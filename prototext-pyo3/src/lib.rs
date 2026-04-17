@@ -284,8 +284,6 @@ fn prototext_codec_lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 /// Gather stub info for pyo3-stub-gen (called by the post_build binary).
 pub fn stub_info() -> pyo3_stub_gen::Result<pyo3_stub_gen::StubInfo> {
-    pyo3_stub_gen::StubInfo::from_project_root(
-        "prototext_codec_lib".to_string(),
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")),
-    )
+    let pyproject = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("pyproject.toml");
+    pyo3_stub_gen::StubInfo::from_pyproject_toml(pyproject)
 }

@@ -14,8 +14,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 prototext-core       = { path = "../prototext-core" }
 pyo3                 = { version = "0.26", features = ["extension-module"] }
-pyo3_stub_gen        = { version = "0.16", package = "pyo3-stub-gen" }
-pyo3_stub_gen_derive = { version = "0.16", package = "pyo3-stub-gen-derive" }
+pyo3_stub_gen        = { version = "0.22", package = "pyo3-stub-gen" }
+pyo3_stub_gen_derive = { version = "0.22", package = "pyo3-stub-gen-derive" }
 
 [[bin]]
 name = "prototext_post_build"

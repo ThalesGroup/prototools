@@ -177,7 +177,7 @@ let
       # The shared library extension differs by platform (.so on Linux, .dylib on macOS).
       ext=${if pkgs.stdenv.isDarwin then "dylib" else "so"}
       cp target/release/libprototext_codec_lib.$ext $out/artifacts/prototext_codec_lib.so
-      cp prototext-pyo3/prototext_codec_lib.pyi      $out/artifacts/prototext_codec_lib.pyi
+      cp prototext-pyo3/prototext_codec.pyi           $out/artifacts/prototext_codec_lib.pyi
     '';
   });
 
