@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+#
+# SPDX-License-Identifier: MIT
+
+[package]
+name    = "prototext_codec"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name       = "prototext_codec_lib"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+prototext-core       = { path = "../prototext-core" }
+pyo3                 = { version = "0.26", features = ["extension-module"] }
+pyo3_stub_gen        = { version = "0.16", package = "pyo3-stub-gen" }
+pyo3_stub_gen_derive = { version = "0.16", package = "pyo3-stub-gen-derive" }
+
+[[bin]]
+name = "prototext_post_build"
+path = "src/bin/post_build.rs"

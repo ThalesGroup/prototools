@@ -13,6 +13,8 @@ on:
 
 jobs:
   # Fast gates: formatting, lints, unit tests.
+  # Runs on Linux only — Nix derivations are hermetic and platform-independent
+  # for the lint/test phase.
   check:
     runs-on: ubuntu-latest
     steps:
@@ -29,13 +31,19 @@ jobs:
       - name: Check lints (clippy)
         run: nix-build -A rust-clippy
 
+      - name: Check lints (clippy — pyo3 extension)
+        run: nix-build -A rust-clippy-pyo3
+
       - name: Run tests
         run: nix-build -A rust-tests
 
-  # Build the release binary (includes man page + shell completions).
+  # Build the release binary and the Python extension on both Linux and macOS.
   build:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     needs: check
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -46,3 +54,6 @@ jobs:
 
       - name: Build prototext
         run: nix-build -A prototools
+
+      - name: Build prototext-codec (Python extension)
+        run: nix-build -A prototext-codec
