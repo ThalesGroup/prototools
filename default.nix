@@ -174,8 +174,10 @@ let
     '';
     installPhase = ''
       mkdir -p $out/artifacts/
-      cp target/release/libprototext_codec_lib.so $out/artifacts/prototext_codec_lib.so
-      cp prototext-pyo3/prototext_codec_lib.pyi    $out/artifacts/prototext_codec_lib.pyi
+      # The shared library extension differs by platform (.so on Linux, .dylib on macOS).
+      ext=${if pkgs.stdenv.isDarwin then "dylib" else "so"}
+      cp target/release/libprototext_codec_lib.$ext $out/artifacts/prototext_codec_lib.so
+      cp prototext-pyo3/prototext_codec_lib.pyi      $out/artifacts/prototext_codec_lib.pyi
     '';
   });
 
