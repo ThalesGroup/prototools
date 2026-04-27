@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+#
+# SPDX-License-Identifier: MIT
+
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reproto"
+version = "0.1.0"
+description = "Reconstruct .proto source files from compiled .pb descriptor sets"
+authors = [{ name = "Frederic Ruget", email = "fred@atlant.is" }]
+dependencies = [
+    "click",
+    "google-re2",
+    "lark",
+    "protobuf",
+    "pyvis",
+    "pyyaml",
+    "rapidfuzz",
+    "rich",
+]
+
+[project.scripts]
+reproto = "reproto.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"resources" = ["**/*.proto", "**/*.pb"]
+"reproto.variants" = ["*.yaml", "**/*.pb"]
+
+[tool.pytest.ini_options]
+testpaths = ["src/reproto/tests"]
+python_files = ["test_*.py"]
+pythonpath = ["src"]
+addopts = "-n auto"
+
+[tool.ruff]
+src = ["src"]
+fix = true

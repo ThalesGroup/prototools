@@ -1,0 +1,33 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+//
+// SPDX-License-Identifier: MIT
+
+// Test fixture for Google well-known types
+
+syntax = "proto2";
+
+package test.wellknown;
+
+import "google/protobuf/any.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+
+message TestMessage {
+  // Test Any type
+  optional google.protobuf.Any any_field = 1;
+
+  // Test Empty type
+  optional google.protobuf.Empty empty_field = 2;
+
+  // Test Timestamp type
+  optional google.protobuf.Timestamp timestamp_field = 3;
+
+  // Test Duration type
+  optional google.protobuf.Duration duration_field = 4;
+}
+
+service TestService {
+  rpc GetEmpty(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc GetMessage(TestMessage) returns (TestMessage);
+}

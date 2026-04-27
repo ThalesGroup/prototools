@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+#
+# SPDX-License-Identifier: MIT
+
+# All files in this directory are generated at build time by patch_reproto.sh.
+# Do not commit them.
+/*
+/.*
+!/.gitignore

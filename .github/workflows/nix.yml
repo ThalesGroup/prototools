@@ -12,19 +12,52 @@ on:
   workflow_dispatch:
 
 jobs:
-  ci:
-    name: CI (${{ matrix.os }})
+  check:
+    name: Check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+          - os: ubuntu-24.04-arm
+          - os: macos-15
+          - os: macos-15-intel
+            skip-clippy: true
     steps:
       - uses: actions/checkout@v6
 
       - name: Install Nix
-        uses: cachix/install-nix-action@v31
-        with:
-          nix_path: nixpkgs=channel:nixos-25.11
+        uses: DeterminateSystems/nix-installer-action@v16
 
-      - name: Build and test
-        run: nix-build -A ci
+      - name: Check formatting (rustfmt)
+        run: nix-build -A rust-fmt
+
+      - name: Check lints (clippy)
+        if: ${{ !matrix.skip-clippy }}
+        run: nix-build -A rust-clippy && nix-build -A rust-clippy-pyo3
+
+      - name: Run tests
+        run: nix-build -A rust-tests
+
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: check
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+          - os: ubuntu-24.04-arm
+          - os: macos-15
+          - os: macos-15-intel
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+
+      - name: Build prototools + prototext-codec + reproto
+        run: nix-build -A prototools && nix-build -A prototext-codec && nix-build -A reproto
+
+      - name: Run reproto tests + python lint
+        run: nix-build -A reproto-tests && nix-build -A python-lint

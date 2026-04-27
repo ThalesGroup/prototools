@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+# SPDX-License-Identifier: MIT
+#
+# Thin wrapper — delegates to the compiled prototext binary in target/release/.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+exec "$REPO_ROOT/target/release/prototext" "$@"

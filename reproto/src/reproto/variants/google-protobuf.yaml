@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+#
+# SPDX-License-Identifier: MIT
+
+name: google.protobuf
+description: >
+  Standard OSS protobuf variant. Input files are compiled against
+  google/protobuf/descriptor.proto.
+
+descriptor_proto: google/protobuf/descriptor.proto
+
+well_known: {}
+
+import_rewrites: []
+
+namespace_rewrites: []
+
+orphans:
+  EnumOptions:            [features, feature_support]
+  EnumValueOptions:       [features, feature_support]
+  ExtensionRangeOptions:  [features, feature_support, verification]
+  FieldOptions:           [features, feature_support]
+  FileOptions:            [features, feature_support]
+  MessageOptions:         [features, feature_support, map_entry, message_set_wire_format]
+  MethodOptions:          [features, feature_support]
+  ServiceOptions:         [features, feature_support]

@@ -25,9 +25,15 @@ let
   src = pkgs.lib.cleanSourceWith {
     src    = pkgs.lib.cleanSource ./.;
     # Keep Cargo sources plus fixtures/ (integration tests + proto schemas).
+    # Exclude reproto/ and bin/ — Python-only subtrees that must not perturb
+    # the Rust derivation hashes.
     filter = path: type:
-      (crane.filterCargoSources path type) ||
-      (pkgs.lib.hasInfix "/fixtures/" path);
+      let rel = pkgs.lib.removePrefix (toString ./. + "/") (toString path);
+      in
+      !(pkgs.lib.hasPrefix "reproto/" rel) &&
+      !(pkgs.lib.hasPrefix "bin/" rel) &&
+      ((crane.filterCargoSources path type) ||
+       (pkgs.lib.hasInfix "/fixtures/" path));
   };
 
   # Common arguments shared by all Crane derivations.
@@ -91,17 +97,14 @@ let
   # ---------------------------------------------------------------------------
   prototools = crane.buildPackage (commonArgs // {
     pname          = "prototools";
-    version        = "0.1.0";
     cargoArtifacts = rustTests;
     cargoExtraArgs = "-p prototext";
+    # doCheck = false: tests are already run by the dedicated rust-tests
+    # derivation (which has protoc in nativeBuildInputs).
+    doCheck        = false;
 
     nativeBuildInputs = (commonArgs.nativeBuildInputs or []) ++ [ pkgs.installShellFiles ];
 
-    checkPhase = ''
-      echo "fmt:    ${rustFmt}"
-      echo "clippy: ${rustClippy}"
-      echo "tests:  ${rustTests}"
-    '';
 
     postInstall = ''
       # Install shell completions.
@@ -135,7 +138,7 @@ let
   # ---------------------------------------------------------------------------
   # PyO3 extension — prototext_codec Python package
   # ---------------------------------------------------------------------------
-  pythonBin        = pythonPkgs.python.withPackages (_: []);
+  pythonBin        = pythonPkgs.python;
   pythonExecutable = "${pythonBin}/bin/python";
 
   # commonArgs extended with the three values required for a PyO3 Crane build.
@@ -160,7 +163,10 @@ let
   # Compile the cdylib and run post_build to generate the .pyi stub.
   prototextExtension = crane.buildPackage (pyo3CommonArgs // {
     pname          = "prototext-codec-ext";
-    cargoArtifacts = rustClippyPyo3;
+    # Chain off pyo3DepsCache rather than rustClippyPyo3: the clippy binary
+    # cannot be patched on macos-15-intel (install_name_tool path-length limit).
+    # CI enforces clippy separately via the rust-clippy-pyo3 derivation.
+    cargoArtifacts = pyo3DepsCache;
     cargoExtraArgs = "-p prototext_codec --lib";
     doCheck        = false;
     # Clear stale Cargo fingerprints so the pyo3 build script re-runs here.
@@ -197,6 +203,161 @@ let
   };
 
   # ---------------------------------------------------------------------------
+  # reproto — Python package for reconstructing .proto sources from .pb files
+  # ---------------------------------------------------------------------------
+
+  # Filtered source for the reproto/ subtree — excludes .pb files (generated),
+  # __pycache__ dirs, and result symlinks so the hash is stable.
+  reprotoFilteredSrc = builtins.path {
+    name   = "reproto-src";
+    path   = ./reproto;
+    filter = path: type:
+      let
+        base       = baseNameOf (toString path);
+        skipPb     = type == "regular" && pkgs.lib.hasSuffix ".pb" base;
+        skipCache  = base == "__pycache__";
+        skipResult = pkgs.lib.hasPrefix "result" base;
+      in
+        !skipPb && !skipCache && !skipResult;
+  };
+
+  # Common Python dependencies for reproto (used by both reprotoBare and reproto).
+  reprotoPropagatedDeps = [
+    pythonPkgs.click
+    pythonPkgs.google-re2
+    pythonPkgs.lark
+    pythonPkgs.protobuf
+    pythonPkgs.pyvis
+    pythonPkgs.pyyaml
+    pythonPkgs.rapidfuzz
+    pythonPkgs.rich
+    pythonPkgs.types-protobuf
+  ];
+
+  # Bootstrap package — installs reproto without running tests.
+  # Provides bin/reproto and carries the patch scripts for the codegen stage.
+  reprotoBare = pythonPkgs.buildPythonPackage {
+    pname   = "reproto-bare";
+    version = "0.1.0";
+    src     = reprotoFilteredSrc;
+    pyproject = true;
+
+    nativeBuildInputs = [ pythonPkgs.setuptools pythonPkgs.wheel ];
+    propagatedBuildInputs = reprotoPropagatedDeps;
+
+    doCheck = false;
+
+    postInstall = ''
+      mkdir -p $out/patch
+      cp -r ${reprotoFilteredSrc}/patch/* $out/patch/
+    '';
+  };
+
+  # Codegen stage — seeds well-known .proto files from pkgs.protobuf, then
+  # runs patch_reproto.sh to compile them into .pb descriptors.
+  reprotoSrcWithCodegen = pkgs.runCommand "reproto-src-with-codegen" {
+    buildInputs = [
+      reprotoBare
+      pkgs.protobuf        # provides protoc and well-known .proto includes
+    ];
+  } ''
+    set -euo pipefail
+    cp -r ${reprotoFilteredSrc} $out
+    chmod -R u+w $out
+
+    # Seed well-known-type .proto sources from pkgs.protobuf.
+    mkdir -p $out/src/resources/google/protobuf
+    cp ${pkgs.protobuf}/include/google/protobuf/*.proto \
+       $out/src/resources/google/protobuf/
+
+    bash ${reprotoBare}/patch/patch_reproto.sh "${reprotoBare}" "$out"
+  '';
+
+  # Final reproto package — built from the codegen output, with tests.
+  reproto = pythonPkgs.buildPythonPackage {
+    pname   = "reproto";
+    version = "0.1.0";
+    src     = reprotoSrcWithCodegen;
+    pyproject = true;
+
+    nativeBuildInputs = [
+      pythonPkgs.setuptools
+      pythonPkgs.wheel
+      pythonPkgs.pytest
+      pythonPkgs."pytest-xdist"
+      pkgs.installShellFiles
+    ];
+    propagatedBuildInputs = reprotoPropagatedDeps ++ [
+      prototextCodec  # reproto.load imports prototext_codec_lib at module load time
+    ];
+
+    doCheck = false;
+
+    postInstall = ''
+      installShellCompletion --cmd reproto \
+        --bash ${reprotoFilteredSrc}/src/reproto/completions.sh
+    '';
+  };
+
+  # Tests run separately so that the installable reproto package has doCheck = false
+  # (avoiding pytest during nix-shell) while ci still enforces test passage.
+  reprotoTests = pkgs.runCommand "reproto-tests" {
+    buildInputs = [
+      pkgs.protobuf
+      (pythonPkgs.python.withPackages (_: reprotoPropagatedDeps ++ [
+        prototextCodec
+        pythonPkgs.pytest
+        pythonPkgs."pytest-xdist"
+      ]))
+    ];
+  } ''
+    export PYTHONPATH="${reprotoSrcWithCodegen}/src"
+    pytest -p no:cacheprovider ${reprotoSrcWithCodegen}/src/reproto/tests/ -x
+    touch $out
+  '';
+
+  # ---------------------------------------------------------------------------
+  # Python lint — pyright type checking for the reproto Python package.
+  #
+  # Runs against reprotoSrcWithCodegen so the generated .pb descriptor files
+  # are present.  The prototextExtension artifacts are injected so pyright can
+  # resolve prototext_codec_lib imports via the generated .pyi stub.
+  # ---------------------------------------------------------------------------
+  pythonLint = pkgs.runCommand "python-lint" {
+    buildInputs = [
+      pkgs.pyright
+      (pythonPkgs.python.withPackages (_: reprotoPropagatedDeps ++ [ pythonPkgs.pytest ]))
+    ];
+  } ''
+    set -euo pipefail
+
+    # pyright needs a writable working directory for its cache.
+    cd "$TMPDIR"
+
+    # Make the prototext_codec_lib .pyi stub visible to pyright.
+    export PYTHONPATH="${reprotoSrcWithCodegen}/src:${prototextExtension}/artifacts"
+
+    # Write a hermetic pyrightconfig.json.
+    cat > pyrightconfig.json <<EOF
+{
+  "typeCheckingMode": "basic",
+  "extraPaths": [
+    "${reprotoSrcWithCodegen}/src",
+    "${prototextExtension}/artifacts"
+  ],
+  "exclude": [
+    "result*"
+  ]
+}
+EOF
+
+    echo "--- pyright ---"
+    pyright ${reprotoSrcWithCodegen}/src/
+
+    touch $out
+  '';
+
+  # ---------------------------------------------------------------------------
   # Development shell
   # ---------------------------------------------------------------------------
   dev-shell = pkgs.mkShell {
@@ -215,6 +376,8 @@ let
       protobuf
       mandoc
       zola
+      pythonPkgs.pytest
+      pythonPkgs."pytest-xdist"
     ];
 
     shellHook = ''
@@ -225,11 +388,35 @@ let
       # that the active nix-shell belongs to this repo.
       export NIXSHELL_REPO="${toString ./.}"
 
-      # Add the cargo release build to PATH so prototext is available after cargo build --release.
-      export PATH="${toString ./.}/target/release:$PATH"
+      export PYO3_PYTHON="${pythonExecutable}"
+
+      export PATH="${toString ./.}/bin:${pythonBin}/bin:${toString ./.}/target/release:$PATH"
+
+      export PYTHONPATH="$PWD/reproto/src:${pythonPkgs.makePythonPath (reproto.propagatedBuildInputs ++ [ pythonPkgs.pytest pythonPkgs."pytest-xdist" ])}:$PYTHONPATH"
+
+      # Write .env so VS Code / Pylance picks up the interpreter and PYTHONPATH.
+      echo "PYTHON_INTERPRETER=${pythonExecutable}" > .env
+      echo "PYTHONPATH=$PYTHONPATH" >> .env
+
+      # Generate pyrightconfig.json from $PYTHONPATH so pyright CLI and Pylance
+      # stay in sync with default.nix automatically.
+      python3 -c "
+import json, os
+paths = [p for p in os.environ['PYTHONPATH'].split(':') if p]
+cfg = {'extraPaths': paths, 'exclude': ['result*', 'prototext-pyo3/prototext_codec_lib']}
+with open('pyrightconfig.json', 'w') as f:
+    json.dump(cfg, f, indent=2)
+    f.write('\n')
+"
 
       # Build prototext if not already built.
       cargo build --release --locked -p prototext
+
+      # Set RUSTFLAGS after the prototext build so that manual
+      # `cargo build -p prototext_codec` uses the same linker flags as the Nix
+      # build, keeping Cargo fingerprints aligned.  Setting it before would
+      # invalidate prototext's fingerprint (it doesn't need -lpython).
+      export RUSTFLAGS="-L ${pythonBin}/lib -lpython${pythonPkgs.python.pythonVersion}"
 
       # Generate man page into man/man1/ and expose it via MANPATH.
       if command -v prototext-gen-man &>/dev/null; then
@@ -239,6 +426,19 @@ let
         makewhatis "$PWD/man" 2>/dev/null || true
       fi
 
+      # Generate rust-toolchain.toml so rust-analyzer uses the same rustc version
+      # as the nix-shell build.  Only written when the content changes to avoid
+      # invalidating Cargo fingerprints on every nix-shell entry.
+      _toolchain_content="[toolchain]
+channel = \"${pkgs.rustc.unwrapped.version}\"
+components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
+      if [[ "$(cat rust-toolchain.toml 2>/dev/null)" != "$_toolchain_content" ]]; then
+        rustup toolchain install ${pkgs.rustc.unwrapped.version} \
+          --component rust-src --no-self-update 2>/dev/null || true
+        printf '%s\n' "$_toolchain_content" > rust-toolchain.toml
+      fi
+      unset _toolchain_content
+
       # bash completion for prototext (workaround for clap_complete path-completion bugs)
       if command -v prototext &>/dev/null; then
         source <(PROTOTEXT_COMPLETE=bash prototext | sed \
@@ -246,25 +446,34 @@ let
           -e 's|words\[COMP_CWORD\]="$2"|local _cur="''${COMP_LINE:0:''${COMP_POINT}}"; _cur="''${_cur##* }"; words[COMP_CWORD]="''${_cur}"|')
       fi
 
-      eval "$old_opts"
+      # bash completion for reproto (pre-built script, avoids slow click invocation)
+      eval "$(cat $PWD/reproto/src/reproto/completions.sh)"
+
+      [[ "$old_opts" == *"set -o errexit"*  ]] && set -e || set +e
+      [[ "$old_opts" == *"set -o nounset"*  ]] && set -u || set +u
+      [[ "$old_opts" == *"set -o pipefail"* ]] && set -o pipefail || set +o pipefail
     '';
   };
 
   # Single target that forces the entire CI closure in dependency order.
-  # nix-build -A ci builds fmt → clippy → clippy-pyo3 → tests → prototools → prototext-codec.
+  # nix-build -A ci builds fmt → clippy → clippy-pyo3 → tests → prototools → prototext-codec → reproto.
   ci = pkgs.linkFarmFromDrvs "ci" [
-    rustFmt rustClippy rustClippyPyo3 rustTests prototools prototextCodec
+    rustFmt rustClippy rustClippyPyo3 rustTests prototools prototextCodec reproto reprotoTests pythonLint
   ];
 
 in
 {
-  default              = prototools;
+  default              = ci;
   prototools           = prototools;
   rust-fmt             = rustFmt;
   rust-clippy          = rustClippy;
   rust-clippy-pyo3     = rustClippyPyo3;
   rust-tests           = rustTests;
   prototext-codec      = prototextCodec;
+  reproto              = reproto;
+  reproto-bare         = reprotoBare;
+  reproto-tests        = reprotoTests;
+  python-lint          = pythonLint;
   ci                   = ci;
   dev-shell            = dev-shell;
 }

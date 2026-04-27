@@ -1,0 +1,87 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+//
+// SPDX-License-Identifier: MIT
+
+syntax = "proto2";
+
+package reproto.test;
+
+// Import for extensions if needed
+import "google/protobuf/descriptor.proto";
+
+// Define custom extension for enum value options
+extend google.protobuf.EnumValueOptions {
+  optional string example_value_option = 51235;
+  optional int32 value_number_option = 51236;
+  repeated string value_tags = 51237;
+}
+
+// Enum demonstrating various enum value option patterns
+enum EnumValueOptionsTest {
+  // Allow aliases for testing duplicate values
+  option allow_alias = true;
+
+  // Basic value with no options
+  ZERO = 0;
+
+  // Value with deprecated option
+  ONE = 1 [deprecated = true];
+
+  // Value with custom extension
+  TWO = 2 [(example_value_option) = "custom value"];
+
+  // Value with multiple options
+  THREE = 3 [
+    deprecated = true,
+    (example_value_option) = "multi",
+    (value_number_option) = 42
+  ];
+
+  // Alias value (same number as TWO)
+  ALIAS_TWO = 2;
+
+  // Value with repeated extension option
+  FOUR = 4 [(value_tags) = "tag1", (value_tags) = "tag2"];
+
+  // Value with all built-in and custom options
+  COMPREHENSIVE = 5 [
+    deprecated = true,
+    (example_value_option) = "comprehensive test",
+    (value_number_option) = 999,
+    (value_tags) = "alpha",
+    (value_tags) = "beta",
+    (value_tags) = "gamma"
+  ];
+}
+
+// Enum with negative values and options
+enum NegativeValuesWithOptions {
+  NEG_ZERO = 0;
+  NEG_ONE = -1 [deprecated = true];
+  NEG_MAX = -2147483648 [(example_value_option) = "min int32"];
+}
+
+// Enum with only deprecated values
+enum AllDeprecated {
+  OLD_VALUE_ZERO = 0 [deprecated = true];
+  OLD_VALUE_ONE = 1 [deprecated = true];
+  OLD_VALUE_TWO = 2 [deprecated = true];
+}
+
+// Enum with mixed options patterns
+enum MixedOptions {
+  // No options
+  PLAIN = 0;
+
+  // Only built-in option
+  BUILTIN_ONLY = 1 [deprecated = true];
+
+  // Only extension option
+  EXTENSION_ONLY = 2 [(example_value_option) = "ext"];
+
+  // Both built-in and extension
+  BOTH = 3 [
+    deprecated = true,
+    (example_value_option) = "both"
+  ];
+}

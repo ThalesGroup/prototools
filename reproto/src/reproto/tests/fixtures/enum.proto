@@ -1,0 +1,72 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+//
+// SPDX-License-Identifier: MIT
+
+syntax = "proto2";
+
+package reproto;
+
+// Import for extensions if needed
+import "google/protobuf/descriptor.proto";
+
+// Full enum illustrating all constructs
+enum AllEnumFeatures {
+  // Allow duplicate numeric values
+  option allow_alias = true;
+  // Enum itself is deprecated
+  option deprecated = true;
+  // Custom extension option
+  option (example_enum_option) = "custom";
+
+  // Explicit enum values
+  VALUE_ZERO = 0;
+  VALUE_ONE = 1;
+  VALUE_TWO = 2;
+  // Alias (allowed by allow_alias)
+  VALUE_THREE = 2;
+
+  // Mark deprecated value
+  VALUE_DEPRECATED = 99 [deprecated = true];
+
+  // Reserved numeric values and names
+  // Reserved numeric range
+  reserved 100 to 199;
+  // Reserved specific numbers
+  reserved 300, 301;
+  // Reserved names
+  reserved "OLD_VALUE", "OBSOLETE";
+}
+
+// Another enum showing extensions usage
+enum ExtendedEnum {
+  option (example_enum_option) = "extended";
+
+  FIRST = 0;
+  SECOND = 1;
+}
+
+// Enum demonstrating negative and large numbers
+enum NumericVariants {
+  MINUS_ONE = -1;
+  MAX_INT32 = 2147483647;
+  MIN_INT32 = -2147483648;
+}
+
+// Enum demonstrating empty/default name
+enum EmptyEnum {
+  // FQDN is .reproto.UNSPECIFIED
+  UNSPECIFIED = 0;
+}
+
+// Enum with only reserved values
+enum OnlyReserved {
+  // FQDN is .reproto.UNSPECIFIED2
+  UNSPECIFIED2 = 0;
+  reserved 1 to 10;
+  reserved "RESERVED_NAME";
+}
+
+// Define an extension for enums (just for illustration)
+extend google.protobuf.EnumOptions {
+  optional string example_enum_option = 51234;
+}

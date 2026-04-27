@@ -8,3 +8,6 @@
 /result-*
 /man/
 /website/public/
+/rust-toolchain.toml
+/.env
+/pyrightconfig.json
