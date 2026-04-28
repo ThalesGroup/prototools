@@ -1,0 +1,14 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Finding: does proto3 runtime encode repeated integers as packed when
+// HasField("packed") == False in the descriptor?
+
+syntax = "proto3";
+package mockup;
+
+message PackedWireTest {
+  repeated int32 default_field = 1;         // no [packed] annotation
+  repeated int32 explicit_true  = 2 [packed = true];
+  repeated int32 explicit_false = 3 [packed = false];
+}

@@ -1,0 +1,18 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Finding: MessageOptions in proto3 — are no_standard_descriptor_accessor and
+// deprecated accepted? message_set_wire_format should be rejected.
+
+syntax = "proto3";
+package mockup;
+
+message NoStdAccessorProto3 {
+  option no_standard_descriptor_accessor = true;
+  int32 x = 1;
+}
+
+message DeprecatedMsgProto3 {
+  option deprecated = true;
+  int32 x = 1;
+}

@@ -1,0 +1,24 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Finding: MessageOptions — which are proto2-only vs syntax-neutral?
+// Verify: message_set_wire_format, no_standard_descriptor_accessor,
+//         deprecated, map_entry (synthetic).
+
+syntax = "proto2";
+package mockup;
+
+message WithMsgSetWireFormat {
+  option message_set_wire_format = true;
+  extensions 4 to max;
+}
+
+message NoStdAccessor {
+  option no_standard_descriptor_accessor = true;
+  optional int32 x = 1;
+}
+
+message DeprecatedMsg {
+  option deprecated = true;
+  optional int32 x = 1;
+}

@@ -1,0 +1,25 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Finding: proto3 enums — verify allow_alias, open enum in descriptor.
+
+syntax = "proto3";
+package mockup;
+
+enum Proto3Enum {
+  P3_UNKNOWN = 0;
+  P3_A       = 1;
+  P3_B       = 2;
+}
+
+enum AliasEnum {
+  option allow_alias = true;
+  ALIAS_UNKNOWN = 0;
+  ALIAS_A       = 1;
+  ALIAS_ALSO_A  = 1;
+}
+
+message WithEnum {
+  Proto3Enum e     = 1;
+  AliasEnum  alias = 2;
+}

@@ -1,0 +1,13 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Finding: import weak in edition 2023 files — does protoc accept it?
+
+edition = "2023";
+package mockup;
+
+import weak "f20_weak_import_editions_dep.proto";
+
+message EditionWeakUser {
+  int32 val = 1;
+}

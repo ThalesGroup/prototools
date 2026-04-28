@@ -1,0 +1,21 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Finding: closed (proto2) vs open (proto3) enums in descriptors.
+// Verify: no descriptor-level flag distinguishes closed/open — it's purely
+// inferred from the file's syntax.
+
+syntax = "proto2";
+package mockup;
+
+enum Proto2Enum {
+  P2_UNKNOWN = 0;
+  P2_A       = 1;
+  P2_B       = 2;
+}
+
+message WithEnum {
+  optional Proto2Enum e         = 1;
+  optional Proto2Enum e_default = 2 [default = P2_A];
+  repeated Proto2Enum e_rep     = 3;
+}

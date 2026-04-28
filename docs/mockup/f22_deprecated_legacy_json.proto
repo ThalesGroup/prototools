@@ -1,0 +1,22 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Finding: deprecated_legacy_json_field_conflicts on EnumOptions / MessageOptions.
+// Verify: whether it survives into the descriptor in proto2, proto3, editions.
+
+syntax = "proto2";
+package mockup;
+
+// Enum with deprecated_legacy_json_field_conflicts = true
+enum LegacyJsonEnum {
+  option deprecated_legacy_json_field_conflicts = true;
+  UNKNOWN = 0;
+  VALUE_A = 1;
+  value_a = 2;  // conflicts with VALUE_A in JSON (different casing)
+}
+
+message LegacyJsonMsg {
+  option deprecated_legacy_json_field_conflicts = true;
+  optional int32 foo_bar = 1;
+  optional int32 fooBar = 2;  // conflicts with foo_bar in JSON
+}

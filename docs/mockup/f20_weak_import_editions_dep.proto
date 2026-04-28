@@ -1,0 +1,11 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Dependency file for f20 — import weak in editions test.
+
+edition = "2023";
+package mockup;
+
+message WeakDep {
+  int32 val = 1;
+}

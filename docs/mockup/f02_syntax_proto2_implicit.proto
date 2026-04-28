@@ -1,0 +1,10 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Finding: What does fdp.syntax contain for a file with NO syntax statement (legacy proto2)?
+
+package mockup;
+
+message Dummy {
+  optional int32 x = 1;
+}

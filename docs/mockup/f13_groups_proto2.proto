@@ -1,0 +1,21 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Finding: groups (TYPE_GROUP) in proto2.
+// Verify: field type=TYPE_GROUP, synthetic nested message.
+
+syntax = "proto2";
+package mockup;
+
+message WithGroup {
+  optional int32 id = 1;
+
+  optional group MyGroup = 2 {
+    optional string name  = 1;
+    optional int32  value = 2;
+  }
+
+  repeated group RepGroup = 3 {
+    optional int32 item = 1;
+  }
+}

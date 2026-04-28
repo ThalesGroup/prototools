@@ -1,0 +1,11 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Finding: What does fdp.syntax and fdp.edition contain for an edition 2023 file?
+
+edition = "2023";
+package mockup;
+
+message Dummy {
+  int32 x = 1;
+}

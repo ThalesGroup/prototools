@@ -1,0 +1,22 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Finding: synthetic oneofs for proto3 optional fields.
+// Verify: name starts with _, proto3_optional=true, oneof suppression.
+// Also: explicit oneof must NOT be suppressed.
+
+syntax = "proto3";
+package mockup;
+
+message SyntheticOneof {
+  optional int32  opt_scalar   = 1;   // synthetic oneof: _opt_scalar
+  optional string opt_string   = 2;   // synthetic oneof: _opt_string
+  int32           implicit     = 3;   // no oneof
+  repeated int32  rep          = 4;   // no oneof
+
+  // Real oneof — must NOT be suppressed
+  oneof real_choice {
+    int32  choice_a = 10;
+    string choice_b = 11;
+  }
+}

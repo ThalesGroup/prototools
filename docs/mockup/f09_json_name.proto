@@ -1,0 +1,16 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Finding: json_name in the descriptor.
+// Verify: HasField("json_name"), value for auto vs custom, both syntaxes.
+
+syntax = "proto3";
+package mockup;
+
+message JsonName {
+  string field_name         = 1;                      // auto: "fieldName"
+  string already_camel      = 2;                      // auto: "alreadyCamel"
+  string custom             = 3 [json_name = "My"];   // explicit override
+  string same_as_auto       = 4 [json_name = "sameAsAuto"]; // explicit == auto
+  string under_score_heavy  = 5;                      // auto: "underScoreHeavy"
+}

@@ -1,0 +1,14 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Finding: import weak in proto2.
+// Verify: weak_dependency index populated in FileDescriptorProto.
+
+syntax = "proto2";
+package mockup;
+
+import weak "f14_weak_import_proto2_dep.proto";
+
+message UsesWeak {
+  optional int32 x = 1;
+}

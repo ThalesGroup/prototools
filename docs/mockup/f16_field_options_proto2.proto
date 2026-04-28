@@ -1,0 +1,17 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Finding: FieldOptions in proto2.
+// Verify: ctype, jstype, lazy, deprecated, weak, retention.
+
+syntax = "proto2";
+package mockup;
+
+message FieldOpts {
+  optional string  ctype_cord       = 1 [ctype = CORD];
+  optional string  ctype_string_piece = 2 [ctype = STRING_PIECE];
+  optional int64   jstype_js_string = 3 [jstype = JS_STRING];
+  optional int64   jstype_js_number = 4 [jstype = JS_NUMBER];
+  optional string  deprecated_field = 5 [deprecated = true];
+  optional string  no_opts          = 6;
+}

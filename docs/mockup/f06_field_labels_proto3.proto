@@ -1,0 +1,30 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Finding: proto3 field labels in the descriptor.
+// Verify:
+//   - implicit singular: label=LABEL_OPTIONAL, proto3_optional=false, no synthetic oneof
+//   - explicit optional: label=LABEL_OPTIONAL, proto3_optional=true, synthetic oneof _field
+//   - repeated: label=LABEL_REPEATED, proto3_optional=false
+//   - oneof fields: label=LABEL_OPTIONAL, proto3_optional=false, oneof_index set
+//   - message field (always explicit presence): label=LABEL_OPTIONAL, proto3_optional=false
+
+syntax = "proto3";
+package mockup;
+
+message Inner {
+  int32 val = 1;
+}
+
+message Labels {
+  int32    implicit_scalar  = 1;   // implicit singular
+  optional int32  explicit_opt    = 2;   // explicit optional → proto3_optional=true
+  repeated int32  rep_field       = 3;   // repeated
+  Inner    msg_field        = 4;   // message field (always explicit presence)
+  optional Inner  opt_msg_field   = 5;   // optional message
+
+  oneof choice {
+    int32  oneof_a = 10;
+    string oneof_b = 11;
+  }
+}

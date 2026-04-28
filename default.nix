@@ -346,7 +346,8 @@ let
     "${prototextExtension}/artifacts"
   ],
   "exclude": [
-    "result*"
+    "result*",
+    "docs/mockup"
   ]
 }
 EOF
@@ -403,7 +404,7 @@ EOF
       python3 -c "
 import json, os
 paths = [p for p in os.environ['PYTHONPATH'].split(':') if p]
-cfg = {'extraPaths': paths, 'exclude': ['result*', 'prototext-pyo3/prototext_codec_lib']}
+cfg = {'extraPaths': paths, 'exclude': ['result*', 'prototext-pyo3/prototext_codec_lib', 'docs/mockup']}
 with open('pyrightconfig.json', 'w') as f:
     json.dump(cfg, f, indent=2)
     f.write('\n')

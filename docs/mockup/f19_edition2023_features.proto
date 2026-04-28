@@ -1,0 +1,49 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Finding: edition 2023 features in the descriptor.
+// Verify: features field on FileOptions, MessageOptions, FieldOptions, EnumOptions.
+// Verify: per-element overrides, inheritance.
+// Verify: how repeated_field_encoding, field_presence, enum_type, utf8_validation
+//         appear in the descriptor.
+
+edition = "2023";
+package mockup;
+
+// File-level: override some features to proto2-like
+option features.enum_type = CLOSED;
+option features.utf8_validation = NONE;
+
+enum OpenEnum {
+  // Inherits file-level CLOSED — but let's override to OPEN
+  option features.enum_type = OPEN;
+  OPEN_UNKNOWN = 0;
+  OPEN_A       = 1;
+}
+
+enum ClosedEnum {
+  // Inherits file-level CLOSED
+  CLOSED_UNKNOWN = 0;
+  CLOSED_A       = 1;
+}
+
+message EditionMsg {
+  // Field with IMPLICIT presence (proto3-like)
+  int32 implicit_field = 1 [features.field_presence = IMPLICIT];
+
+  // Field with EXPLICIT presence (default for edition 2023)
+  int32 explicit_field = 2;
+
+  // Repeated with EXPANDED (proto2-like unpacked)
+  repeated int32 expanded = 3 [features.repeated_field_encoding = EXPANDED];
+
+  // Repeated with PACKED (default for edition 2023)
+  repeated int32 packed_field = 4;
+
+  // Group equivalent: DELIMITED message encoding
+  EditionInner delimited_field = 5 [features.message_encoding = DELIMITED];
+}
+
+message EditionInner {
+  int32 val = 1;
+}

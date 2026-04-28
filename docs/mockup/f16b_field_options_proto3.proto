@@ -1,0 +1,18 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Finding: FieldOptions in proto3.
+// Verify same options as proto2: ctype, jstype, lazy, deprecated.
+// Also verify: are these options accepted by protoc in proto3?
+
+syntax = "proto3";
+package mockup;
+
+message FieldOpts {
+  string  ctype_cord         = 1 [ctype = CORD];
+  string  ctype_string_piece = 2 [ctype = STRING_PIECE];
+  int64   jstype_js_string   = 3 [jstype = JS_STRING];
+  int64   jstype_js_number   = 4 [jstype = JS_NUMBER];
+  string  deprecated_field   = 5 [deprecated = true];
+  string  no_opts            = 6;
+}

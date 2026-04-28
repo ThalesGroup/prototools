@@ -1,0 +1,13 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Finding: message_set_wire_format in editions — does protoc accept it?
+// Expected: should be rejected (message_set_wire_format is proto2-only concept).
+
+edition = "2023";
+package mockup;
+
+message WithMsgSet {
+  option message_set_wire_format = true;
+  extensions 4 to max;
+}

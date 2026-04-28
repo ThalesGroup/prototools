@@ -1,0 +1,13 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Finding: extension range options (verification, declaration).
+// Verify: RETENTION_SOURCE means they don't survive into the descriptor.
+
+syntax = "proto2";
+package mockup;
+
+message WithRangeOptions {
+  optional int32 base = 1;
+  extensions 100 to 199;
+}

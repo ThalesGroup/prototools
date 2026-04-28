@@ -1,0 +1,35 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Finding: default_value in proto2 descriptors.
+// Verify: HasField("default_value"), the stored string for each scalar type.
+
+syntax = "proto2";
+package mockup;
+
+enum Color { RED = 0; GREEN = 1; BLUE = 2; }
+
+message Defaults {
+  optional int32   i32     = 1  [default = 42];
+  optional int64   i64     = 2  [default = -1000000000000];
+  optional uint32  u32     = 3  [default = 4294967295];
+  optional uint64  u64     = 4  [default = 18446744073709551615];
+  optional sint32  s32     = 5  [default = -1];
+  optional sint64  s64     = 6  [default = -1];
+  optional fixed32 f32     = 7  [default = 1];
+  optional fixed64 f64     = 8  [default = 1];
+  optional sfixed32 sf32   = 9  [default = -1];
+  optional sfixed64 sf64   = 10 [default = -1];
+  optional float   flt     = 11 [default = 3.14];
+  optional double  dbl     = 12 [default = 2.71828];
+  optional float   flt_inf = 13 [default = inf];
+  optional float   flt_ninf= 14 [default = -inf];
+  optional double  dbl_nan = 15 [default = nan];
+  optional bool    b_true  = 16 [default = true];
+  optional bool    b_false = 17 [default = false];
+  optional string  s       = 18 [default = "hello"];
+  optional string  s_empty = 19 [default = ""];
+  optional bytes   byt     = 20 [default = "binary\000data"];
+  optional Color   color   = 21 [default = GREEN];
+  optional int32   no_def  = 22;  // no default_value set
+}

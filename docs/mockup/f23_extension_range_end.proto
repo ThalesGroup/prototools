@@ -1,0 +1,23 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Finding: extension range end value semantics.
+// The source writes "extensions N to M" (inclusive M).
+// Verify: does the descriptor store M+1 (exclusive) for end?
+// Also verify "to max" sentinel value.
+
+syntax = "proto2";
+package mockup;
+
+message ExtRangeEnd {
+  optional int32 base = 1;
+
+  // Explicit numeric range
+  extensions 100 to 199;
+
+  // Second range
+  extensions 1000 to 1999;
+
+  // "to max" range
+  extensions 2000 to max;
+}

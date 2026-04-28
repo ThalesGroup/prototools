@@ -1,0 +1,15 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Finding: deprecated_legacy_json_field_conflicts in proto3.
+// Note: proto3 treats the conflicting enum name as an error (not just warning),
+// so we can only test the MessageOptions form here.
+
+syntax = "proto3";
+package mockup;
+
+message LegacyJsonMsgP3 {
+  option deprecated_legacy_json_field_conflicts = true;
+  int32 foo_bar = 1;
+  int32 fooBar = 2;
+}

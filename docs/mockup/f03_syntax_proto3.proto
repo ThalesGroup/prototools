@@ -1,0 +1,11 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Finding: What does fdp.syntax contain for a proto3 file?
+
+syntax = "proto3";
+package mockup;
+
+message Dummy {
+  int32 x = 1;
+}

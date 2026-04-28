@@ -1,0 +1,19 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Finding: proto2 field labels in the descriptor.
+// Verify: label values for optional/required/repeated.
+
+syntax = "proto2";
+package mockup;
+
+message Labels {
+  optional int32 opt_field   = 1;
+  required int32 req_field   = 2;
+  repeated int32 rep_field   = 3;
+
+  oneof choice {
+    int32 oneof_a = 4;
+    int32 oneof_b = 5;
+  }
+}
