@@ -18,125 +18,84 @@ import "google/protobuf/descriptor.proto";
 // ============================================================================
 // TEST 1: Enum Value FQDN Quirk
 // ============================================================================
-// QUIRK: Enum value FQDNs don't include the enum name itself.
-// - StatusEnum.OK has FQDN: .name.resolution.test.OK (not .name.resolution.test.StatusEnum.OK)
-// - This means two enums in the same scope CANNOT have values with same names
-// ============================================================================
 
 enum StatusEnum {
-  OK = 0;           // FQDN: .name.resolution.test.OK
-  ERROR = 1;        // FQDN: .name.resolution.test.ERROR
+  OK = 0;
+  ERROR = 1;
 }
 
-// This would cause a collision and is commented out:
-// enum ResultEnum {
-//   OK = 0;         // ERROR: collision with StatusEnum.OK at .name.resolution.test.OK
-//   FAILED = 1;
-// }
-
-// Workaround: Use prefixes for enum values
 enum Result {
-  RESULT_OK = 0;      // FQDN: .name.resolution.test.RESULT_OK
-  RESULT_FAILED = 1;  // FQDN: .name.resolution.test.RESULT_FAILED
+  RESULT_OK = 0;
+  RESULT_FAILED = 1;
 }
 
 message EnumTest {
-  // Within the message scope, enum values are visible without qualification
-  optional StatusEnum status = 1 [default = OK];  // Type: .name.resolution.test.StatusEnum
-  optional Result result = 2 [default = RESULT_OK];  // Type: .name.resolution.test.Result
+  optional StatusEnum status = 1 [default = OK];
+  optional Result result = 2 [default = RESULT_OK];
 }
 
 // ============================================================================
 // TEST 2: Nested Type vs Nested Extension Quirk
 // ============================================================================
-// QUIRK: Nested types can be referenced unqualified, but nested extensions cannot
-// - This is a known protoc inconsistency (issue #9550)
-// ============================================================================
 
 message Outer {
-  // Nested message type
-  message Inner {
-    optional string value = 1;
-  }
-
-  // Nested extension
+  // extend blocks come before fields (protoc canonical order)
   extend google.protobuf.MessageOptions {
     optional string outer_ext = 50000;
   }
 
-  message Test {
-    // Nested type CAN be referenced without qualification
-    optional Inner inner = 1;  // Works: resolves to .name.resolution.test.Outer.Inner
+  message Inner {
+    optional string value = 1;
+  }
 
-    // Nested extension CANNOT be referenced without qualification
-    // option (outer_ext) = "test";  // ERROR: unknown option
-    option (Outer.outer_ext) = "qualified";  // Works: must use qualified name
+  message Test {
+    option (.name.resolution.test.Outer.outer_ext) = "qualified";
+
+    optional Inner inner = 1;
   }
 }
 
 // ============================================================================
 // TEST 3: Collision Scenarios
 // ============================================================================
-// QUIRK: protoc's collision detection is tricky - "it suffices for the first
-// item in the path to coincide, for protoc to be misled"
-// ============================================================================
 
-// Complex nested collision scenario that tests short_ref() thoroughly
 message CollisionTest {
   message Inner {
     optional string value = 1;
   }
 
   message Container {
-    // Nested Inner with same name as parent's Inner
+    // Fields come before nested types (protoc canonical order)
+    optional CollisionTest.Inner outer_inner = 1;
+    optional Inner container_inner = 2;
+
     message Inner {
       optional int32 number = 1;
     }
-
-    // This field references the OUTER Inner (CollisionTest.Inner)
-    // Cannot shorten to just "Inner" - would resolve to Container.Inner!
-    optional .name.resolution.test.CollisionTest.Inner outer_inner = 1;
-
-    // This field references the LOCAL Inner (Container.Inner)
-    // Can shorten to just "Inner"
-    optional Inner container_inner = 2;
   }
 }
 
 // ============================================================================
 // TEST 4: Extension Scope Resolution
 // ============================================================================
-// QUIRK: When resolving custom option names, protoc skips the current message
-// scope and goes directly to the parent scope
-// ============================================================================
-
-// Package-level extension
-extend google.protobuf.FieldOptions {
-  optional string package_ext = 50001;
-}
 
 message ExtensionScopeTest {
-  // Can reference package-level extension without qualification
-  optional string field1 = 1 [(package_ext) = "works"];
-
-  // Nested extension
+  // extend blocks come before fields (protoc canonical order)
   extend google.protobuf.FieldOptions {
     optional string nested_ext = 50002;
   }
 
+  optional string field1 = 1 [(.name.resolution.test.package_ext) = "works"];
+
   message NestedMessage {
     // QUIRK: Custom option resolution skips current message scope
     // So nested_ext is NOT visible here without qualification
-    // optional string field2 = 1 [(nested_ext) = "fails"];  // ERROR
-    optional string field2 = 1 [(ExtensionScopeTest.nested_ext) = "works"];
+    optional string field2 = 1 [(.name.resolution.test.ExtensionScopeTest.nested_ext) = "works"];
   }
 }
 
 // ============================================================================
 // TEST 5: Type Name C++ Scoping
-// ============================================================================
-// Regular type names follow C++ scoping: innermost scope first, then parent
-// scopes, with leading '.' meaning start from outermost scope
 // ============================================================================
 
 message A {
@@ -146,25 +105,19 @@ message A {
 }
 
 message ScopingTest {
+  // Fields come before nested types (protoc canonical order)
+  // reproto shortens .name.resolution.test.A.B to A.B (safe: no collision)
+  optional B local_b = 1;
+  optional A.B other_b = 2;
+  optional A.B absolute_b = 3;
+
   message B {
     optional int32 number = 1;
   }
-
-  // Unqualified "B" resolves to ScopingTest.B (innermost scope)
-  optional B local_b = 1;
-
-  // Must qualify to get A.B
-  optional A.B other_b = 2;
-
-  // Leading dot forces resolution from outermost scope
-  optional .name.resolution.test.A.B absolute_b = 3;
 }
 
 // ============================================================================
 // TEST 6: Extension in Message Literal Scope Resolution
-// ============================================================================
-// QUIRK: When resolving extension names inside a message literal in option
-// values, skip ALL message scopes and use only the file scope
 // ============================================================================
 
 message MessageLiteralTest {
@@ -173,16 +126,13 @@ message MessageLiteralTest {
   }
 }
 
-// This extension is at file scope
-extend google.protobuf.MessageOptions {
-  optional MessageLiteralTest embedded = 50004;
+message TestContainer {
+  option (.name.resolution.test.embedded) = {};
 }
 
-message TestContainer {
-  // Inside the message literal, extensions are resolved at file scope
-  option (embedded) = {
-    // msg_ext is a nested extension, but inside message literals,
-    // we skip message scopes, so it's not directly visible
-    // [msg_ext]: "test"  // Would fail
-  };
+extend google.protobuf.FieldOptions {
+  optional string package_ext = 50001;
+}
+extend google.protobuf.MessageOptions {
+  optional MessageLiteralTest embedded = 50004;
 }

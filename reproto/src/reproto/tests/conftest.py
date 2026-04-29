@@ -33,3 +33,6 @@ def check_dependencies():
     )
     if result.returncode != 0:
         pytest.skip("protoc version check failed", allow_module_level=True)
+
+    if not shutil.which("buf"):
+        pytest.skip("buf not found", allow_module_level=True)

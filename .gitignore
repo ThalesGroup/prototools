@@ -11,3 +11,4 @@
 /rust-toolchain.toml
 /.env
 /pyrightconfig.json
+/ruff.toml

@@ -304,10 +304,13 @@ let
   reprotoTests = pkgs.runCommand "reproto-tests" {
     buildInputs = [
       pkgs.protobuf
+      pkgs.buf
       (pythonPkgs.python.withPackages (_: reprotoPropagatedDeps ++ [
         prototextCodec
         pythonPkgs.pytest
         pythonPkgs."pytest-xdist"
+        pythonPkgs.tree-sitter
+        pythonPkgs.tree-sitter-language-pack
       ]))
     ];
   } ''
@@ -326,7 +329,11 @@ let
   pythonLint = pkgs.runCommand "python-lint" {
     buildInputs = [
       pkgs.pyright
-      (pythonPkgs.python.withPackages (_: reprotoPropagatedDeps ++ [ pythonPkgs.pytest ]))
+      (pythonPkgs.python.withPackages (_: reprotoPropagatedDeps ++ [
+        pythonPkgs.pytest
+        pythonPkgs.tree-sitter
+        pythonPkgs.tree-sitter-language-pack
+      ]))
     ];
   } ''
     set -euo pipefail
@@ -359,6 +366,18 @@ EOF
   '';
 
   # ---------------------------------------------------------------------------
+  # Python ruff check — style and correctness linting for the reproto package.
+  # ---------------------------------------------------------------------------
+  pythonRuff = pkgs.runCommand "python-ruff" {
+    buildInputs = [ pythonPkgs.ruff ];
+  } ''
+    set -euo pipefail
+    echo "--- ruff ---"
+    ruff check --no-cache --exclude docs/mockup ${reprotoSrcWithCodegen}/src/
+    touch $out
+  '';
+
+  # ---------------------------------------------------------------------------
   # Development shell
   # ---------------------------------------------------------------------------
   dev-shell = pkgs.mkShell {
@@ -375,10 +394,12 @@ EOF
       reuse
       gh
       protobuf
+      buf
       mandoc
       zola
       pythonPkgs.pytest
       pythonPkgs."pytest-xdist"
+      pythonPkgs.ruff
     ];
 
     shellHook = ''
@@ -393,7 +414,7 @@ EOF
 
       export PATH="${toString ./.}/bin:${pythonBin}/bin:${toString ./.}/target/release:$PATH"
 
-      export PYTHONPATH="$PWD/reproto/src:${pythonPkgs.makePythonPath (reproto.propagatedBuildInputs ++ [ pythonPkgs.pytest pythonPkgs."pytest-xdist" ])}:$PYTHONPATH"
+      export PYTHONPATH="$PWD/reproto/src:${pythonPkgs.makePythonPath (reproto.propagatedBuildInputs ++ [ pythonPkgs.pytest pythonPkgs."pytest-xdist" pythonPkgs.tree-sitter pythonPkgs.tree-sitter-language-pack ])}:$PYTHONPATH"
 
       # Write .env so VS Code / Pylance picks up the interpreter and PYTHONPATH.
       echo "PYTHON_INTERPRETER=${pythonExecutable}" > .env
@@ -409,6 +430,25 @@ with open('pyrightconfig.json', 'w') as f:
     json.dump(cfg, f, indent=2)
     f.write('\n')
 "
+
+      # Generate ruff.toml so that ruff check (run by the lint hook) excludes
+      # the docs/mockup scratch directory.
+      cat > ruff.toml <<'RUFFEOF'
+exclude = [
+  "docs/mockup",
+]
+RUFFEOF
+
+      # Seed well-known .proto sources and compile .pb descriptors into the
+      # working tree, mirroring what reprotoSrcWithCodegen does in the Nix build.
+      # Skipped if the descriptor files are already present.
+      if [[ ! -f "$PWD/reproto/src/resources/google/protobuf/descriptor.pb" ]]; then
+        mkdir -p "$PWD/reproto/src/resources/google/protobuf"
+        cp ${pkgs.protobuf}/include/google/protobuf/*.proto \
+           "$PWD/reproto/src/resources/google/protobuf/"
+        bash "$PWD/reproto/patch/patch_reproto.sh" \
+          "${reprotoBare}" "$PWD/reproto"
+      fi
 
       # Build prototext if not already built.
       cargo build --release --locked -p prototext
@@ -459,7 +499,7 @@ components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
   # Single target that forces the entire CI closure in dependency order.
   # nix-build -A ci builds fmt → clippy → clippy-pyo3 → tests → prototools → prototext-codec → reproto.
   ci = pkgs.linkFarmFromDrvs "ci" [
-    rustFmt rustClippy rustClippyPyo3 rustTests prototools prototextCodec reproto reprotoTests pythonLint
+    rustFmt rustClippy rustClippyPyo3 rustTests prototools prototextCodec reproto reprotoTests pythonLint pythonRuff
   ];
 
 in
@@ -475,6 +515,7 @@ in
   reproto-bare         = reprotoBare;
   reproto-tests        = reprotoTests;
   python-lint          = pythonLint;
+  python-ruff          = pythonRuff;
   ci                   = ci;
   dev-shell            = dev-shell;
 }

@@ -21,6 +21,56 @@ syntax = "proto2";
 
 package test.service;
 
+// Basic service with simple unary method
+service BasicService {
+  rpc SimpleRpc(Request) returns (Response);
+}
+
+// Service with all streaming variations
+service StreamingService {
+  rpc ClientStream(stream StreamRequest) returns (StreamResponse);
+  rpc ServerStream(StreamRequest) returns (stream StreamResponse);
+  rpc BidiStream(stream StreamRequest) returns (stream StreamResponse);
+}
+
+// Service with method options
+service OptionsService {
+  rpc DeprecatedMethod(Request) returns (Response) {
+    option deprecated = true;
+  }
+
+  rpc IdempotentMethod(Request) returns (Response) {
+    option idempotency_level = IDEMPOTENT;
+  }
+
+  rpc ReadOnlyMethod(Request) returns (Response) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+
+// Deprecated service
+service DeprecatedService {
+  option deprecated = true;
+
+  rpc OldMethod(Request) returns (Response);
+}
+
+// Service with multiple methods of different types
+service MixedService {
+  rpc Unary(Request) returns (Response);
+  rpc Upload(stream StreamRequest) returns (StreamResponse);
+  rpc Download(StreamRequest) returns (stream StreamResponse);
+  rpc Chat(stream Request) returns (stream Response);
+
+  rpc LegacyStream(stream Request) returns (stream Response) {
+    option deprecated = true;
+  }
+}
+
+// Empty service (edge case)
+service EmptyService {
+}
+
 // Basic message types for method signatures
 message Request {
   optional string query = 1;
@@ -39,70 +89,4 @@ message StreamResponse {
   optional int32 chunk_id = 1;
   optional bytes data = 2;
   optional bool complete = 3;
-}
-
-// Basic service with simple unary method
-service BasicService {
-  rpc SimpleRpc(Request) returns (Response);
-}
-
-// Service with all streaming variations
-service StreamingService {
-  // Client streaming: multiple requests, single response
-  rpc ClientStream(stream StreamRequest) returns (StreamResponse);
-
-  // Server streaming: single request, multiple responses
-  rpc ServerStream(StreamRequest) returns (stream StreamResponse);
-
-  // Bidirectional streaming: multiple requests and responses
-  rpc BidiStream(stream StreamRequest) returns (stream StreamResponse);
-}
-
-// Service with method options
-service OptionsService {
-  // Deprecated method
-  rpc DeprecatedMethod(Request) returns (Response) {
-    option deprecated = true;
-  }
-
-  // Method with idempotency level
-  rpc IdempotentMethod(Request) returns (Response) {
-    option idempotency_level = IDEMPOTENT;
-  }
-
-  // Method with NO_SIDE_EFFECTS
-  rpc ReadOnlyMethod(Request) returns (Response) {
-    option idempotency_level = NO_SIDE_EFFECTS;
-  }
-}
-
-// Deprecated service
-service DeprecatedService {
-  option deprecated = true;
-
-  rpc OldMethod(Request) returns (Response);
-}
-
-// Service with multiple methods of different types
-service MixedService {
-  // Unary
-  rpc Unary(Request) returns (Response);
-
-  // Client streaming
-  rpc Upload(stream StreamRequest) returns (StreamResponse);
-
-  // Server streaming
-  rpc Download(StreamRequest) returns (stream StreamResponse);
-
-  // Bidirectional streaming
-  rpc Chat(stream Request) returns (stream Response);
-
-  // Deprecated streaming method
-  rpc LegacyStream(stream Request) returns (stream Response) {
-    option deprecated = true;
-  }
-}
-
-// Empty service (edge case)
-service EmptyService {
 }

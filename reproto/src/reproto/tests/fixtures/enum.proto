@@ -16,7 +16,7 @@ enum AllEnumFeatures {
   // Enum itself is deprecated
   option deprecated = true;
   // Custom extension option
-  option (example_enum_option) = "custom";
+  option (.reproto.example_enum_option) = "custom";
 
   // Explicit enum values
   VALUE_ZERO = 0;
@@ -28,18 +28,19 @@ enum AllEnumFeatures {
   // Mark deprecated value
   VALUE_DEPRECATED = 99 [deprecated = true];
 
-  // Reserved numeric values and names
   // Reserved numeric range
   reserved 100 to 199;
   // Reserved specific numbers
-  reserved 300, 301;
+  reserved 300;
+  reserved 301;
   // Reserved names
-  reserved "OLD_VALUE", "OBSOLETE";
+  reserved "OLD_VALUE";
+  reserved "OBSOLETE";
 }
 
 // Another enum showing extensions usage
 enum ExtendedEnum {
-  option (example_enum_option) = "extended";
+  option (.reproto.example_enum_option) = "extended";
 
   FIRST = 0;
   SECOND = 1;
@@ -54,13 +55,11 @@ enum NumericVariants {
 
 // Enum demonstrating empty/default name
 enum EmptyEnum {
-  // FQDN is .reproto.UNSPECIFIED
   UNSPECIFIED = 0;
 }
 
 // Enum with only reserved values
 enum OnlyReserved {
-  // FQDN is .reproto.UNSPECIFIED2
   UNSPECIFIED2 = 0;
   reserved 1 to 10;
   reserved "RESERVED_NAME";

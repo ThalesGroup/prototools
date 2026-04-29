@@ -9,13 +9,6 @@ package reproto.test;
 // Import for extensions if needed
 import "google/protobuf/descriptor.proto";
 
-// Define custom extension for enum value options
-extend google.protobuf.EnumValueOptions {
-  optional string example_value_option = 51235;
-  optional int32 value_number_option = 51236;
-  repeated string value_tags = 51237;
-}
-
 // Enum demonstrating various enum value option patterns
 enum EnumValueOptionsTest {
   // Allow aliases for testing duplicate values
@@ -28,29 +21,32 @@ enum EnumValueOptionsTest {
   ONE = 1 [deprecated = true];
 
   // Value with custom extension
-  TWO = 2 [(example_value_option) = "custom value"];
+  TWO = 2 [(.reproto.test.example_value_option) = "custom value"];
 
   // Value with multiple options
   THREE = 3 [
     deprecated = true,
-    (example_value_option) = "multi",
-    (value_number_option) = 42
+    (.reproto.test.example_value_option) = "multi",
+    (.reproto.test.value_number_option) = 42
   ];
 
   // Alias value (same number as TWO)
   ALIAS_TWO = 2;
 
   // Value with repeated extension option
-  FOUR = 4 [(value_tags) = "tag1", (value_tags) = "tag2"];
+  FOUR = 4 [
+    (.reproto.test.value_tags) = "tag1",
+    (.reproto.test.value_tags) = "tag2"
+  ];
 
   // Value with all built-in and custom options
   COMPREHENSIVE = 5 [
     deprecated = true,
-    (example_value_option) = "comprehensive test",
-    (value_number_option) = 999,
-    (value_tags) = "alpha",
-    (value_tags) = "beta",
-    (value_tags) = "gamma"
+    (.reproto.test.example_value_option) = "comprehensive test",
+    (.reproto.test.value_number_option) = 999,
+    (.reproto.test.value_tags) = "alpha",
+    (.reproto.test.value_tags) = "beta",
+    (.reproto.test.value_tags) = "gamma"
   ];
 }
 
@@ -58,7 +54,7 @@ enum EnumValueOptionsTest {
 enum NegativeValuesWithOptions {
   NEG_ZERO = 0;
   NEG_ONE = -1 [deprecated = true];
-  NEG_MAX = -2147483648 [(example_value_option) = "min int32"];
+  NEG_MAX = -2147483648 [(.reproto.test.example_value_option) = "min int32"];
 }
 
 // Enum with only deprecated values
@@ -77,11 +73,18 @@ enum MixedOptions {
   BUILTIN_ONLY = 1 [deprecated = true];
 
   // Only extension option
-  EXTENSION_ONLY = 2 [(example_value_option) = "ext"];
+  EXTENSION_ONLY = 2 [(.reproto.test.example_value_option) = "ext"];
 
   // Both built-in and extension
   BOTH = 3 [
     deprecated = true,
-    (example_value_option) = "both"
+    (.reproto.test.example_value_option) = "both"
   ];
+}
+
+// Define custom extension for enum value options
+extend google.protobuf.EnumValueOptions {
+  optional string example_value_option = 51235;
+  optional int32 value_number_option = 51236;
+  repeated string value_tags = 51237;
 }

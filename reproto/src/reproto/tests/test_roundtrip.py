@@ -12,16 +12,17 @@ These tests verify that reproto can perfectly reconstruct proto files by:
 4. Comparing both descriptor sets (must be identical)
 """
 
-import filecmp
 import importlib
 import importlib.resources
 import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
+
+from reproto.tests.proto_normalize import normalize_proto_batch, pb_diff
+
 
 
 # Default fixtures to test (can be overridden via pytest CLI)
@@ -93,15 +94,13 @@ def get_all_fixtures() -> list[str]:
 
 
 @pytest.fixture
-def temp_dirs():
+def temp_dirs(tmp_path):
     """Create temporary directories for test artifacts."""
-    with tempfile.TemporaryDirectory(
-        prefix="reproto_orig_"
-    ) as orig_dir, \
-         tempfile.TemporaryDirectory(
-             prefix="reproto_new_"
-         ) as new_dir:
-        yield Path(orig_dir), Path(new_dir)
+    orig_dir = tmp_path / "orig"
+    new_dir = tmp_path / "new"
+    orig_dir.mkdir()
+    new_dir.mkdir()
+    yield orig_dir, new_dir
 
 
 @pytest.mark.parametrize("fixture_name", DEFAULT_FIXTURES)
@@ -202,61 +201,22 @@ def test_roundtrip(fixture_name: str, temp_dirs):
     assert new_pb.exists(), \
         f"Regenerated descriptor set not created: {new_pb}"
 
-    # Step 4: Compare descriptor sets (must be identical)
-    if not filecmp.cmp(orig_pb, new_pb, shallow=False):
-        # Descriptor sets differ - decode them to text format for debugging
-        orig_txt = orig_dir / f"{stem}_orig.txt"
-        new_txt = new_dir / f"{stem}_new.txt"
-        diff_txt = new_dir / f"{stem}_diff.txt"
+    # Step 4: Compare descriptor sets
+    pb1 = orig_pb.read_bytes()
+    pb2 = new_pb.read_bytes()
+    assert pb1 == pb2, (
+        f"Descriptor sets differ for {fixture_name}:\n"
+        + pb_diff(pb1, pb2)
+    )
 
-        # Decode original descriptor set
-        result = subprocess.run(
-            [
-                "protoc",
-                "--decode=google.protobuf.FileDescriptorSet",
-                "google/protobuf/descriptor.proto",
-            ],
-            stdin=open(orig_pb, 'rb'),
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            orig_txt.write_text(result.stdout)
-
-        # Decode regenerated descriptor set
-        result = subprocess.run(
-            [
-                "protoc",
-                "--decode=google.protobuf.FileDescriptorSet",
-                "google/protobuf/descriptor.proto",
-            ],
-            stdin=open(new_pb, 'rb'),
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            new_txt.write_text(result.stdout)
-
-        # Generate diff
-        diff_output = ""
-        if orig_txt.exists() and new_txt.exists():
-            result = subprocess.run(
-                ["diff", "-u", str(orig_txt), str(new_txt)],
-                capture_output=True,
-                text=True,
-            )
-            diff_output = result.stdout
-            diff_txt.write_text(diff_output)
-
-        # Fail with helpful message
-        assert False, \
-            f"Descriptor sets differ:\n" \
-            f"  Original: {orig_pb}\n" \
-            f"  Regenerated: {new_pb}\n" \
-            f"  Decoded original: {orig_txt}\n" \
-            f"  Decoded regenerated: {new_txt}\n" \
-            f"  Diff: {diff_txt}\n" \
-            f"\nDiff output (first 3000 chars):\n{diff_output[:3000]}"
+    # Step 5: Compare .proto text (comments and whitespace stripped)
+    normalized = normalize_proto_batch({
+        "fixture": content,
+        "output":  new_proto.read_text(encoding="utf-8"),
+    })
+    assert normalized["fixture"] == normalized["output"], (
+        f".proto text differs after normalization for {fixture_name}"
+    )
 
 
 def test_fixture_discovery():

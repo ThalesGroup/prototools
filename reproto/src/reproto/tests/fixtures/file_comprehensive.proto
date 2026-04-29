@@ -9,109 +9,21 @@ syntax = "proto2";
 
 package test.file.comprehensive;
 
-// ============================================================================
-// FILE OPTIONS (builtin)
-// ============================================================================
-
 option java_package = "com.example.test.file";
 option java_outer_classname = "FileComprehensiveProto";
-option java_multiple_files = true;
 option optimize_for = CODE_SIZE;
-option cc_enable_arenas = true;
+option java_multiple_files = true;
 option deprecated = false;
+option cc_enable_arenas = true;
 
-
-// ============================================================================
-// TOP-LEVEL ENUMS
-// ============================================================================
-
-// Simple top-level enum
-enum FileStatus {
-  FILE_STATUS_UNKNOWN = 0;
-  FILE_STATUS_ACTIVE = 1;
-  FILE_STATUS_ARCHIVED = 2;
-}
-
-// Enum with options
-enum Priority {
-  option allow_alias = true;
-
-  PRIORITY_UNKNOWN = 0;
-  PRIORITY_LOW = 1;
-  PRIORITY_NORMAL = 2;
-  PRIORITY_HIGH = 3;
-  PRIORITY_URGENT = 3;  // Alias for HIGH
-}
-
-
-// ============================================================================
-// TOP-LEVEL MESSAGES
-// ============================================================================
-
-// Simple message
-message FileMetadata {
-  optional string filename = 1;
-  optional int64 size_bytes = 2;
-  optional FileStatus status = 3;
-}
-
-// Message with nested types
-message Container {
-  // Nested enum
-  enum ContainerType {
-    CONTAINER_TYPE_UNKNOWN = 0;
-    CONTAINER_TYPE_BOX = 1;
-    CONTAINER_TYPE_CRATE = 2;
-  }
-
-  // Nested message
-  message Item {
-    optional string name = 1;
-    optional int32 quantity = 2;
-  }
-
-  optional ContainerType type = 1;
-  repeated Item items = 2;
-}
-
-// Message for extension demonstration
-message ExtensibleMessage {
-  optional string base_field = 1;
-  extensions 100 to 199;
-}
-
-
-// ============================================================================
-// TOP-LEVEL EXTENSIONS
-// ============================================================================
-
-// Extend the ExtensibleMessage
-extend ExtensibleMessage {
-  optional string file_level_extension = 100;
-  optional int32 another_extension = 101;
-}
-
-
-// ============================================================================
-// SERVICES
-// ============================================================================
-
-// Simple service
+// Services come before enums and messages (protoc canonical order)
 service FileService {
-  // Unary RPC
   rpc GetMetadata(FileMetadata) returns (FileMetadata);
-
-  // Client streaming
   rpc UploadChunks(stream FileMetadata) returns (FileMetadata);
-
-  // Server streaming
   rpc DownloadChunks(FileMetadata) returns (stream FileMetadata);
-
-  // Bidirectional streaming
   rpc SyncFiles(stream FileMetadata) returns (stream FileMetadata);
 }
 
-// Service with options
 service AdvancedFileService {
   option deprecated = true;
 
@@ -120,36 +32,67 @@ service AdvancedFileService {
   }
 }
 
-
-// ============================================================================
-// RESERVED DECLARATIONS (at file level - via messages)
-// ============================================================================
-
-message WithReservedFields {
-  reserved 2, 15, 9 to 11;
-  reserved "foo", "bar";
-
-  optional string active_field = 1;
+enum FileStatus {
+  FILE_STATUS_UNKNOWN = 0;
+  FILE_STATUS_ACTIVE = 1;
+  FILE_STATUS_ARCHIVED = 2;
 }
 
+enum Priority {
+  option allow_alias = true;
 
-// ============================================================================
-// GROUPS (deprecated but valid proto2 syntax)
-// ============================================================================
+  PRIORITY_UNKNOWN = 0;
+  PRIORITY_LOW = 1;
+  PRIORITY_NORMAL = 2;
+  PRIORITY_HIGH = 3;
+  PRIORITY_URGENT = 3;
+}
+
+message FileMetadata {
+  optional string filename = 1;
+  optional int64 size_bytes = 2;
+  optional FileStatus status = 3;
+}
+
+// Fields come before nested types (protoc canonical order)
+message Container {
+  optional ContainerType type = 1;
+  repeated Item items = 2;
+
+  message Item {
+    optional string name = 1;
+    optional int32 quantity = 2;
+  }
+
+  enum ContainerType {
+    CONTAINER_TYPE_UNKNOWN = 0;
+    CONTAINER_TYPE_BOX = 1;
+    CONTAINER_TYPE_CRATE = 2;
+  }
+}
+
+message ExtensibleMessage {
+  optional string base_field = 1;
+
+  extensions 100 to 199;
+}
+
+message WithReservedFields {
+  optional string active_field = 1;
+
+  reserved 2;
+  reserved 15;
+  reserved 9 to 11;
+  reserved "foo", "bar";
+}
 
 message MessageWithGroup {
   optional int32 id = 1;
-
   optional group FileGroup = 2 {
     optional string group_field = 1;
     optional int32 group_number = 2;
   }
 }
-
-
-// ============================================================================
-// ONEOF (proto2 supports oneof since protobuf 2.6)
-// ============================================================================
 
 message MessageWithOneof {
   oneof file_identifier {
@@ -159,29 +102,13 @@ message MessageWithOneof {
   }
 }
 
-
-// ============================================================================
-// MAPS (proto2 supports maps via synthetic messages)
-// ============================================================================
-
 message MessageWithMaps {
-  // Map of string to int
   map<string, int32> tags = 1;
-
-  // Map of int to message
   map<int32, FileMetadata> file_registry = 2;
-
-  // Map of string to enum
   map<string, FileStatus> status_map = 3;
 }
 
-
-// ============================================================================
-// ALL FIELD TYPES (comprehensive coverage)
-// ============================================================================
-
 message AllFieldTypes {
-  // Primitive types
   optional double double_field = 1;
   optional float float_field = 2;
   optional int32 int32_field = 3;
@@ -197,27 +124,21 @@ message AllFieldTypes {
   optional bool bool_field = 13;
   optional string string_field = 14;
   optional bytes bytes_field = 15;
-
-  // Message and enum types
   optional FileMetadata message_field = 16;
   optional FileStatus enum_field = 17;
-
-  // Repeated fields
   repeated int32 repeated_primitive = 18;
   repeated FileMetadata repeated_message = 19;
-
-  // Packed repeated (proto2 requires explicit option)
   repeated int32 packed_ints = 20 [packed = true];
 }
-
-
-// ============================================================================
-// FIELD OPTIONS
-// ============================================================================
 
 message MessageWithFieldOptions {
   optional string deprecated_field = 1 [deprecated = true];
   optional string default_field = 2 [default = "default value"];
   repeated int32 packed_field = 3 [packed = true];
   optional FileMetadata lazy_field = 4 [lazy = true];
+}
+
+extend ExtensibleMessage {
+  optional string file_level_extension = 100;
+  optional int32 another_extension = 101;
 }

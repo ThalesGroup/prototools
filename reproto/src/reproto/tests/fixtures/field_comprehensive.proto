@@ -9,81 +9,52 @@ syntax = "proto2";
 
 package test.field;
 
-// --- Test all primitive types with different labels -------------------------
+enum Status {
+  UNKNOWN = 0;
+  ACTIVE = 1;
+  INACTIVE = 2;
+}
 
 message PrimitiveTypes {
-  // Integers
   required int32 req_int32 = 1;
   optional int64 opt_int64 = 2;
   repeated uint32 rep_uint32 = 3;
-
   required uint64 req_uint64 = 4;
   optional sint32 opt_sint32 = 5;
   repeated sint64 rep_sint64 = 6;
-
   required fixed32 req_fixed32 = 7;
   optional fixed64 opt_fixed64 = 8;
   repeated sfixed32 rep_sfixed32 = 9;
-
   required sfixed64 req_sfixed64 = 10;
-
-  // Floating point
   optional float opt_float = 11;
   repeated double rep_double = 12;
-
-  // Boolean
   required bool req_bool = 13;
-
-  // String and bytes
   optional string opt_string = 14;
   repeated bytes rep_bytes = 15;
 }
 
-// --- Test default values for all primitive types ----------------------------
-
 message DefaultValues {
-  // Integer defaults
   optional int32 int32_default = 1 [default = 42];
   optional int64 int64_default = 2 [default = -123456789];
   optional uint32 uint32_default = 3 [default = 999];
   optional uint64 uint64_default = 4 [default = 18446744073709551615];
   optional sint32 sint32_default = 5 [default = -42];
   optional sint64 sint64_default = 6 [default = -999999];
-
-  // Fixed integer defaults
   optional fixed32 fixed32_default = 7 [default = 100];
   optional fixed64 fixed64_default = 8 [default = 200];
   optional sfixed32 sfixed32_default = 9 [default = -100];
   optional sfixed64 sfixed64_default = 10 [default = -200];
-
-  // Float defaults
   optional float float_default = 11 [default = 3.14];
   optional double double_default = 12 [default = 2.71828];
   optional float float_inf = 13 [default = inf];
   optional float float_neg_inf = 14 [default = -inf];
   optional double double_nan = 15 [default = nan];
-
-  // Boolean default
   optional bool bool_default = 16 [default = true];
-
-  // String defaults
   optional string string_default = 17 [default = "hello world"];
   optional string string_empty = 18 [default = ""];
   optional string string_escaped = 19 [default = "line1\nline2\ttab"];
-
-  // Bytes defaults
-  optional bytes bytes_default = 20 [default = "binary\000data"];
+  optional bytes bytes_default = 20 [default = "binary\x00data"];
   optional bytes bytes_empty = 21 [default = ""];
-
-  // Enum default (tested in EnumDefaults below)
-}
-
-// --- Test message and enum types --------------------------------------------
-
-enum Status {
-  UNKNOWN = 0;
-  ACTIVE = 1;
-  INACTIVE = 2;
 }
 
 message NestedMessage {
@@ -91,21 +62,15 @@ message NestedMessage {
 }
 
 message ComplexTypes {
-  // Message fields
   required NestedMessage req_message = 1;
   optional NestedMessage opt_message = 2;
   repeated NestedMessage rep_message = 3;
-
-  // Enum fields
   required Status req_enum = 4;
   optional Status opt_enum = 5 [default = ACTIVE];
   repeated Status rep_enum = 6;
 }
 
-// --- Test groups (deprecated but valid in proto2) --------------------------
-
 message GroupTest {
-  // Group definition (inline message)
   repeated group RepeatedGroup = 1 {
     required int32 group_field = 2;
   }
@@ -116,24 +81,19 @@ message GroupTest {
   }
 }
 
-// --- Test field options -----------------------------------------------------
-
 message FieldOptions {
-  // Packed option (only for repeated primitive types)
   repeated int32 packed_ints = 1 [packed = true];
   repeated int64 unpacked_longs = 2 [packed = false];
-
-  // Deprecated option
   optional string deprecated_field = 3 [deprecated = true];
-
-  // Multiple options combined
-  repeated fixed32 packed_deprecated = 4 [packed = true, deprecated = true];
-
-  // Default value + option
-  optional int32 default_and_deprecated = 5 [default = 100, deprecated = true];
+  repeated fixed32 packed_deprecated = 4 [
+    packed = true,
+    deprecated = true
+  ];
+  optional int32 default_and_deprecated = 5 [
+    default = 100,
+    deprecated = true
+  ];
 }
-
-// --- Test extensions --------------------------------------------------------
 
 message Extendable {
   extensions 100 to 199;
@@ -147,20 +107,13 @@ message ExtensionFields {
   }
 }
 
-// --- Test map fields --------------------------------------------------------
-
 message MapFields {
-  // Primitive key/value maps
   map<string, int32> string_to_int = 1;
   map<int32, string> int_to_string = 2;
   map<int64, bool> long_to_bool = 3;
   map<bool, float> bool_to_float = 4;
-
-  // Map with message value
   map<string, NestedMessage> string_to_message = 5;
   map<int32, Status> int_to_enum = 6;
-
-  // Map with all supported key types
   map<int32, int32> int32_map = 10;
   map<int64, int32> int64_map = 11;
   map<uint32, int32> uint32_map = 12;
@@ -175,8 +128,6 @@ message MapFields {
   map<string, int32> string_map = 21;
 }
 
-// --- Test oneofs ------------------------------------------------------------
-
 message OneofFields {
   oneof test_oneof {
     int32 oneof_int = 1;
@@ -184,62 +135,45 @@ message OneofFields {
     NestedMessage oneof_message = 3;
     Status oneof_enum = 4;
   }
-
-  // Multiple oneofs
   oneof another_oneof {
     bool another_bool = 10;
     bytes another_bytes = 11;
   }
-
-  // Regular field alongside oneofs
   optional int32 regular_field = 20;
 }
 
-// --- Test deeply nested message types --------------------------------------
-
+// Fields come before nested types (protoc canonical order)
 message Outer {
+  optional Middle middle_field = 1;
+
   message Middle {
+    optional Inner inner_field = 1;
+
     message Inner {
       optional int32 deep_value = 1;
     }
-    optional Inner inner_field = 1;
   }
-  optional Middle middle_field = 1;
 }
 
-// Test referencing deeply nested types
 message NestedReferences {
   optional Outer.Middle.Inner deeply_nested = 1;
   repeated Outer.Middle middle_repeated = 2;
 }
 
-// --- Test edge cases --------------------------------------------------------
-
 message EdgeCases {
-  // Field with maximum field number
   optional int32 max_field_number = 536870911;
-
-  // Fields with non-contiguous numbers
   optional int32 field_1 = 1;
   optional int32 field_100 = 100;
   optional int32 field_1000 = 1000;
-
-  // Field with long name
   optional string this_is_a_very_long_field_name_that_tests_rendering = 2;
 }
 
-// --- Test all combinations --------------------------------------------------
-
 message AllCombinations {
-  // Required primitive with default (unusual but valid)
   required int32 req_with_default = 1 [default = 0];
-
-  // Optional message with deprecated
   optional NestedMessage opt_msg_deprecated = 2 [deprecated = true];
-
-  // Repeated enum with packed
   repeated Status rep_enum_packed = 3 [packed = true];
-
-  // Field with enum default and deprecated
-  optional Status status_combo = 4 [default = INACTIVE, deprecated = true];
+  optional Status status_combo = 4 [
+    default = INACTIVE,
+    deprecated = true
+  ];
 }
