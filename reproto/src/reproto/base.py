@@ -319,6 +319,7 @@ class NodeBase(Generic[MessageT], ABC):
         options_descriptor: Descriptor,
         composite: bool = False,
         depth: int = 0,
+        exclude: set[str] | None = None,
     ) -> list[Block]:
         """
         Render options from an already-parsed options message.
@@ -334,12 +335,15 @@ class NodeBase(Generic[MessageT], ABC):
             composite: True for inline with commas, False for
                       standalone with 'option' keyword
             depth: Indentation depth
+            exclude: Set of built-in field names to skip (e.g. {"packed"}).
+                     The caller is responsible for rendering excluded fields.
 
         Returns:
             List of text Blocks containing rendered options
         """
         from .re_simple import ReFieldDescriptor
 
+        _exclude: set[str] = exclude if exclude is not None else set()
         blocks: list[Block] = []
 
         # === Render built-in options ===
@@ -347,6 +351,9 @@ class NodeBase(Generic[MessageT], ABC):
         for fd_desc, val in opts_msg.ListFields():
             # Skip extension fields - handled separately
             if fd_desc.is_extension:
+                continue
+            # Skip fields explicitly excluded by the caller
+            if fd_desc.name in _exclude:
                 continue
 
             opt = ReFieldDescriptor(fd_desc)

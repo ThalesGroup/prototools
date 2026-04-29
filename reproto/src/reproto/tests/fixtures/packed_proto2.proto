@@ -1,0 +1,25 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Finding: packed option in proto2 descriptors.
+// Verify HasField("packed") for: default (not set), packed=true, packed=false.
+// Also verify for non-packable types (string, bytes, message).
+
+syntax = "proto2";
+package mockup;
+
+enum Status {
+  STATUS_UNKNOWN = 0;
+  STATUS_OK = 1;
+}
+
+message Packed {
+  repeated int32 default_int = 1;
+  repeated int32 explicit_true = 2 [packed = true];
+  repeated int32 explicit_false = 3 [packed = false];
+  repeated string strings = 4;
+  repeated bytes bytesf = 5;
+  repeated Status enums_default = 6;
+  repeated Status enums_true = 7 [packed = true];
+  repeated Status enums_false = 8 [packed = false];
+}

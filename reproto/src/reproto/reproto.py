@@ -165,7 +165,7 @@ import itertools
 import logging
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 import re2 as re
 from google.protobuf import message, text_format
@@ -183,11 +183,6 @@ from .option_messages import create_option_message_classes
 from .re_file import ReFileDescriptorProto
 from .show import show_graph
 from .topology import File, ReFile, Topology
-
-if TYPE_CHECKING:
-    import third_party.boundary_proxy.proto_compare.annotation_pb2  # type: ignore # noqa: F401
-    import third_party.boundary_proxy.proto_compare.hash_options_pb2  # type: ignore # noqa: F401
-
 
 logger = logging.getLogger(__name__)
 logger.propagate = True  # default is True, usually fine
@@ -211,34 +206,18 @@ def matches_any_pattern(fqdn: Fqdn, patterns: list[Fqdn]) -> bool:
     return False
 
 
-def import_annotations() -> None:
-    """Attempt to import optional proto annotation modules.
+def import_annotations(modules: list[str]) -> None:
+    """Import annotation modules declared by the active variant.
 
-    Tries to import proto_compare annotations if available.
-    Logs warning if not found but continues execution.
+    Does nothing when the list is empty.  Logs a warning for each module
+    that cannot be imported, but continues execution.
     """
-    annotations = [
-        ('third_party.boundary_proxy.proto_compare', 'annotation_pb2'),
-        ('third_party.boundary_proxy.proto_compare', 'hash_options_pb2'),
-    ]
-
-    for (module_path, module_name) in annotations:
+    for full_module_name in modules:
         try:
-            # Get a Traversable object for the package
-            package = importlib.import_module(module_path)
-            files = importlib.resources.files(package)  # Traversable for the package
-
-            # Check if the file exists
-            pb2_file = files.joinpath(f"{module_name}.py")
-            if pb2_file.is_file():
-                # Dynamically import the module
-                full_module_name = f"{module_path}.{module_name}"
-                importlib.import_module(full_module_name)
-                cli_info(f"Module '{full_module_name}' imported successfully.")
-            else:
-                cli_warning(f"{module_name}.py not found in {module_path}.")
+            importlib.import_module(full_module_name)
+            cli_info(f"Module '{full_module_name}' imported successfully.")
         except ModuleNotFoundError:
-            cli_warning(f"Package '{module_path}' not found.")
+            cli_warning(f"Module '{full_module_name}' not found.")
 
 class DescriptorProtoMissingError(Exception):
     """Raised when 'descriptor.proto' is missing."""
@@ -306,11 +285,11 @@ def reproto(
 
     The function executes 7 phases (see module docstring for details).
     """
-    import_annotations()
     if options is None:
         ctx = Context(set(prunings))
     else:
         ctx = Context.from_options(set(prunings), options)
+    import_annotations(ctx.variant_annotation_modules)
 
     # =========================================================================
     # PHASE 1: FILE LOADING

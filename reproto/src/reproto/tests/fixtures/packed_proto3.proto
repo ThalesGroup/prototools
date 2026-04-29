@@ -1,0 +1,27 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Finding: packed option in proto3 descriptors.
+// Key question: does protoc strip explicit [packed=true] back to unset,
+// or preserve it?
+
+syntax = "proto3";
+package mockup;
+
+enum Status {
+  STATUS_UNKNOWN = 0;
+  STATUS_OK = 1;
+}
+
+message Packed {
+  repeated int32 default_int = 1;
+  repeated int32 explicit_true = 2 [packed = true];
+  repeated int32 explicit_false = 3 [packed = false];
+  repeated string strings = 4;
+  repeated bytes bytesf = 5;
+  repeated Status enums_default = 6;
+  repeated Status enums_true = 7 [packed = true];
+  repeated Status enums_false = 8 [packed = false];
+  repeated double doubles_def = 9;
+  repeated float floats_true = 10 [packed = true];
+}

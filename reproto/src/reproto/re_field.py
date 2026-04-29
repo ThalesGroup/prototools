@@ -6,8 +6,10 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from google.protobuf.descriptor import FieldDescriptor
-from google.protobuf.descriptor_pb2 import FieldDescriptorProto
+from google.protobuf.descriptor_pb2 import FieldDescriptorProto, FieldOptions
 from google.protobuf.message import Message
 
 from lib.warnings import cli_warning
@@ -275,6 +277,7 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
             fo_msg: Message = ctx.fdo_cls()
             fo_msg.ParseFromString(field_desc.GetOptions().SerializeToString())
 
+
             # Build options block: default value + field options
             opt_block = Block()
             prolog = BlockLine(string, depth)
@@ -287,13 +290,32 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
             default_block = self._render_default_value(depth+1)
             opt_block.extend(default_block)
 
-            # Render field options using inherited method
+            # Compute packed annotation syntax-awaredly (spec 0016).
+            # fo_msg is kept read-only; packed is excluded from generic rendering.
+            from .syntax import packed_option
+            has_packed = (self.this.HasField('options')
+                          and self.this.options.HasField('packed'))
+            # GetMessageClass returns a dynamic C-extension class (module=None, name='FieldOptions').
+            # isinstance() against descriptor_pb2.FieldOptions always returns False for this class,
+            # so we assert structural identity instead.
+            assert type(fo_msg).__name__ == 'FieldOptions' and type(fo_msg).__module__ is None, (
+                f"Expected dynamic FieldOptions from GetMessageClass, got {type(fo_msg)}"
+            )
+            effective_packed = cast(FieldOptions, fo_msg).packed
+            packed_str = packed_option(
+                ctx.syntax, ctx.target_syntax, has_packed, effective_packed,
+            )
+            if packed_str is not None:
+                opt_block.append(BlockLine(f'packed = {packed_str},', depth + 1))
+
+            # Render field options using inherited method (packed excluded).
             option_blocks = self.render_options_from_message(
                 ctx=ctx,
                 opts_msg=fo_msg,
                 options_descriptor=ctx.fdo_desc,
                 composite=True,
-                depth=depth+1
+                depth=depth+1,
+                exclude={"packed"},
             )
             for block in option_blocks:
                 opt_block.extend(block)

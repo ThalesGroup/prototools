@@ -62,6 +62,7 @@ class Options:
     redact_comments: bool = False
     redact_orphans: bool = False
     phase2_plugin: CodeType | None = None
+    polyglot: bool = False
     # Variant fields (spec 0001) — populated at startup from the variant file.
     # Defaults below reflect the OSS google.protobuf variant.
     variant_descriptor_proto: str = 'google/protobuf/descriptor.proto'
@@ -74,6 +75,8 @@ class Options:
     # Resource loading (§8b): None => built-in, path => external filesystem
     variant_file: str | None = None
     variant_stem: str = 'google-protobuf'
+    # Modules to import at startup (spec 0018); default empty for OSS variant.
+    variant_annotation_modules: list[str] = field(default_factory=list)
     write_variant_descriptor: bool = False
 
 class Context(Options):
@@ -86,6 +89,10 @@ class Context(Options):
         super().__init__(**opts_kwargs)
 
         self.pruned_fqdns = pruned_fqdns
+
+        # Per-file syntax state (updated by re_file.py at the start of each render)
+        self.syntax: str = "proto2"         # input file syntax
+        self.target_syntax: str = "proto2"  # output syntax
 
         # Pool and dicts
         self.pool_db: DescriptorDatabase = DescriptorDatabase()

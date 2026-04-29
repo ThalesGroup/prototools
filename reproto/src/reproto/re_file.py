@@ -264,6 +264,13 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
         
         assert isinstance(depth, int)
 
+        from .syntax import fdp_syntax
+        ctx.syntax = fdp_syntax(self.this)
+        if ctx.polyglot and ctx.syntax in ("proto2", "proto3"):
+            ctx.target_syntax = ctx.syntax
+        else:
+            ctx.target_syntax = "proto2"
+
         out = Block()
         inputs = Block()
 
@@ -281,14 +288,13 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
             out.append_div_maybe(depth)
 
         # Syntax
-        syntax = self.syntax if self.syntax else "proto2"
         edition = self.edition if self.HasField("edition") else None
-        if syntax != "proto2":
-            string = f'Note: The original file used "{syntax}" syntax'
+        if ctx.syntax != ctx.target_syntax:
+            string = f'Note: The original file used "{ctx.syntax}" syntax'
             if edition:
                 string += f', edition {edition}'
             out.append(BlockLine(string, depth, COMMENT))
-        out.append(BlockLine('syntax = "proto2";', depth))
+        out.append(BlockLine(f'syntax = "{ctx.target_syntax}";', depth))
         out.append_div_maybe(depth)
 
         # Package

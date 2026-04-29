@@ -211,6 +211,14 @@ class _SectionedCommand(click.Command):
 )
 
 @click.option(
+    '--polyglot',
+    is_flag=True,
+    default=False,
+    help='Enable syntax-aware rendering (proto2 and proto3). '
+         'Without this flag, all output is proto2.',
+)
+
+@click.option(
     '-o', '--proto-out',
     required=True,
     type=click.Path(exists=True, file_okay=False, dir_okay=True, writable=True, path_type=Path),
@@ -345,6 +353,7 @@ class _SectionedCommand(click.Command):
 def main(
         pb_files: list[Path],
         pb_path: list[Path],
+        polyglot: bool,
         proto_out: Path,
         emit_binary: bool,
         dry_run: bool,
@@ -407,6 +416,7 @@ def main(
 
     options = Options(
         binary=emit_binary,
+        polyglot=polyglot,
         debug=debug,
         debug_fqdn=debug_fqdn,
         descriptor_proto=variant['variant_descriptor_proto'],

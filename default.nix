@@ -305,6 +305,7 @@ let
     buildInputs = [
       pkgs.protobuf
       pkgs.buf
+      prototools
       (pythonPkgs.python.withPackages (_: reprotoPropagatedDeps ++ [
         prototextCodec
         pythonPkgs.pytest

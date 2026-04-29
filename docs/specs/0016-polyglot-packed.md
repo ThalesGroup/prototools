@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0016 — Polyglot mode: packed encoding
 
-**Status:** draft
+**Status:** implemented
+**Implemented in:** 2026-04-29
 **App:** reproto
 
 ---
@@ -88,42 +89,51 @@ annotation.
 
 ## Specification
 
-### 1. `re_syntax.py` — new module
+### 1. `syntax.py` — new module
 
-Create `reproto/src/reproto/re_syntax.py`.
+Create `reproto/src/reproto/syntax.py`.
 
 ```python
-def effective_syntax(fdp) -> str:
-    """Return "proto2", "proto3", or "editions" from a FileDescriptorProto."""
-    s = fdp.syntax          # "" for proto2, "proto3", or "editions"
-    if s in ("", "proto2"):
-        return "proto2"
-    if s == "proto3":
-        return "proto3"
-    if s == "editions":
-        return "editions"
-    return "proto2"         # unknown: fall back to proto2
+def fdp_syntax(fdp) -> str:
+    """Return the syntax of a FileDescriptorProto as a non-empty string.
+
+    fdp.syntax is "" for proto2 files (protoc omits the field); normalise
+    that to "proto2".  All other values are returned as-is.
+    """
+    return fdp.syntax or "proto2"
 
 
-def packed_option(ctx: Context, is_packed: bool | None) -> str | None:
+def packed_option(
+    source_syntax: str,
+    target_syntax: str,
+    has_field: bool,
+    effective_packed: bool,
+) -> str | None:
     """
     Return the string to emit for the packed option, or None to emit nothing.
 
-    is_packed is the result of:
-      True  if HasField("packed") and packed == True
-      False if HasField("packed") and packed == False
-      None  if not HasField("packed")  (option absent)
+    Args:
+        source_syntax:   syntax of the input file ("proto2" or "proto3")
+        target_syntax:   syntax reproto will emit ("proto2" or "proto3")
+        has_field:       True if packed was explicitly set in the source .proto
+        effective_packed: fo_msg.packed — the wire-level effective value
+                         (includes proto3 defaults)
 
-    Rules (findings doc Part IV):
-      - None  → emit nothing (use syntax default in both proto2 and proto3)
-      - True  → emit "true"
-      - False → emit "false"
-
-    ctx is accepted for future use (editions feature resolution).
+    Rules:
+      - has_field=True  → emit the explicit value regardless of syntax
+      - has_field=False, source==target → emit nothing (default preserved)
+      - has_field=False, source=proto3, target=proto2 → emit "true" if
+        effective_packed is True (preserve wire semantics across downconversion)
     """
-    if is_packed is None:
+    if has_field:
+        return "true" if effective_packed else "false"
+    if source_syntax == target_syntax:
         return None
-    return "true" if is_packed else "false"
+    # Cross-syntax conversion: source=proto3 (packed by default), target=proto2
+    # (unpacked by default) — must emit explicit annotation to preserve semantics.
+    if effective_packed:
+        return "true"
+    return None
 ```
 
 ### 2. `Options` — add `polyglot` flag
@@ -134,13 +144,22 @@ In `context.py`, add to the `Options` dataclass:
 polyglot: bool = False
 ```
 
-### 3. `Context` — add `syntax` attribute
+### 3. `Context` — add `syntax` and `target_syntax` attributes
 
 In `Context.__init__`, add:
 
 ```python
-self.syntax: str = "proto2"   # overwritten per file in polyglot mode
+self.syntax: str = "proto2"         # input file syntax, set per file in polyglot mode
+self.target_syntax: str = "proto2"  # output syntax; defaults to proto2 (non-polyglot)
 ```
+
+In `--polyglot` mode, `ctx.target_syntax = ctx.syntax` when `ctx.syntax` is
+`"proto2"` or `"proto3"` (same-syntax roundtrip).  For `"editions"` and any
+unknown syntax, `ctx.target_syntax = "proto2"` (fallback; editions support is
+out of scope for this spec).
+
+Without `--polyglot`, `ctx.target_syntax = "proto2"` always (current
+behaviour preserved).
 
 ### 4. `cli.py` — add `--polyglot` flag
 
@@ -158,62 +177,57 @@ Add a new Click option before the existing output options:
 
 Pass `polyglot=polyglot` in the `Options(...)` constructor call.
 
-### 5. `re_file.py` — set `ctx.syntax` per file
+### 5. `re_file.py` — set `ctx.syntax` and `ctx.target_syntax` per file
 
 At the top of `ReFileDescriptorProto.render()`, before any output is
-produced, add (under a `--polyglot` guard):
+produced, add:
 
 ```python
-if ctx.polyglot:
-    from .re_syntax import effective_syntax
-    ctx.syntax = effective_syntax(self.this)
+from .syntax import fdp_syntax
+ctx.syntax = fdp_syntax(self.this)
+if ctx.polyglot and ctx.syntax in ("proto2", "proto3"):
+    ctx.target_syntax = ctx.syntax
+else:
+    ctx.target_syntax = "proto2"
 ```
 
-This overwrites `ctx.syntax` for each file.  Rendering is single-threaded
+This overwrites both attributes for each file.  Rendering is single-threaded
 and processes one file at a time, so this is safe.
+
+The `syntax = "...";` line in the output then uses `ctx.target_syntax`
+instead of the hardcoded `"proto2"`.  The "Note: The original file used..."
+comment is suppressed when `ctx.syntax == ctx.target_syntax`.
 
 ### 6. `re_field.py` — syntax-aware packed rendering
 
-The current code renders `packed` via the generic `render_options_from_message`
-path, which emits whatever `FieldOptions.packed` says.
+`fo_msg` is treated as **read-only** throughout.
 
-Under `--polyglot`, intercept packed rendering:
-
-In `ReFieldDescriptorProto.render()`, after building `fo_msg` from the
-serialized field options, clear the `packed` field from `fo_msg` before
-passing it to `render_options_from_message`, and instead inject the correct
-packed annotation computed by `packed_option()`.
-
-Concretely, in the options block construction section:
+In `ReFieldDescriptorProto.render()`, after building `fo_msg`, collect the
+packed data directly from the original descriptor proto and pass an
+`exclude={"packed"}` set to `render_options_from_message` so the generic
+path skips `packed`:
 
 ```python
-if ctx.polyglot:
-    from .re_syntax import packed_option
-    if self.this.options.HasField('packed'):
-        is_packed = self.this.options.packed   # True or False
-    else:
-        is_packed = None                       # absent
-    packed_str = packed_option(ctx, is_packed)
-    # Clear packed from fo_msg so the generic path does not re-emit it
-    fo_msg.ClearField('packed')
-else:
-    # Non-polyglot mode: fo_msg is passed to render_options_from_message
-    # unchanged, which emits packed (and all other FieldOptions) exactly
-    # as stored in the descriptor.  packed_str = None means we do not
-    # inject any additional annotation.
-    packed_str = None
+from .syntax import packed_option
+has_packed = (self.this.HasField('options')
+              and self.this.options.HasField('packed'))
+effective_packed = fo_msg.packed  # wire-level value (includes proto3 defaults)
+packed_str = packed_option(
+    ctx.syntax, ctx.target_syntax, has_packed, effective_packed
+)
 ```
 
-Then, after `render_options_from_message` produces `option_blocks`, inject
-the packed annotation if present:
+Then pass `exclude={"packed"}` to `render_options_from_message` and inject
+the result first in `opt_block`:
 
 ```python
 if packed_str is not None:
     opt_block.append(BlockLine(f'packed = {packed_str},', depth + 1))
 ```
 
-Insert this **before** the `render_options_from_message` call so that
-`packed` appears first in the options list (matching protoc convention).
+`render_options_from_message` in `base.py` gains an `exclude: set[str]`
+parameter (default `set()`) that skips any built-in field whose name is in
+the set.
 
 ### 7. Test fixtures
 
@@ -265,9 +279,4 @@ reproto reproduces the original source structure (no spurious
 
 ## Open questions
 
-1. Should `--polyglot` also fix the `syntax` line in the output (emit
-   `syntax = "proto3";` instead of `syntax = "proto2";`)?  This is needed
-   for full correctness but is out of scope here.  Without it, the packed
-   roundtrip test still passes because `protoc` accepts `[packed = true]`
-   in proto2 and produces the same descriptor.  Fixing the syntax line is
-   deferred to the next spec in the 0015 series.
+None.

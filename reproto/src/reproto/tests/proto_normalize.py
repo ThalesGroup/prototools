@@ -12,6 +12,7 @@ installable reproto package.
 
 import difflib
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -87,8 +88,21 @@ def normalize_proto(text: str) -> str:
     return normalize_proto_batch({"f": text})["f"]
 
 
-# Path to the prototext binary in the repo.
-_PROTOTEXT = Path(__file__).parents[4] / "bin" / "prototext"
+# Resolve the prototext binary: prefer PATH (nix-build sandbox), fall back to
+# the repo-relative path used in the nix-shell development environment.
+_PROTOTEXT = Path(
+    shutil.which("prototext")
+    or str(Path(__file__).parents[4] / "bin" / "prototext")
+)
+
+
+def _decode_pb(data: bytes) -> list[str]:
+    result = subprocess.run(
+        [str(_PROTOTEXT), "--decode", "--type", "google.protobuf.FileDescriptorSet"],
+        input=data,
+        capture_output=True,
+    )
+    return result.stdout.decode(errors="replace").splitlines(keepends=True)
 
 
 def pb_diff(pb1: bytes, pb2: bytes) -> str:
@@ -98,20 +112,30 @@ def pb_diff(pb1: bytes, pb2: bytes) -> str:
     """
     if pb1 == pb2:
         return ""
+    left  = _decode_pb(pb1)
+    right = _decode_pb(pb2)
+    return "".join(difflib.unified_diff(left, right, fromfile="expected", tofile="actual"))
 
-    def decode(data: bytes) -> str:
-        result = subprocess.run(
-            [
-                str(_PROTOTEXT), "--decode",
-                "--type", "google.protobuf.FileDescriptorSet",
-            ],
-            input=data,
-            capture_output=True,
-        )
-        return result.stdout.decode(errors="replace")
 
-    left  = decode(pb1).splitlines(keepends=True)
-    right = decode(pb2).splitlines(keepends=True)
-    return "".join(difflib.unified_diff(
-        left, right, fromfile="expected", tofile="actual",
-    ))
+def pb_diff_fields(pb1: bytes, pb2: bytes) -> set[str]:
+    """Return the set of field names that differ between two .pb blobs.
+
+    Parses the prototext output and collects field names from lines that
+    appear only in pb1 or only in pb2 (i.e. lines starting with '-' or '+'
+    in the unified diff, excluding the diff header lines).
+    """
+    import re
+    if pb1 == pb2:
+        return set()
+    left  = _decode_pb(pb1)
+    right = _decode_pb(pb2)
+    diff = difflib.unified_diff(left, right)
+    fields: set[str] = set()
+    for line in diff:
+        if line.startswith(('---', '+++')):
+            continue
+        if line.startswith(('+', '-')):
+            m = re.match(r'[+-]\s*(\w+)', line)
+            if m:
+                fields.add(m.group(1))
+    return fields
