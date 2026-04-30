@@ -17,7 +17,7 @@ from lib.warnings import cli_warning
 from .base import NodeBase
 from .context import Context, Fqdn
 from .fake_types import Ref, parse_fqdn
-from .globals import FIELD, label_names, type_names
+from .globals import FIELD, type_names
 from .text import Block, BlockLine
 
 
@@ -238,9 +238,9 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
         string = ''
 
         # --- Field label (aka cardinality) ------------------------------------
-        if not is_oneof:
-            label = self.label
-            string += f'{label_names[label]} '
+        from .syntax import field_label
+        label_str = field_label(ctx, self.this, is_oneof)
+        string += label_str
 
         # --- Field type and name ----------------------------------------------
         if self.type != FieldDescriptorProto.TYPE_GROUP:
@@ -302,9 +302,7 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
                 f"Expected dynamic FieldOptions from GetMessageClass, got {type(fo_msg)}"
             )
             effective_packed = cast(FieldOptions, fo_msg).packed
-            packed_str = packed_option(
-                ctx.syntax, ctx.target_syntax, has_packed, effective_packed,
-            )
+            packed_str = packed_option(ctx, has_packed, effective_packed)
             if packed_str is not None:
                 opt_block.append(BlockLine(f'packed = {packed_str},', depth + 1))
 

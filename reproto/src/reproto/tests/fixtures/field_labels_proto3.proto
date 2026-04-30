@@ -1,0 +1,22 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+
+syntax = "proto3";
+package mockup;
+
+message Inner {
+  int32 val = 1;
+}
+
+message Labels {
+  int32    implicit_scalar  = 1;
+  optional int32  explicit_opt    = 2;
+  repeated int32  rep_field       = 3;
+  Inner    msg_field        = 4;
+  optional Inner  opt_msg_field   = 5;
+
+  oneof choice {
+    int32  oneof_a = 10;
+    string oneof_b = 11;
+  }
+}

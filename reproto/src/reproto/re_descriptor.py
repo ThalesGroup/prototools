@@ -435,22 +435,34 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
             out.append_div_maybe(depth)
 
         # --- Message fields and oneofs (in declaration order) -----------------
-        # Track which oneofs we've already rendered
+        # Pre-compute synthetic oneof indices (spec 0019 §11).
+        # A synthetic oneof is created by protoc for every proto3 `optional` field.
+        # It must be suppressed; its sole member is rendered at message level.
+        from .syntax import is_synthetic_oneof
+        synthetic_oneof_indices: set[int] = set()
+        for idx, oneof in enumerate(self.oneof_decl):
+            members = [f for f in self.field
+                       if f.HasField("oneof_index") and f.oneof_index == idx]
+            if is_synthetic_oneof(ctx, oneof.name, members):
+                synthetic_oneof_indices.add(idx)
+
+        # Track which real oneofs we've already rendered
         is_done: list[bool] = [False] * len(self.oneof_decl)
 
         for f in self.field:
             field_proto = cast(FieldDescriptorProto, f)
             fd: ReFieldDescriptorProto = ReFieldDescriptorProto(ctx, field_proto, parent=self)  # type: ignore[assignment]
 
-            # Non-oneof field: render directly
-            if not fd.HasField("oneof_index"):
+            # Non-oneof field (including synthetic-oneof members): render directly
+            if (not fd.HasField("oneof_index")
+                    or fd.oneof_index in synthetic_oneof_indices):
                 field = fd.render(ctx, depth+1)
                 if not fd.is_summoned:
                     field.abandon()
                 out.extend(field)
                 continue
 
-            # Oneof field: render the entire oneof block on first encounter
+            # Real oneof field: render the entire oneof block on first encounter
             if is_done[fd.oneof_index]:
                 continue
             else:
