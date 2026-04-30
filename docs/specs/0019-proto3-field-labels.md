@@ -14,7 +14,7 @@ SPDX-License-Identifier: MIT
 
 ## Problem
 
-Spec 0016 added `--polyglot` support and fixed packed encoding.  Four further
+Spec 0016 added polyglot support (via `--force-proto2-output` opt-out) and fixed packed encoding.  Four further
 rendering issues remain in `re_field.py` and `re_descriptor.py`:
 
 1. **Field labels** — reproto currently emits `optional T f = N;` for every
@@ -28,13 +28,13 @@ rendering issues remain in `re_field.py` and `re_descriptor.py`:
    as a top-level field.  Currently the synthetic oneof block is already
    skipped during oneof rendering (partial fix), but the `optional` label is
    not emitted on the field itself because the proto2 path emits it
-   unconditionally anyway.  Under `--polyglot`, the proto3 rendering path
+   unconditionally anyway.  In polyglot mode, the proto3 rendering path
    must explicitly check `proto3_optional` and produce the correct output.
 
 3. **Default values in proto3** — reproto currently emits `[default = ...]`
    for any field whose `default_value` is set in the descriptor.  Proto3
    does not allow explicit defaults; emitting them produces a file protoc
-   rejects.  In `--polyglot` mode with `ctx.target_syntax == "proto3"`, the
+   rejects.  When `ctx.target_syntax == "proto3"`,the
    default-value option must be suppressed and a `cli_warning` emitted.
 
 4. **`json_name` over-emission** — `FieldDescriptorProto.json_name` is
@@ -47,14 +47,14 @@ rendering issues remain in `re_field.py` and `re_descriptor.py`:
 
 5. **`import weak` in proto3** — `import weak` is proto2-specific.  Reproto
    already renders it correctly for proto2 (via `weak_dependency` indices in
-   `FileDescriptorProto`).  In `--polyglot` mode with
-   `ctx.target_syntax == "proto3"`, a weak import is an inconsistency: reproto
-   must fall back to plain `import` and emit a `cli_warning`.
+   `FileDescriptorProto`).  When `ctx.target_syntax == "proto3"`, a weak
+   import is an inconsistency: reproto must fall back to plain `import` and
+   emit a `cli_warning`.
 
 6. **Extension ranges and `extend` blocks in proto3** — extension ranges
    (`extensions N to M;`) and `extend Foo { ... }` blocks are proto2-only
    constructs (with the sole exception of extending `*Options` messages for
-   custom options, which is handled separately).  In `--polyglot` mode with
+   custom options, which is handled separately).  When
    `ctx.target_syntax == "proto3"`, both must be omitted and a `cli_warning`
    emitted per occurrence.
 
@@ -66,21 +66,21 @@ respectively, and require no new empirical research.
 
 ## Goals
 
-1. In `--polyglot` mode with `ctx.target_syntax == "proto3"`, suppress the
+1. When `ctx.target_syntax == "proto3"`,suppress the
    `optional` label on implicit singular fields
    (`label == LABEL_OPTIONAL` and `proto3_optional == False` and not in a
    real oneof).
-2. In `--polyglot` mode with `ctx.target_syntax == "proto3"`, emit
+2. When `ctx.target_syntax == "proto3"`,emit
    `optional` on fields with `proto3_optional == True` (these fields are
    rendered outside any oneof block).
-3. In `--polyglot` mode with `ctx.target_syntax == "proto3"`, suppress the
+3. When `ctx.target_syntax == "proto3"`,suppress the
    synthetic oneof block entirely and do not render its single member field
    inside the oneof (that field is rendered at message level instead — see
    goal 2).
 4. Add two helper functions to `re_syntax.py` (created in spec 0016 as
    `syntax.py` — see §Note on module name): `field_label()` and
    `is_synthetic_oneof()`.
-5. In `--polyglot` mode with `ctx.target_syntax == "proto3"`, suppress
+5. When `ctx.target_syntax == "proto3"`,suppress
    `[default = ...]` on any field whose `default_value` is set in the
    descriptor; emit a `cli_warning` per field.  Add a `should_render_default()`
    helper to `syntax.py`.
@@ -88,15 +88,15 @@ respectively, and require no new empirical research.
    stored value differs from the auto-derived camelCase of the field name.
    Add a `camel_case()` utility and a `should_render_json_name()` helper to
    `syntax.py`.
-7. In `--polyglot` mode with `ctx.target_syntax == "proto3"`, render weak
+7. When `ctx.target_syntax == "proto3"`,render weak
    imports as plain `import` and emit a `cli_warning` per occurrence.  Add
    `allow_weak_import(target_syntax)` to `syntax.py`.
-8. In `--polyglot` mode with `ctx.target_syntax == "proto3"`, omit
+8. When `ctx.target_syntax == "proto3"`,omit
    `extensions N to M;` declarations and `extend Foo { ... }` blocks; emit
    a `cli_warning` per omitted declaration/block.  Add
    `allow_extensions(target_syntax)` to `syntax.py`.
 9. Add fixture files and roundtrip tests for all six changes.
-10. All existing tests (with and without `--polyglot`) must continue to pass.
+10. All existing tests (with and without `--force-proto2-output`) must continue to pass.
 
 > **Note on module name:** Spec 0016 created `reproto/src/reproto/syntax.py`
 > with `fdp_syntax()` and `packed_option()`.  Spec 0015 §Architecture names
@@ -214,7 +214,7 @@ which is the common case — omit the option entirely, matching the source
 proto and protoc's own behaviour.
 
 This fix applies in both proto2 and proto3 modes (it is not gated on
-`--polyglot`).
+`--force-proto2-output`).
 
 **Empirically confirmed** (mockup `f09_json_name.proto`): protoc stores the
 user-supplied value when it differs from the auto-derived name, and the
@@ -613,17 +613,17 @@ Drop the `f06_`/`f09_`/`f10_`/`f11_`/`f12_`/`f14_` prefixes.  Leave
 
 ### 10. Roundtrip regression tests
 
-Proto2 fixtures go into the existing non-polyglot `DEFAULT_FIXTURES` list.
+Proto2 fixtures go into the existing `DEFAULT_FIXTURES` list.
 Proto3 polyglot fixtures are split into two categories based on whether a
-lossless roundtrip is possible **without** `--polyglot`:
+lossless roundtrip is possible **with** `--force-proto2-output`:
 
 - **Strict** (`POLYGLOT_FIXTURES_STRICT`): fixtures where the only
-  no-polyglot `.pb` difference is `syntax`.  The existing
+  force-proto2 `.pb` difference is `syntax`.  The existing
   `differing <= {"syntax"}` assertion applies.
 - **Lossy** (`POLYGLOT_FIXTURES_LOSSY`): fixtures that use proto3-only
   descriptor fields (`proto3_optional`, synthetic `oneof_decl`, `oneof_index`)
   which are structurally impossible to reproduce from proto2 source.  The
-  no-polyglot roundtrip still runs for crash-safety, but the field-diff
+  force-proto2 roundtrip still runs for crash-safety, but the field-diff
   assertion is widened to `differing <= PROTO3_ONLY_FIELDS` where:
 
   ```python
@@ -641,14 +641,14 @@ Fixture assignments:
 - `json_name.proto` → `POLYGLOT_FIXTURES_STRICT` (proto3, but no synthetic oneofs)
 - `field_labels_proto3.proto` → `POLYGLOT_FIXTURES_LOSSY` (has synthetic oneofs)
 - `synthetic_oneof.proto` → `POLYGLOT_FIXTURES_LOSSY` (has synthetic oneofs)
-- `default_values_proto2.proto` → `DEFAULT_FIXTURES` (non-polyglot)
-- `weak_import_proto2.proto` → `DEFAULT_FIXTURES` (non-polyglot)
-- `extensions_proto2.proto` → `DEFAULT_FIXTURES` (non-polyglot)
+- `default_values_proto2.proto` → `DEFAULT_FIXTURES`
+- `weak_import_proto2.proto` → `DEFAULT_FIXTURES`
+- `extensions_proto2.proto` → `DEFAULT_FIXTURES`
 
 `test_roundtrip_polyglot` is updated to accept both lists.  For strict
 fixtures it behaves exactly as before.  For lossy fixtures it substitutes
-`PROTO3_ONLY_FIELDS` for `{"syntax"}` in the no-polyglot assertion.  The
-with-`--polyglot` pass (full `.pb` + `.proto` comparison) is identical for
+`PROTO3_ONLY_FIELDS` for `{"syntax"}` in the force-proto2 assertion.  The
+default (polyglot) pass (full `.pb` + `.proto` comparison) is identical for
 both categories.
 
 ---
@@ -663,16 +663,16 @@ After this spec is implemented, running `pytest` must show:
   strict category).
 - `test_roundtrip_polyglot[json_name.proto]` passes (strict category).
 - `test_roundtrip_polyglot[field_labels_proto3.proto]` passes (lossy category):
-  - no-polyglot roundtrip completes without crash; field diff is within
+  - force-proto2 roundtrip completes without crash; field diff is within
     `PROTO3_ONLY_FIELDS`.
-  - with `--polyglot`: implicit singular fields render with no label;
+  - default polyglot: implicit singular fields render with no label;
     `optional` fields render with `optional` label outside any oneof;
     `repeated` fields render with `repeated` label; fields inside a real
     `oneof` render with no label inside the oneof block.
 - `test_roundtrip_polyglot[synthetic_oneof.proto]` passes (lossy category):
-  - no-polyglot roundtrip completes without crash; field diff is within
+  - force-proto2 roundtrip completes without crash; field diff is within
     `PROTO3_ONLY_FIELDS`.
-  - with `--polyglot`: synthetic oneofs (`_opt_scalar`, `_opt_string`) are
+  - default polyglot: synthetic oneofs (`_opt_scalar`, `_opt_string`) are
     suppressed; their member fields render at message level as
     `optional int32 opt_scalar = 1;` etc.; the real `oneof real_choice { ... }`
     block is preserved.

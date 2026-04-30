@@ -211,11 +211,11 @@ class _SectionedCommand(click.Command):
 )
 
 @click.option(
-    '--polyglot',
+    '--force-proto2-output',
     is_flag=True,
     default=False,
-    help='Enable syntax-aware rendering (proto2 and proto3). '
-         'Without this flag, all output is proto2.',
+    help='Force all output to proto2 syntax, regardless of the input syntax. '
+         'Without this flag, output syntax matches the input (polyglot mode).',
 )
 
 @click.option(
@@ -353,7 +353,7 @@ class _SectionedCommand(click.Command):
 def main(
         pb_files: list[Path],
         pb_path: list[Path],
-        polyglot: bool,
+        force_proto2_output: bool,
         proto_out: Path,
         emit_binary: bool,
         dry_run: bool,
@@ -416,7 +416,7 @@ def main(
 
     options = Options(
         binary=emit_binary,
-        polyglot=polyglot,
+        force_proto2_output=force_proto2_output,
         debug=debug,
         debug_fqdn=debug_fqdn,
         descriptor_proto=variant['variant_descriptor_proto'],

@@ -247,41 +247,43 @@ def test_roundtrip(fixture_name: str, temp_dirs):
 
 @pytest.mark.parametrize("fixture_name", POLYGLOT_FIXTURES_STRICT + POLYGLOT_FIXTURES_LOSSY)
 def test_roundtrip_polyglot(fixture_name: str, tmp_path):
-    """Roundtrip test run twice: with and without --polyglot.
+    """Roundtrip test run twice: with and without --force-proto2-output.
 
-    Without --polyglot: .proto text is not compared (output is always proto2).
+    With --force-proto2-output: .proto text is not compared (output is always proto2).
     - Strict fixtures: .pb may only differ by the syntax field.
     - Lossy fixtures: .pb may also differ by proto3-only descriptor fields
       (proto3_optional, synthetic oneof_decl/oneof_index) which cannot be
       reproduced from proto2 source.
-    With --polyglot: full .pb and .proto comparison for both categories.
+    Without --force-proto2-output (default polyglot): full .pb and .proto comparison.
     """
     _, content = get_fixture_content(fixture_name)
     allowed = (PROTO3_ONLY_FIELDS if fixture_name in POLYGLOT_FIXTURES_LOSSY
                else {"syntax"})
 
-    # Run without --polyglot.
+    # Run with --force-proto2-output.
     no_polyglot_dir = tmp_path / "no_polyglot"
     orig_dir = no_polyglot_dir / "orig"
     new_dir = no_polyglot_dir / "new"
     orig_dir.mkdir(parents=True)
     new_dir.mkdir(parents=True)
-    _run_roundtrip(fixture_name, content, orig_dir, new_dir, compare_pb=False, compare_proto=False)
+    _run_roundtrip(fixture_name, content, orig_dir, new_dir,
+                   extra_reproto_args=["--force-proto2-output"],
+                   compare_pb=False, compare_proto=False)
     orig_pb = orig_dir / f"{fixture_name.removesuffix('.proto')}.pb"
     new_pb = new_dir / f"{fixture_name.removesuffix('.proto')}.pb"
     differing = pb_diff_fields(orig_pb.read_bytes(), new_pb.read_bytes())
     assert differing <= allowed, (
-        f"Without --polyglot, .pb differs beyond allowed fields {allowed}: {differing}\n"
+        f"With --force-proto2-output, .pb differs beyond allowed fields {allowed}: {differing}\n"
         + pb_diff(orig_pb.read_bytes(), new_pb.read_bytes())
     )
 
-    # Run with --polyglot: full comparison.
+    # Run without --force-proto2-output (default polyglot): full comparison.
     polyglot_dir = tmp_path / "polyglot"
     orig_dir = polyglot_dir / "orig"
     new_dir = polyglot_dir / "new"
     orig_dir.mkdir(parents=True)
     new_dir.mkdir(parents=True)
-    _run_roundtrip(fixture_name, content, orig_dir, new_dir, extra_reproto_args=["--polyglot"])
+    _run_roundtrip(fixture_name, content, orig_dir, new_dir)
 
 
 def test_fixture_discovery():

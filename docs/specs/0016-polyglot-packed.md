@@ -31,12 +31,12 @@ path produces, which is wrong for proto3.
 
 ## Goals
 
-1. Add a `--polyglot` CLI flag to `reproto`.  When absent, behaviour is
-   identical to today (proto2 only, no syntax inspection).
-2. Add `polyglot: bool` to `Options` and `ctx.syntax: str` to `Context`.
-3. In `--polyglot` mode, set `ctx.syntax` at the start of each file's
-   rendering to `effective_syntax(fdp)`.
-4. In `--polyglot` mode, make packed rendering syntax-aware: suppress
+1. Add a `--force-proto2-output` CLI flag to `reproto`.  When absent,
+   polyglot mode is active (output syntax matches input syntax).
+2. Add `force_proto2_output: bool` to `Options` and `ctx.syntax: str` to `Context`.
+3. In polyglot mode (i.e. `--force-proto2-output` not set), set `ctx.syntax`
+   at the start of each file's rendering to `effective_syntax(fdp)`.
+4. In polyglot mode, make packed rendering syntax-aware: suppress
    `[packed = true]` for proto3 fields where `HasField("packed") == False`
    (i.e., the proto3 default applies).
 5. Add a `re_syntax.py` module with `effective_syntax()` and
@@ -55,7 +55,7 @@ path produces, which is wrong for proto3.
 - Editions support.
 - Syntax-override YAML (`--syntax-overrides`) — deferred to spec 0015.
 - Changing the behaviour of the existing test suite (all existing tests must
-  continue to pass without `--polyglot`).
+  continue to pass; proto2 fixtures are unaffected by polyglot-by-default).
 - Improving the `.pb` diff or `.proto` text comparison in the existing
   `test_roundtrip` — that is spec 0017's scope.
 
@@ -136,12 +136,12 @@ def packed_option(
     return None
 ```
 
-### 2. `Options` — add `polyglot` flag
+### 2. `Options` — add `force_proto2_output` flag
 
 In `context.py`, add to the `Options` dataclass:
 
 ```python
-polyglot: bool = False
+force_proto2_output: bool = False
 ```
 
 ### 3. `Context` — add `syntax` and `target_syntax` attributes
@@ -149,33 +149,32 @@ polyglot: bool = False
 In `Context.__init__`, add:
 
 ```python
-self.syntax: str = "proto2"         # input file syntax, set per file in polyglot mode
-self.target_syntax: str = "proto2"  # output syntax; defaults to proto2 (non-polyglot)
+self.syntax: str = "proto2"         # input file syntax, set per file
+self.target_syntax: str = "proto2"  # output syntax
 ```
 
-In `--polyglot` mode, `ctx.target_syntax = ctx.syntax` when `ctx.syntax` is
-`"proto2"` or `"proto3"` (same-syntax roundtrip).  For `"editions"` and any
-unknown syntax, `ctx.target_syntax = "proto2"` (fallback; editions support is
-out of scope for this spec).
+By default (polyglot mode), `ctx.target_syntax = ctx.syntax` when
+`ctx.syntax` is `"proto2"` or `"proto3"` (same-syntax roundtrip).  For
+`"editions"` and any unknown syntax, `ctx.target_syntax = "proto2"` (fallback;
+editions support is out of scope for this spec).
 
-Without `--polyglot`, `ctx.target_syntax = "proto2"` always (current
-behaviour preserved).
+With `--force-proto2-output`, `ctx.target_syntax = "proto2"` always.
 
-### 4. `cli.py` — add `--polyglot` flag
+### 4. `cli.py` — add `--force-proto2-output` flag
 
 Add a new Click option before the existing output options:
 
 ```python
 @click.option(
-    '--polyglot',
+    '--force-proto2-output',
     is_flag=True,
     default=False,
-    help='Enable syntax-aware rendering (proto2 and proto3). '
-         'Without this flag, all output is proto2.',
+    help='Force all output to proto2 syntax, regardless of the input syntax. '
+         'Without this flag, output syntax matches the input (polyglot mode).',
 )
 ```
 
-Pass `polyglot=polyglot` in the `Options(...)` constructor call.
+Pass `force_proto2_output=force_proto2_output` in the `Options(...)` constructor call.
 
 ### 5. `re_file.py` — set `ctx.syntax` and `ctx.target_syntax` per file
 
@@ -185,7 +184,7 @@ produced, add:
 ```python
 from .syntax import fdp_syntax
 ctx.syntax = fdp_syntax(self.this)
-if ctx.polyglot and ctx.syntax in ("proto2", "proto3"):
+if not ctx.force_proto2_output and ctx.syntax in ("proto2", "proto3"):
     ctx.target_syntax = ctx.syntax
 else:
     ctx.target_syntax = "proto2"
@@ -271,8 +270,8 @@ After this spec is implemented, running `pytest` must show:
 - `test_roundtrip_polyglot[packed_proto3.proto]` passes.
 
 The proto3 test confirms that a proto3 file with a default-packed field
-roundtrips byte-identically through reproto under `--polyglot`, and that
-reproto reproduces the original source structure (no spurious
+roundtrips byte-identically through reproto in polyglot mode (default), and
+that reproto reproduces the original source structure (no spurious
 `[packed = true]`).
 
 ---
