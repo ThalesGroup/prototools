@@ -489,6 +489,7 @@ class NodeBase(Generic[MessageT], ABC):
         options_class: type[Message],
         composite: bool = False,
         depth: int = 0,
+        exclude: set[str] | None = None,
     ) -> list[Block]:
         """
         Generic options renderer for all descriptor types.
@@ -561,6 +562,7 @@ class NodeBase(Generic[MessageT], ABC):
                 options_descriptor=options_descriptor,
                 composite=composite,
                 depth=depth + 1,
+                exclude=exclude,
             )
 
         except (KeyError, ValueError, TypeError, AttributeError) as e:

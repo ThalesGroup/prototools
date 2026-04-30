@@ -1,0 +1,15 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+
+syntax = "proto2";
+package mockup;
+
+message WithGroups {
+  optional group SimpleGroup = 1 {
+    optional int32 value = 2;
+  }
+  repeated group RepeatedGroup = 3 {
+    optional string name = 4;
+    optional int32 count = 5;
+  }
+}

@@ -82,7 +82,9 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
         match self.type:
             case FieldDescriptorProto.TYPE_GROUP:
                 grp = ReDescriptorProto.from_ref(ctx, Ref(self.type_name))
-                grp.is_group = True
+                from .syntax import allow_groups
+                if allow_groups(ctx):
+                    grp.is_group = True
                 self.targets.add(grp)
                 self.type_descriptor = grp
             case FieldDescriptorProto.TYPE_MESSAGE:
@@ -243,7 +245,13 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
         string += label_str
 
         # --- Field type and name ----------------------------------------------
-        if self.type != FieldDescriptorProto.TYPE_GROUP:
+        from .syntax import allow_groups
+        if self.type != FieldDescriptorProto.TYPE_GROUP or not allow_groups(ctx):
+            if self.type == FieldDescriptorProto.TYPE_GROUP:
+                cli_warning(
+                    f"field '{self.name}': groups are not valid in proto3; "
+                    f"rendering as plain message field"
+                )
             ref = short_ref(ctx, self.type_descriptor, self.parent)
             string += f'{ref} {self.name}'
         else:
@@ -345,7 +353,7 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
             out.append(BlockLine(string, depth))
 
         # --- Field group definition (only for fields of type group) -----------
-        if self.type != FieldDescriptorProto.TYPE_GROUP:
+        if self.type != FieldDescriptorProto.TYPE_GROUP or not allow_groups(ctx):
             out.postpend(';')
         else:
             # Groups definitions must be inlined

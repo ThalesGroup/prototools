@@ -21,7 +21,7 @@ orphans:
   ExtensionRangeOptions:  [features, feature_support, verification]
   FieldOptions:           [features, feature_support]
   FileOptions:            [features, feature_support]
-  MessageOptions:         [features, feature_support, map_entry, message_set_wire_format]
+  MessageOptions:         [features, feature_support, map_entry]
   MethodOptions:          [features, feature_support]
   ServiceOptions:         [features, feature_support]
 

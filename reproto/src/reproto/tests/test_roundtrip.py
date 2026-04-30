@@ -38,10 +38,12 @@ DEFAULT_FIXTURES = [
     "enum_value.proto",
     "extensions_proto2.proto",
     "field_comprehensive.proto",
+    "group_proto2.proto",
     "file_comprehensive.proto",
     "message_comprehensive.proto",
     "name_resolution.proto",
     "service.proto",
+    "message_set_proto2.proto",
     "weak_import_proto2.proto",
     "well_known_types.proto",
 ]

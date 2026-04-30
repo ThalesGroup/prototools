@@ -444,12 +444,18 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
             out.append_div_maybe(depth)
 
         # --- Message options --------------------------------------------------
+        from .syntax import allow_message_set_wire_format
+        msf_exclude: set[str] | None = (
+            None if allow_message_set_wire_format(ctx)
+            else {'message_set_wire_format'}
+        )
         option_blocks = self.render_options(
             ctx=ctx,
             options_descriptor=ctx.mso_desc,
             options_class=ctx.mso_cls,
             composite=False,
-            depth=depth
+            depth=depth,
+            exclude=msf_exclude,
         )
         for block in option_blocks:
             out.extend(block)

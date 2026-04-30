@@ -83,12 +83,19 @@ def field_label(
             else                              → ''  (implicit singular)
     """
     from google.protobuf.descriptor_pb2 import FieldDescriptorProto
+    from lib.warnings import cli_warning
 
     if is_oneof:
         return ''
     if field.label == FieldDescriptorProto.LABEL_REPEATED:
         return 'repeated '
     if ctx.target_syntax == "proto3":
+        if field.label == FieldDescriptorProto.LABEL_REQUIRED:
+            cli_warning(
+                f"field '{field.name}': 'required' label is not valid in proto3; "
+                f"rendering as implicit singular"
+            )
+            return ''
         return 'optional ' if field.proto3_optional else ''
     # proto2
     if field.label == FieldDescriptorProto.LABEL_REQUIRED:
@@ -161,4 +168,14 @@ def allow_weak_import(ctx: Context) -> bool:
 
 def allow_extensions(ctx: Context) -> bool:
     """Return True iff extension ranges and extend blocks are legal in the target syntax."""
+    return ctx.target_syntax == "proto2"
+
+
+def allow_groups(ctx: Context) -> bool:
+    """Return True iff TYPE_GROUP fields may be rendered as groups."""
+    return ctx.target_syntax == "proto2"
+
+
+def allow_message_set_wire_format(ctx: Context) -> bool:
+    """Return True iff MessageOptions.message_set_wire_format may be rendered."""
     return ctx.target_syntax == "proto2"
