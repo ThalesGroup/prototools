@@ -1,0 +1,11 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+
+syntax = "proto2";
+package mockup;
+
+import weak "weak_import_proto2_dep.proto";
+
+message UsesWeak {
+  optional WeakDep dep = 1;
+}

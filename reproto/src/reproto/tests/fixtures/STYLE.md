@@ -72,7 +72,25 @@ optional bytes b = 1 [default = "binary\x00data"];  // correct
 optional bytes b = 1 [default = "binary\000data"];  // wrong
 ```
 
-## 5. Multi-option field tags — always expanded
+## 5. `json_name` — only when it differs from auto-derived camelCase
+
+Reproto suppresses `[json_name = "..."]` when the stored value equals the
+auto-derived camelCase of the field name (spec 0019 §4/§16).  Fixtures must
+not carry a redundant annotation that reproto will not reproduce:
+
+```proto
+// correct — reproto emits no json_name for these
+string field_name = 1;         // auto: "fieldName"
+string same_as_auto = 4;       // stored json_name "sameAsAuto" == auto
+
+// correct — reproto emits json_name because it differs
+string custom = 3 [json_name = "My"];
+
+// wrong — reproto won't emit this, text comparison fails
+string same_as_auto = 4 [json_name = "sameAsAuto"];
+```
+
+## 6. Multi-option field tags — always expanded
 
 When a field carries two or more options, use the multi-line form:
 

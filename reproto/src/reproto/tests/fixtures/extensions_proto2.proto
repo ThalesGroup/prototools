@@ -1,0 +1,22 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+
+syntax = "proto2";
+package mockup;
+
+message Extendable {
+  optional string base = 1;
+  extensions 100 to 199;
+}
+
+message Holder {
+  extend Extendable {
+    optional bool msg_ext = 102;
+  }
+  optional int32 own_field = 1;
+}
+
+extend Extendable {
+  optional string file_ext = 100;
+  optional int32 file_ext2 = 101;
+}

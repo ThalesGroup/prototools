@@ -278,17 +278,29 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
             fo_msg.ParseFromString(field_desc.GetOptions().SerializeToString())
 
 
-            # Build options block: default value + field options
+            # Build options block: default value + json_name + field options
             opt_block = Block()
             prolog = BlockLine(string, depth)
 
-            # Add default_value first.
+            # Add default_value first (proto2 only — proto3 forbids explicit defaults).
             # Note: default_value is a direct field of FieldDescriptorProto,
             # NOT a field inside the FieldOptions message. We handle it separately
             # and combine it with FieldOptions in the composite format [default = x, ...].
-            # Proto2 feature only - proto3 doesn't support default values (except enums).
-            default_block = self._render_default_value(depth+1)
-            opt_block.extend(default_block)
+            from .syntax import should_render_default
+            if should_render_default(ctx, self.this):
+                default_block = self._render_default_value(depth+1)
+                opt_block.extend(default_block)
+            elif ctx.target_syntax == "proto3" and self.this.HasField('default_value'):
+                cli_warning(
+                    f"field '{self.name}': explicit default values are not valid "
+                    f"in proto3; omitting"
+                )
+
+            # Add json_name only when it differs from the auto-derived camelCase
+            # (spec 0019 §4/§16 — syntax-independent).
+            from .syntax import should_render_json_name
+            if should_render_json_name(self.this):
+                opt_block.append(BlockLine(f'json_name = "{self.this.json_name}",', depth+1))
 
             # Compute packed annotation syntax-awaredly (spec 0016).
             # fo_msg is kept read-only; packed is excluded from generic rendering.
@@ -306,14 +318,15 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
             if packed_str is not None:
                 opt_block.append(BlockLine(f'packed = {packed_str},', depth + 1))
 
-            # Render field options using inherited method (packed excluded).
+            # Render field options using inherited method (packed and json_name excluded).
+            # json_name is a field of FieldDescriptorProto, not FieldOptions — handled above.
             option_blocks = self.render_options_from_message(
                 ctx=ctx,
                 opts_msg=fo_msg,
                 options_descriptor=ctx.fdo_desc,
                 composite=True,
                 depth=depth+1,
-                exclude={"packed"},
+                exclude={"packed", "json_name"},
             )
             for block in option_blocks:
                 opt_block.extend(block)

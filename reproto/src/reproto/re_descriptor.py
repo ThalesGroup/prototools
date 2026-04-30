@@ -17,6 +17,8 @@ from google.protobuf.descriptor_pb2 import (
 from google.protobuf.internal.containers import RepeatedCompositeFieldContainer
 
 
+from lib.warnings import cli_warning
+
 from .base import NodeBase
 from .context import Context, Fqdn
 from .fake_types import Ref
@@ -87,11 +89,21 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
         Render message extensions grouped by extendee.
 
         Returns a Block containing extend statements, or an empty Block if
-        no extensions are defined.
+        no extensions are defined or extensions are not allowed in this syntax.
         """
+        from .syntax import allow_extensions
         from .re_field import ReFieldDescriptorProto
 
         out = Block()
+
+        if not allow_extensions(ctx):
+            for e in self.extension:
+                extension_proto = cast(FieldDescriptorProto, e)
+                cli_warning(
+                    f"message '{self.name}': nested extend block for "
+                    f"'{extension_proto.extendee}' is not valid in proto3; omitting"
+                )
+            return out
 
         # Group extensions by extendee short name
         extendee_short_names: list[str] = []
@@ -280,11 +292,21 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
 
         out = Block()
 
-        # Extension ranges
-        for r in self.extension_range:
-            range_proto = cast(DescriptorProto.ExtensionRange, r)
-            range_obj = ReExtensionRange(range_proto)
-            out.extend(range_obj.render(ctx, depth))
+        # Extension ranges (proto2 only)
+        from .syntax import allow_extensions
+        if not allow_extensions(ctx):
+            for r in self.extension_range:
+                range_proto = cast(DescriptorProto.ExtensionRange, r)
+                cli_warning(
+                    f"message '{self.name}': extension range "
+                    f"[{range_proto.start}, {range_proto.end}) is not valid in "
+                    f"proto3; omitting"
+                )
+        else:
+            for r in self.extension_range:
+                range_proto = cast(DescriptorProto.ExtensionRange, r)
+                range_obj = ReExtensionRange(range_proto)
+                out.extend(range_obj.render(ctx, depth))
 
         # Reserved ranges
         for r in self.reserved_range:

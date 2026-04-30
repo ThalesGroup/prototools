@@ -25,15 +25,24 @@ from reproto.tests.proto_normalize import normalize_proto_batch, pb_diff, pb_dif
 
 
 
+# Additional fixture files that must be co-present in orig_dir for compilation.
+# Maps a fixture name to the list of companion file names it imports.
+FIXTURE_COMPANIONS: dict[str, list[str]] = {
+    "weak_import_proto2.proto": ["weak_import_proto2_dep.proto"],
+}
+
 # Default fixtures to test (can be overridden via pytest CLI)
 DEFAULT_FIXTURES = [
+    "default_values_proto2.proto",
     "enum.proto",
     "enum_value.proto",
+    "extensions_proto2.proto",
     "field_comprehensive.proto",
     "file_comprehensive.proto",
     "message_comprehensive.proto",
     "name_resolution.proto",
     "service.proto",
+    "weak_import_proto2.proto",
     "well_known_types.proto",
 ]
 
@@ -95,6 +104,7 @@ def get_all_fixtures() -> list[str]:
 
 # Polyglot fixtures where the only no-polyglot .pb difference is `syntax`.
 POLYGLOT_FIXTURES_STRICT = [
+    "json_name.proto",
     "packed_proto2.proto",
     "packed_proto3.proto",
 ]
@@ -137,6 +147,21 @@ def _run_roundtrip(
     fixture_path = orig_dir / fixture_name
     fixture_path.write_text(content, encoding='utf-8')
 
+    # Write companion files (e.g. imported dependencies) into orig_dir and
+    # compile each to its own .pb so reproto can load them as context.
+    companion_pbs: list[Path] = []
+    for companion in FIXTURE_COMPANIONS.get(fixture_name, []):
+        _, companion_content = get_fixture_content(companion)
+        companion_path = orig_dir / companion
+        companion_path.write_text(companion_content, encoding='utf-8')
+        companion_pb = orig_dir / f"{Path(companion).stem}.pb"
+        result = subprocess.run(
+            ["protoc", f"--descriptor_set_out={companion_pb}", f"-I{orig_dir}", str(companion_path)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f"protoc failed on companion {companion}: {result.stderr}"
+        companion_pbs.append(companion_pb)
+
     stem = fixture_path.stem
     orig_pb = orig_dir / f"{stem}.pb"
     new_pb = new_dir / f"{stem}.pb"
@@ -162,6 +187,7 @@ def _run_roundtrip(
         f"-I{orig_dir}",
         f"--proto-out={new_dir}",
         str(orig_pb),
+        *[str(p) for p in companion_pbs],
     ]
     if extra_reproto_args:
         reproto_cmd.extend(extra_reproto_args)
@@ -180,7 +206,11 @@ def _run_roundtrip(
     assert result.returncode == 0, f"reproto failed: {result.stderr}"
     assert new_proto.exists(), f"Regenerated proto not created: {new_proto}"
 
-    # Step 3: Compile regenerated proto to descriptor set
+    # Step 3: Compile regenerated proto to descriptor set.
+    # Companions must also be present in new_dir so protoc can resolve imports.
+    for companion in FIXTURE_COMPANIONS.get(fixture_name, []):
+        _, companion_content = get_fixture_content(companion)
+        (new_dir / companion).write_text(companion_content, encoding='utf-8')
     result = subprocess.run(
         ["protoc", f"-I{new_dir}", f"--descriptor_set_out={new_pb}", str(new_proto)],
         capture_output=True, text=True,

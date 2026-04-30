@@ -115,3 +115,50 @@ def is_synthetic_oneof(ctx: Context, oneof_name: str, members: list) -> bool:
     if len(members) != 1:
         return False
     return bool(members[0].proto3_optional)
+
+
+def should_render_default(ctx: Context, field) -> bool:
+    """Return True iff [default = ...] should be rendered for this field.
+
+    Always False when ctx.target_syntax == "proto3" (proto3 forbids explicit
+    defaults).  The caller must emit a cli_warning in that case if the field
+    actually has a default_value set.
+    """
+    if not field.HasField('default_value'):
+        return False
+    return ctx.target_syntax != "proto3"
+
+
+def _camel_case(name: str) -> str:
+    """Derive the default JSON name (camelCase) for a proto field name.
+
+    Matches protoc's algorithm: split on '_', keep first component as-is,
+    capitalize the first letter of each subsequent non-empty component, join.
+
+    Examples:
+        'field_name'        -> 'fieldName'
+        'already_camel'     -> 'alreadyCamel'
+        'x'                 -> 'x'
+        'under_score_heavy' -> 'underScoreHeavy'
+    """
+    parts = name.split('_')
+    return parts[0] + ''.join(p.capitalize() for p in parts[1:] if p)
+
+
+def should_render_json_name(field) -> bool:
+    """Return True iff [json_name = "..."] should be emitted for this field.
+
+    Emit only when the stored json_name differs from the auto-derived camelCase
+    of field.name.  Syntax-independent — applies in both proto2 and proto3.
+    """
+    return field.json_name != _camel_case(field.name)
+
+
+def allow_weak_import(ctx: Context) -> bool:
+    """Return True iff import weak is legal in the target syntax."""
+    return ctx.target_syntax == "proto2"
+
+
+def allow_extensions(ctx: Context) -> bool:
+    """Return True iff extension ranges and extend blocks are legal in the target syntax."""
+    return ctx.target_syntax == "proto2"

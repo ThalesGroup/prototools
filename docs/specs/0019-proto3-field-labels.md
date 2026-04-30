@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0019 — Polyglot mode: field labels, synthetic oneofs, default values, json_name, import weak, and extensions
 
-**Status:** draft
+**Status:** implemented
+**Implemented in:** 2026-04-30
 **App:** reproto
 
 ---
