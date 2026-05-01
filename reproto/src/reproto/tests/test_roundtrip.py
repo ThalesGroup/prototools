@@ -33,6 +33,7 @@ FIXTURE_COMPANIONS: dict[str, list[str]] = {
 
 # Default fixtures to test (can be overridden via pytest CLI)
 DEFAULT_FIXTURES = [
+    "custom_options_proto3.proto",
     "default_values_proto2.proto",
     "enum.proto",
     "enum_value.proto",

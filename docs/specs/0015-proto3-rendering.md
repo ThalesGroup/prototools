@@ -167,11 +167,18 @@ Proto2-only.  `label = LABEL_REQUIRED` in the descriptor.  See
 
 ### 6. Extension fields and extension ranges
 
-Proto2-only for user-defined extensions.  Proto3 allows extending only
-`*Options` messages (for custom options).
+Proto3 restricts extensions as follows:
 
-- `extensions N to M;` declarations → proto2 only.
-- `extend Foo { ... }` blocks → proto2 only (except extending `*Options`).
+- `extensions N to M;` ranges on user-defined messages → proto2 only.
+- `extend UserMessage { ... }` blocks → proto2 only.
+- `extend SomeOptions { ... }` blocks where the extendee is one of the nine
+  `*Options` messages from `google/protobuf/descriptor.proto`
+  (`FileOptions`, `MessageOptions`, `FieldOptions`, `OneofOptions`,
+  `ExtensionRangeOptions`, `EnumOptions`, `EnumValueOptions`,
+  `ServiceOptions`, `MethodOptions`) → **allowed in proto3** (custom options).
+
+In other words: proto3 files may define custom options via `extend *Options`,
+but may not extend user-defined messages or declare extension ranges on them.
 
 See §Inconsistency handling.
 
@@ -504,7 +511,8 @@ syntax.  Policy: **warn and degrade gracefully; never crash**.
 |---------------|-------------------------|--------------------|
 | Proto3, `required` field | "required fields are not valid in proto3" | render as `T f = N;` (no label) |
 | Proto3, extension range | "extension ranges are not valid in proto3" | omit the `extensions` statement |
-| Proto3, `extend` block | "extend blocks are not valid in proto3" | omit the block |
+| Proto3, `extend UserMsg` block | "extend blocks on user-defined messages are not valid in proto3" | omit the block |
+| Proto3, `extend *Options` block | *(not an inconsistency — allowed in proto3 for custom options)* | emit normally |
 | Proto3, `import weak` | "import weak is not valid in proto3" | render as plain `import` |
 | Proto3, `default_value` set | "explicit default values are not valid in proto3" | omit `[default = ...]` |
 | Proto3, `TYPE_GROUP` field | "groups are not valid in proto3" | render as plain message field |

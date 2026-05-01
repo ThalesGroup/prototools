@@ -378,43 +378,45 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
         out.append_div_maybe(depth)
 
         # --- File extensions --------------------------------------------------
-        from .syntax import allow_extensions
-        if not allow_extensions(ctx):
-            for e in self.extension:
-                extension_proto = cast(FieldDescriptorProto, e)
+        from .syntax import allow_extend_block
+        # Warn and skip extend blocks whose extendee is not legal in this syntax.
+        # In proto3, only *Options extendees are allowed (custom options).
+        extendee_short_names: list[str] = []
+        for e in self.extension:
+            extension_proto = cast(FieldDescriptorProto, e)
+            if not allow_extend_block(ctx, extension_proto.extendee):
                 cli_warning(
                     f"'{self.name}': top-level extend block for "
                     f"'{extension_proto.extendee}' is not valid in proto3; omitting"
                 )
-        else:
-            extendee_short_names: list[str] = []
+                continue
+            fd = ReFieldDescriptorProto(ctx, extension_proto, parent=self)
+            ref = short_ref(ctx, Fqdn(f'message:{fd.extendee}'), self)
+            if ref not in extendee_short_names:
+                extendee_short_names.append(ref)
+
+        for ref in extendee_short_names:
+            block = Block()
+            is_orphan = True
             for e in self.extension:
                 extension_proto = cast(FieldDescriptorProto, e)
+                if not allow_extend_block(ctx, extension_proto.extendee):
+                    continue
                 fd = ReFieldDescriptorProto(ctx, extension_proto, parent=self)
-                ref = short_ref(ctx, Fqdn(f'message:{fd.extendee}'), self)
-                if ref not in extendee_short_names:
-                    extendee_short_names.append(ref)
-
-            for ref in extendee_short_names:
-                block = Block()
-                is_orphan = True
-                for e in self.extension:
-                    extension_proto = cast(FieldDescriptorProto, e)
-                    fd = ReFieldDescriptorProto(ctx, extension_proto, parent=self)
-                    ref2 = short_ref(ctx, Fqdn(f'message:{fd.extendee}'), self)
-                    if ref2 != ref:
-                        continue
-                    blk = fd.render(ctx, depth+1)
-                    if fd.is_summoned:
-                        is_orphan = False
-                    else:
-                        blk.abandon()
-                    block.extend(blk)
-                block.insert(0, BlockLine(f'extend {ref} {{', depth,
-                                          type = ORPHAN if is_orphan else CODE))
-                block.append(BlockLine('}', level=depth,
-                                       type = ORPHAN if is_orphan else CODE))
-                out.extend(block)
+                ref2 = short_ref(ctx, Fqdn(f'message:{fd.extendee}'), self)
+                if ref2 != ref:
+                    continue
+                blk = fd.render(ctx, depth+1)
+                if fd.is_summoned:
+                    is_orphan = False
+                else:
+                    blk.abandon()
+                block.extend(blk)
+            block.insert(0, BlockLine(f'extend {ref} {{', depth,
+                                      type = ORPHAN if is_orphan else CODE))
+            block.append(BlockLine('}', level=depth,
+                                   type = ORPHAN if is_orphan else CODE))
+            out.extend(block)
         out.append_div_maybe(depth)
 
         # Remove any empty trailing lines from out

@@ -85,6 +85,8 @@ from spec 0015's inconsistency table remain unguarded when
 - Changing the rendering of any other proto2 construct.
 - Implementing `allow_groups` / `allow_message_set_wire_format` for editions
   (deferred to a future editions spec).
+- Fixing the `allow_extensions` rule for proto3 `extend *Options` blocks
+  (custom options): that correction is covered in spec 0023.
 
 ---
 

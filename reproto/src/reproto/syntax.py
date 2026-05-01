@@ -166,8 +166,43 @@ def allow_weak_import(ctx: Context) -> bool:
     return ctx.target_syntax == "proto2"
 
 
+# The nine *Options FQNs that proto3 allows extending (custom options).
+_DESCRIPTOR_OPTIONS_FQNS: frozenset[str] = frozenset({
+    ".google.protobuf.FileOptions",
+    ".google.protobuf.MessageOptions",
+    ".google.protobuf.FieldOptions",
+    ".google.protobuf.OneofOptions",
+    ".google.protobuf.ExtensionRangeOptions",
+    ".google.protobuf.EnumOptions",
+    ".google.protobuf.EnumValueOptions",
+    ".google.protobuf.ServiceOptions",
+    ".google.protobuf.MethodOptions",
+})
+
+
+def allow_extend_block(ctx: Context, extendee: str) -> bool:
+    """Return True iff an extend block for extendee is legal in the target syntax.
+
+    Proto2: always True.
+    Proto3: True only when extendee is one of the nine descriptor *Options FQNs
+            (custom options are the only proto3-legal extension target).
+    """
+    if ctx.target_syntax == "proto2":
+        return True
+    return extendee in _DESCRIPTOR_OPTIONS_FQNS
+
+
+def allow_extension_ranges(ctx: Context) -> bool:
+    """Return True iff `extensions N to M;` declarations are legal in the target syntax."""
+    return ctx.target_syntax == "proto2"
+
+
 def allow_extensions(ctx: Context) -> bool:
-    """Return True iff extension ranges and extend blocks are legal in the target syntax."""
+    """Return True iff extension ranges and extend blocks are legal in the target syntax.
+
+    Deprecated: prefer allow_extend_block / allow_extension_ranges.
+    This alias is kept for call sites that use it only for extension-range decisions.
+    """
     return ctx.target_syntax == "proto2"
 
 

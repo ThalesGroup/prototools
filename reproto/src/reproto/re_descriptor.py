@@ -22,7 +22,7 @@ from lib.warnings import cli_warning
 from .base import NodeBase
 from .context import Context, Fqdn
 from .fake_types import Ref
-from .globals import MESSAGE, label_names
+from .globals import MESSAGE
 from .text import CODE, COMMENT, ORPHAN, Block, BlockLine
 
 
@@ -91,24 +91,22 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
         Returns a Block containing extend statements, or an empty Block if
         no extensions are defined or extensions are not allowed in this syntax.
         """
-        from .syntax import allow_extensions
+        from .syntax import allow_extend_block
         from .re_field import ReFieldDescriptorProto
 
         out = Block()
 
-        if not allow_extensions(ctx):
-            for e in self.extension:
-                extension_proto = cast(FieldDescriptorProto, e)
+        # Warn and skip extend blocks whose extendee is not legal in this syntax.
+        # In proto3, only *Options extendees are allowed (custom options).
+        extendee_short_names: list[str] = []
+        for e in self.extension:
+            extension_proto = cast(FieldDescriptorProto, e)
+            if not allow_extend_block(ctx, extension_proto.extendee):
                 cli_warning(
                     f"message '{self.name}': nested extend block for "
                     f"'{extension_proto.extendee}' is not valid in proto3; omitting"
                 )
-            return out
-
-        # Group extensions by extendee short name
-        extendee_short_names: list[str] = []
-        for e in self.extension:
-            extension_proto = cast(FieldDescriptorProto, e)
+                continue
             fd: ReFieldDescriptorProto = ReFieldDescriptorProto(ctx, extension_proto, parent=self)  # type: ignore[assignment]
             short_name = fd.short_type_name(ctx, fd.extendee)
             if short_name not in extendee_short_names:
@@ -119,12 +117,15 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
             out.append(BlockLine(f'extend {short_name} {{', depth))
             for e in self.extension:
                 extension_proto = cast(FieldDescriptorProto, e)
+                if not allow_extend_block(ctx, extension_proto.extendee):
+                    continue
                 fd: ReFieldDescriptorProto = ReFieldDescriptorProto(ctx, extension_proto, parent=self)  # type: ignore[assignment]
                 name = fd.short_type_name(ctx, fd.extendee)
                 if name != short_name:
                     continue
-                out.append(BlockLine(f'{label_names[fd.label]} '
-                                f'{fd.short_type_name(ctx)} '
+                from .syntax import field_label
+                lbl = field_label(ctx, extension_proto, is_oneof=False)
+                out.append(BlockLine(f'{lbl}{fd.short_type_name(ctx)} '
                                 f'{fd.name} = {fd.number};', depth+1))
             out.append(BlockLine('}', level=depth))
 
@@ -293,8 +294,8 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
         out = Block()
 
         # Extension ranges (proto2 only)
-        from .syntax import allow_extensions
-        if not allow_extensions(ctx):
+        from .syntax import allow_extension_ranges
+        if not allow_extension_ranges(ctx):
             for r in self.extension_range:
                 range_proto = cast(DescriptorProto.ExtensionRange, r)
                 cli_warning(

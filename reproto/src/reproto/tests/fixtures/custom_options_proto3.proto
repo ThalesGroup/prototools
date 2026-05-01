@@ -1,0 +1,18 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+
+syntax = "proto3";
+package mockup;
+
+import "google/protobuf/descriptor.proto";
+
+message MyMessage {
+  extend google.protobuf.FieldOptions {
+    bool custom_field_opt = 50001;
+  }
+  string value = 1;
+}
+
+extend google.protobuf.FileOptions {
+  string custom_file_opt = 50000;
+}
