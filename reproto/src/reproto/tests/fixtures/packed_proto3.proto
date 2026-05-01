@@ -1,9 +1,22 @@
 // SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
 // SPDX-License-Identifier: MIT
 //
-// Finding: packed option in proto3 descriptors.
-// Key question: does protoc strip explicit [packed=true] back to unset,
-// or preserve it?
+// Fixture: packed_proto3.proto
+// Tests: packed encoding option rendering in proto3 (spec 0016):
+//   - repeated numeric field with no packed option (default: packed in proto3)
+//   - repeated numeric field with [packed = true] explicitly set
+//   - repeated numeric field with [packed = false] explicitly set
+//   - repeated string/bytes fields (not packable)
+//   - repeated enum fields: default, explicit true, explicit false
+//   - repeated double and float with explicit true
+//
+// Key invariant verified empirically: protoc does NOT set packed=true
+// implicitly for proto3 fields — HasField("packed") remains False for
+// default-packed proto3 fields.  Reproto emits nothing in that case,
+// which is correct for roundtrip fidelity (spec 0015 §4).
+//
+// Used in POLYGLOT_FIXTURES_STRICT: only the syntax field differs under
+// --force-proto2-output.
 
 syntax = "proto3";
 package mockup;

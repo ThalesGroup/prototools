@@ -1,9 +1,21 @@
 // SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
 //
 // SPDX-License-Identifier: MIT
-
-// Comprehensive test fixture for DescriptorProto (message) features
-// Tests all syntactic possibilities for proto2 messages
+//
+// Fixture: message_comprehensive.proto
+// Tests: all DescriptorProto features in proto2:
+//   - multiple extension ranges on a message (including `to max`)
+//   - message-nested extend block on a user-defined message
+//   - file-level extend block where the extension field type is the
+//     extending message itself (self-referential extension)
+//   - all scalar field types, labels (required/optional/repeated)
+//   - oneof blocks: scalars, nested messages, enums; multiple oneofs
+//   - map fields (string→int, int→message)
+//   - repeated group inside a message body
+//   - deeply nested messages (three levels)
+//   - reserved ranges and reserved names
+//   - empty message, single-field message
+//   - cross-message type references using nested type paths
 
 syntax = "proto2";
 

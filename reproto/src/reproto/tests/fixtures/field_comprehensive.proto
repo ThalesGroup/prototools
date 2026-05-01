@@ -1,9 +1,21 @@
 // SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
 //
 // SPDX-License-Identifier: MIT
-
-// Comprehensive test fixture for FieldDescriptorProto rendering
-// Tests ALL field types and features in proto2 syntax
+//
+// Fixture: field_comprehensive.proto
+// Tests: every FieldDescriptorProto feature in proto2:
+//   - all scalar types (int32/64, uint32/64, sint32/64, fixed32/64,
+//     sfixed32/64, float, double, bool, string, bytes)
+//   - all labels: required, optional, repeated
+//   - default values for every scalar type including inf/-inf/nan
+//   - enum and message field types (required/optional/repeated)
+//   - groups: optional group and repeated group (proto2-only construct)
+//   - field options: packed=true/false, deprecated, combined options
+//   - extension ranges and extend blocks on user-defined messages
+//   - map fields: all key types, message and enum value types
+//   - oneof blocks with scalars, messages, and enums
+//   - deeply nested messages and cross-references to nested types
+//   - edge cases: max field number, long field names
 
 syntax = "proto2";
 

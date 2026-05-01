@@ -1,5 +1,18 @@
 // SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
 // SPDX-License-Identifier: MIT
+//
+// Fixture: synthetic_oneof.proto
+// Tests: proto3 synthetic oneof suppression (spec 0019 §11):
+//   - `optional int32` and `optional string` fields: protoc wraps each in
+//     a synthetic oneof (name starts with `_`, single field, proto3_optional=true).
+//     Reproto must suppress the synthetic oneof block and emit `optional T f`
+//     directly.
+//   - implicit singular scalar (no synthetic oneof, no label keyword)
+//   - repeated field (no oneof involvement)
+//   - real oneof block with two choices (must NOT be suppressed)
+//
+// Used in POLYGLOT_FIXTURES_LOSSY: the proto3_optional / synthetic-oneof
+// descriptor fields cannot be reproduced from proto2 source.
 
 syntax = "proto3";
 package mockup;

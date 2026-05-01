@@ -1,5 +1,18 @@
 // SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
 // SPDX-License-Identifier: MIT
+//
+// Fixture: json_name.proto
+// Tests: [json_name = "..."] rendering rule (spec 0019 §16):
+//   - reproto emits [json_name] only when the stored value differs from
+//     the auto-derived camelCase of the field name.
+//   - `field_name` → auto "fieldName": no annotation emitted
+//   - `already_camel` → auto "alreadyCamel": no annotation emitted
+//   - `custom` → explicit override "My" ≠ auto "custom": annotation emitted
+//   - `same_as_auto` → explicit "sameAsAuto" == auto: annotation suppressed
+//   - `under_score_heavy` → auto "underScoreHeavy": no annotation emitted
+//
+// Used in POLYGLOT_FIXTURES_STRICT: the only .pb difference under
+// --force-proto2-output is the syntax field.
 
 syntax = "proto3";
 package mockup;

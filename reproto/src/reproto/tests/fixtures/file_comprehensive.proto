@@ -1,9 +1,21 @@
 // SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
 //
 // SPDX-License-Identifier: MIT
-
-// Comprehensive test fixture for FileDescriptorProto rendering
-// This file exercises ALL file-level syntactic features in proto2
+//
+// Fixture: file_comprehensive.proto
+// Tests: all FileDescriptorProto-level features in proto2:
+//   - file options: java_package, java_outer_classname, optimize_for,
+//     java_multiple_files, deprecated, cc_enable_arenas
+//   - services with unary, client-streaming, server-streaming, and
+//     bidirectional-streaming RPCs; service-level and method-level options
+//   - enums including allow_alias
+//   - messages with nested messages and enums
+//   - extension ranges on user-defined messages
+//   - reserved ranges and reserved names
+//   - groups inside messages (proto2-only)
+//   - oneofs, maps
+//   - all scalar field types with various options (deprecated, default, packed)
+//   - file-level extend block on a user-defined message
 
 syntax = "proto2";
 

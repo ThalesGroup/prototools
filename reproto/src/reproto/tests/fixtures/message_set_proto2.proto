@@ -1,5 +1,14 @@
 // SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
 // SPDX-License-Identifier: MIT
+//
+// Fixture: message_set_proto2.proto
+// Tests: MessageOptions.message_set_wire_format rendering (spec 0020 §5):
+//   - a message with message_set_wire_format=true and an extension range
+//   - a file-level extend block targeting that message
+//
+// message_set_wire_format is a proto2-only legacy option that enables the
+// MessageSet binary encoding (wire types 3/4 for extension fields).
+// When target syntax is proto3, reproto omits the option and warns.
 
 syntax = "proto2";
 package mockup;

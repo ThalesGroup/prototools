@@ -1,5 +1,14 @@
 // SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
 // SPDX-License-Identifier: MIT
+//
+// Fixture: custom_options_proto3.proto
+// Tests: proto3 files may use `extend *Options` to define custom options
+//        (spec 0023).  Both file-level and message-nested extend blocks
+//        targeting google.protobuf.*Options must be emitted in proto3 output,
+//        not silently dropped.
+//
+// Contrasts with extensions_proto2.proto, which tests extensions on
+// user-defined messages (proto2-only).
 
 syntax = "proto3";
 package mockup;
@@ -7,12 +16,14 @@ package mockup;
 import "google/protobuf/descriptor.proto";
 
 message MyMessage {
+  // Message-nested custom option targeting FieldOptions (proto3-legal).
   extend google.protobuf.FieldOptions {
     bool custom_field_opt = 50001;
   }
   string value = 1;
 }
 
+// File-level custom option targeting FileOptions (proto3-legal).
 extend google.protobuf.FileOptions {
   string custom_file_opt = 50000;
 }

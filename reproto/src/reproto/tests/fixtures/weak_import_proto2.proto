@@ -1,5 +1,16 @@
 // SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
 // SPDX-License-Identifier: MIT
+//
+// Fixture: weak_import_proto2.proto
+// Tests: `import weak` rendering in proto2 (spec 0015 §8):
+//   - `import weak "..."` must be reproduced as-is; reproto reads the
+//     weak_dependency field in FileDescriptorProto to distinguish weak
+//     from regular imports.
+//   - The companion file weak_import_proto2_dep.proto is compiled
+//     separately and passed to reproto as additional context.
+//
+// When target syntax is proto3, reproto degrades weak imports to plain
+// imports and emits a warning (proto3 does not support import weak).
 
 syntax = "proto2";
 package mockup;

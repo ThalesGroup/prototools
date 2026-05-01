@@ -1,5 +1,14 @@
 // SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
 // SPDX-License-Identifier: MIT
+//
+// Fixture: extensions_proto2.proto
+// Tests: proto2 extensions on user-defined messages (proto2-only feature):
+//   - `extensions N to M;` declaration on a user-defined message
+//   - file-level `extend UserMessage` block with multiple fields
+//   - message-nested `extend UserMessage` block (inside Holder)
+//
+// Contrasts with custom_options_proto3.proto, which tests proto3-legal
+// extend blocks targeting *Options messages.
 
 syntax = "proto2";
 package mockup;

@@ -1,5 +1,12 @@
 // SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
 // SPDX-License-Identifier: MIT
+//
+// Fixture: default_values_proto2.proto
+// Tests: [default = ...] rendering for every scalar type in proto2.
+//        Covers all numeric types (signed, unsigned, fixed-width, float,
+//        double), string, bytes, bool, and enum defaults, including edge
+//        cases: inf, -inf, nan, max uint64, empty string, binary bytes,
+//        and a field with no default set.
 
 syntax = "proto2";
 package mockup;

@@ -1,5 +1,15 @@
 // SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
 // SPDX-License-Identifier: MIT
+//
+// Fixture: group_proto2.proto
+// Tests: proto2 group fields (spec 0020, TYPE_GROUP rendering):
+//   - optional group: inline group body with a nested field
+//   - repeated group: inline group body with multiple nested fields
+//
+// Groups are a proto2-only deprecated construct that encode sub-messages
+// using wire types 3/4 instead of the length-prefixed wire type 2.
+// When target syntax is proto3, reproto degrades groups to plain message
+// fields and emits a warning (spec 0020 §3).
 
 syntax = "proto2";
 package mockup;

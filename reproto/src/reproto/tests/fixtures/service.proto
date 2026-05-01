@@ -1,21 +1,18 @@
 // SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
 //
 // SPDX-License-Identifier: MIT
-
-// Comprehensive test fixture for ServiceDescriptorProto and
-// MethodDescriptorProto rendering.
 //
-// This fixture exercises all syntactic possibilities for services
-// and methods in proto2 syntax:
-// - Basic unary methods
-// - Client streaming
-// - Server streaming
-// - Bidirectional streaming
-// - Method options (deprecated, idempotency_level, features)
-// - Service options (deprecated, features)
-// - Multiple services
-// - Multiple methods per service
-// - Various input/output types
+// Fixture: service.proto
+// Tests: all ServiceDescriptorProto and MethodDescriptorProto features
+//        in proto2:
+//   - basic unary RPC
+//   - client-streaming, server-streaming, bidirectional-streaming RPCs
+//   - method options: deprecated, idempotency_level=IDEMPOTENT,
+//     idempotency_level=NO_SIDE_EFFECTS
+//   - service-level deprecated option
+//   - multiple services in one file
+//   - empty service (edge case)
+//   - multiple methods per service with mixed streaming modes
 
 syntax = "proto2";
 

@@ -1,12 +1,20 @@
 // SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
 //
 // SPDX-License-Identifier: MIT
+//
+// Fixture: enum_value.proto
+// Tests: all EnumValueDescriptorProto option patterns in proto2:
+//   - no options, deprecated only, custom extension only, both together
+//   - multiple options on a single value (expanded bracket form)
+//   - repeated extension options (value_tags applied twice)
+//   - negative values with options
+//   - alias values (allow_alias=true)
+//   - extend google.protobuf.EnumValueOptions (string, int32, repeated string)
 
 syntax = "proto2";
 
 package reproto.test;
 
-// Import for extensions if needed
 import "google/protobuf/descriptor.proto";
 
 // Enum demonstrating various enum value option patterns

@@ -1,8 +1,17 @@
 // SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
 //
 // SPDX-License-Identifier: MIT
-
-// Test fixture for Google well-known types
+//
+// Fixture: well_known_types.proto
+// Tests: reproto's handling of Google well-known type imports and references:
+//   - imports of google/protobuf/any.proto, empty.proto, timestamp.proto,
+//     duration.proto
+//   - fields typed as google.protobuf.Any, Empty, Timestamp, Duration
+//   - service using google.protobuf.Empty as RPC request/response type
+//
+// Well-known types are handled via reproto variants (--use-variant any/empty/
+// timestamp/duration), which substitute stub definitions so protoc can
+// recompile the output without the full Google protobuf source tree.
 
 syntax = "proto2";
 

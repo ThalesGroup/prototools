@@ -1,5 +1,18 @@
 // SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
 // SPDX-License-Identifier: MIT
+//
+// Fixture: field_labels_proto3.proto
+// Tests: proto3 field label rendering (spec 0019):
+//   - implicit singular scalar (no label keyword)
+//   - explicit optional scalar (proto3_optional=true → `optional` keyword)
+//   - repeated scalar
+//   - implicit message field (no label keyword)
+//   - explicit optional message field (`optional` keyword)
+//   - oneof fields (no label inside oneof)
+//
+// Used in POLYGLOT_FIXTURES_LOSSY: the proto3_optional / synthetic-oneof
+// descriptor fields cannot be reproduced from proto2 source, so the
+// --force-proto2-output roundtrip only checks crash-safety.
 
 syntax = "proto3";
 package mockup;

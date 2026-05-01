@@ -1,13 +1,35 @@
 // SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
 //
 // SPDX-License-Identifier: MIT
-
-// This fixture tests reproto's ability to decompile .pb files in a way that is
-// 100% compatible with protoc's name resolution rules (including quirks):
-// - Enum values (FQDN doesn't include enum name)
-// - Type names (C++ scoping)
-// - Extension names (special scoping rules)
-// - Collision detection
+//
+// Fixture: name_resolution.proto
+// Tests: reproto's name-shortening logic, which must produce output that
+//        protoc can recompile to a byte-identical descriptor.  Covers the
+//        main quirks of protoc's name resolution:
+//
+//   TEST 1 — Enum value FQDN quirk: enum values live in the enclosing
+//     package scope, not inside the enum type, so the default value of an
+//     enum field is written as RESULT_OK, not Result.RESULT_OK.
+//
+//   TEST 2 — Nested type vs. nested extend block: a message-nested extend
+//     block for google.protobuf.MessageOptions; the option reference must
+//     use the fully-qualified form with leading dot.
+//
+//   TEST 3 — Collision scenarios: two messages both have an inner type
+//     named Inner at different nesting levels; reproto must pick the
+//     shortest unambiguous name for each reference.
+//
+//   TEST 4 — Extension scope resolution: a message-nested extend block
+//     for google.protobuf.FieldOptions; the custom option is used in a
+//     sibling message where the short name would be ambiguous, requiring
+//     the fully-qualified form.
+//
+//   TEST 5 — C++ scoping (type name shortening): two types B exist at
+//     different scopes; reproto shortens each reference to the minimal
+//     unambiguous form.
+//
+//   TEST 6 — Extension in message literal scope: a MessageOptions extension
+//     whose value is an empty message literal {}.
 
 syntax = "proto2";
 

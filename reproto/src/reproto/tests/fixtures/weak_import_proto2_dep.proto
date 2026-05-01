@@ -1,5 +1,10 @@
 // SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
 // SPDX-License-Identifier: MIT
+//
+// Fixture: weak_import_proto2_dep.proto
+// Role: companion file imported by weak_import_proto2.proto via
+//       `import weak "..."`.  Contains the WeakDep message referenced
+//       by that file.  Not tested in isolation.
 
 syntax = "proto2";
 package mockup;

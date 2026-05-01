@@ -1,12 +1,20 @@
 // SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
 //
 // SPDX-License-Identifier: MIT
+//
+// Fixture: enum.proto
+// Tests: all EnumDescriptorProto features in proto2:
+//   - allow_alias, deprecated enum option, custom EnumOptions extension
+//   - aliases (duplicate values), deprecated enum values
+//   - reserved ranges, reserved individual numbers, reserved names
+//   - negative and extreme int32 enum values
+//   - enum with only a zero value (EmptyEnum)
+//   - extend google.protobuf.EnumOptions (custom option definition)
 
 syntax = "proto2";
 
 package reproto;
 
-// Import for extensions if needed
 import "google/protobuf/descriptor.proto";
 
 // Full enum illustrating all constructs

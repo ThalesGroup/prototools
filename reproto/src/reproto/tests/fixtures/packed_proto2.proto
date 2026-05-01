@@ -1,9 +1,20 @@
 // SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
 // SPDX-License-Identifier: MIT
 //
-// Finding: packed option in proto2 descriptors.
-// Verify HasField("packed") for: default (not set), packed=true, packed=false.
-// Also verify for non-packable types (string, bytes, message).
+// Fixture: packed_proto2.proto
+// Tests: packed encoding option rendering in proto2 (spec 0016):
+//   - repeated numeric field with no packed option set (default: unpacked)
+//   - repeated numeric field with [packed = true] explicitly set
+//   - repeated numeric field with [packed = false] explicitly set
+//   - repeated string/bytes fields (not packable — option irrelevant)
+//   - repeated enum fields: default, explicit true, explicit false
+//
+// Key invariant: reproto mirrors the HasField("packed") state exactly.
+// When packed is unset (default), nothing is emitted.  Only explicit
+// true/false values are reproduced.
+//
+// Used in POLYGLOT_FIXTURES_STRICT: only the syntax field differs under
+// --force-proto2-output.
 
 syntax = "proto2";
 package mockup;
