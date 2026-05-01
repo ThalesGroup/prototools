@@ -401,6 +401,7 @@ EOF
       pythonPkgs.pytest
       pythonPkgs."pytest-xdist"
       pythonPkgs.ruff
+      pkgs.pyright
     ];
 
     shellHook = ''

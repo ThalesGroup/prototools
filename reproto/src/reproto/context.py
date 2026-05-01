@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+import importlib.resources
 from dataclasses import dataclass, field
+from importlib.resources.abc import Traversable
 from pathlib import Path
 from types import CodeType
 from typing import TYPE_CHECKING, TypeAlias
@@ -32,6 +34,10 @@ if TYPE_CHECKING:
         ReMethodDescriptorProto |
         ReServiceDescriptorProto
     )
+
+
+def _default_variant_root() -> Traversable:
+    return importlib.resources.files('reproto.variants')
 
 
 def _default_variant_orphans() -> dict[str, list[str]]:
@@ -72,8 +78,10 @@ class Options:
     variant_orphans: dict[str, list[str]] = field(
         default_factory=_default_variant_orphans
     )
-    # Resource loading (§8b): None => built-in, path => external filesystem
-    variant_file: str | None = None
+    # Resource root: Traversable pointing to the directory containing <stem>.yaml.
+    # For the built-in variant this is importlib.resources.files('reproto.variants');
+    # for external variants it is the parent Path of the YAML file.
+    variant_root: Traversable = field(default_factory=_default_variant_root)
     variant_stem: str = 'google-protobuf'
     # Modules to import at startup (spec 0018); default empty for OSS variant.
     variant_annotation_modules: list[str] = field(default_factory=list)

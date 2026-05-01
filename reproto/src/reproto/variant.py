@@ -54,20 +54,17 @@ def _merge_orphans(
     return result
 
 
-def _parse(raw: dict, resolved: str | None) -> dict:
+def _parse(raw: dict, root: object, stem: str) -> dict:
     """Convert a raw YAML dict into a variant_* dict.
 
     Args:
-        raw: parsed YAML content.
-        resolved: absolute path of the variant file, or None for built-in.
+        raw:  parsed YAML content.
+        root: Traversable pointing to the directory containing <stem>.yaml.
+        stem: variant stem (filename without extension).
     """
     orphans_raw: dict[str, list[str]] = {}
     for kind, names in (raw.get('orphans') or {}).items():
         orphans_raw[kind] = list(names)
-
-    stem = (
-        Path(resolved).stem if resolved is not None else 'google-protobuf'
-    )
 
     annotation_modules_raw = raw.get('annotation_modules') or []
     if not isinstance(annotation_modules_raw, list) or not all(
@@ -85,21 +82,10 @@ def _parse(raw: dict, resolved: str | None) -> dict:
         'variant_import_rules': list(raw.get('import_rewrites') or []),
         'variant_ns_rules':     list(raw.get('namespace_rewrites') or []),
         'variant_orphans':      _merge_orphans(_EDITION_ORPHANS, orphans_raw),
-        'variant_file':         resolved,
+        'variant_root':         root,
         'variant_stem':         stem,
         'variant_annotation_modules': list(annotation_modules_raw),
     }
-
-
-def _load_builtin() -> dict:
-    """Load the built-in google-protobuf.yaml from the package."""
-    data = (
-        importlib.resources.files('reproto.variants')
-        .joinpath('google-protobuf.yaml')
-        .read_text(encoding='utf-8')
-    )
-    raw = yaml.safe_load(data)
-    return _parse(raw if isinstance(raw, dict) else {}, None)
 
 
 def load(path: str | None = None) -> dict:
@@ -111,14 +97,18 @@ def load(path: str | None = None) -> dict:
     Resolution order:
         1. path argument (if not None)
         2. REPROTO_VARIANT environment variable
-        3. built-in google-protobuf.yaml
+        3. built-in google-protobuf.yaml (via importlib.resources)
     """
     resolved: str | None = path or os.environ.get('REPROTO_VARIANT')
 
     if resolved is None:
-        return _load_builtin()
+        root = importlib.resources.files('reproto.variants')
+        stem = 'google-protobuf'
+    else:
+        abs_resolved = str(Path(resolved).resolve())
+        root = Path(abs_resolved).parent
+        stem = Path(abs_resolved).stem
 
-    abs_resolved = str(Path(resolved).resolve())
-    text = Path(abs_resolved).read_text(encoding='utf-8')
+    text = root.joinpath(f'{stem}.yaml').read_text(encoding='utf-8')
     raw = yaml.safe_load(text)
-    return _parse(raw if isinstance(raw, dict) else {}, abs_resolved)
+    return _parse(raw if isinstance(raw, dict) else {}, root, stem)

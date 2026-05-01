@@ -6,10 +6,12 @@
 
 from __future__ import annotations
 
+import importlib.resources
+import sys
 import textwrap
 
-
 from reproto import variant as V
+from reproto.reproto import import_annotations
 
 
 # ---------------------------------------------------------------------------
@@ -120,22 +122,67 @@ def test_explicit_path_overrides_env_var(monkeypatch, tmp_path):
     assert result['variant_descriptor_proto'] == 'custom/descriptor.proto'
 
 
-def test_builtin_variant_file_is_none(monkeypatch):
-    """Built-in variant returns variant_file=None and variant_stem='google-protobuf'."""
+def test_builtin_variant_root_and_stem(monkeypatch):
+    """Built-in variant returns a Traversable root and stem='google-protobuf'."""
     monkeypatch.delenv('REPROTO_VARIANT', raising=False)
     result = V.load(None)
-    assert result['variant_file'] is None
+    assert result['variant_root'] is not None
     assert result['variant_stem'] == 'google-protobuf'
+    # The root must be readable as a Traversable — the YAML must be accessible.
+    text = result['variant_root'].joinpath('google-protobuf.yaml').read_text(encoding='utf-8')
+    assert 'google/protobuf/descriptor.proto' in text
+    # The built-in root should equal importlib.resources.files('reproto.variants').
+    assert str(result['variant_root']) == str(importlib.resources.files('reproto.variants'))
 
 
-def test_external_variant_file_and_stem(monkeypatch, tmp_path):
-    """External variant returns variant_file=abs_path and variant_stem from filename."""
+def test_external_variant_root_and_stem(monkeypatch, tmp_path):
+    """External variant returns a Path root and stem from filename."""
     yaml_file = tmp_path / 'proto2.yaml'
     yaml_file.write_text('name: proto2\n')
     monkeypatch.delenv('REPROTO_VARIANT', raising=False)
     result = V.load(str(yaml_file))
-    assert result['variant_file'] == str(yaml_file.resolve())
     assert result['variant_stem'] == 'proto2'
+    # Root is the parent directory; joining the stem YAML must give the original file.
+    assert result['variant_root'].joinpath('proto2.yaml').read_text() == 'name: proto2\n'
+
+
+def test_import_annotations_prepends_resource_root(tmp_path, monkeypatch):
+    """import_annotations() prepends resource_root to sys.path when modules are listed."""
+    root = str(tmp_path)
+    # Ensure root is not already on sys.path.
+    monkeypatch.setattr(sys, 'path', [p for p in sys.path if p != root])
+    # Use a module name that won't be found — we only care about sys.path mutation.
+    import_annotations(['_nonexistent_module_xyz'], resource_root=root)
+    assert root in sys.path
+    assert sys.path[0] == root
+
+
+def test_import_annotations_no_duplicate(tmp_path, monkeypatch):
+    """import_annotations() does not add resource_root twice."""
+    root = str(tmp_path)
+    monkeypatch.setattr(sys, 'path', [root] + [p for p in sys.path if p != root])
+    import_annotations(['_nonexistent_module_xyz'], resource_root=root)
+    assert sys.path.count(root) == 1
+
+
+def test_import_annotations_empty_modules_no_side_effects(tmp_path, monkeypatch):
+    """import_annotations() with empty modules list does not touch sys.path."""
+    root = str(tmp_path)
+    monkeypatch.setattr(sys, 'path', [p for p in sys.path if p != root])
+    import_annotations([], resource_root=root)
+    assert root not in sys.path
+
+
+def test_load_embedded_proto_fallback_uses_variant_root(monkeypatch, tmp_path):
+    """variant_root.joinpath(stem, pb_name) is used for .pb loading in both cases."""
+    # Verify that for the built-in variant the root traversal reaches descriptor.pb.
+    monkeypatch.delenv('REPROTO_VARIANT', raising=False)
+    result = V.load(None)
+    root = result['variant_root']
+    stem = result['variant_stem']
+    # descriptor.pb must be reachable via the Traversable.
+    data = root.joinpath(stem, 'google', 'protobuf', 'descriptor.pb').read_bytes()
+    assert len(data) > 0
 
 
 def test_import_rules_parsed(monkeypatch, tmp_path):

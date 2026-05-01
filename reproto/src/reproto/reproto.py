@@ -206,12 +206,20 @@ def matches_any_pattern(fqdn: Fqdn, patterns: list[Fqdn]) -> bool:
     return False
 
 
-def import_annotations(modules: list[str]) -> None:
+def import_annotations(modules: list[str], resource_root: str | None = None) -> None:
     """Import annotation modules declared by the active variant.
 
-    Does nothing when the list is empty.  Logs a warning for each module
+    If resource_root is given and not already on sys.path, it is prepended
+    before any import is attempted.  This allows *_pb2.py files that live
+    inside the variant bundle to be found without any extra setup.
+
+    Does nothing when modules is empty.  Logs a warning for each module
     that cannot be imported, but continues execution.
     """
+    if not modules:
+        return
+    if resource_root is not None and resource_root not in sys.path:
+        sys.path.insert(0, resource_root)
     for full_module_name in modules:
         try:
             importlib.import_module(full_module_name)
@@ -289,7 +297,8 @@ def reproto(
         ctx = Context(set(prunings))
     else:
         ctx = Context.from_options(set(prunings), options)
-    import_annotations(ctx.variant_annotation_modules)
+    resource_root = str(ctx.variant_root.joinpath(ctx.variant_stem))
+    import_annotations(ctx.variant_annotation_modules, resource_root)
 
     # =========================================================================
     # PHASE 1: FILE LOADING
@@ -369,10 +378,8 @@ def reproto(
         """
         Load a proto fallback from the variant's resource directory.
 
-        For built-in variants (ctx.variant_file is None), loads via
-        importlib.resources from reproto.variants.<stem>/.
-        For external variants, loads from the filesystem at
-        <variant_file_dir>/<stem>/<pb_name>.
+        Traverses ctx.variant_root / ctx.variant_stem / <pb_name> via the
+        Traversable API, which works for both directory and zip/wheel installs.
 
         Args:
             proto_name: Proto file name (e.g., "google/protobuf/any.proto")
@@ -383,22 +390,10 @@ def reproto(
         try:
             pb_name = proto_name[:-len('.proto')] + '.pb'
 
-            if ctx.variant_file is None:
-                # Built-in variant: load via importlib.resources (zip-safe)
-                pkg = importlib.resources.files('reproto.variants')
-                parts = [ctx.variant_stem] + pb_name.split('/')
-                node = pkg
-                for part in parts:
-                    node = node.joinpath(part)
-                data = node.read_bytes()
-            else:
-                # External variant: load from filesystem
-                pb_path = (
-                    Path(ctx.variant_file).parent
-                    / ctx.variant_stem
-                    / pb_name
-                )
-                data = pb_path.read_bytes()
+            node = ctx.variant_root
+            for part in [ctx.variant_stem] + pb_name.split('/'):
+                node = node.joinpath(part)
+            data = node.read_bytes()
 
             fd = FileDescriptorSet()
             fd.ParseFromString(data)
