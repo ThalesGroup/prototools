@@ -17,8 +17,6 @@ from google.protobuf.descriptor_pb2 import (
 from google.protobuf.internal.containers import RepeatedCompositeFieldContainer
 
 
-from lib.warnings import cli_warning
-
 from .base import NodeBase
 from .context import Context, Fqdn
 from .fake_types import Ref
@@ -102,10 +100,9 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
         for e in self.extension:
             extension_proto = cast(FieldDescriptorProto, e)
             if not allow_extend_block(ctx, extension_proto.extendee):
-                cli_warning(
-                    f"message '{self.name}': nested extend block for "
-                    f"'{extension_proto.extendee}' is not valid in proto3; omitting"
-                )
+                from .anomalies import report
+                out.append(report("B1", depth,
+                                   msg=self.name, extendee=extension_proto.extendee))
                 continue
             fd: ReFieldDescriptorProto = ReFieldDescriptorProto(ctx, extension_proto, parent=self)  # type: ignore[assignment]
             short_name = fd.short_type_name(ctx, fd.extendee)
@@ -298,11 +295,10 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
         if not allow_extension_ranges(ctx):
             for r in self.extension_range:
                 range_proto = cast(DescriptorProto.ExtensionRange, r)
-                cli_warning(
-                    f"message '{self.name}': extension range "
-                    f"[{range_proto.start}, {range_proto.end}) is not valid in "
-                    f"proto3; omitting"
-                )
+                from .anomalies import report
+                out.append(report("B2", depth,
+                                   msg=self.name,
+                                   start=range_proto.start, end=range_proto.end))
         else:
             for r in self.extension_range:
                 range_proto = cast(DescriptorProto.ExtensionRange, r)
@@ -446,10 +442,14 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
 
         # --- Message options --------------------------------------------------
         from .syntax import allow_message_set_wire_format
-        msf_exclude: set[str] | None = (
-            None if allow_message_set_wire_format(ctx)
-            else {'message_set_wire_format'}
-        )
+        msf_exclude: set[str] | None = None
+        if not allow_message_set_wire_format(ctx):
+            msf_exclude = {'message_set_wire_format'}
+            if (self.this.HasField('options')
+                    and self.this.options.HasField('message_set_wire_format')
+                    and self.this.options.message_set_wire_format):
+                from .anomalies import report
+                out.append(report("B3", depth+1, msg=self.name))
         option_blocks = self.render_options(
             ctx=ctx,
             options_descriptor=ctx.mso_desc,

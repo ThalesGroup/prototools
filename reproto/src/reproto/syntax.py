@@ -83,7 +83,6 @@ def field_label(
             else                              → ''  (implicit singular)
     """
     from google.protobuf.descriptor_pb2 import FieldDescriptorProto
-    from lib.warnings import cli_warning
 
     if is_oneof:
         return ''
@@ -91,10 +90,7 @@ def field_label(
         return 'repeated '
     if ctx.target_syntax == "proto3":
         if field.label == FieldDescriptorProto.LABEL_REQUIRED:
-            cli_warning(
-                f"field '{field.name}': 'required' label is not valid in proto3; "
-                f"rendering as implicit singular"
-            )
+            # C3: comment line is inserted by re_field.py before calling field_label().
             return ''
         return 'optional ' if field.proto3_optional else ''
     # proto2
@@ -184,12 +180,16 @@ def allow_extend_block(ctx: Context, extendee: str) -> bool:
     """Return True iff an extend block for extendee is legal in the target syntax.
 
     Proto2: always True.
-    Proto3: True only when extendee is one of the nine descriptor *Options FQNs
-            (custom options are the only proto3-legal extension target).
+    Proto3: True only when extendee (after variant namespace rewriting) is one
+            of the nine descriptor *Options FQNs (custom options are the only
+            proto3-legal extension target).
     """
     if ctx.target_syntax == "proto2":
         return True
-    return extendee in _DESCRIPTOR_OPTIONS_FQNS
+    from .fake_types import Ref
+    from .mappings import apply_variant_namespace
+    canonical = str(apply_variant_namespace(ctx, Ref(extendee)))
+    return canonical in _DESCRIPTOR_OPTIONS_FQNS
 
 
 def allow_extension_ranges(ctx: Context) -> bool:

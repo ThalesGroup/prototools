@@ -23,7 +23,6 @@ from google.protobuf.internal.containers import (
 )
 from google.protobuf.message import Message
 
-from lib.warnings import cli_warning
 
 from .base import NodeBase
 from .context import Context, Fqdn
@@ -149,9 +148,9 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
             for block in blocks:
                 out.extend(block)
         except (KeyError, ValueError, TypeError, AttributeError) as e:
-            cli_warning(
-                f"Failed to render options for file '{self.name}': {type(e).__name__}: {e}"
-            )
+            from .anomalies import report
+            out.append(report("A3", depth,
+                               file=self.name, exc_type=type(e).__name__, exc_msg=str(e)))
 
         return out
 
@@ -288,12 +287,13 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
             out.append_div_maybe(depth)
 
         # Syntax
-        edition = self.edition if self.HasField("edition") else None
-        if ctx.syntax != ctx.target_syntax:
-            string = f'Note: The original file used "{ctx.syntax}" syntax'
-            if edition:
-                string += f', edition {edition}'
-            out.append(BlockLine(string, depth, COMMENT))
+        from .anomalies import report
+        if ctx.syntax == "editions":
+            # A1: editions not yet supported
+            out.append(report("A1", depth, file=self.name))
+        elif ctx.syntax != ctx.target_syntax:
+            # A2: syntax downconversion (--force-proto2-output)
+            out.append(report("A2", depth, file=self.name, syntax=ctx.syntax))
         out.append(BlockLine(f'syntax = "{ctx.target_syntax}";', depth))
         out.append_div_maybe(depth)
 
@@ -326,10 +326,8 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
                 if allow_weak_import(ctx):
                     import_cmd = 'import weak'
                 else:
-                    cli_warning(
-                        f"'{self.name}': 'import weak' is not valid in proto3; "
-                        f"rendering as plain import: \"{d}\""
-                    )
+                    from .anomalies import report
+                    out.append(report("A4", depth, file=self.name, dep=d))
                     import_cmd = 'import'
             else:
                 import_cmd = 'import'
@@ -385,10 +383,9 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
         for e in self.extension:
             extension_proto = cast(FieldDescriptorProto, e)
             if not allow_extend_block(ctx, extension_proto.extendee):
-                cli_warning(
-                    f"'{self.name}': top-level extend block for "
-                    f"'{extension_proto.extendee}' is not valid in proto3; omitting"
-                )
+                from .anomalies import report
+                out.append(report("A5", depth,
+                                   file=self.name, extendee=extension_proto.extendee))
                 continue
             fd = ReFieldDescriptorProto(ctx, extension_proto, parent=self)
             ref = short_ref(ctx, Fqdn(f'message:{fd.extendee}'), self)

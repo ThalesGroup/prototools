@@ -12,8 +12,6 @@ from google.protobuf.descriptor import FieldDescriptor
 from google.protobuf.descriptor_pb2 import FieldDescriptorProto, FieldOptions
 from google.protobuf.message import Message
 
-from lib.warnings import cli_warning
-
 from .base import NodeBase
 from .context import Context, Fqdn
 from .fake_types import Ref, parse_fqdn
@@ -122,11 +120,10 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
 
         # Validate canonical map entry structure
         if key_field is None or value_field is None:
-            cli_warning(
-                f"Non-canonical map entry message '{map_entry_msg.name}' for field '{self.name}': "
-                f"expected exactly 2 fields (key=1, value=2), found fields: "
-                f"{[f.number for f in map_entry_msg.field]}"
-            )
+            from .anomalies import report
+            found = [f.number for f in map_entry_msg.field]
+            out.append(report("C1", depth,
+                               field=self.name, entry=map_entry_msg.name, found=found))
             # Fallback: render as repeated message instead of map
             from .utils import short_ref
             ref = short_ref(ctx, self.type_descriptor, self.parent)
@@ -241,6 +238,12 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
 
         # --- Field label (aka cardinality) ------------------------------------
         from .syntax import field_label
+        from google.protobuf.descriptor_pb2 import FieldDescriptorProto as _FDP
+        if (ctx.target_syntax == "proto3"
+                and not is_oneof
+                and self.this.label == _FDP.LABEL_REQUIRED):
+            from .anomalies import report
+            out.append(report("C3", depth, name=self.name))
         label_str = field_label(ctx, self.this, is_oneof)
         string += label_str
 
@@ -248,10 +251,8 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
         from .syntax import allow_groups
         if self.type != FieldDescriptorProto.TYPE_GROUP or not allow_groups(ctx):
             if self.type == FieldDescriptorProto.TYPE_GROUP:
-                cli_warning(
-                    f"field '{self.name}': groups are not valid in proto3; "
-                    f"rendering as plain message field"
-                )
+                from .anomalies import report
+                out.append(report("C2", depth, name=self.name))
             ref = short_ref(ctx, self.type_descriptor, self.parent)
             string += f'{ref} {self.name}'
         else:
@@ -299,10 +300,8 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
                 default_block = self._render_default_value(depth+1)
                 opt_block.extend(default_block)
             elif ctx.target_syntax == "proto3" and self.this.HasField('default_value'):
-                cli_warning(
-                    f"field '{self.name}': explicit default values are not valid "
-                    f"in proto3; omitting"
-                )
+                from .anomalies import report
+                opt_block.append(report("C4", depth+1, name=self.name))
 
             # Add json_name only when it differs from the auto-derived camelCase
             # (spec 0019 §4/§16 — syntax-independent).
@@ -347,9 +346,9 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
             )
             out.extend(formatted)
         except (KeyError, ValueError, TypeError, AttributeError) as e:
-            cli_warning(
-                f"Failed to render options for field '{self.name}': {type(e).__name__}: {e}"
-            )
+            from .anomalies import report
+            out.append(report("C5", depth, name=self.name,
+                               exc_type=type(e).__name__, exc_msg=str(e)))
             out.append(BlockLine(string, depth))
 
         # --- Field group definition (only for fields of type group) -----------

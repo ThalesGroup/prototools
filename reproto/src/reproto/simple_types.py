@@ -25,8 +25,7 @@ from google.protobuf.descriptor_pb2 import (
 )
 from google.protobuf.message import Message
 
-from lib.warnings import cli_warning
-
+from .anomalies import report as anomaly_report
 from .context import Context
 from .globals import FIELD_NUM_MAX
 from .mappings import canonize_opt_name
@@ -144,8 +143,8 @@ class ReFieldDescriptor:
                             f'Unexpected FieldDescriptor type: {self.type}.')
 
             case _:
-                cli_warning("Unexpected option value: '%s'.", repr(value))
-                return Scalar(0)
+                # D1: caller (dump_option) is responsible for inserting the comment.
+                raise TypeError(type(value).__name__)
 
     def dump_option(
             self,
@@ -175,7 +174,15 @@ class ReFieldDescriptor:
         match value:
             # Scalars
             case int() | bool() | float() | str() | bytes():
-                scalar = self.get_scalar(value)
+                try:
+                    scalar = self.get_scalar(value)
+                except TypeError as e:
+                    # D1: get_scalar() raised because the Python type does not
+                    # match the proto field type — emit comment + fallback 0.
+                    block.insert(0, anomaly_report("D1", lev,
+                                                   name=name, type=str(e)))
+                    block.append(BlockLine(f'{name} = 0', lev))
+                    return block, is_orphan
                 block.append(BlockLine(f'{name} = {str(scalar)}', lev))
                 return block, is_orphan
             case bool():
@@ -231,11 +238,10 @@ class ReFieldDescriptor:
                 if blocks:
                     block.extend(blocks[-1])
                 return block, is_orphan
-        
+
             case _:
-                cli_warning(
-                    "Skipping field '%s' (unexpected descriptor type)", name)
-                block.append(BlockLine(f'{name} = unexpected type', lev))
+                # D2: descriptor type is not any of the known match arms.
+                block.insert(0, anomaly_report("D2", lev, name=name))
                 return block, True
 
 
