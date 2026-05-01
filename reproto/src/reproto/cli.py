@@ -124,7 +124,6 @@ _SECTIONS: dict[str, str] = {
     '--emit-binary':         'Output',
     '--dry-run':             'Output',
     '--proto-variant':       'Variant / Schema',
-    '--descriptor-proto':    'Variant / Schema',
     '--use-variant':         'Variant / Schema',
     '--keep-descriptor-path': 'Variant / Schema',
     '--emit-descriptor':     'Variant / Schema',
@@ -250,12 +249,6 @@ class _SectionedCommand(click.Command):
 )
 
 @click.option(
-    '-d', '--descriptor-proto',
-    is_flag=True,
-    help='Shorthand for --use-variant descriptor',
-)
-
-@click.option(
     '--use-variant',
     'use_variant',
     type=click.Choice(_USE_VARIANT_CHOICES),
@@ -358,7 +351,6 @@ def main(
         emit_binary: bool,
         dry_run: bool,
         proto_variant: Path | None,
-        descriptor_proto: bool,
         use_variant: tuple[str, ...],
         keep_descriptor_path: bool,
         emit_descriptor: bool,
@@ -392,8 +384,6 @@ def main(
 
     # Expand --use-variant / -d into the fallback_protos list
     use_variant_set: set[str] = set(use_variant)
-    if descriptor_proto:
-        use_variant_set.add('descriptor')
     if 'all' in use_variant_set:
         use_variant_set = {'any', 'empty', 'timestamp', 'duration',
                            'struct', 'wrappers', 'descriptor'}

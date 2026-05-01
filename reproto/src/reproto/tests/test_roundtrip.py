@@ -185,7 +185,7 @@ def _run_roundtrip(
 
     reproto_cmd = [
         sys.executable, "-m", "reproto.cli",
-        "-d",
+        "--use-variant", "descriptor",
         f"-I{orig_dir}",
         f"--proto-out={new_dir}",
         str(orig_pb),
