@@ -36,6 +36,31 @@ let
        (pkgs.lib.hasInfix "/fixtures/" path));
   };
 
+  # patchPhase shared by all Crane derivations that compile prototext.
+  # Compiles the three .proto schemas into fixtures/prebuilt/ using protoc so
+  # that build.rs can copy them into $OUT_DIR without needing protox.
+  protoPatchPhase = ''
+    runHook prePatch
+
+    mkdir -p prototext/fixtures/prebuilt
+
+    protoc \
+      --descriptor_set_out=prototext/fixtures/prebuilt/descriptor.pb \
+      google/protobuf/descriptor.proto
+
+    protoc \
+      --descriptor_set_out=prototext/fixtures/prebuilt/knife.pb \
+      --proto_path=prototext/fixtures/schemas \
+      knife.proto
+
+    protoc \
+      --descriptor_set_out=prototext/fixtures/prebuilt/enum_collision.pb \
+      --proto_path=prototext/fixtures/schemas \
+      enum_collision.proto
+
+    runHook postPatch
+  '';
+
   # Common arguments shared by all Crane derivations.
   commonArgs = {
     inherit src;
@@ -53,7 +78,9 @@ let
     pname          = "prototools-deps";
     # Exclude the pyo3 crate: it requires a Python interpreter (PYO3_PYTHON)
     # that is not available in commonArgs.  Its deps are handled by pyo3DepsCache.
-    cargoExtraArgs = "--workspace --exclude prototext_codec";
+    # buildDepsOnly uses a dummy source (no fixtures/schemas/), so protoPatchPhase
+    # cannot run.  build.rs is also stubbed, so no patchPhase is needed.
+    cargoExtraArgs = "--no-default-features --workspace --exclude prototext_codec";
   });
 
   # ---------------------------------------------------------------------------
@@ -69,8 +96,10 @@ let
   rustClippy = crane.cargoClippy (commonArgs // {
     pname                = "prototools-clippy";
     cargoArtifacts       = depsCache;
-    cargoExtraArgs       = "--workspace --exclude prototext_codec";
+    cargoExtraArgs       = "--no-default-features --workspace --exclude prototext_codec";
     cargoClippyExtraArgs = "--all-targets -- --deny warnings";
+    patchPhase           = protoPatchPhase;
+    nativeBuildInputs    = commonArgs.nativeBuildInputs ++ [ pkgs.protobuf ];
   });
 
   rustClippyPyo3 = crane.cargoClippy (pyo3CommonArgs // {
@@ -86,7 +115,8 @@ let
   rustTests = crane.cargoTest (commonArgs // {
     pname             = "prototools-tests";
     cargoArtifacts    = depsCache;
-    cargoExtraArgs    = "--workspace --exclude prototext_codec";
+    cargoExtraArgs    = "--no-default-features --workspace --exclude prototext_codec";
+    patchPhase        = protoPatchPhase;
     nativeBuildInputs = (commonArgs.nativeBuildInputs or []) ++ [ pkgs.protobuf ];
   });
 
@@ -98,12 +128,12 @@ let
   prototools = crane.buildPackage (commonArgs // {
     pname          = "prototools";
     cargoArtifacts = rustTests;
-    cargoExtraArgs = "-p prototext";
+    cargoExtraArgs = "--no-default-features -p prototext";
+    patchPhase     = protoPatchPhase;
+    nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.protobuf pkgs.installShellFiles ];
     # doCheck = false: tests are already run by the dedicated rust-tests
     # derivation (which has protoc in nativeBuildInputs).
     doCheck        = false;
-
-    nativeBuildInputs = (commonArgs.nativeBuildInputs or []) ++ [ pkgs.installShellFiles ];
 
 
     postInstall = ''
