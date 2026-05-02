@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import collections.abc
+import importlib.metadata
 import logging
 import sys
 from pathlib import Path
@@ -15,6 +16,11 @@ from click.shell_completion import CompletionItem
 from reproto import Fqdn
 from .reproto import DescriptorProtoMissingError, Options, reproto
 from . import variant as variant_mod
+
+try:
+    _reproto_version = importlib.metadata.version('reproto')
+except importlib.metadata.PackageNotFoundError:
+    _reproto_version = 'dev'
 
 logger = logging.getLogger()  # root logger
 logger.setLevel(logging.INFO)
@@ -193,6 +199,10 @@ class _SectionedCommand(click.Command):
 @click.command(
     cls=_SectionedCommand,
     help='Parse PB_FILES and generate output based on the options given.',
+)
+@click.version_option(
+    version=_reproto_version,
+    prog_name='reproto',
 )
 # --- Input ---
 @click.argument(
