@@ -132,52 +132,45 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
             case _:
                 self.type_descriptor = self.type
 
-    def _render_map_field(self, ctx: Context, depth: int) -> Block:
-        """Render a map field as map<K,V> syntax."""
+    def _map_field_string(
+        self, ctx: Context, depth: int
+    ) -> tuple[str, Block | None]:
+        """Return (declaration_string, anomaly_block_or_None) for a map field.
+
+        The declaration string does not include a trailing semicolon; the
+        caller's shared options-rendering path (and out.postpend(';')) handles
+        that.  If the map entry is malformed, returns an empty string and a
+        Block containing the anomaly report and a repeated-message fallback
+        line (the caller should extend out with that block and return early).
+        """
         from .re_descriptor import ReDescriptorProto
 
-        out = Block()
-
-        # Get the map entry message
         map_entry_msg = self.type_descriptor
         assert isinstance(map_entry_msg, ReDescriptorProto)
         assert map_entry_msg.is_map_entry, "Expected map entry message"
 
-        # Map entry messages have exactly 2 fields: key (field 1) and value (field 2)
-        # Extract key and value types
         key_field = None
         value_field = None
-
         for field in map_entry_msg.field:
             if field.number == 1:
                 key_field = field
             elif field.number == 2:
                 value_field = field
 
-        # Validate canonical map entry structure
         if key_field is None or value_field is None:
             from .anomalies import report
-            found = [f.number for f in map_entry_msg.field]
-            out.append(report("C1", depth,
-                               field=self.name, entry=map_entry_msg.name, found=found))
-            # Fallback: render as repeated message instead of map
             from .utils import short_ref
+            found = [f.number for f in map_entry_msg.field]
+            anomaly = Block()
+            anomaly.append(report("C1", depth,
+                                   field=self.name, entry=map_entry_msg.name, found=found))
             ref = short_ref(ctx, self.type_descriptor, self.parent)
-            string = f'repeated {ref} {self.name} = {self.number};'
-            out.append(BlockLine(string, depth))
-            return out
+            anomaly.append(BlockLine(f'repeated {ref} {self.name} = {self.number};', depth))
+            return '', anomaly
 
-        # Get type names for key and value
-        # For primitive types, use the type name directly
-        # For message/enum types, use short_ref to get the type name
         key_type = self._get_field_type_name(ctx, key_field)
         value_type = self._get_field_type_name(ctx, value_field)
-
-        # Render as: map<key_type, value_type> field_name = number;
-        string = f'map<{key_type}, {value_type}> {self.name} = {self.number};'
-        out.append(BlockLine(string, depth))
-
-        return out
+        return f'map<{key_type}, {value_type}> {self.name} = {self.number}', None
 
     def _get_field_type_name(self, ctx: Context, field: FieldDescriptorProto) -> str:
         """Get the type name for a field (used in map<K,V> rendering)."""
@@ -257,18 +250,21 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
         out = Block()
 
         # --- Map field detection ----------------------------------------------
-        # Map fields are:
-        # - TYPE_MESSAGE with LABEL_REPEATED
-        # - The message type has options.map_entry = true
-        # - Rendered as: map<key_type, value_type> field_name = number;
+        # Map fields are TYPE_MESSAGE + LABEL_REPEATED where the target message
+        # has map_entry = true.  We build the declaration string here and fall
+        # through to the shared options-rendering block below so that field
+        # options (including custom extensions) are not silently dropped.
+        is_map_field = False
         if (self.type == FieldDescriptorProto.TYPE_MESSAGE and
-            self.label == FieldDescriptorProto.LABEL_REPEATED):
-            # Check if the message is a map entry
+                self.label == FieldDescriptorProto.LABEL_REPEATED):
             from .re_descriptor import ReDescriptorProto
             if isinstance(self.type_descriptor, ReDescriptorProto) and self.type_descriptor.is_map_entry:
-                # Render map field
-                out.extend(self._render_map_field(ctx, depth))
-                return out
+                is_map_field = True
+                map_string, anomaly = self._map_field_string(ctx, depth)
+                if anomaly is not None:
+                    # Malformed map entry: emit anomaly + fallback and bail out
+                    out.extend(anomaly)
+                    return out
 
         # Resolve per-element features (None for proto2/proto3 files).
         file_node, msg_node = _get_file_and_msg(self)
@@ -280,32 +276,35 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
         )
 
         string = ''
+        if is_map_field:
+            string = map_string
 
-        # --- Field label (aka cardinality) ------------------------------------
-        from .syntax import field_label
-        from google.protobuf.descriptor_pb2 import FieldDescriptorProto as _FDP
-        if (ctx.target_syntax == "proto3"
-                and not is_oneof
-                and self.this.label == _FDP.LABEL_REQUIRED):
-            from .anomalies import report
-            out.append(report("C3", depth, name=self.name))
-        label_str = field_label(ctx, self.this, is_oneof, features=field_features)
-        string += label_str
-
-        # --- Field type and name ----------------------------------------------
-        from .syntax import allow_groups
-        if self.type != FieldDescriptorProto.TYPE_GROUP or not allow_groups(ctx, features=field_features):
-            if self.type == FieldDescriptorProto.TYPE_GROUP:
+        if not is_map_field:
+            # --- Field label (aka cardinality) --------------------------------
+            from .syntax import field_label
+            from google.protobuf.descriptor_pb2 import FieldDescriptorProto as _FDP
+            if (ctx.target_syntax == "proto3"
+                    and not is_oneof
+                    and self.this.label == _FDP.LABEL_REQUIRED):
                 from .anomalies import report
-                out.append(report("C2", depth, name=self.name))
-            ref = short_ref(ctx, self.type_descriptor, self.parent)
-            string += f'{ref} {self.name}'
-        else:
-            ref = short_ref(ctx, self.type_descriptor, self)
-            string += f'group {ref}'
+                out.append(report("C3", depth, name=self.name))
+            label_str = field_label(ctx, self.this, is_oneof, features=field_features)
+            string += label_str
 
-        # --- Field number -----------------------------------------------------
-        string += f' = {self.number}'
+            # --- Field type and name ------------------------------------------
+            from .syntax import allow_groups
+            if self.type != FieldDescriptorProto.TYPE_GROUP or not allow_groups(ctx, features=field_features):
+                if self.type == FieldDescriptorProto.TYPE_GROUP:
+                    from .anomalies import report
+                    out.append(report("C2", depth, name=self.name))
+                ref = short_ref(ctx, self.type_descriptor, self.parent)
+                string += f'{ref} {self.name}'
+            else:
+                ref = short_ref(ctx, self.type_descriptor, self)
+                string += f'group {ref}'
+
+            # --- Field number -------------------------------------------------
+            string += f' = {self.number}'
 
         # --- Field options ----------------------------------------------------
         try:
@@ -404,12 +403,12 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
             out.append(BlockLine(string, depth))
 
         # --- Field group definition (only for fields of type group) -----------
-        if self.type != FieldDescriptorProto.TYPE_GROUP or not allow_groups(ctx, features=field_features):
+        if is_map_field or self.type != FieldDescriptorProto.TYPE_GROUP or not allow_groups(ctx, features=field_features):
             out.postpend(';')
         else:
             # Groups definitions must be inlined
             from .re_descriptor import ReDescriptorProto
-            
+
             out.postpend(' {')
             re_desc = ReDescriptorProto.from_ref(ctx, Ref(self.type_name))
             block, _ = re_desc.render(ctx, depth, force=True)

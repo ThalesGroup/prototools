@@ -140,6 +140,15 @@ message MapFields {
   map<string, int32> string_map = 21;
 }
 
+// Regression: map fields with options were silently dropped before the fix.
+message MapWithOptions {
+  map<string, int32> annotated_map = 1 [deprecated = true];
+  map<int32, string> multi_option_map = 2 [
+    packed = false,
+    deprecated = true
+  ];
+}
+
 message OneofFields {
   oneof test_oneof {
     int32 oneof_int = 1;
