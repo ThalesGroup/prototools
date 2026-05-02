@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from importlib.resources.abc import Traversable
 from pathlib import Path
 from types import CodeType
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING
 
 from google.protobuf.descriptor import Descriptor
 from google.protobuf.descriptor_database import DescriptorDatabase
@@ -19,21 +19,14 @@ from google.protobuf.message import Message
 from .fake_types import Fqdn
 
 if TYPE_CHECKING:
-    from .re_descriptor import ReDescriptorProto
-    from .re_enum import ReEnumDescriptorProto
-    from .re_field import ReFieldDescriptorProto
-    from .re_file import ReFileDescriptorProto
-    from .re_method import ReMethodDescriptorProto
-    from .re_service import ReServiceDescriptorProto
+    from typing import Any
 
-    NodeTypes: TypeAlias = (
-        ReDescriptorProto |
-        ReEnumDescriptorProto |
-        ReFieldDescriptorProto |
-        ReFileDescriptorProto |
-        ReMethodDescriptorProto |
-        ReServiceDescriptorProto
-    )
+    from .base import NodeBase
+    from .re_file import ReFileDescriptorProto
+
+    # Public alias: any NodeBase subclass.  Replaces the former exhaustive union
+    # of Re* types; NodeBase[Any] is both honest and forward-compatible.
+    NodeTypes = NodeBase[Any]
 
 
 def _default_variant_root() -> Traversable:
@@ -113,8 +106,8 @@ class Context(Options):
         # Pool and dicts
         self.pool_db: DescriptorDatabase = DescriptorDatabase()
         self.pool: DescriptorPool = DescriptorPool(self.pool_db)
-        self.nodes: dict[Fqdn, NodeTypes] = {}
-        self.new_nodes: dict[Fqdn, NodeTypes] = {}
+        self.nodes: dict[Fqdn, NodeBase[Any]] = {}
+        self.new_nodes: dict[Fqdn, NodeBase[Any]] = {}
         self.files: dict[str, 'ReFileDescriptorProto'] = {}
         self.new_files: dict[str, 'ReFileDescriptorProto'] = {}
 
@@ -160,7 +153,7 @@ class Context(Options):
     def has_node(self, fqdn: Fqdn) -> bool:
         return fqdn in self.nodes or fqdn in self.new_nodes
     
-    def find_node(self, fqdn: Fqdn) -> NodeTypes | None:
+    def find_node(self, fqdn: Fqdn) -> 'NodeBase[Any] | None':
         if fqdn in self.nodes:
             return self.nodes[fqdn]
         if fqdn in self.new_nodes:
