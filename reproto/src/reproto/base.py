@@ -586,7 +586,7 @@ class NodeBase(Generic[MessageT], ABC):
         cls,
         ctx: Context,
         fqdn: Fqdn,
-        instance: Self
+        instance: 'NodeBase[Any]',
     ) -> None:
         """
         Hook for subclass-specific context registration.

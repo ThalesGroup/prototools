@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Self, cast
+from typing import Any, cast
 
 from google.protobuf.descriptor import FileDescriptor
 from google.protobuf.descriptor_pb2 import (
@@ -106,12 +106,9 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
         return Fqdn(f'{FILE}:{ref}')
 
     @classmethod
-    def _register_in_context(cls, ctx: Context, fqdn: Fqdn, instance: Self) -> None:  # type: ignore[reportIncompatibleMethodOverride]
-        """Register in the files collection.
-
-        Note: Pyright false positive - both base and override use Self, which correctly
-        resolves to the calling class. The signatures are identical at runtime.
-        """
+    def _register_in_context(cls, ctx: Context, fqdn: Fqdn, instance: NodeBase[Any]) -> None:
+        """Register in the files collection."""
+        assert isinstance(instance, cls)
         ctx.new_files[fqdn] = instance
     
     @classmethod
