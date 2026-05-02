@@ -29,6 +29,10 @@ from reproto.tests.proto_normalize import normalize_proto_batch, pb_diff, pb_dif
 # Maps a fixture name to the list of companion file names it imports.
 FIXTURE_COMPANIONS: dict[str, list[str]] = {
     "weak_import_proto2.proto": ["weak_import_proto2_dep.proto"],
+    "editions_roundtrip.proto": [
+        "editions_custom_option_dep.proto",
+        "weak_import_proto2_dep.proto",
+    ],
 }
 
 # Default fixtures to test (can be overridden via pytest CLI)
@@ -238,6 +242,26 @@ def _run_roundtrip(
         assert normalized["fixture"] == normalized["output"], (
             f".proto text differs after normalization for {fixture_name}"
         )
+
+
+EDITION_FIXTURES: list[str] = [
+    "editions_roundtrip.proto",
+]
+
+
+@pytest.mark.parametrize("fixture_name", EDITION_FIXTURES)
+def test_roundtrip_edition(fixture_name: str, tmp_path: Path) -> None:
+    """End-to-end roundtrip for edition .proto files.
+
+    Same two-level check as for proto2/proto3: .pb descriptor byte-identity
+    and normalized .proto text equality (uncomment + buf format).
+    """
+    orig_dir = tmp_path / "orig"
+    new_dir = tmp_path / "new"
+    orig_dir.mkdir()
+    new_dir.mkdir()
+    _, content = get_fixture_content(fixture_name)
+    _run_roundtrip(fixture_name, content, orig_dir, new_dir)
 
 
 @pytest.mark.parametrize("fixture_name", DEFAULT_FIXTURES)

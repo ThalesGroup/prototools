@@ -1,0 +1,17 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Fixture: editions_custom_option_dep.proto
+// Role: companion imported by editions_roundtrip.proto.
+// Defines a custom MessageOptions extension (imported option) so that
+// editions_roundtrip.proto can exercise both inline and imported custom
+// options in a single roundtrip test.
+
+syntax = "proto2";
+package mockup.editions.dep;
+
+import "google/protobuf/descriptor.proto";
+
+extend google.protobuf.MessageOptions {
+  optional string imported_msg_opt = 50100;
+}

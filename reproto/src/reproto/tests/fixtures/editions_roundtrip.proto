@@ -1,0 +1,88 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Fixture: editions_roundtrip.proto
+// Tests: full editions 2023 roundtrip covering all constructs from phases 1-4:
+//   - file-level features override
+//   - message-level features override
+//   - field_presence IMPLICIT, EXPLICIT, LEGACY_REQUIRED
+//   - repeated_field_encoding EXPANDED
+//   - message_encoding DELIMITED (group-style)
+//   - field with default value and features override
+//   - enum with features.enum_type CLOSED
+//   - inline custom option extension (defined locally)
+//   - imported custom option extension (from companion)
+//   - import weak
+//   - extensions range
+
+edition = "2023";
+package mockup.editions;
+
+import "google/protobuf/descriptor.proto";
+import "editions_custom_option_dep.proto";
+import weak "weak_import_proto2_dep.proto";
+
+option features.enum_type = CLOSED;
+
+// ClosedEnum exercises enum with features.enum_type = CLOSED (explicit, even
+// though the file-level default is already CLOSED, to verify HasField=true
+// override is preserved in the roundtrip).
+enum Status {
+  option features.enum_type = CLOSED;
+  STATUS_UNKNOWN = 0;
+  STATUS_ACTIVE = 1;
+  STATUS_INACTIVE = 2;
+}
+
+// Inner is used as a DELIMITED (group-encoded) field type.
+message Inner {
+  int32 value = 1;
+}
+
+// Extendable carries an extensions range (editions allow this, same as proto2).
+message Extendable {
+  string base = 1;
+  extensions 200 to 299;
+}
+
+// AllFeatures exercises every per-field feature override.
+message AllFeatures {
+  option (.mockup.editions.dep.imported_msg_opt) = "hello";
+
+  // IMPLICIT field (no label in editions output).
+  string implicit_field = 1 [features.field_presence = IMPLICIT];
+
+  // EXPLICIT field (explicit presence).
+  string explicit_field = 2 [features.field_presence = EXPLICIT];
+
+  // LEGACY_REQUIRED field.
+  string required_field = 3 [features.field_presence = LEGACY_REQUIRED];
+
+  // EXPANDED repeated field (non-packed).
+  repeated int32 expanded_ids = 4 [features.repeated_field_encoding = EXPANDED];
+
+  // DELIMITED message field (group-encoded).
+  Inner delimited_field = 5 [features.message_encoding = DELIMITED];
+
+  // EXPLICIT field with a default value.
+  int32 with_default = 6 [
+    default = 42,
+    features.field_presence = EXPLICIT
+  ];
+
+  // Enum-typed field using the closed enum above.
+  Status status = 7 [features.field_presence = EXPLICIT];
+
+  // Field referencing the weakly-imported type (exercises import weak).
+  WeakDep weak_ref = 8 [features.field_presence = EXPLICIT];
+}
+
+// Extend Extendable with a locally-defined custom extension field.
+extend Extendable {
+  string local_ext = 200;
+}
+
+// Define a local custom MessageOptions option (inline, not imported).
+extend google.protobuf.MessageOptions {
+  string local_msg_opt = 50101;
+}
