@@ -279,9 +279,7 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
         inputs = Block()
 
         # --- File intro -------------------------------------------------------
-        out.append(BlockLine('', depth, COMMENT))
         out.append(BlockLine(f'FILE NAME: {self.name}', depth, COMMENT))
-        out.append(BlockLine('', depth, COMMENT))
         out.append(BlockLine('', depth))
         out.append_div_maybe(depth)
 
