@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import collections.abc
 import logging
 import sys
 from pathlib import Path
@@ -143,7 +144,7 @@ _SECTIONS: dict[str, str] = {
 class _SectionedHelpFormatter(click.HelpFormatter):
     """HelpFormatter that inserts section headings between option groups."""
 
-    def write_dl(self, rows, col_max=30, col_spacing=2):  # type: ignore[override]
+    def write_dl(self, rows: collections.abc.Sequence[tuple[str, str]], col_max: int = 30, col_spacing: int = 2) -> None:
         # rows is a list of (first_col, second_col) pairs.
         # Scan for options whose leading token matches a _SECTIONS key and
         # inject a blank line + bold heading whenever the section changes.
