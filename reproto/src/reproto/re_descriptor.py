@@ -104,7 +104,7 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
                 out.append(report("B1", depth,
                                    msg=self.name, extendee=extension_proto.extendee))
                 continue
-            fd: ReFieldDescriptorProto = ReFieldDescriptorProto(ctx, extension_proto, parent=self)  # type: ignore[assignment]
+            fd = ReFieldDescriptorProto(ctx, extension_proto, parent=self)
             short_name = fd.short_type_name(ctx, fd.extendee)
             if short_name not in extendee_short_names:
                 extendee_short_names.append(short_name)
@@ -116,7 +116,7 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
                 extension_proto = cast(FieldDescriptorProto, e)
                 if not allow_extend_block(ctx, extension_proto.extendee):
                     continue
-                fd: ReFieldDescriptorProto = ReFieldDescriptorProto(ctx, extension_proto, parent=self)  # type: ignore[assignment]
+                fd = ReFieldDescriptorProto(ctx, extension_proto, parent=self)
                 name = fd.short_type_name(ctx, fd.extendee)
                 if name != short_name:
                     continue
@@ -144,7 +144,7 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
 
         for f in self.field:
             field_proto = cast(FieldDescriptorProto, f)
-            fd: ReFieldDescriptorProto = ReFieldDescriptorProto(ctx, field_proto, parent=self)  # type: ignore[assignment]
+            fd = ReFieldDescriptorProto(ctx, field_proto, parent=self)
 
             # Skip fields not in a oneof
             if not fd.HasField("oneof_index"):
@@ -165,7 +165,7 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
                 if (f.HasField("oneof_index")
                     and f.oneof_index == fd.oneof_index):
                     field_proto2 = cast(FieldDescriptorProto, f)
-                    fd2: ReFieldDescriptorProto = ReFieldDescriptorProto(ctx, field_proto2, parent=self)  # type: ignore[assignment]
+                    fd2 = ReFieldDescriptorProto(ctx, field_proto2, parent=self)
                     field = fd2.render(ctx, depth+1, is_oneof=True)
                     if fd2.is_summoned:
                         is_orphan = False
@@ -350,25 +350,25 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
         # Message extensions
         for e in self.extension:
             extension_proto = cast(FieldDescriptorProto, e)
-            extension: ReFieldDescriptorProto = ReFieldDescriptorProto(ctx, extension_proto, parent=self)  # type: ignore[assignment]
+            extension = ReFieldDescriptorProto(ctx, extension_proto, parent=self)
             self.targets.add(extension)
 
         # Message enums
         for e in self.enum_type:
             enum_proto = cast(EnumDescriptorProto, e)
-            enum: ReEnumDescriptorProto = ReEnumDescriptorProto(ctx, enum_proto, parent=self)  # type: ignore[assignment]
+            enum = ReEnumDescriptorProto(ctx, enum_proto, parent=self)
             self.targets.add(enum)
 
         # Message nested messages
         for n in self.nested_type:
             nested_proto = cast(DescriptorProto, n)
-            nested: ReDescriptorProto = ReDescriptorProto(ctx, nested_proto, parent=self)  # type: ignore[assignment]
+            nested = ReDescriptorProto(ctx, nested_proto, parent=self)
             self.targets.add(nested)
 
         # Message fields
         for f in self.field:
             field_proto = cast(FieldDescriptorProto, f)
-            fd: ReFieldDescriptorProto = ReFieldDescriptorProto(ctx, field_proto, parent=self)  # type: ignore[assignment]
+            fd = ReFieldDescriptorProto(ctx, field_proto, parent=self)
             self.targets.add(fd)
             self.contains.add(fd)
     
@@ -480,7 +480,7 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
 
         for f in self.field:
             field_proto = cast(FieldDescriptorProto, f)
-            fd: ReFieldDescriptorProto = ReFieldDescriptorProto(ctx, field_proto, parent=self)  # type: ignore[assignment]
+            fd = ReFieldDescriptorProto(ctx, field_proto, parent=self)
 
             # Non-oneof field (including synthetic-oneof members): render directly
             if (not fd.HasField("oneof_index")
@@ -506,7 +506,7 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
                 if (f2.HasField("oneof_index")
                     and f2.oneof_index == fd.oneof_index):
                     field_proto2 = cast(FieldDescriptorProto, f2)
-                    fd2: ReFieldDescriptorProto = ReFieldDescriptorProto(ctx, field_proto2, parent=self)  # type: ignore[assignment]
+                    fd2 = ReFieldDescriptorProto(ctx, field_proto2, parent=self)
                     field = fd2.render(ctx, depth+2, is_oneof=True)
                     if fd2.is_summoned:
                         is_orphan = False
@@ -524,7 +524,7 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
         # --- Message nested messages ------------------------------------------
         for n in self.nested_type:
             nested_proto = cast(DescriptorProto, n)
-            nested: ReDescriptorProto = ReDescriptorProto(ctx, nested_proto, parent=self)  # type: ignore[assignment]
+            nested = ReDescriptorProto(ctx, nested_proto, parent=self)
             # Skip: unsummoned messages, groups (rendered inline), and map entries (rendered as map<K,V>)
             if not nested.is_summoned or nested.is_group or nested.is_map_entry:
                 continue
@@ -537,7 +537,7 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
         # --- Message enums ----------------------------------------------------
         for e in self.enum_type:
             enum_proto = cast(EnumDescriptorProto, e)
-            enum: ReEnumDescriptorProto = ReEnumDescriptorProto(ctx, enum_proto, parent=self)  # type: ignore[assignment]
+            enum = ReEnumDescriptorProto(ctx, enum_proto, parent=self)
             out.extend(enum.render(ctx, depth+1))
         out.append_div_maybe(depth)
 
