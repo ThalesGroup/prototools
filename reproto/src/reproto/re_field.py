@@ -6,10 +6,8 @@
 
 from __future__ import annotations
 
-from typing import cast
-
 from google.protobuf.descriptor import FieldDescriptor
-from google.protobuf.descriptor_pb2 import FieldDescriptorProto, FieldOptions
+from google.protobuf.descriptor_pb2 import FieldDescriptorProto
 from google.protobuf.message import Message
 
 from .base import NodeBase
@@ -320,7 +318,7 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
             assert type(fo_msg).__name__ == 'FieldOptions' and type(fo_msg).__module__ is None, (
                 f"Expected dynamic FieldOptions from GetMessageClass, got {type(fo_msg)}"
             )
-            effective_packed = cast(FieldOptions, fo_msg).packed
+            effective_packed = getattr(fo_msg, 'packed')
             packed_str = packed_option(ctx, has_packed, effective_packed)
             if packed_str is not None:
                 opt_block.append(BlockLine(f'packed = {packed_str},', depth + 1))
