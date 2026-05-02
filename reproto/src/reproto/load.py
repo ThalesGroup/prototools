@@ -10,7 +10,7 @@ from google.protobuf import text_format
 from google.protobuf.descriptor_pb2 import FileDescriptorProto, FileDescriptorSet
 from google.protobuf.message import DecodeError, Message
 
-import prototext_codec_lib as _pt_codec  # type: ignore[import]
+import prototext_codec_lib as _pt_codec
 
 from reproto import Context, Fqdn
 
