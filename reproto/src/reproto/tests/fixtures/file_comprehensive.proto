@@ -95,7 +95,8 @@ message WithReservedFields {
   reserved 2;
   reserved 15;
   reserved 9 to 11;
-  reserved "foo", "bar";
+  reserved "foo";
+  reserved "bar";
 }
 
 message MessageWithGroup {

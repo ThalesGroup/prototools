@@ -322,10 +322,11 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
             out.extend(range_obj.render(depth))
 
         # Reserved names
-        if self.this.reserved_name:
-            # Group all reserved names into a single statement
-            names = ', '.join(f'"{name}"' for name in self.this.reserved_name)
-            out.append(BlockLine(f'reserved {names};', depth))
+        for name in self.this.reserved_name:
+            if ctx.target_syntax == "editions":
+                out.append(BlockLine(f'reserved {name};', depth))
+            else:
+                out.append(BlockLine(f'reserved "{name}";', depth))
 
         return out
 

@@ -14,6 +14,7 @@
 //   - imported custom option extension (from companion)
 //   - import weak
 //   - extensions range
+//   - reserved names (unquoted identifiers in editions)
 
 edition = "2023";
 package mockup.editions;
@@ -32,6 +33,7 @@ enum Status {
   STATUS_UNKNOWN = 0;
   STATUS_ACTIVE = 1;
   STATUS_INACTIVE = 2;
+  reserved OLD_STATUS;
 }
 
 // Inner is used as a DELIMITED (group-encoded) field type.
@@ -75,6 +77,8 @@ message AllFeatures {
 
   // Field referencing the weakly-imported type (exercises import weak).
   WeakDep weak_ref = 8 [features.field_presence = EXPLICIT];
+  reserved old_field;
+  reserved another_old_field;
 }
 
 // Extend Extendable with a locally-defined custom extension field.

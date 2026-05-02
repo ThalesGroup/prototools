@@ -79,7 +79,9 @@ message ComprehensiveMessage {
 
   reserved 60 to 69;
   reserved 80 to 89;
-  reserved "old_field1", "old_field2", "deprecated_field";
+  reserved "old_field1";
+  reserved "old_field2";
+  reserved "deprecated_field";
 }
 
 // Message with only extensions
@@ -129,7 +131,9 @@ message ReservedOnly {
   reserved 1 to 10;
   reserved 15;
   reserved 20 to 30;
-  reserved "foo", "bar", "baz";
+  reserved "foo";
+  reserved "bar";
+  reserved "baz";
 }
 
 // Empty message

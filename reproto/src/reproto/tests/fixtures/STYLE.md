@@ -63,6 +63,19 @@ reserved "OLD_VALUE", "OBSOLETE";
 
 Reproto emits one value per `reserved` statement.
 
+In edition files, reserved names are unquoted identifiers (proto language
+rule — string literals are not valid in editions):
+
+```proto
+// editions — correct
+reserved OLD_VALUE;
+reserved OBSOLETE;
+
+// editions — wrong
+reserved "OLD_VALUE";
+reserved "OBSOLETE";
+```
+
 ## 4. Bytes default values — `\xNN` not `\NNN`
 
 Use hex escapes, not octal:

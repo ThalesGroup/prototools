@@ -43,11 +43,14 @@ class ReReservedName:
         return self.this
 
 
-    def render(self, depth: int = 0) -> Block:
-        """Render a ReservedRange in proto2 syntax"""
+    def render(self, ctx: Context, depth: int = 0) -> Block:
+        """Render a reserved name statement."""
         assert isinstance(depth, int)
         out = Block()
-        out.append(BlockLine(f'reserved {Scalar(self.name)};', depth))
+        if ctx.target_syntax == "editions":
+            out.append(BlockLine(f'reserved {self.name};', depth))
+        else:
+            out.append(BlockLine(f'reserved {Scalar(self.name)};', depth))
         return out
     
 # === ReservedRange helper ====================================================
@@ -194,7 +197,7 @@ class ReEnumDescriptorProto(NodeBase[EnumDescriptorProto]):
         for n in self.reserved_name:
             assert isinstance(n, str)
             name = ReReservedName(n)
-            out.extend(name.render(depth+1))
+            out.extend(name.render(ctx, depth+1))
         out.append_div_maybe(depth)
 
         # --- Enum outro ------------------------------------------------------
