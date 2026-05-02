@@ -165,7 +165,6 @@ import itertools
 import logging
 import sys
 from pathlib import Path
-from typing import cast
 
 import re2 as re
 from google.protobuf import message, text_format
@@ -251,7 +250,9 @@ def fqdn_to_path(fqdn: Fqdn) -> Path:
     """
     match = re.fullmatch(r"file:(.+)", str(fqdn))
     assert match, f"String does not match expected format: {fqdn}"
-    return Path(cast(str, match.group(1)))
+    g = match.group(1)
+    assert isinstance(g, str)
+    return Path(g)
 
 def patch_go_package(ctx: Context, fdp: FileDescriptorProto) -> None:
     """Patch go_package option for Go stub generation.

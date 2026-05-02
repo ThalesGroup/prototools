@@ -51,7 +51,6 @@ Implementation Notes:
 
 from __future__ import annotations
 
-from typing import cast
 
 import re2 as re
 
@@ -166,8 +165,9 @@ def canonize_opt_name(ctx: Context, n: str, custom: bool = False) -> tuple[str, 
         # google.protobuf.*), we conservatively return the full name unchanged
         # to avoid breaking custom options. These will always use their FQDN.
         return n, False
-    kind = cast(str, match.group(4))
-    short_name = cast(str, match.group(5))
+    kind = match.group(4)
+    short_name = match.group(5)
+    assert isinstance(kind, str) and isinstance(short_name, str)
 
     is_orphan = short_name in ctx.variant_orphans.get(f'{kind}Options', [])
 
