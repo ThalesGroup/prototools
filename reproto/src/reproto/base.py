@@ -304,10 +304,10 @@ class NodeBase(Generic[MessageT], ABC):
                 raise AssertionError(
                     f"Expected {cls.__name__}, got {type(instance).__name__}"
                 )
-            return instance  # type: ignore[return-value]
+            return instance
 
         # Instance does not exist, create stub
-        return cls(ctx, ref)  # type: ignore[return-value]
+        return cls(ctx, ref)
 
     # === Options Rendering ===
     # (Moved from ProtoMessageDelegateMixin - implementation unchanged)
