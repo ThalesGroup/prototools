@@ -160,6 +160,13 @@ class ReEnumDescriptorProto(NodeBase[EnumDescriptorProto]):
         out = Block()
 
         # --- Enum options ----------------------------------------------------
+        # Emit features.X = Y overrides first (editions only; no-op otherwise).
+        from .syntax import render_features_block
+        if self.this.HasField('options') and self.this.options.HasField('features'):
+            feat_block = render_features_block(
+                ctx, self.this.options.features, depth + 1, inline=False)
+            for line in feat_block:
+                out.append(line)
         option_blocks = self.render_options(
             ctx=ctx,
             options_descriptor=ctx.eno_desc,

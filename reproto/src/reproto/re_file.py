@@ -12,6 +12,7 @@ from typing import Any, cast
 from google.protobuf.descriptor import FileDescriptor
 from google.protobuf.descriptor_pb2 import (
     DescriptorProto,
+    Edition,
     EnumDescriptorProto,
     FieldDescriptorProto,
     FileDescriptorProto,
@@ -40,7 +41,7 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
         return self.this.dependency
 
     @property
-    def edition(self) -> int:
+    def edition(self) -> 'Edition.ValueType':
         return self.this.edition
 
     @property
@@ -134,6 +135,13 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
 
             fio_msg: Message = FiOClass()
             fio_msg.ParseFromString(f_desc.GetOptions().SerializeToString())
+
+            # Emit file-level features overrides first (editions only; no-op otherwise).
+            from .syntax import render_features_block
+            if self.this.HasField('options') and self.this.options.HasField('features'):
+                feat_block = render_features_block(
+                    ctx, self.this.options.features, depth, inline=False)
+                out.extend(feat_block)
 
             # Render builtin options
             blocks = ReOptions(fio_msg).render(ctx, False, depth)
@@ -262,7 +270,7 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
 
         from .syntax import fdp_syntax
         ctx.syntax = fdp_syntax(self.this)
-        if not ctx.force_proto2_output and ctx.syntax in ("proto2", "proto3"):
+        if not ctx.force_proto2_output and ctx.syntax in ("proto2", "proto3", "editions"):
             ctx.target_syntax = ctx.syntax
         else:
             ctx.target_syntax = "proto2"
@@ -283,15 +291,22 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
             out.extend(sci_comments)
             out.append_div_maybe(depth)
 
-        # Syntax
+        # Syntax / edition header
         from .anomalies import report
-        if ctx.syntax == "editions":
-            # A1: editions not yet supported
-            out.append(report("A1", depth, file=self.name))
+        if ctx.target_syntax == "editions":
+            from .syntax import _edition_name
+            edition_name = _edition_name(self.this.edition)
+            out.append(BlockLine(f'edition = "{edition_name}";', depth))
         elif ctx.syntax != ctx.target_syntax:
-            # A2: syntax downconversion (--force-proto2-output)
-            out.append(report("A2", depth, file=self.name, syntax=ctx.syntax))
-        out.append(BlockLine(f'syntax = "{ctx.target_syntax}";', depth))
+            # A2: normal syntax downconversion (proto3 → proto2 via --force-proto2-output)
+            # A1: editions → proto2 downconversion (--force-proto2-output)
+            if ctx.syntax == "editions":
+                out.append(report("A1", depth, file=self.name))
+            else:
+                out.append(report("A2", depth, file=self.name, syntax=ctx.syntax))
+            out.append(BlockLine(f'syntax = "{ctx.target_syntax}";', depth))
+        else:
+            out.append(BlockLine(f'syntax = "{ctx.target_syntax}";', depth))
         out.append_div_maybe(depth)
 
         # Package

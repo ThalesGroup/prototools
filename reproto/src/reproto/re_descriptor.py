@@ -459,7 +459,7 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
             out.append_div_maybe(depth)
 
         # --- Message options --------------------------------------------------
-        from .syntax import allow_message_set_wire_format
+        from .syntax import allow_message_set_wire_format, render_features_block
         msf_exclude: set[str] | None = None
         if not allow_message_set_wire_format(ctx):
             msf_exclude = {'message_set_wire_format'}
@@ -468,6 +468,12 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
                     and self.this.options.message_set_wire_format):
                 from .anomalies import report
                 out.append(report("B3", depth+1, msg=self.name))
+        # Emit features.X = Y overrides first (editions only; no-op otherwise).
+        if self.this.HasField('options') and self.this.options.HasField('features'):
+            feat_block = render_features_block(
+                ctx, self.this.options.features, depth + 1, inline=False)
+            for line in feat_block:
+                out.append(line)
         option_blocks = self.render_options(
             ctx=ctx,
             options_descriptor=ctx.mso_desc,
@@ -478,7 +484,7 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
         )
         for block in option_blocks:
             out.extend(block)
-        if option_blocks:
+        if option_blocks or (self.this.HasField('options') and self.this.options.HasField('features') and ctx.target_syntax == "editions"):
             out.append_div_maybe(depth)
 
         # --- Message fields and oneofs (in declaration order) -----------------
@@ -538,8 +544,16 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
                         field.abandon()
                     block.extend(field)
 
+            # Emit oneof features overrides at the top of the oneof block.
+            oneof_feat_block = Block()
+            if oneof.HasField('options') and oneof.options.HasField('features'):
+                from .syntax import render_features_block
+                oneof_feat_block = render_features_block(
+                    ctx, oneof.options.features, depth + 2, inline=False)
             block.insert(0, BlockLine(f'oneof {oneof.name} {{', depth+1,
                          type=ORPHAN if is_orphan else CODE))
+            for feat_line in reversed(list(oneof_feat_block)):
+                block.insert(1, feat_line)
             block.append(BlockLine('}', level=depth+1,
                          type=ORPHAN if is_orphan else CODE))
             out.extend(block)

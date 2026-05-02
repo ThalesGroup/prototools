@@ -82,6 +82,13 @@ class ReEnumValueDescriptorProto:
         out = Block()
         prolog = BlockLine(f'{self.name} = {self.number}', depth)
 
+        # Emit features.X = Y overrides (editions only; no-op for proto2/proto3).
+        from .syntax import render_features_block
+        if self.this.HasField('options') and self.this.options.HasField('features'):
+            feat_block = render_features_block(
+                ctx, self.this.options.features, depth + 1, inline=True)
+            out.extend(feat_block)
+
         # Render options using parent's helper method
         # (composite=True for inline format with commas)
         option_blocks = self.parent.render_options_from_message(

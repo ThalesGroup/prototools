@@ -26,7 +26,9 @@ from .feature_resolution import (
 )
 
 if TYPE_CHECKING:
+    from google.protobuf.descriptor_pb2 import Edition, FeatureSet
     from .feature_resolution import ResolvedFeatures
+    from .text import Block
 
 
 def fdp_syntax(fdp: FileDescriptorProto) -> str:
@@ -106,8 +108,13 @@ def field_label(
         return ''
     if field.label == FieldDescriptorProto.LABEL_REPEATED:
         return 'repeated '
+    if ctx.target_syntax == "editions":
+        # In editions output, singular field presence is expressed via
+        # features.field_presence options — no label is emitted.
+        return ''
     if features is not None:
-        # Editions: presence is governed by ResolvedFeatures, not syntax string.
+        # Editions rendered as proto2 (--force-proto2-output): use resolved
+        # presence to pick the proto2 label.
         if features.field_presence == FIELD_PRESENCE_LEGACY_REQUIRED:
             return 'required '
         if features.field_presence == FIELD_PRESENCE_IMPLICIT:
@@ -198,9 +205,18 @@ def should_render_json_name(field: FieldDescriptorProto) -> bool:
     return field.json_name != _camel_case(field.name)
 
 
+def _edition_name(edition: 'Edition.ValueType') -> str:
+    """Map Edition enum value to the string used in .proto source (e.g. \"2023\")."""
+    from google.protobuf.descriptor_pb2 import Edition
+    name = Edition.Name(edition)   # e.g. "EDITION_2023"
+    if name.startswith("EDITION_"):
+        return name[len("EDITION_"):]
+    return name
+
+
 def allow_weak_import(ctx: Context) -> bool:
     """Return True iff import weak is legal in the target syntax."""
-    return ctx.target_syntax == "proto2"
+    return ctx.target_syntax in ("proto2", "editions")
 
 
 # The nine *Options FQNs that proto3 allows extending (custom options).
@@ -220,12 +236,12 @@ _DESCRIPTOR_OPTIONS_FQNS: frozenset[str] = frozenset({
 def allow_extend_block(ctx: Context, extendee: str) -> bool:
     """Return True iff an extend block for extendee is legal in the target syntax.
 
-    Proto2: always True.
+    Proto2/editions: always True.
     Proto3: True only when extendee (after variant namespace rewriting) is one
             of the nine descriptor *Options FQNs (custom options are the only
             proto3-legal extension target).
     """
-    if ctx.target_syntax == "proto2":
+    if ctx.target_syntax in ("proto2", "editions"):
         return True
     from .fake_types import Ref
     from .mappings import apply_variant_namespace
@@ -235,7 +251,7 @@ def allow_extend_block(ctx: Context, extendee: str) -> bool:
 
 def allow_extension_ranges(ctx: Context) -> bool:
     """Return True iff `extensions N to M;` declarations are legal in the target syntax."""
-    return ctx.target_syntax == "proto2"
+    return ctx.target_syntax in ("proto2", "editions")
 
 
 def allow_extensions(ctx: Context) -> bool:
@@ -244,16 +260,77 @@ def allow_extensions(ctx: Context) -> bool:
     Deprecated: prefer allow_extend_block / allow_extension_ranges.
     This alias is kept for call sites that use it only for extension-range decisions.
     """
-    return ctx.target_syntax == "proto2"
+    return ctx.target_syntax in ("proto2", "editions")
 
 
 def allow_groups(ctx: Context, features: ResolvedFeatures | None = None) -> bool:
     """Return True iff TYPE_GROUP fields may be rendered as groups."""
     if features is not None:
         return features.message_encoding == MESSAGE_ENCODING_DELIMITED
-    return ctx.target_syntax == "proto2"
+    return ctx.target_syntax in ("proto2", "editions")
 
 
 def allow_message_set_wire_format(ctx: Context) -> bool:
     """Return True iff MessageOptions.message_set_wire_format may be rendered."""
-    return ctx.target_syntax == "proto2"
+    return ctx.target_syntax in ("proto2", "editions")
+
+
+# The six standard RETENTION_RUNTIME fields of FeatureSet, in declaration order.
+_FEATURE_FIELDS: tuple[str, ...] = (
+    "field_presence",
+    "enum_type",
+    "repeated_field_encoding",
+    "utf8_validation",
+    "message_encoding",
+    "json_format",
+)
+_FEATURE_FIELDS_SET: frozenset[str] = frozenset(_FEATURE_FIELDS)
+
+
+def render_features_block(
+    ctx: Context,
+    fs: FeatureSet,
+    depth: int,
+    inline: bool = False,
+) -> 'Block':
+    """Emit features { } option lines for an element with explicit FeatureSet overrides.
+
+    Args:
+        ctx:    Rendering context.  Guard: returns empty Block immediately when
+                ctx.target_syntax != "editions" (proto2/proto3 files, or edition
+                files rendered with --force-proto2-output).
+        fs:     The raw FeatureSet proto from the element's options.  Only fields
+                for which fs.HasField(name) is True are emitted.
+        depth:  Indentation depth for the output lines.
+        inline: True → emit `features.<name> = <val>,` (for composite field
+                options); False → emit `option features.<name> = <val>;`
+                (standalone, for file/message/enum).
+
+    Returns:
+        A Block (possibly empty) with the rendered feature option lines.
+    """
+    from .text import Block, BlockLine
+
+    out = Block()
+    if ctx.target_syntax != "editions":
+        return out
+
+    from .feature_resolution import feature_value_name
+    # Use ListFields() to iterate only explicitly-set fields, avoiding the
+    # HasField(Literal) stub constraint.  Filter to the known RETENTION_RUNTIME
+    # fields and emit them in declaration order.
+    set_fields: dict[str, int] = {
+        fd.name: val
+        for fd, val in fs.ListFields()
+        if fd.name in _FEATURE_FIELDS_SET
+    }
+    for fname in _FEATURE_FIELDS:
+        if fname not in set_fields:
+            continue
+        value_name = feature_value_name(ctx.edition_defaults, fname, set_fields[fname])
+        if inline:
+            out.append(BlockLine(f'features.{fname} = {value_name},', depth))
+        else:
+            out.append(BlockLine(f'option features.{fname} = {value_name};', depth))
+
+    return out

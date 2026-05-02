@@ -2,20 +2,22 @@
 // FILE NAME: editions_rendering.proto
 //
 
-// // WARNING[editions]: original file used editions syntax; rendered as proto2
-syntax = "proto2";
+edition = "2023";
 
 package reproto.test.rendering;
 
 message Inner {
-  optional int32 value = 1;
+  int32 value = 1;
 }
 
 message AllFeatures {
-  string implicit_field = 1;
-  optional string explicit_field = 2;
-  required string required_field = 3;
-  repeated int32 expanded_ids = 4;
-  optional Inner delimited_field = 5;
-  optional int32 with_default = 6 [default = 42];
+  string implicit_field = 1 [features.field_presence = IMPLICIT];
+  string explicit_field = 2 [features.field_presence = EXPLICIT];
+  string required_field = 3 [features.field_presence = LEGACY_REQUIRED];
+  repeated int32 expanded_ids = 4 [features.repeated_field_encoding = EXPANDED];
+  Inner delimited_field = 5 [features.message_encoding = DELIMITED];
+  int32 with_default = 6 [
+    default = 42,
+    features.field_presence = EXPLICIT
+  ];
 }

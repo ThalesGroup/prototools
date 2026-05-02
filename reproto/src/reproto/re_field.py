@@ -373,6 +373,13 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
             if packed_str is not None:
                 opt_block.append(BlockLine(f'packed = {packed_str},', depth + 1))
 
+            # Emit features.X = Y overrides (editions only; no-op for proto2/proto3).
+            from .syntax import render_features_block
+            if self.this.HasField('options') and self.this.options.HasField('features'):
+                feat_block = render_features_block(
+                    ctx, self.this.options.features, depth + 1, inline=True)
+                opt_block.extend(feat_block)
+
             # Render field options using inherited method (packed and json_name excluded).
             # json_name is a field of FieldDescriptorProto, not FieldOptions — handled above.
             option_blocks = self.render_options_from_message(

@@ -61,8 +61,8 @@ ANOMALIES: dict[str, Anomaly] = {
     "A1": Anomaly(
         tag="editions",
         severity="WARNING",
-        stderr="'{file}': editions syntax is not yet supported; rendering as proto2",
-        comment="original file used editions syntax; rendered as proto2",
+        stderr="'{file}': editions file rendered as proto2 (--force-proto2-output)",
+        comment="editions file rendered as proto2 (--force-proto2-output)",
     ),
 
     "A2": Anomaly(
