@@ -196,21 +196,35 @@ logger.propagate = True  # default is True, usually fine
 
 
 def matches_any_pattern(fqdn: Fqdn, patterns: list[Fqdn]) -> bool:
-    """
-    Check if an FQDN matches any of the given glob patterns.
+    """Return True if fqdn matches any pattern (exact or glob) in patterns."""
+    return any(fqdn == p or fnmatch.fnmatch(fqdn, p) for p in patterns)
 
-    Args:
-        fqdn: The fully qualified domain name to match
-        patterns: List of glob patterns (e.g., '.internal.*', '*.Service')
 
-    Returns:
-        True if fqdn matches any pattern (exact or glob), False otherwise
-    """
-    for pattern in patterns:
-        # Support both exact matches and glob patterns
-        if fqdn == pattern or fnmatch.fnmatch(fqdn, pattern):
-            return True
-    return False
+def _find_matching_nodes(
+    pattern: Fqdn,
+    ctx: Context,
+) -> list[tuple[Fqdn, Node]]:
+    """Return all (fqdn, node) pairs whose fqdn matches pattern (exact or glob)."""
+    if '*' in pattern or '?' in pattern:
+        return [
+            (fqdn, node)
+            for fqdn, node in ctx.nodes.items()
+            if fnmatch.fnmatch(fqdn, pattern)
+        ]
+    node = ctx.find_node(pattern)
+    return [(pattern, node)] if node is not None else []
+
+
+def _fuzzy_suggest(pattern: str, ctx: Context) -> str | None:
+    """Return the closest matching FQDN from ctx.nodes, or None if none is close enough."""
+    best_match = None
+    best_score = 85
+    for node in ctx.nodes.values():
+        score = fuzz.ratio(pattern, node.fqdn)
+        if score > best_score:
+            best_score = score
+            best_match = node.fqdn
+    return best_match
 
 
 def import_annotations(modules: list[str], resource_root: str | None = None) -> None:
@@ -415,8 +429,10 @@ def reproto(
         ctx = Context(set(prunings))
     else:
         ctx = Context.from_options(set(prunings), options)
-    resource_root = str(ctx.variant_root.joinpath(ctx.variant_stem))
-    import_annotations(ctx.variant_annotation_modules, resource_root)
+    import_annotations(
+        ctx.variant_annotation_modules,
+        str(ctx.variant_root.joinpath(ctx.variant_stem)),
+    )
 
     # =========================================================================
     # PHASE 1: FILE LOADING
@@ -435,29 +451,27 @@ def reproto(
     if not ctx.quiet:
         cli_info('Phase 1: Loading seed files')
 
+    topo = Topology()
+    seed_files: set[ReFile] = set()
 
     if seed_paths and isinstance(seed_paths[0], QualFile):
-        # Ingest loaded files into the topology
-        topo = Topology()
-        seed_files : set[ReFile] = set()
+        # Ingest pre-loaded QualFiles into the topology
         for f in seed_paths:
             assert isinstance(f, QualFile)
             file = ReFile(topo, f)
             file.is_seed = True
             seed_files.add(file)
         topo.merge_files()
-        
+
     else:
         # Load files from the CLI's seed_paths
-        qual_files: list[QualFile] = list()
+        qual_files: list[QualFile] = []
         for path in seed_paths:
             assert isinstance(path, Path)
             qual_files.extend(load_from_path(ctx, in_repo, path))
 
         # Ingest loaded files into the topology
-        topo = Topology()
-        seed_files : set[ReFile] = set()
-        known_files: dict[str, ReFile] = dict()
+        known_files: dict[str, ReFile] = {}
 
         # Read seed paths (if not pruned)
         for qual_file in qual_files:
@@ -476,8 +490,6 @@ def reproto(
             topo.merge_files()
             for file in topo.files.values():
                 assert isinstance(file, ReFile)
-                #if file.is_pruned:
-                #    continue
                 if file.is_ref():
                     if file not in known_files:
                         name = file.name
@@ -644,7 +656,6 @@ def reproto(
         exec(ctx.phase2_plugin, exec_context)
         phase2_plugin = exec_context["phase2_plugin"]
     else:
-        # Ruff does not like `lambda` expressions (E731)
         def phase2_plugin(
             _ctx: Context,
             _fdp: FileDescriptorProto,
@@ -654,11 +665,7 @@ def reproto(
     for i in itertools.count(start=1):
         # Find leaf-files (i.e.: do not target other files)
         for n in files:
-            is_leaf = True
-            for t in n.targets:
-                if t in files:
-                    is_leaf = False
-                    break
+            is_leaf = all(t not in files for t in n.targets)
             if is_leaf:
                 leaves.add(n)
             else:
@@ -809,7 +816,7 @@ def reproto(
                 proto = ctx.pool_db.FindFileByName(desc.name)
                 re_fdp = ReFileDescriptorProto(ctx, proto)
             case _:
-                assert False
+                raise AssertionError(f"Unexpected desc type: {type(desc)}")
         seed_re_fdp.add(re_fdp)
         fqdn = re_fdp.fqdn
         if fqdn not in known_fqdns:
@@ -851,43 +858,20 @@ def reproto(
     # Start from user-specified prunings
 
     for pruning_pattern in prunings:  # the user-specified prunings
-        # Check if this is a glob pattern (contains * or ?)
-        is_pattern = '*' in pruning_pattern or '?' in pruning_pattern
-        matched_nodes = []
-
-        if is_pattern:
-            # Find all nodes matching the glob pattern
-            for candidate_fqdn, candidate_node in ctx.nodes.items():
-                if fnmatch.fnmatch(candidate_fqdn, pruning_pattern):
-                    matched_nodes.append((candidate_fqdn, candidate_node))
-        else:
-            # Exact match
-            node = ctx.find_node(pruning_pattern)
-            if node is not None:
-                matched_nodes.append((pruning_pattern, node))
+        matched_nodes = _find_matching_nodes(pruning_pattern, ctx)
 
         if not matched_nodes:
             cli_warning(f"Pruning target not found: {pruning_pattern}")
-            if not is_pattern:
-                # Find the closest match for exact FQDNs (not for patterns)
-                best_match = None
-                best_score = 85
-                for node in ctx.nodes.values():
-                    assert isinstance(node, Node)
-                    # Get similarity score (0-100)
-                    score = fuzz.ratio(pruning_pattern, node.fqdn)
-                    if score > best_score:
-                        best_score = score
-                        best_match = node.fqdn
-                if best_match is not None:
-                    cli_attention(f"  Did you mean: {best_match}?")
+            if '*' not in pruning_pattern and '?' not in pruning_pattern:
+                suggestion = _fuzzy_suggest(pruning_pattern, ctx)
+                if suggestion is not None:
+                    cli_attention(f"  Did you mean: {suggestion}?")
             continue
 
-        # Mark all matched nodes as pruned
         for matched_fqdn, matched_node in matched_nodes:
             assert isinstance(matched_node, Node)
             if not matched_node.is_present():
-                continue  # Skip nodes that aren't actually present
+                continue
             matched_node.is_pruned = True
             current_prunings.add(matched_node)
 
@@ -940,43 +924,20 @@ def reproto(
     # Did the user explicitly specify seeds?
     if seeds:
         for seed_pattern in seeds:
-            # Check if this is a glob pattern (contains * or ?)
-            is_pattern = '*' in seed_pattern or '?' in seed_pattern
-            matched_nodes = []
-
-            if is_pattern:
-                # Find all nodes matching the glob pattern
-                for candidate_fqdn, candidate_node in ctx.nodes.items():
-                    if fnmatch.fnmatch(candidate_fqdn, seed_pattern):
-                        matched_nodes.append((candidate_fqdn, candidate_node))
-            else:
-                # Exact match
-                node = ctx.find_node(seed_pattern)
-                if node is not None:
-                    matched_nodes.append((seed_pattern, node))
+            matched_nodes = _find_matching_nodes(seed_pattern, ctx)
 
             if not matched_nodes:
                 cli_warning(f"Seed not found: {seed_pattern}")
-                if not is_pattern:
-                    # Find the closest match for exact FQDNs (not for patterns)
-                    best_match = None
-                    best_score = 85
-                    for node in ctx.nodes.values():
-                        assert isinstance(node, Node)
-                        # Get similarity score (0-100)
-                        score = fuzz.ratio(seed_pattern, node.fqdn)
-                        if score > best_score:
-                            best_score = score
-                            best_match = node.fqdn
-                    if best_match is not None:
-                        cli_attention(f"  Did you mean: {best_match}?")
+                if '*' not in seed_pattern and '?' not in seed_pattern:
+                    suggestion = _fuzzy_suggest(seed_pattern, ctx)
+                    if suggestion is not None:
+                        cli_attention(f"  Did you mean: {suggestion}?")
                 continue
 
-            # Mark all matched nodes as reachable
             for matched_fqdn, matched_node in matched_nodes:
                 assert isinstance(matched_node, Node)
                 if not matched_node.is_present():
-                    continue  # Skip nodes that aren't actually present
+                    continue
                 if matched_node.is_pruned:
                     cli_info(f"  Skipping pruned seed: {matched_fqdn}")
                     continue

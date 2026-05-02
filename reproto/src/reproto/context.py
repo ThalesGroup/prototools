@@ -149,8 +149,8 @@ class Context(Options):
     
     def merge_nodes(self) -> None:
         self.nodes.update(self.new_nodes)
-        self.new_nodes = dict()
-    
+        self.new_nodes = {}
+
     def has_node(self, fqdn: Fqdn) -> bool:
         return fqdn in self.nodes or fqdn in self.new_nodes
     
@@ -163,8 +163,8 @@ class Context(Options):
     
     def merge_files(self) -> None:
         self.files.update(self.new_files)
-        self.new_files = dict()
-    
+        self.new_files = {}
+
     def has_file(self, fqdn: str) -> bool:
         return fqdn in self.files or fqdn in self.new_files
     

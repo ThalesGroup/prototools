@@ -50,11 +50,22 @@ from .globals import type_names
 from .mappings import apply_variant_namespace
 
 if TYPE_CHECKING:
+    from .base import NodeBase
     from .re_descriptor import ReDescriptorProto
     from .re_enum import ReEnumDescriptorProto
     from .re_field import ReFieldDescriptorProto
     from .re_file import ReFileDescriptorProto
     from .re_service import ReServiceDescriptorProto
+
+
+def get_file_node(node: 'NodeBase') -> 'ReFileDescriptorProto':
+    """Walk parent pointers until a ReFileDescriptorProto is found and return it."""
+    from .re_file import ReFileDescriptorProto
+    current = node
+    while not isinstance(current, ReFileDescriptorProto):
+        assert current._parent is not None, f"No file ancestor found for {node.fqdn}"
+        current = current._parent
+    return current
 
 
 def short_ref(

@@ -92,7 +92,6 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
 
     @property
     def source_code_info(self):
-        """Access to SourceCodeInfo for extracting original comments."""
         return self.this.source_code_info if self.this.HasField('source_code_info') else None
 
     @property

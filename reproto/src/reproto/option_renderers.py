@@ -335,8 +335,7 @@ class ReOptions:
         return blocks
     
 
-# === Extensions decorator (generic)=======================================
-_ExtensionFieldDescriptor = Any  # type alias
+# === Extensions decorator (generic) =====================================
 
 class ReExtensions:
     def __init__(self, options: Message) -> None:

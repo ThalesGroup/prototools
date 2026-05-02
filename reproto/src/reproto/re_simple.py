@@ -2,16 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 
-"""
-Compatibility wrapper for resimple.py refactoring.
-
-This module re-exports all classes from the split modules to maintain
-backward compatibility with existing imports.
-
-The original resimple.py was split into:
-- simple_types.py: Simple proto structure renderers
-- option_renderers.py: Option rendering classes
-"""
+"""Facade re-exporting all public classes from simple_types and option_renderers."""
 
 from __future__ import annotations
 

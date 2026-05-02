@@ -147,8 +147,7 @@ def _load_files(
         if res_path.is_dir():
             # Recursively collect all files with recognized extensions
             for f in res_path.rglob('*'):
-                if (f.suffix in ALL_EXTENSIONS):
-                    #and not is_pruned(ctx, f.relative_to(root))):
+                if f.suffix in ALL_EXTENSIONS:
                     loaded_files.append(QualFile(
                         root,
                         f.relative_to(root),
@@ -162,22 +161,16 @@ def _load_files(
             if rel_path.suffix in TEXT_EXTENSIONS:
                 if not res_path.is_file():
                     continue
-                #if is_pruned(ctx, rel_path):
-                #    continue
                 loaded_files.append(
                     QualFile(root, rel_path, res_path.read_text()))
                 return loaded_files
             elif rel_path.suffix in BINARY_EXTENSIONS:
                 if not res_path.is_file():
                     continue
-                #if is_pruned(ctx, rel_path):
-                #    continue
                 loaded_files.append(
                     QualFile(root, rel_path, res_path.read_bytes()))
                 return loaded_files
             elif rel_path.suffix == PROTO_EXTENSION:
-                #if is_pruned(ctx, rel_path):
-                #    continue
                 # Try all extensions automatically
                 for ext in TEXT_EXTENSIONS:
                     res_path = root / (rel_path.with_suffix(ext))

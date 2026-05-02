@@ -36,7 +36,6 @@ from .text import (
     TAB_SIZE,
     Block,
     BlockLine,
-    render_bytes,
 )
 
 logger = logging.getLogger(__name__)
@@ -184,18 +183,6 @@ class ReFieldDescriptor:
                     block.append(BlockLine(f'{name} = 0', lev))
                     return block, is_orphan
                 block.append(BlockLine(f'{name} = {str(scalar)}', lev))
-                return block, is_orphan
-            case bool():
-                block.append(BlockLine(f'{name} = {str(value).lower()}', lev))
-                return block, is_orphan
-            case int() | float():
-                block.append(BlockLine(f'{name} = {str(value)}', lev))
-                return block, is_orphan
-            case str():
-                block.append(BlockLine(f'{name} = "{value}"', lev))
-                return block, is_orphan
-            case bytes():
-                block.append(BlockLine(f'{name} = {render_bytes(value)}', lev))
                 return block, is_orphan
 
             # Nested messages
@@ -383,7 +370,6 @@ class ReExtensionRange:
                     f'to {extension_range.end - 1}')
 
         # --- ExtensionRange options -------------------------------------------
-        # TODO: Needs factoring???
         options = ReExtensionRangeOptions(self.options)
         texts = options.render(ctx, depth, ['declaration'])
         set_options = 0
@@ -456,9 +442,6 @@ class ReExtensionRangeOptions:
             if is_orphan:
                 for line in text:
                     line.type = ORPHAN
-#            if option.name in filter_out:
-#                for line in text:
-#                    line.text = '// ' + line.text
             texts.append(text)
         is_last = True
         for text in reversed(texts):

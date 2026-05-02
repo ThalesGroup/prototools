@@ -7,20 +7,19 @@ from __future__ import annotations
 from typing import Any
 
 from google.protobuf.descriptor_pb2 import FileDescriptorProto, FileDescriptorSet
-from google.protobuf.message import Message
 
 from .load import QualFile
 
 
 class Topology:
     def __init__(self) -> None:
-        self.files: dict[str, ReFile] = dict()
-        self.new_files: dict[str, ReFile] = dict()
+        self.files: dict[str, ReFile] = {}
+        self.new_files: dict[str, ReFile] = {}
     
     def merge_files(self) -> None:
         self.files.update(self.new_files)
-        self.new_files = dict()
-    
+        self.new_files = {}
+
     def has_file(self, fqdn: str) -> bool:
         return fqdn in self.files or fqdn in self.new_files
     
@@ -30,11 +29,6 @@ class Topology:
         if fqdn in self.new_files:
             return self.new_files[fqdn]
         return None
-
-class Contents:
-    def __init__(self, value: str | bytes) -> None:
-        assert isinstance(value, (str, bytes))
-        self.value = value
 
 class File:
     def __init__(
@@ -73,7 +67,7 @@ class ReFile(File):
             case str():
                 name = qfile_or_name
             case _:
-                assert False
+                raise AssertionError(f"Expected QualFile or str, got {type(qfile_or_name)}")
         # Check if instance already exists
         instance = topo.find_file(name)
         if instance is None:
@@ -84,20 +78,6 @@ class ReFile(File):
         else:
             assert(isinstance(instance, ReFile))
         return instance
-
-    @classmethod
-    def from_name(
-            cls,
-            topo: Topology,
-            name: str,
-    ) -> ReFile:
-        # Check if instance already exists
-        instance = topo.find_file(name)
-        if instance is not None:
-            assert(isinstance(instance, ReFile))
-            return instance
-        # Instance does not exist, we create one
-        return ReFile(topo, name)
 
     def __init__(
             self,
@@ -118,21 +98,15 @@ class ReFile(File):
         self.qfile = qfile_or_name
         self.is_seed = False
 
-        # --- File dependencies ------------------------------------------------
-
-        # ...
-        # import "path/to/dependendy.proto";
-        # ...
-
         match qfile_or_name.desc:
             case FileDescriptorSet():
                 fdp = qfile_or_name.desc.file[0]
             case FileDescriptorProto():
                 fdp = qfile_or_name.desc
-            case Message():
-                assert False
+            case _:
+                raise AssertionError(f"Unexpected desc type: {type(qfile_or_name.desc)}")
 
         for index, dep in enumerate(fdp.dependency):
             assert isinstance(dep, str)
-            file = ReFile.from_name(topo, dep)  # Gets or creates a ref
+            file = ReFile(topo, dep)
             self.targets.add(file)

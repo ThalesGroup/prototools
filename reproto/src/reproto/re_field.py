@@ -30,15 +30,12 @@ def _get_file_and_msg(
     """Return (file_node, message_node_or_None) for a field node."""
     from .re_descriptor import ReDescriptorProto
     from .re_file import ReFileDescriptorProto
+    from .utils import get_file_node
     parent = node.parent
     if isinstance(parent, ReFileDescriptorProto):
         return parent, None
     assert isinstance(parent, ReDescriptorProto)
-    grandparent = parent._parent
-    while not isinstance(grandparent, ReFileDescriptorProto):
-        assert grandparent is not None
-        grandparent = grandparent._parent
-    return grandparent, parent
+    return get_file_node(parent), parent
 
 
 def _resolve_field_features(

@@ -84,21 +84,11 @@ class OptionsMessage(Protocol):
 
 
 class NodeBase(Generic[MessageT], ABC):
-    """
-    Unified base class for all redescriptor nodes in the descriptor graph.
+    """Base class for all redescriptor nodes in the descriptor graph.
 
     Combines registry pattern, protobuf message delegation, and graph structure
-    in a single clean hierarchy. Eliminates the complexity of multiple mixins.
-
-    Benefits over the previous mixin approach:
-    - All attributes declared at class level (no type: ignore needed in most cases)
-    - Type checkers understand the full structure
-    - No confusing multiple inheritance
-    - Simpler mental model
+    in a single hierarchy.
     """
-
-    # === Type declarations for all attributes ===
-    # Declaring everything here allows type checkers to understand the structure
 
     ctx: Context
     fqdn: Fqdn
@@ -124,12 +114,7 @@ class NodeBase(Generic[MessageT], ABC):
         message_or_ref: MessageT | Ref,
         **kwargs: Any
     ) -> Self:
-        """
-        Registry pattern implementation.
-
-        Returns existing instance if already created, otherwise creates new.
-        All attributes are properly typed, eliminating type: ignore comments.
-        """
+        """Return existing instance from registry if already created, otherwise create new."""
         # Determine FQDN from input
         parent = kwargs.get('parent')
 
@@ -159,7 +144,6 @@ class NodeBase(Generic[MessageT], ABC):
             # Create a new instance
             instance = super().__new__(cls)
 
-            # Initialize all attributes (NO type: ignore needed!)
             instance.ctx = ctx
             instance.fqdn = fqdn
             instance.is_pruned = False
@@ -236,12 +220,7 @@ class NodeBase(Generic[MessageT], ABC):
 
     @property
     def this(self) -> MessageT:
-        """
-        The underlying protobuf message.
-
-        Clean! Type system knows _this is MessageT | None,
-        and assertion narrows it to MessageT.
-        """
+        """The underlying protobuf message."""
         if self._this is None:
             raise AssertionError(f"Node {self.fqdn} not initialized with message")
         if not isinstance(self._this, Message):
@@ -254,48 +233,37 @@ class NodeBase(Generic[MessageT], ABC):
 
     @property
     def name(self) -> str:
-        """Delegate to proto message name."""
         # All descriptor messages have 'name', but it's not in Message base class
         return self.this.name  # type: ignore[attr-defined]
 
     @property
     def options(self) -> OptionsMessage:
-        """Delegate to proto message options."""
         # All descriptor messages have options
         return self.this.options  # type: ignore[return-value]
 
     @property
     def HasField(self) -> Callable[..., bool]:
-        """Delegate to proto message HasField method."""
         return self.this.HasField
 
     @property
     def parent(self) -> 'NodeBase[Any] | None':
-        """Parent node in the descriptor tree."""
         return self._parent
 
     @parent.setter
     def parent(self, value: 'NodeBase[Any]') -> None:
-        """Set parent node."""
         self._parent = value
 
     # === Utility Methods ===
 
     def is_present(self) -> bool:
-        """Check if this node has an associated protobuf message."""
         return self._this is not None
 
     def is_visible(self) -> bool:
-        """Check if this node is visible (present and reachable)."""
         return self.is_reachable
 
     @classmethod
     def from_ref(cls, ctx: Context, ref: Ref) -> Self:
-        """
-        Create or retrieve an instance from a reference.
-
-        Clean! No cast needed.
-        """
+        """Create or retrieve an instance from a reference."""
         fqdn = cls.fqdn_from_ref(ref)
         instance = ctx.find_node(fqdn)
 
@@ -308,9 +276,6 @@ class NodeBase(Generic[MessageT], ABC):
 
         # Instance does not exist, create stub
         return cls(ctx, ref)
-
-    # === Options Rendering ===
-    # (Moved from ProtoMessageDelegateMixin - implementation unchanged)
 
     def render_options_from_message(
         self,

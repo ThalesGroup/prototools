@@ -91,17 +91,11 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
         no extensions are defined or extensions are not allowed in this syntax.
         """
         from .re_field import ReFieldDescriptorProto
-        from .re_file import ReFileDescriptorProto
         from .syntax import allow_extend_block
+        from .utils import get_file_node
 
         out = Block()
-
-        # Walk up to the file node (needed for feature resolution).
-        _p = self._parent
-        while not isinstance(_p, ReFileDescriptorProto):
-            assert _p is not None
-            _p = _p._parent
-        fdp = _p
+        fdp = get_file_node(self)
 
         # Warn and skip extend blocks whose extendee is not legal in this syntax.
         # In proto3, only *Options extendees are allowed (custom options).
@@ -163,8 +157,7 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
             # Skip if we've already rendered this oneof
             if is_done[fd.oneof_index]:
                 continue
-            else:
-                is_done[fd.oneof_index] = True
+            is_done[fd.oneof_index] = True
 
             # Render the oneof block
             oneof = self.oneof_decl[fd.oneof_index]
@@ -434,18 +427,13 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
         """
         from .re_enum import ReEnumDescriptorProto
         from .re_field import ReFieldDescriptorProto
-        from .re_file import ReFileDescriptorProto
+        from .utils import get_file_node
 
         assert isinstance(depth, int)
         out = Block()
         inputs = Block()
 
-        # Walk up to the file node (needed for per-field feature resolution).
-        _p = self._parent
-        while not isinstance(_p, ReFileDescriptorProto):
-            assert _p is not None
-            _p = _p._parent
-        fdp = _p
+        fdp = get_file_node(self)
 
         # --- Message comments -------------------------------------------------
         comments_block = self.render_message_comments(depth+1)
@@ -525,8 +513,7 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
             # Real oneof field: render the entire oneof block on first encounter
             if is_done[fd.oneof_index]:
                 continue
-            else:
-                is_done[fd.oneof_index] = True
+            is_done[fd.oneof_index] = True
 
             # Render oneof block
             oneof = self.oneof_decl[fd.oneof_index]
