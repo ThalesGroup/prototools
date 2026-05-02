@@ -1,0 +1,41 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+//
+// SPDX-License-Identifier: MIT
+
+// Fixture for spec 0025: editions feature resolution engine.
+// Exercises the full resolution chain (edition defaults -> file -> message -> field/enum).
+
+edition = "2023";
+
+package reproto.test;
+
+// File-level override: utf8_validation = NONE (differs from edition 2023 default VERIFY).
+option features.utf8_validation = NONE;
+
+// Top-level enum with an enum-level override (CLOSED).
+enum Status {
+  option features.enum_type = CLOSED;
+  STATUS_UNKNOWN = 0;
+  STATUS_OK = 1;
+  STATUS_ERROR = 2;
+}
+
+// Message with no overrides — all features inherited from file level.
+message Request {
+  // Field with no override — inherits from file (utf8_validation = NONE).
+  string name = 1;
+
+  // Field with a field-level override: field_presence = IMPLICIT.
+  string optional_name = 2 [features.field_presence = IMPLICIT];
+
+  // Repeated field with repeated_field_encoding = EXPANDED.
+  repeated int32 ids = 3 [features.repeated_field_encoding = EXPANDED];
+}
+
+// Message with a field using message_encoding = DELIMITED.
+message Response {
+  // Field with message_encoding = DELIMITED.
+  Request nested = 1 [features.message_encoding = DELIMITED];
+
+  Status status = 2;
+}

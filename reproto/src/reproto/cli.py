@@ -219,7 +219,8 @@ class _SectionedCommand(click.Command):
 
 @click.option(
     '-o', '--proto-out',
-    required=True,
+    required=False,
+    default=None,
     type=click.Path(exists=True, file_okay=False, dir_okay=True, writable=True, path_type=Path),
     help='Output directory for generated proto files',
 )
@@ -332,6 +333,13 @@ class _SectionedCommand(click.Command):
 )
 
 @click.option(
+    '--dump-resolved-features',
+    default='',
+    hidden=True,
+    help='(diagnostic) Dump resolved FeatureSet YAML for the named proto file and exit',
+)
+
+@click.option(
     '--debug',
     is_flag=True,
     help='Print detailed debug information (development only)',
@@ -347,7 +355,7 @@ def main(
         pb_files: list[Path],
         pb_path: list[Path],
         force_proto2_output: bool,
-        proto_out: Path,
+        proto_out: Path | None,
         emit_binary: bool,
         dry_run: bool,
         proto_variant: Path | None,
@@ -362,12 +370,17 @@ def main(
         quiet: bool,
         graph: Path | None,
         phase2_plugin: str | None,
+        dump_resolved_features: str,
         debug: bool,
         debug_fqdn: bool,
 ):
     '''
     Parse PB_FILES and generate output based on the options given.
     '''
+    # --proto-out is required unless --dump-resolved-features is set.
+    if proto_out is None and not dump_resolved_features:
+        raise click.UsageError('Missing option \'-o\' / \'--proto-out\'.')
+
     # Load variant (path arg > REPROTO_VARIANT env > built-in google-protobuf.yaml)
     variant = variant_mod.load(str(proto_variant) if proto_variant else None)
 
@@ -410,6 +423,7 @@ def main(
         debug=debug,
         debug_fqdn=debug_fqdn,
         descriptor_proto=variant['variant_descriptor_proto'],
+        dump_resolved_features=dump_resolved_features,
         fallback_protos=fallback_protos,
         keep_variant_descriptor=keep_descriptor_path,
         variant_descriptor_proto=variant['variant_descriptor_proto'],
@@ -435,7 +449,7 @@ def main(
             pb_files,
             [Fqdn(s) for s in seeds],
             [Fqdn(p) for p in stumps],
-            proto_out,
+            proto_out if proto_out is not None else Path('.'),
             options,
         )
     except DescriptorProtoMissingError:

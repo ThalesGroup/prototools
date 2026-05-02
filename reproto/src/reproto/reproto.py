@@ -177,6 +177,7 @@ from lib.warnings import cli_attention, cli_error, cli_info, cli_warning
 from reproto import Context, Fqdn, Node, Options
 
 from .fake_types import parse_fqdn
+from .feature_resolution import build_edition_defaults
 from .globals import FILE
 from .load import QualFile, decapsulate, load_from_path
 from .option_messages import create_option_message_classes
@@ -271,6 +272,115 @@ def patch_go_package(ctx: Context, fdp: FileDescriptorProto) -> None:
             go_package
         )
         fdp.options.go_package = go_package
+
+def _dump_resolved_features_yaml(ctx: Context, target_file: str) -> None:
+    """Dump resolved FeatureSet for every element in target_file as YAML.
+
+    Called when --dump-resolved-features is set.  Output goes to stdout.
+    Only edition files produce meaningful output; for proto2/proto3 files the
+    edition_defaults section will be empty (no FeatureSet in their descriptor).
+    """
+    import yaml  # lazy: only needed for this diagnostic path
+    from .feature_resolution import feature_value_name, resolve_features
+
+    # Locate the target ReFileDescriptorProto.
+    # ctx.files/new_files are keyed by Fqdn("FILE:<filename>").
+    file_fqdn = Fqdn(f'{FILE}:{target_file}')
+    re_fdp = ctx.find_file(file_fqdn)
+    if re_fdp is None:
+        cli_warning(f"--dump-resolved-features: file '{target_file}' not found in loaded set")
+        return
+
+    fdp = re_fdp.this
+    ed = fdp.edition     # int; 0 for proto2/proto3
+    defaults = ctx.edition_defaults
+
+    def _feat_name(feature: str, value: int) -> str:
+        return feature_value_name(defaults, feature, value)
+
+    def _resolve(*fsets):
+        return resolve_features(defaults, ed, *fsets)
+
+    def _feat_dict(resolved) -> dict:
+        from dataclasses import asdict
+        return {k: _feat_name(k, v) for k, v in asdict(resolved).items()}
+
+    def _overrides_dict(fs) -> dict:
+        """Return only the explicitly-set fields of a FeatureSet message."""
+        if fs is None:
+            return {}
+        result = {}
+        for fname in ("field_presence", "enum_type", "repeated_field_encoding",
+                      "utf8_validation", "message_encoding", "json_format"):
+            try:
+                if fs.HasField(fname):
+                    result[fname] = _feat_name(fname, getattr(fs, fname))
+            except ValueError:
+                pass
+        return result
+
+    def _file_features_dict(fs) -> dict:
+        return _overrides_dict(fs)
+
+    # edition_defaults: resolved from defaults table only (no overrides)
+    file_fs = fdp.options.features if fdp.options.HasField('features') else None
+    defaults_resolved = _resolve()   # no overrides → pure edition defaults
+    edition_defaults_dict = _feat_dict(defaults_resolved)
+
+    # file-level resolved and overrides
+    file_resolved = _resolve(file_fs)
+
+    def _render_field(field_proto, msg_fs) -> dict:
+        field_fs = field_proto.options.features if field_proto.options.HasField('features') else None
+        resolved = _resolve(file_fs, msg_fs, field_fs)
+        return {
+            "resolved":  _feat_dict(resolved),
+            "overrides": _overrides_dict(field_fs),
+        }
+
+    def _render_enum(enum_proto) -> dict:
+        enum_fs = enum_proto.options.features if enum_proto.options.HasField('features') else None
+        resolved = _resolve(file_fs, enum_fs)
+        return {
+            "resolved":  _feat_dict(resolved),
+            "overrides": _overrides_dict(enum_fs),
+        }
+
+    def _render_message(msg_proto) -> dict:
+        msg_fs = msg_proto.options.features if msg_proto.options.HasField('features') else None
+        resolved = _resolve(file_fs, msg_fs)
+        entry: dict = {
+            "resolved":  _feat_dict(resolved),
+            "overrides": _overrides_dict(msg_fs),
+        }
+        if msg_proto.field:
+            entry["fields"] = {
+                f.name: _render_field(f, msg_fs) for f in msg_proto.field
+            }
+        if msg_proto.nested_type:
+            entry["messages"] = {
+                m.name: _render_message(m) for m in msg_proto.nested_type
+            }
+        if msg_proto.enum_type:
+            entry["enums"] = {
+                e.name: _render_enum(e) for e in msg_proto.enum_type
+            }
+        return entry
+
+    doc: dict = {
+        "file":             fdp.name,
+        "edition":          ed,
+        "edition_defaults": edition_defaults_dict,
+        "file_features":    _file_features_dict(file_fs),
+        "file_resolved":    _feat_dict(file_resolved),
+    }
+    if fdp.message_type:
+        doc["messages"] = {m.name: _render_message(m) for m in fdp.message_type}
+    if fdp.enum_type:
+        doc["enums"] = {e.name: _render_enum(e) for e in fdp.enum_type}
+
+    print(yaml.dump(doc, sort_keys=False, allow_unicode=True), end="")
+
 
 def reproto(
         in_repo: list[Path],
@@ -644,6 +754,14 @@ def reproto(
     if not ctx.quiet:
         cli_info('Phase 2: File descriptor pool complete')
 
+    # --- Build edition-default table from the variant's descriptor.pb --------
+    # pool_db.FindFileByName returns the FileDescriptorProto directly.
+    try:
+        descriptor_fdp = ctx.pool_db.FindFileByName(ctx.variant_descriptor_proto)
+        ctx.edition_defaults = build_edition_defaults(descriptor_fdp)
+    except KeyError:
+        ctx.edition_defaults = {}
+
     # =========================================================================
     # PHASE 3: FQDN GRAPH CONSTRUCTION
     # =========================================================================
@@ -690,6 +808,11 @@ def reproto(
             known_fqdns[fqdn] = re_fdp
 
     ctx.merge_nodes()
+
+    # --dump-resolved-features diagnostic mode: emit YAML and return early.
+    if ctx.dump_resolved_features:
+        _dump_resolved_features_yaml(ctx, ctx.dump_resolved_features)
+        return ctx
 
     # =========================================================================
     # PHASE 4: PRUNING (Transitive Exclusion)

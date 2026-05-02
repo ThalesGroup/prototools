@@ -1,0 +1,98 @@
+file: editions_resolution.proto
+edition: 1000
+edition_defaults:
+  field_presence: EXPLICIT
+  enum_type: OPEN
+  repeated_field_encoding: PACKED
+  utf8_validation: VERIFY
+  message_encoding: LENGTH_PREFIXED
+  json_format: ALLOW
+file_features:
+  utf8_validation: NONE
+file_resolved:
+  field_presence: EXPLICIT
+  enum_type: OPEN
+  repeated_field_encoding: PACKED
+  utf8_validation: NONE
+  message_encoding: LENGTH_PREFIXED
+  json_format: ALLOW
+messages:
+  Request:
+    resolved:
+      field_presence: EXPLICIT
+      enum_type: OPEN
+      repeated_field_encoding: PACKED
+      utf8_validation: NONE
+      message_encoding: LENGTH_PREFIXED
+      json_format: ALLOW
+    overrides: {}
+    fields:
+      name:
+        resolved:
+          field_presence: EXPLICIT
+          enum_type: OPEN
+          repeated_field_encoding: PACKED
+          utf8_validation: NONE
+          message_encoding: LENGTH_PREFIXED
+          json_format: ALLOW
+        overrides: {}
+      optional_name:
+        resolved:
+          field_presence: IMPLICIT
+          enum_type: OPEN
+          repeated_field_encoding: PACKED
+          utf8_validation: NONE
+          message_encoding: LENGTH_PREFIXED
+          json_format: ALLOW
+        overrides:
+          field_presence: IMPLICIT
+      ids:
+        resolved:
+          field_presence: EXPLICIT
+          enum_type: OPEN
+          repeated_field_encoding: EXPANDED
+          utf8_validation: NONE
+          message_encoding: LENGTH_PREFIXED
+          json_format: ALLOW
+        overrides:
+          repeated_field_encoding: EXPANDED
+  Response:
+    resolved:
+      field_presence: EXPLICIT
+      enum_type: OPEN
+      repeated_field_encoding: PACKED
+      utf8_validation: NONE
+      message_encoding: LENGTH_PREFIXED
+      json_format: ALLOW
+    overrides: {}
+    fields:
+      nested:
+        resolved:
+          field_presence: EXPLICIT
+          enum_type: OPEN
+          repeated_field_encoding: PACKED
+          utf8_validation: NONE
+          message_encoding: DELIMITED
+          json_format: ALLOW
+        overrides:
+          message_encoding: DELIMITED
+      status:
+        resolved:
+          field_presence: EXPLICIT
+          enum_type: OPEN
+          repeated_field_encoding: PACKED
+          utf8_validation: NONE
+          message_encoding: LENGTH_PREFIXED
+          json_format: ALLOW
+        overrides: {}
+enums:
+  Status:
+    resolved:
+      field_presence: EXPLICIT
+      enum_type: CLOSED
+      repeated_field_encoding: PACKED
+      utf8_validation: NONE
+      message_encoding: LENGTH_PREFIXED
+      json_format: ALLOW
+    overrides:
+      enum_type: CLOSED

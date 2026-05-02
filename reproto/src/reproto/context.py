@@ -86,6 +86,9 @@ class Options:
     # Modules to import at startup (spec 0018); default empty for OSS variant.
     variant_annotation_modules: list[str] = field(default_factory=list)
     write_variant_descriptor: bool = False
+    # Hidden diagnostic flag (spec 0025): when set to a proto file name, skip
+    # rendering and dump resolved FeatureSet YAML for that file to stdout.
+    dump_resolved_features: str = ""
 
 class Context(Options):
     def __init__(
@@ -101,6 +104,11 @@ class Context(Options):
         # Per-file syntax state (updated by re_file.py at the start of each render)
         self.syntax: str = "proto2"         # input file syntax
         self.target_syntax: str = "proto2"  # output syntax
+
+        # Edition feature defaults extracted from the variant's descriptor.pb
+        # at startup (spec 0025). Maps feature field name -> sorted list of
+        # (edition_number, value_name) pairs.
+        self.edition_defaults: dict[str, list[tuple[int, str]]] = {}
 
         # Pool and dicts
         self.pool_db: DescriptorDatabase = DescriptorDatabase()
