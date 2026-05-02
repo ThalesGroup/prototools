@@ -17,7 +17,6 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import cast
 
 import yaml
 from google.protobuf.descriptor_pb2 import Edition, FeatureSet
@@ -250,9 +249,10 @@ def test_T7_synthetic_descriptor():
     entries = table["field_presence"]
     assert entries == [(int(Edition.EDITION_LEGACY), "FIRST"), (int(Edition.EDITION_2023), "SECOND")]
 
-    enum_map = cast(dict[str, int], table["_enum_field_presence"])
-    assert enum_map.get("FIRST") == 1
-    assert enum_map.get("SECOND") == 2
+    enum_entry = table["_enum_field_presence"]
+    assert isinstance(enum_entry, dict)
+    assert enum_entry.get("FIRST") == 1
+    assert enum_entry.get("SECOND") == 2
 
     # At edition 900 the default is FIRST (1).
     r900 = resolve_features(table, 900)

@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from typing import Any
 
     from .base import NodeBase
+    from .feature_resolution import EditionDefaultTable
     from .re_file import ReFileDescriptorProto
 
     # Public alias: any NodeBase subclass.  Replaces the former exhaustive union
@@ -101,7 +102,7 @@ class Context(Options):
         # Edition feature defaults extracted from the variant's descriptor.pb
         # at startup (spec 0025). Maps feature field name -> sorted list of
         # (edition_number, value_name) pairs.
-        self.edition_defaults: dict[str, list[tuple[int, str]]] = {}
+        self.edition_defaults: EditionDefaultTable = {}
 
         # Pool and dicts
         self.pool_db: DescriptorDatabase = DescriptorDatabase()

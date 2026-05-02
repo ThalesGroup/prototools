@@ -36,9 +36,11 @@ if TYPE_CHECKING:
 # Type alias
 # ---------------------------------------------------------------------------
 
-# Maps feature field name -> sorted list of (edition_number, value_name).
-# "sorted" means ascending by edition_number.
-EditionDefaultTable = dict[str, list[tuple[int, str]]]
+# Maps feature field name to either:
+#   - a sorted list of (edition_number, value_name) pairs  (the defaults), or
+#   - a dict[str, int] stored under the key "_enum_<field_name>" (value→number map).
+# The two kinds are distinguished by key prefix at runtime.
+EditionDefaultTable = dict[str, list[tuple[int, str]] | dict[str, int]]
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +180,7 @@ def build_edition_defaults(descriptor_fdp: FileDescriptorProto) -> EditionDefaul
         # to ints without re-scanning the descriptor.
         table[field.name] = entries
         # Store the name→number mapping under a private key.
-        table[f"_enum_{field.name}"] = value_to_num  # type: ignore[assignment]
+        table[f"_enum_{field.name}"] = value_to_num
 
     return table
 
@@ -200,8 +202,10 @@ def _resolve_one(
     default if no override is found.
     """
     # Start from the edition default.
-    entries = table.get(feature_name, [])
-    name_to_num: dict[str, int] = table.get(f"_enum_{feature_name}", {})  # type: ignore[arg-type]
+    _entries = table.get(feature_name, [])
+    entries: list[tuple[int, str]] = _entries if isinstance(_entries, list) else []
+    _enum_entry = table.get(f"_enum_{feature_name}", {})
+    name_to_num: dict[str, int] = _enum_entry if isinstance(_enum_entry, dict) else {}
 
     default_value = 0
     for edition_num, value_name in reversed(entries):
@@ -273,7 +277,8 @@ def feature_value_name(
 
     Falls back to the decimal string if the value is not found.
     """
-    name_to_num: dict[str, int] = table.get(f"_enum_{feature_name}", {})  # type: ignore[arg-type]
+    _enum_entry = table.get(f"_enum_{feature_name}", {})
+    name_to_num: dict[str, int] = _enum_entry if isinstance(_enum_entry, dict) else {}
     for name, num in name_to_num.items():
         if num == value and not name.endswith("_UNKNOWN") and num != 0:
             return name
