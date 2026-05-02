@@ -4,7 +4,7 @@ SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
 SPDX-License-Identifier: MIT
 -->
 
-# 0025 — Editions feature resolution engine
+# 0026 — Editions feature resolution engine
 
 **Status:** implemented
 **Implemented in:** 2026-05-02
@@ -16,7 +16,7 @@ SPDX-License-Identifier: MIT
 
 Implement the feature resolution engine that is the prerequisite for editions
 rendering (phase 1 of the strategy described in
-`docs/editions-rendering-strategy.md`).
+`docs/specs/0025-editions-rendering-strategy.md`).
 
 This spec covers only resolution — deriving the effective `FeatureSet` for any
 element in an edition file.  Rendering changes (emitting `edition = "...";`,
