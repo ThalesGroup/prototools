@@ -172,7 +172,7 @@ class NodeBase(Generic[MessageT], ABC):
             instance.seeder = None
 
             # Register in context
-            ctx.new_nodes[fqdn] = instance  # type: ignore[assignment]
+            ctx.new_nodes[fqdn] = instance
             cls._register_in_context(ctx, fqdn, instance)
         else:
             # Verify type matches
