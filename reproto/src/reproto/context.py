@@ -88,7 +88,7 @@ class Context(Options):
     def __init__(
         self,
         pruned_fqdns: set[Fqdn],
-        **opts_kwargs,
+        **opts_kwargs: Any,
     ):
         # Initialize Options fields
         super().__init__(**opts_kwargs)

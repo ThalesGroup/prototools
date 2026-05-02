@@ -1,0 +1,21 @@
+//
+// FILE NAME: editions_rendering.proto
+//
+
+// // WARNING[editions]: original file used editions syntax; rendered as proto2
+syntax = "proto2";
+
+package reproto.test.rendering;
+
+message Inner {
+  optional int32 value = 1;
+}
+
+message AllFeatures {
+  string implicit_field = 1;
+  optional string explicit_field = 2;
+  required string required_field = 3;
+  repeated int32 expanded_ids = 4;
+  optional Inner delimited_field = 5;
+  optional int32 with_default = 6 [default = 42];
+}

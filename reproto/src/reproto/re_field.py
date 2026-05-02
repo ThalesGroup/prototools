@@ -6,15 +6,56 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 from google.protobuf.descriptor import FieldDescriptor
-from google.protobuf.descriptor_pb2 import FieldDescriptorProto
+from google.protobuf.descriptor_pb2 import DescriptorProto, FieldDescriptorProto, FileDescriptorProto
 from google.protobuf.message import Message
 
 from .base import NodeBase
 from .context import Context, Fqdn
+
+if TYPE_CHECKING:
+    from .re_descriptor import ReDescriptorProto
+    from .re_file import ReFileDescriptorProto
 from .fake_types import Ref, parse_fqdn
+from .feature_resolution import ResolvedFeatures, resolve_features
 from .globals import FIELD, type_names
 from .text import Block, BlockLine
+
+
+def _get_file_and_msg(
+    node: 'ReFieldDescriptorProto',
+) -> 'tuple[ReFileDescriptorProto, ReDescriptorProto | None]':
+    """Return (file_node, message_node_or_None) for a field node."""
+    from .re_descriptor import ReDescriptorProto
+    from .re_file import ReFileDescriptorProto
+    parent = node.parent
+    if isinstance(parent, ReFileDescriptorProto):
+        return parent, None
+    assert isinstance(parent, ReDescriptorProto)
+    grandparent = parent._parent
+    while not isinstance(grandparent, ReFileDescriptorProto):
+        assert grandparent is not None
+        grandparent = grandparent._parent
+    return grandparent, parent
+
+
+def _resolve_field_features(
+    ctx: Context,
+    fdp: FileDescriptorProto,
+    msg_proto: DescriptorProto | None,
+    field_proto: FieldDescriptorProto,
+) -> ResolvedFeatures | None:
+    """Resolve ResolvedFeatures for a field.  Returns None for proto2/proto3."""
+    if ctx.syntax != "editions":
+        return None
+    file_fs = fdp.options.features if fdp.options.HasField('features') else None
+    msg_fs = (msg_proto.options.features
+              if msg_proto is not None and msg_proto.options.HasField('features')
+              else None)
+    field_fs = field_proto.options.features if field_proto.options.HasField('features') else None
+    return resolve_features(ctx.edition_defaults, fdp.edition, file_fs, msg_fs, field_fs)
 
 
 class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
@@ -45,7 +86,7 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
         return self._parent
 
     @parent.setter
-    def parent(self, value) -> None:
+    def parent(self, value: NodeBase[Any]) -> None:
         self._parent = value
 
     @property
@@ -68,7 +109,7 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
         self,
         ctx: Context,
         message: FieldDescriptorProto,
-        **kwargs
+        **kwargs: Any,
     ) -> None:
         """Initialize field-specific attributes and resolve type references."""
         # Lazy imports
@@ -232,6 +273,15 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
                 out.extend(self._render_map_field(ctx, depth))
                 return out
 
+        # Resolve per-element features (None for proto2/proto3 files).
+        file_node, msg_node = _get_file_and_msg(self)
+        field_features = _resolve_field_features(
+            ctx,
+            file_node.this,
+            msg_node.this if msg_node is not None else None,
+            self.this,
+        )
+
         string = ''
 
         # --- Field label (aka cardinality) ------------------------------------
@@ -242,12 +292,12 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
                 and self.this.label == _FDP.LABEL_REQUIRED):
             from .anomalies import report
             out.append(report("C3", depth, name=self.name))
-        label_str = field_label(ctx, self.this, is_oneof)
+        label_str = field_label(ctx, self.this, is_oneof, features=field_features)
         string += label_str
 
         # --- Field type and name ----------------------------------------------
         from .syntax import allow_groups
-        if self.type != FieldDescriptorProto.TYPE_GROUP or not allow_groups(ctx):
+        if self.type != FieldDescriptorProto.TYPE_GROUP or not allow_groups(ctx, features=field_features):
             if self.type == FieldDescriptorProto.TYPE_GROUP:
                 from .anomalies import report
                 out.append(report("C2", depth, name=self.name))
@@ -294,7 +344,7 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
             # NOT a field inside the FieldOptions message. We handle it separately
             # and combine it with FieldOptions in the composite format [default = x, ...].
             from .syntax import should_render_default
-            if should_render_default(ctx, self.this):
+            if should_render_default(ctx, self.this, features=field_features):
                 default_block = self._render_default_value(depth+1)
                 opt_block.extend(default_block)
             elif ctx.target_syntax == "proto3" and self.this.HasField('default_value'):
@@ -319,7 +369,7 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
                 f"Expected dynamic FieldOptions from GetMessageClass, got {type(fo_msg)}"
             )
             effective_packed = getattr(fo_msg, 'packed')
-            packed_str = packed_option(ctx, has_packed, effective_packed)
+            packed_str = packed_option(ctx, has_packed, effective_packed, features=field_features)
             if packed_str is not None:
                 opt_block.append(BlockLine(f'packed = {packed_str},', depth + 1))
 
@@ -350,7 +400,7 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
             out.append(BlockLine(string, depth))
 
         # --- Field group definition (only for fields of type group) -----------
-        if self.type != FieldDescriptorProto.TYPE_GROUP or not allow_groups(ctx):
+        if self.type != FieldDescriptorProto.TYPE_GROUP or not allow_groups(ctx, features=field_features):
             out.postpend(';')
         else:
             # Groups definitions must be inlined

@@ -25,6 +25,7 @@ detection site.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from lib.warnings import cli_warning
 
@@ -174,7 +175,7 @@ ANOMALIES: dict[str, Anomaly] = {
 # Public helper
 # ---------------------------------------------------------------------------
 
-def report(code: str, depth: int, **kwargs) -> BlockLine:
+def report(code: str, depth: int, **kwargs: Any) -> BlockLine:
     """Emit a cli_warning and return a BlockLine for the .proto comment.
 
     Args:

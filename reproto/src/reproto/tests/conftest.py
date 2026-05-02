@@ -10,7 +10,7 @@ import subprocess
 import pytest
 
 
-def pytest_configure(config):
+def pytest_configure(config: pytest.Config) -> None:
     """Configure pytest with custom markers."""
     config.addinivalue_line(
         "markers", "roundtrip: marks tests as roundtrip tests (deselect with '-m \"not roundtrip\"')"

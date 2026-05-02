@@ -128,7 +128,7 @@ PROTO3_ONLY_FIELDS = {"syntax", "proto3_optional", "oneof_index", "oneof_decl", 
 
 
 @pytest.fixture
-def temp_dirs(tmp_path):
+def temp_dirs(tmp_path: Path):
     """Create temporary directories for test artifacts."""
     orig_dir = tmp_path / "orig"
     new_dir = tmp_path / "new"
@@ -241,7 +241,7 @@ def _run_roundtrip(
 
 
 @pytest.mark.parametrize("fixture_name", DEFAULT_FIXTURES)
-def test_roundtrip(fixture_name: str, temp_dirs):
+def test_roundtrip(fixture_name: str, temp_dirs: tuple[Path, Path]) -> None:
     """Test that reproto can perfectly roundtrip a proto file."""
     orig_dir, new_dir = temp_dirs
     _, content = get_fixture_content(fixture_name)
@@ -249,7 +249,7 @@ def test_roundtrip(fixture_name: str, temp_dirs):
 
 
 @pytest.mark.parametrize("fixture_name", POLYGLOT_FIXTURES_STRICT + POLYGLOT_FIXTURES_LOSSY)
-def test_roundtrip_polyglot(fixture_name: str, tmp_path):
+def test_roundtrip_polyglot(fixture_name: str, tmp_path: Path) -> None:
     """Roundtrip test run twice: with and without --force-proto2-output.
 
     With --force-proto2-output: .proto text is not compared (output is always proto2).

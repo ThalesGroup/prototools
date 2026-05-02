@@ -21,31 +21,31 @@ logger.setLevel(logging.INFO)
 
 # Add special CLIWarningHandlers
 class CLIErrorHandler(logging.Handler):
-    def emit(self, record):
+    def emit(self, record: logging.LogRecord) -> None:
         if getattr(record, 'cli_err', False):
             click.secho(f'{record.getMessage()}',
                         err=True, fg='red', bold=True)
 
 class CLIWarningHandler(logging.Handler):
-    def emit(self, record):
+    def emit(self, record: logging.LogRecord) -> None:
         if getattr(record, 'cli_warn', False):
             click.secho(f'{record.getMessage()}',
                         err=True, fg='yellow', bold=True)
 
 class CLIInfoHandler(logging.Handler):
-    def emit(self, record):
+    def emit(self, record: logging.LogRecord) -> None:
         if getattr(record, 'cli_info', False):
             click.secho(f'{record.getMessage()}', err=True)
 
 class CLIAttentionHandler(logging.Handler):
-    def emit(self, record):
+    def emit(self, record: logging.LogRecord) -> None:
         if getattr(record, 'cli_attn', False):
             click.secho(f'{record.getMessage()}',
                         err=True, fg='blue', bold=True)
 
 # Only suppress cli_warn messages from root StreamHandlers
 class NoCliWarnFilter(logging.Filter):
-    def filter(self, record):
+    def filter(self, record: logging.LogRecord) -> bool:
         return not (getattr(record, 'cli_err', False)
                     or getattr(record, 'cli_warn', False)
                     or getattr(record, 'cli_info', False)
@@ -62,7 +62,7 @@ logger.addHandler(CLIInfoHandler())
 logger.addHandler(CLIAttentionHandler())
 
 
-def complete_pb_files(ctx, param, incomplete: str):
+def complete_pb_files(ctx: click.Context, param: click.Parameter, incomplete: str):
     '''Custom completer for PB_FILES argument (relative to -I).'''
     # pb_path is a tuple when multiple=True
     include_dirs = list(ctx.params.get('pb_path') or [])

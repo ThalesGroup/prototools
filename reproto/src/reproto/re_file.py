@@ -198,7 +198,7 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
         ctx: Context,
         message: FileDescriptorProto,
         go_root: str | None = None,
-        **kwargs
+        **kwargs: Any,
     ) -> None:
         """Initialize file-specific attributes and build dependency graph."""
         # Lazy imports to avoid circular dependencies

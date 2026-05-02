@@ -9,6 +9,9 @@ from __future__ import annotations
 import importlib.resources
 import sys
 import textwrap
+from pathlib import Path
+
+import pytest
 
 from reproto import variant as V
 from reproto.reproto import import_annotations
@@ -42,7 +45,7 @@ def _has_edition_orphans(result: dict) -> bool:
 # Tests
 # ---------------------------------------------------------------------------
 
-def test_load_none_returns_oss_defaults(monkeypatch):
+def test_load_none_returns_oss_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     """load(None) with no REPROTO_VARIANT set returns OSS defaults."""
     monkeypatch.delenv('REPROTO_VARIANT', raising=False)
     result = V.load(None)
@@ -52,7 +55,7 @@ def test_load_none_returns_oss_defaults(monkeypatch):
     assert result['variant_ns_rules'] == []
 
 
-def test_load_builtin_matches_oss_defaults(monkeypatch, tmp_path):
+def test_load_builtin_matches_oss_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """load() with no path and no REPROTO_VARIANT loads google-protobuf.yaml."""
     monkeypatch.delenv('REPROTO_VARIANT', raising=False)
     result = V.load()
@@ -63,7 +66,7 @@ def test_load_builtin_matches_oss_defaults(monkeypatch, tmp_path):
     assert _has_edition_orphans(result)
 
 
-def test_edition_orphans_always_present(monkeypatch, tmp_path):
+def test_edition_orphans_always_present(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Edition orphans are always present even if not listed in the yaml."""
     yaml_file = tmp_path / 'minimal.yaml'
     yaml_file.write_text('name: minimal\n')
@@ -72,7 +75,7 @@ def test_edition_orphans_always_present(monkeypatch, tmp_path):
     assert _has_edition_orphans(result)
 
 
-def test_extra_orphans_merged(monkeypatch, tmp_path):
+def test_extra_orphans_merged(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Extra orphans from the yaml are merged with edition orphans."""
     yaml_file = tmp_path / 'extra.yaml'
     yaml_file.write_text(textwrap.dedent("""\
@@ -90,7 +93,7 @@ def test_extra_orphans_merged(monkeypatch, tmp_path):
     assert 'feature_support' in file_orphans  # merged from edition orphans
 
 
-def test_unknown_keys_ignored(monkeypatch, tmp_path):
+def test_unknown_keys_ignored(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Unknown YAML keys are silently ignored."""
     yaml_file = tmp_path / 'unknown.yaml'
     yaml_file.write_text('name: test\nfuture_key: some_value\n')
@@ -99,7 +102,7 @@ def test_unknown_keys_ignored(monkeypatch, tmp_path):
     assert 'future_key' not in result
 
 
-def test_reproto_variant_env_var(monkeypatch, tmp_path):
+def test_reproto_variant_env_var(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """REPROTO_VARIANT env var is picked up when no path is passed."""
     yaml_file = tmp_path / 'env.yaml'
     yaml_file.write_text(textwrap.dedent("""\
@@ -111,7 +114,7 @@ def test_reproto_variant_env_var(monkeypatch, tmp_path):
     assert result['variant_descriptor_proto'] == 'net/proto2/proto/descriptor.proto'
 
 
-def test_explicit_path_overrides_env_var(monkeypatch, tmp_path):
+def test_explicit_path_overrides_env_var(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Explicit path argument overrides REPROTO_VARIANT env var."""
     env_file = tmp_path / 'env.yaml'
     env_file.write_text('name: env\ndescriptor_proto: net/proto2/proto/descriptor.proto\n')
@@ -122,7 +125,7 @@ def test_explicit_path_overrides_env_var(monkeypatch, tmp_path):
     assert result['variant_descriptor_proto'] == 'custom/descriptor.proto'
 
 
-def test_builtin_variant_root_and_stem(monkeypatch):
+def test_builtin_variant_root_and_stem(monkeypatch: pytest.MonkeyPatch) -> None:
     """Built-in variant returns a Traversable root and stem='google-protobuf'."""
     monkeypatch.delenv('REPROTO_VARIANT', raising=False)
     result = V.load(None)
@@ -135,7 +138,7 @@ def test_builtin_variant_root_and_stem(monkeypatch):
     assert str(result['variant_root']) == str(importlib.resources.files('reproto.variants'))
 
 
-def test_external_variant_root_and_stem(monkeypatch, tmp_path):
+def test_external_variant_root_and_stem(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """External variant returns a Path root and stem from filename."""
     yaml_file = tmp_path / 'proto2.yaml'
     yaml_file.write_text('name: proto2\n')
@@ -146,7 +149,7 @@ def test_external_variant_root_and_stem(monkeypatch, tmp_path):
     assert result['variant_root'].joinpath('proto2.yaml').read_text() == 'name: proto2\n'
 
 
-def test_import_annotations_prepends_resource_root(tmp_path, monkeypatch):
+def test_import_annotations_prepends_resource_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """import_annotations() prepends resource_root to sys.path when modules are listed."""
     root = str(tmp_path)
     # Ensure root is not already on sys.path.
@@ -157,7 +160,7 @@ def test_import_annotations_prepends_resource_root(tmp_path, monkeypatch):
     assert sys.path[0] == root
 
 
-def test_import_annotations_no_duplicate(tmp_path, monkeypatch):
+def test_import_annotations_no_duplicate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """import_annotations() does not add resource_root twice."""
     root = str(tmp_path)
     monkeypatch.setattr(sys, 'path', [root] + [p for p in sys.path if p != root])
@@ -165,7 +168,7 @@ def test_import_annotations_no_duplicate(tmp_path, monkeypatch):
     assert sys.path.count(root) == 1
 
 
-def test_import_annotations_empty_modules_no_side_effects(tmp_path, monkeypatch):
+def test_import_annotations_empty_modules_no_side_effects(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """import_annotations() with empty modules list does not touch sys.path."""
     root = str(tmp_path)
     monkeypatch.setattr(sys, 'path', [p for p in sys.path if p != root])
@@ -173,7 +176,7 @@ def test_import_annotations_empty_modules_no_side_effects(tmp_path, monkeypatch)
     assert root not in sys.path
 
 
-def test_load_embedded_proto_fallback_uses_variant_root(monkeypatch, tmp_path):
+def test_load_embedded_proto_fallback_uses_variant_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """variant_root.joinpath(stem, pb_name) is used for .pb loading in both cases."""
     # Verify that for the built-in variant the root traversal reaches descriptor.pb.
     monkeypatch.delenv('REPROTO_VARIANT', raising=False)
@@ -185,7 +188,7 @@ def test_load_embedded_proto_fallback_uses_variant_root(monkeypatch, tmp_path):
     assert len(data) > 0
 
 
-def test_import_rules_parsed(monkeypatch, tmp_path):
+def test_import_rules_parsed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """import_rewrites rules are parsed correctly."""
     yaml_file = tmp_path / 'rules.yaml'
     yaml_file.write_text(textwrap.dedent("""\

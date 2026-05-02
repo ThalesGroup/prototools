@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Any, cast
 
 from google.protobuf.descriptor import Descriptor
 from google.protobuf.descriptor_pb2 import (
@@ -21,6 +21,7 @@ from .base import NodeBase
 from .context import Context, Fqdn
 from .fake_types import Ref
 from .globals import MESSAGE
+from .re_field import _resolve_field_features
 from .text import CODE, COMMENT, ORPHAN, Block, BlockLine
 
 
@@ -75,7 +76,7 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
         return self._parent
 
     @parent.setter
-    def parent(self, value) -> None:
+    def parent(self, value: NodeBase[Any]) -> None:
         self._parent = value
 
     @property
@@ -89,10 +90,18 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
         Returns a Block containing extend statements, or an empty Block if
         no extensions are defined or extensions are not allowed in this syntax.
         """
-        from .syntax import allow_extend_block
         from .re_field import ReFieldDescriptorProto
+        from .re_file import ReFileDescriptorProto
+        from .syntax import allow_extend_block
 
         out = Block()
+
+        # Walk up to the file node (needed for feature resolution).
+        _p = self._parent
+        while not isinstance(_p, ReFileDescriptorProto):
+            assert _p is not None
+            _p = _p._parent
+        fdp = _p
 
         # Warn and skip extend blocks whose extendee is not legal in this syntax.
         # In proto3, only *Options extendees are allowed (custom options).
@@ -121,7 +130,8 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
                 if name != short_name:
                     continue
                 from .syntax import field_label
-                lbl = field_label(ctx, extension_proto, is_oneof=False)
+                ext_features = _resolve_field_features(ctx, fdp.this, self.this, extension_proto)
+                lbl = field_label(ctx, extension_proto, is_oneof=False, features=ext_features)
                 out.append(BlockLine(f'{lbl}{fd.short_type_name(ctx)} '
                                 f'{fd.name} = {fd.number};', depth+1))
             out.append(BlockLine('}', level=depth))
@@ -340,7 +350,7 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
         self,
         ctx: Context,
         message: DescriptorProto,
-        **kwargs
+        **kwargs: Any,
     ) -> None:
         """Initialize message-specific attributes and build dependency graph."""
         # Lazy imports
@@ -423,10 +433,18 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
         """
         from .re_enum import ReEnumDescriptorProto
         from .re_field import ReFieldDescriptorProto
+        from .re_file import ReFileDescriptorProto
 
         assert isinstance(depth, int)
         out = Block()
         inputs = Block()
+
+        # Walk up to the file node (needed for per-field feature resolution).
+        _p = self._parent
+        while not isinstance(_p, ReFileDescriptorProto):
+            assert _p is not None
+            _p = _p._parent
+        fdp = _p
 
         # --- Message comments -------------------------------------------------
         comments_block = self.render_message_comments(depth+1)
@@ -472,7 +490,13 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
         for idx, oneof in enumerate(self.oneof_decl):
             members = [f for f in self.field
                        if f.HasField("oneof_index") and f.oneof_index == idx]
-            if is_synthetic_oneof(ctx, oneof.name, members):
+            # For editions: resolve features for the single member (if any).
+            member_features = (
+                _resolve_field_features(ctx, fdp.this, self.this,
+                                        cast(FieldDescriptorProto, members[0]))
+                if members else None
+            )
+            if is_synthetic_oneof(ctx, oneof.name, members, features=member_features):
                 synthetic_oneof_indices.add(idx)
 
         # Track which real oneofs we've already rendered

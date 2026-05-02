@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0027 — Editions rendering: phase 2 — thread ResolvedFeatures into rendering helpers
 
-**Status:** draft
+**Status:** implemented
+**Implemented in:** 2026-05-02
 **App:** reproto
 
 ---

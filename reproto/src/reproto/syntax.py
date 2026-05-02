@@ -14,10 +14,22 @@ fdp_syntax() is the one exception: it is called before ctx.syntax is set
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+from google.protobuf.descriptor_pb2 import FieldDescriptorProto, FileDescriptorProto
+
 from .context import Context
+from .feature_resolution import (
+    FIELD_PRESENCE_IMPLICIT,
+    FIELD_PRESENCE_LEGACY_REQUIRED,
+    MESSAGE_ENCODING_DELIMITED,
+)
+
+if TYPE_CHECKING:
+    from .feature_resolution import ResolvedFeatures
 
 
-def fdp_syntax(fdp) -> str:
+def fdp_syntax(fdp: FileDescriptorProto) -> str:
     """Return the syntax of a FileDescriptorProto as a non-empty string.
 
     fdp.syntax is "" for proto2 files (protoc omits the field); normalise
@@ -34,6 +46,7 @@ def packed_option(
     ctx: Context,
     has_field: bool,
     effective_packed: bool,
+    features: ResolvedFeatures | None = None,
 ) -> str | None:
     """Return the string to emit for the packed option, or None to emit nothing.
 
@@ -49,6 +62,12 @@ def packed_option(
       - has_field=False, source=proto3, target=proto2 → emit "true" if
         effective_packed is True (preserve wire semantics across downconversion)
     """
+    if features is not None:
+        # Editions: packed intent is expressed via features { } (phase 3).
+        # Only emit the legacy annotation if it was explicitly present in the source.
+        if has_field:
+            return "true" if effective_packed else "false"
+        return None
     if has_field:
         return "true" if effective_packed else "false"
     if ctx.syntax == ctx.target_syntax:
@@ -62,8 +81,9 @@ def packed_option(
 
 def field_label(
     ctx: Context,
-    field,
+    field: FieldDescriptorProto,
     is_oneof: bool,
+    features: ResolvedFeatures | None = None,
 ) -> str:
     """Return the label keyword to emit before the field type (with trailing space), or ''.
 
@@ -82,12 +102,18 @@ def field_label(
             field.proto3_optional             → 'optional '
             else                              → ''  (implicit singular)
     """
-    from google.protobuf.descriptor_pb2 import FieldDescriptorProto
-
     if is_oneof:
         return ''
     if field.label == FieldDescriptorProto.LABEL_REPEATED:
         return 'repeated '
+    if features is not None:
+        # Editions: presence is governed by ResolvedFeatures, not syntax string.
+        if features.field_presence == FIELD_PRESENCE_LEGACY_REQUIRED:
+            return 'required '
+        if features.field_presence == FIELD_PRESENCE_IMPLICIT:
+            return ''
+        # EXPLICIT or unknown → optional
+        return 'optional '
     if ctx.target_syntax == "proto3":
         if field.label == FieldDescriptorProto.LABEL_REQUIRED:
             # C3: comment line is inserted by re_field.py before calling field_label().
@@ -99,7 +125,12 @@ def field_label(
     return 'optional '
 
 
-def is_synthetic_oneof(ctx: Context, oneof_name: str, members: list) -> bool:
+def is_synthetic_oneof(
+    ctx: Context,
+    oneof_name: str,
+    members: list,
+    features: ResolvedFeatures | None = None,
+) -> bool:
     """Return True iff the given oneof is a proto3 synthetic oneof.
 
     Only meaningful when ctx.target_syntax == "proto3"; returns False
@@ -111,6 +142,13 @@ def is_synthetic_oneof(ctx: Context, oneof_name: str, members: list) -> bool:
         3. exactly one field is in members
         4. that field has proto3_optional == True
     """
+    if features is not None:
+        # Editions: synthetic oneof ↔ single IMPLICIT member (proto3_optional not set).
+        if not oneof_name.startswith('_'):
+            return False
+        if len(members) != 1:
+            return False
+        return features.field_presence == FIELD_PRESENCE_IMPLICIT
     if ctx.target_syntax != "proto3":
         return False
     if not oneof_name.startswith('_'):
@@ -120,15 +158,18 @@ def is_synthetic_oneof(ctx: Context, oneof_name: str, members: list) -> bool:
     return bool(members[0].proto3_optional)
 
 
-def should_render_default(ctx: Context, field) -> bool:
+def should_render_default(ctx: Context, field: FieldDescriptorProto, features: ResolvedFeatures | None = None) -> bool:
     """Return True iff [default = ...] should be rendered for this field.
 
     Always False when ctx.target_syntax == "proto3" (proto3 forbids explicit
     defaults).  The caller must emit a cli_warning in that case if the field
     actually has a default_value set.
+    For editions: False when field_presence == IMPLICIT (implicit fields have no default).
     """
     if not field.HasField('default_value'):
         return False
+    if features is not None:
+        return features.field_presence != FIELD_PRESENCE_IMPLICIT
     return ctx.target_syntax != "proto3"
 
 
@@ -148,7 +189,7 @@ def _camel_case(name: str) -> str:
     return parts[0] + ''.join(p.capitalize() for p in parts[1:] if p)
 
 
-def should_render_json_name(field) -> bool:
+def should_render_json_name(field: FieldDescriptorProto) -> bool:
     """Return True iff [json_name = "..."] should be emitted for this field.
 
     Emit only when the stored json_name differs from the auto-derived camelCase
@@ -206,8 +247,10 @@ def allow_extensions(ctx: Context) -> bool:
     return ctx.target_syntax == "proto2"
 
 
-def allow_groups(ctx: Context) -> bool:
+def allow_groups(ctx: Context, features: ResolvedFeatures | None = None) -> bool:
     """Return True iff TYPE_GROUP fields may be rendered as groups."""
+    if features is not None:
+        return features.message_encoding == MESSAGE_ENCODING_DELIMITED
     return ctx.target_syntax == "proto2"
 
 

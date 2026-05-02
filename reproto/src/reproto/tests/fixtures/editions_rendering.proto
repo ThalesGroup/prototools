@@ -1,0 +1,37 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+//
+// SPDX-License-Identifier: MIT
+
+// Fixture for spec 0027: editions rendering phase 2.
+// Exercises every decision point driven by ResolvedFeatures in syntax.py.
+
+edition = "2023";
+
+package reproto.test.rendering;
+
+// Inner message used as a DELIMITED (group-encoded) field type.
+message Inner {
+  int32 value = 1;
+}
+
+message AllFeatures {
+  // T3 — IMPLICIT: no label emitted (proto3-like implicit singular).
+  string implicit_field = 1 [features.field_presence = IMPLICIT];
+
+  // T2 — EXPLICIT: 'optional' label emitted (edition 2023 default is EXPLICIT,
+  // but we set it explicitly here to make the intent unambiguous).
+  string explicit_field = 2 [features.field_presence = EXPLICIT];
+
+  // T4 — LEGACY_REQUIRED: 'required' label emitted.
+  string required_field = 3 [features.field_presence = LEGACY_REQUIRED];
+
+  // T5/T6 — EXPANDED repeated field: packed_option returns None (encoding
+  // expressed via features {} in phase 3); no [packed=...] annotation.
+  repeated int32 expanded_ids = 4 [features.repeated_field_encoding = EXPANDED];
+
+  // T7 — DELIMITED message encoding: rendered as a group block.
+  Inner delimited_field = 5 [features.message_encoding = DELIMITED];
+
+  // T11/T12 — EXPLICIT field with a default value.
+  int32 with_default = 6 [features.field_presence = EXPLICIT, default = 42];
+}

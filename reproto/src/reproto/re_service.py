@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Any, cast
 
 from google.protobuf.descriptor_pb2 import (
     MethodDescriptorProto,
@@ -37,7 +37,7 @@ class ReServiceDescriptorProto(NodeBase[ServiceDescriptorProto]):
         return self._parent
 
     @parent.setter
-    def parent(self, value) -> None:
+    def parent(self, value: NodeBase[Any]) -> None:
         self._parent = value
 
     @classmethod
@@ -48,7 +48,7 @@ class ReServiceDescriptorProto(NodeBase[ServiceDescriptorProto]):
         self,
         ctx: Context,
         message: ServiceDescriptorProto,
-        **kwargs
+        **kwargs: Any,
     ) -> None:
         """Initialize service-specific attributes and build dependency graph."""
         # Lazy import

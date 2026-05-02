@@ -168,7 +168,14 @@ from pathlib import Path
 
 import re2 as re
 from google.protobuf import message, text_format
-from google.protobuf.descriptor_pb2 import FileDescriptorProto, FileDescriptorSet
+from google.protobuf.descriptor_pb2 import (
+    DescriptorProto,
+    EnumDescriptorProto,
+    FeatureSet,
+    FieldDescriptorProto,
+    FileDescriptorProto,
+    FileDescriptorSet,
+)
 from google.protobuf.message import DecodeError
 from rapidfuzz import fuzz
 
@@ -176,7 +183,7 @@ from lib.warnings import cli_attention, cli_error, cli_info, cli_warning
 from reproto import Context, Fqdn, Node, Options
 
 from .fake_types import parse_fqdn
-from .feature_resolution import build_edition_defaults
+from .feature_resolution import ResolvedFeatures, build_edition_defaults
 from .globals import FILE
 from .load import QualFile, decapsulate, load_from_path
 from .option_messages import create_option_message_classes
@@ -299,14 +306,14 @@ def _dump_resolved_features_yaml(ctx: Context, target_file: str) -> None:
     def _feat_name(feature: str, value: int) -> str:
         return feature_value_name(defaults, feature, value)
 
-    def _resolve(*fsets):
+    def _resolve(*fsets: FeatureSet | None) -> ResolvedFeatures:
         return resolve_features(defaults, ed, *fsets)
 
-    def _feat_dict(resolved) -> dict:
+    def _feat_dict(resolved: ResolvedFeatures) -> dict:
         from dataclasses import asdict
         return {k: _feat_name(k, v) for k, v in asdict(resolved).items()}
 
-    def _overrides_dict(fs) -> dict:
+    def _overrides_dict(fs: FeatureSet | None) -> dict:
         """Return only the explicitly-set fields of a FeatureSet message."""
         if fs is None:
             return {}
@@ -320,7 +327,7 @@ def _dump_resolved_features_yaml(ctx: Context, target_file: str) -> None:
                 pass
         return result
 
-    def _file_features_dict(fs) -> dict:
+    def _file_features_dict(fs: FeatureSet | None) -> dict:
         return _overrides_dict(fs)
 
     # edition_defaults: resolved from defaults table only (no overrides)
@@ -331,7 +338,7 @@ def _dump_resolved_features_yaml(ctx: Context, target_file: str) -> None:
     # file-level resolved and overrides
     file_resolved = _resolve(file_fs)
 
-    def _render_field(field_proto, msg_fs) -> dict:
+    def _render_field(field_proto: FieldDescriptorProto, msg_fs: FeatureSet | None) -> dict:
         field_fs = field_proto.options.features if field_proto.options.HasField('features') else None
         resolved = _resolve(file_fs, msg_fs, field_fs)
         return {
@@ -339,7 +346,7 @@ def _dump_resolved_features_yaml(ctx: Context, target_file: str) -> None:
             "overrides": _overrides_dict(field_fs),
         }
 
-    def _render_enum(enum_proto) -> dict:
+    def _render_enum(enum_proto: EnumDescriptorProto) -> dict:
         enum_fs = enum_proto.options.features if enum_proto.options.HasField('features') else None
         resolved = _resolve(file_fs, enum_fs)
         return {
@@ -347,7 +354,7 @@ def _dump_resolved_features_yaml(ctx: Context, target_file: str) -> None:
             "overrides": _overrides_dict(enum_fs),
         }
 
-    def _render_message(msg_proto) -> dict:
+    def _render_message(msg_proto: DescriptorProto) -> dict:
         msg_fs = msg_proto.options.features if msg_proto.options.HasField('features') else None
         resolved = _resolve(file_fs, msg_fs)
         entry: dict = {
@@ -639,8 +646,8 @@ def reproto(
     else:
         # Ruff does not like `lambda` expressions (E731)
         def phase2_plugin(
-            _ctx,
-            _fdp
+            _ctx: Context,
+            _fdp: FileDescriptorProto,
         ) -> None:
             pass
 

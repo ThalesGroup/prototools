@@ -139,7 +139,7 @@ class ReEnumDescriptorProto(NodeBase[EnumDescriptorProto]):
         self,
         ctx: Context,
         message: EnumDescriptorProto,
-        **kwargs
+        **kwargs: Any,
     ) -> None:
         """Initialize enum-specific attributes.
 

@@ -277,7 +277,7 @@ def _get_fixture_path(name: str) -> Path:
     return Path(str(files.joinpath(name)))
 
 
-def test_editions_resolution_golden(tmp_path):
+def test_editions_resolution_golden(tmp_path: Path) -> None:
     """Compile editions_resolution.proto, run --dump-resolved-features,
     compare YAML output against the checked-in golden file."""
     proto_src = _get_fixture_path("editions_resolution.proto")

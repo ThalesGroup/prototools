@@ -24,7 +24,7 @@ FOI = [
 def is_in(node: NodeBase[Any]) -> bool:
     return 'midas' in node.fqdn or 'datapol' in node.fqdn
 
-def show_graph(ctx: Context, notebook=False, output_path=Path('graph.html')):
+def show_graph(ctx: Context, notebook: bool = False, output_path: Path = Path('graph.html')):
     """
     Display the interactive graph of ctx.nodes where each node has .targets
     """

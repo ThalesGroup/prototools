@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from google.protobuf.descriptor_pb2 import MethodDescriptorProto
 
 from .base import NodeBase
@@ -37,7 +39,7 @@ class ReMethodDescriptorProto(NodeBase[MethodDescriptorProto]):
         return self._parent
 
     @parent.setter
-    def parent(self, value) -> None:
+    def parent(self, value: NodeBase[Any]) -> None:
         self._parent = value
 
     @property
@@ -52,7 +54,7 @@ class ReMethodDescriptorProto(NodeBase[MethodDescriptorProto]):
         self,
         ctx: Context,
         message: MethodDescriptorProto,
-        **kwargs
+        **kwargs: Any,
     ) -> None:
         """Initialize method-specific attributes."""
         # Methods have no child descriptors
