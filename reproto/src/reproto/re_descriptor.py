@@ -6,7 +6,10 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from .re_file import ReFileDescriptorProto
 
 from google.protobuf.descriptor import Descriptor
 from google.protobuf.descriptor_pb2 import (
@@ -23,6 +26,78 @@ from .fake_types import Ref
 from .globals import MESSAGE
 from .re_field import _resolve_field_features
 from .text import CODE, COMMENT, ORPHAN, Block, BlockLine
+
+
+def _render_extend_blocks(
+    ctx: Context,
+    owner: 'ReDescriptorProto | ReFileDescriptorProto',
+    extensions: RepeatedCompositeFieldContainer,
+    depth: int,
+    anomaly_code: str,
+    track_orphans: bool,
+) -> Block:
+    """Render grouped extend blocks for a file or message owner.
+
+    Iterates extensions twice: first to collect distinct extendee short names
+    (preserving encounter order), then to emit one extend { } block per extendee.
+
+    Args:
+        ctx: Rendering context.
+        owner: The file or message node that owns the extension fields.
+        extensions: The repeated extension field descriptors to render.
+        depth: Indentation depth for the extend { } brackets.
+        anomaly_code: Anomaly code for illegal extend blocks ("A5" or "B1").
+        track_orphans: When True, check fd.is_summoned and mark unsummoned
+                       fields and brackets as ORPHAN. When False, emit CODE.
+    """
+    from .anomalies import report
+    from .re_field import ReFieldDescriptorProto
+    from .syntax import allow_extend_block
+    from .utils import short_ref
+
+    out = Block()
+
+    # Pass 1: collect distinct extendee short refs in encounter order.
+    extendee_refs: list[str] = []
+    for e in extensions:
+        extension_proto = cast(FieldDescriptorProto, e)
+        if not allow_extend_block(ctx, extension_proto.extendee):
+            out.append(report(anomaly_code, depth,
+                              msg=getattr(owner, 'name', ''),
+                              file=getattr(owner, 'name', ''),
+                              extendee=extension_proto.extendee))
+            continue
+        fd = ReFieldDescriptorProto(ctx, extension_proto, parent=owner)
+        ref = str(short_ref(ctx, Fqdn(f'message:{fd.extendee}'), owner))
+        if ref not in extendee_refs:
+            extendee_refs.append(ref)
+
+    # Pass 2: emit one extend { } block per extendee.
+    for ref in extendee_refs:
+        block = Block()
+        is_orphan = True
+        for e in extensions:
+            extension_proto = cast(FieldDescriptorProto, e)
+            if not allow_extend_block(ctx, extension_proto.extendee):
+                continue
+            fd = ReFieldDescriptorProto(ctx, extension_proto, parent=owner)
+            if str(short_ref(ctx, Fqdn(f'message:{fd.extendee}'), owner)) != ref:
+                continue
+            blk = fd.render(ctx, depth + 1)
+            if track_orphans:
+                if fd.is_summoned:
+                    is_orphan = False
+                else:
+                    blk.abandon()
+            else:
+                is_orphan = False
+            block.extend(blk)
+        bracket_type = ORPHAN if (track_orphans and is_orphan) else CODE
+        block.insert(0, BlockLine(f'extend {ref} {{', depth, type=bracket_type))
+        block.append(BlockLine('}', level=depth, type=bracket_type))
+        out.extend(block)
+
+    return out
 
 
 class ReDescriptorProto(NodeBase[DescriptorProto]):
@@ -84,105 +159,15 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
         return self.this.reserved_range
 
     def render_extensions(self, ctx: Context, depth: int = 0) -> Block:
-        """
-        Render message extensions grouped by extendee.
-
-        Returns a Block containing extend statements, or an empty Block if
-        no extensions are defined or extensions are not allowed in this syntax.
-        """
-        from .re_field import ReFieldDescriptorProto
-        from .syntax import allow_extend_block
-        from .utils import get_file_node
-
-        out = Block()
-        fdp = get_file_node(self)
-
-        # Warn and skip extend blocks whose extendee is not legal in this syntax.
-        # In proto3, only *Options extendees are allowed (custom options).
-        extendee_short_names: list[str] = []
-        for e in self.extension:
-            extension_proto = cast(FieldDescriptorProto, e)
-            if not allow_extend_block(ctx, extension_proto.extendee):
-                from .anomalies import report
-                out.append(report("B1", depth,
-                                   msg=self.name, extendee=extension_proto.extendee))
-                continue
-            fd = ReFieldDescriptorProto(ctx, extension_proto, parent=self)
-            short_name = fd.short_type_name(ctx, fd.extendee)
-            if short_name not in extendee_short_names:
-                extendee_short_names.append(short_name)
-
-        # Render extend blocks for each extendee
-        for short_name in extendee_short_names:
-            out.append(BlockLine(f'extend {short_name} {{', depth))
-            for e in self.extension:
-                extension_proto = cast(FieldDescriptorProto, e)
-                if not allow_extend_block(ctx, extension_proto.extendee):
-                    continue
-                fd = ReFieldDescriptorProto(ctx, extension_proto, parent=self)
-                name = fd.short_type_name(ctx, fd.extendee)
-                if name != short_name:
-                    continue
-                from .syntax import field_label
-                ext_features = _resolve_field_features(ctx, fdp.this, self.this, extension_proto)
-                lbl = field_label(ctx, extension_proto, is_oneof=False, features=ext_features)
-                out.append(BlockLine(f'{lbl}{fd.short_type_name(ctx)} '
-                                f'{fd.name} = {fd.number};', depth+1))
-            out.append(BlockLine('}', level=depth))
-
-        return out
-
-    def render_oneofs(self, ctx: Context, depth: int = 0) -> Block:
-        """
-        Render oneof blocks with their fields.
-
-        Returns a Block containing oneof statements, or an empty Block if
-        no oneofs are defined.
-        """
-        from .re_field import ReFieldDescriptorProto
-
-        out = Block()
-
-        # Track which oneofs we've already rendered
-        is_done: list[bool] = [False] * len(self.oneof_decl)
-
-        for f in self.field:
-            field_proto = cast(FieldDescriptorProto, f)
-            fd = ReFieldDescriptorProto(ctx, field_proto, parent=self)
-
-            # Skip fields not in a oneof
-            if not fd.HasField("oneof_index"):
-                continue
-
-            # Skip if we've already rendered this oneof
-            if is_done[fd.oneof_index]:
-                continue
-            is_done[fd.oneof_index] = True
-
-            # Render the oneof block
-            oneof = self.oneof_decl[fd.oneof_index]
-            block = Block()
-            is_orphan = True
-
-            for f in self.field:
-                if (f.HasField("oneof_index")
-                    and f.oneof_index == fd.oneof_index):
-                    field_proto2 = cast(FieldDescriptorProto, f)
-                    fd2 = ReFieldDescriptorProto(ctx, field_proto2, parent=self)
-                    field = fd2.render(ctx, depth+1, is_oneof=True)
-                    if fd2.is_summoned:
-                        is_orphan = False
-                    else:
-                        field.abandon()
-                    block.extend(field)
-
-            block.insert(0, BlockLine(f'oneof {oneof.name} {{', depth,
-                         type=ORPHAN if is_orphan else CODE))
-            block.append(BlockLine('}', level=depth,
-                         type=ORPHAN if is_orphan else CODE))
-            out.extend(block)
-
-        return out
+        """Render message extensions grouped by extendee."""
+        return _render_extend_blocks(
+            ctx=ctx,
+            owner=self,
+            extensions=self.extension,
+            depth=depth,
+            anomaly_code='B1',
+            track_orphans=False,
+        )
 
     def render_message_comments(self, depth: int = 0) -> Block:
         """

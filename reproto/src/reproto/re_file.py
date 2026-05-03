@@ -261,9 +261,7 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
         """Reconstruct a FileDescriptorProto as .proto."""
         from .re_descriptor import ReDescriptorProto
         from .re_enum import ReEnumDescriptorProto
-        from .re_field import ReFieldDescriptorProto
         from .re_service import ReServiceDescriptorProto
-        from .utils import short_ref
         
         assert isinstance(depth, int)
 
@@ -385,44 +383,17 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
         out.append_div_maybe(depth)
 
         # --- File extensions --------------------------------------------------
-        from .syntax import allow_extend_block
-        # Warn and skip extend blocks whose extendee is not legal in this syntax.
-        # In proto3, only *Options extendees are allowed (custom options).
-        extendee_short_names: list[str] = []
-        for e in self.extension:
-            extension_proto = cast(FieldDescriptorProto, e)
-            if not allow_extend_block(ctx, extension_proto.extendee):
-                from .anomalies import report
-                out.append(report("A5", depth,
-                                   file=self.name, extendee=extension_proto.extendee))
-                continue
-            fd = ReFieldDescriptorProto(ctx, extension_proto, parent=self)
-            ref = short_ref(ctx, Fqdn(f'message:{fd.extendee}'), self)
-            if ref not in extendee_short_names:
-                extendee_short_names.append(ref)
-
-        for ref in extendee_short_names:
-            block = Block()
-            is_orphan = True
-            for e in self.extension:
-                extension_proto = cast(FieldDescriptorProto, e)
-                if not allow_extend_block(ctx, extension_proto.extendee):
-                    continue
-                fd = ReFieldDescriptorProto(ctx, extension_proto, parent=self)
-                ref2 = short_ref(ctx, Fqdn(f'message:{fd.extendee}'), self)
-                if ref2 != ref:
-                    continue
-                blk = fd.render(ctx, depth+1)
-                if fd.is_summoned:
-                    is_orphan = False
-                else:
-                    blk.abandon()
-                block.extend(blk)
-            block.insert(0, BlockLine(f'extend {ref} {{', depth,
-                                      type = ORPHAN if is_orphan else CODE))
-            block.append(BlockLine('}', level=depth,
-                                   type = ORPHAN if is_orphan else CODE))
-            out.extend(block)
+        from .re_descriptor import _render_extend_blocks
+        extend_block = _render_extend_blocks(
+            ctx=ctx,
+            owner=self,
+            extensions=self.extension,
+            depth=depth,
+            anomaly_code='A5',
+            track_orphans=True,
+        )
+        if extend_block:
+            out.extend(extend_block)
         out.append_div_maybe(depth)
 
         # Remove any empty trailing lines from out
