@@ -444,6 +444,9 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
                 continue
             text, inp = nested.render(ctx, depth+1)
             text.insert(0, BlockLine(f'message {nested.name} {{', depth+1))
+            if text[1].text == '}':  # body is empty: collapse to one line
+                text[0].postpend('}')
+                text.pop(1)
             out.extend(text)
             inputs.extend(inp)
         out.append_div_maybe(depth)

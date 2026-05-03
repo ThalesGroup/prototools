@@ -276,7 +276,7 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
         inputs = Block()
 
         # --- File intro -------------------------------------------------------
-        out.append(BlockLine(f'FILE NAME: {self.name}', depth, COMMENT))
+        out.append(BlockLine(self.name, depth, COMMENT))
         out.append(BlockLine('', depth))
         out.append_div_maybe(depth)
 
@@ -377,6 +377,9 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
                 continue
             lines, inp = message.render(ctx)
             lines.insert(0, BlockLine(f'message {message.name} {{', depth))
+            if lines[1].text == '}':  # body is empty: collapse to one line
+                lines[0].postpend('}')
+                lines.pop(1)
             lines.append_div_maybe(depth)
             out.extend(lines)
             inputs.extend(inp)

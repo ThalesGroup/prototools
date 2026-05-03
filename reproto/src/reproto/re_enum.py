@@ -185,20 +185,20 @@ class ReEnumDescriptorProto(NodeBase[EnumDescriptorProto]):
             assert isinstance(v, EnumValueDescriptorProto)
             value = ReEnumValueDescriptorProto(v, self)
             out.extend(value.render(ctx, depth+1))
+        if self.reserved_range or self.reserved_name:
+            out.append_div_maybe(depth)
 
         # --- Enum reserved ranges --------------------------------------------
         for r in self.reserved_range:
             assert isinstance(r, EnumReservedRange)
             range = ReReservedRange(r)
             out.extend(range.render(depth+1))
-        out.append_div_maybe(depth)
 
-        # --- Enum reserved names =--------------------------------------------
+        # --- Enum reserved names ---------------------------------------------
         for n in self.reserved_name:
             assert isinstance(n, str)
             name = ReReservedName(n)
             out.extend(name.render(ctx, depth+1))
-        out.append_div_maybe(depth)
 
         # --- Enum outro ------------------------------------------------------
         out.append(BlockLine('}', depth))

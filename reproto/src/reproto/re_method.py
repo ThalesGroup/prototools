@@ -112,6 +112,6 @@ class ReMethodDescriptorProto(NodeBase[MethodDescriptorProto]):
                 out.insert(0, BlockLine(string2, depth+2))
                 out.insert(0, BlockLine(string1, depth))
             else:
-                out.insert(0, BlockLine(string1 + ' ' + string2, depth))
+                out.insert(0, BlockLine(string1 + string2, depth))
 
         return out, inputs
