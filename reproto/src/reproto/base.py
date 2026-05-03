@@ -9,167 +9,35 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from typing import Any, Generic, Protocol, Self, TypeVar, runtime_checkable
+from typing import Any, Generic, Self, TypeVar
 
-from google.protobuf.descriptor import Descriptor, FieldDescriptor
-from google.protobuf.internal.extension_dict import _ExtensionDict
+from google.protobuf.descriptor import Descriptor
 from google.protobuf.message import Message
 
 from .context import Context, Fqdn
-from .fake_types import Prefix, Ref, parse_fqdn
-from .globals import ENUM, MESSAGE, METHOD, SERVICE
-from .text import CODE, ORPHAN, Block, BlockLine
+from .fake_types import Prefix, Ref
+from .option_rendering import (
+    DescriptorMessage,
+    OptionsMessage,
+    format_composite_options,
+    render_options,
+    render_options_from_message,
+)
+from .text import Block, BlockLine
+
+__all__ = [
+    "NodeBase",
+    "Node",
+    "DescriptorMessage",
+    "OptionsMessage",
+    "format_composite_options",
+    "render_options",
+    "render_options_from_message",
+]
 
 logger = logging.getLogger(__name__)
 
 MessageT = TypeVar('MessageT', bound=Message)
-
-
-# Protocol for messages that have common descriptor attributes
-@runtime_checkable
-class DescriptorMessage(Protocol):
-    """Protocol for protobuf descriptor messages with common attributes."""
-    name: str
-
-    def HasField(self, field_name: str) -> bool: ...
-
-    @property
-    def options(self) -> Message: ...
-
-
-@runtime_checkable
-class OptionsMessage(Protocol):
-    """
-    Protocol for all *Options message types (FileOptions, MessageOptions, etc.).
-
-    All protobuf options classes inherit from Message and share this interface,
-    allowing generic rendering of both built-in options and extension options.
-    """
-
-    @property
-    def DESCRIPTOR(self) -> Descriptor:
-        """The message type descriptor for this options message."""
-        ...
-
-    def ListFields(self) -> list[tuple[FieldDescriptor, Any]]:
-        """
-        Return a list of (FieldDescriptor, value) tuples for all explicitly set fields.
-
-        Only includes fields that have been set (non-default values in proto2/editions,
-        or explicitly set in proto3). Extension fields are included.
-        """
-        ...
-
-    def HasExtension(self, extension: FieldDescriptor) -> bool:
-        """Check if an extension field is set on this options message."""
-        ...
-
-    @property
-    def Extensions(self) -> _ExtensionDict[Any]:
-        """
-        Access extension fields by descriptor.
-
-        Usage: options.Extensions[extension_descriptor]
-        Returns the value of the extension field.
-        """
-        ...
-
-    def ParseFromString(self, data: bytes) -> None:
-        """Parse serialized protobuf data into this message."""
-        ...
-
-    def SerializeToString(self) -> bytes:
-        """Serialize this options message to a binary string."""
-        ...
-
-
-def render_options_from_message(
-    ctx: Context,
-    opts_msg: Message,
-    options_descriptor: Descriptor,
-    composite: bool = False,
-    depth: int = 0,
-    exclude: set[str] | None = None,
-) -> list[Block]:
-    """Render options from an already-parsed options message.
-
-    Args:
-        ctx: Build context
-        opts_msg: Already-parsed options message
-        options_descriptor: Descriptor for the options type
-        composite: True for inline with commas, False for standalone with 'option' keyword
-        depth: Indentation depth
-        exclude: Set of built-in field names to skip (e.g. {"packed"}).
-
-    Returns:
-        List of text Blocks containing rendered options
-    """
-    from .re_simple import ReFieldDescriptor
-
-    _exclude: set[str] = exclude if exclude is not None else set()
-    blocks: list[Block] = []
-
-    for fd_desc, val in opts_msg.ListFields():
-        if fd_desc.is_extension:
-            continue
-        if fd_desc.name in _exclude:
-            continue
-
-        opt = ReFieldDescriptor(fd_desc)
-
-        if fd_desc.label == FieldDescriptor.LABEL_REPEATED:
-            for v in val:
-                block, is_orp = opt.dump_option(ctx, v, depth)
-                if not block:
-                    continue
-                if not composite:
-                    block.prepend('option ')
-                    block.postpend(';')
-                else:
-                    block.postpend(',')
-                block.set_type(ORPHAN if is_orp else CODE)
-                blocks.append(block)
-        else:
-            block, is_orp = opt.dump_option(ctx, val, depth)
-            if not block:
-                continue
-            if not composite:
-                block.prepend('option ')
-                block.postpend(';')
-            else:
-                block.postpend(',')
-            block.set_type(ORPHAN if is_orp else CODE)
-            blocks.append(block)
-
-    for ext_desc in sorted(
-        ctx.pool.FindAllExtensions(options_descriptor),
-        key=lambda d: d.number
-    ):
-        opt = ReFieldDescriptor(ext_desc)
-        val = opts_msg.Extensions[ext_desc]
-
-        if ext_desc.label == FieldDescriptor.LABEL_REPEATED:
-            for v in val:
-                block, is_orp = opt.dump_option(ctx, v, depth, True)
-                if not composite:
-                    block.prepend('option ')
-                    block.postpend(';')
-                else:
-                    block.postpend(',')
-                block.set_type(ORPHAN if is_orp else CODE)
-                blocks.append(block)
-        else:
-            if opts_msg.HasExtension(ext_desc):
-                block, is_orp = opt.dump_option(ctx, val, depth, True)
-                if not composite:
-                    block.prepend('option ')
-                    block.postpend(';')
-                else:
-                    block.postpend(',')
-                block.set_type(ORPHAN if is_orp else CODE)
-                blocks.append(block)
-
-    return blocks
 
 
 class NodeBase(Generic[MessageT], ABC):
@@ -385,65 +253,7 @@ class NodeBase(Generic[MessageT], ABC):
         prolog: BlockLine,
         depth: int,
     ) -> Block:
-        """
-        Format options in composite/inline style with brackets.
-
-        This helper formats option blocks that were rendered with
-        composite=True, wrapping them in brackets and choosing the
-        appropriate format based on option count and orphan status.
-
-        The formatted output does NOT include a trailing semicolon
-        - the caller should add it as appropriate for the context.
-
-        Args:
-            option_blocks: Block containing rendered option lines
-            prolog: The BlockLine with the declaration (e.g.,
-                   "VALUE = 0" or "string field = 1")
-            depth: Indentation depth
-
-        Returns:
-            Formatted Block ready for semicolon addition
-
-        Format patterns:
-            - No options: prolog only
-            - All orphaned: prolog + orphaned brackets + empty line
-            - One option: prolog with inline brackets
-            - Multiple options: prolog + multi-line brackets
-        """
-        # Remove trailing comma from last CODE line
-        is_orphan = True
-        for i in range(len(option_blocks) - 1, -1, -1):
-            if option_blocks[i].type == CODE:
-                # Found at least one non-orphan option
-                is_orphan = False
-                # Remove trailing comma from last option
-                option_blocks[i].text = option_blocks[i].text[:-1]
-                break
-
-        # Format based on option count and orphan status
-        if len(option_blocks) == 0:
-            # No options at all
-            result = Block([prolog])
-        elif is_orphan:
-            # All options orphaned - brackets marked as ORPHAN
-            # (lines remain for context)
-            option_blocks.insert(0, BlockLine('[', depth, type=ORPHAN))
-            option_blocks.insert(0, prolog)
-            option_blocks.append(BlockLine(']', depth, type=ORPHAN))
-            option_blocks.append(BlockLine('', depth))
-            result = option_blocks
-        elif len(option_blocks) == 1:
-            # Single option - use inline format
-            prolog.postpend(f' [{option_blocks[0].text}]')
-            result = Block([prolog])
-        else:
-            # Multiple options - use multi-line format
-            prolog.postpend(' [')
-            option_blocks.insert(0, prolog)
-            option_blocks.append(BlockLine(']', depth))
-            result = option_blocks
-
-        return result
+        return format_composite_options(self, option_blocks, prolog, depth)
 
     def render_options(
         self,
@@ -454,87 +264,9 @@ class NodeBase(Generic[MessageT], ABC):
         depth: int = 0,
         exclude: set[str] | None = None,
     ) -> list[Block]:
-        """
-        Generic options renderer for all descriptor types.
-
-        Handles both built-in options and extension options.
-
-        Args:
-            ctx: Build context
-            options_descriptor: Descriptor for the options type
-                               (e.g., ctx.eno_desc, ctx.mso_desc, ctx.fdo_desc)
-            options_class: Message class for creating options instances
-                          (e.g., ctx.eno_cls, ctx.mso_cls, ctx.fdo_cls)
-            composite: True for inline options with commas, False for standalone
-                      option statements with 'option' keyword and semicolon
-            depth: Indentation depth
-
-        Returns:
-            List of text Blocks containing rendered options
-        """
-        blocks: list[Block] = []
-
-        # Access fqdn attribute (now guaranteed to exist)
-        if not self.fqdn:
-            logger.warning(
-                "render_options called on object without fqdn attribute"
-            )
-            return blocks
-
-        # Extract prefix and type name from FQDN
-        # FQDN format: '<prefix>:<leading_dot><package>.<name>'
-        # Example: 'enum:.google.protobuf.MyEnum'
-        if ':' not in self.fqdn:
-            logger.warning(f"Invalid FQDN format: {self.fqdn}")
-            return blocks
-
-        prefix, ref = parse_fqdn(self.fqdn)
-
-        # Strip the leading dot to get the full type name for pool lookup
-        # parse_fqdn returns ref with leading dot (e.g., '.google.protobuf.Timestamp')
-        # Pool lookup needs it without the dot (e.g., 'google.protobuf.Timestamp')
-        full_type_name = ref.lstrip('.')
-
-        # Find descriptor in pool based on prefix type
-        try:
-            if prefix == ENUM:
-                desc = ctx.pool.FindEnumTypeByName(full_type_name)
-            elif prefix == MESSAGE:
-                desc = ctx.pool.FindMessageTypeByName(full_type_name)
-            elif prefix == SERVICE:
-                desc = ctx.pool.FindServiceByName(full_type_name)
-            elif prefix == METHOD:
-                desc = ctx.pool.FindMethodByName(full_type_name)
-            else:
-                logger.warning(
-                    f"Unsupported descriptor prefix '{prefix}' "
-                    f"for pool lookup in {self.fqdn}"
-                )
-                return blocks
-
-            # Create fresh options instance and parse from descriptor
-            opts_msg = options_class()
-            opts_msg.ParseFromString(
-                desc.GetOptions().SerializeToString()
-            )
-
-            # Use helper method to render the options
-            blocks = self.render_options_from_message(
-                ctx=ctx,
-                opts_msg=opts_msg,
-                options_descriptor=options_descriptor,
-                composite=composite,
-                depth=depth + 1,
-                exclude=exclude,
-            )
-
-        except (KeyError, ValueError, TypeError, AttributeError) as e:
-            logger.warning(
-                f"Could not find descriptor for {full_type_name} "
-                f"in pool: {e}"
-            )
-
-        return blocks
+        return render_options(
+            self, ctx, options_descriptor, options_class, composite, depth, exclude
+        )
 
     # === Abstract Methods (hooks for subclasses) ===
 

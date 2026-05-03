@@ -22,10 +22,11 @@ from google.protobuf.internal.containers import RepeatedCompositeFieldContainer
 
 from .base import NodeBase
 from .context import Context, Fqdn
+from .source_info import SourceCodeInfoMixin
 from .fake_types import Ref
 from .globals import MESSAGE
 from .re_field import _resolve_field_features
-from .text import CODE, COMMENT, ORPHAN, Block, BlockLine
+from .text import CODE, ORPHAN, Block, BlockLine
 
 
 def _render_extend_blocks(
@@ -100,7 +101,7 @@ def _render_extend_blocks(
     return out
 
 
-class ReDescriptorProto(NodeBase[DescriptorProto]):
+class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
     """Redescriptor for DescriptorProto (message descriptors)."""
     
     @property
@@ -168,104 +169,6 @@ class ReDescriptorProto(NodeBase[DescriptorProto]):
             anomaly_code='B1',
             track_orphans=False,
         )
-
-    def render_message_comments(self, depth: int = 0) -> Block:
-        """
-        Extract and render message-level comments from source_code_info.
-
-        Returns a Block containing comment lines, or an empty Block if
-        no comments are found.
-        """
-        from .re_file import ReFileDescriptorProto
-
-        out = Block()
-
-        # Find the root file to access source_code_info
-        current = self
-        while current.parent is not None:
-            parent = current.parent
-            if isinstance(parent, ReFileDescriptorProto):
-                file = parent
-                break
-            current = parent
-        else:
-            # No file parent found
-            return out
-
-        if not file.source_code_info:
-            return out
-
-        # Calculate the path to this message in the descriptor tree
-        # For top-level messages: [4, index]
-        # For nested messages: [4, parent_index, 3, nested_index, 3, ...]
-        path = self._calculate_source_code_info_path()
-        if not path:
-            return out
-
-        # Find matching location in source_code_info
-        for location in file.source_code_info.location:
-            if list(location.path) == path:
-                # Leading comments before the message
-                if location.leading_comments:
-                    for line in location.leading_comments.strip().split('\n'):
-                        out.append(BlockLine(line, depth, COMMENT))
-
-                # Leading detached comments
-                for detached in location.leading_detached_comments:
-                    for line in detached.strip().split('\n'):
-                        out.append(BlockLine(line, depth, COMMENT))
-
-                # Trailing comments after the message declaration
-                if location.trailing_comments:
-                    for line in location.trailing_comments.strip().split('\n'):
-                        out.append(BlockLine(line, depth, COMMENT))
-
-                break
-
-        return out
-
-    def _calculate_source_code_info_path(self) -> list[int] | None:
-        """
-        Calculate the source_code_info path for this message.
-
-        Returns:
-            List of field numbers representing the path, or None if unable to calculate.
-        """
-        from .re_file import ReFileDescriptorProto
-
-        # Build path from root to this message
-        path_segments = []
-        current = self
-
-        while current.parent is not None:
-            parent = current.parent
-
-            if isinstance(parent, ReFileDescriptorProto):
-                # Top-level message: find index in file.message_type
-                try:
-                    index = next(i for i, m in enumerate(parent.message_type)
-                                if m.name == current.name)
-                    path_segments.insert(0, [4, index])  # 4 = message_type field
-                except StopIteration:
-                    return None
-                break
-            elif isinstance(parent, ReDescriptorProto):
-                # Nested message: find index in parent.nested_type
-                try:
-                    index = next(i for i, m in enumerate(parent.nested_type)
-                                if m.name == current.name)
-                    path_segments.insert(0, [3, index])  # 3 = nested_type field
-                except StopIteration:
-                    return None
-
-            current = parent
-
-        # Flatten the path segments
-        flat_path = []
-        for segment in path_segments:
-            flat_path.extend(segment)
-
-        return flat_path if flat_path else None
 
     def render_reserved(self, ctx: Context, depth: int = 0) -> Block:
         """
