@@ -61,26 +61,64 @@ let
     runHook postPatch
   '';
 
-  # Common arguments shared by all Crane derivations.
+  # ---------------------------------------------------------------------------
+  # Python interpreter — defined early because pyo3Rustflags references it.
+  # ---------------------------------------------------------------------------
+  pythonBin        = pythonPkgs.python;
+  pythonExecutable = "${pythonBin}/bin/python";
+
+  # ---------------------------------------------------------------------------
+  # Shared flag strings — single source of truth for repeated cargo arguments.
+  # ---------------------------------------------------------------------------
+
+  # Cargo flags for workspace-wide derivations (fmt, clippy, tests).
+  # pyo3 crates are included: PYO3_PYTHON is set in commonArgs so every
+  # sandbox can compile prototext_codec without a separate dep cache.
+  workspaceArgs = "--no-default-features --workspace";
+
+  # Cargo package selector used by pyo3-specific derivations (clippy-pyo3,
+  # prototextExtension).
+  pyo3Args = "-p prototext_codec";
+
+  # RUSTFLAGS for linking against CPython.  Set globally in commonArgs so that
+  # all Crane derivations carry the same value — keeping Cargo fingerprints
+  # consistent across the single shared depsCache.  Also exported in the
+  # shellHook so that manual `cargo build -p prototext_codec` aligns.
+  pyo3Rustflags = "-L ${pythonBin}/lib -lpython${pythonPkgs.python.pythonVersion}";
+
+  # ---------------------------------------------------------------------------
+  # Base argument sets — hierarchic composition.
+  #
+  # commonArgs: base for ALL Crane derivations (Rust + pyo3).
+  #   Carries PYO3_PYTHON and RUSTFLAGS globally so that a single depsCache
+  #   covers the whole workspace including prototext_codec.
+  #
+  # protocArgs: extends commonArgs for derivations that invoke protoc.
+  # ---------------------------------------------------------------------------
   commonArgs = {
     inherit src;
-    pname   = "prototools";
-    version = "0.1.4";
-    strictDeps = true;
-    nativeBuildInputs = [ pkgs.cargo pkgs.rustc ];
+    pname             = "prototools";
+    version           = "0.1.4-rebuild";
+    strictDeps        = true;
+    nativeBuildInputs = [ pkgs.cargo pkgs.rustc pythonBin ];
+    env.PYO3_PYTHON   = pythonExecutable;
+    RUSTFLAGS         = pyo3Rustflags;
+  };
+
+  protocArgs = commonArgs // {
+    nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.protobuf ];
+    patchPhase        = protoPatchPhase;
   };
 
   # ---------------------------------------------------------------------------
-  # Shared dependency cache — built once, reused by tests, clippy, and the
-  # final package.  Only rebuilt when Cargo.lock or dependency sources change.
+  # Shared dependency cache — built once, reused by all Crane derivations.
+  # Covers the whole workspace including prototext_codec: PYO3_PYTHON and
+  # RUSTFLAGS are present in commonArgs so the pyo3 build script succeeds.
+  # buildDepsOnly stubs build.rs with a dummy source, so no patchPhase needed.
   # ---------------------------------------------------------------------------
   depsCache = crane.buildDepsOnly (commonArgs // {
     pname          = "prototools-deps";
-    # Exclude the pyo3 crate: it requires a Python interpreter (PYO3_PYTHON)
-    # that is not available in commonArgs.  Its deps are handled by pyo3DepsCache.
-    # buildDepsOnly uses a dummy source (no fixtures/schemas/), so protoPatchPhase
-    # cannot run.  build.rs is also stubbed, so no patchPhase is needed.
-    cargoExtraArgs = "--no-default-features --workspace --exclude prototext_codec";
+    cargoExtraArgs = workspaceArgs;
   });
 
   # ---------------------------------------------------------------------------
@@ -93,31 +131,27 @@ let
     pname = "prototools-fmt";
   });
 
-  rustClippy = crane.cargoClippy (commonArgs // {
+  rustClippy = crane.cargoClippy (protocArgs // {
     pname                = "prototools-clippy";
     cargoArtifacts       = depsCache;
-    cargoExtraArgs       = "--no-default-features --workspace --exclude prototext_codec";
+    cargoExtraArgs       = workspaceArgs;
     cargoClippyExtraArgs = "--all-targets -- --deny warnings";
-    patchPhase           = protoPatchPhase;
-    nativeBuildInputs    = commonArgs.nativeBuildInputs ++ [ pkgs.protobuf ];
   });
 
-  rustClippyPyo3 = crane.cargoClippy (pyo3CommonArgs // {
+  rustClippyPyo3 = crane.cargoClippy (commonArgs // {
     pname                = "prototools-clippy-pyo3";
-    cargoArtifacts       = pyo3DepsCache;
-    cargoExtraArgs       = "-p prototext_codec";
+    cargoArtifacts       = depsCache;
+    cargoExtraArgs       = pyo3Args;
     cargoClippyExtraArgs = "--all-targets -- --deny warnings";
   });
 
   # ---------------------------------------------------------------------------
   # Tests — workspace-wide, reusing depsCache.
   # ---------------------------------------------------------------------------
-  rustTests = crane.cargoTest (commonArgs // {
-    pname             = "prototools-tests";
-    cargoArtifacts    = depsCache;
-    cargoExtraArgs    = "--no-default-features --workspace --exclude prototext_codec";
-    patchPhase        = protoPatchPhase;
-    nativeBuildInputs = (commonArgs.nativeBuildInputs or []) ++ [ pkgs.protobuf ];
+  rustTests = crane.cargoTest (protocArgs // {
+    pname          = "prototools-tests";
+    cargoArtifacts = depsCache;
+    cargoExtraArgs = workspaceArgs;
   });
 
   # ---------------------------------------------------------------------------
@@ -125,12 +159,11 @@ let
   # checkPhase asserts that fmt, clippy, and tests all passed by referencing
   # their store paths (Nix fails the build if any derivation is missing).
   # ---------------------------------------------------------------------------
-  prototools = crane.buildPackage (commonArgs // {
+  prototools = crane.buildPackage (protocArgs // {
     pname          = "prototools";
     cargoArtifacts = rustTests;
     cargoExtraArgs = "--no-default-features -p prototext";
-    patchPhase     = protoPatchPhase;
-    nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.protobuf pkgs.installShellFiles ];
+    nativeBuildInputs = protocArgs.nativeBuildInputs ++ [ pkgs.installShellFiles ];
     # doCheck = false: tests are already run by the dedicated rust-tests
     # derivation (which has protoc in nativeBuildInputs).
     doCheck        = false;
@@ -168,36 +201,23 @@ let
   # ---------------------------------------------------------------------------
   # PyO3 extension — prototext_codec Python package
   # ---------------------------------------------------------------------------
-  pythonBin        = pythonPkgs.python;
-  pythonExecutable = "${pythonBin}/bin/python";
 
-  # commonArgs extended with the three values required for a PyO3 Crane build.
-  pyo3CommonArgs = commonArgs // {
-    env.PYO3_PYTHON    = pythonExecutable;
-    RUSTFLAGS          = "-L ${pythonBin}/lib -lpython${pythonPkgs.python.pythonVersion}";
-    nativeBuildInputs  = commonArgs.nativeBuildInputs ++ [ pythonBin ];
-  };
-
-  # Dependency cache for the pyo3 crate — built once, reused by the extension.
-  # RUSTFLAGS must match exactly between here and prototextExtension so that
-  # Cargo fingerprints align and .rlib artifacts are reused (not recompiled).
-  pyo3DepsCache = crane.buildDepsOnly (pyo3CommonArgs // {
-    pname          = "prototext-codec-deps";
-    cargoExtraArgs = "-p prototext_codec";
-    doCheck        = false;
-    # Skip the default `cargo check` pass: the build pass below produces .rlib
-    # files that are a strict superset of what check produces.
-    buildPhaseCargoCommand = "cargoWithProfile build -p prototext_codec";
-  });
-
-  # Compile the cdylib and run post_build to generate the .pyi stub.
-  prototextExtension = crane.buildPackage (pyo3CommonArgs // {
+  # Compile the cdylib and the stub-generator binary in a single cargo
+  # invocation, then run the already-compiled binary in postBuild to generate
+  # the .pyi stub.  This avoids the previous double-compile that occurred when
+  # postBuild called `cargo run --bin prototext_post_build` separately.
+  #
+  # Chains off the shared depsCache (not a separate pyo3DepsCache): commonArgs
+  # already carries PYO3_PYTHON and RUSTFLAGS, so the pyo3 build script
+  # succeeds and Cargo fingerprints stay aligned with the rest of the workspace.
+  #
+  # Note: the clippy binary cannot be patched on macos-15-intel due to an
+  # install_name_tool path-length limit, so prototextExtension chains off
+  # depsCache rather than rustClippyPyo3.  CI enforces pyo3 clippy separately.
+  prototextExtension = crane.buildPackage (commonArgs // {
     pname          = "prototext-codec-ext";
-    # Chain off pyo3DepsCache rather than rustClippyPyo3: the clippy binary
-    # cannot be patched on macos-15-intel (install_name_tool path-length limit).
-    # CI enforces clippy separately via the rust-clippy-pyo3 derivation.
-    cargoArtifacts = pyo3DepsCache;
-    cargoExtraArgs = "-p prototext_codec --lib";
+    cargoArtifacts = depsCache;
+    cargoExtraArgs = "${pyo3Args} --lib";
     doCheck        = false;
     # Clear stale Cargo fingerprints so the pyo3 build script re-runs here.
     preBuild = ''
@@ -252,6 +272,7 @@ let
   };
 
   # Common Python dependencies for reproto (used by both reprotoBare and reproto).
+  # reprotoPropagatedDeps: runtime deps only (no test tools, no codec).
   reprotoPropagatedDeps = [
     pythonPkgs.click
     pythonPkgs.google-re2
@@ -262,6 +283,17 @@ let
     pythonPkgs.rapidfuzz
     pythonPkgs.rich
     pythonPkgs.types-protobuf
+  ];
+
+  # Full Python dependency set for running the reproto test suite and for the
+  # dev-shell PYTHONPATH.  Extends reprotoPropagatedDeps with the codec, pytest,
+  # and tree-sitter.  Used by reprotoTests, pythonLint, and dev-shell.
+  reprotoTestDeps = reprotoPropagatedDeps ++ [
+    prototextCodec
+    pythonPkgs.pytest
+    pythonPkgs."pytest-xdist"
+    pythonPkgs.tree-sitter
+    pythonPkgs.tree-sitter-language-pack
   ];
 
   # Bootstrap package — installs reproto without running tests.
@@ -336,13 +368,7 @@ let
       pkgs.protobuf
       pkgs.buf
       prototools
-      (pythonPkgs.python.withPackages (_: reprotoPropagatedDeps ++ [
-        prototextCodec
-        pythonPkgs.pytest
-        pythonPkgs."pytest-xdist"
-        pythonPkgs.tree-sitter
-        pythonPkgs.tree-sitter-language-pack
-      ]))
+      (pythonPkgs.python.withPackages (_: reprotoTestDeps))
     ];
   } ''
     export PYTHONPATH="${reprotoSrcWithCodegen}/src"
@@ -446,7 +472,7 @@ EOF
 
       export PATH="${toString ./.}/bin:${pythonBin}/bin:${toString ./.}/target/release:$PATH"
 
-      export PYTHONPATH="$PWD/reproto/src:${pythonPkgs.makePythonPath (reproto.propagatedBuildInputs ++ [ pythonPkgs.pytest pythonPkgs."pytest-xdist" pythonPkgs.tree-sitter pythonPkgs.tree-sitter-language-pack ])}:$PYTHONPATH"
+      export PYTHONPATH="$PWD/reproto/src:${pythonPkgs.makePythonPath reprotoTestDeps}:$PYTHONPATH"
 
       # Write .env so VS Code / Pylance picks up the interpreter and PYTHONPATH.
       echo "PYTHON_INTERPRETER=${pythonExecutable}" > .env
@@ -482,14 +508,19 @@ RUFFEOF
           "${reprotoBare}" "$PWD/reproto"
       fi
 
-      # Build prototext if not already built.
-      cargo build --release --locked -p prototext
+      # Build prototext only when the binary is absent or sources are newer.
+      # Cargo's own incremental logic handles finer-grained staleness within
+      # the working tree; this guard avoids the ~23s invocation overhead on
+      # warm nix-shell entries when nothing has changed.
+      if [[ ! -f "$PWD/target/release/prototext" ]] || \
+         [[ "$PWD/prototext/src" -nt "$PWD/target/release/prototext" ]]; then
+        cargo build --release --locked -p prototext
+      fi
 
-      # Set RUSTFLAGS after the prototext build so that manual
-      # `cargo build -p prototext_codec` uses the same linker flags as the Nix
-      # build, keeping Cargo fingerprints aligned.  Setting it before would
-      # invalidate prototext's fingerprint (it doesn't need -lpython).
-      export RUSTFLAGS="-L ${pythonBin}/lib -lpython${pythonPkgs.python.pythonVersion}"
+      # RUSTFLAGS is set globally in commonArgs (Nix build) so that all Crane
+      # derivations share a single fingerprint.  Export the same value here so
+      # that manual `cargo build -p prototext_codec` in the shell aligns.
+      export RUSTFLAGS="${pyo3Rustflags}"
 
       # Generate man page into man/man1/ and expose it via MANPATH.
       if command -v prototext-gen-man &>/dev/null; then
