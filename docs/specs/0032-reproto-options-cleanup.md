@@ -4,7 +4,7 @@ SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
 SPDX-License-Identifier: MIT
 -->
 
-# 0032 — reproto: eliminate the Re\*Options class family
+# 0032 — reproto: eliminate the `Re*Options` class family
 
 **Status:** implemented 2026-05-03
 **App:** reproto
