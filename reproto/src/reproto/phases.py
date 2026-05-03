@@ -699,7 +699,7 @@ def _phase5_reachability(
             name = ref
             assert name in topo.files
             file = topo.files[name]
-            if hasattr(file, 'qfile') and file.is_seed:
+            if not file.is_ref() and file.is_seed:
                 node.is_reachable = True
                 current_reachables.add(node)
 

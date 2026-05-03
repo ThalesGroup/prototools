@@ -390,7 +390,7 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
             fd = ReFieldDescriptorProto(ctx, field_proto, parent=self)
 
             # Non-oneof field (including synthetic-oneof members): render directly
-            if (not fd.HasField("oneof_index")
+            if (not field_proto.HasField("oneof_index")
                     or fd.oneof_index in synthetic_oneof_indices):
                 field = fd.render(ctx, depth+1)
                 if not fd.is_summoned:

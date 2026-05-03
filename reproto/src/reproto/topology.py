@@ -40,14 +40,15 @@ class File:
         self.name = name
         self.is_pruned = False
         self.targets: set[File] = set()
-        self._qfile: QualFile
+        self._qfile: QualFile | None = None
         self.is_reachable = False
 
     def is_ref(self) -> bool:
-        return not hasattr(self, '_qfile')
-    
+        return self._qfile is None
+
     @property
     def qfile(self) -> QualFile:
+        assert self._qfile is not None
         return self._qfile
 
     @qfile.setter

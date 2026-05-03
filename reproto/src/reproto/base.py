@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Callable
 from typing import Any, Generic, Self, TypeVar
 
 from google.protobuf.descriptor import Descriptor
@@ -197,10 +196,6 @@ class NodeBase(Generic[MessageT], ABC):
     def options(self) -> OptionsMessage:
         # All descriptor messages have options
         return self.this.options  # type: ignore[return-value]
-
-    @property
-    def HasField(self) -> Callable[..., bool]:
-        return self.this.HasField
 
     @property
     def parent(self) -> 'NodeBase[Any] | None':

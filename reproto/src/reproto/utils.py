@@ -343,6 +343,9 @@ def shorten_type_name(
                 if do_more and name.startswith(f'.{container_name}.'):
                     return True, name[len(container_name) + 1:]
                 else:
+                    # Return do_more=False: shortening must be contiguous from
+                    # the package root, so a non-matching level stops all
+                    # further stripping by callers.
                     return False, name
 
     from .re_descriptor import ReDescriptorProto
