@@ -83,6 +83,95 @@ class OptionsMessage(Protocol):
         ...
 
 
+def render_options_from_message(
+    ctx: Context,
+    opts_msg: Message,
+    options_descriptor: Descriptor,
+    composite: bool = False,
+    depth: int = 0,
+    exclude: set[str] | None = None,
+) -> list[Block]:
+    """Render options from an already-parsed options message.
+
+    Args:
+        ctx: Build context
+        opts_msg: Already-parsed options message
+        options_descriptor: Descriptor for the options type
+        composite: True for inline with commas, False for standalone with 'option' keyword
+        depth: Indentation depth
+        exclude: Set of built-in field names to skip (e.g. {"packed"}).
+
+    Returns:
+        List of text Blocks containing rendered options
+    """
+    from .re_simple import ReFieldDescriptor
+
+    _exclude: set[str] = exclude if exclude is not None else set()
+    blocks: list[Block] = []
+
+    for fd_desc, val in opts_msg.ListFields():
+        if fd_desc.is_extension:
+            continue
+        if fd_desc.name in _exclude:
+            continue
+
+        opt = ReFieldDescriptor(fd_desc)
+
+        if fd_desc.label == FieldDescriptor.LABEL_REPEATED:
+            for v in val:
+                block, is_orp = opt.dump_option(ctx, v, depth)
+                if not block:
+                    continue
+                if not composite:
+                    block.prepend('option ')
+                    block.postpend(';')
+                else:
+                    block.postpend(',')
+                block.set_type(ORPHAN if is_orp else CODE)
+                blocks.append(block)
+        else:
+            block, is_orp = opt.dump_option(ctx, val, depth)
+            if not block:
+                continue
+            if not composite:
+                block.prepend('option ')
+                block.postpend(';')
+            else:
+                block.postpend(',')
+            block.set_type(ORPHAN if is_orp else CODE)
+            blocks.append(block)
+
+    for ext_desc in sorted(
+        ctx.pool.FindAllExtensions(options_descriptor),
+        key=lambda d: d.number
+    ):
+        opt = ReFieldDescriptor(ext_desc)
+        val = opts_msg.Extensions[ext_desc]
+
+        if ext_desc.label == FieldDescriptor.LABEL_REPEATED:
+            for v in val:
+                block, is_orp = opt.dump_option(ctx, v, depth, True)
+                if not composite:
+                    block.prepend('option ')
+                    block.postpend(';')
+                else:
+                    block.postpend(',')
+                block.set_type(ORPHAN if is_orp else CODE)
+                blocks.append(block)
+        else:
+            if opts_msg.HasExtension(ext_desc):
+                block, is_orp = opt.dump_option(ctx, val, depth, True)
+                if not composite:
+                    block.prepend('option ')
+                    block.postpend(';')
+                else:
+                    block.postpend(',')
+                block.set_type(ORPHAN if is_orp else CODE)
+                blocks.append(block)
+
+    return blocks
+
+
 class NodeBase(Generic[MessageT], ABC):
     """Base class for all redescriptor nodes in the descriptor graph.
 
@@ -286,100 +375,9 @@ class NodeBase(Generic[MessageT], ABC):
         depth: int = 0,
         exclude: set[str] | None = None,
     ) -> list[Block]:
-        """
-        Render options from an already-parsed options message.
-
-        This helper method contains the core rendering logic used by
-        both render_options() and by classes like ReEnumValueDescriptorProto
-        that need to render options from a pre-parsed message.
-
-        Args:
-            ctx: Build context
-            opts_msg: Already-parsed options message
-            options_descriptor: Descriptor for the options type
-            composite: True for inline with commas, False for
-                      standalone with 'option' keyword
-            depth: Indentation depth
-            exclude: Set of built-in field names to skip (e.g. {"packed"}).
-                     The caller is responsible for rendering excluded fields.
-
-        Returns:
-            List of text Blocks containing rendered options
-        """
-        from .re_simple import ReFieldDescriptor
-
-        _exclude: set[str] = exclude if exclude is not None else set()
-        blocks: list[Block] = []
-
-        # === Render built-in options ===
-        # Use ListFields() to get only fields that are set
-        for fd_desc, val in opts_msg.ListFields():
-            # Skip extension fields - handled separately
-            if fd_desc.is_extension:
-                continue
-            # Skip fields explicitly excluded by the caller
-            if fd_desc.name in _exclude:
-                continue
-
-            opt = ReFieldDescriptor(fd_desc)
-
-            if fd_desc.label == FieldDescriptor.LABEL_REPEATED:
-                # val is already the list/repeated container
-                for v in val:
-                    block, is_orp = opt.dump_option(ctx, v, depth)
-                    if not block:  # nothing rendered
-                        continue
-                    if not composite:
-                        block.prepend('option ')
-                        block.postpend(';')
-                    else:
-                        block.postpend(',')
-                    block.set_type(ORPHAN if is_orp else CODE)
-                    blocks.append(block)
-            else:
-                # Singular field
-                block, is_orp = opt.dump_option(ctx, val, depth)
-                if not block:  # nothing rendered
-                    continue
-                if not composite:
-                    block.prepend('option ')
-                    block.postpend(';')
-                else:
-                    block.postpend(',')
-                block.set_type(ORPHAN if is_orp else CODE)
-                blocks.append(block)
-
-        # === Render extension options ===
-        # Sort by extension number for reproducibility
-        for ext_desc in sorted(
-            ctx.pool.FindAllExtensions(options_descriptor),
-            key=lambda d: d.number
-        ):
-            opt = ReFieldDescriptor(ext_desc)
-            val = opts_msg.Extensions[ext_desc]
-
-            if ext_desc.label == FieldDescriptor.LABEL_REPEATED:
-                for v in val:
-                    block, is_orp = opt.dump_option(ctx, v, depth, True)
-                    if not composite:
-                        block.prepend('option ')
-                        block.postpend(';')
-                    else:
-                        block.postpend(',')
-                    block.set_type(ORPHAN if is_orp else CODE)
-                    blocks.append(block)
-            else:
-                if opts_msg.HasExtension(ext_desc):
-                    block, is_orp = opt.dump_option(ctx, val, depth, True)
-                    if not composite:
-                        block.prepend('option ')
-                        block.postpend(';')
-                    else:
-                        block.postpend(',')
-                    block.set_type(ORPHAN if is_orp else CODE)
-                    blocks.append(block)
-
-        return blocks
+        return render_options_from_message(
+            ctx, opts_msg, options_descriptor, composite, depth, exclude
+        )
 
     def format_composite_options(
         self,

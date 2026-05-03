@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0031 — reproto code-quality cleanup
 
-**Status:** in progress (rounds 1–2 implemented 2026-05-02)
+**Status:** in progress (rounds 1–3 implemented 2026-05-02/03)
 **App:** reproto
 
 ---

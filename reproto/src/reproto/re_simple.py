@@ -8,20 +8,13 @@ from __future__ import annotations
 
 # Re-export everything from option_renderers
 from .option_renderers import (
-    ReEnumOptions,
     ReExtensions,
-    ReFieldOptions,
-    ReFileOptions,
-    ReMessageOptions,
-    ReMethodOptions,
     ReOptions,
-    ReServiceOptions,
 )
 
 # Re-export everything from simple_types
 from .simple_types import (
     ReExtensionRange,
-    ReExtensionRangeOptions,
     ReFieldDescriptor,
     ReMessage,
     ReReservedRange,
@@ -34,13 +27,6 @@ __all__ = [
     "ReMessage",
     "ReReservedRange",
     # From option_renderers
-    "ReEnumOptions",
-    "ReExtensionRangeOptions",
     "ReExtensions",
-    "ReFieldOptions",
-    "ReFileOptions",
-    "ReMessageOptions",
-    "ReMethodOptions",
     "ReOptions",
-    "ReServiceOptions",
 ]

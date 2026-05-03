@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Sequence
 from typing import Any
 
 # Note: These types must be imported from the actual runtime backend (_upb)
@@ -370,12 +369,24 @@ class ReExtensionRange:
                     f'to {extension_range.end - 1}')
 
         # --- ExtensionRange options -------------------------------------------
-        options = ReExtensionRangeOptions(self.options)
-        texts = options.render(ctx, depth, ['declaration'])
+        from .base import render_options_from_message as _rom
+        texts = _rom(
+            ctx=ctx,
+            opts_msg=self.options,
+            options_descriptor=self.options.DESCRIPTOR,
+            composite=True,
+            depth=depth + 1,
+            exclude={'declaration'},
+        )
+        # Strip trailing comma from last non-orphan block
+        for text in reversed(texts):
+            if text and text[0].type != ORPHAN:
+                text[-1].text = text[-1].text.rstrip(',')
+                break
         set_options = 0
         for text in texts:
-            if text and not text[0].text.startswith('//'):
-                set_options +=1
+            if text and text[0].type != ORPHAN:
+                set_options += 1
 
         # Maybe there were no options?
         if set_options == 0:
@@ -389,7 +400,7 @@ class ReExtensionRange:
                 out.append(BlockLine('// ]', depth))
 
         # Maybe there was a single option that fits on a single line?
-        elif len(texts) == 1 and len(texts[0]) == 1:
+        elif set_options == 1 and len(texts) == 1 and len(texts[0]) == 1:
             # A single option that fits on the same line
             short_option = f'[{texts[0][0].text}];'
             string2 = string + ' ' + short_option
@@ -408,49 +419,6 @@ class ReExtensionRange:
             out.append(BlockLine('];', depth))
 
         return out
-
-
-# === ExtensionRangeOptions decorator ==========================================
-
-class ReExtensionRangeOptions:
-
-    def __init__(self, options: ExtensionRangeOptions) -> None:
-        assert isinstance(options, Message)
-        self.this = options
-
-    @property
-    def ListFields(self) -> Callable[[], Sequence[tuple[FieldDescriptor, Any]]]:
-        return self.this.ListFields
-
-
-    def render(
-        self,
-        ctx: Context,
-        depth: int = 0,
-        filter_out: list[str] = [],
-    ) -> list[Block]:
-        """Dump the options from an ExtensionRangeOptions"""
-        assert isinstance(depth, int)
-        assert (isinstance(filter_out, list)
-            and all(isinstance(option, str) for option in filter_out))
-        texts: list[Block] = []
-
-        # We want to dump only explicitly set options
-        for o, value in self.ListFields():
-            option = ReFieldDescriptor(o)
-            text, is_orphan =  option.dump_option(ctx, value, depth+1)
-            if is_orphan:
-                for line in text:
-                    line.type = ORPHAN
-            texts.append(text)
-        is_last = True
-        for text in reversed(texts):
-            if is_last:
-                if text and not text[0].text.startswith('//'):
-                    is_last = False
-            elif text and not text[0].text.startswith('//'):
-                text[-1].text += ','
-        return texts
 
 
 # === EnumOptions decorator ====================================================

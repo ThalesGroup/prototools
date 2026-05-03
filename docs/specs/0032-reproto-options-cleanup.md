@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0032 — reproto: eliminate the Re\*Options class family
 
-**Status:** draft
+**Status:** implemented 2026-05-03
 **App:** reproto
 
 ---
