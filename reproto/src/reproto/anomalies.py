@@ -193,6 +193,6 @@ def report(code: str, depth: int, **kwargs: Any) -> BlockLine:
     anomaly = ANOMALIES[code]
     ctx = _Ignore(kwargs)
     cli_warning(anomaly.stderr.format_map(ctx))
-    prefix = f'// {anomaly.severity}[{anomaly.tag}]:'
+    prefix = f'{anomaly.severity}[{anomaly.tag}]:'
     body = anomaly.comment.format_map(ctx)
     return BlockLine(f'{prefix} {body}', depth, COMMENT)

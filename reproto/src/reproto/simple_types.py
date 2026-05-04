@@ -192,10 +192,10 @@ class ReExtensionRange:
             string += ';'
             out.append(BlockLine(string, depth))
             if texts:
-                out.append(BlockLine('// [', depth))
+                out.append(BlockLine('[', depth, ORPHAN))
                 for text in texts:
                     out.extend(text)
-                out.append(BlockLine('// ]', depth))
+                out.append(BlockLine(']', depth, ORPHAN))
 
         # Maybe there was a single option that fits on a single line?
         elif set_options == 1 and len(texts) == 1 and len(texts[0]) == 1:

@@ -242,6 +242,7 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
 
     def render(self, ctx: Context, depth: int = 0, is_oneof: bool = False) -> Block:
         """Reconstruct field as .proto."""
+        from .syntax import allow_groups
         from .utils import short_ref
 
         assert isinstance(depth, int)
@@ -255,6 +256,7 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
         # through to the shared options-rendering block below so that field
         # options (including custom extensions) are not silently dropped.
         is_map_field = False
+        map_string = ''
         if (self.type == FieldDescriptorProto.TYPE_MESSAGE and
                 self.label == FieldDescriptorProto.LABEL_REPEATED):
             from .re_descriptor import ReDescriptorProto
@@ -292,7 +294,6 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
             string += label_str
 
             # --- Field type and name ------------------------------------------
-            from .syntax import allow_groups
             if self.type != FieldDescriptorProto.TYPE_GROUP or not allow_groups(ctx, features=field_features):
                 if self.type == FieldDescriptorProto.TYPE_GROUP:
                     from .anomalies import report
