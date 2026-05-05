@@ -40,10 +40,14 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
 
-      - name: Generate man page
+      - name: Install Python dependencies for reproto
+        run: pip install --quiet click google-re2 lark protobuf pyvis pyyaml rapidfuzz rich
+
+      - name: Generate man pages
         run: |
           mkdir -p man/man1
           cargo run --release -p prototext --bin prototext-gen-man -- man/man1
+          PYTHONPATH=reproto/src python3 -m reproto.gen_man man/man1
 
       - name: Copy docs into website/content
         run: |
@@ -60,6 +64,9 @@ jobs:
           # README → readme.md
           inject README.md website/content/readme.md
 
+          # reproto/README.md → reproto-readme.md
+          inject reproto/README.md website/content/reproto-readme.md
+
           # docs/*.md (top-level only, not specs/)
           for f in docs/*.md; do
             name=$(basename "$f" .md | tr '[:upper:]' '[:lower:]' | tr '_' '-')
@@ -74,7 +81,7 @@ jobs:
             inject "$f" "website/content/specs/${name}.md"
           done
 
-          # man page → website/content/man-page.md
+          # prototext man page → website/content/man-page.md
           {
             printf '+++\ntitle = "Man Page"\n+++\n\n'
             printf '<div class="manpage">\n'
@@ -82,6 +89,15 @@ jobs:
               || cat man/man1/prototext.1
             printf '</div>\n'
           } > website/content/man-page.md
+
+          # reproto man page → website/content/reproto-man-page.md
+          {
+            printf '+++\ntitle = "reproto Man Page"\n+++\n\n'
+            printf '<div class="manpage">\n'
+            mandoc -T html -O fragment man/man1/reproto.1 2>/dev/null \
+              || cat man/man1/reproto.1
+            printf '</div>\n'
+          } > website/content/reproto-man-page.md
 
       - name: Build
         run: cd website && zola build
