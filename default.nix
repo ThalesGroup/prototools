@@ -173,7 +173,7 @@ let
       # Install shell completions.
       installShellCompletion --cmd prototext \
         --bash <(PROTOTEXT_COMPLETE=bash $out/bin/prototext | sed \
-          -e '/^\s*) )$/a\    compopt -o filenames 2>/dev/null' \
+          -e 's|-o nospace -o bashdefault|-o nospace -o filenames -o bashdefault|g' \
           -e 's|words\[COMP_CWORD\]="$2"|local _cur="''${COMP_LINE:0:''${COMP_POINT}}"; _cur="''${_cur##* }"; words[COMP_CWORD]="''${_cur}"|') \
         --zsh  <(PROTOTEXT_COMPLETE=zsh  $out/bin/prototext) \
         --fish <(PROTOTEXT_COMPLETE=fish $out/bin/prototext)
@@ -543,10 +543,10 @@ components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
       fi
       unset _toolchain_content
 
-      # bash completion for prototext (workaround for clap_complete path-completion bugs)
+      # bash completion for prototext
       if command -v prototext &>/dev/null; then
         source <(PROTOTEXT_COMPLETE=bash prototext | sed \
-          -e '/^\s*) )$/a\    compopt -o filenames 2>/dev/null' \
+          -e 's|-o nospace -o bashdefault|-o nospace -o filenames -o bashdefault|g' \
           -e 's|words\[COMP_CWORD\]="$2"|local _cur="''${COMP_LINE:0:''${COMP_POINT}}"; _cur="''${_cur##* }"; words[COMP_CWORD]="''${_cur}"|')
       fi
 
