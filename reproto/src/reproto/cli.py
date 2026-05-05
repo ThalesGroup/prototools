@@ -5,19 +5,12 @@
 from __future__ import annotations
 
 import collections.abc
-import importlib.metadata
 import logging
 import sys
 from pathlib import Path
 
 import click
 from click.shell_completion import CompletionItem
-
-
-try:
-    _reproto_version = importlib.metadata.version('reproto')
-except importlib.metadata.PackageNotFoundError:
-    _reproto_version = 'dev'
 
 logger = logging.getLogger()  # root logger
 logger.setLevel(logging.INFO)
@@ -216,7 +209,7 @@ class _SectionedCommand(click.Command):
     help='Parse PB_FILES and generate output based on the options given.',
 )
 @click.version_option(
-    version=_reproto_version,
+    package_name='reproto',
     prog_name='reproto',
 )
 # --- Input ---

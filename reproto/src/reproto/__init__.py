@@ -25,31 +25,62 @@ Example:
     file = ReFileDescriptorProto(ctx, file_descriptor_proto)
 """
 
+from __future__ import annotations
 
-_LAZY: dict[str, tuple[str, str]] = {
-    "Node":                       (".base",        "Node"),
-    "NodeBase":                   (".base",        "NodeBase"),
-    "Context":                    (".context",     "Context"),
-    "Fqdn":                       (".context",     "Fqdn"),
-    "Options":                    (".context",     "Options"),
-    "QualFile":                   (".load",        "QualFile"),
-    "ReDescriptorProto":          (".re_descriptor",   "ReDescriptorProto"),
-    "ReEnumDescriptorProto":      (".re_enum",         "ReEnumDescriptorProto"),
-    "ReEnumValueDescriptorProto": (".re_enum_value",   "ReEnumValueDescriptorProto"),
-    "ReFieldDescriptorProto":     (".re_field",        "ReFieldDescriptorProto"),
-    "ReFileDescriptorProto":      (".re_file",         "ReFileDescriptorProto"),
-    "ReMethodDescriptorProto":    (".re_method",       "ReMethodDescriptorProto"),
-    "ReServiceDescriptorProto":   (".re_service",      "ReServiceDescriptorProto"),
-    "reproto":                    (".reproto",         "reproto"),
-    "short_ref":                  (".utils",           "short_ref"),
-    "shorten_type_name":          (".utils",           "shorten_type_name"),
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .base import Node, NodeBase
+    from .context import Context, Fqdn, Options
+    from .load import QualFile
+    from .re_descriptor import ReDescriptorProto
+    from .re_enum import ReEnumDescriptorProto
+    from .re_enum_value import ReEnumValueDescriptorProto
+    from .re_field import ReFieldDescriptorProto
+    from .re_file import ReFileDescriptorProto
+    from .re_method import ReMethodDescriptorProto
+    from .re_service import ReServiceDescriptorProto
+    from .reproto import reproto
+    from .utils import short_ref, shorten_type_name
+
+__all__ = [
+    "Node", "NodeBase",
+    "Context", "Fqdn", "Options",
+    "QualFile",
+    "ReDescriptorProto",
+    "ReEnumDescriptorProto",
+    "ReEnumValueDescriptorProto",
+    "ReFieldDescriptorProto",
+    "ReFileDescriptorProto",
+    "ReMethodDescriptorProto",
+    "ReServiceDescriptorProto",
+    "reproto",
+    "short_ref", "shorten_type_name",
+]
+
+_module_map = {
+    "Node":                    ".base",
+    "NodeBase":                ".base",
+    "Context":                 ".context",
+    "Fqdn":                    ".context",
+    "Options":                 ".context",
+    "QualFile":                ".load",
+    "ReDescriptorProto":       ".re_descriptor",
+    "ReEnumDescriptorProto":   ".re_enum",
+    "ReEnumValueDescriptorProto": ".re_enum_value",
+    "ReFieldDescriptorProto":  ".re_field",
+    "ReFileDescriptorProto":   ".re_file",
+    "ReMethodDescriptorProto": ".re_method",
+    "ReServiceDescriptorProto": ".re_service",
+    "reproto":                 ".reproto",
+    "short_ref":               ".utils",
+    "shorten_type_name":       ".utils",
 }
 
 
 def __getattr__(name: str) -> object:
-    if name in _LAZY:
-        module_name, attr = _LAZY[name]
+    if name in _module_map:
         import importlib
-        mod = importlib.import_module(module_name, package=__name__)
-        return getattr(mod, attr)
+        mod = importlib.import_module(_module_map[name], package=__name__)
+        return getattr(mod, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
