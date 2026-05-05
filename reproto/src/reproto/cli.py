@@ -13,9 +13,6 @@ from pathlib import Path
 import click
 from click.shell_completion import CompletionItem
 
-from reproto import Fqdn
-from .reproto import DescriptorProtoMissingError, Options, reproto
-from . import variant as variant_mod
 
 try:
     _reproto_version = importlib.metadata.version('reproto')
@@ -388,6 +385,10 @@ def main(
     '''
     Parse PB_FILES and generate output based on the options given.
     '''
+    from reproto import Fqdn
+    from .reproto import DescriptorProtoMissingError, Options, reproto
+    from . import variant as variant_mod
+
     # --proto-out is required unless --dump-resolved-features is set.
     if proto_out is None and not dump_resolved_features:
         raise click.UsageError('Missing option \'-o\' / \'--proto-out\'.')

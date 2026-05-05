@@ -25,43 +25,31 @@ Example:
     file = ReFileDescriptorProto(ctx, file_descriptor_proto)
 """
 
-from .base import Node, NodeBase
-from .context import Context, Fqdn, Options
-from .load import QualFile
-from .re_descriptor import ReDescriptorProto
-from .re_enum import ReEnumDescriptorProto
-from .re_enum_value import ReEnumValueDescriptorProto
-from .re_field import ReFieldDescriptorProto
-from .re_file import ReFileDescriptorProto
-from .re_method import ReMethodDescriptorProto
-from .re_service import ReServiceDescriptorProto
-from .reproto import reproto
-from .utils import short_ref, shorten_type_name
 
-__all__ = [
-    # Base classes
-    "Node",
-    "NodeBase",
+_LAZY: dict[str, tuple[str, str]] = {
+    "Node":                       (".base",        "Node"),
+    "NodeBase":                   (".base",        "NodeBase"),
+    "Context":                    (".context",     "Context"),
+    "Fqdn":                       (".context",     "Fqdn"),
+    "Options":                    (".context",     "Options"),
+    "QualFile":                   (".load",        "QualFile"),
+    "ReDescriptorProto":          (".re_descriptor",   "ReDescriptorProto"),
+    "ReEnumDescriptorProto":      (".re_enum",         "ReEnumDescriptorProto"),
+    "ReEnumValueDescriptorProto": (".re_enum_value",   "ReEnumValueDescriptorProto"),
+    "ReFieldDescriptorProto":     (".re_field",        "ReFieldDescriptorProto"),
+    "ReFileDescriptorProto":      (".re_file",         "ReFileDescriptorProto"),
+    "ReMethodDescriptorProto":    (".re_method",       "ReMethodDescriptorProto"),
+    "ReServiceDescriptorProto":   (".re_service",      "ReServiceDescriptorProto"),
+    "reproto":                    (".reproto",         "reproto"),
+    "short_ref":                  (".utils",           "short_ref"),
+    "shorten_type_name":          (".utils",           "shorten_type_name"),
+}
 
-    # Core types and context
-    "Context",
-    "Fqdn",
-    "Options",
 
-    # Redescriptor classes
-    "ReDescriptorProto",
-    "ReEnumDescriptorProto",
-    "ReEnumValueDescriptorProto",
-    "ReFieldDescriptorProto",
-    "ReFileDescriptorProto",
-    "ReMethodDescriptorProto",
-    "ReServiceDescriptorProto",
-
-    # Main function
-    "reproto",
-
-    # Loading and utility functions
-    "QualFile",
-    "short_ref",
-    "shorten_type_name",
-]
+def __getattr__(name: str) -> object:
+    if name in _LAZY:
+        module_name, attr = _LAZY[name]
+        import importlib
+        mod = importlib.import_module(module_name, package=__name__)
+        return getattr(mod, attr)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
