@@ -248,7 +248,7 @@ Additional files modified in this phase:
 - `context.py` — `edition_defaults` and `dump_resolved_features` fields added to `Options`.
 - `reproto.py` — `build_edition_defaults` call after phase 2; `_dump_resolved_features_yaml`
   function; early-return hook after phase 3 when `dump_resolved_features` is set.
-- `cli.py` — hidden `--dump-resolved-features` option; `--proto-out` made optional
+- `cli.py` — hidden `--dump-resolved-features` option; `--output-root` made optional
   when that flag is present.
 
 ---

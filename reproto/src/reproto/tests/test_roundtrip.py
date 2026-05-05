@@ -192,7 +192,7 @@ def _run_roundtrip(
         sys.executable, "-m", "reproto.cli",
         "--use-variant", "descriptor",
         f"-I{orig_dir}",
-        f"--proto-out={new_dir}",
+        f"--output-root={new_dir}",
         str(orig_pb),
         *[str(p) for p in companion_pbs],
     ]

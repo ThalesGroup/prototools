@@ -48,7 +48,7 @@ Compile a `.proto` file to a descriptor set, then regenerate it:
 
 ```shell
 protoc --descriptor_set_out=foo.pb --include_imports foo.proto
-python -m reproto.cli --use-variant descriptor -I. --proto-out=out/ foo.pb
+python -m reproto.cli --use-variant descriptor -I. --output-root=out/ foo.pb
 ```
 
 The reconstructed `.proto` files appear under `out/`.
@@ -62,7 +62,7 @@ python -m reproto.cli [OPTIONS] PB_FILES...
 | Option | Description |
 |---|---|
 | `-I PATH` | Search path for loading imported `.pb` files |
-| `--proto-out DIR` | Output directory for reconstructed `.proto` files |
+| `-O DIR`, `--output-root DIR` | Output directory for reconstructed `.proto` files (created if absent) |
 | `--use-variant NAME` | Activate a descriptor variant (e.g. `descriptor`) |
 | `--seed FQDN` | Restrict output to nodes reachable from FQDN |
 | `--prune FQDN` | Exclude FQDN and its children from output |

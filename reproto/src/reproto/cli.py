@@ -65,53 +65,70 @@ logger.addHandler(CLIInfoHandler())
 logger.addHandler(CLIAttentionHandler())
 
 
-def complete_pb_files(ctx: click.Context, param: click.Parameter, incomplete: str):
-    '''Custom completer for PB_FILES argument (relative to -I).'''
-    # pb_path is a tuple when multiple=True
-    include_dirs = list(ctx.params.get('pb_path') or [])
-
-    if not include_dirs:
-        include_dirs = ['.'    ]
-
+def _complete_paths(
+    incomplete: str,
+    base_dirs: list[str],
+    *,
+    dirs_only: bool = False,
+    suffix: str | None = None,
+) -> list[CompletionItem]:
+    '''Shared path completion logic.'''
     completions = []
-
     incomplete_path = Path(incomplete)
 
-    for dir_path in include_dirs:
-        # Base directory to search
+    for dir_path in base_dirs:
         base_dir = Path(dir_path)
 
-        # If incomplete ends with '/', treat it as a directory
         if incomplete.endswith('/'):
             search_dir = base_dir / incomplete_path
-            prefix = incomplete  # keep the original path as prefix
+            prefix = incomplete_path
         else:
             search_dir = base_dir / incomplete_path.parent
-            prefix = str(incomplete_path.parent) + ('/' if incomplete_path.parent != Path('.') else '')
+            prefix = incomplete_path.parent
 
         if not search_dir.exists() or not search_dir.is_dir():
             continue
 
         for child in search_dir.iterdir():
-            if incomplete.endswith('/'):
-                # No need to filter by last part; show everything in the directory
-                name = child.name
-            else:
-                # Filter by last part of incomplete
-                name = child.name
-                if not name.startswith(incomplete_path.name):
-                    continue
+            name = child.name
+            if not incomplete.endswith('/') and not name.startswith(incomplete_path.name):
+                continue
 
-            rel_path = Path(prefix) / name
+            rel_path = prefix / name
             if child.is_dir():
-                value = str(rel_path)
-            else:
-                value = str(rel_path)
-
-            completions.append(value)
+                completions.append(str(rel_path))
+            elif not dirs_only:
+                if suffix is None or name.endswith(suffix):
+                    completions.append(str(rel_path))
 
     completions.sort()
-    return [ CompletionItem(value=c, type='arg') for c in completions ]
+    return [CompletionItem(value=c, type='arg') for c in completions]
+
+
+def complete_pb_files(ctx: click.Context, param: click.Parameter, incomplete: str):
+    '''Custom completer for PB_FILES argument (relative to -I).'''
+    include_dirs = list(ctx.params.get('pb_path') or ['.'])
+    return _complete_paths(incomplete, include_dirs, suffix='.pb')
+
+
+def complete_any_path(ctx: click.Context, param: click.Parameter, incomplete: str):
+    '''Complete any file or directory path relative to cwd.'''
+    return _complete_paths(incomplete, ['.'])
+
+
+def complete_dir_path(ctx: click.Context, param: click.Parameter, incomplete: str):
+    '''Complete directory paths only, relative to cwd.'''
+    return _complete_paths(incomplete, ['.'], dirs_only=True)
+
+
+def complete_yaml_path(ctx: click.Context, param: click.Parameter, incomplete: str):
+    '''Complete .yaml files and directories relative to cwd.'''
+    return _complete_paths(incomplete, ['.'], suffix='.yaml')
+
+
+def complete_py_path(ctx: click.Context, param: click.Parameter, incomplete: str):
+    '''Complete .py files and directories relative to cwd.'''
+    return _complete_paths(incomplete, ['.'], suffix='.py')
 
 
 _USE_VARIANT_CHOICES = ('any', 'empty', 'timestamp', 'duration', 'struct',
@@ -124,7 +141,7 @@ _USE_VARIANT_CHOICES = ('any', 'empty', 'timestamp', 'duration', 'struct',
 _SECTIONS: dict[str, str] = {
     'PB_FILES':              'Input',
     '--pb-path':             'Input',
-    '--proto-out':           'Output',
+    '--output-root':         'Output',
     '--emit-binary':         'Output',
     '--dry-run':             'Output',
     '--proto-variant':       'Variant / Schema',
@@ -133,6 +150,7 @@ _SECTIONS: dict[str, str] = {
     '--emit-descriptor':     'Variant / Schema',
     '--seed':                'Filtering',
     '--prune':               'Filtering',
+    '--force-proto2-output': 'Rendering',
     '--redact-comments':     'Rendering',
     '--redact-orphans':      'Rendering',
     '--go-root':             'Rendering',
@@ -218,19 +236,13 @@ class _SectionedCommand(click.Command):
 )
 
 @click.option(
-    '--force-proto2-output',
-    is_flag=True,
-    default=False,
-    help='Force all output to proto2 syntax, regardless of the input syntax. '
-         'Without this flag, output syntax matches the input (polyglot mode).',
-)
-
-@click.option(
-    '-o', '--proto-out',
+    '-O', '--output-root',
+    'proto_out',
     required=False,
     default=None,
-    type=click.Path(exists=True, file_okay=False, dir_okay=True, writable=True, path_type=Path),
-    help='Output directory for generated proto files',
+    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
+    shell_complete=complete_dir_path,
+    help='Output directory for generated proto files (created if absent)',
 )
 
 @click.option(
@@ -250,6 +262,7 @@ class _SectionedCommand(click.Command):
     required=False,
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     default=None,
+    shell_complete=complete_yaml_path,
     help=(
         'Path to a variant specification YAML file. '
         'If omitted, $REPROTO_VARIANT is used; '
@@ -299,6 +312,14 @@ class _SectionedCommand(click.Command):
 )
 
 @click.option(
+    '--force-proto2-output',
+    is_flag=True,
+    default=False,
+    help='Force all output to proto2 syntax, regardless of the input syntax. '
+         'Without this flag, output syntax matches the input (polyglot mode).',
+)
+
+@click.option(
     '--redact-comments',
     is_flag=True,
     help='Redact comments from reconstructed .proto files',
@@ -321,6 +342,7 @@ class _SectionedCommand(click.Command):
 @click.option(
     '--phase2-plugin',
     type=click.Path(path_type=Path),
+    shell_complete=complete_py_path,
     help=(
         'Python file executed as a transformation hook during '
         'phase 2. Must define phase2_plugin(ctx, fdp).'
@@ -389,15 +411,17 @@ def main(
     from .reproto import DescriptorProtoMissingError, Options, reproto
     from . import variant as variant_mod
 
-    # --proto-out is required unless --dump-resolved-features is set.
+    # --output-root is required unless --dump-resolved-features is set.
     if proto_out is None and not dump_resolved_features:
-        raise click.UsageError('Missing option \'-o\' / \'--proto-out\'.')
+        raise click.UsageError('Missing option \'-O\' / \'--output-root\'.')
+    if proto_out is not None:
+        proto_out.mkdir(parents=True, exist_ok=True)
 
     # Load variant (path arg > REPROTO_VARIANT env > built-in google-protobuf.yaml)
     variant = variant_mod.load(str(proto_variant) if proto_variant else None)
 
     if phase2_plugin:
-        source = open(phase2_plugin).read()
+        source = Path(phase2_plugin).read_text(encoding='utf-8')
         phase2_plugin_function = compile(source, phase2_plugin, 'exec')
     else:
         phase2_plugin_function = None
