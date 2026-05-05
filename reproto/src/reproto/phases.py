@@ -272,7 +272,7 @@ def _phase1_load_files(
 ) -> set[ReFile]:
     """Phase 1: Load seed files and recursively discover all imported dependencies."""
     if not ctx.quiet:
-        cli_info('Phase 1: Loading seed files')
+        cli_info('Loading seed files')
 
     seed_files: set[ReFile] = set()
 
@@ -305,7 +305,7 @@ def _phase1_load_files(
                 known_files[name] = file
 
         if not ctx.quiet:
-            cli_info('Phase 1: Discovering and loading imported files')
+            cli_info('Discovering and loading imported files')
 
         # Read imported paths (if not pruned)
         while topo.new_files:
@@ -436,8 +436,8 @@ def _phase2_build_pool(
     # -------------------------------------------------------------------------
 
     if not ctx.quiet:
-        cli_info('Phase 2: Sorting files topologically')
-        cli_info('Phase 2: Merging file descriptors into pool')
+        cli_info('Sorting files topologically')
+        cli_info('Merging file descriptors into pool')
 
     # --- Locate descriptor.proto ---------------------------------------------
 
@@ -570,7 +570,7 @@ def _phase2_build_pool(
         for n in non_leaves:
             cli_warning(f"Circular dependency detected: {n.name}")
     if not ctx.quiet:
-        cli_info('Phase 2: File descriptor pool complete')
+        cli_info('File descriptor pool complete')
 
     # --- Build edition-default table from the variant's descriptor.pb --------
     # pool_db.FindFileByName returns the FileDescriptorProto directly.
@@ -587,7 +587,7 @@ def _phase3_build_graph(
 ) -> None:
     """Phase 3: Build FQDN graph — create Re* wrapper nodes and populate ctx.nodes."""
     if not ctx.quiet:
-        cli_info('Phase 3: Building FQDN dependency graph')
+        cli_info('Building FQDN dependency graph')
 
     # Create ReFileDescriptorProto nodes for all loaded files
     for file in topo.files.values():
@@ -609,7 +609,7 @@ def _phase3_build_graph(
 def _phase4_pruning(ctx: Context, prunings: list[Fqdn]) -> None:
     """Phase 4: Mark user-specified prunings and propagate to contained children."""
     if not ctx.quiet and prunings:
-        cli_info('Phase 4: Processing exclusions')
+        cli_info('Processing exclusions')
 
     transitive_prunnings: set[Node] = set()
     current_prunings: set[Node] = set()
@@ -658,7 +658,7 @@ def _phase5_reachability(
 ) -> None:
     """Phase 5: Mark all nodes transitively reachable from seeds (forward propagation)."""
     if not ctx.quiet:
-        cli_info('Phase 5: Computing reachability from seeds')
+        cli_info('Computing reachability from seeds')
 
     transitive_reachables: set[Node] = set()
     current_reachables: set[Node] = set()
@@ -742,7 +742,7 @@ def _phase5_reachability(
 def _phase6_summoning(ctx: Context) -> None:
     """Phase 6: Mark container nodes of reachable nodes (backward propagation)."""
     if not ctx.quiet:
-        cli_info('Phase 6: Marking containers of reachable nodes')
+        cli_info('Marking containers of reachable nodes')
 
     transitive_summoned: set[Node] = set()
     current_summoned: set[Node] = set()
