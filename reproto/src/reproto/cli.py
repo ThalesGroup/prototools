@@ -104,7 +104,7 @@ def complete_pb_files(ctx: click.Context, param: click.Parameter, incomplete: st
 
             rel_path = Path(prefix) / name
             if child.is_dir():
-                value = str(rel_path) + '/'
+                value = str(rel_path)
             else:
                 value = str(rel_path)
 

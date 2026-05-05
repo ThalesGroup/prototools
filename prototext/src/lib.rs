@@ -8,7 +8,10 @@ use std::path::PathBuf;
 use clap::{CommandFactory, Parser};
 use clap_complete::engine::ArgValueCompleter;
 
-use complete::{complete_input_paths, complete_pb_files, complete_type_names};
+use complete::{
+    complete_any_path, complete_dir_path, complete_input_paths, complete_pb_files,
+    complete_type_names,
+};
 
 pub mod complete;
 pub mod inputs;
@@ -89,7 +92,8 @@ pub struct Cli {
         short = 'o',
         long = "output",
         value_name = "PATH",
-        conflicts_with = "output_root"
+        conflicts_with = "output_root",
+        add = ArgValueCompleter::new(complete_any_path),
     )]
     pub output: Option<PathBuf>,
 
@@ -100,13 +104,19 @@ pub struct Cli {
         long = "output-root",
         value_name = "DIR",
         conflicts_with_all = ["output", "in_place"],
+        add = ArgValueCompleter::new(complete_dir_path),
     )]
     pub output_root: Option<PathBuf>,
 
     // ── Input ─────────────────────────────────────────────────────────────────
     /// Root directory: positional paths and globs are resolved relative to DIR.
     /// Absolute positional paths are an error when --input-root is given.
-    #[arg(short = 'I', long = "input-root", value_name = "DIR")]
+    #[arg(
+        short = 'I',
+        long = "input-root",
+        value_name = "DIR",
+        add = ArgValueCompleter::new(complete_dir_path),
+    )]
     pub input_root: Option<PathBuf>,
 
     /// Rewrite each input file in place (exclusive with --output-root).

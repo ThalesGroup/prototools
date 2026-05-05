@@ -94,6 +94,7 @@ fn complete_path_under(
     incomplete: &std::ffi::OsStr,
     base: &Path,
     suffix_filter: Option<&str>,
+    dirs_only: bool,
 ) -> Vec<CompletionCandidate> {
     let s = incomplete.to_string_lossy();
     let incomplete_path = Path::new(incomplete);
@@ -129,7 +130,7 @@ fn complete_path_under(
                 // No trailing slash — compopt -o filenames adds it.
                 let p = typed_prefix.join(&name);
                 Some(CompletionCandidate::new(p.as_os_str().to_os_string()))
-            } else if ft.is_file() {
+            } else if ft.is_file() && !dirs_only {
                 let name_s = name.to_string_lossy();
                 if suffix_filter.is_none_or(|s| name_s.ends_with(s)) {
                     let p = typed_prefix.join(&name);
@@ -152,7 +153,19 @@ fn complete_path_under(
 /// Complete `.pb` descriptor files relative to cwd.
 pub fn complete_pb_files(incomplete: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
     let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    complete_path_under(incomplete, &base, Some(".pb"))
+    complete_path_under(incomplete, &base, Some(".pb"), false)
+}
+
+/// Complete any file or directory path relative to cwd.
+pub fn complete_any_path(incomplete: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
+    let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    complete_path_under(incomplete, &base, None, false)
+}
+
+/// Complete directory paths only relative to cwd.
+pub fn complete_dir_path(incomplete: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
+    let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    complete_path_under(incomplete, &base, None, true)
 }
 
 /// Complete message type names.
@@ -189,5 +202,5 @@ pub fn complete_input_paths(incomplete: &std::ffi::OsStr) -> Vec<CompletionCandi
         .filter(|p| p.is_dir())
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."));
-    complete_path_under(incomplete, &base, None)
+    complete_path_under(incomplete, &base, None, false)
 }
