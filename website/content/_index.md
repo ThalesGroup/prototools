@@ -59,6 +59,11 @@ human-readable text.
 Reconstructs `.proto` source files from compiled protobuf descriptor sets
 (`.pb` files produced by `protoc --descriptor_set_out`).
 
+### User documentation
+
+- [README](reproto-readme) — Overview, installation, and usage guide
+- [Man page](reproto-man-page) — Reference manual
+
 ### Specs
 
 #### Core design

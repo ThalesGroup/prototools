@@ -358,6 +358,9 @@ let
     postInstall = ''
       installShellCompletion --cmd reproto \
         --bash ${reprotoFilteredSrc}/src/reproto/completions.sh
+
+      # Generate and install man page.
+      $out/bin/reproto-gen-man $out/share/man/man1
     '';
   };
 
@@ -522,13 +525,16 @@ RUFFEOF
       # that manual `cargo build -p prototext_codec` in the shell aligns.
       export RUSTFLAGS="${pyo3Rustflags}"
 
-      # Generate man page into man/man1/ and expose it via MANPATH.
+      # Generate man pages into man/man1/ and expose them via MANPATH.
+      mkdir -p man/man1
       if command -v prototext-gen-man &>/dev/null; then
-        mkdir -p man/man1
         prototext-gen-man man/man1
-        export MANPATH="$PWD/man:''${MANPATH:-}"
-        makewhatis "$PWD/man" 2>/dev/null || true
       fi
+      if python3 -c "import reproto.gen_man" 2>/dev/null; then
+        python3 -m reproto.gen_man man/man1
+      fi
+      export MANPATH="$PWD/man:''${MANPATH:-}"
+      makewhatis "$PWD/man" 2>/dev/null || true
 
       # Generate rust-toolchain.toml so rust-analyzer uses the same rustc version
       # as the nix-shell build.  Only written when the content changes to avoid

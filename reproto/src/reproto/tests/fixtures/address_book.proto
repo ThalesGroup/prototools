@@ -1,0 +1,24 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+//
+// SPDX-License-Identifier: MIT
+//
+// Fixture: address_book.proto
+// A simple address book schema used in README examples.
+// Demonstrates proto3 imports, repeated fields, and nested messages.
+
+syntax = "proto3";
+
+package tutorial;
+
+import "phone_number.proto";
+
+message Person {
+  string name = 1;
+  int32 id = 2;
+  string email = 3;
+  repeated PhoneNumber phones = 4;
+}
+
+message AddressBook {
+  repeated Person people = 1;
+}

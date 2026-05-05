@@ -24,6 +24,7 @@ dependencies = [
 
 [project.scripts]
 reproto = "reproto.cli:main"
+reproto-gen-man = "reproto.gen_man:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

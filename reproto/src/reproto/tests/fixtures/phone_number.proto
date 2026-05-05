@@ -1,0 +1,23 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+//
+// SPDX-License-Identifier: MIT
+//
+// Fixture: phone_number.proto
+// A simple standalone message used as a dependency by address_book.proto.
+// Demonstrates proto3 enum and basic message — suitable for README examples.
+
+syntax = "proto3";
+
+package tutorial;
+
+message PhoneNumber {
+  enum PhoneType {
+    PHONE_TYPE_UNSPECIFIED = 0;
+    PHONE_TYPE_MOBILE = 1;
+    PHONE_TYPE_HOME = 2;
+    PHONE_TYPE_WORK = 3;
+  }
+
+  string number = 1;
+  PhoneType type = 2;
+}
