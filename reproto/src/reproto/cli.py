@@ -293,7 +293,7 @@ class _SectionedCommand(click.Command):
     '--seed', 'seeds',
     type=str,
     multiple=True,
-    help='Fully-qualified name to treat as an output root (e.g. .my.package.MyMessage)',
+    help='Fully-qualified name to treat as an output root (e.g. desc:.my.pkg.MyMsg or file:foo.proto)',
 )
 
 @click.option(
@@ -301,7 +301,7 @@ class _SectionedCommand(click.Command):
     '--prune', 'stumps',
     type=str,
     multiple=True,
-    help='Fully-qualified name to exclude from output (e.g. .my.package.MyMessage)',
+    help='Fully-qualified name to exclude from output (e.g. desc:.my.pkg.MyMsg or file:foo.proto)',
 )
 
 @click.option(

@@ -48,41 +48,45 @@ The examples below use the two fixture files shipped with reproto:
 `phone_number.proto` and `address_book.proto` (under
 `reproto/src/reproto/tests/fixtures/`).
 
-**Step 1 — compile to a descriptor set:**
+> **Note:** reproto does not support multi-file `FileDescriptorSet` inputs
+> (i.e. `.pb` files produced with `protoc --include_imports`). Each `.pb`
+> file must contain exactly one `FileDescriptorProto`. Pass all `.pb` files
+> together on the command line and let reproto resolve cross-file imports.
+
+**Step 1 — compile each `.proto` to its own descriptor set:**
+
+Compile without `--include_imports` so each `.pb` contains a single file:
 
 ```shell
 cd reproto/src/reproto/tests/fixtures
-protoc --descriptor_set_out=address_book.pb --include_imports \
-  --proto_path=. address_book.proto phone_number.proto
+protoc --descriptor_set_out=phone_number.pb --proto_path=. phone_number.proto
+protoc --descriptor_set_out=address_book.pb --proto_path=. address_book.proto
 ```
 
 **Step 2 — reconstruct the `.proto` files:**
 
 ```shell
-reproto -I. -O out/ address_book.pb
+reproto --use-variant descriptor -I . -O out/ phone_number.pb address_book.pb
 ```
 
 The reconstructed `.proto` files appear under `out/`:
 
 ```
 out/
-  tutorial/
-    phone_number.proto
-    address_book.proto
+  phone_number.proto
+  address_book.proto
 ```
 
 **Selective output** — emit only `Person` and its dependencies:
 
 ```shell
-reproto -I. -O out/ --seed .tutorial.Person address_book.pb
+reproto --use-variant descriptor -I . -O out/ --seed desc:.tutorial.Person \
+  phone_number.pb address_book.pb
 ```
 
-**Using the embedded descriptor variant** (no separate `descriptor.proto`
-needed in the output):
-
-```shell
-reproto --use-variant descriptor -I. -O out/ address_book.pb
-```
+**Using the embedded descriptor variant** — `--use-variant descriptor`
+supplies `descriptor.proto` from the built-in variant bundle, so no
+separate descriptor `.pb` is needed (as shown above).
 
 ## CLI reference
 
