@@ -89,7 +89,7 @@ def _complete_paths(
 
             rel_path = prefix / name
             if child.is_dir():
-                completions.append(str(rel_path))
+                completions.append(str(rel_path) + '/')
             elif not dirs_only:
                 if suffix is None or name.endswith(suffix):
                     completions.append(str(rel_path))
