@@ -59,12 +59,13 @@ def _render(cmd: click.Command) -> str:
     buf.append(r'.SH DESCRIPTION')
     buf.append(
         r'.B reproto'
-        '\nreads one or more binary protobuf descriptor sets (\fI.pb\fR files produced by'
-        '\n\\fBprotoc \\-\\-descriptor_set_out\\fR) and regenerates the original \\fI.proto\\fR'
-        '\nsource files with correct syntax, field types, options, and comments where'
-        '\nsource\\-code info is available.'
+        '\nreads one or more binary or text\\-format protobuf descriptor sets and'
+        '\nregenerates the original \\fI.proto\\fR source files with correct syntax,'
+        '\nfield types, and options.'
         '\n.PP'
-        '\nIt supports proto2, proto3, and editions syntax.'
+        '\nIt supports proto2, proto3, and editions syntax, and accepts both'
+        '\n\\fI.pb\\fR (binary \\fBFileDescriptorSet\\fR) and \\fI.textpb\\fR'
+        '\n(text\\-format) descriptor files as input.'
     )
 
     # Arguments section

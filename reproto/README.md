@@ -11,47 +11,47 @@ Reconstructs `.proto` source files from compiled protobuf descriptor sets
 
 ## What it does
 
-`reproto` takes one or more binary descriptor sets and regenerates the
-original `.proto` files with correct syntax, field types, options, and
-comments where source-code info is available.  It supports proto2, proto3,
-and editions syntax.
+`reproto` takes one or more binary or text-format descriptor sets and
+regenerates the original `.proto` files with correct syntax, field types,
+and options.  It supports proto2, proto3, and editions syntax.
 
 Key features:
 
-- **Selective output** — seed and prune flags let you emit only the subset
-  of messages and files you care about.
-- **Dependency-aware** — automatically pulls in all transitively imported
+- **Accurate reconstruction** — output recompiles to a descriptor set
+  equivalent to the input (roundtrip capability).
+- **Binary and text-format input** — accepts both `.pb` (binary
+  `FileDescriptorSet`) and `.textpb` (text-format) descriptor files.
+- **Dependency-aware** — automatically resolves all transitively imported
   files needed to compile the output.
+- **Selective output** — seed and prune flags let you emit only the subset
+  of messages and files you care about, with full dependency closure.
 - **Variant support** — pluggable descriptor variants for different protobuf
   runtimes and well-known-type bundles.
-
-## Installation
-
-### NixOS / nix-shell
-
-```shell
-git clone https://github.com/douzebis/prototools
-cd prototools
-nix-shell
-pip install -e reproto/
-```
-
-### pip
-
-```shell
-pip install reproto
-```
-
-## Quick start
-
-The examples below use the two fixture files shipped with reproto:
-`phone_number.proto` and `address_book.proto` (under
-`reproto/src/reproto/tests/fixtures/`).
 
 > **Note:** reproto does not support multi-file `FileDescriptorSet` inputs
 > (i.e. `.pb` files produced with `protoc --include_imports`). Each `.pb`
 > file must contain exactly one `FileDescriptorProto`. Pass all `.pb` files
 > together on the command line and let reproto resolve cross-file imports.
+
+## Installation
+
+### NixOS / nix-shell
+
+reproto depends on `prototext_codec`, a compiled Rust extension that is
+built as part of the prototools Nix derivation. The recommended way to
+install is via nix-shell:
+
+```shell
+git clone https://github.com/douzebis/prototools
+cd prototools
+nix-shell
+```
+
+## Quick start
+
+The examples below use two fixture files shipped with reproto:
+`phone_number.proto` and `address_book.proto` (under
+`reproto/src/reproto/tests/fixtures/`).
 
 **Step 1 — compile each `.proto` to its own descriptor set:**
 
