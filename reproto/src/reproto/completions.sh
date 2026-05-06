@@ -72,7 +72,7 @@ _reproto_completion() {
         elif [[ $type == 'plain' ]]; then
             COMPREPLY+=($value)
         elif [[ $type == 'arg' ]]; then
-            COMPREPLY+=($value); compopt -o nospace -o filenames
+            COMPREPLY+=($value); compopt -o nospace
         fi
     done
     #echo "<-- ${COMPREPLY[@]}" >> /tmp/aaa
