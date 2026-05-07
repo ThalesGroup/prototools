@@ -260,7 +260,9 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
         if (self.type == FieldDescriptorProto.TYPE_MESSAGE and
                 self.label == FieldDescriptorProto.LABEL_REPEATED):
             from .re_descriptor import ReDescriptorProto
-            if isinstance(self.type_descriptor, ReDescriptorProto) and self.type_descriptor.is_map_entry:
+            if (isinstance(self.type_descriptor, ReDescriptorProto)
+                    and self.type_descriptor.is_present()
+                    and self.type_descriptor.is_map_entry):
                 is_map_field = True
                 map_string, anomaly = self._map_field_string(ctx, depth)
                 if anomaly is not None:

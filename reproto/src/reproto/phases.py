@@ -381,6 +381,22 @@ def _phase1_load_files(
     return seed_files
 
 
+def _strip_self_dependency(fdp: FileDescriptorProto) -> None:
+    """Remove any self-referential entries from fdp.dependency in-place.
+
+    Some malformed .pb files in the wild list their own name as a dependency
+    (likely an artifact of a broken descriptor-set extraction script).  The
+    protobuf C extension segfaults when such a descriptor is added to the pool,
+    so we strip the bogus entry before calling pool_db.Add().
+    """
+    self_deps = [d for d in fdp.dependency if d == fdp.name]
+    for _ in self_deps:
+        fdp.dependency.remove(fdp.name)
+        cli_warning(
+            "Stripped self-dependency from '%s' (malformed descriptor)", fdp.name
+        )
+
+
 def _phase2_build_pool(
     ctx: Context,
     topo: Topology,
@@ -505,6 +521,7 @@ def _phase2_build_pool(
                                 fdp = f.file[0]
                                 phase2_plugin(ctx, fdp)
                                 patch_go_package(ctx, fdp)
+                                _strip_self_dependency(fdp)
                                 ctx.pool_db.Add(fdp)
                             case FileDescriptorProto():
                                 # - Update the pool of descriptors
@@ -518,6 +535,7 @@ def _phase2_build_pool(
                                 # - Update pool with static FileDescriptorProto
                                 phase2_plugin(ctx, fdp)
                                 patch_go_package(ctx, fdp)
+                                _strip_self_dependency(fdp)
                                 ctx.pool_db.Add(fdp)
 
                     case bytes():
@@ -531,6 +549,7 @@ def _phase2_build_pool(
                                     fdp = fds.file[0]
                                     phase2_plugin(ctx, fdp)
                                     patch_go_package(ctx, fdp)
+                                    _strip_self_dependency(fdp)
                                     ctx.pool_db.Add(fdp)
                                 except TypeError as e:
                                     # NOTE: TypeError can occur when attempting to add a descriptor
@@ -543,6 +562,7 @@ def _phase2_build_pool(
                                 try:
                                     phase2_plugin(ctx, fdp)
                                     patch_go_package(ctx, fdp)
+                                    _strip_self_dependency(fdp)
                                     ctx.pool_db.Add(fdp)
                                 except TypeError as e:
                                     # NOTE: TypeError can occur when attempting to add a descriptor
@@ -566,9 +586,11 @@ def _phase2_build_pool(
         leaves = set()
 
     if non_leaves:
-        # The remaining files have a circular dependency
+        # The remaining files have a circular dependency; mark them pruned so
+        # that phase 3 skips them (they were never added to the pool).
         for n in non_leaves:
             cli_warning(f"Circular dependency detected: {n.name}")
+            n.is_pruned = True
     if not ctx.quiet:
         cli_info('File descriptor pool complete')
 
@@ -591,7 +613,7 @@ def _phase3_build_graph(
 
     # Create ReFileDescriptorProto nodes for all loaded files
     for file in topo.files.values():
-        if file.is_ref():
+        if file.is_ref() or file.is_pruned:
             continue
         desc = file.qfile.desc
         match desc:
