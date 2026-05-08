@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+
+SPDX-License-Identifier: MIT
+-->
+
 # default.nix — Build Analysis and Recommendations
 
 ## 1. What was built (nix-build log)

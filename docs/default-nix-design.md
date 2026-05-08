@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+
+SPDX-License-Identifier: MIT
+-->
+
 # default.nix — Design, Analysis, and Proposals
 
 ## 1. Overview

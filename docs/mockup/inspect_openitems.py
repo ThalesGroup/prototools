@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+#
+# SPDX-License-Identifier: MIT
+
 """Inspect descriptor files for the 5 remaining open items."""
 import sys
 from google.protobuf import descriptor_pb2

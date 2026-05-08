@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+
+SPDX-License-Identifier: MIT
+-->
+
 # docs/mockup — Proto2 / Proto3 / Editions Empirical Test Fixtures
 
 This directory contains `.proto` source files and their compiled `.pb`
