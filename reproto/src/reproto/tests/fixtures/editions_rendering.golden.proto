@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
-//
-// SPDX-License-Identifier: MIT
-
 // editions_rendering.proto
 
 edition = "2023";
