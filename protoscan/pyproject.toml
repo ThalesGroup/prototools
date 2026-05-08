@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+#
+# SPDX-License-Identifier: MIT
+
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "protoscan"
+version = "0.1.0"
+description = "Scan binary files for embedded FileDescriptorProto blobs"
+dependencies = [
+    "click",
+    "protobuf",
+]
+
+[project.scripts]
+protoscan = "protoscan.cli:main"
+protoscan-gen-man = "protoscan.gen_man:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]

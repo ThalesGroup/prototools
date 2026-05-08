@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+#
+# SPDX-License-Identifier: MIT
+
+# fdp_scan – protobuf-scanner Python extension.
+[package]
+name    = "fdp_scan_extension"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name       = "fdp_scan_lib"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3             = { version = "0.26", features = ["extension-module"] }
+pyo3_stub_gen    = { version = "0.22", package = "pyo3-stub-gen" }
+pyo3_stub_gen_derive = { version = "0.22", package = "pyo3-stub-gen-derive" }
+
+[[bin]]
+name = "fdp_scan_post_build"
+path = "src/bin/post_build.rs"

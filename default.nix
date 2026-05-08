@@ -25,13 +25,13 @@ let
   src = pkgs.lib.cleanSourceWith {
     src    = pkgs.lib.cleanSource ./.;
     # Keep Cargo sources plus fixtures/ (integration tests + proto schemas).
-    # Exclude reproto/ and bin/ — Python-only subtrees that must not perturb
-    # the Rust derivation hashes.
+    # Exclude Python-only subtrees that must not perturb the Rust derivation hashes.
     filter = path: type:
       let rel = pkgs.lib.removePrefix (toString ./. + "/") (toString path);
       in
       !(pkgs.lib.hasPrefix "reproto/" rel) &&
       !(pkgs.lib.hasPrefix "bin/" rel) &&
+      !(pkgs.lib.hasPrefix "protoscan/" rel) &&
       ((crane.filterCargoSources path type) ||
        (pkgs.lib.hasInfix "/fixtures/" path));
   };
@@ -79,6 +79,9 @@ let
   # Cargo package selector used by pyo3-specific derivations (clippy-pyo3,
   # prototextExtension).
   pyo3Args = "-p prototext_codec";
+
+  # Cargo package selector for fdp_scan pyo3 derivations.
+  fdpScanArgs = "-p fdp_scan_extension";
 
   # RUSTFLAGS for linking against CPython.  Set globally in commonArgs so that
   # all Crane derivations carry the same value — keeping Cargo fingerprints
@@ -253,6 +256,76 @@ let
   };
 
   # ---------------------------------------------------------------------------
+  # PyO3 extension — fdp_scan Python package
+  # ---------------------------------------------------------------------------
+
+  fdpscanExtension = crane.buildPackage (commonArgs // {
+    pname          = "fdp-scan-ext";
+    cargoArtifacts = depsCache;
+    cargoExtraArgs = "${fdpScanArgs} --lib";
+    doCheck        = false;
+    preBuild = ''
+      rm -rf target/release/build/fdp_scan_extension-*
+      rm -rf target/release/.fingerprint/fdp_scan_extension-*
+    '';
+    postBuild = ''
+      echo "Generating fdp_scan_lib stubs..."
+      cargo run --release -p fdp_scan_extension --bin fdp_scan_post_build
+    '';
+    installPhase = ''
+      mkdir -p $out/artifacts/
+      ext=${if pkgs.stdenv.isDarwin then "dylib" else "so"}
+      cp target/release/libfdp_scan_lib.$ext $out/artifacts/fdp_scan_lib.so
+      cp fdp-scan-pyo3/fdp_scan.pyi          $out/artifacts/fdp_scan_lib.pyi
+    '';
+  });
+
+  # Python package wrapping the .so and .pyi into a wheel.
+  # Importable as `fdp_scan_lib` (the Rust cdylib name).
+  fdpScanLib = pythonPkgs.buildPythonPackage {
+    pname   = "fdp_scan";
+    version = "0.1.0";
+    format  = "pyproject";
+    src     = ./fdp-scan-pyo3;
+    buildInputs = [ pythonPkgs.hatchling fdpscanExtension ];
+    patchPhase = ''
+      cp ${fdpscanExtension}/artifacts/fdp_scan_lib.pyi fdp_scan_lib/fdp_scan_lib.pyi
+      cp ${fdpscanExtension}/artifacts/fdp_scan_lib.so  fdp_scan_lib/fdp_scan_lib.so
+    '';
+  };
+
+  # ---------------------------------------------------------------------------
+  # protoscan — Python CLI for scanning binaries for embedded FDP blobs
+  # ---------------------------------------------------------------------------
+
+  protoscan = pythonPkgs.buildPythonPackage {
+    pname   = "protoscan";
+    version = "0.1.0";
+    src     = ./protoscan;
+    pyproject = true;
+
+    nativeBuildInputs = [
+      pythonPkgs.setuptools
+      pythonPkgs.wheel
+      pkgs.installShellFiles
+    ];
+    propagatedBuildInputs = [
+      pythonPkgs.click
+      pythonPkgs.protobuf
+      fdpScanLib
+    ];
+
+    doCheck = false;
+
+    postInstall = ''
+      installShellCompletion --cmd protoscan \
+        --bash <(_PROTOSCAN_COMPLETE=bash_source $out/bin/protoscan)
+
+      $out/bin/protoscan-gen-man $out/share/man/man1
+    '';
+  };
+
+  # ---------------------------------------------------------------------------
   # reproto — Python package for reconstructing .proto sources from .pb files
   # ---------------------------------------------------------------------------
 
@@ -290,6 +363,7 @@ let
   # and tree-sitter.  Used by reprotoTests, pythonLint, and dev-shell.
   reprotoTestDeps = reprotoPropagatedDeps ++ [
     prototextCodec
+    fdpScanLib
     pythonPkgs.pytest
     pythonPkgs."pytest-xdist"
     pythonPkgs.tree-sitter
@@ -444,13 +518,21 @@ EOF
   user-shell = pkgs.mkShell {
     name = "prototools-user";
 
-    buildInputs = [ prototext reproto ];
+    buildInputs = [ prototext reproto protoscan ];
 
     shellHook = ''
+      old_opts=$(set +o)
+      set -euo pipefail
+
       export NIXSHELL_REPO="${toString ./.}"
-      export MANPATH="${prototext}/share/man:${reproto}/share/man:''${MANPATH:-}"
+      export MANPATH="${prototext}/share/man:${reproto}/share/man:${protoscan}/share/man:''${MANPATH:-}"
       source ${prototext}/share/bash-completion/completions/prototext.bash
       source ${reproto}/share/bash-completion/completions/reproto.bash
+      source ${protoscan}/share/bash-completion/completions/protoscan.bash
+
+      [[ "$old_opts" == *"set -o errexit"*  ]] && set -e || set +e
+      [[ "$old_opts" == *"set -o nounset"*  ]] && set -u || set +u
+      [[ "$old_opts" == *"set -o pipefail"* ]] && set -o pipefail || set +o pipefail
     '';
   };
 
@@ -492,7 +574,7 @@ EOF
 
       export PATH="${toString ./.}/bin:${pythonBin}/bin:${toString ./.}/target/release:$PATH"
 
-      export PYTHONPATH="$PWD/reproto/src:${pythonPkgs.makePythonPath reprotoTestDeps}:$PYTHONPATH"
+      export PYTHONPATH="$PWD/reproto/src:$PWD/protoscan/src:${pythonPkgs.makePythonPath reprotoTestDeps}:$PYTHONPATH"
 
       # Write .env so VS Code / Pylance picks up the interpreter and PYTHONPATH.
       echo "PYTHON_INTERPRETER=${pythonExecutable}" > .env
@@ -503,7 +585,7 @@ EOF
       python3 -c "
 import json, os
 paths = [p for p in os.environ['PYTHONPATH'].split(':') if p]
-cfg = {'extraPaths': paths, 'exclude': ['result*', 'prototext-pyo3/prototext_codec_lib', 'docs/mockup']}
+cfg = {'extraPaths': paths, 'exclude': ['result*', 'prototext-pyo3/prototext_codec_lib', 'fdp-scan-pyo3/fdp_scan_lib', 'docs/mockup']}
 with open('pyrightconfig.json', 'w') as f:
     json.dump(cfg, f, indent=2)
     f.write('\n')
@@ -550,6 +632,9 @@ RUFFEOF
       if python3 -c "import reproto.gen_man" 2>/dev/null; then
         python3 -m reproto.gen_man man/man1
       fi
+      if python3 -c "import protoscan.gen_man" 2>/dev/null; then
+        python3 -m protoscan.gen_man man/man1
+      fi
       export MANPATH="$PWD/man:''${MANPATH:-}"
       makewhatis "$PWD/man" 2>/dev/null || true
 
@@ -576,22 +661,25 @@ components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
       # bash completion for reproto (pre-built script, avoids slow click invocation)
       eval "$(cat $PWD/reproto/src/reproto/completions.sh)"
 
+      # bash completion for protoscan
+      eval "$(_PROTOSCAN_COMPLETE=bash_source protoscan)"
+
       [[ "$old_opts" == *"set -o errexit"*  ]] && set -e || set +e
       [[ "$old_opts" == *"set -o nounset"*  ]] && set -u || set +u
       [[ "$old_opts" == *"set -o pipefail"* ]] && set -o pipefail || set +o pipefail
     '';
   };
 
-  # Bundle: prototext + reproto together (the full prototools suite).
+  # Bundle: prototext + reproto + protoscan (the full prototools suite).
   prototools = pkgs.symlinkJoin {
     name   = "prototools";
-    paths  = [ prototext reproto ];
+    paths  = [ prototext reproto protoscan ];
   };
 
   # Single target that forces the entire CI closure in dependency order.
-  # nix-build -A ci builds fmt → clippy → clippy-pyo3 → tests → prototext → prototext-codec → reproto.
+  # nix-build -A ci builds fmt → clippy → clippy-pyo3 → tests → prototext → prototext-codec → reproto → protoscan.
   ci = pkgs.linkFarmFromDrvs "ci" [
-    rustFmt rustClippy rustClippyPyo3 rustTests prototext prototextCodec reproto reprotoTests pythonLint pythonRuff
+    rustFmt rustClippy rustClippyPyo3 rustTests prototext prototextCodec reproto reprotoTests pythonLint pythonRuff protoscan
   ];
 
 in
@@ -612,4 +700,6 @@ in
   ci                   = ci;
   user-shell           = user-shell;
   dev-shell            = dev-shell;
+  protoscan            = protoscan;
+  fdp-scan-lib         = fdpScanLib;
 }
