@@ -1520,3 +1520,47 @@ fn selftest_roundtrip() {
     );
     eprintln!("selftest: {n} iterations passed (seed={seed:#x})");
 }
+
+// ── §bug: LEN wire type on a varint-declared field ────────────────────────────
+
+/// Regression test for the missing `proto2_has_type_mismatch` flag in
+/// `decode_len_field`'s wire-type-mismatch fallback path.
+///
+/// `SwissArmyKnife.int32Op` (field 25) is declared as `int32` (wire type 0,
+/// varint).  When the wire message carries field 25 with wire type 2
+/// (length-delimited), the decoder reaches the fallback branch in
+/// `decode_len_field` and emits `WireBytes`.  That branch must also set
+/// `proto2_has_type_mismatch = true` — without it the type conflict is
+/// silently lost and the field is indistinguishable from an unknown field.
+///
+/// This test currently FAILS, confirming the pre-existing bug.
+#[test]
+fn len_wire_type_on_varint_field_sets_type_mismatch_flag() {
+    // Tag: field 25, wire type LEN (2) → (25 << 3) | 2 = 202 → 0xCA 0x01
+    // Length: 3 bytes → 0x03
+    // Payload: arbitrary bytes 0x01 0x02 0x03
+    let wire: Vec<u8> = vec![0xCA, 0x01, 0x03, 0x01, 0x02, 0x03];
+    let schema = knife_schema();
+    let msg = prototext_core::decoder::ingest_pb(&wire, &schema, false);
+
+    assert_eq!(msg.fields.len(), 1, "expected exactly one field");
+    let field = &msg.fields[0];
+
+    assert_eq!(
+        field.field_number,
+        Some(25),
+        "field number must be 25 (int32Op)"
+    );
+    assert!(
+        matches!(
+            field.content,
+            prototext_core::decoder::ProtoTextContent::WireBytes(_)
+        ),
+        "content must be WireBytes (LEN fallback), got: {:?}",
+        field.content
+    );
+    assert!(
+        field.proto2_has_type_mismatch,
+        "proto2_has_type_mismatch must be true for LEN wire type on int32 field"
+    );
+}

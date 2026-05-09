@@ -205,5 +205,9 @@ pub(super) fn decode_len_field(
     }
 
     // ── Wire-type mismatch fallback ───────────────────────────────────────────
+    // The field is declared in the schema but its proto-type expects a different
+    // wire type (e.g. int32 arriving as WT_LEN).  Mirror the varint path in
+    // codec.rs: emit WireBytes for lossless roundtrip AND flag the conflict.
+    field.proto2_has_type_mismatch = true;
     field.content = ProtoTextContent::WireBytes(data.to_vec());
 }

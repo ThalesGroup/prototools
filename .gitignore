@@ -12,3 +12,5 @@
 /.env
 /pyrightconfig.json
 /ruff.toml
+/schema-db/data/
+/docs/specs/0043-hopcroft-db-bp-protodb.md
