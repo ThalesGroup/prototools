@@ -1,0 +1,14 @@
+// SPDX-FileCopyrightText: Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+//
+// TC-3: two-hop bridge (A→B→D→C chain).
+// Leaf file defining TC.
+
+syntax = "proto3";
+
+package tc3;
+
+message TC {
+  int32 value = 1;
+}

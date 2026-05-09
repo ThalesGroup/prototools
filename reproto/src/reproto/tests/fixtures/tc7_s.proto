@@ -1,0 +1,14 @@
+// SPDX-FileCopyrightText: Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+//
+// TC-7: import-only file must not be summoned.
+// Seed file: only this message is seeded.
+
+syntax = "proto3";
+
+package tc7;
+
+message TS {
+  int32 value = 1;
+}

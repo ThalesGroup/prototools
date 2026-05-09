@@ -1,0 +1,15 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+//
+// SPDX-License-Identifier: MIT
+//
+// Fixture: bridge_c.proto
+// Leaf file in a 3-hop import chain used by summoning bridge tests (spec 0046).
+// Defines a single message type TC that bridge_a.proto references via bridge_b.proto.
+
+syntax = "proto3";
+
+package bridge;
+
+message TC {
+  int32 value = 1;
+}

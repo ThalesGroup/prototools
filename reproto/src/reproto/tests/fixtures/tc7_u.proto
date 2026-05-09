@@ -1,0 +1,17 @@
+// SPDX-FileCopyrightText: Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+//
+// TC-7: import-only file must not be summoned.
+// Unrelated file that imports tc7_s.proto — must NOT be written when only TS
+// is seeded (regression for the old "any target is_summoned" phase 7 filter).
+
+syntax = "proto3";
+
+package tc7;
+
+import "tc7_s.proto";
+
+message TU {
+  int32 x = 1;
+}

@@ -1,0 +1,14 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+//
+// SPDX-License-Identifier: MIT
+//
+// Fixture: bridge_lex_c.proto
+// Shared leaf for lexicographic tie-breaking test (spec 0046 TC-5).
+
+syntax = "proto3";
+
+package bridgelex;
+
+message LexC {
+  int32 value = 1;
+}

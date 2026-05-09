@@ -1,0 +1,14 @@
+// SPDX-FileCopyrightText: Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+//
+// TC-6: shared bridge used once.
+// Leaf file defining TC.
+
+syntax = "proto3";
+
+package tc6;
+
+message TC {
+  int32 value = 1;
+}

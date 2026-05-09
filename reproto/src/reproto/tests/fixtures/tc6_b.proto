@@ -1,0 +1,16 @@
+// SPDX-FileCopyrightText: Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+//
+// TC-6: shared bridge used once.
+// Middle file: both a bridge for the A→C reference and directly reachable for TB.
+
+syntax = "proto3";
+
+package tc6;
+
+import public "tc6_c.proto";
+
+message TB {
+  TC c_field = 1;
+}

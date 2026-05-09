@@ -1,0 +1,16 @@
+// SPDX-FileCopyrightText: Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+//
+// TC-3: two-hop bridge (A→B→D→C chain).
+// D imports C; must be summoned as a bridge.
+
+syntax = "proto3";
+
+package tc3;
+
+import public "tc3_c.proto";
+
+message TD {
+  TC c_field = 1;
+}

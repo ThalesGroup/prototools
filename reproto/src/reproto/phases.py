@@ -733,6 +733,13 @@ def _phase4_pruning(ctx: Context, topo: Topology, prunings: list[Fqdn]) -> None:
             if not matched_node.is_present():
                 continue
             matched_node.is_pruned = True
+            # Enforce "prune overrides seed": if this is a file node, clear
+            # is_seed so that phase 5's default-seed path does not mark it
+            # reachable.
+            if isinstance(matched_node, ReFileDescriptorProto):
+                topo_file = topo.files.get(matched_node.name)
+                if topo_file is not None:
+                    topo_file.is_seed = False
             current_prunings.add(matched_node)
 
     # --- Propagate stumps (contains relation) --------------------------------
@@ -850,23 +857,55 @@ def _phase5_reachability(
             )
 
 
+def _shortest_lex_path(
+    start: 'ReFileDescriptorProto',
+    end: 'ReFileDescriptorProto',
+    import_graph: 'dict[ReFileDescriptorProto, list[ReFileDescriptorProto]]',
+) -> 'list[ReFileDescriptorProto]':
+    """Return the shortest import path from start to end, lex-smallest if tied.
+
+    Shortest = fewest hops.  Among all shortest paths, choose the one whose
+    sequence of intermediate node names is lexicographically smallest.
+    This is achieved by BFS with neighbours pre-sorted by name: the first
+    time a node is reached is always via the lex-smallest shortest path.
+
+    Returns the full path [start, ..., end], or [] if no path exists.
+    import_graph[F] must be F's direct imports sorted by name.
+    """
+    from collections import deque
+    if start is end:
+        return [start]
+    prev: dict[ReFileDescriptorProto, ReFileDescriptorProto] = {start: start}
+    queue: deque[ReFileDescriptorProto] = deque([start])
+    while queue:
+        node = queue.popleft()
+        for neighbour in import_graph.get(node, []):
+            if neighbour in prev:
+                continue
+            prev[neighbour] = node
+            if neighbour is end:
+                path: list[ReFileDescriptorProto] = []
+                cur: ReFileDescriptorProto = end
+                while cur is not start:
+                    path.append(cur)
+                    cur = prev[cur]
+                path.append(start)
+                path.reverse()
+                return path
+            queue.append(neighbour)
+    return []
+
+
 def _phase6_summoning(ctx: Context) -> None:
     """Phase 6: Mark container nodes of reachable nodes (backward propagation)."""
     if not ctx.quiet:
         cli_info('Marking containers of reachable nodes')
 
-    transitive_summoned: set[Node] = set()
+    # --- Sub-pass 1: seed summoning ------------------------------------------
+    # Mark every reachable node as summoned, then propagate upward through the
+    # parent relation until file nodes are reached.
+
     current_summoned: set[Node] = set()
-
-    # Pre-identify sibling files
-    sibling_files: set[Node] = set()
-    for node in ctx.nodes.values():
-        if (node.is_present()
-            and node.parent is None
-            and not node.is_pruned):
-            sibling_files.add(node)
-
-    # --- Start from visible nodes --------------------------------------------
 
     for node in ctx.nodes.values():
         if not node.is_reachable:
@@ -874,27 +913,89 @@ def _phase6_summoning(ctx: Context) -> None:
         node.is_summoned = True
         current_summoned.add(node)
 
-    # --- Propagate backwards (parent relation) -------------------------------
-
     while current_summoned:
-        transitive_summoned.update(current_summoned)
         new_summoned: set[Node] = set()
         for node in current_summoned:
             if node.parent is None:
-                for sibling_file in sibling_files:
-                    sibling_file: Node
-                    if sibling_file.is_summoned:
-                        continue
-                    if node not in sibling_file.targets:
-                        continue
-                    sibling_file.is_summoned = True
-                    new_summoned.add(sibling_file)
                 continue
             if node.parent.is_summoned:
                 continue
             node.parent.is_summoned = True
             new_summoned.add(node.parent)
         current_summoned = new_summoned
+
+    # --- Sub-pass 2: import bridging (spec 0046) ------------------------------
+    # For each summoned file A and each of A's type-level targets T whose host
+    # file C is also summoned, find the shortest (lex-smallest if tied) import
+    # path from A to C and summon all intermediate files on it.
+    # Repeat until stable: newly summoned bridge files may themselves need
+    # bridges for their own type-level targets.
+
+    # Build import graph: file node -> sorted list of directly imported file nodes.
+    import_graph: dict[ReFileDescriptorProto, list[ReFileDescriptorProto]] = {}
+    for node in ctx.nodes.values():
+        if not isinstance(node, ReFileDescriptorProto):
+            continue
+        if not node.is_present() or node.is_pruned:
+            continue
+        imports = sorted(
+            (t for t in node.targets
+             if isinstance(t, ReFileDescriptorProto)
+             and t.is_present()
+             and not t.is_pruned),
+            key=lambda f: f.name,
+        )
+        import_graph[node] = imports
+
+    def _host_file(node: Node) -> 'ReFileDescriptorProto | None':
+        """Walk parent chain to find the hosting ReFileDescriptorProto."""
+        cur: Node = node
+        while cur.parent is not None:
+            cur = cur.parent
+        if isinstance(cur, ReFileDescriptorProto):
+            return cur
+        return None
+
+    def _all_type_targets(file_node: ReFileDescriptorProto) -> 'set[Node]':
+        """Collect all non-file targets reachable via the contains tree of file_node."""
+        result: set[Node] = set()
+        stack: list[Node] = [file_node]
+        visited: set[Node] = set()
+        while stack:
+            n = stack.pop()
+            if n in visited:
+                continue
+            visited.add(n)
+            for t in n.targets:
+                if not isinstance(t, ReFileDescriptorProto):
+                    result.add(t)
+            for c in n.contains:
+                stack.append(c)
+        return result
+
+    changed = True
+    while changed:
+        changed = False
+        summoned_files = [
+            node for node in ctx.nodes.values()
+            if isinstance(node, ReFileDescriptorProto)
+            and node.is_summoned
+        ]
+        for file_a in summoned_files:
+            for target in _all_type_targets(file_a):
+                file_c = _host_file(target)
+                if file_c is None or not file_c.is_summoned:
+                    continue
+                if file_c is file_a:
+                    continue
+                path = _shortest_lex_path(file_a, file_c, import_graph)
+                if not path:
+                    continue
+                # Summon all intermediate files (exclude start and end)
+                for intermediate in path[1:-1]:
+                    if not intermediate.is_summoned:
+                        intermediate.is_summoned = True
+                        changed = True
 
 
 def _phase7_output(ctx: Context, out_repo: Path) -> None:
@@ -909,7 +1010,7 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
             continue
         if not re_fdp.is_present():
             continue
-        if not any(n for n in re_fdp.targets if n.is_summoned):
+        if not re_fdp.is_summoned:
             continue
 
         if (re_fdp.name == ctx.variant_descriptor_proto

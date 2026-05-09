@@ -1,0 +1,18 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+//
+// SPDX-License-Identifier: MIT
+//
+// Fixture: bridge_lex_a.proto
+// Root file for lex tie-breaking test (spec 0046 TC-5).
+// Imports both bridge_lex_b1 and bridge_lex_b2; references LexC via both.
+
+syntax = "proto3";
+
+package bridgelex;
+
+import "bridge_lex_b1.proto";
+import "bridge_lex_b2.proto";
+
+message LexA {
+  LexC c_field = 1;
+}

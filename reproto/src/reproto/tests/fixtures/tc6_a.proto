@@ -1,0 +1,18 @@
+// SPDX-FileCopyrightText: Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+//
+// TC-6: shared bridge used once.
+// Root file: has fields of both TB and TC; tc6_b.proto serves as both a
+// direct dependency and a bridge for TC.
+
+syntax = "proto3";
+
+package tc6;
+
+import "tc6_b.proto";
+
+message TA {
+  TB b_field = 1;
+  TC c_field = 2;
+}

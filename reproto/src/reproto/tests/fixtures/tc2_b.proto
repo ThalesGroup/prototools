@@ -1,0 +1,17 @@
+// SPDX-FileCopyrightText: Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+//
+// TC-2: one-hop bridge.
+// Middle file: imports tc2_c.proto.  Must be summoned as a bridge even though
+// nothing in it is directly referenced from tc2_a.proto.
+
+syntax = "proto3";
+
+package tc2;
+
+import public "tc2_c.proto";
+
+message TB {
+  TC c_field = 1;
+}

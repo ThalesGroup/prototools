@@ -1,0 +1,17 @@
+// SPDX-FileCopyrightText: Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+//
+// TC-8: pruned seed file must not be written.
+// Imports tc8_p.proto (which is pruned) but has no field of type TP.
+// Must still be written normally.
+
+syntax = "proto3";
+
+package tc8;
+
+import "tc8_p.proto";
+
+message TQ {
+  int32 x = 1;
+}

@@ -1,0 +1,14 @@
+// SPDX-FileCopyrightText: Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+//
+// TC-1: direct import, no bridge needed.
+// Leaf file defining TC.
+
+syntax = "proto3";
+
+package tc1;
+
+message TC {
+  int32 value = 1;
+}

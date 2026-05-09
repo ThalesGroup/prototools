@@ -1,0 +1,16 @@
+// SPDX-FileCopyrightText: Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+//
+// TC-4: no spurious summoning.
+// Imports tc4_leaf.proto and uses Leaf, but is not seeded — must NOT be summoned.
+
+syntax = "proto3";
+
+package tc4;
+
+import "tc4_leaf.proto";
+
+message User {
+  Leaf leaf = 1;
+}

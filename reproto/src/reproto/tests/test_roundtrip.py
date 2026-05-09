@@ -254,7 +254,7 @@ def test_roundtrip_edition(fixture_name: str, tmp_path: Path) -> None:
     """End-to-end roundtrip for edition .proto files.
 
     Same two-level check as for proto2/proto3: .pb descriptor byte-identity
-    and normalized .proto text equality (uncomment + buf format).
+    and .proto text equality.
     """
     orig_dir = tmp_path / "orig"
     new_dir = tmp_path / "new"

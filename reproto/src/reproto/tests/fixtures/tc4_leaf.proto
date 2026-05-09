@@ -1,0 +1,15 @@
+// SPDX-FileCopyrightText: Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+//
+// TC-4: no spurious summoning.
+// Leaf file with scalar fields only — no message-type dependencies.
+
+syntax = "proto3";
+
+package tc4;
+
+message Leaf {
+  int32 x = 1;
+  int32 y = 2;
+}

@@ -1,0 +1,16 @@
+// SPDX-FileCopyrightText: Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+//
+// TC-1: direct import, no bridge needed.
+// Root file: directly imports tc1_c.proto and uses TC.
+
+syntax = "proto3";
+
+package tc1;
+
+import "tc1_c.proto";
+
+message TA {
+  TC c_field = 1;
+}

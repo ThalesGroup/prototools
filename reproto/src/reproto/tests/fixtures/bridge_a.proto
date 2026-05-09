@@ -1,0 +1,18 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+//
+// SPDX-License-Identifier: MIT
+//
+// Fixture: bridge_a.proto
+// Root file in a 3-hop import chain used by summoning bridge tests (spec 0046).
+// Imports bridge_b.proto only; references TC (from bridge_c.proto) via that chain.
+
+syntax = "proto3";
+
+package bridge;
+
+import "bridge_b.proto";
+
+message TA {
+  TC c_field = 1;
+  TB b_field = 2;
+}

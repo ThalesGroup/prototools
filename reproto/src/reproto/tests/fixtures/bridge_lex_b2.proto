@@ -1,0 +1,17 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+//
+// SPDX-License-Identifier: MIT
+//
+// Fixture: bridge_lex_b2.proto
+// Second of two equal-length paths for lex tie-breaking test (spec 0046 TC-5).
+// bridge_lex_b1 < bridge_lex_b2 lexicographically, so this bridge should NOT be chosen.
+
+syntax = "proto3";
+
+package bridgelex;
+
+import public "bridge_lex_c.proto";
+
+message LexB2 {
+  LexC c_field = 1;
+}
