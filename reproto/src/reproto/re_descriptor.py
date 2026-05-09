@@ -443,16 +443,19 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
         for n in self.nested_type:
             nested_proto = cast(DescriptorProto, n)
             nested = ReDescriptorProto(ctx, nested_proto, parent=self)
-            # Skip: unsummoned messages, groups (rendered inline), and map entries (rendered as map<K,V>)
-            if not nested.is_summoned or nested.is_group or nested.is_map_entry:
+            # Skip groups (rendered inline) and map entries (rendered as map<K,V>)
+            if nested.is_group or nested.is_map_entry:
                 continue
             text, inp = nested.render(ctx, depth+1)
             text.insert(0, BlockLine(f'message {nested.name} {{', depth+1))
             if text[1].text == '}':  # body is empty: collapse to one line
                 text[0].postpend('}')
                 text.pop(1)
+            if not nested.is_summoned:
+                text.abandon()
+            else:
+                inputs.extend(inp)
             out.extend(text)
-            inputs.extend(inp)
         out.append_div_maybe(depth)
 
         # --- Message enums ----------------------------------------------------

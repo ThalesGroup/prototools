@@ -376,7 +376,7 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
         for m in self.message_type:
             msg_proto = cast(DescriptorProto, m)
             message = ReDescriptorProto(ctx, msg_proto, parent=self)
-            if not message.is_summoned or message.is_group:
+            if message.is_group:
                 continue
             lines, inp = message.render(ctx)
             lines.insert(0, BlockLine(f'message {message.name} {{', depth))
@@ -384,8 +384,11 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
                 lines[0].postpend('}')
                 lines.pop(1)
             lines.append_div_maybe(depth)
+            if not message.is_summoned:
+                lines.abandon()
+            else:
+                inputs.extend(inp)
             out.extend(lines)
-            inputs.extend(inp)
         out.append_div_maybe(depth)
 
         # --- File extensions --------------------------------------------------
