@@ -150,6 +150,7 @@ _SECTIONS: dict[str, str] = {
     '--redact-comments':     'Rendering',
     '--redact-orphans':      'Rendering',
     '--go-root':             'Rendering',
+    '--emit-scoring-graphs':  'Advanced',
     '--phase2-plugin':       'Advanced',
     '--keep-duplicates':     'Advanced',
     '--detailed-warnings':   'Diagnostics',
@@ -256,6 +257,12 @@ class _SectionedCommand(click.Command):
 )
 
 @click.option(
+    '--emit-scoring-graphs',
+    is_flag=True,
+    help='Write per-file scoring-graph YAML files alongside .proto output under --output-root',
+)
+
+@click.option(
     '--proto-variant',
     required=False,
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
@@ -298,7 +305,7 @@ class _SectionedCommand(click.Command):
     '--seed', 'seeds',
     type=str,
     multiple=True,
-    help='Fully-qualified name to treat as an output root (e.g. desc:.my.pkg.MyMsg or file:foo.proto)',
+    help='Fully-qualified name to treat as an output root (e.g. desc:my.pkg.MyMsg or file:foo.proto)',
 )
 
 @click.option(
@@ -306,7 +313,7 @@ class _SectionedCommand(click.Command):
     '--prune', 'stumps',
     type=str,
     multiple=True,
-    help='Fully-qualified name to exclude from output (e.g. desc:.my.pkg.MyMsg or file:foo.proto)',
+    help='Fully-qualified name to exclude from output (e.g. desc:my.pkg.MyMsg or file:foo.proto)',
 )
 
 @click.option(
@@ -405,6 +412,7 @@ def main(
         proto_out: Path | None,
         emit_binary: bool,
         dry_run: bool,
+        emit_scoring_graphs: bool,
         proto_variant: Path | None,
         use_variant: tuple[str, ...],
         keep_descriptor_path: bool,
@@ -476,6 +484,7 @@ def main(
 
     options = Options(
         binary=emit_binary,
+        emit_scoring_graphs=emit_scoring_graphs,
         force_proto2_output=force_proto2_output,
         debug=debug,
         debug_fqdn=debug_fqdn,
@@ -502,12 +511,23 @@ def main(
         redact_orphans=redact_orphans,
         phase2_plugin=phase2_plugin_function,
     )
+    def _normalise_fqdn(s: str) -> Fqdn:
+        """Accept FQDNs without a leading dot after the prefix for non-file nodes.
+
+        E.g. 'desc:my.pkg.Foo' → 'desc:.my.pkg.Foo'; 'file:foo.proto' unchanged.
+        """
+        if ':' in s:
+            prefix, rest = s.split(':', 1)
+            if prefix != 'file' and rest and not rest.startswith('.'):
+                return Fqdn(f'{prefix}:.{rest}')
+        return Fqdn(s)
+
     try:
         reproto(
             list(pb_path) if pb_path else [Path('.')],
             pb_files,
-            [Fqdn(s) for s in seeds],
-            [Fqdn(p) for p in stumps],
+            [_normalise_fqdn(s) for s in seeds],
+            [_normalise_fqdn(p) for p in stumps],
             proto_out if proto_out is not None else Path('.'),
             options,
         )

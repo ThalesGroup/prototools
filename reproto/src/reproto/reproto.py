@@ -178,6 +178,7 @@ from .phases import (
     _phase5_reachability,
     _phase6_summoning,
     _phase7_output,
+    _phase_emit_scoring_graphs,
     import_annotations,
 )
 from .show import show_graph
@@ -238,6 +239,9 @@ def reproto(
         _phase5_reachability(ctx, seeds, topo)
         _phase6_summoning(ctx)
         _phase7_output(ctx, out_repo)
+
+        if ctx.emit_scoring_graphs:
+            _phase_emit_scoring_graphs(ctx, out_repo)
 
         if ctx.graph is not None:
             show_graph(ctx, output_path=ctx.graph)

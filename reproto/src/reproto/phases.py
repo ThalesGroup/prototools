@@ -13,6 +13,7 @@ from __future__ import annotations
 import fnmatch
 import importlib.resources
 import itertools
+from typing import Any
 import logging
 import sys
 from pathlib import Path
@@ -131,7 +132,12 @@ def _find_matching_nodes(
 
 
 def _fuzzy_suggest(pattern: str, ctx: Context) -> str | None:
-    """Return the closest matching FQDN from ctx.nodes, or None if none is close enough."""
+    """Return the closest matching FQDN from ctx.nodes, or None if none is close enough.
+
+    The suggestion strips the leading dot after the prefix (e.g. 'desc:.a.B' →
+    'desc:a.B') so it can be pasted directly into --seed / --prune without
+    modification.
+    """
     best_match = None
     best_score = 85
     for node in ctx.nodes.values():
@@ -139,6 +145,13 @@ def _fuzzy_suggest(pattern: str, ctx: Context) -> str | None:
         if score > best_score:
             best_score = score
             best_match = node.fqdn
+    if best_match is None:
+        return None
+    # Strip leading dot from the name part for user-facing display.
+    if ':' in best_match:
+        prefix, rest = best_match.split(':', 1)
+        if rest.startswith('.'):
+            return f'{prefix}:{rest[1:]}'
     return best_match
 
 
@@ -515,6 +528,14 @@ def _phase2_build_pool(
 
     # --- Locate descriptor.proto ---------------------------------------------
 
+    if ctx.variant_descriptor_proto not in topo.files:
+        cli_error(
+            f"descriptor.proto not found in input files "
+            f"({ctx.variant_descriptor_proto}); "
+            f"add it to your input set or use --use-variant to load the "
+            f"embedded fallback"
+        )
+        raise DescriptorProtoMissingError
     descriptor_proto: ReFile = topo.files[ctx.variant_descriptor_proto]
     if descriptor_proto.is_ref() or descriptor_proto.targets:
         cli_error("Unexpected targets in descriptor.proto, aborting")
@@ -1069,3 +1090,108 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
                 cli_error(f"Failed to write {res_path}: {type(e).__name__}: {e}")
                 cli_error("Cannot continue due to I/O error.")
                 sys.exit(1)
+
+
+def _field_label(field: Any) -> str:
+    """Return 'required', 'repeated', or 'optional' for a FieldDescriptor (spec 0045)."""
+    from google.protobuf.descriptor import FieldDescriptor as FD
+    label = field.label
+    if label == FD.LABEL_REQUIRED:
+        return 'required'
+    if label == FD.LABEL_REPEATED:
+        return 'repeated'
+    return 'optional'
+
+
+def _scoring_kind(field: Any) -> 'tuple[str, str | None, int | None, int | None]':
+    """Map a FieldDescriptor to a (ScoringKind, child_fqdn, enum_min, enum_max) tuple (spec 0045 §3)."""
+    from google.protobuf.descriptor import FieldDescriptor as FD
+    TYPE = field.type
+    if TYPE == FD.TYPE_MESSAGE:
+        return 'LEN_MSG', field.message_type.full_name, None, None
+    if TYPE == FD.TYPE_GROUP:
+        return 'GROUP', field.message_type.full_name, None, None
+    if TYPE == FD.TYPE_STRING:
+        return 'LEN_STRING', None, None, None
+    if TYPE == FD.TYPE_BYTES:
+        return 'LEN_BYTES', None, None, None
+    if TYPE in (FD.TYPE_DOUBLE, FD.TYPE_FIXED64, FD.TYPE_SFIXED64):
+        return 'I64', None, None, None
+    if TYPE in (FD.TYPE_FLOAT, FD.TYPE_FIXED32, FD.TYPE_SFIXED32):
+        return 'I32', None, None, None
+    if TYPE == FD.TYPE_ENUM:
+        if field.is_packed:
+            return 'LEN_PACKED', None, None, None
+        values = list(field.enum_type.values_by_number.keys())
+        return 'ENUM', None, min(values), max(values)
+    varint_types = {
+        FD.TYPE_INT32, FD.TYPE_INT64, FD.TYPE_UINT32, FD.TYPE_UINT64,
+        FD.TYPE_SINT32, FD.TYPE_SINT64, FD.TYPE_BOOL,
+    }
+    if TYPE in varint_types:
+        if field.is_packed:
+            return 'LEN_PACKED', None, None, None
+        return 'VARINT', None, None, None
+    raise ValueError(f'Unknown field type: {TYPE}')
+
+
+def _phase_emit_scoring_graphs(ctx: 'Context', out_dir: Path) -> None:
+    """Emit one scoring-graph YAML file per FileDescriptorProto (spec 0045)."""
+    import yaml
+
+    def _collect(desc: Any, messages: dict) -> None:
+        msg_node = ctx.nodes.get(Fqdn(f'desc:.{desc.full_name}'))
+        if msg_node is not None and msg_node.is_pruned:
+            return
+        fields_out = []
+        for f in sorted(desc.fields_by_number.values(), key=lambda f: f.number):
+            field_node = ctx.nodes.get(Fqdn(f'fdsc:.{f.full_name}'))
+            if field_node is not None and field_node.is_pruned:
+                continue
+            kind, child, enum_min, enum_max = _scoring_kind(f)
+            entry: dict = {'number': f.number, 'kind': kind}
+            if child is not None:
+                entry['child'] = child
+            if enum_min is not None:
+                entry['enum_min'] = enum_min
+                entry['enum_max'] = enum_max
+            label = _field_label(f)
+            if label != 'optional':
+                entry['label'] = label
+            fields_out.append(entry)
+        messages[desc.full_name] = {'fields': fields_out}
+        for nested in desc.nested_types:
+            _collect(nested, messages)
+
+    for re_file in ctx.nodes.values():
+        if not isinstance(re_file, ReFileDescriptorProto):
+            continue
+        if not re_file.is_present():
+            continue
+        if not re_file.is_summoned:
+            continue
+        proto_name = re_file.name
+
+        try:
+            fd = ctx.pool.FindFileByName(proto_name)
+        except KeyError:
+            continue
+
+        messages: dict = {}
+        for msg_desc in fd.message_types_by_name.values():
+            _collect(msg_desc, messages)
+
+        # Entry nodes: top-level (non-nested) messages in this file that are
+        # not pruned (full FQDNs, sorted for determinism).
+        entries = []
+        for msg_desc in fd.message_types_by_name.values():
+            node = ctx.nodes.get(Fqdn(f'desc:.{msg_desc.full_name}'))
+            if node is None or not node.is_pruned:
+                entries.append(msg_desc.full_name)
+        entries.sort()
+
+        yaml_path = out_dir / Path(proto_name).with_suffix('.yaml')
+        yaml_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(yaml_path, 'w', encoding='utf-8') as fh:
+            yaml.dump({'entries': entries, 'messages': messages}, fh,
+                      sort_keys=False, allow_unicode=True)

@@ -54,6 +54,7 @@ class Options:
     debug_fqdn: bool = False
     descriptor_proto: str = ""
     dry_run: bool = False
+    emit_scoring_graphs: bool = False
     fallback_protos: list[str] = field(default_factory=list)
     go_root: str | None = None
     graph: Path | None = None
