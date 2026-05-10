@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+[workspace]
+
+[package]
+name        = "score-graph"
+version     = "0.1.0"
+edition     = "2021"
+description = "Build a Hopcroft-deduplicated scoring graph from reproto YAML output"
+
+[[bin]]
+name = "score-graph"
+path = "src/main.rs"
+
+[dependencies]
+clap           = { version = "4.5", features = ["derive"] }
+serde          = { version = "1", features = ["derive"] }
+serde_yaml     = "0.9"
+rkyv           = { version = "0.8", features = ["little_endian"] }
+memmap2        = "0.9"
+walkdir        = "2"
+globset        = "0.4"
+prototext-core = { path = "../prototext-core" }
+
+[dev-dependencies]
+tempfile    = "3"

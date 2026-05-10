@@ -149,12 +149,21 @@ pub fn parse_message(
                 pos += 8;
 
                 if let Some(ref fs) = field_schema {
-                    field.content = match fs.kind() {
-                        Kind::Double => ProtoTextContent::Double(decode_double(data)),
-                        Kind::Fixed64 => ProtoTextContent::PFixed64(decode_fixed64(data)),
-                        Kind::Sfixed64 => ProtoTextContent::Sfixed64(decode_sfixed64(data)),
-                        _ => ProtoTextContent::WireFixed64(decode_fixed64(data)),
-                    };
+                    match fs.kind() {
+                        Kind::Double => {
+                            field.content = ProtoTextContent::Double(decode_double(data));
+                        }
+                        Kind::Fixed64 => {
+                            field.content = ProtoTextContent::PFixed64(decode_fixed64(data));
+                        }
+                        Kind::Sfixed64 => {
+                            field.content = ProtoTextContent::Sfixed64(decode_sfixed64(data));
+                        }
+                        _ => {
+                            field.proto2_has_type_mismatch = true;
+                            field.content = ProtoTextContent::WireFixed64(decode_fixed64(data));
+                        }
+                    }
                 } else {
                     field.content = ProtoTextContent::WireFixed64(decode_fixed64(data));
                 }
@@ -261,13 +270,22 @@ pub fn parse_message(
                 pos += 4;
 
                 if let Some(ref fs) = field_schema {
-                    field.content = match fs.kind() {
-                        Kind::Float => ProtoTextContent::Float(decode_float(data)),
-                        Kind::Fixed32 => ProtoTextContent::PFixed32(decode_fixed32(data)),
-                        Kind::Sfixed32 => ProtoTextContent::Sfixed32(decode_sfixed32(data)),
-                        // Fallback: Python uses field.fixed32 (proto2-level, field 37)
-                        _ => ProtoTextContent::PFixed32(decode_fixed32(data)),
-                    };
+                    match fs.kind() {
+                        Kind::Float => {
+                            field.content = ProtoTextContent::Float(decode_float(data));
+                        }
+                        Kind::Fixed32 => {
+                            field.content = ProtoTextContent::PFixed32(decode_fixed32(data));
+                        }
+                        Kind::Sfixed32 => {
+                            field.content = ProtoTextContent::Sfixed32(decode_sfixed32(data));
+                        }
+                        _ => {
+                            field.proto2_has_type_mismatch = true;
+                            // Fallback: Python uses field.fixed32 (proto2-level, field 37)
+                            field.content = ProtoTextContent::PFixed32(decode_fixed32(data));
+                        }
+                    }
                 } else {
                     // No schema fallback: Python uses field.fixed32 (proto2-level, field 37)
                     field.content = ProtoTextContent::PFixed32(decode_fixed32(data));

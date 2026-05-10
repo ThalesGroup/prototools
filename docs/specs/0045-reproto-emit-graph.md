@@ -6,8 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0045 — reproto: --emit-scoring-graph option
 
-**Status:** draft
-**Implemented in:** —
+**Status:** implemented
+**Implemented in:** 2026-05-10 (updated 2026-05-10, label field added 2026-05-10)
 **App:** reproto
 
 ---
@@ -45,10 +45,11 @@ schema-db compilation pipeline.  It is not on the hot path.
 ## Goals
 
 1. Add `--emit-scoring-graph` CLI flag to reproto.
-2. For each `FileDescriptorProto` in the loaded corpus, write one YAML file
-   alongside the corresponding reconstructed `.proto` file under
+2. For each **summoned** `FileDescriptorProto` (i.e. each file that is written
+   as a `.proto` output), write one YAML file alongside it under
    `--output-root`, e.g. `OUT/google/rpc/status.yaml` next to
-   `OUT/google/rpc/status.proto`.
+   `OUT/google/rpc/status.proto`.  Files that are loaded but not summoned
+   (pruned, unreachable, or outside the seed set) produce no YAML.
 3. The YAML contains only the information required for scoring (spec 0042
    §Schema information required for scoring): for each message type, a list
    of `(field_number, scoring_kind[, child_fqdn])` triples.
@@ -86,7 +87,7 @@ New flag added to `reproto/src/reproto/cli.py` and `Options` in
 
 In `Options`:
 ```python
-emit_graph: bool = False
+emit_scoring_graph: bool = False
 ```
 
 The `--emit-scoring-graph` option belongs to the **Advanced** section in
@@ -113,17 +114,30 @@ messages:
     fields:
       - number: 1
         kind: VARINT
+        label: required
       - number: 2
         kind: LEN_STRING
       - number: 3
         kind: LEN_MSG
         child: google.protobuf.Any
+        label: repeated
+      - number: 4
+        kind: ENUM
+        enum_min: 0
+        enum_max: 5
 ```
 
 Notes:
 - `child` key is present when `kind` is `LEN_MSG` or `GROUP` — both are
   message-typed fields whose child FQDN is needed to recurse during
   scoring.  Absent for all other kinds.
+- `enum_min` and `enum_max` are present when `kind` is `ENUM`; they give
+  the minimum and maximum integer values defined for the enum type of this
+  field.  An observed varint outside `[enum_min, enum_max]` is a **veto**
+  — a strong negative score impact equivalent to a wire-type mismatch.
+- `label` is one of `optional`, `required`, or `repeated`.  `optional` is
+  the default and is **omitted** when it applies, to keep the YAML compact.
+  `required` and `repeated` are always written explicitly.
 - Fields are listed in ascending `number` order.
 - Nested message types (defined inside another message) are included as
   top-level entries in `messages`, using their full FQDN.  For example,
@@ -143,7 +157,7 @@ Notes:
   to a future spec once the scoring model is extended to use enum value
   ranges).
 
-### §3 — ScoringKind mapping
+### §3 — ScoringKind and label mapping
 
 The `kind` field is one of eight string values derived from each field's
 proto type and packing state.  The mapping uses `FieldDescriptor` objects
@@ -153,14 +167,31 @@ default packing rules, so no manual syntax-version check is needed.
 
 | Proto type(s) | `.is_packed`? | kind |
 |---|---|---|
-| TYPE_INT32, TYPE_INT64, TYPE_UINT32, TYPE_UINT64, TYPE_SINT32, TYPE_SINT64, TYPE_BOOL, TYPE_ENUM | false | `VARINT` |
+| TYPE_INT32, TYPE_INT64, TYPE_UINT32, TYPE_UINT64, TYPE_SINT32, TYPE_SINT64, TYPE_BOOL | false | `VARINT` |
 | same | true | `LEN_PACKED` |
+| TYPE_ENUM | false | `ENUM` (with `enum_min`, `enum_max`) |
+| TYPE_ENUM | true | `LEN_PACKED` |
 | TYPE_FIXED64, TYPE_SFIXED64, TYPE_DOUBLE | n/a | `I64` |
 | TYPE_STRING | n/a | `LEN_STRING` |
 | TYPE_BYTES | n/a | `LEN_BYTES` |
 | TYPE_MESSAGE | n/a | `LEN_MSG` |
 | TYPE_GROUP | n/a | `GROUP` |
 | TYPE_FIXED32, TYPE_SFIXED32, TYPE_FLOAT | n/a | `I32` |
+
+`enum_min` and `enum_max` are derived from `field.enum_type.values_by_number`:
+```python
+values = list(field.enum_type.values_by_number.keys())
+enum_min, enum_max = min(values), max(values)
+```
+
+**Label mapping**: each field also carries a `label` key derived from
+`FieldDescriptor.label`:
+
+| `FieldDescriptor.label` | YAML value | Emitted? |
+|---|---|---|
+| `LABEL_OPTIONAL` | `optional` | No — default, omitted |
+| `LABEL_REQUIRED` | `required` | Yes |
+| `LABEL_REPEATED` | `repeated` | Yes |
 
 **Proto3 implicit packing** is handled automatically: `FieldDescriptor.is_packed`
 returns `True` for a `LABEL_REPEATED` field of a packable type in a proto3
@@ -180,7 +211,7 @@ A new function `_phase_emit_graph` is added to `phases.py` and called from
 
 ```python
 # reproto.py — after _phase7_output(ctx, out_repo):
-if ctx.emit_graph:
+if ctx.emit_scoring_graph:
     _phase_emit_graph(ctx, out_repo)
 if ctx.graph is not None:
     show_graph(ctx, output_path=ctx.graph)
@@ -271,9 +302,9 @@ def _scoring_kind(field) -> tuple[str, str | None]:
 | File | Change |
 |---|---|
 | `cli.py` | Add `--emit-scoring-graph` flag (is_flag); add `'--emit-scoring-graph': 'Advanced'` to `_SECTIONS` |
-| `context.py` | Add `emit_graph: bool = False` to `Options` |
+| `context.py` | Add `emit_scoring_graph: bool = False` to `Options` |
 | `reproto.py` | Call `_phase_emit_graph(ctx, out_repo)` after `_phase7_output`; export it |
-| `phases.py` | Add `_phase_emit_graph` and `_scoring_kind` functions |
+| `phases.py` | Add `_phase_emit_graph`, `_scoring_kind`, and `_field_label` functions |
 
 No changes to `show.py`, `re_descriptor.py`, `re_field.py`, or any test
 infrastructure.

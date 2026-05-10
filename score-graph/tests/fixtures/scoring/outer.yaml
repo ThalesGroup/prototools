@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+entries:
+- Inner
+- Outer
+messages:
+  Inner:
+    fields:
+    - number: 1
+      kind: VARINT
+  Outer:
+    fields:
+    - number: 1
+      kind: VARINT
+      label: required
+    - number: 2
+      kind: LEN_STRING
+    - number: 3
+      kind: VARINT
+      label: repeated
+    - number: 4
+      kind: LEN_MSG
+      child: Inner
+    - number: 5
+      kind: ENUM
+      enum_min: 0
+      enum_max: 2

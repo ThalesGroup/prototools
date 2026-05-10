@@ -1,0 +1,25 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
+// outer.proto
+
+syntax = "proto2";
+
+enum Status {
+  OK = 0;
+  WARN = 1;
+  ERR = 2;
+}
+
+message Inner {
+  optional uint32 value = 1;
+}
+
+message Outer {
+  required uint32 id = 1;
+  optional string name = 2;
+  repeated uint32 tags = 3;
+  optional Inner child = 4;
+  optional Status status = 5;
+}

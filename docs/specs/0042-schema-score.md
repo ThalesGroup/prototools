@@ -64,9 +64,11 @@ required for scoring).
 
 ```rust
 pub struct MatchScore {
-    pub matches:  u64,
-    pub unknowns: u64,
-    pub vetoed:   bool,
+    pub matches:       u64,
+    pub unknowns:      u64,
+    pub mismatches:    u64,  // absent required fields; weighted same as unknowns in ratio
+    pub non_canonical: u64,  // overhang bytes, >1 occurrences of optional/required, etc.
+    pub vetoed:        bool,
 }
 ```
 
@@ -156,6 +158,28 @@ match for the enclosing field, recurse into `inner` and continue counting.
 `WireGroup` is NOT recursed into in this spec (the group content is opaque
 at the scoring level).  `Group` (schema-declared) counts as a match but its
 contents are also not recursed into in this spec.
+
+**Cardinality checks** — applied at the end of each `score_message` call,
+after the full field list of the current state has been traversed:
+
+| Label | 0 occurrences | 1 occurrence | >1 occurrences |
+|---|---|---|---|
+| `Optional` | ok | ok | `non_canonical += 1` per extra |
+| `Required` | `mismatches += 1` | ok | `non_canonical += 1` per extra |
+| `Repeated` | ok | ok | ok |
+
+`mismatches` is a new counter on `MatchScore` (alongside `matches`,
+`unknowns`, `non_canonical`).  It contributes negatively to the score ratio:
+
+```
+ratio = matches / (matches + unknowns + mismatches)
+```
+
+Rationale: a required field that is absent is a strong structural mismatch
+— the message cannot be valid under the schema — comparable in severity to
+a type mismatch.  >1 occurrences for optional/required fields are not fatal
+because the protobuf format allows it, but they are unusual in practice and
+warrant a weak suspicion signal (`non_canonical`).
 
 ### §4 — Decoder fix required
 
@@ -265,9 +289,16 @@ enum ScoringKind {
     I32,             // FIXED32, SFIXED32, FLOAT
 }
 
+enum FieldLabel {
+    Optional,   // 0 or 1 occurrence; >1 is non-canonical
+    Required,   // exactly 1 occurrence; 0 is a mismatch, >1 is non-canonical
+    Repeated,   // 0+ occurrences; no constraint
+}
+
 struct ScoringField {
     field_number: u32,
     kind:         ScoringKind,
+    label:        FieldLabel,
 }
 
 struct ScoringState {
