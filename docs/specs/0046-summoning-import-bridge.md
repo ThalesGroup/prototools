@@ -7,8 +7,8 @@ SPDX-License-Identifier: MIT
 
 # 0046 — reproto: tighter summoning via import bridging
 
-**Status:** draft
-**Implemented in:** —
+**Status:** implemented
+**Implemented in:** 2026-05-10
 **App:** reproto
 
 ---
@@ -66,7 +66,6 @@ rule even though nothing references them.
 
 ## Non-goals
 
-- Changing phases 1–5 or phase 7.
 - Changing the reachability (forward) pass.
 - Optimal minimisation of the summoned set beyond what the algorithm below
   delivers.
@@ -86,9 +85,11 @@ a `ReFileDescriptorProto`).
 **File-level targets of A**: the subset of A's `targets` that are
 `ReFileDescriptorProto` instances — i.e. the files A directly imports.
 
-**Type-level targets of A**: the subset of A's `targets` that are *not*
-`ReFileDescriptorProto` instances — i.e. the message, enum, service, and
-extension nodes that A directly references.
+**Type-level targets of A**: the union of all non-`ReFileDescriptorProto`
+targets reachable by walking the full `contains` tree of A.  This includes
+targets of A's contained nodes (messages, fields, etc.) at any nesting depth,
+because field-level type references (e.g. a field's `type_name`) are recorded
+as targets of the field node, not of the file or message node directly.
 
 **Host file of a node N**: the unique `ReFileDescriptorProto` that contains N
 (found by walking `N.parent` upward until reaching a node with `parent is
@@ -125,8 +126,8 @@ sub-pass is identical to the current implementation.
 Repeat until no new files are added to S:
 
 1. For each summoned file A in S:
-2.   For each type-level target T of A (i.e. each node in A's `targets` that
-     is not a `ReFileDescriptorProto`):
+2.   For each type-level target T of A (i.e. each non-`ReFileDescriptorProto`
+     node reachable via A's `contains` tree, collected by `_all_type_targets`):
 3.     Let C = host file of T.
 4.     If C is not in S: skip (T's file is not summoned; no bridge needed).
 5.     Find all shortest paths A = F₀ → F₁ → … → Fₖ = C in the import
@@ -197,6 +198,12 @@ before BFS begins (once, as a pre-computation step).
 **Where**: `_phase6_summoning` in `phases.py`.  Sub-pass 1 is unchanged.
 Sub-pass 2 replaces lines 883–891 (the sibling-file loop) entirely.
 
+**Type-level target collection**: a helper `_all_type_targets(file_node)`
+walks the `contains` tree of the file node (DFS) and collects all
+non-`ReFileDescriptorProto` targets at every level.  This is necessary
+because field-level type references live on field nodes, not on the file or
+message node directly.
+
 **Import graph construction**: iterate over all `ReFileDescriptorProto` nodes
 in `ctx.nodes`.  For each, collect its file-level targets (the subset of
 `node.targets` that are `ReFileDescriptorProto` instances) sorted by
@@ -222,8 +229,8 @@ that were declared as imports but never loaded) are excluded.
 | File | Change |
 |---|---|
 | `phases.py` | Replace sibling-file loop in `_phase6_summoning` with sub-pass 2 as specified above |
-
-No changes to any other file.
+| `phases.py` | Fix phase 7 output filter: replace `any(target.is_summoned for target in re_fdp.targets)` with `re_fdp.is_summoned` |
+| `phases.py` | Fix phase 4 pruning: enforce "prune overrides seed" by clearing `topo_file.is_seed` when a file node is explicitly pruned, so the default-seed path in phase 5 does not mark pruned files reachable |
 
 ### §7 — Tests
 
@@ -252,6 +259,13 @@ B1 is summoned and B2 is not.
 TB (in B) and one of type TC (in C), where A imports B imports C.  Assert B
 is summoned once (not duplicated).
 
-**TC-7 — regression on duration seed**: run reproto with
-`--seed desc:.google.protobuf.Duration` on the protodb corpus fixture.
-Assert exactly one file is written: `google/protobuf/duration.proto`.
+**TC-7 — import-only file not written**: file U imports file S; a `desc:`
+seed targets a message in S only.  U has no reachable nodes.  Assert S is
+written and U is not — regression for the old phase 7 filter
+`any(target.is_summoned for target in re_fdp.targets)` which wrote any file
+importing a summoned file.
+
+**TC-8 — pruned seed file not written**: file P is passed as input (a seed by
+default) and also explicitly `--prune`d.  File Q imports P but has no field
+of type from P.  Assert Q is written and P is not — regression for the phase
+5 default-seed path not respecting `is_pruned`.
