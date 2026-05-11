@@ -62,19 +62,21 @@ pub fn minimize(raw: &RawGraph, reg: &LeafRegistry) -> Partition {
         }
     };
 
-    // ── Reverse adjacency: dst_index → Vec<(src_index, field_number)> ─────────
-    let mut rev: Vec<Vec<(usize, u32)>> = vec![Vec::new(); n];
+    // ── Reverse adjacency: dst_index → Vec<(src_index, field_number, label)> ──
+    // Label is part of the edge identity: two edges with the same field_number
+    // but different labels (optional/required/repeated) are distinct splitters.
+    let mut rev: Vec<Vec<(usize, u32, u8)>> = vec![Vec::new(); n];
     for edge in &raw.edges {
         let si = node_index(edge.src);
         let di = node_index(edge.dst);
-        rev[di].push((si, edge.field_number));
+        rev[di].push((si, edge.field_number, edge.label));
     }
 
-    // ── Outgoing signature per node: sorted Vec<field_number> ─────────────────
-    let mut sig: Vec<Vec<u32>> = vec![Vec::new(); n];
+    // ── Outgoing signature per node: sorted Vec<(field_number, label)> ────────
+    let mut sig: Vec<Vec<(u32, u8)>> = vec![Vec::new(); n];
     for edge in &raw.edges {
         let si = node_index(edge.src);
-        sig[si].push(edge.field_number);
+        sig[si].push((edge.field_number, edge.label));
     }
     for s in sig.iter_mut() {
         s.sort_unstable();
@@ -82,10 +84,10 @@ pub fn minimize(raw: &RawGraph, reg: &LeafRegistry) -> Partition {
     }
 
     // ── Initial partition ─────────────────────────────────────────────────────
-    // Message nodes: grouped by outgoing field-number signature.
+    // Message nodes: grouped by outgoing (field_number, label) signature.
     // Leaf nodes: grouped by (wire_type, is_string, enum_range_idx) — nodes
     // with identical attributes are equivalent and may share a block.
-    let mut sig_to_block: HashMap<Vec<u32>, u32> = HashMap::new();
+    let mut sig_to_block: HashMap<Vec<(u32, u8)>, u32> = HashMap::new();
     let mut leaf_attr_to_block: HashMap<(u8, bool, u16), u32> = HashMap::new();
     let mut block_of: Vec<u32> = vec![0u32; n];
     let mut num_blocks: u32 = 0;
@@ -121,12 +123,16 @@ pub fn minimize(raw: &RawGraph, reg: &LeafRegistry) -> Partition {
         blocks[block_of[i] as usize].insert(i);
     }
 
-    // ── Worklist: (block_id, field_number) splitters ──────────────────────────
-    let all_fields: HashSet<u32> = raw.edges.iter().map(|e| e.field_number).collect();
-    let mut worklist: VecDeque<(usize, u32)> = VecDeque::new();
+    // ── Worklist: (block_id, field_number, label) splitters ───────────────────
+    let all_field_labels: HashSet<(u32, u8)> = raw
+        .edges
+        .iter()
+        .map(|e| (e.field_number, e.label))
+        .collect();
+    let mut worklist: VecDeque<(usize, u32, u8)> = VecDeque::new();
     for b in 0..num_blocks {
-        for &f in &all_fields {
-            worklist.push_back((b, f));
+        for &(f, l) in &all_field_labels {
+            worklist.push_back((b, f, l));
         }
     }
 
@@ -135,19 +141,19 @@ pub fn minimize(raw: &RawGraph, reg: &LeafRegistry) -> Partition {
     let mut blocks = blocks;
     let mut num_blocks = num_blocks;
 
-    while let Some((splitter_block, field)) = worklist.pop_front() {
+    while let Some((splitter_block, field, label)) = worklist.pop_front() {
         if splitter_block >= blocks.len() || blocks[splitter_block].is_empty() {
             continue;
         }
 
-        // Predecessors of splitter_block via `field`.
+        // Predecessors of splitter_block via `(field, label)`.
         let predecessors: HashSet<usize> = blocks[splitter_block]
             .iter()
             .flat_map(|&dst| {
                 rev[dst]
                     .iter()
-                    .filter(|(_, f)| *f == field)
-                    .map(|(src, _)| *src)
+                    .filter(|(_, f, l)| *f == field && *l == label)
+                    .map(|(src, _, _)| *src)
             })
             .collect();
 
@@ -182,8 +188,8 @@ pub fn minimize(raw: &RawGraph, reg: &LeafRegistry) -> Partition {
             } else {
                 c
             };
-            for &f in &all_fields {
-                worklist.push_back((smaller, f));
+            for &(f, l) in &all_field_labels {
+                worklist.push_back((smaller, f, l));
             }
         }
     }

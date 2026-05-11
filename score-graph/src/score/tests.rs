@@ -517,6 +517,221 @@ fn tc19_repeated_field_multiple_occurrences() {
     assert_eq!(s.unknowns, 0);
 }
 
+// ── Multi-entry tests (spec 0048 §7) ──────────────────────────────────────────
+
+/// Build a two-entry graph: Outer (full schema) + Inner (one field).
+/// Used by MT-01..MT-04.
+fn build_two_entry_graph() -> score_load::LoadedGraph {
+    let inner_fields = vec![ScoringField {
+        number: 1,
+        kind: ScoringKind::Varint,
+        child: None,
+        enum_range: None,
+        label: FieldLabel::Optional,
+    }];
+
+    let outer_fields = vec![
+        ScoringField {
+            number: 1,
+            kind: ScoringKind::Varint,
+            child: None,
+            enum_range: None,
+            label: FieldLabel::Required,
+        },
+        ScoringField {
+            number: 2,
+            kind: ScoringKind::LenString,
+            child: None,
+            enum_range: None,
+            label: FieldLabel::Optional,
+        },
+        ScoringField {
+            number: 4,
+            kind: ScoringKind::LenMsg,
+            child: Some("Inner".to_string()),
+            enum_range: None,
+            label: FieldLabel::Optional,
+        },
+        ScoringField {
+            number: 5,
+            kind: ScoringKind::Enum,
+            child: None,
+            enum_range: Some((0, 2)),
+            label: FieldLabel::Optional,
+        },
+    ];
+
+    let mut states = std::collections::HashMap::new();
+    states.insert("Inner".to_string(), inner_fields);
+    states.insert("Outer".to_string(), outer_fields);
+
+    let merged = crate::build_scoring_graph::load::Merged {
+        states,
+        roots: vec!["Outer".to_string(), "Inner".to_string()],
+    };
+
+    let (raw, reg) = graph::build(&merged);
+    let partition = hopcroft::minimize(&raw, &reg);
+    let compiled = graph::compile(&raw, &reg, &partition, &merged);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("two.bin");
+    serial::write(&compiled, &path).expect("write");
+    let _ = std::mem::ManuallyDrop::new(dir);
+    score_load::load_graph(&path).expect("load")
+}
+
+fn entry_score<'a>(results: &'a [walk::EntryScore], fqdn: &str) -> &'a walk::EntryScore {
+    results
+        .iter()
+        .find(|r| r.fqdn == fqdn)
+        .unwrap_or_else(|| panic!("entry '{fqdn}' not found in results"))
+}
+
+/// MT-01: Two entries with the same root state (after Hopcroft deduplication)
+/// both receive the same match/unknown counts from one walk.
+///
+/// Inner has one field (field 1, varint).  A wire message containing only
+/// field 1 is valid for both Outer (field 1 = id) and Inner (field 1 = value).
+/// After Hopcroft, if they deduplicate they share a state; if not, both still
+/// walk correctly and agree on the result.
+#[test]
+fn mt01_shared_root_state_both_scored() {
+    let g = build_two_entry_graph();
+    // A message with only field 1 (varint).
+    let pb = field_varint(1, 42);
+    let results = walk::score_all(&pb, &g);
+
+    let outer = entry_score(&results, "Outer");
+    let inner = entry_score(&results, "Inner");
+
+    // Both declare field 1 as VARINT → match for both.
+    assert!(!outer.vetoed, "Outer should not be vetoed");
+    assert!(!inner.vetoed, "Inner should not be vetoed");
+    assert_eq!(outer.matches, 1, "Outer: field 1 is a match");
+    assert_eq!(inner.matches, 1, "Inner: field 1 is a match");
+    assert_eq!(outer.unknowns, 0);
+    assert_eq!(inner.unknowns, 0);
+}
+
+/// MT-02: Two entries with different root states; a wire-type mismatch on a
+/// field declared only by Outer vetoes Outer but leaves Inner unaffected.
+///
+/// Outer declares field 2 as LEN_STRING.  Inner does not declare field 2.
+/// Send field 2 as VARINT (wire type 0) — this is a mismatch for Outer
+/// (expected WT_LEN) and an unknown for Inner.
+#[test]
+fn mt02_mismatch_vetoes_one_entry_only() {
+    let g = build_two_entry_graph();
+    // field 2 sent as VARINT — Outer expects LEN, Inner has no field 2.
+    let pb = field_varint(2, 99);
+    let results = walk::score_all(&pb, &g);
+
+    let outer = entry_score(&results, "Outer");
+    let inner = entry_score(&results, "Inner");
+
+    assert!(
+        outer.vetoed,
+        "Outer: field 2 wire-type mismatch should veto"
+    );
+    assert!(!inner.vetoed, "Inner: field 2 is unknown, should not veto");
+    assert_eq!(inner.unknowns, 1, "Inner: field 2 counts as unknown");
+}
+
+/// MT-03: Veto inside a sub-message propagates upward to the parent entry.
+///
+/// Outer declares field 4 as LEN_MSG → Inner.  Inner expects field 1 as VARINT.
+/// We send field 4 as LEN containing a sub-message where field 1 is sent as
+/// LEN (wire-type mismatch inside Inner) — this should veto Outer (which
+/// recurses) but not Inner-as-root (which sees field 4 as unknown).
+#[test]
+fn mt03_veto_in_submessage_propagates_upward() {
+    let g = build_two_entry_graph();
+
+    // Sub-message payload: field 1 sent as LEN instead of VARINT → mismatch.
+    let bad_inner = field_len(1, b"oops");
+    let pb = field_len(4, &bad_inner);
+
+    let results = walk::score_all(&pb, &g);
+
+    let outer = entry_score(&results, "Outer");
+    let inner = entry_score(&results, "Inner");
+
+    assert!(
+        outer.vetoed,
+        "Outer: veto in sub-message should propagate up"
+    );
+    // Inner-as-root sees field 4 as unknown (not declared) — no veto.
+    assert!(!inner.vetoed, "Inner-as-root: field 4 is unknown, no veto");
+    assert_eq!(inner.unknowns, 1);
+}
+
+/// MT-04: Non-canonical tag overhang increments non_canonical for all active
+/// entries at that depth.
+#[test]
+fn mt04_tag_overhang_increments_all_active_entries() {
+    let g = build_two_entry_graph();
+
+    // Field 1 with a non-canonical tag varint (1 overhang byte).
+    let mut pb = varint_ohb((1u64 << 3) | 0, 1); // tag: field=1, wt=VARINT, ohb=1
+    pb.extend(varint(7)); // value
+
+    let results = walk::score_all(&pb, &g);
+
+    let outer = entry_score(&results, "Outer");
+    let inner = entry_score(&results, "Inner");
+
+    assert!(!outer.vetoed);
+    assert!(!inner.vetoed);
+    assert_eq!(outer.non_canonical, 1, "Outer: tag overhang counted");
+    assert_eq!(inner.non_canonical, 1, "Inner: tag overhang counted");
+}
+
+/// MT-05: Length-prefix overhang increments non_canonical for all active
+/// entries at that depth, both recursing and non-recursing.
+///
+/// Field 4 sent as LEN with overhang on the length prefix.
+/// Outer recurses into it (LEN_MSG); Inner-as-root sees it as unknown.
+/// Both should get non_canonical += 1 for the overhang.
+#[test]
+fn mt05_len_prefix_overhang_increments_all_active_entries() {
+    let g = build_two_entry_graph();
+
+    // Build field 4 LEN with non-canonical length prefix (overhang=1).
+    // Payload: field 1 varint 5 (valid Inner content).
+    let inner_payload = field_varint(1, 5);
+    let mut pb = tag(4, 2);
+    pb.extend(varint_ohb(inner_payload.len() as u64, 1)); // length with ohb=1
+    pb.extend(&inner_payload);
+
+    let results = walk::score_all(&pb, &g);
+
+    let outer = entry_score(&results, "Outer");
+    let inner = entry_score(&results, "Inner");
+
+    assert!(!outer.vetoed);
+    assert!(!inner.vetoed);
+    assert_eq!(outer.non_canonical, 1, "Outer: len-prefix overhang counted");
+    assert_eq!(inner.non_canonical, 1, "Inner: len-prefix overhang counted");
+}
+
+/// MT-06: Enum out-of-range vetoes only the entry with the enum leaf.
+///
+/// Outer declares field 5 as ENUM [0..2].  Inner has no field 5.
+/// Send field 5 = 99 (out of range) → Outer vetoed, Inner gets unknown.
+#[test]
+fn mt06_enum_oor_vetoes_only_enum_entry() {
+    let g = build_two_entry_graph();
+    let pb = field_varint(5, 99);
+    let results = walk::score_all(&pb, &g);
+
+    let outer = entry_score(&results, "Outer");
+    let inner = entry_score(&results, "Inner");
+
+    assert!(outer.vetoed, "Outer: enum 99 outside [0..2] should veto");
+    assert!(!inner.vetoed, "Inner: field 5 is unknown, no veto");
+    assert_eq!(inner.unknowns, 1);
+}
+
 /// TC-20: Enum value exactly at boundary (0 and 2) — both valid.
 #[test]
 fn tc20_enum_boundary_values() {

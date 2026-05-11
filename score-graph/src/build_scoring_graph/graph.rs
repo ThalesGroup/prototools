@@ -217,25 +217,18 @@ pub fn compile(
     let _num_msg_blocks = partition.num_blocks() - num_leaves;
 
     // ── Transition table ──────────────────────────────────────────────────────
-    // Key: (src_block, field_number) → (dst_block, label)
-    // label merge: most permissive wins — repeated(2) > optional(0) > required(1).
+    // After the Hopcroft fix (label part of bisimulation key), each
+    // (src_block, field_number) pair has at most one label — no merge needed.
     let msg_count = raw.node_ids.len() as u32;
     let mut seen: HashMap<(u32, u32), (u32, u8)> = HashMap::new();
     for edge in &raw.edges {
         let src_block = partition.block_of(edge.src);
-        // edge.dst is either a dense message node ID (< msg_count) or a leaf sentinel.
         let dst_block = if edge.dst < msg_count {
             partition.block_of(edge.dst)
         } else {
             partition.block_of_sentinel(edge.dst, reg)
         };
         seen.entry((src_block, edge.field_number))
-            .and_modify(|e| {
-                let rank = |l: u8| if l == 2 { 2 } else { 1 - l }; // 2→2, 0→1, 1→0
-                if rank(edge.label) > rank(e.1) {
-                    e.1 = edge.label;
-                }
-            })
             .or_insert((dst_block, edge.label));
     }
     let mut transitions: Vec<TransitionEntry> = seen

@@ -19,6 +19,21 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+fn run_match(graph: &Path, proto: &Path) -> String {
+    let out = Command::new(score_graph_bin())
+        .args(["match"])
+        .arg(graph)
+        .arg(proto)
+        .output()
+        .expect("failed to run score-graph match");
+    assert!(
+        out.status.success(),
+        "score-graph match exited non-zero:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn fixture_dir() -> PathBuf {
@@ -75,7 +90,10 @@ fn run_score(graph: &Path, entry: &str, proto: &Path) -> String {
 fn e2e_01_perfect_match() {
     let (_dir, graph) = build_graph();
     let out = run_score(&graph, "Outer", &proto_fixture("e01"));
-    assert_eq!(out, "matches=6 unknowns=0 non_canonical=0 score=6");
+    assert_eq!(
+        out,
+        "matches=6 unknowns=0 mismatches=0 non_canonical=0 score=6"
+    );
 }
 
 /// E2E-02: All-unknown fields.
@@ -83,7 +101,10 @@ fn e2e_01_perfect_match() {
 fn e2e_02_all_unknown() {
     let (_dir, graph) = build_graph();
     let out = run_score(&graph, "Outer", &proto_fixture("e02"));
-    assert_eq!(out, "matches=0 unknowns=3 non_canonical=0 score=-30");
+    assert_eq!(
+        out,
+        "matches=0 unknowns=3 mismatches=1 non_canonical=0 score=-40"
+    );
 }
 
 /// E2E-03: Wrong wire type on a known field → veto.
@@ -115,7 +136,10 @@ fn e2e_05_enum_out_of_range_veto() {
 fn e2e_06_mixed_known_unknown() {
     let (_dir, graph) = build_graph();
     let out = run_score(&graph, "Outer", &proto_fixture("e06"));
-    assert_eq!(out, "matches=2 unknowns=2 non_canonical=0 score=-18");
+    assert_eq!(
+        out,
+        "matches=2 unknowns=2 mismatches=0 non_canonical=0 score=-18"
+    );
 }
 
 /// E2E-07: Sub-message recursion — matches accumulate across both levels.
@@ -124,7 +148,10 @@ fn e2e_07_submessage_recursion() {
     let (_dir, graph) = build_graph();
     let out = run_score(&graph, "Outer", &proto_fixture("e07"));
     // id + child-field + inner.value = 3 matches
-    assert_eq!(out, "matches=3 unknowns=0 non_canonical=0 score=3");
+    assert_eq!(
+        out,
+        "matches=3 unknowns=0 mismatches=0 non_canonical=0 score=3"
+    );
 }
 
 /// E2E-08: Repeated field — multiple occurrences all count.
@@ -132,7 +159,10 @@ fn e2e_07_submessage_recursion() {
 fn e2e_08_repeated_multiple() {
     let (_dir, graph) = build_graph();
     let out = run_score(&graph, "Outer", &proto_fixture("e08"));
-    assert_eq!(out, "matches=4 unknowns=0 non_canonical=0 score=4");
+    assert_eq!(
+        out,
+        "matches=4 unknowns=0 mismatches=0 non_canonical=0 score=4"
+    );
 }
 
 /// E2E-09: Truncated LEN payload → veto (structural parse error).
@@ -148,7 +178,10 @@ fn e2e_09_truncated_len_veto() {
 fn e2e_10_empty_message() {
     let (_dir, graph) = build_graph();
     let out = run_score(&graph, "Outer", &proto_fixture("e10"));
-    assert_eq!(out, "matches=0 unknowns=0 non_canonical=0 score=0");
+    assert_eq!(
+        out,
+        "matches=0 unknowns=0 mismatches=1 non_canonical=0 score=-10"
+    );
 }
 
 /// E2E-11: Tag varint overhang on known field → non_canonical.
@@ -156,7 +189,10 @@ fn e2e_10_empty_message() {
 fn e2e_11_tag_overhang() {
     let (_dir, graph) = build_graph();
     let out = run_score(&graph, "Outer", &proto_fixture("e11"));
-    assert_eq!(out, "matches=1 unknowns=0 non_canonical=1 score=-19");
+    assert_eq!(
+        out,
+        "matches=1 unknowns=0 mismatches=0 non_canonical=1 score=-19"
+    );
 }
 
 /// E2E-12: Value varint overhang on known field → non_canonical.
@@ -164,7 +200,10 @@ fn e2e_11_tag_overhang() {
 fn e2e_12_value_overhang() {
     let (_dir, graph) = build_graph();
     let out = run_score(&graph, "Outer", &proto_fixture("e12"));
-    assert_eq!(out, "matches=1 unknowns=0 non_canonical=1 score=-19");
+    assert_eq!(
+        out,
+        "matches=1 unknowns=0 mismatches=0 non_canonical=1 score=-19"
+    );
 }
 
 /// E2E-13: LEN length-prefix overhang on known field → non_canonical.
@@ -172,7 +211,10 @@ fn e2e_12_value_overhang() {
 fn e2e_13_len_prefix_overhang() {
     let (_dir, graph) = build_graph();
     let out = run_score(&graph, "Outer", &proto_fixture("e13"));
-    assert_eq!(out, "matches=1 unknowns=0 non_canonical=1 score=-19");
+    assert_eq!(
+        out,
+        "matches=1 unknowns=0 mismatches=1 non_canonical=1 score=-29"
+    );
 }
 
 /// E2E-14: Out-of-range field number (0) → non_canonical + unknown.
@@ -180,5 +222,47 @@ fn e2e_13_len_prefix_overhang() {
 fn e2e_14_field_number_oor() {
     let (_dir, graph) = build_graph();
     let out = run_score(&graph, "Outer", &proto_fixture("e14"));
-    assert_eq!(out, "matches=0 unknowns=1 non_canonical=1 score=-30");
+    assert_eq!(
+        out,
+        "matches=0 unknowns=1 mismatches=1 non_canonical=1 score=-40"
+    );
+}
+
+/// E2E-15: match subcommand — scores all entries simultaneously.
+///
+/// The fixture graph has two entries: Outer and Inner.
+/// e01 is a perfect Outer message (6 fields match).  Outer must appear first
+/// (highest score).  Inner must appear later with a lower score.
+#[test]
+fn e2e_15_match_all_entries() {
+    let (_dir, graph) = build_graph();
+    let out = run_match(&graph, &proto_fixture("e01"));
+    let lines: Vec<&str> = out.lines().collect();
+
+    // First line must be Outer with score=6.
+    assert!(
+        lines[0].starts_with("entry=Outer "),
+        "first line should be Outer, got: {}",
+        lines[0]
+    );
+    assert!(
+        lines[0].contains("score=6"),
+        "Outer score should be 6, got: {}",
+        lines[0]
+    );
+
+    // Inner must appear somewhere after Outer.
+    let inner_line = lines.iter().find(|l| l.starts_with("entry=Inner "));
+    assert!(inner_line.is_some(), "Inner must appear in output");
+    let inner_line = inner_line.unwrap();
+    let outer_score: i64 = 6;
+    let inner_score: i64 = inner_line
+        .split("score=")
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .expect("Inner score must be parseable");
+    assert!(
+        inner_score < outer_score,
+        "Inner score ({inner_score}) must be less than Outer score ({outer_score})"
+    );
 }

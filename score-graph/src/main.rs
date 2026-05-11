@@ -22,6 +22,8 @@ enum Command {
     BuildScoringGraph(BuildScoringGraphArgs),
     /// Score a binary protobuf against a compiled scoring graph.
     Score(score::ScoreArgs),
+    /// Score a binary protobuf against all entries in a compiled scoring graph simultaneously.
+    Match(score::MatchArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -54,6 +56,7 @@ fn main() {
     let result = match cli.command {
         Command::BuildScoringGraph(args) => build_scoring_graph::run(args),
         Command::Score(args) => score::run(args),
+        Command::Match(args) => score::run_match(args),
     };
     if let Err(e) = result {
         eprintln!("error: {e}");

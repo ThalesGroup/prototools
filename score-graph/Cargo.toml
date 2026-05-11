@@ -23,6 +23,7 @@ memmap2        = "0.9"
 walkdir        = "2"
 globset        = "0.4"
 prototext-core = { path = "../prototext-core" }
+smallvec       = "1"
 
 [dev-dependencies]
 tempfile    = "3"

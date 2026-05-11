@@ -4,6 +4,8 @@
 # SPDX-License-Identifier: MIT
 
 /target/
+/score-graph/target/
+/score-graph/Cargo.lock
 /result
 /result-*
 /man/
