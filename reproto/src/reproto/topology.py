@@ -42,6 +42,9 @@ class File:
         self.targets: set[File] = set()
         self._qfile: QualFile | None = None
         self.is_reachable = False
+        # Dependencies stripped because they were pruned as duplicates (spec 0053).
+        self.stripped_dependencies: list[str] = []
+        self.stripped_public_dependencies: list[str] = []
 
     def is_ref(self) -> bool:
         return self._qfile is None

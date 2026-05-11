@@ -1,0 +1,12 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
+syntax = "proto3";
+
+package test.dup;
+
+// Duplicate of dup_sym_b.proto — same symbol DupMsg (spec 0053 regression fixture).
+message DupMsg {
+  string value = 1;
+}

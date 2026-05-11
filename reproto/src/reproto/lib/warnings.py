@@ -61,10 +61,22 @@ class WarningCollector:
         self._w6: Counter[str] = Counter()
         # Names of files pruned by reproto itself — W5 for these is suppressed.
         self._pruned_files: set[str] = set()
+        # Names of files that will be satisfied by an embedded fallback —
+        # W1 (loading-phase miss) for these is suppressed because not finding
+        # them on the -I path is expected and intentional.
+        self._fallback_files: set[str] = set()
 
     def register_pruned_file(self, name: str) -> None:
         """Register a file name as pruned so W5 warnings for it are suppressed."""
         self._pruned_files.add(name)
+
+    def register_fallback_file(self, name: str) -> None:
+        """Register a file name as provided by an embedded fallback.
+
+        Suppresses the W1 loading-phase warning that would otherwise fire when
+        the import-discovery loop fails to find the file on the -I search path.
+        """
+        self._fallback_files.add(name)
 
     def w1(self, missing_file: str) -> None:
         """Missing source file (W1 — loading phase).
@@ -74,6 +86,8 @@ class WarningCollector:
         for the same file are combined into a single summary line.
         """
         if missing_file in self._pruned_files:
+            return
+        if missing_file in self._fallback_files:
             return
         if self._detailed:
             cli_warning(f"Warning: missing file '{missing_file}' (not found on -I path; skipped)")

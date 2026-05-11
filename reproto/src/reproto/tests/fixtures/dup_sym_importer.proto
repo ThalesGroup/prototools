@@ -1,0 +1,15 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
+syntax = "proto3";
+
+package test.dup;
+
+import "dup_sym_a.proto";
+
+// Imports dup_sym_a.proto, which may be pruned as a duplicate of dup_sym_b.proto
+// (spec 0053 regression fixture).
+message Importer {
+  DupMsg msg = 1;
+}

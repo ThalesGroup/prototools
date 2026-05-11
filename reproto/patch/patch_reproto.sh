@@ -50,6 +50,10 @@ google_proto_files=(
     "google/protobuf/duration.proto"
     "google/protobuf/struct.proto"
     "google/protobuf/wrappers.proto"
+    "google/protobuf/source_context.proto"   # no imports
+    "google/protobuf/field_mask.proto"       # no imports
+    "google/protobuf/type.proto"             # imports any, source_context
+    "google/protobuf/api.proto"              # imports timestamp, source_context
 )
 
 for proto_file in "${google_proto_files[@]}"; do

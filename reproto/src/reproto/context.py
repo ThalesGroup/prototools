@@ -113,6 +113,11 @@ class Context(Options):
         # (edition_number, value_name) pairs.
         self.edition_defaults: EditionDefaultTable = {}
 
+        # File names pruned by duplicate-symbol detection (spec 0053).
+        # Populated by _prune_if_duplicate in phase 2; used by
+        # _strip_pruned_dependencies to patch importer FDPs before pool_db.Add.
+        self.pruned_file_names: set[str] = set()
+
         # Pool and dicts
         self.pool_db: DescriptorDatabase = DescriptorDatabase()
         self.pool: DescriptorPool = DescriptorPool(self.pool_db)

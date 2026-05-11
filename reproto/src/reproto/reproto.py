@@ -168,7 +168,7 @@ from .load import QualFile
 from .phases import (
     DescriptorProtoHasTargetsError,
     DescriptorProtoMissingError,
-    WellKnownTypeHasTargetsError,
+    # WellKnownTypeHasTargetsError removed by spec 0052
     _dump_resolved_features_yaml,
     _make_context,
     _phase1_load_files,
@@ -190,7 +190,7 @@ __all__ = [
     "import_annotations",
     "DescriptorProtoMissingError",
     "DescriptorProtoHasTargetsError",
-    "WellKnownTypeHasTargetsError",
+    # "WellKnownTypeHasTargetsError",  # removed by spec 0052
 ]
 
 

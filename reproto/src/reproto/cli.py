@@ -128,7 +128,9 @@ def complete_py_path(ctx: click.Context, param: click.Parameter, incomplete: str
 
 
 _USE_VARIANT_CHOICES = ('any', 'empty', 'timestamp', 'duration', 'struct',
-                        'wrappers', 'descriptor', 'all')
+                        'wrappers', 'descriptor',
+                        'source_context', 'field_mask', 'type', 'api',
+                        'all')
 
 # Maps each long option name (or 'PB_FILES' for the argument) to its section
 # heading.  Options in the same section appear consecutively in --help output
@@ -463,8 +465,11 @@ def main(
     # Expand --use-variant / -d into the fallback_protos list
     use_variant_set: set[str] = set(use_variant)
     if 'all' in use_variant_set:
-        use_variant_set = {'any', 'empty', 'timestamp', 'duration',
-                           'struct', 'wrappers', 'descriptor'}
+        use_variant_set = {
+            'any', 'empty', 'timestamp', 'duration',
+            'struct', 'wrappers', 'descriptor',
+            'source_context', 'field_mask', 'type', 'api',
+        }
 
     fallback_protos: list[str] = []
     if 'descriptor' in use_variant_set:
@@ -481,6 +486,15 @@ def main(
         fallback_protos.append(_wk('google/protobuf/struct.proto'))
     if 'wrappers' in use_variant_set:
         fallback_protos.append(_wk('google/protobuf/wrappers.proto'))
+    # Leaves before dependents so the topo-sort sees them in the right order.
+    if 'source_context' in use_variant_set:
+        fallback_protos.append(_wk('google/protobuf/source_context.proto'))
+    if 'field_mask' in use_variant_set:
+        fallback_protos.append(_wk('google/protobuf/field_mask.proto'))
+    if 'type' in use_variant_set:
+        fallback_protos.append(_wk('google/protobuf/type.proto'))
+    if 'api' in use_variant_set:
+        fallback_protos.append(_wk('google/protobuf/api.proto'))
 
     options = Options(
         binary=emit_binary,

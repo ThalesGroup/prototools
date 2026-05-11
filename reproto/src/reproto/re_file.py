@@ -36,6 +36,12 @@ from .text import CODE, COMMENT, ORPHAN, Block, BlockLine
 class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
     """Redescriptor for FileDescriptorProto."""
 
+    # Dependencies stripped from this file's FDP before pool_db.Add because
+    # they were pruned as duplicate-symbol files (spec 0053).  Populated by
+    # phase 3 from the topo-layer ReFile.  Rendered as orphan import lines.
+    stripped_dependencies: list[str]
+    stripped_public_dependencies: list[str]
+
     @property
     def dependency(self) -> RepeatedScalarFieldContainer[str]:
         return self.this.dependency
@@ -350,6 +356,16 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
             )
             text = f'{import_cmd} {dep_name};'
             out.append(BlockLine(text, depth, kind))
+        # --- Stripped pruned-duplicate dependencies (spec 0053) ---------------
+        # These imports were removed from the FDP before pool registration
+        # because their target was pruned as a duplicate-symbol file.
+        for dep in self.stripped_dependencies:
+            out.append(BlockLine(f'import "{dep}";', depth, ORPHAN))
+        for dep in self.stripped_public_dependencies:
+            out.append(BlockLine(f'import public "{dep}";', depth, ORPHAN))
+        if self.stripped_dependencies or self.stripped_public_dependencies:
+            out.append_div_maybe(depth)
+
         out.append_div_maybe(depth)
 
         # --- File services ----------------------------------------------------

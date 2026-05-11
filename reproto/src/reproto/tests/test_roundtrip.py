@@ -198,7 +198,7 @@ def _run_roundtrip(
     ]
     if extra_reproto_args:
         reproto_cmd.extend(extra_reproto_args)
-    if fixture_name == "well_known_types.proto":
+    if fixture_name == "well_known_types.proto" and "all" not in (extra_reproto_args or []):
         reproto_cmd.extend([
             "--use-variant", "any",
             "--use-variant", "empty",
@@ -311,6 +311,209 @@ def test_roundtrip_polyglot(fixture_name: str, tmp_path: Path) -> None:
     orig_dir.mkdir(parents=True)
     new_dir.mkdir(parents=True)
     _run_roundtrip(fixture_name, content, orig_dir, new_dir)
+
+
+# ---------------------------------------------------------------------------
+# Regression: --use-variant all must not break topo-sort for WKT importers
+# (spec 0051)
+#
+# When a .pb compiled without --include_imports imports a well-known type,
+# reproto loads the embedded fallback.  A bug in the fallback-loading loop
+# (topo.files.pop + new ReFile instance) broke object identity: the importing
+# file's targets set still referenced the old ref object, which was no longer
+# in topo.files, causing the topo-sort to place importer and importee in the
+# same rank.  The importee was merged into pool_db after the importer, the
+# importer's pool_db.Add silently failed, and rendering produced a W5 warning
+# and incorrect output.
+# ---------------------------------------------------------------------------
+
+def test_roundtrip_use_variant_all_wkt(tmp_path: Path) -> None:
+    """Roundtrip well_known_types.proto via --use-variant all (regression for spec 0051).
+
+    The bug: fallback loading used topo.files.pop() before creating the new
+    ReFile, breaking topo-sort object identity and producing spurious W5
+    warnings for every well-known type that appeared as a dependency.
+    """
+    orig_dir = tmp_path / "orig"
+    new_dir = tmp_path / "new"
+    orig_dir.mkdir()
+    new_dir.mkdir()
+    _, content = get_fixture_content("well_known_types.proto")
+
+    # Capture stderr so we can assert no W5 warnings.
+    fixture_path = orig_dir / "well_known_types.proto"
+    fixture_path.write_text(content, encoding="utf-8")
+    orig_pb = orig_dir / "well_known_types.pb"
+    result = subprocess.run(
+        ["protoc", f"--descriptor_set_out={orig_pb}", f"-I{orig_dir}", str(fixture_path)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, f"protoc failed: {result.stderr}"
+
+    src_path = str(Path(__file__).parent.parent.parent)
+    pythonpath_parts = [src_path]
+    if existing := os.environ.get("PYTHONPATH"):
+        pythonpath_parts.append(existing)
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(pythonpath_parts)}
+    env.pop("REPROTO_VARIANT", None)
+
+    reproto_result = subprocess.run(
+        [
+            sys.executable, "-m", "reproto.cli",
+            "--use-variant", "descriptor",
+            "--use-variant", "all",
+            f"-I{orig_dir}",
+            f"--output-root={new_dir}",
+            str(orig_pb),
+        ],
+        capture_output=True, text=True, env=env,
+    )
+    assert reproto_result.returncode == 0, f"reproto failed:\n{reproto_result.stderr}"
+    assert "missing dependency file" not in reproto_result.stderr, (
+        "Spurious W5 warning(s) — fallback topo-sort bug regression:\n"
+        + reproto_result.stderr
+    )
+
+    # Full roundtrip check: recompile and compare descriptors.
+    _run_roundtrip("well_known_types.proto", content, orig_dir, new_dir,
+                   extra_reproto_args=["--use-variant", "all"])
+
+
+# ---------------------------------------------------------------------------
+# Regression: --use-variant all must provide fallbacks for api, type,
+# field_mask, and source_context (spec 0052)
+#
+# Before the fix, these four WKTs were absent from the embedded fallback set.
+# Their absence left stub nodes (is_present() == False) in the descriptor
+# graph; _all_type_targets then passed those stubs to _host_file, which
+# walked .parent on a node whose _parent is None and hit an AssertionError.
+# ---------------------------------------------------------------------------
+
+def test_roundtrip_use_variant_all_api(tmp_path: Path) -> None:
+    """reproto --use-variant all must not crash on a file that imports api.proto.
+
+    Regression for spec 0052: api, type, field_mask, and source_context were
+    missing from the embedded WKT fallback set, leaving stub nodes that caused
+    an AssertionError in _host_file during phase 6.
+    """
+    orig_dir = tmp_path / "orig"
+    new_dir = tmp_path / "new"
+    orig_dir.mkdir()
+    new_dir.mkdir()
+    _, content = get_fixture_content("wkt_api_ref.proto")
+
+    fixture_path = orig_dir / "wkt_api_ref.proto"
+    fixture_path.write_text(content, encoding="utf-8")
+    orig_pb = orig_dir / "wkt_api_ref.pb"
+    result = subprocess.run(
+        ["protoc", f"--descriptor_set_out={orig_pb}", f"-I{orig_dir}", str(fixture_path)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, f"protoc failed: {result.stderr}"
+
+    src_path = str(Path(__file__).parent.parent.parent)
+    pythonpath_parts = [src_path]
+    if existing := os.environ.get("PYTHONPATH"):
+        pythonpath_parts.append(existing)
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(pythonpath_parts)}
+    env.pop("REPROTO_VARIANT", None)
+
+    reproto_result = subprocess.run(
+        [
+            sys.executable, "-m", "reproto.cli",
+            "--use-variant", "descriptor",
+            "--use-variant", "all",
+            "--emit-scoring-graphs",
+            f"-I{orig_dir}",
+            f"--output-root={new_dir}",
+            str(orig_pb),
+        ],
+        capture_output=True, text=True, env=env,
+    )
+    assert reproto_result.returncode == 0, (
+        f"reproto crashed (spec 0052 regression):\n{reproto_result.stderr}"
+    )
+    assert "missing dependency file" not in reproto_result.stderr, (
+        "Unexpected W5 warning for a google/protobuf WKT:\n" + reproto_result.stderr
+    )
+
+
+# ---------------------------------------------------------------------------
+# Regression: scoring-graph emitter must not crash when an importer's
+# dependency was pruned as a duplicate-symbol file (spec 0053)
+# ---------------------------------------------------------------------------
+
+def test_scoring_graph_pruned_dependency(tmp_path: Path) -> None:
+    """reproto --emit-scoring-graphs must not crash when an import was pruned.
+
+    dup_sym_a.proto and dup_sym_b.proto define identical symbols.  Whichever
+    loses the duplicate race is pruned; dup_sym_importer.proto imports
+    dup_sym_a.proto so one of two things happens:
+    - dup_sym_a wins: importer rendered normally.
+    - dup_sym_b wins: dup_sym_a is pruned, importer's dependency is stripped,
+      the import line appears as an orphan in the output.
+    Either way reproto must exit 0 and produce a scoring-graph YAML for the
+    importer file.
+    """
+    orig_dir = tmp_path / "orig"
+    new_dir = tmp_path / "new"
+    orig_dir.mkdir()
+    new_dir.mkdir()
+
+    # Write all three fixtures and compile each to a mono-fdp .pb.
+    pbs: list[Path] = []
+    for name in ("dup_sym_a.proto", "dup_sym_b.proto", "dup_sym_importer.proto"):
+        _, content = get_fixture_content(name)
+        proto_path = orig_dir / name
+        proto_path.write_text(content, encoding="utf-8")
+        pb_path = orig_dir / name.replace(".proto", ".pb")
+        result = subprocess.run(
+            ["protoc", f"--descriptor_set_out={pb_path}",
+             f"-I{orig_dir}", str(proto_path)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f"protoc failed on {name}: {result.stderr}"
+        pbs.append(pb_path)
+
+    src_path = str(Path(__file__).parent.parent.parent)
+    pythonpath_parts = [src_path]
+    if existing := os.environ.get("PYTHONPATH"):
+        pythonpath_parts.append(existing)
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(pythonpath_parts)}
+    env.pop("REPROTO_VARIANT", None)
+
+    reproto_result = subprocess.run(
+        [
+            sys.executable, "-m", "reproto.cli",
+            "--use-variant", "descriptor",
+            "--emit-scoring-graphs",
+            f"-I{orig_dir}",
+            f"--output-root={new_dir}",
+            *[str(p) for p in pbs],
+        ],
+        capture_output=True, text=True, env=env,
+    )
+    assert reproto_result.returncode == 0, (
+        f"reproto crashed (spec 0053 regression):\n{reproto_result.stderr}"
+    )
+
+    # The scoring-graph YAML for the importer must exist and have entries.
+    yaml_path = new_dir / "dup_sym_importer.yaml"
+    assert yaml_path.exists(), (
+        f"Scoring graph not produced for dup_sym_importer: {reproto_result.stderr}"
+    )
+
+    # The reconstructed importer .proto must exist.
+    new_proto = new_dir / "dup_sym_importer.proto"
+    assert new_proto.exists(), "Reconstructed dup_sym_importer.proto not produced"
+
+    # If dup_sym_a was pruned, its import must appear as an orphan line.
+    content = new_proto.read_text(encoding="utf-8")
+    if "stripped pruned dependency" in reproto_result.stderr:
+        # Orphan lines render as '///' + text (no space — see text.py).
+        assert '///import "dup_sym_a.proto";' in content, (
+            "Stripped import not rendered as orphan:\n" + content
+        )
 
 
 def test_fixture_discovery():

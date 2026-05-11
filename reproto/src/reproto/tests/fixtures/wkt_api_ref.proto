@@ -1,0 +1,15 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
+syntax = "proto3";
+
+package test.wkt;
+
+import "google/protobuf/api.proto";
+
+// A message that references google.protobuf.Api so that the api.proto
+// fallback is exercised by --use-variant all (regression for spec 0052).
+message ServiceWrapper {
+  google.protobuf.Api api = 1;
+}

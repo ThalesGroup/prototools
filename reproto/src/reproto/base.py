@@ -110,6 +110,11 @@ class NodeBase(Generic[MessageT], ABC):
             instance._this = None
             instance._parent = None
             instance.seeder = None
+            # Stripped pruned-duplicate imports (spec 0053); file nodes only.
+            from .re_file import ReFileDescriptorProto as _ReFile
+            if isinstance(instance, _ReFile):
+                instance.stripped_dependencies = []
+                instance.stripped_public_dependencies = []
 
             # Register in context
             ctx.new_nodes[fqdn] = instance

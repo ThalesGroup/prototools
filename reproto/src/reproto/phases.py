@@ -51,8 +51,10 @@ class DescriptorProtoMissingError(Exception):
 class DescriptorProtoHasTargetsError(Exception):
     """Raised when 'descriptor.proto' has targets."""
 
-class WellKnownTypeHasTargetsError(Exception):
-    """Raised when a well-known type proto has targets (imports)."""
+# WellKnownTypeHasTargetsError: removed by spec 0052 — fallback WKTs may now
+# import other fallback files (e.g. type.proto imports any + source_context).
+# class WellKnownTypeHasTargetsError(Exception):
+#     """Raised when a well-known type proto has targets (imports)."""
 
 
 def import_annotations(modules: list[str], resource_root: str | None = None) -> None:
@@ -286,6 +288,16 @@ def _phase1_load_files(
     if not ctx.quiet:
         cli_info('Loading seed files')
 
+    # Pre-register fallback protos so W1 is suppressed for them.
+    # The import-discovery loop calls load_from_path for every dependency; if a
+    # dependency is a well-known type that will be satisfied by an embedded
+    # fallback, it won't be found on the -I path and w1() would fire a spurious
+    # warning.  register_fallback_file() tells w1() to suppress those misses
+    # without affecting W5 (render-phase) suppression.
+    from .lib.warnings import get_collector as _get_collector
+    for _fp in ctx.fallback_protos:
+        _get_collector().register_fallback_file(_fp)
+
     seed_files: set[ReFile] = set()
 
     if seed_paths and isinstance(seed_paths[0], QualFile):
@@ -338,7 +350,7 @@ def _phase1_load_files(
         topo.merge_files()
 
     # Helper function to load embedded proto fallbacks
-    def load_embedded_proto_fallback(proto_name: str) -> bool:
+    def load_embedded_proto_fallback(proto_name: str) -> 'QualFile | None':
         """
         Load a proto fallback from the variant's resource directory.
 
@@ -349,7 +361,7 @@ def _phase1_load_files(
             proto_name: Proto file name (e.g., "google/protobuf/any.proto")
 
         Returns:
-            True if loaded successfully, False otherwise
+            The QualFile built from the embedded data, or None on failure.
         """
         try:
             pb_name = proto_name[:-len('.proto')] + '.pb'
@@ -367,11 +379,11 @@ def _phase1_load_files(
             ReFile(topo, qual_file)
 
             cli_attention(f"Using embedded fallback: {proto_name}")
-            return True
+            return qual_file
         except (ImportError, FileNotFoundError, DecodeError, IndexError, AttributeError) as e:
             if ctx.debug:
                 cli_warning(f"Failed to load embedded fallback for {proto_name}: {e}")
-            return False
+            return None
 
     # Load requested fallbacks (well-known types and descriptor.proto)
     # These fallbacks replace any versions that might exist in the input files.
@@ -379,16 +391,30 @@ def _phase1_load_files(
     for fallback_proto in ctx.fallback_protos:
         proto_fqdn = Fqdn(FILE + ':' + fallback_proto)
         ctx.pruned_fqdns.discard(proto_fqdn)  # safe remove (no KeyError)
-        topo.files.pop(fallback_proto, None)  # safe remove (no KeyError)
+        # Do NOT pop from topo.files here.  If the import-discovery loop already
+        # created a ref ReFile for this name (e.g. any.proto listed as a
+        # dependency of a seed file), that ref is held in the importing file's
+        # targets set.  Popping it and creating a new instance breaks topo-sort
+        # object-identity: the importing file appears to have no unresolved
+        # dependencies and lands in the same topo rank as the fallback, causing
+        # pool_db.Add to fail silently and rendering to emit a spurious W5.
+        # Instead we let ReFile.__new__ return the existing instance (ref or
+        # full) so that all targets references remain valid, then force-overwrite
+        # qfile below so the fallback content always wins (spec 0051).
 
-        load_embedded_proto_fallback(fallback_proto)
+        fallback_qfile = load_embedded_proto_fallback(fallback_proto)
         topo.merge_files()
 
-        # Verify well-known types are leaf files (no imports)
-        proto_file: ReFile = topo.files[fallback_proto]
-        if proto_file.targets:
-            cli_error(f"Unexpected imports in {fallback_proto} (well-known types must be leaf files)")
-            raise WellKnownTypeHasTargetsError(f"{fallback_proto} has targets")
+        # Force the fallback QualFile to win regardless of what was previously
+        # loaded from disk (covers the case where a full ReFile already existed).
+        if fallback_qfile is not None:
+            proto_file: ReFile = topo.files[fallback_proto]
+            proto_file.qfile = fallback_qfile
+
+        # Note: fallback files may have imports (e.g. type.proto imports any
+        # and source_context; api.proto imports timestamp and source_context).
+        # Those imports must appear earlier in ctx.fallback_protos so the
+        # topo-sort sees them in the right order — enforced by cli.py ordering.
 
     return seed_files
 
@@ -406,6 +432,46 @@ def _strip_self_dependency(fdp: FileDescriptorProto) -> None:
         fdp.dependency.remove(fdp.name)
         cli_warning(
             "Stripped self-dependency from '%s' (malformed descriptor)", fdp.name
+        )
+
+
+def _strip_pruned_dependencies(
+    ctx: Context,
+    topo_file: 'ReFile',
+    fdp: FileDescriptorProto,
+) -> None:
+    """Remove pruned-duplicate entries from fdp.dependency in-place (spec 0053).
+
+    When a file P was pruned because its symbols conflict with an already-loaded
+    file, P's path is in ctx.pruned_file_names.  Any importer that still lists P
+    in its dependency array must have P stripped before pool_db.Add — otherwise
+    pool.FindFileByName on the importer will fail with TypeError because P was
+    never registered in pool_db under its original path.
+
+    Stripped paths are recorded on the topo-layer ReFile so phase 3 can copy
+    them to the ReFileDescriptorProto node for orphan rendering.
+    """
+    from .lib.warnings import get_collector
+    # Collect indices to strip (iterate in reverse to preserve indices).
+    # Also track which are public (their index appears in public_dependency).
+    public_indices = set(fdp.public_dependency)
+    to_strip: list[tuple[int, str]] = []
+    for i, dep in enumerate(fdp.dependency):
+        if dep in ctx.pruned_file_names:
+            to_strip.append((i, dep))
+
+    if not to_strip:
+        return
+
+    # Remove in reverse index order so earlier indices stay valid.
+    for i, dep in reversed(to_strip):
+        if dep in public_indices:
+            topo_file.stripped_public_dependencies.append(dep)
+        else:
+            topo_file.stripped_dependencies.append(dep)
+        fdp.dependency.remove(dep)
+        get_collector().w3(
+            f"Warning: stripped pruned dependency \"{dep}\" from {fdp.name}"
         )
 
 
@@ -465,6 +531,7 @@ def _prune_if_duplicate(
     from .lib.warnings import get_collector
     get_collector().w3('\n'.join(parts))
     n.is_pruned = True
+    ctx.pruned_file_names.add(n.name)
     return True
 
 
@@ -603,6 +670,7 @@ def _phase2_build_pool(
                                 _strip_self_dependency(fdp)
                                 if not ctx.keep_duplicates and _prune_if_duplicate(ctx, n, fdp):
                                     continue
+                                _strip_pruned_dependencies(ctx, n, fdp)
                                 ctx.pool_db.Add(fdp)
                             case FileDescriptorProto():
                                 # - Update the pool of descriptors
@@ -619,6 +687,7 @@ def _phase2_build_pool(
                                 _strip_self_dependency(fdp)
                                 if not ctx.keep_duplicates and _prune_if_duplicate(ctx, n, fdp):
                                     continue
+                                _strip_pruned_dependencies(ctx, n, fdp)
                                 ctx.pool_db.Add(fdp)
 
                     case bytes():
@@ -629,12 +698,17 @@ def _phase2_build_pool(
                                 fds.ParseFromString(contents)
                                 assert len(fds.file) == 1
                                 try:
-                                    fdp = fds.file[0]
+                                    # Use qf.desc.file[0] (the object phase 3
+                                    # will use as self.this) so that in-place
+                                    # mutations (strip, patch) are visible to
+                                    # the render path without re-parsing.
+                                    fdp = qf.desc.file[0]
                                     phase2_plugin(ctx, fdp)
                                     patch_go_package(ctx, fdp)
                                     _strip_self_dependency(fdp)
                                     if not ctx.keep_duplicates and _prune_if_duplicate(ctx, n, fdp):
                                         continue
+                                    _strip_pruned_dependencies(ctx, n, fdp)
                                     ctx.pool_db.Add(fdp)
                                 except TypeError as e:
                                     # NOTE: TypeError can occur when attempting to add a descriptor
@@ -650,6 +724,7 @@ def _phase2_build_pool(
                                     _strip_self_dependency(fdp)
                                     if not ctx.keep_duplicates and _prune_if_duplicate(ctx, n, fdp):
                                         continue
+                                    _strip_pruned_dependencies(ctx, n, fdp)
                                     ctx.pool_db.Add(fdp)
                                 except TypeError as e:
                                     # NOTE: TypeError can occur when attempting to add a descriptor
@@ -720,13 +795,17 @@ def _phase3_build_graph(
     # stubs have is_pruned=False, which causes phase 5 to mark them reachable and
     # phase 6 to mark them summoned, leading to a crash in phase 7 when render
     # calls .name on an uninitialised node.
+    # Also copy stripped_dependencies recorded in phase 2 onto the Re* nodes
+    # so the render path can emit them as orphan import lines (spec 0053).
     for name, file in topo.files.items():
-        if not file.is_pruned:
-            continue
         fqdn = ReFileDescriptorProto.fqdn_from_ref(name)
         node = ctx.find_file(fqdn)
-        if node is not None:
+        if file.is_pruned and node is not None:
             node.is_pruned = True
+        if node is not None and (file.stripped_dependencies
+                                 or file.stripped_public_dependencies):
+            node.stripped_dependencies = list(file.stripped_dependencies)
+            node.stripped_public_dependencies = list(file.stripped_public_dependencies)
 
 
 def _phase4_pruning(ctx: Context, topo: Topology, prunings: list[Fqdn]) -> None:
@@ -988,7 +1067,7 @@ def _phase6_summoning(ctx: Context) -> None:
                 continue
             visited.add(n)
             for t in n.targets:
-                if not isinstance(t, ReFileDescriptorProto):
+                if not isinstance(t, ReFileDescriptorProto) and t.is_present():
                     result.add(t)
             for c in n.contains:
                 stack.append(c)
@@ -1175,6 +1254,12 @@ def _phase_emit_scoring_graphs(ctx: 'Context', out_dir: Path) -> None:
         try:
             fd = ctx.pool.FindFileByName(proto_name)
         except KeyError:
+            from .lib.warnings import get_collector
+            get_collector().w6(proto_name, "scoring graph", "not in descriptor pool")
+            continue
+        except TypeError as e:
+            from .lib.warnings import get_collector
+            get_collector().w6(proto_name, "scoring graph", str(e))
             continue
 
         messages: dict = {}
