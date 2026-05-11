@@ -5,6 +5,7 @@
 
 pub mod decoder;
 pub mod helpers;
+pub mod instantiate;
 pub mod schema;
 pub mod serialize;
 

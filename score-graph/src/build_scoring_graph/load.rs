@@ -100,6 +100,40 @@ pub struct Merged {
 
 // ── Loading ───────────────────────────────────────────────────────────────────
 
+/// Load and merge from in-memory YAML strings (no filesystem access).
+pub fn merge_from_strings(scoring_graphs: &[String]) -> Result<Merged, Box<dyn std::error::Error>> {
+    let mut states: HashMap<String, Vec<ScoringField>> = HashMap::new();
+    let mut roots: Vec<String> = Vec::new();
+    let mut roots_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for (i, text) in scoring_graphs.iter().enumerate() {
+        let yaml: YamlFile =
+            serde_yaml::from_str(text).map_err(|e| format!("scoring_graph[{i}]: {e}"))?;
+        for fqdn in yaml.entries {
+            if roots_seen.insert(fqdn.clone()) {
+                roots.push(fqdn);
+            }
+        }
+        for (fqdn, msg) in yaml.messages {
+            let fields = parse_fields(&fqdn, msg.fields)?;
+            match states.entry(fqdn.clone()) {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(fields);
+                }
+                std::collections::hash_map::Entry::Occupied(existing) => {
+                    if *existing.get() != fields {
+                        eprintln!(
+                            "warning: conflicting definitions for '{fqdn}' in scoring_graph[{i}]; using first",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(Merged { states, roots })
+}
+
 pub fn load_and_merge(paths: &[std::path::PathBuf]) -> Result<Merged, Box<dyn std::error::Error>> {
     let mut states: HashMap<String, Vec<ScoringField>> = HashMap::new();
     let mut roots: Vec<String> = Vec::new();

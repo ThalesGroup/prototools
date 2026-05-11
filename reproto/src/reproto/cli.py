@@ -152,6 +152,7 @@ _SECTIONS: dict[str, str] = {
     '--redact-comments':     'Rendering',
     '--redact-orphans':      'Rendering',
     '--go-root':             'Rendering',
+    '--build-schema-db':      'Advanced',
     '--emit-scoring-graphs':  'Advanced',
     '--phase2-plugin':       'Advanced',
     '--keep-duplicates':     'Advanced',
@@ -256,6 +257,20 @@ class _SectionedCommand(click.Command):
     '--dry-run',
     is_flag=True,
     help='Do not actually create .proto files',
+)
+
+@click.option(
+    '--build-schema-db',
+    'build_schema_db',
+    required=False,
+    default=None,
+    type=click.Path(dir_okay=False, writable=True, path_type=Path),
+    help=(
+        'Build the full schema DB at PATH (must end in .rkyv): '
+        'writes PATH (compiled scoring graph) and PATH-stem/schemas.pb '
+        '(FileDescriptorSet of all loaded FDPs). '
+        'YAML and FDPs stay in memory; no intermediate files are written.'
+    ),
 )
 
 @click.option(
@@ -414,6 +429,7 @@ def main(
         proto_out: Path | None,
         emit_binary: bool,
         dry_run: bool,
+        build_schema_db: Path | None,
         emit_scoring_graphs: bool,
         proto_variant: Path | None,
         use_variant: tuple[str, ...],
@@ -496,8 +512,12 @@ def main(
     if 'api' in use_variant_set:
         fallback_protos.append(_wk('google/protobuf/api.proto'))
 
+    if build_schema_db is not None and not str(build_schema_db).endswith('.rkyv'):
+        raise click.UsageError('--build-schema-db PATH must end in .rkyv')
+
     options = Options(
         binary=emit_binary,
+        build_schema_db=build_schema_db,
         emit_scoring_graphs=emit_scoring_graphs,
         force_proto2_output=force_proto2_output,
         debug=debug,

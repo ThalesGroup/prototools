@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use clap::{CommandFactory, Parser};
+use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::engine::ArgValueCompleter;
 
 use complete::{
@@ -136,6 +136,42 @@ pub struct Cli {
         add = ArgValueCompleter::new(complete_input_paths),
     )]
     pub paths: Vec<String>,
+
+    /// Subcommand (e.g. instantiate-schema).
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+/// Subcommands for prototext.
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Generate a pseudo-random valid protobuf instance for a message type.
+    ///
+    /// Renders the generated binary as #@ prototext with ground_truth and
+    /// seed hint comments.  The effective PRNG seed is
+    /// SHA256(decimal(SEED) + ":" + FQDN) → StdRng.
+    InstantiateSchema {
+        /// Fully-qualified message type name (e.g. .google.protobuf.Timestamp).
+        #[arg(value_name = "TYPE")]
+        r#type: String,
+
+        /// Integer seed (default 0).  The effective PRNG seed is derived via
+        /// SHA256(seed + ":" + fqdn).
+        #[arg(long, default_value_t = 0)]
+        seed: i64,
+
+        /// Maximum recursion depth for nested messages (default 4).
+        #[arg(long, default_value_t = 4)]
+        max_depth: usize,
+
+        /// Maximum number of elements for repeated fields (default 3).
+        #[arg(long, default_value_t = 3)]
+        max_repeated: usize,
+
+        /// Probability of populating an optional field (default 0.7).
+        #[arg(long, default_value_t = 0.7)]
+        p_optional: f64,
+    },
 }
 
 /// Return a fully-built [`clap::Command`] for `prototext`.

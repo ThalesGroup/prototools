@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 use prototext_core::{parse_schema, render_as_bytes, render_as_text, CodecError, RenderOpts};
 
 use crate::inputs::{expand_path, InputFile};
-use crate::{Cli, EMBEDDED_DESCRIPTOR};
+use prototext_core::instantiate::{generate_message_bytes, InstantiateOpts};
+
+use crate::{Cli, Command, EMBEDDED_DESCRIPTOR};
 
 // ── Schema loading ────────────────────────────────────────────────────────────
 
@@ -86,6 +88,27 @@ pub fn write_output(data: &[u8], explicit_output: Option<&Path>) -> Result<(), S
 // ── Top-level run ─────────────────────────────────────────────────────────────
 
 pub fn run(cli: Cli) -> Result<(), String> {
+    // ── Subcommand dispatch ───────────────────────────────────────────────────
+    if let Some(Command::InstantiateSchema {
+        r#type,
+        seed,
+        max_depth,
+        max_repeated,
+        p_optional,
+    }) = cli.command
+    {
+        return run_instantiate_schema(
+            cli.descriptor.as_ref(),
+            &r#type,
+            seed,
+            max_depth,
+            max_repeated,
+            p_optional,
+            cli.quiet,
+            cli.output.as_deref(),
+        );
+    }
+
     // ── Validate mode ─────────────────────────────────────────────────────────
     if !cli.decode && !cli.encode {
         return Err("one of --decode (-d) or --encode (-e) is required".into());
@@ -248,4 +271,84 @@ pub fn run(cli: Cli) -> Result<(), String> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+// ── instantiate-schema ────────────────────────────────────────────────────────
+
+#[allow(clippy::too_many_arguments)]
+fn run_instantiate_schema(
+    descriptor: Option<&PathBuf>,
+    type_name: &str,
+    seed: i64,
+    max_depth: usize,
+    max_repeated: usize,
+    p_optional: f64,
+    quiet: bool,
+    output: Option<&Path>,
+) -> Result<(), String> {
+    // Normalize type name: strip leading dot for descriptor lookup, but keep
+    // the dotted form for the ground_truth hint comment.
+    let fqdn = if type_name.starts_with('.') {
+        type_name.to_string()
+    } else {
+        format!(".{}", type_name)
+    };
+    let lookup_name = fqdn.trim_start_matches('.');
+
+    // Load the descriptor bytes.
+    let desc_bytes: Vec<u8> = if let Some(path) = descriptor {
+        std::fs::read(path)
+            .map_err(|e| format!("cannot read descriptor '{}': {}", path.display(), e))?
+    } else {
+        EMBEDDED_DESCRIPTOR.to_vec()
+    };
+
+    // Locate the message descriptor.
+    let schema =
+        parse_schema(&desc_bytes, lookup_name).map_err(|e| format!("descriptor parse: {}", e))?;
+
+    let opts = InstantiateOpts {
+        seed,
+        max_depth,
+        max_repeated,
+        p_optional,
+        quiet,
+    };
+
+    // Locate the root MessageDescriptor (guaranteed present — parse_schema
+    // returns MessageNotFound if the type is absent).
+    let msg_desc = schema
+        .root_descriptor()
+        .ok_or_else(|| format!("type '{}' not found in descriptor", lookup_name))?;
+
+    // Generate binary protobuf bytes.
+    let binary = generate_message_bytes(&msg_desc, &opts);
+
+    // Decode to #@ prototext.
+    let render_opts = RenderOpts {
+        assume_binary: true,
+        include_annotations: true,
+        indent: 1,
+    };
+    let text_bytes = render_as_text(&binary, Some(&schema), render_opts)
+        .map_err(|e: CodecError| e.to_string())?;
+
+    // Insert hint comments after the magic line.
+    let text = String::from_utf8(text_bytes)
+        .map_err(|e| format!("generated text is not valid UTF-8: {}", e))?;
+    let out = insert_hints(&text, &fqdn, seed);
+
+    write_output(out.as_bytes(), output)
+}
+
+/// Insert `# ground_truth:` and `# seed:` comment lines after the first line
+/// (the `#@ prototext:` magic line).
+fn insert_hints(text: &str, fqdn: &str, seed: i64) -> String {
+    let mut lines = text.splitn(2, '\n');
+    let magic = lines.next().unwrap_or("");
+    let rest = lines.next().unwrap_or("");
+    format!(
+        "{}\n# ground_truth: {}\n# seed: {}\n{}",
+        magic, fqdn, seed, rest
+    )
 }

@@ -2,10 +2,9 @@
 //
 // SPDX-License-Identifier: MIT
 
-mod build_scoring_graph;
-mod score;
-
-use std::path::PathBuf;
+use score_graph_lib::build_scoring_graph;
+use score_graph_lib::build_scoring_graph::BuildScoringGraphArgs;
+use score_graph_lib::score;
 
 use clap::{Parser, Subcommand};
 
@@ -24,31 +23,6 @@ enum Command {
     Score(score::ScoreArgs),
     /// Score a binary protobuf against all entries in a compiled scoring graph simultaneously.
     Match(score::MatchArgs),
-}
-
-#[derive(Debug, clap::Args)]
-pub struct BuildScoringGraphArgs {
-    /// Output path for the CompiledGraph binary.
-    #[arg(short = 'o', long = "output", value_name = "PATH", required = true)]
-    pub output: PathBuf,
-
-    /// Write an interactive HTML visualisation of the compiled graph to PATH.
-    #[arg(long = "graph", value_name = "PATH")]
-    pub graph: Option<PathBuf>,
-
-    /// Resolve YAML paths relative to DIR; walk DIR recursively for *.yaml if
-    /// no explicit YAML_FILES are given.
-    #[arg(short = 'I', long = "input-root", value_name = "DIR")]
-    pub input_root: Option<PathBuf>,
-
-    /// Suppress the summary written to stderr.
-    #[arg(short = 'q', long = "quiet")]
-    pub quiet: bool,
-
-    /// YAML files or glob patterns produced by reproto --emit-scoring-graph.
-    /// If omitted, --input-root is walked recursively for *.yaml.
-    #[arg(value_name = "YAML_FILES")]
-    pub yaml_files: Vec<String>,
 }
 
 fn main() {

@@ -172,6 +172,12 @@ pub fn encode_text_to_binary(text: &[u8]) -> Vec<u8> {
             continue;
         }
 
+        // Skip plain comments (`# ...`) that carry no wire semantics.
+        // Only `#@ ...` lines (handled via split_at_annotation) have meaning.
+        if trimmed.starts_with('#') && !trimmed.starts_with("#@") {
+            continue;
+        }
+
         // Split value part from annotation.
         let (value_part, ann_str) = split_at_annotation(line);
 

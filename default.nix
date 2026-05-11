@@ -83,6 +83,9 @@ let
   # Cargo package selector for fdp_scan pyo3 derivations.
   fdpScanArgs = "-p fdp_scan_extension";
 
+  # Cargo package selector for scoring_graph pyo3 derivations.
+  scoringGraphArgs = "-p scoring_graph_extension";
+
   # RUSTFLAGS for linking against CPython.  Set globally in commonArgs so that
   # all Crane derivations carry the same value — keeping Cargo fingerprints
   # consistent across the single shared depsCache.  Also exported in the
@@ -145,6 +148,13 @@ let
     pname                = "prototools-clippy-pyo3";
     cargoArtifacts       = depsCache;
     cargoExtraArgs       = pyo3Args;
+    cargoClippyExtraArgs = "--all-targets -- --deny warnings";
+  });
+
+  rustClippyScoringGraph = crane.cargoClippy (commonArgs // {
+    pname                = "prototools-clippy-scoring-graph";
+    cargoArtifacts       = depsCache;
+    cargoExtraArgs       = scoringGraphArgs;
     cargoClippyExtraArgs = "--all-targets -- --deny warnings";
   });
 
@@ -295,6 +305,46 @@ let
   };
 
   # ---------------------------------------------------------------------------
+  # PyO3 extension — scoring_graph Python package
+  # ---------------------------------------------------------------------------
+
+  scoringGraphExtension = crane.buildPackage (commonArgs // {
+    pname          = "scoring-graph-ext";
+    cargoArtifacts = depsCache;
+    cargoExtraArgs = "${scoringGraphArgs} --lib";
+    doCheck        = false;
+    preBuild = ''
+      rm -rf target/release/build/scoring_graph_extension-*
+      rm -rf target/release/.fingerprint/scoring_graph_extension-*
+    '';
+    postBuild = ''
+      echo "Generating scoring_graph_lib stubs..."
+      cargo run --release -p scoring_graph_extension --bin scoring_graph_post_build
+    '';
+    installPhase = ''
+      mkdir -p $out/artifacts/
+      ext=${if pkgs.stdenv.isDarwin then "dylib" else "so"}
+      cp target/release/libscoring_graph_lib.$ext $out/artifacts/scoring_graph_lib.so
+      cp score-graph-pyo3/scoring_graph.pyi         $out/artifacts/scoring_graph_lib.pyi
+    '';
+  });
+
+  # Python package wrapping the .so and .pyi into a wheel.
+  scoringGraphLib = pythonPkgs.buildPythonPackage {
+    pname   = "scoring_graph";
+    version = "0.1.0";
+    format  = "pyproject";
+    src     = ./score-graph-pyo3;
+    buildInputs = [ pythonPkgs.hatchling scoringGraphExtension ];
+    patchPhase = ''
+      cp ${scoringGraphExtension}/artifacts/scoring_graph_lib.pyi \
+         scoring_graph_lib/scoring_graph_lib.pyi
+      cp ${scoringGraphExtension}/artifacts/scoring_graph_lib.so  \
+         scoring_graph_lib/scoring_graph_lib.so
+    '';
+  };
+
+  # ---------------------------------------------------------------------------
   # protoscan — Python CLI for scanning binaries for embedded FDP blobs
   # ---------------------------------------------------------------------------
 
@@ -364,6 +414,7 @@ let
   reprotoTestDeps = reprotoPropagatedDeps ++ [
     prototextCodec
     fdpScanLib
+    scoringGraphLib
     pythonPkgs.pytest
     pythonPkgs."pytest-xdist"
     pythonPkgs.tree-sitter
@@ -424,7 +475,8 @@ let
       pkgs.installShellFiles
     ];
     propagatedBuildInputs = reprotoPropagatedDeps ++ [
-      prototextCodec  # reproto.load imports prototext_codec_lib at module load time
+      prototextCodec   # reproto.load imports prototext_codec_lib at module load time
+      scoringGraphLib  # reproto --build-schema-db imports scoring_graph_lib
     ];
 
     doCheck = false;
@@ -475,8 +527,8 @@ let
     # pyright needs a writable working directory for its cache.
     cd "$TMPDIR"
 
-    # Make the prototext_codec_lib .pyi stub visible to pyright.
-    export PYTHONPATH="${reprotoSrcWithCodegen}/src:${prototextExtension}/artifacts"
+    # Make the prototext_codec_lib and scoring_graph_lib .pyi stubs visible to pyright.
+    export PYTHONPATH="${reprotoSrcWithCodegen}/src:${prototextExtension}/artifacts:${scoringGraphExtension}/artifacts"
 
     # Write a hermetic pyrightconfig.json.
     cat > pyrightconfig.json <<EOF
@@ -484,7 +536,8 @@ let
   "typeCheckingMode": "basic",
   "extraPaths": [
     "${reprotoSrcWithCodegen}/src",
-    "${prototextExtension}/artifacts"
+    "${prototextExtension}/artifacts",
+    "${scoringGraphExtension}/artifacts"
   ],
   "exclude": [
     "result*",
@@ -585,7 +638,7 @@ EOF
       python3 -c "
 import json, os
 paths = [p for p in os.environ['PYTHONPATH'].split(':') if p]
-cfg = {'extraPaths': paths, 'exclude': ['result*', 'prototext-pyo3/prototext_codec_lib', 'fdp-scan-pyo3/fdp_scan_lib', 'docs/mockup']}
+cfg = {'extraPaths': paths, 'exclude': ['result*', 'prototext-pyo3/prototext_codec_lib', 'fdp-scan-pyo3/fdp_scan_lib', 'score-graph-pyo3/scoring_graph_lib', 'docs/mockup']}
 with open('pyrightconfig.json', 'w') as f:
     json.dump(cfg, f, indent=2)
     f.write('\n')
@@ -679,7 +732,7 @@ components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
   # Single target that forces the entire CI closure in dependency order.
   # nix-build -A ci builds fmt → clippy → clippy-pyo3 → tests → prototext → prototext-codec → reproto → protoscan.
   ci = pkgs.linkFarmFromDrvs "ci" [
-    rustFmt rustClippy rustClippyPyo3 rustTests prototext prototextCodec reproto reprotoTests pythonLint pythonRuff protoscan
+    rustFmt rustClippy rustClippyPyo3 rustClippyScoringGraph rustTests prototext prototextCodec scoringGraphLib reproto reprotoTests pythonLint pythonRuff protoscan
   ];
 
 in
@@ -702,4 +755,5 @@ in
   dev-shell            = dev-shell;
   protoscan            = protoscan;
   fdp-scan-lib         = fdpScanLib;
+  scoring-graph-lib    = scoringGraphLib;
 }

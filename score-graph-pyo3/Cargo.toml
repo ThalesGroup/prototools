@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+# scoring_graph – scoring-graph build PyO3 extension.
+[package]
+name    = "scoring_graph_extension"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name       = "scoring_graph_lib"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+score-graph          = { path = "../score-graph" }
+pyo3                 = { version = "0.26", features = ["extension-module"] }
+pyo3_stub_gen        = { version = "0.22", package = "pyo3-stub-gen" }
+pyo3_stub_gen_derive = { version = "0.22", package = "pyo3-stub-gen-derive" }
+
+[[bin]]
+name = "scoring_graph_post_build"
+path = "src/bin/post_build.rs"

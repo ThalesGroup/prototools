@@ -435,44 +435,55 @@ def _strip_self_dependency(fdp: FileDescriptorProto) -> None:
         )
 
 
-def _strip_pruned_dependencies(
+def _strip_unresolvable_dependencies(
     ctx: Context,
     topo_file: 'ReFile',
     fdp: FileDescriptorProto,
 ) -> None:
-    """Remove pruned-duplicate entries from fdp.dependency in-place (spec 0053).
+    """Remove unresolvable entries from fdp.dependency in-place.
 
-    When a file P was pruned because its symbols conflict with an already-loaded
-    file, P's path is in ctx.pruned_file_names.  Any importer that still lists P
-    in its dependency array must have P stripped before pool_db.Add — otherwise
-    pool.FindFileByName on the importer will fail with TypeError because P was
-    never registered in pool_db under its original path.
+    Two cases are handled:
 
-    Stripped paths are recorded on the topo-layer ReFile so phase 3 can copy
-    them to the ReFileDescriptorProto node for orphan rendering.
+    1. Pruned-duplicate files (spec 0053): P's symbols conflict with an
+       already-loaded file; P's path is in ctx.pruned_file_names.
+       Emits W3.
+
+    2. Absent files: P was listed as a dependency but was never provided
+       in any input .pb (its topo entry is still a ref).  Without stripping,
+       pool.FindFileByName on the importer raises TypeError and prevents the
+       importer from rendering at all.  Emits W1.
+
+    In both cases the stripped path is recorded on the topo-layer ReFile so
+    phase 3 can copy it to the ReFileDescriptorProto node for orphan rendering
+    (a commented-out import vestige in the output .proto).
     """
     from .lib.warnings import get_collector
-    # Collect indices to strip (iterate in reverse to preserve indices).
-    # Also track which are public (their index appears in public_dependency).
+    collector = get_collector()
     public_indices = set(fdp.public_dependency)
     to_strip: list[tuple[int, str]] = []
     for i, dep in enumerate(fdp.dependency):
         if dep in ctx.pruned_file_names:
             to_strip.append((i, dep))
+        else:
+            topo_dep = topo_file.topo.files.get(dep)
+            if topo_dep is not None and topo_dep.is_ref():
+                to_strip.append((i, dep))
 
     if not to_strip:
         return
 
-    # Remove in reverse index order so earlier indices stay valid.
     for i, dep in reversed(to_strip):
         if dep in public_indices:
             topo_file.stripped_public_dependencies.append(dep)
         else:
             topo_file.stripped_dependencies.append(dep)
         fdp.dependency.remove(dep)
-        get_collector().w3(
-            f"Warning: stripped pruned dependency \"{dep}\" from {fdp.name}"
-        )
+        if dep in ctx.pruned_file_names:
+            collector.w3(
+                f"Warning: stripped pruned dependency \"{dep}\" from {fdp.name}"
+            )
+        else:
+            collector.w1(dep)
 
 
 def _extract_fdp_symbols(fdp: FileDescriptorProto) -> list[str]:
@@ -670,7 +681,7 @@ def _phase2_build_pool(
                                 _strip_self_dependency(fdp)
                                 if not ctx.keep_duplicates and _prune_if_duplicate(ctx, n, fdp):
                                     continue
-                                _strip_pruned_dependencies(ctx, n, fdp)
+                                _strip_unresolvable_dependencies(ctx, n, fdp)
                                 ctx.pool_db.Add(fdp)
                             case FileDescriptorProto():
                                 # - Update the pool of descriptors
@@ -687,7 +698,7 @@ def _phase2_build_pool(
                                 _strip_self_dependency(fdp)
                                 if not ctx.keep_duplicates and _prune_if_duplicate(ctx, n, fdp):
                                     continue
-                                _strip_pruned_dependencies(ctx, n, fdp)
+                                _strip_unresolvable_dependencies(ctx, n, fdp)
                                 ctx.pool_db.Add(fdp)
 
                     case bytes():
@@ -708,7 +719,7 @@ def _phase2_build_pool(
                                     _strip_self_dependency(fdp)
                                     if not ctx.keep_duplicates and _prune_if_duplicate(ctx, n, fdp):
                                         continue
-                                    _strip_pruned_dependencies(ctx, n, fdp)
+                                    _strip_unresolvable_dependencies(ctx, n, fdp)
                                     ctx.pool_db.Add(fdp)
                                 except TypeError as e:
                                     # NOTE: TypeError can occur when attempting to add a descriptor
@@ -724,7 +735,7 @@ def _phase2_build_pool(
                                     _strip_self_dependency(fdp)
                                     if not ctx.keep_duplicates and _prune_if_duplicate(ctx, n, fdp):
                                         continue
-                                    _strip_pruned_dependencies(ctx, n, fdp)
+                                    _strip_unresolvable_dependencies(ctx, n, fdp)
                                     ctx.pool_db.Add(fdp)
                                 except TypeError as e:
                                     # NOTE: TypeError can occur when attempting to add a descriptor
@@ -1169,6 +1180,130 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
                 cli_error(f"Failed to write {res_path}: {type(e).__name__}: {e}")
                 cli_error("Cannot continue due to I/O error.")
                 sys.exit(1)
+
+
+def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
+    """Build the full schema DB at db_path (spec 0056 §reproto --build-schema-db).
+
+    Produces:
+      db_path                   — compiled (baked) scoring graph (.rkyv)
+      db_path.stem/schemas.pb   — FileDescriptorSet of all loaded FDPs
+
+    YAML content is generated in-memory from the same logic as
+    _phase_emit_scoring_graphs; no intermediate files are written to disk.
+    """
+    import yaml
+    from google.protobuf.descriptor_pb2 import FileDescriptorProto, FileDescriptorSet
+
+    # ── 1. Collect per-file scoring-graph YAML strings (mirrors _phase_emit_scoring_graphs)
+
+    def _collect(desc: Any, messages: dict) -> None:
+        msg_node = ctx.nodes.get(Fqdn(f'desc:.{desc.full_name}'))
+        if msg_node is not None and msg_node.is_pruned:
+            return
+        fields_out = []
+        for f in sorted(desc.fields_by_number.values(), key=lambda f: f.number):
+            field_node = ctx.nodes.get(Fqdn(f'fdsc:.{f.full_name}'))
+            if field_node is not None and field_node.is_pruned:
+                continue
+            kind, child, enum_min, enum_max = _scoring_kind(f)
+            entry: dict = {'number': f.number, 'kind': kind}
+            if child is not None:
+                entry['child'] = child
+            if enum_min is not None:
+                entry['enum_min'] = enum_min
+                entry['enum_max'] = enum_max
+            label = _field_label(f)
+            if label != 'optional':
+                entry['label'] = label
+            fields_out.append(entry)
+        messages[desc.full_name] = {'fields': fields_out}
+        for nested in desc.nested_types:
+            _collect(nested, messages)
+
+    scoring_graphs: list[str] = []
+
+    for re_file in ctx.nodes.values():
+        if not isinstance(re_file, ReFileDescriptorProto):
+            continue
+        if not re_file.is_present():
+            continue
+        if not re_file.is_summoned:
+            continue
+        proto_name = re_file.name
+
+        try:
+            fd = ctx.pool.FindFileByName(proto_name)
+        except (KeyError, TypeError) as e:
+            from .lib.warnings import get_collector
+            get_collector().w6(proto_name, "schema db", str(e))
+            continue
+
+        messages: dict = {}
+        for msg_desc in fd.message_types_by_name.values():
+            _collect(msg_desc, messages)
+
+        entries = []
+        for msg_desc in fd.message_types_by_name.values():
+            node = ctx.nodes.get(Fqdn(f'desc:.{msg_desc.full_name}'))
+            if node is None or not node.is_pruned:
+                entries.append(msg_desc.full_name)
+        entries.sort()
+
+        scoring_graphs.append(
+            str(yaml.dump({'entries': entries, 'messages': messages},
+                          sort_keys=False, allow_unicode=True))
+        )
+
+    if not scoring_graphs:
+        from .lib.warnings import get_collector
+        get_collector().w6('--build-schema-db', 'schema db', 'no scoring graphs generated; skipping')
+        return
+
+    # ── 2. Build the baked graph via the scoring_graph_lib PyO3 extension
+
+    try:
+        from scoring_graph_lib import build_graph
+    except ImportError as e:
+        raise RuntimeError(
+            f'--build-schema-db requires the scoring_graph_lib extension: {e}'
+        ) from e
+
+    baked_graph: bytes = build_graph(scoring_graphs=scoring_graphs)
+
+    # ── 3. Assemble schemas.pb from all summoned files in the pool
+
+    fds = FileDescriptorSet()
+    seen: set[str] = set()
+    for re_file in ctx.nodes.values():
+        if not isinstance(re_file, ReFileDescriptorProto):
+            continue
+        if not re_file.is_present():
+            continue
+        try:
+            fd = ctx.pool.FindFileByName(re_file.name)
+        except (KeyError, TypeError):
+            continue
+        if fd.name in seen:
+            continue
+        seen.add(fd.name)
+        fdp = FileDescriptorProto()
+        fd.CopyToProto(fdp)
+        fds.file.append(fdp)
+
+    # ── 4. Write both outputs
+
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path.write_bytes(baked_graph)
+
+    schema_db_dir = db_path.with_suffix('')
+    schema_db_dir.mkdir(parents=True, exist_ok=True)
+    (schema_db_dir / 'schemas.pb').write_bytes(fds.SerializeToString())
+
+    if not ctx.quiet:
+        eprintln = __import__('sys').stderr.write
+        eprintln(f'  schema db: {db_path}\n')
+        eprintln(f'  schemas:   {schema_db_dir / "schemas.pb"}\n')
 
 
 def _field_label(field: Any) -> str:

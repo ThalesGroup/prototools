@@ -22,6 +22,8 @@ members = [
     "prototext",
     "prototext-pyo3",
     "fdp-scan-pyo3",
+    "score-graph",
+    "score-graph-pyo3",
 ]
 
 [profile.release]

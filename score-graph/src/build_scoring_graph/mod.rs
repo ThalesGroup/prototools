@@ -10,10 +10,55 @@ mod show;
 
 use std::path::{Path, PathBuf};
 
+use clap::Args;
 use globset::Glob;
 use walkdir::WalkDir;
 
-use crate::BuildScoringGraphArgs;
+#[derive(Debug, Args)]
+pub struct BuildScoringGraphArgs {
+    /// Output path for the CompiledGraph binary.
+    #[arg(short = 'o', long = "output", value_name = "PATH", required = true)]
+    pub output: PathBuf,
+
+    /// Write an interactive HTML visualisation of the compiled graph to PATH.
+    #[arg(long = "graph", value_name = "PATH")]
+    pub graph: Option<PathBuf>,
+
+    /// Resolve YAML paths relative to DIR; walk DIR recursively for *.yaml if
+    /// no explicit YAML_FILES are given.
+    #[arg(short = 'I', long = "input-root", value_name = "DIR")]
+    pub input_root: Option<PathBuf>,
+
+    /// Suppress the summary written to stderr.
+    #[arg(short = 'q', long = "quiet")]
+    pub quiet: bool,
+
+    /// YAML files or glob patterns produced by reproto --emit-scoring-graph.
+    /// If omitted, --input-root is walked recursively for *.yaml.
+    #[arg(value_name = "YAML_FILES")]
+    pub yaml_files: Vec<String>,
+}
+
+/// Build a compiled scoring graph from in-memory YAML strings.
+///
+/// Each entry in `scoring_graphs` is the full text of one scoring-graph YAML
+/// file (as produced by `reproto --emit-scoring-graphs`).  Returns the
+/// serialised `.rkyv` bytes (the baked graph), ready to be written to disk.
+///
+/// This is the library entry point used by the `scoring_graph_lib` PyO3
+/// extension (`scoring_graph.build_graph`).
+pub fn build_from_strings(
+    scoring_graphs: &[String],
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let merged = load::merge_from_strings(scoring_graphs)?;
+    if merged.states.is_empty() {
+        return Err("no scoring-graph entries found in provided YAML strings".into());
+    }
+    let (raw, reg) = graph::build(&merged);
+    let partition = hopcroft::minimize(&raw, &reg);
+    let compiled = graph::compile(&raw, &reg, &partition, &merged);
+    serial::to_bytes(&compiled)
+}
 
 pub fn run(args: BuildScoringGraphArgs) -> Result<(), Box<dyn std::error::Error>> {
     // ── 1. Collect YAML paths ─────────────────────────────────────────────────
@@ -92,7 +137,7 @@ fn collect_yaml_paths(
             .into_iter()
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file())
-            .filter(|e| e.path().extension().map_or(false, |x| x == "yaml"))
+            .filter(|e| e.path().extension().is_some_and(|x| x == "yaml"))
             .map(|e| e.into_path())
             .collect();
         return Ok(paths);
@@ -114,7 +159,7 @@ fn collect_yaml_paths(
                 .into_iter()
                 .filter_map(|e| e.ok())
                 .filter(|e| e.file_type().is_file())
-                .filter(|e| e.path().extension().map_or(false, |x| x == "yaml"))
+                .filter(|e| e.path().extension().is_some_and(|x| x == "yaml"))
             {
                 paths.push(entry.into_path());
             }

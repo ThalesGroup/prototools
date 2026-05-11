@@ -137,7 +137,6 @@ pub fn minimize(raw: &RawGraph, reg: &LeafRegistry) -> Partition {
     }
 
     // ── Refinement loop ───────────────────────────────────────────────────────
-    let mut block_of = block_of;
     let mut blocks = blocks;
     let mut num_blocks = num_blocks;
 

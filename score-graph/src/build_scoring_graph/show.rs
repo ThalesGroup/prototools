@@ -86,8 +86,8 @@ fn build_html(raw: &RawGraph, partition: &Partition, compiled: &CompiledGraph) -
 
     let mut nodes_js = String::new();
     // Message states — plain blue dots
-    for block in 0..num_msg_blocks {
-        let mut labels = state_labels[block].clone();
+    for (block, block_labels) in state_labels[..num_msg_blocks].iter().enumerate() {
+        let mut labels = block_labels.clone();
         labels.sort();
         let short = labels
             .iter()

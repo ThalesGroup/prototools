@@ -356,9 +356,9 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
             )
             text = f'{import_cmd} {dep_name};'
             out.append(BlockLine(text, depth, kind))
-        # --- Stripped pruned-duplicate dependencies (spec 0053) ---------------
+        # --- Stripped unresolvable dependencies (spec 0053) -------------------
         # These imports were removed from the FDP before pool registration
-        # because their target was pruned as a duplicate-symbol file.
+        # because their target was either pruned as a duplicate or absent.
         for dep in self.stripped_dependencies:
             out.append(BlockLine(f'import "{dep}";', depth, ORPHAN))
         for dep in self.stripped_public_dependencies:

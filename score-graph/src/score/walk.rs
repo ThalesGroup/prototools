@@ -638,7 +638,7 @@ fn score_message(
                                     s.veto();
                                     return buflen;
                                 }
-                                if val >= 0x8000_0000 && val <= 0xFFFF_FFFF {
+                                if (0x8000_0000..=0xFFFF_FFFF).contains(&val) {
                                     s.non_canonical += 1;
                                 }
                                 if let Some(range) = graph.enum_ranges.get(eri as usize) {
@@ -704,11 +704,11 @@ fn score_message(
                             .iter()
                             .all(|t| t.state_id.to_native() != child);
                         if is_leaf_node {
-                            if node.map_or(false, |n| n.is_string) {
-                                if std::str::from_utf8(payload).is_err() {
-                                    s.veto();
-                                    return buflen;
-                                }
+                            if node.is_some_and(|n| n.is_string)
+                                && std::str::from_utf8(payload).is_err()
+                            {
+                                s.veto();
+                                return buflen;
                             }
                             record_occurrence(&mut occurrences, field_number as u32);
                             s.matches += 1;
@@ -806,7 +806,7 @@ fn propagate_vetoes(active: &mut Vec<ActiveEntry>, ws: &WalkState) {
 fn apply_cardinality_multi(
     graph: &ArchivedCompiledGraph,
     ae: &ActiveEntry,
-    scores: &mut Vec<EntryScore>,
+    scores: &mut [EntryScore],
 ) {
     let state = ae.state_id;
     let t = &graph.transitions;
@@ -998,7 +998,7 @@ fn score_message_multi(
                                         do_veto = true;
                                     } else {
                                         // Truncated negative non-canonical.
-                                        if val >= 0x8000_0000 && val <= 0xFFFF_FFFF {
+                                        if (0x8000_0000..=0xFFFF_FFFF).contains(&val) {
                                             for &e in &ae.entries {
                                                 ws.scores[e as usize].non_canonical += 1;
                                             }
@@ -1111,7 +1111,7 @@ fn score_message_multi(
                                     child_pairs.push((child, e));
                                 }
                             } else {
-                                let is_string = node.map_or(false, |n| n.is_string);
+                                let is_string = node.is_some_and(|n| n.is_string);
                                 if is_string && std::str::from_utf8(payload).is_err() {
                                     for &e in &ae.entries {
                                         ws.set_vetoed(e);

@@ -22,6 +22,8 @@ crate-type = ["rlib"]
 prost         = "0.14"
 prost-reflect = "0.16"
 memchr        = "2"
+rand          = { version = "0.8", features = ["std", "std_rng"] }
+sha2          = "0.10"
 
 [dev-dependencies]
 prost-types = "0.14"

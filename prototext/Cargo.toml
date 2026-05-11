@@ -32,6 +32,7 @@ clap_complete   = { version = "4.5", features = ["unstable-dynamic"] }
 clap_mangen     = "0.2"
 globset         = "0.4"
 prost           = "0.14"
+prost-reflect   = "0.16"
 prost-types     = "0.14"
 walkdir         = "2"
 

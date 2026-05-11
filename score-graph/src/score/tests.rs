@@ -171,9 +171,7 @@ fn varint_ohb(v: u64, ohb: u8) -> Vec<u8> {
         // Remove final terminator, re-add as continuation, then pad, then 0x00.
         let last = out.pop().unwrap();
         out.push(last | 0x80);
-        for _ in 1..ohb {
-            out.push(0x80);
-        }
+        out.extend(std::iter::repeat_n(0x80u8, (ohb - 1) as usize));
         out.push(0x00);
     }
     out
@@ -329,7 +327,7 @@ fn tc10_tag_overhang_non_canonical() {
     let root = root_state(&g);
 
     // Tag for field 1 (id), wire type 0, with 1 overhang byte on the tag.
-    let mut pb = varint_ohb(1 << 3 | 0, 1); // tag with ohb=1
+    let mut pb = varint_ohb(1 << 3, 1); // tag: field=1, wt=VARINT (0), ohb=1
     pb.extend(varint(42)); // id value
 
     let s = walk::score(&pb, root, &g);
@@ -672,7 +670,7 @@ fn mt04_tag_overhang_increments_all_active_entries() {
     let g = build_two_entry_graph();
 
     // Field 1 with a non-canonical tag varint (1 overhang byte).
-    let mut pb = varint_ohb((1u64 << 3) | 0, 1); // tag: field=1, wt=VARINT, ohb=1
+    let mut pb = varint_ohb(1u64 << 3, 1); // tag: field=1, wt=VARINT (0), ohb=1
     pb.extend(varint(7)); // value
 
     let results = walk::score_all(&pb, &g);

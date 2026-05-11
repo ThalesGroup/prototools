@@ -66,9 +66,8 @@ const VERSION: u32 = 2;
 
 // ── Writing ───────────────────────────────────────────────────────────────────
 
-/// Serialize `graph` to `path` in the spec 0047 §5 binary format.
-/// Returns the number of bytes written.
-pub fn write(graph: &CompiledGraph, path: &Path) -> Result<usize, Box<dyn std::error::Error>> {
+/// Serialize `graph` to in-memory bytes in the spec 0047 §5 binary format.
+pub fn to_bytes(graph: &CompiledGraph) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let rkyv_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(graph)?;
 
     // Fixed header: 8 magic + 4 version + 4 reserved + 8 offset = 24 bytes.
@@ -79,7 +78,13 @@ pub fn write(graph: &CompiledGraph, path: &Path) -> Result<usize, Box<dyn std::e
     buf.write_all(&0u32.to_le_bytes())?; // reserved
     buf.write_all(&root_offset.to_le_bytes())?;
     buf.write_all(&rkyv_bytes)?;
+    Ok(buf)
+}
 
+/// Serialize `graph` to `path` in the spec 0047 §5 binary format.
+/// Returns the number of bytes written.
+pub fn write(graph: &CompiledGraph, path: &Path) -> Result<usize, Box<dyn std::error::Error>> {
+    let buf = to_bytes(graph)?;
     std::fs::write(path, &buf)?;
     Ok(buf.len())
 }

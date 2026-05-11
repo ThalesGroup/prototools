@@ -2,8 +2,6 @@
 #
 # SPDX-License-Identifier: MIT
 
-[workspace]
-
 [package]
 name        = "score-graph"
 version     = "0.1.0"
@@ -13,6 +11,10 @@ description = "Build a Hopcroft-deduplicated scoring graph from reproto YAML out
 [[bin]]
 name = "score-graph"
 path = "src/main.rs"
+
+[lib]
+name       = "score_graph_lib"
+crate-type = ["rlib"]
 
 [dependencies]
 clap           = { version = "4.5", features = ["derive"] }

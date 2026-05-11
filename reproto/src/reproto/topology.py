@@ -42,7 +42,8 @@ class File:
         self.targets: set[File] = set()
         self._qfile: QualFile | None = None
         self.is_reachable = False
-        # Dependencies stripped because they were pruned as duplicates (spec 0053).
+        # Dependencies stripped because they are unresolvable (pruned duplicates
+        # or absent from the input); recorded for orphan rendering.
         self.stripped_dependencies: list[str] = []
         self.stripped_public_dependencies: list[str] = []
 

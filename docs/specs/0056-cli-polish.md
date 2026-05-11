@@ -160,7 +160,7 @@ The repo already contains two pyo3 extensions (`prototext_codec` and
 `pyo3-stub-gen`, and a Nix derivation pair (extension + Python package) in
 `default.nix`.  The new extension follows the same pattern.
 
-The extension is named **`score_graph_lib`** (cdylib name) / **`score_graph`**
+The extension is named **`scoring_graph_lib`** (cdylib name) / **`scoring_graph`**
 (Python package), living under `score-graph-pyo3/`.
 
 Three interface options were considered:
@@ -170,7 +170,7 @@ Three interface options were considered:
 **Option A — Thin path-in / path-out wrapper**
 
 ```python
-score_graph.build_graph(
+scoring_graph.build_graph(
     input_root: str,   # directory walked for *.yaml
     output: str,       # path for <name>.rkyv written by the extension
     quiet: bool = False,
@@ -193,19 +193,19 @@ the filesystem; reproto would have to write them out first too.
 
 ---
 
-**Option B — Bytes-in / bytes-out**
+**Option B — Strings-in / bytes-out**
 
 ```python
-score_graph.build_graph(
-    yaml_contents: list[bytes],   # YAML content, one entry per scoring-graph file
-) -> bytes                        # serialised .rkyv content
+scoring_graph.build_graph(
+    scoring_graphs: list[str],   # YAML content, one entry per scoring-graph
+) -> bytes                       # baked_graph: serialised .rkyv content
 ```
 
 reproto passes in-memory YAML strings (already constructed during phase 3) as
-a list of `bytes`; the extension returns the `.rkyv` content as `bytes`;
-reproto writes the file.  `schemas.pb` is assembled entirely on the Python
-side from the in-memory descriptor pool, then written by reproto.  No
-intermediate files needed.
+a list of `str`; the extension returns the `.rkyv` content as `bytes`
+(the `baked_graph`); reproto writes the file.  `schemas.pb` is assembled
+entirely on the Python side from the in-memory descriptor pool, then written by
+reproto.  No intermediate files needed.
 
 *Pros*: no disk I/O inside the extension; no coupling between
 `--build-schema-db` and `--emit-scoring-graphs`; reproto controls all file
@@ -213,15 +213,15 @@ writes; testable without a filesystem; clean separation — Rust does only graph
 computation, Python does all I/O.  Size is not a concern: the YAML corpus is a
 few MB in total, well within comfortable in-memory passing.
 
-*Cons*: pyo3 copies `list[bytes]` into a Rust `Vec<Vec<u8>>` — one allocation
+*Cons*: pyo3 copies `list[str]` into a Rust `Vec<String>` — one allocation
 per YAML string.  Acceptable given the size; zero-copy is not needed here.
 
 ---
 
-**Option C — Hybrid: path-in for YAML, bytes-in for FDPs**
+**Option C — Hybrid: path-in for YAML, strings-in for FDPs**
 
 ```python
-score_graph.build_graph(
+scoring_graph.build_graph(
     input_root: str,          # walked for *.yaml (on disk)
     output: str,              # path for <name>.rkyv
     quiet: bool = False,
@@ -264,9 +264,9 @@ schema_db_dir.mkdir(parents=True, exist_ok=True)
 The pyo3 extension interface:
 
 ```python
-score_graph.build_graph(
-    yaml_contents: list[bytes],   # one entry per scoring-graph YAML
-) -> bytes                        # .rkyv content, written to disk by caller
+scoring_graph.build_graph(
+    scoring_graphs: list[str],   # one entry per scoring-graph YAML
+) -> bytes                       # baked_graph: .rkyv content, written to disk by caller
 ```
 
 Errors are surfaced as Python `RuntimeError` with the Rust error message.
@@ -277,10 +277,10 @@ same Python environment as reproto.
 After the normal reproto pipeline finishes, reproto calls:
 
 ```python
-import score_graph
+import scoring_graph
 
-rkyv_bytes = score_graph.build_graph(yaml_contents=list_of_yaml_bytes)
-schema_db_path.write_bytes(rkyv_bytes)
+baked_graph = scoring_graph.build_graph(scoring_graphs=list_of_yaml_strings)
+schema_db_path.write_bytes(baked_graph)
 
 # assemble schemas.pb from in-memory pool_db
 fds = descriptor_pb2.FileDescriptorSet()
@@ -524,8 +524,8 @@ prototext -d [--db PATH] [--type NAME] [--descriptor PATH] [blob.pb ...]
    `prototext`): recursive `DynamicMessage` walk, SHA256-derived seed,
    `render_as_text` output, `# ground_truth:` / `# seed:` hints.  Add `rand`
    and `sha2` dependencies.  Supersedes the standalone `proto-gen` Python tool.
-2. Build pyo3 `score_graph_lib` extension (`score-graph-pyo3/`) with
-   `build_graph(yaml_contents: list[bytes]) -> bytes`; wire
+2. Build pyo3 `scoring_graph_lib` extension (`score-graph-pyo3/`) with
+   `build_graph(scoring_graphs: list[str]) -> bytes`; wire
    `reproto --build-schema-db` to call it in-memory and write
    `<name>.rkyv` + `<stem>/schemas.pb` with no intermediate disk artifacts.
 3. Add `--db PATH` / `PROTOTEXT_DB` support: teach `load_schema` in `run.rs`
