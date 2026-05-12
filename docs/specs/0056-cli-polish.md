@@ -6,8 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0056 — CLI polish: reproto graph build + prototext match/infer/instantiate
 
-**Status:** draft
-**Implemented in:** —
+**Status:** implemented
+**Implemented in:** 2026-05-12
 **App:** prototools (`reproto`, `prototext`, `score-graph`)
 
 ---

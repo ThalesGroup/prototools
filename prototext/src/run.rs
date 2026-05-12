@@ -8,6 +8,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use prototext_core::{parse_schema, render_as_bytes, render_as_text, CodecError, RenderOpts};
+use score_graph_lib::score::{load::load_graph, score_all};
 
 use crate::inputs::{expand_path, InputFile};
 use prototext_core::instantiate::{generate_message_bytes, InstantiateOpts};
@@ -16,15 +17,106 @@ use crate::{Cli, Command, EMBEDDED_DESCRIPTOR};
 
 // ── Schema loading ────────────────────────────────────────────────────────────
 
+/// Derive the `schemas.pb` path from a DB `.rkyv` path:
+/// strips the `.rkyv` suffix and appends `/schemas.pb`.
+pub fn schemas_pb_from_db(db: &Path) -> PathBuf {
+    let stem = db.with_extension("");
+    stem.join("schemas.pb")
+}
+
+/// Result of auto-inference: the winning FQDN and its score.
+pub struct InferredType {
+    pub fqdn: String,
+    pub score: i64,
+}
+
+/// Score `pb_bytes` against the compiled graph at `db` and return the unique
+/// top non-vetoed winner, or an error describing the outcome (tie or no DB).
+pub fn infer_type_from_db(pb_bytes: &[u8], db: &Path) -> Result<InferredType, String> {
+    let graph = load_graph(db).map_err(|e| format!("loading graph '{}': {}", db.display(), e))?;
+    let mut results = score_all(pb_bytes, &graph);
+
+    // Sort non-vetoed by score descending, ties broken by fqdn lexicographic.
+    results.sort_by(|a, b| match (a.vetoed, b.vetoed) {
+        (false, true) => std::cmp::Ordering::Less,
+        (true, false) => std::cmp::Ordering::Greater,
+        (true, true) => a.fqdn.cmp(&b.fqdn),
+        (false, false) => b.score().cmp(&a.score()).then(a.fqdn.cmp(&b.fqdn)),
+    });
+
+    let non_vetoed: Vec<_> = results.iter().filter(|r| !r.vetoed).collect();
+    if non_vetoed.is_empty() {
+        return Err("all entries vetoed; cannot infer message type".into());
+    }
+
+    let top_score = non_vetoed[0].score();
+    let tied: Vec<_> = non_vetoed
+        .iter()
+        .filter(|r| r.score() == top_score)
+        .collect();
+
+    if tied.len() > 1 {
+        let names: Vec<_> = tied.iter().map(|r| r.fqdn.as_str()).collect();
+        return Err(format!(
+            "ambiguous: {} entries tie at score {}; specify --type ({})",
+            tied.len(),
+            top_score,
+            names.join(", ")
+        ));
+    }
+
+    let winner = &non_vetoed[0];
+    Ok(InferredType {
+        fqdn: winner.fqdn.clone(),
+        score: top_score,
+    })
+}
+
+/// Replace the magic line in rendered prototext output with one that carries
+/// `matched=FQDN score=N` annotations.
+///
+/// Input: `b"#@ prototext: protoc\n..."`.
+/// Output: `b"#@ prototext: protoc matched=.Foo score=7\n..."`.
+fn inject_matched_annotation(text: &[u8], fqdn: &str, score: i64) -> Vec<u8> {
+    // Find the first newline.
+    if let Some(nl) = text.iter().position(|&b| b == b'\n') {
+        let magic = &text[..nl];
+        let rest = &text[nl..]; // includes the '\n'
+        let new_magic = format!(
+            "{} matched={} score={}",
+            String::from_utf8_lossy(magic),
+            fqdn,
+            score,
+        );
+        let mut out = new_magic.into_bytes();
+        out.extend_from_slice(rest);
+        out
+    } else {
+        text.to_vec()
+    }
+}
+
 pub fn load_schema(
     descriptor: Option<&PathBuf>,
+    db: Option<&PathBuf>,
     type_name: Option<&String>,
 ) -> Result<Option<prototext_core::ParsedSchema>, String> {
     match (descriptor, type_name) {
         (None, None) => Ok(None),
         (None, Some(t)) => {
-            let schema = parse_schema(EMBEDDED_DESCRIPTOR, t)
-                .map_err(|e| format!("embedded descriptor: {}", e))?;
+            // Try DB's schemas.pb first, fall back to embedded descriptor.
+            let bytes: Vec<u8> = if let Some(db_path) = db {
+                let schemas_pb = schemas_pb_from_db(db_path);
+                if schemas_pb.exists() {
+                    std::fs::read(&schemas_pb)
+                        .map_err(|e| format!("cannot read '{}': {}", schemas_pb.display(), e))?
+                } else {
+                    EMBEDDED_DESCRIPTOR.to_vec()
+                }
+            } else {
+                EMBEDDED_DESCRIPTOR.to_vec()
+            };
+            let schema = parse_schema(&bytes, t).map_err(|e| format!("descriptor: {}", e))?;
             Ok(Some(schema))
         }
         (Some(_), None) => Err("--descriptor requires --type".into()),
@@ -85,6 +177,50 @@ pub fn write_output(data: &[u8], explicit_output: Option<&Path>) -> Result<(), S
     }
 }
 
+// ── Schema listing ────────────────────────────────────────────────────────────
+
+/// Score `pb_bytes` against the graph at `db` and write the ranked candidate
+/// list to `out` (stdout for standalone use, stderr when combined with `-d`).
+/// Same format as `score-graph match`.
+pub fn print_schema_list(
+    pb_bytes: &[u8],
+    db: &Path,
+    top: Option<usize>,
+    out: &mut dyn Write,
+) -> Result<(), String> {
+    let graph = load_graph(db).map_err(|e| format!("loading graph '{}': {}", db.display(), e))?;
+    let mut results = score_all(pb_bytes, &graph);
+
+    results.sort_by(|a, b| match (a.vetoed, b.vetoed) {
+        (false, true) => std::cmp::Ordering::Less,
+        (true, false) => std::cmp::Ordering::Greater,
+        (true, true) => a.fqdn.cmp(&b.fqdn),
+        (false, false) => b.score().cmp(&a.score()).then(a.fqdn.cmp(&b.fqdn)),
+    });
+
+    let non_vetoed: Vec<_> = results.iter().filter(|r| !r.vetoed).collect();
+    let to_print = match top {
+        Some(n) => &non_vetoed[..n.min(non_vetoed.len())],
+        None => &non_vetoed[..],
+    };
+
+    for r in to_print {
+        writeln!(
+            out,
+            "entry={} matches={} unknowns={} mismatches={} non_canonical={} score={}",
+            r.fqdn,
+            r.matches,
+            r.unknowns,
+            r.mismatches,
+            r.non_canonical,
+            r.score(),
+        )
+        .map_err(|e| format!("writing list: {}", e))?;
+    }
+
+    Ok(())
+}
+
 // ── Top-level run ─────────────────────────────────────────────────────────────
 
 pub fn run(cli: Cli) -> Result<(), String> {
@@ -99,6 +235,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
     {
         return run_instantiate_schema(
             cli.descriptor.as_ref(),
+            cli.db.as_ref(),
             &r#type,
             seed,
             max_depth,
@@ -110,7 +247,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
     }
 
     // ── Validate mode ─────────────────────────────────────────────────────────
-    if !cli.decode && !cli.encode {
+    if !cli.decode && !cli.encode && !cli.list_schemas {
         return Err("one of --decode (-d) or --encode (-e) is required".into());
     }
     let decode = cli.decode;
@@ -145,8 +282,22 @@ pub fn run(cli: Cli) -> Result<(), String> {
         }
     }
 
+    // ── Detect auto-inference mode ────────────────────────────────────────────
+    // Auto-infer when: decode mode, no --descriptor, no --type, DB present.
+    let auto_infer = decode && cli.descriptor.is_none() && cli.r#type.is_none() && cli.db.is_some();
+
     // ── Load schema ───────────────────────────────────────────────────────────
-    let schema = load_schema(cli.descriptor.as_ref(), cli.r#type.as_ref())?;
+    // In auto-infer mode the schema is resolved per-file after scoring; skip
+    // the up-front load (type is None so load_schema would return Ok(None)).
+    let schema = if auto_infer {
+        None
+    } else {
+        load_schema(
+            cli.descriptor.as_ref(),
+            cli.db.as_ref(),
+            cli.r#type.as_ref(),
+        )?
+    };
     let schema_ref = schema.as_ref();
 
     // ── Resolve base dir ──────────────────────────────────────────────────────
@@ -167,6 +318,29 @@ pub fn run(cli: Cli) -> Result<(), String> {
         io::stdin()
             .read_to_end(&mut data)
             .map_err(|e| format!("reading stdin: {}", e))?;
+        if cli.list_schemas {
+            let db = cli.db.as_ref().unwrap();
+            if decode {
+                print_schema_list(&data, db, cli.top, &mut io::stderr())?;
+            } else {
+                print_schema_list(&data, db, cli.top, &mut io::stdout())?;
+                return Ok(());
+            }
+        }
+        if auto_infer {
+            let db = cli.db.as_ref().unwrap();
+            let inferred = infer_type_from_db(&data, db)?;
+            eprintln!(
+                "info: inferred type {} (score={})",
+                inferred.fqdn, inferred.score
+            );
+            let lookup = inferred.fqdn.trim_start_matches('.');
+            let infer_schema = load_schema(None, Some(db), Some(&lookup.to_string()))?;
+            let raw_out = process(&data, decode, infer_schema.as_ref(), annotations)?;
+            let out = inject_matched_annotation(&raw_out, &inferred.fqdn, inferred.score);
+            write_output(&out, cli.output.as_deref())?;
+            return Ok(());
+        }
         let out = process(&data, decode, schema_ref, annotations)?;
         write_output(&out, cli.output.as_deref())?;
         return Ok(());
@@ -190,11 +364,47 @@ pub fn run(cli: Cli) -> Result<(), String> {
         std::process::exit(1);
     }
 
+    // ── Reject batch auto-infer ───────────────────────────────────────────────
+    // Auto-inference requires a single input; batch decode needs --type.
+    if auto_infer && all_files.len() > 1 {
+        return Err(
+            "--type is required when decoding multiple files (auto-inference is single-file only)"
+                .into(),
+        );
+    }
+
     // ── Single file (no batch flags) ──────────────────────────────────────────
     if all_files.len() == 1 && !cli.in_place && cli.output_root.is_none() {
         let f = &all_files[0];
         let data =
             std::fs::read(&f.abs).map_err(|e| format!("reading '{}': {}", f.abs.display(), e))?;
+
+        if cli.list_schemas {
+            let db = cli.db.as_ref().unwrap();
+            if decode {
+                print_schema_list(&data, db, cli.top, &mut io::stderr())?;
+            } else {
+                print_schema_list(&data, db, cli.top, &mut io::stdout())?;
+                return Ok(());
+            }
+        }
+
+        if auto_infer {
+            // Safety: auto_infer implies cli.db.is_some().
+            let db = cli.db.as_ref().unwrap();
+            let inferred = infer_type_from_db(&data, db)?;
+            eprintln!(
+                "info: inferred type {} (score={})",
+                inferred.fqdn, inferred.score
+            );
+            let lookup = inferred.fqdn.trim_start_matches('.');
+            let infer_schema = load_schema(None, Some(db), Some(&lookup.to_string()))?;
+            let raw_out = process(&data, decode, infer_schema.as_ref(), annotations)?;
+            let out = inject_matched_annotation(&raw_out, &inferred.fqdn, inferred.score);
+            write_output(&out, cli.output.as_deref())?;
+            return Ok(());
+        }
+
         let out = process(&data, decode, schema_ref, annotations)?;
         write_output(&out, cli.output.as_deref())?;
         return Ok(());
@@ -278,6 +488,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
 #[allow(clippy::too_many_arguments)]
 fn run_instantiate_schema(
     descriptor: Option<&PathBuf>,
+    db: Option<&PathBuf>,
     type_name: &str,
     seed: i64,
     max_depth: usize,
@@ -295,10 +506,18 @@ fn run_instantiate_schema(
     };
     let lookup_name = fqdn.trim_start_matches('.');
 
-    // Load the descriptor bytes.
+    // Load the descriptor bytes: --descriptor > DB schemas.pb > embedded.
     let desc_bytes: Vec<u8> = if let Some(path) = descriptor {
         std::fs::read(path)
             .map_err(|e| format!("cannot read descriptor '{}': {}", path.display(), e))?
+    } else if let Some(db_path) = db {
+        let schemas_pb = schemas_pb_from_db(db_path);
+        if schemas_pb.exists() {
+            std::fs::read(&schemas_pb)
+                .map_err(|e| format!("cannot read '{}': {}", schemas_pb.display(), e))?
+        } else {
+            EMBEDDED_DESCRIPTOR.to_vec()
+        }
     } else {
         EMBEDDED_DESCRIPTOR.to_vec()
     };

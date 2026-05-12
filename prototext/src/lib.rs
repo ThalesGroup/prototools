@@ -9,8 +9,8 @@ use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::engine::ArgValueCompleter;
 
 use complete::{
-    complete_any_path, complete_dir_path, complete_input_paths, complete_pb_files,
-    complete_type_names,
+    complete_any_path, complete_db_path, complete_dir_path, complete_input_paths,
+    complete_pb_files, complete_type_names,
 };
 
 pub mod complete;
@@ -65,8 +65,20 @@ pub struct Cli {
     )]
     pub descriptor: Option<PathBuf>,
 
+    /// Path to the schema DB (.rkyv file).  The sibling <stem>/schemas.pb is
+    /// used for type lookup when --descriptor is absent.
+    /// Overrides the PROTOTEXT_DB environment variable.
+    #[arg(
+        long = "db",
+        value_name = "PATH",
+        env = "PROTOTEXT_DB",
+        add = ArgValueCompleter::new(complete_db_path),
+    )]
+    pub db: Option<PathBuf>,
+
     /// Fully-qualified root message type name (e.g. pkg.MyMessage).
-    /// When given without --descriptor, uses the embedded descriptor
+    /// When given without --descriptor, looks up the type in the DB
+    /// (--db / PROTOTEXT_DB) or falls back to the embedded descriptor
     /// (covers all google.protobuf.* types).
     #[arg(
         short = 't',
@@ -123,6 +135,19 @@ pub struct Cli {
     /// Each file is read fully into memory before being overwritten (sponge).
     #[arg(short = 'i', long = "in-place", conflicts_with = "output_root")]
     pub in_place: bool,
+
+    // ── Scoring / listing ─────────────────────────────────────────────────────
+    /// Score input against the DB and print all non-vetoed candidates,
+    /// score-descending, ties broken by FQDN.
+    /// Standalone (no -d): list goes to stdout, no decode.
+    /// Combined with -d: list goes to stderr, decode proceeds to stdout.
+    /// Requires --db / PROTOTEXT_DB.
+    #[arg(long = "list-schemas", requires = "db")]
+    pub list_schemas: bool,
+
+    /// Limit --list-schemas output to the top N entries.
+    #[arg(long = "top", value_name = "N", requires = "list_schemas")]
+    pub top: Option<usize>,
 
     // ── Other ─────────────────────────────────────────────────────────────────
     /// Suppress warnings on stderr (errors are always printed).

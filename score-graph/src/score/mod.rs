@@ -4,8 +4,10 @@
 
 //! Score a binary protobuf against a compiled scoring graph.
 
-mod load;
-mod walk;
+pub mod load;
+pub(crate) mod walk;
+
+pub use walk::{score_all, EntryScore};
 
 #[cfg(test)]
 mod tests;
