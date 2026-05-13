@@ -7,36 +7,115 @@ use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-use prototext_core::{parse_schema, render_as_bytes, render_as_text, CodecError, RenderOpts};
-use score_graph_lib::score::{load::load_graph, score_all};
+use serde::Serialize;
+
+use prototext_core::{
+    decode_pool, render_as_bytes, render_as_text, schema_from_pool, CodecError, RenderOpts,
+};
+use score_graph_lib::score::{
+    load::{load_graph, LoadedGraph},
+    score_all,
+};
 
 use crate::inputs::{expand_path, InputFile};
 use prototext_core::instantiate::{generate_message_bytes, InstantiateOpts};
 
 use crate::{Cli, Command, EMBEDDED_DESCRIPTOR};
 
-// ── Schema loading ────────────────────────────────────────────────────────────
+// ── DescriptorContext ─────────────────────────────────────────────────────────
 
-/// Derive the `schemas.pb` path from a DB `.rkyv` path:
-/// strips the `.rkyv` suffix and appends `/schemas.pb`.
-pub fn schemas_pb_from_db(db: &Path) -> PathBuf {
-    let stem = db.with_extension("");
-    stem.join("schemas.pb")
+/// Result of resolving `--descriptor`: a descriptor pool for type lookup, plus
+/// an optional compiled Hopcroft scoring graph when the sibling
+/// `<stem>/hopcroft.rkyv` file is present.
+pub struct DescriptorContext {
+    pub pool: prost_reflect::DescriptorPool,
+    pub graph: Option<LoadedGraph>,
 }
 
-/// Result of auto-inference: the winning FQDN and its score.
+impl DescriptorContext {
+    /// Load a `DescriptorContext` from an optional descriptor path.
+    ///
+    /// When `path` is `None`, uses only the embedded WKT descriptor and no
+    /// graph.  Otherwise reads the descriptor file (binary FDS, `#@` prototext
+    /// FDS, or single FDP), builds the pool, then checks for
+    /// `<stem>/hopcroft.rkyv` and loads it if present.
+    pub fn load(path: Option<&Path>) -> Result<Self, String> {
+        let desc_bytes = match path {
+            None => EMBEDDED_DESCRIPTOR.to_vec(),
+            Some(p) => read_descriptor_file(p)?,
+        };
+
+        let pool = decode_pool(&desc_bytes).map_err(|e| format!("descriptor: {}", e))?;
+
+        let graph = if let Some(p) = path {
+            let stem = p.with_extension("");
+            let rkyv_path = stem.join("hopcroft.rkyv");
+            if rkyv_path.exists() {
+                Some(
+                    load_graph(&rkyv_path)
+                        .map_err(|e| format!("loading graph '{}': {}", rkyv_path.display(), e))?,
+                )
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        Ok(DescriptorContext { pool, graph })
+    }
+}
+
+/// Read a descriptor file: accepts binary `FileDescriptorSet`, `#@` prototext
+/// `FileDescriptorSet`, or a single `FileDescriptorProto`.
+fn read_descriptor_file(path: &Path) -> Result<Vec<u8>, String> {
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("cannot read '{}': {}", path.display(), e))?;
+    // The prototext_core parser handles both binary and #@ prototext FDS/FDP
+    // transparently via render_as_bytes — but we need raw binary FDS bytes for
+    // decode_pool.  If the file starts with the #@ magic, decode it first.
+    if bytes.starts_with(b"#@") {
+        let opts = RenderOpts {
+            assume_binary: false,
+            include_annotations: false,
+            indent: 1,
+        };
+        render_as_bytes(&bytes, opts).map_err(|e: CodecError| {
+            format!("decoding prototext descriptor '{}': {}", path.display(), e)
+        })
+    } else {
+        Ok(bytes)
+    }
+}
+
+// ── Type inference helpers ────────────────────────────────────────────────────
+
+/// Result of auto-inference: the winning FQDN and its score breakdown.
 pub struct InferredType {
     pub fqdn: String,
     pub score: i64,
+    pub matches: u64,
+    pub unknowns: u64,
+    pub mismatches: u64,
+    pub non_canonical: u64,
 }
 
-/// Score `pb_bytes` against the compiled graph at `db` and return the unique
-/// top non-vetoed winner, or an error describing the outcome (tie or no DB).
-pub fn infer_type_from_db(pb_bytes: &[u8], db: &Path) -> Result<InferredType, String> {
-    let graph = load_graph(db).map_err(|e| format!("loading graph '{}': {}", db.display(), e))?;
-    let mut results = score_all(pb_bytes, &graph);
+/// Score `pb_bytes` against `graph` and return the unique top non-vetoed
+/// winner, or an error describing the outcome (tie or all-vetoed).
+pub fn infer_type(pb_bytes: &[u8], graph: &LoadedGraph) -> Result<InferredType, String> {
+    let binary_buf;
+    let pb_bytes = {
+        let opts = RenderOpts {
+            assume_binary: false,
+            include_annotations: false,
+            indent: 1,
+        };
+        binary_buf = render_as_bytes(pb_bytes, opts)
+            .map_err(|e: CodecError| format!("encoding prototext to binary: {}", e))?;
+        binary_buf.as_slice()
+    };
 
-    // Sort non-vetoed by score descending, ties broken by fqdn lexicographic.
+    let mut results = score_all(pb_bytes, graph);
     results.sort_by(|a, b| match (a.vetoed, b.vetoed) {
         (false, true) => std::cmp::Ordering::Less,
         (true, false) => std::cmp::Ordering::Greater,
@@ -69,63 +148,38 @@ pub fn infer_type_from_db(pb_bytes: &[u8], db: &Path) -> Result<InferredType, St
     Ok(InferredType {
         fqdn: winner.fqdn.clone(),
         score: top_score,
+        matches: winner.matches,
+        unknowns: winner.unknowns,
+        mismatches: winner.mismatches,
+        non_canonical: winner.non_canonical,
     })
 }
 
-/// Replace the magic line in rendered prototext output with one that carries
-/// `matched=FQDN score=N` annotations.
-///
-/// Input: `b"#@ prototext: protoc\n..."`.
-/// Output: `b"#@ prototext: protoc matched=.Foo score=7\n..."`.
-fn inject_matched_annotation(text: &[u8], fqdn: &str, score: i64) -> Vec<u8> {
-    // Find the first newline.
+/// Insert `# Type:` and `# Score:` comment lines (plus a blank line) after the
+/// magic first line of rendered prototext output.  The magic line itself is
+/// left unmodified.
+fn inject_matched_annotation(text: &[u8], inferred: &InferredType) -> Vec<u8> {
+    let score_str = if inferred.score == i64::MIN {
+        "-inf".to_string()
+    } else {
+        inferred.score.to_string()
+    };
+    let insert = format!(
+        "# Type: {}\n# Score: {}  (matched: {}, unknown: {}, mismatches: {}, non_canonical: {})\n\n",
+        inferred.fqdn,
+        score_str,
+        inferred.matches,
+        inferred.unknowns,
+        inferred.mismatches,
+        inferred.non_canonical,
+    );
     if let Some(nl) = text.iter().position(|&b| b == b'\n') {
-        let magic = &text[..nl];
-        let rest = &text[nl..]; // includes the '\n'
-        let new_magic = format!(
-            "{} matched={} score={}",
-            String::from_utf8_lossy(magic),
-            fqdn,
-            score,
-        );
-        let mut out = new_magic.into_bytes();
-        out.extend_from_slice(rest);
+        let mut out = text[..=nl].to_vec();
+        out.extend_from_slice(insert.as_bytes());
+        out.extend_from_slice(&text[nl + 1..]);
         out
     } else {
         text.to_vec()
-    }
-}
-
-pub fn load_schema(
-    descriptor: Option<&PathBuf>,
-    db: Option<&PathBuf>,
-    type_name: Option<&String>,
-) -> Result<Option<prototext_core::ParsedSchema>, String> {
-    match (descriptor, type_name) {
-        (None, None) => Ok(None),
-        (None, Some(t)) => {
-            // Try DB's schemas.pb first, fall back to embedded descriptor.
-            let bytes: Vec<u8> = if let Some(db_path) = db {
-                let schemas_pb = schemas_pb_from_db(db_path);
-                if schemas_pb.exists() {
-                    std::fs::read(&schemas_pb)
-                        .map_err(|e| format!("cannot read '{}': {}", schemas_pb.display(), e))?
-                } else {
-                    EMBEDDED_DESCRIPTOR.to_vec()
-                }
-            } else {
-                EMBEDDED_DESCRIPTOR.to_vec()
-            };
-            let schema = parse_schema(&bytes, t).map_err(|e| format!("descriptor: {}", e))?;
-            Ok(Some(schema))
-        }
-        (Some(_), None) => Err("--descriptor requires --type".into()),
-        (Some(d), Some(t)) => {
-            let bytes = std::fs::read(d)
-                .map_err(|e| format!("cannot read descriptor '{}': {}", d.display(), e))?;
-            let schema = parse_schema(&bytes, t).map_err(|e| format!("descriptor parse: {}", e))?;
-            Ok(Some(schema))
-        }
     }
 }
 
@@ -134,11 +188,12 @@ pub fn load_schema(
 pub fn process(
     data: &[u8],
     decode: bool,
+    assume_binary: bool,
     schema: Option<&prototext_core::ParsedSchema>,
     annotations: bool,
 ) -> Result<Vec<u8>, String> {
     let opts = RenderOpts {
-        assume_binary: decode,
+        assume_binary,
         include_annotations: annotations,
         indent: 1,
     };
@@ -151,14 +206,14 @@ pub fn process(
 
 // ── Output helpers ────────────────────────────────────────────────────────────
 
-/// Compute the output path for a file in batch mode.
-/// Precondition: `cli.in_place || cli.output_root.is_some()`.
-pub fn output_path_for(f: &InputFile, cli: &Cli) -> PathBuf {
-    if let Some(root) = &cli.output_root {
+/// Compute the output path for a batch-mode file.
+pub fn output_path_for(f: &InputFile, in_place: bool, output_root: Option<&PathBuf>) -> PathBuf {
+    if let Some(root) = output_root {
         root.join(&f.rel)
-    } else {
-        // --in-place: overwrite the original file (sponge semantics).
+    } else if in_place {
         f.abs.clone()
+    } else {
+        unreachable!("output_path_for called without in_place or output_root")
     }
 }
 
@@ -177,20 +232,28 @@ pub fn write_output(data: &[u8], explicit_output: Option<&Path>) -> Result<(), S
     }
 }
 
-// ── Schema listing ────────────────────────────────────────────────────────────
+// ── Schema listing helpers ────────────────────────────────────────────────────
 
-/// Score `pb_bytes` against the graph at `db` and write the ranked candidate
-/// list to `out` (stdout for standalone use, stderr when combined with `-d`).
-/// Same format as `score-graph match`.
-pub fn print_schema_list(
+pub fn list_schemas_one(
     pb_bytes: &[u8],
-    db: &Path,
+    graph: &LoadedGraph,
+    path_label: &str,
     top: Option<usize>,
     out: &mut dyn Write,
 ) -> Result<(), String> {
-    let graph = load_graph(db).map_err(|e| format!("loading graph '{}': {}", db.display(), e))?;
-    let mut results = score_all(pb_bytes, &graph);
+    let binary_buf;
+    let pb_bytes = {
+        let opts = RenderOpts {
+            assume_binary: false,
+            include_annotations: false,
+            indent: 1,
+        };
+        binary_buf = render_as_bytes(pb_bytes, opts)
+            .map_err(|e: CodecError| format!("encoding prototext to binary: {}", e))?;
+        binary_buf.as_slice()
+    };
 
+    let mut results = score_all(pb_bytes, graph);
     results.sort_by(|a, b| match (a.vetoed, b.vetoed) {
         (false, true) => std::cmp::Ordering::Less,
         (true, false) => std::cmp::Ordering::Greater,
@@ -199,66 +262,166 @@ pub fn print_schema_list(
     });
 
     let non_vetoed: Vec<_> = results.iter().filter(|r| !r.vetoed).collect();
-    let to_print = match top {
-        Some(n) => &non_vetoed[..n.min(non_vetoed.len())],
-        None => &non_vetoed[..],
+
+    let to_print: Vec<_> = match top {
+        Some(n) if n > 0 => non_vetoed[..n.min(non_vetoed.len())].to_vec(),
+        _ => {
+            if non_vetoed.is_empty() {
+                vec![]
+            } else {
+                let top_score = non_vetoed[0].score();
+                let mut tied: Vec<_> = non_vetoed
+                    .iter()
+                    .filter(|r| r.score() == top_score)
+                    .copied()
+                    .collect();
+                tied.sort_by(|a, b| a.fqdn.cmp(&b.fqdn));
+                tied
+            }
+        }
     };
 
-    for r in to_print {
-        writeln!(
-            out,
-            "entry={} matches={} unknowns={} mismatches={} non_canonical={} score={}",
-            r.fqdn,
-            r.matches,
-            r.unknowns,
-            r.mismatches,
-            r.non_canonical,
-            r.score(),
-        )
-        .map_err(|e| format!("writing list: {}", e))?;
+    #[derive(Serialize)]
+    struct Entry<'a> {
+        path: &'a str,
+        types: Vec<&'a str>,
     }
-
-    Ok(())
+    let entry = Entry {
+        path: path_label,
+        types: to_print.iter().map(|r| r.fqdn.as_str()).collect(),
+    };
+    let yaml = serde_yaml::to_string(&[entry]).map_err(|e| format!("serializing YAML: {}", e))?;
+    out.write_all(yaml.as_bytes())
+        .map_err(|e| format!("writing list: {}", e))
 }
 
 // ── Top-level run ─────────────────────────────────────────────────────────────
 
 pub fn run(cli: Cli) -> Result<(), String> {
-    // ── Subcommand dispatch ───────────────────────────────────────────────────
-    if let Some(Command::InstantiateSchema {
-        r#type,
-        seed,
-        max_depth,
-        max_repeated,
-        p_optional,
-    }) = cli.command
-    {
-        return run_instantiate_schema(
-            cli.descriptor.as_ref(),
-            cli.db.as_ref(),
-            &r#type,
+    // Resolve the descriptor once up front.
+    let desc_ctx = DescriptorContext::load(cli.descriptor.as_deref())?;
+
+    match cli.command {
+        // ── decode ────────────────────────────────────────────────────────────
+        Command::Decode {
+            r#type,
+            in_place,
+            assume_binary,
+            annotations,
+            no_annotations,
+            output_root: cmd_output_root,
+            paths,
+        } => {
+            let effective_annotations = !no_annotations && annotations;
+            let output_root = cli.output_root.or(cmd_output_root);
+
+            validate_input_root_absolute(&cli.input_root, &paths)?;
+            validate_roots_not_same(&cli.input_root, &output_root)?;
+
+            let auto_infer = r#type.is_none();
+            if auto_infer && desc_ctx.graph.is_none() {
+                return Err("decode auto-inference requires a DB-backed descriptor \
+                     (no hopcroft.rkyv found alongside the descriptor file)"
+                    .into());
+            }
+
+            run_decode(
+                &desc_ctx,
+                r#type.as_deref(),
+                in_place,
+                assume_binary,
+                effective_annotations,
+                &cli.output,
+                output_root.as_ref(),
+                &cli.input_root,
+                &paths,
+            )
+        }
+
+        // ── encode ────────────────────────────────────────────────────────────
+        Command::Encode {
+            in_place,
+            output_root: cmd_output_root,
+            paths,
+        } => {
+            let output_root = cli.output_root.or(cmd_output_root);
+
+            validate_input_root_absolute(&cli.input_root, &paths)?;
+            validate_roots_not_same(&cli.input_root, &output_root)?;
+
+            run_encode(
+                in_place,
+                &cli.output,
+                output_root.as_ref(),
+                &cli.input_root,
+                &paths,
+            )
+        }
+
+        // ── list-schemas ──────────────────────────────────────────────────────
+        Command::ListSchemas { top, paths } => {
+            let graph = desc_ctx.graph.as_ref().ok_or(
+                "list-schemas requires a DB-backed descriptor \
+                 (no hopcroft.rkyv found alongside the descriptor file)",
+            )?;
+            run_list_schemas(graph, top, &cli.input_root, &paths)
+        }
+
+        // ── instantiate-schema ────────────────────────────────────────────────
+        Command::InstantiateSchema {
+            types,
             seed,
             max_depth,
             max_repeated,
             p_optional,
-            cli.quiet,
-            cli.output.as_deref(),
-        );
-    }
+        } => {
+            if types.len() > 1 && cli.output_root.is_none() {
+                return Err("multiple types require --output-root (-O)".into());
+            }
+            let opts = InstantiateOpts {
+                seed,
+                max_depth,
+                max_repeated,
+                p_optional,
+                quiet: cli.quiet,
+            };
+            for type_name in &types {
+                let out: Option<PathBuf> = if let Some(ref root) = cli.output_root {
+                    let rel = type_name.trim_start_matches('.').replace('.', "/");
+                    let mut p = root.join(rel);
+                    p.set_extension("pb");
+                    Some(p)
+                } else {
+                    cli.output.clone()
+                };
+                run_instantiate_schema(desc_ctx.pool.clone(), type_name, &opts, out.as_deref())?;
+            }
+            Ok(())
+        }
 
-    // ── Validate mode ─────────────────────────────────────────────────────────
-    if !cli.decode && !cli.encode && !cli.list_schemas {
-        return Err("one of --decode (-d) or --encode (-e) is required".into());
+        // ── score ─────────────────────────────────────────────────────────────
+        Command::Score {
+            r#type,
+            assume_binary,
+            paths,
+        } => {
+            let graph = desc_ctx.graph.as_ref().ok_or(
+                "score requires a DB-backed descriptor \
+                 (no hopcroft.rkyv found alongside the descriptor file)",
+            )?;
+            run_score(graph, &r#type, assume_binary, &cli.input_root, &paths)
+        }
     }
-    let decode = cli.decode;
-    // clap `overrides_with` ensures at most one of the two flags is set in
-    // argv, but the bool fields still reflect their defaults when absent.
-    // The effective value is: annotations=true unless --no-annotations was given.
-    let annotations = !cli.no_annotations;
+}
 
-    // ── Validate absolute paths when --input-root is given ────────────────────
-    if cli.input_root.is_some() {
-        for raw in &cli.paths {
+// ── Validation helpers ────────────────────────────────────────────────────────
+
+fn validate_input_root_absolute(
+    input_root: &Option<PathBuf>,
+    paths: &[String],
+) -> Result<(), String> {
+    if input_root.is_some() {
+        for raw in paths {
             if Path::new(raw).is_absolute() {
                 return Err(format!(
                     "absolute path '{}' is not allowed when --input-root is given",
@@ -267,9 +430,14 @@ pub fn run(cli: Cli) -> Result<(), String> {
             }
         }
     }
+    Ok(())
+}
 
-    // ── Validate --input-root and --output-root not the same dir ──────────────
-    if let (Some(ir), Some(or)) = (&cli.input_root, &cli.output_root) {
+fn validate_roots_not_same(
+    input_root: &Option<PathBuf>,
+    output_root: &Option<PathBuf>,
+) -> Result<(), String> {
+    if let (Some(ir), Some(or)) = (input_root, output_root) {
         let ir_canon = std::fs::canonicalize(ir)
             .map_err(|e| format!("--input-root '{}': {}", ir.display(), e))?;
         let or_canon = std::fs::canonicalize(or).unwrap_or_else(|_| or.clone());
@@ -281,91 +449,77 @@ pub fn run(cli: Cli) -> Result<(), String> {
             );
         }
     }
+    Ok(())
+}
 
-    // ── Detect auto-inference mode ────────────────────────────────────────────
-    // Auto-infer when: decode mode, no --descriptor, no --type, DB present.
-    let auto_infer = decode && cli.descriptor.is_none() && cli.r#type.is_none() && cli.db.is_some();
+// ── decode handler ────────────────────────────────────────────────────────────
 
-    // ── Load schema ───────────────────────────────────────────────────────────
-    // In auto-infer mode the schema is resolved per-file after scoring; skip
-    // the up-front load (type is None so load_schema would return Ok(None)).
-    let schema = if auto_infer {
-        None
+#[allow(clippy::too_many_arguments)]
+fn run_decode(
+    desc_ctx: &DescriptorContext,
+    type_name: Option<&str>,
+    in_place: bool,
+    assume_binary: bool,
+    annotations: bool,
+    output: &Option<PathBuf>,
+    output_root: Option<&PathBuf>,
+    input_root: &Option<PathBuf>,
+    paths: &[String],
+) -> Result<(), String> {
+    let auto_infer = type_name.is_none();
+
+    // Build schema if a type was given explicitly.
+    let schema: Option<prototext_core::ParsedSchema> = if let Some(t) = type_name {
+        let lookup = t.trim_start_matches('.');
+        Some(
+            schema_from_pool(desc_ctx.pool.clone(), lookup)
+                .map_err(|e| format!("descriptor: {}", e))?,
+        )
     } else {
-        load_schema(
-            cli.descriptor.as_ref(),
-            cli.db.as_ref(),
-            cli.r#type.as_ref(),
-        )?
+        None
     };
-    let schema_ref = schema.as_ref();
 
-    // ── Resolve base dir ──────────────────────────────────────────────────────
-    let base = cli
-        .input_root
+    let base = input_root
         .clone()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-    // ── Stdin path ────────────────────────────────────────────────────────────
-    if cli.paths.is_empty() {
-        if cli.in_place {
+    if paths.is_empty() {
+        // stdin path
+        if in_place {
             return Err("--in-place cannot be used with stdin input".into());
         }
-        if cli.output_root.is_some() {
+        if output_root.is_some() {
             return Err("--output-root cannot be used with stdin input".into());
         }
         let mut data = Vec::new();
         io::stdin()
             .read_to_end(&mut data)
             .map_err(|e| format!("reading stdin: {}", e))?;
-        if cli.list_schemas {
-            let db = cli.db.as_ref().unwrap();
-            if decode {
-                print_schema_list(&data, db, cli.top, &mut io::stderr())?;
-            } else {
-                print_schema_list(&data, db, cli.top, &mut io::stdout())?;
-                return Ok(());
-            }
-        }
+
         if auto_infer {
-            let db = cli.db.as_ref().unwrap();
-            let inferred = infer_type_from_db(&data, db)?;
+            let graph = desc_ctx.graph.as_ref().unwrap(); // checked earlier
+            let inferred = infer_type(&data, graph)?;
             eprintln!(
                 "info: inferred type {} (score={})",
-                inferred.fqdn, inferred.score
+                inferred.fqdn, inferred.score,
             );
             let lookup = inferred.fqdn.trim_start_matches('.');
-            let infer_schema = load_schema(None, Some(db), Some(&lookup.to_string()))?;
-            let raw_out = process(&data, decode, infer_schema.as_ref(), annotations)?;
-            let out = inject_matched_annotation(&raw_out, &inferred.fqdn, inferred.score);
-            write_output(&out, cli.output.as_deref())?;
+            let infer_schema = schema_from_pool(desc_ctx.pool.clone(), lookup)
+                .map_err(|e| format!("descriptor: {}", e))?;
+            let raw_out = process(&data, true, assume_binary, Some(&infer_schema), annotations)?;
+            let out = inject_matched_annotation(&raw_out, &inferred);
+            write_output(&out, output.as_deref())?;
             return Ok(());
         }
-        let out = process(&data, decode, schema_ref, annotations)?;
-        write_output(&out, cli.output.as_deref())?;
+
+        let out = process(&data, true, assume_binary, schema.as_ref(), annotations)?;
+        write_output(&out, output.as_deref())?;
         return Ok(());
     }
 
-    // ── Expand positional paths ───────────────────────────────────────────────
-    let mut all_files: Vec<InputFile> = Vec::new();
-    let mut expand_errors: Vec<String> = Vec::new();
+    // Expand paths.
+    let all_files = expand_all_paths(paths, &base)?;
 
-    for raw in &cli.paths {
-        match expand_path(raw, &base) {
-            Ok(files) => all_files.extend(files),
-            Err(e) => expand_errors.push(e),
-        }
-    }
-
-    if !expand_errors.is_empty() {
-        for e in &expand_errors {
-            eprintln!("error: {}", e);
-        }
-        std::process::exit(1);
-    }
-
-    // ── Reject batch auto-infer ───────────────────────────────────────────────
-    // Auto-inference requires a single input; batch decode needs --type.
     if auto_infer && all_files.len() > 1 {
         return Err(
             "--type is required when decoding multiple files (auto-inference is single-file only)"
@@ -373,69 +527,267 @@ pub fn run(cli: Cli) -> Result<(), String> {
         );
     }
 
-    // ── Single file (no batch flags) ──────────────────────────────────────────
-    if all_files.len() == 1 && !cli.in_place && cli.output_root.is_none() {
+    // Single file, no batch flags.
+    if all_files.len() == 1 && !in_place && output_root.is_none() {
         let f = &all_files[0];
         let data =
             std::fs::read(&f.abs).map_err(|e| format!("reading '{}': {}", f.abs.display(), e))?;
 
-        if cli.list_schemas {
-            let db = cli.db.as_ref().unwrap();
-            if decode {
-                print_schema_list(&data, db, cli.top, &mut io::stderr())?;
-            } else {
-                print_schema_list(&data, db, cli.top, &mut io::stdout())?;
-                return Ok(());
-            }
-        }
-
         if auto_infer {
-            // Safety: auto_infer implies cli.db.is_some().
-            let db = cli.db.as_ref().unwrap();
-            let inferred = infer_type_from_db(&data, db)?;
+            let graph = desc_ctx.graph.as_ref().unwrap();
+            let inferred = infer_type(&data, graph)?;
             eprintln!(
                 "info: inferred type {} (score={})",
-                inferred.fqdn, inferred.score
+                inferred.fqdn, inferred.score,
             );
             let lookup = inferred.fqdn.trim_start_matches('.');
-            let infer_schema = load_schema(None, Some(db), Some(&lookup.to_string()))?;
-            let raw_out = process(&data, decode, infer_schema.as_ref(), annotations)?;
-            let out = inject_matched_annotation(&raw_out, &inferred.fqdn, inferred.score);
-            write_output(&out, cli.output.as_deref())?;
+            let infer_schema = schema_from_pool(desc_ctx.pool.clone(), lookup)
+                .map_err(|e| format!("descriptor: {}", e))?;
+            let raw_out = process(&data, true, assume_binary, Some(&infer_schema), annotations)?;
+            let out = inject_matched_annotation(&raw_out, &inferred);
+            write_output(&out, output.as_deref())?;
             return Ok(());
         }
 
-        let out = process(&data, decode, schema_ref, annotations)?;
-        write_output(&out, cli.output.as_deref())?;
+        let out = process(&data, true, assume_binary, schema.as_ref(), annotations)?;
+        write_output(&out, output.as_deref())?;
         return Ok(());
     }
 
-    // ── Batch mode ────────────────────────────────────────────────────────────
-    if !cli.in_place && cli.output_root.is_none() {
+    // Batch mode.
+    if !in_place && output_root.is_none() {
         return Err("multiple input files require --in-place (-i) or --output-root (-O)".into());
     }
 
+    run_batch(
+        all_files,
+        true,
+        assume_binary,
+        schema.as_ref(),
+        annotations,
+        in_place,
+        output_root,
+    )
+}
+
+// ── encode handler ────────────────────────────────────────────────────────────
+
+fn run_encode(
+    in_place: bool,
+    output: &Option<PathBuf>,
+    output_root: Option<&PathBuf>,
+    input_root: &Option<PathBuf>,
+    paths: &[String],
+) -> Result<(), String> {
+    let base = input_root
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    if paths.is_empty() {
+        if in_place {
+            return Err("--in-place cannot be used with stdin input".into());
+        }
+        if output_root.is_some() {
+            return Err("--output-root cannot be used with stdin input".into());
+        }
+        let mut data = Vec::new();
+        io::stdin()
+            .read_to_end(&mut data)
+            .map_err(|e| format!("reading stdin: {}", e))?;
+        let out = process(&data, false, false, None, false)?;
+        write_output(&out, output.as_deref())?;
+        return Ok(());
+    }
+
+    let all_files = expand_all_paths(paths, &base)?;
+
+    if all_files.len() == 1 && !in_place && output_root.is_none() {
+        let f = &all_files[0];
+        let data =
+            std::fs::read(&f.abs).map_err(|e| format!("reading '{}': {}", f.abs.display(), e))?;
+        let out = process(&data, false, false, None, false)?;
+        write_output(&out, output.as_deref())?;
+        return Ok(());
+    }
+
+    if !in_place && output_root.is_none() {
+        return Err("multiple input files require --in-place (-i) or --output-root (-O)".into());
+    }
+
+    run_batch(all_files, false, false, None, false, in_place, output_root)
+}
+
+// ── list-schemas handler ──────────────────────────────────────────────────────
+
+fn run_list_schemas(
+    graph: &LoadedGraph,
+    top: Option<usize>,
+    input_root: &Option<PathBuf>,
+    paths: &[String],
+) -> Result<(), String> {
+    let base = input_root
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    let mut out = io::stdout();
+
+    if paths.is_empty() {
+        let mut data = Vec::new();
+        io::stdin()
+            .read_to_end(&mut data)
+            .map_err(|e| format!("reading stdin: {}", e))?;
+        return list_schemas_one(&data, graph, "<stdin>", top, &mut out);
+    }
+
+    let all_files = expand_all_paths(paths, &base)?;
+    for f in &all_files {
+        let data =
+            std::fs::read(&f.abs).map_err(|e| format!("reading '{}': {}", f.abs.display(), e))?;
+        let label = f.abs.display().to_string();
+        list_schemas_one(&data, graph, &label, top, &mut out)?;
+    }
+    Ok(())
+}
+
+// ── score handler ─────────────────────────────────────────────────────────────
+
+fn run_score(
+    graph: &LoadedGraph,
+    type_name: &str,
+    assume_binary: bool,
+    input_root: &Option<PathBuf>,
+    paths: &[String],
+) -> Result<(), String> {
+    let base = input_root
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    #[derive(Serialize)]
+    #[serde(untagged)]
+    enum ScoreEntry {
+        Scored {
+            path: String,
+            score: i64,
+            matches: u64,
+            unknowns: u64,
+            mismatches: u64,
+            non_canonical: u64,
+        },
+        Vetoed {
+            path: String,
+            vetoed: bool,
+        },
+    }
+
+    let score_one = |data: &[u8]| -> Result<(bool, i64, u64, u64, u64, u64), String> {
+        let binary = render_as_bytes(
+            data,
+            RenderOpts {
+                assume_binary,
+                include_annotations: false,
+                indent: 1,
+            },
+        )
+        .map_err(|e: CodecError| format!("encoding prototext to binary: {}", e))?;
+        let results = score_all(&binary, graph);
+        let result = results
+            .iter()
+            .find(|r| r.fqdn == type_name || r.fqdn == format!(".{}", type_name))
+            .ok_or_else(|| format!("type '{}' not found in scoring graph", type_name))?;
+        Ok((
+            result.vetoed,
+            result.score(),
+            result.matches,
+            result.unknowns,
+            result.mismatches,
+            result.non_canonical,
+        ))
+    };
+
+    let mut entries: Vec<ScoreEntry> = Vec::new();
+
+    if paths.is_empty() {
+        let mut data = Vec::new();
+        io::stdin()
+            .read_to_end(&mut data)
+            .map_err(|e| format!("reading stdin: {}", e))?;
+        let (vetoed, score, matches, unknowns, mismatches, non_canonical) = score_one(&data)?;
+        if vetoed {
+            entries.push(ScoreEntry::Vetoed {
+                path: "<stdin>".into(),
+                vetoed: true,
+            });
+        } else {
+            entries.push(ScoreEntry::Scored {
+                path: "<stdin>".into(),
+                score,
+                matches,
+                unknowns,
+                mismatches,
+                non_canonical,
+            });
+        }
+    } else {
+        let all_files = expand_all_paths(paths, &base)?;
+        for f in &all_files {
+            let data = std::fs::read(&f.abs)
+                .map_err(|e| format!("reading '{}': {}", f.abs.display(), e))?;
+            let label = f.abs.display().to_string();
+            let (vetoed, score, matches, unknowns, mismatches, non_canonical) = score_one(&data)?;
+            if vetoed {
+                entries.push(ScoreEntry::Vetoed {
+                    path: label,
+                    vetoed: true,
+                });
+            } else {
+                entries.push(ScoreEntry::Scored {
+                    path: label,
+                    score,
+                    matches,
+                    unknowns,
+                    mismatches,
+                    non_canonical,
+                });
+            }
+        }
+    }
+
+    let yaml = serde_yaml::to_string(&entries).map_err(|e| format!("serializing YAML: {}", e))?;
+    io::stdout()
+        .write_all(yaml.as_bytes())
+        .map_err(|e| format!("writing stdout: {}", e))
+}
+
+// ── batch helper ──────────────────────────────────────────────────────────────
+
+fn run_batch(
+    all_files: Vec<InputFile>,
+    decode: bool,
+    assume_binary: bool,
+    schema: Option<&prototext_core::ParsedSchema>,
+    annotations: bool,
+    in_place: bool,
+    output_root: Option<&PathBuf>,
+) -> Result<(), String> {
     // Detect output collisions eagerly.
     {
-        let mut seen: HashMap<PathBuf, &InputFile> = HashMap::new();
+        let mut seen: HashMap<PathBuf, PathBuf> = HashMap::new();
         for f in &all_files {
-            let out_path = output_path_for(f, &cli);
-            if let Some(prev) = seen.get(&out_path) {
+            let out_path = output_path_for(f, in_place, output_root);
+            if let Some(prev_abs) = seen.get(&out_path) {
                 return Err(format!(
                     "output collision: '{}' and '{}' both map to '{}'",
-                    prev.abs.display(),
+                    prev_abs.display(),
                     f.abs.display(),
                     out_path.display()
                 ));
             }
-            seen.insert(out_path, f);
+            seen.insert(out_path, f.abs.clone());
         }
     }
 
-    // In-place: read all files into memory before writing any of them (sponge
-    // semantics — safe when input and output are the same path).
-    // Each entry is (file, Some(preread_bytes)) for in-place, (file, None) otherwise.
-    let file_data: Vec<(InputFile, Option<Vec<u8>>)> = if cli.in_place {
+    // In-place: sponge semantics — read all files before writing any.
+    let file_data: Vec<(InputFile, Option<Vec<u8>>)> = if in_place {
         let mut v = Vec::with_capacity(all_files.len());
         for f in all_files {
             let data = std::fs::read(&f.abs)
@@ -462,8 +814,8 @@ pub fn run(cli: Cli) -> Result<(), String> {
             }
         };
 
-        let dest = output_path_for(&f, &cli);
-        match process(&data, decode, schema_ref, annotations) {
+        let dest = output_path_for(&f, in_place, output_root);
+        match process(&data, decode, assume_binary, schema, annotations) {
             Ok(out) => {
                 if let Err(e) = write_output(&out, Some(&dest)) {
                     eprintln!("error: {}", e);
@@ -483,22 +835,37 @@ pub fn run(cli: Cli) -> Result<(), String> {
     Ok(())
 }
 
-// ── instantiate-schema ────────────────────────────────────────────────────────
+// ── Path expansion helper ─────────────────────────────────────────────────────
 
-#[allow(clippy::too_many_arguments)]
+fn expand_all_paths(paths: &[String], base: &Path) -> Result<Vec<InputFile>, String> {
+    let mut all_files: Vec<InputFile> = Vec::new();
+    let mut expand_errors: Vec<String> = Vec::new();
+
+    for raw in paths {
+        match expand_path(raw, base) {
+            Ok(files) => all_files.extend(files),
+            Err(e) => expand_errors.push(e),
+        }
+    }
+
+    if !expand_errors.is_empty() {
+        for e in &expand_errors {
+            eprintln!("error: {}", e);
+        }
+        std::process::exit(1);
+    }
+
+    Ok(all_files)
+}
+
+// ── instantiate-schema handler ────────────────────────────────────────────────
+
 fn run_instantiate_schema(
-    descriptor: Option<&PathBuf>,
-    db: Option<&PathBuf>,
+    pool: prost_reflect::DescriptorPool,
     type_name: &str,
-    seed: i64,
-    max_depth: usize,
-    max_repeated: usize,
-    p_optional: f64,
-    quiet: bool,
+    opts: &InstantiateOpts,
     output: Option<&Path>,
 ) -> Result<(), String> {
-    // Normalize type name: strip leading dot for descriptor lookup, but keep
-    // the dotted form for the ground_truth hint comment.
     let fqdn = if type_name.starts_with('.') {
         type_name.to_string()
     } else {
@@ -506,44 +873,14 @@ fn run_instantiate_schema(
     };
     let lookup_name = fqdn.trim_start_matches('.');
 
-    // Load the descriptor bytes: --descriptor > DB schemas.pb > embedded.
-    let desc_bytes: Vec<u8> = if let Some(path) = descriptor {
-        std::fs::read(path)
-            .map_err(|e| format!("cannot read descriptor '{}': {}", path.display(), e))?
-    } else if let Some(db_path) = db {
-        let schemas_pb = schemas_pb_from_db(db_path);
-        if schemas_pb.exists() {
-            std::fs::read(&schemas_pb)
-                .map_err(|e| format!("cannot read '{}': {}", schemas_pb.display(), e))?
-        } else {
-            EMBEDDED_DESCRIPTOR.to_vec()
-        }
-    } else {
-        EMBEDDED_DESCRIPTOR.to_vec()
-    };
+    let schema = schema_from_pool(pool, lookup_name).map_err(|e| format!("descriptor: {}", e))?;
 
-    // Locate the message descriptor.
-    let schema =
-        parse_schema(&desc_bytes, lookup_name).map_err(|e| format!("descriptor parse: {}", e))?;
-
-    let opts = InstantiateOpts {
-        seed,
-        max_depth,
-        max_repeated,
-        p_optional,
-        quiet,
-    };
-
-    // Locate the root MessageDescriptor (guaranteed present — parse_schema
-    // returns MessageNotFound if the type is absent).
     let msg_desc = schema
         .root_descriptor()
         .ok_or_else(|| format!("type '{}' not found in descriptor", lookup_name))?;
 
-    // Generate binary protobuf bytes.
-    let binary = generate_message_bytes(&msg_desc, &opts);
+    let binary = generate_message_bytes(&msg_desc, opts);
 
-    // Decode to #@ prototext.
     let render_opts = RenderOpts {
         assume_binary: true,
         include_annotations: true,
@@ -552,22 +889,16 @@ fn run_instantiate_schema(
     let text_bytes = render_as_text(&binary, Some(&schema), render_opts)
         .map_err(|e: CodecError| e.to_string())?;
 
-    // Insert hint comments after the magic line.
     let text = String::from_utf8(text_bytes)
         .map_err(|e| format!("generated text is not valid UTF-8: {}", e))?;
-    let out = insert_hints(&text, &fqdn, seed);
+    let out = insert_hints(&text, &fqdn, opts.seed);
 
     write_output(out.as_bytes(), output)
 }
 
-/// Insert `# ground_truth:` and `# seed:` comment lines after the first line
-/// (the `#@ prototext:` magic line).
 fn insert_hints(text: &str, fqdn: &str, seed: i64) -> String {
     let mut lines = text.splitn(2, '\n');
     let magic = lines.next().unwrap_or("");
     let rest = lines.next().unwrap_or("");
-    format!(
-        "{}\n# ground_truth: {}\n# seed: {}\n{}",
-        magic, fqdn, seed, rest
-    )
+    format!("{}\n# type: {}\n# seed: {}\n{}", magic, fqdn, seed, rest)
 }

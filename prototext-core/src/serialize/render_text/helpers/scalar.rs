@@ -25,6 +25,8 @@ pub(in super::super) struct ScalarCtx<'a> {
     pub(in super::super) wire_type_name: &'a str,
     /// Non-canonical NaN bit pattern; emits `nan_bits: 0x…` annotation modifier.
     pub(in super::super) nan_bits: Option<u64>,
+    /// True when the wire type is known but doesn't match the schema type.
+    pub(in super::super) type_mismatch: bool,
 }
 
 /// Render a non-varint scalar (FIXED64, FIXED32, string, bytes, wire-bytes).
@@ -45,6 +47,7 @@ pub(in super::super) fn render_scalar(
         len_ohb,
         wire_type_name,
         nan_bits,
+        type_mismatch,
     } = *ctx;
     let annotations = ANNOTATIONS.with(|c| c.get());
     let unknown = field_schema.is_none();
@@ -62,6 +65,9 @@ pub(in super::super) fn render_scalar(
         if unknown || is_wire {
             // Unknown/wire: wire type FIRST, then modifiers, NO field_decl
             aw.push_wire(out, wire_type_name);
+            if type_mismatch {
+                aw.push(out, b"TYPE_MISMATCH");
+            }
             push_tag_modifiers(&mut aw, out, tag_ohb, tag_oor, len_ohb);
         } else {
             // Known field: field_decl FIRST, then modifiers

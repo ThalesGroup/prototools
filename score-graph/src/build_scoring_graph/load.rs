@@ -5,7 +5,6 @@
 //! Load and merge per-file scoring-graph YAMLs (spec 0045 format).
 
 use std::collections::HashMap;
-use std::path::Path;
 
 use serde::Deserialize;
 
@@ -19,6 +18,9 @@ struct YamlFile {
 
 #[derive(Debug, Deserialize)]
 struct YamlMessage {
+    /// "LENDEL" (default) or "GROUP" — framing of this node (spec 0058).
+    #[serde(default)]
+    kind: String,
     fields: Vec<YamlField>,
 }
 
@@ -62,38 +64,36 @@ pub enum ScoringKind {
     I64,
     LenString,
     LenBytes,
-    LenMsg,
+    /// Non-leaf node (length-delimited message or group).  The actual framing
+    /// (LENDEL vs GROUP) is encoded in the source node's NodeKind (spec 0058).
+    Node,
     LenPacked,
-    Group,
     I32,
     Enum,
 }
 
 impl ScoringKind {
-    /// Wire type used on the wire for this kind.
-    pub fn wire_type(self) -> u32 {
-        match self {
-            ScoringKind::Varint | ScoringKind::Enum => 0,
-            ScoringKind::I64 => 1,
-            ScoringKind::LenString
-            | ScoringKind::LenBytes
-            | ScoringKind::LenMsg
-            | ScoringKind::LenPacked => 2,
-            ScoringKind::Group => 3,
-            ScoringKind::I32 => 5,
-        }
+    /// True for kinds whose edge points to a child non-leaf node.
+    pub fn is_node(self) -> bool {
+        matches!(self, ScoringKind::Node)
     }
+}
 
-    /// True for kinds whose edge points to a child message node (not a leaf).
-    pub fn is_message(self) -> bool {
-        matches!(self, ScoringKind::LenMsg | ScoringKind::Group)
-    }
+/// Framing of a non-leaf node: how it is entered from the wire stream (spec 0058).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeKind {
+    /// Length-delimited message (WT_LEN = 2).
+    LenDel,
+    /// Group (WT_START_GROUP = 3).
+    Group,
 }
 
 /// Merged result of all loaded YAML files.
 pub struct Merged {
     /// FQDN → fields (sorted by field number).
     pub states: HashMap<String, Vec<ScoringField>>,
+    /// FQDN → node framing (LENDEL or GROUP); defaults to LenDel if absent.
+    pub node_kinds: HashMap<String, NodeKind>,
     /// Root entry FQDNs (from all `entries` lists, deduplicated).
     pub roots: Vec<String>,
 }
@@ -103,6 +103,7 @@ pub struct Merged {
 /// Load and merge from in-memory YAML strings (no filesystem access).
 pub fn merge_from_strings(scoring_graphs: &[String]) -> Result<Merged, Box<dyn std::error::Error>> {
     let mut states: HashMap<String, Vec<ScoringField>> = HashMap::new();
+    let mut node_kinds: HashMap<String, NodeKind> = HashMap::new();
     let mut roots: Vec<String> = Vec::new();
     let mut roots_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -115,6 +116,8 @@ pub fn merge_from_strings(scoring_graphs: &[String]) -> Result<Merged, Box<dyn s
             }
         }
         for (fqdn, msg) in yaml.messages {
+            let nk = parse_node_kind(&msg.kind);
+            node_kinds.entry(fqdn.clone()).or_insert(nk);
             let fields = parse_fields(&fqdn, msg.fields)?;
             match states.entry(fqdn.clone()) {
                 std::collections::hash_map::Entry::Vacant(e) => {
@@ -131,51 +134,11 @@ pub fn merge_from_strings(scoring_graphs: &[String]) -> Result<Merged, Box<dyn s
         }
     }
 
-    Ok(Merged { states, roots })
-}
-
-pub fn load_and_merge(paths: &[std::path::PathBuf]) -> Result<Merged, Box<dyn std::error::Error>> {
-    let mut states: HashMap<String, Vec<ScoringField>> = HashMap::new();
-    let mut roots: Vec<String> = Vec::new();
-    let mut roots_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    for path in paths {
-        let yaml = load_file(path)?;
-
-        // Collect root entries in order, deduplicated across files.
-        for fqdn in yaml.entries {
-            if roots_seen.insert(fqdn.clone()) {
-                roots.push(fqdn);
-            }
-        }
-
-        // Merge message states.
-        for (fqdn, msg) in yaml.messages {
-            let fields = parse_fields(&fqdn, msg.fields)?;
-            match states.entry(fqdn.clone()) {
-                std::collections::hash_map::Entry::Vacant(e) => {
-                    e.insert(fields);
-                }
-                std::collections::hash_map::Entry::Occupied(existing) => {
-                    if *existing.get() != fields {
-                        eprintln!(
-                            "warning: conflicting definitions for '{fqdn}' in {}; using first",
-                            path.display()
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(Merged { states, roots })
-}
-
-fn load_file(path: &Path) -> Result<YamlFile, Box<dyn std::error::Error>> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let yaml: YamlFile =
-        serde_yaml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(yaml)
+    Ok(Merged {
+        states,
+        node_kinds,
+        roots,
+    })
 }
 
 fn parse_fields(
@@ -186,7 +149,7 @@ fn parse_fields(
     for f in raw {
         let kind =
             parse_kind(&f.kind).ok_or_else(|| format!("{fqdn}: unknown kind '{}'", f.kind))?;
-        if kind.is_message() && f.child.is_none() {
+        if kind.is_node() && f.child.is_none() {
             return Err(format!(
                 "{fqdn} field {}: kind {} requires a child FQDN",
                 f.number, f.kind
@@ -231,12 +194,19 @@ fn parse_kind(s: &str) -> Option<ScoringKind> {
         "I64" => Some(ScoringKind::I64),
         "LEN_STRING" => Some(ScoringKind::LenString),
         "LEN_BYTES" => Some(ScoringKind::LenBytes),
-        "LEN_MSG" => Some(ScoringKind::LenMsg),
+        // "MESSAGE" is the current name; "LEN_MSG" accepted for backward compat.
+        "MESSAGE" | "LEN_MSG" => Some(ScoringKind::Node),
         "LEN_PACKED" => Some(ScoringKind::LenPacked),
-        "GROUP" => Some(ScoringKind::Group),
         "I32" => Some(ScoringKind::I32),
         "ENUM" => Some(ScoringKind::Enum),
         _ => None,
+    }
+}
+
+fn parse_node_kind(s: &str) -> NodeKind {
+    match s {
+        "GROUP" => NodeKind::Group,
+        _ => NodeKind::LenDel, // "LENDEL" or absent → default
     }
 }
 

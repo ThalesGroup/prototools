@@ -109,6 +109,7 @@ let
     nativeBuildInputs = [ pkgs.cargo pkgs.rustc pythonBin ];
     env.PYO3_PYTHON   = pythonExecutable;
     RUSTFLAGS         = pyo3Rustflags;
+    CARGO_PROFILE     = "release";
   };
 
   protocArgs = commonArgs // {
@@ -723,6 +724,113 @@ components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
     '';
   };
 
+  # ---------------------------------------------------------------------------
+  # Stress tests (spec 0054) — separate from ci; triggered by
+  # nix-build -A stress-tests only.
+  #
+  # Two derivations:
+  #   stressDb    — fetches pinned corpora, compiles protos, runs
+  #                 reproto --build-schema-db.  Cached by Nix; only rebuilt
+  #                 when inputs (corpora hashes, fixture protos, reproto) change.
+  #   stressTests — runs pytest with STRESS_DB pointing at stressDb.
+  #                 Rebuilt whenever the test code or prototext changes.
+  # ---------------------------------------------------------------------------
+
+  # Pinned remote corpora (must match REMOTE_CORPORA in test_stress.py).
+  stressCorpusGoogleapis = pkgs.fetchzip {
+    url    = "https://github.com/googleapis/googleapis/archive/83e70370751716489986478edc8713b455b21e86.tar.gz";
+    sha256 = "03xhi19zkcmfqzlzpn3inma8aj09a9xq8kvn3frsvsjv55k0y9d1";
+    stripRoot = true;
+  };
+  stressCorpusOtel = pkgs.fetchzip {
+    url    = "https://github.com/open-telemetry/opentelemetry-proto/archive/1d70aa012dc42a5e74a215ce31c1fd84244ce89e.tar.gz";
+    sha256 = "1rp5sv9rbkvdrqcy58pgq35j6pbqh6hgsz34c54mk982pbkgg1bx";
+    stripRoot = true;
+  };
+
+  # Build the schema DB once; cached until inputs change.
+  stressDb = pkgs.runCommand "stress-db" {
+    buildInputs = [
+      pkgs.protobuf
+      reproto
+    ];
+  } ''
+    set -euo pipefail
+
+    FIXTURES="${reprotoSrcWithCodegen}/src/reproto/tests/fixtures"
+    PB=$TMPDIR/pb
+    mkdir -p "$PB"
+
+    # ── Compile fixture protos ────────────────────────────────────────────────
+    compile_fixture() {
+      local proto=$1 stem
+      stem=''${proto%.proto}
+      protoc -I"$FIXTURES" --descriptor_set_out="$PB/$stem.pb" "$proto"
+    }
+    compile_fixture field_comprehensive.proto
+    compile_fixture default_values_proto2.proto
+    compile_fixture group_proto2.proto
+    compile_fixture extensions_proto2.proto
+    compile_fixture message_comprehensive.proto
+    compile_fixture packed_proto3.proto
+    compile_fixture phone_number.proto
+    compile_fixture address_book.proto
+    compile_fixture editions_rendering.proto
+
+    # ── Compile a corpus dir (skip failures — missing imports) ────────────────
+    compile_corpus() {
+      local corpus_root=$1
+      find "$corpus_root" -name '*.proto' | sort | while read -r proto; do
+        local rel flat
+        rel=''${proto#"$corpus_root/"}
+        flat=''${rel//\//_}
+        flat=''${flat%.proto}
+        protoc --proto_path="$corpus_root" \
+               --descriptor_set_out="$PB/$flat.pb" \
+               "$rel" 2>/dev/null || rm -f "$PB/$flat.pb"
+      done
+    }
+
+    # googleapis — skip the preview/ subtree
+    find "${stressCorpusGoogleapis}" -name '*.proto' \
+         ! -path "${stressCorpusGoogleapis}/preview/*" \
+         | sort | while read -r proto; do
+      rel=''${proto#"${stressCorpusGoogleapis}/"}
+      flat=''${rel//\//_}; flat=''${flat%.proto}
+      protoc --proto_path="${stressCorpusGoogleapis}" \
+             --descriptor_set_out="$PB/$flat.pb" \
+             "$rel" 2>/dev/null || rm -f "$PB/$flat.pb"
+    done
+
+    # opentelemetry-proto
+    compile_corpus "${stressCorpusOtel}"
+
+    # ── Build the schema DB ───────────────────────────────────────────────────
+    mkdir -p "$out"
+    reproto \
+      --use-variant all \
+      --prost-workaround \
+      -I"$PB" \
+      --output-root="$out/reproto-out" \
+      --emit-scoring-graphs \
+      --build-schema-db="$out/stress.desc" \
+      .
+  '';
+
+  stressTests = pkgs.runCommand "stress-tests" {
+    buildInputs = [
+      prototext
+      reproto
+      (pythonPkgs.python.withPackages (_: reprotoTestDeps))
+    ];
+  } ''
+    set -euo pipefail
+    export PYTHONPATH="${reprotoSrcWithCodegen}/src"
+    export STRESS_DB="${stressDb}/stress.desc"
+    pytest -p no:cacheprovider ${./tests/stress}/
+    touch $out
+  '';
+
   # Bundle: prototext + reproto + protoscan (the full prototools suite).
   prototools = pkgs.symlinkJoin {
     name   = "prototools";
@@ -751,6 +859,8 @@ in
   python-lint          = pythonLint;
   python-ruff          = pythonRuff;
   ci                   = ci;
+  stress-db            = stressDb;
+  stress-tests         = stressTests;
   user-shell           = user-shell;
   dev-shell            = dev-shell;
   protoscan            = protoscan;

@@ -946,6 +946,8 @@ dependencies = [
  "prototext-core",
  "protox",
  "score-graph",
+ "serde",
+ "serde_yaml",
  "toml 0.8.23",
  "walkdir",
 ]
@@ -1358,8 +1360,6 @@ dependencies = [
 name = "score-graph"
 version = "0.1.0"
 dependencies = [
- "clap",
- "globset",
  "memmap2",
  "prototext-core",
  "rkyv",

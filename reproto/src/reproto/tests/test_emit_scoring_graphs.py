@@ -100,10 +100,10 @@ def test_TC1_basic_emission(tmp_path: Path) -> None:
     assert prim[14]["kind"] == "LEN_STRING"
     assert prim[15]["kind"] == "LEN_BYTES"
 
-    # ComplexTypes: message field must have kind LEN_MSG and correct child
+    # ComplexTypes: message field must have kind MESSAGE and correct child
     complex_fields = {f["number"]: f for f in messages["test.field.ComplexTypes"]["fields"]}
     msg_field = complex_fields[1]
-    assert msg_field["kind"] == "LEN_MSG"
+    assert msg_field["kind"] == "MESSAGE"
     assert msg_field["child"] == "test.field.NestedMessage"
     assert "child" not in complex_fields[4]  # enum field — no child
 
@@ -174,9 +174,9 @@ def test_TC3_cross_file_reference(tmp_path: Path) -> None:
     ab_data = _load_yaml(out_dir / "address_book.yaml")
     ab_messages = ab_data["messages"]
 
-    # Person.phones (field 4) is repeated PhoneNumber — LEN_MSG with child
+    # Person.phones (field 4) is repeated PhoneNumber — MESSAGE with child
     person_fields = {f["number"]: f for f in ab_messages["tutorial.Person"]["fields"]}
-    assert person_fields[4]["kind"] == "LEN_MSG"
+    assert person_fields[4]["kind"] == "MESSAGE"
     assert person_fields[4]["child"] == "tutorial.PhoneNumber"
 
     # PhoneNumber must NOT be defined in address_book.yaml
@@ -220,7 +220,8 @@ def test_TC4_proto3_implicit_packing(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def test_TC5_group_child_fqdn(tmp_path: Path) -> None:
-    """GroupTest fields appear with kind GROUP and a child FQDN."""
+    """GroupTest: group field entries use kind MESSAGE (spec 0058); group
+    message entries carry kind GROUP at the message level."""
     pb_dir = tmp_path / "pb"
     pb_dir.mkdir()
     out_dir = tmp_path / "out"
@@ -231,12 +232,17 @@ def test_TC5_group_child_fqdn(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
 
     data = _load_yaml(out_dir / "field_comprehensive.yaml")
-    fields = {f["number"]: f for f in data["messages"]["test.field.GroupTest"]["fields"]}
+    messages = data["messages"]
+    fields = {f["number"]: f for f in messages["test.field.GroupTest"]["fields"]}
 
-    # field 1: repeated group RepeatedGroup
-    assert fields[1]["kind"] == "GROUP"
+    # field 1: repeated group RepeatedGroup — field kind is MESSAGE (spec 0058)
+    assert fields[1]["kind"] == "MESSAGE"
     assert fields[1]["child"] == "test.field.GroupTest.RepeatedGroup"
 
-    # field 3: optional group OptionalGroup
-    assert fields[3]["kind"] == "GROUP"
+    # field 3: optional group OptionalGroup — field kind is MESSAGE (spec 0058)
+    assert fields[3]["kind"] == "MESSAGE"
     assert fields[3]["child"] == "test.field.GroupTest.OptionalGroup"
+
+    # The group message entries must have kind GROUP at the message level
+    assert messages["test.field.GroupTest.RepeatedGroup"]["kind"] == "GROUP"
+    assert messages["test.field.GroupTest.OptionalGroup"]["kind"] == "GROUP"

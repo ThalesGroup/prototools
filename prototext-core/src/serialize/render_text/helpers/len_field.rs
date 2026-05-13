@@ -51,7 +51,55 @@ pub(in super::super) fn render_len_field(
     let is_repeated = fs.cardinality() == Cardinality::Repeated;
 
     // ── Packed repeated ───────────────────────────────────────────────────────
-    if is_repeated && fs.is_packed() {
+    let is_packable_kind = matches!(
+        fs.kind(),
+        Kind::Bool
+            | Kind::Int32
+            | Kind::Int64
+            | Kind::Uint32
+            | Kind::Uint64
+            | Kind::Sint32
+            | Kind::Sint64
+            | Kind::Fixed32
+            | Kind::Fixed64
+            | Kind::Sfixed32
+            | Kind::Sfixed64
+            | Kind::Float
+            | Kind::Double
+            | Kind::Enum(_)
+    );
+    // Determine whether this LEN record encodes a packed repeated field.
+    //
+    // Normally we trust prost-reflect's precomputed `is_packed()`.  However,
+    // prost-reflect has a bug (see docs/PROST-ISSUES.md §1): for proto3
+    // repeated scalar/enum fields, `is_packed()` returns false when
+    // `FieldOptions` is present-but-empty in the FDS (e.g. because an
+    // unrelated custom option such as `google.api.field_behavior` is set on
+    // another field in the same message).  The proto3 spec mandates packed
+    // encoding for such fields unless `[packed=false]` is explicitly set.
+    //
+    // When the `prost-bug-workaround` feature is enabled and the conditions
+    // for the bug are met (proto3, repeated, packable kind), we apply the
+    // correct rule ourselves: packed unless `raw_packed_option()` is
+    // `Some(false)`.
+    let use_packed = if is_repeated && is_packable_kind {
+        #[cfg(feature = "prost-bug-workaround")]
+        {
+            if fs.parent_file_syntax() == prost_reflect::Syntax::Proto3 {
+                // Correct proto3 rule: packed unless explicitly set to false.
+                fs.raw_packed_option() != Some(false)
+            } else {
+                fs.is_packed()
+            }
+        }
+        #[cfg(not(feature = "prost-bug-workaround"))]
+        {
+            fs.is_packed()
+        }
+    } else {
+        false
+    };
+    if use_packed {
         render_packed(field_number, fs, tag_ohb, tag_oor, len_ohb, data, out);
         return;
     }
@@ -136,7 +184,8 @@ pub(in super::super) fn render_len_field(
     }
 
     // ── Wire-type mismatch (schema says non-LEN type but wire says LEN) ───────
-    // v2: numeric key, `bytes` wire type FIRST, no field_decl; skip when annotations=false.
+    // v2: numeric key, `bytes` wire type FIRST, TYPE_MISMATCH modifier, no field_decl;
+    // skip when annotations=false.
     if !annotations {
         return;
     }
@@ -146,6 +195,9 @@ pub(in super::super) fn render_len_field(
     out.push(b'"');
     let mut aw = AnnWriter::new();
     aw.push_wire(out, "bytes");
+    if field_schema.is_some() {
+        aw.push(out, b"TYPE_MISMATCH");
+    }
     push_tag_modifiers(&mut aw, out, tag_ohb, tag_oor, len_ohb);
     out.push(b'\n');
     CBL_START.with(|c| c.set(out.len())); // content line: set past-end to inhibit folding
@@ -261,13 +313,14 @@ pub(in super::super) fn render_group_field(
     } else {
         None
     };
+    let mismatch_mod = annotations && is_mismatch && field_schema.is_some();
 
     // Does annotations=true and we have anything to splice?
     let has_field_decl = decl_opt.is_some();
     let has_open_tag_mods = annotations && (tag_ohb.is_some() || tag_oor);
     let has_close_mods = annotations && !close_mods.is_empty();
 
-    if has_field_decl || has_open_tag_mods || has_close_mods {
+    if has_field_decl || mismatch_mod || has_open_tag_mods || has_close_mods {
         // Build insert: each part contributes `"; " + text`.
         // Since `group` was already written greedily, the first element of the
         // insert begins with `"; "` to become the separator after `group`.
@@ -275,6 +328,9 @@ pub(in super::super) fn render_group_field(
         if let Some(ref d) = decl_opt {
             insert.push_str("; ");
             insert.push_str(d);
+        }
+        if mismatch_mod {
+            insert.push_str("; TYPE_MISMATCH");
         }
         if let Some(v) = tag_ohb {
             insert.push_str("; tag_ohb: ");

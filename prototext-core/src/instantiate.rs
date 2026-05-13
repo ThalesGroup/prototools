@@ -129,11 +129,43 @@ fn generate_message(
                 if count == 0 {
                     continue;
                 }
-                let values: Vec<Value> = (0..count)
-                    .filter_map(|_| generate_value(&field, rng, depth, opts))
-                    .collect();
-                if !values.is_empty() {
-                    msg.set_field(&field, Value::List(values));
+                if field.is_map() {
+                    // Map fields require Value::Map, not Value::List.
+                    // The entry message has exactly two fields: key (1) and value (2).
+                    let entry_desc = match field.kind() {
+                        Kind::Message(m) => m,
+                        _ => continue,
+                    };
+                    let key_field = match entry_desc.get_field(1) {
+                        Some(f) => f,
+                        None => continue,
+                    };
+                    let val_field = match entry_desc.get_field(2) {
+                        Some(f) => f,
+                        None => continue,
+                    };
+                    let mut map = std::collections::HashMap::new();
+                    for _ in 0..count {
+                        let k = match generate_value(&key_field, rng, depth, opts) {
+                            Some(v) => v,
+                            None => continue,
+                        };
+                        let v = generate_value(&val_field, rng, depth, opts)
+                            .unwrap_or_else(|| Value::default_value_for_field(&val_field));
+                        if let Some(map_key) = k.into_map_key() {
+                            map.insert(map_key, v);
+                        }
+                    }
+                    if !map.is_empty() {
+                        msg.set_field(&field, Value::Map(map));
+                    }
+                } else {
+                    let values: Vec<Value> = (0..count)
+                        .filter_map(|_| generate_value(&field, rng, depth, opts))
+                        .collect();
+                    if !values.is_empty() {
+                        msg.set_field(&field, Value::List(values));
+                    }
                 }
             }
             Cardinality::Optional => {

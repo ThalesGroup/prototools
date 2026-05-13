@@ -10,6 +10,12 @@ import sys
 from pathlib import Path
 
 import click
+
+try:
+    from importlib.metadata import version as _pkg_version
+    _reproto_version = _pkg_version('reproto')
+except Exception:
+    _reproto_version = 'dev'
 from click.shell_completion import CompletionItem
 
 logger = logging.getLogger()  # root logger
@@ -149,6 +155,7 @@ _SECTIONS: dict[str, str] = {
     '--seed':                'Filtering',
     '--prune':               'Filtering',
     '--force-proto2-output': 'Rendering',
+    '--prost-workaround':    'Rendering',
     '--redact-comments':     'Rendering',
     '--redact-orphans':      'Rendering',
     '--go-root':             'Rendering',
@@ -218,7 +225,7 @@ class _SectionedCommand(click.Command):
     help='Parse PB_FILES and generate output based on the options given.',
 )
 @click.version_option(
-    package_name='reproto',
+    version=_reproto_version,
     prog_name='reproto',
 )
 # --- Input ---
@@ -266,9 +273,9 @@ class _SectionedCommand(click.Command):
     default=None,
     type=click.Path(dir_okay=False, writable=True, path_type=Path),
     help=(
-        'Build the full schema DB at PATH (must end in .rkyv): '
-        'writes PATH (compiled scoring graph) and PATH-stem/schemas.pb '
-        '(FileDescriptorSet of all loaded FDPs). '
+        'Build the full schema DB at PATH (must end in .desc): '
+        'writes PATH (FileDescriptorSet of all loaded FDPs) and '
+        'PATH-stem/hopcroft.rkyv (compiled scoring graph). '
         'YAML and FDPs stay in memory; no intermediate files are written.'
     ),
 )
@@ -339,6 +346,19 @@ class _SectionedCommand(click.Command):
     default=False,
     help='Force all output to proto2 syntax, regardless of the input syntax. '
          'Without this flag, output syntax matches the input (polyglot mode).',
+)
+
+@click.option(
+    '--prost-workaround',
+    is_flag=True,
+    default=False,
+    help=(
+        'Patch editions-syntax FDPs to appear as proto2 in output and '
+        'schemas.pb, working around a prost-reflect limitation '
+        '(upstream PR #1347). Editions fields using non-default features '
+        '(LEGACY_REQUIRED, DELIMITED, EXPANDED, IMPLICIT) will be '
+        'rendered incorrectly. Remove once prost-reflect supports editions.'
+    ),
 )
 
 @click.option(
@@ -426,6 +446,7 @@ def main(
         pb_files: list[Path],
         pb_path: list[Path],
         force_proto2_output: bool,
+        prost_workaround: bool,
         proto_out: Path | None,
         emit_binary: bool,
         dry_run: bool,
@@ -512,14 +533,15 @@ def main(
     if 'api' in use_variant_set:
         fallback_protos.append(_wk('google/protobuf/api.proto'))
 
-    if build_schema_db is not None and not str(build_schema_db).endswith('.rkyv'):
-        raise click.UsageError('--build-schema-db PATH must end in .rkyv')
+    if build_schema_db is not None and not str(build_schema_db).endswith('.desc'):
+        raise click.UsageError('--build-schema-db PATH must end in .desc')
 
     options = Options(
         binary=emit_binary,
         build_schema_db=build_schema_db,
         emit_scoring_graphs=emit_scoring_graphs,
         force_proto2_output=force_proto2_output,
+        prost_workaround=prost_workaround,
         debug=debug,
         debug_fqdn=debug_fqdn,
         descriptor_proto=variant['variant_descriptor_proto'],

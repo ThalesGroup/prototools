@@ -33,6 +33,16 @@ use crate::build_scoring_graph::{
 };
 use crate::score::{load as score_load, walk};
 
+/// Score `pb` against the graph and return the result for entry `fqdn`.
+fn score_entry(pb: &[u8], graph: &score_load::LoadedGraph, fqdn: &str) -> walk::EntryScore {
+    let mut results = walk::score_all(pb, graph);
+    let pos = results
+        .iter()
+        .position(|r| r.fqdn == fqdn)
+        .unwrap_or_else(|| panic!("entry '{fqdn}' not found in results"));
+    results.swap_remove(pos)
+}
+
 // ── Schema fixture ────────────────────────────────────────────────────────────
 
 fn make_merged() -> Merged {
@@ -68,7 +78,7 @@ fn make_merged() -> Merged {
         },
         ScoringField {
             number: 4,
-            kind: ScoringKind::LenMsg,
+            kind: ScoringKind::Node,
             child: Some("Inner".to_string()),
             enum_range: None,
             label: FieldLabel::Optional,
@@ -88,6 +98,7 @@ fn make_merged() -> Merged {
 
     Merged {
         states,
+        node_kinds: std::collections::HashMap::new(),
         roots: vec!["Outer".to_string()],
     }
 }
@@ -96,8 +107,8 @@ fn make_merged() -> Merged {
 fn build_graph() -> score_load::LoadedGraph {
     let merged = make_merged();
     let (raw, reg) = graph::build(&merged);
-    let partition = hopcroft::minimize(&raw, &reg);
-    let compiled = graph::compile(&raw, &reg, &partition, &merged);
+    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types);
+    let compiled = graph::compile(&raw, &reg, &partition, &merged.roots);
 
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("test.bin");
@@ -106,16 +117,6 @@ fn build_graph() -> score_load::LoadedGraph {
     // Keep tempdir alive by leaking it — fine for tests.
     let _ = std::mem::ManuallyDrop::new(dir);
     score_load::load_graph(&path).expect("load graph")
-}
-
-fn root_state(graph: &score_load::LoadedGraph) -> u32 {
-    graph
-        .roots
-        .iter()
-        .find(|r| r.fqdn.as_str() == "Outer")
-        .expect("Outer root")
-        .state_id
-        .to_native()
 }
 
 // ── Wire encoding helpers ─────────────────────────────────────────────────────
@@ -183,7 +184,6 @@ fn varint_ohb(v: u64, ohb: u8) -> Vec<u8> {
 #[test]
 fn tc01_perfect_match() {
     let g = build_graph();
-    let root = root_state(&g);
 
     // Outer { id=1, name="hi", tags=7, child=Inner{value=42}, status=1 }
     let inner = field_varint(1, 42);
@@ -194,7 +194,7 @@ fn tc01_perfect_match() {
     pb.extend(field_len(4, &inner)); // child (optional message)
     pb.extend(field_varint(5, 1)); // status = WARN (enum 0..2)
 
-    let s = walk::score(&pb, root, &g);
+    let s = score_entry(&pb, &g, "Outer");
     // matches: id + name + tags + child-field + inner.value + status = 6
     // (child-field counts as 1 match at the Outer level; inner.value counts
     // as 1 more match inside the Inner recursion)
@@ -208,14 +208,13 @@ fn tc01_perfect_match() {
 #[test]
 fn tc02_all_unknown() {
     let g = build_graph();
-    let root = root_state(&g);
 
     let mut pb = Vec::new();
     pb.extend(field_varint(10, 1)); // unknown VARINT
     pb.extend(field_varint(11, 2)); // unknown VARINT
     pb.extend(field_len(12, b"x")); // unknown LEN
 
-    let s = walk::score(&pb, root, &g);
+    let s = score_entry(&pb, &g, "Outer");
     assert!(!s.vetoed);
     assert_eq!(s.unknowns, 3);
     assert_eq!(s.matches, 0);
@@ -229,12 +228,11 @@ fn tc02_all_unknown() {
 #[test]
 fn tc03_wrong_wire_type_veto() {
     let g = build_graph();
-    let root = root_state(&g);
 
     // field 1 (id, VARINT) sent as LEN — wire-type mismatch on known field
     let pb = field_len(1, b"oops");
 
-    let s = walk::score(&pb, root, &g);
+    let s = score_entry(&pb, &g, "Outer");
     assert!(s.vetoed, "wrong wire type on known field should veto");
 }
 
@@ -242,13 +240,12 @@ fn tc03_wrong_wire_type_veto() {
 #[test]
 fn tc04_invalid_utf8_veto() {
     let g = build_graph();
-    let root = root_state(&g);
 
     let mut pb = Vec::new();
     pb.extend(field_varint(1, 1)); // id ok
     pb.extend(field_len(2, b"\xff\xfe invalid")); // name: invalid UTF-8
 
-    let s = walk::score(&pb, root, &g);
+    let s = score_entry(&pb, &g, "Outer");
     assert!(s.vetoed, "invalid UTF-8 on string field should veto");
 }
 
@@ -256,13 +253,12 @@ fn tc04_invalid_utf8_veto() {
 #[test]
 fn tc05_enum_out_of_range_veto() {
     let g = build_graph();
-    let root = root_state(&g);
 
     let mut pb = Vec::new();
     pb.extend(field_varint(1, 1)); // id
     pb.extend(field_varint(5, 99)); // status=99, outside [0..2]
 
-    let s = walk::score(&pb, root, &g);
+    let s = score_entry(&pb, &g, "Outer");
     assert!(s.vetoed, "enum value 99 outside [0..2] should veto");
 }
 
@@ -270,14 +266,13 @@ fn tc05_enum_out_of_range_veto() {
 #[test]
 fn tc06_truncated_fixed32_veto() {
     let g = build_graph();
-    let root = root_state(&g);
 
     // Send a raw field tag for wire type 5 (I32) on an unknown field,
     // then only 2 bytes instead of 4.
     let mut pb = tag(20, 5); // unknown I32 field
     pb.extend_from_slice(&[0x01, 0x02]); // only 2 bytes
 
-    let s = walk::score(&pb, root, &g);
+    let s = score_entry(&pb, &g, "Outer");
     assert!(s.vetoed, "truncated fixed32 should veto");
 }
 
@@ -285,12 +280,11 @@ fn tc06_truncated_fixed32_veto() {
 #[test]
 fn tc07_truncated_fixed64_veto() {
     let g = build_graph();
-    let root = root_state(&g);
 
     let mut pb = tag(20, 1); // unknown I64 field
     pb.extend_from_slice(&[0x01, 0x02, 0x03]); // only 3 bytes
 
-    let s = walk::score(&pb, root, &g);
+    let s = score_entry(&pb, &g, "Outer");
     assert!(s.vetoed, "truncated fixed64 should veto");
 }
 
@@ -298,13 +292,12 @@ fn tc07_truncated_fixed64_veto() {
 #[test]
 fn tc08_truncated_len_payload_veto() {
     let g = build_graph();
-    let root = root_state(&g);
 
     let mut pb = tag(2, 2); // name field, LEN
     pb.extend(varint(100)); // claims 100-byte payload
     pb.extend_from_slice(b"short"); // only 5 bytes
 
-    let s = walk::score(&pb, root, &g);
+    let s = score_entry(&pb, &g, "Outer");
     assert!(s.vetoed, "truncated LEN payload should veto");
 }
 
@@ -312,11 +305,10 @@ fn tc08_truncated_len_payload_veto() {
 #[test]
 fn tc09_invalid_wire_type_veto() {
     let g = build_graph();
-    let root = root_state(&g);
 
     let pb = vec![0x06]; // field=0, wire_type=6 — invalid
 
-    let s = walk::score(&pb, root, &g);
+    let s = score_entry(&pb, &g, "Outer");
     assert!(s.vetoed, "wire type 6 should veto");
 }
 
@@ -324,13 +316,12 @@ fn tc09_invalid_wire_type_veto() {
 #[test]
 fn tc10_tag_overhang_non_canonical() {
     let g = build_graph();
-    let root = root_state(&g);
 
     // Tag for field 1 (id), wire type 0, with 1 overhang byte on the tag.
     let mut pb = varint_ohb(1 << 3, 1); // tag: field=1, wt=VARINT (0), ohb=1
     pb.extend(varint(42)); // id value
 
-    let s = walk::score(&pb, root, &g);
+    let s = score_entry(&pb, &g, "Outer");
     assert!(!s.vetoed);
     assert_eq!(s.non_canonical, 1);
     assert_eq!(s.matches, 1);
@@ -340,13 +331,12 @@ fn tc10_tag_overhang_non_canonical() {
 #[test]
 fn tc11_value_overhang_non_canonical() {
     let g = build_graph();
-    let root = root_state(&g);
 
     // field 1 (id), canonical tag, non-canonical value
     let mut pb = tag(1, 0);
     pb.extend(varint_ohb(1, 2)); // value 1 with 2 overhang bytes
 
-    let s = walk::score(&pb, root, &g);
+    let s = score_entry(&pb, &g, "Outer");
     assert!(!s.vetoed);
     assert_eq!(s.non_canonical, 1);
     assert_eq!(s.matches, 1);
@@ -356,14 +346,13 @@ fn tc11_value_overhang_non_canonical() {
 #[test]
 fn tc12_len_prefix_overhang_non_canonical() {
     let g = build_graph();
-    let root = root_state(&g);
 
     // field 2 (name), canonical tag, non-canonical length prefix
     let mut pb = tag(2, 2);
     pb.extend(varint_ohb(2, 1)); // length=2 with 1 overhang byte
     pb.extend_from_slice(b"hi");
 
-    let s = walk::score(&pb, root, &g);
+    let s = score_entry(&pb, &g, "Outer");
     assert!(!s.vetoed);
     assert_eq!(s.non_canonical, 1);
     assert_eq!(s.matches, 1);
@@ -373,7 +362,6 @@ fn tc12_len_prefix_overhang_non_canonical() {
 #[test]
 fn tc13_submessage_recursion() {
     let g = build_graph();
-    let root = root_state(&g);
 
     // Outer { id=1, child=Inner{value=99} }
     let inner = field_varint(1, 99);
@@ -381,7 +369,7 @@ fn tc13_submessage_recursion() {
     pb.extend(field_varint(1, 1)); // id (required) → match
     pb.extend(field_len(4, &inner)); // child → match + recurse: value → match
 
-    let s = walk::score(&pb, root, &g);
+    let s = score_entry(&pb, &g, "Outer");
     assert!(!s.vetoed);
     assert_eq!(s.matches, 3); // id + child-field + inner.value
     assert_eq!(s.unknowns, 0);
@@ -391,7 +379,6 @@ fn tc13_submessage_recursion() {
 #[test]
 fn tc14_mixed_known_unknown() {
     let g = build_graph();
-    let root = root_state(&g);
 
     let mut pb = Vec::new();
     pb.extend(field_varint(1, 5)); // id → match
@@ -399,7 +386,7 @@ fn tc14_mixed_known_unknown() {
     pb.extend(field_len(2, b"hello")); // name → match
     pb.extend(field_fixed32(88, 0)); // unknown I32 → unknown
 
-    let s = walk::score(&pb, root, &g);
+    let s = score_entry(&pb, &g, "Outer");
     assert!(!s.vetoed);
     assert_eq!(s.matches, 2);
     assert_eq!(s.unknowns, 2);
@@ -411,13 +398,12 @@ fn tc14_mixed_known_unknown() {
 #[test]
 fn tc15_unknown_field_truncated_body_veto() {
     let g = build_graph();
-    let root = root_state(&g);
 
     let mut pb = field_varint(1, 1); // id → match
     pb.extend(tag(99, 1)); // unknown I64 field
     pb.extend_from_slice(&[0x00, 0x01]); // only 2 bytes of the required 8
 
-    let s = walk::score(&pb, root, &g);
+    let s = score_entry(&pb, &g, "Outer");
     assert!(s.vetoed, "truncated body on unknown I64 field should veto");
 }
 
@@ -449,27 +435,21 @@ fn tc16_fixed_fields_known() {
             );
             m
         },
+        node_kinds: std::collections::HashMap::new(),
         roots: vec!["M".to_string()],
     };
     let (raw, reg) = graph::build(&merged);
-    let partition = hopcroft::minimize(&raw, &reg);
-    let compiled = graph::compile(&raw, &reg, &partition, &merged);
+    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types);
+    let compiled = graph::compile(&raw, &reg, &partition, &merged.roots);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("m.bin");
     serial::write(&compiled, &path).unwrap();
     let g = score_load::load_graph(&path).unwrap();
-    let root = g
-        .roots
-        .iter()
-        .find(|r| r.fqdn.as_str() == "M")
-        .unwrap()
-        .state_id
-        .to_native();
 
     let mut pb = field_fixed32(1, 0xDEAD_BEEF);
     pb.extend(field_fixed64(2, 0x0102_0304_0506_0708));
 
-    let s = walk::score(&pb, root, &g);
+    let s = score_entry(&pb, &g, "M");
     assert!(!s.vetoed);
     assert_eq!(s.matches, 2);
     assert_eq!(s.unknowns, 0);
@@ -479,8 +459,7 @@ fn tc16_fixed_fields_known() {
 #[test]
 fn tc17_empty_message() {
     let g = build_graph();
-    let root = root_state(&g);
-    let s = walk::score(&[], root, &g);
+    let s = score_entry(&[], &g, "Outer");
     assert!(!s.vetoed);
     assert_eq!(s.matches, 0);
     assert_eq!(s.unknowns, 0);
@@ -490,11 +469,10 @@ fn tc17_empty_message() {
 #[test]
 fn tc18_end_group_outside_group_veto() {
     let g = build_graph();
-    let root = root_state(&g);
 
     let pb = tag(1, 4); // wire type 4 = END_GROUP, not inside a group
 
-    let s = walk::score(&pb, root, &g);
+    let s = score_entry(&pb, &g, "Outer");
     assert!(s.vetoed, "END_GROUP outside group should veto");
 }
 
@@ -502,14 +480,13 @@ fn tc18_end_group_outside_group_veto() {
 #[test]
 fn tc19_repeated_field_multiple_occurrences() {
     let g = build_graph();
-    let root = root_state(&g);
 
     let mut pb = field_varint(1, 1); // id
     pb.extend(field_varint(3, 10)); // tags[0]
     pb.extend(field_varint(3, 20)); // tags[1]
     pb.extend(field_varint(3, 30)); // tags[2]
 
-    let s = walk::score(&pb, root, &g);
+    let s = score_entry(&pb, &g, "Outer");
     assert!(!s.vetoed);
     assert_eq!(s.matches, 4); // id + 3× tags
     assert_eq!(s.unknowns, 0);
@@ -545,7 +522,7 @@ fn build_two_entry_graph() -> score_load::LoadedGraph {
         },
         ScoringField {
             number: 4,
-            kind: ScoringKind::LenMsg,
+            kind: ScoringKind::Node,
             child: Some("Inner".to_string()),
             enum_range: None,
             label: FieldLabel::Optional,
@@ -565,12 +542,13 @@ fn build_two_entry_graph() -> score_load::LoadedGraph {
 
     let merged = crate::build_scoring_graph::load::Merged {
         states,
+        node_kinds: std::collections::HashMap::new(),
         roots: vec!["Outer".to_string(), "Inner".to_string()],
     };
 
     let (raw, reg) = graph::build(&merged);
-    let partition = hopcroft::minimize(&raw, &reg);
-    let compiled = graph::compile(&raw, &reg, &partition, &merged);
+    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types);
+    let compiled = graph::compile(&raw, &reg, &partition, &merged.roots);
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("two.bin");
     serial::write(&compiled, &path).expect("write");
@@ -734,19 +712,103 @@ fn mt06_enum_oor_vetoes_only_enum_entry() {
 #[test]
 fn tc20_enum_boundary_values() {
     let g = build_graph();
-    let root = root_state(&g);
 
     let mut pb = field_varint(1, 1); // id
     pb.extend(field_varint(5, 0)); // status = OK (min boundary)
 
-    let s = walk::score(&pb, root, &g);
+    let s = score_entry(&pb, &g, "Outer");
     assert!(!s.vetoed);
     assert_eq!(s.matches, 2);
 
     let mut pb = field_varint(1, 1); // id
     pb.extend(field_varint(5, 2)); // status = ERR (max boundary)
 
-    let s = walk::score(&pb, root, &g);
+    let s = score_entry(&pb, &g, "Outer");
     assert!(!s.vetoed);
     assert_eq!(s.matches, 2);
+}
+
+// ── Reproduce AnnotatedMapEntry vs MultiOptionMapEntry merge ──────────────────
+//
+// MapWithOptions has two map fields:
+//   annotated_map = 1  (map<string,int32>) → AnnotatedMapEntry: {f1=LEN_STRING, f2=VARINT}
+//   multi_option_map=2 (map<int32,string>)  → MultiOptionMapEntry: {f1=VARINT,   f2=LEN_STRING}
+//
+// After minimisation, AnnotatedMapEntry and MultiOptionMapEntry MUST be in
+// distinct states (they have different field→leaf assignments).
+#[test]
+fn map_entry_states_are_distinct() {
+    let annotated_entry_fields = vec![
+        ScoringField {
+            number: 1,
+            kind: ScoringKind::LenString,
+            child: None,
+            enum_range: None,
+            label: FieldLabel::Optional,
+        },
+        ScoringField {
+            number: 2,
+            kind: ScoringKind::Varint,
+            child: None,
+            enum_range: None,
+            label: FieldLabel::Optional,
+        },
+    ];
+    let multi_option_entry_fields = vec![
+        ScoringField {
+            number: 1,
+            kind: ScoringKind::Varint,
+            child: None,
+            enum_range: None,
+            label: FieldLabel::Optional,
+        },
+        ScoringField {
+            number: 2,
+            kind: ScoringKind::LenString,
+            child: None,
+            enum_range: None,
+            label: FieldLabel::Optional,
+        },
+    ];
+    let map_with_options_fields = vec![
+        ScoringField {
+            number: 1,
+            kind: ScoringKind::Node,
+            child: Some("AnnotatedMapEntry".to_string()),
+            enum_range: None,
+            label: FieldLabel::Repeated,
+        },
+        ScoringField {
+            number: 2,
+            kind: ScoringKind::Node,
+            child: Some("MultiOptionMapEntry".to_string()),
+            enum_range: None,
+            label: FieldLabel::Repeated,
+        },
+    ];
+
+    let mut states = std::collections::HashMap::new();
+    states.insert("AnnotatedMapEntry".to_string(), annotated_entry_fields);
+    states.insert("MultiOptionMapEntry".to_string(), multi_option_entry_fields);
+    states.insert("MapWithOptions".to_string(), map_with_options_fields);
+
+    let merged = crate::build_scoring_graph::load::Merged {
+        states,
+        node_kinds: std::collections::HashMap::new(),
+        roots: vec!["MapWithOptions".to_string()],
+    };
+
+    let (raw, reg) = graph::build(&merged);
+    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types);
+
+    let ame_id = raw.node_ids["AnnotatedMapEntry"];
+    let moe_id = raw.node_ids["MultiOptionMapEntry"];
+    let ame_block = partition.block_of(ame_id);
+    let moe_block = partition.block_of(moe_id);
+
+    assert_ne!(
+        ame_block, moe_block,
+        "AnnotatedMapEntry (block {ame_block}) and MultiOptionMapEntry (block {moe_block}) \
+         must be in distinct states after minimisation"
+    );
 }

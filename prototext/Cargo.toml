@@ -26,12 +26,14 @@ name = "prototext-gen-man"
 path = "src/gen_man.rs"
 
 [dependencies]
-prototext-core  = { path = "../prototext-core", version = "0.1.2" }
+prototext-core  = { path = "../prototext-core", version = "0.1.2", features = ["prost-bug-workaround"] }
 score-graph     = { path = "../score-graph" }
 clap            = { version = "4.5", features = ["derive"] }
 clap_complete   = { version = "4.5", features = ["unstable-dynamic"] }
 clap_mangen     = "0.2"
 globset         = "0.4"
+serde           = { version = "1", features = ["derive"] }
+serde_yaml      = "0.9"
 prost           = "0.14"
 prost-reflect   = "0.16"
 prost-types     = "0.14"

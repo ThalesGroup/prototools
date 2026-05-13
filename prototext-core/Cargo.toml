@@ -18,6 +18,14 @@ categories  = ["encoding", "parser-implementations"]
 name       = "prototext_core"
 crate-type = ["rlib"]
 
+[features]
+# Workaround for prost-reflect bug: is_packed() returns false for proto3
+# repeated scalar/enum fields when FieldOptions is present-but-empty in the
+# FDS (e.g. because an unrelated custom option is set on the field).
+# Enable this feature until the bug is fixed upstream.
+# See docs/PROST-ISSUES.md §1.
+prost-bug-workaround = []
+
 [dependencies]
 prost         = "0.14"
 prost-reflect = "0.16"

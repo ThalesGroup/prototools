@@ -1,0 +1,153 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+# Stress-test type list (spec 0054).
+#
+# Each entry is either a bare FQDN string or a dict {fqdn: ..., max_ties: N}.
+# max_ties (default 5): if --list-schemas returns more than max_ties tied
+# FQDNs, the test fails with an error (scoring too weak for this corpus).
+#
+# Sorted lexicographically by FQDN.  No leading dot.
+#
+# Coverage:
+#   - All fixture top-level message types (our own corpus), except editions-only
+#     types (reproto.test.rendering.*) which are incompatible with inference after
+#     the --prost-workaround features-stripping pass
+#   - ~100 randomly sampled types from googleapis and opentelemetry-proto
+
+types:
+  # ── googleapis ──────────────────────────────────────────────────────────────
+  - google.ads.admanager.v1.BatchDeactivateLabelsRequest
+  - google.ads.datamanager.v1.RetrieveRequestStatusRequest
+  - google.ads.googleads.v20.enums.BiddingStrategySystemStatusEnum
+  - google.ads.googleads.v20.errors.OperatorErrorEnum
+  - google.ads.googleads.v20.services.Forecast
+  - google.ads.googleads.v20.services.TargetingSuggestionMetrics
+  - google.ads.googleads.v21.enums.AssetLinkPrimaryStatusEnum
+  - google.ads.googleads.v21.errors.FunctionErrorEnum
+  - google.ads.googleads.v21.services.CreateDataLinkRequest
+  - google.ads.googleads.v21.services.ScheduleExperimentRequest
+  - google.ads.googleads.v22.common.YouTubeVideoAttributeMetadata
+  - google.ads.googleads.v22.errors.CampaignGoalConfigErrorEnum
+  - google.ads.googleads.v22.services.AssetSetOperation
+  - google.ads.googleads.v22.services.MutateKeywordPlanAdGroupKeywordsRequest
+  - google.ads.googleads.v23.common.ProximityInfo
+  - google.ads.googleads.v23.enums.SharedSetTypeEnum
+  - google.ads.googleads.v23.resources.KeywordPlanCampaign
+  - google.ads.googleads.v23.services.MutateAdsResponse
+  - google.ads.googleads.v24.common.ContentLabelInfo
+  - google.ads.googleads.v24.enums.CustomInterestMemberTypeEnum
+  - google.ads.googleads.v24.errors.SettingErrorEnum
+  - google.ads.googleads.v24.services.EffectiveFrequencyBreakdown
+  - google.ads.googleads.v24.services.RemoveCampaignAutomaticallyCreatedAssetResponse
+  - google.ai.generativelanguage.v1alpha.CitationSource
+  - google.ai.generativelanguage.v1beta3.UpdateTunedModelRequest
+  - google.analytics.data.v1alpha.CreateReportTaskRequest
+  - google.api.serviceusage.v1beta1.ImportConsumerOverridesMetadata
+  - google.apps.events.subscriptions.v1.ReactivateSubscriptionRequest
+  - google.bigtable.v2.BackendIdentifier
+  - google.cloud.aiplatform.v1beta1.DeleteIndexEndpointRequest
+  - google.cloud.aiplatform.v1beta1.ListOptimalTrialsRequest
+  - google.cloud.aiplatform.v1beta1.TFRecordDestination
+  - google.cloud.aiplatform.v1.ContainerRegistryDestination
+  - google.cloud.aiplatform.v1.ListIndexEndpointsResponse
+  - google.cloud.aiplatform.v1.UndeployIndexOperationMetadata
+  - google.cloud.alloydb.v1alpha.ListClustersRequest
+  - google.cloud.apphub.v1.DetachServiceProjectAttachmentResponse
+  - google.cloud.automl.v1beta1.TableSpec
+  - google.cloud.biglake.hive.v1beta.ListHiveDatabasesRequest
+  - google.cloud.bigquery.migration.v2alpha.TypedValue
+  - google.cloud.billing.v1.UpdateProjectBillingInfoRequest
+  - google.cloud.ces.v1beta.GetSecuritySettingsRequest
+  - google.cloud.chronicle.v1.WatchlistUserPreferences
+  - google.cloud.compute.v1.AggregatedListPublicDelegatedPrefixesRequest
+  - google.cloud.compute.v1beta.ApplyUpdatesToInstancesRegionInstanceGroupManagerRequest
+  - google.cloud.compute.v1beta.GetGlobalOperationRequest
+  - google.cloud.compute.v1beta.InstanceGroupManagersScopedList
+  - google.cloud.compute.v1beta.NetworksRequestRemovePeeringRequest
+  - google.cloud.compute.v1beta.SendDiagnosticInterruptInstanceRequest
+  - google.cloud.compute.v1beta.UsableSubnetwork
+  - google.cloud.compute.v1.GetGlobalOrganizationOperationRequest
+  - google.cloud.compute.v1.InstancesSetMinCpuPlatformRequest
+  - google.cloud.compute.v1.PatchRegionNetworkFirewallPolicyRequest
+  - google.cloud.compute.v1.SnapshotParams
+  - google.cloud.contactcenterinsights.v1.BulkDeleteConversationsRequest
+  - google.cloud.datacatalog.v1.FieldType
+  - google.cloud.dataform.v1beta1.SearchTeamFoldersRequest
+  - google.cloud.dataplex.v1.UpdateDataTaxonomyRequest
+  - google.cloud.deploy.v1.CreateCustomTargetTypeRequest
+  - google.cloud.dialogflow.cx.v3beta1.Status
+  - google.cloud.dialogflow.cx.v3.ListExamplesResponse
+  - google.cloud.dialogflow.v2beta1.Conversation
+  - google.cloud.discoveryengine.v1beta.DeleteSchemaMetadata
+  - google.cloud.discoveryengine.v1.ListDataStoresResponse
+  - google.cloud.domains.v1beta1.ListRegistrationsResponse
+  - google.cloud.functions.v2.UpdateFunctionRequest
+  - google.cloud.gkebackup.v1.DeleteRestorePlanRequest
+  - google.cloud.gkemulticloud.v1.GetAttachedServerConfigRequest
+  - google.cloud.ids.v1.Endpoint
+  - google.cloud.managedkafka.schemaregistry.v1.DeleteSchemaModeRequest
+  - google.cloud.migrationcenter.v1.DeleteSourceRequest
+  - google.cloud.networkconnectivity.v1.OperationMetadata
+  - google.cloud.networksecurity.v1.ListInterceptEndpointGroupsRequest
+  - google.cloud.networkservices.v1.UpdateMeshRequest
+  - google.cloud.orchestration.airflow.service.v1.UpdateUserWorkloadsSecretRequest
+  - google.cloud.parametermanager.v1.ListParametersResponse
+  - google.cloud.recommender.logging.v1beta1.ActionLog
+  - google.cloud.retail.v2.PurgeUserEventsResponse
+  - google.cloud.run.v2.DeleteWorkerPoolRequest
+  - google.cloud.securitycenter.v2.Notebook
+  - google.cloud.security.privateca.v1.UpdateCertificateRevocationListRequest
+  - google.cloud.sql.v1.OnPremisesConfiguration
+  - google.cloud.support.v2beta.Case
+  - google.cloud.texttospeech.v1beta1.SynthesizeLongAudioResponse
+  - google.cloud.vectorsearch.v1.SearchDataObjectsRequest
+  - google.cloud.videointelligence.v1p3beta1.NormalizedBoundingPoly
+  - google.cloud.visionai.v1alpha1.GetProcessorRequest
+  - google.cloud.visionai.v1.ClusterInfo
+  - google.cloud.vmwareengine.v1.UndeletePrivateCloudRequest
+  - google.container.v1.NodeManagement
+  - google.dataflow.v1beta3.KeyRangeDataDiskAssignment
+  - google.devtools.artifactregistry.v1beta2.ListRepositoriesResponse
+  - google.devtools.testing.v1.ShardingOption
+  - google.iam.v3.SearchPrincipalAccessBoundaryPolicyBindingsRequest
+  - google.maps.solar.v1.SavingsOverTime
+  - google.privacy.dlp.v2.ListConnectionsRequest
+  - google.shopping.merchant.accounts.v1.Headers
+  - google.shopping.merchant.products.v1.ListProductsResponse
+  - google.spanner.v1.PartitionQueryRequest
+
+  # ── our fixture types ────────────────────────────────────────────────────────
+  - mockup.Defaults
+  - mockup.Extendable
+  - mockup.Holder
+  - mockup.Packed
+  - mockup.WithGroups
+  - test.field.AllCombinations
+  - test.field.ComplexTypes
+  - test.field.DefaultValues
+  - test.field.EdgeCases
+  - {fqdn: test.field.Extendable, max_ties: 50000}
+  - test.field.ExtensionFields
+  - test.field.FieldOptions
+  - {fqdn: test.field.GroupTest, max_ties: 50000}
+  - test.field.MapFields
+  - test.field.MapWithOptions
+  - test.field.NestedMessage
+  - test.field.NestedReferences
+  - test.field.OneofFields
+  - test.field.Outer
+  - test.field.PrimitiveTypes
+  - test.message.ComprehensiveMessage
+  - test.message.EmptyMessage
+  - test.message.ExtendableMessage
+  - test.message.MultipleExtensionRanges
+  - test.message.OneofVariations
+  - test.message.OnlyExtensions
+  - test.message.OuterMessage
+  - test.message.ReservedOnly
+  - test.message.SingleFieldMessage
+  - {fqdn: tutorial.AddressBook, max_ties: 50000}
+  - tutorial.Person
+  - {fqdn: tutorial.PhoneNumber, max_ties: 50000}

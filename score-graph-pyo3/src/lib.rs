@@ -4,7 +4,8 @@
 
 //! PyO3 module definition for `scoring_graph`.
 //!
-//! Exposes `build_graph(scoring_graphs: list[str]) -> bytes` to Python.
+//! Exposes `build_graph(scoring_graphs: list[str], emit_yaml: bool = False) -> tuple[bytes, str | None]`
+//! to Python.
 
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -23,12 +24,16 @@ use score_graph_lib::build_scoring_graph::build_from_strings;
 ///     YAML content of each per-file scoring graph, as produced by
 ///     ``reproto --emit-scoring-graphs``.  One entry per file; order does
 ///     not matter.
+/// emit_yaml : bool, optional
+///     When True, also return the compiled graph as a human-readable YAML
+///     string (spec 0059 §2 format).  Default False.
 ///
 /// Returns
 /// -------
-/// bytes
-///     Serialised ``.rkyv`` content (the baked graph), ready to be written
-///     to disk as ``<name>.rkyv``.
+/// tuple[bytes, str | None]
+///     First element: serialised ``.rkyv`` content (the baked graph).
+///     Second element: compiled-graph YAML string when ``emit_yaml=True``,
+///     otherwise ``None``.
 ///
 /// Raises
 /// ------
@@ -36,10 +41,15 @@ use score_graph_lib::build_scoring_graph::build_from_strings;
 ///     If any YAML string is malformed or the graph cannot be built.
 #[gen_stub_pyfunction]
 #[pyfunction]
-fn build_graph<'py>(py: Python<'py>, scoring_graphs: Vec<String>) -> PyResult<Bound<'py, PyBytes>> {
-    let baked =
-        build_from_strings(&scoring_graphs).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-    Ok(PyBytes::new(py, &baked))
+#[pyo3(signature = (scoring_graphs, emit_yaml = false))]
+fn build_graph<'py>(
+    py: Python<'py>,
+    scoring_graphs: Vec<String>,
+    emit_yaml: bool,
+) -> PyResult<(Bound<'py, PyBytes>, Option<String>)> {
+    let (rkyv_bytes, yaml) = build_from_strings(&scoring_graphs, emit_yaml)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    Ok((PyBytes::new(py, &rkyv_bytes), yaml))
 }
 
 // ── Python module ─────────────────────────────────────────────────────────────

@@ -2,7 +2,24 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Hopcroft DFA minimization over the raw scoring graph.
+//! Hopcroft DFA minimization over the raw scoring graph (spec 0062).
+//!
+//! Implements the textbook Hopcroft (1971) algorithm verbatim:
+//!
+//!   P  := initial partition
+//!   W  := P   (worklist = every (block, symbol) pair)
+//!
+//!   while W not empty:
+//!       pick and remove A from W
+//!       for each symbol (f, l):
+//!           X := predecessors of A via (f, l)
+//!           for each block Y where Y∩X ≠ ∅ and Y\X ≠ ∅:
+//!               split Y into Y₁ = Y∩X and Y₂ = Y\X
+//!               for each symbol (f', l'):
+//!                   if (Y, f', l') ∈ W:
+//!                       replace (Y, f', l') with (Y₁, f', l') and (Y₂, f', l')
+//!                   else:
+//!                       add smaller(Y₁, Y₂) for (f', l') to W
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -32,18 +49,20 @@ impl Partition {
 
 // ── Minimization ──────────────────────────────────────────────────────────────
 
-pub fn minimize(raw: &RawGraph, reg: &LeafRegistry) -> Partition {
+pub fn minimize(
+    raw: &RawGraph,
+    reg: &LeafRegistry,
+    node_wire_types: &HashMap<u32, u8>,
+) -> Partition {
     let num_leaves = reg.num_leaves();
     let n = raw.num_nodes as usize;
     let msg_count = n - num_leaves;
 
-    // Map a node ID (message or leaf sentinel) to a contiguous index in 0..n.
-    // Smallest possible ENUM sentinel: u32::MAX - 5 - (num_enum_leaves - 1).
-    // All values >= this threshold and < LEAF_VARINT are ENUM sentinels.
+    // ── node_index: map raw node ID to contiguous index 0..n ─────────────────
     let enum_sentinel_min = if num_leaves > NUM_FIXED_LEAVES {
-        LEAF_VARINT - 1 - (num_leaves - NUM_FIXED_LEAVES) as u32 + 1
+        LEAF_VARINT - (num_leaves - NUM_FIXED_LEAVES) as u32
     } else {
-        LEAF_VARINT // no ENUM leaves — sentinel range is empty
+        LEAF_VARINT
     };
 
     let node_index = |node: u32| -> usize {
@@ -54,7 +73,6 @@ pub fn minimize(raw: &RawGraph, reg: &LeafRegistry) -> Partition {
             x if x == LEAF_STRING => msg_count + 3,
             x if x == LEAF_I32 => msg_count + 4,
             x if x >= enum_sentinel_min && x < LEAF_VARINT => {
-                // Dynamic ENUM sentinel: u32::MAX - 5 - i → msg_count + 5 + i
                 let i = (u32::MAX - 5).wrapping_sub(x) as usize;
                 msg_count + NUM_FIXED_LEAVES + i
             }
@@ -62,9 +80,19 @@ pub fn minimize(raw: &RawGraph, reg: &LeafRegistry) -> Partition {
         }
     };
 
-    // ── Reverse adjacency: dst_index → Vec<(src_index, field_number, label)> ──
-    // Label is part of the edge identity: two edges with the same field_number
-    // but different labels (optional/required/repeated) are distinct splitters.
+    // ── Alphabet Σ: all (field_number, label) pairs in the graph ─────────────
+    let alphabet: Vec<(u32, u8)> = {
+        let set: HashSet<(u32, u8)> = raw
+            .edges
+            .iter()
+            .map(|e| (e.field_number, e.label))
+            .collect();
+        let mut v: Vec<(u32, u8)> = set.into_iter().collect();
+        v.sort_unstable();
+        v
+    };
+
+    // ── Reverse adjacency: rev[di] = list of (si, field_number, label) ────────
     let mut rev: Vec<Vec<(usize, u32, u8)>> = vec![Vec::new(); n];
     for edge in &raw.edges {
         let si = node_index(edge.src);
@@ -72,7 +100,7 @@ pub fn minimize(raw: &RawGraph, reg: &LeafRegistry) -> Partition {
         rev[di].push((si, edge.field_number, edge.label));
     }
 
-    // ── Outgoing signature per node: sorted Vec<(field_number, label)> ────────
+    // ── Outgoing signature per node ───────────────────────────────────────────
     let mut sig: Vec<Vec<(u32, u8)>> = vec![Vec::new(); n];
     for edge in &raw.edges {
         let si = node_index(edge.src);
@@ -83,26 +111,22 @@ pub fn minimize(raw: &RawGraph, reg: &LeafRegistry) -> Partition {
         s.dedup();
     }
 
-    // ── Initial partition ─────────────────────────────────────────────────────
-    // Message nodes: grouped by outgoing (field_number, label) signature.
-    // Leaf nodes: grouped by (wire_type, is_string, enum_range_idx) — nodes
-    // with identical attributes are equivalent and may share a block.
-    let mut sig_to_block: HashMap<Vec<(u32, u8)>, u32> = HashMap::new();
-    let mut leaf_attr_to_block: HashMap<(u8, bool, u16), u32> = HashMap::new();
-    let mut block_of: Vec<u32> = vec![0u32; n];
-    let mut num_blocks: u32 = 0;
+    // ── Initial partition P₀ ─────────────────────────────────────────────────
+    let mut sig_to_block: HashMap<(u8, Vec<(u32, u8)>), usize> = HashMap::new();
+    let mut leaf_attr_to_block: HashMap<(u8, bool, u16), usize> = HashMap::new();
+    let mut block_of: Vec<usize> = vec![0usize; n];
+    let mut num_blocks: usize = 0;
 
     for i in 0..msg_count {
+        let wt = node_wire_types.get(&(i as u32)).copied().unwrap_or(2);
         let s = sig[i].clone();
-        let b = sig_to_block.entry(s).or_insert_with(|| {
+        let b = sig_to_block.entry((wt, s)).or_insert_with(|| {
             let b = num_blocks;
             num_blocks += 1;
             b
         });
         block_of[i] = *b;
     }
-
-    // Leaf nodes: two leaves with identical attributes start in the same block.
     for li in 0..num_leaves {
         let sentinel = leaf_sentinel_for_index(li, reg);
         let attrs = leaf_attrs(sentinel, reg);
@@ -115,93 +139,104 @@ pub fn minimize(raw: &RawGraph, reg: &LeafRegistry) -> Partition {
         block_of[msg_count + li] = *b;
     }
 
-    let num_blocks = num_blocks as usize;
-
-    // ── Block membership sets ─────────────────────────────────────────────────
+    // ── Block membership: blocks[id] = set of node indices ───────────────────
     let mut blocks: Vec<HashSet<usize>> = vec![HashSet::new(); num_blocks];
     for i in 0..n {
-        blocks[block_of[i] as usize].insert(i);
+        blocks[block_of[i]].insert(i);
     }
 
-    // ── Worklist: (block_id, field_number, label) splitters ───────────────────
-    let all_field_labels: HashSet<(u32, u8)> = raw
-        .edges
-        .iter()
-        .map(|e| (e.field_number, e.label))
-        .collect();
+    // ── Worklist W: (block_id, field, label) ─────────────────────────────────
+    // in_worklist mirrors the deque contents for O(1) membership queries.
     let mut worklist: VecDeque<(usize, u32, u8)> = VecDeque::new();
+    let mut in_worklist: HashSet<(usize, u32, u8)> = HashSet::new();
+
     for b in 0..num_blocks {
-        for &(f, l) in &all_field_labels {
+        for &(f, l) in &alphabet {
             worklist.push_back((b, f, l));
+            in_worklist.insert((b, f, l));
         }
     }
 
     // ── Refinement loop ───────────────────────────────────────────────────────
-    let mut blocks = blocks;
-    let mut num_blocks = num_blocks;
+    while let Some((a_id, field, label)) = worklist.pop_front() {
+        in_worklist.remove(&(a_id, field, label));
 
-    while let Some((splitter_block, field, label)) = worklist.pop_front() {
-        if splitter_block >= blocks.len() || blocks[splitter_block].is_empty() {
+        if a_id >= blocks.len() || blocks[a_id].is_empty() {
             continue;
         }
 
-        // Predecessors of splitter_block via `(field, label)`.
-        let predecessors: HashSet<usize> = blocks[splitter_block]
+        // X = predecessors of block A via (field, label).
+        let x: HashSet<usize> = blocks[a_id]
             .iter()
-            .flat_map(|&dst| {
-                rev[dst]
+            .flat_map(|&di| {
+                rev[di]
                     .iter()
                     .filter(|(_, f, l)| *f == field && *l == label)
-                    .map(|(src, _, _)| *src)
+                    .map(|(si, _, _)| *si)
             })
             .collect();
 
-        if predecessors.is_empty() {
+        if x.is_empty() {
             continue;
         }
 
-        let mut block_intersection: HashMap<usize, Vec<usize>> = HashMap::new();
-        for &p in &predecessors {
-            block_intersection
-                .entry(block_of[p] as usize)
-                .or_default()
-                .push(p);
+        // Group X members by their current block.
+        let mut x_in_block: HashMap<usize, Vec<usize>> = HashMap::new();
+        for &node in &x {
+            x_in_block.entry(block_of[node]).or_default().push(node);
         }
 
-        for (c, inside) in block_intersection {
-            if inside.len() == blocks[c].len() {
+        for (y_id, y1_nodes) in x_in_block {
+            // Y₁ = Y ∩ X = y1_nodes; Y₂ = Y \ X = blocks[y_id] after removal.
+            if y1_nodes.len() == blocks[y_id].len() {
+                // Y ⊆ X: no split needed.
                 continue;
             }
-            let new_block_id = blocks.len();
-            let mut new_block: HashSet<usize> = HashSet::new();
-            for &node in &inside {
-                blocks[c].remove(&node);
-                new_block.insert(node);
-                block_of[node] = new_block_id as u32;
-            }
-            blocks.push(new_block);
-            num_blocks += 1;
 
-            let smaller = if inside.len() <= blocks[c].len() {
-                new_block_id
-            } else {
-                c
-            };
-            for &(f, l) in &all_field_labels {
-                worklist.push_back((smaller, f, l));
+            // Perform the split: Y₁ gets a new block ID; Y₂ keeps y_id.
+            let y1_id = blocks.len();
+            let mut y1_block: HashSet<usize> = HashSet::new();
+            for &node in &y1_nodes {
+                blocks[y_id].remove(&node);
+                y1_block.insert(node);
+                block_of[node] = y1_id;
+            }
+            blocks.push(y1_block);
+            // blocks[y_id] now contains Y₂.
+
+            let y2_id = y_id;
+            let y1_len = y1_nodes.len();
+            let y2_len = blocks[y2_id].len();
+
+            // Update worklist for every symbol (f', l') per textbook rule.
+            for &(fp, lp) in &alphabet {
+                if in_worklist.contains(&(y_id, fp, lp)) {
+                    // (Y, f', l') ∈ W: replace Y with Y₁ and Y₂.
+                    // Y₂ keeps the original y_id slot — its entry is already
+                    // (y_id=y2_id, fp, lp) which remains in in_worklist.
+                    // Just add Y₁.
+                    if in_worklist.insert((y1_id, fp, lp)) {
+                        worklist.push_back((y1_id, fp, lp));
+                    }
+                } else {
+                    // (Y, f', l') ∉ W: add only the smaller of Y₁ and Y₂.
+                    let smaller_id = if y1_len <= y2_len { y1_id } else { y2_id };
+                    if in_worklist.insert((smaller_id, fp, lp)) {
+                        worklist.push_back((smaller_id, fp, lp));
+                    }
+                }
             }
         }
     }
 
-    let _ = num_blocks;
+    // ── Renumber: non-leaf blocks first, then leaf blocks ─────────────────────
+    let leaf_block_ids: Vec<usize> = (0..num_leaves).map(|li| block_of[msg_count + li]).collect();
+    let leaf_block_set: HashSet<usize> = leaf_block_ids.iter().copied().collect();
 
-    // ── Renumber: non-leaf blocks first, then leaf blocks ────────────────────
-    let leaf_block_ids: Vec<u32> = (0..num_leaves).map(|li| block_of[msg_count + li]).collect();
-
-    let mut old_to_new: HashMap<u32, u32> = HashMap::new();
+    let mut old_to_new: HashMap<usize, u32> = HashMap::new();
     let mut next_msg_id: u32 = 0;
     for &b in &block_of {
-        if !leaf_block_ids.contains(&b) && !old_to_new.contains_key(&b) {
+        if !leaf_block_set.contains(&b) && !old_to_new.contains_key(&b) {
             old_to_new.insert(b, next_msg_id);
             next_msg_id += 1;
         }

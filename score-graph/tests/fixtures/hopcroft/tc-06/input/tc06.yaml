@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+entries:
+  - AnnotatedMapEntry
+  - MultiOptionMapEntry
+  - MapWithOptions
+
+messages:
+  AnnotatedMapEntry:
+    kind: LENDEL
+    fields:
+      - number: 1
+        kind: LEN_STRING
+      - number: 2
+        kind: VARINT
+  MultiOptionMapEntry:
+    kind: LENDEL
+    fields:
+      - number: 1
+        kind: VARINT
+      - number: 2
+        kind: LEN_STRING
+  MapWithOptions:
+    kind: LENDEL
+    fields:
+      - number: 1
+        kind: MESSAGE
+        child: AnnotatedMapEntry
+        label: repeated
+      - number: 2
+        kind: MESSAGE
+        child: MultiOptionMapEntry
+        label: repeated

@@ -36,44 +36,6 @@ const WT_START_GROUP: u32 = 3;
 const WT_END_GROUP: u32 = 4;
 const WT_I32: u32 = 5;
 
-// ── Public types ──────────────────────────────────────────────────────────────
-
-pub struct MatchScore {
-    pub matches: u64,
-    pub unknowns: u64,
-    pub mismatches: u64,    // absent required fields
-    pub non_canonical: u64, // overhang bytes, out-of-range field numbers, truncated negatives
-    pub vetoed: bool,
-}
-
-impl MatchScore {
-    /// Integer score: matches×1 + unknowns×(−10) + mismatches×(−10) + non_canonical×(−20).
-    pub fn score(&self) -> i64 {
-        self.matches as i64
-            - 10 * self.unknowns as i64
-            - 10 * self.mismatches as i64
-            - 20 * self.non_canonical as i64
-    }
-
-    fn veto(&mut self) {
-        self.vetoed = true;
-    }
-}
-
-// ── Entry point ───────────────────────────────────────────────────────────────
-
-pub fn score(pb: &[u8], root_state: u32, graph: &ArchivedCompiledGraph) -> MatchScore {
-    let mut s = MatchScore {
-        matches: 0,
-        unknowns: 0,
-        mismatches: 0,
-        non_canonical: 0,
-        vetoed: false,
-    };
-    score_message(pb, 0, root_state, None, graph, &mut s);
-    s
-}
-
 // ── Multi-entry types (spec 0048) ─────────────────────────────────────────────
 
 /// Per-entry scoring counters for the multi-entry walk.
@@ -116,6 +78,8 @@ struct WalkState<'a> {
     scores: &'a mut Vec<EntryScore>,
     /// Flat bitset: bit i is set iff entry i has been permanently vetoed.
     vetoed: Vec<u64>,
+    /// If set, print a message to stderr whenever this FQDN is vetoed.
+    debug_fqdn: Option<String>,
 }
 
 impl<'a> WalkState<'a> {
@@ -126,6 +90,7 @@ impl<'a> WalkState<'a> {
             graph,
             scores,
             vetoed: vec![0u64; words],
+            debug_fqdn: std::env::var("PROTOTEXT_DEBUG_FQDN").ok(),
         }
     }
 
@@ -134,10 +99,18 @@ impl<'a> WalkState<'a> {
         (self.vetoed[e / 64] >> (e % 64)) & 1 == 1
     }
 
-    fn set_vetoed(&mut self, e: u16) {
-        let e = e as usize;
-        self.vetoed[e / 64] |= 1 << (e % 64);
-        self.scores[e].vetoed = true;
+    fn set_vetoed(&mut self, e: u16, reason: &str) {
+        let ei = e as usize;
+        if self.vetoed[ei / 64] & (1 << (ei % 64)) != 0 {
+            return; // already vetoed
+        }
+        self.vetoed[ei / 64] |= 1 << (ei % 64);
+        self.scores[ei].vetoed = true;
+        if let Some(ref dbg) = self.debug_fqdn {
+            if self.scores[ei].fqdn == *dbg {
+                eprintln!("[veto] {} — {}", self.scores[ei].fqdn, reason);
+            }
+        }
     }
 }
 
@@ -425,16 +398,6 @@ fn parse_group_blind(buf: &[u8], mut pos: usize, expected_field: u64) -> Option<
 // stream wire type matches is determined by looking up the child node's
 // wire_type in the node table (also sorted by state_id).
 
-/// Result of looking up a (state, field_number) pair.
-enum SchemaVerdict {
-    /// Field number not declared in this state.
-    Unknown,
-    /// Field number declared; child node's wire_type does not match the stream.
-    WireTypeMismatch,
-    /// Match: child_state_id and label of the found transition.
-    Found(u32, u8), // (child_state_id, label)
-}
-
 struct TransitionResult {
     child_state_id: u32,
     label: u8,
@@ -485,34 +448,6 @@ fn node_wire_type(graph: &ArchivedCompiledGraph, state_id: u32) -> u8 {
     u8::MAX
 }
 
-fn schema_verdict(
-    graph: &ArchivedCompiledGraph,
-    state: u32,
-    field_number: u32,
-    stream_wire_type: u32,
-) -> SchemaVerdict {
-    match find_transition(graph, state, field_number) {
-        None => SchemaVerdict::Unknown,
-        Some(tr) => {
-            let expected_wt = node_wire_type(graph, tr.child_state_id) as u32;
-            if stream_wire_type == expected_wt {
-                SchemaVerdict::Found(tr.child_state_id, tr.label)
-            } else {
-                SchemaVerdict::WireTypeMismatch
-            }
-        }
-    }
-}
-
-// ── Core recursive scoring walk ───────────────────────────────────────────────
-//
-// Structure: for each field,
-//   1. Parse the wire tag.
-//   2. Determine schema verdict by field number (Unknown / WireTypeMismatch / Found(child)).
-//      WireTypeMismatch vetoes before body consumption.
-//   3. Consume the body (dispatch on stream wire_type for structural validity).
-//   4. For Found(child): apply node-level checks (enum range, UTF-8, recursion).
-
 // ── Cardinality check helpers ─────────────────────────────────────────────────
 
 /// Increment occurrences[field_number] by 1.  The vec is kept sorted.
@@ -523,270 +458,13 @@ fn record_occurrence(occurrences: &mut Vec<(u32, u64)>, field_number: u32) {
     }
 }
 
-/// Apply end-of-frame cardinality checks for `state` against `occurrences`.
-fn apply_cardinality(
-    graph: &ArchivedCompiledGraph,
-    state: u32,
-    occurrences: &[(u32, u64)],
-    s: &mut MatchScore,
-) {
-    // Scan all transitions from `state`.
-    let t = &graph.transitions;
-    let start = t.partition_point(|e| e.state_id.to_native() < state);
-    for entry in &t[start..] {
-        if entry.state_id.to_native() != state {
-            break;
-        }
-        let fn_ = entry.field_number.to_native();
-        let count = occurrences
-            .binary_search_by_key(&fn_, |&(f, _)| f)
-            .map(|i| occurrences[i].1)
-            .unwrap_or(0);
-        match entry.label {
-            0 => {
-                // Optional: >1 is non-canonical
-                if count > 1 {
-                    s.non_canonical += count - 1;
-                }
-            }
-            1 => {
-                // Required: 0 is mismatch, >1 is non-canonical
-                if count == 0 {
-                    s.mismatches += 1;
-                } else if count > 1 {
-                    s.non_canonical += count - 1;
-                }
-            }
-            _ => {} // Repeated: no constraint
-        }
-    }
-}
-
-fn score_message(
-    buf: &[u8],
-    start: usize,
-    state: u32,
-    my_group: Option<u64>,
-    graph: &ArchivedCompiledGraph,
-    s: &mut MatchScore,
-) -> usize {
-    let buflen = buf.len();
-    let mut pos = start;
-    let mut occurrences: Vec<(u32, u64)> = Vec::new();
-
-    loop {
-        if pos == buflen || s.vetoed {
-            if !s.vetoed {
-                if my_group.is_some() {
-                    // Reached EOF while still inside a group — open-ended group → veto.
-                    s.veto();
-                    return buflen;
-                }
-                apply_cardinality(graph, state, &occurrences, s);
-            }
-            return pos;
-        }
-
-        // ── Parse wire tag ────────────────────────────────────────────────────
-
-        let tag = parse_wiretag(buf, pos);
-        if tag.garbage.is_some() {
-            s.veto();
-            return buflen;
-        }
-        let field_number = tag.field_number;
-        let wire_type = tag.wire_type;
-        pos = tag.next_pos;
-        if tag.overhang > 0 {
-            s.non_canonical += 1;
-        }
-        if tag.out_of_range {
-            s.non_canonical += 1;
-        }
-
-        // ── Schema verdict ────────────────────────────────────────────────────
-
-        let verdict = schema_verdict(graph, state, field_number as u32, wire_type);
-        if matches!(verdict, SchemaVerdict::WireTypeMismatch) {
-            s.veto();
-            return buflen;
-        }
-
-        // ── Wire-type dispatch ────────────────────────────────────────────────
-
-        match wire_type {
-            // ── VARINT ───────────────────────────────────────────────────────
-            WT_VARINT => {
-                let vr = parse_varint(buf, pos);
-                if vr.garbage.is_some() {
-                    s.veto();
-                    return buflen;
-                }
-                pos = vr.next_pos;
-                let val = vr.value;
-                if vr.overhang > 0 {
-                    s.non_canonical += 1;
-                }
-                match verdict {
-                    SchemaVerdict::Unknown => s.unknowns += 1,
-                    SchemaVerdict::Found(child, _label) => {
-                        let node = graph.nodes.iter().find(|n| n.state_id.to_native() == child);
-                        if let Some(n) = node {
-                            let eri = n.enum_range_idx.to_native();
-                            if eri != 0xFFFF {
-                                if val >= (1u64 << 32) {
-                                    s.veto();
-                                    return buflen;
-                                }
-                                if (0x8000_0000..=0xFFFF_FFFF).contains(&val) {
-                                    s.non_canonical += 1;
-                                }
-                                if let Some(range) = graph.enum_ranges.get(eri as usize) {
-                                    let (min, max) =
-                                        (range.0.to_native() as i64, range.1.to_native() as i64);
-                                    let signed = val as i32 as i64;
-                                    if signed < min || signed > max {
-                                        s.veto();
-                                        return buflen;
-                                    }
-                                }
-                            }
-                        }
-                        record_occurrence(&mut occurrences, field_number as u32);
-                        s.matches += 1;
-                    }
-                    SchemaVerdict::WireTypeMismatch => unreachable!(),
-                }
-            }
-
-            // ── FIXED 64 ─────────────────────────────────────────────────────
-            WT_I64 => {
-                if pos + 8 > buflen {
-                    s.veto();
-                    return buflen;
-                }
-                pos += 8;
-                match verdict {
-                    SchemaVerdict::Unknown => s.unknowns += 1,
-                    SchemaVerdict::Found(_, _) => {
-                        record_occurrence(&mut occurrences, field_number as u32);
-                        s.matches += 1;
-                    }
-                    SchemaVerdict::WireTypeMismatch => unreachable!(),
-                }
-            }
-
-            // ── LENGTH-DELIMITED ─────────────────────────────────────────────
-            WT_LEN => {
-                let lr = parse_varint(buf, pos);
-                if lr.garbage.is_some() {
-                    s.veto();
-                    return buflen;
-                }
-                pos = lr.next_pos;
-                if lr.overhang > 0 {
-                    s.non_canonical += 1;
-                }
-                let length = lr.value as usize;
-                if pos + length > buflen {
-                    s.veto();
-                    return buflen;
-                }
-                let payload = &buf[pos..pos + length];
-                pos += length;
-
-                match verdict {
-                    SchemaVerdict::Unknown => s.unknowns += 1,
-                    SchemaVerdict::Found(child, _label) => {
-                        let node = graph.nodes.iter().find(|n| n.state_id.to_native() == child);
-                        let is_leaf_node = graph
-                            .transitions
-                            .iter()
-                            .all(|t| t.state_id.to_native() != child);
-                        if is_leaf_node {
-                            if node.is_some_and(|n| n.is_string)
-                                && std::str::from_utf8(payload).is_err()
-                            {
-                                s.veto();
-                                return buflen;
-                            }
-                            record_occurrence(&mut occurrences, field_number as u32);
-                            s.matches += 1;
-                        } else {
-                            record_occurrence(&mut occurrences, field_number as u32);
-                            s.matches += 1;
-                            score_message(payload, 0, child, None, graph, s);
-                        }
-                    }
-                    SchemaVerdict::WireTypeMismatch => unreachable!(),
-                }
-            }
-
-            // ── START GROUP ──────────────────────────────────────────────────
-            WT_START_GROUP => match verdict {
-                SchemaVerdict::Unknown => {
-                    match parse_group_blind(buf, pos, field_number) {
-                        None => {
-                            s.veto();
-                            return buflen;
-                        }
-                        Some(new_pos) => pos = new_pos,
-                    }
-                    s.unknowns += 1;
-                }
-                SchemaVerdict::Found(child, _label) => {
-                    record_occurrence(&mut occurrences, field_number as u32);
-                    s.matches += 1;
-                    pos = score_message(buf, pos, child, Some(field_number), graph, s);
-                }
-                SchemaVerdict::WireTypeMismatch => unreachable!(),
-            },
-
-            // ── END GROUP ────────────────────────────────────────────────────
-            WT_END_GROUP => match my_group {
-                None => {
-                    s.veto();
-                    return buflen;
-                }
-                Some(expected) => {
-                    if field_number != expected {
-                        s.veto();
-                        return buflen;
-                    }
-                    apply_cardinality(graph, state, &occurrences, s);
-                    return pos;
-                }
-            },
-
-            // ── FIXED 32 ─────────────────────────────────────────────────────
-            WT_I32 => {
-                if pos + 4 > buflen {
-                    s.veto();
-                    return buflen;
-                }
-                pos += 4;
-                match verdict {
-                    SchemaVerdict::Unknown => s.unknowns += 1,
-                    SchemaVerdict::Found(_, _) => {
-                        record_occurrence(&mut occurrences, field_number as u32);
-                        s.matches += 1;
-                    }
-                    SchemaVerdict::WireTypeMismatch => unreachable!(),
-                }
-            }
-
-            _ => unreachable!("wire type > 5 caught by parse_wiretag"),
-        }
-    }
-}
-
 // ── Multi-entry parallel walk (spec 0048) ─────────────────────────────────────
 
 /// Veto all entries in `active` and clear the set.
-fn veto_all(active: &mut Vec<ActiveEntry>, ws: &mut WalkState) {
+fn veto_all(active: &mut Vec<ActiveEntry>, ws: &mut WalkState, reason: &str) {
     for ae in active.iter() {
         for &e in &ae.entries {
-            ws.set_vetoed(e);
+            ws.set_vetoed(e, reason);
         }
     }
     active.clear();
@@ -874,7 +552,7 @@ fn score_message_multi(
             if !active.is_empty() {
                 if my_group.is_some() {
                     // Reached EOF while still inside a group — open-ended group → veto.
-                    veto_all(&mut active, ws);
+                    veto_all(&mut active, ws, "open-ended group (EOF inside group)");
                     return buflen;
                 }
                 for ae in &active {
@@ -888,7 +566,7 @@ fn score_message_multi(
 
         let tag = parse_wiretag(buf, pos);
         if tag.garbage.is_some() {
-            veto_all(&mut active, ws);
+            veto_all(&mut active, ws, "garbage wire tag");
             return buflen;
         }
         let field_number = tag.field_number;
@@ -938,7 +616,12 @@ fn score_message_multi(
                 .map(|(_, v)| v);
             if matches!(v, Some(Verdict::Mismatch)) {
                 for &e in &ae.entries {
-                    ws.set_vetoed(e);
+                    ws.set_vetoed(
+                        e,
+                        &format!(
+                            "wire-type mismatch on field {field_number} (wire_type={wire_type})"
+                        ),
+                    );
                 }
                 ae.entries.clear();
             }
@@ -965,7 +648,7 @@ fn score_message_multi(
             WT_VARINT => {
                 let vr = parse_varint(buf, pos);
                 if vr.garbage.is_some() {
-                    veto_all(&mut active, ws);
+                    veto_all(&mut active, ws, "truncated varint body");
                     return buflen;
                 }
                 pos = vr.next_pos;
@@ -1019,7 +702,10 @@ fn score_message_multi(
                             }
                             if do_veto {
                                 for &e in &ae.entries {
-                                    ws.set_vetoed(e);
+                                    ws.set_vetoed(
+                                        e,
+                                        &format!("enum value out of range on field {field_number}"),
+                                    );
                                 }
                                 ae.entries.clear();
                             } else {
@@ -1037,7 +723,7 @@ fn score_message_multi(
 
             WT_I64 => {
                 if pos + 8 > buflen {
-                    veto_all(&mut active, ws);
+                    veto_all(&mut active, ws, "truncated I64 body");
                     return buflen;
                 }
                 pos += 8;
@@ -1062,7 +748,7 @@ fn score_message_multi(
             WT_LEN => {
                 let lr = parse_varint(buf, pos);
                 if lr.garbage.is_some() {
-                    veto_all(&mut active, ws);
+                    veto_all(&mut active, ws, "truncated LEN length prefix");
                     return buflen;
                 }
                 pos = lr.next_pos;
@@ -1078,7 +764,7 @@ fn score_message_multi(
 
                 let length = lr.value as usize;
                 if pos + length > buflen {
-                    veto_all(&mut active, ws);
+                    veto_all(&mut active, ws, "LEN body extends past end of buffer");
                     return buflen;
                 }
                 let payload = &buf[pos..pos + length];
@@ -1114,7 +800,12 @@ fn score_message_multi(
                                 let is_string = node.is_some_and(|n| n.is_string);
                                 if is_string && std::str::from_utf8(payload).is_err() {
                                     for &e in &ae.entries {
-                                        ws.set_vetoed(e);
+                                        ws.set_vetoed(
+                                            e,
+                                            &format!(
+                                                "invalid UTF-8 on string field {field_number}"
+                                            ),
+                                        );
                                     }
                                     ae.entries.clear();
                                 } else {
@@ -1177,7 +868,7 @@ fn score_message_multi(
                     // All entries are Unknown — use parse_group_blind for boundary.
                     match parse_group_blind(buf, pos, field_number) {
                         None => {
-                            veto_all(&mut active, ws);
+                            veto_all(&mut active, ws, "malformed unknown group");
                             return buflen;
                         }
                         Some(np) => np,
@@ -1198,7 +889,7 @@ fn score_message_multi(
                             for ae in active.iter_mut() {
                                 if matches!(verdict_for(ae.state_id), Verdict::Unknown) {
                                     for &e in &ae.entries {
-                                        ws.set_vetoed(e);
+                                        ws.set_vetoed(e, "malformed group (blind fallback)");
                                     }
                                     ae.entries.clear();
                                 }
@@ -1225,12 +916,18 @@ fn score_message_multi(
 
             WT_END_GROUP => match my_group {
                 None => {
-                    veto_all(&mut active, ws);
+                    veto_all(&mut active, ws, "unexpected END_GROUP outside any group");
                     return buflen;
                 }
                 Some(expected) => {
                     if field_number != expected {
-                        veto_all(&mut active, ws);
+                        veto_all(
+                            &mut active,
+                            ws,
+                            &format!(
+                                "mismatched END_GROUP: expected field {expected}, got {field_number}"
+                            ),
+                        );
                         return buflen;
                     }
                     for ae in &active {
@@ -1242,7 +939,7 @@ fn score_message_multi(
 
             WT_I32 => {
                 if pos + 4 > buflen {
-                    veto_all(&mut active, ws);
+                    veto_all(&mut active, ws, "truncated I32 body");
                     return buflen;
                 }
                 pos += 4;

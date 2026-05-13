@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+entries:
+  - A
+  - B
+
+messages:
+  A:
+    kind: LENDEL
+    fields:
+      - number: 1
+        kind: VARINT
+  B:
+    kind: LENDEL
+    fields:
+      - number: 1
+        kind: VARINT
+        label: repeated

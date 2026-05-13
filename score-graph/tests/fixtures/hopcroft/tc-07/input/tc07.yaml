@@ -1,0 +1,83 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+entries:
+  - Root1
+  - Root2
+
+# Root1 and Root2 have identical signatures (fields 1,2 both repeated MESSAGE).
+# Root1.f1 → TypeA, Root1.f2 → TypeB
+# Root2.f1 → TypeC, Root2.f2 → TypeD
+#
+# TypeA: f1→VARINT, f2→LEN_STRING  (sig: [(1,opt),(2,opt)])
+# TypeB: f1→LEN_STRING, f2→VARINT  (sig: [(1,opt),(2,opt)])
+# TypeC: f1→VARINT, f2→LEN_STRING  (sig: same as TypeA)
+# TypeD: f1→LEN_STRING, f2→VARINT  (sig: same as TypeB)
+#
+# TypeA and TypeC are identical → should collapse to same state.
+# TypeB and TypeD are identical → should collapse to same state.
+# Root1.f1 and Root2.f1 both → block(TypeA/C); same for f2 → block(TypeB/D).
+# So Root1 and Root2 SHOULD be bisimilar and collapse to the same state.
+# This is the correct (non-buggy) case.
+#
+# Now add a twist: TypeA2 is identical to TypeA, but TypeB2 is DIFFERENT from TypeB.
+# Root3 has f1→TypeA2, f2→TypeB2.
+# Root3 must be in a DIFFERENT state from Root1/Root2.
+
+messages:
+  TypeA:
+    kind: LENDEL
+    fields:
+      - number: 1
+        kind: VARINT
+      - number: 2
+        kind: LEN_STRING
+
+  TypeB:
+    kind: LENDEL
+    fields:
+      - number: 1
+        kind: LEN_STRING
+      - number: 2
+        kind: VARINT
+
+  TypeC:
+    kind: LENDEL
+    fields:
+      - number: 1
+        kind: VARINT
+      - number: 2
+        kind: LEN_STRING
+
+  TypeD:
+    kind: LENDEL
+    fields:
+      - number: 1
+        kind: LEN_STRING
+      - number: 2
+        kind: VARINT
+
+  Root1:
+    kind: LENDEL
+    fields:
+      - number: 1
+        kind: MESSAGE
+        child: TypeA
+        label: repeated
+      - number: 2
+        kind: MESSAGE
+        child: TypeB
+        label: repeated
+
+  Root2:
+    kind: LENDEL
+    fields:
+      - number: 1
+        kind: MESSAGE
+        child: TypeC
+        label: repeated
+      - number: 2
+        kind: MESSAGE
+        child: TypeD
+        label: repeated

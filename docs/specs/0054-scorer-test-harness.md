@@ -4,10 +4,10 @@ SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
 SPDX-License-Identifier: MIT
 -->
 
-# 0054 — Scorer test harness
+# 0054 — Scorer stress-test harness
 
-**Status:** draft
-**Implemented in:** —
+**Status:** implemented
+**Implemented in:** 2026-05-12
 **App:** prototools (cross-component)
 
 ---
@@ -15,37 +15,45 @@ SPDX-License-Identifier: MIT
 ## Background
 
 The scorer (spec 0042 / 0048) identifies the protobuf message type of an
-unknown binary blob by matching it against a scoring graph DB.  We need an
-automated regression harness that:
+unknown binary blob by matching it against a schema DB.  We need an
+automated stress-test harness that:
 
-- Builds a realistic, large-scale scoring graph DB from public and custom
-  proto corpora.
-- Runs the scorer against a curated set of protobuf message instances.
-- Asserts that each instance scores highest for its known ground-truth type.
+- Builds a realistic, large-scale schema DB from public proto corpora using
+  `reproto --build-schema-db` (spec 0056).
+- Generates pseudo-random protobuf instances at test time using
+  `prototext instantiate-schema` (spec 0056).
+- Runs `prototext -d --db` auto-inference against each instance and asserts
+  that it identifies the correct ground-truth type.
 
-The harness also serves as the foundation for the scoring tutorial (spec
-0050): it produces the DB and fixture instances that the tutorial references.
+The harness is intentionally excluded from the regular `nix-build` target
+(too slow) and exposed only via `nix-build -A stress-tests`.
 
 ---
 
 ## Goals
 
-1. A repeatable pipeline that builds the scoring graph DB from a pinned
-   corpus at test time.
-2. A curated fixture inventory (committed to the repo) listing the types
-   to test and the `.pb` instance files to score against them.
-3. A test runner that invokes the scorer for each fixture and asserts
-   correctness.
-4. Clean separation between the DB-build step (slow, cacheable) and the
-   scoring step (fast, per-fixture).
+1. A repeatable pipeline that builds the schema DB from pinned corpora at
+   test time using `reproto --build-schema-db`.
+2. A config file (committed to the repo) listing the message types for
+   which protobuf instances are to be generated and tested.
+3. Protobuf instances are generated at test time with
+   `prototext instantiate-schema` (default seed); they are never committed
+   to Git.
+4. A test runner that invokes `prototext -d --db` auto-inference for each
+   instance and asserts that the inferred type matches the ground truth.
+5. Clean separation between the DB-build step (slow, cacheable) and the
+   instance-generation + scoring step (fast, per-type).
+6. Triggered by `nix-build -A stress-tests`; not triggered by regular
+   `nix-build` (i.e. not part of the `ci` closure).
 
 ---
 
 ## Non-goals
 
-- Polishing the `hopcroft-db` CLI wrapper (future work, separate spec).
 - Benchmarking scorer performance.
-- Covering every type in the corpus — only the curated inventory is tested.
+- Covering every type in the corpus — only the types listed in the config
+  are tested.
+- Committing fixture `.pb` files to Git.
 
 ---
 
@@ -55,12 +63,12 @@ The harness also serves as the foundation for the scoring tutorial (spec
 
 | Repo | Pinned hash | Notes |
 |---|---|---|
-| `googleapis/googleapis` | TBD | Remove `preview/` subtree before compiling |
-| `open-telemetry/opentelemetry-proto` | TBD | |
+| `googleapis/googleapis` | `83e70370751716489986478edc8713b455b21e86` | Remove `preview/` subtree before compiling |
+| `open-telemetry/opentelemetry-proto` | `1d70aa012dc42a5e74a215ce31c1fd84244ce89e` | |
 
 ### Local corpus
 
-Custom `.proto` files committed under `tests/harness/protos/` in this repo.
+Custom `.proto` files committed under `tests/stress/protos/` in this repo.
 These cover types and patterns not well represented in the public corpora.
 
 ---
@@ -74,16 +82,19 @@ fetch corpora (pinned hashes)
 protoc (per .proto → mono-fdp .pb, no --include_imports)
         │
         ▼
-reproto --use-variant all --emit-scoring-graphs
+reproto --build-schema-db stress.rkyv
+        │  (produces stress.rkyv + stress/schemas.pb)
+        ▼
+for each FQDN in types.yaml:
+    prototext instantiate-schema --db stress.rkyv <FQDN> -o instance.pb
         │
         ▼
-hopcroft-db build  →  scoring_graph.db
-        │
+prototext --list-schemas --db stress.rkyv inst1.pb inst2.pb ...
+        │  (YAML: list of {path, types} dicts; DB loaded once)
         ▼
-scorer --db scoring_graph.db  <fixture.pb>  →  ranked type list
-        │
-        ▼
-assert ground_truth rank == 1
+for each result:
+    FAIL  if FQDN not in top-tied list  (wrong inference)
+    WARN  if len(top-tied) > max_ties   (too many ties, shown in output)
 ```
 
 ### Step 1 — Fetch and compile
@@ -103,98 +114,128 @@ protoc --descriptor_set_out=<out>/<flat_name>.pb \
 where `<flat_name>` is the proto path with `/` replaced by `_` and
 `.proto` stripped.
 
-### Step 2 — reproto
+### Step 2 — Build schema DB
 
 ```bash
-reproto --use-variant all --emit-scoring-graphs \
-        -I <pb_dir> -O <graph_dir> .
+reproto --build-schema-db stress.rkyv \
+        -I <pb_dir> .
 ```
 
 All corpora are compiled into a single `<pb_dir>` so reproto sees them
-together and deduplicates as needed.
+together and deduplicates as needed.  This produces `stress.rkyv` (the
+compiled Hopcroft scoring graph) and the sibling `stress/schemas.pb` (the
+`FileDescriptorSet` for all types).
 
-### Step 3 — hopcroft-db build
+### Step 3 — Generate instance and assert
 
-```bash
-cargo run -p hopcroft-db -- build \
-    --input <graph_dir> \
-    --output scoring_graph.db
-```
-
-If the merged build fails due to unresolvable conflicts, fall back to
-per-corpus DBs (out of scope for this spec; noted as a contingency).
-
-### Step 4 — Score and assert
-
-For each fixture listed in the inventory (§ Fixture inventory):
+For each type listed in `types.yaml`, generate a pseudo-random instance and
+score it with `--list-schemas`:
 
 ```bash
-scorer --db scoring_graph.db <fixture.pb>
+prototext instantiate-schema --db stress.rkyv <TYPE> -o instance.pb
+prototext --list-schemas --db stress.rkyv instance.pb
 ```
 
-Parse the ranked output, extract the top-ranked type FQDN, compare with
-the `ground_truth` embedded in the fixture's leading `#` comment.  Assert
-equality.
+`--list-schemas` (with default `top=0`) prints only the FQDNs that tie at the
+highest score, one per line, sorted lexicographically.  Assert that the
+expected FQDN appears in the list and that the number of tied FQDNs does not
+exceed `max_ties` (from `types.yaml`, default 5).
 
 ---
 
-## Fixture inventory
+## Type config
 
-A YAML file committed at `tests/harness/fixtures.yaml`:
+A YAML file committed at `tests/stress/types.yaml`:
 
 ```yaml
-fixtures:
-  - path: tests/harness/fixtures/google_api_http_rule.pb
-    ground_truth: .google.api.HttpRule
-  - path: tests/harness/fixtures/otel_trace_span.pb
-    ground_truth: .opentelemetry.proto.trace.v1.Span
-  - path: tests/harness/fixtures/custom_my_message.pb
-    ground_truth: .mycompany.myservice.MyMessage
+types:
+  - google.api.HttpRule                            # bare FQDN (no leading dot)
+  - {fqdn: opentelemetry.proto.trace.v1.Span, max_ties: 10}
   # ... more entries
 ```
 
-Each `.pb` fixture file is a `#@` prototext file (suffix `.pb`, magic line
-`#@ prototext: protoc`, ground-truth comment on the second line).  See spec
-0055 for how these files are generated.
+Each entry is either a bare FQDN string or a dict with a `fqdn` key and an
+optional `max_ties` key (default 5).  No leading dot.  Entries are sorted
+lexicographically by FQDN.
+
+`max_ties` controls a test warning threshold: if `--list-schemas` returns more
+than `max_ties` tied FQDNs, the test emits a `warnings.warn` (visible in
+pytest output) but still passes, since excessive ties indicate a structurally
+ambiguous type in the given corpus rather than a scorer bug.  The warning
+message includes the actual tie count.
+
+A test fails (hard `FAIL`) only when the expected FQDN is absent from the
+top-tied list — meaning the scorer ranked a different type higher, which
+indicates wrong inference.
+
+One `prototext instantiate-schema` call is made per type using the default
+seed (0), yielding one instance file.
 
 ---
 
 ## Test runner
 
-Implemented as a pytest test (`tests/harness/test_scorer_harness.py`) that:
+Implemented as a pytest test (`tests/stress/test_stress.py`) that:
 
-1. Calls the pipeline build steps (corpus fetch, protoc, reproto,
-   hopcroft-db) once per session via a `pytest` session-scoped fixture,
-   caching results under a configurable cache directory.
-2. Parametrizes over the fixture inventory YAML.
-3. For each fixture, invokes the scorer subprocess and asserts
-   `top_ranked_fqdn == ground_truth`.
+1. Calls the DB-build steps (corpus fetch, protoc, reproto) once per
+   session via a `pytest` session-scoped fixture, caching results under a
+   configurable temp directory.
+2. Loads `types.yaml` and parametrizes over the listed FQDNs.
+3. For each FQDN, runs `prototext instantiate-schema --db stress.rkyv`
+   (default seed 0) to generate an instance, then runs
+   `prototext --list-schemas --db stress.rkyv` on it.
+4. Asserts the expected FQDN appears in the top-tied list and that
+   `len(top-tied) <= max_ties` (from `types.yaml`, default 5).
 
-The build steps are skipped if the cache directory already contains a
-valid `scoring_graph.db` (cache invalidated by hash of pinned corpus
+The DB-build step is skipped if the cache directory already contains a
+valid `stress.rkyv` (cache invalidated by a hash of the pinned corpus
 hashes + local proto files).
+
+---
+
+## Nix integration
+
+The stress-test derivation is a `pkgs.runCommand` that:
+
+- Takes `reproto`, `prototext`, `protobuf` (for `protoc`), and a Python
+  environment with `pytest` as `buildInputs`.
+- Runs the full pipeline (corpus fetch → protoc → reproto → pytest).
+- Is exposed as `nix-build -A stress-tests`.
+- Is **not** included in the `ci` closure (kept separate to avoid slowing
+  down the regular CI build).
+
+```nix
+stress-tests = pkgs.runCommand "stress-tests" {
+  buildInputs = [
+    pkgs.protobuf
+    pkgs.git
+    reproto
+    prototext
+    (pythonPkgs.python.withPackages (_: [ pythonPkgs.pytest ]))
+  ];
+} ''
+  pytest -p no:cacheprovider ${./tests/stress}/
+  touch $out
+'';
+```
 
 ---
 
 ## Directory layout
 
 ```
-tests/harness/
-├── fixtures.yaml          # fixture inventory (committed)
-├── fixtures/              # .pb prototext fixture files (committed)
-│   ├── google_api_http_rule.pb
-│   └── ...
+tests/stress/
+├── types.yaml             # type config (committed)
 ├── protos/                # custom .proto files (committed)
 │   └── ...
-└── test_scorer_harness.py # pytest entry point
+└── test_stress.py         # pytest entry point (committed)
 ```
+
+Generated artefacts (instances, `stress.rkyv`, `stress/schemas.pb`) are
+written to a temporary directory at test time and never committed to Git.
 
 ---
 
 ## Open questions
 
-- Exact pinned hashes for googleapis and opentelemetry-proto (to be
-  recorded once corpus selection is finalised).
-- Whether a single merged DB is feasible or per-corpus DBs are needed
-  (depends on hopcroft-db conflict behaviour).
 - Cache invalidation strategy for CI vs. local development.

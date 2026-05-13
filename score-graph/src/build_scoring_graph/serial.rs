@@ -88,3 +88,53 @@ pub fn write(graph: &CompiledGraph, path: &Path) -> Result<usize, Box<dyn std::e
     std::fs::write(path, &buf)?;
     Ok(buf.len())
 }
+
+// ── YAML dump (spec 0059 §2) ──────────────────────────────────────────────────
+
+/// Serialize `graph` to human-readable YAML (spec 0059 §2 format).
+pub fn dump_compiled(graph: &CompiledGraph) -> String {
+    let mut out = String::new();
+
+    // states
+    out.push_str("states:\n");
+    for n in &graph.nodes {
+        out.push_str(&format!("  - id: {}\n", n.state_id));
+        out.push_str(&format!("    wire_type: {}\n", n.wire_type));
+        out.push_str(&format!(
+            "    is_string: {}\n",
+            if n.is_string { "true" } else { "false" }
+        ));
+        if n.enum_range_idx == 0xFFFF {
+            out.push_str("    enum_range: null\n");
+        } else {
+            let (min, max) = graph.enum_ranges[n.enum_range_idx as usize];
+            out.push_str(&format!("    enum_range: [{}, {}]\n", min, max));
+        }
+    }
+
+    // transitions
+    out.push_str("transitions:\n");
+    for t in &graph.transitions {
+        out.push_str(&format!("  - from: {}\n", t.state_id));
+        out.push_str(&format!("    field: {}\n", t.field_number));
+        let label = match t.label {
+            0 => "optional",
+            1 => "required",
+            2 => "repeated",
+            _ => "unknown",
+        };
+        out.push_str(&format!("    label: {}\n", label));
+        out.push_str(&format!("    to: {}\n", t.child_state_id));
+    }
+
+    // roots
+    out.push_str("roots:\n");
+    let mut roots: Vec<&RootEntry> = graph.roots.iter().collect();
+    roots.sort_by(|a, b| a.fqdn.cmp(&b.fqdn));
+    for r in roots {
+        out.push_str(&format!("  - fqdn: {}\n", r.fqdn));
+        out.push_str(&format!("    state: {}\n", r.state_id));
+    }
+
+    out
+}

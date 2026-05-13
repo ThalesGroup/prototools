@@ -70,6 +70,35 @@ impl std::error::Error for SchemaError {}
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
+/// Decode `schema_bytes` into a `DescriptorPool`, for use with
+/// `schema_from_pool` when instantiating multiple types from the same bytes.
+pub fn decode_pool(schema_bytes: &[u8]) -> Result<DescriptorPool, SchemaError> {
+    DescriptorPool::decode(schema_bytes).map_err(|e| SchemaError::InvalidDescriptor(e.to_string()))
+}
+
+/// Create a `ParsedSchema` from an already-decoded pool and a root message name.
+pub fn schema_from_pool(
+    pool: DescriptorPool,
+    root_msg_name: &str,
+) -> Result<ParsedSchema, SchemaError> {
+    let root_full_name = root_msg_name.trim_start_matches('.').to_string();
+    if pool.get_message_by_name(&root_full_name).is_none() {
+        let available = pool
+            .all_messages()
+            .map(|m| m.full_name().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(SchemaError::MessageNotFound(format!(
+            "root message '{}' not found in schema (available: {})",
+            root_full_name, available
+        )));
+    }
+    Ok(ParsedSchema {
+        pool,
+        root_full_name,
+    })
+}
+
 /// Parse `schema_bytes` into a `ParsedSchema`.
 ///
 /// An empty `schema_bytes` or empty `root_msg_name` returns a schema whose

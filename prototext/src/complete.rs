@@ -150,16 +150,10 @@ fn complete_path_under(
 
 // ── Completer functions ───────────────────────────────────────────────────────
 
-/// Complete `.pb` descriptor files relative to cwd.
-pub fn complete_pb_files(incomplete: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
+/// Complete descriptor files (any extension) relative to cwd.
+pub fn complete_descriptor_path(incomplete: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
     let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    complete_path_under(incomplete, &base, Some(".pb"), false)
-}
-
-/// Complete `.rkyv` schema DB files relative to cwd.
-pub fn complete_db_path(incomplete: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
-    let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    complete_path_under(incomplete, &base, Some(".rkyv"), false)
+    complete_path_under(incomplete, &base, None, false)
 }
 
 /// Complete any file or directory path relative to cwd.
@@ -177,33 +171,19 @@ pub fn complete_dir_path(incomplete: &std::ffi::OsStr) -> Vec<CompletionCandidat
 /// Complete message type names.
 ///
 /// Priority:
-/// 1. `--descriptor`/`-D` on the partial command line → read that file.
-/// 2. `--db`/`PROTOTEXT_DB` → load the sibling `<stem>/schemas.pb`.
-/// 3. Embedded descriptor (all `google.protobuf.*` types).
+/// 1. `--descriptor` / `PROTOTEXT_DEFAULT_DESCRIPTOR` on the partial command line → read that file.
+/// 2. Embedded descriptor (all `google.protobuf.*` types).
 pub fn complete_type_names(incomplete: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
-    use crate::run::schemas_pb_from_db;
-
-    let bytes: std::borrow::Cow<[u8]> =
-        if let Some(path) = flag_value_from_args("-D", "--descriptor") {
-            match std::fs::read(&path) {
-                Ok(b) => std::borrow::Cow::Owned(b),
-                Err(_) => return vec![],
-            }
-        } else if let Some(db_path) =
-            flag_value_from_args("", "--db").or_else(|| std::env::var_os("PROTOTEXT_DB"))
-        {
-            let schemas_pb = schemas_pb_from_db(Path::new(&db_path));
-            if schemas_pb.exists() {
-                match std::fs::read(&schemas_pb) {
-                    Ok(b) => std::borrow::Cow::Owned(b),
-                    Err(_) => std::borrow::Cow::Borrowed(EMBEDDED_DESCRIPTOR),
-                }
-            } else {
-                std::borrow::Cow::Borrowed(EMBEDDED_DESCRIPTOR)
-            }
-        } else {
-            std::borrow::Cow::Borrowed(EMBEDDED_DESCRIPTOR)
-        };
+    let bytes: std::borrow::Cow<[u8]> = if let Some(path) = flag_value_from_args("", "--descriptor")
+        .or_else(|| std::env::var_os("PROTOTEXT_DEFAULT_DESCRIPTOR"))
+    {
+        match std::fs::read(&path) {
+            Ok(b) => std::borrow::Cow::Owned(b),
+            Err(_) => return vec![],
+        }
+    } else {
+        std::borrow::Cow::Borrowed(EMBEDDED_DESCRIPTOR)
+    };
 
     let prefix = incomplete.to_string_lossy();
     message_names_from_descriptor(&bytes)

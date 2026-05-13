@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use super::hopcroft::Partition;
-use super::load::{FieldLabel, Merged, ScoringField, ScoringKind};
+use super::load::{FieldLabel, Merged, NodeKind, ScoringField, ScoringKind};
 use super::serial::CompiledGraph;
 use super::serial::{NodeEntry, RootEntry, TransitionEntry};
 
@@ -77,8 +77,8 @@ fn leaf_for_field(field: &ScoringField, reg: &mut LeafRegistry) -> u32 {
             let (min, max) = field.enum_range.expect("Enum field must have enum_range");
             reg.enum_sentinel(min, max)
         }
-        ScoringKind::LenMsg | ScoringKind::Group => {
-            panic!("leaf_for_field called on message kind")
+        ScoringKind::Node => {
+            panic!("leaf_for_field called on node kind")
         }
     }
 }
@@ -140,17 +140,19 @@ pub struct RawEdge {
 }
 
 pub struct RawGraph {
-    /// Maps FQDN → dense NodeId (message nodes only).
+    /// Maps FQDN → dense NodeId (non-leaf nodes only).
     pub node_ids: HashMap<String, u32>,
     pub edges: Vec<RawEdge>,
-    /// Total node count: message nodes + all leaves.
+    /// Total node count: non-leaf nodes + all leaves.
     pub num_nodes: u32,
+    /// wire_type per non-leaf node ID (2=LENDEL, 3=GROUP).
+    pub node_wire_types: HashMap<u32, u8>,
 }
 
 pub fn build(merged: &Merged) -> (RawGraph, LeafRegistry) {
     let mut reg = LeafRegistry::new();
 
-    // Assign dense IDs to message nodes.
+    // Assign dense IDs to non-leaf nodes.
     let mut node_ids: HashMap<String, u32> = HashMap::new();
     for fqdn in merged.states.keys() {
         let id = node_ids.len() as u32;
@@ -168,11 +170,22 @@ pub fn build(merged: &Merged) -> (RawGraph, LeafRegistry) {
         }
     }
 
+    // Pre-compute wire_type per node ID from node_kinds (spec 0058).
+    // This must happen before Hopcroft so the initial partition is correct.
+    let mut node_wire_types: HashMap<u32, u8> = HashMap::new();
+    for (fqdn, &node_id) in &node_ids {
+        let wt = match merged.node_kinds.get(fqdn) {
+            Some(NodeKind::Group) => 3u8,
+            _ => 2u8,
+        };
+        node_wire_types.insert(node_id, wt);
+    }
+
     let mut edges = Vec::new();
     for (fqdn, fields) in &merged.states {
         let src = node_ids[fqdn];
         for f in fields {
-            let dst = if f.kind.is_message() {
+            let dst = if f.kind.is_node() {
                 let child_fqdn = f.child.as_deref().unwrap();
                 node_ids[child_fqdn]
             } else {
@@ -192,14 +205,15 @@ pub fn build(merged: &Merged) -> (RawGraph, LeafRegistry) {
         }
     }
 
-    let msg_count = node_ids.len() as u32;
-    let num_nodes = msg_count + reg.num_leaves() as u32;
+    let node_count = node_ids.len() as u32;
+    let num_nodes = node_count + reg.num_leaves() as u32;
 
     (
         RawGraph {
             node_ids,
             edges,
             num_nodes,
+            node_wire_types,
         },
         reg,
     )
@@ -211,7 +225,7 @@ pub fn compile(
     raw: &RawGraph,
     reg: &LeafRegistry,
     partition: &Partition,
-    merged: &Merged,
+    roots: &[String],
 ) -> CompiledGraph {
     let num_leaves = reg.num_leaves();
     let _num_msg_blocks = partition.num_blocks() - num_leaves;
@@ -245,35 +259,19 @@ pub fn compile(
     transitions.sort_by_key(|t| (t.state_id, t.field_number));
 
     // ── Node table ────────────────────────────────────────────────────────────
-    // Message/group nodes: wire_type comes from the ScoringKind of any edge
-    // pointing *to* them — all edges to the same block share the same wire_type
-    // after Hopcroft.  We derive it from the merged field definitions.
+    // Non-leaf nodes: wire_type is derived from node_wire_types, which was
+    // populated before Hopcroft from node_kinds (spec 0058).  All nodes in the
+    // same block have the same wire_type (guaranteed by initial partition).
     //
     // Leaf nodes: attributes come directly from LeafAttrs.
 
     // Map block_id → NodeEntry attributes.
     let mut node_attrs: HashMap<u32, (u8, bool, u16)> = HashMap::new();
 
-    // Message/group node blocks: derive wire_type from the field kind.
-    for fields in merged.states.values() {
-        for f in fields {
-            if !f.kind.is_message() {
-                continue;
-            }
-            let child_fqdn = f.child.as_deref().unwrap();
-            if let Some(&child_node) = raw.node_ids.get(child_fqdn) {
-                let block = partition.block_of(child_node);
-                let wt = f.kind.wire_type() as u8;
-                node_attrs.entry(block).or_insert((wt, false, 0xFFFF));
-            }
-        }
-    }
-    // Message nodes that are only roots (no incoming edge) default to LEN (wire_type=2).
-    for fqdn in &merged.roots {
-        if let Some(&node_id) = raw.node_ids.get(fqdn) {
-            let block = partition.block_of(node_id);
-            node_attrs.entry(block).or_insert((2, false, 0xFFFF));
-        }
+    // Non-leaf node blocks: use pre-computed wire_types.
+    for (&node_id, &wt) in &raw.node_wire_types {
+        let block = partition.block_of(node_id);
+        node_attrs.entry(block).or_insert((wt, false, 0xFFFF));
     }
 
     // Leaf node blocks.
@@ -302,11 +300,11 @@ pub fn compile(
     nodes.sort_by_key(|n| n.state_id);
 
     // ── Root entries ──────────────────────────────────────────────────────────
-    let mut roots: Vec<RootEntry> = Vec::new();
-    for fqdn in &merged.roots {
+    let mut root_entries: Vec<RootEntry> = Vec::new();
+    for fqdn in roots {
         if let Some(&node_id) = raw.node_ids.get(fqdn) {
             let state_id = partition.block_of(node_id);
-            roots.push(RootEntry {
+            root_entries.push(RootEntry {
                 fqdn: fqdn.clone(),
                 state_id,
             });
@@ -320,7 +318,7 @@ pub fn compile(
     CompiledGraph {
         nodes,
         transitions,
-        roots,
+        roots: root_entries,
         enum_ranges: reg.enum_ranges.clone(),
         num_states: partition.num_blocks() as u32,
     }

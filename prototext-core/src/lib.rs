@@ -9,7 +9,7 @@ pub mod instantiate;
 pub mod schema;
 pub mod serialize;
 
-pub use schema::{ParsedSchema, SchemaError};
+pub use schema::{decode_pool, schema_from_pool, ParsedSchema, SchemaError};
 
 // ── Public API types ──────────────────────────────────────────────────────────
 
@@ -62,18 +62,24 @@ impl std::error::Error for CodecError {}
 /// Decode a raw protobuf binary payload and render it as protoc-style text.
 ///
 /// When `opts.assume_binary` is `false` and the data already carries the
-/// `#@ prototext:` header, the bytes are returned unchanged (zero-copy fast
-/// path).
+/// `#@ prototext:` header, it is first encoded back to binary so that the
+/// schema-aware decoder can re-render it (e.g. with a different schema or
+/// annotation settings).  With `assume_binary: true` the data is always
+/// treated as raw binary wire bytes.
 pub fn render_as_text(
     data: &[u8],
     schema: Option<&ParsedSchema>,
     opts: RenderOpts,
 ) -> Result<Vec<u8>, CodecError> {
-    if !opts.assume_binary && serialize::render_text::is_prototext_text(data) {
-        return Ok(data.to_vec());
-    }
+    let binary;
+    let wire = if !opts.assume_binary && serialize::render_text::is_prototext_text(data) {
+        binary = serialize::encode_text::encode_text_to_binary(data);
+        binary.as_slice()
+    } else {
+        data
+    };
     Ok(serialize::render_text::decode_and_render(
-        data,
+        wire,
         schema,
         opts.include_annotations,
         opts.indent,

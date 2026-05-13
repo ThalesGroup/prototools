@@ -29,6 +29,7 @@ from .base import NodeBase
 from .context import Context, Fqdn
 from .fake_types import Prefix, Ref
 from .globals import FILE
+from .lib.warnings import cli_warning
 from .mappings import canonize_dependency
 from .text import CODE, COMMENT, ORPHAN, Block, BlockLine
 
@@ -274,7 +275,16 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
         from .syntax import fdp_syntax
         ctx.syntax = fdp_syntax(self.this)
         ctx.current_file = self.name
-        if not ctx.force_proto2_output and ctx.syntax in ("proto2", "proto3", "editions"):
+        if ctx.force_proto2_output:
+            ctx.target_syntax = "proto2"
+        elif ctx.prost_workaround and ctx.syntax == "editions":
+            ctx.target_syntax = "proto2"
+            cli_warning(
+                "'%s' is an editions file; patching to proto2 for prost-reflect "
+                "compatibility (--prost-workaround).",
+                self.name,
+            )
+        elif ctx.syntax in ("proto2", "proto3", "editions"):
             ctx.target_syntax = ctx.syntax
         else:
             ctx.target_syntax = "proto2"

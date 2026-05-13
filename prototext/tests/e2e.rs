@@ -51,8 +51,9 @@ fn schema_path(schema_rel: &str) -> PathBuf {
     repo_root().join(schema_rel)
 }
 
-/// Run `prototext -d --descriptor <schema> --type <message>` on binary input,
-/// then `prototext -e` on the text output.  Returns (text, re-encoded binary).
+/// Run `prototext --descriptor <schema> decode --type <message>` on binary
+/// input, then `prototext encode` on the text output.
+/// Returns (text, re-encoded binary).
 fn cli_roundtrip(
     wire: &[u8],
     schema_path: &Path,
@@ -63,8 +64,9 @@ fn cli_roundtrip(
 
     let mut decode_cmd = Command::new(bin);
     decode_cmd
-        .args(["-d", "--descriptor"])
+        .arg("--descriptor")
         .arg(schema_path)
+        .arg("decode")
         .args(["--type", message]);
     if !annotations {
         decode_cmd.arg("--no-annotations");
@@ -79,13 +81,13 @@ fn cli_roundtrip(
 
     assert!(
         decode_out.status.success(),
-        "prototext -d failed:\n{}",
+        "prototext decode failed:\n{}",
         String::from_utf8_lossy(&decode_out.stderr)
     );
     let text = decode_out.stdout;
 
     let encode_out = Command::new(bin)
-        .arg("-e")
+        .arg("encode")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -95,7 +97,7 @@ fn cli_roundtrip(
 
     assert!(
         encode_out.status.success(),
-        "prototext -e failed:\n{}",
+        "prototext encode failed:\n{}",
         String::from_utf8_lossy(&encode_out.stderr)
     );
 
@@ -118,9 +120,9 @@ impl SpawnExt for std::process::Child {
 
 // ── §3.1 Lossless round-trip with annotations (all fixtures) ─────────────────
 
-/// CLI: `prototext -d` then `prototext -e` must reproduce the original wire bytes.
+/// CLI: `prototext decode` then `prototext encode` must reproduce the original wire bytes.
 ///
-/// Pipeline: craft_a() → wire → `prototext -d` → text → `prototext -e` → wire2
+/// Pipeline: craft_a() → wire → `prototext decode` → text → `prototext encode` → wire2
 /// Assert: wire2 == wire (bit-exact).
 #[test]
 fn fixture_roundtrip_annotated_craft_a() {
@@ -153,7 +155,7 @@ fn fixture_roundtrip_annotated_craft_a() {
 
 // ── §3.2 No crash without annotations (all fixtures) ─────────────────────────
 
-/// CLI: `prototext -d --no-annotations` must exit 0 for every fixture.
+/// CLI: `prototext decode --no-annotations` must exit 0 for every fixture.
 #[test]
 fn fixture_no_panic_no_annotations() {
     let mut ran = 0;

@@ -518,6 +518,89 @@ prototext -d [--db PATH] [--type NAME] [--descriptor PATH] [blob.pb ...]
 
 ---
 
+---
+
+## Multi-instance `--list-schemas` (addendum)
+
+### Motivation
+
+Loading a schema DB (`.rkyv` mmap) takes ~2 seconds on a large corpus.  The
+stress test runs `prototext --list-schemas` once per type — 130+ invocations
+— so the DB is loaded 130+ times, adding minutes of wall-clock time.
+
+### Design
+
+`--list-schemas` accepts multiple input files (and globs/directories) using
+the same `paths: Vec<String>` + `expand_path` machinery already present for
+`-d`/`-e` batch mode.  The DB is loaded once, then each input file is scored
+in sequence.
+
+**CLI**: no change to flag definitions.  `--list-schemas` with multiple inputs
+is now valid; existing single-file behavior is unchanged.
+
+**Output format**: always YAML, regardless of the number of input files.
+Each result is a list entry with `path` and `types` keys:
+
+```yaml
+- path: inst1.pb
+  types:
+    - google.ads.admanager.v1.BatchDeactivateLabelsRequest
+    - google.ads.admanager.v1.BatchActivateLabelsRequest
+- path: inst2.pb
+  types:
+    - tutorial.Person
+```
+
+`types` is the list of top-tied non-vetoed FQDNs, sorted lexicographically
+(same entries as before, now in YAML list form).  When `--top N` is given,
+`types` contains at most N entries.
+
+Single-file and multi-file output use the same format; the result is always
+a YAML sequence.  This replaces the previous plain-text one-FQDN-per-line
+format.
+
+**Internal interface**: split `print_schema_list` into:
+
+```rust
+/// Load the graph once and return it.
+pub fn load_graph_for_listing(db: &Path) -> Result<LoadedGraph, String>
+
+/// Score one file's bytes against an already-loaded graph.
+pub fn list_schemas_one(
+    pb_bytes: &[u8],
+    graph: &LoadedGraph,
+    top: Option<usize>,
+    out: &mut dyn Write,
+) -> Result<(), String>
+```
+
+`print_schema_list` is kept as a thin wrapper over both for the single-file
+path (no behavior change).
+
+**`run()`** batch path for `--list-schemas`:
+
+1. Expand all positional paths via `expand_path` (same as batch decode).
+2. Load the graph once via `load_graph_for_listing`.
+3. For each file: read bytes, call `list_schemas_one`.
+   - Single file: write to stdout (standalone) or stderr (with `-d`), no header.
+   - Multiple files: write header `<path>:\n` then FQDNs to stdout/stderr.
+4. `auto_infer` batch restriction (line 402–407 in current `run.rs`) is
+   relaxed: multiple files are allowed with `--list-schemas` (listing only,
+   no decode).  The existing restriction remains for auto-infer decode mode.
+
+**Stress test update**: generate all instances first, then call
+`prototext --list-schemas --db ... inst1.pb inst2.pb ...` once, parse the
+YAML output (list of `{path, types}` dicts).
+
+### Files changed (addendum)
+
+| File | Change |
+|---|---|
+| `prototext/src/run.rs` | Split `print_schema_list`; handle multi-file `--list-schemas` in batch path; load DB once |
+| `tests/stress/test_stress.py` | Generate all instances, then single `prototext --list-schemas` call; parse multi-file output |
+
+---
+
 ## Implementation order
 
 1. Implement `prototext instantiate-schema` in Rust (`prototext-core` +

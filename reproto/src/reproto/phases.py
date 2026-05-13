@@ -683,6 +683,7 @@ def _phase2_build_pool(
                                     continue
                                 _strip_unresolvable_dependencies(ctx, n, fdp)
                                 ctx.pool_db.Add(fdp)
+                                ctx.pool_db_fdps.append(fdp)
                             case FileDescriptorProto():
                                 # - Update the pool of descriptors
                                 fdp = text_format.Parse(
@@ -700,6 +701,7 @@ def _phase2_build_pool(
                                     continue
                                 _strip_unresolvable_dependencies(ctx, n, fdp)
                                 ctx.pool_db.Add(fdp)
+                                ctx.pool_db_fdps.append(fdp)
 
                     case bytes():
                         # Binary format
@@ -721,6 +723,7 @@ def _phase2_build_pool(
                                         continue
                                     _strip_unresolvable_dependencies(ctx, n, fdp)
                                     ctx.pool_db.Add(fdp)
+                                    ctx.pool_db_fdps.append(fdp)
                                 except TypeError as e:
                                     # NOTE: TypeError can occur when attempting to add a descriptor
                                     # that conflicts with an existing one in the pool (e.g., duplicate
@@ -737,6 +740,7 @@ def _phase2_build_pool(
                                         continue
                                     _strip_unresolvable_dependencies(ctx, n, fdp)
                                     ctx.pool_db.Add(fdp)
+                                    ctx.pool_db_fdps.append(fdp)
                                 except TypeError as e:
                                     # NOTE: TypeError can occur when attempting to add a descriptor
                                     # that conflicts with an existing one in the pool (e.g., duplicate
@@ -1186,18 +1190,18 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
     """Build the full schema DB at db_path (spec 0056 §reproto --build-schema-db).
 
     Produces:
-      db_path                   — compiled (baked) scoring graph (.rkyv)
-      db_path.stem/schemas.pb   — FileDescriptorSet of all loaded FDPs
+      db_path                      — FileDescriptorSet of all loaded FDPs (.desc)
+      db_path.stem/hopcroft.rkyv   — compiled (baked) Hopcroft scoring graph
 
     YAML content is generated in-memory from the same logic as
     _phase_emit_scoring_graphs; no intermediate files are written to disk.
     """
     import yaml
-    from google.protobuf.descriptor_pb2 import FileDescriptorProto, FileDescriptorSet
+    from google.protobuf.descriptor_pb2 import FileDescriptorSet
 
     # ── 1. Collect per-file scoring-graph YAML strings (mirrors _phase_emit_scoring_graphs)
 
-    def _collect(desc: Any, messages: dict) -> None:
+    def _collect(desc: Any, messages: dict, group_fqdns: 'set[str]') -> None:
         msg_node = ctx.nodes.get(Fqdn(f'desc:.{desc.full_name}'))
         if msg_node is not None and msg_node.is_pruned:
             return
@@ -1217,9 +1221,10 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
             if label != 'optional':
                 entry['label'] = label
             fields_out.append(entry)
-        messages[desc.full_name] = {'fields': fields_out}
+        node_kind = 'GROUP' if desc.full_name in group_fqdns else 'LENDEL'
+        messages[desc.full_name] = {'kind': node_kind, 'fields': fields_out}
         for nested in desc.nested_types:
-            _collect(nested, messages)
+            _collect(nested, messages, group_fqdns)
 
     scoring_graphs: list[str] = []
 
@@ -1239,9 +1244,10 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
             get_collector().w6(proto_name, "schema db", str(e))
             continue
 
+        group_fqdns = _collect_group_fqdns(fd)
         messages: dict = {}
         for msg_desc in fd.message_types_by_name.values():
-            _collect(msg_desc, messages)
+            _collect(msg_desc, messages, group_fqdns)
 
         entries = []
         for msg_desc in fd.message_types_by_name.values():
@@ -1269,41 +1275,101 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
             f'--build-schema-db requires the scoring_graph_lib extension: {e}'
         ) from e
 
-    baked_graph: bytes = build_graph(scoring_graphs=scoring_graphs)
+    baked_graph, _yaml = build_graph(scoring_graphs=scoring_graphs)
 
     # ── 3. Assemble schemas.pb from all summoned files in the pool
+    #
+    # ctx.pool_db_fdps was populated in phase 2 at every ctx.pool_db.Add()
+    # call, preserving topological order (dependencies before dependents).
+    # prost-reflect requires this ordering when loading a multi-FDP FDS.
 
     fds = FileDescriptorSet()
-    seen: set[str] = set()
-    for re_file in ctx.nodes.values():
-        if not isinstance(re_file, ReFileDescriptorProto):
-            continue
-        if not re_file.is_present():
-            continue
-        try:
-            fd = ctx.pool.FindFileByName(re_file.name)
-        except (KeyError, TypeError):
-            continue
-        if fd.name in seen:
-            continue
-        seen.add(fd.name)
-        fdp = FileDescriptorProto()
-        fd.CopyToProto(fdp)
+    for fdp in ctx.pool_db_fdps:
         fds.file.append(fdp)
 
+    if ctx.prost_workaround:
+        for fdp in fds.file:
+            if fdp.syntax == "editions":
+                cli_warning(
+                    "'%s' is an editions file; patching to proto2 for prost-reflect "
+                    "compatibility (--prost-workaround).",
+                    fdp.name,
+                )
+                fdp.ClearField("syntax")
+                fdp.ClearField("edition")
+                _clear_features(fdp)
+
     # ── 4. Write both outputs
+    #
+    # db_path           → FileDescriptorSet (.desc)
+    # db_path.stem/     → sibling directory
+    #   hopcroft.rkyv   → compiled Hopcroft scoring graph
 
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    db_path.write_bytes(baked_graph)
+    db_path.write_bytes(fds.SerializeToString())
 
     schema_db_dir = db_path.with_suffix('')
     schema_db_dir.mkdir(parents=True, exist_ok=True)
-    (schema_db_dir / 'schemas.pb').write_bytes(fds.SerializeToString())
+    (schema_db_dir / 'hopcroft.rkyv').write_bytes(baked_graph)
 
     if not ctx.quiet:
         eprintln = __import__('sys').stderr.write
-        eprintln(f'  schema db: {db_path}\n')
-        eprintln(f'  schemas:   {schema_db_dir / "schemas.pb"}\n')
+        eprintln(f'  descriptor: {db_path}\n')
+        eprintln(f'  graph:      {schema_db_dir / "hopcroft.rkyv"}\n')
+
+
+def _clear_features(fdp: Any) -> None:
+    """Recursively strip features from all options in a FileDescriptorProto.
+
+    Used by the --prost-workaround path to make editions files acceptable to
+    prost-reflect after their syntax/edition fields have been cleared.
+    """
+    if fdp.HasField('options') and fdp.options.HasField('features'):
+        fdp.options.ClearField('features')
+
+    def _msg(msg: Any) -> None:
+        if msg.HasField('options') and msg.options.HasField('features'):
+            msg.options.ClearField('features')
+        for field in msg.field:
+            if field.HasField('options') and field.options.HasField('features'):
+                field.options.ClearField('features')
+        for oneof in msg.oneof_decl:
+            if oneof.HasField('options') and oneof.options.HasField('features'):
+                oneof.options.ClearField('features')
+        for enum in msg.enum_type:
+            _enum(enum)
+        for nested in msg.nested_type:
+            _msg(nested)
+
+    def _enum(enum: Any) -> None:
+        if enum.HasField('options') and enum.options.HasField('features'):
+            enum.options.ClearField('features')
+        for val in enum.value:
+            if val.HasField('options') and val.options.HasField('features'):
+                val.options.ClearField('features')
+
+    for msg in fdp.message_type:
+        _msg(msg)
+    for enum in fdp.enum_type:
+        _enum(enum)
+
+
+def _collect_group_fqdns(fd: Any) -> 'set[str]':
+    """Return the set of FQDNs that are group message types in fd (spec 0058)."""
+    from google.protobuf.descriptor import FieldDescriptor as FD
+
+    group_fqdns: set[str] = set()
+
+    def _scan(msg: Any) -> None:
+        for f in msg.fields_by_number.values():
+            if f.type == FD.TYPE_GROUP:
+                group_fqdns.add(f.message_type.full_name)
+        for nested in msg.nested_types:
+            _scan(nested)
+
+    for msg_desc in fd.message_types_by_name.values():
+        _scan(msg_desc)
+    return group_fqdns
 
 
 def _field_label(field: Any) -> str:
@@ -1322,16 +1388,20 @@ def _scoring_kind(field: Any) -> 'tuple[str, str | None, int | None, int | None]
     from google.protobuf.descriptor import FieldDescriptor as FD
     TYPE = field.type
     if TYPE == FD.TYPE_MESSAGE:
-        return 'LEN_MSG', field.message_type.full_name, None, None
+        return 'MESSAGE', field.message_type.full_name, None, None
     if TYPE == FD.TYPE_GROUP:
-        return 'GROUP', field.message_type.full_name, None, None
+        return 'MESSAGE', field.message_type.full_name, None, None
     if TYPE == FD.TYPE_STRING:
         return 'LEN_STRING', None, None, None
     if TYPE == FD.TYPE_BYTES:
         return 'LEN_BYTES', None, None, None
     if TYPE in (FD.TYPE_DOUBLE, FD.TYPE_FIXED64, FD.TYPE_SFIXED64):
+        if field.is_packed:
+            return 'LEN_PACKED', None, None, None
         return 'I64', None, None, None
     if TYPE in (FD.TYPE_FLOAT, FD.TYPE_FIXED32, FD.TYPE_SFIXED32):
+        if field.is_packed:
+            return 'LEN_PACKED', None, None, None
         return 'I32', None, None, None
     if TYPE == FD.TYPE_ENUM:
         if field.is_packed:
@@ -1353,7 +1423,7 @@ def _phase_emit_scoring_graphs(ctx: 'Context', out_dir: Path) -> None:
     """Emit one scoring-graph YAML file per FileDescriptorProto (spec 0045)."""
     import yaml
 
-    def _collect(desc: Any, messages: dict) -> None:
+    def _collect(desc: Any, messages: dict, group_fqdns: 'set[str]') -> None:
         msg_node = ctx.nodes.get(Fqdn(f'desc:.{desc.full_name}'))
         if msg_node is not None and msg_node.is_pruned:
             return
@@ -1373,9 +1443,10 @@ def _phase_emit_scoring_graphs(ctx: 'Context', out_dir: Path) -> None:
             if label != 'optional':
                 entry['label'] = label
             fields_out.append(entry)
-        messages[desc.full_name] = {'fields': fields_out}
+        node_kind = 'GROUP' if desc.full_name in group_fqdns else 'LENDEL'
+        messages[desc.full_name] = {'kind': node_kind, 'fields': fields_out}
         for nested in desc.nested_types:
-            _collect(nested, messages)
+            _collect(nested, messages, group_fqdns)
 
     for re_file in ctx.nodes.values():
         if not isinstance(re_file, ReFileDescriptorProto):
@@ -1397,9 +1468,10 @@ def _phase_emit_scoring_graphs(ctx: 'Context', out_dir: Path) -> None:
             get_collector().w6(proto_name, "scoring graph", str(e))
             continue
 
+        group_fqdns = _collect_group_fqdns(fd)
         messages: dict = {}
         for msg_desc in fd.message_types_by_name.values():
-            _collect(msg_desc, messages)
+            _collect(msg_desc, messages, group_fqdns)
 
         # Entry nodes: top-level (non-nested) messages in this file that are
         # not pruned (full FQDNs, sorted for determinism).

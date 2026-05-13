@@ -21,6 +21,8 @@ from .fake_types import Fqdn
 if TYPE_CHECKING:
     from typing import Any
 
+    from google.protobuf.descriptor_pb2 import FileDescriptorProto
+
     from .base import NodeBase
     from .feature_resolution import EditionDefaultTable
     from .re_file import ReFileDescriptorProto
@@ -65,6 +67,7 @@ class Options:
     redact_orphans: bool = False
     phase2_plugin: CodeType | None = None
     force_proto2_output: bool = False
+    prost_workaround: bool = False
     # Variant fields (spec 0001) — populated at startup from the variant file.
     # Defaults below reflect the OSS google.protobuf variant.
     variant_descriptor_proto: str = 'google/protobuf/descriptor.proto'
@@ -122,6 +125,8 @@ class Context(Options):
         # Pool and dicts
         self.pool_db: DescriptorDatabase = DescriptorDatabase()
         self.pool: DescriptorPool = DescriptorPool(self.pool_db)
+        # FDPs added to pool_db in insertion (topological) order (spec 0056).
+        self.pool_db_fdps: list[FileDescriptorProto] = []
         self.nodes: dict[Fqdn, NodeBase[Any]] = {}
         self.new_nodes: dict[Fqdn, NodeBase[Any]] = {}
         self.files: dict[str, 'ReFileDescriptorProto'] = {}
