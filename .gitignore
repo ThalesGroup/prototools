@@ -12,6 +12,7 @@
 /website/public/
 /rust-toolchain.toml
 /.env
+/python.env
 /pyrightconfig.json
 /ruff.toml
 /schema-db/data/
