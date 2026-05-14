@@ -377,6 +377,38 @@ let
   };
 
   # ---------------------------------------------------------------------------
+  # tree-sitter-textproto — plain C Python extension for the textproto grammar
+  # ---------------------------------------------------------------------------
+
+  treeSitterTextprotoSrc = pkgs.fetchzip {
+    url    = "https://github.com/PorterAtGoogle/tree-sitter-textproto/"
+           + "archive/568471b80fd8793d37ed01865d8c2208a9fefd1b.tar.gz";
+    sha256 = "056h95fn779p73ik1gyr4n0y0r5w9pk09z25ly6mm42v5jlzq22l";
+    stripRoot = true;
+  };
+
+  treeSitterTextproto = pkgs.stdenv.mkDerivation {
+    name              = "tree-sitter-textproto";
+    src               = ./reproto/tree-sitter-textproto;
+    buildInputs       = [ pythonBin ];
+    nativeBuildInputs = [ pkgs.tree-sitter pkgs.nodejs ];
+    buildPhase  = ''
+      cp ${treeSitterTextprotoSrc}/grammar.js .
+      tree-sitter generate
+      gcc -shared -fPIC \
+        -o textproto$(python3-config --extension-suffix) \
+        binding.c src/parser.c \
+        -I src \
+        $(python3-config --includes --ldflags)
+    '';
+    installPhase = ''
+      mkdir -p $out
+      cp textproto*.so $out/
+      cp ${./reproto/tree-sitter-textproto/textproto.pyi} $out/textproto.pyi
+    '';
+  };
+
+  # ---------------------------------------------------------------------------
   # reproto — Python package for reconstructing .proto sources from .pb files
   # ---------------------------------------------------------------------------
 
@@ -498,10 +530,11 @@ let
       pkgs.protobuf
       pkgs.buf
       prototext
+      treeSitterTextproto
       (pythonPkgs.python.withPackages (_: reprotoTestDeps))
     ];
   } ''
-    export PYTHONPATH="${reprotoSrcWithCodegen}/src"
+    export PYTHONPATH="${reprotoSrcWithCodegen}/src:${treeSitterTextproto}"
     pytest -p no:cacheprovider ${reprotoSrcWithCodegen}/src/reproto/tests/ -x
     touch $out
   '';
@@ -516,6 +549,7 @@ let
   pythonLint = pkgs.runCommand "python-lint" {
     buildInputs = [
       pkgs.pyright
+      treeSitterTextproto
       (pythonPkgs.python.withPackages (_: reprotoPropagatedDeps ++ [
         pythonPkgs.pytest
         pythonPkgs.tree-sitter
@@ -528,8 +562,9 @@ let
     # pyright needs a writable working directory for its cache.
     cd "$TMPDIR"
 
-    # Make the prototext_codec_lib and scoring_graph_lib .pyi stubs visible to pyright.
-    export PYTHONPATH="${reprotoSrcWithCodegen}/src:${prototextExtension}/artifacts:${scoringGraphExtension}/artifacts"
+    # Make the prototext_codec_lib, scoring_graph_lib .pyi stubs and
+    # textproto extension visible to pyright.
+    export PYTHONPATH="${reprotoSrcWithCodegen}/src:${prototextExtension}/artifacts:${scoringGraphExtension}/artifacts:${treeSitterTextproto}"
 
     # Write a hermetic pyrightconfig.json.
     cat > pyrightconfig.json <<EOF
@@ -538,7 +573,8 @@ let
   "extraPaths": [
     "${reprotoSrcWithCodegen}/src",
     "${prototextExtension}/artifacts",
-    "${scoringGraphExtension}/artifacts"
+    "${scoringGraphExtension}/artifacts",
+    "${treeSitterTextproto}"
   ],
   "exclude": [
     "result*",
@@ -628,7 +664,7 @@ EOF
 
       export PATH="${toString ./.}/bin:${pythonBin}/bin:${toString ./.}/target/release:$PATH"
 
-      export PYTHONPATH="$PWD/reproto/src:$PWD/protoscan/src:${pythonPkgs.makePythonPath reprotoTestDeps}:$PYTHONPATH"
+      export PYTHONPATH="$PWD/reproto/src:$PWD/protoscan/src:${treeSitterTextproto}:${pythonPkgs.makePythonPath reprotoTestDeps}:$PYTHONPATH"
 
       # Write .env so VS Code / Pylance picks up the interpreter and PYTHONPATH.
       echo "PYTHON_INTERPRETER=${pythonExecutable}" > .env
@@ -652,6 +688,24 @@ exclude = [
   "docs/mockup",
 ]
 RUFFEOF
+
+      # Compile prototext fixture .pb descriptors into prototext/fixtures/prebuilt/,
+      # mirroring what protoPatchPhase does in the Nix build.
+      # Skipped if the descriptor files are already present.
+      if [[ ! -f "$PWD/prototext/fixtures/prebuilt/descriptor.pb" ]]; then
+        mkdir -p "$PWD/prototext/fixtures/prebuilt"
+        protoc \
+          --descriptor_set_out="$PWD/prototext/fixtures/prebuilt/descriptor.pb" \
+          google/protobuf/descriptor.proto
+        protoc \
+          --descriptor_set_out="$PWD/prototext/fixtures/prebuilt/knife.pb" \
+          --proto_path="$PWD/prototext/fixtures/schemas" \
+          knife.proto
+        protoc \
+          --descriptor_set_out="$PWD/prototext/fixtures/prebuilt/enum_collision.pb" \
+          --proto_path="$PWD/prototext/fixtures/schemas" \
+          enum_collision.proto
+      fi
 
       # Seed well-known .proto sources and compile .pb descriptors into the
       # working tree, mirroring what reprotoSrcWithCodegen does in the Nix build.

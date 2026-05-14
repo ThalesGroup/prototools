@@ -25,7 +25,7 @@ serde          = { version = "1", features = ["derive"] }
 serde_yaml     = "0.9"
 rkyv           = { version = "0.8", features = ["little_endian"] }
 memmap2        = "0.9"
-prototext-core = { path = "../prototext-core" }
+prototext-core = { workspace = true }
 smallvec       = "1"
 walkdir        = "2"
 

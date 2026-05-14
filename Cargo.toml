@@ -26,6 +26,9 @@ members = [
     "score-graph-pyo3",
 ]
 
+[workspace.dependencies]
+prototext-core = { path = "prototext-core", features = ["prost-bug-workaround"] }
+
 [profile.release]
 codegen-units = 1
 lto           = "thin"

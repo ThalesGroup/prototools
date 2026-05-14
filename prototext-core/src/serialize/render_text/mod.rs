@@ -82,6 +82,7 @@ impl FieldOrExt {
     ///
     /// Uses `prost_types::FieldDescriptorProto.options.packed: Option<bool>` directly —
     /// O(1), zero allocation (no DynamicMessage decoding).
+    #[cfg(feature = "prost-bug-workaround")]
     pub(super) fn raw_packed_option(&self) -> Option<bool> {
         let proto = match self {
             FieldOrExt::Field(f) => f.field_descriptor_proto(),
@@ -90,6 +91,7 @@ impl FieldOrExt {
         proto.options.as_ref().and_then(|o| o.packed)
     }
 
+    #[cfg(feature = "prost-bug-workaround")]
     pub(super) fn parent_file_syntax(&self) -> prost_reflect::Syntax {
         match self {
             FieldOrExt::Field(f) => f.parent_file().syntax(),
