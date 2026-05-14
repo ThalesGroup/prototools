@@ -37,7 +37,7 @@ from reproto import Context, Fqdn, Node, Options
 from .fake_types import parse_fqdn
 from .feature_resolution import ResolvedFeatures, build_edition_defaults
 from .globals import FILE
-from .load import QualFile, decapsulate, load_from_path
+from .load import QualFile, load_from_path
 from .option_messages import create_option_message_classes
 from .re_file import ReFileDescriptorProto
 from .topology import File, ReFile, Topology
@@ -371,11 +371,12 @@ def _phase1_load_files(
                 node = node.joinpath(part)
             data = node.read_bytes()
 
-            fd = FileDescriptorSet()
-            fd.ParseFromString(data)
-            qual_file = QualFile(Path('internal'), Path(proto_name), data)
-            qual_file.name = fd.file[0].name
-            qual_file.desc = fd
+            fds = FileDescriptorSet()
+            fds.ParseFromString(data)
+            fdp = fds.file[0]
+            qual_file = QualFile(Path('internal'), Path(proto_name), fdp.SerializeToString())
+            qual_file.name = fdp.name
+            qual_file.desc = fdp
             ReFile(topo, qual_file)
 
             cli_attention(f"Using embedded fallback: {proto_name}")
@@ -662,98 +663,42 @@ def _phase2_build_pool(
             try:
                 match contents:
                     case str():
-                        # Text format
-                        match qf.desc:
-                            case FileDescriptorSet():
-                                # - Update the pool of descriptors
-                                f = text_format.Parse(
-                                    decapsulate(contents),
-                                    FileDescriptorSet(),
-                                    allow_unknown_field=True,
-                                    allow_unknown_extension=True,
-                                    descriptor_pool=ctx.pool,
-                                )
-                                assert len(f.file) == 1
-                                # - Update pool with static FileDescriptorProto
-                                fdp = f.file[0]
-                                phase2_plugin(ctx, fdp)
-                                patch_go_package(ctx, fdp)
-                                _strip_self_dependency(fdp)
-                                if not ctx.keep_duplicates and _prune_if_duplicate(ctx, n, fdp):
-                                    continue
-                                _strip_unresolvable_dependencies(ctx, n, fdp)
-                                ctx.pool_db.Add(fdp)
-                                ctx.pool_db_fdps.append(fdp)
-                            case FileDescriptorProto():
-                                # - Update the pool of descriptors
-                                fdp = text_format.Parse(
-                                    decapsulate(contents),
-                                    FileDescriptorProto(),
-                                    allow_unknown_field=True,
-                                    allow_unknown_extension=True,
-                                    descriptor_pool=ctx.pool,
-                                )
-                                # - Update pool with static FileDescriptorProto
-                                phase2_plugin(ctx, fdp)
-                                patch_go_package(ctx, fdp)
-                                _strip_self_dependency(fdp)
-                                if not ctx.keep_duplicates and _prune_if_duplicate(ctx, n, fdp):
-                                    continue
-                                _strip_unresolvable_dependencies(ctx, n, fdp)
-                                ctx.pool_db.Add(fdp)
-                                ctx.pool_db_fdps.append(fdp)
+                        # Text format — contents is a bare FDP fragment (already
+                        # decapsulated by split_fdps; no entry{} wrapper present)
+                        fdp = text_format.Parse(
+                            contents,
+                            FileDescriptorProto(),
+                            allow_unknown_field=True,
+                            allow_unknown_extension=True,
+                            descriptor_pool=ctx.pool,
+                        )
+                        phase2_plugin(ctx, fdp)
+                        patch_go_package(ctx, fdp)
+                        _strip_self_dependency(fdp)
+                        if not ctx.keep_duplicates and _prune_if_duplicate(ctx, n, fdp):
+                            continue
+                        _strip_unresolvable_dependencies(ctx, n, fdp)
+                        ctx.pool_db.Add(fdp)
+                        ctx.pool_db_fdps.append(fdp)
 
                     case bytes():
-                        # Binary format
-                        match qf.desc:
-                            case FileDescriptorSet():
-                                fds = FileDescriptorSet()
-                                fds.ParseFromString(contents)
-                                assert len(fds.file) == 1
-                                try:
-                                    # Use qf.desc.file[0] (the object phase 3
-                                    # will use as self.this) so that in-place
-                                    # mutations (strip, patch) are visible to
-                                    # the render path without re-parsing.
-                                    fdp = qf.desc.file[0]
-                                    phase2_plugin(ctx, fdp)
-                                    patch_go_package(ctx, fdp)
-                                    _strip_self_dependency(fdp)
-                                    if not ctx.keep_duplicates and _prune_if_duplicate(ctx, n, fdp):
-                                        continue
-                                    _strip_unresolvable_dependencies(ctx, n, fdp)
-                                    ctx.pool_db.Add(fdp)
-                                    ctx.pool_db_fdps.append(fdp)
-                                except TypeError as e:
-                                    # NOTE: TypeError can occur when attempting to add a descriptor
-                                    # that conflicts with an existing one in the pool (e.g., duplicate
-                                    # symbol names or incompatible descriptor types).
-                                    cli_warning("Could not add descriptor from '%s' to pool: %s", n.name, e)
-                            case FileDescriptorProto():
-                                fdp = FileDescriptorProto()
-                                fdp.ParseFromString(contents)
-                                try:
-                                    phase2_plugin(ctx, fdp)
-                                    patch_go_package(ctx, fdp)
-                                    _strip_self_dependency(fdp)
-                                    if not ctx.keep_duplicates and _prune_if_duplicate(ctx, n, fdp):
-                                        continue
-                                    _strip_unresolvable_dependencies(ctx, n, fdp)
-                                    ctx.pool_db.Add(fdp)
-                                    ctx.pool_db_fdps.append(fdp)
-                                except TypeError as e:
-                                    # NOTE: TypeError can occur when attempting to add a descriptor
-                                    # that conflicts with an existing one in the pool (e.g., duplicate
-                                    # symbol names or incompatible descriptor types).
-                                    cli_warning("Could not add descriptor from '%s' to pool: %s", n.name, e)
-                                # Since dyn_fds is a dynamic message,
-                                # MergeFromString expects a **serialized
-                                # dynamic FDS** So first we need to serialize
-                                # `fds` into binary again
-                                fds = FileDescriptorSet()
-                                fds.file.extend([fdp])  # add the single FDP
-                            case _:
-                                assert False
+                        # Binary format — contents is a serialised single FDP
+                        fdp = FileDescriptorProto()
+                        fdp.ParseFromString(contents)
+                        try:
+                            phase2_plugin(ctx, fdp)
+                            patch_go_package(ctx, fdp)
+                            _strip_self_dependency(fdp)
+                            if not ctx.keep_duplicates and _prune_if_duplicate(ctx, n, fdp):
+                                continue
+                            _strip_unresolvable_dependencies(ctx, n, fdp)
+                            ctx.pool_db.Add(fdp)
+                            ctx.pool_db_fdps.append(fdp)
+                        except TypeError as e:
+                            # NOTE: TypeError can occur when attempting to add a descriptor
+                            # that conflicts with an existing one in the pool (e.g., duplicate
+                            # symbol names or incompatible descriptor types).
+                            cli_warning("Could not add descriptor from '%s' to pool: %s", n.name, e)
             except message.DecodeError:
                 cli_warning(f"Skipping unparseable file: {n.name}")
                 n.is_pruned = True
@@ -793,14 +738,8 @@ def _phase3_build_graph(
         if file.is_ref() or file.is_pruned:
             continue
         desc = file.qfile.desc
-        match desc:
-            case FileDescriptorSet():
-                ReFileDescriptorProto(ctx, desc.file[0])
-            case FileDescriptorProto():
-                proto = ctx.pool_db.FindFileByName(desc.name)
-                ReFileDescriptorProto(ctx, proto)
-            case _:
-                raise AssertionError(f"Unexpected desc type: {type(desc)}")
+        proto = ctx.pool_db.FindFileByName(desc.name)
+        ReFileDescriptorProto(ctx, proto)
 
     ctx.merge_nodes()
 

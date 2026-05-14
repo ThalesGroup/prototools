@@ -70,3 +70,33 @@ def compile_proto(
         )
         pb_paths.append(pb_path)
     return pb_paths
+
+
+def compile_proto_multi(
+    out_path: Path,
+    *proto_names: str,
+    include_dirs: list[Path] | None = None,
+) -> Path:
+    """Compile multiple .proto files into a single multi-FDP FDS .pb.
+
+    Uses protoc --include_imports so all transitive dependencies are bundled
+    into one FileDescriptorSet binary at out_path.
+
+    Returns out_path.
+    """
+    dirs = [FIXTURES_DIR] + (include_dirs or [])
+    include_flags = [f"-I{d}" for d in dirs]
+    proto_paths = [str(FIXTURES_DIR / name) for name in proto_names]
+    result = subprocess.run(
+        [
+            "protoc", *include_flags,
+            "--include_imports",
+            f"--descriptor_set_out={out_path}",
+            *proto_paths,
+        ],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, (
+        f"protoc failed compiling {proto_names}:\n{result.stderr}"
+    )
+    return out_path

@@ -20,7 +20,9 @@ from google.protobuf.descriptor_pb2 import (
     FileDescriptorSet,
 )
 
-from reproto.tests.conftest import FIXTURES_DIR, compile_proto
+from google.protobuf import text_format
+
+from reproto.tests.conftest import FIXTURES_DIR, compile_proto, compile_proto_multi
 
 
 # ---------------------------------------------------------------------------
@@ -315,3 +317,114 @@ def test_P10_pruned_seed_skipped(tmp_path: Path) -> None:
     assert result.returncode == 0, f"reproto crashed:\n{result.stderr}"
     assert "Skipping pruned seed" in result.stderr
     assert not (out_dir / "prune_base.proto").exists()
+
+
+# ---------------------------------------------------------------------------
+# TC-M1  Multi-FDP binary FDS round-trips correctly
+# ---------------------------------------------------------------------------
+
+def test_M1_multi_fdp_binary_fds(tmp_path: Path) -> None:
+    """A multi-FDP binary FDS yields the same output as feeding each FDP separately.
+
+    address_book.proto imports phone_number.proto, so --include_imports bundles
+    both FDPs into one FileDescriptorSet .pb.
+    """
+    pb_dir = tmp_path / "pb"
+    pb_dir.mkdir()
+    out_single = tmp_path / "out_single"
+    out_single.mkdir()
+    out_multi = tmp_path / "out_multi"
+    out_multi.mkdir()
+
+    # Individual single-FDP files
+    phone_pb, addr_pb = compile_proto(pb_dir, "phone_number.proto", "address_book.proto")
+    # Single multi-FDP FDS containing both
+    multi_pb = compile_proto_multi(pb_dir / "multi.pb", "address_book.proto")
+
+    result_single = _run_reproto([phone_pb, addr_pb], out_single)
+    result_multi = _run_reproto([multi_pb], out_multi)
+
+    assert result_single.returncode == 0, f"single run crashed:\n{result_single.stderr}"
+    assert result_multi.returncode == 0, f"multi run crashed:\n{result_multi.stderr}"
+
+    single_files = {f.name for f in out_single.rglob("*.proto")}
+    multi_files = {f.name for f in out_multi.rglob("*.proto")}
+    assert single_files == multi_files, (
+        f"Output file sets differ.\nSingle: {single_files}\nMulti:  {multi_files}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# TC-M2  Multi-FDP text FDS round-trips correctly
+# ---------------------------------------------------------------------------
+
+def test_M2_multi_fdp_text_fds(tmp_path: Path) -> None:
+    """A multi-FDP text FDS (.textpb) yields the same output as individual .pb files."""
+    pb_dir = tmp_path / "pb"
+    pb_dir.mkdir()
+    out_single = tmp_path / "out_single"
+    out_single.mkdir()
+    out_multi = tmp_path / "out_multi"
+    out_multi.mkdir()
+
+    phone_pb, addr_pb = compile_proto(pb_dir, "phone_number.proto", "address_book.proto")
+    multi_pb = compile_proto_multi(pb_dir / "multi.pb", "address_book.proto")
+
+    # Serialise the multi-FDP FDS as text
+    fds = FileDescriptorSet()
+    fds.ParseFromString(multi_pb.read_bytes())
+    textpb = tmp_path / "multi.textpb"
+    textpb.write_text(text_format.MessageToString(fds))
+
+    result_single = _run_reproto([phone_pb, addr_pb], out_single)
+    result_multi = _run_reproto([textpb], out_multi)
+
+    assert result_single.returncode == 0, f"single run crashed:\n{result_single.stderr}"
+    assert result_multi.returncode == 0, f"multi run crashed:\n{result_multi.stderr}"
+
+    single_files = {f.name for f in out_single.rglob("*.proto")}
+    multi_files = {f.name for f in out_multi.rglob("*.proto")}
+    assert single_files == multi_files, (
+        f"Output file sets differ.\nSingle: {single_files}\nMulti:  {multi_files}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# TC-M3  Single-FDP binary input still works (regression)
+# ---------------------------------------------------------------------------
+
+def test_M3_single_fdp_binary_regression(tmp_path: Path) -> None:
+    """Single-FDP .pb input continues to work after the parse_qfile refactor."""
+    pb_dir = tmp_path / "pb"
+    pb_dir.mkdir()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    (phone_pb,) = compile_proto(pb_dir, "phone_number.proto")
+    result = _run_reproto([phone_pb], out_dir)
+
+    assert result.returncode == 0, f"reproto crashed:\n{result.stderr}"
+    assert (out_dir / "phone_number.proto").exists(), "Expected phone_number.proto in output"
+
+
+# ---------------------------------------------------------------------------
+# TC-M4  FDP name collision across two FDS files (first-wins)
+# ---------------------------------------------------------------------------
+
+def test_M4_fdp_name_collision_first_wins(tmp_path: Path) -> None:
+    """Two FDS files sharing an FDP name are accepted; only one copy is processed."""
+    pb_dir = tmp_path / "pb"
+    pb_dir.mkdir()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    # Build a duplicate: two multi-FDP FDS files both containing phone_number.proto
+    multi_a = compile_proto_multi(pb_dir / "multi_a.pb", "address_book.proto")
+    multi_b = compile_proto_multi(pb_dir / "multi_b.pb", "address_book.proto")
+
+    result = _run_reproto([multi_a, multi_b], out_dir)
+
+    assert result.returncode == 0, f"reproto crashed:\n{result.stderr}"
+    # Output should still contain the reconstructed protos
+    assert (out_dir / "phone_number.proto").exists(), "Expected phone_number.proto in output"
+    assert (out_dir / "address_book.proto").exists(), "Expected address_book.proto in output"

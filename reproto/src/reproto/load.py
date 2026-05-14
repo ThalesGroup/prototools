@@ -7,12 +7,10 @@ import logging
 from pathlib import Path
 
 from google.protobuf import text_format
-from google.protobuf.descriptor_pb2 import FileDescriptorProto, FileDescriptorSet
-from google.protobuf.message import DecodeError, Message
-
-import prototext_codec_lib as _pt_codec
+from google.protobuf.descriptor_pb2 import FileDescriptorProto
 
 from reproto import Context, Fqdn
+from reproto.split_fdps import split_fdps
 
 logger = logging.getLogger(__name__)
 logger.propagate = True  # default is True, usually fine
@@ -22,45 +20,6 @@ BINARY_EXTENSIONS = ['.pb', '.binpb', '.pbset', '.protoset', '.desc']
 TEXT_EXTENSIONS = ['.textpb', '.pbtxt', '.prototxt', '.ascii_proto']
 PROTO_EXTENSION = '.proto'
 ALL_EXTENSIONS = BINARY_EXTENSIONS + TEXT_EXTENSIONS
-
-def decapsulate(text: str) -> str:
-    """
-    Remove enclosing `entry {}` from a .textpb string, handling surrounding spaces.
-    Note: This is a pure slicing function (no string copy involved)
-    """
-
-    # Strip leading whitespace to check for 'entry {'
-    start = 0
-    while start < len(text) and text[start].isspace():
-        start += 1
-
-    # Check if we have 'entry' followed by optional spaces and '{'
-    if text.startswith("entry", start):
-        i = start + len("entry")
-        while i < len(text) and text[i].isspace():
-            i += 1
-        if i < len(text) and text[i] == "{":
-            # Found opening 'entry {', slice past it
-            start = i + 1
-            # Strip any additional whitespace after '{'
-            while start < len(text) and text[start].isspace():
-                start += 1
-
-            # Now find the matching closing '}' at the end
-            end = len(text) - 1
-            while end >= start and text[end].isspace():
-                end -= 1
-            if end >= start and text[end] == "}":
-                end -= 1  # Exclude the '}'
-                # Strip any whitespace before '}'
-                while end >= start and text[end].isspace():
-                    end -= 1
-                end += 1  # Make the slice inclusive of last content
-
-            return text[start:end]
-
-    # No enclosing 'entry { ... }' found
-    return text
 
 
 def matches_any_pattern(fqdn: Fqdn, patterns: set[Fqdn]) -> bool:
@@ -108,7 +67,7 @@ class QualFile:
         self.rel_path = rel_path
         self.contents = contents
         self._name: str
-        self._desc: FileDescriptorProto | FileDescriptorSet  # | Message
+        self._desc: FileDescriptorProto
 
     @property
     def name(self) -> str:
@@ -119,12 +78,11 @@ class QualFile:
         self._name = v
 
     @property
-    def desc(self) -> FileDescriptorProto | FileDescriptorSet | Message:
+    def desc(self) -> FileDescriptorProto:
         return self._desc
 
     @desc.setter
-    def desc(self, v: FileDescriptorProto | FileDescriptorSet) -> None:
-        assert not isinstance(v, FileDescriptorSet) or len(v.file) == 1
+    def desc(self, v: FileDescriptorProto) -> None:
         self._desc = v
 
 
@@ -203,102 +161,52 @@ def load_from_path(
       - If extension is .proto → tries all binary/text extensions automatically
       - Otherwise → loads the file directly
 
-    Returns a set of pre-initialized QualFiles.
+    Returns a list of fully-initialised QualFiles (one per FDP found).
     """
-
     loaded_files = _load_files(ctx, roots, file_or_dir_path)
-
-
-    qual_files: list[QualFile] = list()
+    qual_files: list[QualFile] = []
     for file in loaded_files:
-        qfile = parse_qfile(ctx, file)
-        if qfile is not None:
-            qual_files.append(file)
+        qual_files.extend(parse_qfile(ctx, file))
     return qual_files
 
 
 def parse_qfile(
     ctx: Context,
-    file: QualFile
-) -> QualFile | None:
+    file: QualFile,
+) -> list[QualFile]:
+    """Split a raw QualFile into one QualFile per contained FDP.
+
+    Delegates format detection, decapsulation, and splitting to split_fdps().
+    Returns an empty list and logs a warning if the input cannot be parsed.
     """
-    Load protobuf descriptors from a file or directory.
+    try:
+        fragments = split_fdps(file.contents, file.rel_path.suffix)
+    except ValueError:
+        logger.warning(
+            "Cannot parse '%s'", file.rel_path,
+            extra={"cli_warn": True},
+        )
+        return []
 
-    - If a directory is given, recursively loads all descriptor files with
-    supported extensions.
-    - If a single file is given:
-    - If extension is .proto → tries all binary/text extensions automatically
-    - Otherwise → loads the file directly
-
-    Returns a set of pre-initialized QualFiles.
-    """
-
-    ok = False
-    match file.contents:
-        case str():
-            data = decapsulate(file.contents)
-            if not ok:
-                try:
-                    fds = text_format.Parse(
-                        data,
-                        FileDescriptorSet(),
-                        allow_unknown_field=True,
-                        allow_unknown_extension=True,
-                    )
-                    if fds.file and len(fds.file) == 1 and fds.file[0].name:
-                        file.desc = fds
-                        file.name = fds.file[0].name
-                        ok = True
-                except (text_format.ParseError, IndexError, AttributeError):
-                    pass
-            if not ok:
-                try:
-                    fdp = text_format.Parse(
-                        data,
-                        FileDescriptorProto(),
-                        allow_unknown_field=True,
-                        allow_unknown_extension=True,
-                    )
-                    if fdp.name:
-                        file.desc = fdp
-                        file.name = fdp.name
-                        ok = True
-                except (text_format.ParseError, AttributeError):
-                    pass
-        case bytes():
-            data = _pt_codec.format_as_bytes(file.contents)
-            file.contents = data  # normalise once; Phase 2 reuses qf.contents
-            if not ok:
-                try:
-                    fds = FileDescriptorSet()
-                    fds.ParseFromString(data)
-                    if fds.file and len(fds.file) == 1 and fds.file[0].name:
-                        file.desc = fds
-                        file.name = fds.file[0].name
-                        ok = True
-                except (DecodeError, IndexError, AttributeError):
-                    pass
-            if not ok:
-                try:
-                    fdp = FileDescriptorProto()
-                    fdp.ParseFromString(data)
-                    if fdp.name:
-                        file.desc = fdp
-                        file.name = fdp.name
-                        ok = True
-                except (DecodeError, AttributeError):
-                    pass
-    if ok:
+    result: list[QualFile] = []
+    for name, fragment in fragments:
+        qf = QualFile(file.root, file.rel_path, fragment)
+        qf.name = name
+        if isinstance(fragment, bytes):
+            fdp = FileDescriptorProto()
+            fdp.ParseFromString(fragment)
+            qf.desc = fdp
+        else:
+            qf.desc = text_format.Parse(
+                fragment,
+                FileDescriptorProto(),
+                allow_unknown_field=True,
+                allow_unknown_extension=True,
+            )
         if ctx.debug:
             logger.warning(
                 "Parsing file '%s'", file.rel_path,
-                extra={"cli_warn": True}
+                extra={"cli_warn": True},
             )
-        return file
-    
-    else:
-        logger.warning(
-            "Cannot parse '%s'", file.rel_path,
-            extra={"cli_warn": True}
-        )
-        return None
+        result.append(qf)
+    return result
