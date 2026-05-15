@@ -36,6 +36,7 @@
 , reprotoSrc        # filtered reproto source (builtins.path)
 , reprotoBare       # bootstrap reproto package
 , reprotoTestDeps   # full Python dep list for the dev-shell
+, treeSitterTextproto
 , protoscan
 }:
 
@@ -103,7 +104,7 @@
         export NIXSHELL_REPO="${repoRoot}"
         export PYO3_PYTHON="${pythonExecutable}"
         export PATH="${repoRoot}/bin:${pythonBin}/bin:${repoRoot}/target/release:$PATH"
-        export PYTHONPATH="$PWD/reproto/src:$PWD/protoscan/src:${pythonPkgs.makePythonPath reprotoTestDeps}:$PYTHONPATH"
+        export PYTHONPATH="$PWD/reproto/src:$PWD/protoscan/src:${treeSitterTextproto}:${pythonPkgs.makePythonPath reprotoTestDeps}:$PYTHONPATH"
       }
 
       _hook_python() {

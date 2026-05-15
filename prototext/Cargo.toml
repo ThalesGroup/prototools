@@ -40,8 +40,9 @@ prost-types     = "0.14"
 walkdir         = "2"
 
 [features]
-default = ["protox"]
-protox = ["dep:protox"]
+default = ["protox", "wkt-db"]
+protox  = ["dep:protox"]
+wkt-db  = []
 
 [build-dependencies]
 prost  = "0.14"

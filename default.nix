@@ -120,22 +120,82 @@ let
   };
 
   # ---------------------------------------------------------------------------
+  # WKT proto list — read from the committed SOURCES file at eval time so
+  # default.nix never needs updating when the list changes.
+  # ---------------------------------------------------------------------------
+  wktSources =
+    let
+      raw  = builtins.readFile ./prototext/wkt/SOURCES;
+      lines = pkgs.lib.splitString "\n" raw;
+    in
+      builtins.filter (l: l != "") lines;
+
+  # ---------------------------------------------------------------------------
   # Sub-file imports
+  #
+  # wkt-db cycle break (single Rust import, no double-compile):
+  #
+  #   rust      — single Crane workspace; produces prototextBare + prototext.
+  #               prototextBare is built unconditionally (no wktRkyv needed).
+  #               prototext (full) receives wktRkyv; falls back to prototextBare
+  #               when wktRkyv is null (never the case here).
+  #   python    — reprotoBare depends only on the Python codec, not on any Rust
+  #               binary.  reprotoTests/stressTests use rust.prototext (lazy).
+  #   wktRkyv   — uses python.reprotoBare to run reproto --build-schema-db.
+  #               Does NOT depend on rust.prototext, breaking the cycle.
+  #
+  # All shared Crane artefacts (depsCache, rustTests, etc.) come from the
+  # single rust import — Rust sources are compiled exactly once.
   # ---------------------------------------------------------------------------
 
   rust = import ./nix/rust.nix {
     inherit pkgs crane pythonPkgs pythonBin pythonExecutable pyo3Rustflags
-            src protoPatchPhase;
+            src protoPatchPhase wktRkyv;
   };
 
   python = import ./nix/python.nix {
     inherit pkgs pythonPkgs pythonBin treeSitterTextproto;
-    inherit (rust) prototext prototextCodec fdpScanLib scoringGraphLib
+    # rust.prototext (full, lazy): only forced when reprotoTests/stressTests
+    # are built, by which time wktRkyv is already available.
+    prototext = rust.prototext;
+    inherit (rust) prototextCodec fdpScanLib scoringGraphLib
                    prototextExtensionArtifacts scoringGraphExtensionArtifacts;
   };
 
+  # Pre-build the WKT scoring graph using python.reprotoBare.
+  # proto filenames are read from prototext/wkt/SOURCES at eval time.
+  # python.reprotoBare does not depend on the Rust prototext binary, so there
+  # is no cycle: wktRkyv → python.reprotoBare → (pure Python) ✓
+  wktRkyv = pkgs.runCommand "wkt-rkyv" {
+    buildInputs = [
+      pkgs.protobuf
+      (pythonPkgs.python.withPackages (_: python.reprotoTestDeps))
+    ];
+  } ''
+    set -euo pipefail
+    mkdir -p "$out"
+    export PYTHONPATH="${python.reprotoSrcFull}/src"
+
+    # Compile WKT .proto files (from prototext/wkt/SOURCES) into one FDS.
+    protoc \
+      --descriptor_set_out="$out/wkt.desc" \
+      --include_imports \
+      ${pkgs.lib.concatStringsSep " \\\n      " wktSources}
+
+    # Build the Hopcroft scoring graph from the WKT descriptor.
+    # reproto -I takes a directory of .pb files; PB_FILES are positional.
+    # --build-schema-db writes schemas.desc and schemas/hopcroft.rkyv.
+    # We copy hopcroft.rkyv to $out/wkt.rkyv for the build.rs fast-path.
+    python -m reproto.cli \
+      --build-schema-db="$out/schemas.desc" \
+      -O "$TMPDIR/reproto-out" \
+      -I "$out" \
+      wkt.desc
+    cp "$out/schemas/hopcroft.rkyv" "$out/wkt.rkyv"
+  '';
+
   shells = import ./nix/shells.nix {
-    inherit pkgs pythonPkgs pythonBin pythonExecutable pyo3Rustflags;
+    inherit pkgs pythonPkgs pythonBin pythonExecutable pyo3Rustflags treeSitterTextproto;
     inherit (rust) prototext;
     inherit (python) reprotoSrc reprotoBare reprotoTestDeps reproto protoscan;
     repoRoot    = toString ./.;
@@ -160,7 +220,7 @@ let
   # ---------------------------------------------------------------------------
   ci = pkgs.linkFarmFromDrvs "ci" [
     rust.rustFmt rust.rustClippy rust.rustTests
-    rust.prototext rust.prototextCodec rust.fdpScanLib rust.scoringGraphLib
+    rust.prototextBare rust.prototext rust.prototextCodec rust.fdpScanLib rust.scoringGraphLib
     python.reproto python.protoscan
     python.reprotoTests python.pythonLint python.pythonRuff
   ];
@@ -174,6 +234,7 @@ in
   default              = ci;
   prototools           = prototools;
   prototext            = rust.prototext;
+  prototext-bare       = rust.prototextBare;
   rust-fmt             = rust.rustFmt;
   rust-clippy          = rust.rustClippy;
   rust-tests           = rust.rustTests;

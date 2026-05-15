@@ -23,6 +23,11 @@ pub mod run;
 /// Covers all `google.protobuf.*` types without requiring a file on disk.
 pub static EMBEDDED_DESCRIPTOR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/descriptor.pb"));
 
+/// Pre-built Hopcroft scoring graph for all WKT types (feature `wkt-db`).
+/// Embedded at compile time from `$OUT_DIR/wkt.rkyv` produced by `build.rs`.
+#[cfg(feature = "wkt-db")]
+pub static WKT_GRAPH: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wkt.rkyv"));
+
 // ── CLI definition ────────────────────────────────────────────────────────────
 
 /// Convert between binary protobuf and protoc-style text (enhanced textproto).

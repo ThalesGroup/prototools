@@ -132,12 +132,51 @@ constraints:
 | GitHub Releases | pre-built binaries (all four platforms) | musl static linking for Linux; plain `cargo build`, no Nix |
 | nixpkgs | Nix derivations | must be self-contained, reproducible, pass `nix-build` on all platforms |
 | crates.io | Rust crates (`prototext`, library crates) | `cargo publish`; no binary blobs, no path dependencies |
-| Python package index (PyPI) | Python wheels (`prototext_codec`, `fdp_scan`, `scoring_graph`, `reproto`, `protoscan`) | `maturin` or `hatch` build; platform tags; no Nix dependency |
+| PyPI | Python wheels (`prototext_codec`, `fdp_scan`, `scoring_graph`, `reproto`, `protoscan`) | `maturin` or `hatch` build; platform tags; no Nix dependency |
 
 The build system should accommodate these constraints so that:
 - publishing to each venue is straightforward and documented,
 - there is at least a smoke test for each publication path,
 - manual steps are minimal and written down.
+
+**Release bundle pattern** — for crates.io and PyPI, a dedicated Nix
+derivation (`releaseBundle` or similar) prepares a ready-to-upload directory
+tree in the Nix store.  The human's only action is to run a short top-level
+script that calls the upload tool in dependency order:
+
+```
+$out/
+  crates/
+    00-prototext-core/    ← path deps rewritten to version deps
+    01-score-graph/
+    02-prototext/         ← includes pre-generated wkt.rkyv (see below)
+    publish.sh            ← calls `cargo publish` in order
+  wheels/
+    00-prototext-codec/   ← ready-to-upload source tree
+    01-fdp-scan/
+    02-scoring-graph/
+    03-reproto/
+    04-protoscan/
+    publish.sh            ← calls `twine upload` (or `hatch publish`) in order
+```
+
+Neither crates.io nor PyPI requires a link to a Git repository; both accept
+a self-contained tarball/source tree produced by the Nix derivation.
+
+**crates.io — path dependency rewriting** — `cargo publish` rejects path
+dependencies.  The release derivation rewrites each crate's `Cargo.toml`,
+replacing `path = "../sibling"` with `version = "x.y.z"`.  Crates are
+published leaf-first so version deps resolve at publish time.
+
+**crates.io — embedded WKT rkyv** — `prototext` with auto-inference enabled
+embeds a pre-built Hopcroft DB (`wkt.rkyv`) generated from the WKT descriptor.
+This creates a build-time cycle (`prototext-full` → `reproto` → `prototext-bare`),
+broken by a Cargo feature flag (`wkt-db`, default on): the bare build
+(`--no-default-features`) omits the rkyv; `reproto` depends on the bare build;
+the full build's `build.rs` embeds the rkyv produced by a Nix `runCommand`
+that calls `reproto --build-schema-db` over the embedded descriptor.  The
+release derivation includes the pre-generated `wkt.rkyv` in the crate source
+tree so `cargo publish` is self-contained.
 
 For the current overhaul, the GitHub Releases workflow
 (`.github/workflows/release.yml`) is treated as a reference implementation:

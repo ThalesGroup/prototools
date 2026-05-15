@@ -31,6 +31,7 @@
 , pyo3Rustflags
 , src
 , protoPatchPhase
+, wktRkyv ? null   # store path to wkt.rkyv; null for bare/bootstrap builds
 }:
 
 let
@@ -110,48 +111,70 @@ let
     cargoExtraArgs = workspaceArgs;
   });
 
+  # Common postInstall for both prototext variants.
+  prototextPostInstall = ''
+    # Install shell completions.
+    installShellCompletion --cmd prototext \
+      --bash <(PROTOTEXT_COMPLETE=bash $out/bin/prototext | sed \
+        -e 's|-o nospace -o bashdefault|-o nospace -o filenames -o bashdefault|g' \
+        -e 's|words\[COMP_CWORD\]="$2"|local _cur="''${COMP_LINE:0:''${COMP_POINT}}"; _cur="''${_cur##* }"; words[COMP_CWORD]="''${_cur}"|') \
+      --zsh  <(PROTOTEXT_COMPLETE=zsh  $out/bin/prototext) \
+      --fish <(PROTOTEXT_COMPLETE=fish $out/bin/prototext)
+
+    # Generate and install man page.
+    $out/bin/prototext-gen-man $out/share/man/man1
+  '';
+
+  prototextMeta = with pkgs.lib; {
+    description  = "Command-line tool for Protocol Buffer messages (prototext binary)";
+    longDescription = ''
+      prototools is a collection of CLI utilities for working with Protocol
+      Buffer messages.  The first tool, prototext, converts between binary
+      protobuf wire format and protoc-style enhanced textproto, with lossless
+      round-trip by default.
+    '';
+    homepage    = "https://github.com/douzebis/prototools";
+    license     = licenses.mit;
+    maintainers = with maintainers; [ ];  # add: douzebis once registered
+    mainProgram = "prototext";
+    platforms   = platforms.unix;
+  };
+
   # ---------------------------------------------------------------------------
-  # Final package — builds only the prototext binary.
-  # checkPhase asserts that fmt, clippy, and tests all passed by referencing
-  # their store paths (Nix fails the build if any derivation is missing).
+  # prototextBare — prototext without the embedded WKT scoring graph.
+  # Used by reproto as a build-time dependency, breaking the circular dep:
+  #   prototext-full → wktRkyv → reproto → prototextBare
   # ---------------------------------------------------------------------------
-  prototext = crane.buildPackage (protocArgs // {
-    pname          = "prototext";
+  prototextBare = crane.buildPackage (protocArgs // {
+    pname          = "prototext-bare";
     cargoArtifacts = rustTests;
     cargoExtraArgs = "--no-default-features -p prototext";
     nativeBuildInputs = protocArgs.nativeBuildInputs ++ [ pkgs.installShellFiles ];
-    # doCheck = false: tests are already run by the dedicated rust-tests
-    # derivation (which has protoc in nativeBuildInputs).
     doCheck        = false;
-
-    postInstall = ''
-      # Install shell completions.
-      installShellCompletion --cmd prototext \
-        --bash <(PROTOTEXT_COMPLETE=bash $out/bin/prototext | sed \
-          -e 's|-o nospace -o bashdefault|-o nospace -o filenames -o bashdefault|g' \
-          -e 's|words\[COMP_CWORD\]="$2"|local _cur="''${COMP_LINE:0:''${COMP_POINT}}"; _cur="''${_cur##* }"; words[COMP_CWORD]="''${_cur}"|') \
-        --zsh  <(PROTOTEXT_COMPLETE=zsh  $out/bin/prototext) \
-        --fish <(PROTOTEXT_COMPLETE=fish $out/bin/prototext)
-
-      # Generate and install man page.
-      $out/bin/prototext-gen-man $out/share/man/man1
-    '';
-
-    meta = with pkgs.lib; {
-      description  = "Command-line tool for Protocol Buffer messages (prototext binary)";
-      longDescription = ''
-        prototools is a collection of CLI utilities for working with Protocol
-        Buffer messages.  The first tool, prototext, converts between binary
-        protobuf wire format and protoc-style enhanced textproto, with lossless
-        round-trip by default.
-      '';
-      homepage    = "https://github.com/douzebis/prototools";
-      license     = licenses.mit;
-      maintainers = with maintainers; [ ];  # add: douzebis once registered
-      mainProgram = "prototext";
-      platforms   = platforms.unix;
-    };
+    postInstall    = prototextPostInstall;
+    meta           = prototextMeta;
   });
+
+  # ---------------------------------------------------------------------------
+  # prototext (full) — with embedded WKT scoring graph (feature wkt-db).
+  # When wktRkyv is non-null (Nix build), WKT_RKYV points at the pre-built
+  # rkyv file so build.rs skips the reproto invocation.
+  # When wktRkyv is null (bare/bootstrap), falls back to prototextBare.
+  # ---------------------------------------------------------------------------
+  prototext =
+    if wktRkyv != null then
+      crane.buildPackage (protocArgs // {
+        pname          = "prototext";
+        cargoArtifacts = rustTests;
+        cargoExtraArgs = "--no-default-features --features wkt-db -p prototext";
+        nativeBuildInputs = protocArgs.nativeBuildInputs ++ [ pkgs.installShellFiles ];
+        doCheck        = false;
+        WKT_RKYV       = "${wktRkyv}/wkt.rkyv";
+        postInstall    = prototextPostInstall;
+        meta           = prototextMeta;
+      })
+    else
+      prototextBare;
 
   # ---------------------------------------------------------------------------
   # makePyo3Extension — shared helper for the three PyO3 extensions.
@@ -277,6 +300,7 @@ in {
     rustFmt
     rustClippy
     rustTests
+    prototextBare
     prototext
     prototextCodec
     fdpScanLib

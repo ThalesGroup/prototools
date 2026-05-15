@@ -20,6 +20,8 @@ use score_graph_lib::score::{
 use crate::inputs::{expand_path, InputFile};
 use prototext_core::instantiate::{generate_message_bytes, InstantiateOpts};
 
+#[cfg(feature = "wkt-db")]
+use crate::WKT_GRAPH;
 use crate::{Cli, Command, EMBEDDED_DESCRIPTOR};
 
 // ── DescriptorContext ─────────────────────────────────────────────────────────
@@ -40,28 +42,35 @@ impl DescriptorContext {
     /// FDS, or single FDP), builds the pool, then checks for
     /// `<stem>/hopcroft.rkyv` and loads it if present.
     pub fn load(path: Option<&Path>) -> Result<Self, String> {
-        let desc_bytes = match path {
-            None => EMBEDDED_DESCRIPTOR.to_vec(),
-            Some(p) => read_descriptor_file(p)?,
+        let (desc_bytes, graph) = match path {
+            None => {
+                let bytes = EMBEDDED_DESCRIPTOR.to_vec();
+                #[cfg(feature = "wkt-db")]
+                let graph = Some(
+                    LoadedGraph::from_static_bytes(WKT_GRAPH)
+                        .map_err(|e| format!("wkt graph: {e}"))?,
+                );
+                #[cfg(not(feature = "wkt-db"))]
+                let graph = None;
+                (bytes, graph)
+            }
+            Some(p) => {
+                let bytes = read_descriptor_file(p)?;
+                let stem = p.with_extension("");
+                let rkyv_path = stem.join("hopcroft.rkyv");
+                let graph =
+                    if rkyv_path.exists() {
+                        Some(load_graph(&rkyv_path).map_err(|e| {
+                            format!("loading graph '{}': {}", rkyv_path.display(), e)
+                        })?)
+                    } else {
+                        None
+                    };
+                (bytes, graph)
+            }
         };
 
         let pool = decode_pool(&desc_bytes).map_err(|e| format!("descriptor: {}", e))?;
-
-        let graph = if let Some(p) = path {
-            let stem = p.with_extension("");
-            let rkyv_path = stem.join("hopcroft.rkyv");
-            if rkyv_path.exists() {
-                Some(
-                    load_graph(&rkyv_path)
-                        .map_err(|e| format!("loading graph '{}': {}", rkyv_path.display(), e))?,
-                )
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
         Ok(DescriptorContext { pool, graph })
     }
 }
@@ -320,9 +329,15 @@ pub fn run(cli: Cli) -> Result<(), String> {
 
             let auto_infer = r#type.is_none();
             if auto_infer && desc_ctx.graph.is_none() {
-                return Err("decode auto-inference requires a DB-backed descriptor \
+                return Err(if cli.descriptor.is_some() {
+                    "decode auto-inference requires a DB-backed descriptor \
                      (no hopcroft.rkyv found alongside the descriptor file)"
-                    .into());
+                        .into()
+                } else {
+                    "decode auto-inference requires --descriptor with a sibling \
+                     hopcroft.rkyv, or a wkt-db-enabled build"
+                        .into()
+                });
             }
 
             run_decode(
@@ -360,10 +375,15 @@ pub fn run(cli: Cli) -> Result<(), String> {
 
         // ── list-schemas ──────────────────────────────────────────────────────
         Command::ListSchemas { top, paths } => {
-            let graph = desc_ctx.graph.as_ref().ok_or(
-                "list-schemas requires a DB-backed descriptor \
-                 (no hopcroft.rkyv found alongside the descriptor file)",
-            )?;
+            let graph = desc_ctx.graph.as_ref().ok_or_else(|| {
+                if cli.descriptor.is_some() {
+                    "list-schemas requires a DB-backed descriptor \
+                     (no hopcroft.rkyv found alongside the descriptor file)"
+                } else {
+                    "list-schemas requires --descriptor with a sibling hopcroft.rkyv, \
+                     or a wkt-db-enabled build"
+                }
+            })?;
             run_list_schemas(graph, top, &cli.input_root, &paths)
         }
 
@@ -405,10 +425,15 @@ pub fn run(cli: Cli) -> Result<(), String> {
             assume_binary,
             paths,
         } => {
-            let graph = desc_ctx.graph.as_ref().ok_or(
-                "score requires a DB-backed descriptor \
-                 (no hopcroft.rkyv found alongside the descriptor file)",
-            )?;
+            let graph = desc_ctx.graph.as_ref().ok_or_else(|| {
+                if cli.descriptor.is_some() {
+                    "score requires a DB-backed descriptor \
+                     (no hopcroft.rkyv found alongside the descriptor file)"
+                } else {
+                    "score requires --descriptor with a sibling hopcroft.rkyv, \
+                     or a wkt-db-enabled build"
+                }
+            })?;
             run_score(graph, &r#type, assume_binary, &cli.input_root, &paths)
         }
     }
