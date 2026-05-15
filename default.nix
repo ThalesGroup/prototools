@@ -135,7 +135,7 @@ let
   };
 
   shells = import ./nix/shells.nix {
-    inherit pkgs pythonPkgs pythonBin pythonExecutable pyo3Rustflags treeSitterTextproto;
+    inherit pkgs pythonPkgs pythonBin pythonExecutable pyo3Rustflags;
     inherit (rust) prototext;
     inherit (python) reprotoSrc reprotoBare reprotoTestDeps reproto protoscan;
     repoRoot    = toString ./.;

@@ -54,8 +54,26 @@ let
         !skipPb && !skipCache && !skipResult;
   };
 
+  # Wrap treeSitterTextproto (a bare .so store path) as a minimal Python
+  # package so it can appear in propagatedBuildInputs and propagates
+  # correctly to consumers.  The .so is installed directly into site-packages.
+  treeSitterTextprotoPkg = pythonPkgs.buildPythonPackage {
+    pname   = "textproto";
+    version = "0.1.0";
+    format  = "other";
+    src     = treeSitterTextproto;
+    installPhase = ''
+      site="$out/lib/${pythonPkgs.python.libPrefix}/site-packages"
+      mkdir -p "$site"
+      cp ${treeSitterTextproto}/textproto*.so "$site/"
+      cp ${treeSitterTextproto}/textproto.pyi "$site/"
+    '';
+  };
+
   # Common Python dependencies for reproto (used by both reprotoBare and reproto).
   # reprotoPropagatedDeps: runtime deps only (no test tools, no codec).
+  # tree-sitter and tree-sitter-language-pack are runtime deps because
+  # split_fdps.py imports them at module load time (top-level imports).
   reprotoPropagatedDeps = [
     pythonPkgs.click
     pythonPkgs.google-re2
@@ -66,19 +84,20 @@ let
     pythonPkgs.rapidfuzz
     pythonPkgs.rich
     pythonPkgs.types-protobuf
+    pythonPkgs.tree-sitter
+    pythonPkgs.tree-sitter-language-pack
+    treeSitterTextprotoPkg
   ];
 
   # Full Python dependency set for running the reproto test suite and for the
-  # dev-shell PYTHONPATH.  Extends reprotoPropagatedDeps with the codec, pytest,
-  # and tree-sitter.  Used by reprotoTests, pythonLint, and dev-shell.
+  # dev-shell PYTHONPATH.  Extends reprotoPropagatedDeps with the codec and
+  # pytest tools.  Used by reprotoTests, pythonLint, and dev-shell.
   reprotoTestDeps = reprotoPropagatedDeps ++ [
     prototextCodec
     fdpScanLib
     scoringGraphLib
     pythonPkgs.pytest
     pythonPkgs."pytest-xdist"
-    pythonPkgs.tree-sitter
-    pythonPkgs.tree-sitter-language-pack
   ];
 
   # Bootstrap package — installs reproto without running tests.
@@ -159,11 +178,10 @@ let
       pkgs.protobuf
       pkgs.buf
       prototext
-      treeSitterTextproto
       (pythonPkgs.python.withPackages (_: reprotoTestDeps))
     ];
   } ''
-    export PYTHONPATH="${reprotoSrcFull}/src:${treeSitterTextproto}"
+    export PYTHONPATH="${reprotoSrcFull}/src"
     pytest -p no:cacheprovider ${reprotoSrcFull}/src/reproto/tests/ -x
     touch $out
   '';
@@ -210,11 +228,8 @@ let
   pythonLint = pkgs.runCommand "python-lint" {
     buildInputs = [
       pkgs.pyright
-      treeSitterTextproto
       (pythonPkgs.python.withPackages (_: reprotoPropagatedDeps ++ [
         pythonPkgs.pytest
-        pythonPkgs.tree-sitter
-        pythonPkgs.tree-sitter-language-pack
       ]))
     ];
   } ''
@@ -223,9 +238,10 @@ let
     # pyright needs a writable working directory for its cache.
     cd "$TMPDIR"
 
-    # Make the prototext_codec_lib, scoring_graph_lib .pyi stubs and
-    # textproto extension visible to pyright.
-    export PYTHONPATH="${reprotoSrcFull}/src:${prototextExtensionArtifacts}:${scoringGraphExtensionArtifacts}:${treeSitterTextproto}"
+    # Make the prototext_codec_lib and scoring_graph_lib .pyi stubs visible to
+    # pyright.  tree-sitter, tree-sitter-language-pack, and treeSitterTextproto
+    # are now in reprotoPropagatedDeps and reach pyright via the Python env.
+    export PYTHONPATH="${reprotoSrcFull}/src:${prototextExtensionArtifacts}:${scoringGraphExtensionArtifacts}"
 
     # Write a hermetic pyrightconfig.json.
     cat > pyrightconfig.json <<EOF
@@ -234,8 +250,7 @@ let
   "extraPaths": [
     "${reprotoSrcFull}/src",
     "${prototextExtensionArtifacts}",
-    "${scoringGraphExtensionArtifacts}",
-    "${treeSitterTextproto}"
+    "${scoringGraphExtensionArtifacts}"
   ],
   "exclude": [
     "result*",
