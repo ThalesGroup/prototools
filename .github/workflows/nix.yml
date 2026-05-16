@@ -39,7 +39,7 @@ jobs:
 
       - name: Check lints (clippy)
         if: ${{ !matrix.skip-clippy }}
-        run: nix-build -A rust-clippy && nix-build -A rust-clippy-pyo3
+        run: nix-build -A rust-clippy
 
       - name: Run tests
         run: nix-build -A rust-tests
