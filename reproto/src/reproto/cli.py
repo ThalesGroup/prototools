@@ -274,8 +274,9 @@ class _SectionedCommand(click.Command):
     type=click.Path(dir_okay=False, writable=True, path_type=Path),
     help=(
         'Build the full schema DB at PATH (must end in .desc): '
-        'writes PATH (FileDescriptorSet of all loaded FDPs) and '
-        'PATH-stem/hopcroft.rkyv (compiled scoring graph). '
+        'writes PATH (FileDescriptorSet of all loaded FDPs), '
+        'PATH-stem/hopcroft.rkyv (compiled scoring graph), and '
+        'PATH-stem/index.rkyv (lazy-loading FDS index). '
         'YAML and FDPs stay in memory; no intermediate files are written.'
     ),
 )

@@ -6,7 +6,7 @@
 //! compiled graph as human-readable YAML to stdout.
 //!
 //! Usage:
-//!   cargo run -p score-graph --bin hopcroft_dump -- <fixture-dir>
+//!   cargo run -p scoring-graph --bin hopcroft_dump -- <fixture-dir>
 //!
 //! <fixture-dir> must contain an `input/` subdirectory with one or more
 //! scoring-graph YAML files (spec 0045 §2 format).  All `*.yaml` files

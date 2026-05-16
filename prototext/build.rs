@@ -61,11 +61,16 @@ fn build_wkt_graph(out_dir: &str, manifest_dir: &str) {
     use std::process::Command;
 
     let wkt_rkyv_dst = format!("{out_dir}/wkt.rkyv");
+    let wkt_index_dst = format!("{out_dir}/wkt_index.rkyv");
 
-    // Fast path: Nix full build pre-supplies the file.
+    // Fast path: Nix full build pre-supplies both files.
     if let Ok(prebuilt) = std::env::var("WKT_RKYV") {
         std::fs::copy(&prebuilt, &wkt_rkyv_dst)
             .unwrap_or_else(|e| panic!("failed to copy WKT_RKYV '{prebuilt}': {e}"));
+        let prebuilt_index = std::env::var("WKT_INDEX")
+            .unwrap_or_else(|_| panic!("WKT_RKYV is set but WKT_INDEX is not"));
+        std::fs::copy(&prebuilt_index, &wkt_index_dst)
+            .unwrap_or_else(|e| panic!("failed to copy WKT_INDEX '{prebuilt_index}': {e}"));
         return;
     }
 
@@ -124,6 +129,9 @@ fn build_wkt_graph(out_dir: &str, manifest_dir: &str) {
     // Copy schemas/hopcroft.rkyv → wkt.rkyv (the path embedded via include_bytes!).
     std::fs::copy(format!("{out_dir}/schemas/hopcroft.rkyv"), &wkt_rkyv_dst)
         .unwrap_or_else(|e| panic!("failed to copy hopcroft.rkyv: {e}"));
+    // Copy schemas/index.rkyv → wkt_index.rkyv (the path embedded via include_bytes!).
+    std::fs::copy(format!("{out_dir}/schemas/index.rkyv"), &wkt_index_dst)
+        .unwrap_or_else(|e| panic!("failed to copy index.rkyv: {e}"));
 }
 
 fn main() {

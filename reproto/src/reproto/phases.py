@@ -1126,11 +1126,12 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
 
 
 def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
-    """Build the full schema DB at db_path (spec 0056 §reproto --build-schema-db).
+    """Build the full schema DB at db_path (spec 0056, 0068).
 
     Produces:
       db_path                      — FileDescriptorSet of all loaded FDPs (.desc)
       db_path.stem/hopcroft.rkyv   — compiled (baked) Hopcroft scoring graph
+      db_path.stem/index.rkyv      — lazy-loading FDS index (spec 0068)
 
     YAML content is generated in-memory from the same logic as
     _phase_emit_scoring_graphs; no intermediate files are written to disk.
@@ -1244,17 +1245,23 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
     # db_path.stem/     → sibling directory
     #   hopcroft.rkyv   → compiled Hopcroft scoring graph
 
+    raw_pb_bytes = fds.SerializeToString()
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    db_path.write_bytes(fds.SerializeToString())
+    db_path.write_bytes(raw_pb_bytes)
 
     schema_db_dir = db_path.with_suffix('')
     schema_db_dir.mkdir(parents=True, exist_ok=True)
     (schema_db_dir / 'hopcroft.rkyv').write_bytes(baked_graph)
 
+    # ── 5. Build and write index.rkyv (spec 0068)
+    from .build_index import write_fds_index
+    write_fds_index(raw_pb_bytes, fds, schema_db_dir / 'index.rkyv')
+
     if not ctx.quiet:
         eprintln = __import__('sys').stderr.write
         eprintln(f'  descriptor: {db_path}\n')
         eprintln(f'  graph:      {schema_db_dir / "hopcroft.rkyv"}\n')
+        eprintln(f'  index:      {schema_db_dir / "index.rkyv"}\n')
 
 
 def _clear_features(fdp: Any) -> None:

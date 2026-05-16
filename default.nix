@@ -192,6 +192,7 @@ let
       -I "$out" \
       wkt.desc
     cp "$out/schemas/hopcroft.rkyv" "$out/wkt.rkyv"
+    cp "$out/schemas/index.rkyv"    "$out/wkt_index.rkyv"
   '';
 
   shells = import ./nix/shells.nix {

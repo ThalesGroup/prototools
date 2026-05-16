@@ -22,8 +22,8 @@ members = [
     "prototext",
     "prototext-pyo3",
     "fdp-scan-pyo3",
-    "score-graph",
-    "score-graph-pyo3",
+    "scoring-graph",
+    "scoring-graph-pyo3",
 ]
 
 [workspace.dependencies]

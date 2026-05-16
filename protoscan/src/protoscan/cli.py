@@ -36,7 +36,7 @@ def main(
         blob = mv[start:end]
         fdp = descriptor_pb2.FileDescriptorProto()
         try:
-            fdp.ParseFromString(blob)  # type: ignore[arg-type]  # types-protobuf stubs declare bytes but protobuf accepts any buffer-protocol object at runtime
+            fdp.ParseFromString(bytes(blob))
             print(fdp.name)
             if proto_out:
                 out_path = proto_out / fdp.name

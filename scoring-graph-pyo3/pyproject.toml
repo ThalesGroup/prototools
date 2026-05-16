@@ -19,4 +19,4 @@ requires-python = ">=3.8"
 packages = ["scoring_graph_lib"]
 
 [tool.pyo3-stub-gen]
-# pyo3-stub-gen writes scoring_graph_lib.pyi next to this file (i.e. score-graph-pyo3/).
+# pyo3-stub-gen writes scoring_graph_lib.pyi next to this file (i.e. scoring-graph-pyo3/).

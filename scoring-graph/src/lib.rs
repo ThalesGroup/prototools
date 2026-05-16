@@ -2,10 +2,11 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Library interface for the `score-graph` crate.
+//! Library interface for the `scoring-graph` crate.
 //!
 //! Exposes the build pipeline so that the `scoring_graph_lib` PyO3 extension
 //! can call it without going through the CLI binary.
 
 pub mod build_scoring_graph;
+pub mod fds_index;
 pub mod score;

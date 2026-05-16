@@ -30,8 +30,6 @@ class DescriptorMessage(Protocol):
     """Protocol for protobuf descriptor messages with common attributes."""
     name: str
 
-    def HasField(self, field_name: str) -> bool: ...
-
     @property
     def options(self) -> Message: ...
 

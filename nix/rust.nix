@@ -157,8 +157,8 @@ let
 
   # ---------------------------------------------------------------------------
   # prototext (full) — with embedded WKT scoring graph (feature wkt-db).
-  # When wktRkyv is non-null (Nix build), WKT_RKYV points at the pre-built
-  # rkyv file so build.rs skips the reproto invocation.
+  # When wktRkyv is non-null (Nix build), WKT_RKYV and WKT_INDEX point at
+  # the pre-built files so build.rs skips the reproto invocation.
   # When wktRkyv is null (bare/bootstrap), falls back to prototextBare.
   # ---------------------------------------------------------------------------
   prototext =
@@ -170,6 +170,7 @@ let
         nativeBuildInputs = protocArgs.nativeBuildInputs ++ [ pkgs.installShellFiles ];
         doCheck        = false;
         WKT_RKYV       = "${wktRkyv}/wkt.rkyv";
+        WKT_INDEX      = "${wktRkyv}/wkt_index.rkyv";
         postInstall    = prototextPostInstall;
         meta           = prototextMeta;
       })
@@ -282,8 +283,8 @@ let
 
   _scoringGraphLibExt = makePyo3Extension {
     crateName    = "scoring_graph_extension";
-    crateDir     = "score-graph-pyo3";
-    pyDir        = ../score-graph-pyo3;
+    crateDir     = "scoring-graph-pyo3";
+    pyDir        = ../scoring-graph-pyo3;
     libName      = "scoring_graph_lib";
     pyiName      = "scoring_graph";
     postBuildBin = "scoring_graph_post_build";

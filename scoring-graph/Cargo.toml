@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 [package]
-name        = "score-graph"
+name        = "scoring-graph"
 version     = "0.1.0"
 edition     = "2021"
 description = "Build a Hopcroft-deduplicated scoring graph from reproto YAML output"

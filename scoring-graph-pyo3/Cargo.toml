@@ -13,7 +13,7 @@ name       = "scoring_graph_lib"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-score-graph          = { path = "../score-graph" }
+scoring-graph        = { path = "../scoring-graph" }
 pyo3                 = { version = "0.26", features = ["extension-module"] }
 pyo3_stub_gen        = { version = "0.22", package = "pyo3-stub-gen" }
 pyo3_stub_gen_derive = { version = "0.22", package = "pyo3-stub-gen-derive" }

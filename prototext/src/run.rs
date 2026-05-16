@@ -18,6 +18,7 @@ use score_graph_lib::score::{
 };
 
 use crate::inputs::{expand_path, InputFile};
+use crate::lazy_pool::LazyPool;
 use prototext_core::instantiate::{generate_message_bytes, InstantiateOpts};
 
 #[cfg(feature = "wkt-db")]
@@ -26,23 +27,47 @@ use crate::{Cli, Command, EMBEDDED_DESCRIPTOR};
 
 // ── DescriptorContext ─────────────────────────────────────────────────────────
 
-/// Result of resolving `--descriptor`: a descriptor pool for type lookup, plus
-/// an optional compiled Hopcroft scoring graph when the sibling
-/// `<stem>/hopcroft.rkyv` file is present.
+/// Result of resolving `--descriptor`: a pool for type lookup plus an optional
+/// Hopcroft scoring graph.
+///
+/// When a `<stem>/index.rkyv` sidecar is present, `lazy` holds a `LazyPool`
+/// that mmaps the FDS and decodes FDPs on demand; `pool` is `None`.  On the
+/// eager path (no sidecar) `pool` holds the fully-decoded pool and `lazy` is
+/// `None`.  Always use the `pool()` / `pool_mut()` accessors.
 pub struct DescriptorContext {
-    pub pool: prost_reflect::DescriptorPool,
+    /// Populated only on the eager path (no index.rkyv sidecar).
+    pool: Option<prost_reflect::DescriptorPool>,
     pub graph: Option<LoadedGraph>,
+    pub lazy: Option<LazyPool>,
 }
 
 impl DescriptorContext {
+    /// The descriptor pool, regardless of which path was taken.
+    pub fn pool(&self) -> &prost_reflect::DescriptorPool {
+        if let Some(lazy) = &self.lazy {
+            &lazy.pool
+        } else {
+            self.pool.as_ref().unwrap()
+        }
+    }
+
+    /// Mutable access to the descriptor pool.
+    pub fn pool_mut(&mut self) -> &mut prost_reflect::DescriptorPool {
+        if let Some(lazy) = &mut self.lazy {
+            &mut lazy.pool
+        } else {
+            self.pool.as_mut().unwrap()
+        }
+    }
+
     /// Load a `DescriptorContext` from an optional descriptor path.
     ///
-    /// When `path` is `None`, uses only the embedded WKT descriptor and no
-    /// graph.  Otherwise reads the descriptor file (binary FDS, `#@` prototext
-    /// FDS, or single FDP), builds the pool, then checks for
-    /// `<stem>/hopcroft.rkyv` and loads it if present.
+    /// When `path` is `None`, uses the embedded WKT descriptor (eager).
+    /// When `path` is `Some(p)` and `<stem>/index.rkyv` exists, opens a
+    /// `LazyPool`; otherwise falls back to eager `decode_pool`.
+    /// In both `Some` cases checks for `<stem>/hopcroft.rkyv`.
     pub fn load(path: Option<&Path>) -> Result<Self, String> {
-        let (desc_bytes, graph) = match path {
+        match path {
             None => {
                 let bytes = EMBEDDED_DESCRIPTOR.to_vec();
                 #[cfg(feature = "wkt-db")]
@@ -52,12 +77,18 @@ impl DescriptorContext {
                 );
                 #[cfg(not(feature = "wkt-db"))]
                 let graph = None;
-                (bytes, graph)
+                let pool = decode_pool(&bytes).map_err(|e| format!("embedded descriptor: {e}"))?;
+                Ok(DescriptorContext {
+                    pool: Some(pool),
+                    graph,
+                    lazy: None,
+                })
             }
             Some(p) => {
-                let bytes = read_descriptor_file(p)?;
                 let stem = p.with_extension("");
                 let rkyv_path = stem.join("hopcroft.rkyv");
+                let index_path = stem.join("index.rkyv");
+
                 let graph =
                     if rkyv_path.exists() {
                         Some(load_graph(&rkyv_path).map_err(|e| {
@@ -66,12 +97,26 @@ impl DescriptorContext {
                     } else {
                         None
                     };
-                (bytes, graph)
-            }
-        };
 
-        let pool = decode_pool(&desc_bytes).map_err(|e| format!("descriptor: {}", e))?;
-        Ok(DescriptorContext { pool, graph })
+                if index_path.exists() {
+                    let lazy = LazyPool::open(p, &index_path)
+                        .map_err(|e| format!("opening lazy pool: {e}"))?;
+                    Ok(DescriptorContext {
+                        pool: None,
+                        graph,
+                        lazy: Some(lazy),
+                    })
+                } else {
+                    let bytes = read_descriptor_file(p)?;
+                    let pool = decode_pool(&bytes).map_err(|e| format!("descriptor: {e}"))?;
+                    Ok(DescriptorContext {
+                        pool: Some(pool),
+                        graph,
+                        lazy: None,
+                    })
+                }
+            }
+        }
     }
 }
 
@@ -144,12 +189,13 @@ pub fn infer_type(pb_bytes: &[u8], graph: &LoadedGraph) -> Result<InferredType, 
         .collect();
 
     if tied.len() > 1 {
-        let names: Vec<_> = tied.iter().map(|r| r.fqdn.as_str()).collect();
+        let names: Vec<&str> = tied.iter().map(|r| r.fqdn.as_str()).collect();
+        let list = serde_yaml::to_string(&names).unwrap_or_else(|_| names.join("\n"));
         return Err(format!(
-            "ambiguous: {} entries tie at score {}; specify --type ({})",
+            "{} types tie at score {}; specify --type:\n{}",
             tied.len(),
             top_score,
-            names.join(", ")
+            list.trim_end(),
         ));
     }
 
@@ -308,7 +354,7 @@ pub fn list_schemas_one(
 
 pub fn run(cli: Cli) -> Result<(), String> {
     // Resolve the descriptor once up front.
-    let desc_ctx = DescriptorContext::load(cli.descriptor.as_deref())?;
+    let mut desc_ctx = DescriptorContext::load(cli.descriptor.as_deref())?;
 
     match cli.command {
         // ── decode ────────────────────────────────────────────────────────────
@@ -341,7 +387,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
             }
 
             run_decode(
-                &desc_ctx,
+                &mut desc_ctx,
                 r#type.as_deref(),
                 in_place,
                 assume_binary,
@@ -384,6 +430,9 @@ pub fn run(cli: Cli) -> Result<(), String> {
                      or a wkt-db-enabled build"
                 }
             })?;
+            if let Some(lazy) = &mut desc_ctx.lazy {
+                lazy.load_all().map_err(|e| format!("loading index: {e}"))?;
+            }
             run_list_schemas(graph, top, &cli.input_root, &paths)
         }
 
@@ -406,15 +455,20 @@ pub fn run(cli: Cli) -> Result<(), String> {
                 quiet: cli.quiet,
             };
             for type_name in &types {
+                let lookup = type_name.trim_start_matches('.');
+                if let Some(lazy) = &mut desc_ctx.lazy {
+                    lazy.get_message(lookup)
+                        .map_err(|e| format!("loading type '{lookup}': {e}"))?;
+                }
                 let out: Option<PathBuf> = if let Some(ref root) = cli.output_root {
-                    let rel = type_name.trim_start_matches('.').replace('.', "/");
+                    let rel = lookup.replace('.', "/");
                     let mut p = root.join(rel);
                     p.set_extension("pb");
                     Some(p)
                 } else {
                     cli.output.clone()
                 };
-                run_instantiate_schema(desc_ctx.pool.clone(), type_name, &opts, out.as_deref())?;
+                run_instantiate_schema(desc_ctx.pool().clone(), lookup, &opts, out.as_deref())?;
             }
             Ok(())
         }
@@ -481,7 +535,7 @@ fn validate_roots_not_same(
 
 #[allow(clippy::too_many_arguments)]
 fn run_decode(
-    desc_ctx: &DescriptorContext,
+    desc_ctx: &mut DescriptorContext,
     type_name: Option<&str>,
     in_place: bool,
     assume_binary: bool,
@@ -496,8 +550,12 @@ fn run_decode(
     // Build schema if a type was given explicitly.
     let schema: Option<prototext_core::ParsedSchema> = if let Some(t) = type_name {
         let lookup = t.trim_start_matches('.');
+        if let Some(lazy) = &mut desc_ctx.lazy {
+            lazy.get_message(lookup)
+                .map_err(|e| format!("loading type '{lookup}': {e}"))?;
+        }
         Some(
-            schema_from_pool(desc_ctx.pool.clone(), lookup)
+            schema_from_pool(desc_ctx.pool().clone(), lookup)
                 .map_err(|e| format!("descriptor: {}", e))?,
         )
     } else {
@@ -529,7 +587,11 @@ fn run_decode(
                 inferred.fqdn, inferred.score,
             );
             let lookup = inferred.fqdn.trim_start_matches('.');
-            let infer_schema = schema_from_pool(desc_ctx.pool.clone(), lookup)
+            if let Some(lazy) = &mut desc_ctx.lazy {
+                lazy.get_message(lookup)
+                    .map_err(|e| format!("loading inferred type '{lookup}': {e}"))?;
+            }
+            let infer_schema = schema_from_pool(desc_ctx.pool().clone(), lookup)
                 .map_err(|e| format!("descriptor: {}", e))?;
             let raw_out = process(&data, true, assume_binary, Some(&infer_schema), annotations)?;
             let out = inject_matched_annotation(&raw_out, &inferred);
@@ -566,7 +628,11 @@ fn run_decode(
                 inferred.fqdn, inferred.score,
             );
             let lookup = inferred.fqdn.trim_start_matches('.');
-            let infer_schema = schema_from_pool(desc_ctx.pool.clone(), lookup)
+            if let Some(lazy) = &mut desc_ctx.lazy {
+                lazy.get_message(lookup)
+                    .map_err(|e| format!("loading inferred type '{lookup}': {e}"))?;
+            }
+            let infer_schema = schema_from_pool(desc_ctx.pool().clone(), lookup)
                 .map_err(|e| format!("descriptor: {}", e))?;
             let raw_out = process(&data, true, assume_binary, Some(&infer_schema), annotations)?;
             let out = inject_matched_annotation(&raw_out, &inferred);

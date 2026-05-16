@@ -126,7 +126,7 @@ cfg = {
     'result*',
     'prototext-pyo3/prototext_codec_lib',
     'fdp-scan-pyo3/fdp_scan_lib',
-    'score-graph-pyo3/scoring_graph_lib',
+    'scoring-graph-pyo3/scoring_graph_lib',
     'docs/mockup',
   ],
 }

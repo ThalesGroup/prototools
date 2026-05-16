@@ -15,6 +15,7 @@ use complete::{
 
 pub mod complete;
 pub mod inputs;
+pub mod lazy_pool;
 pub mod run;
 
 // ── Embedded descriptor ───────────────────────────────────────────────────────
@@ -27,6 +28,11 @@ pub static EMBEDDED_DESCRIPTOR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), 
 /// Embedded at compile time from `$OUT_DIR/wkt.rkyv` produced by `build.rs`.
 #[cfg(feature = "wkt-db")]
 pub static WKT_GRAPH: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wkt.rkyv"));
+
+/// Pre-built lazy FDS index for all WKT types (feature `wkt-db`).
+/// Embedded at compile time from `$OUT_DIR/wkt_index.rkyv` produced by `build.rs`.
+#[cfg(feature = "wkt-db")]
+pub static WKT_INDEX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wkt_index.rkyv"));
 
 // ── CLI definition ────────────────────────────────────────────────────────────
 

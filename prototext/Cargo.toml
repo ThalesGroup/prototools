@@ -27,7 +27,9 @@ path = "src/gen_man.rs"
 
 [dependencies]
 prototext-core  = { workspace = true }
-score-graph     = { path = "../score-graph" }
+scoring-graph   = { path = "../scoring-graph" }
+memmap2         = "0.9"
+rkyv            = { version = "0.8", features = ["little_endian"] }
 clap            = { version = "4.5", features = ["derive"] }
 clap_complete   = { version = "4.5", features = ["unstable-dynamic"] }
 clap_mangen     = "0.2"

@@ -7,12 +7,15 @@
 //! Exposes `build_graph(scoring_graphs: list[str], emit_yaml: bool = False) -> tuple[bytes, str | None]`
 //! to Python.
 
+use std::collections::HashMap;
+
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pyo3_stub_gen::derive::gen_stub_pyfunction;
 
 use score_graph_lib::build_scoring_graph::build_from_strings;
+use score_graph_lib::fds_index::{to_bytes as fds_index_to_bytes, FdsIndex};
 
 // ── API functions ─────────────────────────────────────────────────────────────
 
@@ -52,12 +55,50 @@ fn build_graph<'py>(
     Ok((PyBytes::new(py, &rkyv_bytes), yaml))
 }
 
+/// Serialize an FdsIndex to rkyv bytes with the PTSGRAPH header (version 3).
+///
+/// Parameters
+/// ----------
+/// type_to_file : dict[str, str]
+///     Fully-qualified type name (no leading dot) → proto file name.
+/// file_to_span : dict[str, tuple[int, int]]
+///     Proto file name → (start, end) byte offsets in the raw .pb file.
+/// dep_graph : dict[str, list[str]]
+///     Proto file name → list of direct import file names.
+///
+/// Returns
+/// -------
+/// bytes
+///     Serialized ``index.rkyv`` content (PTSGRAPH header + rkyv payload).
+///
+/// Raises
+/// ------
+/// RuntimeError
+///     If serialization fails.
+#[gen_stub_pyfunction]
+#[pyfunction]
+fn build_fds_index<'py>(
+    py: Python<'py>,
+    type_to_file: HashMap<String, String>,
+    file_to_span: HashMap<String, (u64, u64)>,
+    dep_graph: HashMap<String, Vec<String>>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let index = FdsIndex {
+        type_to_file,
+        file_to_span,
+        dep_graph,
+    };
+    let bytes = fds_index_to_bytes(&index).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    Ok(PyBytes::new(py, &bytes))
+}
+
 // ── Python module ─────────────────────────────────────────────────────────────
 
 /// Rust extension for building compiled scoring graphs.
 #[pymodule]
 fn scoring_graph_lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(build_graph, m)?)?;
+    m.add_function(wrap_pyfunction!(build_fds_index, m)?)?;
     Ok(())
 }
 

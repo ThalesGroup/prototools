@@ -36,7 +36,7 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-MessageT = TypeVar('MessageT', bound=Message)
+MessageT = TypeVar('MessageT', bound=DescriptorMessage)
 
 
 class NodeBase(Generic[MessageT], ABC):
@@ -194,13 +194,11 @@ class NodeBase(Generic[MessageT], ABC):
 
     @property
     def name(self) -> str:
-        # All descriptor messages have 'name', but it's not in Message base class
-        return self.this.name  # type: ignore[attr-defined]
+        return self.this.name
 
     @property
-    def options(self) -> OptionsMessage:
-        # All descriptor messages have options
-        return self.this.options  # type: ignore[return-value]
+    def options(self) -> Message:
+        return self.this.options
 
     @property
     def parent(self) -> 'NodeBase[Any] | None':
