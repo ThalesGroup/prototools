@@ -226,6 +226,15 @@ let
     python.reprotoTests python.pythonLint python.pythonRuff
   ];
 
+  # ci-no-clippy — same as ci but without rustClippy.
+  # Used on platforms where clippy is known to fail (e.g. macos-15-intel).
+  ci-no-clippy = pkgs.linkFarmFromDrvs "ci-no-clippy" [
+    rust.rustFmt rust.rustTests
+    rust.prototextBare rust.prototext rust.prototextCodec rust.fdpScanLib rust.scoringGraphLib
+    python.reproto python.protoscan
+    python.reprotoTests python.pythonLint python.pythonRuff
+  ];
+
   full-tests = pkgs.linkFarmFromDrvs "full-tests" [
     ci python.stressDb python.stressTests
   ];
@@ -246,6 +255,7 @@ in
   python-lint          = python.pythonLint;
   python-ruff          = python.pythonRuff;
   ci                   = ci;
+  ci-no-clippy         = ci-no-clippy;
   full-tests           = full-tests;
   stress-db            = python.stressDb;
   stress-tests         = python.stressTests;

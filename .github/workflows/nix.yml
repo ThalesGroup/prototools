@@ -23,6 +23,7 @@ jobs:
           - os: macos-15
           - os: macos-15-intel
             skip-clippy: true
+            ci-target: ci-no-clippy
     steps:
       - uses: actions/checkout@v6
 
@@ -42,4 +43,4 @@ jobs:
         run: nix-build -A rust-clippy
 
       - name: Run CI targets (tests, build, reproto tests, python lint)
-        run: nix-build -A ci
+        run: nix-build -A ${{ matrix.ci-target || 'ci' }}
