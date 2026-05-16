@@ -110,7 +110,8 @@ let
         -o textproto$(python3-config --extension-suffix) \
         binding.c src/parser.c \
         -I src \
-        $(python3-config --includes --ldflags)
+        $(python3-config --includes --ldflags) \
+        ${pkgs.lib.optionalString pkgs.stdenv.isDarwin "-undefined dynamic_lookup"}
     '';
     installPhase = ''
       mkdir -p $out
