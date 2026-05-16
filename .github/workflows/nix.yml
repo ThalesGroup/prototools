@@ -41,11 +41,5 @@ jobs:
         if: ${{ !matrix.skip-clippy }}
         run: nix-build -A rust-clippy
 
-      - name: Run tests
-        run: nix-build -A rust-tests
-
-      - name: Build prototools + prototext-codec + reproto
-        run: nix-build -A prototools && nix-build -A prototext-codec && nix-build -A reproto
-
-      - name: Run reproto tests + python lint
-        run: nix-build -A reproto-tests && nix-build -A python-lint
+      - name: Run CI targets (tests, build, reproto tests, python lint)
+        run: nix-build -A ci
