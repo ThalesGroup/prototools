@@ -95,7 +95,7 @@ let
     pname = "prototools-fmt";
   });
 
-  rustClippy = crane.cargoClippy (commonArgs // {
+  rustClippy = crane.cargoClippy (protocArgs // {
     pname                = "prototools-clippy";
     cargoArtifacts       = depsCache;
     cargoExtraArgs       = workspaceArgs;
