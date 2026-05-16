@@ -106,7 +106,7 @@ let
     buildPhase  = ''
       cp ${treeSitterTextprotoSrc}/grammar.js .
       tree-sitter generate
-      gcc -shared -fPIC \
+      $CC -shared -fPIC \
         -o textproto$(python3-config --extension-suffix) \
         binding.c src/parser.c \
         -I src \
