@@ -46,7 +46,7 @@ jobs:
       - name: Generate man pages
         run: |
           mkdir -p man/man1
-          cargo run --release -p prototext --bin prototext-gen-man -- man/man1
+          cargo run --release -p prototext --no-default-features --features protox --bin prototext-gen-man -- man/man1
           PYTHONPATH=reproto/src python3 -m reproto.gen_man man/man1
 
       - name: Copy docs into website/content
