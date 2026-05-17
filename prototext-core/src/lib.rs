@@ -10,6 +10,7 @@ pub mod schema;
 pub mod serialize;
 
 pub use schema::{decode_pool, schema_from_pool, ParsedSchema, SchemaError};
+pub use serialize::render_text::is_prototext_text;
 
 // ── Public API types ──────────────────────────────────────────────────────────
 
@@ -95,14 +96,12 @@ pub fn render_as_text(
 
 /// Encode a textual prototext payload back to raw protobuf binary wire bytes.
 ///
-/// Encode a prototext payload back to binary protobuf.
-///
-/// The input must carry the `#@ prototext:` header produced by `render_as_text`.
-/// Any other input — plain text, raw binary, or unannotated textproto — is
-/// rejected with [`CodecError::NotPrototext`].
+/// When `opts.assume_binary` is `true`, or the input does not carry the
+/// `#@ prototext:` header, the bytes are returned unchanged (pass-through).
+/// When the input carries the header, it is decoded from text to binary.
 pub fn render_as_bytes(data: &[u8], opts: RenderOpts) -> Result<Vec<u8>, CodecError> {
     if opts.assume_binary || !serialize::render_text::is_prototext_text(data) {
-        Err(CodecError::NotPrototext)
+        Ok(data.to_vec())
     } else {
         Ok(serialize::encode_text::encode_text_to_binary(data))
     }

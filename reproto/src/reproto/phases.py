@@ -1228,13 +1228,11 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
         fds.file.append(fdp)
 
     if ctx.prost_workaround:
+        from .lib.warnings import get_collector as _get_prost_collector
+        _prost_collector = _get_prost_collector()
         for fdp in fds.file:
             if fdp.syntax == "editions":
-                cli_warning(
-                    "'%s' is an editions file; patching to proto2 for prost-reflect "
-                    "compatibility (--prost-workaround).",
-                    fdp.name,
-                )
+                _prost_collector.w_prost(fdp.name)
                 fdp.ClearField("syntax")
                 fdp.ClearField("edition")
                 _clear_features(fdp)

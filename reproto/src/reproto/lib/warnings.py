@@ -59,6 +59,7 @@ class WarningCollector:
         self._w4: Counter[str] = Counter()
         self._w5: Counter[str] = Counter()
         self._w6: Counter[str] = Counter()
+        self._prost: list[str] = []   # prost-workaround patched file names
         # Names of files pruned by reproto itself — W5 for these is suppressed.
         self._pruned_files: set[str] = set()
         # Names of files that will be satisfied by an embedded fallback —
@@ -130,6 +131,21 @@ class WarningCollector:
         """Duplicate symbol pruning (W3) — always printed immediately."""
         cli_warning(message)
 
+    def w_prost(self, file_name: str) -> None:
+        """prost-workaround: editions file patched to proto2.
+
+        In detailed mode: printed immediately.
+        In squashed mode: buffered; flushed as a single count line.
+        """
+        if self._detailed:
+            cli_warning(
+                "'%s' is an editions file; patching to proto2 for prost-reflect "
+                "compatibility (--prost-workaround).",
+                file_name,
+            )
+        else:
+            self._prost.append(file_name)
+
     def flush(self) -> None:
         """Flush buffered squashed warnings to stderr."""
         if self._detailed:
@@ -150,6 +166,14 @@ class WarningCollector:
             cli_warning(f"Warning: {key} {_occ(count)}")
             if count > 1:
                 suppressed = True
+        if self._prost:
+            n = len(self._prost)
+            noun = "file" if n == 1 else "files"
+            cli_warning(
+                "%d editions %s patched to proto2 for prost-reflect compatibility "
+                "(--prost-workaround); run with --detailed-warnings to list them.",
+                n, noun,
+            )
         if suppressed:
             cli_info("Run with --detailed-warnings to see all warning occurrences.")
 

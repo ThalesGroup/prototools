@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use prototext_core::{
-    decode_pool, render_as_bytes, render_as_text, schema_from_pool, CodecError, RenderOpts,
+    decode_pool, is_prototext_text, render_as_bytes, render_as_text, schema_from_pool, CodecError,
+    RenderOpts,
 };
 use score_graph_lib::score::{
     load::{load_graph, LoadedGraph},
@@ -266,6 +267,10 @@ pub fn process(
     if decode {
         render_as_text(data, schema, opts).map_err(|e: CodecError| e.to_string())
     } else {
+        // encode path: require the `#@ prototext:` header
+        if !is_prototext_text(data) {
+            return Err(CodecError::NotPrototext.to_string());
+        }
         render_as_bytes(data, opts).map_err(|e: CodecError| e.to_string())
     }
 }

@@ -62,7 +62,7 @@ def _random_value(
     """Generate a random scalar or message value for a single field occurrence."""
     ft = field.type
 
-    if ft == FieldDescriptor.TYPE_MESSAGE:
+    if ft in (FieldDescriptor.TYPE_MESSAGE, FieldDescriptor.TYPE_GROUP):
         if depth >= max_depth:
             return None
         nested_desc = field.message_type
@@ -169,17 +169,29 @@ def _generate_message(
         label = field.label
 
         if label == FieldDescriptor.LABEL_REPEATED:
-            max_count = max(0, round(p * max_repeated))
-            count = rng.randint(0, max_count)
+            max_count = max(1, round(p * max_repeated))
+            min_count = 1 if depth == 0 else 0
+            count = rng.randint(min_count, max_count)
             if count == 0:
                 continue
+            is_map = (
+                field.type == FieldDescriptor.TYPE_MESSAGE
+                and field.message_type.GetOptions().map_entry
+            )
             repeated = getattr(msg, field.name)
             for _ in range(count):
                 val = _random_value(field, rng, depth, max_depth, max_repeated, pool)
                 if val is None:
                     continue
                 try:
-                    if field.type == FieldDescriptor.TYPE_MESSAGE:
+                    if is_map:
+                        # Map fields: val is the entry message; assign via key.
+                        map_val_desc = field.message_type.fields_by_name['value']
+                        if map_val_desc.type == FieldDescriptor.TYPE_MESSAGE:
+                            repeated[val.key].CopyFrom(val.value)
+                        else:
+                            repeated[val.key] = val.value
+                    elif field.type == FieldDescriptor.TYPE_MESSAGE:
                         repeated.add().CopyFrom(val)
                     else:
                         repeated.append(val)
