@@ -45,10 +45,10 @@ The rest of this tutorial walks you through all three scenarios step by step.
 Clone the repo and enter the Nix development shell.  All tools and dependencies
 are provided automatically.
 
-<button onclick="navigator.clipboard.writeText('git clone https://github.com/douzebis/prototools\ncd prototools\nnix-shell')">copy</button>
+<button onclick="navigator.clipboard.writeText('git clone https://github.com/ThalesGroup/prototools\ncd prototools\nnix-shell')">copy</button>
 
 ```
-$ git clone https://github.com/douzebis/prototools
+$ git clone https://github.com/ThalesGroup/prototools
 $ cd prototools
 $ nix-shell
 ```

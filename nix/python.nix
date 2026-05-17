@@ -297,27 +297,31 @@ EOF
     stripRoot = true;
   };
 
-  # Compile every .proto in the googleapis corpus into a flat directory of .pb
-  # files.  Pure function of corpus + protoc; cached independently of the DB
-  # build so that changes to reproto/instantiation logic don't force a recompile.
+  # Compile every .proto in the googleapis corpus into a single multi-FDP FDS.
+  # Pure function of corpus + protoc; cached independently of the DB build so
+  # that changes to reproto/instantiation logic don't force a recompile.
   googleapisPbs = pkgs.runCommand "googleapis-pbs" {
     buildInputs = [ pkgs.protobuf ];
   } ''
     set -euo pipefail
     mkdir -p "$out"
+
+    # Collect all .proto paths (excluding preview/) into a response file.
+    # protoc supports @<file> to avoid ARG_MAX limits with large corpora.
     find "${corpusGoogleapis}" -name '*.proto' \
          ! -path "${corpusGoogleapis}/preview/*" \
-         | sort | while read -r proto; do
-      rel=''${proto#"${corpusGoogleapis}/"}
-      flat=''${rel//\//_}; flat=''${flat%.proto}
-      protoc --proto_path="${corpusGoogleapis}" \
-             --descriptor_set_out="$out/$flat.pb" \
-             "$rel" 2>/dev/null || rm -f "$out/$flat.pb"
-    done
+         | sort | sed "s|^${corpusGoogleapis}/||" > /tmp/proto_list.txt
+
+    # Single protoc invocation: one multi-FDP FDS covering the whole corpus.
+    protoc \
+      --proto_path="${corpusGoogleapis}" \
+      --descriptor_set_out="$out/googleapis.pb" \
+      --include_imports \
+      @/tmp/proto_list.txt
   '';
 
   # Build the googleapis schema DB + instantiated messages.
-  # Depends on googleapisPbs (pre-compiled .pb files) so proto compilation is
+  # Depends on googleapisPbs (single multi-FDP FDS) so proto compilation is
   # not repeated when reproto or instantiation logic changes.
   googleapisDb = pkgs.runCommand "googleapis-db" {
     buildInputs = [
@@ -333,11 +337,10 @@ EOF
     reproto \
       --use-variant all \
       --prost-workaround \
-      -I"${googleapisPbs}" \
       --output-root="$out/reproto-out" \
       --emit-scoring-graphs \
       --build-schema-db="$out/googleapis.desc" \
-      .
+      "${googleapisPbs}/googleapis.pb"
 
     # ── Instantiate one .pb per sampled type ──────────────────────────────────
     # Number of types to instantiate (includes potential 0-byte skips).
