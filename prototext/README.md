@@ -15,7 +15,7 @@ human-readable text.  Three promises:
    identical to `protoc --decode`.
 3. **Schema-aware** — supply a compiled `.pb` descriptor and a root message
    type to get field names, proto types, and enum values.  Works without a
-   schema too: every field is then decoded by wire type and field number.
+   schema too: every field is decoded by wire type and field number.
 
 ## Installation
 
@@ -152,6 +152,35 @@ numbers (`TAG_OOR`).  Repeated optional fields and interleaved fields
 are visible as duplicate or out-of-order field names in the text output.
 Together these make `prototext decode -a` a practical tool for auditing
 whether a binary message conforms to the canonical encoding rules.
+
+## Schema inference
+
+When a descriptor DB is available, `prototext` can infer the message type
+automatically:
+
+```
+$ prototext --descriptor my.desc list-schemas unknown.pb
+- path: unknown.pb
+  types:
+  - google.type.PostalAddress
+
+$ prototext --descriptor my.desc decode unknown.pb
+#@ prototext: protoc
+# Type: google.type.PostalAddress
+# Score: 13  (matched: 13, unknown: 0, mismatches: 0, non_canonical: 0)
+
+revision: 448
+region_code: "US"
+...
+```
+
+Build a descriptor DB with `reproto --build-schema-db`, or use the
+pre-built `googleapis-db` Nix derivation (~8 000 types):
+
+```shell
+export GOOGLEAPIS_DB=$(nix-build -A googleapis-db --no-out-link)/googleapis.desc
+prototext --descriptor $GOOGLEAPIS_DB list-schemas unknown.pb
+```
 
 For full usage see `man prototext` or the
 [online docs](https://douzebis.github.io/prototools).

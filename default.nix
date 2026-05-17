@@ -189,7 +189,6 @@ let
     # We copy hopcroft.rkyv to $out/wkt.rkyv for the build.rs fast-path.
     python -m reproto.cli \
       --build-schema-db="$out/schemas.desc" \
-      -O "$TMPDIR/reproto-out" \
       -I "$out" \
       wkt.desc
     cp "$out/schemas/hopcroft.rkyv" "$out/wkt.rkyv"

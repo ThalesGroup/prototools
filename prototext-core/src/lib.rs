@@ -44,6 +44,8 @@ pub enum CodecError {
     DecodeFailed(String),
     /// The input bytes could not be decoded as a textual prototext payload.
     TextDecodeFailed(String),
+    /// The input does not carry the `#@ prototext:` header required by `encode`.
+    NotPrototext,
 }
 
 impl std::fmt::Display for CodecError {
@@ -51,6 +53,11 @@ impl std::fmt::Display for CodecError {
         match self {
             CodecError::DecodeFailed(msg) => write!(f, "decode failed: {msg}"),
             CodecError::TextDecodeFailed(msg) => write!(f, "text decode failed: {msg}"),
+            CodecError::NotPrototext => write!(
+                f,
+                "input is not prototext (missing '#@ prototext:' header); \
+                 use 'prototext decode -a' to produce encodable output"
+            ),
         }
     }
 }
@@ -88,11 +95,14 @@ pub fn render_as_text(
 
 /// Encode a textual prototext payload back to raw protobuf binary wire bytes.
 ///
-/// The input must carry the `#@ prototext:` header (i.e. be produced by
-/// `render_as_text`).  Raw binary input is passed through unchanged.
+/// Encode a prototext payload back to binary protobuf.
+///
+/// The input must carry the `#@ prototext:` header produced by `render_as_text`.
+/// Any other input — plain text, raw binary, or unannotated textproto — is
+/// rejected with [`CodecError::NotPrototext`].
 pub fn render_as_bytes(data: &[u8], opts: RenderOpts) -> Result<Vec<u8>, CodecError> {
     if opts.assume_binary || !serialize::render_text::is_prototext_text(data) {
-        Ok(data.to_vec())
+        Err(CodecError::NotPrototext)
     } else {
         Ok(serialize::encode_text::encode_text_to_binary(data))
     }

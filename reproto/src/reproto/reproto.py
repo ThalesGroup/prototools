@@ -205,7 +205,7 @@ def reproto(
         seed_paths: list[Path] | list[QualFile],
         seeds: list[Fqdn],
         prunings: list[Fqdn],
-        out_repo: Path,
+        out_repo: Path | None,
         options: Options | None = None,
 ) -> Context | None:
     """Reconstruct .proto files from descriptor sets."""
@@ -239,10 +239,11 @@ def reproto(
         _phase4_pruning(ctx, topo, prunings)
         _phase5_reachability(ctx, seeds, topo)
         _phase6_summoning(ctx)
-        _phase7_output(ctx, out_repo)
 
-        if ctx.emit_scoring_graphs:
-            _phase_emit_scoring_graphs(ctx, out_repo)
+        if out_repo is not None:
+            _phase7_output(ctx, out_repo)
+            if ctx.emit_scoring_graphs:
+                _phase_emit_scoring_graphs(ctx, out_repo)
 
         if ctx.build_schema_db is not None:
             _phase_build_schema_db(ctx, ctx.build_schema_db)

@@ -48,6 +48,8 @@ jobs:
           mkdir -p man/man1
           cargo run --release -p prototext --no-default-features --features protox --bin prototext-gen-man -- man/man1
           PYTHONPATH=reproto/src python3 -m reproto.gen_man man/man1
+          PYTHONPATH=reproto/src python3 -m reproto.gen_man_instantiate man/man1
+          PYTHONPATH=protoscan/src python3 -m protoscan.gen_man man/man1
 
       - name: Copy docs into website/content
         run: |
@@ -73,10 +75,35 @@ jobs:
             inject "$f" "website/content/${name}.md"
           done
 
-          # docs/specs/[0-9]*.md
+          # docs/specs/[0-9]*.md — publish only user-facing specs.
+          #
+          # Excluded categories:
+          #   - draft / dropped / in-progress specs
+          #   - pure internal test harnesses (0006, 0009, 0017, 0054, 0059)
+          #   - reproto code-quality cleanup rounds (0031-0037)
+          #   - Nix build internals (0038)
+          #   - internal bug-fix specs with no standalone user value
+          #     (0051, 0053, 0060, 0062)
+          #   - bp-protodb companion (0043-hopcroft-db-bp-protodb)
+          #
+          EXCLUDE_SPECS="0006 0009 0014 0015 0017 0024 0031 0032 0033 \
+                         0035 0036 0037 0038 0040 0042 0043 0044 0047 0050 \
+                         0051 0053 0054 0059 0060 0061 0062"
+
           mkdir -p website/content/specs
           for f in docs/specs/[0-9]*.md; do
             [ -f "$f" ] || continue
+            num=$(basename "$f" .md | grep -oE '^[0-9]+')
+            skip=0
+            for ex in $EXCLUDE_SPECS; do
+              [ "$num" = "$ex" ] && skip=1 && break
+            done
+            # Also skip the bp-protodb companion (no number prefix match needed,
+            # catch by filename).
+            case "$(basename $f)" in
+              0043-hopcroft-db-bp-protodb.md) skip=1 ;;
+            esac
+            [ "$skip" = "1" ] && continue
             name=$(basename "$f" .md)
             inject "$f" "website/content/specs/${name}.md"
           done
@@ -98,6 +125,24 @@ jobs:
               || cat man/man1/reproto.1
             printf '</div>\n'
           } > website/content/reproto-man-page.md
+
+          # reproto-instantiate-schema man page
+          {
+            printf '+++\ntitle = "reproto-instantiate-schema Man Page"\n+++\n\n'
+            printf '<div class="manpage">\n'
+            mandoc -T html -O fragment man/man1/reproto-instantiate-schema.1 2>/dev/null \
+              || cat man/man1/reproto-instantiate-schema.1
+            printf '</div>\n'
+          } > website/content/reproto-instantiate-schema-man-page.md
+
+          # protoscan man page
+          {
+            printf '+++\ntitle = "protoscan Man Page"\n+++\n\n'
+            printf '<div class="manpage">\n'
+            mandoc -T html -O fragment man/man1/protoscan.1 2>/dev/null \
+              || cat man/man1/protoscan.1
+            printf '</div>\n'
+          } > website/content/protoscan-man-page.md
 
       - name: Build
         run: cd website && zola build

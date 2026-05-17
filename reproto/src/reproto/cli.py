@@ -480,8 +480,17 @@ def main(
     from .lib.warnings import configure_collector
     configure_collector(detailed=detailed_warnings)
 
-    # --output-root is required unless --dump-resolved-features is set.
-    if proto_out is None and not dump_resolved_features:
+    # --output-root is required when .proto file output will be produced.
+    # It is legitimately optional for modes that produce no .proto output:
+    #   --build-schema-db   → writes only .desc / .rkyv artifacts
+    #   --dry-run           → writes nothing at all
+    #   --graph             → writes a single HTML visualisation
+    #   --dump-resolved-features → returns early before phase 7
+    output_only_mode = bool(
+        build_schema_db is not None or dry_run or graph is not None
+        or dump_resolved_features
+    )
+    if proto_out is None and not output_only_mode:
         raise click.UsageError('Missing option \'-O\' / \'--output-root\'.')
     if proto_out is not None:
         proto_out.mkdir(parents=True, exist_ok=True)
@@ -585,7 +594,7 @@ def main(
             pb_files,
             [_normalise_fqdn(s) for s in seeds],
             [_normalise_fqdn(p) for p in stumps],
-            proto_out if proto_out is not None else Path('.'),
+            proto_out,
             options,
         )
     except DescriptorProtoMissingError:
