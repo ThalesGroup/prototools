@@ -308,16 +308,19 @@ EOF
 
     # Collect all .proto paths (excluding preview/) into a response file.
     # protoc supports @<file> to avoid ARG_MAX limits with large corpora.
+    # NOTE: must use $TMPDIR, not /tmp — on macOS the Nix sandbox does not
+    # grant write access to /tmp (which resolves to /private/tmp), so writing
+    # there would fail with "Permission denied" on x86_64-darwin builds.
     find "${corpusGoogleapis}" -name '*.proto' \
          ! -path "${corpusGoogleapis}/preview/*" \
-         | sort | sed "s|^${corpusGoogleapis}/||" > /tmp/proto_list.txt
+         | sort | sed "s|^${corpusGoogleapis}/||" > "$TMPDIR/proto_list.txt"
 
     # Single protoc invocation: one multi-FDP FDS covering the whole corpus.
     protoc \
       --proto_path="${corpusGoogleapis}" \
       --descriptor_set_out="$out/googleapis.pb" \
       --include_imports \
-      @/tmp/proto_list.txt
+      @"$TMPDIR/proto_list.txt"
   '';
 
   # Build the googleapis schema DB + instantiated messages.
