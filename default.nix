@@ -141,7 +141,7 @@ let
   #               prototext (full) receives wktRkyv; falls back to prototextBare
   #               when wktRkyv is null (never the case here).
   #   python    — reprotoBare depends only on the Python codec, not on any Rust
-  #               binary.  reprotoTests/stressTests use rust.prototext (lazy).
+  #               binary.  reprotoTests/googleapisTests/customTests use rust.prototext (lazy).
   #   wktRkyv   — uses python.reprotoBare to run reproto --build-schema-db.
   #               Does NOT depend on rust.prototext, breaking the cycle.
   #
@@ -156,7 +156,7 @@ let
 
   python = import ./nix/python.nix {
     inherit pkgs pythonPkgs pythonBin treeSitterTextproto;
-    # rust.prototext (full, lazy): only forced when reprotoTests/stressTests
+    # rust.prototext (full, lazy): only forced when reprotoTests/googleapisTests/customTests
     # are built, by which time wktRkyv is already available.
     prototext = rust.prototext;
     inherit (rust) prototextCodec fdpScanLib scoringGraphLib
@@ -237,7 +237,7 @@ let
   ];
 
   full-tests = pkgs.linkFarmFromDrvs "full-tests" [
-    ci python.stressDb python.stressTests
+    ci python.googleapisDb python.googleapisTests python.customDb python.customTests
   ];
 
 in
@@ -258,8 +258,11 @@ in
   ci                   = ci;
   ci-no-clippy         = ci-no-clippy;
   full-tests           = full-tests;
-  stress-db            = python.stressDb;
-  stress-tests         = python.stressTests;
+  googleapis-pbs       = python.googleapisPbs;
+  googleapis-db        = python.googleapisDb;
+  googleapis-tests     = python.googleapisTests;
+  custom-db            = python.customDb;
+  custom-tests         = python.customTests;
   user-shell           = shells.user-shell;
   dev-shell            = shells.dev-shell;
   protoscan            = python.protoscan;

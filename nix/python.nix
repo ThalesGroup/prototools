@@ -278,31 +278,119 @@ EOF
   '';
 
   # ---------------------------------------------------------------------------
-  # Stress tests (spec 0054) — separate from ci; triggered by
+  # googleapis DB + tests — separate from ci; triggered by
   # nix-build -A full-tests only.
   #
   # Two derivations:
-  #   stressDb    — fetches pinned corpora, compiles protos, runs
-  #                 reproto --build-schema-db.  Cached by Nix; only rebuilt
-  #                 when inputs (corpora hashes, fixture protos, reproto) change.
-  #   stressTests — runs pytest with STRESS_DB pointing at stressDb.
-  #                 Rebuilt whenever the test code or prototext changes.
+  #   googleapisDb    — fetches pinned googleapis corpus, compiles protos,
+  #                     runs reproto --build-schema-db, and instantiates
+  #                     N_INSTANCES randomly-sampled .pb messages.
+  #                     Cached by Nix; only rebuilt when inputs change.
+  #   googleapisTests — runs pytest with STRESS_DB pointing at googleapisDb.
+  #                     Rebuilt whenever the test code or prototext changes.
   # ---------------------------------------------------------------------------
 
-  # Pinned remote corpora (must match REMOTE_CORPORA in test_stress.py).
-  stressCorpusGoogleapis = pkgs.fetchzip {
+  # Pinned googleapis corpus.
+  corpusGoogleapis = pkgs.fetchzip {
     url    = "https://github.com/googleapis/googleapis/archive/83e70370751716489986478edc8713b455b21e86.tar.gz";
     sha256 = "03xhi19zkcmfqzlzpn3inma8aj09a9xq8kvn3frsvsjv55k0y9d1";
     stripRoot = true;
   };
-  stressCorpusOtel = pkgs.fetchzip {
+
+  # Compile every .proto in the googleapis corpus into a flat directory of .pb
+  # files.  Pure function of corpus + protoc; cached independently of the DB
+  # build so that changes to reproto/instantiation logic don't force a recompile.
+  googleapisPbs = pkgs.runCommand "googleapis-pbs" {
+    buildInputs = [ pkgs.protobuf ];
+  } ''
+    set -euo pipefail
+    mkdir -p "$out"
+    find "${corpusGoogleapis}" -name '*.proto' \
+         ! -path "${corpusGoogleapis}/preview/*" \
+         | sort | while read -r proto; do
+      rel=''${proto#"${corpusGoogleapis}/"}
+      flat=''${rel//\//_}; flat=''${flat%.proto}
+      protoc --proto_path="${corpusGoogleapis}" \
+             --descriptor_set_out="$out/$flat.pb" \
+             "$rel" 2>/dev/null || rm -f "$out/$flat.pb"
+    done
+  '';
+
+  # Build the googleapis schema DB + instantiated messages.
+  # Depends on googleapisPbs (pre-compiled .pb files) so proto compilation is
+  # not repeated when reproto or instantiation logic changes.
+  googleapisDb = pkgs.runCommand "googleapis-db" {
+    buildInputs = [
+      prototext
+      reproto
+      (pythonPkgs.python.withPackages (_: reprotoPropagatedDeps))
+    ];
+  } ''
+    set -euo pipefail
+
+    # ── Build the schema DB ───────────────────────────────────────────────────
+    mkdir -p "$out"
+    reproto \
+      --use-variant all \
+      --prost-workaround \
+      -I"${googleapisPbs}" \
+      --output-root="$out/reproto-out" \
+      --emit-scoring-graphs \
+      --build-schema-db="$out/googleapis.desc" \
+      .
+
+    # ── Instantiate one .pb per sampled type ──────────────────────────────────
+    # Number of types to instantiate (includes potential 0-byte skips).
+    N_INSTANCES=400
+    TYPES_YAML=${../tests/stress/googleapis-types.yaml}
+    # Mandatory set: types listed in googleapis-types.yaml (used by tests).
+    MANDATORY=$(grep '^\s*- ' "$TYPES_YAML" | sed 's/^\s*- //')
+    # Full type list from the DB (empty protobuf matches everything).
+    ALL=$(printf "" | prototext --descriptor "$out/googleapis.desc" list-schemas --top 999999 | grep '^  - ' | sed 's/^  - //')
+    # Sample additional types to reach N_INSTANCES, excluding mandatory ones.
+    EXTRA=$(comm -23 \
+              <(echo "$ALL"   | sort -u) \
+              <(echo "$MANDATORY" | sort -u) \
+            | shuf -n $(( N_INSTANCES - $(echo "$MANDATORY" | wc -l) )))
+    FQDNS=$(printf '%s\n%s' "$MANDATORY" "$EXTRA")
+    mkdir -p "$out/instances"
+    reproto-instantiate-schema \
+      --descriptor "$out/googleapis.desc" \
+      -O "$out/instances" \
+      $FQDNS
+  '';
+
+  googleapisTests = pkgs.runCommand "googleapis-tests" {
+    buildInputs = [
+      prototext
+      reproto
+      (pythonPkgs.python.withPackages (_: reprotoTestDeps))
+    ];
+  } ''
+    set -euo pipefail
+    export PYTHONPATH="${reprotoSrcFull}/src"
+    export STRESS_DB="${googleapisDb}/googleapis.desc"
+    pytest -p no:cacheprovider ${../tests/stress}/
+    touch $out
+  '';
+
+  # ---------------------------------------------------------------------------
+  # Custom DB + tests — fixture types and opentelemetry-proto.
+  #
+  # Two derivations:
+  #   customDb    — compiles reproto fixture protos + opentelemetry-proto corpus,
+  #                 runs reproto --build-schema-db.
+  #   customTests — runs pytest with CUSTOM_DB pointing at customDb.
+  # ---------------------------------------------------------------------------
+
+  # Pinned opentelemetry-proto corpus.
+  corpusOtel = pkgs.fetchzip {
     url    = "https://github.com/open-telemetry/opentelemetry-proto/archive/1d70aa012dc42a5e74a215ce31c1fd84244ce89e.tar.gz";
     sha256 = "1rp5sv9rbkvdrqcy58pgq35j6pbqh6hgsz34c54mk982pbkgg1bx";
     stripRoot = true;
   };
 
-  # Build the schema DB once; cached until inputs change.
-  stressDb = pkgs.runCommand "stress-db" {
+  customDb = pkgs.runCommand "custom-db" {
     buildInputs = [
       pkgs.protobuf
       reproto
@@ -330,33 +418,15 @@ EOF
     compile_fixture address_book.proto
     compile_fixture editions_rendering.proto
 
-    # ── Compile a corpus dir (skip failures — missing imports) ────────────────
-    compile_corpus() {
-      local corpus_root=$1
-      find "$corpus_root" -name '*.proto' | sort | while read -r proto; do
-        local rel flat
-        rel=''${proto#"$corpus_root/"}
-        flat=''${rel//\//_}
-        flat=''${flat%.proto}
-        protoc --proto_path="$corpus_root" \
-               --descriptor_set_out="$PB/$flat.pb" \
-               "$rel" 2>/dev/null || rm -f "$PB/$flat.pb"
-      done
-    }
-
-    # googleapis — skip the preview/ subtree
-    find "${stressCorpusGoogleapis}" -name '*.proto' \
-         ! -path "${stressCorpusGoogleapis}/preview/*" \
-         | sort | while read -r proto; do
-      rel=''${proto#"${stressCorpusGoogleapis}/"}
-      flat=''${rel//\//_}; flat=''${flat%.proto}
-      protoc --proto_path="${stressCorpusGoogleapis}" \
+    # ── Compile opentelemetry-proto corpus (skip failures) ────────────────────
+    find "${corpusOtel}" -name '*.proto' | sort | while read -r proto; do
+      rel=''${proto#"${corpusOtel}/"}
+      flat=''${rel//\//_}
+      flat=''${flat%.proto}
+      protoc --proto_path="${corpusOtel}" \
              --descriptor_set_out="$PB/$flat.pb" \
              "$rel" 2>/dev/null || rm -f "$PB/$flat.pb"
     done
-
-    # opentelemetry-proto
-    compile_corpus "${stressCorpusOtel}"
 
     # ── Build the schema DB ───────────────────────────────────────────────────
     mkdir -p "$out"
@@ -366,11 +436,11 @@ EOF
       -I"$PB" \
       --output-root="$out/reproto-out" \
       --emit-scoring-graphs \
-      --build-schema-db="$out/stress.desc" \
+      --build-schema-db="$out/custom.desc" \
       .
   '';
 
-  stressTests = pkgs.runCommand "stress-tests" {
+  customTests = pkgs.runCommand "custom-tests" {
     buildInputs = [
       prototext
       reproto
@@ -379,8 +449,8 @@ EOF
   } ''
     set -euo pipefail
     export PYTHONPATH="${reprotoSrcFull}/src"
-    export STRESS_DB="${stressDb}/stress.desc"
-    pytest -p no:cacheprovider ${../tests/stress}/
+    export CUSTOM_DB="${customDb}/custom.desc"
+    pytest -p no:cacheprovider ${../tests/custom}/
     touch $out
   '';
 
@@ -396,6 +466,9 @@ in {
     protoscan
     pythonLint
     pythonRuff
-    stressDb
-    stressTests;
+    googleapisPbs
+    googleapisDb
+    googleapisTests
+    customDb
+    customTests;
 }

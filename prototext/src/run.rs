@@ -144,6 +144,9 @@ fn read_descriptor_file(path: &Path) -> Result<Vec<u8>, String> {
 
 // ── Type inference helpers ────────────────────────────────────────────────────
 
+/// Maximum number of tied type names shown per ambiguous file in warnings.
+const MAX_AMBIGUOUS_TYPES: usize = 10;
+
 /// Result of auto-inference: the winning FQDN and its score breakdown.
 pub struct InferredType {
     pub fqdn: String,
@@ -154,9 +157,18 @@ pub struct InferredType {
     pub non_canonical: u64,
 }
 
-/// Score `pb_bytes` against `graph` and return the unique top non-vetoed
-/// winner, or an error describing the outcome (tie or all-vetoed).
-pub fn infer_type(pb_bytes: &[u8], graph: &LoadedGraph) -> Result<InferredType, String> {
+/// Outcome of attempting to infer the message type of a protobuf blob.
+pub enum InferOutcome {
+    /// A unique winner was found.
+    Unique(InferredType),
+    /// Multiple types tied at the top score; contains the tied FQDNs
+    /// (lexicographically sorted, capped at MAX_AMBIGUOUS_TYPES).
+    Ambiguous(Vec<String>),
+}
+
+/// Score `pb_bytes` against `graph` and return the inference outcome,
+/// or a hard error (e.g. all entries vetoed, or encoding failure).
+pub fn infer_type(pb_bytes: &[u8], graph: &LoadedGraph) -> Result<InferOutcome, String> {
     let binary_buf;
     let pb_bytes = {
         let opts = RenderOpts {
@@ -177,6 +189,9 @@ pub fn infer_type(pb_bytes: &[u8], graph: &LoadedGraph) -> Result<InferredType, 
         (false, false) => b.score().cmp(&a.score()).then(a.fqdn.cmp(&b.fqdn)),
     });
 
+    if results.is_empty() {
+        return Err("schema DB is empty; cannot infer message type".into());
+    }
     let non_vetoed: Vec<_> = results.iter().filter(|r| !r.vetoed).collect();
     if non_vetoed.is_empty() {
         return Err("all entries vetoed; cannot infer message type".into());
@@ -189,25 +204,21 @@ pub fn infer_type(pb_bytes: &[u8], graph: &LoadedGraph) -> Result<InferredType, 
         .collect();
 
     if tied.len() > 1 {
-        let names: Vec<&str> = tied.iter().map(|r| r.fqdn.as_str()).collect();
-        let list = serde_yaml::to_string(&names).unwrap_or_else(|_| names.join("\n"));
-        return Err(format!(
-            "{} types tie at score {}; specify --type:\n{}",
-            tied.len(),
-            top_score,
-            list.trim_end(),
-        ));
+        let mut names: Vec<String> = tied.iter().map(|r| r.fqdn.clone()).collect();
+        names.sort();
+        names.truncate(MAX_AMBIGUOUS_TYPES);
+        return Ok(InferOutcome::Ambiguous(names));
     }
 
     let winner = &non_vetoed[0];
-    Ok(InferredType {
+    Ok(InferOutcome::Unique(InferredType {
         fqdn: winner.fqdn.clone(),
         score: top_score,
         matches: winner.matches,
         unknowns: winner.unknowns,
         mismatches: winner.mismatches,
         non_canonical: winner.non_canonical,
-    })
+    }))
 }
 
 /// Insert `# Type:` and `# Score:` comment lines (plus a blank line) after the
@@ -363,11 +374,10 @@ pub fn run(cli: Cli) -> Result<(), String> {
             in_place,
             assume_binary,
             annotations,
-            no_annotations,
             output_root: cmd_output_root,
             paths,
         } => {
-            let effective_annotations = !no_annotations && annotations;
+            let effective_annotations = annotations;
             let output_root = cli.output_root.or(cmd_output_root);
 
             validate_input_root_absolute(&cli.input_root, &paths)?;
@@ -392,6 +402,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
                 in_place,
                 assume_binary,
                 effective_annotations,
+                cli.strict,
                 &cli.output,
                 output_root.as_ref(),
                 &cli.input_root,
@@ -540,6 +551,7 @@ fn run_decode(
     in_place: bool,
     assume_binary: bool,
     annotations: bool,
+    strict: bool,
     output: &Option<PathBuf>,
     output_root: Option<&PathBuf>,
     input_root: &Option<PathBuf>,
@@ -581,22 +593,27 @@ fn run_decode(
 
         if auto_infer {
             let graph = desc_ctx.graph.as_ref().unwrap(); // checked earlier
-            let inferred = infer_type(&data, graph)?;
-            eprintln!(
-                "info: inferred type {} (score={})",
-                inferred.fqdn, inferred.score,
-            );
-            let lookup = inferred.fqdn.trim_start_matches('.');
-            if let Some(lazy) = &mut desc_ctx.lazy {
-                lazy.get_message(lookup)
-                    .map_err(|e| format!("loading inferred type '{lookup}': {e}"))?;
+            match infer_type(&data, graph)? {
+                InferOutcome::Ambiguous(tied) => {
+                    let mut rep = InferFailureReporter::new();
+                    rep.report_ambiguous("<stdin>", &tied);
+                    std::process::exit(if strict { 1 } else { 0 });
+                }
+                InferOutcome::Unique(inferred) => {
+                    let lookup = inferred.fqdn.trim_start_matches('.');
+                    if let Some(lazy) = &mut desc_ctx.lazy {
+                        lazy.get_message(lookup)
+                            .map_err(|e| format!("loading inferred type '{lookup}': {e}"))?;
+                    }
+                    let infer_schema = schema_from_pool(desc_ctx.pool().clone(), lookup)
+                        .map_err(|e| format!("descriptor: {}", e))?;
+                    let raw_out =
+                        process(&data, true, assume_binary, Some(&infer_schema), annotations)?;
+                    let out = inject_matched_annotation(&raw_out, &inferred);
+                    write_output(&out, output.as_deref())?;
+                    return Ok(());
+                }
             }
-            let infer_schema = schema_from_pool(desc_ctx.pool().clone(), lookup)
-                .map_err(|e| format!("descriptor: {}", e))?;
-            let raw_out = process(&data, true, assume_binary, Some(&infer_schema), annotations)?;
-            let out = inject_matched_annotation(&raw_out, &inferred);
-            write_output(&out, output.as_deref())?;
-            return Ok(());
         }
 
         let out = process(&data, true, assume_binary, schema.as_ref(), annotations)?;
@@ -607,14 +624,7 @@ fn run_decode(
     // Expand paths.
     let all_files = expand_all_paths(paths, &base)?;
 
-    if auto_infer && all_files.len() > 1 {
-        return Err(
-            "--type is required when decoding multiple files (auto-inference is single-file only)"
-                .into(),
-        );
-    }
-
-    // Single file, no batch flags.
+    // Single file, no batch flags — write to stdout / --output.
     if all_files.len() == 1 && !in_place && output_root.is_none() {
         let f = &all_files[0];
         let data =
@@ -622,22 +632,27 @@ fn run_decode(
 
         if auto_infer {
             let graph = desc_ctx.graph.as_ref().unwrap();
-            let inferred = infer_type(&data, graph)?;
-            eprintln!(
-                "info: inferred type {} (score={})",
-                inferred.fqdn, inferred.score,
-            );
-            let lookup = inferred.fqdn.trim_start_matches('.');
-            if let Some(lazy) = &mut desc_ctx.lazy {
-                lazy.get_message(lookup)
-                    .map_err(|e| format!("loading inferred type '{lookup}': {e}"))?;
+            match infer_type(&data, graph)? {
+                InferOutcome::Ambiguous(tied) => {
+                    let mut rep = InferFailureReporter::new();
+                    rep.report_ambiguous(&f.abs.display().to_string(), &tied);
+                    std::process::exit(if strict { 1 } else { 0 });
+                }
+                InferOutcome::Unique(inferred) => {
+                    let lookup = inferred.fqdn.trim_start_matches('.');
+                    if let Some(lazy) = &mut desc_ctx.lazy {
+                        lazy.get_message(lookup)
+                            .map_err(|e| format!("loading inferred type '{lookup}': {e}"))?;
+                    }
+                    let infer_schema = schema_from_pool(desc_ctx.pool().clone(), lookup)
+                        .map_err(|e| format!("descriptor: {}", e))?;
+                    let raw_out =
+                        process(&data, true, assume_binary, Some(&infer_schema), annotations)?;
+                    let out = inject_matched_annotation(&raw_out, &inferred);
+                    write_output(&out, output.as_deref())?;
+                    return Ok(());
+                }
             }
-            let infer_schema = schema_from_pool(desc_ctx.pool().clone(), lookup)
-                .map_err(|e| format!("descriptor: {}", e))?;
-            let raw_out = process(&data, true, assume_binary, Some(&infer_schema), annotations)?;
-            let out = inject_matched_annotation(&raw_out, &inferred);
-            write_output(&out, output.as_deref())?;
-            return Ok(());
         }
 
         let out = process(&data, true, assume_binary, schema.as_ref(), annotations)?;
@@ -648,6 +663,18 @@ fn run_decode(
     // Batch mode.
     if !in_place && output_root.is_none() {
         return Err("multiple input files require --in-place (-i) or --output-root (-O)".into());
+    }
+
+    if auto_infer {
+        return run_batch_infer(
+            all_files,
+            assume_binary,
+            annotations,
+            strict,
+            in_place,
+            output_root,
+            desc_ctx,
+        );
     }
 
     run_batch(
@@ -847,6 +874,173 @@ fn run_score(
     io::stdout()
         .write_all(yaml.as_bytes())
         .map_err(|e| format!("writing stdout: {}", e))
+}
+
+// ── inference failure reporter ────────────────────────────────────────────────
+
+/// Stateful reporter that prints a single heading on the first failure, then
+/// emits each entry on-the-go as it is discovered.
+///
+/// Output format:
+/// ```text
+/// warning: type inference issues:
+/// - path: foo.pb
+///   types:
+///   - TypeA
+///   - TypeB
+/// - path: bar.pb
+///   types: []
+///   error: all entries vetoed
+/// ```
+struct InferFailureReporter {
+    heading_printed: bool,
+    had_hard_error: bool,
+    had_warning: bool,
+}
+
+impl InferFailureReporter {
+    fn new() -> Self {
+        Self {
+            heading_printed: false,
+            had_hard_error: false,
+            had_warning: false,
+        }
+    }
+
+    fn report_ambiguous(&mut self, path: &str, tied: &[String]) {
+        self.ensure_heading();
+        self.had_warning = true;
+        eprintln!("- path: {path}");
+        eprintln!("  types:");
+        for fqdn in tied {
+            eprintln!("  - {fqdn}");
+        }
+    }
+
+    fn report_error(&mut self, path: &str, error: &str) {
+        self.ensure_heading();
+        self.had_hard_error = true;
+        eprintln!("- path: {path}");
+        eprintln!("  types: []");
+        eprintln!("  error: {error}");
+    }
+
+    fn ensure_heading(&mut self) {
+        if !self.heading_printed {
+            eprintln!("warning: type inference issues:");
+            self.heading_printed = true;
+        }
+    }
+
+    /// Compute the appropriate exit code.
+    /// - 0: no failures, or warnings without --strict
+    /// - 1: hard errors, or warnings with --strict
+    fn exit_code(&self, strict: bool) -> i32 {
+        if self.had_hard_error || (self.had_warning && strict) {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+// ── batch auto-infer ──────────────────────────────────────────────────────────
+
+fn run_batch_infer(
+    all_files: Vec<InputFile>,
+    assume_binary: bool,
+    annotations: bool,
+    strict: bool,
+    in_place: bool,
+    output_root: Option<&PathBuf>,
+    desc_ctx: &mut DescriptorContext,
+) -> Result<(), String> {
+    // Detect output collisions eagerly.
+    {
+        let mut seen: HashMap<PathBuf, PathBuf> = HashMap::new();
+        for f in &all_files {
+            let out_path = output_path_for(f, in_place, output_root);
+            if let Some(prev_abs) = seen.get(&out_path) {
+                return Err(format!(
+                    "output collision: '{}' and '{}' both map to '{}'",
+                    prev_abs.display(),
+                    f.abs.display(),
+                    out_path.display()
+                ));
+            }
+            seen.insert(out_path, f.abs.clone());
+        }
+    }
+
+    let graph = desc_ctx.graph.as_ref().unwrap(); // guaranteed by caller
+
+    // First pass: read + infer every file.
+    // Failures are reported on-the-go; successes are collected with their data
+    // so the second pass can use &mut desc_ctx without re-reading.
+    let mut reporter = InferFailureReporter::new();
+    let mut successes: Vec<(InputFile, Vec<u8>, InferredType)> = Vec::new();
+
+    for f in all_files {
+        let data = match std::fs::read(&f.abs) {
+            Ok(d) => d,
+            Err(e) => {
+                reporter.report_error(&f.abs.display().to_string(), &e.to_string());
+                continue;
+            }
+        };
+        match infer_type(&data, graph) {
+            Err(e) => reporter.report_error(&f.abs.display().to_string(), &e),
+            Ok(InferOutcome::Ambiguous(tied)) => {
+                reporter.report_ambiguous(&f.abs.display().to_string(), &tied)
+            }
+            Ok(InferOutcome::Unique(inferred)) => successes.push((f, data, inferred)),
+        }
+    }
+
+    // Second pass: process successful files (needs &mut desc_ctx for lazy loading).
+    let mut had_hard_error = false;
+    for (f, data, inferred) in &successes {
+        let lookup = inferred.fqdn.trim_start_matches('.');
+        let schema = match (|| {
+            if let Some(lazy) = &mut desc_ctx.lazy {
+                lazy.get_message(lookup)
+                    .map_err(|e| format!("loading inferred type '{lookup}': {e}"))?;
+            }
+            schema_from_pool(desc_ctx.pool().clone(), lookup)
+                .map_err(|e| format!("descriptor: {}", e))
+        })() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error: '{}': {}", f.abs.display(), e);
+                had_hard_error = true;
+                continue;
+            }
+        };
+        let raw_out = match process(data, true, assume_binary, Some(&schema), annotations) {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!("error: '{}': {}", f.abs.display(), e);
+                had_hard_error = true;
+                continue;
+            }
+        };
+        let out = inject_matched_annotation(&raw_out, inferred);
+        let dest = output_path_for(f, in_place, output_root);
+        if let Err(e) = write_output(&out, Some(&dest)) {
+            eprintln!("error: {}", e);
+            had_hard_error = true;
+        }
+    }
+
+    let code = if had_hard_error {
+        1
+    } else {
+        reporter.exit_code(strict)
+    };
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
 }
 
 // ── batch helper ──────────────────────────────────────────────────────────────

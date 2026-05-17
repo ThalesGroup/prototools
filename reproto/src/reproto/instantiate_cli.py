@@ -53,12 +53,6 @@ from .instantiate import generate_instance, load_pool
     help='Maximum number of elements for repeated fields (default: 3).',
 )
 @click.option(
-    '--p-optional',
-    default=0.7,
-    type=float,
-    help='Probability of populating an optional field (default: 0.7).',
-)
-@click.option(
     '--quiet', '-q',
     is_flag=True,
     help='Suppress per-file progress messages.',
@@ -70,7 +64,6 @@ def main(
     seed: int,
     max_depth: int,
     max_repeated: int,
-    p_optional: float,
     quiet: bool,
     fqdns: tuple[str, ...],
 ) -> None:
@@ -95,10 +88,11 @@ def main(
                 seed=seed,
                 max_depth=max_depth,
                 max_repeated=max_repeated,
-                p_optional=p_optional,
             )
         except KeyError as e:
             raise click.ClickException(f'type not found in descriptor: {e}') from e
+        if not wire:
+            continue
         out_path = root / Path(*fqdn.split('.'))
         out_path = out_path.with_suffix('.pb')
         out_path.parent.mkdir(parents=True, exist_ok=True)
