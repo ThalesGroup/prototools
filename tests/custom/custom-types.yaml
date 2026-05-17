@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+# Custom-DB type list — fixture types and opentelemetry-proto types.
+#
+# Each entry is either a bare FQDN string or a dict {fqdn: ..., max_ties: N}.
+# max_ties (default 5): if --list-schemas returns more than max_ties tied
+# FQDNs, the test issues a warning (scoring too weak for this corpus).
+
+types:
+  # ── our fixture types ────────────────────────────────────────────────────────
+  - mockup.Defaults
+  - mockup.Extendable
+  - mockup.Holder
+  - mockup.Packed
+  - mockup.WithGroups
+  - test.field.AllCombinations
+  - test.field.ComplexTypes
+  - test.field.DefaultValues
+  - test.field.EdgeCases
+  - {fqdn: test.field.Extendable, max_ties: 50000}
+  - test.field.ExtensionFields
+  - test.field.FieldOptions
+  - {fqdn: test.field.GroupTest, max_ties: 50000}
+  - test.field.MapFields
+  - test.field.MapWithOptions
+  - test.field.NestedMessage
+  - test.field.NestedReferences
+  - test.field.OneofFields
+  - test.field.Outer
+  - test.field.PrimitiveTypes
+  - test.message.ComprehensiveMessage
+  - test.message.EmptyMessage
+  - test.message.ExtendableMessage
+  - test.message.MultipleExtensionRanges
+  - test.message.OneofVariations
+  - test.message.OnlyExtensions
+  - test.message.OuterMessage
+  - test.message.ReservedOnly
+  - test.message.SingleFieldMessage
+  - {fqdn: tutorial.AddressBook, max_ties: 50000}
+  - tutorial.Person
+  - {fqdn: tutorial.PhoneNumber, max_ties: 50000}

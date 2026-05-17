@@ -98,7 +98,7 @@ _PROTOTEXT = Path(
 
 def _decode_pb(data: bytes) -> list[str]:
     result = subprocess.run(
-        [str(_PROTOTEXT), "--decode", "--type", "google.protobuf.FileDescriptorSet"],
+        [str(_PROTOTEXT), "decode", "--type", "google.protobuf.FileDescriptorSet"],
         input=data,
         capture_output=True,
     )

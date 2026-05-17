@@ -2,18 +2,19 @@
 #
 # SPDX-License-Identifier: MIT
 
-"""Test harness for the prototext auto-inference pipeline against the googleapis DB.
+"""Test harness for the prototext auto-inference pipeline against the custom DB.
 
-The googleapis DB covers ~8000 message types from the public googleapis proto corpus.
+The custom DB covers fixture types (mockup.*, test.*, tutorial.*) compiled from
+the reproto test fixtures, plus the opentelemetry-proto corpus.
 
 Pipeline per test:
-  1. Session fixture: read STRESS_DB env var → googleapis .desc path.
+  1. Session fixture: read CUSTOM_DB env var → .desc path.
   2. Per type: prototext --descriptor <db> instantiate-schema <FQDN> → instance.pb.
   3. prototext --descriptor <db> list-schemas instance.pb → top-tied FQDNs.
   4. Assert expected FQDN is in the top-tied list.
-  5. Assert len(top-tied) <= max_ties (from googleapis-types.yaml, default 5).
+  5. Assert len(top-tied) <= max_ties (from custom-types.yaml, default 5).
 
-Triggered by:  nix-build -A googleapis-tests
+Triggered by:  nix-build -A custom-tests
 Not part of the regular CI closure.
 """
 
@@ -30,7 +31,7 @@ import yaml
 # Repo layout constants
 # ---------------------------------------------------------------------------
 
-TYPES_YAML = Path(__file__).parent / "googleapis-types.yaml"
+TYPES_YAML = Path(__file__).parent / "custom-types.yaml"
 
 
 # ---------------------------------------------------------------------------
@@ -66,25 +67,21 @@ def _load_types() -> list[TypeEntry]:
 
 @pytest.fixture(scope="session")
 def schema_db(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Fetch corpora, compile protos, build the schema DB; return .desc path.
-
-    If the STRESS_DB environment variable is set to an existing .desc path,
-    the build step is skipped and that DB is used directly.
-    """
+    """Return the custom schema DB path from CUSTOM_DB env var."""
     import os
-    prebuilt = os.environ.get("STRESS_DB")
+    prebuilt = os.environ.get("CUSTOM_DB")
     if not prebuilt:
         pytest.skip(
-            "STRESS_DB not set; skipping googleapis tests "
-            "(set STRESS_DB=/path/to/googleapis.desc to enable)"
+            "CUSTOM_DB not set; skipping custom tests "
+            "(set CUSTOM_DB=/path/to/custom.desc to enable)"
         )
     p = Path(prebuilt)
-    assert p.exists(), f"STRESS_DB={prebuilt!r} does not exist"
+    assert p.exists(), f"CUSTOM_DB={prebuilt!r} does not exist"
     return p
 
 
 # ---------------------------------------------------------------------------
-# Parametrize over types.yaml
+# Parametrize over custom-types.yaml
 # ---------------------------------------------------------------------------
 
 _TYPE_ENTRIES = _load_types()
@@ -95,10 +92,7 @@ def all_instances(
     schema_db: Path,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> dict[str, Path]:
-    """Generate one instance per type; return {fqdn: instance_path}.
-
-    All instances are generated in a single reproto-instantiate-schema call (DB loaded once).
-    """
+    """Generate one instance per type; return {fqdn: instance_path}."""
     inst_dir = tmp_path_factory.mktemp("instances")
     fqdns = [e.fqdn for e in _TYPE_ENTRIES]
     gen = subprocess.run(
