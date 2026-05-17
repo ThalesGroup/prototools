@@ -55,22 +55,27 @@ Used by the shell completion setup described below.
 .SS Decode a binary protobuf file (schemaless)
 .PP
 .nf
-prototext -d message.binpb
+prototext decode message.binpb
 .fi
 .SS Decode with a schema
 .PP
 .nf
-prototext -d -D descriptor.pb -t pkg.MyMessage message.binpb
+prototext --descriptor descriptor.pb decode --type pkg.MyMessage message.binpb
 .fi
-.SS Encode text back to binary (lossless round-trip)
+.SS Decode with inline annotations (required for lossless round-trip)
 .PP
 .nf
-prototext -e message.pb > message.binpb
+prototext --descriptor descriptor.pb decode -a --type pkg.MyMessage message.binpb
+.fi
+.SS Encode text back to binary
+.PP
+.nf
+prototext encode message.pb > message.binpb
 .fi
 .SS Pipe from protoc
 .PP
 .nf
-protoc --encode=pkg.MyMessage descriptor.proto < input.txt | prototext -d -D descriptor.pb -t pkg.MyMessage
+protoc --encode=pkg.MyMessage descriptor.proto < input.txt | prototext --descriptor descriptor.pb decode --type pkg.MyMessage
 .fi
 .SS Enable bash completion
 .PP

@@ -113,6 +113,10 @@ pub struct Cli {
     #[arg(short = 'q', long = "quiet")]
     pub quiet: bool,
 
+    /// Treat inference warnings (ambiguous type) as errors: exit 1 instead of 2.
+    #[arg(long = "strict")]
+    pub strict: bool,
+
     // ── Subcommand ────────────────────────────────────────────────────────────
     #[command(subcommand)]
     pub command: Command,
@@ -142,15 +146,10 @@ pub enum Command {
         #[arg(long = "assume-binary")]
         assume_binary: bool,
 
-        /// Emit inline wire-type/field-number comments (default).
+        /// Emit inline wire-type/field-number comments.
         /// Required for lossless round-trip encode.
-        #[arg(long, default_value_t = true, overrides_with = "no_annotations")]
+        #[arg(short = 'a', long)]
         annotations: bool,
-
-        /// Suppress inline wire-type/field-number comments.
-        /// Output will not round-trip losslessly.
-        #[arg(long, overrides_with = "annotations")]
-        no_annotations: bool,
 
         /// Root directory for output files in batch mode (exclusive with
         /// --output and --in-place).

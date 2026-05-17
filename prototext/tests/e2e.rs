@@ -68,8 +68,8 @@ fn cli_roundtrip(
         .arg(schema_path)
         .arg("decode")
         .args(["--type", message]);
-    if !annotations {
-        decode_cmd.arg("--no-annotations");
+    if annotations {
+        decode_cmd.arg("--annotations");
     }
     let decode_out = decode_cmd
         .stdin(std::process::Stdio::piped())
@@ -155,7 +155,7 @@ fn fixture_roundtrip_annotated_craft_a() {
 
 // ── §3.2 No crash without annotations (all fixtures) ─────────────────────────
 
-/// CLI: `prototext decode --no-annotations` must exit 0 for every fixture.
+/// CLI: `prototext decode` (no -a) must exit 0 for every fixture.
 #[test]
 fn fixture_no_panic_no_annotations() {
     let mut ran = 0;

@@ -93,7 +93,7 @@ any `.pb` descriptor that `protoc` produces:
 ```
 $ protoc -o timestamp.pb google/protobuf/timestamp.proto
 
-$ prototext -d -t google.protobuf.FileDescriptorSet timestamp.pb
+$ prototext decode -a --type google.protobuf.FileDescriptorSet timestamp.pb
 #@ prototext: protoc
 file {  #@ repeated FileDescriptorProto = 1
  name: "google/protobuf/timestamp.proto"  #@ string = 1
@@ -112,20 +112,24 @@ file {  #@ repeated FileDescriptorProto = 1
 }
 ```
 
-Encode back to binary and verify the round-trip is byte-exact:
+Pass `-a` / `--annotations` to include inline wire-type comments; omit it for
+clean output compatible with `protoc --decode`.
+
+Encode back to binary and verify the round-trip is byte-exact (annotations
+are required for lossless encode):
 
 ```
-$ prototext -d -t google.protobuf.FileDescriptorSet timestamp.pb | \
-    prototext -e | diff - timestamp.pb && echo "byte-exact"
+$ prototext decode -a --type google.protobuf.FileDescriptorSet timestamp.pb | \
+    prototext encode | diff - timestamp.pb && echo "byte-exact"
 byte-exact
 ```
 
 **Non-canonical encoding** — protobuf varints can carry redundant continuation
 bytes and still decode to the same value.  Standard tools discard these bytes;
-`prototext` preserves them via inline annotations:
+`prototext` preserves them via inline annotations (enable with `-a`):
 
 ```
-$ printf '\x08\xaa\x00' | prototext -d
+$ printf '\x08\xaa\x00' | prototext decode -a
 #@ prototext: protoc
 1: 42  #@ varint; val_ohb: 1
 ```
@@ -135,7 +139,7 @@ Field 1 = 42, but encoded in three bytes instead of the canonical two
 byte-exact:
 
 ```
-$ printf '\x08\xaa\x00' | prototext -d | prototext -e | od -A n -t x1
+$ printf '\x08\xaa\x00' | prototext decode -a | prototext encode | od -A n -t x1
  08 aa 00
 ```
 
@@ -146,8 +150,8 @@ patterns (`nan_bits`), truncated payloads (`MISSING`), mismatched or
 open groups (`END_MISMATCH`, `OPEN_GROUP`), and out-of-range field
 numbers (`TAG_OOR`).  Repeated optional fields and interleaved fields
 are visible as duplicate or out-of-order field names in the text output.
-Together these make `prototext -d` a practical tool for auditing whether
-a binary message conforms to the canonical encoding rules.
+Together these make `prototext decode -a` a practical tool for auditing
+whether a binary message conforms to the canonical encoding rules.
 
 For full usage see `man prototext` or the
 [online docs](https://douzebis.github.io/prototools).
