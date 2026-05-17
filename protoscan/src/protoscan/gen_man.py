@@ -87,12 +87,33 @@ def _render(cmd: click.Command) -> str:
     return '\n'.join(buf) + '\n'
 
 
+def _build_stub_cmd() -> click.Command:
+    """Build a stub Click command that matches protoscan's CLI signature.
+
+    Avoids importing protoscan.cli (which pulls in the compiled fdp_scan_lib
+    extension, unavailable in plain-Python environments such as CI man-page
+    generation).
+    """
+    @click.command()
+    @click.argument("file", type=click.Path(exists=False, dir_okay=False))
+    @click.option(
+        "--proto_out",
+        type=click.Path(file_okay=False),
+        default=None,
+        help="Directory to write extracted .pb files.",
+    )
+    def _cmd(file: str, proto_out: str | None) -> None:
+        """Scan file for embedded FileDescriptorProto (.proto) blobs and optionally
+        write them under PROTO_OUT directory."""
+
+    return _cmd  # type: ignore[return-value]
+
+
 def main() -> None:
     out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("man/man1")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    from protoscan.cli import main as protoscan_main
-    text = _render(protoscan_main)
+    text = _render(_build_stub_cmd())
 
     dest = out_dir / "protoscan.1"
     dest.write_text(text, encoding="utf-8")
