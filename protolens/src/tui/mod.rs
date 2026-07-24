@@ -788,6 +788,14 @@ pub struct App {
     /// event on a 635k-node document, compounding into tens of seconds
     /// whenever a burst of requests completed at once).
     pending_heat_recheck: HashSet<usize>,
+    /// Spec 0164 G7: main-pane zigzag read-ahead prefetch walk state,
+    /// persisted across `run_loop` iterations.
+    prefetch_walk: PrefetchWalk,
+    /// Incremented every time `rebuild_visible_rows` runs (fold/unfold,
+    /// content-shape change) — `App::prefetch_step`'s staleness signal
+    /// (spec 0164 G7) for restarting its walk when rendered line
+    /// numbers may have shifted.
+    structural_version: u64,
     /// `true` while `recompute_override_candidates`'s `SortMode::
     /// Inferred` branch is waiting on a worker request for the
     /// override pane's first page (spec 0152 G7).
@@ -1113,6 +1121,8 @@ impl App {
             root_type_pending: decoded.root_type_deferred,
             heat_states: vec![heat_cue::HeatState::default(); tree_len],
             pending_heat_recheck: HashSet::new(),
+            prefetch_walk: PrefetchWalk::exhausted(),
+            structural_version: 0,
             override_candidates_pending: false,
             override_complete_pending: false,
             heat_cues_hidden: false,
@@ -1196,6 +1206,157 @@ impl App {
         }
         app.rebuild_visible_rows();
         app
+    }
+}
+
+/// Spec 0164 G7: per-`App` zigzag-walk state, persisted across
+/// `run_loop` iterations (not rebuilt on every call) — reset only when
+/// the cursor's display row or the document's structural/reflow state
+/// (`App::structural_version`) has changed since the walk began.
+/// `origin_line`/`above`/`below` are indices into `App::visible_rows`
+/// (rendered-line space), not raw `App::lines` indices — folded/hidden
+/// content never appears there, so the walk naturally skips it.
+struct PrefetchWalk {
+    origin_line: usize,
+    above: usize,
+    below: usize,
+    above_done: bool,
+    below_done: bool,
+    /// `App::structural_version` as of this walk's start — part of
+    /// the staleness signal `prefetch_step` checks on entry (the
+    /// exact mechanism the spec left TBD during implementation).
+    structural_version: u64,
+}
+
+impl PrefetchWalk {
+    /// Both ends already exhausted, and an `origin_line`/
+    /// `structural_version` that can never coincide with a real walk's
+    /// — guarantees the very first `prefetch_step` call starts a fresh
+    /// walk.
+    fn exhausted() -> Self {
+        PrefetchWalk {
+            origin_line: usize::MAX,
+            above: 0,
+            below: 0,
+            above_done: true,
+            below_done: true,
+            structural_version: u64::MAX,
+        }
+    }
+
+    /// Advances the walk to the next unexplored row, alternating above/
+    /// below (always the nearer of the two unexplored ends), and
+    /// returns its index into `visible_rows`. `None` once both ends
+    /// are exhausted.
+    fn next_row(&mut self, visible_len: usize) -> Option<usize> {
+        loop {
+            if self.above_done && self.below_done {
+                return None;
+            }
+            let try_above = if self.above_done {
+                false
+            } else if self.below_done {
+                true
+            } else {
+                self.above <= self.below
+            };
+            if try_above {
+                let next = self.above + 1;
+                if next > self.origin_line {
+                    self.above_done = true;
+                    continue;
+                }
+                self.above = next;
+                return Some(self.origin_line - next);
+            } else {
+                let next = self.below + 1;
+                let row = self.origin_line + next;
+                if row >= visible_len {
+                    self.below_done = true;
+                    continue;
+                }
+                self.below = next;
+                return Some(row);
+            }
+        }
+    }
+}
+
+pub(super) enum PrefetchStep {
+    Progressed,
+    Idle,
+}
+
+impl App {
+    /// Advances the zigzag prefetch walk by one candidate, pushing it
+    /// at `Tier::Prefetch` if it isn't already settled/cached (spec
+    /// 0164 G7). First resets `self.prefetch_walk` to a fresh walk
+    /// from the cursor's current display row if either the cursor's
+    /// row or `self.structural_version` has changed since the walk
+    /// began — calling `start_new_wave()` (G2) on the request queue
+    /// and both `HeatCaches` maps before the reset; otherwise resumes
+    /// exactly where the previous call left off. Returns `Idle` once
+    /// the document is fully walked, the last push returned
+    /// `UpsertOutcome::Rejected` (G6), or no worker is running at all
+    /// (nothing to prefetch into).
+    pub(super) fn prefetch_step(&mut self) -> PrefetchStep {
+        if self.heat_worker.is_none() {
+            return PrefetchStep::Idle;
+        }
+        let origin_row = self.cursor_display_row();
+        if self.prefetch_walk.origin_line != origin_row
+            || self.prefetch_walk.structural_version != self.structural_version
+        {
+            if let Some(worker) = &self.heat_worker {
+                worker.start_new_wave();
+            }
+            {
+                let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
+                caches.by_range.start_new_wave();
+                caches.current_score.start_new_wave();
+            }
+            self.prefetch_walk = PrefetchWalk {
+                origin_line: origin_row,
+                above: 0,
+                below: 0,
+                above_done: false,
+                below_done: false,
+                structural_version: self.structural_version,
+            };
+        }
+
+        loop {
+            let Some(row) = self.prefetch_walk.next_row(self.visible_rows.len()) else {
+                return PrefetchStep::Idle;
+            };
+            let line = self.visible_rows[row];
+            let Some(&idx) = self.line_to_node.get(&line) else {
+                continue;
+            };
+            if !self.can_override(idx) || self.heat_states[idx].settled() {
+                continue;
+            }
+            let range = {
+                let node = &self.tree[idx].span;
+                extract::message_payload_range(
+                    &self.blob,
+                    &node.raw_range,
+                    node.packed_record_start,
+                )
+            };
+            let current_key = self.current_type_key(idx);
+            let (_, outcome) = self.heat_lookup_ex(
+                &range,
+                current_key.as_deref(),
+                0,
+                heat_cue::HEAT_CUE_PREVIEW,
+                tiered::Tier::Prefetch,
+            );
+            return match outcome {
+                Some(tiered::UpsertOutcome::Rejected) => PrefetchStep::Idle,
+                _ => PrefetchStep::Progressed,
+            };
+        }
     }
 }
 
@@ -1597,12 +1758,41 @@ where
             (Some(d), None) | (None, Some(d)) => Some(d),
             (None, None) => None,
         };
-        let received = match deadline {
-            Some(deadline) => {
-                let timeout = deadline.saturating_duration_since(Instant::now());
-                rx.recv_timeout(timeout).ok() // timeout elapsed => None
+        // Spec 0164 G7: interleave one unit of inline prefetch work
+        // with a non-blocking channel check on every idle-wait
+        // iteration, so read-ahead never holds the thread for more
+        // than a single `TieredBounded::upsert` push before yielding
+        // to a pending event. Falls back to the deadline-aware receive
+        // above only once `prefetch_step` reports `Idle` (walk
+        // exhausted or capacity-rejected).
+        let received = loop {
+            match rx.try_recv() {
+                // A bare mouse-move carries no user intent (`handle_
+                // mouse` already discards it after dequeuing), but
+                // `EnableMouseCapture` makes the terminal send one on
+                // essentially every pixel the pointer crosses. Treating
+                // it as "a real event" here would starve prefetching
+                // any time the mouse merely hovers over the window, so
+                // it's discarded transparently at this level too,
+                // without breaking out of the loop.
+                Ok(event::AppEvent::Term(Event::Mouse(m))) if m.kind == MouseEventKind::Moved => {
+                    continue
+                }
+                Ok(ev) => break Some(ev),
+                Err(mpsc::TryRecvError::Empty) => match app.prefetch_step() {
+                    PrefetchStep::Progressed => continue,
+                    PrefetchStep::Idle => {
+                        break match deadline {
+                            Some(deadline) => {
+                                let timeout = deadline.saturating_duration_since(Instant::now());
+                                rx.recv_timeout(timeout).ok() // timeout elapsed => None
+                            }
+                            None => rx.recv().ok(),
+                        };
+                    }
+                },
+                Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
             }
-            None => rx.recv().ok(),
         };
         match received {
             // Some Kitty-protocol-aware terminals report a `Release`
@@ -1679,6 +1869,7 @@ mod neovim;
 mod override_apply;
 mod override_select;
 mod render;
+mod tiered;
 
 #[cfg(test)]
 mod tests;

@@ -7,7 +7,8 @@
 //! finds a strictly better-scoring type for a node's byte range than the
 //! node's current effective type.
 
-use super::heat_worker::{Priority, RangeHeatEntry};
+use super::heat_worker::RangeHeatEntry;
+use super::tiered::Tier;
 use super::*;
 
 /// Preview width (spec 0152 G6) `heat_cue_for` asks `App::heat_lookup`
@@ -116,103 +117,6 @@ pub(super) struct RangeHeatStats {
     pub(super) best_count: usize,
 }
 
-/// Bounded-MRU cache, generic over a small, fixed-size value (spec 0151
-/// G1/G4) — the shared shape behind both `heat_range_cache` and
-/// `heat_current_score_cache`. Distinct from `override_pane::
-/// CandidateCache` (byte-budget-bounded, sized for large `Vec<(String,
-/// i64)>` previews) — entry-count-bounded instead, since `V` here is
-/// always a small fixed-size scalar with no need for a per-entry size
-/// estimator. Deliberately minimal (`get`/`insert` only, `entries`/
-/// `max_entries` never exposed) so a future background scoring thread
-/// (spec 0151 N7) could wrap an instance in a `Mutex` transparently.
-pub(super) struct BoundedMru<K: PartialEq + Clone, V: Clone> {
-    entries: Vec<(K, V)>,
-    max_entries: usize,
-}
-
-impl<K: PartialEq + Clone, V: Clone> BoundedMru<K, V> {
-    pub(super) fn new(max_entries: usize) -> Self {
-        Self {
-            entries: Vec::new(),
-            max_entries,
-        }
-    }
-
-    /// Promotes to most-recently-used on a hit, mirroring
-    /// `CandidateCache::get`.
-    pub(super) fn get(&mut self, key: &K) -> Option<V> {
-        let pos = self.entries.iter().position(|(k, _)| k == key)?;
-        let (k, v) = self.entries.remove(pos);
-        self.entries.push((k, v.clone()));
-        Some(v)
-    }
-
-    /// Non-promoting read (spec 0152 G3/G5) — a defensive already-done
-    /// check has no business reshuffling recency order just to look.
-    pub(super) fn peek(&self, key: &K) -> Option<V> {
-        self.entries
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v.clone())
-    }
-
-    /// Removes and returns the most-recently-used (last) entry (spec
-    /// 0152 G3) — the queue's counterpart to `get`/`insert`.
-    pub(super) fn pop_mru(&mut self) -> Option<(K, V)> {
-        self.entries.pop()
-    }
-
-    /// Replaces an existing entry for `key` in place (re-promoting it),
-    /// or appends a new one; evicts the least-recently-used entry while
-    /// over `max_entries`, always keeping at least the one just
-    /// inserted — mirrors `CandidateCache::insert`'s shape with an
-    /// entry-count bound instead of a byte budget.
-    pub(super) fn insert(&mut self, key: K, value: V) {
-        self.entries.retain(|(k, _)| *k != key);
-        self.entries.push((key, value));
-        while self.entries.len() > self.max_entries.max(1) {
-            self.entries.remove(0);
-        }
-    }
-
-    /// Updates an existing entry's value in place, without touching its
-    /// position in the recency order (2026-07-20 feedback,
-    /// `HeatRequestQueue`'s background-priority push) — unlike
-    /// `insert`, a background/polling merge shouldn't re-promote an
-    /// already-queued entry ahead of whatever a user action queued
-    /// after it. A no-op if `key` isn't present; callers only use this
-    /// once `peek` has already confirmed the entry exists.
-    pub(super) fn update_in_place(&mut self, key: &K, value: V) {
-        if let Some(slot) = self.entries.iter_mut().find(|(k, _)| k == key) {
-            slot.1 = value;
-        }
-    }
-
-    /// Inserts a brand-new entry at the *least*-recently-used end
-    /// (2026-07-20 feedback) — the counterpart to `insert`'s always-
-    /// most-recently-used placement, for background/polling pushes
-    /// that shouldn't jump ahead of whatever a user action already
-    /// queued. Same eviction policy as `insert` (least-recently-used
-    /// entry dropped past `max_entries`) — at capacity, that's the
-    /// entry just inserted here, which is an intentional consequence
-    /// of it being the lowest-priority arrival, not a bug. Never
-    /// called for a key `peek` already found present — see
-    /// `HeatRequestQueue::push`.
-    pub(super) fn insert_back(&mut self, key: K, value: V) {
-        self.entries.insert(0, (key, value));
-        while self.entries.len() > self.max_entries.max(1) {
-            self.entries.remove(0);
-        }
-    }
-
-    /// Test-only entry-count introspection (spec 0152 test plan) — the
-    /// `HeatRequestQueue` cap-eviction test's assertion basis.
-    #[cfg(test)]
-    pub(super) fn len(&self) -> usize {
-        self.entries.len()
-    }
-}
-
 /// Entry-count cap for `heat_range_cache`/`heat_current_score_cache`
 /// (spec 0151 G4) — generous headroom for any realistically browsed
 /// document tree; both value types are small fixed-size scalars, so
@@ -272,7 +176,9 @@ impl App {
     /// simply won't be found in the candidate list — `heat_cue_from_
     /// stats` treats that as `current_entry: None` (spec 0151 G5), not
     /// a coincidental `0`.
-    fn current_type_key(&self, idx: usize) -> Option<String> {
+    ///
+    /// `pub(super)`: also used by `App::prefetch_step` (spec 0164 G7).
+    pub(super) fn current_type_key(&self, idx: usize) -> Option<String> {
         let span = &self.tree[idx].span;
         if span.is_message {
             return span.type_fqdn.clone();
@@ -340,28 +246,33 @@ impl App {
         // missing, merged into the queue per G3); the AND-gated return
         // value itself is discarded — `best`/`current` are re-read
         // independently just below, since either may already be known
-        // even when this reports a miss. `Priority::Background`
-        // (2026-07-20 feedback): this runs every frame for every
-        // visible node just to re-check its own pending status — it
-        // must not repeatedly jump ahead of a request a user action
-        // (`t`, arrow keys in the override pane) just queued.
+        // even when this reports a miss. `Tier::Visible` (spec 0164
+        // G1): this runs every frame for every visible node just to
+        // re-check its own pending status — it must not repeatedly
+        // jump ahead of a request a user action (`t`, arrow keys in
+        // the override pane) just queued.
         self.heat_lookup(
             &range,
             current_key.as_deref(),
             0,
             HEAT_CUE_PREVIEW,
-            Priority::Background,
+            Tier::Visible,
         );
 
         let state = {
-            let caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
-            let best = caches.by_range.peek(&start).map(|e| RangeHeatStats {
-                best_score: e.best_score,
-                best_count: e.best_count,
-            });
+            let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
+            let best = caches
+                .by_range
+                .peek(&start, Tier::Visible)
+                .map(|e| RangeHeatStats {
+                    best_score: e.best_score,
+                    best_count: e.best_count,
+                });
             let current = match current_key.as_deref() {
                 None => Some(None),
-                Some(key) => caches.current_score.peek(&(start, key.to_string())),
+                Some(key) => caches
+                    .current_score
+                    .peek(&(start, key.to_string()), Tier::Visible),
             };
             HeatState { best, current }
         };
@@ -397,7 +308,9 @@ impl App {
                 .expect("unsettled with best known implies current is still pending");
             let score = override_pane::inferred_score(range_bytes, key, graph);
             let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
-            caches.current_score.insert((start, key.to_string()), score);
+            caches
+                .current_score
+                .upsert((start, key.to_string()), score, Tier::Visible);
             HeatState {
                 best: state.best,
                 current: Some(score),
@@ -416,18 +329,19 @@ impl App {
             // cross-population cap) — never narrower than either.
             let cap = self.override_list_height.max(1).max(HEAT_CUE_PREVIEW);
             let top_n: Vec<_> = candidates.iter().take(cap).cloned().collect();
-            caches.by_range.insert(
+            caches.by_range.upsert(
                 start,
                 RangeHeatEntry {
                     best_score: stats.best_score,
                     best_count: stats.best_count,
                     top_n,
                 },
+                Tier::Visible,
             );
             if let Some(key) = current_key.as_ref() {
                 caches
                     .current_score
-                    .insert((start, key.clone()), current_entry);
+                    .upsert((start, key.clone()), current_entry, Tier::Visible);
             }
             caches.complete = Some((range.clone(), candidates));
             HeatState {
@@ -481,14 +395,19 @@ impl App {
             let start = range.start;
             let current_key = self.current_type_key(idx);
 
-            let caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
-            let best = caches.by_range.peek(&start).map(|e| RangeHeatStats {
-                best_score: e.best_score,
-                best_count: e.best_count,
-            });
+            let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
+            let best = caches
+                .by_range
+                .peek(&start, Tier::Visible)
+                .map(|e| RangeHeatStats {
+                    best_score: e.best_score,
+                    best_count: e.best_count,
+                });
             let current = match current_key.as_deref() {
                 None => Some(None),
-                Some(key) => caches.current_score.peek(&(start, key.to_string())),
+                Some(key) => caches
+                    .current_score
+                    .peek(&(start, key.to_string()), Tier::Visible),
             };
             drop(caches);
 

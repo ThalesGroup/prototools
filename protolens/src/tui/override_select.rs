@@ -6,7 +6,7 @@ use super::*;
 
 use prost_reflect::prost_types::field_descriptor_proto::Type;
 
-use super::heat_worker::Priority;
+use super::tiered::Tier;
 
 impl App {
     /// Whether `idx` is eligible as an override target (`t`, `type-as`,
@@ -281,10 +281,10 @@ impl App {
             // worker's own widening-not-shrinking rule, spec 0152 G5).
             let top_n_len = caches
                 .by_range
-                .peek(&range.start)
+                .peek(&range.start, Tier::Visible)
                 .map_or(0, |e| e.top_n.len())
                 .max(n);
-            caches.by_range.insert(
+            caches.by_range.upsert(
                 range.start,
                 heat_worker::RangeHeatEntry {
                     best_score: stats.best_score,
@@ -296,6 +296,7 @@ impl App {
                         .cloned()
                         .collect(),
                 },
+                Tier::Visible,
             );
             if self.override_candidates_complete {
                 caches.complete = Some((range, self.override_inferred_raw.clone()));
@@ -406,7 +407,7 @@ impl App {
                             None,
                             0,
                             self.override_list_height,
-                            Priority::UserEvent,
+                            Tier::User,
                         ) {
                             Some(top_n) => {
                                 self.override_inferred_raw = top_n;
@@ -481,7 +482,7 @@ impl App {
         // 2026-07-20 feedback: directly follows the user opening the
         // pane or scrolling past the loaded window — a user event,
         // jumps the queue.
-        match self.heat_lookup(&range, None, 0, usize::MAX, Priority::UserEvent) {
+        match self.heat_lookup(&range, None, 0, usize::MAX, Tier::User) {
             Some(candidates) => {
                 self.override_inferred_raw = candidates;
                 self.override_candidates_complete = true;
@@ -532,13 +533,8 @@ impl App {
             // 2026-07-20 feedback: a passive re-check after a worker-
             // progress wakeup, not a fresh user action — must not
             // preempt whatever the user has since asked for.
-            let lookup = self.heat_lookup(
-                &range,
-                None,
-                0,
-                self.override_list_height,
-                Priority::Background,
-            );
+            let lookup =
+                self.heat_lookup(&range, None, 0, self.override_list_height, Tier::Visible);
             if let Some(top_n) = lookup {
                 self.override_inferred_raw = top_n;
                 self.override_candidates_complete = false;

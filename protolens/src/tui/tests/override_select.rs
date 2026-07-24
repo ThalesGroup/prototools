@@ -7,6 +7,7 @@ use std::thread;
 use crate::override_pane::OverrideCollection;
 
 use super::super::heat_worker::{HeatWorkerHandle, RangeHeatEntry};
+use super::super::tiered::Tier;
 use super::super::*;
 use super::support::*;
 
@@ -1122,13 +1123,14 @@ fn recompute_override_candidates_pushes_pending_on_miss_and_applies_pre_populate
         &app.tree[idx].span.raw_range,
         app.tree[idx].span.packed_record_start,
     );
-    app.heat_caches.lock().unwrap().by_range.insert(
+    app.heat_caches.lock().unwrap().by_range.upsert(
         range.start,
         RangeHeatEntry {
             best_score: Some(9),
             best_count: 1,
             top_n: vec![("pkg.Type".to_string(), 9); 4],
         },
+        Tier::Visible,
     );
 
     app.recompute_override_candidates();
@@ -1195,13 +1197,14 @@ fn upgrade_active_override_to_complete_pushes_pending_and_respects_the_mismatch_
 
     // `by_range` alone — even for the correct range — can never
     // satisfy the one-shot `[0, usize::MAX)` request.
-    app.heat_caches.lock().unwrap().by_range.insert(
+    app.heat_caches.lock().unwrap().by_range.upsert(
         range.start,
         RangeHeatEntry {
             best_score: Some(9),
             best_count: 1,
             top_n: vec![("pkg.C".to_string(), 9); 6],
         },
+        Tier::Visible,
     );
     app.poll_pending_override_work();
     assert!(
@@ -1270,13 +1273,14 @@ fn poll_pending_override_work_does_not_clobber_a_non_inferred_sort_mode() {
         &app.tree[idx].span.raw_range,
         app.tree[idx].span.packed_record_start,
     );
-    app.heat_caches.lock().unwrap().by_range.insert(
+    app.heat_caches.lock().unwrap().by_range.upsert(
         range.start,
         RangeHeatEntry {
             best_score: Some(9),
             best_count: 1,
             top_n: vec![("pkg.Type".to_string(), 9); 4],
         },
+        Tier::Visible,
     );
 
     app.poll_pending_override_work();

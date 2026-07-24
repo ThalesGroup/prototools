@@ -46,6 +46,11 @@ impl App {
         }
         self.visible_rows = (0..total).filter(|&l| !hidden[l]).collect();
         self.clamp_pan_offset();
+        // Spec 0164 G7: any fold/unfold or content-shape change can
+        // shift rendered line numbers or invalidate prefetch
+        // eligibility — bumping this makes `App::prefetch_step` notice
+        // and restart its walk from scratch.
+        self.structural_version += 1;
     }
 
     /// Clamps `pan_offset` to the current content's valid range — the

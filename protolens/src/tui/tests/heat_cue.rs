@@ -3,12 +3,13 @@
 // SPDX-License-Identifier: MIT
 
 use super::super::heat_cue::{
-    derive_stats, heat_display, heat_level, score_of, BoundedMru, HeatCue, HeatCueKind,
-    HeatDisplay, HeatState, RangeHeatStats, HEAT_CUE_PREVIEW, HEAT_GLYPH,
+    derive_stats, heat_display, heat_level, score_of, HeatCue, HeatCueKind, HeatDisplay, HeatState,
+    RangeHeatStats, HEAT_CUE_PREVIEW, HEAT_GLYPH,
 };
 use std::thread;
 
-use super::super::heat_worker::{HeatWorkerHandle, Priority, RangeHeatEntry};
+use super::super::heat_worker::{HeatWorkerHandle, RangeHeatEntry};
+use super::super::tiered::{Tier, TieredBounded};
 use super::super::*;
 use super::support::*;
 
@@ -27,17 +28,20 @@ fn seed_range_heat_entry(
     current_score: Option<i64>,
 ) {
     let mut caches = app.heat_caches.lock().unwrap();
-    caches.by_range.insert(
+    caches.by_range.upsert(
         start,
         RangeHeatEntry {
             best_score,
             best_count,
             top_n: vec![("protolens_internal.dummy".to_string(), 0); HEAT_CUE_PREVIEW],
         },
+        Tier::Visible,
     );
-    caches
-        .current_score
-        .insert((start, current_key.to_string()), current_score);
+    caches.current_score.upsert(
+        (start, current_key.to_string()),
+        current_score,
+        Tier::Visible,
+    );
 }
 
 /// Spec 0138 G5: the Fibonacci boundaries partition the score axis into
@@ -119,114 +123,9 @@ fn score_of_finds_by_fqdn_or_returns_none() {
 }
 
 // ---------------------------------------------------------------------
-// BoundedMru (spec 0151 G4)
+// TieredBounded (spec 0164 G2) has its own dedicated test module at
+// tui::tiered — see protolens/src/tui/tiered.rs.
 // ---------------------------------------------------------------------
-
-#[test]
-fn bounded_mru_hit_promotes_to_most_recently_used() {
-    let mut cache: BoundedMru<u32, u32> = BoundedMru::new(2);
-    cache.insert(1, 10);
-    cache.insert(2, 20);
-    // Touch key 1, making key 2 the least-recently-used.
-    assert_eq!(cache.get(&1), Some(10));
-    cache.insert(3, 30);
-    // Key 2 (LRU) must have been evicted; keys 1 and 3 survive.
-    assert_eq!(cache.get(&2), None);
-    assert_eq!(cache.get(&1), Some(10));
-    assert_eq!(cache.get(&3), Some(30));
-}
-
-#[test]
-fn bounded_mru_evicts_least_recently_used_past_entry_budget() {
-    let mut cache: BoundedMru<u32, u32> = BoundedMru::new(3);
-    cache.insert(1, 10);
-    cache.insert(2, 20);
-    cache.insert(3, 30);
-    cache.insert(4, 40); // 4 distinct keys > max_entries(3): evicts key 1.
-    assert_eq!(cache.get(&1), None);
-    assert_eq!(cache.get(&2), Some(20));
-    assert_eq!(cache.get(&3), Some(30));
-    assert_eq!(cache.get(&4), Some(40));
-}
-
-/// Spec 0152 G3: `pop_mru` pops most-recently-inserted first, and a
-/// `get` promotion before popping re-orders accordingly.
-#[test]
-fn bounded_mru_pop_mru_returns_most_recently_touched_first() {
-    let mut cache: BoundedMru<u32, u32> = BoundedMru::new(8);
-    cache.insert(1, 10);
-    cache.insert(2, 20);
-    cache.insert(3, 30);
-    // No promotion: insertion order is 1, 2, 3 — pop_mru pops 3 first.
-    assert_eq!(cache.pop_mru(), Some((3, 30)));
-    assert_eq!(cache.pop_mru(), Some((2, 20)));
-    assert_eq!(cache.pop_mru(), Some((1, 10)));
-    assert_eq!(cache.pop_mru(), None);
-
-    cache.insert(1, 10);
-    cache.insert(2, 20);
-    cache.insert(3, 30);
-    // Promote key 1 via `get` — it becomes the most-recently-touched,
-    // ahead of 3 (which was inserted after it but not touched since).
-    assert_eq!(cache.get(&1), Some(10));
-    assert_eq!(cache.pop_mru(), Some((1, 10)));
-    assert_eq!(cache.pop_mru(), Some((3, 30)));
-    assert_eq!(cache.pop_mru(), Some((2, 20)));
-}
-
-/// 2026-07-20 feedback: `update_in_place` replaces an existing entry's
-/// value but leaves its position (recency order) untouched, unlike
-/// `insert`'s own always-promote behavior.
-#[test]
-fn bounded_mru_update_in_place_does_not_reorder() {
-    let mut cache: BoundedMru<u32, u32> = BoundedMru::new(8);
-    cache.insert(1, 10);
-    cache.insert(2, 20);
-    cache.update_in_place(&1, 11);
-    // Key 2 was inserted after key 1 and never re-touched — it must
-    // still pop first despite key 1's value having just changed.
-    assert_eq!(cache.pop_mru(), Some((2, 20)));
-    assert_eq!(cache.pop_mru(), Some((1, 11)));
-}
-
-/// `update_in_place` on an absent key is a no-op (no panic, no new
-/// entry).
-#[test]
-fn bounded_mru_update_in_place_on_missing_key_is_a_no_op() {
-    let mut cache: BoundedMru<u32, u32> = BoundedMru::new(8);
-    cache.insert(1, 10);
-    cache.update_in_place(&99, 999);
-    assert_eq!(cache.pop_mru(), Some((1, 10)));
-    assert_eq!(cache.pop_mru(), None);
-}
-
-/// 2026-07-20 feedback: `insert_back` places a brand-new entry at the
-/// least-recently-used end — it pops *last*, unlike `insert`'s
-/// always-most-recently-used placement.
-#[test]
-fn bounded_mru_insert_back_places_a_new_entry_at_the_lru_end() {
-    let mut cache: BoundedMru<u32, u32> = BoundedMru::new(8);
-    cache.insert(1, 10);
-    cache.insert_back(2, 20);
-    // Key 1 (via `insert`, MRU) must still pop before key 2 (via
-    // `insert_back`, LRU), even though key 2 was added second.
-    assert_eq!(cache.pop_mru(), Some((1, 10)));
-    assert_eq!(cache.pop_mru(), Some((2, 20)));
-}
-
-/// `insert_back` past `max_entries` evicts the least-recently-used
-/// entry, same as `insert` — at capacity, that's the entry just
-/// inserted here (the lowest-priority arrival), an intentional
-/// consequence, not a bug.
-#[test]
-fn bounded_mru_insert_back_past_capacity_evicts_the_new_entry() {
-    let mut cache: BoundedMru<u32, u32> = BoundedMru::new(2);
-    cache.insert(1, 10);
-    cache.insert(2, 20);
-    cache.insert_back(3, 30);
-    assert_eq!(cache.pop_mru(), Some((2, 20)));
-    assert_eq!(cache.pop_mru(), Some((1, 10)));
-}
 
 // ---------------------------------------------------------------------
 // heat_display (spec 0151 G5, spec 0138 G4/G9, spec 0154 G6 test plan
@@ -666,15 +565,16 @@ fn second_call_for_the_same_line_is_a_pure_cache_hit() {
 /// "nothing was cached."
 #[test]
 fn vetoed_range_is_still_cached_as_a_hit() {
-    let mut cache: BoundedMru<usize, RangeHeatStats> = BoundedMru::new(8192);
-    cache.insert(
+    let mut cache: TieredBounded<usize, RangeHeatStats> = TieredBounded::new(8192);
+    cache.upsert(
         42,
         RangeHeatStats {
             best_score: None,
             best_count: 0,
         },
+        Tier::Visible,
     );
-    let hit = cache.get(&42);
+    let hit = cache.peek(&42, Tier::Visible);
     assert!(hit.is_some());
     assert_eq!(hit.unwrap().best_score, None);
 }
@@ -694,13 +594,14 @@ fn g6_cross_population_caps_to_override_list_height() {
         app.tree[inner_idx].span.packed_record_start,
     );
     app.override_list_height = 200; // simulates the eager `run()` init.
-    app.heat_caches.lock().unwrap().by_range.insert(
+    app.heat_caches.lock().unwrap().by_range.upsert(
         range.start,
         RangeHeatEntry {
             best_score: Some(5),
             best_count: 1,
             top_n: vec![("a.Type".to_string(), 5), ("b.Type".to_string(), 3)],
         },
+        Tier::Visible,
     );
     // The `by_range` cache API itself is exercised elsewhere
     // (`heat_worker.rs`'s own tests); this just pins that
@@ -713,7 +614,7 @@ fn g6_cross_population_caps_to_override_list_height() {
         .lock()
         .unwrap()
         .by_range
-        .peek(&range.start)
+        .peek(&range.start, Tier::Visible)
         .is_some());
 }
 
@@ -805,36 +706,38 @@ fn heat_lookup_ands_window_and_current_score() {
     let key = "google.protobuf.DescriptorProto";
 
     // Window covered, current_score missing.
-    app.heat_caches.lock().unwrap().by_range.insert(
+    app.heat_caches.lock().unwrap().by_range.upsert(
         range.start,
         RangeHeatEntry {
             best_score: Some(5),
             best_count: 1,
             top_n: vec![("a.Type".to_string(), 5); HEAT_CUE_PREVIEW],
         },
+        Tier::Visible,
     );
     assert!(app
-        .heat_lookup(&range, Some(key), 0, HEAT_CUE_PREVIEW, Priority::Background)
+        .heat_lookup(&range, Some(key), 0, HEAT_CUE_PREVIEW, Tier::Visible)
         .is_none());
     assert_eq!(app.heat_worker.as_ref().unwrap().queue_len(), 1);
 
     // Symmetric case: current_score cached, window now insufficient.
     app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
-    app.heat_caches.lock().unwrap().by_range.insert(
+    app.heat_caches.lock().unwrap().by_range.upsert(
         range.start,
         RangeHeatEntry {
             best_score: Some(5),
             best_count: 1,
             top_n: vec![("a.Type".to_string(), 5)],
         },
+        Tier::Visible,
     );
-    app.heat_caches
-        .lock()
-        .unwrap()
-        .current_score
-        .insert((range.start, key.to_string()), Some(3));
+    app.heat_caches.lock().unwrap().current_score.upsert(
+        (range.start, key.to_string()),
+        Some(3),
+        Tier::Visible,
+    );
     assert!(app
-        .heat_lookup(&range, Some(key), 0, HEAT_CUE_PREVIEW, Priority::Background)
+        .heat_lookup(&range, Some(key), 0, HEAT_CUE_PREVIEW, Tier::Visible)
         .is_none());
     assert_eq!(app.heat_worker.as_ref().unwrap().queue_len(), 1);
 }

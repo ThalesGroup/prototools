@@ -19,7 +19,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use prototext_graph::build_scoring_graph::serial::ArchivedCompiledGraph;
 
 use super::event::AppEvent;
-use super::heat_cue::{self, BoundedMru};
+use super::heat_cue;
+use super::tiered::{Tier, TieredBounded, UpsertOutcome};
 use super::App;
 use crate::override_pane;
 
@@ -28,45 +29,27 @@ use crate::override_pane;
 /// so reaching it during ordinary interactive use would mean this many
 /// *distinct* ranges are simultaneously unresolved, not expected in
 /// practice.
-const HEAT_REQUEST_QUEUE_MAX_ENTRIES: usize = 512;
+pub(super) const HEAT_REQUEST_QUEUE_MAX_ENTRIES: usize = 512;
 
 /// One request for the worker thread (spec 0152 "plain terms"/G3):
 /// which node's payload range, its currently-assigned type (if any),
 /// and the `[start, end)` window of the ranked candidate list actually
-/// wanted.
+/// wanted. `tier` (spec 0164 G4) tags what the worker should stamp
+/// the eventual cache write with — the queue's own `TieredBounded`
+/// tracks priority for ordering purposes separately, but that
+/// bookkeeping doesn't survive `pop_highest`, so the request carries
+/// its own copy.
 #[derive(Clone)]
 pub(super) struct HeatRequest {
     pub(super) range: Range<usize>,
     pub(super) current_key: Option<String>,
     pub(super) start: usize,
     pub(super) end: usize,
-}
-
-/// Distinguishes a request directly triggered by a user action from
-/// one raised by passive background/polling code (2026-07-20
-/// feedback) — `HeatRequestQueue::push`'s only means of deciding
-/// whether a push may jump the queue.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Priority {
-    /// Directly follows a user event (opening/navigating the override
-    /// pane, toggling sort mode, scrolling past the loaded window) —
-    /// promoted to the front of the queue, same as every push before
-    /// this distinction existed.
-    UserEvent,
-    /// Passive re-check or background polling (e.g. the main pane's
-    /// per-frame heat-cue glyph re-verifying its own pending status,
-    /// or the override pane re-checking an outstanding request after a
-    /// worker-progress wakeup) — merged into an existing entry without
-    /// moving it, or, if genuinely new, queued behind whatever's
-    /// already there instead of preempting it. The goal (2026-07-20
-    /// feedback): the most recent thing the user actually asked for
-    /// stays at the front even while unrelated background traffic
-    /// keeps touching the queue.
-    Background,
+    pub(super) tier: Tier,
 }
 
 struct HeatRequestQueueState {
-    mru: BoundedMru<usize, HeatRequest>,
+    mru: TieredBounded<usize, HeatRequest>,
     stop: bool,
 }
 
@@ -83,46 +66,46 @@ impl HeatRequestQueue {
     fn new() -> Self {
         HeatRequestQueue {
             state: Mutex::new(HeatRequestQueueState {
-                mru: BoundedMru::new(HEAT_REQUEST_QUEUE_MAX_ENTRIES),
+                mru: TieredBounded::new(HEAT_REQUEST_QUEUE_MAX_ENTRIES),
                 stop: false,
             }),
             condvar: Condvar::new(),
         }
     }
 
-    /// `priority` (2026-07-20 feedback) governs where a push lands, not
-    /// whether it merges: merging by `range.start` (union window,
-    /// newest `current_key` wins) happens either way. `UserEvent`
-    /// always promotes to the front, as every push did before this
-    /// distinction existed. `Background` merges in place (no reorder)
-    /// if the key is already queued, or appends behind whatever's
-    /// already there if it's genuinely new — so passive polling can
-    /// never preempt a request a user action already queued.
-    fn push(&self, req: HeatRequest, priority: Priority) {
+    /// `tier` (spec 0164 G3) governs both where a push lands (via
+    /// `TieredBounded::upsert`'s own promotion/in-place-update rules,
+    /// G5) and, tagged onto the merged request itself, what the
+    /// eventual worker completion should be tagged with (G4).
+    /// Merging by `range.start` (union window, newest `current_key`
+    /// wins) happens regardless of tier — the promoting `peek` used to
+    /// look up the existing entry already applies `tier`'s own
+    /// promotion, so `upsert`'s subsequent `max` is a no-op on top of
+    /// it.
+    fn push(&self, req: HeatRequest, tier: Tier) -> UpsertOutcome<usize> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let key = req.range.start;
-        let existing = state.mru.peek(&key);
+        let existing = state.mru.peek(&key, tier);
         let merged = match &existing {
             Some(existing) => HeatRequest {
                 range: req.range.clone(),
                 current_key: req.current_key.clone(),
                 start: existing.start.min(req.start),
                 end: existing.end.max(req.end),
+                tier,
             },
-            None => req,
+            None => HeatRequest { tier, ..req },
         };
-        match (priority, existing.is_some()) {
-            (Priority::UserEvent, _) => state.mru.insert(key, merged),
-            (Priority::Background, true) => state.mru.update_in_place(&key, merged),
-            (Priority::Background, false) => state.mru.insert_back(key, merged),
-        }
+        let outcome = state.mru.upsert(key, merged, tier);
         self.condvar.notify_one();
+        outcome
     }
 
     /// Blocks until a request is available or `stop` is set; pops the
-    /// most-recently-touched entry. `None` once `stop` is set — checked
-    /// *before* popping, so a `shutdown()` mid-backlog abandons whatever
-    /// is still queued instead of draining it first (each entry can be
+    /// highest-priority entry (spec 0164 G3: `TieredBounded::
+    /// pop_highest`). `None` once `stop` is set — checked *before*
+    /// popping, so a `shutdown()` mid-backlog abandons whatever is
+    /// still queued instead of draining it first (each entry can be
     /// an expensive `inferred_candidates` call; the one request already
     /// popped and mid-flight when `stop` was set still finishes
     /// normally — unavoidable, and bounded to one item).
@@ -132,7 +115,7 @@ impl HeatRequestQueue {
             if state.stop {
                 return None;
             }
-            if let Some(entry) = state.mru.pop_mru() {
+            if let Some(entry) = state.mru.pop_highest() {
                 return Some(entry);
             }
             state = self.condvar.wait(state).unwrap_or_else(|e| e.into_inner());
@@ -143,6 +126,14 @@ impl HeatRequestQueue {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.stop = true;
         self.condvar.notify_all();
+    }
+
+    /// Spec 0164 G7: demotes the whole in-progress `Prefetch` wave to
+    /// `prefetch_previous` (`TieredBounded::start_new_wave`, G2) —
+    /// called by `App::prefetch_step` on a walk restart.
+    fn start_new_wave(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.mru.start_new_wave();
     }
 
     /// Test-only entry-count introspection (spec 0152 test plan).
@@ -171,19 +162,23 @@ pub(super) struct RangeHeatEntry {
 /// `type_complexity` lint happy.
 type CompleteSlot = (Range<usize>, Vec<(String, i64)>);
 
+/// `heat_lookup_ex`'s return type (spec 0164 G7) — factored into a
+/// named type for the same reason as `CompleteSlot` above.
+type HeatLookupResult = (Option<Vec<(String, i64)>>, Option<UpsertOutcome<usize>>);
+
 /// The shared cache (spec 0152 G4) — both the render/input thread and
 /// the worker thread read and write this same structure directly,
 /// under `App::heat_caches`' single `Mutex`.
 pub(super) struct HeatCaches {
     /// Keyed by a node's tag/length-stripped payload range's `start`
     /// offset.
-    pub(super) by_range: BoundedMru<usize, RangeHeatEntry>,
+    pub(super) by_range: TieredBounded<usize, RangeHeatEntry>,
     /// The current type's exact score — kept separate from `by_range`
     /// because it's keyed on an orthogonal axis (the currently-
     /// assigned type, which changes independently of a range's
     /// candidate list on every override edit) and because it may not
     /// be one of `top_n`'s entries at all.
-    pub(super) current_score: BoundedMru<(usize, String), Option<i64>>,
+    pub(super) current_score: TieredBounded<(usize, String), Option<i64>>,
     /// The most recently *fully* scored range's complete candidate
     /// list — a single slot, not a cache: only one override pane can
     /// be open at a time. Refreshed unconditionally by the worker
@@ -194,16 +189,19 @@ pub(super) struct HeatCaches {
 impl HeatCaches {
     pub(super) fn new(max_entries: usize) -> Self {
         HeatCaches {
-            by_range: BoundedMru::new(max_entries),
-            current_score: BoundedMru::new(max_entries),
+            by_range: TieredBounded::new(max_entries),
+            current_score: TieredBounded::new(max_entries),
             complete: None,
         }
     }
 
-    /// Pure, read-only lookup, no side effects, no access to the queue
-    /// (spec 0152 G4): `Some` (a clone of) the answer for `[start,
-    /// end)` if either `by_range`'s `top_n` already covers it, or
-    /// `complete` holds this exact range; `None` otherwise.
+    /// Read-only-in-spirit lookup, no access to the queue (spec 0152
+    /// G4): `Some` (a clone of) the answer for `[start, end)` if
+    /// either `by_range`'s `top_n` already covers it, or `complete`
+    /// holds this exact range; `None` otherwise. `by_range`'s check
+    /// goes through the promoting `peek(key, tier)` (spec 0164 G9) —
+    /// a `by_range` hit bumps the entry's tracked tier up to `tier`
+    /// if it was lower.
     ///
     /// `complete` is always the true, unbounded, fully-scored
     /// candidate list for whichever range it matches (spec 0152 G5),
@@ -215,12 +213,13 @@ impl HeatCaches {
     /// raw terminal height) could never report a hit even after the
     /// worker finished scoring it, leaving callers to busy-loop.
     pub(super) fn window(
-        &self,
+        &mut self,
         range_start: usize,
         start: usize,
         end: usize,
+        tier: Tier,
     ) -> Option<Vec<(String, i64)>> {
-        if let Some(entry) = self.by_range.peek(&range_start) {
+        if let Some(entry) = self.by_range.peek(&range_start, tier) {
             if entry.top_n.len() >= end {
                 return Some(entry.top_n[start..end].to_vec());
             }
@@ -245,42 +244,59 @@ impl App {
     /// pane's case, G7 — only requires the window itself). On a hit,
     /// returns the data. On a miss, pushes a `HeatRequest` (merging
     /// with the queue's own semantics, G3) and returns `None` —
-    /// "pending". `priority` (2026-07-20 feedback) is forwarded
-    /// unchanged to `HeatRequestQueue::push` — see `Priority`'s own
-    /// doc comment.
+    /// "pending". `tier` (spec 0164 G1) is forwarded unchanged to
+    /// `HeatRequestQueue::push` and also used to promote a cache hit
+    /// (G9) — see `Tier`'s own doc comment.
     pub(super) fn heat_lookup(
         &self,
         range: &Range<usize>,
         current_key: Option<&str>,
         start: usize,
         end: usize,
-        priority: Priority,
+        tier: Tier,
     ) -> Option<Vec<(String, i64)>> {
+        self.heat_lookup_ex(range, current_key, start, end, tier).0
+    }
+
+    /// `heat_lookup`'s full-fidelity core (spec 0164 G7): additionally
+    /// returns the `UpsertOutcome` of the queue push a miss triggers
+    /// (`None` on a hit, or when no worker is present) — `prefetch_
+    /// step` needs this to detect `UpsertOutcome::Rejected` (G6) and
+    /// stop the walk.
+    pub(super) fn heat_lookup_ex(
+        &self,
+        range: &Range<usize>,
+        current_key: Option<&str>,
+        start: usize,
+        end: usize,
+        tier: Tier,
+    ) -> HeatLookupResult {
         let ready = {
-            let c = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
-            let window = c.window(range.start, start, end);
+            let mut c = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
+            let window = c.window(range.start, start, end, tier);
             let current_ready = current_key.is_none_or(|k| {
                 c.current_score
-                    .peek(&(range.start, k.to_string()))
+                    .peek(&(range.start, k.to_string()), tier)
                     .is_some()
             });
             window.filter(|_| current_ready)
         };
         if ready.is_some() {
-            return ready;
+            return (ready, None);
         }
-        if let Some(worker) = &self.heat_worker {
+        let outcome = self.heat_worker.as_ref().map(|worker| {
             worker.push(
                 HeatRequest {
                     range: range.clone(),
                     current_key: current_key.map(str::to_string),
                     start,
                     end,
+                    tier,
                 },
-                priority,
-            );
-        }
-        None
+                tier,
+            )
+        });
+        (None, outcome)
     }
 }
 
@@ -308,15 +324,16 @@ pub(super) fn heat_worker_loop(
 ) {
     while let Some((start, req)) = queue.pop_blocking() {
         let (covers_window, covers_current) = {
-            let c = caches.lock().unwrap_or_else(|e| e.into_inner());
+            let mut c = caches.lock().unwrap_or_else(|e| e.into_inner());
             let covers_window = c
                 .by_range
-                .peek(&start)
+                .peek(&start, req.tier)
                 .is_some_and(|e| e.top_n.len() >= req.end);
-            let covers_current = req
-                .current_key
-                .as_deref()
-                .is_none_or(|k| c.current_score.peek(&(start, k.to_string())).is_some());
+            let covers_current = req.current_key.as_deref().is_none_or(|k| {
+                c.current_score
+                    .peek(&(start, k.to_string()), req.tier)
+                    .is_some()
+            });
             (covers_window, covers_current)
         };
         match (covers_window, covers_current) {
@@ -333,7 +350,8 @@ pub(super) fn heat_worker_loop(
                     .expect("covers_current false implies current_key is Some");
                 let score = override_pane::inferred_score(range_bytes, key, graph);
                 let mut c = caches.lock().unwrap_or_else(|e| e.into_inner());
-                c.current_score.insert((start, key.to_string()), score);
+                c.current_score
+                    .upsert((start, key.to_string()), score, req.tier);
             }
             (false, _) => {
                 let range_bytes = &blob[req.range.clone()];
@@ -348,24 +366,31 @@ pub(super) fn heat_worker_loop(
                 let mut c = caches.lock().unwrap_or_else(|e| e.into_inner());
                 let top_n_len = c
                     .by_range
-                    .get(&start)
+                    .peek(&start, req.tier)
                     .map_or(0, |e| e.top_n.len())
                     .max(req.end);
-                c.by_range.insert(
+                c.by_range.upsert(
                     start,
                     RangeHeatEntry {
                         best_score: stats.best_score,
                         best_count: stats.best_count,
                         top_n: candidates.iter().take(top_n_len.max(1)).cloned().collect(),
                     },
+                    req.tier,
                 );
                 if let Some(key) = &req.current_key {
-                    c.current_score.insert((start, key.clone()), current_score);
+                    c.current_score
+                        .upsert((start, key.clone()), current_score, req.tier);
                 }
                 c.complete = Some((req.range.clone(), candidates)); // always refreshed
             }
         }
-        let _ = progress.send(AppEvent::HeatWorkerProgress);
+        // Spec 0164 G10: a `Prefetch`-tier completion writes its cache
+        // entry but never wakes the main thread — a large read-ahead
+        // burst would otherwise mean thousands of no-op redraws.
+        if req.tier != Tier::Prefetch {
+            let _ = progress.send(AppEvent::HeatWorkerProgress);
+        }
     }
 }
 
@@ -396,8 +421,13 @@ impl HeatWorkerHandle {
         }
     }
 
-    pub(super) fn push(&self, req: HeatRequest, priority: Priority) {
-        self.queue.push(req, priority);
+    pub(super) fn push(&self, req: HeatRequest, tier: Tier) -> UpsertOutcome<usize> {
+        self.queue.push(req, tier)
+    }
+
+    /// Spec 0164 G7: passthrough to `HeatRequestQueue::start_new_wave`.
+    pub(super) fn start_new_wave(&self) {
+        self.queue.start_new_wave();
     }
 
     /// Signal stop, then block until the worker exits. Shared body
@@ -453,10 +483,11 @@ mod tests {
             current_key: None,
             start,
             end,
+            tier: Tier::User,
         }
     }
 
-    // ── HeatRequestQueue (spec 0152 test plan) ──────────────────────
+    // ── HeatRequestQueue (spec 0152/0164 test plan) ─────────────────
 
     /// Pushing the same `range.start` twice with different `[start,
     /// end)` windows yields one entry whose window is the union, not
@@ -471,8 +502,9 @@ mod tests {
                 current_key: None,
                 start: 0,
                 end: 2,
+                tier: Tier::User,
             },
-            Priority::UserEvent,
+            Tier::User,
         );
         queue.push(
             HeatRequest {
@@ -480,8 +512,9 @@ mod tests {
                 current_key: Some("x".to_string()),
                 start: 1,
                 end: 5,
+                tier: Tier::User,
             },
-            Priority::UserEvent,
+            Tier::User,
         );
         assert_eq!(queue.len(), 1, "same range.start must merge into one entry");
         let (key, merged) = queue.pop_blocking().unwrap();
@@ -492,66 +525,69 @@ mod tests {
     }
 
     /// Pushing distinct ranges pops the most-recently-pushed one first
-    /// (LIFO/MRU order across distinct keys); a later merging push for
-    /// an already-queued key re-promotes it to the front.
+    /// (LIFO order across distinct keys, `Tier::User`'s head-insert/
+    /// head-pop); a later same-tier merging push for an already-queued
+    /// key updates its window in place without reordering it (spec
+    /// 0164 G5).
     #[test]
-    fn pop_returns_most_recently_pushed_or_merged_first() {
+    fn pop_returns_most_recently_pushed_first_and_merges_do_not_reorder() {
         let queue = HeatRequestQueue::new();
-        queue.push(req(1, 0, 1), Priority::UserEvent);
-        queue.push(req(2, 0, 1), Priority::UserEvent);
-        queue.push(req(3, 0, 1), Priority::UserEvent);
+        queue.push(req(1, 0, 1), Tier::User);
+        queue.push(req(2, 0, 1), Tier::User);
+        queue.push(req(3, 0, 1), Tier::User);
         assert_eq!(queue.pop_blocking().unwrap().0, 3);
         assert_eq!(queue.pop_blocking().unwrap().0, 2);
         assert_eq!(queue.pop_blocking().unwrap().0, 1);
 
-        queue.push(req(1, 0, 1), Priority::UserEvent);
-        queue.push(req(2, 0, 1), Priority::UserEvent);
-        // Re-touch key 1 via a merging push — moves it back to the front.
-        queue.push(req(1, 0, 1), Priority::UserEvent);
-        assert_eq!(queue.pop_blocking().unwrap().0, 1);
+        queue.push(req(1, 0, 1), Tier::User);
+        queue.push(req(2, 0, 1), Tier::User);
+        // Re-touching key 1 via a same-tier merging push does not
+        // reorder it (spec 0164 G5: only a tier promotion relinks).
+        queue.push(req(1, 0, 1), Tier::User);
         assert_eq!(queue.pop_blocking().unwrap().0, 2);
+        assert_eq!(queue.pop_blocking().unwrap().0, 1);
     }
 
-    /// 2026-07-20 feedback: a `Priority::Background` push for a
-    /// brand-new key must not preempt a `Priority::UserEvent` request
-    /// already queued — it's appended behind it instead of promoted to
-    /// the front.
+    /// Spec 0164 G1/G3: a `Tier::Visible` push for a brand-new key
+    /// must not preempt a `Tier::User` request already queued — bands
+    /// alone guarantee `User` drains before `Visible`, no merge logic
+    /// needed.
     #[test]
-    fn background_push_of_a_new_key_does_not_preempt_a_queued_user_event() {
+    fn visible_push_of_a_new_key_does_not_preempt_a_queued_user_request() {
         let queue = HeatRequestQueue::new();
-        queue.push(req(1, 0, 1), Priority::UserEvent);
-        queue.push(req(2, 0, 1), Priority::Background);
+        queue.push(req(1, 0, 1), Tier::User);
+        queue.push(req(2, 0, 1), Tier::Visible);
         assert_eq!(
             queue.pop_blocking().unwrap().0,
             1,
-            "the user-event request must still pop first"
+            "the User-tier request must still pop first"
         );
         assert_eq!(queue.pop_blocking().unwrap().0, 2);
     }
 
-    /// A `Priority::Background` push that merges into an *already-
-    /// queued* entry updates its window/`current_key` in place without
-    /// moving it — a later `UserEvent` push for a different key stays
-    /// ahead of it.
+    /// Spec 0164 G5: a lower-tier push that merges into an
+    /// already-`User`-tracked entry updates its window in place
+    /// without promoting/reordering it — a `User` push for a
+    /// different key stays ahead of it.
     #[test]
-    fn background_push_merging_an_existing_entry_does_not_reorder_it() {
+    fn lower_tier_push_merging_an_existing_entry_does_not_reorder_it() {
         let queue = HeatRequestQueue::new();
-        queue.push(req(1, 0, 1), Priority::UserEvent);
-        queue.push(req(2, 0, 1), Priority::UserEvent);
-        // Re-touch key 1 in the background — merges its window but must
-        // not re-promote it ahead of key 2.
-        queue.push(req(1, 1, 3), Priority::Background);
+        queue.push(req(1, 0, 1), Tier::User);
+        queue.push(req(2, 0, 1), Tier::User);
+        // Re-touch key 1 at a lower tier — merges its window but must
+        // not re-promote it ahead of key 2, nor change its tier.
+        queue.push(req(1, 1, 3), Tier::Visible);
         assert_eq!(
             queue.pop_blocking().unwrap().0,
             2,
-            "key 2 must still pop first — the background push must not reorder key 1"
+            "key 2 must still pop first — the Visible push must not reorder key 1"
         );
         let (key, merged) = queue.pop_blocking().unwrap();
         assert_eq!(key, 1);
         assert_eq!(
             (merged.start, merged.end),
             (0, 3),
-            "the background push's window must still be merged in"
+            "the lower-tier push's window must still be merged in"
         );
     }
 
@@ -561,24 +597,24 @@ mod tests {
     fn push_past_capacity_evicts_least_recently_touched() {
         let queue = HeatRequestQueue::new();
         for start in 0..HEAT_REQUEST_QUEUE_MAX_ENTRIES {
-            queue.push(req(start, 0, 1), Priority::UserEvent);
+            queue.push(req(start, 0, 1), Tier::User);
         }
         assert_eq!(queue.len(), HEAT_REQUEST_QUEUE_MAX_ENTRIES);
-        queue.push(
-            req(HEAT_REQUEST_QUEUE_MAX_ENTRIES, 0, 1),
-            Priority::UserEvent,
-        );
+        queue.push(req(HEAT_REQUEST_QUEUE_MAX_ENTRIES, 0, 1), Tier::User);
         assert_eq!(
             queue.len(),
             HEAT_REQUEST_QUEUE_MAX_ENTRIES,
             "must stay capped"
         );
-        let state = queue.state.lock().unwrap();
+        let mut state = queue.state.lock().unwrap();
         assert!(
-            state.mru.peek(&0).is_none(),
+            state.mru.peek(&0, Tier::User).is_none(),
             "the least-recently-touched entry must be evicted"
         );
-        assert!(state.mru.peek(&HEAT_REQUEST_QUEUE_MAX_ENTRIES).is_some());
+        assert!(state
+            .mru
+            .peek(&HEAT_REQUEST_QUEUE_MAX_ENTRIES, Tier::User)
+            .is_some());
     }
 
     /// `pop_blocking` on a spawned thread against an empty queue
@@ -643,15 +679,16 @@ messages:
                 current_key: None,
                 start: 0,
                 end: 1,
+                tier: Tier::User,
             },
-            Priority::UserEvent,
+            Tier::User,
         );
 
         // Bounded poll, not `recv` — this isn't exercising the
         // event-driven wiring, just the worker/cache contract.
         let mut entry = None;
         for _ in 0..200 {
-            if let Some(e) = caches.lock().unwrap().by_range.peek(&0) {
+            if let Some(e) = caches.lock().unwrap().by_range.peek(&0, Tier::User) {
                 entry = Some(e);
                 break;
             }
@@ -679,8 +716,9 @@ messages:
                 current_key: None,
                 start: 0,
                 end: 1,
+                tier: Tier::User,
             },
-            Priority::UserEvent,
+            Tier::User,
         );
         rx.recv_timeout(Duration::from_secs(2))
             .expect("progress must fire for the second request");
@@ -718,14 +756,18 @@ messages:
                 current_key: None,
                 start: 0,
                 end: 1,
+                tier: Tier::User,
             },
-            Priority::UserEvent,
+            Tier::User,
         );
         rx.recv_timeout(Duration::from_secs(2))
             .expect("progress must fire for the priming request");
         let (by_range_before, complete_before) = {
-            let c = caches.lock().unwrap();
-            let entry = c.by_range.peek(&0).expect("window must be primed");
+            let mut c = caches.lock().unwrap();
+            let entry = c
+                .by_range
+                .peek(&0, Tier::User)
+                .expect("window must be primed");
             (
                 (entry.best_score, entry.best_count, entry.top_n.clone()),
                 c.complete.clone(),
@@ -741,8 +783,9 @@ messages:
                 current_key: Some("Msg".to_string()),
                 start: 0,
                 end: 1,
+                tier: Tier::User,
             },
-            Priority::UserEvent,
+            Tier::User,
         );
         rx.recv_timeout(Duration::from_secs(2))
             .expect("progress must fire for the cheap-path request");
@@ -752,12 +795,14 @@ messages:
             calls_after, calls_before,
             "the cheap fast path must not re-run a full score_all sweep"
         );
-        let c = caches.lock().unwrap();
+        let mut c = caches.lock().unwrap();
         assert!(
-            c.current_score.peek(&(0, "Msg".to_string())).is_some(),
+            c.current_score
+                .peek(&(0, "Msg".to_string()), Tier::User)
+                .is_some(),
             "current_score must be filled by the fast path"
         );
-        let entry = c.by_range.peek(&0).unwrap();
+        let entry = c.by_range.peek(&0, Tier::User).unwrap();
         assert_eq!(
             (entry.best_score, entry.best_count, entry.top_n.clone()),
             by_range_before,
@@ -768,6 +813,123 @@ messages:
             "complete must be untouched by the cheap path"
         );
         drop(c);
+        worker.shutdown();
+    }
+
+    // ── Spec 0164 tier-aware caches/queue integration ───────────────
+
+    fn range_entry(marker: i64) -> RangeHeatEntry {
+        RangeHeatEntry {
+            best_score: Some(marker),
+            best_count: 1,
+            top_n: vec![(format!("T{marker}"), marker)],
+        }
+    }
+
+    /// G4/G2: at capacity, a `Prefetch`-tier `by_range` entry is
+    /// evicted ahead of a `Visible`-tier one.
+    #[test]
+    fn heat_caches_prefetch_entry_evicted_before_visible_entry() {
+        let mut caches = HeatCaches::new(2);
+        caches.by_range.upsert(1, range_entry(1), Tier::Visible);
+        caches.by_range.upsert(2, range_entry(2), Tier::Prefetch);
+        let outcome = caches.by_range.upsert(3, range_entry(3), Tier::Visible);
+        assert_eq!(
+            outcome,
+            UpsertOutcome::Applied { evicted: Some(2) },
+            "the Prefetch-tier entry must be evicted before the Visible one"
+        );
+    }
+
+    /// G9: a `by_range` entry cached at `Prefetch` tier, once `peek`'d
+    /// at `Visible` tier, is retagged and survives eviction pressure
+    /// that would otherwise have removed it as a `Prefetch` entry.
+    #[test]
+    fn heat_caches_window_promotes_a_prefetch_entry_and_it_survives_eviction() {
+        let mut caches = HeatCaches::new(2);
+        caches.by_range.upsert(1, range_entry(1), Tier::Prefetch);
+        caches.by_range.upsert(2, range_entry(2), Tier::User);
+        // Promote key 1 to Visible via the same path `heat_lookup`
+        // uses (`HeatCaches::window`).
+        assert!(caches.window(1, 0, 1, Tier::Visible).is_some());
+        // A new Prefetch-tier push now has nothing at or below
+        // Prefetch tier left to evict (key 1 is Visible, key 2 is
+        // User) — it must be rejected rather than displacing the
+        // promoted entry.
+        let outcome = caches.by_range.upsert(3, range_entry(3), Tier::Prefetch);
+        assert_eq!(
+            outcome,
+            UpsertOutcome::Rejected,
+            "no Prefetch-or-lower entry remains to evict, so the new Prefetch push is rejected"
+        );
+        assert!(
+            caches.by_range.peek(&1, Tier::Visible).is_some(),
+            "the promoted entry must have survived"
+        );
+    }
+
+    /// G10: completing a `Prefetch`-tier worker request writes its
+    /// cache entry but does not send `HeatWorkerProgress`; a
+    /// subsequent `Visible`-tier request for a different range does.
+    #[test]
+    fn worker_does_not_notify_on_prefetch_tier_completion() {
+        let graph = test_scoring_graph();
+        let graph: &'static ArchivedCompiledGraph = graph.graph;
+        let range_bytes = vec![0x08, 0x05, 0x08, 0x05];
+        let blob = Arc::new(range_bytes.clone());
+        let caches = Arc::new(Mutex::new(HeatCaches::new(8)));
+        let (tx, rx) = mpsc::channel::<AppEvent>();
+        let worker = HeatWorkerHandle::spawn(Arc::clone(&caches), graph, Arc::clone(&blob), tx);
+
+        worker.push(
+            HeatRequest {
+                range: 0..2,
+                current_key: None,
+                start: 0,
+                end: 1,
+                tier: Tier::Prefetch,
+            },
+            Tier::Prefetch,
+        );
+
+        // Bounded poll for the cache write itself (no progress event to
+        // wait on for a Prefetch-tier completion, by design).
+        let mut saw_entry = false;
+        for _ in 0..200 {
+            if caches
+                .lock()
+                .unwrap()
+                .by_range
+                .peek(&0, Tier::Prefetch)
+                .is_some()
+            {
+                saw_entry = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            saw_entry,
+            "the Prefetch-tier completion must still write its cache entry"
+        );
+        assert!(
+            rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "a Prefetch-tier completion must not send HeatWorkerProgress"
+        );
+
+        worker.push(
+            HeatRequest {
+                range: 2..4,
+                current_key: None,
+                start: 0,
+                end: 1,
+                tier: Tier::Visible,
+            },
+            Tier::Visible,
+        );
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("a Visible-tier completion must send HeatWorkerProgress");
+
         worker.shutdown();
     }
 }
