@@ -1600,6 +1600,52 @@ fn preview_override_highlight_survives_a_failing_splice_after_truncation() {
     assert_eq!(count, 0);
 }
 
+/// 2026-07-24 bug report: hitting `t` right away against a descriptor
+/// set whose scoring graph resolves the root to a type absent from the
+/// descriptor pool panicked in `can_override` with an out-of-bounds
+/// tree index. Root cause: an unrelated full `render_overrides` pass
+/// landing between two live previews (e.g. the background root-type
+/// resolution's `apply_resolved_root_type`) rebuilds `line_to_node`/
+/// `footer_line_to_node` — via `finalize_override_batch` — against a
+/// tree grown past the watermark. The next preview's truncation must
+/// purge any such now-out-of-bounds entries from both maps, exactly as
+/// it already does for `self.folded`.
+#[test]
+fn preview_truncation_drops_stale_line_to_node_entries() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.override_target = Some(inner_idx);
+    app.override_candidates = vec![
+        ("test.Inner".to_string(), None),
+        ("test.Outer".to_string(), None),
+    ];
+
+    app.override_highlight = 0;
+    app.preview_override_highlight();
+    assert!(app.preview_tree_watermark.is_some());
+
+    // Simulate an intervening `finalize_override_batch` call (e.g. via
+    // `apply_resolved_root_type`) rebuilding both maps against a tree
+    // grown past the watermark.
+    let stale_idx = app.tree.len();
+    app.line_to_node.insert(999_999, stale_idx);
+    app.footer_line_to_node.insert(999_998, stale_idx);
+
+    // A different preview triggers truncation back to `watermark` —
+    // must also drop the now out-of-bounds entries above, not just
+    // truncate `self.tree` itself.
+    app.override_highlight = 1;
+    app.preview_override_highlight();
+    let new_len = app.tree.len();
+    assert!(
+        app.line_to_node.values().all(|&idx| idx < new_len),
+        "line_to_node must not keep entries past the truncated tree's end"
+    );
+    assert!(
+        app.footer_line_to_node.values().all(|&idx| idx < new_len),
+        "footer_line_to_node must not keep entries past the truncated tree's end"
+    );
+}
+
 /// Spec 0161 regression: confirming an override with `Enter` after
 /// several intervening live previews must produce identical final
 /// content to confirming the same candidate directly, with no previews

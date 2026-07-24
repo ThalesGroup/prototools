@@ -776,6 +776,20 @@ impl App {
                 self.tree.truncate(watermark);
                 self.heat_states.truncate(watermark);
                 self.folded.retain(|&i| i < watermark);
+                // Between this preview and the previous one, an
+                // unrelated full `render_overrides` pass (e.g. the
+                // background root-type resolution landing via
+                // `apply_resolved_root_type`) may have rebuilt these
+                // two maps — via `finalize_override_batch` — against a
+                // tree grown past `watermark`. The truncation above just
+                // invalidated any such entries; without this, a later
+                // lookup (e.g. `heat_cue_for`) can hand `can_override`
+                // an index that's now out of bounds, panicking on the
+                // very next render (2026-07-24 bug report: crashed on
+                // hitting `t` right away against a descriptor set whose
+                // scoring graph resolved to an absent root type).
+                self.line_to_node.retain(|_, idx| *idx < watermark);
+                self.footer_line_to_node.retain(|_, idx| *idx < watermark);
                 // The truncation above just invalidated whatever `idx`'s
                 // children/doc-chain pointer previously pointed at (the
                 // prior preview's now-discarded subtree). `splice_override`
