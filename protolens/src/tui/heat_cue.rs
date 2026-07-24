@@ -368,6 +368,11 @@ impl App {
 
         if state.settled() || self.heat_worker.is_some() {
             self.heat_states[idx] = state;
+            if state.settled() {
+                self.pending_heat_recheck.remove(&idx);
+            } else {
+                self.pending_heat_recheck.insert(idx);
+            }
             return heat_display(state);
         }
 
@@ -432,6 +437,7 @@ impl App {
         };
 
         self.heat_states[idx] = state;
+        self.pending_heat_recheck.remove(&idx);
         heat_display(state)
     }
 
@@ -448,11 +454,20 @@ impl App {
     /// progressive `[?]` -> `[?/{best}]` -> cue sequence visible across
     /// successive worker-progress wakeups.
     pub(super) fn recheck_pending_heat_states(&mut self) {
-        for idx in 0..self.heat_states.len() {
+        let candidates: Vec<usize> = self.pending_heat_recheck.iter().copied().collect();
+        for idx in candidates {
+            // Out of range after a live-preview truncation (spec 0161)
+            // shrank `tree`/`heat_states` since this index was queued.
+            if idx >= self.heat_states.len() {
+                self.pending_heat_recheck.remove(&idx);
+                continue;
+            }
             if self.heat_states[idx].settled() {
+                self.pending_heat_recheck.remove(&idx);
                 continue;
             }
             if !self.can_override(idx) {
+                self.pending_heat_recheck.remove(&idx);
                 continue;
             }
             let range = {
@@ -477,7 +492,11 @@ impl App {
             };
             drop(caches);
 
-            self.heat_states[idx] = HeatState { best, current };
+            let state = HeatState { best, current };
+            self.heat_states[idx] = state;
+            if state.settled() {
+                self.pending_heat_recheck.remove(&idx);
+            }
         }
     }
 }

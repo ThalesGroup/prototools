@@ -124,3 +124,109 @@ fn profile_override_pane_down_on_db3() {
         );
     }
 }
+
+/// Throwaway diagnostic for the 2026-07-24 report: main-pane `Down`
+/// (no override pane ever opened) is also slow on a large document.
+/// Isolates key-handling cost from draw cost, same as the override-pane
+/// harness above.
+#[test]
+#[ignore]
+fn profile_main_pane_down_on_db3() {
+    let desc_path = Path::new("/tmp/db3.desc");
+    if !desc_path.exists() {
+        eprintln!("skipping: /tmp/db3.desc not present");
+        return;
+    }
+
+    let t0 = Instant::now();
+    let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
+    eprintln!("DescriptorContext::load: {:?}", t0.elapsed());
+
+    let blob = std::fs::read(desc_path).expect("read blob");
+    let t1 = Instant::now();
+    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    eprintln!("decode: {:?}", t1.elapsed());
+
+    let t2 = Instant::now();
+    let mut app = App::new(
+        decoded,
+        "db3.desc",
+        std::path::PathBuf::from(desc_path),
+        2,
+        ctx,
+        ThemeKind::Dark,
+        None,
+    );
+    app.splash = false;
+    app.term_width = 120;
+    eprintln!("App::new: {:?}", t2.elapsed());
+    eprintln!("total lines: {}", app.lines.len());
+    eprintln!("total tree nodes: {}", app.tree.len());
+
+    // Mirror `mod.rs`'s real `run()` setup (2026-07-24 follow-up
+    // feedback: the first test never spawned this, so it never
+    // exercised the cache-miss path the user actually reported) — the
+    // worker is spawned *before* any navigation, exactly like a real
+    // session. Unlike the first attempt, the receiver is kept (not
+    // discarded) so `HeatWorkerProgress` events can be pumped into
+    // `recheck_pending_heat_states`/`poll_pending_override_work` below,
+    // exactly like `mod.rs`'s `run_loop` does — the first attempt's
+    // `let (tx, _rx) = ...` silently skipped that call path entirely,
+    // which is why it never reproduced the reported slowdown.
+    let mut rx = None;
+    if let Some(graph) = &app.ctx.graph {
+        let graph_ref = graph.graph;
+        let blob = std::sync::Arc::new(app.blob.clone());
+        let (tx, worker_rx) = std::sync::mpsc::channel();
+        app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
+            std::sync::Arc::clone(&app.heat_caches),
+            graph_ref,
+            blob,
+            tx,
+        ));
+        rx = Some(worker_rx);
+    }
+    eprintln!("heat_worker spawned = {}", app.heat_worker.is_some());
+
+    let backend = ratatui::backend::TestBackend::new(120, 50);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    // No warm-up pass here (unlike `run()`), and enough iterations to
+    // scroll well past the initial viewport into genuinely
+    // never-visited nodes, matching the user's "first time you Down to
+    // a node whose status isn't in the cache" report.
+    for i in 0..60 {
+        let t = Instant::now();
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let key_elapsed = t.elapsed();
+
+        // Single (likely single-core) sandbox: the worker thread never
+        // gets scheduled unless the main thread actually yields, unlike
+        // a real interactive session where `rx.recv_timeout` blocks
+        // between keystrokes. Sleep briefly so the worker can actually
+        // process the requests this render just queued.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+
+        // Drain every `HeatWorkerProgress` the worker has posted so
+        // far, same as `run_loop`'s `rx.recv()` match arm — each one
+        // triggers `recheck_pending_heat_states`.
+        let mut progress_events = 0;
+        let t_progress = Instant::now();
+        if let Some(rx) = &rx {
+            while rx.try_recv().is_ok() {
+                app.recheck_pending_heat_states();
+                app.poll_pending_override_work();
+                progress_events += 1;
+            }
+        }
+        let progress_elapsed = t_progress.elapsed();
+
+        let td = Instant::now();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let draw_elapsed = td.elapsed();
+        eprintln!(
+            "Down #{i}: key={key_elapsed:?} progress={progress_elapsed:?} ({progress_events} events) draw={draw_elapsed:?}"
+        );
+    }
+}

@@ -778,6 +778,16 @@ pub struct App {
     /// worker-progress wakeup or a real redraw-triggering input event)
     /// resolves it; `Resolved` nodes are read directly, no cache lock.
     heat_states: Vec<heat_cue::HeatState>,
+    /// Node indices with an outstanding worker request (spec 0152 G6/
+    /// G8) — populated by `heat_cue_resolve` whenever it finds a node
+    /// still unsettled with a worker present, drained by
+    /// `recheck_pending_heat_states`. Bounds that recheck to the
+    /// handful of nodes actually awaiting an answer instead of the
+    /// whole document (2026-07-24 bugfix: a full `0..heat_states.len()`
+    /// scan on every `HeatWorkerProgress` event took over a second per
+    /// event on a 635k-node document, compounding into tens of seconds
+    /// whenever a burst of requests completed at once).
+    pending_heat_recheck: HashSet<usize>,
     /// `true` while `recompute_override_candidates`'s `SortMode::
     /// Inferred` branch is waiting on a worker request for the
     /// override pane's first page (spec 0152 G7).
@@ -1102,6 +1112,7 @@ impl App {
             heat_worker: None,
             root_type_pending: decoded.root_type_deferred,
             heat_states: vec![heat_cue::HeatState::default(); tree_len],
+            pending_heat_recheck: HashSet::new(),
             override_candidates_pending: false,
             override_complete_pending: false,
             heat_cues_hidden: false,
