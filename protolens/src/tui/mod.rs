@@ -684,6 +684,14 @@ pub struct App {
     /// message/group node whose byte range it targets (spec 0114 §1/§2);
     /// `None` when closed.
     override_target: Option<usize>,
+    /// `self.tree.len()` captured just before the first live-preview
+    /// splice of the current override-pane session (spec 0161). `None`
+    /// when no preview has been spliced yet this session. Every
+    /// subsequent preview truncates `self.tree`/`self.heat_states` back
+    /// to this watermark before splicing its own candidate, so at most
+    /// one outstanding preview's worth of disposable nodes exists at a
+    /// time. Reset to `None` in `close_override`.
+    preview_tree_watermark: Option<usize>,
     /// `true` when the override pane has focus (spec 0114 §3's `Tab`
     /// toggle); meaningless while `override_target` is `None`.
     override_focus: bool,
@@ -1075,6 +1083,7 @@ impl App {
             manage_pan_offset: 0,
             command_pan_offset: 0,
             override_target: None,
+            preview_tree_watermark: None,
             override_focus: false,
             override_opened_from_manage: false,
             ctx,

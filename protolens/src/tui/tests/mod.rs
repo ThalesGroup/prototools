@@ -10,5 +10,6 @@ mod mouse;
 mod navigation;
 mod override_apply;
 mod override_select;
+mod profiling;
 mod render;
 mod support;

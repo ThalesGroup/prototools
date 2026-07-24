@@ -272,6 +272,7 @@ impl App {
         if let Some(idx) = self.override_target {
             self.render_overrides(idx);
         }
+        self.preview_tree_watermark = None;
         if let Some(range) = self.active_override_range.take() {
             let n = self.override_list_height.max(1);
             let stats = heat_cue::derive_stats(&self.override_inferred_raw);
@@ -774,6 +775,28 @@ impl App {
         let Some(idx) = self.override_target else {
             return;
         };
+        match self.preview_tree_watermark {
+            Some(watermark) => {
+                self.tree.truncate(watermark);
+                self.heat_states.truncate(watermark);
+                self.folded.retain(|&i| i < watermark);
+                // The truncation above just invalidated whatever `idx`'s
+                // children/doc-chain pointer previously pointed at (the
+                // prior preview's now-discarded subtree). `splice_override`
+                // below unconditionally overwrites all three fields on
+                // success, but if it returns `Err` before reaching that
+                // point (every error path precedes any tree mutation),
+                // these must not keep dangling, out-of-bounds indices
+                // around. Null them defensively so a failed splice leaves
+                // `idx` merely childless (harmless — the override pane, not
+                // the main pane, has focus here) rather than referencing
+                // truncated memory.
+                self.tree[idx].first_child = None;
+                self.tree[idx].last_child = None;
+                self.tree[idx].doc_next = None;
+            }
+            None => self.preview_tree_watermark = Some(self.tree.len()),
+        }
         let tentative = self
             .override_candidates
             .get(self.override_highlight)

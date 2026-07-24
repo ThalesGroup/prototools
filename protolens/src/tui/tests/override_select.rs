@@ -1423,3 +1423,217 @@ fn override_pane_seeks_the_active_overrides_type_once_the_complete_list_arrives(
         "the highlight must land on the previously-active type once fetched"
     );
 }
+
+/// Spec 0161 G1/G2: successive live previews truncate the *previous*
+/// preview's disposable subtree back to the session's watermark before
+/// splicing the newly highlighted candidate in — so `self.tree`'s
+/// growth across previews is bounded by the current splice's own size,
+/// not by the sum of every candidate previewed so far this session.
+#[test]
+fn preview_override_highlight_truncates_prior_preview_before_splicing_next() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.override_target = Some(inner_idx);
+    app.override_candidates = vec![
+        ("test.Inner".to_string(), None),
+        ("test.Outer".to_string(), None),
+    ];
+
+    app.override_highlight = 0;
+    app.preview_override_highlight();
+    let watermark = app
+        .preview_tree_watermark
+        .expect("watermark must be captured on the first preview");
+    let len_after_a = app.tree.len();
+    assert!(len_after_a >= watermark);
+
+    app.override_highlight = 1;
+    app.preview_override_highlight();
+    assert!(
+        app.tree.len() >= watermark,
+        "second preview must still start from the watermark, not from len_after_a"
+    );
+
+    // Same candidate/bytes as the first preview, spliced from the same
+    // watermark again — must exactly reproduce A's own tree length, not
+    // accumulate A + B + A.
+    app.override_highlight = 0;
+    app.preview_override_highlight();
+    assert_eq!(app.tree.len(), len_after_a);
+}
+
+/// Spec 0161 G1 (second bullet of the Test plan): cycling through many
+/// previews in a loop must not accumulate growth proportional to the
+/// number of cycles — `self.tree.len()` must settle back to the same
+/// bounded value every time the same candidate is re-previewed.
+#[test]
+fn repeated_previews_do_not_accumulate_tree_growth() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.override_target = Some(inner_idx);
+    app.override_candidates = vec![
+        ("test.Inner".to_string(), None),
+        ("test.Outer".to_string(), None),
+    ];
+
+    app.override_highlight = 0;
+    app.preview_override_highlight();
+    let len_after_single_preview = app.tree.len();
+
+    for i in 0..40 {
+        app.override_highlight = i % 2;
+        app.preview_override_highlight();
+    }
+    app.override_highlight = 0;
+    app.preview_override_highlight();
+
+    assert_eq!(
+        app.tree.len(),
+        len_after_single_preview,
+        "40 cycles of preview-switching must not accumulate tree growth"
+    );
+}
+
+/// Spec 0161 G5: a node folded while it's part of the currently
+/// previewed subtree must not survive as a stale index in `self.folded`
+/// once a later preview truncates that subtree away.
+#[test]
+fn preview_truncation_drops_stale_folded_entries() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.override_target = Some(inner_idx);
+    app.override_candidates = vec![
+        ("test.Inner".to_string(), None),
+        ("test.Outer".to_string(), None),
+    ];
+
+    app.override_highlight = 0;
+    app.preview_override_highlight();
+    let watermark = app.preview_tree_watermark.unwrap();
+    let child_to_fold = app.tree[inner_idx]
+        .first_child
+        .expect("previewing test.Inner over id: 5 must decode a child field");
+    assert!(
+        child_to_fold >= watermark,
+        "the folded node must belong to the just-previewed (disposable) subtree"
+    );
+    app.folded.insert(child_to_fold);
+
+    // A different preview triggers truncation back to `watermark`,
+    // which must also drop `child_to_fold` from `folded` — no stale
+    // index left behind.
+    app.override_highlight = 1;
+    app.preview_override_highlight();
+    assert!(!app.folded.contains(&child_to_fold));
+}
+
+/// Spec 0161 hidden-flaw fix: if a preview's truncation runs but the
+/// *following* `splice_override` call then fails (e.g. an unresolvable
+/// candidate type), `idx`'s `first_child`/`last_child`/`doc_next` must
+/// not keep dangling, out-of-bounds indices into the just-truncated
+/// range — they must be left in a safe, merely-childless state.
+#[test]
+fn preview_override_highlight_survives_a_failing_splice_after_truncation() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.override_target = Some(inner_idx);
+    app.override_candidates = vec![
+        ("test.Inner".to_string(), None),
+        ("nonexistent.Type".to_string(), None),
+    ];
+
+    app.override_highlight = 0;
+    app.preview_override_highlight();
+    assert!(app.message.is_empty(), "first preview must succeed cleanly");
+
+    // Second preview's candidate type doesn't exist in the descriptor
+    // pool — `splice_override` returns `Err` after truncation already
+    // ran.
+    app.override_highlight = 1;
+    app.preview_override_highlight();
+    assert!(
+        app.message.contains("cannot preview override"),
+        "unresolvable candidate must report an error: {}",
+        app.message
+    );
+    assert_eq!(app.tree[inner_idx].first_child, None);
+    assert_eq!(app.tree[inner_idx].last_child, None);
+    assert_eq!(app.tree[inner_idx].doc_next, None);
+
+    // Must not panic walking `idx`'s (now empty) children.
+    let mut child = app.tree[inner_idx].first_child;
+    let mut count = 0;
+    while let Some(c) = child {
+        count += 1;
+        child = app.tree[c].next_sibling;
+    }
+    assert_eq!(count, 0);
+}
+
+/// Spec 0161 regression: confirming an override with `Enter` after
+/// several intervening live previews must produce identical final
+/// content to confirming the same candidate directly, with no previews
+/// in between — truncation must not interact with the real commit path
+/// (`render_overrides`/`finalize_override_batch`), which is unaffected
+/// by this spec.
+#[test]
+fn confirming_after_several_previews_matches_confirming_directly() {
+    let (mut app_a, inner_idx_a, _) = type_as_fixture();
+    app_a.cursor = inner_idx_a;
+    app_a.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    app_a.override_sort = SortMode::Lexicographic;
+    app_a.recompute_override_candidates();
+    let row_a = app_a
+        .override_candidates
+        .iter()
+        .position(|(f, _)| f == "test.Inner")
+        .expect("test.Inner must be a candidate");
+
+    // Cycle through a few other rows first — each a real live preview
+    // that truncates the previous one.
+    for _ in 0..3 {
+        app_a.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    }
+    app_a.override_highlight = row_a;
+    app_a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let (mut app_b, inner_idx_b, _) = type_as_fixture();
+    app_b.cursor = inner_idx_b;
+    app_b.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    app_b.override_sort = SortMode::Lexicographic;
+    app_b.recompute_override_candidates();
+    let row_b = app_b
+        .override_candidates
+        .iter()
+        .position(|(f, _)| f == "test.Inner")
+        .expect("test.Inner must be a candidate");
+    app_b.override_highlight = row_b;
+    app_b.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(app_a.lines, app_b.lines);
+    assert_eq!(
+        app_a.tree[inner_idx_a].span.type_fqdn,
+        app_b.tree[inner_idx_b].span.type_fqdn
+    );
+}
+
+/// Spec 0161 regression: `Esc` after several live previews still
+/// correctly reverts to the pre-preview content — unaffected by
+/// truncation, since revert already goes through `render_overrides`,
+/// not anything watermark-related.
+#[test]
+fn esc_after_several_previews_reverts_to_original_content() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    let original_lines = app.lines.clone();
+    let original_type_fqdn = app.tree[inner_idx].span.type_fqdn.clone();
+
+    app.cursor = inner_idx;
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    app.override_sort = SortMode::Lexicographic;
+    app.recompute_override_candidates();
+
+    for _ in 0..5 {
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    }
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.override_target, None);
+    assert_eq!(app.lines, original_lines);
+    assert_eq!(app.tree[inner_idx].span.type_fqdn, original_type_fqdn);
+}
