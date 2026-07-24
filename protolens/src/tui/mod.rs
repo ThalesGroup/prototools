@@ -592,6 +592,20 @@ pub struct App {
     /// descendant's), the same way `line_to_node` already recognizes its
     /// own opening line.
     footer_line_to_node: HashMap<usize, usize>,
+    /// Spec 0160 G1: whether a `render_overrides` batch is currently
+    /// active — `0` outside of one, `1` while the outer (caller-
+    /// initiated) call is running. `splice_override` uses this to decide
+    /// whether it must self-finalize immediately (a standalone call,
+    /// e.g. `override_select.rs`'s live-preview splice) or defer to the
+    /// active batch's own finalize. Self-recursion inside
+    /// `render_overrides_inner` never goes through the counted
+    /// `render_overrides` wrapper, so this only ever toggles `0`/`1`,
+    /// never nesting deeper.
+    override_batch_depth: u32,
+    /// Spec 0160 G2: running total of line-count deltas accumulated by
+    /// `splice_override` calls in the current `render_overrides` batch.
+    /// Always `0` outside of an active batch.
+    pending_shift: isize,
     cursor: usize,
     /// `true` when the cursor is visually resting on `cursor`'s own
     /// closing `}` line rather than its header line (spec 0142).
@@ -1043,6 +1057,8 @@ impl App {
             tree: decoded.tree,
             line_to_node,
             footer_line_to_node,
+            override_batch_depth: 0,
+            pending_shift: 0,
             cursor,
             cursor_footer: false,
             cursor_moves: 0,

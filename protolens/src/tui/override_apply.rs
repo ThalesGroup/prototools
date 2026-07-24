@@ -587,7 +587,17 @@ impl App {
     /// `splice_override` already relies on for a manual override that
     /// no longer cleanly matches its target (a `TYPE_MISMATCH`-style
     /// annotation, not a silent revert to raw).
-    pub(super) fn resettle_node(&mut self, idx: usize) {
+    /// Returns `true` iff `idx` was actually re-spliced (i.e. `target`
+    /// disagreed with `idx`'s currently-rendered provenance and
+    /// `splice_override` succeeded) — spec 0160 G2: callers use this to
+    /// distinguish "my own node was just re-spliced, so my children are
+    /// freshly positioned and need no further correction" from "my own
+    /// node was untouched, so my *existing* children still owe whatever
+    /// correction I was just given". This can't be inferred from
+    /// `pending_shift` alone, since a splice whose new content happens
+    /// to have the same line count as the old (`delta == 0`) must still
+    /// count as fresh.
+    pub(super) fn resettle_node(&mut self, idx: usize) -> bool {
         let target = self.resolve_active_override(idx);
         let field_name = self.field_name_for(idx);
         let current = Some((target.clone(), field_name));
@@ -597,9 +607,17 @@ impl App {
                 None => self.natural_type(idx),
             };
             match self.splice_override(idx, effective) {
-                Ok(()) => self.tree[idx].rendered_as = current,
-                Err(e) => self.message = format!("cannot apply override: {e}"),
+                Ok(()) => {
+                    self.tree[idx].rendered_as = current;
+                    true
+                }
+                Err(e) => {
+                    self.message = format!("cannot apply override: {e}");
+                    false
+                }
             }
+        } else {
+            false
         }
     }
 
@@ -699,6 +717,56 @@ impl App {
     /// unrelated `render(&mut self, frame: &mut Frame)` ratatui draw
     /// method below.
     pub(super) fn render_overrides(&mut self, idx: usize) {
+        self.override_batch_depth += 1;
+        self.render_overrides_inner(idx, 0);
+        self.override_batch_depth -= 1;
+        if self.override_batch_depth == 0 {
+            self.finalize_override_batch(idx);
+        }
+    }
+
+    /// Spec 0160 G2: a small private helper applying `delta` to both
+    /// endpoints of `span.text_range` — the `(x as isize + delta) as
+    /// usize` pattern used at several call sites in this file, factored
+    /// out.
+    fn shift_span(span: &mut prototext_core::serialize::render_text::NodeSpan, delta: isize) {
+        span.text_range.start = (span.text_range.start as isize + delta) as usize;
+        span.text_range.end = (span.text_range.end as isize + delta) as usize;
+    }
+
+    /// The actual (self-recursive) body of `render_overrides` (spec 0160
+    /// G2): `inherited` is the line-count correction owed to `idx`'s own
+    /// `span.text_range` by splices that already happened earlier in
+    /// this batch, applied here directly, once — then, unless `idx`
+    /// itself was just re-spliced (in which case its freshly decoded
+    /// children are already positioned correctly), the same correction
+    /// is carried down to each of `idx`'s existing children, accumulating
+    /// each already-processed child's own growth onto what's owed to its
+    /// later siblings.
+    fn render_overrides_inner(&mut self, idx: usize, inherited: isize) {
+        // `idx`'s own node — and, if it's a member of a packed-repeated
+        // run (spec 0135 G1), every other member of that run too, since
+        // `packed_record_extent` (inside `splice_override`, called from
+        // `resettle_node` below) reads the run's first and last members
+        // directly and can't wait for their own turn later in this
+        // function's child loop — needs `inherited` applied now, once,
+        // directly. An override can be triggered on any member of a
+        // packed run, not just the leading one (see `splice_override`'s
+        // own doc comment), so `packed_record_siblings(idx)` may return
+        // `idx` at any position — shift every *other* member explicitly,
+        // never a fixed `[1..]` slice (which would wrongly assume `idx`
+        // is the leader).
+        if inherited != 0 {
+            Self::shift_span(&mut self.tree[idx].span, inherited);
+            if self.tree[idx].span.packed_record_start.is_some() {
+                for s in self.packed_record_siblings(idx) {
+                    if s != idx {
+                        Self::shift_span(&mut self.tree[s].span, inherited);
+                    }
+                }
+            }
+        }
+
         let origin = OverrideOrigin::Path {
             path: self.positional_path(idx),
         };
@@ -729,7 +797,13 @@ impl App {
                 }
             }
         }
-        self.resettle_node(idx);
+        let spliced = self.resettle_node(idx);
+        // Fresh children (just pushed by a splice) are already
+        // positioned relative to `idx`'s now-correct start and owe
+        // nothing further; pre-existing children (no splice happened)
+        // still owe whatever `idx` itself was just given.
+        let mut child_owed = if spliced { 0 } else { inherited };
+        let initial_child_owed = child_owed;
         let mut child = self.tree[idx].first_child;
         while let Some(c) = child {
             // Recurse into every node actually rendered as message/group
@@ -768,10 +842,78 @@ impl App {
                 || self.resolve_active_override_entry(c).is_some()
                 || self.tree[c].rendered_as.is_some()
             {
-                self.render_overrides(c);
+                let before = self.pending_shift;
+                self.render_overrides_inner(c, child_owed);
+                child_owed += self.pending_shift - before;
+            } else if child_owed != 0 {
+                Self::shift_span(&mut self.tree[c].span, child_owed);
             }
             child = self.tree[c].next_sibling;
         }
+        // `idx`'s own closing/footer `end` must grow by however much its
+        // children collectively grew during this loop (their own
+        // splices, and/or further-nested descendants' splices) — its
+        // `start` never moves due to its own descendants' growth.
+        let growth = child_owed - initial_child_owed;
+        if growth != 0 {
+            self.tree[idx].span.text_range.end =
+                (self.tree[idx].span.text_range.end as isize + growth) as usize;
+        }
+    }
+
+    /// Spec 0160 G1: runs exactly once, when the outermost
+    /// `render_overrides` call for a batch of splices returns (or a
+    /// standalone `splice_override` call finishes) — not once per
+    /// splice. Everything *inside* `idx`'s own subtree is already
+    /// correct by this point (`render_overrides_inner`'s carried-down
+    /// correction, or — for a standalone call — `splice_override`'s own
+    /// direct writes); this handles exactly what's left: what a single
+    /// eager splice on `idx` alone would still owe the *rest* of the
+    /// document — every live node strictly after `idx`'s whole subtree,
+    /// and every ancestor of `idx` (its `text_range.end` only) — applied
+    /// once for the whole batch using its aggregate `pending_shift`,
+    /// followed by the `line_to_node`/`footer_line_to_node` rebuild and
+    /// `rebuild_visible_rows()` (formerly redone on every splice).
+    fn finalize_override_batch(&mut self, idx: usize) {
+        let delta = self.pending_shift;
+        if delta != 0 {
+            // Doc-order-last live descendant of `idx` — `last_child`,
+            // walked to its own leaf, since `build_tree`/`splice_
+            // override` always keep it as the doc-order-last direct
+            // child (see `packed_run_is_last_child`'s existing use of
+            // this same invariant).
+            let mut last = idx;
+            while let Some(lc) = self.tree[last].last_child {
+                last = lc;
+            }
+            let mut after = self.tree[last].doc_next;
+            while let Some(a) = after {
+                Self::shift_span(&mut self.tree[a].span, delta);
+                after = self.tree[a].doc_next;
+            }
+            let mut p = self.tree[idx].parent;
+            while let Some(pi) = p {
+                self.tree[pi].span.text_range.end =
+                    (self.tree[pi].span.text_range.end as isize + delta) as usize;
+                p = self.tree[pi].parent;
+            }
+        }
+        self.line_to_node.clear();
+        self.footer_line_to_node.clear();
+        let mut cur = Some(self.first_node);
+        while let Some(c) = cur {
+            let node = &self.tree[c];
+            self.line_to_node.insert(node.span.text_range.start, c);
+            // See `App::new`'s matching build site (spec 0142 fix) for
+            // why this checks the line span rather than `first_child`.
+            if node.span.text_range.end - 1 > node.span.text_range.start {
+                self.footer_line_to_node
+                    .insert(node.span.text_range.end - 1, c);
+            }
+            cur = node.doc_next;
+        }
+        self.pending_shift = 0;
+        self.rebuild_visible_rows();
     }
 
     /// Unified splice mechanic (spec 0118 §4, reworked spec 0135 G1):
@@ -805,6 +947,13 @@ impl App {
         mut idx: usize,
         target: Option<String>,
     ) -> Result<(), String> {
+        // Spec 0160 G2: `self.tree[idx].span` is already authoritative
+        // by the time this is called — either `render_overrides_inner`'s
+        // prologue already applied `idx`'s own pending correction (and,
+        // for a packed member, every other member of its run too), or
+        // this is a standalone call (`override_batch_depth == 0`), where
+        // `pending_shift == 0` because the tree is already fully
+        // reconciled from the previous batch.
         let mut old_span = self.tree[idx].span.clone();
         let is_packed = old_span.packed_record_start.is_some();
 
@@ -968,6 +1117,13 @@ impl App {
 
         let delta = new_lines.len() as isize
             - (old_span.text_range.end - old_span.text_range.start) as isize;
+        // Spec 0160 G2: bump the batch's running offset now, rather than
+        // eagerly walking every downstream node's `text_range` —
+        // everything outside `idx`'s own subtree is reconciled once,
+        // lazily, in `finalize_override_batch`; everything inside it is
+        // handled directly, by `render_overrides_inner`'s carried-down
+        // correction.
+        self.pending_shift += delta;
 
         // Collect old descendants (pointer-based, before any pointer is
         // overwritten below) and scrub them from `folded` — otherwise
@@ -1115,41 +1271,21 @@ impl App {
             }
         }
 
-        // Forward doc-chain shift: every node from `after` onward has its
-        // own text_range shifted by `delta`.
-        let mut cur = after;
-        while let Some(c) = cur {
-            let r = &mut self.tree[c].span.text_range;
-            r.start = (r.start as isize + delta) as usize;
-            r.end = (r.end as isize + delta) as usize;
-            cur = self.tree[c].doc_next;
+        // Spec 0160 G2: no eager forward/ancestor `text_range` shift and
+        // no `line_to_node`/`footer_line_to_node`/`rebuild_visible_rows`
+        // rebuild here anymore — `self.pending_shift += delta` above
+        // already recorded this splice's effect. When called from within
+        // a `render_overrides` batch (`override_batch_depth > 0`, e.g.
+        // via `resettle_node`), reconciliation is deferred to that outer
+        // call's own `finalize_override_batch`. `splice_override` is
+        // also called directly outside of any `render_overrides` batch
+        // (e.g. `override_select.rs`'s live preview splice,
+        // `override_batch_depth == 0` there) — such a call must finalize
+        // immediately itself, exactly matching today's eager-splice
+        // behavior for a single standalone splice.
+        if self.override_batch_depth == 0 {
+            self.finalize_override_batch(idx);
         }
-        // Ancestor closing-brace-line shift: each ancestor's own opening
-        // line is unaffected, only its closing line moves.
-        let mut p = self.tree[idx].parent;
-        while let Some(pi) = p {
-            self.tree[pi].span.text_range.end =
-                (self.tree[pi].span.text_range.end as isize + delta) as usize;
-            p = self.tree[pi].parent;
-        }
-
-        // Full rebuild — walking the doc chain (not array order) so
-        // orphaned entries are naturally excluded.
-        self.line_to_node.clear();
-        self.footer_line_to_node.clear();
-        let mut cur = Some(self.first_node);
-        while let Some(c) = cur {
-            self.line_to_node
-                .insert(self.tree[c].span.text_range.start, c);
-            // See `App::new`'s matching build site (spec 0142 fix) for
-            // why this checks the line span rather than `first_child`.
-            if self.tree[c].span.text_range.end - 1 > self.tree[c].span.text_range.start {
-                self.footer_line_to_node
-                    .insert(self.tree[c].span.text_range.end - 1, c);
-            }
-            cur = self.tree[c].doc_next;
-        }
-        self.rebuild_visible_rows();
 
         // Spec 0142 G6.1: `idx` keeps its own tree-array identity across
         // a retype (see this function's own doc comment), so if the
@@ -1201,6 +1337,10 @@ impl App {
         let len = prototext_core::helpers::parse_varint(&self.blob, tag.next_pos);
         let raw_end = len.next_pos + len.varint.unwrap_or(0) as usize;
         let last = *siblings.last().expect("siblings never empty");
+        // Spec 0160 G2: every member of the run was already corrected by
+        // `render_overrides_inner`'s prologue (or, for a standalone
+        // call, is already reconciled since `pending_shift == 0` then) —
+        // read `text_range` directly, no further correction needed.
         let text_range =
             self.tree[siblings[0]].span.text_range.start..self.tree[last].span.text_range.end;
         (start..raw_end, text_range)
