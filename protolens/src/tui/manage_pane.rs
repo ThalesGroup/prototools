@@ -341,6 +341,22 @@ impl App {
             }
             return;
         }
+        // `gg` chord (vim-style jump-to-first), mirroring the main
+        // pane's own `handle_key` chord: a first `g` press arms
+        // `pending_g`; a second `g` press immediately after jumps to
+        // the first entry. Any other key clears the pending state.
+        if key.code == KeyCode::Char('g') {
+            if self.pending_g {
+                self.pending_g = false;
+                self.manage_highlight = 0;
+                self.manage_pending_kind = None;
+            } else {
+                self.pending_g = true;
+            }
+            return;
+        }
+        self.pending_g = false;
+
         match key.code {
             KeyCode::Tab => self.manage_focus = false,
             KeyCode::Esc | KeyCode::Char('o') | KeyCode::Char('q') => self.close_manage_pane(),
@@ -408,7 +424,7 @@ impl App {
                 self.manage_highlight = 0;
                 self.manage_pending_kind = None;
             }
-            KeyCode::End => {
+            KeyCode::End | KeyCode::Char('G') => {
                 self.manage_highlight = self.overrides.entries().len().saturating_sub(1);
                 self.manage_pending_kind = None;
             }

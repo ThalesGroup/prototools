@@ -8,6 +8,22 @@ impl App {
     /// Handle a keypress while the override pane has focus (spec 0114
     /// §2/§3/§4).
     pub(super) fn handle_override_key(&mut self, key: KeyEvent) {
+        // `gg` chord (vim-style jump-to-first), mirroring the main
+        // pane's own `handle_key` chord: a first `g` press arms
+        // `pending_g`; a second `g` press immediately after jumps to
+        // the first candidate. Any other key clears the pending state.
+        if key.code == KeyCode::Char('g') {
+            if self.pending_g {
+                self.pending_g = false;
+                self.override_highlight = 0;
+                self.preview_override_highlight();
+            } else {
+                self.pending_g = true;
+            }
+            return;
+        }
+        self.pending_g = false;
+
         match key.code {
             KeyCode::Tab => self.override_focus = false,
             KeyCode::Esc | KeyCode::Char('t') | KeyCode::Char('q') => self.close_override(),
@@ -48,7 +64,7 @@ impl App {
                 self.override_highlight = 0;
                 self.preview_override_highlight();
             }
-            KeyCode::End => {
+            KeyCode::End | KeyCode::Char('G') => {
                 if !self.override_candidates_complete && self.override_sort == SortMode::Inferred {
                     self.upgrade_active_override_to_complete();
                 }

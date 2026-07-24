@@ -531,6 +531,36 @@ fn override_highlight_movement_clamps_at_both_ends() {
     assert_eq!(app.override_highlight, 1);
 }
 
+/// `gg`/`G` (vim-style jump-to-first/jump-to-last, mirroring the main
+/// pane's own chord) work the override pane's own highlight, same as
+/// `Home`/`End` do — a lone `g` press must not itself jump (it only
+/// arms the chord).
+#[test]
+fn override_pane_gg_and_capital_g_jump_to_first_and_last() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.term_width = 120;
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+
+    app.override_candidates = vec![
+        ("a.B".to_string(), None),
+        ("a.C".to_string(), None),
+        ("a.D".to_string(), None),
+    ];
+    app.override_highlight = 1;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE));
+    assert_eq!(app.override_highlight, 2);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+    assert_eq!(
+        app.override_highlight, 2,
+        "a lone `g` must not jump by itself"
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+    assert_eq!(app.override_highlight, 0);
+}
+
 /// Spec 0114 §4/spec 0137 §G4: `/` searches forward, `?` searches
 /// backward, `n` repeats the last search — wrapping around — over
 /// `override_candidates` directly, no pinned raw row excluded.

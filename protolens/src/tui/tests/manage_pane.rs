@@ -1160,6 +1160,37 @@ fn manage_pane_search_repeat_with_p_reverses_direction() {
     );
 }
 
+/// `gg`/`G` (vim-style jump-to-first/jump-to-last, mirroring the main
+/// pane's own chord) work the management pane's own highlight, same
+/// as `Home`/`End` do — a lone `g` press must not itself jump (it
+/// only arms the chord).
+#[test]
+fn manage_pane_gg_and_capital_g_jump_to_first_and_last() {
+    let (mut app, items) = repeated_scalar_fixture();
+    app.manage_focus = true;
+    app.manage_open = true;
+
+    for (item, ty) in items.iter().zip(["pkg.Alpha", "pkg.Beta", "pkg.Gamma"]) {
+        let origin = OverrideOrigin::Path {
+            path: app.positional_path(*item),
+        };
+        app.overrides.activate(origin, Some(ty.to_string()));
+    }
+    app.manage_highlight = 1;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE));
+    assert_eq!(app.manage_highlight, app.overrides.entries().len() - 1);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+    assert_eq!(
+        app.manage_highlight,
+        app.overrides.entries().len() - 1,
+        "a lone `g` must not jump by itself"
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+    assert_eq!(app.manage_highlight, 0);
+}
+
 /// Spec 0119 §G4: `f` in the management pane opens a rename buffer
 /// pre-filled from the highlighted entry's current name; `Enter`
 /// confirms, mutating the entry in place and — since the entry is
