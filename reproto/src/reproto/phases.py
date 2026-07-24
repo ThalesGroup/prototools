@@ -1497,112 +1497,15 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
     import yaml
     from google.protobuf.descriptor_pb2 import FileDescriptorSet
 
-    # ── 1. Collect per-file scoring-graph YAML strings (mirrors _phase_emit_scoring_graphs)
-
-    def _collect(desc: Any, messages: dict, group_fqdns: 'set[str]', entries: list[str]) -> None:
-        msg_node = ctx.nodes.get(Fqdn(f'desc:.{desc.full_name}'))
-        if msg_node is not None and msg_node.is_pruned:
-            return
-        fields_out = []
-        for f in sorted(desc.fields_by_number.values(), key=lambda f: f.number):
-            field_node = ctx.nodes.get(Fqdn(f'fdsc:.{f.full_name}'))
-            if field_node is not None and field_node.is_pruned:
-                continue
-            type_str, child, range_ = _scoring_kind(f)
-            entry: dict = {'number': f.number, 'type': type_str}
-            if child is not None:
-                entry['child'] = child
-            if range_ is not None:
-                entry['range'] = list(range_)
-            label = _field_label(f)
-            if label != 'optional':
-                entry['label'] = label
-            fields_out.append(entry)
-        _synthesize_message_set_item(desc, messages, fields_out)
-        node_kind = 'GROUP' if desc.full_name in group_fqdns else 'LENDEL'
-        messages[desc.full_name] = {'kind': node_kind, 'fields': fields_out}
-        entries.append(desc.full_name)
-        for nested in desc.nested_types:
-            _collect(nested, messages, group_fqdns, entries)
-
-    scoring_graphs: list[str] = []
-
-    summoned_files = [
-        n for n in ctx.nodes.values()
-        if isinstance(n, ReFileDescriptorProto) and n.is_present() and n.is_summoned
-    ]
-    total_summoned = 0 if ctx.quiet else len(summoned_files)
-    with _progress('Collecting scoring data', total_summoned, quiet=ctx.quiet) as advance:
-        for re_file in summoned_files:
-            proto_name = re_file.name
-            try:
-                fd = ctx.pool.FindFileByName(proto_name)
-            except (KeyError, TypeError) as e:
-                from .lib.warnings import get_collector
-                get_collector().w6(proto_name, "schema db", str(e))
-                advance()
-                continue
-
-            group_fqdns = _collect_group_fqdns(fd)
-            messages: dict = {}
-            entries: list[str] = []
-            for msg_desc in fd.message_types_by_name.values():
-                _collect(msg_desc, messages, group_fqdns, entries)
-            entries.sort()
-
-            scoring_graphs.append(
-                str(yaml.dump({'entries': entries, 'messages': messages},
-                              sort_keys=False, allow_unicode=True))
-            )
-            advance()
-
-    if not scoring_graphs:
-        from .lib.warnings import get_collector
-        get_collector().w6('--build-schema-db', 'schema db', 'no scoring graphs generated; skipping')
-        return
-
-    # ── 2. Build the baked graph via the prototext_graph_lib PyO3 extension
-
-    try:
-        from prototext_graph_lib import build_graph
-    except ImportError as e:
-        raise RuntimeError(
-            f'--build-schema-db requires the prototext_graph_lib extension: {e}'
-        ) from e
-
-    last_current = 0
-    total_set = False
-
-    def _on_progress(current: int, total: int) -> None:
-        nonlocal last_current, total_set
-        if not total_set:
-            set_total(total)
-            total_set = True
-        advance(current - last_current)
-        last_current = current
-
-    want_pyvis = ctx.emit_scoring_html is not None
-    with _progress_lazy('Compiling scoring graph', quiet=ctx.quiet) as (advance, set_total):
-        baked_graph, compiled_yaml, initial_yaml = build_graph(
-            scoring_graphs=scoring_graphs,
-            emit_yaml=want_pyvis,
-            emit_initial_yaml=want_pyvis,
-            on_progress=_on_progress,
-        )
-
-    # ── 3. Assemble schemas.pb from FDPs collected by _phase7_output (spec 0076 §7)
-    #
-    # ctx.schema_db_fdps was populated during phase 7's render loop.  The loop
-    # iterates ctx.nodes in insertion order, which is not guaranteed topological.
-    # pool.Add() requires dependencies before dependents, so sort first.
-
-    # ── 3b. Render binary FDPs for WKT/fallback dependencies (spec 0080) ──────
+    # ── 1. Render binary FDPs for WKT/fallback dependencies (spec 0080) ──────
     #
     # ctx.schema_db_extra_nodes was populated by phase 6 sub-pass 3.  These
     # nodes are transitive dependencies of summoned files but were not rendered
     # by phase 7 (they were not summoned).  Promote them now, render their
     # binary FDPs, and append to ctx.schema_db_fdps so the DB is self-contained.
     # Phase 7 is complete at this point so promoting is_summoned here is safe.
+    # Runs before the scoring-graph collection below so hopcroft.rkyv's file
+    # coverage matches .desc's exactly, WKT promotion included (spec 0166 G2).
     from .context import DescOut as _DescOut
     from .syntax import fdp_syntax as _fdp_syntax
 
@@ -1636,6 +1539,109 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
                 assert isinstance(slot.out, FileDescriptorProto)
                 ctx.schema_db_fdps.append(slot.out)
                 ctx.schema_db_fdp_origins.append(extra_node.name)
+
+    # ── 2. Collect per-file scoring-graph YAML strings (mirrors _phase_emit_scoring_graphs)
+    #
+    # Node/child names are rewritten through _canonical_scoring_name so
+    # hopcroft.rkyv's names stay in lockstep with .desc's own rewritten
+    # names (spec 0159, spec 0166 G1).  Pruning lookups (ctx.nodes.get)
+    # and node_kind's group_fqdns membership check stay keyed on the
+    # original (pre-rewrite) FQDN, unaffected.
+
+    def _collect(desc: Any, messages: dict, group_fqdns: 'set[str]', entries: list[str]) -> None:
+        msg_node = ctx.nodes.get(Fqdn(f'desc:.{desc.full_name}'))
+        if msg_node is not None and msg_node.is_pruned:
+            return
+        fields_out = []
+        for f in sorted(desc.fields_by_number.values(), key=lambda f: f.number):
+            field_node = ctx.nodes.get(Fqdn(f'fdsc:.{f.full_name}'))
+            if field_node is not None and field_node.is_pruned:
+                continue
+            type_str, child, range_ = _scoring_kind(f)
+            entry: dict = {'number': f.number, 'type': type_str}
+            if child is not None:
+                entry['child'] = _canonical_scoring_name(ctx, child)
+            if range_ is not None:
+                entry['range'] = list(range_)
+            label = _field_label(f)
+            if label != 'optional':
+                entry['label'] = label
+            fields_out.append(entry)
+        node_kind = 'GROUP' if desc.full_name in group_fqdns else 'LENDEL'
+        canonical_name = _canonical_scoring_name(ctx, desc.full_name)
+        _synthesize_message_set_item(desc, messages, fields_out, canonical_name)
+        messages[canonical_name] = {'kind': node_kind, 'fields': fields_out}
+        entries.append(canonical_name)
+        for nested in desc.nested_types:
+            _collect(nested, messages, group_fqdns, entries)
+
+    scoring_graphs: list[str] = []
+
+    scoring_files = list(dict.fromkeys(ctx.schema_db_fdp_origins))
+    total_scoring = 0 if ctx.quiet else len(scoring_files)
+    with _progress('Collecting scoring data', total_scoring, quiet=ctx.quiet) as advance:
+        for proto_name in scoring_files:
+            try:
+                fd = ctx.pool.FindFileByName(proto_name)
+            except (KeyError, TypeError) as e:
+                from .lib.warnings import get_collector
+                get_collector().w6(proto_name, "schema db", str(e))
+                advance()
+                continue
+
+            group_fqdns = _collect_group_fqdns(fd)
+            messages: dict = {}
+            entries: list[str] = []
+            for msg_desc in fd.message_types_by_name.values():
+                _collect(msg_desc, messages, group_fqdns, entries)
+            entries.sort()
+
+            scoring_graphs.append(
+                str(yaml.dump({'entries': entries, 'messages': messages},
+                              sort_keys=False, allow_unicode=True))
+            )
+            advance()
+
+    if not scoring_graphs:
+        from .lib.warnings import get_collector
+        get_collector().w6('--build-schema-db', 'schema db', 'no scoring graphs generated; skipping')
+        return
+
+    # ── 3. Build the baked graph via the prototext_graph_lib PyO3 extension
+
+    try:
+        from prototext_graph_lib import build_graph
+    except ImportError as e:
+        raise RuntimeError(
+            f'--build-schema-db requires the prototext_graph_lib extension: {e}'
+        ) from e
+
+    last_current = 0
+    total_set = False
+
+    def _on_progress(current: int, total: int) -> None:
+        nonlocal last_current, total_set
+        if not total_set:
+            set_total(total)
+            total_set = True
+        advance(current - last_current)
+        last_current = current
+
+    want_pyvis = ctx.emit_scoring_html is not None
+    with _progress_lazy('Compiling scoring graph', quiet=ctx.quiet) as (advance, set_total):
+        baked_graph, compiled_yaml, initial_yaml = build_graph(
+            scoring_graphs=scoring_graphs,
+            emit_yaml=want_pyvis,
+            emit_initial_yaml=want_pyvis,
+            on_progress=_on_progress,
+        )
+
+    # ── 4. Assemble schemas.pb from FDPs collected by _phase7_output (spec 0076 §7)
+    #
+    # ctx.schema_db_fdps was populated during phase 7's render loop and step 1
+    # above.  The loop iterates ctx.nodes in insertion order, which is not
+    # guaranteed topological.  pool.Add() requires dependencies before
+    # dependents, so sort first.
 
     # spec 0158: detect two entries that canonize to the same schema-db
     # name but carry different content (e.g. an import_rewrites rule
@@ -1685,7 +1691,7 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
     fds = FileDescriptorSet()
     fds.file.extend(sorted_fdps)
 
-    # ── 4. Write both outputs
+    # ── 5. Write both outputs
     #
     # db_path           → FileDescriptorSet (.desc)
     # db_path.stem/     → sibling directory
@@ -1703,7 +1709,7 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
         (schema_db_dir / 'hopcroft.rkyv').write_bytes(baked_graph)
         advance()
 
-        # ── 5. Build and write index.rkyv (spec 0068)
+        # ── 6. Build and write index.rkyv (spec 0068)
         from .build_index import write_fds_index
         write_fds_index(raw_pb_bytes, fds, schema_db_dir / 'index.rkyv')
         advance()
@@ -1714,7 +1720,7 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
         eprintln(f'  graph:      {schema_db_dir / "hopcroft.rkyv"}\n')
         eprintln(f'  index:      {schema_db_dir / "index.rkyv"}\n')
 
-    # ── 6. Write pyvis HTML visualisations (spec 0083) ────────────────────────
+    # ── 7. Write pyvis HTML visualisations (spec 0083) ────────────────────────
     if want_pyvis and initial_yaml is not None and compiled_yaml is not None:
         from .show import render_scoring_graph
         pyvis_path = ctx.emit_scoring_html
@@ -1744,6 +1750,20 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
             eprintln(f'  pyvis hopcroft:  {hop_path}\n')
 
 
+def _canonical_scoring_name(ctx: 'Context', full_name: str) -> str:
+    """Rewrite a scoring-graph node/child FQDN through the active variant's
+    namespace_rewrites rules, mirroring the same rewrite .desc's own
+    type_name/extendee fields already receive at render time (spec 0159)
+    — keeps hopcroft.rkyv's names in lockstep with .desc's names (spec
+    0166).
+    """
+    if ctx.keep_variant_descriptor:
+        return full_name
+    from .mappings import apply_variant_namespace
+    from .fake_types import Ref as _Ref
+    return str(apply_variant_namespace(ctx, _Ref(f'.{full_name}'))).lstrip('.')
+
+
 def _collect_group_fqdns(fd: Any) -> 'set[str]':
     """Return the set of FQDNs that are group message types in fd (spec 0058)."""
     from google.protobuf.descriptor import FieldDescriptor as FD
@@ -1762,7 +1782,10 @@ def _collect_group_fqdns(fd: Any) -> 'set[str]':
     return group_fqdns
 
 
-def _synthesize_message_set_item(desc: Any, messages: dict, fields_out: list) -> None:
+def _synthesize_message_set_item(
+    desc: Any, messages: dict, fields_out: list,
+    canonical_full_name: 'str | None' = None,
+) -> None:
     """Synthesize the protocol-fixed `Item` group for a MessageSet type (spec 0108).
 
     A message with `message_set_wire_format=true` has no declared fields
@@ -1772,10 +1795,17 @@ def _synthesize_message_set_item(desc: Any, messages: dict, fields_out: list) ->
     credit for `type_id`/`message` instead of falling to blind-group-skip
     unknowns, and lets custom-named MessageSet types be recognized
     structurally (no FQDN heuristic needed).
+
+    canonical_full_name, when given, is used in place of desc.full_name to
+    build the synthesized Item's FQDN, so it lands in the same (possibly
+    variant-namespace-rewritten) namespace as the rest of the node's own
+    entry (spec 0166).  Defaults to desc.full_name, preserving
+    _phase_emit_scoring_graphs's existing (unrewritten) call site.
     """
     if not desc.GetOptions().message_set_wire_format or fields_out:
         return
-    item_fqdn = f'{desc.full_name}.Item'
+    base_name = canonical_full_name if canonical_full_name is not None else desc.full_name
+    item_fqdn = f'{base_name}.Item'
     messages[item_fqdn] = {
         'kind': 'GROUP',
         'fields': [
