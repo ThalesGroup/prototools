@@ -22,6 +22,18 @@ impl App {
     /// Recompute `visible_rows` from current fold state: a folded node
     /// hides its body (`text_range.start + 1 .. text_range.end`), keeping
     /// its own opening line visible with a fold indicator.
+    ///
+    /// Also re-clamps `pan_offset` (2026-07-24 bug report: a fold/unfold
+    /// or an override splice — e.g. deactivating an override that turns
+    /// a collapsed scalar back into a wide expanded message — can shrink
+    /// the currently-visible content out from under a `pan_offset` that
+    /// was valid for the *previous* shape. Left unclamped, every visible
+    /// row then renders shorter than `pan_offset`, so `pan_spans` yields
+    /// nothing for any of them and the main pane goes blank — recoverable
+    /// only by panning right again, since only `pan_horizontal`'s own
+    /// right-branch re-derives the clamp). Called on every caller of this
+    /// method, so the pane is never left stuck blank regardless of which
+    /// direction shrank the content.
     pub(super) fn rebuild_visible_rows(&mut self) {
         let total = self.lines.len();
         let mut hidden = vec![false; total];
@@ -33,6 +45,34 @@ impl App {
             }
         }
         self.visible_rows = (0..total).filter(|&l| !hidden[l]).collect();
+        self.clamp_pan_offset();
+    }
+
+    /// Clamps `pan_offset` to the current content's valid range — the
+    /// same `max_pan_offset` bound `pan_horizontal`'s right-branch
+    /// enforces, but applied proactively (see `rebuild_visible_rows`'s
+    /// doc comment) rather than only when the user happens to pan right
+    /// again.
+    ///
+    /// First re-syncs `scroll_offset` to the cursor's row, mirroring
+    /// `render()`'s own auto-pan-into-view guard (2026-07-24 follow-up):
+    /// `rebuild_visible_rows` runs mid-`splice_override`, well before
+    /// the next `render()` pass would normally refresh `scroll_offset`
+    /// for the new content shape. Computing `max_pan_offset` against
+    /// that stale, pre-splice `scroll_offset` window — rather than the
+    /// window the next render will actually show around the (possibly
+    /// moved) cursor — clamps against the wrong rows, panning further
+    /// left than the true content width allows.
+    pub(super) fn clamp_pan_offset(&mut self) {
+        if !self.tree.is_empty() {
+            let pane_height = self.main_area.height as usize;
+            let cursor_row = self.cursor_display_row();
+            if self.last_cursor_row != Some(cursor_row) {
+                clamp_scroll_to_visible(&mut self.scroll_offset, cursor_row, pane_height);
+                self.last_cursor_row = Some(cursor_row);
+            }
+        }
+        self.pan_offset = self.pan_offset.min(self.max_pan_offset());
     }
 
     /// Unfold every ancestor of `idx`, so it becomes visible.
@@ -173,24 +213,29 @@ impl App {
             .unwrap_or(0)
     }
 
+    /// Upper bound for `pan_offset`: the widest currently-visible row's
+    /// last character stays shown, never further. Column 0 of
+    /// `main_area` is always the heat-cue gutter (spec 0138 N1),
+    /// reserved but never panned — only `width - 1` columns actually
+    /// show line text, so the bound must leave room for that extra
+    /// column or panning stops one character short of the line's true
+    /// end.
+    fn max_pan_offset(&self) -> usize {
+        let width = (self.main_area.width as usize).saturating_sub(1);
+        self.max_visible_line_len().saturating_sub(width)
+    }
+
     /// Shared horizontal-pan arithmetic behind the main pane's Ctrl-Left/
     /// Ctrl-Right (`pan_left`/`pan_right`, `PAN_STEP`) and Shift+wheel/
     /// native horizontal scroll (`wheel_pan_left`/`wheel_pan_right`,
     /// `WHEEL_PAN_STEP`, 2026-07-19 feedback) — bounded on the right by
-    /// `max_visible_line_len` so it stops once the rightmost character of
+    /// `max_pan_offset` so it stops once the rightmost character of
     /// the widest currently-visible row would be shown, never further.
     fn pan_horizontal(&mut self, step: usize, left: bool) {
         if left {
             self.pan_offset = self.pan_offset.saturating_sub(step);
         } else {
-            // Column 0 of `main_area` is always the heat-cue gutter (spec
-            // 0138 N1), reserved but never panned — only `width - 1`
-            // columns actually show line text, so the clamp must leave
-            // room for that extra column or panning stops one character
-            // short of the line's true end.
-            let width = (self.main_area.width as usize).saturating_sub(1);
-            let max_offset = self.max_visible_line_len().saturating_sub(width);
-            self.pan_offset = (self.pan_offset + step).min(max_offset);
+            self.pan_offset = (self.pan_offset + step).min(self.max_pan_offset());
         }
     }
 

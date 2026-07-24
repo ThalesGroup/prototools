@@ -363,6 +363,222 @@ fn splice_override_on_a_varint_mismatch_does_not_corrupt_type_mismatch_annotatio
     );
 }
 
+/// Deactivating an override that turns a narrow overridden line back
+/// into a wide multi-line message must re-clamp `pan_offset` to the
+/// new content — regression for a bug where panning all the way right
+/// while a submessage field is mis-overridden as `int32` (a genuine
+/// `TYPE_MISMATCH`, whose annotation renders a wide single line), then
+/// deactivating the override (reverting to the real, narrower
+/// multi-line message), left every visible row shorter than
+/// `pan_offset`, so the main pane rendered blank — recoverable only by
+/// panning right again (2026-07-24 bug report). `rebuild_visible_rows`
+/// (the chokepoint `splice_override` always calls) must re-clamp.
+#[test]
+fn deactivating_override_reclamps_pan_offset_to_the_shrunk_content() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.main_area = Rect::new(0, 0, 10, 5);
+
+    app.splice_override(inner_idx, Some("int32".to_string()))
+        .expect("overriding a submessage field as int32 must still succeed (as a type mismatch)");
+    assert!(
+        app.lines.iter().any(|l| l.contains("TYPE_MISMATCH")),
+        "fixture must trigger a TYPE_MISMATCH annotation to get a wide line: {:?}",
+        app.lines
+    );
+
+    for _ in 0..50 {
+        app.pan_right();
+    }
+    assert!(
+        app.pan_offset > 0,
+        "fixture must actually exercise panning while overridden"
+    );
+
+    // Reverting an active override falls back to the field's *natural*
+    // type (`resettle_node`'s `natural_type(idx)`), not a raw `None`
+    // retype (spec 0135 G1) — `None` is a distinct, explicit "show
+    // raw" choice a user can select in the override pane, not what
+    // happens when an override is simply removed.
+    app.splice_override(inner_idx, Some("test.Inner".to_string()))
+        .unwrap();
+
+    let usable_width = app.main_area.width as usize - 1;
+    let max_len = app.max_visible_line_len();
+    let expected_max_pan = max_len.saturating_sub(usable_width);
+    assert!(
+        app.pan_offset <= expected_max_pan,
+        "pan_offset ({}) must be re-clamped to the reverted content's width \
+         ({expected_max_pan}), or the main pane renders blank",
+        app.pan_offset,
+    );
+}
+
+/// Deactivating an override must recompute `max_visible_line_len`'s
+/// clamping bound against the window the *next* render will actually
+/// show — not a stale `scroll_offset` left over from before the
+/// splice (2026-07-24 follow-up feedback, after the blank-pane fix
+/// above): the cursor sits on a *sibling* field after `inner`, whose
+/// row shifts down several lines once `inner`'s body re-expands from
+/// the override's 1-line collapse back to its real 4-line shape, so
+/// `scroll_offset` must advance to keep that sibling in view — same
+/// as `render()`'s own `clamp_scroll_to_visible` would do. Using the
+/// stale, pre-splice `scroll_offset` instead leaves the window
+/// pointing at the wrong rows, missing the wide field row that
+/// scrolled into view alongside the cursor, and under-estimates the
+/// true visible width — over-clamping `pan_offset` too far left.
+#[test]
+fn deactivating_override_recomputes_the_pan_bound_against_the_post_splice_scroll_window() {
+    use prost::Message as _;
+    use prost_types::field_descriptor_proto::{Label, Type};
+    use prost_types::{
+        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+    };
+
+    use crate::decode::{decode, DescriptorContext};
+
+    // The long field name is the fixture's whole point: once `inner`
+    // reverts to its natural 4-line shape, this field's row must be
+    // the widest currently-visible row — but only reachable by
+    // scrolling down to follow the cursor's (shifted) footer row.
+    const WIDE_FIELD_NAME: &str =
+        "a_field_with_a_very_long_name_so_its_own_rendered_line_is_the_widest_visible_row";
+    let inner_desc = DescriptorProto {
+        name: Some("Inner".to_string()),
+        field: vec![
+            FieldDescriptorProto {
+                name: Some("id".to_string()),
+                number: Some(1),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Int32 as i32),
+                ..Default::default()
+            },
+            FieldDescriptorProto {
+                name: Some(WIDE_FIELD_NAME.to_string()),
+                number: Some(2),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Int32 as i32),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let outer_desc = DescriptorProto {
+        name: Some("Outer".to_string()),
+        field: vec![
+            FieldDescriptorProto {
+                name: Some("inner".to_string()),
+                number: Some(1),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Message as i32),
+                type_name: Some(".test.Inner".to_string()),
+                ..Default::default()
+            },
+            FieldDescriptorProto {
+                name: Some("pad_a".to_string()),
+                number: Some(2),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Int32 as i32),
+                ..Default::default()
+            },
+            FieldDescriptorProto {
+                name: Some("pad_b".to_string()),
+                number: Some(3),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Int32 as i32),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let file = FileDescriptorProto {
+        name: Some("stale_scroll.proto".to_string()),
+        package: Some("test".to_string()),
+        message_type: vec![outer_desc, inner_desc],
+        syntax: Some("proto3".to_string()),
+        ..Default::default()
+    };
+    let fds = FileDescriptorSet { file: vec![file] };
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let descriptor_path =
+        std::env::temp_dir().join(format!("protolens-tui-stale-scroll-override-{n}.pb"));
+    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
+    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
+    std::fs::remove_file(&descriptor_path).unwrap();
+
+    // Outer { inner: Inner { id: 5, <wide_field>: 7 }, pad_a: 1, pad_b: 2 }.
+    let blob = [
+        0x0Au8, 0x04, 0x08, 0x05, 0x10, 0x07, // inner { id: 5, wide_field: 7 }
+        0x10, 0x01, // pad_a: 1
+        0x18, 0x02, // pad_b: 2
+    ];
+    let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, false).unwrap();
+    let mut app = App::new(
+        decoded,
+        "test.pb",
+        PathBuf::from("test.pb"),
+        2,
+        ctx,
+        ThemeKind::Dark,
+        None,
+    );
+    app.splash = false;
+    app.term_width = 120;
+    app.main_area = Rect::new(0, 0, 10, 3);
+
+    let inner_idx = app
+        .tree
+        .iter()
+        .position(|n| n.span.type_fqdn.as_deref() == Some("test.Inner"))
+        .expect("tree must contain the Inner submessage");
+    let pad_a_idx = app
+        .tree
+        .iter()
+        .position(|n| n.span.field_number == 2 && n.span.level == 1)
+        .expect("tree must contain the pad_a sibling field");
+
+    // Rest the cursor on the `pad_a` sibling field, as a normal render
+    // pass would have already scrolled to keep it in view — seeds
+    // `scroll_offset`/`last_cursor_row` exactly as they'd be just
+    // before the user deactivates the override.
+    app.cursor = pad_a_idx;
+    app.rebuild_visible_rows();
+
+    app.splice_override(inner_idx, Some("int32".to_string()))
+        .expect("overriding a submessage field as int32 must still succeed (as a type mismatch)");
+
+    let wide_field_row = app.lines.iter().position(|l| l.contains(WIDE_FIELD_NAME));
+    assert!(
+        wide_field_row.is_none(),
+        "wide field must be hidden while inner is overridden as int32: {:?}",
+        app.lines
+    );
+
+    // Reverting an active override falls back to the field's *natural*
+    // type (`resettle_node`'s `natural_type(idx)`), not a raw `None`
+    // retype (spec 0135 G1). `inner` re-expands from its 1-line
+    // collapse back to its real 4-line shape, pushing `pad_a` (the
+    // cursor's node) several rows further down — `scroll_offset` must
+    // advance to keep it in view.
+    app.splice_override(inner_idx, Some("test.Inner".to_string()))
+        .unwrap();
+
+    let wide_field_row = app
+        .lines
+        .iter()
+        .position(|l| l.contains(WIDE_FIELD_NAME))
+        .expect("revert must restore the wide field");
+    let wide_field_len = app.render_line_content(wide_field_row).chars().count();
+
+    let max_len = app.max_visible_line_len();
+    assert!(
+        max_len >= wide_field_len,
+        "max_visible_line_len ({max_len}) must reflect the post-splice scroll window \
+         (which includes the {wide_field_len}-char-wide field row scrolled into view \
+         alongside the cursor's shifted sibling field), not a stale pre-splice window"
+    );
+}
+
 /// Overriding a group field to a resolvable type must keep the
 /// `group;` prefix in the header (spec 0122 Test Plan item 2, 1st
 /// bullet).
