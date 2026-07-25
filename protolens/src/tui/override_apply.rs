@@ -45,6 +45,45 @@ pub(super) struct LinePatch {
     pub(super) styles: Vec<Vec<(Range<usize>, SyntaxRole)>>,
 }
 
+/// Unifies `FieldDescriptor` (regular field) and `ExtensionDescriptor`
+/// (extension field) for `parent_field`'s callers — mirrors
+/// `prototext_core`'s own (crate-private) `FieldOrExt` adapter, which
+/// can't be reused directly since it's `pub(super)` to that crate's
+/// `render_text` module. Only the accessors `parent_field`'s three
+/// call sites actually need are exposed.
+pub(super) enum ParentFieldOrExt {
+    Field(prost_reflect::FieldDescriptor),
+    Ext(prost_reflect::ExtensionDescriptor),
+}
+
+impl ParentFieldOrExt {
+    pub(super) fn kind(&self) -> prost_reflect::Kind {
+        match self {
+            ParentFieldOrExt::Field(f) => f.kind(),
+            ParentFieldOrExt::Ext(e) => e.kind(),
+        }
+    }
+
+    pub(super) fn cardinality(&self) -> Cardinality {
+        match self {
+            ParentFieldOrExt::Field(f) => f.cardinality(),
+            ParentFieldOrExt::Ext(e) => e.cardinality(),
+        }
+    }
+
+    /// Regular field: bare field name. Extension field: its full
+    /// (dotted) name — there is no bracket-wrapping here, unlike
+    /// `prototext_core::FieldOrExt::display_name` (that one is for
+    /// prototext syntax output; this one feeds `field_name_for`'s plain
+    /// status-line/override-pane name display).
+    pub(super) fn name(&self) -> String {
+        match self {
+            ParentFieldOrExt::Field(f) => f.name().to_string(),
+            ParentFieldOrExt::Ext(e) => e.full_name().to_string(),
+        }
+    }
+}
+
 impl App {
     /// Recursively collect every current descendant of `idx` (any depth),
     /// via `first_child`/`next_sibling` pointer traversal — never array
@@ -66,17 +105,27 @@ impl App {
     /// Looks up `idx`'s own field on its parent's schema (spec 0119
     /// §G1/§G2's shared lookup): requires both that `idx`'s parent has a
     /// resolved `type_fqdn` and that its schema declares `idx`'s
-    /// `field_number`. Returns `None` when either fails (no parent,
-    /// unresolved parent type, or the field isn't declared) — the same
-    /// failure mode `natural_type`/`field_name_for` both fall back from.
-    pub(super) fn parent_field(&self, idx: usize) -> Option<prost_reflect::FieldDescriptor> {
+    /// `field_number`, either as a regular field or as an extension
+    /// (mirroring `render_text::render_message`'s own `get_field`/
+    /// `get_extension` fallback — omitting the extension fallback here
+    /// silently demoted every message-typed FieldOptions-style extension
+    /// to raw/untyped on the auto-resettle walk). Returns `None` when
+    /// neither lookup succeeds (no parent, unresolved parent type, or the
+    /// field isn't declared at all) — the same failure mode
+    /// `natural_type`/`field_name_for` both fall back from.
+    pub(super) fn parent_field(&self, idx: usize) -> Option<ParentFieldOrExt> {
         let parent = self.tree[idx].parent?;
         let fqdn = self.tree[parent].span.type_fqdn.as_ref()?;
         let field_number = self.tree[idx].span.field_number;
-        self.ctx
-            .pool()
-            .get_message_by_name(fqdn)?
+        let message = self.ctx.pool().get_message_by_name(fqdn)?;
+        message
             .get_field(field_number as u32)
+            .map(ParentFieldOrExt::Field)
+            .or_else(|| {
+                message
+                    .get_extension(field_number as u32)
+                    .map(ParentFieldOrExt::Ext)
+            })
     }
 
     /// The type `idx` would naturally have from its parent's schema, used
@@ -1304,6 +1353,21 @@ impl App {
             .resolve_active_override_entry(idx)
             .and_then(|e| e.name.clone())
             .is_some();
+        // An un-renamed extension's schema name must be shown in
+        // prototext's `[fqdn]` bracket convention (mirrors `prototext_
+        // core::FieldOrExt::display_name`) so the patched header both
+        // reads correctly and re-colorizes as an extension reference
+        // (`colorize`'s highlight query keys off the brackets) — plain
+        // `field_name_for` deliberately returns the bare name here since
+        // its other callers (`export_descriptor::synthetic_field_name`/
+        // `synthetic_message_name`, which need a valid identifier) must
+        // not see brackets.
+        let header_field_name =
+            if !renamed && matches!(self.parent_field(idx), Some(ParentFieldOrExt::Ext(_))) {
+                format!("[{field_name}]")
+            } else {
+                field_name.clone()
+            };
 
         // Resolve `target` into the synthetic field's declared `Type`
         // (spec 0135 G1's "second subtlety" + G3, spec 0137 §G3/§G4): a
@@ -1422,7 +1486,7 @@ impl App {
         let mut new_line_styles = colorize::hints_by_line(&new_lines, &new_style_hints);
         let patched_header = match field_type {
             Some(ft) if ft != Type::Group => {
-                decode::patch_synthetic_field_name(&new_lines[0], &field_name)
+                decode::patch_synthetic_field_name(&new_lines[0], &header_field_name)
             }
             None if renamed => {
                 decode::patch_raw_field_name(&new_lines[0], field_number, &field_name)
