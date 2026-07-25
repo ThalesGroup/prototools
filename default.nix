@@ -85,6 +85,15 @@ let
         (fixtureFilter ./reproto/src/reproto/tests/fixtures)
         (fixtureFilter ./prototext-graph/tests/fixtures)
         (fixtureFilter ./tests/fixtures)
+        # prototext-core/fixtures is taken wholesale rather than through
+        # fixtureFilter: `benches/codec.rs` include_bytes! the .txt protoc
+        # rendering, an extension fixtureFilter deliberately drops.  The
+        # directory holds nothing else — just descriptor.pb, that .txt, and
+        # their two .license sidecars.  Omitting it broke `nix-build`
+        # outright, since the spec-0163 test in
+        # `prototext-core/src/serialize/render_text/mod.rs` include_bytes!
+        # descriptor.pb and so cannot even compile without it.
+        ./prototext-core/fixtures
         ./README.md
       ])
       (pkgs.lib.fileset.unions [
