@@ -23,6 +23,7 @@
 //! unknown per the field presence rule, with `non_canonical` incremented so
 //! callers can apply a quality penalty.
 
+use prototext_core::helpers::{payload_end, MAX_WIRE_DEPTH};
 use smallvec::SmallVec;
 
 use crate::build_scoring_graph::serial::{ArchivedCompiledGraph, ArchivedNodeEntry};
@@ -35,23 +36,6 @@ const WT_LEN: u32 = 2;
 const WT_START_GROUP: u32 = 3;
 const WT_END_GROUP: u32 = 4;
 const WT_I32: u32 = 5;
-
-/// Hard cap on `score_message_multi`'s own recursion depth. Unlike
-/// `prototext-core`'s decoder (bounded by an explicit node budget), this
-/// walker had no depth guard at all: recursion depth tracks the *byte
-/// range's* own LEN/group nesting, which for a schema mismatch (scoring
-/// a range against a candidate type whose shape doesn't actually match
-/// the bytes) can run far deeper than any well-formed document would —
-/// in the worst case, proportional to the buffer's length divided by the
-/// smallest possible LEN-field overhead (tag + zero-length prefix), i.e.
-/// tens of thousands of levels for an ordinary-sized document — a
-/// legitimate (if unlikely) stack-overflow risk on its own, though not
-/// the cause of the 2026-07-25 segfault report that first prompted this
-/// cap (that turned out to be an unrelated `App`-field-drop-order
-/// use-after-unmap race in `protolens`, not a recursion-depth issue
-/// here). 1000 is far beyond any legitimate schema's nesting depth
-/// while staying comfortably inside any thread's stack budget.
-const MAX_SCORE_DEPTH: usize = 1000;
 
 // ── Multi-entry types (spec 0048) ─────────────────────────────────────────────
 
@@ -417,9 +401,24 @@ fn parse_wiretag(buf: &[u8], start: usize) -> TagResult {
 // Full structural walk with no schema — used for Unknown-verdict groups and as
 // fallback when all recurse_into entries are vetoed.
 // Returns `Some(new_pos)` after the matching END_GROUP tag, or `None` on error.
+//
+// Iterative on purpose (spec 0171 §S3). Matching group nesting needs a
+// counter, not a call stack — a START_GROUP tag costs one byte, so the
+// recursive form this replaced could be made to demand a million frames from a
+// 1 MB range. Being unable to overflow is what lets this need no depth cap of
+// its own.
+//
+// One check is given up in exchange. The recursive form validated every level's
+// closing field number against its own opener; doing that here would need a
+// `Vec<u64>` of open field numbers, an allocation in a routine that exists to
+// be allocation-free. Only the outermost is checked. That is safe because the
+// answer is only ever used to find where an *unscored* group ends: a tolerated
+// inner mismatch changes no verdict, only which bytes are skipped, and those
+// bytes contribute nothing either way.
 
 fn parse_group_blind(buf: &[u8], mut pos: usize, expected_field: u64) -> Option<usize> {
     let buflen = buf.len();
+    let mut depth: usize = 0;
     loop {
         if pos == buflen {
             return None; // open-ended group
@@ -438,37 +437,29 @@ fn parse_group_blind(buf: &[u8], mut pos: usize, expected_field: u64) -> Option<
                 pos = vr.next_pos;
             }
             WT_I64 => {
-                if pos + 8 > buflen {
-                    return None;
-                }
-                pos += 8;
+                pos = payload_end(pos, 8, buflen)?;
             }
             WT_LEN => {
                 let vr = parse_varint(buf, pos);
                 if vr.garbage.is_some() {
                     return None;
                 }
-                pos = vr.next_pos;
-                let len = vr.value as usize;
-                if pos + len > buflen {
-                    return None;
-                }
-                pos += len;
+                pos = payload_end(vr.next_pos, vr.value, buflen)?;
             }
             WT_START_GROUP => {
-                pos = parse_group_blind(buf, pos, tag.field_number)?;
+                depth += 1;
             }
             WT_END_GROUP => {
-                if tag.field_number != expected_field {
-                    return None; // mismatched group end
+                if depth == 0 {
+                    if tag.field_number != expected_field {
+                        return None; // mismatched group end
+                    }
+                    return Some(pos);
                 }
-                return Some(pos);
+                depth -= 1;
             }
             WT_I32 => {
-                if pos + 4 > buflen {
-                    return None;
-                }
-                pos += 4;
+                pos = payload_end(pos, 4, buflen)?;
             }
             _ => return None,
         }
@@ -654,23 +645,16 @@ fn extract_type_url(any_bytes: &[u8]) -> Option<&str> {
                 pos = vr.next_pos;
             }
             WT_I64 => {
-                if pos + 8 > buflen {
-                    return None;
-                }
-                pos += 8;
+                pos = payload_end(pos, 8, buflen)?;
             }
             WT_LEN => {
                 let lr = parse_varint(any_bytes, pos);
                 if lr.garbage.is_some() {
                     return None;
                 }
-                pos = lr.next_pos;
-                let len = lr.value as usize;
-                if pos + len > buflen {
-                    return None;
-                }
-                let payload = &any_bytes[pos..pos + len];
-                pos += len;
+                let end = payload_end(lr.next_pos, lr.value, buflen)?;
+                let payload = &any_bytes[lr.next_pos..end];
+                pos = end;
                 if field_number == 1 {
                     // Field 1 = type_url (string).
                     if payload.is_empty() {
@@ -684,10 +668,7 @@ fn extract_type_url(any_bytes: &[u8]) -> Option<&str> {
                 pos = parse_group_blind(any_bytes, pos, field_number)?;
             }
             WT_I32 => {
-                if pos + 4 > buflen {
-                    return None;
-                }
-                pos += 4;
+                pos = payload_end(pos, 4, buflen)?;
             }
             _ => return None,
         }
@@ -719,23 +700,16 @@ fn extract_any_value(any_bytes: &[u8]) -> Option<&[u8]> {
                 pos = vr.next_pos;
             }
             WT_I64 => {
-                if pos + 8 > buflen {
-                    return None;
-                }
-                pos += 8;
+                pos = payload_end(pos, 8, buflen)?;
             }
             WT_LEN => {
                 let lr = parse_varint(any_bytes, pos);
                 if lr.garbage.is_some() {
                     return None;
                 }
-                pos = lr.next_pos;
-                let len = lr.value as usize;
-                if pos + len > buflen {
-                    return None;
-                }
-                let payload = &any_bytes[pos..pos + len];
-                pos += len;
+                let end = payload_end(lr.next_pos, lr.value, buflen)?;
+                let payload = &any_bytes[lr.next_pos..end];
+                pos = end;
                 if field_number == 2 {
                     // Field 2 = value (bytes).
                     return Some(payload);
@@ -745,10 +719,7 @@ fn extract_any_value(any_bytes: &[u8]) -> Option<&[u8]> {
                 pos = parse_group_blind(any_bytes, pos, field_number)?;
             }
             WT_I32 => {
-                if pos + 4 > buflen {
-                    return None;
-                }
-                pos += 4;
+                pos = payload_end(pos, 4, buflen)?;
             }
             _ => return None,
         }
@@ -767,7 +738,26 @@ fn score_message_multi(
     let buflen = buf.len();
     let mut pos = start;
 
-    if depth > MAX_SCORE_DEPTH {
+    // Hard cap on this function's genuine recursion, shared with
+    // `prototext-core`'s renderer so both wire walkers refuse the same inputs
+    // (spec 0171 §S1). `parse_group_blind` needs no cap of its own — it is
+    // iterative.
+    //
+    // Depth here tracks the *byte range's* own LEN/group nesting, which for a
+    // schema mismatch (scoring a range against a candidate type whose shape
+    // doesn't actually match the bytes) can run far deeper than any well-formed
+    // document would — in the worst case, proportional to the buffer's length
+    // divided by the smallest possible LEN-field overhead (tag + zero-length
+    // prefix), i.e. tens of thousands of levels for an ordinary-sized document
+    // — a legitimate (if unlikely) stack-overflow risk on its own, though not
+    // the cause of the 2026-07-25 segfault report that first prompted this cap
+    // (that turned out to be an unrelated `App`-field-drop-order
+    // use-after-unmap race in `protolens`, not a recursion-depth issue here).
+    //
+    // Unlike the renderer's cap, exceeding this one is a veto rather than a
+    // local degradation: a range this walker cannot finish reading is a range
+    // it cannot honestly score.
+    if depth > MAX_WIRE_DEPTH {
         veto_all(&mut active, ws, "recursion depth exceeded");
         return buflen;
     }
@@ -987,11 +977,11 @@ fn score_message_multi(
             }
 
             WT_I64 => {
-                if pos + 8 > buflen {
+                let Some(end) = payload_end(pos, 8, buflen) else {
                     veto_all(&mut active, ws, "truncated I64 body");
                     return buflen;
-                }
-                pos += 8;
+                };
+                pos = end;
                 for ae in active.iter_mut() {
                     match verdict_for(ae.state_id) {
                         Verdict::Unknown => {
@@ -1027,13 +1017,12 @@ fn score_message_multi(
                     }
                 }
 
-                let length = lr.value as usize;
-                if pos + length > buflen {
+                let Some(end) = payload_end(pos, lr.value, buflen) else {
                     veto_all(&mut active, ws, "LEN body extends past end of buffer");
                     return buflen;
-                }
-                let payload = &buf[pos..pos + length];
-                pos += length;
+                };
+                let payload = &buf[pos..end];
+                pos = end;
 
                 let mut child_pairs: Vec<(u32, u16)> = Vec::new();
 
@@ -1254,11 +1243,11 @@ fn score_message_multi(
             },
 
             WT_I32 => {
-                if pos + 4 > buflen {
+                let Some(end) = payload_end(pos, 4, buflen) else {
                     veto_all(&mut active, ws, "truncated I32 body");
                     return buflen;
-                }
-                pos += 4;
+                };
+                pos = end;
                 for ae in active.iter_mut() {
                     match verdict_for(ae.state_id) {
                         Verdict::Unknown => {

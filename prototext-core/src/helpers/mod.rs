@@ -3,10 +3,12 @@
 //
 // SPDX-License-Identifier: MIT
 
+mod bounds;
 mod codecs;
 mod varint;
 mod wire;
 
+pub use bounds::*;
 pub use codecs::*;
 pub use varint::*;
 pub use wire::*;

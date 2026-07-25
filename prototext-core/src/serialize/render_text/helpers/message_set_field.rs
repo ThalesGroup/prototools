@@ -13,7 +13,7 @@ use super::super::{enter_level, render_message, ANY_LOADER};
 use super::len_field::FieldCtx;
 
 use crate::helpers::{
-    parse_varint, parse_wiretag, WT_END_GROUP, WT_LEN, WT_START_GROUP, WT_VARINT,
+    parse_varint, parse_wiretag, payload_end, WT_END_GROUP, WT_LEN, WT_START_GROUP, WT_VARINT,
 };
 
 // ── Heuristic ─────────────────────────────────────────────────────────────────
@@ -101,12 +101,9 @@ fn scan_message_set(data: &[u8]) -> Option<Vec<MsItem<'_>>> {
                         return None;
                     }
                     pos = lr.next_pos;
-                    let len = lr.varint.unwrap() as usize;
-                    if pos + len > buflen {
-                        return None;
-                    }
-                    message = Some(&data[pos..pos + len]);
-                    pos += len;
+                    let end = payload_end(pos, lr.varint.unwrap(), buflen)?;
+                    message = Some(&data[pos..end]);
+                    pos = end;
                 }
                 (_, WT_END_GROUP) => {
                     // END_GROUP for a different field number — malformed.
@@ -140,10 +137,7 @@ fn skip_field(buf: &[u8], mut pos: usize, wire_type: u32) -> Option<usize> {
             pos = vr.next_pos;
         }
         1 /* WT_I64 */ => {
-            if pos + 8 > buflen {
-                return None;
-            }
-            pos += 8;
+            pos = payload_end(pos, 8, buflen)?;
         }
         WT_LEN => {
             let lr = parse_varint(buf, pos);
@@ -151,17 +145,10 @@ fn skip_field(buf: &[u8], mut pos: usize, wire_type: u32) -> Option<usize> {
                 return None;
             }
             pos = lr.next_pos;
-            let len = lr.varint.unwrap() as usize;
-            if pos + len > buflen {
-                return None;
-            }
-            pos += len;
+            pos = payload_end(pos, lr.varint.unwrap(), buflen)?;
         }
         5 /* WT_I32 */ => {
-            if pos + 4 > buflen {
-                return None;
-            }
-            pos += 4;
+            pos = payload_end(pos, 4, buflen)?;
         }
         _ => return None,
     }

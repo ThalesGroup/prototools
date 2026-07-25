@@ -1298,3 +1298,31 @@ fn tc_of1_entry_count_over_u16_max_panics() {
     let pb = field_varint(1, 1);
     let _ = walk::score_all(&pb, &g, &walk::ScoringOpts::default());
 }
+
+// ── Bounds arithmetic and depth caps (spec 0171) ──────────────────────────────
+
+#[test]
+fn len_prefix_near_u64_max_vetoes_rather_than_panicking() {
+    // Field 2 (LEN, a declared string on `Outer`) with a length prefix of
+    // `u64::MAX`. The old `pos + length > buflen` check wrapped in release
+    // mode, so the guard passed and `&buf[pos..pos + length]` panicked.
+    let g = build_graph();
+    let mut pb = vec![0x12]; // field 2, wire type LEN
+    pb.extend_from_slice(&varint(u64::MAX));
+    let r = score_entry(&pb, &g, "Outer");
+    assert!(r.vetoed, "expected a veto, got score {}", r.score());
+}
+
+#[test]
+fn blind_group_walk_does_not_overflow_the_stack() {
+    // 200 000 START_GROUP tags for field 9 — a field `Outer` does not
+    // declare, so every entry's verdict is Unknown and the walk goes
+    // through `parse_group_blind`. A START_GROUP tag costs one byte, so
+    // the recursive form this replaced demanded 200 000 stack frames.
+    let g = build_graph();
+    let pb = vec![0x4Bu8; 200_000]; // (9 << 3) | 3
+    let r = score_entry(&pb, &g, "Outer");
+    // The groups are all open-ended, so the walk vetoes; the point of the
+    // test is that it returns at all.
+    assert!(r.vetoed);
+}

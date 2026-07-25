@@ -13,8 +13,9 @@ use super::super::sink::{NestedKind, Sink};
 use super::super::{enter_level, render_message, ANY_LOADER, EXPAND_ANY};
 use super::len_field::FieldCtx;
 
+use super::group_scan::scan_group_extent;
 use crate::helpers::{
-    parse_varint, parse_wiretag, WT_I32, WT_I64, WT_LEN, WT_START_GROUP, WT_VARINT,
+    parse_varint, parse_wiretag, payload_end, WT_I32, WT_I64, WT_LEN, WT_START_GROUP, WT_VARINT,
 };
 use crate::serialize::common::escape_string_into;
 
@@ -55,10 +56,7 @@ fn scan_any_fields(data: &[u8]) -> Option<AnyFields<'_>> {
                 pos = vr.next_pos;
             }
             WT_I64 => {
-                if pos + 8 > buflen {
-                    return None;
-                }
-                pos += 8;
+                pos = payload_end(pos, 8, buflen)?;
             }
             WT_LEN => {
                 let lr = parse_varint(data, pos);
@@ -66,12 +64,9 @@ fn scan_any_fields(data: &[u8]) -> Option<AnyFields<'_>> {
                     return None;
                 }
                 pos = lr.next_pos;
-                let len = lr.varint.unwrap() as usize;
-                if pos + len > buflen {
-                    return None;
-                }
-                let payload = &data[pos..pos + len];
-                pos += len;
+                let end = payload_end(pos, lr.varint.unwrap(), buflen)?;
+                let payload = &data[pos..end];
+                pos = end;
                 match field_number {
                     1 => {
                         // type_url
@@ -92,14 +87,14 @@ fn scan_any_fields(data: &[u8]) -> Option<AnyFields<'_>> {
                 }
             }
             WT_START_GROUP => {
-                // skip blindly
-                pos = skip_group(data, pos, field_number)?;
+                // Skip blindly to the matching END_GROUP. `Some(field_number)`
+                // keeps this caller's pre-spec-0171 strictness: a group whose
+                // closing tag names a different field makes the whole Any scan
+                // decline, and the field falls back to an ordinary render.
+                pos = scan_group_extent(data, pos, Some(field_number))?;
             }
             WT_I32 => {
-                if pos + 4 > buflen {
-                    return None;
-                }
-                pos += 4;
+                pos = payload_end(pos, 4, buflen)?;
             }
             _ => return None,
         }
@@ -110,66 +105,6 @@ fn scan_any_fields(data: &[u8]) -> Option<AnyFields<'_>> {
     }
     let type_url = type_url?;
     Some(AnyFields { type_url, value })
-}
-
-/// Blind group skip: consume bytes until matching END_GROUP for `expected_field`.
-fn skip_group(buf: &[u8], mut pos: usize, expected_field: u64) -> Option<usize> {
-    let buflen = buf.len();
-    loop {
-        if pos == buflen {
-            return None;
-        }
-        let tag = parse_wiretag(buf, pos);
-        if tag.wtag_gar.is_some() {
-            return None;
-        }
-        let field_number = tag.wfield.unwrap();
-        let wire_type = tag.wtype.unwrap();
-        pos = tag.next_pos;
-        match wire_type {
-            WT_VARINT => {
-                let vr = parse_varint(buf, pos);
-                if vr.varint_gar.is_some() {
-                    return None;
-                }
-                pos = vr.next_pos;
-            }
-            WT_I64 => {
-                if pos + 8 > buflen {
-                    return None;
-                }
-                pos += 8;
-            }
-            WT_LEN => {
-                let lr = parse_varint(buf, pos);
-                if lr.varint_gar.is_some() {
-                    return None;
-                }
-                pos = lr.next_pos;
-                let len = lr.varint.unwrap() as usize;
-                if pos + len > buflen {
-                    return None;
-                }
-                pos += len;
-            }
-            WT_START_GROUP => {
-                pos = skip_group(buf, pos, field_number)?;
-            }
-            4 /* WT_END_GROUP */ => {
-                if field_number != expected_field {
-                    return None;
-                }
-                return Some(pos);
-            }
-            WT_I32 => {
-                if pos + 4 > buflen {
-                    return None;
-                }
-                pos += 4;
-            }
-            _ => return None,
-        }
-    }
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────

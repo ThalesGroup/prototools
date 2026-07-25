@@ -9,7 +9,8 @@ use prost_reflect::{Cardinality, Kind, MessageDescriptor};
 
 use super::super::sink::{GroupCloseFacts, NestedKind, ProbeSink, ScalarValue, Sink, TagFacts};
 use super::super::{
-    enter_level, render_message, FieldOrExt, EXPAND_ANY, EXPAND_MESSAGE_SET, HIDE_UNKNOWN,
+    at_depth_cap, enter_level, render_message, FieldOrExt, EXPAND_ANY, EXPAND_MESSAGE_SET,
+    HIDE_UNKNOWN,
 };
 use super::any_field::render_any_expansion;
 use super::message_set_field::{is_message_set, render_message_set_expansion};
@@ -41,6 +42,29 @@ pub(in super::super) fn render_len_field<S: Sink>(
         sink.scalar_field(
             field_number,
             field_schema,
+            tag,
+            ScalarValue::Bytes(data),
+            raw_range,
+            schema_present,
+        );
+        return;
+    }
+
+    // Spec 0171 §S4: at the render-recursion depth cap, hand the payload back
+    // opaquely rather than descending into it. One check covers all four of
+    // this function's recursive branches — nested message, spec-0097 probe,
+    // Any expansion, MessageSet expansion — and it is made before anything is
+    // written, so the parent's output needs no retraction.
+    //
+    // The schema is deliberately dropped: `ScalarValue::Bytes` with a
+    // message-kind schema lands in `TextSink`'s wire-type-mismatch arm, which
+    // annotates TYPE_MISMATCH and, with annotations off, emits nothing at all
+    // — losing the bytes. `None` takes the unknown-field rendering instead,
+    // which is always emitted and always re-encodes to tag + length + payload.
+    if at_depth_cap() {
+        sink.scalar_field(
+            field_number,
+            None,
             tag,
             ScalarValue::Bytes(data),
             raw_range,

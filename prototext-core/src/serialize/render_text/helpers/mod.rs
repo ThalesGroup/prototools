@@ -5,12 +5,14 @@
 
 mod annotations;
 mod any_field;
+mod group_scan;
 mod len_field;
 mod message_set_field;
 mod output;
 mod scalar;
 
 pub(super) use annotations::*;
+pub(super) use group_scan::*;
 pub(super) use len_field::*;
 pub(super) use output::*;
 pub(super) use scalar::*;
