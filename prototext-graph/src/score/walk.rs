@@ -147,8 +147,10 @@ fn group_by_state(pairs: impl Iterator<Item = (u32, u16)>) -> Vec<ActiveEntry> {
 
 /// Options controlling walk behaviour.
 pub struct ScoringOpts {
-    /// If true (default), out-of-range RANGE values are vetoed.
-    /// If false (--no-strict-ranges), they increment non_canonical instead.
+    /// If true, out-of-range RANGE (bool/enum) values veto the candidate.
+    /// If false (the default since spec 0172), they increment
+    /// `non_canonical` instead. No binary in this workspace exposes a
+    /// flag for it; it is a library knob.
     pub strict_ranges: bool,
     /// If true (default), google.protobuf.Any fields are expanded using the
     /// type resolved from type_url and scored against the wrapped type.
@@ -159,7 +161,23 @@ pub struct ScoringOpts {
 impl Default for ScoringOpts {
     fn default() -> Self {
         Self {
-            strict_ranges: true,
+            // Spec 0172 S3: vetoing on an out-of-range enum value
+            // requires knowing the enum is *closed*, and the compiled
+            // graph carries no syntax information (`serial.rs`'s
+            // `NodeEntry` is wire_type + is_string + range_idx). Under
+            // proto3 every enum is open, so an unknown value is legal,
+            // forward-compatible, and common — vetoing eliminates the
+            // blob's own correct FQDN and hands the win to an unrelated
+            // type. Penalizing instead costs the right answer some
+            // points and still lets it win.
+            //
+            // The same reasoning covers bool, whose range is 0..=1 but
+            // whose wire encoding accepts any nonzero varint as `true`.
+            //
+            // Revisit when the graph format carries syntax per enum node
+            // (deferred decision D-g), at which point closed enums can
+            // veto again and this default can go back to `true`.
+            strict_ranges: false,
             expand_any: true,
         }
     }
@@ -168,9 +186,13 @@ impl Default for ScoringOpts {
 /// Score all root entries in `graph` simultaneously against `pb`.
 /// Returns one `EntryScore` per root entry, in graph order.
 pub fn score_all(pb: &[u8], graph: &ArchivedCompiledGraph, opts: &ScoringOpts) -> Vec<EntryScore> {
-    assert!(
+    // Spec 0172 S5: enforced at load time by `load::check_root_count`,
+    // which turns an oversized corpus into an `Err` instead of aborting
+    // the process from inside a background scoring thread. This is the
+    // invariant restated, not the check.
+    debug_assert!(
         graph.roots.len() <= u16::MAX as usize,
-        "entry count {} exceeds u16::MAX",
+        "entry count {} exceeds u16::MAX (load::check_root_count should have rejected this graph)",
         graph.roots.len()
     );
 
@@ -823,14 +845,28 @@ fn score_message_multi(
 
         verdicts.clear();
         for ae in active.iter() {
-            let v = match find_transition(ws.graph, ae.state_id, field_number as u32) {
-                None => Verdict::Unknown,
-                Some(tr) => {
-                    let expected_wt = node_wire_type(ws.graph, tr.child_state_id) as u32;
-                    if wire_type == expected_wt {
-                        Verdict::Found(tr.child_state_id, tr.label)
-                    } else {
-                        Verdict::Mismatch
+            // Spec 0172 S1: a field number of 0 or >= 2^29 cannot be
+            // declared by any schema, so there is nothing to look it up
+            // against — and narrowing it to u32 for the lookup would
+            // alias it onto a real field (2^32+1 onto field 1), awarding
+            // a match or a wire-type-mismatch veto on the strength of a
+            // number the wire format forbids. The `non_canonical`
+            // penalty above still applies; the tag just no longer
+            // resolves. In the other branch `field_number as u32` is
+            // sound by construction: `!out_of_range` establishes
+            // `1 <= field_number < 2^29`.
+            let v = if tag.out_of_range {
+                Verdict::Unknown
+            } else {
+                match find_transition(ws.graph, ae.state_id, field_number as u32) {
+                    None => Verdict::Unknown,
+                    Some(tr) => {
+                        let expected_wt = node_wire_type(ws.graph, tr.child_state_id) as u32;
+                        if wire_type == expected_wt {
+                            Verdict::Found(tr.child_state_id, tr.label)
+                        } else {
+                            Verdict::Mismatch
+                        }
                     }
                 }
             };
@@ -921,11 +957,25 @@ fn score_message_multi(
                                         }
                                     }
                                     0 if ri != 0xFFFF => {
-                                        // RANGE (bool / enum)
-                                        if val >= (1u64 << 32) {
+                                        // RANGE (bool / enum). Spec 0172 S2:
+                                        // mirrors the INT32 arm above. A
+                                        // negative enum value is sign-extended
+                                        // to 64 bits on the wire, so -1 arrives
+                                        // as 0xFFFF_FFFF_FFFF_FFFF; the only
+                                        // genuinely impossible values are those
+                                        // in the gap between "too big for u32"
+                                        // and "smallest sign-extended i32",
+                                        // which are neither encoding of any
+                                        // 32-bit number. Vetoing on `val >=
+                                        // 1<<32` instead made the *canonical*
+                                        // encoding fatal while merely
+                                        // penalizing the sloppy 5-byte one.
+                                        if val > 0xFFFF_FFFF && val < 0xFFFF_FFFF_8000_0000u64 {
                                             do_veto = true;
                                         } else {
                                             if (0x8000_0000u64..=0xFFFF_FFFFu64).contains(&val) {
+                                                // Negative written in the
+                                                // non-canonical 5-byte form.
                                                 for &e in &ae.entries {
                                                     ws.scores[e as usize].non_canonical += 1;
                                                 }
@@ -936,7 +986,13 @@ fn score_message_multi(
                                                     range.0.to_native() as i64,
                                                     range.1.to_native() as i64,
                                                 );
-                                                let signed = val as i32 as i64;
+                                                // The explicit `as u32` step
+                                                // makes this correct for both
+                                                // encodings: it truncates the
+                                                // sign-extended form back to 32
+                                                // bits, and is a no-op on the
+                                                // 5-byte one.
+                                                let signed = val as u32 as i32 as i64;
                                                 if signed < min || signed > max {
                                                     if ws.strict_ranges {
                                                         do_veto = true;

@@ -43,7 +43,52 @@ fn check_header(bytes: &[u8], label: &str) -> Result<usize, Box<dyn std::error::
         return Err(format!("{label}: unsupported version {version}").into());
     }
     let root_offset = u64::from_le_bytes(bytes[16..24].try_into()?) as usize;
+    // Spec 0172 S4: `root_offset` is attacker-controlled. Unvalidated, it
+    // made `mmap.len() - root_offset` underflow in `load_graph` and
+    // `from_raw_parts` fabricate a slice of nearly `usize::MAX` bytes —
+    // UB before rkyv's validator ever ran. Checking it here is what makes
+    // this function's return value safe to slice with.
+    //
+    // The bound is deliberately just `> bytes.len()` rather than "room for
+    // the archived root": the mmap path runs rkyv's checked `access` over
+    // the resulting slice, which already rejects a payload too short for
+    // the root, so a size check here would only duplicate that in a second
+    // place that can drift out of date with the archived layout.
+    if root_offset > bytes.len() {
+        return Err(format!(
+            "{label}: root offset {root_offset} past end of file ({} bytes)",
+            bytes.len()
+        )
+        .into());
+    }
     Ok(root_offset)
+}
+
+/// `score_all` addresses candidates by `u16` index
+/// (`ActiveEntry::entries`), so a graph with more roots than that cannot
+/// be scored. Rejecting at load (spec 0172 S5) is what makes the walk's
+/// `debug_assert!` a genuine invariant rather than a live abort in a
+/// background thread: a corpus with more than 65 535 message types is
+/// input, not a programming error.
+///
+/// Whether 65 535 is the *right* ceiling is a separate, open question —
+/// widening `ActiveEntry::entries` is deferred decision D-h
+/// (`docs/protolens/rendering-worklist.md`), since `entries` is the
+/// hottest structure in the walk and wants a measurement rather than an
+/// assumption. This check is correct wherever that lands.
+fn check_root_count(
+    graph: &ArchivedCompiledGraph,
+    label: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if graph.roots.len() > u16::MAX as usize {
+        return Err(format!(
+            "{label}: scoring graph has {} root entries, exceeding the {} the scorer can address",
+            graph.roots.len(),
+            u16::MAX
+        )
+        .into());
+    }
+    Ok(())
 }
 
 impl LoadedGraph {
@@ -65,6 +110,7 @@ impl LoadedGraph {
         // aligned, so access_unchecked's preconditions are satisfied.
         let graph: &'static ArchivedCompiledGraph =
             unsafe { access_unchecked::<ArchivedCompiledGraph>(aligned) };
+        check_root_count(graph, "<embedded>")?;
         Ok(LoadedGraph {
             _backing: GraphBacking::Aligned,
             graph,
@@ -78,15 +124,22 @@ pub fn load_graph(path: &Path) -> Result<LoadedGraph, Box<dyn std::error::Error>
 
     let root_offset = check_header(&mmap, &path.display().to_string())?;
 
-    // Safety: the bytes were written by rkyv::to_bytes with the same types.
-    // We extend the lifetime to 'static, which is safe as long as _mmap lives
-    // as long as graph — enforced by keeping both in LoadedGraph.
+    // Spec 0172 S4: slice safely rather than fabricating the slice from a
+    // raw pointer — the bounds are now established by the slicing itself,
+    // with `check_header` having already rejected an out-of-range
+    // `root_offset`.
+    let payload = &mmap[root_offset..];
+
     let graph: &'static ArchivedCompiledGraph = unsafe {
-        let bytes: &'static [u8] =
-            std::slice::from_raw_parts(mmap.as_ptr().add(root_offset), mmap.len() - root_offset);
-        access::<ArchivedCompiledGraph, rkyv::rancor::Error>(bytes)
+        // Safety: the only remaining unsafety is the lifetime extension.
+        // `payload` borrows `mmap`, which `LoadedGraph` keeps alive for
+        // exactly as long as `graph`. The bytes themselves are validated
+        // by rkyv's checked `access` below.
+        let payload: &'static [u8] = std::mem::transmute::<&[u8], &'static [u8]>(payload);
+        access::<ArchivedCompiledGraph, rkyv::rancor::Error>(payload)
             .map_err(|e| format!("{}: rkyv access failed: {e}", path.display()))?
     };
+    check_root_count(graph, &path.display().to_string())?;
 
     Ok(LoadedGraph {
         _backing: GraphBacking::Mmap { _mmap: mmap },

@@ -258,9 +258,15 @@ fn tc04_invalid_utf8_veto() {
     assert!(s.vetoed, "invalid UTF-8 on string field should veto");
 }
 
-/// TC-05: Enum value out of range [0..2] → veto.
+/// TC-05: Enum value out of range [0..2] → penalized, not vetoed.
+///
+/// Retargeted by spec 0172 S3 (this is its C6 proving test): the compiled
+/// graph carries no syntax bit, and under proto3 every enum is open, so an
+/// unknown value is forward-compatible rather than impossible. Vetoing
+/// eliminated the blob's own correct FQDN. `tc77_02_enum_range_veto_strict`
+/// keeps the `strict_ranges: true` behavior covered.
 #[test]
-fn tc05_enum_out_of_range_veto() {
+fn tc05_enum_out_of_range_penalized_by_default() {
     let g = build_graph();
 
     let mut pb = Vec::new();
@@ -268,7 +274,12 @@ fn tc05_enum_out_of_range_veto() {
     pb.extend(field_varint(5, 99)); // status=99, outside [0..2]
 
     let s = score_entry(&pb, &g, "Outer");
-    assert!(s.vetoed, "enum value 99 outside [0..2] should veto");
+    assert!(
+        !s.vetoed,
+        "enum value 99 outside [0..2] should survive by default"
+    );
+    assert_eq!(s.non_canonical, 1, "out-of-range enum should be penalized");
+    assert_eq!(s.matches, 2, "both fields still resolve");
 }
 
 /// TC-06: Truncated FIXED32 → veto.
@@ -703,11 +714,20 @@ fn mt05_len_prefix_overhang_increments_all_active_entries() {
 ///
 /// Outer declares field 5 as ENUM [0..2].  Inner has no field 5.
 /// Send field 5 = 99 (out of range) → Outer vetoed, Inner gets unknown.
+///
+/// The subject here is the *isolation* of a veto to the entry that owns the
+/// offending leaf, so spec 0172 S3 leaves it opted into `strict_ranges: true`
+/// rather than retargeting it — with the new default there would be no veto
+/// left to isolate.
 #[test]
 fn mt06_enum_oor_vetoes_only_enum_entry() {
     let g = build_two_entry_graph();
     let pb = field_varint(5, 99);
-    let results = walk::score_all(&pb, &g, &walk::ScoringOpts::default());
+    let opts = walk::ScoringOpts {
+        strict_ranges: true,
+        ..Default::default()
+    };
+    let results = walk::score_all(&pb, &g, &opts);
 
     let outer = entry_score(&results, "Outer");
     let inner = entry_score(&results, "Inner");
@@ -916,11 +936,21 @@ fn build_single_field_graph(
 }
 
 /// TC-77-01: RANGE/bool strict — wire value 2 on bool field → vetoed.
+///
+/// Both TC-77-01 and TC-77-02 were written against `strict_ranges`'s old
+/// `true` default; spec 0172 S3 flipped that default, so they now opt in
+/// explicitly. That keeps them testing what they were written to test —
+/// that the range check fires — and makes them the "the knob is
+/// demonstrably live" companions to TC-77-03 and TC-05.
 #[test]
 fn tc77_01_bool_range_veto() {
     let g = build_single_field_graph(ScoringKind::Range, Some((0, 1)));
     let pb = field_varint(1, 2);
-    let s = score_entry(&pb, &g, "M");
+    let opts = walk::ScoringOpts {
+        strict_ranges: true,
+        ..Default::default()
+    };
+    let s = score_entry_opts(&pb, &g, "M", &opts);
     assert!(s.vetoed, "bool value 2 should be vetoed");
 }
 
@@ -929,11 +959,15 @@ fn tc77_01_bool_range_veto() {
 fn tc77_02_enum_range_veto_strict() {
     let g = build_single_field_graph(ScoringKind::Range, Some((0, 2)));
     let pb = field_varint(1, 99);
-    let s = score_entry(&pb, &g, "M");
+    let opts = walk::ScoringOpts {
+        strict_ranges: true,
+        ..Default::default()
+    };
+    let s = score_entry_opts(&pb, &g, "M", &opts);
     assert!(s.vetoed, "enum value 99 outside [0,2] should be vetoed");
 }
 
-/// TC-77-03: RANGE/enum --no-strict-ranges — out-of-range → non_canonical++, not vetoed.
+/// TC-77-03: RANGE/enum non-strict — out-of-range → non_canonical++, not vetoed.
 #[test]
 fn tc77_03_enum_range_no_strict() {
     let g = build_single_field_graph(ScoringKind::Range, Some((0, 2)));
@@ -947,7 +981,14 @@ fn tc77_03_enum_range_no_strict() {
     assert!(s.non_canonical > 0, "should increment non_canonical");
 }
 
-/// TC-77-04: RANGE, val >= 2^32 — always vetoed even with --no-strict-ranges.
+/// TC-77-04: RANGE, val in the impossible varint gap — always vetoed, even
+/// with `strict_ranges: false`.
+///
+/// Spec 0172 S2 narrowed the veto condition from `val >= 2^32` to the gap
+/// `0xFFFF_FFFF < val < 0xFFFF_FFFF_8000_0000` — values that are neither a
+/// u32 nor a sign-extended i32. `1u64 << 32` sits in that gap, so this test
+/// is unaffected by the narrowing and now doubles as the proof that S2 did
+/// not simply delete the check.
 #[test]
 fn tc77_04_range_32bit_overflow_always_veto() {
     let g = build_single_field_graph(ScoringKind::Range, Some((0, 2)));
@@ -1044,12 +1085,16 @@ fn tc77_11_uint64_large_value() {
 ///   Int32  { field 1: int32 (INT32)       }
 ///
 /// Value 802 on field 1:
-///   - Bool  → vetoed   (802 outside [0,1])
-///   - Int32 → not vetoed (802 is a valid positive int32)
+///   - Bool  → penalized (802 outside [0,1])
+///   - Int32 → clean     (802 is a valid positive int32)
 ///
 /// This is the core discrimination benefit introduced by spec 0077: before
-/// this change both schemas collapsed into a single VARINT leaf and 802 would
-/// not veto either candidate.
+/// this change both schemas collapsed into a single VARINT leaf and 802
+/// looked equally plausible under either. Spec 0172 S3 downgraded the
+/// penalty from a veto to `non_canonical`, so the assertion is now on the
+/// resulting score gap rather than on elimination — the discrimination is
+/// what spec 0077 bought, and it survives; the veto was only ever how it
+/// happened to be expressed.
 #[test]
 fn tc77_12_bool_vs_int32_discrimination() {
     let merged = Merged {
@@ -1093,8 +1138,16 @@ fn tc77_12_bool_vs_int32_discrimination() {
     let bool_s = score_entry(&pb, &g, "Bool");
     let int32_s = score_entry(&pb, &g, "Int32");
 
-    assert!(bool_s.vetoed, "Bool: 802 outside [0,1] should veto");
+    assert!(!bool_s.vetoed, "Bool: out-of-range no longer vetoes");
     assert!(!int32_s.vetoed, "Int32: 802 is a valid positive int32");
+    assert_eq!(bool_s.non_canonical, 1, "Bool: 802 outside [0,1] penalized");
+    assert_eq!(int32_s.non_canonical, 0, "Int32: nothing to penalize");
+    assert!(
+        int32_s.score() > bool_s.score(),
+        "Int32 must outrank Bool on 802: {} vs {}",
+        int32_s.score(),
+        bool_s.score()
+    );
 }
 
 // ── Any expansion (spec 0107) ──────────────────────────────────────────────
@@ -1255,14 +1308,19 @@ fn any_expansion_empty_value() {
 
 // ── Entry-count guard hardening (spec 0140 G6) ───────────────────────────────
 
-/// TC-OF1: an entry count exceeding `u16::MAX` must panic loudly at
-/// `score_all`'s guard rather than silently wrapping/truncating the `as u16`
-/// cast used to pack entry indices. Nested-type entries (spec 0140) grow the
-/// corpus well past what a top-level-only schema set would ever reach, so
-/// this guard is no longer purely academic.
+/// TC-OF1: an entry count exceeding `u16::MAX` must be rejected rather than
+/// silently wrapping/truncating the `as u16` cast used to pack entry indices.
+/// Nested-type entries (spec 0140) grow the corpus well past what a
+/// top-level-only schema set would ever reach, so this guard is no longer
+/// purely academic.
+///
+/// Spec 0172 S5 moved the enforcement from an `assert!` inside `score_all` to
+/// `load::check_root_count`: such a corpus is input, not a programming error,
+/// and aborting the process from a background scoring thread is the wrong
+/// response. This test correspondingly moved from `#[should_panic]` on the
+/// walk to an `Err` from the load.
 #[test]
-#[should_panic(expected = "exceeds u16::MAX")]
-fn tc_of1_entry_count_over_u16_max_panics() {
+fn tc_of1_entry_count_over_u16_max_is_a_load_error() {
     let n = usize::from(u16::MAX) + 1;
     let field = vec![ScoringField {
         number: 1,
@@ -1293,10 +1351,15 @@ fn tc_of1_entry_count_over_u16_max_panics() {
     let path = dir.path().join("huge.bin");
     serial::write(&compiled, &path).expect("write graph");
     let _ = std::mem::ManuallyDrop::new(dir);
-    let g = score_load::load_graph(&path).expect("load graph");
 
-    let pb = field_varint(1, 1);
-    let _ = walk::score_all(&pb, &g, &walk::ScoringOpts::default());
+    let err = score_load::load_graph(&path)
+        .err()
+        .expect("a 65 536-root graph must not load")
+        .to_string();
+    assert!(
+        err.contains("65536") && err.contains("65535"),
+        "load error should name the count and the ceiling: {err}"
+    );
 }
 
 // ── Bounds arithmetic and depth caps (spec 0171) ──────────────────────────────
@@ -1325,4 +1388,116 @@ fn blind_group_walk_does_not_overflow_the_stack() {
     // The groups are all open-ended, so the walk vetoes; the point of the
     // test is that it returns at all.
     assert!(r.vetoed);
+}
+
+// ── Veto correctness and load validation (spec 0172) ─────────────────────────
+
+/// C4/S1: a field number the wire format forbids must not resolve to a
+/// schema field. `2^32 + 1` truncates to `1` under the `as u32` the lookup
+/// used to perform, so it used to be credited a match against field 1 (or
+/// vetoed for a wire-type mismatch against it) on the strength of a number
+/// no schema can declare.
+#[test]
+fn out_of_range_field_number_does_not_alias() {
+    let g = build_single_field_graph(ScoringKind::Uint32, None);
+
+    // Tag for field number 2^32 + 1, wire type 0 — same wire type as the
+    // graph's field 1, so an aliased lookup would find and match it.
+    const WT_VARINT: u64 = 0;
+    let mut pb = varint((((1u64 << 32) + 1) << 3) | WT_VARINT);
+    pb.extend(varint(7));
+
+    let s = score_entry(&pb, &g, "M");
+    assert!(
+        !s.vetoed,
+        "an impossible field number is unknown, not fatal"
+    );
+    assert_eq!(s.matches, 0, "must not alias onto field 1");
+    assert_eq!(s.unknowns, 1);
+    assert_eq!(s.non_canonical, 1, "the tag itself is still penalized");
+
+    // Control: the same wire type on the legal field number 1 *does* credit
+    // a match, so this would fail if S1 had skipped the lookup wholesale.
+    let ok = score_entry(&field_varint(1, 7), &g, "M");
+    assert_eq!(ok.matches, 1);
+    assert_eq!(ok.unknowns, 0);
+}
+
+/// C5/S2: `-1` on the wire is sign-extended to ten bytes, i.e.
+/// `0xFFFF_FFFF_FFFF_FFFF`. The RANGE arm used to veto anything `>= 2^32`
+/// outright, so the *canonical* encoding of a negative enum was fatal while
+/// its non-canonical four-byte truncation was merely penalized — exactly
+/// inverted.
+#[test]
+fn canonical_negative_enum_is_not_vetoed() {
+    let g = build_single_field_graph(ScoringKind::Range, Some((-1, 2)));
+    let pb = field_varint(1, (-1i64) as u64);
+    let s = score_entry(&pb, &g, "M");
+    assert!(!s.vetoed, "-1 is inside the declared range [-1, 2]");
+    assert_eq!(s.matches, 1);
+    assert_eq!(s.non_canonical, 0, "ten bytes is canonical for -1");
+}
+
+/// C5/S2 companion: a negative *outside* the declared range is treated like
+/// any other out-of-range value — penalized by default, vetoed under
+/// `strict_ranges`. What matters is that it is decoded as a negative at all
+/// rather than short-circuited by the old `>= 2^32` test.
+#[test]
+fn negative_enum_outside_range_is_penalized_not_vetoed() {
+    let g = build_single_field_graph(ScoringKind::Range, Some((0, 3)));
+    let pb = field_varint(1, (-99i64) as u64);
+
+    let s = score_entry(&pb, &g, "M");
+    assert!(!s.vetoed, "out of range is unlikely, not impossible");
+    assert_eq!(s.non_canonical, 1);
+
+    let strict = walk::ScoringOpts {
+        strict_ranges: true,
+        ..Default::default()
+    };
+    let s = score_entry_opts(&pb, &g, "M", &strict);
+    assert!(s.vetoed, "strict_ranges still vetoes -99 outside [0, 3]");
+}
+
+/// C5/S2 regression: the four-byte truncation of a negative — the encoding
+/// that already worked before the fix — still costs exactly one
+/// `non_canonical` and nothing more, now that the canonical form reaches the
+/// same code path.
+#[test]
+fn truncated_negative_enum_still_costs_exactly_one_penalty() {
+    let g = build_single_field_graph(ScoringKind::Range, Some((-1, 2)));
+    let pb = field_varint(1, 0xFFFF_FFFFu64); // -1, written in five bytes
+    let s = score_entry(&pb, &g, "M");
+    assert!(!s.vetoed);
+    assert_eq!(
+        s.non_canonical, 1,
+        "one penalty for the truncation, none for the range"
+    );
+}
+
+/// C8/S4: `root_offset` comes out of the file header and is attacker-
+/// controlled. Unvalidated, `mmap.len() - root_offset` underflowed and
+/// `from_raw_parts` fabricated a slice of nearly `usize::MAX` bytes — UB
+/// before rkyv's validator ever ran.
+#[test]
+fn graph_with_out_of_range_root_offset_is_rejected() {
+    let mut header = Vec::new();
+    header.extend_from_slice(b"PTSGRAPH");
+    header.extend_from_slice(&2u32.to_le_bytes()); // version
+    header.extend_from_slice(&0u32.to_le_bytes()); // reserved
+    header.extend_from_slice(&u64::MAX.to_le_bytes()); // root_offset
+    header.extend_from_slice(&[0u8; 32]); // some payload to map
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("bad-offset.bin");
+    std::fs::write(&path, &header).expect("write graph");
+
+    let err = score_load::load_graph(&path)
+        .err()
+        .expect("an out-of-range root offset must not load")
+        .to_string();
+    assert!(
+        err.contains(&u64::MAX.to_string()),
+        "load error should name the offending offset: {err}"
+    );
 }
