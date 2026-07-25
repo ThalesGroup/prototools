@@ -7,6 +7,44 @@ use super::*;
 use prost_reflect::prost_types::field_descriptor_proto::{Label, Type};
 use prost_reflect::Cardinality;
 
+/// Spec 0167 (N1 follow-up to spec 0160): where a single
+/// `splice_override` call's freshly decoded content ultimately belongs
+/// once the active `render_overrides` batch finishes — see
+/// `render_overrides_inner`'s `patch_scope` doc comment for why a patch
+/// can be nested inside another, not-yet-materialized one.
+pub(super) enum LinePatchTarget {
+    /// A range in `self.lines`/`self.line_styles` as they stood before
+    /// this batch began.
+    Original(Range<usize>),
+    /// `(parent_patch_index, local_range_within_that_patch's_own_lines)`.
+    Nested(usize, Range<usize>),
+}
+
+/// Spec 0167: one collected line-buffer patch. `global_start` is the
+/// patch's own start position in the batch's corrected coordinate frame
+/// (i.e. `App::pending_shift`-corrected `NodeSpan::text_range.start`).
+/// `children_base_shift` is `App::pending_shift`'s value right after
+/// this patch's own delta was folded in — i.e. at the exact moment this
+/// patch's freshly decoded children were translated into the tree. Both
+/// exist solely so a *further-nested* child patch of this one can
+/// compute its own local offset in O(1): `render_overrides_inner`'s
+/// `inherited`-shift propagation keeps every node's `NodeSpan::
+/// text_range` tracking its true *final* position (needed by
+/// `finalize_override_batch`'s `line_to_node` rebuild), which — unlike
+/// this patch's own `lines`, a frozen snapshot never touched again after
+/// creation — keeps growing as later-processed nested siblings
+/// themselves get spliced. A child patch's local offset must undo
+/// exactly that growth (everything accumulated since `children_base_
+/// shift`) to land back in this patch's own frozen coordinate frame —
+/// see `splice_override`'s `Nested` branch.
+pub(super) struct LinePatch {
+    pub(super) target: LinePatchTarget,
+    pub(super) global_start: usize,
+    pub(super) children_base_shift: isize,
+    pub(super) lines: Vec<String>,
+    pub(super) styles: Vec<Vec<(Range<usize>, SyntaxRole)>>,
+}
+
 impl App {
     /// Recursively collect every current descendant of `idx` (any depth),
     /// via `first_child`/`next_sibling` pointer traversal — never array
@@ -645,7 +683,18 @@ impl App {
     /// by the sole caller (`render_overrides_inner`'s hot full-document
     /// walk) rather than recomputed here — see `resolve_active_override_
     /// entry_index_by_path`'s doc comment for why that matters.
-    pub(super) fn resettle_node(&mut self, idx: usize, path: &str) -> bool {
+    /// Returns the index of the freshly recorded line-buffer patch (spec
+    /// 0167) if `idx` was actually re-spliced, `None` otherwise (already
+    /// matched `rendered_as`, or `splice_override` returned `Err`).
+    /// `patch_scope` is `idx`'s own patch-nesting context — see
+    /// `render_overrides_inner`'s doc comment — threaded straight through
+    /// to `splice_override`.
+    pub(super) fn resettle_node(
+        &mut self,
+        idx: usize,
+        path: &str,
+        patch_scope: Option<usize>,
+    ) -> Option<usize> {
         let target = self
             .resolve_active_override_entry_index_by_path(idx, path)
             .map(|i| self.overrides.entries()[i].r#type.clone());
@@ -656,18 +705,18 @@ impl App {
                 Some(explicit) => explicit.clone(),
                 None => self.natural_type(idx),
             };
-            match self.splice_override(idx, effective, false) {
-                Ok(()) => {
+            match self.splice_override(idx, effective, false, patch_scope) {
+                Ok(patch_idx) => {
                     self.tree[idx].rendered_as = current;
-                    true
+                    Some(patch_idx)
                 }
                 Err(e) => {
                     self.message = format!("cannot apply override: {e}");
-                    false
+                    None
                 }
             }
         } else {
-            false
+            None
         }
     }
 
@@ -769,7 +818,10 @@ impl App {
     pub(super) fn render_overrides(&mut self, idx: usize) {
         self.override_batch_depth += 1;
         let path = self.positional_path(idx);
-        self.render_overrides_inner(idx, 0, &path);
+        // `idx` itself always starts outside any not-yet-materialized
+        // patch (spec 0167): it's an already-existing node, never one
+        // freshly created within this very call.
+        self.render_overrides_inner(idx, 0, &path, None);
         self.override_batch_depth -= 1;
         if self.override_batch_depth == 0 {
             self.finalize_override_batch(idx);
@@ -825,7 +877,27 @@ impl App {
     /// children are visited in sibling order via `next_sibling` below, a
     /// child's own path is available in O(1) from `path` plus a running
     /// ordinal counter (`child_path`).
-    fn render_overrides_inner(&mut self, idx: usize, inherited: isize, path: &str) {
+    ///
+    /// `patch_scope` (spec 0167, N1 follow-up to spec 0160): the index
+    /// into `self.pending_line_patches` of the nearest still-open
+    /// ancestor patch whose freshly decoded content `idx`'s own position
+    /// currently lies within, or `None` if `idx`'s position is still
+    /// within `self.lines`/`self.line_styles` as they stood before this
+    /// batch began. A node freshly created by an ancestor's own splice,
+    /// within this very same batch, can itself need its own re-splice
+    /// (e.g. a nested message getting its own override applied on top of
+    /// its parent's just-decoded natural rendering) — such a re-splice's
+    /// content must be recorded as *nested inside* that ancestor's own
+    /// not-yet-materialized patch, not as a patch against `self.lines`
+    /// directly (which, for the whole duration of the batch, still holds
+    /// only pre-batch content — see `splice_override`).
+    fn render_overrides_inner(
+        &mut self,
+        idx: usize,
+        inherited: isize,
+        path: &str,
+        patch_scope: Option<usize>,
+    ) {
         // `idx`'s own node — and, if it's a member of a packed-repeated
         // run (spec 0135 G1), every other member of that run too, since
         // `packed_record_extent` (inside `splice_override`, called from
@@ -879,7 +951,13 @@ impl App {
                 }
             }
         }
-        let spliced = self.resettle_node(idx, path);
+        let spliced_patch = self.resettle_node(idx, path, patch_scope);
+        let spliced = spliced_patch.is_some();
+        // Spec 0167: if `idx` was just spliced, its fresh children's
+        // content lives inside `idx`'s own new patch; otherwise, they
+        // remain wherever `idx` itself was already found (the same
+        // ancestor patch, if any, or `self.lines` directly).
+        let child_scope = spliced_patch.or(patch_scope);
         // Fresh children (just pushed by a splice) are already
         // positioned relative to `idx`'s now-correct start and owe
         // nothing further; pre-existing children (no splice happened)
@@ -930,7 +1008,7 @@ impl App {
                 || self.tree[c].rendered_as.is_some()
             {
                 let before = self.pending_shift;
-                self.render_overrides_inner(c, child_owed, &c_path);
+                self.render_overrides_inner(c, child_owed, &c_path, child_scope);
                 child_owed += self.pending_shift - before;
             } else if child_owed != 0 {
                 Self::shift_span(&mut self.tree[c].span, child_owed);
@@ -962,6 +1040,10 @@ impl App {
     /// followed by the `line_to_node`/`footer_line_to_node` rebuild and
     /// `rebuild_visible_rows()` (formerly redone on every splice).
     fn finalize_override_batch(&mut self, idx: usize) {
+        // Spec 0167: materialize this batch's line-buffer patches first —
+        // `rebuild_visible_rows()` below reads `self.lines.len()`, which
+        // must already reflect the batch's final content.
+        self.materialize_line_patches();
         let delta = self.pending_shift;
         if delta != 0 {
             // Doc-order-last live descendant of `idx` — `last_child`,
@@ -1001,6 +1083,116 @@ impl App {
         }
         self.pending_shift = 0;
         self.rebuild_visible_rows();
+    }
+
+    /// Spec 0167: applies every patch collected during the current batch
+    /// to `self.lines`/`self.line_styles` in one pass, instead of one
+    /// `Vec::splice` per patch (each an O(document length) memmove — spec
+    /// 0160 N1).
+    ///
+    /// Patches form a tree, not a flat sequence: a `Nested` patch's
+    /// content must be resolved into its parent's own content *before*
+    /// the parent itself is resolved (recursively, all the way up to
+    /// whichever `Original`-targeted patch owns the top of that chain) —
+    /// see `render_overrides_inner`'s `patch_scope` doc comment for why
+    /// nesting happens at all. Resolving bottom-up like this keeps each
+    /// individual merge bounded to the size of the patch's own content
+    /// (not the whole document); only the single final merge against
+    /// `self.lines`/`self.line_styles` (for the top-level `Original`
+    /// patches) is O(document length), and it happens exactly once.
+    fn materialize_line_patches(&mut self) {
+        if self.pending_line_patches.is_empty() {
+            return;
+        }
+        let raw_patches = std::mem::take(&mut self.pending_line_patches);
+
+        // Direct `Nested` children of each patch, sorted by their local
+        // range's start — `render_overrides_inner`'s strict pre-order,
+        // left-to-right walk (spec 0160 G2) guarantees insertion order
+        // already satisfies this, so no comparison-sort is strictly
+        // needed, but grouping by parent still requires one pass.
+        let mut children_of: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut top_level: Vec<usize> = Vec::new();
+        for (i, p) in raw_patches.iter().enumerate() {
+            match &p.target {
+                LinePatchTarget::Original(_) => top_level.push(i),
+                LinePatchTarget::Nested(parent, _) => {
+                    children_of.entry(*parent).or_default().push(i)
+                }
+            }
+        }
+
+        let mut patches: Vec<Option<LinePatch>> = raw_patches.into_iter().map(Some).collect();
+        let old_lines = std::mem::take(&mut self.lines);
+        let old_line_styles = std::mem::take(&mut self.line_styles);
+        let mut new_lines = Vec::with_capacity(old_lines.len());
+        let mut new_line_styles = Vec::with_capacity(old_line_styles.len());
+        let mut cursor = 0usize;
+        for idx in top_level {
+            let range = match &patches[idx].as_ref().unwrap().target {
+                LinePatchTarget::Original(r) => r.clone(),
+                LinePatchTarget::Nested(..) => unreachable!("filtered to Original above"),
+            };
+            debug_assert!(
+                range.start >= cursor,
+                "spec 0167: top-level line patches must be sorted, non-overlapping"
+            );
+            new_lines.extend_from_slice(&old_lines[cursor..range.start]);
+            new_line_styles.extend_from_slice(&old_line_styles[cursor..range.start]);
+            let (lines, styles) = Self::resolve_line_patch(&mut patches, &children_of, idx);
+            new_lines.extend(lines);
+            new_line_styles.extend(styles);
+            cursor = range.end;
+        }
+        new_lines.extend_from_slice(&old_lines[cursor..]);
+        new_line_styles.extend_from_slice(&old_line_styles[cursor..]);
+        self.lines = new_lines;
+        self.line_styles = new_line_styles;
+    }
+
+    /// Spec 0167: recursively resolves patch `idx` — splicing in every
+    /// one of its own direct `Nested` children (themselves first
+    /// resolved the same way) — into a single flat
+    /// `(lines, line_styles)` pair. `patches[idx]` is taken (never
+    /// visited twice; every patch is either a `top_level` entry or
+    /// exactly one patch's `Nested` child, per `materialize_line_
+    /// patches`'s grouping pass).
+    fn resolve_line_patch(
+        patches: &mut [Option<LinePatch>],
+        children_of: &HashMap<usize, Vec<usize>>,
+        idx: usize,
+    ) -> (Vec<String>, Vec<Vec<(Range<usize>, SyntaxRole)>>) {
+        let LinePatch { lines, styles, .. } = patches[idx]
+            .take()
+            .expect("spec 0167: each patch is resolved at most once");
+        let Some(children) = children_of.get(&idx) else {
+            return (lines, styles);
+        };
+        let mut new_lines = Vec::with_capacity(lines.len());
+        let mut new_styles = Vec::with_capacity(styles.len());
+        let mut cursor = 0usize;
+        for &child_idx in children {
+            let local_range = match &patches[child_idx].as_ref().unwrap().target {
+                LinePatchTarget::Nested(_, r) => r.clone(),
+                LinePatchTarget::Original(_) => {
+                    unreachable!("children_of only ever contains Nested-targeted patches")
+                }
+            };
+            debug_assert!(
+                local_range.start >= cursor,
+                "spec 0167: nested line patches must be sorted, non-overlapping"
+            );
+            new_lines.extend_from_slice(&lines[cursor..local_range.start]);
+            new_styles.extend_from_slice(&styles[cursor..local_range.start]);
+            let (child_lines, child_styles) =
+                Self::resolve_line_patch(patches, children_of, child_idx);
+            new_lines.extend(child_lines);
+            new_styles.extend(child_styles);
+            cursor = local_range.end;
+        }
+        new_lines.extend_from_slice(&lines[cursor..]);
+        new_styles.extend_from_slice(&styles[cursor..]);
+        (new_lines, new_styles)
     }
 
     /// Spec 0163: default for `App::override_splice_node_budget` — the
@@ -1065,7 +1257,8 @@ impl App {
         mut idx: usize,
         target: Option<String>,
         is_preview: bool,
-    ) -> Result<(), String> {
+        patch_scope: Option<usize>,
+    ) -> Result<usize, String> {
         // Spec 0160 G2: `self.tree[idx].span` is already authoritative
         // by the time this is called — either `render_overrides_inner`'s
         // prologue already applied `idx`'s own pending correction (and,
@@ -1251,6 +1444,14 @@ impl App {
         // lazily, in `finalize_override_batch`; everything inside it is
         // handled directly, by `render_overrides_inner`'s carried-down
         // correction.
+        //
+        // Spec 0167: capture `pending_shift`'s value *before* this call's
+        // own delta is folded in — `old_span.text_range` above is already
+        // corrected for every earlier splice in this batch (spec 0160
+        // G2), so subtracting this pre-increment value recovers the
+        // position `self.lines`/`self.line_styles` still have it at,
+        // since those buffers are no longer touched eagerly (see below).
+        let pending_shift_before = self.pending_shift;
         self.pending_shift += delta;
 
         // Collect old descendants (pointer-based, before any pointer is
@@ -1289,15 +1490,60 @@ impl App {
 
         // Replace `idx`'s *whole* line range (header, interior, and
         // footer alike) — not just its interior, unlike the old
-        // `apply_override`.
-        self.lines.splice(
-            old_span.text_range.start..old_span.text_range.end,
-            new_lines,
-        );
-        self.line_styles.splice(
-            old_span.text_range.start..old_span.text_range.end,
-            new_line_styles,
-        );
+        // `apply_override`. Spec 0167: rather than eagerly
+        // `Vec::splice`-ing `self.lines`/`self.line_styles` here (an
+        // O(document length) memmove *per splice*, dominating a batch
+        // with many qualifying splices — spec 0160 N1), record a patch
+        // and defer the actual buffer write to a single materialization
+        // pass in `finalize_override_batch`. `patch_scope` is `None` when
+        // `idx` itself lives in `self.lines` as it stood before this
+        // batch began (`old_span.text_range` is already batch-corrected
+        // — spec 0160 G2 — so recovering the position `self.lines` still
+        // has it at just means subtracting `pending_shift_before`); it's
+        // `Some(parent_idx)` when `idx` is a node freshly created by an
+        // ancestor's own not-yet-materialized splice earlier in this same
+        // batch (`render_overrides_inner`'s doc comment), in which case
+        // the recorded range is local to that parent patch's own content
+        // instead, recovered via the parent's stored `global_start`.
+        let global_start = old_span.text_range.start;
+        let target_range = match patch_scope {
+            None => {
+                let original_start =
+                    (old_span.text_range.start as isize - pending_shift_before) as usize;
+                let original_end =
+                    (old_span.text_range.end as isize - pending_shift_before) as usize;
+                LinePatchTarget::Original(original_start..original_end)
+            }
+            Some(parent_idx) => {
+                // `text_range.start`/`.end` keep tracking this node's true
+                // *final* document position (`render_overrides_inner`'s
+                // `inherited`-shift propagation — needed by `finalize_
+                // override_batch`'s own rebuild), which grows every time a
+                // sibling processed earlier within the same parent gets
+                // its own splice — but the parent's own `lines` is a
+                // frozen snapshot, never touched again after creation.
+                // Undo exactly that extra growth (everything accumulated
+                // since the parent's `children_base_shift`) to recover
+                // the offset that's actually valid in the parent's frozen
+                // `lines`.
+                let parent = &self.pending_line_patches[parent_idx];
+                let parent_start = parent.global_start as isize;
+                let extra_growth = pending_shift_before - parent.children_base_shift;
+                let local_start =
+                    (old_span.text_range.start as isize - parent_start - extra_growth) as usize;
+                let local_end =
+                    (old_span.text_range.end as isize - parent_start - extra_growth) as usize;
+                LinePatchTarget::Nested(parent_idx, local_start..local_end)
+            }
+        };
+        let patch_idx = self.pending_line_patches.len();
+        self.pending_line_patches.push(LinePatch {
+            target: target_range,
+            global_start,
+            children_base_shift: self.pending_shift,
+            lines: new_lines,
+            styles: new_line_styles,
+        });
 
         // Translate the freshly built local tree (raw_range-relative
         // coordinates) into this document's global coordinates and append
@@ -1425,7 +1671,7 @@ impl App {
             self.cursor_footer = false;
         }
 
-        Ok(())
+        Ok(patch_idx)
     }
 
     /// Every current sibling of `idx` that shares the same

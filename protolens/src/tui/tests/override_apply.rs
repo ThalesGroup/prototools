@@ -138,7 +138,7 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
     app.override_target = Some(node_idx);
 
     // 1) Re-typed as itself: idempotent structural round-trip.
-    app.splice_override(node_idx, Some("test.Node".to_string()), false)
+    app.splice_override(node_idx, Some("test.Node".to_string()), false, None)
         .expect("re-typing as the same type must succeed");
     assert_children(&app, "re-typed as itself");
     assert_eq!(
@@ -151,13 +151,13 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
     );
 
     // 2) Raw override (no schema).
-    app.splice_override(node_idx, None, false)
+    app.splice_override(node_idx, None, false, None)
         .expect("raw override must succeed");
     assert_eq!(app.tree[node_idx].span.type_fqdn, None);
 
     // 3) Re-typed again, on top of two prior overrides — exercises
     // repeated overrides of the same node.
-    app.splice_override(node_idx, Some("test.Node".to_string()), false)
+    app.splice_override(node_idx, Some("test.Node".to_string()), false, None)
         .expect("third override must still succeed");
     assert_children(&app, "re-typed a third time");
 
@@ -271,7 +271,7 @@ fn splice_override_on_an_incompatible_scalar_does_not_panic() {
         "a WT_LEN scalar must be overridable"
     );
 
-    app.splice_override(s_idx, Some("incompat.Target".to_string()), false)
+    app.splice_override(s_idx, Some("incompat.Target".to_string()), false, None)
         .expect("override onto an incompatible type must still succeed");
     assert!(
         app.lines
@@ -348,7 +348,7 @@ fn splice_override_on_a_varint_mismatch_does_not_corrupt_type_mismatch_annotatio
         .position(|n| n.span.field_number == 2)
         .expect("must find field 2");
 
-    app.splice_override(idx, Some("double".to_string()), false)
+    app.splice_override(idx, Some("double".to_string()), false, None)
         .expect("override onto an incompatible primitive type must still succeed");
 
     assert!(
@@ -378,7 +378,7 @@ fn deactivating_override_reclamps_pan_offset_to_the_shrunk_content() {
     let (mut app, inner_idx, _) = type_as_fixture();
     app.main_area = Rect::new(0, 0, 10, 5);
 
-    app.splice_override(inner_idx, Some("int32".to_string()), false)
+    app.splice_override(inner_idx, Some("int32".to_string()), false, None)
         .expect("overriding a submessage field as int32 must still succeed (as a type mismatch)");
     assert!(
         app.lines.iter().any(|l| l.contains("TYPE_MISMATCH")),
@@ -399,7 +399,7 @@ fn deactivating_override_reclamps_pan_offset_to_the_shrunk_content() {
     // retype (spec 0135 G1) — `None` is a distinct, explicit "show
     // raw" choice a user can select in the override pane, not what
     // happens when an override is simply removed.
-    app.splice_override(inner_idx, Some("test.Inner".to_string()), false)
+    app.splice_override(inner_idx, Some("test.Inner".to_string()), false, None)
         .unwrap();
 
     let usable_width = app.main_area.width as usize - 1;
@@ -544,7 +544,7 @@ fn deactivating_override_recomputes_the_pan_bound_against_the_post_splice_scroll
     app.cursor = pad_a_idx;
     app.rebuild_visible_rows();
 
-    app.splice_override(inner_idx, Some("int32".to_string()), false)
+    app.splice_override(inner_idx, Some("int32".to_string()), false, None)
         .expect("overriding a submessage field as int32 must still succeed (as a type mismatch)");
 
     let wide_field_row = app.lines.iter().position(|l| l.contains(WIDE_FIELD_NAME));
@@ -560,7 +560,7 @@ fn deactivating_override_recomputes_the_pan_bound_against_the_post_splice_scroll
     // collapse back to its real 4-line shape, pushing `pad_a` (the
     // cursor's node) several rows further down — `scroll_offset` must
     // advance to keep it in view.
-    app.splice_override(inner_idx, Some("test.Inner".to_string()), false)
+    app.splice_override(inner_idx, Some("test.Inner".to_string()), false, None)
         .unwrap();
 
     let wide_field_row = app
@@ -585,7 +585,7 @@ fn deactivating_override_recomputes_the_pan_bound_against_the_post_splice_scroll
 #[test]
 fn splice_override_on_a_group_field_keeps_the_group_prefix() {
     let (mut app, grp_idx) = group_type_fixture();
-    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false)
+    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false, None)
         .unwrap();
     let header = &app.lines[app.tree[grp_idx].span.text_range.start];
     assert!(
@@ -606,7 +606,7 @@ fn splice_override_on_a_group_field_keeps_the_group_prefix() {
 #[test]
 fn splice_override_keeps_colors_aligned_after_a_header_length_change() {
     let (mut app, grp_idx) = group_type_fixture();
-    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false)
+    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false, None)
         .unwrap();
     let value_idx = app.tree[grp_idx]
         .first_child
@@ -636,7 +636,7 @@ fn splice_override_on_a_group_field_keeps_the_tag_ohb_modifier() {
         header_before.contains("tag_ohb: 1"),
         "fixture must exercise the anomaly modifier, got: {header_before:?}"
     );
-    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false)
+    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false, None)
         .unwrap();
     let header = &app.lines[app.tree[grp_idx].span.text_range.start];
     assert!(
@@ -651,7 +651,7 @@ fn splice_override_on_a_group_field_keeps_the_tag_ohb_modifier() {
 #[test]
 fn splice_override_on_a_wt_len_field_has_no_group_prefix() {
     let (mut app, inner_idx, _) = type_as_fixture();
-    app.splice_override(inner_idx, Some("test.Outer".to_string()), false)
+    app.splice_override(inner_idx, Some("test.Outer".to_string()), false, None)
         .unwrap();
     let header = &app.lines[app.tree[inner_idx].span.text_range.start];
     assert!(
@@ -676,7 +676,7 @@ fn splice_override_preserves_the_header_line_indentation() {
     let (mut app, inner_idx, _) = type_as_fixture();
     let start = app.tree[inner_idx].span.text_range.start;
     let indent_before = app.lines[start].len() - app.lines[start].trim_start().len();
-    app.splice_override(inner_idx, Some("test.Outer".to_string()), false)
+    app.splice_override(inner_idx, Some("test.Outer".to_string()), false, None)
         .unwrap();
     let header = &app.lines[app.tree[inner_idx].span.text_range.start];
     let indent_after = header.len() - header.trim_start().len();
@@ -697,9 +697,9 @@ fn splice_override_preserves_the_header_line_indentation() {
 #[test]
 fn splice_override_reverting_a_group_field_restores_bare_group() {
     let (mut app, grp_idx) = group_type_fixture();
-    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false)
+    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false, None)
         .unwrap();
-    app.splice_override(grp_idx, None, false).unwrap();
+    app.splice_override(grp_idx, None, false, None).unwrap();
     let header = &app.lines[app.tree[grp_idx].span.text_range.start];
     assert!(
         header.contains("#@ group"),
@@ -720,7 +720,7 @@ fn splice_override_reverting_a_group_field_restores_bare_group() {
 #[test]
 fn splice_override_shows_the_root_field_number_in_the_header_line() {
     let (mut app, _, _) = type_as_fixture();
-    app.splice_override(app.first_node, Some("test.Outer".to_string()), false)
+    app.splice_override(app.first_node, Some("test.Outer".to_string()), false, None)
         .unwrap();
     assert!(
         app.lines[0].starts_with("1 "),
@@ -735,7 +735,8 @@ fn splice_override_shows_the_root_field_number_in_the_header_line() {
 #[test]
 fn splice_override_raw_root_shows_the_field_number_in_the_header_line() {
     let (mut app, _, _) = type_as_fixture();
-    app.splice_override(app.first_node, None, false).unwrap();
+    app.splice_override(app.first_node, None, false, None)
+        .unwrap();
     assert!(
         app.lines[0].starts_with("1 "),
         "raw root header line must show the field number: {:?}",
@@ -1410,7 +1411,7 @@ fn splice_override_on_a_pathological_candidate_is_bounded_by_the_node_budget() {
     let field_count = App::OVERRIDE_SPLICE_NODE_BUDGET_DEFAULT + 10_000;
     let (mut app, blob_idx) = node_budget_fixture(field_count);
 
-    app.splice_override(blob_idx, Some("test.Empty".to_string()), true)
+    app.splice_override(blob_idx, Some("test.Empty".to_string()), true, None)
         .expect("a pathological candidate splice must still complete");
 
     assert!(
@@ -1435,7 +1436,7 @@ fn splice_override_on_a_confirmed_override_is_not_truncated_by_the_node_budget()
     let field_count = App::OVERRIDE_SPLICE_NODE_BUDGET_DEFAULT + 10_000;
     let (mut app, blob_idx) = node_budget_fixture(field_count);
 
-    app.splice_override(blob_idx, Some("test.Empty".to_string()), false)
+    app.splice_override(blob_idx, Some("test.Empty".to_string()), false, None)
         .expect("a confirmed override splice must complete");
 
     assert!(
@@ -1462,7 +1463,7 @@ fn splice_override_preview_respects_a_custom_node_budget() {
     let (mut app, blob_idx) = node_budget_fixture(field_count);
     app.override_splice_node_budget = custom_budget;
 
-    app.splice_override(blob_idx, Some("test.Empty".to_string()), true)
+    app.splice_override(blob_idx, Some("test.Empty".to_string()), true, None)
         .expect("a pathological candidate splice must still complete");
 
     assert!(

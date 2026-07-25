@@ -811,8 +811,8 @@ impl App {
             .override_candidates
             .get(self.override_highlight)
             .map(|(fqdn, _)| fqdn.clone());
-        match self.splice_override(idx, tentative) {
-            Ok(()) => self.tree[idx].rendered_as = None,
+        match self.splice_override(idx, tentative, true, None) {
+            Ok(_) => self.tree[idx].rendered_as = None,
             Err(e) => self.message = format!("cannot preview override: {e}"),
         }
     }

@@ -606,6 +606,15 @@ pub struct App {
     /// `splice_override` calls in the current `render_overrides` batch.
     /// Always `0` outside of an active batch.
     pending_shift: isize,
+    /// Spec 0167 (N1 follow-up to spec 0160): line-buffer patches
+    /// collected by `splice_override` calls during the currently-active
+    /// `render_overrides` batch — see `override_apply::LinePatch`'s own
+    /// doc comment, and `render_overrides_inner`'s `patch_scope`
+    /// parameter, for why a patch can be nested inside another,
+    /// not-yet-materialized one. Always empty outside of an active
+    /// batch; drained and applied to `self.lines`/`self.line_styles` in
+    /// one pass by `finalize_override_batch`.
+    pending_line_patches: Vec<override_apply::LinePatch>,
     cursor: usize,
     /// `true` when the cursor is visually resting on `cursor`'s own
     /// closing `}` line rather than its header line (spec 0142).
@@ -1090,6 +1099,7 @@ impl App {
             footer_line_to_node,
             override_batch_depth: 0,
             pending_shift: 0,
+            pending_line_patches: Vec::new(),
             cursor,
             cursor_footer: false,
             cursor_moves: 0,
