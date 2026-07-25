@@ -21,7 +21,13 @@ use crate::colorize::StyleHint;
 /// placeholder `"_"`, and the real display name is patched in as a
 /// post-render substring replacement, so the cached render itself is
 /// field-name-invariant.
-type RenderKey = (Range<usize>, Option<String>);
+///
+/// The trailing `bool` is `splice_override`'s own `is_preview` (spec
+/// 0163) — a live preview may be truncated by `OVERRIDE_SPLICE_NODE_
+/// BUDGET`, while a confirmed override always renders completely; these
+/// must be cached separately, or confirming an override could silently
+/// reuse a truncated preview render of the same `(range, type)`.
+type RenderKey = (Range<usize>, Option<String>, bool);
 
 /// Value: everything `apply_override` derives from a fresh
 /// `decode_and_render_indexed` call plus the colorize pass (§7) — a
@@ -104,11 +110,23 @@ mod tests {
     #[test]
     fn render_cache_hit_promotes_to_most_recently_used() {
         let mut cache = RenderCache::new(1_000_000);
-        cache.insert((0..10, None), value("a"));
-        cache.insert((10..20, Some("pkg.A".to_string())), value("b"));
-        assert!(cache.get(&(0..10, None)).is_some());
-        assert!(cache.get(&(10..20, Some("pkg.A".to_string()))).is_some());
-        assert!(cache.get(&(20..30, None)).is_none());
+        cache.insert((0..10, None, false), value("a"));
+        cache.insert((10..20, Some("pkg.A".to_string()), false), value("b"));
+        assert!(cache.get(&(0..10, None, false)).is_some());
+        assert!(cache
+            .get(&(10..20, Some("pkg.A".to_string()), false))
+            .is_some());
+        assert!(cache.get(&(20..30, None, false)).is_none());
+    }
+
+    #[test]
+    fn render_cache_keeps_preview_and_confirmed_renders_separate() {
+        let mut cache = RenderCache::new(1_000_000);
+        cache.insert((0..10, None, true), value("truncated preview"));
+        assert!(cache.get(&(0..10, None, false)).is_none());
+        cache.insert((0..10, None, false), value("full"));
+        assert!(cache.get(&(0..10, None, true)).is_some());
+        assert!(cache.get(&(0..10, None, false)).is_some());
     }
 
     #[test]
@@ -116,20 +134,20 @@ mod tests {
         // Each entry costs len("a") = 1 byte; budget of 2 fits exactly
         // two entries at a time.
         let mut cache = RenderCache::new(2);
-        cache.insert((0..10, None), value("a"));
-        cache.insert((10..20, None), value("b"));
-        cache.insert((20..30, None), value("c"));
+        cache.insert((0..10, None, false), value("a"));
+        cache.insert((10..20, None, false), value("b"));
+        cache.insert((20..30, None, false), value("c"));
         // First insert (0..10) should have been evicted.
-        assert!(cache.get(&(0..10, None)).is_none());
-        assert!(cache.get(&(10..20, None)).is_some());
-        assert!(cache.get(&(20..30, None)).is_some());
+        assert!(cache.get(&(0..10, None, false)).is_none());
+        assert!(cache.get(&(10..20, None, false)).is_some());
+        assert!(cache.get(&(20..30, None, false)).is_some());
     }
 
     #[test]
     fn render_cache_keeps_oversized_entry_alone() {
         let mut cache = RenderCache::new(1);
-        cache.insert((0..10, None), value("way too big for the budget"));
-        assert!(cache.get(&(0..10, None)).is_some());
+        cache.insert((0..10, None, false), value("way too big for the budget"));
+        assert!(cache.get(&(0..10, None, false)).is_some());
     }
 
     #[test]
@@ -140,10 +158,10 @@ mod tests {
             role: SyntaxRole::Attribute,
         }];
         cache.insert(
-            (0..10, None),
+            (0..10, None, false),
             (vec!["flag".to_string()], Vec::new(), hints.clone()),
         );
-        let (_, _, cached_hints) = cache.get(&(0..10, None)).unwrap();
+        let (_, _, cached_hints) = cache.get(&(0..10, None, false)).unwrap();
         assert_eq!(cached_hints, hints);
     }
 }

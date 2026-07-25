@@ -114,6 +114,7 @@ pub fn render_as_text(
             expand_message_set: opts.expand_message_set,
             initial_level: 0,
             emit_header: opts.include_annotations,
+            node_budget: None,
         },
     ))
 }

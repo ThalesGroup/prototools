@@ -3,6 +3,7 @@
 //
 // SPDX-License-Identifier: MIT
 
+use std::cell::Cell;
 use std::ops::Range;
 
 use prost_reflect::Kind;
@@ -20,9 +21,9 @@ use crate::serialize::common::{
     format_uint32_protoc, format_uint64_protoc,
 };
 
-use super::helpers::{push_indent, wfl_prefix_n, AnnWriter};
+use super::helpers::{push_indent, render_node_budget_exceeded, wfl_prefix_n, AnnWriter};
 use super::sink::TextSink;
-use super::{ANNOTATIONS, CBL_START};
+use super::{ANNOTATIONS, CBL_START, NODE_BUDGET, NODE_COUNT};
 
 /// Write `bits` as zero-padded lowercase hex into `out` without heap allocation.
 /// Uses 16 digits for doubles (bits > u32::MAX), 8 digits for floats.
@@ -348,6 +349,18 @@ pub(super) fn render_packed(
 
     // ── Per-element lines ──────────────────────────────────────────────────────
     for (i, elem) in elems.iter().enumerate() {
+        // Spec 0163: a packed field's elements are otherwise invisible to
+        // `render_message`'s per-field budget check (the whole field only
+        // counts as one iteration there), so count each element here too.
+        if let Some(budget) = NODE_BUDGET.with(Cell::get) {
+            let count = NODE_COUNT.with(Cell::get) + 1;
+            NODE_COUNT.with(|c| c.set(count));
+            if count > budget {
+                let not_rendered = (pack_size - i) as u64;
+                render_node_budget_exceeded(field_number, tag_ohb, tag_oor, not_rendered, sink);
+                return;
+            }
+        }
         let is_first = i == 0;
         let out = &mut sink.out;
         wfl_prefix_n(field_number, Some(foe), false, out);

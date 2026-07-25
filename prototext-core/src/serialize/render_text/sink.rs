@@ -63,8 +63,14 @@ pub(super) enum MalformedKind {
     InvalidFixed64,
     InvalidFixed32,
     InvalidLen,
-    TruncatedBytes { missing: u64 },
+    TruncatedBytes {
+        missing: u64,
+    },
     InvalidGroupEnd,
+    /// Spec 0163: the configured `DecodeRenderOpts::node_budget` was
+    /// reached mid-decode — the remaining bytes are rendered as this
+    /// annotation instead of continuing to recursively decode them.
+    NodeBudgetExceeded,
 }
 
 /// Facts about a group's own closing tag, only knowable *after* recursing
@@ -222,7 +228,7 @@ use super::helpers::{
 };
 use super::packed::{decode_packed_elems, render_packed};
 use super::varint::{decode_varint_typed, render_varint_field, VarintKind};
-use super::{ANNOTATIONS, CBL_START, HIDE_UNKNOWN};
+use super::{ANNOTATIONS, CBL_START, HIDE_UNKNOWN, NODE_BUDGET, NODE_COUNT};
 
 /// Per-`TextSink` "in-progress nested node" marker (§1's `Sink::Mark`).
 pub(super) enum TextMark {
@@ -824,6 +830,15 @@ impl Sink for TextSink {
                     self,
                 );
             }
+            MalformedKind::NodeBudgetExceeded => {
+                super::helpers::render_node_budget_exceeded(
+                    field_number,
+                    tag.tag_ohb,
+                    tag.tag_oor,
+                    raw.len() as u64,
+                    self,
+                );
+            }
         }
     }
 }
@@ -1145,6 +1160,12 @@ impl Sink for IndexingTextSink {
             ScalarValue::Fixed32(_) => WT_I32,
             ScalarValue::Bytes(_) | ScalarValue::Packed(_) => WT_LEN,
         };
+        // Spec 0163: snapshot the node-budget counter around the delegated
+        // call so a packed field's own per-element budget check (inside
+        // `render_packed`, invisible from here otherwise) can be detected
+        // below and mirrored onto the spans built for its elements.
+        let node_budget_set = NODE_BUDGET.with(|c| c.get()).is_some();
+        let count_before = NODE_COUNT.with(|c| c.get());
         self.inner.scalar_field(
             field_number,
             field_schema,
@@ -1175,7 +1196,22 @@ impl Sink for IndexingTextSink {
                 if !elems.is_empty() {
                     let payload_start = raw_range.end - data.len();
                     let packed_record_start = Some(base + raw_range.start);
-                    for (i, elem) in elems.iter().enumerate() {
+                    // Spec 0163: mirror `render_packed`'s own truncation --
+                    // when the node budget cut the delegated render short,
+                    // only emit spans for the elements actually rendered,
+                    // so `self.spans` stays bounded instead of tracking the
+                    // full (possibly mis-parsed) element count.
+                    let rendered_count = if node_budget_set {
+                        let consumed = NODE_COUNT.with(|c| c.get()) - count_before;
+                        if consumed >= elems.len() {
+                            elems.len()
+                        } else {
+                            consumed - 1
+                        }
+                    } else {
+                        elems.len()
+                    };
+                    for (i, elem) in elems.iter().enumerate().take(rendered_count) {
                         self.spans.push(NodeSpan {
                             field_number,
                             raw_range: (base + payload_start + elem.byte_range.start)
@@ -1189,7 +1225,9 @@ impl Sink for IndexingTextSink {
                             natural_annotation: None,
                         });
                     }
-                    return;
+                    if rendered_count > 0 {
+                        return;
+                    }
                 }
             }
         }

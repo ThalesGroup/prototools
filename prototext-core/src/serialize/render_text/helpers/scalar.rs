@@ -166,3 +166,33 @@ pub(in super::super) fn render_truncated_bytes(
     sink.newline();
     CBL_START.with(|c| c.set(sink.out.len())); // content line: set past-end to inhibit folding
 }
+
+/// Render a NODE_BUDGET_EXCEEDED field (spec 0163): the configured
+/// `DecodeRenderOpts::node_budget` was reached mid-decode. Unlike
+/// `render_truncated_bytes`, this deliberately does not escape/embed the
+/// undecoded remainder into the output — that remainder is exactly the
+/// pathologically large slice this budget exists to avoid materializing —
+/// only its length is reported.
+pub(in super::super) fn render_node_budget_exceeded(
+    field_number: u64,
+    tag_ohb: Option<u64>,
+    tag_oor: bool,
+    not_rendered: u64,
+    sink: &mut TextSink,
+) {
+    let annotations = ANNOTATIONS.with(|c| c.get());
+    let out = &mut sink.out;
+    // v2: always numeric key for invalid fields.
+    wfl_prefix_n(field_number, None, true, out);
+    out.push(b'"');
+    out.push(b'"');
+    if annotations {
+        let mut aw = AnnWriter::new();
+        aw.push(out, b"NODE_BUDGET_EXCEEDED"); // invalid wire type, ALL CAPS
+        push_tag_modifiers(&mut aw, out, tag_ohb, tag_oor, None);
+        aw.push_u64_mod(out, b"NOT_RENDERED: ", not_rendered); // invalid modifier, ALL CAPS
+                                                               // v2: NO field_decl for invalid fields.
+    }
+    sink.newline();
+    CBL_START.with(|c| c.set(sink.out.len())); // content line: set past-end to inhibit folding
+}
