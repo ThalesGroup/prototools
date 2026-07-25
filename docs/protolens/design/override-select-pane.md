@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # Pane: override selection pane
 
-*last verified: 2026-07-19*
+*last verified: 2026-07-25*
 
 ## Executive summary
 
@@ -52,6 +52,33 @@ type. Closing the pane (by any route — `Enter`, `Esc`, or toggling `t`
 again) always ends with one real `render_overrides` pass from the target
 node, which is what actually settles the display back to the collection's
 true state, live-preview history notwithstanding.
+
+Each preview splice is called outside any `render_overrides` batch, so it
+is its own standalone, immediately self-finalizing batch — it pays the
+full [batch-finalization cost](override-collection.md) on every
+highlighted row, not just on commit; on a very large document this is the
+dominant cost of browsing candidates (see spec 0163's non-goals). To keep
+the splice itself affordable independent of that, preview splices alone
+pass a bounded node budget (`OVERRIDE_SPLICE_NODE_BUDGET_DEFAULT`, spec
+0163) into `splice_override`, capping how much of a huge candidate
+subtree gets decoded and materialized for a mere preview; the render
+cache key includes an `is_preview` flag specifically so a budget-truncated
+preview is never mistaken for, or reused as, a full confirmed render of
+the same range.
+
+Because the same node gets re-spliced repeatedly as the user browses
+candidates, the pane tracks a `preview_tree_watermark`: the tree's own
+length recorded on the *first* preview of a pane-open session. Every
+subsequent preview (a new highlighted row, or an automatic re-trigger as
+background candidate scoring streams in) first truncates the tree array
+— and the caches indexed by it — back to that watermark, discarding the
+previous preview's now-superseded subtree before splicing the new one in,
+so successive previews don't leak orphaned nodes indefinitely. This
+truncation only ever needs to invalidate the target node's own
+`first_child`/`last_child` (which pointed into the just-discarded range);
+its `doc_next` must be left untouched; see
+[document-tree.md](document-tree.md)'s `doc_next` invariant section for
+why conflating the two caused a real crash.
 
 Live preview intentionally does not extend into nested Any/MessageSet
 auto-expansion within the previewed subtree — a preview shows the

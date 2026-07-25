@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # Asset: the override collection
 
-*last verified: 2026-07-16*
+*last verified: 2026-07-25*
 
 ## Executive summary
 
@@ -76,30 +76,89 @@ render in a muted style, per [manage-pane.md](manage-pane.md)). Auto is a
 provenance tag consulted at a few specific decision points (delete
 behavior, YAML serialization), not a parallel code path.
 
-### The render pass: resolve, compare, splice
+### The render pass: resolve, compare, splice — as one batch
 
 `render_overrides` is the single function that keeps the displayed
-document consistent with the current collection. Walking the tree in
-document order from a given starting node, at each node it:
+document consistent with the current collection. It is a thin wrapper: it
+bumps a re-entrancy counter (`override_batch_depth`), delegates the
+actual recursive walk to `render_overrides_inner`, and — only once the
+counter returns to zero, i.e. only for the *outermost* call — runs a
+single batch-finalization step. Recursive calls made while already inside
+a batch (e.g. auto-expansion triggering a nested `render_overrides` on a
+freshly-revealed Any payload) skip finalization entirely and let the
+outermost call pay for it once.
 
-1. Resolves the node's currently-applicable override (if any), by origin
-   priority, with auto-entry staleness demotion applied.
-2. Falls back to the node's *natural* type — what the parent's own schema
-   says this field's type should be — when no override applies at all.
-   This fallback is what makes clearing an override behave as "revert to
-   what the schema says," not "revert to raw."
-3. Compares the resolved target against the node's stored `rendered_as`
-   provenance, and splices only if they differ.
-4. Recurses into children — using the same recursion-gate widening for
+`render_overrides_inner` walks the tree in document order (pre-order,
+left to right) from a given starting node. At each node it:
+
+1. Applies any line-count correction already known to be owed to this
+   node from an earlier sibling's splice earlier in the *same* batch,
+   before doing anything else — so every subsequent step sees an
+   up-to-date `text_range`.
+2. Seeds an auto-expansion override (see
+   [document-tree.md](document-tree.md)) if this is an unseeded
+   Any/MessageSet candidate.
+3. Resolves the node's currently-applicable override (if any), by origin
+   priority, with auto-entry staleness demotion applied, and falls back
+   to the node's *natural* type — what the parent's own schema says this
+   field's type should be — when no override applies at all. This
+   fallback is what makes clearing an override behave as "revert to what
+   the schema says," not "revert to raw."
+4. Compares the resolved target against the node's stored `rendered_as`
+   provenance, and calls `splice_override` only if they differ. As
+   described in [document-tree.md](document-tree.md), the splice itself
+   does not touch the rendered buffers or downstream `text_range`s
+   immediately — it queues a deferred line patch and adds to a
+   batch-wide running line-count total.
+5. Recurses into children — using the same recursion-gate widening for
    Any/MessageSet candidates described in
-   [document-tree.md](document-tree.md).
+   [document-tree.md](document-tree.md) — carrying forward whatever
+   line-count correction this node's own splice (if any) owes to its
+   children, and accumulating each child's own growth so later siblings
+   and the node's own closing/footer line stay correct.
 
-Because step 3 is a cheap no-op check, calling `render_overrides` from the
-document root after *any* collection change (activation, deactivation,
-rename, kind rotation, wholesale collection replace) is always correct
-and always affordable — it never re-splices anything that didn't actually
-change, so there's no need for callers to reason about which subset of
-the tree a given collection edit could have affected.
+Because step 4 is a cheap no-op check when nothing changed, calling
+`render_overrides` from the document root after *any* collection change
+(activation, deactivation, rename, kind rotation, wholesale collection
+replace) is always correct — it never re-splices anything that didn't
+actually change, so there's no need for callers to reason about which
+subset of the tree a given collection edit could have affected.
+
+### Batch finalization: one O(remaining document) pass, paid once per call
+
+Everything a splice defers — line-buffer materialization, and correcting
+every node whose `text_range` a splice's line-count delta invalidated —
+is settled in a single step, once, when the outermost `render_overrides`
+call (or a standalone splice such as a live-preview update, which is
+always its own one-node batch) is about to return:
+
+1. Flatten every queued line patch from this batch into the rendered
+   `lines`/`line_styles` buffers, in one pass proportional to the final
+   document length.
+2. If the batch's running line-count delta is non-zero, walk the
+   document-order chain (`doc_next`) forward from the end of the
+   outermost spliced node's own subtree to the end of the document,
+   shifting every node's `text_range` by that delta, and walk the
+   `parent` chain upward from the outermost spliced node correcting each
+   ancestor's own closing extent.
+3. Fully rebuild the `line_to_node`/`footer_line_to_node` lookup tables
+   by walking `doc_next` from the very first node.
+4. Reset the batch's running delta, and rebuild the visible-row cache.
+
+Steps 2 and 3 are each proportional to *the size of the document from the
+spliced node onward* — not to the size of what actually changed. This is
+paid once per `render_overrides` call regardless of how many nodes inside
+that call were actually spliced, which is a deliberate trade-off (see
+spec 0160): it is far cheaper than paying an O(document) correction after
+*every individual splice*, but it is not O(1) or O(change-size), and on a
+large document (order-of-a-million nodes) it is expensive enough to be
+felt directly — every live-preview update in
+[override-select-pane.md](override-select-pane.md) is its own standalone
+batch, so browsing candidates on such a document pays this full cost on
+every highlighted row, not just on commit. Spec 0163's own non-goals
+section flagged this exact cost as a known, deferred problem requiring a
+larger document-representation change to fix properly, rather than a
+targeted one.
 
 ### Persistence: YAML, hash-checked, root-preserving
 

@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # Asset: the document tree
 
-*last verified: 2026-07-16*
+*last verified: 2026-07-25*
 
 ## Executive summary
 
@@ -51,17 +51,31 @@ node `idx`:
 1. Re-wraps `idx`'s payload bytes under the new target type (or leaves
    them unwrapped for a "raw" target) and decodes that in isolation —
    the same [synthetic-wrapper trick](target-blob.md) used for the whole
-   document, applied locally.
+   document, applied locally. Live preview (see
+   [override-select-pane.md](override-select-pane.md)) may additionally
+   cap this decode to a bounded number of spans, so an interactive
+   preview over a huge subtree stays cheap; every other caller (a real
+   commit, `render_overrides`, auto-expansion) is unbounded.
 2. Builds a small local tree over just that decode, and appends its
    nodes to the *end* of the global array — it does not attempt to
    reuse or renumber any existing slot.
 3. Rewrites `idx`'s own entry to describe the new subtree's root (so
    anything referencing `idx` transparently sees the new content), and
    stitches the local tree's remaining nodes in as `idx`'s new
-   descendants.
-4. Splices the corresponding line range in the rendered text/style
-   buffers, and shifts every downstream node's `text_range` by the
-   resulting line-count delta.
+   descendants. It also relinks `idx` into the `doc_next`/`doc_prev`
+   chain: the new subtree is spliced in where the *old* one used to sit,
+   found by walking forward from `idx`'s own (pre-splice) `doc_next`
+   past every node that belonged to the old subtree, until the first
+   live node genuinely outside it — that node becomes the new subtree's
+   `doc_next` seam.
+4. Does **not** touch the rendered text/style buffers directly. Instead
+   it records the affected line range and its replacement lines as a
+   pending, deferred patch; the buffers are only actually rewritten once
+   per *batch* of splices (a single `render_overrides` pass, or a single
+   standalone splice such as a live-preview update), described in
+   [override-collection.md](override-collection.md)'s render-pass
+   section. `text_range`s of nodes *downstream* of `idx` are similarly
+   left stale until that same batch-end step corrects them.
 5. Orphans the old subtree's nodes (they stay in the array, unreachable
    from any live pointer, and are scrubbed out of the fold set so stale
    entries can't hide unrelated content) rather than compacting the
@@ -72,6 +86,39 @@ can be re-overridden any number of times over a session without ever
 invalidating another node's index — the trade-off is that the array
 grows monotonically and accumulates orphaned entries, which is accepted
 as a cheap, session-scoped cost.
+
+### The `doc_next` invariant splicing depends on
+
+Step 3 above only works because `idx`'s `doc_next` — read *before* the
+splice mutates anything — always points to a node outside `idx`'s own
+subtree: it is `idx`'s document-order successor, and a subtree's own
+descendants can never be their ancestor's successor. This makes
+`doc_next` the *only* piece of state `splice_override` needs in order to
+find where to re-attach the new subtree, and it is also the seam the
+batch-end downstream-correction walk (`finalize_override_batch`,
+[override-collection.md](override-collection.md)) starts from to bring
+every later node's stale `text_range` back in sync.
+
+Because of this, `doc_next`/`doc_prev` are load-bearing far beyond
+ordinary "next/previous" navigation, and any code outside
+`splice_override` itself that touches them must preserve the invariant
+exactly. A 2026-07-25 bug did not: the override-select pane's live-preview
+retry path (re-previewing a different candidate on the same node,
+[override-select-pane.md](override-select-pane.md)) truncates a chunk of
+the array back to a watermark before re-splicing, and — reasoning that
+`idx`'s previous preview subtree was being discarded anyway — defensively
+nulled `idx.doc_next` along with `first_child`/`last_child`. Unlike those
+two pointers, `doc_next` never points into the truncated range, so this
+was never necessary; forcing it to `None` severed the document-order
+chain from `idx` onward, silently disabling the batch-end correction walk
+for every splice that followed and eventually producing out-of-order,
+overlapping line patches. The fix was simply to leave `doc_next` alone on
+that path. The lesson generalizes: any future code that mutates
+`first_child`/`last_child`/`doc_next`/`doc_prev` outside `splice_override`
+should treat `doc_next` as a different kind of pointer from the other
+three — it points *away* from the subtree being discarded, not into it —
+rather than assuming "we're discarding this node's subtree" justifies
+clearing all of its outgoing pointers uniformly.
 
 ### `rendered_as`: provenance, not just "is there an override"
 
