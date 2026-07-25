@@ -1399,6 +1399,63 @@ fn override_pane_auto_completes_from_polling_alone_without_scrolling() {
     assert_eq!(app.override_candidates.len(), 8);
 }
 
+/// 2026-07-25 feedback ("pressing `t` no longer auto-renders in
+/// preview mode with the first candidate"): on a cold cache,
+/// `toggle_override`'s spec 0132 §G2 preview runs against a
+/// still-empty candidate list, so it splices *raw*.
+/// `poll_pending_override_work` then fills the list and resets the
+/// highlight to row 0 — but used to re-preview only along its
+/// `override_seek_target` branch, leaving the `open_override_on_
+/// default` path (no active override, no natural type) stuck on that
+/// raw splice for the rest of the session.
+#[test]
+fn poll_pending_override_work_previews_the_newly_arrived_top_candidate() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
+    app.override_target = Some(inner_idx);
+    app.override_sort = SortMode::Inferred;
+    app.override_list_height = 4;
+
+    // The cold-open state `toggle_override` leaves behind: nothing to
+    // preview yet, so the splice went in raw.
+    app.override_candidates.clear();
+    app.override_highlight = 0;
+    app.preview_override_highlight();
+    assert_eq!(
+        app.tree[inner_idx].span.type_fqdn, None,
+        "the cold-open preview must have spliced raw"
+    );
+
+    // The worker's answer lands in the shared cache.
+    app.override_candidates_pending = true;
+    let range = extract::message_payload_range(
+        &app.blob,
+        &app.tree[inner_idx].span.raw_range,
+        app.tree[inner_idx].span.packed_record_start,
+    );
+    app.heat_caches.lock().unwrap().by_range.upsert(
+        range.start,
+        RangeHeatEntry {
+            best_score: Some(9),
+            best_count: 1,
+            top_n: vec![("test.Outer".to_string(), 9); 4],
+        },
+        Tier::Visible,
+    );
+
+    app.poll_pending_override_work();
+
+    assert!(!app.override_candidates_pending);
+    assert_eq!(app.override_highlight, 0);
+    assert_eq!(app.override_candidates[0].0, "test.Outer");
+    assert_eq!(
+        app.tree[inner_idx].span.type_fqdn.as_deref(),
+        Some("test.Outer"),
+        "the main pane must be previewing the highlighted top candidate, \
+         not the raw splice left over from the cold open"
+    );
+}
+
 /// 2026-07-20 feedback, second half ("...PLUS try to put the cursor
 /// on the correct one, when it has been fetched"): opening the pane
 /// on a node with an existing active override whose type isn't in the

@@ -523,6 +523,18 @@ impl App {
         let Some(idx) = self.override_target else {
             return;
         };
+        // Spec 0132 §G2's live preview is driven off the highlighted row,
+        // and every arrival below can change which type that row names —
+        // most visibly on a cold-cache open, where `toggle_override`'s
+        // preview ran against a still-empty list and so spliced *raw*.
+        // Snapshot the highlighted type now and re-preview at the end iff
+        // it moved: that covers the seek retry and the plain top-scored
+        // row alike, and skips the (expensive) re-splice when the arrival
+        // left the highlighted type unchanged.
+        let previewed = self
+            .override_candidates
+            .get(self.override_highlight)
+            .map(|(f, _)| f.clone());
         if self.override_candidates_pending {
             let node = &self.tree[idx].span;
             let range = extract::message_payload_range(
@@ -574,15 +586,19 @@ impl App {
         // without finding it; the fixed Lexicographic universe is
         // guaranteed to contain it.
         if let Some(key) = self.override_seek_target.clone() {
-            if self.seek_override_highlight(&key) {
-                self.preview_override_highlight();
-            } else if self.override_candidates_complete {
+            if !self.seek_override_highlight(&key) && self.override_candidates_complete {
                 self.override_sort = SortMode::Lexicographic;
                 self.recompute_override_candidates();
                 self.seek_override_highlight(&key);
                 self.override_seek_target = None;
-                self.preview_override_highlight();
             }
+        }
+        let now = self
+            .override_candidates
+            .get(self.override_highlight)
+            .map(|(f, _)| f.as_str());
+        if now != previewed.as_deref() {
+            self.preview_override_highlight();
         }
     }
 

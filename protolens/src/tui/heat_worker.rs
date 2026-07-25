@@ -77,6 +77,20 @@ struct HeatRequestQueueState {
 pub(super) struct HeatRequestQueue {
     state: Mutex<HeatRequestQueueState>,
     condvar: Condvar,
+    /// Test-only full-sweep call counter (spec 0152/0154 test plans) —
+    /// proves the "no second `score_all` call" claim for a request the
+    /// cache already covers by the time the worker re-checks it.
+    ///
+    /// It lives here, rather than in a `static`, precisely because this
+    /// queue is the one structure both `HeatWorkerHandle` and its own
+    /// `heat_worker_loop` already share: a process-global counter was
+    /// read as a before/after delta while *other* tests in the same
+    /// binary concurrently spawned real workers of their own, so an
+    /// unrelated test's sweep landed inside the window and the
+    /// assertion failed at random (2026-07-25: `left: 3, right: 2`,
+    /// green in isolation, flaky under the full suite).
+    #[cfg(test)]
+    score_all_calls: AtomicUsize,
 }
 
 impl HeatRequestQueue {
@@ -87,6 +101,8 @@ impl HeatRequestQueue {
                 stop: false,
             }),
             condvar: Condvar::new(),
+            #[cfg(test)]
+            score_all_calls: AtomicUsize::new(0),
         }
     }
 
@@ -326,12 +342,6 @@ impl App {
 /// expensive call with no lock held, then re-lock briefly to write
 /// everything just learned into the shared cache, then notify the
 /// main thread before looping again.
-/// Test-only call counter (spec 0152 test plan) — proves the "no
-/// second `score_all` call" claim for a request the cache already
-/// covers by the time the worker re-checks it.
-#[cfg(test)]
-pub(super) static TEST_INFERRED_CANDIDATES_CALLS: AtomicUsize = AtomicUsize::new(0);
-
 pub(super) fn heat_worker_loop(
     queue: Arc<HeatRequestQueue>,
     caches: Arc<Mutex<HeatCaches>>,
@@ -373,7 +383,7 @@ pub(super) fn heat_worker_loop(
             (false, _) => {
                 let range_bytes = &blob[req.range.clone()];
                 #[cfg(test)]
-                TEST_INFERRED_CANDIDATES_CALLS.fetch_add(1, Ordering::SeqCst);
+                queue.score_all_calls.fetch_add(1, Ordering::SeqCst);
                 let candidates = override_pane::inferred_candidates(range_bytes, graph);
                 let stats = heat_cue::derive_stats(&candidates);
                 let current_score = req
@@ -467,6 +477,13 @@ impl HeatWorkerHandle {
     #[cfg(test)]
     pub(super) fn queue_len(&self) -> usize {
         self.queue.len()
+    }
+
+    /// Test-only full-sweep count for *this* worker (see
+    /// `HeatRequestQueue::score_all_calls`).
+    #[cfg(test)]
+    pub(super) fn score_all_calls(&self) -> usize {
+        self.queue.score_all_calls.load(Ordering::SeqCst)
     }
 
     /// Test-only construction (spec 0152 test plan) — a live queue
@@ -729,7 +746,7 @@ messages:
         let complete = caches.lock().unwrap().complete.clone();
         assert_eq!(complete, Some((0..2, expected_candidates.clone())));
 
-        let calls_before = TEST_INFERRED_CANDIDATES_CALLS.load(Ordering::SeqCst);
+        let calls_before = worker.score_all_calls();
         worker.push(
             HeatRequest {
                 range: 0..2,
@@ -742,7 +759,7 @@ messages:
         );
         rx.recv_timeout(Duration::from_secs(2))
             .expect("progress must fire for the second request");
-        let calls_after = TEST_INFERRED_CANDIDATES_CALLS.load(Ordering::SeqCst);
+        let calls_after = worker.score_all_calls();
         assert_eq!(
             calls_after, calls_before,
             "a cache-covered request must not re-score"
@@ -755,7 +772,7 @@ messages:
     /// cached, a request for that same range whose `current_key` isn't
     /// cached yet is served by the cheap `score_one`-backed fast path —
     /// no additional `inferred_candidates` sweep (the existing
-    /// `TEST_INFERRED_CANDIDATES_CALLS` counter stays flat), and
+    /// `score_all_calls` counter stays flat), and
     /// `by_range`/`complete` are left untouched, only `current_score`
     /// gains the new entry. (W-02 — the full-sweep path itself — is
     /// covered by `heat_caches_worker_round_trip` above.)
@@ -793,7 +810,7 @@ messages:
                 c.complete.clone(),
             )
         };
-        let calls_before = TEST_INFERRED_CANDIDATES_CALLS.load(Ordering::SeqCst);
+        let calls_before = worker.score_all_calls();
 
         // Ask again for the same window, now with a current_key that
         // isn't cached yet.
@@ -810,7 +827,7 @@ messages:
         rx.recv_timeout(Duration::from_secs(2))
             .expect("progress must fire for the cheap-path request");
 
-        let calls_after = TEST_INFERRED_CANDIDATES_CALLS.load(Ordering::SeqCst);
+        let calls_after = worker.score_all_calls();
         assert_eq!(
             calls_after, calls_before,
             "the cheap fast path must not re-run a full score_all sweep"

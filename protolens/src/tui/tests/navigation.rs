@@ -515,3 +515,38 @@ fn empty_bracketed_message_is_foldable() {
         "Left must fold an empty message"
     );
 }
+
+/// 2026-07-25 bug: `visible_rows` holds every unfolded rendered line,
+/// but only some of them are cursor stops — a malformed record's line
+/// (`IndexSink::malformed` pushes no `NodeSpan`) and a virtual
+/// scalar's line (Any's `type_url`, MessageSet's `type_id`) are
+/// display-only. `move_down`/`move_up` used to test only the
+/// immediately adjacent row and give up if it didn't resolve, making
+/// any such line an absorbing barrier: reported as "I cannot `Down`
+/// past /3/1" on a node whose mistyped preview rendered an
+/// `INVALID_TAG_TYPE` line.
+#[test]
+fn move_down_and_up_step_over_display_only_lines() {
+    let mut app = sibling_leaves_app(&["a", "b", "c"]);
+    app.splash = false;
+    app.rebuild_visible_rows();
+    assert_eq!(app.visible_rows, vec![0, 1, 2]);
+
+    // Line 1 is rendered but has no node behind it, exactly as a
+    // malformed or virtual-scalar line does.
+    app.line_to_node.remove(&1);
+
+    app.cursor = 0;
+    app.cursor_footer = false;
+    app.move_down();
+    assert_eq!(
+        app.cursor, 2,
+        "move_down must skip the span-less line, not stall on it"
+    );
+
+    app.move_up();
+    assert_eq!(
+        app.cursor, 0,
+        "move_up must skip the span-less line, not stall on it"
+    );
+}

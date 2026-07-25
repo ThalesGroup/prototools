@@ -1287,7 +1287,6 @@ fn diagnose_sim_t_stall() {
         app.cursor, app.tree[app.cursor].span.is_message, app.tree[app.cursor].span.field_number
     );
 
-    heat_worker::TEST_INFERRED_CANDIDATES_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
     let t0 = Instant::now();
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
     eprintln!("'t' (open override pane): {:?}", t0.elapsed());
@@ -1317,7 +1316,7 @@ fn diagnose_sim_t_stall() {
         app.override_complete_pending,
         app.override_candidates.len(),
         app.override_candidates_complete,
-        heat_worker::TEST_INFERRED_CANDIDATES_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+        app.heat_worker.as_ref().map_or(0, |w| w.score_all_calls()),
     );
 }
 
@@ -1376,7 +1375,6 @@ fn diagnose_sim_node3_t_down_stall() {
     );
     terminal.draw(|frame| app.render(frame)).unwrap();
 
-    heat_worker::TEST_INFERRED_CANDIDATES_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
     terminal.draw(|frame| app.render(frame)).unwrap();
 
@@ -1397,7 +1395,7 @@ fn diagnose_sim_node3_t_down_stall() {
         app.override_complete_pending,
         app.override_candidates.len(),
         app.override_candidates_complete,
-        heat_worker::TEST_INFERRED_CANDIDATES_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+        app.heat_worker.as_ref().map_or(0, |w| w.score_all_calls()),
     );
 
     eprintln!(
@@ -1408,7 +1406,6 @@ fn diagnose_sim_node3_t_down_stall() {
     );
     eprintln!("highlight before Down: {}", app.override_highlight);
 
-    heat_worker::TEST_INFERRED_CANDIDATES_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
     let t_down = Instant::now();
     app.move_override_highlight(1);
     eprintln!(
@@ -1436,6 +1433,6 @@ fn diagnose_sim_node3_t_down_stall() {
         app.override_complete_pending,
         app.override_candidates.len(),
         app.override_candidates_complete,
-        heat_worker::TEST_INFERRED_CANDIDATES_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+        app.heat_worker.as_ref().map_or(0, |w| w.score_all_calls()),
     );
 }

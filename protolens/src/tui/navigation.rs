@@ -139,29 +139,45 @@ impl App {
     /// next sibling (or ancestor's own footer). Walks `visible_rows`
     /// directly rather than `doc_next`/`doc_prev` node links, since
     /// footer lines aren't nodes in their own right.
+    ///
+    /// `visible_rows` holds every unfolded *rendered* line, and not all
+    /// of them are cursor stops: a malformed record's line
+    /// (`IndexSink::malformed` delegates to the text sink without
+    /// pushing a `NodeSpan`) and a virtual scalar's line (Any's
+    /// `type_url`, MessageSet's `type_id` — likewise span-less by spec
+    /// 0110 §3) are display-only. Scan past them for the next line that
+    /// does resolve, rather than testing only the immediately adjacent
+    /// row: giving up after one made any such line an absorbing
+    /// barrier the cursor could never cross (2026-07-25 bug, reported
+    /// against an `INVALID_TAG_TYPE` line inside a mistyped preview).
     pub(super) fn move_down(&mut self) {
         let cur = self.cursor_line();
-        if let Ok(pos) = self.visible_rows.binary_search(&cur) {
-            if let Some(&line) = self.visible_rows.get(pos + 1) {
-                if let Some((idx, footer)) = self.resolve_cursor_line(line) {
-                    self.cursor = idx;
-                    self.cursor_footer = footer;
-                    self.cursor_moves += 1;
-                }
-            }
+        let Ok(pos) = self.visible_rows.binary_search(&cur) else {
+            return;
+        };
+        let next = self.visible_rows[pos + 1..]
+            .iter()
+            .find_map(|&line| self.resolve_cursor_line(line));
+        if let Some((idx, footer)) = next {
+            self.cursor = idx;
+            self.cursor_footer = footer;
+            self.cursor_moves += 1;
         }
     }
 
     pub(super) fn move_up(&mut self) {
         let cur = self.cursor_line();
-        if let Ok(pos) = self.visible_rows.binary_search(&cur) {
-            if pos > 0 {
-                if let Some((idx, footer)) = self.resolve_cursor_line(self.visible_rows[pos - 1]) {
-                    self.cursor = idx;
-                    self.cursor_footer = footer;
-                    self.cursor_moves += 1;
-                }
-            }
+        let Ok(pos) = self.visible_rows.binary_search(&cur) else {
+            return;
+        };
+        let prev = self.visible_rows[..pos]
+            .iter()
+            .rev()
+            .find_map(|&line| self.resolve_cursor_line(line));
+        if let Some((idx, footer)) = prev {
+            self.cursor = idx;
+            self.cursor_footer = footer;
+            self.cursor_moves += 1;
         }
     }
 
