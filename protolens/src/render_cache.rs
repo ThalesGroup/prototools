@@ -23,10 +23,12 @@ use crate::colorize::StyleHint;
 /// field-name-invariant.
 ///
 /// The trailing `bool` is `splice_override`'s own `is_preview` (spec
-/// 0163) — a live preview may be truncated by `OVERRIDE_SPLICE_NODE_
-/// BUDGET`, while a confirmed override always renders completely; these
-/// must be cached separately, or confirming an override could silently
-/// reuse a truncated preview render of the same `(range, type)`.
+/// 0163, still required by spec 0174, now for a stronger reason) — a
+/// live preview is rendered from at most `override_preview_byte_budget`
+/// interior bytes, i.e. literally not the same input as the confirmed
+/// render, which always renders completely; these must be cached
+/// separately, or confirming an override could silently reuse a
+/// truncated preview render of the same `(range, type)`.
 type RenderKey = (Range<usize>, Option<String>, bool);
 
 /// Value: everything `apply_override` derives from a fresh

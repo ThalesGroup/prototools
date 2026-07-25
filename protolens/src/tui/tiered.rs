@@ -262,12 +262,6 @@ impl<K: Eq + Hash + Clone, V: Clone> TieredBounded<K, V> {
         Some(self.remove_by_idx(idx))
     }
 
-    pub(super) fn remove(&mut self, key: &K) {
-        if let Some(&idx) = self.index.get(key) {
-            self.remove_by_idx(idx);
-        }
-    }
-
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.index.len()
@@ -598,16 +592,5 @@ mod tests {
         // must now pop before Prefetch.
         assert_eq!(m.pop_highest().map(|(k, _)| k), Some(1));
         assert_eq!(m.pop_highest().map(|(k, _)| k), Some(2));
-    }
-
-    #[test]
-    fn remove_unlinks_and_frees_the_slot() {
-        let mut m = new_map(10);
-        m.upsert(1, 1, Tier::User);
-        m.upsert(2, 2, Tier::User);
-        m.remove(&1);
-        assert_eq!(m.len(), 1);
-        assert_eq!(m.pop_highest().map(|(k, _)| k), Some(2));
-        assert_eq!(m.pop_highest(), None);
     }
 }

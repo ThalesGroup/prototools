@@ -59,12 +59,17 @@ full [batch-finalization cost](override-collection.md) on every
 highlighted row, not just on commit; on a very large document this is the
 dominant cost of browsing candidates (see spec 0163's non-goals). To keep
 the splice itself affordable independent of that, preview splices alone
-pass a bounded node budget (`OVERRIDE_SPLICE_NODE_BUDGET_DEFAULT`, spec
-0163) into `splice_override`, capping how much of a huge candidate
-subtree gets decoded and materialized for a mere preview; the render
-cache key includes an `is_preview` flag specifically so a budget-truncated
-preview is never mistaken for, or reused as, a full confirmed render of
-the same range.
+truncate the candidate node's *interior bytes* to
+`OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT` before handing them to the
+renderer (spec 0174) — bounding the input bounds the decode, the render,
+the span count and the line count together, so a huge candidate subtree
+never gets materialized for a mere preview. The truncation rewrites the
+node's own length prefix so the surviving prefix is still well-framed,
+which is what lets it render as complete, correctly-typed, fully nested
+fields rather than one opaque bytes line; a truncated preview ends with a
+literal `...`. The render cache key includes an `is_preview` flag
+specifically so a truncated preview is never mistaken for, or reused as,
+a full confirmed render of the same range.
 
 Because the same node gets re-spliced repeatedly as the user browses
 candidates, the pane tracks a `preview_tree_watermark`: the tree's own
@@ -73,12 +78,23 @@ subsequent preview (a new highlighted row, or an automatic re-trigger as
 background candidate scoring streams in) first truncates the tree array
 — and the caches indexed by it — back to that watermark, discarding the
 previous preview's now-superseded subtree before splicing the new one in,
-so successive previews don't leak orphaned nodes indefinitely. This
-truncation only ever needs to invalidate the target node's own
-`first_child`/`last_child` (which pointed into the just-discarded range);
-its `doc_next` must be left untouched; see
-[document-tree.md](document-tree.md)'s `doc_next` invariant section for
-why conflating the two caused a real crash.
+so successive previews don't leak orphaned nodes indefinitely. The
+truncation invalidates the target node's own `first_child`/`last_child`
+(both pointed into the just-discarded range), which are simply nulled;
+its `doc_next` pointed into that range too — at the previous preview's
+own first child — and so must be *recomputed* to the post-subtree seam
+**before** the truncation runs, while the descendant set it is derived
+from still exists. Assuming instead that `doc_next` always points outside
+the subtree left a dangling index that the next splice's freshly-pushed
+nodes made valid again, wiring a cycle into the document-order chain; see
+[document-tree.md](document-tree.md)'s seam section for the full account.
+
+The truncation also scrubs the two line-index maps (`line_to_node`,
+`footer_line_to_node`) of any entry at or past the watermark: an
+unrelated full `render_overrides` pass landing between two previews (e.g.
+background root-type resolution) may have rebuilt them against a tree
+that has since been truncated, and a later `heat_cue_for` lookup would
+otherwise feed an out-of-bounds index straight into an array index.
 
 Live preview intentionally does not extend into nested Any/MessageSet
 auto-expansion within the previewed subtree — a preview shows the

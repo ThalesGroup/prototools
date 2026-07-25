@@ -6,6 +6,10 @@ use super::*;
 
 use prost_reflect::prost_types::field_descriptor_proto::{Label, Type};
 use prost_reflect::Cardinality;
+use prototext_core::helpers::{
+    encode_varint_bytes, parse_varint, parse_wiretag, WT_LEN, WT_START_GROUP,
+};
+use prototext_core::serialize::render_text::NodeSpan;
 
 /// Spec 0167 (N1 follow-up to spec 0160): where a single
 /// `splice_override` call's freshly decoded content ultimately belongs
@@ -42,7 +46,7 @@ pub(super) struct LinePatch {
     pub(super) global_start: usize,
     pub(super) children_base_shift: isize,
     pub(super) lines: Vec<String>,
-    pub(super) styles: Vec<Vec<(Range<usize>, SyntaxRole)>>,
+    pub(super) styles: Vec<LineStyles>,
 }
 
 /// Unifies `FieldDescriptor` (regular field) and `ExtensionDescriptor`
@@ -82,6 +86,202 @@ impl ParentFieldOrExt {
             ParentFieldOrExt::Ext(e) => e.full_name().to_string(),
         }
     }
+}
+
+/// Spec 0174 §S3: where a live preview's interior may be cut. Framing
+/// (LEN vs. group) is read from the node's own tag and is independent of
+/// this; `TruncShape` only decides *how many* interior bytes to keep.
+///
+/// Every variant aligns on a boundary the renderer itself respects, so
+/// truncation can never manufacture a malformity marker the untruncated
+/// data did not already have — that is the shared invariant, and the
+/// reason `string` cannot simply fall under `Exact`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TruncShape {
+    /// Message, group, `bytes`. Cut at exactly `budget`. For a message or
+    /// group the cut is *meant* to land deep inside, so every field that
+    /// fits still renders in full and correctly typed; the one straddling
+    /// field degrades and its line is dropped by the caller. For `bytes`
+    /// there is no alignment to respect — any byte sequence is a valid
+    /// value.
+    Exact,
+    /// `string`. Cut at the last UTF-8 character boundary at or before
+    /// `budget`, so the shortened payload stays valid UTF-8 and renders
+    /// as an ordinary string rather than `INVALID_STRING`.
+    CharBoundary,
+    /// Every other target: bounded by construction (varint, I32 and I64
+    /// are at most ten bytes), or not truncatable without lying. Never
+    /// cut.
+    ///
+    /// There is deliberately no packed-record rule. A preview renders
+    /// against `decode::register_wrapper`'s synthetic field, which is
+    /// always `Label::Optional`, and `render_packed` only fires for a
+    /// *repeated* packable schema field — so the previewed node itself
+    /// can never render as a packed record. A packed record nested
+    /// *inside* the interior keeps its own untouched length prefix, so
+    /// it either fits whole or overruns and degrades to the ordinary
+    /// `TRUNCATED_BYTES` straddler; it can never end up length-satisfied
+    /// but misaligned, which is the only case `decode_packed_elems`
+    /// rejects outright.
+    Never,
+}
+
+/// Spec 0174 §S3: a copy of `field_bytes` (a node's complete
+/// `tag[+length]+payload` span) whose *interior* is cut to at most
+/// `budget` bytes and re-framed so the result is still a well-formed
+/// field — which is what keeps the cut inside the interior instead of
+/// overrunning the synthetic wrapper's single field.
+///
+/// Returns `(truncated_bytes, span_shift)`, or `None` when nothing was
+/// cut. `span_shift` is how far the interior moved left because the
+/// rewritten length varint is narrower than the original; the caller adds
+/// it back when translating child spans into document coordinates.
+///
+/// Preview-only. A confirmed override must render completely, so its
+/// bytes never come through here (G5).
+pub(super) fn truncate_interior(
+    field_bytes: &[u8],
+    budget: usize,
+    shape: TruncShape,
+) -> Option<(Vec<u8>, usize)> {
+    if shape == TruncShape::Never {
+        return None;
+    }
+    let tag = parse_wiretag(field_bytes, 0);
+    let wire_type = tag.wtype?;
+
+    // Group framing: no length prefix to rewrite, so a plain prefix of
+    // the original bytes is already a well-formed (open-ended) group.
+    // `render_group_field` reports `close_facts: None` when a group
+    // reaches end-of-buffer without a close tag, so `end_nested` still
+    // emits a plain `}` with no annotation.
+    if wire_type == WT_START_GROUP {
+        let payload = &field_bytes[tag.next_pos..];
+        let kept = cut_at(payload, budget, shape)?;
+        let mut out = Vec::with_capacity(tag.next_pos + kept);
+        out.extend_from_slice(&field_bytes[..tag.next_pos]);
+        out.extend_from_slice(&payload[..kept]);
+        return Some((out, 0));
+    }
+
+    if wire_type != WT_LEN {
+        return None;
+    }
+    let len = parse_varint(field_bytes, tag.next_pos);
+    let original_prefix_len = len.next_pos - tag.next_pos;
+    len.varint?;
+    let payload = &field_bytes[len.next_pos..];
+    let kept = cut_at(payload, budget, shape)?;
+
+    let new_prefix = encode_varint_bytes(kept as u64, None);
+    let mut out = Vec::with_capacity(tag.next_pos + new_prefix.len() + kept);
+    out.extend_from_slice(&field_bytes[..tag.next_pos]);
+    out.extend_from_slice(&new_prefix);
+    out.extend_from_slice(&payload[..kept]);
+    Some((out, original_prefix_len - new_prefix.len()))
+}
+
+/// Spec 0174 §S3: which cut rule a preview of this candidate needs.
+///
+/// `field_type` is the synthetic wrapper field's declared type (`None`
+/// for a raw, un-retyped node); `wire_type` is the node's real framing
+/// on the wire, which is what decides whether a numeric target renders
+/// as a packed record or as a single scalar.
+pub(super) fn trunc_shape_for(field_type: Option<Type>, wire_type: u32) -> TruncShape {
+    let Some(ft) = field_type else {
+        // Raw: `render_message` probes a LEN payload and renders it as a
+        // nested message or as bytes. Either way an exact cut is safe —
+        // a shorter probe still decodes, and shorter bytes are still
+        // bytes.
+        return if wire_type == WT_LEN || wire_type == WT_START_GROUP {
+            TruncShape::Exact
+        } else {
+            TruncShape::Never
+        };
+    };
+    match ft {
+        Type::Message | Type::Group | Type::Bytes => TruncShape::Exact,
+        Type::String => TruncShape::CharBoundary,
+        // Every remaining type is numeric/bool/enum: a single value,
+        // bounded by construction.
+        _ => TruncShape::Never,
+    }
+}
+
+/// Spec 0174 §S4: mark a truncated preview's rendering with a trailing
+/// `...` line.
+///
+/// The straddling field — the one `TruncShape::Exact` cut in half — is
+/// *replaced* by the marker rather than merely deleted, so its
+/// `TRUNCATED_BYTES` annotation never reaches the user (G4) and the line
+/// count is unchanged. Only that field's own leaf spans are dropped;
+/// enclosing spans legitimately keep covering the line.
+///
+/// The aligned cut rules leave nothing straddling, so there the marker is
+/// *inserted* instead — inside the closing brace for a nested render,
+/// where the elided content would have been, or after the value line for
+/// a `string`/`bytes`/packed target, which has no brace. Insertion shifts
+/// every later line, so span text ranges are corrected accordingly.
+fn insert_truncation_marker(
+    lines: &mut Vec<String>,
+    styles: &mut Vec<LineStyles>,
+    spans: &mut Vec<NodeSpan>,
+    indent_size: usize,
+) {
+    let indent_of = |l: &str| l.len() - l.trim_start().len();
+    let straddler = lines.iter().rposition(|l| l.contains("TRUNCATED_BYTES"));
+
+    let (at, indent, replacing) = match straddler {
+        Some(i) => (i, indent_of(&lines[i]), true),
+        None if lines.last().is_some_and(|l| l.trim_end() == "}") => {
+            let close = lines.len() - 1;
+            (close, indent_of(&lines[close]) + indent_size, false)
+        }
+        None => (lines.len(), lines.last().map_or(0, |l| indent_of(l)), false),
+    };
+
+    let marker = format!("{}...", " ".repeat(indent));
+    if replacing {
+        lines[at] = marker;
+        styles[at] = Vec::new();
+        // Leaf spans confined to this one line only — an enclosing
+        // message's span spills past it and must survive.
+        spans.retain(|s| !(s.text_range.start >= at && s.text_range.end <= at + 1));
+    } else {
+        lines.insert(at, marker);
+        styles.insert(at, Vec::new());
+        for s in spans.iter_mut() {
+            if s.text_range.start >= at {
+                s.text_range.start += 1;
+            }
+            if s.text_range.end > at {
+                s.text_range.end += 1;
+            }
+        }
+    }
+}
+
+/// How many of `payload`'s bytes to keep under `shape`, or `None` when
+/// the payload already fits and nothing needs cutting.
+fn cut_at(payload: &[u8], budget: usize, shape: TruncShape) -> Option<usize> {
+    if payload.len() <= budget {
+        return None;
+    }
+    let kept = match shape {
+        TruncShape::Never => return None,
+        TruncShape::Exact => budget,
+        TruncShape::CharBoundary => {
+            // Walk back to the start of the character straddling the cut:
+            // continuation bytes are `0b10xxxxxx`. At most three steps for
+            // valid UTF-8, and bounded anyway so invalid input terminates.
+            let mut k = budget;
+            while k > 0 && (payload[k] & 0xC0) == 0x80 {
+                k -= 1;
+            }
+            k
+        }
+    };
+    Some(kept)
 }
 
 impl App {
@@ -1241,7 +1441,7 @@ impl App {
         patches: &mut [Option<LinePatch>],
         children_of: &HashMap<usize, Vec<usize>>,
         idx: usize,
-    ) -> (Vec<String>, Vec<Vec<(Range<usize>, SyntaxRole)>>) {
+    ) -> (Vec<String>, Vec<LineStyles>) {
         let LinePatch { lines, styles, .. } = patches[idx]
             .take()
             .expect("spec 0167: each patch is resolved at most once");
@@ -1275,29 +1475,34 @@ impl App {
         (new_lines, new_styles)
     }
 
-    /// Spec 0163: default for `App::override_splice_node_budget` — the
-    /// maximum number of fields/spans a single *live-preview*
-    /// `splice_override` candidate decode may produce before the rest is
-    /// shown as `MalformedKind::NodeBudgetExceeded` instead of continuing
-    /// to recursively decode/render — guards against a structurally
-    /// mismatched candidate type causing the recursive-descent decoder
-    /// to mis-parse arbitrary bytes into a pathologically large synthetic
-    /// tree (observed: 1,083,626 spans from a single splice on a ~1.1MB
-    /// field — larger than the entire 635,052-node original document).
+    /// Spec 0174: default for `App::override_preview_byte_budget` — the
+    /// maximum number of *interior* bytes of a *live-preview*
+    /// `splice_override` candidate that are handed to the renderer.
+    /// Guards against a structurally mismatched candidate type causing
+    /// the recursive-descent decoder to mis-parse arbitrary bytes into a
+    /// pathologically large synthetic tree (observed: 1,083,626 spans
+    /// from a single splice on a ~1.1MB field — larger than the entire
+    /// 635,052-node original document). Bounding the *input* bounds the
+    /// decode, the render, the span count and the line count together,
+    /// which is why the renderer itself needs no budget of its own
+    /// (spec 0174 G1 removed `DecodeRenderOpts::node_budget`).
+    ///
     /// Only applies while a candidate is being *previewed*
     /// (`splice_override`'s `is_preview: true`, `preview_override_
     /// highlight`'s sole call site) — once a candidate is actually
     /// confirmed as a real override, its rendering must be complete, not
     /// truncated, so every other `splice_override` call site (routed
-    /// through `resettle_node`) passes `is_preview: false` and gets an
-    /// unbounded `node_budget: None` instead. A preview only needs to
-    /// show enough of a wrong-type candidate's shape for the user to
-    /// judge it's the wrong one and move on — 200 direct fields is
-    /// already far more than any legitimate candidate's own top-level
-    /// field count, so it's kept low rather than matched to the ~50k+
-    /// scale of the pathological blowups this guards against.
-    /// Overridable at startup via `--override-preview-node-budget`.
-    pub(crate) const OVERRIDE_SPLICE_NODE_BUDGET_DEFAULT: usize = 200;
+    /// through `resettle_node`) passes `is_preview: false` and gets the
+    /// candidate's bytes untouched.
+    ///
+    /// 4096 is generous in lines while still bounding the work: the
+    /// smallest interior field is two bytes, so it admits at most ~2000
+    /// nodes, and a realistic mixed payload yields a few hundred lines —
+    /// more than any pane shows, which is the point. A preview only
+    /// needs to show enough of a wrong-type candidate's shape for the
+    /// user to judge it's the wrong one and move on.
+    /// Overridable at startup via `--override-preview-byte-budget`.
+    pub(crate) const OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT: usize = 4096;
 
     /// Unified splice mechanic (spec 0118 §4, reworked spec 0135 G1):
     /// regenerates the *whole* rendering of `idx` — header, interior, and
@@ -1326,12 +1531,12 @@ impl App {
     /// node, regardless of which specific element the caller invoked the
     /// override on.
     /// `is_preview`: `true` from `preview_override_highlight`'s sole live-
-    /// preview call site — caps the decode at `OVERRIDE_SPLICE_NODE_
-    /// BUDGET` (spec 0163). `false` from every other call site (routed
-    /// through `resettle_node`, i.e. an already-confirmed/active override
-    /// being (re)applied) — renders completely, unbounded, since this is
-    /// the content that actually gets shown as the real override, not a
-    /// speculative preview.
+    /// preview call site — caps the *interior bytes* handed to the
+    /// renderer at `override_preview_byte_budget` (spec 0174). `false`
+    /// from every other call site (routed through `resettle_node`, i.e.
+    /// an already-confirmed/active override being (re)applied) — renders
+    /// completely, unbounded, since this is the content that actually
+    /// gets shown as the real override, not a speculative preview.
     pub(super) fn splice_override(
         &mut self,
         mut idx: usize,
@@ -1434,7 +1639,25 @@ impl App {
 
         // Decode `idx`'s own real tag+payload bytes directly (spec 0135
         // G1) — no synthetic tag prepended.
-        let field_bytes = self.blob[old_span.raw_range.clone()].to_vec();
+        let mut field_bytes = self.blob[old_span.raw_range.clone()].to_vec();
+
+        // Spec 0174: only a live preview is speculative and needs
+        // bounding — a confirmed override must render completely (G5).
+        // Bounding the renderer's *input* bounds its decode, its render,
+        // its span count and its line count together, which is why
+        // `prototext-core` itself carries no budget.
+        let mut span_shift = 0usize;
+        let mut truncated = false;
+        if is_preview {
+            let shape = trunc_shape_for(field_type, old_span.wire_type);
+            if let Some((cut, shift)) =
+                truncate_interior(&field_bytes, self.override_preview_byte_budget, shape)
+            {
+                field_bytes = cut;
+                span_shift = shift;
+                truncated = true;
+            }
+        }
 
         // Render-cache key: `(interior_range, target)` — no longer
         // `field_name` (G2 makes the cached render field-name-invariant).
@@ -1475,11 +1698,6 @@ impl App {
                     // prototext-core's own virtual-node expansion.
                     expand_any: false,
                     expand_message_set: false,
-                    // Spec 0163: only a live preview is speculative and
-                    // needs bounding -- a confirmed override must render
-                    // completely (see `OVERRIDE_SPLICE_NODE_BUDGET_
-                    // DEFAULT`'s doc comment).
-                    node_budget: is_preview.then_some(self.override_splice_node_budget),
                     ..Default::default()
                 };
                 let (new_text, new_spans) =
@@ -1529,6 +1747,23 @@ impl App {
             new_line_styles[0] =
                 colorize::hints_by_line(&new_lines[..1], &colorize::colorize(&new_lines[0]))
                     .remove(0);
+        }
+
+        // Spec 0174 §S4: a truncated preview ends with a literal `...`,
+        // so the user sees there is more. Done here, on the rendered
+        // lines, rather than in `prototext-core`: `...` is not part of
+        // the prototext grammar, and doing it after `colorize()` has run
+        // means the highlighter never has to parse it. The line carries
+        // empty styles and no `NodeSpan`, so it is not selectable, not
+        // navigable, and not part of any span range.
+        let mut new_spans = new_spans;
+        if truncated {
+            insert_truncation_marker(
+                &mut new_lines,
+                &mut new_line_styles,
+                &mut new_spans,
+                self.indent_size,
+            );
         }
 
         let delta = new_lines.len() as isize
@@ -1641,7 +1876,14 @@ impl App {
         // always idx's *new* self (the decoded field, whatever shape it
         // turned out to be); everything else is its descendants.
         let base = self.tree.len();
-        let byte_offset = old_span.raw_range.start as isize;
+        // Spec 0174 §S3: a truncated preview's LEN framing rewrites the
+        // length varint, which may be narrower than the original — the
+        // whole interior then sits `span_shift` bytes earlier in the
+        // buffer core saw than it does in `self.blob`. Folding the
+        // constant in here corrects every child span at once; the local
+        // root needs no care, its `raw_range` is force-overwritten with
+        // `old_span.raw_range` below.
+        let byte_offset = old_span.raw_range.start as isize + span_shift as isize;
         let local_len = new_spans.len();
         let local_root_idx = local_len - 1;
         let local_tree = decode::build_tree(new_spans);

@@ -83,7 +83,7 @@ impl App {
             .get(line_idx)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        let (content, hints): (&str, Vec<(Range<usize>, SyntaxRole)>) =
+        let (content, hints): (&str, LineStyles) =
             match (!self.annotations, self.annotation_start(line_idx)) {
                 (true, Some(pos)) => {
                     let truncated = full_content[..pos].trim_end();

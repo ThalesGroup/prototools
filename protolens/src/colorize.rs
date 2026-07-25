@@ -162,16 +162,21 @@ pub fn colorize(text: &str) -> Vec<StyleHint> {
     hints
 }
 
+/// Syntax-highlight spans for a single rendered line, as `(column range,
+/// role)` pairs in the line's own byte-offset coordinate system.
+///
+/// Named because the nested form spells out four levels of generics at
+/// every use site, and one of those (`resolve_line_patch`) returns it
+/// inside a tuple, which clippy's `type_complexity` rejects outright.
+pub type LineStyles = Vec<(Range<usize>, SyntaxRole)>;
+
 /// Buckets `hints` (byte offsets relative to `lines.join("\n")`) into one
-/// `Vec` of `(column range, role)` per entry of `lines` — the coordinate
-/// system `App::line_styles` (`protolens/src/tui.rs`) needs to color
-/// individual rendered rows. A hint that crosses a line boundary
-/// (nothing in `queries/highlights.scm` spans a rendered newline today)
-/// is clipped to the line it starts on.
-pub fn hints_by_line(
-    lines: &[String],
-    hints: &[StyleHint],
-) -> Vec<Vec<(Range<usize>, SyntaxRole)>> {
+/// `LineStyles` per entry of `lines` — the coordinate system
+/// `App::line_styles` (`protolens/src/tui.rs`) needs to color individual
+/// rendered rows. A hint that crosses a line boundary (nothing in
+/// `queries/highlights.scm` spans a rendered newline today) is clipped to
+/// the line it starts on.
+pub fn hints_by_line(lines: &[String], hints: &[StyleHint]) -> Vec<LineStyles> {
     let mut line_starts = Vec::with_capacity(lines.len());
     let mut offset = 0;
     for line in lines {

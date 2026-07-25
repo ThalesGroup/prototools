@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # protolens — design
 
-*last verified: 2026-07-16*
+*last verified: 2026-07-25*
 
 ## Executive summary
 
@@ -62,10 +62,12 @@ plus the `tui` module:
   resulting roles to terminal colors with graduated true-color fallback.
 - `complete.rs` — shell-completion script generation for `clap`.
 - `tui/` — the interactive session itself: `mod.rs` defines the `App`
-  struct (all mutable session state) and the top-level event loop; eight
-  sibling files each own one pane's or one concern's behavior
-  (`navigation`, `mouse`, `override_select`, `manage_pane`,
-  `override_apply`, `key_dispatch`, `command_line`, `render`).
+  struct (all mutable session state) and the top-level event loop;
+  sibling files each own one pane's or one concern's behavior — the panes
+  and input plumbing (`navigation`, `mouse`, `override_select`,
+  `manage_pane`, `override_apply`, `key_dispatch`, `command_line`,
+  `render`, `event`, `neovim`) plus the background heat-cue subsystem
+  (`heat_worker`, `heat_cue`, `tiered`).
 
 Two ideas recur throughout and are worth naming up front, since later
 scope files lean on both without re-explaining them:
@@ -90,11 +92,21 @@ Each scope below has its own file with a short executive summary followed
 by technical detail — read the summaries first for orientation, the
 technical sections when you need to change something in that area.
 
-Scopes come from two overlapping, non-partitioning groupings: **assets**
-(the data protolens operates on) and **panes** (the TUI surfaces a user
-interacts with). A single mechanism (e.g. the override collection) is
-usually described once, as an asset, and referenced (not re-explained)
-from the pane files that present it.
+Scopes come from three overlapping, non-partitioning groupings:
+**assets** (the data protolens operates on), **panes** (the TUI surfaces
+a user interacts with), and **pipelines** (end-to-end paths that cut
+*across* several assets and panes). A single mechanism (e.g. the override
+collection) is usually described once, as an asset, and referenced (not
+re-explained) from the pane files that present it.
+
+A pipeline file exists precisely when no single asset or pane owns the
+thing being explained. Rendering is the motivating case: it starts in
+`decode.rs` (an asset), passes through the tree and the override
+collection (two more assets), surfaces in the main pane, and is joined
+mid-flight by a background thread — so filing it under any one of those
+would have forced the others to re-explain it. Pipeline files are
+therefore deliberately reference-heavy and own no data model of their
+own.
 
 ### Assets
 
@@ -115,6 +127,12 @@ from the pane files that present it.
 | [manage-pane.md](manage-pane.md) | The override collection's UI: lifecycle, grouping, kind rotation |
 | [command-line.md](command-line.md) | The global command/message row (commands/search/rename/messages), Tab-completion |
 | [help-and-chrome.md](help-and-chrome.md) | Help overlay, splash, local statuslines, quit/suspend confirmation |
+
+### Pipelines
+
+| File | Covers |
+|---|---|
+| [rendering.md](rendering.md) | The five rendering stages (eager decode-to-text, whole-document highlight, arena build, per-frame viewport draw, override splice) plus the concurrent heat-cue pipeline; the three coordinate systems and the invariants tying them together; measured costs at scale |
 
 ## The `prototext_core` boundary
 

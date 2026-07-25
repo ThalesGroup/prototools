@@ -144,9 +144,6 @@ thread_local! {
     // of the rendering call that set it.  Always cleared before the setting
     // stack frame returns.
     pub(super) static ANY_LOADER: RefCell<Option<AnyLoader>> = const { RefCell::new(None) };
-    // Spec 0163: opt-in ceiling on fields/spans a single decode may emit.
-    pub(super) static NODE_BUDGET: Cell<Option<usize>> = const { Cell::new(None) };
-    pub(super) static NODE_COUNT:  Cell<usize>         = const { Cell::new(0) };
     // Spec 0171: actual `render_message` recursion depth, capped at
     // `MAX_WIRE_DEPTH`. Distinct from `LEVEL`, which is the *indentation*
     // counter and is deliberately not maintained by every sink.
@@ -273,12 +270,6 @@ pub struct DecodeRenderOpts {
     /// destined to be spliced into an existing document's text, which must
     /// not repeat the header.
     pub emit_header: bool,
-    /// Spec 0163: maximum number of fields/spans this decode may emit
-    /// before aborting early and marking the remainder
-    /// `MalformedKind::NodeBudgetExceeded`, instead of continuing to
-    /// recursively decode/render an unbounded amount of content. `None`
-    /// (the default) preserves today's unlimited behavior.
-    pub node_budget: Option<usize>,
 }
 
 impl Default for DecodeRenderOpts {
@@ -291,7 +282,6 @@ impl Default for DecodeRenderOpts {
             expand_message_set: true,
             initial_level: 0,
             emit_header: false,
-            node_budget: None,
         }
     }
 }
@@ -320,7 +310,6 @@ pub fn decode_and_render(
         expand_message_set,
         initial_level,
         emit_header,
-        node_budget,
     } = opts;
     let capacity = buf.len() * 8;
     let mut sink = TextSink::new(capacity);
@@ -349,8 +338,6 @@ pub fn decode_and_render(
     EXPAND_ANY.with(|c| c.set(expand_any));
     HIDE_UNKNOWN.with(|c| c.set(hide_unknown_fields));
     EXPAND_MESSAGE_SET.with(|c| c.set(expand_message_set));
-    NODE_BUDGET.with(|c| c.set(node_budget));
-    NODE_COUNT.with(|c| c.set(0));
     DEPTH.with(|c| c.set(0));
 
     let schema_present = root_desc.is_some();
@@ -396,7 +383,6 @@ pub fn decode_and_render_indexed(
         expand_message_set,
         initial_level,
         emit_header,
-        node_budget,
     } = opts;
     let capacity = buf.len() * 8;
     let mut sink = IndexingTextSink::new(capacity);
@@ -417,8 +403,6 @@ pub fn decode_and_render_indexed(
     EXPAND_ANY.with(|c| c.set(expand_any));
     HIDE_UNKNOWN.with(|c| c.set(hide_unknown_fields));
     EXPAND_MESSAGE_SET.with(|c| c.set(expand_message_set));
-    NODE_BUDGET.with(|c| c.set(node_budget));
-    NODE_COUNT.with(|c| c.set(0));
     DEPTH.with(|c| c.set(0));
 
     let schema_present = root_desc.is_some();
@@ -467,24 +451,6 @@ fn render_message<S: Sink>(
     loop {
         if pos == buflen {
             return (pos, None);
-        }
-
-        // Spec 0163: abort early once a caller-set budget on
-        // fields/spans is exceeded, rendering the remainder as a
-        // distinct malformed annotation instead of continuing to
-        // recursively decode an unbounded amount of speculative content.
-        if let Some(budget) = NODE_BUDGET.with(Cell::get) {
-            let count = NODE_COUNT.with(Cell::get) + 1;
-            NODE_COUNT.with(|c| c.set(count));
-            if count > budget {
-                sink.malformed(
-                    0,
-                    TagFacts::default(),
-                    MalformedKind::NodeBudgetExceeded,
-                    &buf[pos..],
-                );
-                return (buflen, None);
-            }
         }
 
         // ── Parse wire tag ────────────────────────────────────────────────────
@@ -824,92 +790,6 @@ mod tests {
         );
         let text = String::from_utf8(out).unwrap();
         assert!(!text.starts_with("#@ prototext: protoc\n"));
-    }
-
-    // ── `node_budget` (spec 0163) ───────────────────────────────────────────
-
-    #[test]
-    fn node_budget_truncates_deep_nesting_with_a_visible_marker() {
-        // 20 levels of `field 1 (LEN) { field 1 (LEN) { ... } }`, bottoming
-        // out in a plain varint leaf -- deep enough that a small budget
-        // (10) is exceeded well before the bottom, and deep enough that
-        // an unbounded decode would produce far more lines than the
-        // budget allows.
-        let mut payload = vec![0x08, 0x2A]; // field 1 (varint) = 42
-        for _ in 0..20 {
-            let mut wrapped = vec![0x0A, payload.len() as u8];
-            wrapped.extend_from_slice(&payload);
-            payload = wrapped;
-        }
-        let out = decode_and_render(
-            &payload,
-            None,
-            DecodeRenderOpts {
-                annotations: true,
-                indent_size: 2,
-                node_budget: Some(10),
-                ..Default::default()
-            },
-        );
-        let text = String::from_utf8(out).unwrap();
-        assert!(text.contains("NODE_BUDGET_EXCEEDED"), "got: {text}");
-        // Bounded: nowhere near the 41 lines (20 openers, a leaf, 20
-        // closers) a full decode of all 20 nesting levels would produce.
-        assert!(text.lines().count() <= 15, "got: {text}");
-    }
-
-    #[test]
-    fn node_budget_none_is_unaffected_by_a_never_tripped_budget() {
-        // fixtures/descriptor.pb (18 753 bytes, deeply nested, repeated
-        // fields) -- large enough to meaningfully exercise the new
-        // per-field counter, compared against a budget high enough to
-        // never trip: `node_budget: None` (the default) must behave
-        // identically to a budget that's simply never reached, for both
-        // `decode_and_render` and `decode_and_render_indexed`.
-        static DESCRIPTOR_PB: &[u8] = include_bytes!("../../../fixtures/descriptor.pb");
-
-        let out_unset = decode_and_render(
-            DESCRIPTOR_PB,
-            None,
-            DecodeRenderOpts {
-                annotations: true,
-                indent_size: 2,
-                ..Default::default()
-            },
-        );
-        let out_never_tripped = decode_and_render(
-            DESCRIPTOR_PB,
-            None,
-            DecodeRenderOpts {
-                annotations: true,
-                indent_size: 2,
-                node_budget: Some(usize::MAX),
-                ..Default::default()
-            },
-        );
-        assert_eq!(out_unset, out_never_tripped);
-
-        let (text_unset, spans_unset) = decode_and_render_indexed(
-            DESCRIPTOR_PB,
-            None,
-            DecodeRenderOpts {
-                annotations: true,
-                indent_size: 2,
-                ..Default::default()
-            },
-        );
-        let (text_never_tripped, spans_never_tripped) = decode_and_render_indexed(
-            DESCRIPTOR_PB,
-            None,
-            DecodeRenderOpts {
-                annotations: true,
-                indent_size: 2,
-                node_budget: Some(usize::MAX),
-                ..Default::default()
-            },
-        );
-        assert_eq!(text_unset, text_never_tripped);
-        assert_eq!(spans_unset.len(), spans_never_tripped.len());
     }
 
     // ── `ProbeSink` (spec 0110 Step 4 / Open Issue #1) ─────────────────────
@@ -1387,6 +1267,67 @@ mod tests {
         );
         let wire = crate::serialize::encode_text::encode_text_to_binary(&text);
         assert_eq!(wire, buf, "capped render did not round-trip");
+    }
+
+    /// The marker `MalformedKind` renders as. Exhaustive by construction
+    /// (no wildcard arm): a variant added without a marker here fails to
+    /// compile, and one added without an `encode_text/fields.rs` arm
+    /// fails the round-trip below (spec 0174 G1).
+    fn malformity_marker(kind: &super::sink::MalformedKind) -> &'static str {
+        use super::sink::MalformedKind as K;
+        match kind {
+            K::InvalidTagType => "INVALID_TAG_TYPE",
+            K::InvalidVarint => "INVALID_VARINT",
+            K::InvalidFixed64 => "INVALID_FIXED64",
+            K::InvalidFixed32 => "INVALID_FIXED32",
+            K::InvalidLen => "INVALID_LEN",
+            K::TruncatedBytes { .. } => "TRUNCATED_BYTES",
+            K::InvalidGroupEnd => "INVALID_GROUP_END",
+        }
+    }
+
+    /// Spec 0174 G1: the round-trip promise is unconditional — every
+    /// production the renderer can emit re-encodes to the exact bytes it
+    /// came from. `NODE_BUDGET_EXCEEDED` was the sole exception (it
+    /// reported a length and dropped the bytes on purpose), which is why
+    /// the budget left this crate.
+    #[test]
+    fn every_malformity_marker_round_trips() {
+        use super::sink::MalformedKind as K;
+        // One minimal wire input per variant, each provoking exactly
+        // that malformity.
+        let cases: [(K, &[u8]); 7] = [
+            // Field 1, wire type 7 — no such wire type.
+            (K::InvalidTagType, &[0x0F]),
+            // Field 1 VARINT, whose value varint never terminates.
+            (K::InvalidVarint, &[0x08, 0xFF]),
+            // Field 1 FIXED64 with 1 of its 8 bytes present.
+            (K::InvalidFixed64, &[0x09, 0x01]),
+            // Field 1 FIXED32 with 1 of its 4 bytes present.
+            (K::InvalidFixed32, &[0x0D, 0x01]),
+            // Field 1 LEN, whose length varint never terminates.
+            (K::InvalidLen, &[0x0A, 0xFF]),
+            // Field 1 LEN declaring 10 bytes with 2 present.
+            (K::TruncatedBytes { missing: 8 }, &[0x0A, 0x0A, 0x01, 0x02]),
+            // Field 1 END_GROUP with no matching START_GROUP.
+            (K::InvalidGroupEnd, &[0x0C]),
+        ];
+        for (kind, buf) in cases {
+            let marker = malformity_marker(&kind);
+            let rendered = decode_and_render(
+                buf,
+                None,
+                DecodeRenderOpts {
+                    annotations: true,
+                    emit_header: true,
+                    ..Default::default()
+                },
+            );
+            let text = String::from_utf8(rendered.clone()).unwrap();
+            assert!(text.contains(marker), "{marker} not rendered: {text}");
+            let wire = crate::serialize::encode_text::encode_text_to_binary(&rendered);
+            assert_eq!(wire, buf, "{marker} did not round-trip: {text}");
+        }
     }
 
     #[test]

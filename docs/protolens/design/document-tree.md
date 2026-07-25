@@ -87,38 +87,59 @@ invalidating another node's index — the trade-off is that the array
 grows monotonically and accumulates orphaned entries, which is accepted
 as a cheap, session-scoped cost.
 
-### The `doc_next` invariant splicing depends on
+### The seam `doc_next` does *not* directly give you
 
-Step 3 above only works because `idx`'s `doc_next` — read *before* the
-splice mutates anything — always points to a node outside `idx`'s own
-subtree: it is `idx`'s document-order successor, and a subtree's own
-descendants can never be their ancestor's successor. This makes
-`doc_next` the *only* piece of state `splice_override` needs in order to
-find where to re-attach the new subtree, and it is also the seam the
-batch-end downstream-correction walk (`finalize_override_batch`,
-[override-collection.md](override-collection.md)) starts from to bring
-every later node's stale `text_range` back in sync.
+It is tempting to assume `idx.doc_next` is the seam step 3 needs — that
+because `doc_next` is a document-order successor, and a node's own
+descendants can never be its successor, `idx.doc_next` must point
+somewhere outside `idx`'s subtree. That is true of a *leaf*, and it is
+true of `idx` immediately after `build_tree` if `idx` is childless. It is
+**false in general**, and specifically false in exactly the case the
+splice machinery cares about: as soon as `idx` has any descendants,
+`idx`'s document-order successor *is* its own first descendant, because
+document order is pre-order — a container's opening line precedes its
+children's lines. So for any node with children, `idx.doc_next` points
+*into* `idx`'s subtree.
+
+This is why step 3 does not use `idx.doc_next` as the seam but as a
+*starting point*: `doc_next_after_subtree`
+(`override_apply.rs:120-134`) walks forward from it, skipping every node
+in `idx`'s previously-collected descendant set, and returns the first
+node genuinely outside. That returned node — not `idx.doc_next` — is the
+seam the new subtree's document-order-last node is stitched onto, and it
+is also where the batch-end downstream-correction walk
+(`finalize_override_batch`, [override-collection.md](override-collection.md))
+begins bringing every later node's stale `text_range` back in sync.
 
 Because of this, `doc_next`/`doc_prev` are load-bearing far beyond
 ordinary "next/previous" navigation, and any code outside
-`splice_override` itself that touches them must preserve the invariant
-exactly. A 2026-07-25 bug did not: the override-select pane's live-preview
-retry path (re-previewing a different candidate on the same node,
-[override-select-pane.md](override-select-pane.md)) truncates a chunk of
-the array back to a watermark before re-splicing, and — reasoning that
-`idx`'s previous preview subtree was being discarded anyway — defensively
-nulled `idx.doc_next` along with `first_child`/`last_child`. Unlike those
-two pointers, `doc_next` never points into the truncated range, so this
-was never necessary; forcing it to `None` severed the document-order
-chain from `idx` onward, silently disabling the batch-end correction walk
-for every splice that followed and eventually producing out-of-order,
-overlapping line patches. The fix was simply to leave `doc_next` alone on
-that path. The lesson generalizes: any future code that mutates
-`first_child`/`last_child`/`doc_next`/`doc_prev` outside `splice_override`
-should treat `doc_next` as a different kind of pointer from the other
-three — it points *away* from the subtree being discarded, not into it —
-rather than assuming "we're discarding this node's subtree" justifies
-clearing all of its outgoing pointers uniformly.
+`splice_override` itself that touches them must reproduce this
+recomputation. A 2026-07-25 bug did not. The override-select pane's
+live-preview retry path (re-previewing a different candidate on the same
+node, [override-select-pane.md](override-select-pane.md)) truncates the
+array back to a watermark before re-splicing. It nulled
+`first_child`/`last_child` defensively — correct, since both pointed into
+the truncated range — but left `doc_next` untouched, on the mistaken
+"successor is always outside the subtree" reasoning above. Since
+`doc_next` pointed at the previous preview's first child, i.e. *at or
+past the watermark*, truncation left it dangling at an index that the
+very next splice would make valid again by pushing fresh nodes into those
+same slots. The result was a **cycle** wired into the document-order
+chain, which hung `finalize_override_batch`'s forward walk forever.
+
+The fix (`override_select.rs:774-797`) is to recompute the seam with
+`collect_descendants` + `doc_next_after_subtree` and store it into
+`idx.doc_next` *before* `tree.truncate(watermark)` runs — while
+`first_child`/`last_child` still describe the pre-truncation subtree the
+descendant set is derived from. Ordering matters: after the truncation
+the information needed to compute the seam no longer exists.
+
+The lesson generalizes: `doc_next` is a different kind of pointer from
+`first_child`/`last_child`/`doc_prev` in that it *may* point into the
+subtree being discarded and *may* point outside it, and which one is the
+case depends on whether `idx` currently has descendants. Neither
+"clear it, we're discarding this subtree" nor "leave it, it points
+outside" is correct unconditionally; only recomputing it is.
 
 ### `rendered_as`: provenance, not just "is there an override"
 

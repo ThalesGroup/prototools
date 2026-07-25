@@ -37,7 +37,7 @@ use prototext_core::serialize::render_text::{
     decode_and_render, decode_and_render_indexed, DecodeRenderOpts,
 };
 
-use crate::colorize::{self, SyntaxRole};
+use crate::colorize::{self, LineStyles, SyntaxRole};
 use crate::decode::{self, Decoded, DescriptorContext, TreeNode};
 use crate::export_descriptor;
 use crate::extract::{self, ExtractFormat};
@@ -575,7 +575,7 @@ pub struct App {
     /// — each entry holds that line's `(column range, role)` pairs.
     /// Spliced in lockstep with `lines` by `apply_override`, so no
     /// separate offset-shifting bookkeeping is needed.
-    line_styles: Vec<Vec<(Range<usize>, SyntaxRole)>>,
+    line_styles: Vec<LineStyles>,
     /// Resolved color theme (spec 0116 §9) — fixed for the session, never
     /// `ThemeKind::System` (resolved once in `main.rs` before `App::new`).
     theme: ThemeKind,
@@ -701,11 +701,11 @@ pub struct App {
     /// one outstanding preview's worth of disposable nodes exists at a
     /// time. Reset to `None` in `close_override`.
     preview_tree_watermark: Option<usize>,
-    /// Spec 0163: `splice_override`'s live-preview node budget — see
-    /// `OVERRIDE_SPLICE_NODE_BUDGET_DEFAULT`'s doc comment. Defaults to
-    /// that constant, overridable at startup via `main.rs`'s
-    /// `--override-preview-node-budget`.
-    pub(crate) override_splice_node_budget: usize,
+    /// Spec 0174: `splice_override`'s live-preview interior byte budget —
+    /// see `OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT`'s doc comment. Defaults
+    /// to that constant, overridable at startup via `main.rs`'s
+    /// `--override-preview-byte-budget`.
+    pub(crate) override_preview_byte_budget: usize,
     /// `true` when the override pane has focus (spec 0114 §3's `Tab`
     /// toggle); meaningless while `override_target` is `None`.
     override_focus: bool,
@@ -1129,7 +1129,7 @@ impl App {
             command_pan_offset: 0,
             override_target: None,
             preview_tree_watermark: None,
-            override_splice_node_budget: Self::OVERRIDE_SPLICE_NODE_BUDGET_DEFAULT,
+            override_preview_byte_budget: Self::OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT,
             override_focus: false,
             override_opened_from_manage: false,
             ctx,

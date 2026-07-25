@@ -1308,26 +1308,25 @@ fn export_descriptor_bytes_on_a_scalar_leaf_cursor_is_an_error() {
     assert!(err.contains("not a message/group"), "got: {err}");
 }
 
-/// Fixture shared by the `node_budget` tests below: a `Holder` message
-/// with one `bytes blob = 1` field, whose raw payload is `field_count`
-/// repetitions of a 2-byte `field 1 (varint) = 1` entry — far more than
-/// `OVERRIDE_SPLICE_NODE_BUDGET` when `field_count` is chosen
-/// accordingly. Returns the ready-to-splice `App` and `blob`'s own tree
-/// index, with `override_target` already set to it.
-fn node_budget_fixture(field_count: usize) -> (App, usize) {
+/// Fixture shared by the preview-budget tests below: a `Holder` message
+/// with one `bytes blob = 1` field carrying `payload` verbatim as its
+/// raw interior. Returns the ready-to-splice `App` and `blob`'s own
+/// tree index, with `override_target` already set to it.
+fn preview_budget_fixture_bytes(payload: &[u8]) -> (App, usize) {
     use prost::Message as _;
     use prost_types::field_descriptor_proto::{Label, Type};
     use prost_types::{
         DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
     };
-    use prototext_core::helpers::{write_tag, write_varint, WT_LEN, WT_VARINT};
+    use prototext_core::helpers::{write_tag, write_varint, WT_LEN};
 
     use crate::decode::{decode, DescriptorContext};
 
-    // `Empty` has no declared fields, so every entry in `blob`'s
-    // reinterpreted payload below lands as an unknown numeric field —
-    // still budget-counted, per `render_message`'s loop, regardless of
-    // whether it resolves against the schema.
+    // `Empty` has no declared fields, so retyping `blob` to it makes
+    // every entry of the reinterpreted payload land as an unknown
+    // numeric field — which is exactly the pathological shape spec 0174
+    // bounds: the byte budget applies to the raw input regardless of
+    // whether anything in it resolves against the schema.
     let empty_msg = DescriptorProto {
         name: Some("Empty".to_string()),
         ..Default::default()
@@ -1343,36 +1342,58 @@ fn node_budget_fixture(field_count: usize) -> (App, usize) {
         }],
         ..Default::default()
     };
+    // The other candidate type `blob` gets retyped to: unlike `Empty` it
+    // resolves the interior into real nested *messages*, which is what
+    // spec 0174 G3 is about — the surviving prefix must keep its nesting,
+    // not collapse into one bytes line.
+    let inner_msg = DescriptorProto {
+        name: Some("Inner".to_string()),
+        field: vec![FieldDescriptorProto {
+            name: Some("v".to_string()),
+            number: Some(1),
+            label: Some(Label::Optional as i32),
+            r#type: Some(Type::Int64 as i32),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let wrapper_msg = DescriptorProto {
+        name: Some("Wrapper".to_string()),
+        field: vec![FieldDescriptorProto {
+            name: Some("items".to_string()),
+            number: Some(1),
+            label: Some(Label::Repeated as i32),
+            r#type: Some(Type::Message as i32),
+            type_name: Some(".test.Inner".to_string()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
     let file = FileDescriptorProto {
-        name: Some("test_node_budget.proto".to_string()),
+        name: Some("test_preview_budget.proto".to_string()),
         package: Some("test".to_string()),
-        message_type: vec![holder_msg, empty_msg],
+        message_type: vec![holder_msg, empty_msg, wrapper_msg, inner_msg],
         syntax: Some("proto3".to_string()),
         ..Default::default()
     };
     let fds = FileDescriptorSet { file: vec![file] };
 
     // Unique per call (`static COUNTER`, matching `support.rs`'s
-    // convention): the two `node_budget` tests both call this fixture
-    // and run concurrently as separate test-binary threads, so a fixed
+    // convention): the preview-budget tests all call this fixture and
+    // run concurrently as separate test-binary threads, so a fixed
     // filename would race on `write`/`load`/`remove_file`.
     static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let descriptor_path =
-        std::env::temp_dir().join(format!("protolens-tui-node-budget-descriptor-{n}.pb"));
+        std::env::temp_dir().join(format!("protolens-tui-preview-budget-descriptor-{n}.pb"));
     std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
     let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
     std::fs::remove_file(&descriptor_path).unwrap();
 
-    let mut inner_payload = Vec::with_capacity(field_count * 2);
-    for _ in 0..field_count {
-        write_tag(1, WT_VARINT, &mut inner_payload);
-        write_varint(1, &mut inner_payload);
-    }
     let mut blob = Vec::new();
     write_tag(1, WT_LEN, &mut blob);
-    write_varint(inner_payload.len() as u64, &mut blob);
-    blob.extend_from_slice(&inner_payload);
+    write_varint(payload.len() as u64, &mut blob);
+    blob.extend_from_slice(payload);
 
     let decoded = decode(&blob, &mut ctx, Some("test.Holder"), 2, false).unwrap();
     let mut app = App::new(
@@ -1395,46 +1416,79 @@ fn node_budget_fixture(field_count: usize) -> (App, usize) {
     (app, blob_idx)
 }
 
-/// Spec 0163: a candidate type structurally mismatched against a large
-/// raw payload can make the recursive-descent decoder mis-parse
-/// arbitrary bytes into a pathologically large synthetic tree (observed
-/// on a real ~1.1MB field: over a million spans from a single splice).
-/// `App::override_splice_node_budget` bounds this for a *live preview*
-/// (`is_preview: true`): a splice whose candidate decode exceeds the
-/// budget must still complete (not hang/panic), with a bounded
-/// tree/lines footprint and a visible `NODE_BUDGET_EXCEEDED` marker in
-/// place of the undecoded remainder. A confirmed override
-/// (`is_preview: false`) is intentionally exempt — see the companion
-/// test below.
+/// `preview_budget_fixture_bytes` with an interior of `field_count`
+/// repetitions of a 2-byte `field 1 (varint) = 1` entry — so the
+/// interior is exactly `2 * field_count` bytes, and every *even* cut
+/// offset lands on a field boundary (no straddler) while every odd one
+/// lands mid-field.
+fn preview_budget_fixture(field_count: usize) -> (App, usize) {
+    use prototext_core::helpers::{write_tag, write_varint, WT_VARINT};
+
+    let mut payload = Vec::with_capacity(field_count * 2);
+    for _ in 0..field_count {
+        write_tag(1, WT_VARINT, &mut payload);
+        write_varint(1, &mut payload);
+    }
+    preview_budget_fixture_bytes(&payload)
+}
+
+/// Number of `...` truncation markers (spec 0174 §S4) in `app.lines`.
+fn ellipsis_line_count(app: &App) -> usize {
+    app.lines.iter().filter(|l| l.trim() == "...").count()
+}
+
+/// `app.lines` with each line's indentation and trailing `#@` annotation
+/// stripped, so the assertions below read against the prototext itself.
+fn bare_lines(app: &App) -> Vec<String> {
+    app.lines
+        .iter()
+        .map(|l| l.split("  #@").next().unwrap_or(l).trim().to_string())
+        .collect()
+}
+
+/// Spec 0174 (superseding spec 0163): a candidate type structurally
+/// mismatched against a large raw payload can make the recursive-descent
+/// decoder mis-parse arbitrary bytes into a pathologically large
+/// synthetic tree (observed on a real ~1.1MB field: over a million spans
+/// from a single splice). `App::override_preview_byte_budget` bounds
+/// this at the *input*: a *live preview* (`is_preview: true`) hands the
+/// renderer at most that many interior bytes, so the decode, the render,
+/// the span count and the line count are all bounded together, and the
+/// splice completes (no hang/panic) with a visible `...` marker in place
+/// of the omitted remainder. A confirmed override (`is_preview: false`)
+/// is intentionally exempt — see the companion test below.
 #[test]
-fn splice_override_on_a_pathological_candidate_is_bounded_by_the_node_budget() {
-    let field_count = App::OVERRIDE_SPLICE_NODE_BUDGET_DEFAULT + 10_000;
-    let (mut app, blob_idx) = node_budget_fixture(field_count);
+fn preview_on_a_pathological_candidate_is_bounded_by_the_byte_budget() {
+    let field_count = App::OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT * 2;
+    let (mut app, blob_idx) = preview_budget_fixture(field_count);
 
     app.splice_override(blob_idx, Some("test.Empty".to_string()), true, None)
         .expect("a pathological candidate splice must still complete");
 
+    // The budget admits at most one node per two interior bytes, i.e.
+    // a quarter of `field_count` here — plus the document's own handful.
     assert!(
-        app.tree.len() < field_count,
-        "tree footprint must be bounded by the node budget, not track the \
+        app.tree.len() < field_count / 2,
+        "tree footprint must be bounded by the byte budget, not track the \
          mis-parsed field count: tree.len()={} field_count={field_count}",
         app.tree.len()
     );
-    assert!(
-        app.lines.iter().any(|l| l.contains("NODE_BUDGET_EXCEEDED")),
-        "a budget-exceeded marker must be visible in the rendered output"
+    assert_eq!(
+        ellipsis_line_count(&app),
+        1,
+        "a truncated preview must show exactly one `...` marker"
     );
 }
 
-/// Companion to the test above (spec 0163): the same pathological
+/// Companion to the test above (spec 0174 G5): the same pathological
 /// candidate, but spliced as a *confirmed* override (`is_preview:
 /// false`) rather than a live preview — must render completely, with no
-/// `NODE_BUDGET_EXCEEDED` truncation, since this is the content that
-/// actually gets shown as the real override, not a speculative guess.
+/// truncation and no `...`, since this is the content that actually gets
+/// shown as the real override, not a speculative guess.
 #[test]
-fn splice_override_on_a_confirmed_override_is_not_truncated_by_the_node_budget() {
-    let field_count = App::OVERRIDE_SPLICE_NODE_BUDGET_DEFAULT + 10_000;
-    let (mut app, blob_idx) = node_budget_fixture(field_count);
+fn confirmed_override_is_not_truncated() {
+    let field_count = App::OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT * 2;
+    let (mut app, blob_idx) = preview_budget_fixture(field_count);
 
     app.splice_override(blob_idx, Some("test.Empty".to_string()), false, None)
         .expect("a confirmed override splice must complete");
@@ -1442,38 +1496,255 @@ fn splice_override_on_a_confirmed_override_is_not_truncated_by_the_node_budget()
     assert!(
         app.tree.len() >= field_count,
         "a confirmed override must render completely, not be truncated by \
-         the preview-only node budget: tree.len()={} field_count={field_count}",
+         the preview-only byte budget: tree.len()={} field_count={field_count}",
         app.tree.len()
     );
-    assert!(
-        !app.lines.iter().any(|l| l.contains("NODE_BUDGET_EXCEEDED")),
-        "a confirmed override must show no budget-exceeded marker"
+    assert_eq!(
+        ellipsis_line_count(&app),
+        0,
+        "a confirmed override must show no truncation marker"
     );
 }
 
-/// Spec 0163 (CLI-overridable follow-up): `App::override_splice_node_
-/// budget` is a plain field, not a fixed constant — setting it to a
-/// custom value (as `main.rs`'s `--override-preview-node-budget` does)
-/// must actually change where a live-preview splice truncates, not just
-/// the default.
+/// Spec 0174 §S2: `App::override_preview_byte_budget` is a plain field,
+/// not a fixed constant — setting it to a custom value (as `main.rs`'s
+/// `--override-preview-byte-budget` does) must actually change where a
+/// live-preview splice cuts, not just the default.
 #[test]
-fn splice_override_preview_respects_a_custom_node_budget() {
+fn preview_respects_a_custom_byte_budget() {
     let field_count = 50;
-    let custom_budget = 10;
-    let (mut app, blob_idx) = node_budget_fixture(field_count);
-    app.override_splice_node_budget = custom_budget;
+    let (mut app, blob_idx) = preview_budget_fixture(field_count);
+    app.override_preview_byte_budget = 20;
 
     app.splice_override(blob_idx, Some("test.Empty".to_string()), true, None)
-        .expect("a pathological candidate splice must still complete");
+        .expect("a preview splice must complete under a custom budget");
+
+    // 20 bytes / 2 bytes per entry = 10 entries, well under the 50 the
+    // untruncated payload would have produced.
+    assert_eq!(
+        bare_lines(&app).iter().filter(|l| *l == "1: 1").count(),
+        10,
+        "a lower custom budget must be honored, not fall back to the \
+         default: lines={:?}",
+        app.lines
+    );
+    assert_eq!(ellipsis_line_count(&app), 1);
+}
+
+/// Spec 0174 G3: the cut is on the *input* bytes, so whatever survives
+/// it is decoded and rendered exactly as it would have been in the
+/// untruncated document — the entries before the cut keep their full
+/// nesting and their declared types, rather than collapsing into a
+/// single opaque bytes line the way naive field-level truncation would
+/// leave them.
+#[test]
+fn preview_renders_complete_nested_fields_up_to_the_cut() {
+    use prototext_core::helpers::{write_tag, write_varint, WT_LEN, WT_VARINT};
+
+    // 20 repetitions of `items { v: 1 }` — 4 bytes each.
+    let mut payload = Vec::new();
+    for _ in 0..20 {
+        write_tag(1, WT_LEN, &mut payload);
+        write_varint(2, &mut payload);
+        write_tag(1, WT_VARINT, &mut payload);
+        write_varint(1, &mut payload);
+    }
+    let (mut app, blob_idx) = preview_budget_fixture_bytes(&payload);
+    // A multiple of 4 => the cut lands exactly on an entry boundary.
+    app.override_preview_byte_budget = 20;
+
+    app.splice_override(blob_idx, Some("test.Wrapper".to_string()), true, None)
+        .expect("a preview splice must complete");
+
+    // Everything below the two enclosing headers, minus the marker.
+    let interior: Vec<String> = bare_lines(&app)
+        .into_iter()
+        .skip(2)
+        .filter(|l| *l != "...")
+        .collect();
+    let mut expected: Vec<String> = Vec::new();
+    for _ in 0..5 {
+        expected.extend(["items {", "v: 1", "}"].map(str::to_string));
+    }
+    expected.push("}".to_string()); // `blob`'s own closing brace.
+    expected.push("}".to_string()); // the document root's.
+    assert_eq!(
+        interior, expected,
+        "the surviving entries must keep their nesting and declared \
+         types: lines={:?}",
+        app.lines
+    );
+}
+
+/// Spec 0174 G4: cutting mid-entry makes the renderer emit its own
+/// malformity annotation for the straddling bytes — which is an artifact
+/// of *our* cut, not of the document, so it must never reach the user.
+/// §S4 replaces that line with the plain `...` marker.
+#[test]
+fn preview_shows_no_malformity_marker() {
+    let field_count = 50;
+    let (mut app, blob_idx) = preview_budget_fixture(field_count);
+    // Odd budget => the cut lands mid-entry, between an entry's tag and
+    // its varint payload.
+    app.override_preview_byte_budget = 21;
+
+    app.splice_override(blob_idx, Some("test.Empty".to_string()), true, None)
+        .expect("a preview splice must complete on a mid-entry cut");
 
     assert!(
-        app.tree.len() < App::OVERRIDE_SPLICE_NODE_BUDGET_DEFAULT,
-        "a lower custom budget must be honored, not fall back to the \
-         default: tree.len()={} custom_budget={custom_budget}",
-        app.tree.len()
+        !app.lines.iter().any(|l| l.contains("TRUNCATED_BYTES")
+            || l.contains("MALFORMED")
+            || l.contains("UNEXPECTED_EOF")),
+        "no malformity marker may leak out of a preview: lines={:?}",
+        app.lines
+    );
+    assert_eq!(ellipsis_line_count(&app), 1);
+}
+
+/// Spec 0174 §S4: the `...` is the *last* thing inside the truncated
+/// node — just before its closing brace — so it reads as "and there is
+/// more below", not as a sibling of what follows.
+#[test]
+fn truncated_preview_ends_with_an_ellipsis_line() {
+    let field_count = 50;
+    let (mut app, blob_idx) = preview_budget_fixture(field_count);
+    app.override_preview_byte_budget = 20;
+
+    app.splice_override(blob_idx, Some("test.Empty".to_string()), true, None)
+        .expect("a preview splice must complete");
+
+    let marker = app
+        .lines
+        .iter()
+        .position(|l| l.trim() == "...")
+        .expect("a truncated preview must carry a `...` marker");
+    assert_eq!(
+        app.lines[marker + 1].trim(),
+        "}",
+        "the marker must sit immediately before the node's closing brace: \
+         lines={:?}",
+        app.lines
+    );
+    // S4: the marker line carries no styles and no `NodeSpan` — it is
+    // not selectable, not navigable, not part of any span range.
+    assert!(app.line_styles[marker].is_empty());
+    assert!(
+        !app.tree
+            .iter()
+            .any(|n| n.span.text_range == (marker..marker + 1)),
+        "no tree node may claim the marker line"
+    );
+}
+
+/// Spec 0174 G4's converse: a preview that fits within the budget is
+/// byte-for-byte the confirmed rendering — no marker, nothing to
+/// mistake for missing content.
+#[test]
+fn untruncated_preview_has_no_ellipsis_line() {
+    let (mut app, blob_idx) = preview_budget_fixture(10);
+
+    app.splice_override(blob_idx, Some("test.Empty".to_string()), true, None)
+        .expect("a preview splice must complete");
+
+    assert_eq!(
+        ellipsis_line_count(&app),
+        0,
+        "an untruncated preview must show no marker: lines={:?}",
+        app.lines
+    );
+}
+
+/// Spec 0174 §S3 `TruncShape::CharBoundary`: a `string` target is cut at
+/// the last UTF-8 character boundary at or before the budget, never
+/// mid-character — otherwise the renderer would see (and flag) invalid
+/// UTF-8 that the document does not actually contain.
+#[test]
+fn preview_of_a_long_string_stays_valid_utf8() {
+    // 50 two-byte characters; an odd budget guarantees the naive cut
+    // would land mid-character.
+    let payload = "é".repeat(50);
+    let (mut app, blob_idx) = preview_budget_fixture_bytes(payload.as_bytes());
+    app.override_preview_byte_budget = 21;
+
+    app.splice_override(blob_idx, Some("string".to_string()), true, None)
+        .expect("a string preview must complete on a mid-character cut");
+
+    let rendered = app
+        .lines
+        .iter()
+        .find(|l| l.contains('"'))
+        .expect("the string value must be rendered");
+    assert!(
+        rendered.contains(&"é".repeat(10)) && !rendered.contains(&"é".repeat(11)),
+        "the cut must fall back to the last character boundary at or \
+         before the budget: {rendered}"
     );
     assert!(
-        app.lines.iter().any(|l| l.contains("NODE_BUDGET_EXCEEDED")),
-        "a budget-exceeded marker must be visible in the rendered output"
+        !rendered.contains("INVALID_STRING"),
+        "the cut must never leave a partial character behind: {rendered}"
+    );
+    assert_eq!(ellipsis_line_count(&app), 1);
+}
+
+/// Spec 0174 §S3 `TruncShape::Never`: a singular numeric value is
+/// bounded by construction (10 bytes at most), so it is never cut — a
+/// budget lower than its own width must not corrupt it.
+#[test]
+fn preview_of_a_singular_varint_is_never_truncated() {
+    let (mut app, _inner_idx, id_idx) = type_as_fixture();
+    app.override_target = Some(id_idx);
+    app.override_preview_byte_budget = 1;
+
+    app.splice_override(id_idx, Some("int64".to_string()), true, None)
+        .expect("a scalar preview splice must complete");
+
+    assert_eq!(
+        ellipsis_line_count(&app),
+        0,
+        "a singular varint must never be truncated: lines={:?}",
+        app.lines
+    );
+    assert!(
+        bare_lines(&app).iter().any(|l| l == "id: 5"),
+        "the value must survive intact: lines={:?}",
+        app.lines
+    );
+}
+
+/// Spec 0174 §S3 (Offsets): rewriting the LEN framing can shrink the
+/// length varint — here a 3-byte original (16 400 bytes) becomes a
+/// 2-byte one (4096) — so every span the renderer reports sits one byte
+/// earlier than in `self.blob`. `splice_override` folds that shift into
+/// `byte_offset`; if it did not, every child's `raw_range` would be off
+/// by one and point at garbage.
+#[test]
+fn preview_child_spans_survive_the_length_prefix_shift() {
+    let field_count = 8_200; // 16 400 interior bytes => 3-byte length varint.
+    let (mut app, blob_idx) = preview_budget_fixture(field_count);
+
+    app.splice_override(blob_idx, Some("test.Empty".to_string()), true, None)
+        .expect("a preview splice must complete");
+
+    // Walked through the sibling chain, not by scanning for `parent ==
+    // blob_idx`: the pushed copy of the local root is deliberately left
+    // orphaned (it carries `blob_idx`'s own parent link) and is never
+    // part of the live tree.
+    let mut child = app.tree[blob_idx].first_child;
+    let mut count = 0usize;
+    while let Some(c) = child {
+        let r = app.tree[c].span.raw_range.clone();
+        assert_eq!(
+            &app.blob[r.clone()],
+            &[0x08u8, 0x01],
+            "child {c}'s raw_range {r:?} must still point at its own \
+             on-the-wire bytes"
+        );
+        count += 1;
+        child = app.tree[c].next_sibling;
+    }
+    assert_eq!(
+        count,
+        App::OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT / 2,
+        "the whole budget's worth of entries must be rendered"
     );
 }

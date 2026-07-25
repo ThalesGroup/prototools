@@ -6,9 +6,21 @@ SPDX-License-Identifier: MIT
 
 # 0163 — protolens: cap a single override splice's decode/render size
 
-Status: implemented
+Status: implemented (mechanism replaced by
+docs/specs/0174-preview-interior-truncation-and-node-budget-removal.md)
 App: protolens
 Implemented in: 2026-07-24
+
+> **Mechanism replaced.** The problem this spec identified, and its
+> preview-only scope, both stand — but the *node* budget it added to
+> `prototext-core` cost that crate its unconditional round-trip promise
+> (`NODE_BUDGET_EXCEEDED` had no `encode_text` arm). Spec 0174 deletes
+> `node_budget`, `App::override_splice_node_budget` and
+> `--override-preview-node-budget`, and bounds the preview by truncating
+> the *input bytes* instead: `App::override_preview_byte_budget` /
+> `--override-preview-byte-budget`. Everything below describes the
+> superseded mechanism; the render-cache `is_preview` key it introduced
+> is unchanged.
 
 ## Background
 

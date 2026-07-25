@@ -80,13 +80,21 @@ behavior, YAML serialization), not a parallel code path.
 
 `render_overrides` is the single function that keeps the displayed
 document consistent with the current collection. It is a thin wrapper: it
-bumps a re-entrancy counter (`override_batch_depth`), delegates the
-actual recursive walk to `render_overrides_inner`, and — only once the
-counter returns to zero, i.e. only for the *outermost* call — runs a
-single batch-finalization step. Recursive calls made while already inside
-a batch (e.g. auto-expansion triggering a nested `render_overrides` on a
-freshly-revealed Any payload) skip finalization entirely and let the
-outermost call pay for it once.
+bumps a depth counter (`override_batch_depth`), delegates the actual
+recursive walk to `render_overrides_inner`, and — only once the counter
+returns to zero — runs a single batch-finalization step.
+
+The counter's job is narrower than "re-entrancy counter" suggests: no
+call site anywhere invokes `render_overrides` from inside a walk (the
+recursion is `render_overrides_inner` calling *itself*, which never
+touches the counter), so in practice it only ever holds 0 or 1. What it
+actually encodes is a *mode flag* read by `splice_override`: non-zero
+means "you are being called from inside a walk, so defer finalization to
+that walk's own `render_overrides`," while zero means "you are a
+standalone splice — finalize immediately yourself." That second case is
+the live-preview path, and it is exactly why previewing a single
+candidate pays a full batch finalization. Reading the counter as genuine
+nesting support overstates what is exercised or tested.
 
 `render_overrides_inner` walks the tree in document order (pre-order,
 left to right) from a given starting node. At each node it:
