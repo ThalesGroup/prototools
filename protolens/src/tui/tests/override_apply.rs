@@ -138,7 +138,7 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
     app.override_target = Some(node_idx);
 
     // 1) Re-typed as itself: idempotent structural round-trip.
-    app.splice_override(node_idx, Some("test.Node".to_string()))
+    app.splice_override(node_idx, Some("test.Node".to_string()), false)
         .expect("re-typing as the same type must succeed");
     assert_children(&app, "re-typed as itself");
     assert_eq!(
@@ -151,13 +151,13 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
     );
 
     // 2) Raw override (no schema).
-    app.splice_override(node_idx, None)
+    app.splice_override(node_idx, None, false)
         .expect("raw override must succeed");
     assert_eq!(app.tree[node_idx].span.type_fqdn, None);
 
     // 3) Re-typed again, on top of two prior overrides — exercises
     // repeated overrides of the same node.
-    app.splice_override(node_idx, Some("test.Node".to_string()))
+    app.splice_override(node_idx, Some("test.Node".to_string()), false)
         .expect("third override must still succeed");
     assert_children(&app, "re-typed a third time");
 
@@ -271,7 +271,7 @@ fn splice_override_on_an_incompatible_scalar_does_not_panic() {
         "a WT_LEN scalar must be overridable"
     );
 
-    app.splice_override(s_idx, Some("incompat.Target".to_string()))
+    app.splice_override(s_idx, Some("incompat.Target".to_string()), false)
         .expect("override onto an incompatible type must still succeed");
     assert!(
         app.lines
@@ -348,7 +348,7 @@ fn splice_override_on_a_varint_mismatch_does_not_corrupt_type_mismatch_annotatio
         .position(|n| n.span.field_number == 2)
         .expect("must find field 2");
 
-    app.splice_override(idx, Some("double".to_string()))
+    app.splice_override(idx, Some("double".to_string()), false)
         .expect("override onto an incompatible primitive type must still succeed");
 
     assert!(
@@ -378,7 +378,7 @@ fn deactivating_override_reclamps_pan_offset_to_the_shrunk_content() {
     let (mut app, inner_idx, _) = type_as_fixture();
     app.main_area = Rect::new(0, 0, 10, 5);
 
-    app.splice_override(inner_idx, Some("int32".to_string()))
+    app.splice_override(inner_idx, Some("int32".to_string()), false)
         .expect("overriding a submessage field as int32 must still succeed (as a type mismatch)");
     assert!(
         app.lines.iter().any(|l| l.contains("TYPE_MISMATCH")),
@@ -399,7 +399,7 @@ fn deactivating_override_reclamps_pan_offset_to_the_shrunk_content() {
     // retype (spec 0135 G1) — `None` is a distinct, explicit "show
     // raw" choice a user can select in the override pane, not what
     // happens when an override is simply removed.
-    app.splice_override(inner_idx, Some("test.Inner".to_string()))
+    app.splice_override(inner_idx, Some("test.Inner".to_string()), false)
         .unwrap();
 
     let usable_width = app.main_area.width as usize - 1;
@@ -544,7 +544,7 @@ fn deactivating_override_recomputes_the_pan_bound_against_the_post_splice_scroll
     app.cursor = pad_a_idx;
     app.rebuild_visible_rows();
 
-    app.splice_override(inner_idx, Some("int32".to_string()))
+    app.splice_override(inner_idx, Some("int32".to_string()), false)
         .expect("overriding a submessage field as int32 must still succeed (as a type mismatch)");
 
     let wide_field_row = app.lines.iter().position(|l| l.contains(WIDE_FIELD_NAME));
@@ -560,7 +560,7 @@ fn deactivating_override_recomputes_the_pan_bound_against_the_post_splice_scroll
     // collapse back to its real 4-line shape, pushing `pad_a` (the
     // cursor's node) several rows further down — `scroll_offset` must
     // advance to keep it in view.
-    app.splice_override(inner_idx, Some("test.Inner".to_string()))
+    app.splice_override(inner_idx, Some("test.Inner".to_string()), false)
         .unwrap();
 
     let wide_field_row = app
@@ -585,7 +585,7 @@ fn deactivating_override_recomputes_the_pan_bound_against_the_post_splice_scroll
 #[test]
 fn splice_override_on_a_group_field_keeps_the_group_prefix() {
     let (mut app, grp_idx) = group_type_fixture();
-    app.splice_override(grp_idx, Some("test.NewGroup".to_string()))
+    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false)
         .unwrap();
     let header = &app.lines[app.tree[grp_idx].span.text_range.start];
     assert!(
@@ -606,7 +606,7 @@ fn splice_override_on_a_group_field_keeps_the_group_prefix() {
 #[test]
 fn splice_override_keeps_colors_aligned_after_a_header_length_change() {
     let (mut app, grp_idx) = group_type_fixture();
-    app.splice_override(grp_idx, Some("test.NewGroup".to_string()))
+    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false)
         .unwrap();
     let value_idx = app.tree[grp_idx]
         .first_child
@@ -636,7 +636,7 @@ fn splice_override_on_a_group_field_keeps_the_tag_ohb_modifier() {
         header_before.contains("tag_ohb: 1"),
         "fixture must exercise the anomaly modifier, got: {header_before:?}"
     );
-    app.splice_override(grp_idx, Some("test.NewGroup".to_string()))
+    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false)
         .unwrap();
     let header = &app.lines[app.tree[grp_idx].span.text_range.start];
     assert!(
@@ -651,7 +651,7 @@ fn splice_override_on_a_group_field_keeps_the_tag_ohb_modifier() {
 #[test]
 fn splice_override_on_a_wt_len_field_has_no_group_prefix() {
     let (mut app, inner_idx, _) = type_as_fixture();
-    app.splice_override(inner_idx, Some("test.Outer".to_string()))
+    app.splice_override(inner_idx, Some("test.Outer".to_string()), false)
         .unwrap();
     let header = &app.lines[app.tree[inner_idx].span.text_range.start];
     assert!(
@@ -676,7 +676,7 @@ fn splice_override_preserves_the_header_line_indentation() {
     let (mut app, inner_idx, _) = type_as_fixture();
     let start = app.tree[inner_idx].span.text_range.start;
     let indent_before = app.lines[start].len() - app.lines[start].trim_start().len();
-    app.splice_override(inner_idx, Some("test.Outer".to_string()))
+    app.splice_override(inner_idx, Some("test.Outer".to_string()), false)
         .unwrap();
     let header = &app.lines[app.tree[inner_idx].span.text_range.start];
     let indent_after = header.len() - header.trim_start().len();
@@ -697,9 +697,9 @@ fn splice_override_preserves_the_header_line_indentation() {
 #[test]
 fn splice_override_reverting_a_group_field_restores_bare_group() {
     let (mut app, grp_idx) = group_type_fixture();
-    app.splice_override(grp_idx, Some("test.NewGroup".to_string()))
+    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false)
         .unwrap();
-    app.splice_override(grp_idx, None).unwrap();
+    app.splice_override(grp_idx, None, false).unwrap();
     let header = &app.lines[app.tree[grp_idx].span.text_range.start];
     assert!(
         header.contains("#@ group"),
@@ -720,7 +720,7 @@ fn splice_override_reverting_a_group_field_restores_bare_group() {
 #[test]
 fn splice_override_shows_the_root_field_number_in_the_header_line() {
     let (mut app, _, _) = type_as_fixture();
-    app.splice_override(app.first_node, Some("test.Outer".to_string()))
+    app.splice_override(app.first_node, Some("test.Outer".to_string()), false)
         .unwrap();
     assert!(
         app.lines[0].starts_with("1 "),
@@ -735,7 +735,7 @@ fn splice_override_shows_the_root_field_number_in_the_header_line() {
 #[test]
 fn splice_override_raw_root_shows_the_field_number_in_the_header_line() {
     let (mut app, _, _) = type_as_fixture();
-    app.splice_override(app.first_node, None).unwrap();
+    app.splice_override(app.first_node, None, false).unwrap();
     assert!(
         app.lines[0].starts_with("1 "),
         "raw root header line must show the field number: {:?}",
@@ -1305,4 +1305,174 @@ fn export_descriptor_bytes_on_a_scalar_leaf_cursor_is_an_error() {
     assert!(!app.tree[app.cursor].span.is_message);
     let err = app.export_descriptor_bytes(false).unwrap_err();
     assert!(err.contains("not a message/group"), "got: {err}");
+}
+
+/// Fixture shared by the `node_budget` tests below: a `Holder` message
+/// with one `bytes blob = 1` field, whose raw payload is `field_count`
+/// repetitions of a 2-byte `field 1 (varint) = 1` entry — far more than
+/// `OVERRIDE_SPLICE_NODE_BUDGET` when `field_count` is chosen
+/// accordingly. Returns the ready-to-splice `App` and `blob`'s own tree
+/// index, with `override_target` already set to it.
+fn node_budget_fixture(field_count: usize) -> (App, usize) {
+    use prost::Message as _;
+    use prost_types::field_descriptor_proto::{Label, Type};
+    use prost_types::{
+        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+    };
+    use prototext_core::helpers::{write_tag, write_varint, WT_LEN, WT_VARINT};
+
+    use crate::decode::{decode, DescriptorContext};
+
+    // `Empty` has no declared fields, so every entry in `blob`'s
+    // reinterpreted payload below lands as an unknown numeric field —
+    // still budget-counted, per `render_message`'s loop, regardless of
+    // whether it resolves against the schema.
+    let empty_msg = DescriptorProto {
+        name: Some("Empty".to_string()),
+        ..Default::default()
+    };
+    let holder_msg = DescriptorProto {
+        name: Some("Holder".to_string()),
+        field: vec![FieldDescriptorProto {
+            name: Some("blob".to_string()),
+            number: Some(1),
+            label: Some(Label::Optional as i32),
+            r#type: Some(Type::Bytes as i32),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let file = FileDescriptorProto {
+        name: Some("test_node_budget.proto".to_string()),
+        package: Some("test".to_string()),
+        message_type: vec![holder_msg, empty_msg],
+        syntax: Some("proto3".to_string()),
+        ..Default::default()
+    };
+    let fds = FileDescriptorSet { file: vec![file] };
+
+    // Unique per call (`static COUNTER`, matching `support.rs`'s
+    // convention): the two `node_budget` tests both call this fixture
+    // and run concurrently as separate test-binary threads, so a fixed
+    // filename would race on `write`/`load`/`remove_file`.
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let descriptor_path =
+        std::env::temp_dir().join(format!("protolens-tui-node-budget-descriptor-{n}.pb"));
+    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
+    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
+    std::fs::remove_file(&descriptor_path).unwrap();
+
+    let mut inner_payload = Vec::with_capacity(field_count * 2);
+    for _ in 0..field_count {
+        write_tag(1, WT_VARINT, &mut inner_payload);
+        write_varint(1, &mut inner_payload);
+    }
+    let mut blob = Vec::new();
+    write_tag(1, WT_LEN, &mut blob);
+    write_varint(inner_payload.len() as u64, &mut blob);
+    blob.extend_from_slice(&inner_payload);
+
+    let decoded = decode(&blob, &mut ctx, Some("test.Holder"), 2, false).unwrap();
+    let mut app = App::new(
+        decoded,
+        "test.pb",
+        PathBuf::from("test.pb"),
+        2,
+        ctx,
+        ThemeKind::Dark,
+        None,
+    );
+
+    let blob_idx = app
+        .tree
+        .iter()
+        .position(|n| n.span.field_number == 1)
+        .expect("tree must contain the blob field");
+    app.override_target = Some(blob_idx);
+
+    (app, blob_idx)
+}
+
+/// Spec 0163: a candidate type structurally mismatched against a large
+/// raw payload can make the recursive-descent decoder mis-parse
+/// arbitrary bytes into a pathologically large synthetic tree (observed
+/// on a real ~1.1MB field: over a million spans from a single splice).
+/// `App::override_splice_node_budget` bounds this for a *live preview*
+/// (`is_preview: true`): a splice whose candidate decode exceeds the
+/// budget must still complete (not hang/panic), with a bounded
+/// tree/lines footprint and a visible `NODE_BUDGET_EXCEEDED` marker in
+/// place of the undecoded remainder. A confirmed override
+/// (`is_preview: false`) is intentionally exempt — see the companion
+/// test below.
+#[test]
+fn splice_override_on_a_pathological_candidate_is_bounded_by_the_node_budget() {
+    let field_count = App::OVERRIDE_SPLICE_NODE_BUDGET_DEFAULT + 10_000;
+    let (mut app, blob_idx) = node_budget_fixture(field_count);
+
+    app.splice_override(blob_idx, Some("test.Empty".to_string()), true)
+        .expect("a pathological candidate splice must still complete");
+
+    assert!(
+        app.tree.len() < field_count,
+        "tree footprint must be bounded by the node budget, not track the \
+         mis-parsed field count: tree.len()={} field_count={field_count}",
+        app.tree.len()
+    );
+    assert!(
+        app.lines.iter().any(|l| l.contains("NODE_BUDGET_EXCEEDED")),
+        "a budget-exceeded marker must be visible in the rendered output"
+    );
+}
+
+/// Companion to the test above (spec 0163): the same pathological
+/// candidate, but spliced as a *confirmed* override (`is_preview:
+/// false`) rather than a live preview — must render completely, with no
+/// `NODE_BUDGET_EXCEEDED` truncation, since this is the content that
+/// actually gets shown as the real override, not a speculative guess.
+#[test]
+fn splice_override_on_a_confirmed_override_is_not_truncated_by_the_node_budget() {
+    let field_count = App::OVERRIDE_SPLICE_NODE_BUDGET_DEFAULT + 10_000;
+    let (mut app, blob_idx) = node_budget_fixture(field_count);
+
+    app.splice_override(blob_idx, Some("test.Empty".to_string()), false)
+        .expect("a confirmed override splice must complete");
+
+    assert!(
+        app.tree.len() >= field_count,
+        "a confirmed override must render completely, not be truncated by \
+         the preview-only node budget: tree.len()={} field_count={field_count}",
+        app.tree.len()
+    );
+    assert!(
+        !app.lines.iter().any(|l| l.contains("NODE_BUDGET_EXCEEDED")),
+        "a confirmed override must show no budget-exceeded marker"
+    );
+}
+
+/// Spec 0163 (CLI-overridable follow-up): `App::override_splice_node_
+/// budget` is a plain field, not a fixed constant — setting it to a
+/// custom value (as `main.rs`'s `--override-preview-node-budget` does)
+/// must actually change where a live-preview splice truncates, not just
+/// the default.
+#[test]
+fn splice_override_preview_respects_a_custom_node_budget() {
+    let field_count = 50;
+    let custom_budget = 10;
+    let (mut app, blob_idx) = node_budget_fixture(field_count);
+    app.override_splice_node_budget = custom_budget;
+
+    app.splice_override(blob_idx, Some("test.Empty".to_string()), true)
+        .expect("a pathological candidate splice must still complete");
+
+    assert!(
+        app.tree.len() < App::OVERRIDE_SPLICE_NODE_BUDGET_DEFAULT,
+        "a lower custom budget must be honored, not fall back to the \
+         default: tree.len()={} custom_budget={custom_budget}",
+        app.tree.len()
+    );
+    assert!(
+        app.lines.iter().any(|l| l.contains("NODE_BUDGET_EXCEEDED")),
+        "a budget-exceeded marker must be visible in the rendered output"
+    );
 }

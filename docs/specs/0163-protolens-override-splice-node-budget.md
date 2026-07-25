@@ -6,8 +6,9 @@ SPDX-License-Identifier: MIT
 
 # 0163 — protolens: cap a single override splice's decode/render size
 
-Status: draft
+Status: implemented
 App: protolens
+Implemented in: 2026-07-24
 
 ## Background
 
@@ -62,10 +63,11 @@ to completion, however large the result turns out to be, before
   genuinely corrupt encodings) rather than continuing to recursively
   decode/render an unbounded amount of speculative content.
 - **G2**: `protolens`'s `splice_override` passes a concrete budget for
-  every candidate decode it performs (both live-preview and confirmed
-  real-override splices) — the only call site that speculatively
-  reinterprets bytes under a caller-chosen candidate type that may not
-  match the actual encoding.
+  every *live-preview* candidate decode it performs — the speculative
+  reinterpretation under a caller-chosen candidate type that may not
+  match the actual encoding. A *confirmed* override (the type actually
+  applied, not merely being previewed) is exempt and always renders
+  completely — see the revised N2 below.
 - **G3**: `DecodeRenderOpts::node_budget` defaults to `None`
   (unlimited, today's behavior) — every other caller (the `prototext`
   CLI, `protolens`'s own initial whole-document decode in
@@ -86,12 +88,30 @@ to completion, however large the result turns out to be, before
 ## Non-goals
 
 - **N1**: Choosing a smarter/adaptive budget (e.g. scaled to the
-  node's own byte length or the document's current size). A fixed
+  node's own byte length or the document's current size). ~~A fixed
   constant is used initially; tuning or adaptivity is left for
-  follow-up if the fixed value proves wrong in practice.
-- **N2**: A different (e.g. higher) budget for a confirmed/committed
+  follow-up if the fixed value proves wrong in practice.~~ **Extended
+  during implementation** (2026-07-24 follow-up feedback): the budget
+  is still a single flat number, not adaptive, but it is no longer a
+  hardcoded constant — `App::override_splice_node_budget` is a plain
+  field (defaulting to `OVERRIDE_SPLICE_NODE_BUDGET_DEFAULT`, now
+  `200`, down from the constant's earlier `1,000`), settable at
+  startup via `main.rs`'s `--override-preview-node-budget` CLI flag.
+  Still no *adaptive* scaling — this only lets a user override the
+  one flat default for their own session, N1's actual substance is
+  unchanged.
+- **N2**: ~~A different (e.g. higher) budget for a confirmed/committed
   override versus a live preview. Every `splice_override` call, preview
-  or real, shares the same budget for simplicity (see G2).
+  or real, shares the same budget for simplicity (see G2).~~ **Reversed
+  during implementation** (2026-07-24 feedback): a confirmed override
+  is the content actually shown as the document's real rendering, not a
+  speculative guess — truncating it would silently hide data. Only a
+  live preview (`splice_override`'s new `is_preview: true` parameter,
+  `preview_override_highlight`'s sole call site) is budget-capped; every
+  other call site (routed through `resettle_node`, i.e. an
+  already-confirmed/active override being (re)applied) passes
+  `is_preview: false` and gets `node_budget: None` (unbounded), exactly
+  like every non-`protolens` caller (G3).
 - **N3**: The separate, already-present cost of `finalize_override_
   batch` (`line_to_node`/`footer_line_to_node` full rebuild,
   `rebuild_visible_rows`'s full `Vec` rebuild — `override_apply.rs:
@@ -188,27 +208,83 @@ every entry into a nested message/group, since `render_len_field`/
 `render_group_field` ultimately recurse back into `render_message`)
 is confirmed during implementation.
 
+**Found during implementation**: `render_message`'s loop counts a
+packed-repeated scalar field (`ScalarValue::Packed`) as a single
+iteration, regardless of how many elements it decodes into.
+`render_packed` (`prototext-core/src/serialize/render_text/
+packed.rs`) and `IndexingTextSink::scalar_field`'s packed-element
+`NodeSpan`-building loop (`sink.rs`) each independently iterate over
+every decoded packed element — a candidate that mis-parses as one
+enormous packed field bypasses the budget entirely through these two
+uninstrumented loops (confirmed via the Test plan's manual/perf
+validation step below: the fix as first implemented did not bound
+`/tmp/db3.desc`'s pathological candidate). Fixed by mirroring the same
+`NODE_BUDGET`/`NODE_COUNT` check inside `render_packed`'s per-element
+loop (aborting via the same `NodeBudgetExceeded` annotation), and by
+having `IndexingTextSink::scalar_field` snapshot `NODE_COUNT` before
+and after the delegated call to detect and match that same truncation
+point when building spans, instead of re-deriving the full element
+list independently.
+
 ### protolens/src/tui/override_apply.rs
 
-New constant near `splice_override`:
+New associated constant near `splice_override`, and a matching
+`App` field seeded from it (**extended from this spec's original N1**
+during implementation, see above — first landed as a plain `const`,
+then turned into a field so it can be overridden per-session):
 
 ```rust
-/// Spec 0163: maximum number of fields/spans a single `splice_
-/// override` candidate decode may produce before the rest is shown
-/// as `MalformedKind::NodeBudgetExceeded` instead of continuing to
-/// recursively decode/render — guards against a structurally
+/// Spec 0163: default for `App::override_splice_node_budget` — the
+/// maximum number of fields/spans a single *live-preview*
+/// `splice_override` candidate decode may produce before the rest is
+/// shown as `MalformedKind::NodeBudgetExceeded` instead of continuing
+/// to recursively decode/render — guards against a structurally
 /// mismatched candidate type causing the recursive-descent decoder
 /// to mis-parse arbitrary bytes into a pathologically large synthetic
 /// tree (observed: 1,083,626 spans from a single splice on a ~1.1MB
 /// field — larger than the entire 635,052-node original document).
-const OVERRIDE_SPLICE_NODE_BUDGET: usize = 50_000;
+/// Only applies to a live preview (see `is_preview` below) — a
+/// preview only needs to show enough of a wrong-type candidate's
+/// shape for the user to judge it's the wrong one and move on, so
+/// this is kept low (200) rather than matched to the ~50k+ scale of
+/// the pathological blowups it guards against. Overridable at
+/// startup via `--override-preview-node-budget`.
+pub(crate) const OVERRIDE_SPLICE_NODE_BUDGET_DEFAULT: usize = 200;
 ```
 
-`splice_override`'s `DecodeRenderOpts` construction (the cache-miss
-branch) gains:
+`App` gains an `override_splice_node_budget: usize` field, seeded to
+`OVERRIDE_SPLICE_NODE_BUDGET_DEFAULT` in `App::new`.
+
+`splice_override` gains an `is_preview: bool` parameter: `true` from
+`preview_override_highlight`'s sole live-preview call site, `false`
+from every other call site (routed through `resettle_node`, i.e. an
+already-confirmed/active override being (re)applied — **reversed from
+this spec's original N2** during implementation, see above). Its
+`DecodeRenderOpts` construction (the cache-miss branch) gains:
 
 ```rust
-node_budget: Some(OVERRIDE_SPLICE_NODE_BUDGET),
+node_budget: is_preview.then_some(self.override_splice_node_budget),
+```
+
+`RenderCache`'s key (`protolens/src/render_cache.rs`) gains `is_
+preview: bool` as a third tuple element: a budget-truncated preview
+render and a full confirmed render of the same `(range, target)` must
+never be conflated, or confirming an override could silently reuse a
+truncated preview render cached by an earlier `Down`/`Up` cycle over
+the same candidate.
+
+### protolens/src/main.rs
+
+New `Cli` field, defaulting to `App::OVERRIDE_SPLICE_NODE_BUDGET_
+DEFAULT`, assigned onto `app.override_splice_node_budget` right after
+`App::new`:
+
+```rust
+#[arg(
+    long = "override-preview-node-budget",
+    default_value_t = tui::App::OVERRIDE_SPLICE_NODE_BUDGET_DEFAULT,
+)]
+override_preview_node_budget: usize,
 ```
 
 ## Test plan
@@ -224,16 +300,38 @@ node_budget: Some(OVERRIDE_SPLICE_NODE_BUDGET),
   existing large fixture.
 - New `protolens` test in `tui/tests/override_apply.rs`: a payload/
   candidate-type combination engineered to mis-parse into more than
-  `OVERRIDE_SPLICE_NODE_BUDGET` spans; confirm `splice_override`
-  completes (doesn't hang/panic) and the resulting tree/lines are
-  bounded in size, with a visible budget-exceeded marker in the
-  rendered output.
+  `OVERRIDE_SPLICE_NODE_BUDGET_DEFAULT` spans; confirm a *preview*
+  (`is_preview: true`) `splice_override` completes (doesn't hang/panic)
+  and the resulting tree/lines are bounded in size, with a visible
+  budget-exceeded marker in the rendered output.
+- Companion `protolens` test (added when N2 was reversed): the same
+  pathological candidate spliced as a *confirmed* override
+  (`is_preview: false`) instead — must render completely, with
+  `tree.len()` reaching the full mis-parsed field count and no
+  `NODE_BUDGET_EXCEEDED` marker anywhere in the output.
+- Companion `protolens` test (added when N1 was extended): setting
+  `app.override_splice_node_budget` to a custom value below the
+  default actually changes where a live-preview splice truncates,
+  confirming the field (not just its default) is load-bearing.
 - Regression: existing `tui/tests/override_apply.rs`/`override_
   select.rs` suites must pass unchanged — no existing fixture is
-  anywhere near 50,000 spans for a single field, so no existing test's
-  candidate should ever trip the new budget.
+  anywhere near 200 spans for a single field, so no existing test's
+  candidate should ever trip the default budget.
 - Manual/perf validation (external fixture, not part of the automated
   suite): re-run `tests/profiling.rs`'s `Down`-press loop against
   `/tmp/db3.desc` and confirm the previously-observed pathological
   candidate (1,083,626 spans) now renders in bounded time instead of
-  contributing to the multi-second/multi-ten-second stalls.
+  contributing to the multi-second/multi-ten-second stalls. This step
+  is what surfaced the packed-field gap noted above under
+  Specification — the first implementation attempt (budget checked
+  only in `render_message`'s per-field loop) left `Down` presses at
+  8-16s+ with `tree.len()` still reaching 1,718,678. After also
+  covering `render_packed`'s and `IndexingTextSink::scalar_field`'s
+  per-packed-element loops, `Down` dropped to ~0.8-2.5s with
+  `tree.len()` bounded to the base document size plus the (then
+  50,000) budget. After N2 was reversed and the budget lowered to
+  1,000, re-running again showed `Down` at ~2-70ms (one ~1.5s outlier,
+  attributable to the separate, out-of-scope N3 cost) with `tree.len()`
+  bounded to 635,052 + 1,000 = 636,050 — confirmed exact. After N1 was
+  extended (default further lowered to 200, and made CLI-overridable),
+  the same bound now tracks 635,052 + 200 = 635,252 at the default.

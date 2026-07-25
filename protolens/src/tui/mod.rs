@@ -692,6 +692,11 @@ pub struct App {
     /// one outstanding preview's worth of disposable nodes exists at a
     /// time. Reset to `None` in `close_override`.
     preview_tree_watermark: Option<usize>,
+    /// Spec 0163: `splice_override`'s live-preview node budget — see
+    /// `OVERRIDE_SPLICE_NODE_BUDGET_DEFAULT`'s doc comment. Defaults to
+    /// that constant, overridable at startup via `main.rs`'s
+    /// `--override-preview-node-budget`.
+    pub(crate) override_splice_node_budget: usize,
     /// `true` when the override pane has focus (spec 0114 §3's `Tab`
     /// toggle); meaningless while `override_target` is `None`.
     override_focus: bool,
@@ -1102,6 +1107,7 @@ impl App {
             command_pan_offset: 0,
             override_target: None,
             preview_tree_watermark: None,
+            override_splice_node_budget: Self::OVERRIDE_SPLICE_NODE_BUDGET_DEFAULT,
             override_focus: false,
             override_opened_from_manage: false,
             ctx,

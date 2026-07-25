@@ -86,6 +86,19 @@ struct Cli {
     #[arg(long = "theme", value_enum, default_value = "system")]
     theme: theme::ThemeKind,
 
+    /// Maximum number of fields/spans a single live-preview override
+    /// candidate decode may produce before truncating (spec 0163) —
+    /// guards against a structurally mismatched candidate type making
+    /// the recursive-descent decoder mis-parse arbitrary bytes into a
+    /// pathologically large synthetic tree while the user is just
+    /// browsing candidates. A *confirmed* override is always rendered
+    /// completely, regardless of this value.
+    #[arg(
+        long = "override-preview-node-budget",
+        default_value_t = tui::App::OVERRIDE_SPLICE_NODE_BUDGET_DEFAULT,
+    )]
+    override_preview_node_budget: usize,
+
     /// Binary protobuf to decode.
     #[arg(add = ArgValueCompleter::new(complete::complete_any_path))]
     blob: PathBuf,
@@ -363,6 +376,7 @@ fn main() -> ExitCode {
         theme,
         proto_root,
     );
+    app.override_splice_node_budget = cli.override_preview_node_budget;
 
     match cli.command {
         Some(Command::Export {

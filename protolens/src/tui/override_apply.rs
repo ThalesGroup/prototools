@@ -498,9 +498,17 @@ impl App {
     /// cased: it's always field number 1 of the virtual encompassing
     /// message, so it falls through to this same field-number case.
     pub(super) fn field_name_for(&self, idx: usize) -> String {
+        let path = self.positional_path(idx);
+        self.field_name_for_by_path(idx, &path)
+    }
+
+    /// Same as `field_name_for`, but takes `idx`'s own already-known
+    /// path rather than recomputing it — see `resolve_active_override_
+    /// entry_index_by_path`'s doc comment for why this matters.
+    fn field_name_for_by_path(&self, idx: usize, path: &str) -> String {
         if let Some(name) = self
-            .resolve_active_override_entry(idx)
-            .and_then(|e| e.name.clone())
+            .resolve_active_override_entry_index_by_path(idx, path)
+            .and_then(|i| self.overrides.entries()[i].name.clone())
         {
             return name;
         }
@@ -521,7 +529,8 @@ impl App {
         &self,
         idx: usize,
     ) -> Option<&override_pane::OverrideEntry> {
-        self.resolve_active_override_entry_index(idx)
+        let path = self.positional_path(idx);
+        self.resolve_active_override_entry_index_by_path(idx, &path)
             .map(|i| &self.overrides.entries()[i])
     }
 
@@ -533,14 +542,33 @@ impl App {
     /// pane's `o`-key cursor placement), not just read its `r#type`.
     pub(super) fn resolve_active_override_entry_index(&self, idx: usize) -> Option<usize> {
         let path = self.positional_path(idx);
+        self.resolve_active_override_entry_index_by_path(idx, &path)
+    }
+
+    /// Same resolution as `resolve_active_override_entry_index`, but
+    /// takes `idx`'s own positional path as an already-known `path`
+    /// rather than recomputing it via `positional_path` — `path` is
+    /// O(depth) to walk up from `idx`, and its own leading segment
+    /// (`sibling_position`) is O(k) in `idx`'s ordinal position among
+    /// its siblings; both are cheap for a single ad hoc call but
+    /// prohibitively expensive when called once per node across an
+    /// entire large document (spec 0163 follow-up: `render_overrides_
+    /// inner`'s full-document walk already knows every node's path for
+    /// free, incrementally, while descending top-down in sibling
+    /// order — see `render_overrides_inner`'s own use of this). The
+    /// `PathField` tier's `parent_path` is derived from `path` by
+    /// trimming its last segment (`parent_path_of`), rather than a
+    /// second `positional_path` call on the parent, for the same
+    /// reason.
+    fn resolve_active_override_entry_index_by_path(&self, idx: usize, path: &str) -> Option<usize> {
         if let Some(pos) = self.overrides.entries().iter().position(|e| {
-            e.active && matches!(&e.origin, OverrideOrigin::Path { path: p } if *p == path)
+            e.active && matches!(&e.origin, OverrideOrigin::Path { path: p } if p == path)
         }) {
             return Some(pos);
         }
         let parent = self.tree[idx].parent?;
         let field = self.tree[idx].span.field_number;
-        let parent_path = self.positional_path(parent);
+        let parent_path = Self::parent_path_of(path);
         if let Some(pos) = self.overrides.entries().iter().position(|e| {
             e.active
                 && matches!(&e.origin, OverrideOrigin::PathField { path: p, field: f }
@@ -554,6 +582,22 @@ impl App {
                 && matches!(&e.origin, OverrideOrigin::FqdnField { fqdn: f, field: fld }
                     if f == fqdn && *fld == field)
         })
+    }
+
+    /// `path`'s own parent path, derived by trimming `path`'s last `/
+    /// segment` rather than walking the tree again — see `resolve_
+    /// active_override_entry_index_by_path`'s doc comment. `path` is
+    /// always either `"/"` (the document root, which has no parent —
+    /// callers never actually reach this case since they only call it
+    /// after confirming `idx` has a parent) or of the form `"/a/b/.../
+    /// n"` (`positional_path`'s own format), so its last `/` always
+    /// exists and splits it into `parent_path` + `"/n"`.
+    fn parent_path_of(path: &str) -> &str {
+        match path.rfind('/') {
+            Some(0) => "/",
+            Some(pos) => &path[..pos],
+            None => "/",
+        }
     }
 
     /// Resolves to the type (or `None` = raw) that should currently be
@@ -597,16 +641,22 @@ impl App {
     /// `pending_shift` alone, since a splice whose new content happens
     /// to have the same line count as the old (`delta == 0`) must still
     /// count as fresh.
-    pub(super) fn resettle_node(&mut self, idx: usize) -> bool {
-        let target = self.resolve_active_override(idx);
-        let field_name = self.field_name_for(idx);
+    /// `path` is `idx`'s own already-known positional path, passed down
+    /// by the sole caller (`render_overrides_inner`'s hot full-document
+    /// walk) rather than recomputed here — see `resolve_active_override_
+    /// entry_index_by_path`'s doc comment for why that matters.
+    pub(super) fn resettle_node(&mut self, idx: usize, path: &str) -> bool {
+        let target = self
+            .resolve_active_override_entry_index_by_path(idx, path)
+            .map(|i| self.overrides.entries()[i].r#type.clone());
+        let field_name = self.field_name_for_by_path(idx, path);
         let current = Some((target.clone(), field_name));
         if current != self.tree[idx].rendered_as {
             let effective = match &target {
                 Some(explicit) => explicit.clone(),
                 None => self.natural_type(idx),
             };
-            match self.splice_override(idx, effective) {
+            match self.splice_override(idx, effective, false) {
                 Ok(()) => {
                     self.tree[idx].rendered_as = current;
                     true
@@ -718,10 +768,29 @@ impl App {
     /// method below.
     pub(super) fn render_overrides(&mut self, idx: usize) {
         self.override_batch_depth += 1;
-        self.render_overrides_inner(idx, 0);
+        let path = self.positional_path(idx);
+        self.render_overrides_inner(idx, 0, &path);
         self.override_batch_depth -= 1;
         if self.override_batch_depth == 0 {
             self.finalize_override_batch(idx);
+        }
+    }
+
+    /// `parent_path`'s display-format child path for the child at
+    /// 1-based ordinal `ordinal` among its siblings — the same format
+    /// `positional_path` builds (root is `"/"`; a root child is `"/1"`,
+    /// `"/2"`, ...; deeper nodes append further `"/n"` segments) but
+    /// computed in O(1) from an already-known parent path plus an
+    /// already-known ordinal, rather than walking the tree. See
+    /// `render_overrides_inner`'s use of this: it already visits every
+    /// child in sibling order via `next_sibling`, so it can track the
+    /// ordinal with a plain loop counter instead of `sibling_position`'s
+    /// O(k) backward walk.
+    fn child_path(parent_path: &str, ordinal: usize) -> String {
+        if parent_path == "/" {
+            format!("/{ordinal}")
+        } else {
+            format!("{parent_path}/{ordinal}")
         }
     }
 
@@ -743,7 +812,20 @@ impl App {
     /// is carried down to each of `idx`'s existing children, accumulating
     /// each already-processed child's own growth onto what's owed to its
     /// later siblings.
-    fn render_overrides_inner(&mut self, idx: usize, inherited: isize) {
+    ///
+    /// `path` is `idx`'s own already-known positional path (spec 0163
+    /// follow-up), passed down from the caller rather than recomputed
+    /// via `positional_path(idx)`: this walk visits every node in the
+    /// whole document exactly once, so recomputing each node's path from
+    /// scratch (`positional_path` is O(depth) ancestor hops, each paying
+    /// an O(k) `sibling_position` walk) turns an O(n) walk into
+    /// something far worse on a document with large sibling groups —
+    /// observed to make a single `render_overrides` pass take minutes on
+    /// a ~600k-node document with sibling groups in the hundreds. Since
+    /// children are visited in sibling order via `next_sibling` below, a
+    /// child's own path is available in O(1) from `path` plus a running
+    /// ordinal counter (`child_path`).
+    fn render_overrides_inner(&mut self, idx: usize, inherited: isize, path: &str) {
         // `idx`'s own node — and, if it's a member of a packed-repeated
         // run (spec 0135 G1), every other member of that run too, since
         // `packed_record_extent` (inside `splice_override`, called from
@@ -768,7 +850,7 @@ impl App {
         }
 
         let origin = OverrideOrigin::Path {
-            path: self.positional_path(idx),
+            path: path.to_string(),
         };
         let already_seeded = self.overrides.entries().iter().any(|e| e.origin == origin);
         if !already_seeded {
@@ -797,7 +879,7 @@ impl App {
                 }
             }
         }
-        let spliced = self.resettle_node(idx);
+        let spliced = self.resettle_node(idx, path);
         // Fresh children (just pushed by a splice) are already
         // positioned relative to `idx`'s now-correct start and owe
         // nothing further; pre-existing children (no splice happened)
@@ -805,7 +887,9 @@ impl App {
         let mut child_owed = if spliced { 0 } else { inherited };
         let initial_child_owed = child_owed;
         let mut child = self.tree[idx].first_child;
+        let mut ordinal = 0usize;
         while let Some(c) = child {
+            ordinal += 1;
             // Recurse into every node actually rendered as message/group
             // (`NodeSpan::is_message`) — the set of nodes that can carry
             // nested overridable children at all (spec 0119) — plus the
@@ -837,13 +921,16 @@ impl App {
             // relies on stops holding, permanently orphaning the node
             // before `resettle_node` gets a chance to fall it back to
             // its natural type.
+            let c_path = Self::child_path(path, ordinal);
             if self.tree[c].span.is_message
                 || self.is_auto_expand_candidate(c)
-                || self.resolve_active_override_entry(c).is_some()
+                || self
+                    .resolve_active_override_entry_index_by_path(c, &c_path)
+                    .is_some()
                 || self.tree[c].rendered_as.is_some()
             {
                 let before = self.pending_shift;
-                self.render_overrides_inner(c, child_owed);
+                self.render_overrides_inner(c, child_owed, &c_path);
                 child_owed += self.pending_shift - before;
             } else if child_owed != 0 {
                 Self::shift_span(&mut self.tree[c].span, child_owed);
@@ -916,6 +1003,30 @@ impl App {
         self.rebuild_visible_rows();
     }
 
+    /// Spec 0163: default for `App::override_splice_node_budget` — the
+    /// maximum number of fields/spans a single *live-preview*
+    /// `splice_override` candidate decode may produce before the rest is
+    /// shown as `MalformedKind::NodeBudgetExceeded` instead of continuing
+    /// to recursively decode/render — guards against a structurally
+    /// mismatched candidate type causing the recursive-descent decoder
+    /// to mis-parse arbitrary bytes into a pathologically large synthetic
+    /// tree (observed: 1,083,626 spans from a single splice on a ~1.1MB
+    /// field — larger than the entire 635,052-node original document).
+    /// Only applies while a candidate is being *previewed*
+    /// (`splice_override`'s `is_preview: true`, `preview_override_
+    /// highlight`'s sole call site) — once a candidate is actually
+    /// confirmed as a real override, its rendering must be complete, not
+    /// truncated, so every other `splice_override` call site (routed
+    /// through `resettle_node`) passes `is_preview: false` and gets an
+    /// unbounded `node_budget: None` instead. A preview only needs to
+    /// show enough of a wrong-type candidate's shape for the user to
+    /// judge it's the wrong one and move on — 200 direct fields is
+    /// already far more than any legitimate candidate's own top-level
+    /// field count, so it's kept low rather than matched to the ~50k+
+    /// scale of the pathological blowups this guards against.
+    /// Overridable at startup via `--override-preview-node-budget`.
+    pub(crate) const OVERRIDE_SPLICE_NODE_BUDGET_DEFAULT: usize = 200;
+
     /// Unified splice mechanic (spec 0118 §4, reworked spec 0135 G1):
     /// regenerates the *whole* rendering of `idx` — header, interior, and
     /// footer alike — under `target` (`None` = revert to raw, `Some(fqdn)`
@@ -942,10 +1053,18 @@ impl App {
     /// element sharing the same packed record is collapsed into this one
     /// node, regardless of which specific element the caller invoked the
     /// override on.
+    /// `is_preview`: `true` from `preview_override_highlight`'s sole live-
+    /// preview call site — caps the decode at `OVERRIDE_SPLICE_NODE_
+    /// BUDGET` (spec 0163). `false` from every other call site (routed
+    /// through `resettle_node`, i.e. an already-confirmed/active override
+    /// being (re)applied) — renders completely, unbounded, since this is
+    /// the content that actually gets shown as the real override, not a
+    /// speculative preview.
     pub(super) fn splice_override(
         &mut self,
         mut idx: usize,
         target: Option<String>,
+        is_preview: bool,
     ) -> Result<(), String> {
         // Spec 0160 G2: `self.tree[idx].span` is already authoritative
         // by the time this is called — either `render_overrides_inner`'s
@@ -1036,7 +1155,11 @@ impl App {
         // resolved `raw_range`, with `packed_record_start` always `None`
         // (the packed case has already been normalized above).
         let interior_range = extract::message_payload_range(&self.blob, &old_span.raw_range, None);
-        let cache_key = (interior_range, target.clone());
+        // Spec 0163: `is_preview` is part of the key -- a budget-
+        // truncated preview render and a full confirmed render of the
+        // same `(range, target)` must never be conflated, or confirming
+        // an override could silently reuse a truncated preview render.
+        let cache_key = (interior_range, target.clone(), is_preview);
         let (mut new_lines, new_spans, new_style_hints) = match self.render_cache.get(&cache_key) {
             Some(cached) => cached,
             None => {
@@ -1064,6 +1187,11 @@ impl App {
                     // prototext-core's own virtual-node expansion.
                     expand_any: false,
                     expand_message_set: false,
+                    // Spec 0163: only a live preview is speculative and
+                    // needs bounding -- a confirmed override must render
+                    // completely (see `OVERRIDE_SPLICE_NODE_BUDGET_
+                    // DEFAULT`'s doc comment).
+                    node_budget: is_preview.then_some(self.override_splice_node_budget),
                     ..Default::default()
                 };
                 let (new_text, new_spans) =

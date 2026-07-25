@@ -379,6 +379,25 @@ fn move_end_reaches_the_document_true_last_line() {
     assert!(app.cursor_footer);
 }
 
+/// `gg`/`Home` must reach the true first line even when the cursor
+/// already rests on the root's own footer (`self.cursor ==
+/// self.first_node` in that case too, since the closing `}` belongs
+/// to the root node, not a distinct one) -- the plain `cursor !=
+/// first_node` check alone would falsely treat this as already home.
+#[test]
+fn move_home_from_the_root_footer_reaches_the_document_true_first_line() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.splash = false;
+    let outer_idx = app.tree[inner_idx].parent.unwrap();
+    app.cursor = outer_idx;
+    app.cursor_footer = true;
+
+    app.move_home();
+
+    assert_eq!(app.cursor, app.first_node);
+    assert!(!app.cursor_footer);
+}
+
 /// Spec 0142 G6.2: folding the node the cursor's footer currently
 /// rests on must snap the cursor back to that node's own header,
 /// since the footer line stops being visible.

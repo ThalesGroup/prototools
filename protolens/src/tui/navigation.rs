@@ -305,9 +305,14 @@ impl App {
         cur
     }
 
-    /// Jump to the document-order first node (`Home`/`gg`).
+    /// Jump to the document-order first node (`Home`/`gg`). Must also
+    /// fire when the cursor already sits on `first_node` but on its
+    /// *footer* line (e.g. the root node's own closing `}`, which is
+    /// `first_node`'s footer, not a distinct node) — otherwise the
+    /// `self.cursor != self.first_node` check alone is falsely
+    /// satisfied and the cursor stays stuck on the last line.
     pub(super) fn move_home(&mut self) {
-        if self.cursor != self.first_node {
+        if self.cursor != self.first_node || self.cursor_footer {
             self.record_jump(self.cursor);
             self.set_cursor(self.first_node);
         }
