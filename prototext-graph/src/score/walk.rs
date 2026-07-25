@@ -36,6 +36,23 @@ const WT_START_GROUP: u32 = 3;
 const WT_END_GROUP: u32 = 4;
 const WT_I32: u32 = 5;
 
+/// Hard cap on `score_message_multi`'s own recursion depth. Unlike
+/// `prototext-core`'s decoder (bounded by an explicit node budget), this
+/// walker had no depth guard at all: recursion depth tracks the *byte
+/// range's* own LEN/group nesting, which for a schema mismatch (scoring
+/// a range against a candidate type whose shape doesn't actually match
+/// the bytes) can run far deeper than any well-formed document would —
+/// in the worst case, proportional to the buffer's length divided by the
+/// smallest possible LEN-field overhead (tag + zero-length prefix), i.e.
+/// tens of thousands of levels for an ordinary-sized document — a
+/// legitimate (if unlikely) stack-overflow risk on its own, though not
+/// the cause of the 2026-07-25 segfault report that first prompted this
+/// cap (that turned out to be an unrelated `App`-field-drop-order
+/// use-after-unmap race in `protolens`, not a recursion-depth issue
+/// here). 1000 is far beyond any legitimate schema's nesting depth
+/// while staying comfortably inside any thread's stack budget.
+const MAX_SCORE_DEPTH: usize = 1000;
+
 // ── Multi-entry types (spec 0048) ─────────────────────────────────────────────
 
 /// Per-entry scoring counters for the multi-entry walk.
@@ -195,7 +212,7 @@ pub fn score_all(pb: &[u8], graph: &ArchivedCompiledGraph, opts: &ScoringOpts) -
     );
 
     let mut ws = WalkState::new(graph, &mut scores, opts);
-    score_message_multi(pb, 0, initial_active, None, &mut ws);
+    score_message_multi(pb, 0, initial_active, None, &mut ws, 0);
 
     scores
 }
@@ -234,7 +251,7 @@ pub fn score_one(
     }];
 
     let mut ws = WalkState::new(graph, &mut scores, opts);
-    score_message_multi(pb, 0, initial_active, None, &mut ws);
+    score_message_multi(pb, 0, initial_active, None, &mut ws, 0);
 
     scores.pop()
 }
@@ -745,9 +762,15 @@ fn score_message_multi(
     mut active: Vec<ActiveEntry>,
     my_group: Option<u64>,
     ws: &mut WalkState,
+    depth: usize,
 ) -> usize {
     let buflen = buf.len();
     let mut pos = start;
+
+    if depth > MAX_SCORE_DEPTH {
+        veto_all(&mut active, ws, "recursion depth exceeded");
+        return buflen;
+    }
 
     // Verdict attached directly to each ActiveEntry for one field iteration.
     // Stored by state_id (stable across retain) rather than Vec index.
@@ -1086,7 +1109,14 @@ fn score_message_multi(
                                 let value_payload = extract_any_value(payload).unwrap_or(&[]);
                                 let any_active =
                                     group_by_state(any_pairs.iter().map(|&(_, e)| (root_state, e)));
-                                score_message_multi(value_payload, 0, any_active, None, ws);
+                                score_message_multi(
+                                    value_payload,
+                                    0,
+                                    any_active,
+                                    None,
+                                    ws,
+                                    depth + 1,
+                                );
                             }
                             None => {
                                 // Unknown type_url or not a root: score value as plain
@@ -1101,7 +1131,7 @@ fn score_message_multi(
 
                     if !normal_pairs.is_empty() {
                         let child_active = group_by_state(normal_pairs.into_iter());
-                        score_message_multi(payload, 0, child_active, None, ws);
+                        score_message_multi(payload, 0, child_active, None, ws, depth + 1);
                     }
                     propagate_vetoes(&mut active, ws);
                 }
@@ -1131,7 +1161,14 @@ fn score_message_multi(
                 let new_pos = if !recurse_into.is_empty() {
                     // Recurse with schema — boundaries are determined by the group walk.
                     let child_active = group_by_state(recurse_into.iter().copied());
-                    let np = score_message_multi(buf, pos, child_active, Some(field_number), ws);
+                    let np = score_message_multi(
+                        buf,
+                        pos,
+                        child_active,
+                        Some(field_number),
+                        ws,
+                        depth + 1,
+                    );
                     propagate_vetoes(&mut active, ws);
                     // Record occurrences and matches for surviving Found entries.
                     for ae in active.iter_mut() {

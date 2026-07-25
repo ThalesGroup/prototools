@@ -450,3 +450,992 @@ fn profile_main_pane_down_on_db3() {
         );
     }
 }
+
+/// Repro for the 2026-07-25 crash report: `Down` (into the first
+/// `FileDescriptorProto`), then `t`, then `Enter` (confirming the
+/// first candidate) -- panicked with "slice index starts at 39 but
+/// ends at 35" in `materialize_line_patches`.
+#[test]
+#[ignore]
+fn repro_crash_down_t_enter_on_pdb() {
+    let desc_path = Path::new("/tmp/pdb.desc");
+    if !desc_path.exists() {
+        eprintln!("skipping: /tmp/pdb.desc not present");
+        return;
+    }
+
+    let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
+    let blob = std::fs::read(desc_path).expect("read blob");
+    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let mut app = App::new(
+        decoded,
+        "pdb.desc",
+        std::path::PathBuf::from(desc_path),
+        2,
+        ctx,
+        ThemeKind::Dark,
+        None,
+    );
+    app.splash = false;
+    app.term_width = 120;
+    eprintln!("total tree nodes: {}", app.tree.len());
+
+    let backend = ratatui::backend::TestBackend::new(120, 50);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    let mut rx = None;
+    if let Some(graph) = &app.ctx.graph {
+        let graph_ref = graph.graph;
+        let blob = std::sync::Arc::new(app.blob.clone());
+        let (tx, worker_rx) = std::sync::mpsc::channel();
+        app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
+            std::sync::Arc::clone(&app.heat_caches),
+            graph_ref,
+            blob,
+            tx.clone(),
+        ));
+        rx = Some(worker_rx);
+
+        let original_blob = app.blob[app.wrapper_offset..].to_vec();
+        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref) {
+            eprintln!("resolved root type: {fqdn}");
+            app.apply_resolved_root_type(fqdn);
+        }
+    }
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    eprintln!(
+        "cursor after Down: {} type_fqdn={:?}",
+        app.cursor, app.tree[app.cursor].span.type_fqdn
+    );
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    eprintln!(
+        "right after 't': override_target={:?} sort={:?} pending={} message={}",
+        app.override_target, app.override_sort, app.override_candidates_pending, app.message
+    );
+    let t_poll = Instant::now();
+    while app.override_candidates_pending && t_poll.elapsed().as_secs() < 120 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        app.poll_pending_override_work();
+        if let Some(rx) = &rx {
+            while rx.try_recv().is_ok() {
+                app.recheck_pending_heat_states();
+                app.poll_pending_override_work();
+            }
+        }
+    }
+    eprintln!("candidates.len() = {}", app.override_candidates.len());
+    if app.override_candidates.is_empty() {
+        eprintln!("Inferred mode gave 0 candidates -- switching to Lexicographic");
+        app.override_sort = SortMode::Lexicographic;
+        app.recompute_override_candidates();
+        eprintln!(
+            "Lexicographic candidates.len() = {}",
+            app.override_candidates.len()
+        );
+        // Pick the first real message FQDN (skip the `None` sentinel and
+        // primitive keywords), same convention as override_select.rs's
+        // own tests -- a guaranteed real retype, not a no-op.
+        let chosen = "google.protobuf.FileDescriptorProto".to_string();
+        let row = app
+            .override_candidates
+            .iter()
+            .position(|(f, _)| *f == chosen)
+            .expect("chosen FQDN must be a candidate");
+        app.override_highlight = row;
+        eprintln!("chosen candidate (same-as-current, no-op retype): {chosen} at row {row}");
+    }
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    eprintln!("about to press Enter -- tree.len()={}", app.tree.len());
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    eprintln!(
+        "after Enter: tree.len()={} manage_open={} message={}",
+        app.tree.len(),
+        app.manage_open,
+        app.message
+    );
+}
+
+/// Repro attempt #2 for the 2026-07-25 crash report, per the user's
+/// more precise follow-up: `Down` (into the first `FileDescriptorProto`
+/// -- root having *already* been rendered twice by this point: once as
+/// `None`/raw at `App::new`, then re-rendered as `FileDescriptorSet`
+/// once `apply_resolved_root_type` lands), then immediately `t` then
+/// `Enter` -- confirming the pane's *default* initial highlight with no
+/// waiting for candidates to settle and no candidate navigation, unlike
+/// `repro_crash_down_t_enter_on_pdb` above (which polled up to 120s for
+/// candidates and picked a specific no-op candidate on empty-Inferred
+/// fallback). Mirrors real fast keypress timing far more closely.
+#[test]
+#[ignore]
+fn repro_crash_down_t_enter_immediate_on_pdb() {
+    let desc_path = Path::new("/tmp/pdb.desc");
+    if !desc_path.exists() {
+        eprintln!("skipping: /tmp/pdb.desc not present");
+        return;
+    }
+
+    let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
+    let blob = std::fs::read(desc_path).expect("read blob");
+    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let mut app = App::new(
+        decoded,
+        "pdb.desc",
+        std::path::PathBuf::from(desc_path),
+        2,
+        ctx,
+        ThemeKind::Dark,
+        None,
+    );
+    app.splash = false;
+    app.term_width = 120;
+    eprintln!(
+        "root rendered_as after App::new: {:?}",
+        app.tree[app.first_node].rendered_as
+    );
+
+    let backend = ratatui::backend::TestBackend::new(120, 50);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    if let Some(graph) = &app.ctx.graph {
+        let graph_ref = graph.graph;
+        let blob = std::sync::Arc::new(app.blob.clone());
+        let (tx, _worker_rx) = std::sync::mpsc::channel();
+        app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
+            std::sync::Arc::clone(&app.heat_caches),
+            graph_ref,
+            blob,
+            tx,
+        ));
+
+        let original_blob = app.blob[app.wrapper_offset..].to_vec();
+        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref) {
+            eprintln!("resolved root type: {fqdn}");
+            app.apply_resolved_root_type(fqdn);
+        }
+    }
+    eprintln!(
+        "root rendered_as after apply_resolved_root_type: {:?}",
+        app.tree[app.first_node].rendered_as
+    );
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    eprintln!("cursor after Down: {}", app.cursor);
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    eprintln!(
+        "right after 't': override_target={:?} sort={:?} highlight={} candidates.len()={} pending={}",
+        app.override_target,
+        app.override_sort,
+        app.override_highlight,
+        app.override_candidates.len(),
+        app.override_candidates_pending
+    );
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    eprintln!(
+        "about to press Enter (no wait) -- tree.len()={}",
+        app.tree.len()
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    eprintln!(
+        "after Enter: tree.len()={} manage_open={} message={}",
+        app.tree.len(),
+        app.manage_open,
+        app.message
+    );
+}
+
+/// Surgical repro attempt #3, prompted by the user's report that the
+/// crash happens even with a long wait between `t` and `Enter` --
+/// ruling out a timing/race explanation entirely. This bypasses the
+/// interactive pane/candidate machinery altogether and reproduces
+/// exactly the *structural* effect `Enter` has on the cursor node:
+/// `preview_override_highlight` (fired at pane-open time, `t`) force-
+/// resets `rendered_as = None` on the cursor node after its own
+/// preview splice (see its doc comment) precisely so a later confirm
+/// always re-splices for real -- so here we do that reset directly,
+/// then call `render_overrides` from the document root exactly like
+/// the real Enter-confirm path (`key_dispatch.rs`) does, with no pane
+/// state involved at all.
+#[test]
+#[ignore]
+fn repro_crash_forced_resplice_on_pdb() {
+    let desc_path = Path::new("/tmp/pdb.desc");
+    if !desc_path.exists() {
+        eprintln!("skipping: /tmp/pdb.desc not present");
+        return;
+    }
+
+    let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
+    let blob = std::fs::read(desc_path).expect("read blob");
+    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let mut app = App::new(
+        decoded,
+        "pdb.desc",
+        std::path::PathBuf::from(desc_path),
+        2,
+        ctx,
+        ThemeKind::Dark,
+        None,
+    );
+    app.splash = false;
+    app.term_width = 120;
+
+    if let Some(graph) = &app.ctx.graph {
+        let graph_ref = graph.graph;
+        let original_blob = app.blob[app.wrapper_offset..].to_vec();
+        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref) {
+            eprintln!("resolved root type: {fqdn}");
+            app.apply_resolved_root_type(fqdn);
+        }
+    }
+    eprintln!(
+        "root rendered_as after apply_resolved_root_type: {:?}",
+        app.tree[app.first_node].rendered_as
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let cursor = app.cursor;
+    eprintln!(
+        "cursor after Down: {} rendered_as={:?}",
+        cursor, app.tree[cursor].rendered_as
+    );
+
+    // Mimic exactly what `preview_override_highlight` does after its own
+    // (budget-capped) preview splice at pane-open time: force `rendered_as`
+    // back to `None` so the node is treated as needing a real re-splice.
+    app.tree[cursor].rendered_as = None;
+
+    eprintln!(
+        "about to force-resplice from root -- tree.len()={}",
+        app.tree.len()
+    );
+    app.render_overrides(app.first_node);
+    eprintln!(
+        "after forced resplice: tree.len()={} message={}",
+        app.tree.len(),
+        app.message
+    );
+}
+
+/// Repro attempt #4: replays the *exact* two-batch sequence the real
+/// `Enter`-confirm key handler performs (`key_dispatch.rs`'s
+/// `handle_override_key`'s `KeyCode::Enter` arm), skipping only the
+/// pane/candidate-list bookkeeping that attempt #3 already showed is
+/// irrelevant to the crash. The critical difference from attempt #3:
+/// (1) an explicit override entry is *activated* (`overrides.activate`)
+/// before the first `render_overrides(self.first_node)` call, and (2)
+/// a *second*, independent batch -- `render_overrides(idx)` scoped to
+/// the cursor node itself, not the root -- immediately follows, exactly
+/// as `close_override` does right after every real Enter-confirm.
+#[test]
+#[ignore]
+fn repro_crash_activate_then_close_on_pdb() {
+    let desc_path = Path::new("/tmp/pdb.desc");
+    if !desc_path.exists() {
+        eprintln!("skipping: /tmp/pdb.desc not present");
+        return;
+    }
+
+    let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
+    let blob = std::fs::read(desc_path).expect("read blob");
+    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let mut app = App::new(
+        decoded,
+        "pdb.desc",
+        std::path::PathBuf::from(desc_path),
+        2,
+        ctx,
+        ThemeKind::Dark,
+        None,
+    );
+    app.splash = false;
+    app.term_width = 120;
+
+    if let Some(graph) = &app.ctx.graph {
+        let graph_ref = graph.graph;
+        let original_blob = app.blob[app.wrapper_offset..].to_vec();
+        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref) {
+            eprintln!("resolved root type: {fqdn}");
+            app.apply_resolved_root_type(fqdn);
+        }
+    }
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let cursor = app.cursor;
+    let own_fqdn = app.tree[cursor].span.type_fqdn.clone();
+    eprintln!(
+        "cursor after Down: {} type_fqdn={:?} rendered_as={:?}",
+        cursor, own_fqdn, app.tree[cursor].rendered_as
+    );
+
+    // Mimic `toggle_override`'s preview splice + forced rendered_as reset
+    // (attempt #3 already showed this alone doesn't crash, but keep it
+    // for fidelity -- it's what real `t` always does before Enter).
+    app.tree[cursor].rendered_as = None;
+
+    // Mimic `handle_override_key`'s `Enter` arm exactly.
+    let origin = app
+        .override_origin_for_kind(cursor)
+        .expect("origin for cursor");
+    app.overrides.activate(origin.clone(), own_fqdn.clone());
+    eprintln!(
+        "about to batch#1 render_overrides(first_node) -- tree.len()={}",
+        app.tree.len()
+    );
+    app.render_overrides(app.first_node);
+    eprintln!(
+        "after batch#1: tree.len()={} message={}",
+        app.tree.len(),
+        app.message
+    );
+
+    // Mimic `close_override`'s own follow-up call, scoped to `cursor`
+    // (not the root) -- this is the second, independent batch.
+    eprintln!("about to batch#2 render_overrides(cursor={cursor})");
+    app.render_overrides(cursor);
+    eprintln!(
+        "after batch#2: tree.len()={} message={}",
+        app.tree.len(),
+        app.message
+    );
+}
+
+/// Repro attempt #4.5: attempt #4 (activate+render_overrides, no real
+/// `t` keypress) did *not* crash; attempt #5 (real `t` then a long
+/// candidate-settling wait then real `Enter`) *did* crash, picking the
+/// exact same target type as #4. The only structural difference: #5's
+/// real `t` keypress goes through `toggle_override` -> `preview_
+/// override_highlight`, which does an immediate, budget-capped (spec
+/// 0163, default 200 spans) preview splice of the cursor's ~600k-node
+/// subtree -- something #4 never did. This test isolates exactly that:
+/// a real `t` keypress (no waiting at all) immediately followed by the
+/// same manual activate+render_overrides(first_node)+render_overrides
+/// (cursor) sequence #4 used, skipping the pane/candidate machinery
+/// entirely otherwise.
+#[test]
+#[ignore]
+fn repro_crash_real_t_then_manual_confirm_on_pdb() {
+    let desc_path = Path::new("/tmp/pdb.desc");
+    if !desc_path.exists() {
+        eprintln!("skipping: /tmp/pdb.desc not present");
+        return;
+    }
+
+    let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
+    let blob = std::fs::read(desc_path).expect("read blob");
+    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let mut app = App::new(
+        decoded,
+        "pdb.desc",
+        std::path::PathBuf::from(desc_path),
+        2,
+        ctx,
+        ThemeKind::Dark,
+        None,
+    );
+    app.splash = false;
+    app.term_width = 120;
+
+    if let Some(graph) = &app.ctx.graph {
+        let graph_ref = graph.graph;
+        let original_blob = app.blob[app.wrapper_offset..].to_vec();
+        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref) {
+            eprintln!("resolved root type: {fqdn}");
+            app.apply_resolved_root_type(fqdn);
+        }
+    }
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let cursor = app.cursor;
+    let own_fqdn = app.tree[cursor].span.type_fqdn.clone();
+    eprintln!("cursor after Down: {cursor} type_fqdn={own_fqdn:?}");
+
+    // Real `t` keypress -- no waiting, no candidate polling.
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    eprintln!(
+        "right after real 't': override_target={:?} rendered_as={:?} tree.len()={}",
+        app.override_target,
+        app.tree[cursor].rendered_as,
+        app.tree.len()
+    );
+
+    // Mimic `handle_override_key`'s `Enter` arm's core effect manually
+    // (bypassing the candidate list -- already shown irrelevant).
+    let origin = app
+        .override_origin_for_kind(cursor)
+        .expect("origin for cursor");
+    app.overrides.activate(origin.clone(), own_fqdn.clone());
+    eprintln!(
+        "about to batch#1 render_overrides(first_node) -- tree.len()={}",
+        app.tree.len()
+    );
+    app.render_overrides(app.first_node);
+    eprintln!(
+        "after batch#1: tree.len()={} message={}",
+        app.tree.len(),
+        app.message
+    );
+
+    eprintln!("about to batch#2 render_overrides(cursor={cursor})");
+    app.render_overrides(cursor);
+    eprintln!(
+        "after batch#2: tree.len()={} message={}",
+        app.tree.len(),
+        app.message
+    );
+}
+
+/// Repro attempt #4.75: #4.5 (one real `t` keypress, i.e. exactly one
+/// preview splice of the cursor node, then manual confirm) did *not*
+/// crash. The real interactive session's wait loop calls `poll_
+/// pending_override_work` repeatedly, which -- once `override_seek_
+/// target` finally resolves -- calls `preview_override_highlight()` a
+/// *second* time on the very same node (`override_select.rs`'s own
+/// `poll_pending_override_work`, the `seek_override_highlight` success
+/// branch). This test isolates that: two successive preview splices of
+/// the same huge subtree (mimicking what the pane-open seek + the
+/// eventual poll-driven re-seek both do), then the same manual confirm
+/// sequence as #4/#4.5.
+#[test]
+#[ignore]
+fn repro_crash_two_previews_then_manual_confirm_on_pdb() {
+    let desc_path = Path::new("/tmp/pdb.desc");
+    if !desc_path.exists() {
+        eprintln!("skipping: /tmp/pdb.desc not present");
+        return;
+    }
+
+    let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
+    let blob = std::fs::read(desc_path).expect("read blob");
+    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let mut app = App::new(
+        decoded,
+        "pdb.desc",
+        std::path::PathBuf::from(desc_path),
+        2,
+        ctx,
+        ThemeKind::Dark,
+        None,
+    );
+    app.splash = false;
+    app.term_width = 120;
+
+    if let Some(graph) = &app.ctx.graph {
+        let graph_ref = graph.graph;
+        let original_blob = app.blob[app.wrapper_offset..].to_vec();
+        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref) {
+            eprintln!("resolved root type: {fqdn}");
+            app.apply_resolved_root_type(fqdn);
+        }
+    }
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let cursor = app.cursor;
+    let own_fqdn = app.tree[cursor].span.type_fqdn.clone();
+    eprintln!("cursor after Down: {cursor} type_fqdn={own_fqdn:?}");
+
+    // Real `t` keypress -- exactly one preview splice.
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    eprintln!(
+        "right after real 't' (preview #1): override_target={:?} rendered_as={:?} tree.len()={}",
+        app.override_target,
+        app.tree[cursor].rendered_as,
+        app.tree.len()
+    );
+
+    // A second preview splice of the *same* node -- mimicking `poll_
+    // pending_override_work`'s own seek-retry-success call.
+    app.preview_override_highlight();
+    eprintln!(
+        "after preview #2: rendered_as={:?} tree.len()={}",
+        app.tree[cursor].rendered_as,
+        app.tree.len()
+    );
+
+    // Manual confirm (bypassing the candidate list -- already shown
+    // irrelevant to which type gets picked here).
+    let origin = app
+        .override_origin_for_kind(cursor)
+        .expect("origin for cursor");
+    app.overrides.activate(origin.clone(), own_fqdn.clone());
+    eprintln!(
+        "about to batch#1 render_overrides(first_node) -- tree.len()={}",
+        app.tree.len()
+    );
+    app.render_overrides(app.first_node);
+    eprintln!(
+        "after batch#1: tree.len()={} message={}",
+        app.tree.len(),
+        app.message
+    );
+
+    eprintln!("about to batch#2 render_overrides(cursor={cursor})");
+    app.render_overrides(cursor);
+    eprintln!(
+        "after batch#2: tree.len()={} message={}",
+        app.tree.len(),
+        app.message
+    );
+}
+
+/// Repro attempt #4.9: instrumenting #5 revealed the real wait-loop's
+/// splice events are *tiny* (a few nodes, not the whole subtree) --
+/// because at `t` time `override_candidates` is still empty (cold
+/// cache), so `preview_override_highlight`'s `tentative` is `None`:
+/// the very *first* preview is of the node as **raw** (untyped), not
+/// as its own current type! Only once real candidates arrive does a
+/// *second* preview (via `poll_pending_override_work`'s seek-retry)
+/// switch it to the real type -- a raw-preview-then-typed-preview
+/// transition #4.75 never actually exercised (it called `preview_
+/// override_highlight()` twice back-to-back with an empty candidate
+/// list both times, i.e. raw-then-raw). This test isolates exactly
+/// that transition: real `t` (raw preview), then manually seed
+/// `override_candidates` with the real type and preview again (typed),
+/// then the same manual confirm sequence.
+#[test]
+#[ignore]
+fn repro_crash_raw_then_typed_preview_then_manual_confirm_on_pdb() {
+    let desc_path = Path::new("/tmp/pdb.desc");
+    if !desc_path.exists() {
+        eprintln!("skipping: /tmp/pdb.desc not present");
+        return;
+    }
+
+    let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
+    let blob = std::fs::read(desc_path).expect("read blob");
+    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let mut app = App::new(
+        decoded,
+        "pdb.desc",
+        std::path::PathBuf::from(desc_path),
+        2,
+        ctx,
+        ThemeKind::Dark,
+        None,
+    );
+    app.splash = false;
+    app.term_width = 120;
+
+    if let Some(graph) = &app.ctx.graph {
+        let graph_ref = graph.graph;
+        let original_blob = app.blob[app.wrapper_offset..].to_vec();
+        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref) {
+            eprintln!("resolved root type: {fqdn}");
+            app.apply_resolved_root_type(fqdn);
+        }
+    }
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let cursor = app.cursor;
+    let own_fqdn = app.tree[cursor].span.type_fqdn.clone();
+    eprintln!("cursor after Down: {cursor} type_fqdn={own_fqdn:?}");
+    let baseline_len = app.tree.len();
+
+    // Real `t` keypress -- with a cold (empty) candidate cache, this
+    // previews the node as *raw*.
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    eprintln!(
+        "right after real 't' (raw preview): candidates.len()={} tree.len()={} (delta {})",
+        app.override_candidates.len(),
+        app.tree.len(),
+        app.tree.len() as isize - baseline_len as isize
+    );
+
+    // Manually seed the candidate list with the node's real type at
+    // row 0 (mimicking what the heat worker eventually provides) and
+    // re-preview -- the raw -> typed transition.
+    app.override_candidates = vec![(own_fqdn.clone().unwrap(), Some(1))];
+    app.override_highlight = 0;
+    app.preview_override_highlight();
+    eprintln!(
+        "after typed preview: tree.len()={} (delta {}) message={}",
+        app.tree.len(),
+        app.tree.len() as isize - baseline_len as isize,
+        app.message
+    );
+
+    // Manual confirm (bypassing the candidate list dispatch itself --
+    // already shown irrelevant to which type gets picked here).
+    let origin = app
+        .override_origin_for_kind(cursor)
+        .expect("origin for cursor");
+    app.overrides.activate(origin.clone(), own_fqdn.clone());
+    eprintln!(
+        "about to batch#1 render_overrides(first_node) -- tree.len()={}",
+        app.tree.len()
+    );
+    app.render_overrides(app.first_node);
+    eprintln!(
+        "after batch#1: tree.len()={} message={}",
+        app.tree.len(),
+        app.message
+    );
+
+    eprintln!("about to batch#2 render_overrides(cursor={cursor})");
+    app.render_overrides(cursor);
+    eprintln!(
+        "after batch#2: tree.len()={} message={}",
+        app.tree.len(),
+        app.message
+    );
+}
+
+/// Repro attempt #5: unlike every earlier attempt, does *not* force the
+/// override pane's highlight onto the cursor node's own current type --
+/// waits (like `repro_crash_down_t_enter_on_pdb`) for the background
+/// heat worker to settle, then presses Enter on *whatever* candidate
+/// naturally ends up highlighted (real `open_override_on_type`'s own
+/// seek/fallback logic, untouched), even if that's a genuinely
+/// different type than the node's current one -- through the real
+/// `app.handle_key` dispatch path throughout, exactly as a human would
+/// experience it. Prints the actually-confirmed candidate FQDN either
+/// way, so a crash or a clean pass are both informative.
+#[test]
+#[ignore]
+fn repro_crash_natural_highlight_on_pdb() {
+    let desc_path = Path::new("/tmp/pdb.desc");
+    if !desc_path.exists() {
+        eprintln!("skipping: /tmp/pdb.desc not present");
+        return;
+    }
+
+    let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
+    let blob = std::fs::read(desc_path).expect("read blob");
+    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let mut app = App::new(
+        decoded,
+        "pdb.desc",
+        std::path::PathBuf::from(desc_path),
+        2,
+        ctx,
+        ThemeKind::Dark,
+        None,
+    );
+    app.splash = false;
+    app.term_width = 120;
+
+    let backend = ratatui::backend::TestBackend::new(120, 50);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    let mut rx = None;
+    if let Some(graph) = &app.ctx.graph {
+        let graph_ref = graph.graph;
+        let blob = std::sync::Arc::new(app.blob.clone());
+        let (tx, worker_rx) = std::sync::mpsc::channel();
+        app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
+            std::sync::Arc::clone(&app.heat_caches),
+            graph_ref,
+            blob,
+            tx.clone(),
+        ));
+        rx = Some(worker_rx);
+
+        let original_blob = app.blob[app.wrapper_offset..].to_vec();
+        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref) {
+            eprintln!("resolved root type: {fqdn}");
+            app.apply_resolved_root_type(fqdn);
+        }
+    }
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    eprintln!(
+        "cursor after Down: {} type_fqdn={:?}",
+        app.cursor, app.tree[app.cursor].span.type_fqdn
+    );
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    eprintln!(
+        "right after 't': sort={:?} highlight={} pending={} seek_target={:?}",
+        app.override_sort,
+        app.override_highlight,
+        app.override_candidates_pending,
+        app.override_seek_target
+    );
+    let t_poll = Instant::now();
+    let mut last_len = app.tree.len();
+    let mut splice_events = 0usize;
+    while (app.override_candidates_pending
+        || app.override_complete_pending
+        || app.override_seek_target.is_some())
+        && t_poll.elapsed().as_secs() < 120
+    {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        app.poll_pending_override_work();
+        if app.tree.len() != last_len {
+            splice_events += 1;
+            eprintln!(
+                "  [poll] tree.len() changed: {} -> {} (event #{splice_events}, highlight={}, candidates.len()={})",
+                last_len,
+                app.tree.len(),
+                app.override_highlight,
+                app.override_candidates.len()
+            );
+            last_len = app.tree.len();
+        }
+        if let Some(rx) = &rx {
+            while rx.try_recv().is_ok() {
+                app.recheck_pending_heat_states();
+                app.poll_pending_override_work();
+                if app.tree.len() != last_len {
+                    splice_events += 1;
+                    eprintln!(
+                        "  [drain] tree.len() changed: {} -> {} (event #{splice_events}, highlight={}, candidates.len()={})",
+                        last_len,
+                        app.tree.len(),
+                        app.override_highlight,
+                        app.override_candidates.len()
+                    );
+                    last_len = app.tree.len();
+                }
+            }
+        }
+    }
+    eprintln!("total splice events during wait loop: {splice_events}");
+    eprintln!(
+        "settled: sort={:?} highlight={} candidates.len()={} seek_target={:?}",
+        app.override_sort,
+        app.override_highlight,
+        app.override_candidates.len(),
+        app.override_seek_target
+    );
+    if let Some((fqdn, _)) = app.override_candidates.get(app.override_highlight) {
+        eprintln!("about to confirm candidate: {fqdn}");
+    } else {
+        eprintln!("no candidate at highlight row {} -- Enter will no-op with a message, not crash; skipping", app.override_highlight);
+        return;
+    }
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    eprintln!("about to press Enter -- tree.len()={}", app.tree.len());
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    eprintln!(
+        "after Enter: tree.len()={} manage_open={} message={}",
+        app.tree.len(),
+        app.manage_open,
+        app.message
+    );
+}
+
+/// Throwaway diagnostic for the 2026-07-25 report: even on the tiny
+/// `/tmp/sim` fixture (459 bytes), `Down` then `t` reportedly stalls
+/// forever at "Scoring candidates…", pegging one CPU core. Bounds the
+/// settle-poll loop tightly (5s) and counts real `inferred_candidates`/
+/// `score_all` calls via the worker's own test counter to distinguish
+/// "genuinely slow" from "never terminates, repeatedly redoing the same
+/// work".
+#[test]
+#[ignore]
+fn diagnose_sim_t_stall() {
+    let desc_path = Path::new("/tmp/pdb.desc");
+    let blob_path = Path::new("/tmp/sim");
+    if !desc_path.exists() || !blob_path.exists() {
+        eprintln!("skipping: /tmp/pdb.desc or /tmp/sim not present");
+        return;
+    }
+
+    let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
+    let blob = std::fs::read(blob_path).expect("read blob");
+    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    eprintln!("total tree nodes: {}", decoded.tree.len());
+
+    let mut app = App::new(
+        decoded,
+        "sim",
+        std::path::PathBuf::from(blob_path),
+        2,
+        ctx,
+        ThemeKind::Dark,
+        None,
+    );
+    app.splash = false;
+    app.term_width = 120;
+
+    if let Some(graph) = &app.ctx.graph {
+        let graph_ref = graph.graph;
+        let blob_arc = std::sync::Arc::new(app.blob.clone());
+        let (tx, _rx) = std::sync::mpsc::channel();
+        app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
+            std::sync::Arc::clone(&app.heat_caches),
+            graph_ref,
+            blob_arc,
+            tx,
+        ));
+    }
+    eprintln!("scoring graph present: {}", app.ctx.graph.is_some());
+
+    let backend = ratatui::backend::TestBackend::new(120, 50);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    // 2026-07-25 report: `t` *at the default cursor position*, no
+    // navigation first, reportedly loops forever.
+    eprintln!(
+        "default cursor: {} (is_message={}, field_number={})",
+        app.cursor, app.tree[app.cursor].span.is_message, app.tree[app.cursor].span.field_number
+    );
+
+    heat_worker::TEST_INFERRED_CANDIDATES_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
+    let t0 = Instant::now();
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    eprintln!("'t' (open override pane): {:?}", t0.elapsed());
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    eprintln!(
+        "right after open: pending={} complete_pending={} candidates.len()={} message={}",
+        app.override_candidates_pending,
+        app.override_complete_pending,
+        app.override_candidates.len(),
+        app.message
+    );
+
+    let t_poll = Instant::now();
+    let mut polls = 0;
+    while (app.override_candidates_pending || app.override_complete_pending)
+        && t_poll.elapsed().as_secs() < 5
+    {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        app.poll_pending_override_work();
+        polls += 1;
+    }
+    eprintln!(
+        "settle-poll: {:?} ({polls} polls), pending={} complete_pending={} \
+         candidates.len()={} complete={} score_all_calls={}",
+        t_poll.elapsed(),
+        app.override_candidates_pending,
+        app.override_complete_pending,
+        app.override_candidates.len(),
+        app.override_candidates_complete,
+        heat_worker::TEST_INFERRED_CANDIDATES_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+    );
+}
+
+/// Throwaway diagnostic for the 2026-07-25 report: on `/tmp/sim`,
+/// navigate to node `/3`, press `t`, then `Down` *inside the override
+/// pane* (moving the highlight, triggering a live preview) — reportedly
+/// stalls at 100% CPU. Bounds every poll loop tightly so the test itself
+/// can never hang forever even if the underlying bug does.
+#[test]
+#[ignore]
+fn diagnose_sim_node3_t_down_stall() {
+    let desc_path = Path::new("/tmp/pdb.desc");
+    let blob_path = Path::new("/tmp/sim");
+    if !desc_path.exists() || !blob_path.exists() {
+        eprintln!("skipping: /tmp/pdb.desc or /tmp/sim not present");
+        return;
+    }
+
+    let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
+    let blob = std::fs::read(blob_path).expect("read blob");
+    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+
+    let mut app = App::new(
+        decoded,
+        "sim",
+        std::path::PathBuf::from(blob_path),
+        2,
+        ctx,
+        ThemeKind::Dark,
+        None,
+    );
+    app.splash = false;
+    app.term_width = 120;
+
+    if let Some(graph) = &app.ctx.graph {
+        let graph_ref = graph.graph;
+        let blob_arc = std::sync::Arc::new(app.blob.clone());
+        let (tx, _rx) = std::sync::mpsc::channel();
+        app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
+            std::sync::Arc::clone(&app.heat_caches),
+            graph_ref,
+            blob_arc,
+            tx,
+        ));
+    }
+
+    let backend = ratatui::backend::TestBackend::new(120, 50);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    let idx3 = app.resolve_path("/3").expect("node /3 must exist");
+    app.set_cursor(idx3);
+    eprintln!(
+        "node /3: idx={idx3} is_message={} field_number={}",
+        app.tree[idx3].span.is_message, app.tree[idx3].span.field_number
+    );
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    heat_worker::TEST_INFERRED_CANDIDATES_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    let t_open = Instant::now();
+    let mut open_polls = 0;
+    while (app.override_candidates_pending || app.override_complete_pending)
+        && t_open.elapsed().as_secs() < 5
+    {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        app.poll_pending_override_work();
+        open_polls += 1;
+    }
+    eprintln!(
+        "settle after open: {:?} ({open_polls} polls), pending={} complete_pending={} \
+         candidates.len()={} complete={} score_all_calls={}",
+        t_open.elapsed(),
+        app.override_candidates_pending,
+        app.override_complete_pending,
+        app.override_candidates.len(),
+        app.override_candidates_complete,
+        heat_worker::TEST_INFERRED_CANDIDATES_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+    );
+
+    eprintln!(
+        "candidate[0]={:?} candidate[1]={:?} candidate[2]={:?}",
+        app.override_candidates.first(),
+        app.override_candidates.get(1),
+        app.override_candidates.get(2),
+    );
+    eprintln!("highlight before Down: {}", app.override_highlight);
+
+    heat_worker::TEST_INFERRED_CANDIDATES_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
+    let t_down = Instant::now();
+    app.move_override_highlight(1);
+    eprintln!(
+        "move_override_highlight(1) (direct call, bypassing handle_key): {:?}, tree.len()={}, highlight={}",
+        t_down.elapsed(),
+        app.tree.len(),
+        app.override_highlight,
+    );
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    let t_poll = Instant::now();
+    let mut polls = 0;
+    while (app.override_candidates_pending || app.override_complete_pending)
+        && t_poll.elapsed().as_secs() < 5
+    {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        app.poll_pending_override_work();
+        polls += 1;
+    }
+    eprintln!(
+        "settle after Down: {:?} ({polls} polls), pending={} complete_pending={} \
+         candidates.len()={} complete={} score_all_calls={}",
+        t_poll.elapsed(),
+        app.override_candidates_pending,
+        app.override_complete_pending,
+        app.override_candidates.len(),
+        app.override_candidates_complete,
+        heat_worker::TEST_INFERRED_CANDIDATES_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+    );
+}

@@ -102,6 +102,37 @@ impl App {
         }
     }
 
+    /// The live node immediately following `idx`'s own subtree in document
+    /// order, found by walking forward from `start` (`idx`'s own pre-splice
+    /// `doc_next`) past every node in `old_descendants`, until the first
+    /// live node genuinely outside it (spec 0118's `after` seam —
+    /// `document-tree.md`'s `doc_next` invariant section). Shared between
+    /// `splice_override`'s own re-linking and `preview_override_highlight`'s
+    /// truncate-and-retry path: once `idx` has been given a multi-node
+    /// subtree by an earlier splice, `idx.doc_next` points to that
+    /// subtree's own first child (*inside* it, not outside), so any code
+    /// about to discard `idx`'s current subtree must recompute this before
+    /// discarding it, rather than assume `idx.doc_next` already points
+    /// outside (2026-07-25 bug: `preview_override_highlight`'s retry path
+    /// left `idx.doc_next` untouched across a truncate, leaving it stale
+    /// enough to be reused as an index inside the *next* preview's own
+    /// freshly-pushed subtree, forming a `doc_next` cycle).
+    pub(super) fn doc_next_after_subtree(
+        &self,
+        start: Option<usize>,
+        old_descendants: &HashSet<usize>,
+    ) -> Option<usize> {
+        let mut after = start;
+        while let Some(a) = after {
+            if old_descendants.contains(&a) {
+                after = self.tree[a].doc_next;
+            } else {
+                break;
+            }
+        }
+        after
+    }
+
     /// Looks up `idx`'s own field on its parent's schema (spec 0119
     /// §G1/§G2's shared lookup): requires both that `idx`'s parent has a
     /// resolved `type_fqdn` and that its schema declares `idx`'s
@@ -1539,18 +1570,12 @@ impl App {
         // into. For a packed sibling merge this is `siblings.last()`'s
         // own `doc_next`, not `idx`'s (spec 0135 G1) — `idx` is now
         // `siblings[0]`, but the whole run is being replaced.
-        let mut after = if is_packed {
+        let start = if is_packed {
             packed_seam_after
         } else {
             self.tree[idx].doc_next
         };
-        while let Some(a) = after {
-            if old_descendants.contains(&a) {
-                after = self.tree[a].doc_next;
-            } else {
-                break;
-            }
-        }
+        let after = self.doc_next_after_subtree(start, &old_descendants);
 
         // Replace `idx`'s *whole* line range (header, interior, and
         // footer alike) — not just its interior, unlike the old

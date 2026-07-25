@@ -31,6 +31,23 @@ use crate::override_pane;
 /// practice.
 pub(super) const HEAT_REQUEST_QUEUE_MAX_ENTRIES: usize = 512;
 
+/// Stack size for the worker thread spawned by `HeatWorkerHandle::spawn`.
+/// `score_message_multi` (`prototext-graph`) recurses once per nested
+/// message/group level of whatever candidate type it's scoring a range
+/// against; on a schema mismatch (e.g. decoding a range against a
+/// candidate whose shape doesn't actually match the bytes) this can run
+/// noticeably deeper than a well-formed decode of the same bytes would.
+/// `std::thread::spawn`'s default stack (2 MiB) is smaller than the main
+/// thread's own (commonly 8 MiB, per the process's `RLIMIT_STACK`), so
+/// scoring that would be safely within budget on the main thread could
+/// overflow the worker's smaller default. Not the cause of the
+/// 2026-07-25 segfault report (that turned out to be an unrelated
+/// `App`-field-drop-order use-after-unmap race — see `mod.rs`'s
+/// `heat_worker`/`ctx` field-ordering comment), but kept as reasonable
+/// defense-in-depth: 16 MiB comfortably exceeds the main thread's own
+/// default, rather than merely matching it.
+const HEAT_WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
+
 /// One request for the worker thread (spec 0152 "plain terms"/G3):
 /// which node's payload range, its currently-assigned type (if any),
 /// and the `[start, end)` window of the ranked candidate list actually
@@ -413,8 +430,11 @@ impl HeatWorkerHandle {
     ) -> Self {
         let queue = Arc::new(HeatRequestQueue::new());
         let worker_queue = Arc::clone(&queue);
-        let join =
-            thread::spawn(move || heat_worker_loop(worker_queue, caches, graph, blob, progress));
+        let join = thread::Builder::new()
+            .name("heat-worker".to_string())
+            .stack_size(HEAT_WORKER_STACK_SIZE)
+            .spawn(move || heat_worker_loop(worker_queue, caches, graph, blob, progress))
+            .expect("spawn heat worker thread");
         HeatWorkerHandle {
             queue,
             join: Some(join),

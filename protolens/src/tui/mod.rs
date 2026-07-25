@@ -718,6 +718,24 @@ pub struct App {
     /// management pane instead of leaving focus on the main pane — and
     /// is cleared as soon as it's acted on.
     override_opened_from_manage: bool,
+    /// The background scoring worker thread (spec 0152 G1) — `None`
+    /// whenever no scoring graph is loaded (mirroring the warm-up
+    /// pass's own gate) or before `tui::run()` has spawned it; every
+    /// fork that checks `heat_worker.is_some()` falls through to the
+    /// existing synchronous logic when it's `None`.
+    ///
+    /// Declared (and thus dropped) before `ctx` below: `heat_worker`
+    /// holds a `&'static ArchivedCompiledGraph` borrowed from `ctx`'s
+    /// mmap-backed `LoadedGraph` (`prototext_graph::score::load`'s
+    /// safety contract requires the backing mmap to outlive every
+    /// reference into it), and `HeatWorkerHandle`'s `Drop` is what
+    /// actually stops and joins the background thread using that
+    /// reference. Rust drops struct fields in declaration order, so
+    /// `ctx` must come *after* `heat_worker` here, or `App`'s own
+    /// teardown would unmap the graph out from under a still-running
+    /// worker thread — a use-after-unmap race hit intermittently at
+    /// process exit (2026-07-25 bug report).
+    heat_worker: Option<heat_worker::HeatWorkerHandle>,
     /// Type-lookup/scoring context (spec 0114 §3) — owned by `App` after
     /// `decode()` returns it, so the override pane can resolve/score
     /// candidate types for the rest of the session.
@@ -773,12 +791,6 @@ pub struct App {
     /// `heat_worker` (when spawned) read and write this same structure
     /// directly — see `heat_worker::HeatCaches`.
     heat_caches: Arc<Mutex<heat_worker::HeatCaches>>,
-    /// The background scoring worker thread (spec 0152 G1) — `None`
-    /// whenever no scoring graph is loaded (mirroring the warm-up
-    /// pass's own gate) or before `tui::run()` has spawned it; every
-    /// fork that checks `heat_worker.is_some()` falls through to the
-    /// existing synchronous logic when it's `None`.
-    heat_worker: Option<heat_worker::HeatWorkerHandle>,
     /// `true` from `App::new` until the one-shot background root-type
     /// resolver (spec NNNN) reports back via `AppEvent::RootTypeResolved`
     /// — set from `Decoded::root_type_deferred`. `run()` only spawns the

@@ -773,6 +773,28 @@ impl App {
         };
         match self.preview_tree_watermark {
             Some(watermark) => {
+                // `idx.doc_next`, once `idx` has been given a
+                // multi-node subtree by an earlier splice, points to
+                // that subtree's own first child — *inside* the range
+                // about to be truncated below — not "always outside
+                // idx's subtree" as an earlier fix here assumed (see
+                // `document-tree.md`'s `doc_next` invariant section).
+                // Recompute it now, while `first_child`/`last_child`
+                // still describe the pre-truncation subtree, by
+                // skipping forward past every one of idx's own
+                // descendants to the first live node genuinely outside
+                // it. Otherwise `idx.doc_next` is left pointing at an
+                // index that `self.tree.len()` will make valid again
+                // (reused by the *next* splice's freshly-pushed
+                // subtree), wiring a cycle into the doc-order chain
+                // that hangs `finalize_override_batch`'s forward walk
+                // (2026-07-25 bug).
+                let mut old_descendants_vec = Vec::new();
+                self.collect_descendants(idx, &mut old_descendants_vec);
+                let old_descendants: HashSet<usize> = old_descendants_vec.into_iter().collect();
+                self.tree[idx].doc_next =
+                    self.doc_next_after_subtree(self.tree[idx].doc_next, &old_descendants);
+
                 self.tree.truncate(watermark);
                 self.heat_states.truncate(watermark);
                 self.folded.retain(|&i| i < watermark);
@@ -791,19 +813,21 @@ impl App {
                 self.line_to_node.retain(|_, idx| *idx < watermark);
                 self.footer_line_to_node.retain(|_, idx| *idx < watermark);
                 // The truncation above just invalidated whatever `idx`'s
-                // children/doc-chain pointer previously pointed at (the
-                // prior preview's now-discarded subtree). `splice_override`
-                // below unconditionally overwrites all three fields on
-                // success, but if it returns `Err` before reaching that
-                // point (every error path precedes any tree mutation),
-                // these must not keep dangling, out-of-bounds indices
-                // around. Null them defensively so a failed splice leaves
-                // `idx` merely childless (harmless — the override pane, not
-                // the main pane, has focus here) rather than referencing
-                // truncated memory.
+                // `first_child`/`last_child` previously pointed at (the
+                // prior preview's now-discarded subtree — always at or
+                // past `watermark`). `splice_override` below
+                // unconditionally overwrites both fields on success, but
+                // if it returns `Err` before reaching that point (every
+                // error path precedes any tree mutation), these must not
+                // keep dangling, out-of-bounds indices around. Null them
+                // defensively so a failed splice leaves `idx` merely
+                // childless (harmless — the override pane, not the main
+                // pane, has focus here) rather than referencing truncated
+                // memory. `doc_next` was already corrected above, before
+                // the truncation invalidated the descendant set it's
+                // computed from.
                 self.tree[idx].first_child = None;
                 self.tree[idx].last_child = None;
-                self.tree[idx].doc_next = None;
             }
             None => self.preview_tree_watermark = Some(self.tree.len()),
         }
