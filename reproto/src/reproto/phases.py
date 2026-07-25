@@ -1553,7 +1553,13 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
         if msg_node is not None and msg_node.is_pruned:
             return
         fields_out = []
-        for f in sorted(desc.fields_by_number.values(), key=lambda f: f.number):
+        # See the sibling `_collect` in `_phase_emit_scoring_graphs` for why
+        # extensions (except on message_set_wire_format types) are included
+        # here alongside the message's own declared fields (2026-07-25 fix).
+        known_fields = list(desc.fields_by_number.values())
+        if not desc.GetOptions().message_set_wire_format:
+            known_fields += list(ctx.pool.FindAllExtensions(desc))
+        for f in sorted(known_fields, key=lambda f: f.number):
             field_node = ctx.nodes.get(Fqdn(f'fdsc:.{f.full_name}'))
             if field_node is not None and field_node.is_pruned:
                 continue
@@ -1882,7 +1888,19 @@ def _phase_emit_scoring_graphs(ctx: 'Context', out_dir: Path) -> None:
         if msg_node is not None and msg_node.is_pruned:
             return
         fields_out = []
-        for f in sorted(desc.fields_by_number.values(), key=lambda f: f.number):
+        # Known transitions include both the message's own declared fields
+        # and every extension targeting it elsewhere (`extend desc { ... }`,
+        # e.g. FieldOptions extensions) — the compiled scoring graph must
+        # recognize extension field numbers as matches, not as unknowns
+        # (2026-07-25 fix). MessageSet extensions are the one exception:
+        # message_set_wire_format messages never carry their extensions'
+        # own field numbers on the wire (everything is wrapped in the
+        # synthesized `Item` group below), so including them here would
+        # wrongly claim those field numbers as direct transitions.
+        known_fields = list(desc.fields_by_number.values())
+        if not desc.GetOptions().message_set_wire_format:
+            known_fields += list(ctx.pool.FindAllExtensions(desc))
+        for f in sorted(known_fields, key=lambda f: f.number):
             field_node = ctx.nodes.get(Fqdn(f'fdsc:.{f.full_name}'))
             if field_node is not None and field_node.is_pruned:
                 continue
