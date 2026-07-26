@@ -141,7 +141,8 @@ the document pays an allocate-copy-free cycle: 193 072 of them on the
 - **N5**: Removing `NodeSpan::natural_annotation` (decode flaws P2). It
   is dead weight and should go, but it is a `NodeSpan` field that
   protolens's arena carries, so it belongs with the arena-sizing work
-  (worklist W25), not here.
+  (worklist W25), not here. *(Taken up 2026-07-26 by
+  [spec 0181](0181-delete-natural-annotation.md), as W25 step 5.)*
 
 ## Specification
 

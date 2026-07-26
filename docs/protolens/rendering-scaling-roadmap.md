@@ -679,7 +679,7 @@ landable:
 | `raw_range`, `text_range` | `Range<usize>` = 16 B ea | `(u32, u32)` | 16 B |
 | `level` | `usize` | `u16` | 6 B |
 | `type_fqdn` | `Option<String>` = 24 B | interned `u32` into a per-document FQDN table | 20 B + one heap alloc per node |
-| `natural_annotation` | `Option<String>` = 24 B | **delete it** — it has zero production readers | 24 B + heap |
+| ~~`natural_annotation`~~ | ~~`Option<String>` = 24 B~~ | ✔ **deleted 2026-07-26** (spec 0181) — it had zero production readers | 24 B + heap, **banked** |
 | `is_message` + `wire_type` | `bool` + `u32`, 8 B padded | 1 B flag byte (room for spec 0169's `is_elision`) + `u8` wire type | 6 B |
 | `packed_record_start` | `Option<usize>` = 16 B | `u32` sentinel | 12 B |
 
@@ -688,12 +688,15 @@ GB** at 24.5 MB fresh, ~4.3 GB after two commits (which is the argument
 for doing S7 as well, not instead). The `u32` node index also becomes the
 natural key type for `line_to_node`, `heat_states` and the S8 window maps.
 
-**One of those rows is free.** `natural_annotation` is written at three
-sites in `sink.rs` and read at **none** — a repo-wide grep finds only
-producers, `: None` initializers, and prototext-core's own tests
-([decode P2](../prototext/decode-flaws.md)). Deleting it costs nothing
-and saves ~330 MB at 24.5 MB plus one allocation per container node. Do
-it first, because it is the only row with no design question attached.
+**One of those rows was free, and is now banked.** `natural_annotation`
+was written at three sites in `sink.rs` and read at **none** — a
+repo-wide grep found only producers, `: None` initializers, and
+prototext-core's own tests
+([decode P2](../prototext/decode-flaws.md)). ✔ Deleted 2026-07-26 by
+[spec 0181](../specs/0181-delete-natural-annotation.md): ~330 MB at
+24.5 MB plus one allocation per container node, at the cost of nothing.
+It went first because it was the only row with no design question
+attached; **every remaining row still has one.**
 
 **Do the interning first** of the rows that remain. `type_fqdn` is the
 single highest-value entry:

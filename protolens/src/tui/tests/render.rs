@@ -158,7 +158,6 @@ fn a_toggles_the_main_pane_annotation_display() {
             is_message: false,
             packed_record_start: None,
             wire_type: WT_VARINT,
-            natural_annotation: None,
         },
         parent: None,
         first_child: None,

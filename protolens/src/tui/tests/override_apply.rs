@@ -195,8 +195,8 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
 /// message type must not panic — it should apply the override and
 /// surface the mismatch as ordinary `TYPE_MISMATCH`/`INVALID_*`
 /// annotations in the interior, exactly like any other malformed
-/// nested-message re-decode (feedback, 2026-07-16: `t` used to
-/// panic on `natural_annotation`'s `.expect()`).
+/// nested-message re-decode (feedback, 2026-07-16: `t` used to panic
+/// here, in the header-patching path spec 0135 has since deleted).
 #[test]
 fn splice_override_on_an_incompatible_scalar_does_not_panic() {
     use crate::decode::{decode, DescriptorContext};

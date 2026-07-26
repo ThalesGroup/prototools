@@ -1445,20 +1445,25 @@ each its own commit:
    draft reserved a bit here for spec 0169's `is_elision`; decision D-b
    scoped that field out, so no reservation is needed. Spare bits in the
    flag byte are free anyway.)
-5. **Delete `natural_annotation`.** Revised 2026-07-25: this step used to
-   read "intern it or move it to a side table". It does not need either —
-   a repo-wide grep finds **zero production readers**
-   ([decode P2](../prototext/decode-flaws.md)). It is produced at
-   `sink.rs:1070`, `:1310`, `:1320`, initialized to `None` in `extract.rs`
-   and the fixtures, and otherwise touched only by prototext-core's own
-   tests. Straight deletion: 24 B, plus one heap allocation per container
-   node — ~330 MB at 24.5 MB before counting the allocations. Strictly
-   less work and strictly more saving than interning it.
+5. ✔ **Delete `natural_annotation`** — **done 2026-07-26** by
+   [spec 0181](../specs/0181-delete-natural-annotation.md). Revised
+   2026-07-25: this step used to read "intern it or move it to a side
+   table". It needed neither — a repo-wide grep found **zero production
+   readers** ([decode P2](../prototext/decode-flaws.md)). Straight
+   deletion: 24 B off every `NodeSpan`, plus one heap allocation per
+   container node — ~330 MB at 24.5 MB before counting the allocations.
 
-   Confirm the three producer sites have no side effect worth keeping,
-   and delete the stale doc comment at
-   `protolens/src/tui/tests/override_apply.rs:199` (it describes an
-   `.expect()` that no longer exists) in the same commit.
+   The side-effect check this step asked for came back clean:
+   `natural_annotation_from` was a pure forward scan over the
+   already-written output buffer, so `IndexMark::header_start` went with
+   it. The stale doc comment at
+   `protolens/src/tui/tests/override_apply.rs:199` was corrected in the
+   same commit.
+
+   **Only this step is done. Steps 1-4 and 6 below are untouched**, and
+   the `size_of::<TreeNode>() <= 72` proving test is still unwritten —
+   this one row was carved out precisely because it had no design
+   question attached.
 
 Also hoist `build_tree`'s per-node `let mut children = Vec::new();`
 (`decode.rs:324`) out of the loop and `clear()` it. Leaves are already

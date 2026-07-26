@@ -83,7 +83,6 @@ fn prefetch_fixture(n: usize) -> App {
                     is_message: false,
                     packed_record_start: None,
                     wire_type: WT_VARINT,
-                    natural_annotation: None,
                 },
                 parent: None,
                 first_child: None,

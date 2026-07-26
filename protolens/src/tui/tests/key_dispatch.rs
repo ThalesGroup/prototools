@@ -755,7 +755,6 @@ fn default_export_descriptor_path_falls_back_to_the_numeric_range_when_unresolva
             is_message: false,
             packed_record_start: None,
             wire_type: WT_VARINT,
-            natural_annotation: None,
         },
         parent: None,
         first_child: None,

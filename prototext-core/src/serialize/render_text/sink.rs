@@ -1004,18 +1004,6 @@ pub struct NodeSpan {
     /// for the `WT_LEN | WT_START_GROUP` recursion-eligibility check,
     /// which either value would satisfy.
     pub wire_type: u32,
-    /// The exact `#@ ...` annotation text this node's own header line was
-    /// rendered with by the one authoritative, non-wrapped decode pass that
-    /// produced this `NodeSpan` — i.e. everything from (and including) the
-    /// `#@` marker to end of line, with no trailing newline. `None` when
-    /// annotations were disabled for this render, or when this node is a
-    /// scalar field (only message/group nodes ever populate this field).
-    /// Set once, at span-finalization time, and never recomputed —
-    /// `protolens`'s override/splice machinery (spec 0122) treats this the
-    /// same way it already treats `wire_type`: an immutable fact about the
-    /// underlying bytes, independent of whatever override is currently
-    /// displayed.
-    pub natural_annotation: Option<String>,
 }
 
 /// Per-`IndexingTextSink` "in-progress nested node" marker: captures what's
@@ -1033,31 +1021,7 @@ pub(super) struct IndexMark {
     /// with at `end_nested`, and to restore `raw_base` to once this
     /// node's children are done being visited.
     raw_base: usize,
-    /// `self.inner.out.len()` as it was *before* this node's own header
-    /// line began being written — the start point `natural_annotation_from`
-    /// scans forward from, at `end_nested` time, to recover the node's
-    /// finalized `#@ ...` header text (spec 0122 §1).
-    header_start: usize,
     inner: TextMark,
-}
-
-/// Recovers a node's finalized `#@ ...` header annotation text (everything
-/// from, and including, the `#@` marker to end of line — no trailing
-/// newline), by scanning `out` forward from `header_start` (the byte offset
-/// at which this node's own header line began being written) to that line's
-/// terminating `\n`. Called only *after* the wrapped `TextSink` has fully
-/// finished writing/patching this node's header line — safe for both
-/// `NestedKind::Message` (header fully written at `begin_nested` time) and
-/// `NestedKind::Group` (header's annotation is completed by a post-hoc
-/// splice at `end_nested` time, always applied before this scan runs — spec
-/// 0122 §1). `None` if no `#@` marker is present on the line (annotations
-/// disabled for this render).
-fn natural_annotation_from(out: &[u8], header_start: usize) -> Option<String> {
-    let line = &out[header_start..];
-    let nl = line.iter().position(|&b| b == b'\n').unwrap_or(line.len());
-    let line = &line[..nl];
-    let marker = line.windows(2).position(|w| w == b"#@")?;
-    Some(String::from_utf8_lossy(&line[marker..]).into_owned())
 }
 
 /// FQDN of a field's *declared* type, when it's a message-kinded field with
@@ -1186,7 +1150,6 @@ impl Sink for IndexingTextSink {
                             is_message: false,
                             packed_record_start,
                             wire_type: elem_wire_type,
-                            natural_annotation: None,
                         });
                     }
                     return;
@@ -1205,7 +1168,6 @@ impl Sink for IndexingTextSink {
             is_message: false,
             packed_record_start: None,
             wire_type,
-            natural_annotation: None,
         });
     }
 
@@ -1226,7 +1188,6 @@ impl Sink for IndexingTextSink {
             NestedKind::Group => WT_START_GROUP,
         };
         let raw_base = self.raw_base;
-        let header_start = self.inner.out.len();
         let inner = self.inner.begin_nested(
             field_number,
             field_schema,
@@ -1244,7 +1205,6 @@ impl Sink for IndexingTextSink {
             is_message: true,
             wire_type,
             raw_base,
-            header_start,
             inner,
         }
     }
@@ -1263,13 +1223,11 @@ impl Sink for IndexingTextSink {
             is_message,
             wire_type,
             raw_base,
-            header_start,
             inner,
         } = mark;
         self.inner.end_nested(inner, raw_range.clone(), close_facts);
         self.raw_base = raw_base;
         let text_end = self.inner.line_count();
-        let natural_annotation = natural_annotation_from(&self.inner.out, header_start);
         self.spans.push(NodeSpan {
             field_number,
             raw_range: (raw_base + raw_range.start)..(raw_base + raw_range.end),
@@ -1279,7 +1237,6 @@ impl Sink for IndexingTextSink {
             is_message,
             packed_record_start: None,
             wire_type,
-            natural_annotation,
         });
     }
 
@@ -1307,7 +1264,6 @@ impl Sink for IndexingTextSink {
         let text_start = self.inner.line_count();
         let level = LEVEL.with(|c| c.get());
         let raw_base = self.raw_base;
-        let header_start = self.inner.out.len();
         let inner =
             self.inner
                 .begin_virtual_nested(name, annotation, type_fqdn, raw_start, payload_start);
@@ -1321,7 +1277,6 @@ impl Sink for IndexingTextSink {
             // Always message-shaped; see `NodeSpan::wire_type` doc comment.
             wire_type: WT_LEN,
             raw_base,
-            header_start,
             inner,
         }
     }

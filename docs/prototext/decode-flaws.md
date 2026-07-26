@@ -375,7 +375,18 @@ worth pinning, and nothing currently pins it.
 
 ## Perf cliffs
 
-### P2. `natural_annotation` is computed for every container node and read by nobody **[verified open 2026-07-26]**
+### P2. ✔ `natural_annotation` is computed for every container node and read by nobody **[fixed 2026-07-26]**
+
+> ✔ **Fixed 2026-07-26** by
+> [spec 0181](../specs/0181-delete-natural-annotation.md), exactly as
+> proposed below: the field, `natural_annotation_from`, the one
+> computing site, the two `None` literals, `IndexMark::header_start`,
+> the five `render_text/mod.rs` tests, the eleven protolens `None`
+> initializers, and the stale `override_apply.rs:199` comment are all
+> gone. No rendered byte, span range or line count changed, and the
+> existing suites stayed green with no edit other than the five
+> deletions. W25 step 5 is discharged; every other row of the
+> `NodeSpan` shrink table remains open.
 
 **Where:** declared at
 `prototext-core/src/serialize/render_text/sink.rs:1018`, computed by
