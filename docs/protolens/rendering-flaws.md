@@ -43,9 +43,20 @@ ordinary action there is (quitting) against the largest inputs
 (`googleapis.desc`), which are exactly the inputs whose sweep is slow
 enough to still be running.
 
-### C1. The live-preview watermark truncation leaves the seam node's `doc_prev` dangling on the `Err` path
+### C1. ✔ The live-preview watermark truncation leaves the seam node's `doc_prev` dangling on the `Err` path
 
 **Where:** `protolens/src/tui/override_select.rs:815-841`
+
+> ✔ **Obsoleted 2026-07-26** by
+> [spec 0185](../specs/0185-the-preview-is-an-overlay.md), not fixed. The
+> whole block described below is gone: the live preview no longer splices
+> and therefore no longer truncates, so there is no watermark, no seam to
+> repair, and no `Err` path that can leave the chain half-consistent —
+> `preview_override_highlight` renders into an overlay and touches the
+> tree not at all. The analysis below is retained because its *class* of
+> bug (repairing the pointers out of a range but not the pointers into it
+> from outside) still applies to the committed splice path, which does
+> still rewire the chain.
 
 **What happens.** `preview_override_highlight` recomputes `idx.doc_next`
 before truncating (the 2026-07-25 fix), and defensively nulls

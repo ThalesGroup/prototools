@@ -6,7 +6,14 @@ SPDX-License-Identifier: MIT
 
 # protolens rendering — implementation worklist
 
-*last verified: 2026-07-25*
+*last verified: 2026-07-26*
+
+**Phase 1 is closed as of 2026-07-26.** W1 obsoleted by spec 0185, W2 and
+W3 done, W4 done via spec 0180, W26 half 1 done via spec 0171 with half 2
+superseded by spec 0174, W27 done, W28 moot, W29/W30 done via spec 0172.
+Each was re-verified against the code on that date rather than trusted
+from this document — several had been fixed as a side effect of a spec
+that never mentioned the item.
 
 ## How to use this document
 
@@ -207,7 +214,21 @@ failure modes are protolens's failure modes: a `SIGSEGV` in
 W26 in particular fires on `googleapis.desc`, the input class D-e
 confirmed as required.
 
-### W1. Repair the seam node's `doc_prev` before preview truncation
+### W1. ~~Repair the seam node's `doc_prev` before preview truncation~~ — **OBSOLETE 2026-07-26, via spec 0185**
+
+[Spec 0185](../specs/0185-the-preview-is-an-overlay.md) deleted the
+preview's splice, and with it the watermark truncation this item patches.
+There is no seam and no `Err` path left to make consistent —
+`preview_override_highlight` renders into an overlay and does not touch
+the tree. Nothing to do; [C1](rendering-flaws.md) is closed by deletion
+rather than by fix.
+
+**Do not port this fix to the committed splice path by analogy.** That
+path overwrites `tree[after].doc_prev` unconditionally on its own success
+path, which is where it always was correct; the bug was specific to
+truncation-then-maybe-fail.
+
+**Original item, for the record:**
 
 **Fixes:** [C1](rendering-flaws.md).
 
@@ -343,7 +364,25 @@ deletes the spawn site, it deletes an already-sound one.
 
 ---
 
-### W26. Cap decode recursion, and turn the node budget on in production
+### W26. Cap decode recursion, and turn the node budget on in production — **CLOSED 2026-07-26 (half 1 done, half 2 superseded)**
+
+Verified against the code on 2026-07-26, not merely assumed:
+
+- **Half 1 (depth cap) is done**, via spec 0171. `render_message` tracks
+  its own recursion depth and hands the payload back as bytes at the cap
+  (`render_text/mod.rs`, `helpers/len_field.rs`), and the constant is
+  shared workspace-wide as `MAX_WIRE_DEPTH` in
+  `prototext-core/src/helpers/bounds.rs`, with the stack margin
+  *measured* rather than asserted.
+- **Half 2 (turn the node budget on) is superseded, not done.** Spec 0174
+  G1 *deleted* `DecodeRenderOpts::node_budget` outright and replaced it
+  with an input-side byte budget on the live preview
+  (`OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT`). Bounding the input bounds the
+  output, so there is no *n* left to choose and no budget left to enable.
+  The `Watch for` warning below — and W28, which existed only to make
+  that budget safe to turn on — go with it.
+
+**Original item, for the record:**
 
 **Fixes:** [decode C3](../prototext/decode-flaws.md).
 
@@ -387,7 +426,16 @@ documents get truncated.
 
 ---
 
-### W27. Replace the wire-format bounds arithmetic in both crates
+### W27. Replace the wire-format bounds arithmetic in both crates — **DONE**
+
+Verified 2026-07-26. The shared module landed as
+`prototext-core/src/helpers/bounds.rs` (`payload_end`, `bytes_missing`,
+`MAX_WIRE_DEPTH`), phrased as the subtraction and covering even the
+fixed-width `8`/`4` cases that cannot wrap — "the same idiom written by
+the same hand". `prototext-graph`'s `score/walk.rs` imports it and every
+one of its length checks goes through it, so the "two crates wrote this
+independently" defect is closed through one implementation as the item
+required.
 
 **Fixes:** [decode C1, C2](../prototext/decode-flaws.md),
 [scoring C1, C3, C4](../scoring-flaws.md).
@@ -456,7 +504,25 @@ makes it reachable.
 
 ---
 
-### W28. Give the cascade probe its own node-budget scope
+### W28. ~~Give the cascade probe its own node-budget scope~~ — **MOOT 2026-07-26**
+
+The leak this item plugs is the cascade probe charging the outer render's
+`NODE_COUNT`. Spec 0174 G1 deleted the node budget, and with it
+`NODE_COUNT` — a workspace-wide grep for that identifier now returns
+nothing. There is no shared counter left for the probe to disturb, so
+there is nothing to save and restore and no doc comment left to correct.
+
+**Its dependent is gone too:** W28 blocked W26 half 2, which the same
+spec superseded. Neither is actionable.
+
+**Still worth keeping from this item:** its proving test is a good one on
+its own terms — *decode the same fixture at two different resource
+pressures and assert byte-identical output* pins "a resource limit must
+not change what structure is recovered", which the byte budget can
+violate just as a node budget could. If that invariant is ever pinned,
+pin it against `OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT`.
+
+**Original item, for the record:**
 
 **Fixes:** [decode C5](../prototext/decode-flaws.md).
 
