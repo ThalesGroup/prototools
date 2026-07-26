@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # prototext-core decode and sinks — flaws report
 
-*last verified: 2026-07-25*
+*last verified: 2026-07-26*
 
 Findings from a fresh-eyes review of `prototext-core`'s decode path —
 `render_message` and its helpers, the `TextSink` / `IndexingTextSink` /
@@ -35,13 +35,52 @@ renumbered away.
 
 ## Correctness bugs
 
-By impact: **C3** is the worst — it is the only one whose failure is a
+**All four are now resolved.** Re-derived against source on 2026-07-26:
+
+| | |
+|---|---|
+| **C1** | fixed — `payload_end` (spec 0171), regression-tested |
+| **C2** | fixed — the recursion is gone entirely (spec 0171 §S3), and all three of its sub-defects with it |
+| **C3** | fixed — depth cap (0171) + budget deleted rather than enabled (0174) |
+| **C5** | dissolved — the shared counter it raced no longer exists (0174) |
+
+Auditing them turned up one new, minor finding — **M1**, the depth cap
+degrading LEN and `START_GROUP` inconsistently — which is written up under
+[Minor / doc drift](#minor--doc-drift).
+
+The ranking below is preserved as written for the record. Worth noting how
+they closed: **three of the four were retired by one spec** (0171), and the
+fourth by deleting the mechanism rather than fixing it (0174). Two of the
+four were closed by *removing* code — the node budget and the recursive
+group skip — which is the pattern to expect when a defect is in a mechanism
+nobody needed.
+
+By impact: **C3** was the worst — it is the only one whose failure is a
 process-level `SIGSEGV` with no unwinding and no message, and it fires on
 the 24.5 MB input class that is an explicit target. **C1** and **C2** are
 crashes and hangs on hostile input. **C5** is the subtlest: it produces
 plausible-looking *wrong output* with no error at all.
 
 ### C1. The LEN bounds check overflows before it can reject
+
+> **Resolved by spec 0171.** The site is now
+> `render_text/mod.rs:592-593`, and the guard is the subtraction this entry
+> asked for — except it lives in a shared helper rather than being inlined:
+> `payload_end(pos, length, buflen)` with `bytes_missing(pos, length, buflen)`
+> supplying the `MISSING:` count. The cross-cutting recommendation at the
+> foot of this document was taken; see the note there.
+>
+> Every LEN/I64/I32 length check on the decode path went through the same
+> conversion, not just the one this entry names — `mod.rs:540`, `:592`,
+> `:696`, plus `group_scan.rs:65/73/90`, `message_set_field.rs:104/140/148/151`
+> and `any_field.rs:59/67/97`. The fixed-width `8`/`4` cases cannot actually
+> wrap; they were converted anyway, because leaving the wrapping idiom in the
+> file is how it comes back.
+>
+> Guarded by `len_prefix_near_u64_max_does_not_panic`
+> (`render_text::tests`, `mod.rs:1102`), which asserts the output contains
+> `TRUNCATED_BYTES` — i.e. that the *correct* rendering is produced, not
+> merely that nothing panics.
 
 **Where:** `prototext-core/src/serialize/render_text/mod.rs:538-555`.
 
@@ -90,6 +129,32 @@ helper.
 
 ### C2. `skip_group` recurses without a depth cap
 
+> **Resolved by spec 0171 §S3, and more thoroughly than proposed below.**
+> `skip_group` no longer exists. It was replaced by `scan_group_extent`
+> (`render_text/helpers/group_scan.rs:38`), which is **iterative** — group
+> nesting is matched with a `depth: usize` counter instead of the call stack.
+> That is better than threading a depth and capping it, for a reason the
+> proposal could not have known: because it cannot overflow, it is usable *as*
+> the recovery path for `render_message`'s own depth cap, rather than being
+> subject to that cap itself.
+>
+> All three defects in this entry are closed by the rewrite:
+> - the recursion is gone (guarded by `deep_nesting_does_not_overflow_the_stack`,
+>   200 000 nested `START_GROUP` tags);
+> - the `pos + len > buflen` overflow at the old `:150` is now
+>   `payload_end(...)?` (`group_scan.rs:73`);
+> - the `pos == buflen` guard at the old `:119` survives verbatim
+>   (`group_scan.rs:46`) and is now correct, exactly as this entry predicted —
+>   it was only dangerous in combination with the overflow, and `payload_end`
+>   restores the `pos <= buflen` invariant it depends on.
+>
+> One check was traded away, and the trade is documented at
+> `group_scan.rs:31-37`: only the *outermost* closing field number is
+> validated, because per-level validation would need a `Vec<u64>` of open
+> field numbers — an allocation in a routine whose point is to have none.
+> Sound here because the extent is only ever used to bound a span reproduced
+> verbatim, so a tolerated inner mismatch changes no output byte.
+
 **Where:** `prototext-core/src/serialize/render_text/helpers/any_field.rs:116-161`,
 self-recursing at `:156`.
 
@@ -137,6 +202,47 @@ without change. Use the same constant as the main decode's depth cap
 > it. Turning it on in production was never the fix; bounding the input
 > is. The depth cap is now the crate's only brake, and it is
 > unconditional.
+>
+> **Re-derived 2026-07-26, and the cap does *not* do what step 1 below asked
+> for** — it does something better, and the difference is worth recording:
+>
+> - The over-deep node is rendered as an **ordinary opaque scalar**, not a
+>   `MalformedKind` line. Emitting a malformity for a *well-formed* deep nest
+>   would be a lie, and only the byte form round-trips. No new grammar was
+>   added, which is the constraint a `MalformedKind` would have violated
+>   (`deeply_nested_len_degrades_to_bytes_at_the_cap`, `mod.rs:1157`).
+>
+>   Verified end to end through the CLI on a 1005-deep LEN nest wrapping
+>   `field 1 (varint) = 42`. Line 1001 of the `--raw` rendering — the innermost
+>   one, at the cap — is:
+>
+>   ```
+>   1: "\n\n\n\010\n\006\n\004\n\002\010*"  #@ string
+>   ```
+>
+>   The 999 enclosing levels render normally as `1 {  #@ message`
+>   (`MAX_WIRE_DEPTH - 1`, since the root frame costs one), and the remaining 6
+>   levels of framing appear verbatim as the escaped payload of that one opaque
+>   scalar — `0A 0A | 0A 08 | 0A 06 | 0A 04 | 0A 02 | 08 2A`. `prototext encode`
+>   on that output reproduces the input **byte-identically**, which is the
+>   property a `MalformedKind` line could not have had.
+> - `at_depth_cap()` (`mod.rs:250`) is consulted at each recursion site
+>   *before* anything is written, so the deep node degrades **in place** while
+>   its siblings and every enclosing level render normally. `DepthGuard::enter`
+>   returning `None` (`:228`) is a deliberate backstop for a recursion site
+>   added later without a check, not the mechanism.
+> - `DEPTH` (`:160`) is a separate thread-local from `LEVEL`, precisely because
+>   `LEVEL` is the *indentation* counter and is not maintained by every sink.
+>   `DEPTH` is, including by `ProbeSink` — and the doc comment at `:215-220`
+>   argues why that does not breach the invariant C5 was about: `DEPTH` counts
+>   real stack frames, a probe's frames sit on top of the outer render's, so
+>   the outer value is the right starting point and the RAII guard restores it.
+>   That is the one shared thread-local the probe legitimately touches, and the
+>   reasoning is written down where the next reader of C5 will look.
+> - `tripping_the_depth_cap_does_not_leak_the_counter` (`:1215`) pins the
+>   consequence that a thread-local makes possible and a parameter would not:
+>   protolens reuses render threads, so a guard that failed to unwind would
+>   silently cap every later render on that thread.
 
 **Where:** `protolens/src/decode.rs:769-787` (the production options), and
 the *absence* of any depth limit throughout
@@ -269,24 +375,48 @@ worth pinning, and nothing currently pins it.
 
 ## Perf cliffs
 
-### P2. `natural_annotation` is computed for every container node and read by nobody
+### P2. `natural_annotation` is computed for every container node and read by nobody **[verified open 2026-07-26]**
 
-**Where:** produced at
-`prototext-core/src/serialize/render_text/sink.rs:1070`, `:1310`,
-`:1320`; declared on `NodeSpan` at `sink.rs:957-1034`.
+**Where:** declared at
+`prototext-core/src/serialize/render_text/sink.rs:1018`, computed by
+`natural_annotation_from` (`:1055`) from the single call site at `:1272`.
+The line numbers below the fold are stale by roughly −120; these are current.
 
-**What happens.** A repo-wide grep for `natural_annotation` finds:
+**What happens.** A repo-wide grep for `natural_annotation` finds 55 hits in
+17 files, and **not one is a production read**:
 
-- three producer sites in `sink.rs`,
-- `: None` initializers (`extract.rs:370`, `:413`, `:459`, plus test
-  fixtures),
-- prototext-core's own tests (`mod.rs:859-1063`),
+- one computing site, `sink.rs:1272` (in `end_nested`);
+- two `: None` literals in the same file (`:1189`, `:1208` — the scalar and
+  packed-element paths);
+- `: None` initializers in `protolens/src/extract.rs:370`, `:413`, `:459`;
+- five tests in `prototext-core` that assert the field's own value
+  (`render_text/mod.rs:917-1087`) and eight `: None` lines in protolens's
+  test fixtures;
 - a stale doc comment at `protolens/src/tui/tests/override_apply.rs:199`
   referring to an `.expect()` that no longer exists.
 
-**Zero production readers.** The field is computed, stored, and never
-consulted. It costs an `Option<String>` — 24 bytes of `NodeSpan`, plus a
-heap allocation whenever it is `Some`.
+**One correction to the original write-up:** "three producer sites" overstates
+it. Two of the three are `None` literals; there is exactly **one** site that
+computes anything, and it runs once per *container* node, not per node. So the
+`Option<String>` costs 24 bytes on every `NodeSpan` but a heap allocation only
+per container.
+
+**The reason it is still here is a specific, documented, false claim.** The
+field was added by spec 0122 for override header patching, and spec 0135
+deleted that patching — the ~70-line `patched_annotation` token-splicing
+block — thereby removing the only reader. Spec 0135 §Non-goals justifies
+leaving the field itself in place:
+
+> `NodeSpan::natural_annotation` (`prototext-core`) itself is
+> `pub`/general-purpose and used elsewhere in `prototext-core` (unrelated to
+> this override-specific patching) — left untouched; only its *use* in
+> `splice_override` is removed.
+
+There is no such use elsewhere. The only other references in `prototext-core`
+are the five tests that exist to test the field. Spec 0135 correctly identified
+that it was deleting the last consumer and then declined to delete the producer
+on the strength of an unchecked assumption — which is why this survived a
+review that was looking straight at it.
 
 That 24 bytes matters more than it looks. `NodeSpan` is 120 B and
 `TreeNode` is 280 B, and at the measured density of 0.566 nodes/byte a
@@ -300,10 +430,16 @@ step 5 of the `TreeNode` shrink (S12 / W25) from "intern
 `natural_annotation`" to "remove it"**, which is strictly less work and
 strictly more saving.
 
-Before deleting, confirm the three producer sites do not have a side
-effect worth keeping, and remove the stale doc comment at
-`override_apply.rs:199` in the same change so the next reader is not
-misled again.
+The side-effect check the entry asked for is done: `natural_annotation_from`
+(`sink.rs:1055`) is a pure forward scan over `self.inner.out` for a `#@`
+marker — it reads the already-written output buffer and mutates nothing. So
+the deletion takes `natural_annotation_from`, the field, the one computing
+site, the two `None` literals, the five tests in
+`render_text/mod.rs:917-1087`, and the `header_start` member of the
+in-progress-node marker (`sink.rs:1036-1040`), which exists only to feed it.
+Remove the stale doc comment at `override_apply.rs:199` in the same change so
+the next reader is not misled again, and record in the spec that this reverses
+spec 0135's non-goal on the basis that its stated reason was wrong.
 
 ### P4. `display_name()` allocates a `String` per output line, under a doc comment promising it does not
 
@@ -364,6 +500,54 @@ stops allocating and the doc comments at `:75` and `:95` become true.
 
 ---
 
+## Minor / doc drift
+
+### M1. The depth cap degrades LEN and `START_GROUP` differently, and the group form mislabels valid bytes **[new, 2026-07-26]**
+
+**Where:** `render_text/mod.rs:643-652` (the `WT_START_GROUP if at_depth_cap()`
+arm) versus the LEN arm's opaque fallback described in C3.
+
+**What happens.** The same condition — one level past `MAX_WIRE_DEPTH` — gets
+two unrelated treatments. Measured through the CLI on 1005-deep nests:
+
+| | rendering at the cap |
+|---|---|
+| LEN | `1: "\n\n\n\010\n\006\n\004\n\002\010*"  #@ string` |
+| `START_GROUP` | `0: "\013\013\013\013\013\013\010*\014\014\014\014\014\014"  #@ INVALID_TAG_TYPE` |
+
+Three differences, and the third is the defect:
+
+1. The group form reports field number **0**, not the real field number. It has
+   to: the raw span it hands the sink starts at `field_start`, so the opening
+   tag is *inside* the quoted payload rather than being rendered as the field.
+2. The group form goes through `sink.malformed`, so it is a malformity line;
+   the LEN form is an ordinary scalar.
+3. It claims `INVALID_TAG_TYPE`. **The tag is a perfectly valid
+   `START_GROUP`.** The renderer is telling the reader that well-formed bytes
+   are malformed, and specifically that a valid wire type is invalid.
+
+**Severity: minor, and bounded by measurement.** Both forms round-trip
+byte-identically (`prototext encode` reproduces the input exactly in both
+cases), so no data is lost and the core promise is intact. What is wrong is the
+*claim*: for a tool whose annotations a human reads to decide whether a blob is
+damaged, a false `INVALID_TAG_TYPE` is worse than no annotation. It also
+contradicts the reasoning C3's fix is built on — that a `MalformedKind` for a
+well-formed deep nest would be a lie — by doing exactly that on the group path.
+
+**Why it is defensible today, and where the line is.** `scan_group_extent` can
+genuinely fail (`unwrap_or(buflen)`), and when it does the remainder really is
+structurally broken, so a malformity is right *in that case*. The bug is
+treating the success case the same way.
+
+**Proposed correction.** Split the two outcomes: on a successful extent scan,
+render the group opaquely under its own field number, matching the LEN path;
+keep the malformity only for `scan_group_extent` returning `None`, and give it a
+kind that is true — `InvalidGroupEnd` already exists and is what an unclosed
+group actually is. Whether a dedicated kind is warranted is a separate question
+and probably answered "no" for the same reason C3 answered it "no".
+
+---
+
 ## Pending re-derivation
 
 The audit that produced this report also raised **C4, C6, C7, C8, C9,
@@ -402,6 +586,28 @@ checked advance) used by `prototext-core` and `prototext-graph` alike.
 It is a small module and it retires six confirmed defects and the class
 that produced them.
 
+> **Done (spec 0171).** The module is
+> `prototext-core/src/helpers/bounds.rs`: `payload_end`, `bytes_missing`, and
+> `MAX_WIRE_DEPTH`, with `prototext-graph` depending on it. Both crates' LEN
+> checks and both crates' blind group skips went through it (C1 and C2 here,
+> C3 and C1 in the scoring report), so all six sites are retired and the two
+> walkers now refuse the same inputs by construction.
+>
+> Two things the prediction got right that are worth naming, because they are
+> the reason the shared-helper argument was correct rather than merely tidy.
+> The helper's doc comment is where the measured stack figures for *both*
+> walkers ended up living — a per-crate fix would have had no such place, and
+> the calibration question (scoring C2) would have had nowhere to be answered.
+> And `payload_end` returns `None` for `pos > buflen` instead of asserting,
+> which is what let C2's `pos == buflen` guard stay correct without every
+> caller carrying an invariant check.
+>
+> The helper is *not* what the prediction described in one respect: there is
+> no "depth-capped group skip" in it. The group skip became iterative and
+> therefore needs no cap, and it stayed in each crate because the two walkers
+> want different return values. The shared thing was the arithmetic and the
+> constant, not the traversal.
+
 **Every confirmed correctness bug here is triggered by malformed
 input.** C1, C2, and C3 are crashes on bytes that are not valid protobuf;
 C5 is wrong output when a resource limit fires. This library's stated
@@ -412,6 +618,77 @@ malformed" is its normal operating condition. It is not fuzzed. A
 in minutes, and asserting "the same bytes render identically at two
 budget levels" would have found C5.
 
+> **"It is not fuzzed" was wrong, and the correction sharpens the
+> recommendation rather than retiring it** (checked 2026-07-26).
+>
+> There is no `fuzz/` directory, but there *is* a randomized round-trip stress
+> test: `selftest_roundtrip` (`prototext/tests/roundtrip.rs:2497`). Its
+> scaffolding is better than this observation assumed — a deterministic
+> xorshift64, a real schema (`knife_schema`), env-tunable `PROTOTEXT_SELFTEST_N`
+> / `_SEED`, and exactly the right oracle: `binary → text → binary` must be
+> byte-identical. A `cargo-fuzz` target would add nightly and out-of-CI
+> infrastructure to reach an oracle this test already has.
+>
+> **What is weak is the generator, and it is weak in a way that provably
+> excludes all four bugs.** `random_bytes` (`:2486`) returns uniformly random
+> bytes of length **0–63**. Therefore:
+>
+> - **C1 unreachable.** Its input needs a ten-byte varint of `0x80`-continued
+>   bytes to encode a length near `u64::MAX`. From uniform bytes that is a
+>   ~2⁻⁷⁰ event.
+> - **C2 and C3 unreachable at any N.** A LEN level costs two bytes and a group
+>   level one, so 63 bytes cannot express more than 63 levels — the cap is 1000.
+>   No seed reaches it.
+> - **C5 unreachable.** It needed budget pressure across *sibling* subtrees,
+>   which needs a payload large enough to have siblings.
+> - Most iterations die on the first byte as `INVALID_TAG_TYPE` and consume the
+>   whole buffer, so the bulk of the run re-tests one path.
+>
+> So the million iterations are real but shallow: the generator samples the
+> byte space uniformly, while the decoder's interesting behavior lives in a
+> vanishingly small, highly structured subset of it. **Sharpening the generator
+> is worth more than adding a fuzzer**, and it stays inside `cargo test` and
+> `nix-build -A ci`. Concretely, in rough order of yield:
+>
+> 1. **Generate records, not bytes.** Emit a sequence of `(field number, wire
+>    type, payload)` triples, drawing the field number from {schema-known,
+>    unknown, 0, `u32::MAX`-ish} and the wire type from all eight values
+>    including the two invalid ones. This lands the generator inside the space
+>    where the decoder does work.
+> 2. **Bias the length prefixes adversarially.** Sample LEN from a fixed
+>    interesting set — `0`, `1`, exactly-remaining, remaining+1, `2^31`,
+>    `2^32`, `u64::MAX` — plus overlong (non-canonical) encodings of small
+>    values. That set contains C1 by construction, and non-canonical varints
+>    are already a concept the renderer annotates.
+> 3. **Mutate valid messages instead of only generating.** Build a well-formed
+>    message, then apply one damaging edit: truncate at a random offset, flip a
+>    wire type, delete a length byte, duplicate a tag. Truncation is the
+>    single highest-yield mutation here because every `payload_end` rejection
+>    path is a truncation.
+> 4. **A nesting-depth mode.** Wrap a leaf in `k` levels of LEN or
+>    `START_GROUP` with `k` drawn from around the cap — 0, 1, 999, 1000, 1001,
+>    5000. This requires lifting the 63-byte ceiling; make the length
+>    log-uniform from 1 byte to a few KB so both the tiny-edge and the deep
+>    cases get sampled.
+> 5. **Add two more oracles — both free, and each catches a class the
+>    round-trip cannot.** *Idempotence:* rendering the same bytes twice on the
+>    same thread must give identical output — that is exactly C5's class and
+>    the `DEPTH`-guard leak that `tripping_the_depth_cap_does_not_leak_the_counter`
+>    currently pins with one hand-written case. *Schema monotonicity:*
+>    rendering with and without a schema must re-encode to the same bytes,
+>    which is the direct statement of the core promise and is currently
+>    asserted nowhere at random.
+> 6. **Report a coverage proxy.** Count how many iterations produced at least
+>    one nested message, one malformity of each kind, one depth-capped node.
+>    Printing that is what would have made the current generator's weakness
+>    visible instead of leaving it to be inferred.
+>
+> Also a small doc drift in the same test: the comment at `:2495` says the
+> default `N` is 10 000; the code at `:2502` says `1_000_000`.
+>
+> This remains the highest-value item in this report — above P2, which is a
+> memory saving rather than a correctness one.
+
 **Two doc comments in this report state the opposite of what the code
 does** — `output.rs:75`/`:95` ("without String allocation", P4) and
 `sink.rs:865-868` ("never mutates any shared render-mode thread-local
@@ -419,6 +696,13 @@ state", C5). In a codebase whose house style is dense *why*-comments,
 that style is load-bearing: readers trust the comment instead of
 re-deriving the behavior. Both should be fixed *as part of* the code
 fixes, not separately, so the comment and the guarantee land together.
+
+> **Both are true now, and each got there a different way.** P4's comments
+> became true by changing the code to match them (spec 0173 S4:
+> `write_display_name(&self, out: &mut Vec<u8>)`). C5's became true by deleting
+> the state that falsified it (spec 0174 removed `NODE_COUNT`). The second
+> route is the one to prefer where it is available: a guarantee about state
+> that does not exist cannot rot.
 
 ---
 
@@ -437,9 +721,16 @@ fixes, not separately, so the comment and the guarantee land together.
 - **`MalformedKind` covers the cases it needs to** — `INVALID_VARINT`,
   `TRUNCATED_BYTES`, `NODE_BUDGET_EXCEEDED`. The renderability promise is
   expressible; C1 and C3 are failures to *reach* these paths, not gaps in
-  them.
+  them. *(2026-07-26: the variant set is now `InvalidTagType`,
+  `InvalidVarint`, `InvalidLen`, `TruncatedBytes`, `InvalidGroupEnd` —
+  `NodeBudgetExceeded` went with spec 0174, and no depth-cap variant was
+  added because the cap degrades to opaque bytes instead. The conclusion is
+  unchanged and now stronger: every variant round-trips.)*
 - **The thread-local implicit-parameter set is coherent** — `LEVEL`,
   `NODE_BUDGET`, `NODE_COUNT`, `EXPAND_ANY`, `EXPAND_MESSAGE_SET`,
   `ANNOTATIONS`, `HIDE_UNKNOWN`, `CBL_START`, `ANY_LOADER` are
   consistently scoped and restored. `NODE_COUNT` under `ProbeSink` (C5)
-  is the one exception found.
+  is the one exception found. *(2026-07-26: `NODE_BUDGET`/`NODE_COUNT` are
+  gone (spec 0174) and `DEPTH` was added (spec 0171), so the exception no
+  longer exists. `DEPTH` is RAII-guarded and deliberately shared with
+  `ProbeSink`; see the C3 note.)*

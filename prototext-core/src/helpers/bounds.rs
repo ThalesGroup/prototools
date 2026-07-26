@@ -60,7 +60,60 @@ pub fn bytes_missing(pos: usize, len: u64, buflen: usize) -> u64 {
 /// level costs one, so a 1 MB blob can demand hundreds of thousands of
 /// stack frames. 1000 is far beyond any legitimate schema's nesting depth —
 /// protobuf's own reference implementations default to 100 — while staying
-/// comfortably inside a default thread stack.
+/// inside a default thread stack.
+///
+/// "Inside" is measured, not assumed (flaw C2) — but *what* it is inside is
+/// two separate facts, and conflating them is how the first two attempts at
+/// this comment both got the margin wrong. Keep them apart:
+///
+/// **1. What each walker consumes** — a property of the code. Bisecting an
+/// explicit `stack_size` against a nest of LEN fields, **release** build:
+///
+/// | walker | stack for the full cap | per frame |
+/// |---|---|---|
+/// | `prototext-graph`'s `score_message_multi` | ~576 KiB | ≈ 590 B |
+/// | this crate's `render_message` | ~1408 KiB | ≈ 1.44 KiB |
+///
+/// The renderer is 2.4× the heavier of the two, and both its paths measure
+/// the same — with a schema, and the schemaless one that makes two
+/// `render_message` calls per level (spec-0097 probe, then the real render).
+///
+/// Both figures are worst cases by construction, and that is the whole reason
+/// the cap exists. A flat message costs one frame; a blob's depth cannot be
+/// known without walking it; and without the cap, depth is bounded only by
+/// input length, so there is no finite number to measure. Fixing the cap is
+/// what makes "prepare for the worst" a bounded promise rather than an
+/// unbounded one.
+///
+/// **2. What each call site provides** — a property of the deployment. The
+/// margin is only meaningful per (walker, thread) pair, because the two
+/// walkers do not run on the same threads:
+///
+/// | walker | thread | available | margin |
+/// |---|---|---|---|
+/// | scorer | `protolens`'s detached root-type thread (`tui/mod.rs:1680`, a plain `thread::spawn`) | 2 MiB | **3.6×** |
+/// | scorer | `protolens`'s heat worker (explicit `stack_size`) | 16 MiB | 28× |
+/// | renderer | main thread — `protolens`'s draw loop, and the `prototext` CLI | 8 MiB (`RLIMIT_STACK`) | **5.8×** |
+/// | renderer | whatever thread Python calls `prototext-pyo3` from | `threading.stack_size()` — **caller's choice** | **unbounded** |
+///
+/// So the binding margin in the binaries is **3.6×**, the scorer on the one
+/// call site that takes `std`'s default. The renderer, despite being the
+/// heavier walker, has more room because it only ever runs on a main thread.
+/// The genuine open exposure is the last row: `prototext-pyo3` is a library,
+/// a Python caller may set any stack size it likes, and 1408 KiB is a lot to
+/// need from a thread someone else sized.
+///
+/// **All of the above is release-only, and the gap is not marginal.** The
+/// same bisection on a debug build puts the scorer's frame at ≈ 4.8 KiB — 8×
+/// larger — needing ~4.7 MiB, so a 1000-deep walk overflows a default thread
+/// stack outright. Release is what ships and what this repo builds; a debug
+/// `cargo test` consequently aborts in the deep-nesting tests here and in
+/// `prototext-graph`.
+///
+/// Regression guards: `deeply_nested_len_*` in
+/// `serialize::render_text::tests` (this crate) and
+/// `max_depth_walk_fits_in_a_default_thread_stack` (`prototext-graph`).
+/// Re-measure if this constant or either frame grows.
 ///
 /// It is deliberately a constant rather than an option. A caller-tunable
 /// depth would make a rendering a function of `(bytes, schema, depth)`,

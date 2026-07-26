@@ -98,6 +98,8 @@
       pythonPkgs.ruff
       pythonPkgs.twine
       pkgs.pyright
+      # Arithmetic in shell one-liners (benchmark and allocation-count math).
+      bc
       # Demo / ASCII-art utilities (not part of the released package)
       figlet
       toilet

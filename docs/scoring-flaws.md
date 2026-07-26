@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # `score_all` — flaws report
 
-*last verified: 2026-07-25*
+*last verified: 2026-07-26*
 
 Findings from a fresh-eyes review of the multi-entry scoring walk
 (`prototext-graph/src/score/`), the component that answers "which of
@@ -26,9 +26,31 @@ Ranked in three bands: **correctness bug** (wrong verdict, panic, hang,
 or UB), **perf cliff** (correct but degrades superlinearly or blocks the
 UI), and **minor / doc drift**.
 
-Findings marked **[unverified]** come from the audit but were not
-confirmed against source in this pass; they are recorded so they are not
-lost, but must be re-checked before any code is written.
+**No finding is `[unverified]` any more.** The six that were — C2, C9, P2,
+P3, P6, P7 — were each checked against source on 2026-07-26 and now carry an
+explicit verdict in their heading. The tally is worth keeping, because it is
+the argument for auditing a report before acting on one:
+
+| | |
+|---|---|
+| confirmed, and the numbers came out worse than reported | **P3** |
+| confirmed open, but owned by another campaign | **C9** |
+| partly confirmed — the cap holds everywhere shipped (3.6× at the tightest), but not in a debug build, and not for a library embedder | **C2** |
+| subsumed by another finding | **P2** |
+| rejected on a false premise | **P6** |
+| unrecoverable; never had content | **P7** |
+
+Only two of six survived as work to do, and one of those two was *already*
+half-implemented before the audit began (C2's explicit `stack_size`). An
+unverified finding is not a cheap finding: acting on P6 as written would have
+produced an unsound cut.
+
+The audit then made the same class of mistake it was correcting, twice, on
+C2's stack margin: first measuring one of the two walkers that share the
+constant and one of the two build profiles, then dividing one walker's
+consumption by a stack the other walker runs on. **A verification pass needs
+verifying too**, and the specific trap is a claim that sounds like a
+measurement because it has a number attached.
 
 ---
 
@@ -41,6 +63,23 @@ is to eat hostile input), then **C5/C6** (silently wrong answers, which
 is worse than a crash for a tool whose output a human trusts).
 
 ### C1. `parse_group_blind` recurses without a depth cap
+
+> **Resolved by spec 0171 §S3.** Noticed while auditing C2, which cites the
+> same constant. The fix is better than the correction proposed below: rather
+> than threading a `depth` and capping it, `parse_group_blind`
+> (`walk.rs:487`) is now **iterative**, matching group nesting with a
+> `depth` counter instead of the call stack, so it cannot overflow and needs
+> no cap at all. Guarded by `blind_group_walk_does_not_overflow_the_stack`
+> (200 000 START_GROUP tags). One check was traded away — only the outermost
+> closing field number is validated, since a `Vec<u64>` of open field numbers
+> would put an allocation in a routine whose point is to have none; the
+> reasoning is in the comment at `:479-485`.
+>
+> Two stale names below, both fixed by spec 0171: the constant is
+> `MAX_WIRE_DEPTH` in `prototext-core/src/helpers/bounds.rs:69`, not
+> `MAX_SCORE_DEPTH` in `walk.rs`, and the `pos == buflen` guard flagged at
+> the end is safe as written because every length now goes through
+> `payload_end`, which cannot drive `pos` past `buflen` (that is C3).
 
 **Where:** `prototext-graph/src/score/walk.rs:421-429`, self-recursing at
 `:459`.
@@ -79,22 +118,114 @@ every call site handles it. Note the loop guard at `:423` is
 `if pos == buflen` where `>=` is the safer form — see C3, which can drive
 `pos` past `buflen`.
 
-### C2. `MAX_SCORE_DEPTH = 1000` is uncalibrated **[unverified]**
+### C2. The recursion cap is uncalibrated **[measured 2026-07-26 — binding margin 3.6×, and negative in debug]**
 
-**Where:** `prototext-graph/src/score/walk.rs:54`.
+**Where:** `prototext-core/src/helpers/bounds.rs:69` (`MAX_WIRE_DEPTH`),
+consulted at `prototext-graph/src/score/walk.rs:940`.
 
-The constant is justified by "far beyond any legitimate schema's nesting
+The constant was justified by "far beyond any legitimate schema's nesting
 depth while staying comfortably inside any thread's stack budget", but
-"comfortably" is asserted, not measured. `walk_message`'s frame carries a
-`Vec<ActiveEntry>` by value plus several locals; if the frame is ~2 KB,
-1000 frames is 2 MB, which is the *entire* default stack of a spawned
-thread (`std` default: 2 MiB) — and the heat-cue sweep runs on a spawned
+"comfortably" was asserted, not measured. The worry was that
+`score_message_multi`'s frame — which carries the active set by value plus
+several locals — might be ~2 KB, making 1000 frames 2 MB: the *entire*
+default stack of a spawned thread, and the heat-cue sweep runs on a spawned
 thread, not the main one.
 
-**Proposed correction.** Measure the frame with a stack-address delta in
-a `#[test]`, then either lower the constant or set an explicit
-`stack_size` on the sweep thread and assert the relationship between the
-two in a test. Do not leave the safety margin implicit.
+**Measured.** Bisecting an explicit `stack_size` against a nest of LEN
+fields on a self-recursive schema, release build:
+
+| frames | minimum stack that survives |
+|---|---|
+| 501 | 288 KiB |
+| 1002 | 576 KiB |
+
+≈ **590 bytes per frame** for `score_message_multi`, so the full cap costs
+~576 KiB. `MAX_WIRE_DEPTH` is shared with `prototext-core`'s `render_message`
+(spec 0171), which needs **~1408 KiB** for the same depth — 2.4× the scorer,
+≈ 1.44 KiB per frame, and identical on both the schema'd path and the
+schemaless one that makes two calls per level.
+
+Those are the worst cases by construction, and that is the point of having a
+cap: depth on the wire is bounded only by input length, so without
+`MAX_WIRE_DEPTH` there is no finite figure to measure. A flat message costs one
+frame; the numbers above are what a maximally nested one costs. Sizing against
+them means every accepted input is covered.
+
+**A consumption figure is not a margin, and the first two versions of this
+verdict conflated them.** What a walker consumes is a property of the code;
+what it has to spend is a property of the *thread it runs on*, and the two
+walkers do not share threads. Per (walker, thread) pair:
+
+| walker | thread | available | margin |
+|---|---|---|---|
+| scorer | `protolens`'s detached root-type thread (`tui/mod.rs:1680`, a plain `thread::spawn`) | 2 MiB | **3.6×** |
+| scorer | `protolens`'s heat worker (explicit `stack_size`) | 16 MiB | 28× |
+| renderer | main thread — `protolens`'s draw loop, and the `prototext` CLI | 8 MiB (`RLIMIT_STACK`) | **5.8×** |
+| renderer | whatever thread Python calls `prototext-pyo3` from | `threading.stack_size()` — caller's choice | **unbounded** |
+
+So the binding margin in the shipped binaries is **3.6×** — the scorer, on the
+one call site that takes `std`'s default. The renderer, despite being the
+heavier walker, has more room because it only ever runs on a main thread. The
+genuine open exposure is the last row: `prototext-pyo3` is a library, a Python
+caller may set any stack size it likes, and 1408 KiB is a lot to need from a
+thread someone else sized.
+
+**And in a debug build the margin is negative.** The same bisection puts the
+scorer's frame at ≈ 4.8 KiB — 8× the release figure — so 1000 levels wants
+~4.7 MiB and overflows a 2 MiB stack outright. This is why a debug
+`cargo test` aborts in `prototext-core`'s `deeply_nested_len_*` tests, and it
+means **C2's original estimate was correct for a build the first pass of this
+audit did not measure**: "if the frame is ~2 KB, 1000 frames is 2 MB, which is
+the entire default stack" understates debug rather than overstating release.
+The repo builds release exclusively, so no shipped binary is at risk — but the
+estimate was not the error; the single-configuration check was.
+
+**Verdict: the cap holds in every shipped configuration, but it is not
+obviously right.** 1000 levels is 10× protobuf's own reference default of 100,
+buys nothing anyone needs, and leaves a library embedder no way to shrink its
+appetite. Lowering it is a *behavior* change — the
+cap is deliberately a constant because rendering must be a function of
+`(bytes, schema)` alone — so it needs a spec and a decision, not a quiet edit.
+Recorded here rather than acted on.
+
+**Two things this audit found already done.** The entry's own proposed
+correction asked for an explicit `stack_size` on the sweep thread — that
+exists: `HEAT_WORKER_STACK_SIZE = 16 MiB`
+(`protolens/src/tui/heat_worker.rs:49`). And the constant is no longer
+`MAX_SCORE_DEPTH` in `walk.rs`: spec 0171 moved it to `prototext-core` so
+both wire walkers refuse the same inputs, which is why grepping the cited
+line finds nothing. The function is `score_message_multi`, not
+`walk_message`.
+
+**Closed by** recording the numbers where the claim lives — the doc comment
+on `MAX_WIRE_DEPTH` now carries both walkers' per-frame figures, the
+per-(walker, thread) margin table, and the release-only caveat — and by
+`max_depth_walk_fits_in_a_default_thread_stack`
+(`prototext-graph/src/score/tests.rs`), which walks `MAX_WIRE_DEPTH + 2`
+levels on a thread pinned to `std`'s 2 MiB default. It asserts the match
+count as well as survival, because a walk that stopped early would never
+allocate the deep frames and would make the stack assertion vacuous. It is
+`#[cfg(not(debug_assertions))]`: the contract is a release contract, and in
+debug it would abort the test binary over a configuration nothing ships in.
+
+**Generalizable lessons, and none of them is the obvious one.** This entry
+took three passes, each wrong for a different reason: the first measured only
+the scorer and published 3.5×; the second measured the renderer too and
+published 1.45×; the third noticed that 1.45× divided the *renderer's* 1408 KiB
+by `thread::spawn`'s 2 MiB — a stack the renderer never runs on. In order of
+usefulness:
+
+1. **A margin needs a named denominator.** "1.45× the default thread stack" was
+   arithmetic on two numbers that never meet at runtime. Always write the pair:
+   which walker, on which thread.
+2. **A shared constant must be measured against every sharer.** The cap became
+   `prototext-core`'s in spec 0171; measuring only the crate whose flaws report
+   this is answered the wrong question.
+3. **A margin measured in one build configuration is not a margin.** Release
+   and debug differ 8× here, and the original estimate was right about debug.
+   The prose flaw ("comfortably", naming no number) was real, but naming *one*
+   number would have replaced an unreviewable claim with a falsely precise
+   one.
 
 ### C3. Length-prefix arithmetic overflows before the bounds check
 
@@ -438,21 +569,47 @@ Also require enough room for the archived root itself, not merely
 comment tying it to a validated invariant, which is why the gap was
 invisible.
 
-### C9. The loaded graph is handed out as `&'static` **[unverified]**
+### C9. The loaded graph is handed out as `&'static` **[verified open 2026-07-26]**
 
-Corroborates the existing A5 / S4(1) finding in the protolens rendering
-review: the `'static` lifetime is fabricated from an mmap whose lifetime
-is a struct field, and the 2026-07-25 teardown segfault
-(commit `60a1673`) was exactly this class of bug. Cross-reference rather
-than duplicate; the fix belongs to that campaign.
+**Where:** `prototext-graph/src/score/load.rs:138` fabricates the lifetime:
+
+```rust
+std::mem::transmute::<&[u8], &'static [u8]>(payload)
+```
+
+`LoadedGraph.graph` is then a `pub` `Copy` field, so the `Deref` impl at
+`:27-31` — the thing that would otherwise tie a borrow to the owner — is
+trivially bypassed by reading the field out. `protolens/src/tui/mod.rs:1660`
+does exactly that (`let graph_ref = graph.graph;`) and moves the copy into a
+`thread::spawn` at `:1680` that is **never joined**.
+
+**Verified still open.** Commit `60a1673` fixed the *observable* 2026-07-25
+teardown segfault, but only by ordering `App`'s fields so `heat_worker`
+(`:738`) drops before `ctx` (`:742`). The `transmute` and the `pub` field are
+untouched, so today's safety rests entirely on a field declaration order that
+no compiler check and no test protects. The detached thread at `:1680` is a
+second, unmitigated instance: it is never joined, and its comment claiming it
+"holds only `'static`/`Arc`-owned data" is false — the `'static` there is the
+fabricated one.
+
+**Not fixed here, deliberately.** This is owned by **W8** in
+[protolens/rendering-worklist.md](protolens/rendering-worklist.md), where the
+A5 / S4(1) findings of the rendering review already scope it. Duplicating the
+fix into the scoring report would put two descriptions of one lifetime
+redesign in two documents. What this audit adds is only the confirmation that
+W8 is *not* already discharged by `60a1673`, which the commit message could
+easily be read as implying.
 
 ### C10. Root count is enforced with `assert!`
 
 > **Resolved (2026-07-25).** Spec 0172 S5. `load::check_root_count` rejects
 > an oversized graph at load time on both the mmap and the `include_bytes!`
 > path, and `score_all`'s guard is now a `debug_assert!` naming that site.
-> The 65 535-root ceiling itself stands — widening `ActiveEntry::entries`
-> is deferred decision D-h.
+> The 65 535-root ceiling itself stood until spec 0179 S1 (2026-07-26),
+> which widened `ActiveEntry::entries` to `u32` — deferred decision D-h,
+> now answered. The load-time check is *kept*, against `u32::MAX`, because
+> `roots.len()` is a `usize` and a 64-bit target can still express more
+> roots than the index addresses.
 
 **Where:** `prototext-graph/src/score/walk.rs:187-191`.
 
@@ -486,6 +643,16 @@ ceiling is deferred** — decision D-h in
 also notes that widening `ActiveEntry::entries` to `u32` is not free: it
 is the hottest structure in the walk, so it wants a measurement rather
 than an assumption.
+
+**Ceiling resolved (2026-07-26).** Spec 0179 S1. The measurement the
+deferral asked for was made, and it says the width is not the variable
+that matters — the *inline capacity* is. Holding capacity at 4, every
+spill decision is bit-identical to the `u16` version, so the widening is
+allocation-neutral; `SmallVec<[u32; 2]>` has the same `size_of` as
+`[u16; 4]` and looks free for that reason, but measured **+21.9%
+allocations**. The contradiction with `schema-match.md` was live rather
+than theoretical: googleapis alone compiles to **49 255 roots**, 75% of
+the old ceiling.
 
 ### C11. HashMap iteration order **[not a scoring bug; artifact half fixed 2026-07-26]**
 
@@ -668,19 +835,101 @@ but positional indexing should make that unnecessary.
 a large enough expected effect to justify a dedicated benchmark on
 `googleapis.desc`.
 
-### P2. Per-state side tables **[unverified]**
+### P2. Per-state side tables **[not confirmed — no such table exists 2026-07-26]**
 
-Reported as allocated per walk rather than reused. Same shape as P3;
-verify together.
+Reported as allocated per walk rather than reused. There is nothing left to
+reuse: `WalkState` (`walk.rs:136-144`) holds `graph`, `scores`, `vetoed`,
+`debug_fqdn` and `expand_any`, and none of them is keyed by state. The only
+state-keyed side table the walk ever had was `verdicts`, which spec 0173 S1
+deleted by moving the verdict onto `ActiveEntry` (that is P1). `vetoed` is
+keyed by *entry*, not state, and is a flat bitset allocated exactly once per
+`score_all` (`:157`) — already the reuse this entry was asking for.
 
-### P3. Per-frame allocations in the walk **[unverified]**
+P2 was recorded as "same shape as P3", and on the evidence it was a
+restatement of P3 rather than a second finding. **Closed as subsumed;** the
+live allocation work is entirely under P3.
 
-`walk_message` allocates `Vec`s (`verdicts`, `child_pairs` at `:1038`,
-the regrouped `active`) on every recursion. `child_pairs` in particular
-is `Vec::new()`'d inside the LEN arm, i.e. once per LEN field in the
-entire blob. A scratch buffer threaded through `WalkState` and cleared
-per use would remove the whole class. Verify the actual allocation count
-before optimizing — this is a plausible-but-unmeasured claim.
+### P3. Per-frame allocations in the walk **[quantified, then re-measured on a real corpus; largely fixed 2026-07-26]**
+
+> **Resolved in part (2026-07-26).** Spec 0179 S2. `occurrences` became a
+> `SmallVec<[(u32, u32); 2]>`, which removed **78.3%** of everything
+> `score_all` allocates on googleapis (4 761 300 → 1 035 352). The scratch
+> buffers proposed below are **declined**, on the measurement in "The
+> synthetic bench inverts the profile" — they are 1.3% of the total, not the
+> bulk of it. Read that subsection before acting on the numbers above it.
+
+**Measured.** A counting global allocator around a single `score_all` over
+the `benches/score` workload — an 886-byte blob, 64 nested-message records,
+1024 roots — records **2828 allocations and 2.6 MB of allocation traffic**.
+Scaling, holding one variable fixed:
+
+| roots (A) | allocations per LEN record |
+|---|---|
+| 64 | 16 |
+| 256 | 22 |
+| 1024 | 28 |
+| 4096 | 34 |
+
+Exactly **+3 per doubling of A**, plus a fixed **~1 allocation per distinct
+live state per frame**.
+
+**The mechanism is worse than reported.** The `+3 per doubling` is the
+signature of three `Vec`s grown from *zero* capacity, so each costs
+O(log A) allocations rather than one:
+
+- `child_pairs` (`walk.rs:1146`) — `Vec::new()` inside the LEN arm, one per
+  LEN field in the blob, then pushed once per entry;
+- `normal_pairs` (`:1273`) — the `partition` that separates `Any` candidates
+  allocates *two* fresh `Vec`s and consumes `child_pairs`, which the original
+  entry did not mention;
+- `group_by_state`'s `collect` (`:190`) — a third copy of the same pairs,
+  sorted in place.
+
+The fixed per-frame term is `occurrences: Vec::new()` (`:204`): one
+`ActiveEntry` per distinct live state, each of which allocates as soon as
+`record_occurrence` pushes. At A = 4096 with a 13-byte blob that alone is
+4144 allocations before the walk does anything interesting.
+
+Two corrections to the entry as recorded: `verdicts` is **stale** (spec 0173
+removed it, see P1), and the `child_pairs` line reference `:1038` predates
+that commit.
+
+**The synthetic bench inverts the profile (2026-07-26).** Everything above
+was measured on `benches/score`, and that workload is not representative of
+the thing it is standing in for. It gives every synthetic root a *unique*
+field number, so Hopcroft can merge none of them: every `ActiveEntry` ends
+up holding exactly one entry and `entries` never spills. And it holds A
+large against only 64 records, which maximizes the O(log A) terms. The two
+distortions push in the same direction, and the resulting picture — "the
+three `Vec`s are the problem" — is the opposite of the truth.
+
+Re-measured on `googleapis.desc` (49 255 roots), the split is:
+
+| site | share of `score_all` allocations |
+|---|---|
+| `occurrences` | **81.6%** |
+| `entries` spilling past its inline 4 | 17.1% |
+| `child_pairs` + the partition + `group_by_state` | **1.3%** |
+
+The last row is 1.3% because `group_by_state` is called **2 608 times in
+total** across the whole corpus — the O(log A) term the bench makes look
+dominant barely runs on real input.
+
+**Correction, as implemented** (spec 0179 S2). `occurrences` becomes a
+`SmallVec<[(u32, u32); 2]>` — inline capacity **2**, not the 4 proposed
+here, and a `u32` count, not `u64`. Capacity 2 covers 98.15% of real frames;
+capacity 4 covers 99.87% and measured *slower*, with higher peak RSS. Half
+of all `ActiveEntry` record nothing at all and never allocated either way;
+the other half were taking a 64-byte heap block (a `Vec`'s first capacity
+for a 16-byte element) to hold one or two pairs. Result: allocations
+4 761 300 → 1 035 352 (−78.3%), peak RSS −5.1%, and no score changes.
+
+**Scratch buffers: declined.** Threading `child_pairs`, the partition and
+`group_by_state`'s buffer through `WalkState` would target the 1.3% row.
+That is real but small, and it trades the walk's current locality for
+mutable shared state on its hottest path. Not worth it on this evidence; if
+it is ever revisited it should be justified against a corpus measurement,
+not against `benches/score`.
 
 ### P4. `EntryScore.fqdn` copies every root FQDN on every call
 
@@ -758,18 +1007,47 @@ Check whether the reason is read at all on the protolens path before
 investing in (2) — if it is diagnostics-only, (2) removes 100% of the
 cost.
 
-### P6. No pruning of hopeless candidates **[unverified]**
+### P6. No pruning of hopeless candidates **[rejected 2026-07-26]**
 
-Reported: entries whose score has fallen far enough that no remaining
-input could recover a win are still carried through the walk. Since
-`score()` is monotonically non-increasing in the penalty terms
-(`walk.rs:69-74`), a branch-and-bound cut is available in principle.
-Verify the claim, then weigh it against P1 — if P1 is the real cost,
-pruning may be unnecessary complexity.
+Reported: entries whose score has fallen far enough that no remaining input
+could recover a win are still carried through the walk, so a branch-and-bound
+cut should be available.
 
-### P7. **[unverified]**
+**The premise is false.** The entry justifies the cut by "`score()` is
+monotonically non-increasing in the penalty terms", but `score()`
+(`walk.rs:82-88`) has a *positive* `matches` term, so a candidate's score
+rises as well as falls and there is no monotone quantity to bound against.
+Worse, "hopeless" is not decidable mid-walk: it means "cannot overtake the
+eventual winner", and the eventual winner's score is itself still moving —
+every rival's score can also fall. A sound cut would need a lower bound on
+the final best score, which no single forward pass has.
 
-Recorded in the audit; not yet re-derived. Re-check before acting.
+**And it would not buy much.** Per-tag cost scales with *A*, the number of
+distinct live **states** — one `find_transition` binary search each — not with
+the number of entries. Dropping some entries from an `ActiveEntry` leaves the
+per-tag work unchanged; only emptying a state entirely removes any. So the cut
+would have to find every entry in a state simultaneously hopeless to pay at
+all.
+
+**And it would break the reports.** A pruned candidate stops accumulating, so
+its counters become fiction. All four `score_all` consumers print those
+counters — `score`, `--detailed-score`, `list-schemas`, and the decode
+header — and two of them print them for candidates that did not win. Veto can
+do this only because a vetoed candidate reports `vetoed: true` and no numbers
+at all.
+
+**Rejected**, not deferred: the mechanism is unsound, the payoff is bounded by
+a quantity it does not reduce, and the cost is wrong output. The pruning the
+walk actually has is veto, and its cost model is
+[documented](#cross-cutting-observations) under the veto-demotion note.
+
+### P7. **[closed as unrecoverable 2026-07-26]**
+
+The entry has been an empty placeholder in every committed revision of this
+file, back to `40c7bd8` where the report was first written — the finding was
+lost before it was ever recorded, not since. There is nothing to re-derive.
+**Closed.** If it mattered it will resurface as a fresh finding, which is a
+better outcome than a permanent unanswerable placeholder.
 
 ---
 
