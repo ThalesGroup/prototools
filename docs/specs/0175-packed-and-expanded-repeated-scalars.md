@@ -337,20 +337,44 @@ directly. Take a before/after reading on a blob containing packed fields;
 a slowdown there is expected and is not a regression, whereas a slowdown
 on the existing packed-free workloads means S3 was not hoisted.
 
-**Outstanding (2026-07-26).** The reading has not been taken:
-`benches/score`'s only blob (`blob()`) carries a string and a
-length-delimited submessage, no packed field, so a packed workload has to be
-added to the bench before there is anything to read. That is the whole reason
-it is outstanding.
+### Measured, 2026-07-26
 
-What *is* established is structural, and it is what the "slowdown on
-packed-free workloads means S3 was not hoisted" clause above was really
-asking: the packed-varint termination scan is memoized in `packed_varints_ok`,
-declared **outside** the `for ae in active.iter_mut()` loop, so it is
-O(payload) once per LEN tag and not once per candidate; and a packed-free
-workload never reaches the `FoundPacked` arm at all, paying only that one-word
-`None` initialization per LEN tag. The A-widening cost, which is the
-interesting one, still wants the measurement.
+`benches/score` had no packable field, so `bench_packed_vs_expanded` was added
+(field 3, `repeated uint64`, 256 elements, root count 64→4096). Before/after is
+across the implementing commit, same bench file in both trees.
+
+| roots | packed, before | packed, after | expanded, before | expanded, after |
+|---|---|---|---|---|
+| 64 | 3.14 µs | 9.34 µs | 539 µs | 541 µs |
+| 256 | 12.8 µs | 40.1 µs | 2.56 ms | 2.62 ms |
+| 1024 | 87.4 µs | 198 µs | 19.4 ms | 18.2 ms |
+| 4096 | 437 µs | 949 µs | 102 ms | 100 ms |
+
+**The A-widening cost is 2.2–3.0×, and it is the predicted one.** "Before" on
+the packed blob is a veto at the first tag, i.e. an immediate exit, so this is
+the price of not being wrong rather than a regression. In absolute terms it is
+small: a packed field is *still* ~100× cheaper than the expanded encoding of
+the same 256 values (949 µs vs 100 ms at 4096 roots), so S4's claim that packed
+stays the cheaper encoding holds by two orders of magnitude — expanded pays a
+tag parse and a `find_transition` per element per candidate, packed pays one
+memoized run scan.
+
+**Scaling.** Packed grows 4.3×/4.95×/4.8× per 4× roots (≈ A^1.13); expanded
+4.8×/6.97×/5.5× (≈ A^1.26). Neither is O(A²), so spec 0173 holds, but the
+expanded curve's bend at 256→1024 is unexplained and worth a look if varint-
+heavy blobs ever matter — plausibly `EntryScore` working-set effects, not the
+verdict loop.
+
+**One real regression found and fixed: `check_varint_value` needs
+`#[inline]`.** Extracting the shared per-element checks out of the `WT_VARINT`
+`Found` arm (S4) put a five-argument, non-inlined call in the hottest per-value
+path in the walk, costing **2.1× on a pure-varint blob** (expanded at 64 roots:
+539 µs before → 1135 µs, restored to 541 µs by `#[inline]`; the same 2× at every
+root count). This is the finding the measurement was worth taking for, and note
+that the pre-existing mixed workload `score_all_by_root_count` was **identical**
+across the change (464.5 → 464.9 µs at 64 roots, 63.48 → 63.36 ms at 4096) — it
+spends most of its time on strings and submessages, so it hid the regression
+entirely. A workload that isolates the arm being edited is what exposed it.
 
 ## Test plan
 

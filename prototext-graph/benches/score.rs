@@ -42,13 +42,19 @@ fn synthetic_yaml(n: usize) -> String {
     s.push_str("messages:\n");
     s.push_str("  Leaf:\n    fields:\n    - number: 1\n      type: uint64\n");
     for i in 0..n {
-        // Fields 1 and 2 are shared by every root (so the blob matches all of
-        // them); field `100 + i` is unique to this root and never encoded (so
-        // Hopcroft keeps them apart without any of them being vetoed).
+        // Fields 1, 2 and 3 are shared by every root (so the blob matches all
+        // of them); field `100 + i` is unique to this root and never encoded
+        // (so Hopcroft keeps them apart without any of them being vetoed).
+        //
+        // Field 3 is a repeated scalar, i.e. packable: it is what the
+        // packed-vs-expanded workload exercises (spec 0175). It is absent from
+        // `blob()`, so the pre-existing benchmarks are unaffected beyond one
+        // more transition in each root's table.
         s.push_str(&format!(
             "  Msg{i}:\n    fields:\n    \
              - number: 1\n      type: string\n    \
              - number: 2\n      type: message\n      child: Leaf\n      label: repeated\n    \
+             - number: 3\n      type: uint64\n      label: repeated\n    \
              - number: {}\n      type: uint64\n",
             100 + i
         ));
@@ -96,6 +102,66 @@ fn blob(records: usize) -> Vec<u8> {
         out.extend_from_slice(&inner);
     }
     out
+}
+
+/// Field 3 (`repeated uint64`) carrying `elements` values, in the **expanded**
+/// encoding: one varint tag per value.
+fn blob_expanded(elements: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    for i in 0..elements {
+        write_varint(&mut out, 3 << 3);
+        write_varint(&mut out, i as u64);
+    }
+    out
+}
+
+/// The same values as `blob_expanded`, in the **packed** encoding: one LEN tag
+/// whose payload is the varint run.
+///
+/// Before spec 0175 this vetoed every candidate at the first tag, so the walk
+/// exited immediately — which is why a before/after on this blob measures an
+/// early exit rather than a slowdown. The comparison that carries information
+/// is packed vs expanded *after* the fix: both are accepted, so both hold the
+/// active set at full width, and packed should stay the cheaper of the two
+/// (no tag to parse and no `find_transition` per element).
+fn blob_packed(elements: usize) -> Vec<u8> {
+    let mut payload = Vec::new();
+    for i in 0..elements {
+        write_varint(&mut payload, i as u64);
+    }
+    let mut out = Vec::new();
+    write_varint(&mut out, (3 << 3) | 2);
+    write_varint(&mut out, payload.len() as u64);
+    out.extend_from_slice(&payload);
+    out
+}
+
+/// Packed vs expanded, across a widening active set (spec 0175).
+///
+/// Both blobs encode the same 256 values of the same repeated scalar, and
+/// neither vetoes, so `A` is the root count in both. Two readings come out of
+/// this: whether packed remains cheaper than expanded (spec 0175's S4 claim),
+/// and whether the cost in root count is linear or bends.
+fn bench_packed_vs_expanded(c: &mut Criterion) {
+    const ELEMENTS: usize = 256;
+    let packed = blob_packed(ELEMENTS);
+    let expanded = blob_expanded(ELEMENTS);
+    let opts = ScoringOpts::default();
+    let mut g = c.benchmark_group("packed_vs_expanded");
+
+    for &n in &[64usize, 256, 1024, 4096] {
+        let graph = build_graph(n);
+        g.throughput(Throughput::Bytes(packed.len() as u64));
+        g.bench_with_input(BenchmarkId::new("packed", n), &n, |b, _| {
+            b.iter(|| score_all(black_box(&packed), graph.graph, &opts))
+        });
+        g.throughput(Throughput::Bytes(expanded.len() as u64));
+        g.bench_with_input(BenchmarkId::new("expanded", n), &n, |b, _| {
+            b.iter(|| score_all(black_box(&expanded), graph.graph, &opts))
+        });
+    }
+
+    g.finish();
 }
 
 /// `score_all` against a widening active set — the O(A) vs O(A²) question.
@@ -155,5 +221,6 @@ criterion_group!(
     bench_score_all_roots,
     bench_score_all_setup,
     bench_score_one,
+    bench_packed_vs_expanded,
 );
 criterion_main!(benches);

@@ -649,6 +649,7 @@ fn packed_varints_terminate(payload: &[u8]) -> bool {
 /// Returns true iff the value vetoes. The caller owns the veto and match
 /// bookkeeping, which differ between one expanded occurrence and one element of
 /// a packed run.
+#[inline]
 fn check_varint_value(
     ws: &mut WalkState<'_, '_>,
     ae: &ActiveEntry,
