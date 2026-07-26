@@ -40,8 +40,12 @@ const WT_I32: u32 = 5;
 // ── Multi-entry types (spec 0048) ─────────────────────────────────────────────
 
 /// Per-entry scoring counters for the multi-entry walk.
-pub struct EntryScore {
-    pub fqdn: String,
+pub struct EntryScore<'g> {
+    /// Borrowed from the graph's `ArchivedString`, which outlives every
+    /// call. Copying it allocated once per root *before scoring began*, so
+    /// a 13 000-root graph paid 13 000 allocations to score a 40-byte blob
+    /// that vetoes on its first tag.
+    pub fqdn: &'g str,
     pub matches: u64,
     pub unknowns: u64,
     pub mismatches: u64,
@@ -49,13 +53,23 @@ pub struct EntryScore {
     pub vetoed: bool,
 }
 
-impl EntryScore {
+impl EntryScore<'_> {
     pub fn score(&self) -> i64 {
         self.matches as i64
             - 10 * self.unknowns as i64
             - 10 * self.mismatches as i64
             - 20 * self.non_canonical as i64
     }
+}
+
+/// This active entry's schema verdict for one wire tag.
+///
+/// `label` is carried on `Found` so occurrences are recorded only for it.
+#[derive(Clone, Copy)]
+enum Verdict {
+    Unknown,
+    Mismatch,
+    Found(u32, u8), // (child_state_id, label)
 }
 
 /// One entry in the active set: a state_id shared by one or more entry indices.
@@ -71,12 +85,26 @@ struct ActiveEntry {
     /// Per-frame occurrence counts for fields that received a Found verdict.
     /// field_number → how many times seen in this message/group frame.
     occurrences: Vec<(u32, u64)>, // sorted by field_number
+    /// This entry's verdict for the wire tag currently being processed.
+    /// Overwritten at the top of every tag iteration and never read across
+    /// iterations.
+    ///
+    /// Held here rather than in a side table keyed by `state_id` because
+    /// `active.retain()` compacts the vector mid-iteration: positional
+    /// indices into a parallel array do not survive it. The state_id-keyed
+    /// lookup that used to bridge that gap was a linear scan run once per
+    /// entry per tag — O(A²) per tag, where A is the number of distinct
+    /// live states. A field moves with its owner through `retain` for free,
+    /// and `propagate_vetoes` and every `retain` here only ever *remove*
+    /// entries, never reorder or rebuild them, so an entry's verdict stays
+    /// its own.
+    verdict: Verdict,
 }
 
 /// Global walk state shared across all recursion levels.
-struct WalkState<'a> {
+struct WalkState<'a, 'g> {
     graph: &'a ArchivedCompiledGraph,
-    scores: &'a mut Vec<EntryScore>,
+    scores: &'a mut Vec<EntryScore<'g>>,
     /// Flat bitset: bit i is set iff entry i has been permanently vetoed.
     vetoed: Vec<u64>,
     /// If set, print a message to stderr whenever this FQDN is vetoed.
@@ -85,10 +113,10 @@ struct WalkState<'a> {
     expand_any: bool,
 }
 
-impl<'a> WalkState<'a> {
+impl<'a, 'g> WalkState<'a, 'g> {
     fn new(
         graph: &'a ArchivedCompiledGraph,
-        scores: &'a mut Vec<EntryScore>,
+        scores: &'a mut Vec<EntryScore<'g>>,
         opts: &ScoringOpts,
     ) -> Self {
         let n = scores.len();
@@ -108,7 +136,12 @@ impl<'a> WalkState<'a> {
         (self.vetoed[e / 64] >> (e % 64)) & 1 == 1
     }
 
-    fn set_vetoed(&mut self, e: u16, reason: &str) {
+    /// `reason` is a closure because it is read only when
+    /// `PROTOTEXT_DEBUG_FQDN` names this exact candidate — i.e. never, in
+    /// production. It used to be a `&str`, which meant the `format!` call
+    /// sites below built and dropped a `String` once per candidate per
+    /// mismatching tag.
+    fn set_vetoed(&mut self, e: u16, reason: impl FnOnce() -> String) {
         let ei = e as usize;
         if self.vetoed[ei / 64] & (1 << (ei % 64)) != 0 {
             return; // already vetoed
@@ -117,7 +150,7 @@ impl<'a> WalkState<'a> {
         self.scores[ei].vetoed = true;
         if let Some(ref dbg) = self.debug_fqdn {
             if self.scores[ei].fqdn == *dbg {
-                eprintln!("[veto] {} — {}", self.scores[ei].fqdn, reason);
+                eprintln!("[veto] {} — {}", self.scores[ei].fqdn, reason());
             }
         }
     }
@@ -140,6 +173,7 @@ fn group_by_state(pairs: impl Iterator<Item = (u32, u16)>) -> Vec<ActiveEntry> {
             state_id,
             entries,
             occurrences: Vec::new(),
+            verdict: Verdict::Unknown,
         });
     }
     result
@@ -185,7 +219,11 @@ impl Default for ScoringOpts {
 
 /// Score all root entries in `graph` simultaneously against `pb`.
 /// Returns one `EntryScore` per root entry, in graph order.
-pub fn score_all(pb: &[u8], graph: &ArchivedCompiledGraph, opts: &ScoringOpts) -> Vec<EntryScore> {
+pub fn score_all<'g>(
+    pb: &[u8],
+    graph: &'g ArchivedCompiledGraph,
+    opts: &ScoringOpts,
+) -> Vec<EntryScore<'g>> {
     // Spec 0172 S5: enforced at load time by `load::check_root_count`,
     // which turns an oversized corpus into an `Err` instead of aborting
     // the process from inside a background scoring thread. This is the
@@ -196,11 +234,11 @@ pub fn score_all(pb: &[u8], graph: &ArchivedCompiledGraph, opts: &ScoringOpts) -
         graph.roots.len()
     );
 
-    let mut scores: Vec<EntryScore> = graph
+    let mut scores: Vec<EntryScore<'g>> = graph
         .roots
         .iter()
         .map(|r| EntryScore {
-            fqdn: r.fqdn.as_str().to_owned(),
+            fqdn: r.fqdn.as_str(),
             matches: 0,
             unknowns: 0,
             mismatches: 0,
@@ -227,12 +265,12 @@ pub fn score_all(pb: &[u8], graph: &ArchivedCompiledGraph, opts: &ScoringOpts) -
 /// any other root candidates.  `fqdn` may be given with or without a leading
 /// dot, matching either form stored in `graph.roots`.  Returns `None` if no
 /// root entry matches `fqdn`.
-pub fn score_one(
+pub fn score_one<'g>(
     pb: &[u8],
     fqdn: &str,
-    graph: &ArchivedCompiledGraph,
+    graph: &'g ArchivedCompiledGraph,
     opts: &ScoringOpts,
-) -> Option<EntryScore> {
+) -> Option<EntryScore<'g>> {
     let want = fqdn.trim_start_matches('.');
     let root = graph
         .roots
@@ -240,7 +278,7 @@ pub fn score_one(
         .find(|r| r.fqdn.trim_start_matches('.') == want)?;
 
     let mut scores = vec![EntryScore {
-        fqdn: root.fqdn.as_str().to_owned(),
+        fqdn: root.fqdn.as_str(),
         matches: 0,
         unknowns: 0,
         mismatches: 0,
@@ -254,6 +292,7 @@ pub fn score_one(
         state_id: root.state_id.to_native(),
         entries,
         occurrences: Vec::new(),
+        verdict: Verdict::Unknown,
     }];
 
     let mut ws = WalkState::new(graph, &mut scores, opts);
@@ -578,10 +617,15 @@ fn record_occurrence(occurrences: &mut Vec<(u32, u64)>, field_number: u32) {
 // ── Multi-entry parallel walk (spec 0048) ─────────────────────────────────────
 
 /// Veto all entries in `active` and clear the set.
+///
+/// `reason` is deliberately a plain `&str` rather than `set_vetoed`'s
+/// closure: every caller but one passes a literal, and each of them is a
+/// terminal error that ends the walk, so it is paid once — not once per
+/// candidate per tag, which is what made laziness worth it there.
 fn veto_all(active: &mut Vec<ActiveEntry>, ws: &mut WalkState, reason: &str) {
     for ae in active.iter() {
         for &e in &ae.entries {
-            ws.set_vetoed(e, reason);
+            ws.set_vetoed(e, || reason.to_string());
         }
     }
     active.clear();
@@ -784,20 +828,6 @@ fn score_message_multi(
         return buflen;
     }
 
-    // Verdict attached directly to each ActiveEntry for one field iteration.
-    // Stored by state_id (stable across retain) rather than Vec index.
-    // label is included so occurrences can be recorded only for Found.
-    #[derive(Clone, Copy)]
-    enum Verdict {
-        Unknown,
-        Mismatch,
-        Found(u32, u8), // (child_state_id, label)
-    }
-
-    // Reusable per-field verdict buffer: (state_id, verdict).
-    // Keyed by state_id so it remains valid after active.retain().
-    let mut verdicts: Vec<(u32, Verdict)> = Vec::new();
-
     loop {
         if pos == buflen || active.is_empty() {
             if !active.is_empty() {
@@ -840,11 +870,8 @@ fn score_message_multi(
         }
 
         // ── Schema verdict per active-entry group ─────────────────────────────
-        //
-        // Keyed by state_id so lookups remain valid after active.retain().
 
-        verdicts.clear();
-        for ae in active.iter() {
+        for ae in active.iter_mut() {
             // Spec 0172 S1: a field number of 0 or >= 2^29 cannot be
             // declared by any schema, so there is nothing to look it up
             // against — and narrowing it to u32 for the lookup would
@@ -870,23 +897,18 @@ fn score_message_multi(
                     }
                 }
             };
-            verdicts.push((ae.state_id, v));
+            ae.verdict = v;
         }
 
         // Apply mismatches: veto affected entries, then drop empty ActiveEntries.
         for ae in active.iter_mut() {
-            let v = verdicts
-                .iter()
-                .find(|(sid, _)| *sid == ae.state_id)
-                .map(|(_, v)| v);
-            if matches!(v, Some(Verdict::Mismatch)) {
+            if matches!(ae.verdict, Verdict::Mismatch) {
                 for &e in &ae.entries {
-                    ws.set_vetoed(
-                        e,
-                        &format!(
+                    ws.set_vetoed(e, || {
+                        format!(
                             "wire-type mismatch on field {field_number} (wire_type={wire_type})"
-                        ),
-                    );
+                        )
+                    });
                 }
                 ae.entries.clear();
             }
@@ -896,16 +918,6 @@ fn score_message_multi(
         if active.is_empty() {
             return pos;
         }
-
-        // Helper: look up the verdict for the given state_id.
-        // Returns Unknown if not found (shouldn't happen for entries still in active).
-        let verdict_for = |sid: u32| -> Verdict {
-            verdicts
-                .iter()
-                .find(|(s, _)| *s == sid)
-                .map(|(_, v)| *v)
-                .unwrap_or(Verdict::Unknown)
-        };
 
         // ── Consume wire body ─────────────────────────────────────────────────
 
@@ -920,7 +932,7 @@ fn score_message_multi(
                 let val = vr.value;
 
                 for ae in active.iter_mut() {
-                    match verdict_for(ae.state_id) {
+                    match ae.verdict {
                         Verdict::Unknown => {
                             for &e in &ae.entries {
                                 ws.scores[e as usize].unknowns += 1;
@@ -1011,12 +1023,9 @@ fn score_message_multi(
                             }
                             if do_veto {
                                 for &e in &ae.entries {
-                                    ws.set_vetoed(
-                                        e,
-                                        &format!(
-                                            "varint value out of range on field {field_number}"
-                                        ),
-                                    );
+                                    ws.set_vetoed(e, || {
+                                        format!("varint value out of range on field {field_number}")
+                                    });
                                 }
                                 ae.entries.clear();
                             } else {
@@ -1039,7 +1048,7 @@ fn score_message_multi(
                 };
                 pos = end;
                 for ae in active.iter_mut() {
-                    match verdict_for(ae.state_id) {
+                    match ae.verdict {
                         Verdict::Unknown => {
                             for &e in &ae.entries {
                                 ws.scores[e as usize].unknowns += 1;
@@ -1083,7 +1092,7 @@ fn score_message_multi(
                 let mut child_pairs: Vec<(u32, u16)> = Vec::new();
 
                 for ae in active.iter_mut() {
-                    match verdict_for(ae.state_id) {
+                    match ae.verdict {
                         Verdict::Unknown => {
                             for &e in &ae.entries {
                                 ws.scores[e as usize].unknowns += 1;
@@ -1102,12 +1111,9 @@ fn score_message_multi(
                                 let is_string = node.is_some_and(|n| n.is_string);
                                 if is_string && std::str::from_utf8(payload).is_err() {
                                     for &e in &ae.entries {
-                                        ws.set_vetoed(
-                                            e,
-                                            &format!(
-                                                "invalid UTF-8 on string field {field_number}"
-                                            ),
-                                        );
+                                        ws.set_vetoed(e, || {
+                                            format!("invalid UTF-8 on string field {field_number}")
+                                        });
                                     }
                                     ae.entries.clear();
                                 } else {
@@ -1188,7 +1194,7 @@ fn score_message_multi(
                 let mut stay_out_entries: Vec<u16> = Vec::new();
 
                 for ae in active.iter_mut() {
-                    match verdict_for(ae.state_id) {
+                    match ae.verdict {
                         Verdict::Found(child, _label) => {
                             for &e in &ae.entries {
                                 recurse_into.push((child, e));
@@ -1217,7 +1223,7 @@ fn score_message_multi(
                     propagate_vetoes(&mut active, ws);
                     // Record occurrences and matches for surviving Found entries.
                     for ae in active.iter_mut() {
-                        if matches!(verdict_for(ae.state_id), Verdict::Found(_, _)) {
+                        if matches!(ae.verdict, Verdict::Found(_, _)) {
                             record_occurrence(&mut ae.occurrences, field_number as u32);
                             for &e in &ae.entries {
                                 ws.scores[e as usize].matches += 1;
@@ -1241,16 +1247,18 @@ fn score_message_multi(
                 let final_pos = if !recurse_into.is_empty()
                     && active
                         .iter()
-                        .all(|ae| !matches!(verdict_for(ae.state_id), Verdict::Found(_, _)))
+                        .all(|ae| !matches!(ae.verdict, Verdict::Found(_, _)))
                 {
                     // All Found entries were vetoed; need blind walk for stay_out boundary.
                     match parse_group_blind(buf, pos, field_number) {
                         None => {
                             // stay_out entries also can't parse it — veto them too.
                             for ae in active.iter_mut() {
-                                if matches!(verdict_for(ae.state_id), Verdict::Unknown) {
+                                if matches!(ae.verdict, Verdict::Unknown) {
                                     for &e in &ae.entries {
-                                        ws.set_vetoed(e, "malformed group (blind fallback)");
+                                        ws.set_vetoed(e, || {
+                                            "malformed group (blind fallback)".to_string()
+                                        });
                                     }
                                     ae.entries.clear();
                                 }
@@ -1305,7 +1313,7 @@ fn score_message_multi(
                 };
                 pos = end;
                 for ae in active.iter_mut() {
-                    match verdict_for(ae.state_id) {
+                    match ae.verdict {
                         Verdict::Unknown => {
                             for &e in &ae.entries {
                                 ws.scores[e as usize].unknowns += 1;
@@ -1324,5 +1332,122 @@ fn score_message_multi(
 
             _ => unreachable!("wire type > 5 caught by parse_wiretag"),
         }
+    }
+}
+
+// ── Tests: `set_vetoed`'s lazy reason (spec 0173 S2) ─────────────────────────
+
+#[cfg(test)]
+mod set_vetoed_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    fn walk_state<'a, 'g>(
+        graph: &'a ArchivedCompiledGraph,
+        scores: &'a mut Vec<EntryScore<'g>>,
+        debug_fqdn: Option<String>,
+    ) -> WalkState<'a, 'g> {
+        let words = scores.len().div_ceil(64);
+        WalkState {
+            graph,
+            scores,
+            vetoed: vec![0u64; words],
+            debug_fqdn,
+            strict_ranges: false,
+            expand_any: true,
+        }
+    }
+
+    /// A one-field graph, only ever used to satisfy `WalkState`'s `graph`
+    /// field — `set_vetoed` never reads it.
+    fn tiny_graph() -> crate::score::load::LoadedGraph {
+        use crate::build_scoring_graph::load::{FieldLabel, Merged, ScoringField, ScoringKind};
+        use crate::build_scoring_graph::{graph, hopcroft, serial};
+
+        let mut states = std::collections::HashMap::new();
+        states.insert(
+            "pkg.Msg".to_string(),
+            vec![ScoringField {
+                number: 1,
+                kind: ScoringKind::Uint64,
+                child: None,
+                range: None,
+                label: FieldLabel::Optional,
+            }],
+        );
+        let merged = Merged {
+            states,
+            node_kinds: std::collections::HashMap::new(),
+            roots: vec!["pkg.Msg".to_string()],
+        };
+        let (raw, reg) = graph::build(&merged);
+        let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_, _| {});
+        let compiled = graph::compile(&raw, &reg, &partition, &merged.roots);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tiny.bin");
+        serial::write(&compiled, &path).expect("write");
+        let _ = std::mem::ManuallyDrop::new(dir);
+        crate::score::load::load_graph(&path).expect("load")
+    }
+
+    fn entry(fqdn: &str) -> EntryScore<'_> {
+        EntryScore {
+            fqdn,
+            matches: 0,
+            unknowns: 0,
+            mismatches: 0,
+            non_canonical: 0,
+            vetoed: false,
+        }
+    }
+
+    /// The reason is a closure precisely so it costs nothing in production,
+    /// where `PROTOTEXT_DEBUG_FQDN` is unset. Constructed directly rather
+    /// than through `WalkState::new`, which reads that variable from the
+    /// process environment — a value the rest of the test binary's threads
+    /// share.
+    #[test]
+    fn reason_is_not_built_without_a_debug_fqdn() {
+        let graph = tiny_graph();
+        let mut scores = vec![entry("pkg.Msg")];
+        let mut ws = walk_state(&graph, &mut scores, None);
+
+        let built = Cell::new(false);
+        ws.set_vetoed(0, || {
+            built.set(true);
+            "why".to_string()
+        });
+
+        assert!(ws.scores[0].vetoed, "the veto itself must still land");
+        assert!(!built.get(), "no reader, so the reason must not be built");
+    }
+
+    /// …and it *is* built when the debug FQDN names this candidate, which is
+    /// the one case the old eager `&str` served.
+    #[test]
+    fn reason_is_built_for_the_named_debug_fqdn() {
+        let graph = tiny_graph();
+        let mut scores = vec![entry("pkg.Msg"), entry("pkg.Other")];
+        let mut ws = walk_state(&graph, &mut scores, Some("pkg.Msg".to_string()));
+
+        let built = Cell::new(0u32);
+        ws.set_vetoed(1, || {
+            built.set(built.get() + 1);
+            "why".to_string()
+        });
+        assert_eq!(built.get(), 0, "a different candidate: still not built");
+
+        ws.set_vetoed(0, || {
+            built.set(built.get() + 1);
+            "why".to_string()
+        });
+        assert_eq!(built.get(), 1, "the named candidate: built once");
+
+        // Already vetoed — the early return must precede the closure.
+        ws.set_vetoed(0, || {
+            built.set(built.get() + 1);
+            "why".to_string()
+        });
+        assert_eq!(built.get(), 1, "a repeat veto must not build it again");
     }
 }

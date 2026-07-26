@@ -650,6 +650,16 @@ line of the initial decode (W32).
 
 ### W31. Remove the per-tag O(A²) scan in `score_all`
 
+**Done:** spec 0173, 2026-07-26. One correction to the plan below: (1)'s
+"index positionally (`zip`)" is *wrong*, and the side table's own comment
+said why — the mismatch loop clears entries and `active.retain()`
+compacts the vector between the two loops, so `verdicts[i]` no longer
+belongs to `active[i]`. The verdict moved onto `ActiveEntry` instead,
+where `retain` carries it along for free. Measured at A = 4096:
+1.114 s → 68.9 ms, with the cost-vs-A curve dropping from 14.2× per 4×
+A to 5.3×. (2) became a closure rather than a hoist, so it costs nothing
+at all when unread; (3) landed as written.
+
 **Fixes:** [scoring P1, P4, P5](../scoring-flaws.md).
 
 **Files:** `prototext-graph/src/score/walk.rs:834-882`, `:1041`, `:60`,
@@ -699,6 +709,13 @@ radius only.
 ---
 
 ### W32. Stop allocating a `String` per rendered line in `display_name`
+
+**Done:** spec 0173, 2026-07-26, as `write_display_name(&self, out: &mut
+Vec<u8>)`. A counting allocator puts the effect at exactly one
+allocation per schema-named line removed and none left over (5 485 →
+2 974 per render of the 18 KB `fixtures/descriptor.pb`, whose protoc
+text has 2 511 named lines), for −8% wall clock on the annotated path
+and no movement on the schema-less control.
 
 **Fixes:** [decode P4](../prototext/decode-flaws.md).
 

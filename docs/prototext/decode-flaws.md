@@ -307,6 +307,8 @@ misled again.
 
 ### P4. `display_name()` allocates a `String` per output line, under a doc comment promising it does not
 
+*Fixed by spec 0173 S4, 2026-07-26 — replaced by `write_display_name(&self, out: &mut Vec<u8>)`, making the doc comments true.*
+
 **Where:** `prototext-core/src/serialize/render_text/mod.rs:96-101` and
 `helpers/output.rs:75-113`.
 

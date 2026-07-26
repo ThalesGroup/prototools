@@ -89,14 +89,24 @@ impl FieldOrExt {
         }
     }
 
-    /// The name to use in field-line output.
+    /// Append the name to use in field-line output directly to `out`.
     ///
-    /// Regular field: `"name"` (bare field name).
-    /// Extension field: `"[full.qualified.name]"`.
-    pub(super) fn display_name(&self) -> String {
+    /// Regular field: `name`. Extension field: `[full.qualified.name]`.
+    ///
+    /// Writes rather than returns, because both callers
+    /// (`wfl_prefix_n`/`wob_prefix_n`) only ever append it to a buffer, and
+    /// the `String` this used to return was allocated, copied and dropped
+    /// once per schema-named line — 2511 times on the 18 KB
+    /// `fixtures/descriptor.pb`, under two doc comments that claimed the
+    /// opposite.
+    pub(super) fn write_display_name(&self, out: &mut Vec<u8>) {
         match self {
-            FieldOrExt::Field(f) => f.name().to_owned(),
-            FieldOrExt::Ext(e) => format!("[{}]", e.full_name()),
+            FieldOrExt::Field(f) => out.extend_from_slice(f.name().as_bytes()),
+            FieldOrExt::Ext(e) => {
+                out.push(b'[');
+                out.extend_from_slice(e.full_name().as_bytes());
+                out.push(b']');
+            }
         }
     }
 
@@ -728,6 +738,38 @@ mod tests {
 
     // field 1 (varint) = 42: tag 0x08, value 0x2A.
     const VARINT_FIELD: [u8; 2] = [0x08, 0x2A];
+
+    /// Spec 0173 S4: `FieldOrExt::write_display_name` replaced a
+    /// `display_name() -> String` that allocated once per schema-named
+    /// line. The change is meant to be invisible in the output, and the
+    /// benches' own fixtures are the widest schema-named corpus committed
+    /// to this repo — every well-known type, 2511 named lines — so pin the
+    /// rendering against them byte for byte.
+    ///
+    /// Extension names (`[pkg.ext]`, the other arm of `write_display_name`)
+    /// are not reachable from a `FileDescriptorSet` payload; they are
+    /// covered by `prototext/tests/roundtrip.rs`'s `[acme.blade_count]`
+    /// assertion.
+    #[test]
+    fn descriptor_fixture_renders_byte_for_byte() {
+        let pb: &[u8] = include_bytes!("../../../fixtures/descriptor.pb");
+        let expected: &[u8] = include_bytes!("../../../fixtures/descriptor_protoc.txt");
+        let schema = crate::parse_schema(pb, "google.protobuf.FileDescriptorSet")
+            .expect("descriptor.pb is self-describing");
+        let out = decode_and_render(
+            pb,
+            schema.root_descriptor().as_ref(),
+            DecodeRenderOpts {
+                annotations: true,
+                emit_header: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out),
+            String::from_utf8_lossy(expected)
+        );
+    }
 
     #[test]
     fn initial_level_indents_output() {

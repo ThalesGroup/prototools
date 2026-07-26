@@ -62,13 +62,13 @@ pub fn inferred_candidates(
     results.sort_by(|a, b| match (a.vetoed, b.vetoed) {
         (false, true) => std::cmp::Ordering::Less,
         (true, false) => std::cmp::Ordering::Greater,
-        (true, true) => a.fqdn.cmp(&b.fqdn),
-        (false, false) => b.score().cmp(&a.score()).then(a.fqdn.cmp(&b.fqdn)),
+        (true, true) => a.fqdn.cmp(b.fqdn),
+        (false, false) => b.score().cmp(&a.score()).then(a.fqdn.cmp(b.fqdn)),
     });
     results
         .into_iter()
         .filter(|r| !r.vetoed)
-        .map(|r| (r.fqdn.clone(), r.score()))
+        .map(|r| (r.fqdn.to_owned(), r.score()))
         .collect()
 }
 

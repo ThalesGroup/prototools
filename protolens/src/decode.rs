@@ -194,8 +194,8 @@ pub(crate) fn resolve_root_winner_fqdn(
     results.sort_by(|a, b| match (a.vetoed, b.vetoed) {
         (false, true) => std::cmp::Ordering::Less,
         (true, false) => std::cmp::Ordering::Greater,
-        (true, true) => a.fqdn.cmp(&b.fqdn),
-        (false, false) => b.score().cmp(&a.score()).then(a.fqdn.cmp(&b.fqdn)),
+        (true, true) => a.fqdn.cmp(b.fqdn),
+        (false, false) => b.score().cmp(&a.score()).then(a.fqdn.cmp(b.fqdn)),
     });
 
     if results.is_empty() {
@@ -212,7 +212,7 @@ pub(crate) fn resolve_root_winner_fqdn(
         return None;
     }
 
-    Some(non_vetoed[0].fqdn.clone())
+    Some(non_vetoed[0].fqdn.to_owned())
 }
 
 /// Resolve the root message type to decode `blob` as.

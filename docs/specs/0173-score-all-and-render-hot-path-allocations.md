@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0173 — prototext-graph, prototext-core: `score_all`'s quadratic verdict scan and per-line allocations
 
-Status: draft
+Status: implemented
+Implemented in: 2026-07-26
 App: prototext-graph, prototext-core
 Refs: docs/scoring-flaws.md (P1, P4, P5),
       docs/prototext/decode-flaws.md (P4),
@@ -266,32 +267,125 @@ which already promise this, are left as they stand.
 Correctness first: none of this may change a single byte of output or a
 single counter.
 
-- **S1/S2/S3 equivalence** — `score_all_output_is_unchanged`: over the
-  existing `score::tests` corpus plus the `hopcroft_suite` fixtures,
-  assert every `EntryScore` field (`matches`, `unknowns`, `mismatches`,
-  `non_canonical`, `vetoed`) and the resulting rank order match the
-  values recorded before the change. Committed as explicit expected
-  values, so the assertion survives a future refactor of the same code.
+- **S1/S2/S3 equivalence** — the existing `score::tests` corpus (54
+  cases) and the `hopcroft_suite` fixtures already assert every
+  `EntryScore` field (`matches`, `unknowns`, `mismatches`,
+  `non_canonical`, `vetoed`) against committed expected values, over
+  exactly the schemas and wire shapes this change touches. A second test
+  re-asserting the same facts over the same fixtures would restate them,
+  not check anything more, so the corpus is used as-is: all 54 must stay
+  green unchanged.
 - **S1 verdict-after-retain** — the hazard the old design existed to
-  avoid, pinned directly: a fixture in which one `ActiveEntry` is vetoed
-  and removed by the mismatch loop while others survive, asserting the
-  survivors' subsequent per-wire-type handling still sees their own
-  verdicts. This is the test that fails if a future change reintroduces
-  positional indexing.
-- **S2 debug output** — with `PROTOTEXT_DEBUG_FQDN` set to a candidate
-  that gets vetoed, the `[veto]` line still appears on stderr with the
-  same text. Run as a child process so the env var does not leak across
-  the test binary's threads.
-- **S4 byte-for-byte** — `decode_and_render` over the committed
+  avoid, pinned directly:
+  `score::tests::survivors_keep_their_own_verdict_after_a_mismatch_retain`.
+  Three roots, one tag: one root mismatches and is removed by the
+  mismatch loop's `retain`, and the two that outlive it must still be
+  handled with their own verdicts (one `Found`, one `Unknown` — the two
+  arms a positional swap would visibly exchange). The removal only shifts
+  anything if the mismatching root sorts first, and that order is not the
+  test's to choose: `graph::build` assigns node IDs by `HashMap`
+  iteration order, so `state_id`s differ from process to process. (An
+  earlier draft asserted an ordering instead; it passed locally and
+  failed under `nix-build`.) The three roots are therefore arranged in a
+  cycle — for a LEN tag on field `f`, root `R{f}` mismatches, `R{f-1}` is
+  `Found` and `R{f+1}` is `Unknown` — and the test reads back which root
+  sorts first and aims the blob at it. Every permutation then exercises
+  the hazard and none goes vacuous.
+- **S2 lazy reason** — `walk::set_vetoed_tests`. `WalkState::new` reads
+  `PROTOTEXT_DEBUG_FQDN` from the process environment, which the test
+  binary's threads share, so rather than a child process the two tests
+  construct `WalkState` directly (the module is a child of `walk`, so
+  its private fields are in scope) and assert on whether the closure
+  runs: not built with no `debug_fqdn`, built exactly once for the named
+  candidate, and not built again on a repeat veto — i.e. the early
+  return still precedes it.
+- **S4 byte-for-byte** —
+  `render_text::tests::descriptor_fixture_renders_byte_for_byte`:
+  `decode_and_render` over the committed
   `prototext-core/fixtures/descriptor.pb` produces output identical to
-  `fixtures/descriptor_protoc.txt`, covering both regular and extension
-  field names. Extensions specifically: a fixture containing an
-  extension field still renders `[pkg.ext_name]:` with the brackets.
+  `fixtures/descriptor_protoc.txt` (2511 schema-named lines). That
+  payload is a `FileDescriptorSet` and so reaches only the
+  regular-field arm; the extension arm's brackets are already pinned by
+  `prototext/tests/roundtrip.rs`'s `[acme.blade_count]` assertion, which
+  the test references rather than duplicating.
 
-Performance, reported but not asserted (this sandbox's Criterion runs
-vary 30–45% on unchanged code — see `docs/bench-process.md`):
+## Measurements
 
-- `cargo bench -p prototext-core --bench codec` before and after S4.
-- A timed `score_all` over `googleapis.desc` before and after S1, which
-  is the change with a predicted effect large enough to clear the noise
-  floor.
+A `score_all` bench did not exist; `prototext-graph/benches/score.rs`
+adds one (`cargo bench -p prototext-graph --bench score`). It
+parameterizes on **A**, the number of distinct states alive in the
+active set — which is what the walk's cost actually scales with, since
+Hopcroft collapses structurally identical roots onto one state. Every
+synthetic root shares fields 1 and 2 (so the blob matches all of them
+and nothing is vetoed, holding the active set at full width) and adds
+one field number unique to itself (so Hopcroft cannot merge them).
+
+Run on a 4-core VM; run-to-run variance on unchanged code was 1–4%,
+against the 30–45% recorded in `docs/bench-process.md` for the previous
+single-core sandbox. Two runs each; both are given.
+
+### Wall clock — `score_all`
+
+| bench | before | after | change |
+|---|---|---|---|
+| `by_root_count/64` | 744.5 / 730.5 µs | 461.8 / 451.2 µs | −39% |
+| `by_root_count/256` | 6.385 / 6.633 ms | 1.971 / 2.048 ms | −69% |
+| `by_root_count/1024` | 78.95 / 78.87 ms | 14.65 / 13.06 ms | −82% |
+| `by_root_count/4096` | 1.114 / 1.117 s | 68.87 / 68.81 ms | −94% |
+| `setup/1024` (1 record) | 1.417 / 1.401 ms | 321.8 / 323.1 µs | −77% |
+| `setup/4096` (1 record) | 18.43 / 18.18 ms | 1.457 / 1.576 ms | −92% |
+| `score_one` (A = 1) | 24.40 / 24.16 µs | 22.70 / 22.69 µs | −6% |
+
+The shape is the point. Each row quadruples A, so a linear walk costs
+4× more and a quadratic one 16×:
+
+| A step | before | after |
+|---|---|---|
+| 64 → 256 | 8.75× | 4.54× |
+| 256 → 1024 | 11.9× | 6.38× |
+| 1024 → 4096 | 14.2× | 5.27× |
+
+Before, the ratio climbs toward 16 as A grows — the O(A²) scan
+dominating everything else. After, it sits near 4–6, i.e. linear plus
+cache effects. `score_one` holds A at 1 and so isolates what is left
+when the scan cannot bite: −6%, which is S2 and S3 alone.
+
+### Wall clock — `decode_and_render`
+
+`cargo bench -p prototext-core --bench codec`:
+
+| bench | before | after | change |
+|---|---|---|---|
+| A1 (no schema — control) | 266.5 / 269.3 / 266.4 µs | 264.3 / 263.3 µs | −1% (noise) |
+| A2 (schema + annotations) | 428.8 / 424.7 / 416.8 µs | 379.2 / 396.6 µs | −8% |
+
+A1 renders no schema names, so it never reaches `display_name` and
+should not move — it does not, which is what makes A2's −8%
+attributable to S4 rather than to the machine.
+
+### Structural — allocation counts
+
+Measured with a counting `GlobalAlloc` wrapper, one call each, against
+this branch and against `HEAD` in a throwaway worktree. The probe was
+temporary and is not committed.
+
+| call | before | after | delta |
+|---|---|---|---|
+| A1 `decode_and_render` (no schema) | 1 654 | 1 654 | 0 |
+| A2 `decode_and_render` (schema + annot) | 5 485 | 2 974 | **−2 511** |
+| `score_all` / 256 roots, 1 record | 552 | 288 | −264 |
+| `score_all` / 1024 roots, 1 record | 2 098 | 1 064 | −1 034 |
+| `score_all` / 4096 roots, 1 record | 8 252 | 4 144 | −4 108 |
+| `score_all` / 256 roots, 64 records | 2 001 | 1 674 | −327 |
+| `score_all` / 1024 roots, 64 records | 3 925 | 2 828 | −1 097 |
+| `score_all` / 4096 roots, 64 records | 10 457 | 6 286 | −4 171 |
+
+−2 511 on A2 is *exactly* the number of schema-named lines in
+`descriptor_protoc.txt`: one `String` per line, as S4 predicted, and
+none left over. A1's zero delta confirms nothing else moved.
+
+On `score_all` the delta is a little above the root count (−1 034 for
+1 024 roots): the roots themselves are S3, and the remainder is the
+`verdicts: Vec` growth S1 deleted — one vector per message frame,
+doubling its way up to A, which is why the 64-record rows shed more
+than the 1-record rows at the same root count.

@@ -1915,6 +1915,7 @@ dependencies = [
 name = "prototext-graph"
 version = "0.2.1"
 dependencies = [
+ "criterion",
  "memmap2",
  "prototext-core",
  "rkyv",

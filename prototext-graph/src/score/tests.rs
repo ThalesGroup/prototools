@@ -34,16 +34,20 @@ use crate::build_scoring_graph::{
 use crate::score::{load as score_load, walk};
 
 /// Score `pb` against the graph and return the result for entry `fqdn`.
-fn score_entry(pb: &[u8], graph: &score_load::LoadedGraph, fqdn: &str) -> walk::EntryScore {
+fn score_entry<'g>(
+    pb: &[u8],
+    graph: &'g score_load::LoadedGraph,
+    fqdn: &str,
+) -> walk::EntryScore<'g> {
     score_entry_opts(pb, graph, fqdn, &walk::ScoringOpts::default())
 }
 
-fn score_entry_opts(
+fn score_entry_opts<'g>(
     pb: &[u8],
-    graph: &score_load::LoadedGraph,
+    graph: &'g score_load::LoadedGraph,
     fqdn: &str,
     opts: &walk::ScoringOpts,
-) -> walk::EntryScore {
+) -> walk::EntryScore<'g> {
     let mut results = walk::score_all(pb, graph, opts);
     let pos = results
         .iter()
@@ -576,7 +580,10 @@ fn build_two_entry_graph() -> score_load::LoadedGraph {
     score_load::load_graph(&path).expect("load")
 }
 
-fn entry_score<'a>(results: &'a [walk::EntryScore], fqdn: &str) -> &'a walk::EntryScore {
+fn entry_score<'a, 'g>(
+    results: &'a [walk::EntryScore<'g>],
+    fqdn: &str,
+) -> &'a walk::EntryScore<'g> {
     results
         .iter()
         .find(|r| r.fqdn == fqdn)
@@ -1500,4 +1507,102 @@ fn graph_with_out_of_range_root_offset_is_rejected() {
         err.contains(&u64::MAX.to_string()),
         "load error should name the offending offset: {err}"
     );
+}
+
+/// Spec 0173 S1: the verdict now lives on the `ActiveEntry` rather than in
+/// a side table keyed by `state_id`. The side table existed because the
+/// mismatch loop clears entries and `active.retain()` compacts the vector
+/// *in the middle of a tag iteration* — so a parallel array indexed by
+/// position would hand the survivors each other's verdicts.
+///
+/// This pins that hazard directly, so a future rewrite back to positional
+/// indexing fails here rather than in the field: one root mismatches on the
+/// tag and is removed, and the two that outlive it must still be handled
+/// with their own verdicts — one Found, one Unknown, which are the two arms
+/// a swap would visibly exchange.
+#[test]
+fn survivors_keep_their_own_verdict_after_a_mismatch_retain() {
+    // Three roots arranged in a cycle: for a LEN tag on field `f`, root
+    // `R{f}` declares `f` as a varint and is a wire-type Mismatch, root
+    // `R{f-1}` declares `f` as a string and is Found, and root `R{f+1}`
+    // does not declare `f` at all and is Unknown. No two roots have the
+    // same field/type set, so Hopcroft keeps all three apart.
+    fn root(varint: u32, string: u32) -> Vec<ScoringField> {
+        vec![
+            ScoringField {
+                number: varint,
+                kind: ScoringKind::Uint64,
+                child: None,
+                range: None,
+                label: FieldLabel::Optional,
+            },
+            ScoringField {
+                number: string,
+                kind: ScoringKind::LenString,
+                child: None,
+                range: None,
+                label: FieldLabel::Optional,
+            },
+        ]
+    }
+
+    let mut states = std::collections::HashMap::new();
+    states.insert("R1".to_string(), root(1, 2));
+    states.insert("R2".to_string(), root(2, 3));
+    states.insert("R3".to_string(), root(3, 1));
+
+    let merged = Merged {
+        states,
+        node_kinds: std::collections::HashMap::new(),
+        roots: vec!["R1".to_string(), "R2".to_string(), "R3".to_string()],
+    };
+    let (raw, reg) = graph::build(&merged);
+    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_, _| {});
+    let compiled = graph::compile(&raw, &reg, &partition, &merged.roots);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("retain.bin");
+    serial::write(&compiled, &path).expect("write");
+    let _ = std::mem::ManuallyDrop::new(dir);
+    let g = score_load::load_graph(&path).expect("load");
+
+    // `group_by_state` orders the active set by state_id, so the removal
+    // only shifts the survivors if the mismatching root sorts ahead of both
+    // of them. That order is not ours to choose: `graph::build` assigns node
+    // IDs by `HashMap` iteration order, which differs from process to
+    // process. So read it back and aim the blob at whichever root sorts
+    // first — the cycle above makes any of the three a valid mismatcher.
+    let state_of = |fqdn: &str| -> u32 {
+        g.roots
+            .iter()
+            .find(|r| r.fqdn.as_str() == fqdn)
+            .map(|r| r.state_id.to_native())
+            .unwrap_or_else(|| panic!("root '{fqdn}' not in graph"))
+    };
+    let f = (1..=3u32)
+        .min_by_key(|i| state_of(&format!("R{i}")))
+        .expect("three roots");
+    let mismatch = format!("R{f}");
+    let found_name = format!("R{}", if f == 1 { 3 } else { f - 1 });
+    let unknown_name = format!("R{}", if f == 3 { 1 } else { f + 1 });
+
+    let pb = field_len(f, b"hi");
+    let results = walk::score_all(&pb, &g, &walk::ScoringOpts::default());
+
+    assert!(entry_score(&results, &mismatch).vetoed);
+
+    let found = entry_score(&results, &found_name);
+    assert!(!found.vetoed);
+    assert_eq!(
+        found.matches, 1,
+        "{found_name} must keep its own Found verdict"
+    );
+    assert_eq!(found.unknowns, 0);
+
+    let unknown = entry_score(&results, &unknown_name);
+    assert!(!unknown.vetoed);
+    assert_eq!(
+        unknown.unknowns, 1,
+        "{unknown_name} must keep its own Unknown verdict"
+    );
+    assert_eq!(unknown.matches, 0);
 }

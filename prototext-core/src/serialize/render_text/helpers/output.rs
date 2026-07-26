@@ -75,7 +75,7 @@ pub(in super::super) fn wfl_prefix(name: &str, out: &mut Vec<u8>) {
 /// Write field-line prefix without String allocation.
 ///
 /// When `is_wire_or_mismatch` is false and `fs` is `Some`, writes the schema
-/// field name (or `[pkg.ext]` for extensions) directly from `fs.display_name()`.
+/// field name (or `[pkg.ext]` for extensions) directly from `fs.write_display_name()`.
 /// Otherwise writes `num` as decimal.
 #[inline]
 pub(in super::super) fn wfl_prefix_n(
@@ -86,7 +86,7 @@ pub(in super::super) fn wfl_prefix_n(
 ) {
     push_indent(out);
     match fs.filter(|_| !is_wire_or_mismatch) {
-        Some(fi) => out.extend_from_slice(fi.display_name().as_bytes()),
+        Some(fi) => fi.write_display_name(out),
         None => write_dec_u64(num, out),
     }
     out.extend_from_slice(b": ");
@@ -95,7 +95,7 @@ pub(in super::super) fn wfl_prefix_n(
 /// Write open-brace prefix without String allocation.
 ///
 /// When `is_wire_or_mismatch` is false and `fs` is `Some`, writes the schema
-/// field name (or `[pkg.ext]` for extensions) directly from `fs.display_name()`.
+/// field name (or `[pkg.ext]` for extensions) directly from `fs.write_display_name()`.
 /// Otherwise writes `num` as decimal.
 #[inline]
 pub(in super::super) fn wob_prefix_n(
@@ -106,7 +106,7 @@ pub(in super::super) fn wob_prefix_n(
 ) {
     push_indent(out);
     match fs.filter(|_| !is_wire_or_mismatch) {
-        Some(fi) => out.extend_from_slice(fi.display_name().as_bytes()),
+        Some(fi) => fi.write_display_name(out),
         None => write_dec_u64(num, out),
     }
     out.extend_from_slice(b" {");

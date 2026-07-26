@@ -194,8 +194,8 @@ pub fn infer_type(
     results.sort_by(|a, b| match (a.vetoed, b.vetoed) {
         (false, true) => std::cmp::Ordering::Less,
         (true, false) => std::cmp::Ordering::Greater,
-        (true, true) => a.fqdn.cmp(&b.fqdn),
-        (false, false) => b.score().cmp(&a.score()).then(a.fqdn.cmp(&b.fqdn)),
+        (true, true) => a.fqdn.cmp(b.fqdn),
+        (false, false) => b.score().cmp(&a.score()).then(a.fqdn.cmp(b.fqdn)),
     });
 
     if results.is_empty() {
@@ -216,7 +216,7 @@ pub fn infer_type(
         let mut ambiguous: Vec<InferredType> = tied
             .iter()
             .map(|r| InferredType {
-                fqdn: r.fqdn.clone(),
+                fqdn: r.fqdn.to_owned(),
                 score: r.score(),
                 matches: r.matches,
                 unknowns: r.unknowns,
@@ -231,7 +231,7 @@ pub fn infer_type(
 
     let winner = &non_vetoed[0];
     Ok(InferOutcome::Unique(InferredType {
-        fqdn: winner.fqdn.clone(),
+        fqdn: winner.fqdn.to_owned(),
         score: top_score,
         matches: winner.matches,
         unknowns: winner.unknowns,
@@ -334,8 +334,8 @@ pub fn list_schemas_one(
     results.sort_by(|a, b| match (a.vetoed, b.vetoed) {
         (false, true) => std::cmp::Ordering::Less,
         (true, false) => std::cmp::Ordering::Greater,
-        (true, true) => a.fqdn.cmp(&b.fqdn),
-        (false, false) => b.score().cmp(&a.score()).then(a.fqdn.cmp(&b.fqdn)),
+        (true, true) => a.fqdn.cmp(b.fqdn),
+        (false, false) => b.score().cmp(&a.score()).then(a.fqdn.cmp(b.fqdn)),
     });
 
     let non_vetoed: Vec<_> = results.iter().filter(|r| !r.vetoed).collect();
@@ -352,7 +352,7 @@ pub fn list_schemas_one(
                     .filter(|r| r.score() == top_score)
                     .copied()
                     .collect();
-                tied.sort_by(|a, b| a.fqdn.cmp(&b.fqdn));
+                tied.sort_by(|a, b| a.fqdn.cmp(b.fqdn));
                 tied
             }
         }
@@ -361,7 +361,7 @@ pub fn list_schemas_one(
     let entries: Vec<InferredType> = to_print
         .iter()
         .map(|r| InferredType {
-            fqdn: r.fqdn.clone(),
+            fqdn: r.fqdn.to_owned(),
             score: r.score(),
             matches: r.matches,
             unknowns: r.unknowns,

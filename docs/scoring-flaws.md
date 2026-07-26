@@ -476,6 +476,8 @@ consuming.
 
 ### P1. The verdict table is a `Vec` scanned linearly, once per active entry, per wire tag
 
+*Fixed by spec 0173 S1, 2026-07-26 — the verdict moved onto `ActiveEntry`.*
+
 **Where:** `prototext-graph/src/score/walk.rs:834-882`.
 
 **What happens.** For each wire tag, the walk builds a verdict per active
@@ -545,6 +547,8 @@ before optimizing — this is a plausible-but-unmeasured claim.
 
 ### P4. `EntryScore.fqdn` copies every root FQDN on every call
 
+*Fixed by spec 0173 S3, 2026-07-26 — `pub fqdn: &'g str`.*
+
 **Where:** `prototext-graph/src/score/walk.rs:60` (the field) and `:197`
 (the allocation).
 
@@ -588,6 +592,8 @@ protolens boundary — where the winner's FQDN outlives the sweep — clone
 100,000 up front.
 
 ### P5. The veto reason is formatted eagerly, inside the per-entry loop
+
+*Fixed by spec 0173 S2, 2026-07-26 — `set_vetoed` takes a closure.*
 
 **Where:** `prototext-graph/src/score/walk.rs:860-862`.
 
