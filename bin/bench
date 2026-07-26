@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Pinned, mutually-exclusive `cargo bench` runner.
+#
+# This VM maps guest vCPU N to host CPU N one-to-one. Host CPUs 0-3 are the two
+# hyperthreaded P-cores (4.9 GHz) and 4-11 are E-cores (3.8 GHz) in two
+# four-core clusters; 4-7 is one whole cluster with its own shared L2.
+# Benchmarks are pinned there so a measurement cannot land on a P-core one run
+# and an E-core the next, while compilation stays free to use all 12 vCPUs.
+#
+# Keeping those two apart is the lock's job, not the operator's: this takes it
+# exclusively, `bin/build` takes it shared. So builds may overlap each other
+# but never a measurement. `flock -n` makes an overlap fail loudly rather than
+# queue silently behind a long build.
+#
+# Usage: bin/bench -p prototext-graph --bench score
+#        BENCH_CPUS=4-7 bin/bench -p protolens --bench <name>
+set -euo pipefail
+
+# The lock is machine-global, not per-tree: two worktrees share one set of
+# physical cores, so a bench in one must exclude a build in the other. `/tmp`
+# is hardcoded on purpose — `$TMPDIR` is per-nix-shell here, which would give
+# every shell a private lock and enforce nothing.
+LOCK="/tmp/prototools-bench.lock"
+
+# One core by default: the library benches are single-threaded, and confining
+# them to one core of the cluster leaves the rest of the cluster's L2 alone.
+# Widen to `4-7` for a wallclock measurement of a genuinely threaded program
+# (protolens overlaps its heat worker with the TUI thread on purpose).
+CPUS="${BENCH_CPUS:-4}"
+
+# Compile the bench target *before* pinning: an unpinned parallel build takes
+# seconds, the same build on one E-core takes minutes, and none of it is being
+# measured. It is still a build, so it holds the lock shared like any other —
+# blocking if someone else is mid-measurement.
+exec 8>"$LOCK"
+flock -s 8
+cargo bench --no-run "$@"
+exec 8>&-
+
+exec 9>"$LOCK"
+if ! flock -n -x 9; then
+    echo "bin/bench: a build or another benchmark holds the lock; not measuring" >&2
+    exit 1
+fi
+
+# Let the machine settle after that build before criterion starts sampling.
+sleep 2
+
+exec taskset -c "$CPUS" cargo bench "$@"

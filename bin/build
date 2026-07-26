@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# `cargo` under the benchmark lock, held shared.
+#
+# Compilation is deliberately unrestricted here — all 12 vCPUs, no pinning,
+# and several of these may run at once. The lock's only effect is that none of
+# them runs while `bin/bench` holds the same lock exclusively. It blocks rather
+# than failing, because waiting out a measurement is exactly what we want a
+# build to do.
+#
+# Use this for anything that compiles while a measurement might be running.
+# Usage: bin/build build --release
+#        bin/build clippy --no-default-features --workspace -- -D warnings
+set -euo pipefail
+
+# Same hardcoded path as bin/bench — `$TMPDIR` is per-nix-shell here, so using
+# it would give every shell a private lock and enforce nothing.
+exec 9>/tmp/prototools-bench.lock
+flock -s 9
+
+exec cargo "$@"
