@@ -239,7 +239,15 @@ of the fix is that consistency stops being conditional on success.
 
 ---
 
-### W2. Make the line-patch ordering check always-on, and preferably unnecessary
+### W2. Make the line-patch ordering check always-on, and preferably unnecessary — **DONE 2026-07-26**
+
+Took the stronger form: `materialize_line_patches` sorts `top_level` and
+each `children_of` entry by range start before merging, so ordering stops
+being a caller obligation, and both `debug_assert!`s became `assert!`s on
+*overlap* only, naming the offending pair. Proven by three tests in
+`tests/override_apply.rs` that queue back-to-front (top-level and
+nested) and one `should_panic` for overlap — all under `--release`.
+`materialize_line_patches` became `pub(super)` so the tests can reach it.
 
 **Fixes:** [C2](rendering-flaws.md).
 

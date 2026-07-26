@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
+use super::super::override_apply::{LinePatch, LinePatchTarget};
 use super::super::*;
 use super::support::*;
 use prost_reflect::prost_types::field_descriptor_proto::{Label, Type};
@@ -1995,4 +1996,90 @@ fn preview_child_spans_survive_the_length_prefix_shift() {
         App::OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT / 2,
         "the whole budget's worth of entries must be rendered"
     );
+}
+
+/// Seed `app` with `n` synthetic committed lines, so that the patch
+/// tests below have a document to merge against without depending on
+/// whatever the fixture happened to render.
+fn seed_committed_lines(app: &mut App, n: usize) {
+    app.lines = (0..n).map(|i| format!("old{i}")).collect();
+    app.line_styles = vec![Vec::new(); n];
+}
+
+fn original_patch(range: Range<usize>, lines: &[&str]) -> LinePatch {
+    LinePatch {
+        target: LinePatchTarget::Original(range.clone()),
+        global_start: range.start,
+        children_base_shift: 0,
+        lines: lines.iter().map(|l| l.to_string()).collect(),
+        styles: vec![Vec::new(); lines.len()],
+    }
+}
+
+/// Flaw C2 (worklist W2): `materialize_line_patches`'s forward merge is
+/// only correct for ascending, non-overlapping ranges. That used to rest
+/// entirely on *callers* queueing in order, guarded by a
+/// `debug_assert!` — which a project built exclusively with `--release`
+/// never compiles, so the guard was absent from every binary anyone ran.
+/// The requirement was violable at a distance, and was in fact violated
+/// (the 2026-07-25 `doc_next` cycle bug presented as a bare slice panic
+/// in this loop rather than naming the splice that queued the bad
+/// patch). Ordering is now the merge's own business: it sorts. This test
+/// queues back-to-front and demands the correct merge anyway, and it
+/// runs under `--release` like every other test here, which is the whole
+/// point.
+#[test]
+fn top_level_line_patches_merge_correctly_when_queued_out_of_order() {
+    let (mut app, _inner_idx, _id_idx) = type_as_fixture();
+    seed_committed_lines(&mut app, 6);
+
+    app.pending_line_patches = vec![
+        original_patch(4..6, &["B"]),
+        original_patch(1..2, &["A0", "A1"]),
+    ];
+    app.materialize_line_patches();
+
+    assert_eq!(app.lines, ["old0", "A0", "A1", "old2", "old3", "B"]);
+    assert_eq!(app.line_styles.len(), app.lines.len());
+    assert!(app.pending_line_patches.is_empty());
+}
+
+/// Flaw C2, the nested half: a patch's `Nested` children are resolved by
+/// the same forward merge, against the parent patch's own lines, and so
+/// need the same ordering guarantee.
+#[test]
+fn nested_line_patches_merge_correctly_when_queued_out_of_order() {
+    let (mut app, _inner_idx, _id_idx) = type_as_fixture();
+    seed_committed_lines(&mut app, 4);
+
+    let nested = |parent: usize, range: Range<usize>, line: &str| LinePatch {
+        target: LinePatchTarget::Nested(parent, range),
+        global_start: 0,
+        children_base_shift: 0,
+        lines: vec![line.to_string()],
+        styles: vec![Vec::new()],
+    };
+    app.pending_line_patches = vec![
+        original_patch(1..3, &["p0", "p1", "p2", "p3"]),
+        nested(0, 2..3, "Y"),
+        nested(0, 0..1, "X"),
+    ];
+    app.materialize_line_patches();
+
+    assert_eq!(app.lines, ["old0", "X", "p1", "Y", "p3", "old3"]);
+    assert_eq!(app.line_styles.len(), app.lines.len());
+}
+
+/// Flaw C2: overlap is a genuine contradiction rather than a permutation
+/// problem, so it stays an assertion — but a real one, naming the
+/// offending pair instead of surfacing as `slice index starts at 3 but
+/// ends at 2` inside the merge loop.
+#[test]
+#[should_panic(expected = "overlapping top-level line patches")]
+fn overlapping_line_patches_panic_with_a_directed_message() {
+    let (mut app, _inner_idx, _id_idx) = type_as_fixture();
+    seed_committed_lines(&mut app, 6);
+
+    app.pending_line_patches = vec![original_patch(0..3, &["A"]), original_patch(2..4, &["B"])];
+    app.materialize_line_patches();
 }

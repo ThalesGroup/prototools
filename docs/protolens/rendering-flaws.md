@@ -95,10 +95,20 @@ subsequent splice succeeds, rather than consistent only if it does.
 
 ---
 
-### C2. The line-patch ordering invariant is enforced only by `debug_assert!`, which this project never compiles in
+### C2. ✔ The line-patch ordering invariant is enforced only by `debug_assert!`, which this project never compiles in
 
 **Where:** `protolens/src/tui/override_apply.rs:1216`,
 `protolens/src/tui/override_apply.rs:1261`
+
+> ✔ **Fixed 2026-07-26**, taking the stronger of the two options below.
+> `materialize_line_patches` now sorts both `top_level` and each
+> `children_of` entry by range start, so ordering is the merge's own
+> business rather than a caller's obligation, and both `debug_assert!`s
+> became real `assert!`s covering *overlap* only — the one condition a
+> reordering cannot repair — each naming the offending pair. Three tests
+> in `tests/override_apply.rs` queue patches back-to-front (top-level and
+> nested) and demand the correct merge, plus a `should_panic` case for
+> overlap; all run under `--release`, which was the point.
 
 **What happens.** `materialize_line_patches` merges the batch's queued
 `LinePatch`es into `lines`/`line_styles` in one forward pass, which is

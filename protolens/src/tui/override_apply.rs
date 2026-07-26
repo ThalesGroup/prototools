@@ -1619,17 +1619,17 @@ impl App {
     /// (not the whole document); only the single final merge against
     /// `self.lines`/`self.line_styles` (for the top-level `Original`
     /// patches) is O(document length), and it happens exactly once.
-    fn materialize_line_patches(&mut self) {
+    pub(super) fn materialize_line_patches(&mut self) {
         if self.pending_line_patches.is_empty() {
             return;
         }
         let raw_patches = std::mem::take(&mut self.pending_line_patches);
 
-        // Direct `Nested` children of each patch, sorted by their local
-        // range's start — `render_overrides_inner`'s strict pre-order,
-        // left-to-right walk (spec 0160 G2) guarantees insertion order
-        // already satisfies this, so no comparison-sort is strictly
-        // needed, but grouping by parent still requires one pass.
+        // Group each patch under its parent (`Nested`) or as a root
+        // (`Original`). `render_overrides_inner`'s strict pre-order,
+        // left-to-right walk (spec 0160 G2) is *expected* to hand these
+        // over already in ascending order; the sort below no longer
+        // relies on that being true.
         let mut children_of: HashMap<usize, Vec<usize>> = HashMap::new();
         let mut top_level: Vec<usize> = Vec::new();
         for (i, p) in raw_patches.iter().enumerate() {
@@ -1639,6 +1639,25 @@ impl App {
                     children_of.entry(*parent).or_default().push(i)
                 }
             }
+        }
+
+        // Flaw C2: the forward merge below is only correct for ascending,
+        // non-overlapping ranges, and that used to rest on callers
+        // queueing in order — a requirement enforced by `debug_assert!`,
+        // which a `--release`-only project never compiles, and which the
+        // 2026-07-25 `doc_next` cycle bug did in fact violate at a
+        // distance. Sorting here makes ordering the merge's own business
+        // instead of a caller's obligation. It is O(k log k) in the
+        // batch's patch count (one per splice), not in document length,
+        // and it is a no-op whenever the walk did behave. Overlap stays
+        // an `assert!` below: it is a real contradiction, not something
+        // a reordering can repair.
+        let range_start = |i: usize| match &raw_patches[i].target {
+            LinePatchTarget::Original(r) | LinePatchTarget::Nested(_, r) => r.start,
+        };
+        top_level.sort_unstable_by_key(|&i| range_start(i));
+        for children in children_of.values_mut() {
+            children.sort_unstable_by_key(|&i| range_start(i));
         }
 
         let mut patches: Vec<Option<LinePatch>> = raw_patches.into_iter().map(Some).collect();
@@ -1652,9 +1671,13 @@ impl App {
                 LinePatchTarget::Original(r) => r.clone(),
                 LinePatchTarget::Nested(..) => unreachable!("filtered to Original above"),
             };
-            debug_assert!(
+            assert!(
                 range.start >= cursor,
-                "spec 0167: top-level line patches must be sorted, non-overlapping"
+                "spec 0167 (flaw C2): overlapping top-level line patches — \
+                 the previous patch ends at line {cursor}, patch {idx} \
+                 (global_start {}) starts at line {}",
+                patches[idx].as_ref().unwrap().global_start,
+                range.start
             );
             new_lines.extend_from_slice(&old_lines[cursor..range.start]);
             new_line_styles.extend_from_slice(&old_line_styles[cursor..range.start]);
@@ -1697,9 +1720,12 @@ impl App {
                     unreachable!("children_of only ever contains Nested-targeted patches")
                 }
             };
-            debug_assert!(
+            assert!(
                 local_range.start >= cursor,
-                "spec 0167: nested line patches must be sorted, non-overlapping"
+                "spec 0167 (flaw C2): overlapping nested line patches under \
+                 patch {idx} — the previous child ends at local line \
+                 {cursor}, child {child_idx} starts at local line {}",
+                local_range.start
             );
             new_lines.extend_from_slice(&lines[cursor..local_range.start]);
             new_styles.extend_from_slice(&styles[cursor..local_range.start]);
