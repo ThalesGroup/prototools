@@ -6,8 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0183 — prune the override walk to the subtrees that can change
 
-Status: draft
-Implemented in:
+Status: implemented
+Implemented in: 2026-07-26
 App: protolens
 Refs: docs/protolens/rendering-flaws.md (P1, P2, P3),
       docs/protolens/rendering-scaling-roadmap.md (S1),
@@ -121,8 +121,34 @@ predicate is a string prefix test.
   `entries()`.
 - **G4** — pruned and unpruned renders are byte-identical, asserted
   differentially rather than argued.
-- **G5** — no change to any rendered byte, ever, under any input. This
-  is a pure work-avoidance change.
+- **G5** — no change to any rendered byte, ever, under any input, with
+  the single bounded exception below. This is a work-avoidance change.
+
+  **G5's exception, found by G4's own test.** Arriving at a node is not
+  free. `resettle_node` splices whenever `current != rendered_as`, and
+  at startup `rendered_as` is `None` on every node but the root, so the
+  *old* walk re-spliced every message node in the document. A re-splice
+  renders the node against `decode::register_wrapper`'s synthetic
+  one-field descriptor, whose field is hard-coded
+  `label: Some(Label::Optional)` (`protolens/src/decode.rs:499`), so the
+  `#@` annotation comes back without the `repeated` qualifier the
+  original decode wrote. Pruning does not arrive, so it keeps decode's
+  own annotation: `#@ repeated Item = 1` where the old walk showed
+  `#@ Item = 1`.
+
+  The old behavior was the wrong one — it disagreed with the same
+  renderer's CLI output — so this is a bug fix falling out of the
+  pruning, not a regression. The differential test tolerates exactly
+  this difference and nothing else (`tests/prune.rs`,
+  `only_lost_the_repeated_qualifier`).
+
+  It does leave a residual inconsistency, now *visible* rather than
+  uniformly hidden: overriding an ancestor still re-splices the
+  descendant and still drops the qualifier. Fixing that means threading
+  the real cardinality into `register_wrapper` and into
+  `synthetic_wrapper_name`'s cache key, which changes rendering for
+  packed scalar records too. **Deliberately out of scope here; it wants
+  its own spec.**
 
 ## Non-goals
 
@@ -203,9 +229,19 @@ type, already reconciled by the `rendered_as` write at `mod.rs:1223`, so
 no other node can need resettling and the seed set is provably complete.
 This scoping is load-bearing — see L1.
 
+**As implemented, the seed list is not materialized and `App::new`
+still makes its single `render_overrides(root)` call.** S2's mark scan
+is already an O(n) pass that evaluates the same predicate, and marking
+a seed's ancestors is exactly what makes one root-entry walk reach that
+seed and nothing else. A separate `Vec<usize>` of seeds plus a loop
+would have re-derived the same information and still needed the marks
+to bound each descent, so it was dropped as redundant rather than
+implemented. The widening of `is_auto_expand_candidate` to cover tier 1
+— the part of S1 that is load-bearing — was implemented as specified.
+
 ### S2. A descent mark, computed before the walk
 
-Introduce a bitset `descend: FixedBitSet` of length `tree.len()`, where
+Introduce a bitset `descend` of length `tree.len()`, where
 bit `i` means "node `i` is itself a visit target, or has one in its
 subtree". Compute it at the start of each batch from three sources:
 
@@ -217,6 +253,11 @@ subtree". Compute it at the start of each batch from three sources:
 Mark each target, then walk `parent` links upward from it, setting bits
 until an already-set bit is reached. That is O(targets × depth) with
 early termination, plus the O(n) scan for source 2.
+
+Implemented as a plain `Vec<bool>` rather than a packed bitset: the
+scan that fills it is O(n) anyway, one byte per node is ~150 KB on the
+1.1 MB fixture, and a packed representation would have added a
+dependency for no measurable gain.
 
 The gate becomes:
 
@@ -244,14 +285,43 @@ state and a strictly worse place to introduce a silent bug, so it is
 deliberately *not* specified here. Land the rebuild, measure, and open a
 follow-up only if the residual O(n) shows up.
 
-### S3. Freshly spliced content is descended in full
+### S3. Freshly spliced content is marked, not blanket-descended
 
 A subtree that was just re-decoded contains nodes that did not exist
 when `descend` was computed, and may contain new auto-expand candidates
-(see L1). Carry a `fresh: bool` parameter, set when `resettle_node`
-returned a patch, and descend unconditionally beneath it — bounded by
-the size of the spliced content, which is the work the splice implies
-anyway.
+(see L1).
+
+**This spec originally said: carry a `fresh: bool` parameter, set when
+`resettle_node` returned a patch, and descend unconditionally beneath it
+— "bounded by the size of the spliced content, which is the work the
+splice implies anyway." That is wrong, and it was implemented before it
+was caught.** The bound is only reassuring while the spliced content is
+small. For a **root** retype the spliced content is the entire document,
+so the flag re-enables precisely the blanket descent this spec exists to
+delete — and does strictly worse than the gate it replaced: it descends
+into plain scalar leaves too, and every fresh node has
+`rendered_as == None`, so `resettle_node` re-splices every one of them,
+each splice appending another copy of its subtree to an append-only
+arena.
+
+It does not show up at startup, because at startup nothing splices. It
+shows up moments later, when the background root-type resolution lands
+and `apply_resolved_root_type` retypes the root: the first render is
+fast and then the process pins a core and never returns. That is how it
+was found — by the user, running it, not by the test suite, which has
+no fixture large enough for the difference between "quadratic" and
+"instant" to be visible.
+
+**Corrected: after a splice, extend the marks over the freshly appended
+nodes** (`base..tree.len()`, the arena being append-only per Q1),
+applying the same three sources S2 uses, then walk each new target's
+ancestors upward as usual. The path-shaped sources are restricted to
+origins at or under the spliced node's own path, via S4's prefix query,
+so the marking cost is bounded by the splice rather than by the
+override table. `fresh` is deleted; the gate reads `descend` alone.
+
+The lesson worth keeping: "bounded by the size of X" is not a bound
+when X can be the whole document.
 
 ### S4. Prefix queries use the existing sort invariant
 
@@ -309,6 +379,16 @@ Maintenance: `type_fqdn` changes when a node is retyped, so the index
 needs patching on splice — but only for nodes inside the spliced
 subtree, which is bounded by the splice itself.
 
+**Implemented without the index at all, and this answers Q2.** S2's
+mark computation is already scanning every node; the FQDN match can
+ride along on that scan for free. Collect the active `FqdnField`
+origins into a `HashSet<(&str, u64)>` — there are never more than a
+handful — and, for each node, test `(parent's type_fqdn, own field
+number)` against it. That is exact, needs no persistent index, and
+therefore needs no splice-time maintenance and no fallback mask. The
+`HashSet` is only consulted when non-empty, so a document with no
+`fqdn:field` override pays one `is_empty()` per node.
+
 **Fallback if that maintenance proves awkward: a subtree FQDN mask.**
 Hash each distinct FQDN to a bit in a `u64`; store per node the OR of
 its subtree's FQDN hashes; test `(subtree_mask[X] & query_mask) != 0`.
@@ -339,6 +419,11 @@ startup therefore remain sufficient for all non-fresh content.
 This is the claim most likely to be wrong, because it is a claim about
 every way `type_fqdn` can change. It is the first thing a reviewer
 should attack.
+
+L1 is also what makes S3's corrected form sufficient: the fresh nodes
+are scanned for candidacy at the moment the splice completes, which is
+after their parents' `type_fqdn` has been written — so a candidate that
+only comes into existence mid-batch (MessageSet tier 2) is seen.
 
 **L2 — a subtree's rendering does not depend on its position.** Spec
 0174 G1 removed `DecodeRenderOpts::node_budget`, so there is no global
@@ -398,6 +483,26 @@ is exactly what the fallback-to-natural-type rule requires. Entry
   existing fixtures and over spec 0182's generated corpus once that
   lands. A wrong pruning predicate produces *stale text with no panic*,
   so nothing weaker than byte equality is worth running.
+
+  **As built** (`protolens/src/tui/tests/prune.rs`): rather than two
+  `App`s, the reference walk runs *after* the pruned one has settled
+  the same `App`, via a `#[cfg(test)]` `unpruned_walk` flag that
+  restores the old four-disjunct gate, and the assertion is that it
+  changes nothing. This tests the same property and additionally covers
+  the startup pass, which two `App`s could not — `App::new` runs
+  `render_overrides` itself, before a test can set any flag.
+
+  Two adjustments the criterion needed, both forced by the code rather
+  than chosen:
+  - the tolerated `repeated` difference (G5's exception);
+  - **comparisons are by content, not by arena index.** The arena is
+    append-only (Q1), so the reference walk's re-splices push fresh
+    copies and abandon the originals — legitimately renumbering every
+    node they touch. `app.tree` and the raw `line_to_node` *values*
+    therefore differ for reasons that say nothing about reachability.
+    The test projects each node to `(level, field_number, type_fqdn,
+    text_range)` and compares the live tree in document order, plus
+    both line maps through the same projection.
 - **L1 gets its own test:** a document where an override on node X
   retypes it such that a descendant becomes `Any`-typed, asserting the
   newly eligible node is auto-expanded in the same batch.
@@ -407,10 +512,25 @@ is exactly what the fallback-to-natural-type rule requires. Entry
   pruned it.
 - **P1's own assertion** (from rendering-flaws): the seed list equals
   the set of nodes the current full walk would splice.
-- **A timing check, through `bin/bench`,** on `App::new` for the 1.1 MB
-  fixture. The predicted result is that the pass approaches zero on a
-  fixture with no `Any`/MessageSet; if it does not, S1 is not doing what
-  this spec claims and the reason must be found before landing.
+- **A timing check** on `App::new` for the 1.1 MB fixture. The
+  predicted result is that the pass approaches zero on a fixture with
+  no `Any`/MessageSet; if it does not, S1 is not doing what this spec
+  claims and the reason must be found before landing.
+
+  **Measured** (`profile_main_pane_down_on_db3`, release, pinned core):
+
+  | | before | after |
+  |---|---|---|
+  | `App::new` | 5.22 s | **63 ms** |
+  | arena nodes | 622,922 | **149,359** |
+
+  The node count is the same finding from the other side, and it was
+  not predicted: the old startup pass was not merely re-rendering the
+  document, it was re-*splicing* it, and every re-splice appends a
+  fresh copy of the subtree to an append-only arena. Removing the pass
+  removes 4.2× of the arena along with the 5.22 s. This also means the
+  1.1 MB fixture's published 622,922-node figure was a figure for a
+  document that had already been needlessly rebuilt once.
 - `reuse lint` and `nix-build -A ci`.
 
 ## Open questions
@@ -437,8 +557,9 @@ is exactly what the fallback-to-natural-type rule requires. Entry
   roadmap's "renumber" language at `:354` describes the *ordinal* within
   a parent's child list, which is a different numbering entirely (and is
   spec 0184's subject).
-- **Q2** — is there an existing FQDN→nodes index (on the heat or
-  scoring side) that S5's first option can reuse, or must one be built?
+- **Q2 — moot: no index is needed.** See S5's implementation note —
+  the FQDN match rides along on the mark scan against a `HashSet` of
+  the active `FqdnField` origins.
 - **Q3** — when a user *deletes* an override entry from the manage
   pane, what re-render is triggered, and does it reach the nodes that
   still carry `rendered_as` from it? Under today's full walk this is

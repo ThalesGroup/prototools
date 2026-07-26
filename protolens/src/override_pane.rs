@@ -181,7 +181,7 @@ impl OverrideOrigin {
 /// trailing slash, so it's checked directly instead. An `fqdn:field`
 /// origin never prefixes, nor is prefixed by, anything but its own
 /// label — no other origin's label is ever built by extending an FQDN.
-fn origin_is_at_or_under(candidate: &OverrideOrigin, origin: &OverrideOrigin) -> bool {
+pub(crate) fn origin_is_at_or_under(candidate: &OverrideOrigin, origin: &OverrideOrigin) -> bool {
     let origin_label = origin.label();
     let candidate_label = candidate.label();
     if candidate_label == origin_label {

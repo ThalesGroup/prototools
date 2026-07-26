@@ -624,6 +624,35 @@ pub struct App {
     /// `render_overrides` wrapper, so this only ever toggles `0`/`1`,
     /// never nesting deeper.
     override_batch_depth: u32,
+    /// Spec 0183 S2: the descent mark. `descend[i]` is `true` when node
+    /// `i` either needs resettling itself or has a descendant that
+    /// does, so `render_overrides_inner`'s child gate is a single
+    /// `Vec` read instead of the old `is_message` blanket that
+    /// descended into every interior node of the document.
+    ///
+    /// Recomputed by `compute_descend_marks` at the start of each
+    /// batch (when `override_batch_depth` goes `0` -> `1`) and read
+    /// only during it. Indices are arena indices, which is sound
+    /// because the arena is append-only: `splice_override` translates
+    /// fresh nodes by `base = tree.len()` and abandons superseded ones
+    /// in place, so no existing index ever moves. Nodes created
+    /// *during* a batch therefore sit past the end of this `Vec` and
+    /// read as unmarked — correctly, since freshly spliced content is
+    /// descended by `render_overrides_inner`'s `fresh` flag (S3)
+    /// rather than by a mark.
+    descend: Vec<bool>,
+    /// Test-only escape hatch restoring the pre-spec-0183 recursion
+    /// gate (`is_message || is_auto_expand_candidate || <has an active
+    /// override> || rendered_as.is_some()`), so that a pruned render
+    /// can be compared against an unpruned one.
+    ///
+    /// It exists because pruning fails silently: a subtree the walk
+    /// wrongly skipped keeps whatever text it was last rendered with,
+    /// with no panic and no bad index, so nothing weaker than byte
+    /// equality against the unpruned walk is worth asserting. Not
+    /// reachable from a release build.
+    #[cfg(test)]
+    pub(super) unpruned_walk: bool,
     /// Spec 0160 G2: running total of line-count deltas accumulated by
     /// `splice_override` calls in the current `render_overrides` batch.
     /// Always `0` outside of an active batch.
@@ -1143,6 +1172,9 @@ impl App {
             line_to_node,
             footer_line_to_node,
             override_batch_depth: 0,
+            descend: Vec::new(),
+            #[cfg(test)]
+            unpruned_walk: false,
             pending_shift: 0,
             pending_line_patches: Vec::new(),
             cursor,

@@ -727,10 +727,25 @@ impl App {
         if field_number == 2 && self.is_any_typed(parent) {
             return true;
         }
-        // MessageSet tier 1 (the "Item" group wrapper itself) needs no
-        // entry here: it's already `is_message == true` naturally (a
-        // real decoded group), so `render_overrides`'s own `is_message`
-        // half of its recursion gate already reaches it.
+        // MessageSet tier 1 (the "Item" group wrapper itself). This
+        // used to be omitted deliberately, on the grounds that a real
+        // decoded group is `is_message == true` anyway, so
+        // `render_overrides`'s own `is_message` recursion disjunct
+        // reached it for free. Spec 0183 deletes that disjunct and
+        // makes this predicate the seed source for the descent marks,
+        // so the omission would have silently stopped MessageSet
+        // auto-expansion — no panic, just an unexpanded document.
+        //
+        // The two O(1) discriminators come first so that the
+        // `pool()` lookup inside `is_message_set_typed` is reached
+        // only by field-1 group nodes, not by every node in the
+        // document (spec 0183 S1's cheap-first requirement).
+        if field_number == 1
+            && self.tree[idx].span.wire_type == prototext_core::helpers::WT_START_GROUP
+            && self.is_message_set_typed(parent)
+        {
+            return true;
+        }
         if field_number == 3
             && self.tree[parent].span.type_fqdn.as_deref() == Some(decode::MESSAGE_SET_ITEM_FQDN)
         {
@@ -879,27 +894,48 @@ impl App {
     /// second `positional_path` call on the parent, for the same
     /// reason.
     fn resolve_active_override_entry_index_by_path(&self, idx: usize, path: &str) -> Option<usize> {
-        if let Some(pos) = self.overrides.entries().iter().position(|e| {
-            e.active && matches!(&e.origin, OverrideOrigin::Path { path: p } if p == path)
-        }) {
+        if let Some(pos) = self.active_entry_with_label(path, OverrideKind::Path) {
             return Some(pos);
         }
         let parent = self.tree[idx].parent?;
         let field = self.tree[idx].span.field_number;
         let parent_path = Self::parent_path_of(path);
-        if let Some(pos) = self.overrides.entries().iter().position(|e| {
-            e.active
-                && matches!(&e.origin, OverrideOrigin::PathField { path: p, field: f }
-                    if *p == parent_path && *f == field)
-        }) {
+        if let Some(pos) =
+            self.active_entry_with_label(&format!("{parent_path}:{field}"), OverrideKind::PathField)
+        {
             return Some(pos);
         }
         let fqdn = self.tree[parent].span.type_fqdn.as_ref()?;
-        self.overrides.entries().iter().position(|e| {
-            e.active
-                && matches!(&e.origin, OverrideOrigin::FqdnField { fqdn: f, field: fld }
-                    if f == fqdn && *fld == field)
-        })
+        self.active_entry_with_label(&format!("{fqdn}:{field}"), OverrideKind::FqdnField)
+    }
+
+    /// The index of the active entry whose origin has exactly `label`
+    /// and kind `kind`, if any — spec 0183 G3.
+    ///
+    /// `OverrideCollection` keeps `entries` sorted by
+    /// `OverrideOrigin::label()` (then type), and has a test pinning
+    /// that, so every entry sharing a label is contiguous and a
+    /// `partition_point` lands on the first of them. That replaces the
+    /// linear scan of the whole collection this used to do — three
+    /// times over, once per origin kind, once per node.
+    ///
+    /// `kind` is checked as well as the label. In practice the label
+    /// alone would do (a `PathField` label always starts with `/`, an
+    /// `FqdnField` label never does), but relying on that would make
+    /// this function's correctness depend on an unstated property of
+    /// path syntax rather than on the discriminant that is right there.
+    fn active_entry_with_label(&self, label: &str, kind: OverrideKind) -> Option<usize> {
+        let entries = self.overrides.entries();
+        let start = entries.partition_point(|e| e.origin.label().as_str() < label);
+        for (offset, e) in entries[start..].iter().enumerate() {
+            if e.origin.label() != label {
+                break;
+            }
+            if e.active && e.origin.kind() == kind {
+                return Some(start + offset);
+            }
+        }
+        None
     }
 
     /// `path`'s own parent path, derived by trimming `path`'s last `/
@@ -1096,6 +1132,9 @@ impl App {
     /// unrelated `render(&mut self, frame: &mut Frame)` ratatui draw
     /// method below.
     pub(super) fn render_overrides(&mut self, idx: usize) {
+        if self.override_batch_depth == 0 {
+            self.compute_descend_marks();
+        }
         self.override_batch_depth += 1;
         let path = self.positional_path(idx);
         // `idx` itself always starts outside any not-yet-materialized
@@ -1106,6 +1145,172 @@ impl App {
         if self.override_batch_depth == 0 {
             self.finalize_override_batch(idx);
         }
+    }
+
+    /// Spec 0183 S2: recomputes `self.descend` from scratch for a
+    /// batch about to start. A node is a *target* if this pass could
+    /// change how it renders; every target and every ancestor of one
+    /// gets marked, so that `render_overrides_inner`'s child gate can
+    /// prune whole subtrees instead of descending into every message
+    /// in the document.
+    ///
+    /// Marking ancestors — not just targets — is the point, and it is
+    /// the part that is easy to get wrong (spec 0183 L3). A node-level
+    /// predicate like `rendered_as.is_some()` is only ever consulted if
+    /// the walk *reaches* the node, and under the old gate it always
+    /// did, because `is_message` let it through every plain ancestor on
+    /// the way down. Without the upward walk below, a marked node under
+    /// unmarked ancestors would simply never be visited, and would keep
+    /// the text it was last rendered with forever — no panic, no
+    /// assertion, just stale content.
+    ///
+    /// Over-marking is safe (it costs a wasted descent); under-marking
+    /// is the silent failure. The arena also still holds nodes
+    /// superseded by earlier splices, which are unreachable from the
+    /// walk but are scanned here; marking them only over-marks their
+    /// still-live ancestors.
+    fn compute_descend_marks(&mut self) {
+        self.descend = vec![false; self.tree.len()];
+        let targets = self.collect_descend_targets(0, self.tree.len(), None);
+        self.mark_targets(targets);
+    }
+
+    /// Spec 0183 S3: extend the marks to cover a subtree that was just
+    /// re-decoded, whose nodes did not exist when `compute_descend_marks`
+    /// ran and so could not have been marked by it.
+    ///
+    /// The obvious alternative — carry a `fresh` flag down the walk and
+    /// descend unconditionally beneath a splice — is what this replaces,
+    /// and it is worth recording why, because it looks correct and is
+    /// catastrophic. "Bounded by the size of the spliced content" is only
+    /// reassuring while the spliced content is small; for a *root*
+    /// retype it is the whole document. The flag then re-enables exactly
+    /// the blanket descent this spec exists to delete, and does strictly
+    /// worse than the old gate: it visits plain scalar leaves too, and
+    /// every fresh node has `rendered_as == None`, so `resettle_node`
+    /// re-splices every single one of them — each splice appending
+    /// another copy of its subtree to an append-only arena. It presents
+    /// as a hang at 100% CPU right after the background root-type
+    /// resolution lands, which is how it was found.
+    ///
+    /// Marking instead keeps the bound honest: the cost is one pass over
+    /// the fresh nodes, and only the ones that are genuinely targets get
+    /// descended into.
+    fn mark_fresh_subtree(&mut self, base: usize, path: &str) {
+        if self.tree.len() <= base {
+            return;
+        }
+        self.descend.resize(self.tree.len(), false);
+        let targets = self.collect_descend_targets(base, self.tree.len(), Some(path));
+        self.mark_targets(targets);
+    }
+
+    /// Set `descend` on every target and on every ancestor of one,
+    /// stopping each upward walk at the first already-marked node —
+    /// everything above it is marked by construction.
+    fn mark_targets(&mut self, targets: Vec<usize>) {
+        for t in targets {
+            let mut cur = Some(t);
+            while let Some(c) = cur {
+                if self.descend[c] {
+                    break;
+                }
+                self.descend[c] = true;
+                cur = self.tree[c].parent;
+            }
+        }
+    }
+
+    /// The nodes in `start..end` whose rendering this batch could
+    /// change. `under`, when set, restricts the path-shaped sources to
+    /// override origins at or under that path — used by
+    /// `mark_fresh_subtree`, where scanning every entry would defeat the
+    /// point of bounding the work by the splice.
+    fn collect_descend_targets(&self, start: usize, end: usize, under: Option<&str>) -> Vec<usize> {
+        let mut targets: Vec<usize> = Vec::new();
+
+        {
+            // Active `FqdnField` origins as a set, so the per-node test
+            // below is one hash lookup rather than a scan of
+            // `entries()` (spec 0183 G3). This is exact — every node
+            // carries its parent's resolved type — which is what spec
+            // 0183 S5 asked of an FQDN index, without an index to
+            // build or to keep patched across splices.
+            let fqdn_fields: HashSet<(&str, u64)> = self
+                .overrides
+                .entries()
+                .iter()
+                .filter_map(|e| match &e.origin {
+                    OverrideOrigin::FqdnField { fqdn, field } => Some((fqdn.as_str(), *field)),
+                    _ => None,
+                })
+                .collect();
+
+            for i in start..end {
+                // Source 2: a node spliced under an override at least
+                // once must keep being revisited, so it can fall back
+                // to its natural type once that override goes away.
+                if self.tree[i].rendered_as.is_some() {
+                    targets.push(i);
+                    continue;
+                }
+                // Source 3: the Any/MessageSet auto-expansion seeds.
+                if self.is_auto_expand_candidate(i) {
+                    targets.push(i);
+                    continue;
+                }
+                // Source 1, the part that is not path-shaped.
+                if !fqdn_fields.is_empty() {
+                    let field = self.tree[i].span.field_number;
+                    if let Some(fqdn) = self.tree[i]
+                        .parent
+                        .and_then(|p| self.tree[p].span.type_fqdn.as_deref())
+                    {
+                        if fqdn_fields.contains(&(fqdn, field)) {
+                            targets.push(i);
+                        }
+                    }
+                }
+            }
+
+            // Source 1, the path-shaped part. Resolved per entry rather
+            // than per node, since a node does not know its own path
+            // without an O(depth) walk. Entry state is not filtered on
+            // `active`: a deactivated entry still has to be reached, so
+            // that its node can be settled back to its natural type.
+            let scope = under.map(|p| OverrideOrigin::Path {
+                path: p.to_string(),
+            });
+            for e in self.overrides.entries() {
+                if let Some(scope) = &scope {
+                    if !override_pane::origin_is_at_or_under(&e.origin, scope) {
+                        continue;
+                    }
+                }
+                match &e.origin {
+                    OverrideOrigin::Path { path } => {
+                        targets.extend(self.resolve_path(path));
+                    }
+                    OverrideOrigin::PathField { path, field } => {
+                        // The entry names the *parent*; the nodes whose
+                        // rendering it governs are that parent's
+                        // children bearing `field`.
+                        if let Some(parent) = self.resolve_path(path) {
+                            let mut c = self.tree[parent].first_child;
+                            while let Some(ci) = c {
+                                if self.tree[ci].span.field_number == *field {
+                                    targets.push(ci);
+                                }
+                                c = self.tree[ci].next_sibling;
+                            }
+                        }
+                    }
+                    OverrideOrigin::FqdnField { .. } => {}
+                }
+            }
+        }
+
+        targets
     }
 
     /// `parent_path`'s display-format child path for the child at
@@ -1171,6 +1376,17 @@ impl App {
     /// not-yet-materialized patch, not as a patch against `self.lines`
     /// directly (which, for the whole duration of the batch, still holds
     /// only pre-batch content — see `splice_override`).
+    ///
+    /// `fresh` (spec 0183 S3) is `true` when `idx` lies inside content
+    /// re-decoded earlier in this very batch. Such nodes did not exist
+    /// when `compute_descend_marks` ran, so they carry no mark and are
+    /// descended into unconditionally instead — bounded by the size of
+    /// the spliced content, which is work the splice implies anyway.
+    /// This is also what makes it sound for the mark scan to ignore
+    /// auto-expand candidates that only *become* candidates during the
+    /// batch (MessageSet tier 2, whose eligibility depends on its
+    /// parent having just been retyped by tier 1): they are always
+    /// inside fresh content by construction.
     fn render_overrides_inner(
         &mut self,
         idx: usize,
@@ -1231,6 +1447,7 @@ impl App {
                 }
             }
         }
+        let base = self.tree.len();
         let spliced_patch = self.resettle_node(idx, path, patch_scope);
         let spliced = spliced_patch.is_some();
         // Spec 0167: if `idx` was just spliced, its fresh children's
@@ -1238,6 +1455,11 @@ impl App {
         // remain wherever `idx` itself was already found (the same
         // ancestor patch, if any, or `self.lines` directly).
         let child_scope = spliced_patch.or(patch_scope);
+        // Spec 0183 S3: the nodes the splice just appended did not
+        // exist when the batch's marks were computed, so mark them now.
+        if spliced {
+            self.mark_fresh_subtree(base, path);
+        }
         // Fresh children (just pushed by a splice) are already
         // positioned relative to `idx`'s now-correct start and owe
         // nothing further; pre-existing children (no splice happened)
@@ -1259,45 +1481,34 @@ impl App {
                 ordinal += 1;
             }
             prev_child = Some(c);
-            // Recurse into every node actually rendered as message/group
-            // (`NodeSpan::is_message`) — the set of nodes that can carry
-            // nested overridable children at all (spec 0119) — plus the
-            // two specific plain-scalar shapes eligible for Any/
-            // MessageSet auto-expansion (spec 0120's
-            // `is_auto_expand_candidate`): those aren't `is_message` yet
-            // (they're still bytes/varint until auto-overridden), but
-            // must still be visited once so `auto_expand_type` above gets
-            // a chance to promote them. Recursing into every plain
-            // scalar LEN-wire field unconditionally would reopen the
-            // spec 0119 bug this same gate was introduced to fix
-            // (`natural_type` demoting an ordinary string/bytes field to
-            // a raw record dump) — `is_auto_expand_candidate` is
-            // deliberately narrow, matching only these two shapes. Also
-            // recurse into any child carrying its own active override
-            // entry (spec 0135 §G3 gap, found post-implementation): a
-            // primitive override on a plain scalar leaf is exactly such
-            // a node — not `is_message`, not an auto-expand candidate —
-            // and would otherwise never actually get spliced by
-            // `:type-as` (which, unlike the override pane's live
-            // preview, applies solely through this recursive walk). Also
-            // recurse into any child already carrying a `rendered_as`
-            // (spec 0135 follow-up, found post-implementation): once a
-            // plain scalar leaf has been spliced under an override at
-            // least once, it must keep being revisited on every future
-            // pass, even after that override is deactivated — otherwise
-            // `resolve_active_override_entry(c)` above goes back to
-            // `None` (deactivated) the moment the gate condition it
-            // relies on stops holding, permanently orphaning the node
-            // before `resettle_node` gets a chance to fall it back to
-            // its natural type.
+            // Spec 0183 G1: descend only where something can actually
+            // change. This used to be four disjuncts, the first of
+            // which was `span.is_message` — true of essentially every
+            // interior node in a real document, and so the reason a
+            // single pass cost seconds on a 600k-node one. It was
+            // never really a claim that a message node needs work; it
+            // was a stand-in for "something under here might", the
+            // walk having no cheaper way to find out. `descend` is
+            // that cheaper way, computed once per batch by
+            // `compute_descend_marks` from the same three real
+            // sources (override entries, `rendered_as`, auto-expand
+            // seeds) but lifted to cover ancestors, which is what
+            // makes it safe to stop at an unmarked node.
             let c_path = Self::child_path(path, ordinal);
-            if self.tree[c].span.is_message
-                || self.is_auto_expand_candidate(c)
-                || self
-                    .resolve_active_override_entry_index_by_path(c, &c_path)
-                    .is_some()
-                || self.tree[c].rendered_as.is_some()
-            {
+            #[cfg(not(test))]
+            let descend_here = self.descend.get(c).copied().unwrap_or(false);
+            #[cfg(test)]
+            let descend_here = if self.unpruned_walk {
+                self.tree[c].span.is_message
+                    || self.is_auto_expand_candidate(c)
+                    || self
+                        .resolve_active_override_entry_index_by_path(c, &c_path)
+                        .is_some()
+                    || self.tree[c].rendered_as.is_some()
+            } else {
+                self.descend.get(c).copied().unwrap_or(false)
+            };
+            if descend_here {
                 let before = self.pending_shift;
                 self.render_overrides_inner(c, child_owed, &c_path, child_scope);
                 child_owed += self.pending_shift - before;

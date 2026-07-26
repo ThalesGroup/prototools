@@ -12,5 +12,6 @@ mod override_apply;
 mod override_select;
 mod prefetch;
 mod profiling;
+mod prune;
 mod render;
 mod support;
