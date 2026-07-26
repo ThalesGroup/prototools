@@ -29,8 +29,9 @@ impl App {
             // pane. While the selection pane is open, focus is locked to
             // it — that lock is what makes the preview overlay's anchor
             // (`first_row`/`covered_rows`, positions in `visible_rows`)
-            // immutable for the overlay's whole lifetime. It falls
-            // through to the catch-all arm below.
+            // immutable for the overlay's whole lifetime. Say so rather
+            // than doing nothing, which reads as a broken key.
+            KeyCode::Tab => self.message = OVERRIDE_FOCUS_LOCK_MESSAGE.to_string(),
             KeyCode::Esc | KeyCode::Char('t') | KeyCode::Char('q') => self.close_override(),
             // Spec 0185 S5/G4: the main pane can still be panned while
             // the preview is up. Ctrl-arrows already pan this pane's own

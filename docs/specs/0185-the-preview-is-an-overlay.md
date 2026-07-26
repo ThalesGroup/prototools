@@ -302,6 +302,15 @@ While `override_target.is_some()`:
 - The cursor does not move for the overlay's whole lifetime, so
   `render.rs:305-308`'s `last_cursor_row` guard never fires and
   `clamp_scroll_to_visible` never fights the user's panning.
+- **Both blocked gestures explain themselves.** `Tab` and a main-pane
+  left-click each set `self.message` to `OVERRIDE_FOCUS_LOCK_MESSAGE`
+  (`mod.rs`), which `track_message_timeout` auto-dismisses after
+  `MESSAGE_TIMEOUT` like any other passive notice. Added after the fact,
+  on the observation that a gesture doing *visibly nothing* reads as a
+  broken key rather than as a deliberate lock — S7's statusline notice
+  is passive and states the condition, whereas this is the reply to the
+  particular gesture that was just refused. It names the two ways out:
+  `Esc` closes the pane, `Alt`-arrows pan the main pane in place.
 
 **Why the lock is load-bearing, not just a simplification.** It is what
 makes the overlay's anchor immutable. `first_row` and `covered_rows`
@@ -373,7 +382,8 @@ holds but no overlay does.
   candidate that failed to render, and drops it on close.
 - **Focus lock (S5):** with the pane open, `Tab` leaves
   `override_focus` set; a synthesized left-click in `main_area` leaves
-  focus, `cursor` and `select_anchor` untouched; `Alt-Down` and a wheel
+  focus, `cursor` and `select_anchor` untouched; both refusals leave
+  `OVERRIDE_FOCUS_LOCK_MESSAGE` in `message`; `Alt-Down` and a wheel
   event both change `scroll_offset` and neither changes `cursor`. The
   management pane's own `Tab` still works, so that Q2's deliberate
   difference is pinned rather than merely intended.

@@ -1755,11 +1755,17 @@ fn the_selection_pane_holds_focus_but_still_lets_the_main_pane_pan() {
     let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
     terminal.draw(|frame| app.render(frame)).unwrap();
 
+    app.message.clear();
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     assert!(app.override_focus, "Tab must not leave the selection pane");
+    assert_eq!(
+        app.message, OVERRIDE_FOCUS_LOCK_MESSAGE,
+        "...but it must say why, rather than reading as a broken key"
+    );
 
     let cursor = app.cursor;
     app.select_anchor = None;
+    app.message.clear();
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: app.main_area.x + 1,
@@ -1769,6 +1775,10 @@ fn the_selection_pane_holds_focus_but_still_lets_the_main_pane_pan() {
     assert!(app.override_focus, "a main-pane click must not steal focus");
     assert_eq!(app.cursor, cursor, "...nor move the cursor");
     assert_eq!(app.select_anchor, None, "...nor start a selection");
+    assert_eq!(
+        app.message, OVERRIDE_FOCUS_LOCK_MESSAGE,
+        "...but it must say why"
+    );
 
     // G4: a one-row-high pane is what gives this three-line fixture
     // something to scroll.

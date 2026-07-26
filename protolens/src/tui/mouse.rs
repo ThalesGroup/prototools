@@ -169,6 +169,11 @@ impl App {
                 // it selected).
                 self.select_anchor = line_idx;
                 self.select_end = line_idx;
+            } else if over_main {
+                // Locked out by `main_interactive` above. Same reasoning
+                // as `handle_override_key`'s `Tab` arm: a click that does
+                // visibly nothing reads as a bug, so name the lock.
+                self.message = OVERRIDE_FOCUS_LOCK_MESSAGE.to_string();
             } else if over_side {
                 // Symmetric with the main-pane case above: clicking the
                 // side pane (re-)claims keyboard focus for it too.

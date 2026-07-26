@@ -97,6 +97,14 @@ fn is_double_click<T: PartialEq>(last: &mut Option<(Instant, T)>, key: T) -> boo
 /// comment).
 const MESSAGE_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// Shown in the global command/message row when the user tries to take
+/// focus back to the main pane while the override selection pane is open
+/// — by `Tab` or by clicking the main pane. Spec 0185 S5 makes both
+/// inert, and silently ignoring them reads as a broken key rather than a
+/// deliberate lock, so say why. Auto-dismisses like any other message.
+const OVERRIDE_FOCUS_LOCK_MESSAGE: &str =
+    "main pane locked while the type pane is open - Esc closes it, Alt-arrows pan it";
+
 /// Auto-dismiss delay for the startup splash screen (2026-07-17
 /// feedback, item 13), in addition to its existing keypress/mouse
 /// dismissal — mirrors `MESSAGE_TIMEOUT`'s deadline-based approach.
