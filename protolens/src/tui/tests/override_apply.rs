@@ -1283,17 +1283,17 @@ fn message_set_item_status_and_manage_labels_show_the_friendly_fqdn_not_the_inte
     );
 }
 
-/// Regression test (spec 0132 §G3 feedback, 2026-07-15): opening the
-/// override pane on an ancestor of a MessageSet's `Item` group live-
-/// previews that ancestor's subtree via a bare `splice_override`
-/// call (§G2 non-goal: "no live nested Any/MessageSet preview"),
-/// which discards the tier-1/tier-2 auto-expansion of every
-/// descendant. Cancelling with `Esc` must fully restore it — not
-/// just re-settle the ancestor node itself back to its own correct
-/// type, but re-run the whole `render_overrides` recursion so
-/// `ExtPayload` gets re-expanded too.
+/// Spec 0185 G1/Q3, superseding the spec 0132 §G3 feedback fix
+/// (2026-07-15): opening the override pane on an ancestor of a
+/// MessageSet's `Item` group used to live-preview that ancestor via a
+/// bare `splice_override`, which rebuilt the subtree with no
+/// per-descendant overrides applied and so discarded every descendant's
+/// tier-1/tier-2 auto-expansion — `Esc` then had to re-run the whole
+/// `render_overrides` recursion to put it back. An overlay never
+/// touches the committed tree, so the expansion is never lost and there
+/// is nothing to restore.
 #[test]
-fn esc_closing_the_override_pane_restores_nested_message_set_auto_expansion() {
+fn the_override_preview_leaves_nested_message_set_auto_expansion_alone() {
     let mut app = message_set_fixture();
     let extensions_idx = app
         .tree
@@ -1301,37 +1301,31 @@ fn esc_closing_the_override_pane_restores_nested_message_set_auto_expansion() {
         .position(|n| n.span.type_fqdn.as_deref() == Some("ms_test.TestMessageSet"))
         .expect("extensions field must resolve to TestMessageSet");
     app.cursor = extensions_idx;
+    let lines = app.lines.clone();
 
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
     assert_eq!(app.override_target, Some(extensions_idx));
-    // The live preview's own `splice_override` call rebuilds the
-    // subtree from scratch with no per-descendant overrides applied
-    // (§G2 non-goal) — the rendered text must no longer show the
-    // nested expansion for the duration of the pane being open.
-    // (`splice_override` never removes orphaned descendant entries
-    // from the flat `tree` Vec, only unlinks them — so `app.tree`
-    // itself is not a reliable signal here; `app.lines`, what's
-    // actually displayed, is.)
-    assert!(
-        !app.lines.iter().any(|l| l.contains("label")),
-        "live preview must not still show the nested auto-expansion: {:?}",
-        app.lines
+    assert!(app.preview_overlay.is_some(), "the pane must live-preview");
+    assert_eq!(
+        app.lines, lines,
+        "the preview must leave the committed document alone"
     );
 
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.override_target, None);
+    assert_eq!(app.lines, lines, "...and cancelling must re-render nothing");
     assert!(
         app.tree
             .iter()
             .any(|n| n.span.type_fqdn.as_deref() == Some("ms_test.ExtPayload")),
-        "Esc-cancel must restore the nested MessageSet auto-expansion: {:#?}",
+        "the nested MessageSet auto-expansion must have survived: {:#?}",
         app.lines
     );
     assert!(
         app.lines
             .iter()
             .any(|l| l.contains("label") && l.contains("hi")),
-        "expanded MessageSet extension payload's own field must be back \
+        "expanded MessageSet extension payload's own field must still be \
          in the rendered text: {:?}",
         app.lines
     );

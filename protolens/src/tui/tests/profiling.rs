@@ -163,6 +163,79 @@ fn profile_override_pane_down_on_db3() {
     }
 }
 
+/// Throwaway diagnostic for the 2026-07-26 report: "browsing types for
+/// the first child is faster than for the root, but still noticeably
+/// slower". Times `preview_override_highlight` alone (no scoring, no
+/// draw) on the root and on its first child, on the 1.1 MB
+/// `/tmp/db3.desc`. Under spec 0185 the preview renders only the
+/// target's own byte-budgeted interior and touches nothing
+/// document-sized, so the two must now cost the same; any gap left is
+/// the render itself, not the document.
+#[test]
+#[ignore]
+fn profile_preview_root_versus_first_child_on_db3() {
+    let desc_path = Path::new("/tmp/db3.desc");
+    if !desc_path.exists() {
+        eprintln!("skipping: /tmp/db3.desc not present");
+        return;
+    }
+
+    let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
+    let blob = std::fs::read(desc_path).expect("read blob");
+    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let mut app = App::new(
+        decoded,
+        "db3.desc",
+        std::path::PathBuf::from(desc_path),
+        2,
+        ctx,
+        ThemeKind::Dark,
+        None,
+    );
+    app.splash = false;
+    app.term_width = 120;
+    eprintln!(
+        "tree.len()={} lines.len()={}",
+        app.tree.len(),
+        app.lines.len()
+    );
+
+    let root = app.first_node;
+    let first_child = app.tree[root].first_child.expect("root must have a child");
+
+    // Two fixed candidates, alternated, so each measurement is a real
+    // re-render rather than a `render_cache` hit.
+    let candidates: Vec<(String, Option<i64>)> = vec![
+        ("google.protobuf.FileDescriptorSet".to_string(), None),
+        ("google.protobuf.FileDescriptorProto".to_string(), None),
+    ];
+
+    for (label, idx) in [("root", root), ("first child", first_child)] {
+        app.override_target = Some(idx);
+        app.override_candidates = candidates.clone();
+        // Warm the cache the same way for both, then measure.
+        app.override_highlight = 0;
+        app.preview_override_highlight();
+
+        let t = Instant::now();
+        const N: usize = 20;
+        for i in 0..N {
+            app.override_highlight = i % 2;
+            app.preview_override_highlight();
+        }
+        eprintln!(
+            "{label} (idx {idx}): {N} previews in {:?} ({:?}/preview), overlay={} lines, \
+             tree.len()={} lines.len()={}",
+            t.elapsed(),
+            t.elapsed() / N as u32,
+            app.preview_overlay.as_ref().map_or(0, |o| o.lines.len()),
+            app.tree.len(),
+            app.lines.len(),
+        );
+    }
+    app.close_override();
+}
+
 /// Throwaway diagnostic for the 2026-07-24 report: `t`, `Down`, `Enter`
 /// (confirming an override) against `/tmp/pdb.desc` — reported as
 /// "painfully slow, does it even complete??".

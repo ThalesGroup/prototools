@@ -4,20 +4,89 @@
 
 use super::*;
 
+/// Byte offset where a line's trailing `#@ ...` annotation starts, if it
+/// has one (spec 0133 G4) — reuses the tree-sitter `SyntaxRole::Comment`
+/// span already computed for that line. Takes the hints rather than a
+/// line index so that spec 0185's overlay rows, which are not in
+/// `self.line_styles`, go through the same rule.
+fn annotation_start_in(hints: &LineStyles) -> Option<usize> {
+    hints
+        .iter()
+        .find(|(_, role)| *role == SyntaxRole::Comment)
+        .map(|(range, _)| range.start)
+}
+
 impl App {
-    /// Byte offset within `self.lines[line_idx]` where that line's
-    /// trailing `#@ ...` annotation starts, if it has one (spec 0133 G4)
-    /// — reuses the tree-sitter `SyntaxRole::Comment` span already
-    /// computed in `self.line_styles` (a comment always spans from `#` to
-    /// end of line, and protolens's own rendered text never otherwise
-    /// contains a bare `#` outside a quoted string, so at most one such
-    /// span exists per line).
-    pub(super) fn annotation_start(&self, line_idx: usize) -> Option<usize> {
-        self.line_styles
-            .get(line_idx)?
-            .iter()
-            .find(|(_, role)| *role == SyntaxRole::Comment)
-            .map(|(range, _)| range.start)
+    /// Spec 0185 S2: total number of rows the main pane draws — the
+    /// committed `visible_rows`, adjusted by however many rows the
+    /// preview overlay adds or removes.
+    pub(super) fn composed_row_count(&self) -> usize {
+        match &self.preview_overlay {
+            Some(o) => (self.visible_rows.len() + o.lines.len()) - o.covered_rows,
+            None => self.visible_rows.len(),
+        }
+    }
+
+    /// Spec 0185 S2: resolve a display row to the line it draws. Exactly
+    /// one contiguous span of rows is ever substituted, so this is
+    /// arithmetic rather than a rebuilt vector. `None` past the last row.
+    pub(super) fn display_row(&self, d: usize) -> Option<DisplayRow> {
+        let committed = |l: usize| self.visible_rows.get(l).copied().map(DisplayRow::Committed);
+        let Some(o) = &self.preview_overlay else {
+            return committed(d);
+        };
+        if d < o.first_row {
+            committed(d)
+        } else if d < o.first_row + o.lines.len() {
+            Some(DisplayRow::Overlay(d - o.first_row))
+        } else {
+            committed((d - o.lines.len()) + o.covered_rows)
+        }
+    }
+
+    /// Spec 0185 S2: `cursor_display_row()` carried into composed row
+    /// space, which is what the render loop's `REVERSED` comparison
+    /// needs — it compares against rows it is drawing, not against
+    /// `visible_rows`. A cursor inside the block the overlay stands in
+    /// for (the usual case: the preview's target *is* the node the
+    /// cursor is on) resolves to the overlay's own first row.
+    pub(super) fn cursor_composed_row(&self) -> usize {
+        let row = self.cursor_display_row();
+        let Some(o) = &self.preview_overlay else {
+            return row;
+        };
+        if row < o.first_row {
+            row
+        } else if row < o.first_row + o.covered_rows {
+            o.first_row
+        } else {
+            (row + o.lines.len()) - o.covered_rows
+        }
+    }
+
+    /// Spec 0185 S2: the `(content, syntax hints, node)` triple a
+    /// display row draws from — the single point where committed and
+    /// overlay rows converge, so that everything downstream of it is
+    /// shared. An overlay row has no node (S4): no heat cue, no
+    /// active-override hint, no fold marker, no selection.
+    fn display_row_source(&self, row: DisplayRow) -> (&str, &LineStyles, Option<usize>) {
+        /// Stand-in for a row that has no styles at all, so that the
+        /// two arms can share one return type.
+        static NO_STYLES: LineStyles = Vec::new();
+        match row {
+            DisplayRow::Committed(l) => (
+                self.lines.get(l).map(String::as_str).unwrap_or(""),
+                self.line_styles.get(l).unwrap_or(&NO_STYLES),
+                self.line_to_node.get(&l).copied(),
+            ),
+            DisplayRow::Overlay(i) => {
+                let o = self
+                    .preview_overlay
+                    .as_ref()
+                    .expect("an Overlay row is only ever produced while an overlay is held");
+                (&o.lines[i], &o.line_styles[i], None)
+            }
+        }
     }
 
     /// A foldable node's line, with its fold marker inserted right after
@@ -33,16 +102,22 @@ impl App {
     /// 0133 G4); the underlying `self.lines` always carries the full
     /// annotation regardless.
     pub(super) fn render_line_content(&self, line_idx: usize) -> String {
-        let content = self.lines.get(line_idx).map(String::as_str).unwrap_or("");
+        self.row_content(DisplayRow::Committed(line_idx))
+    }
+
+    /// Spec 0185 S2: `render_line_content` for any display row, overlay
+    /// rows included — there must not be a second line-rendering path.
+    pub(super) fn row_content(&self, row: DisplayRow) -> String {
+        let (full_content, hints, node) = self.display_row_source(row);
         let content = if !self.annotations {
-            match self.annotation_start(line_idx) {
-                Some(pos) => content[..pos].trim_end(),
-                None => content,
+            match annotation_start_in(hints) {
+                Some(pos) => full_content[..pos].trim_end(),
+                None => full_content,
             }
         } else {
-            content
+            full_content
         };
-        let Some(&idx) = self.line_to_node.get(&line_idx) else {
+        let Some(idx) = node else {
             return content.to_string();
         };
         if !self.has_children(idx) {
@@ -65,26 +140,27 @@ impl App {
         s
     }
 
-    /// Styled counterpart of `render_line_content` (spec 0116 §7/§9):
-    /// applies `self.line_styles[line_idx]`'s syntax-highlighting spans
-    /// via `theme::style_for`, then splices in the same fold-marker /
-    /// `" ... }"` collapse-summary text `render_line_content` inserts —
-    /// as unstyled spans, so highlighting and folding compose cleanly.
+    /// Styled counterpart of `row_content` (spec 0116 §7/§9): applies the
+    /// row's syntax-highlighting spans via `theme::style_for`, then
+    /// splices in the same fold-marker / `" ... }"` collapse-summary text
+    /// `row_content` inserts — as unstyled spans, so highlighting and
+    /// folding compose cleanly.
     ///
     /// Follows the same display-time annotation-hiding truncation as
-    /// `render_line_content` (spec 0133 G4) — any `self.line_styles`
-    /// hint extending past the truncated length is clipped/dropped
-    /// before `segment_line` runs, since `segment_line` doesn't
-    /// bounds-check hint ranges against `content`.
-    pub(super) fn render_line_spans(&self, line_idx: usize) -> Vec<Span<'static>> {
-        let full_content = self.lines.get(line_idx).map(String::as_str).unwrap_or("");
-        let full_hints = self
-            .line_styles
-            .get(line_idx)
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
+    /// `row_content` (spec 0133 G4) — any hint extending past the
+    /// truncated length is clipped/dropped before `segment_line` runs,
+    /// since `segment_line` doesn't bounds-check hint ranges against
+    /// `content`.
+    ///
+    /// Spec 0185 S2: takes a display row, so overlay rows come through
+    /// here too. **There must not be a second line-rendering path** — a
+    /// preview and the commit that follows it are required to be
+    /// byte-identical (G3), and both reaching this same function is how
+    /// that is met.
+    pub(super) fn row_spans(&self, row: DisplayRow) -> Vec<Span<'static>> {
+        let (full_content, full_hints, node) = self.display_row_source(row);
         let (content, hints): (&str, LineStyles) =
-            match (!self.annotations, self.annotation_start(line_idx)) {
+            match (!self.annotations, annotation_start_in(full_hints)) {
                 (true, Some(pos)) => {
                     let truncated = full_content[..pos].trim_end();
                     let clipped = full_hints
@@ -98,7 +174,7 @@ impl App {
             };
         let segments = segment_line(content, &hints);
 
-        let Some(&idx) = self.line_to_node.get(&line_idx) else {
+        let Some(idx) = node else {
             return self.spans_with_insertions(content, segments, Vec::new());
         };
         if !self.has_children(idx) {
@@ -306,13 +382,25 @@ impl App {
             clamp_scroll_to_visible(&mut self.scroll_offset, cursor_row, pane_height);
             self.last_cursor_row = Some(cursor_row);
         }
-        let end = (self.scroll_offset + pane_height).min(self.visible_rows.len());
+        // Spec 0185 S2: the row the cursor is *drawn* on, in composed
+        // coordinates — distinct from `cursor_row` above, which stays in
+        // `visible_rows` coordinates because that is what
+        // `last_cursor_row` (and `clamp_pan_offset`'s matching guard) is
+        // compared against. With no overlay the two are equal.
+        let cursor_draw_row = if self.tree.is_empty() {
+            0
+        } else {
+            self.cursor_composed_row()
+        };
+        let total_rows = self.composed_row_count();
+        let end = (self.scroll_offset + pane_height).min(total_rows);
         // Collected (not a borrowed slice) so the heat-cue pass below can
         // mutate `self.heat_range_cache`/`self.heat_current_score_cache`
         // — a plain slice would keep `self` borrowed immutably for the
         // rest of this block.
-        let window: Vec<usize> =
-            self.visible_rows[self.scroll_offset.min(self.visible_rows.len())..end].to_vec();
+        let window: Vec<DisplayRow> = (self.scroll_offset.min(total_rows)..end)
+            .filter_map(|d| self.display_row(d))
+            .collect();
 
         // Spec 0129 §G1: the drag-selected `line_idx` range (if any) gets
         // the same `REVERSED` treatment as the single cursor row below —
@@ -327,18 +415,34 @@ impl App {
         // spec 0154 G6: computed in its own pass, ahead of the
         // (immutable-`self`) `text_lines` closure below, since
         // populating the heat-cue caches needs `&mut self`.
+        //
+        // Spec 0185 S4: an overlay row has no committed node, so it has
+        // no cue. That is correct rather than merely convenient — a cue
+        // reports how well a *committed* node's bytes score as its
+        // current type, and an overlay row has no committed node.
         let heat_displays: Vec<heat_cue::HeatDisplay> = window
             .iter()
-            .map(|&line_idx| self.heat_cue_for(line_idx))
+            .map(|&row| match row {
+                DisplayRow::Committed(line_idx) => self.heat_cue_for(line_idx),
+                DisplayRow::Overlay(_) => heat_cue::HeatDisplay::None,
+            })
             .collect();
 
         let text_lines: Vec<Line> = window
             .iter()
             .zip(heat_displays.iter())
             .enumerate()
-            .map(|(row, (&line_idx, display))| {
-                let mut spans = pan_spans(self.render_line_spans(line_idx), self.pan_offset);
-                if self.line_has_active_override(line_idx) {
+            .map(|(row, (&display_row, display))| {
+                // `None` for an overlay row (spec 0185 S4), which gates
+                // the active-override hint and the drag selection below
+                // exactly as it already gates fold markers inside
+                // `row_spans`.
+                let line_idx = match display_row {
+                    DisplayRow::Committed(l) => Some(l),
+                    DisplayRow::Overlay(_) => None,
+                };
+                let mut spans = pan_spans(self.row_spans(display_row), self.pan_offset);
+                if line_idx.is_some_and(|l| self.line_has_active_override(l)) {
                     for span in &mut spans {
                         span.style = span.style.add_modifier(Modifier::BOLD);
                     }
@@ -402,10 +506,9 @@ impl App {
                         spans.insert(0, Span::raw(" "));
                     }
                 }
-                let selected = selection_range
-                    .as_ref()
-                    .is_some_and(|r| r.contains(&line_idx));
-                if self.scroll_offset + row == cursor_row || selected {
+                let selected = line_idx
+                    .is_some_and(|l| selection_range.as_ref().is_some_and(|r| r.contains(&l)));
+                if self.scroll_offset + row == cursor_draw_row || selected {
                     for span in &mut spans {
                         span.style = span.style.add_modifier(Modifier::REVERSED);
                     }
@@ -442,6 +545,21 @@ impl App {
                 }
                 Some((t, _)) => format!("{path_label} {node_path}: {t}"),
                 None => format!("{path_label} {node_path}"),
+            };
+            // Spec 0185 S7/Q1: the focus lock is announced in words
+            // rather than shown — the cursor is deliberately left
+            // unrestyled, so that the main pane looks exactly as it
+            // would after a real splice (G3). The notice is tied to the
+            // pane being open, not to an overlay existing, so it is
+            // shown for a candidate that failed to render too, where
+            // the lock still holds but no overlay does.
+            let left = if self.override_target.is_some() {
+                match self.preview_overlay {
+                    Some(_) => format!("{left} - preview (main pane locked)"),
+                    None => format!("{left} - main pane locked"),
+                }
+            } else {
+                left
             };
             // The byte-range ruler is dropped (not truncated) once a side
             // pane is open and the main pane is only half-width, since

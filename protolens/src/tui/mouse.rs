@@ -124,8 +124,16 @@ impl App {
             return;
         }
 
+        // Spec 0185 S5: while the override selection pane is open, focus
+        // is locked to it — a main-pane click moves no focus, no cursor,
+        // and starts no selection, and a drag extends nothing. That lock
+        // is what keeps the preview overlay's anchor valid. Wheel events
+        // are deliberately *not* gated on this: they route by geometry
+        // rather than by focus, and panning must keep working (G4).
+        let main_interactive = over_main && self.override_target.is_none();
+
         if let MouseEventKind::Down(MouseButton::Left) = event.kind {
-            if over_main {
+            if main_interactive {
                 // A click in the main pane always shifts keyboard focus
                 // back to it without closing the side pane (2026-07-14
                 // feedback, item 3) — `handle_key` follows `override_focus`/
@@ -175,7 +183,7 @@ impl App {
             return;
         }
 
-        if over_main {
+        if main_interactive {
             match event.kind {
                 // Spec 0129 §G1: dragging extends the selection's end to
                 // the row under the pointer; clamped to the pane's

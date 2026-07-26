@@ -92,14 +92,14 @@ fn mouse_wheel_scrolls_the_help_overlay_when_hovered() {
 
 /// A mouse click landing in the main pane shifts keyboard focus back
 /// to it without closing the still-open side pane (2026-07-14
-/// feedback, item 3).
+/// feedback, item 3). Spec 0185 S5 exempts the override *selection*
+/// pane from this, so the management pane is what carries the rule now.
 #[test]
-fn mouse_click_in_main_pane_refocuses_without_closing_override_pane() {
+fn mouse_click_in_main_pane_refocuses_without_closing_the_manage_pane() {
     let (mut app, inner_idx, _) = type_as_fixture();
     app.cursor = inner_idx;
-    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
-    assert!(app.override_target.is_some());
-    assert!(app.override_focus);
+    app.manage_open = true;
+    app.manage_focus = true;
 
     app.main_area = Rect::new(0, 0, 40, 20);
     app.side_area = Rect::new(60, 0, 40, 20);
@@ -112,14 +112,10 @@ fn mouse_click_in_main_pane_refocuses_without_closing_override_pane() {
     });
 
     assert!(
-        !app.override_focus,
+        !app.manage_focus,
         "click in main pane must shift focus back to it"
     );
-    assert_eq!(
-        app.override_target,
-        Some(inner_idx),
-        "the override pane must stay open"
-    );
+    assert!(app.manage_open, "the management pane must stay open");
 }
 
 /// Wheel scroll routes to whichever pane the mouse is hovering, not

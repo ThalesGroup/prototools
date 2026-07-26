@@ -195,7 +195,7 @@ fn a_toggles_the_main_pane_annotation_display() {
     assert!(!app.annotations);
     assert_eq!(app.render_line_content(0), "  id: 5");
     let spanned: String = app
-        .render_line_spans(0)
+        .row_spans(DisplayRow::Committed(0))
         .iter()
         .map(|s| s.content.as_ref())
         .collect();

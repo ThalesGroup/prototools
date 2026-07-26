@@ -49,6 +49,23 @@ pub(super) struct LinePatch {
     pub(super) styles: Vec<LineStyles>,
 }
 
+/// Spec 0185 S3: one node's complete rendering under a candidate type,
+/// with no tree mutation whatsoever — everything `splice_override` used
+/// to compute inline before its splice proper begins. The live preview
+/// takes the same value and stops there, which is what makes the
+/// preview and the commit byte-identical (G3).
+pub(super) struct RenderedAs {
+    pub(super) lines: Vec<String>,
+    pub(super) line_styles: Vec<LineStyles>,
+    /// Discarded by the preview (spec 0185 N6: overlay rows have no
+    /// identity); consumed by `splice_override` to build the new subtree.
+    pub(super) spans: Vec<NodeSpan>,
+    /// Spec 0174 §S3: how far a truncated preview's interior moved left
+    /// because the rewritten LEN framing is narrower than the original.
+    /// Only `splice_override` needs it, to correct `spans`' byte ranges.
+    pub(super) span_shift: usize,
+}
+
 /// Unifies `FieldDescriptor` (regular field) and `ExtensionDescriptor`
 /// (extension field) for `parent_field`'s callers — mirrors
 /// `prototext_core`'s own (crate-private) `FieldOrExt` adapter, which
@@ -1761,24 +1778,29 @@ impl App {
     /// gets shown as the real override, not a speculative preview.
     pub(super) fn splice_override(
         &mut self,
-        mut idx: usize,
+        idx: usize,
         target: Option<String>,
         is_preview: bool,
         patch_scope: Option<usize>,
     ) -> Result<usize, String> {
-        // Spec 0160 G2: `self.tree[idx].span` is already authoritative
-        // by the time this is called — either `render_overrides_inner`'s
-        // prologue already applied `idx`'s own pending correction (and,
-        // for a packed member, every other member of its run too), or
-        // this is a standalone call (`override_batch_depth == 0`), where
-        // `pending_shift == 0` because the tree is already fully
-        // reconciled from the previous batch.
-        let mut old_span = self.tree[idx].span.clone();
-        let is_packed = old_span.packed_record_start.is_some();
+        // Spec 0185 S3: the "what does this node look like as `target`"
+        // half now lives in `render_node_as`, shared verbatim with the
+        // live preview — including the packed-record normalization,
+        // which is what reassigns `idx` to the run's leader and widens
+        // `old_span` to the whole run's extent (spec 0135 G1).
+        let (idx, old_span, rendered) = self.render_node_as(idx, target.as_deref(), is_preview)?;
+        let RenderedAs {
+            lines: new_lines,
+            line_styles: new_line_styles,
+            spans: new_spans,
+            span_shift,
+        } = rendered;
 
-        // Packed-record reconstruction + sibling merge (spec 0135 G1):
-        // collapse every sibling element of the same packed record into
-        // `siblings[0]` before proceeding through the ordinary path below.
+        let is_packed = old_span.packed_record_start.is_some();
+        // Packed sibling merge (spec 0135 G1): every sibling element of
+        // the same packed record is collapsed into `idx`. What remains
+        // here — after `render_node_as`'s own normalization — is only
+        // the pointer bookkeeping the splice itself needs.
         let mut packed_next_sibling_of_run = None;
         let mut packed_seam_after = None;
         let mut packed_run_is_last_child = false;
@@ -1788,12 +1810,6 @@ impl App {
             let last = *siblings
                 .last()
                 .expect("packed_record_siblings always returns at least idx itself");
-            let (raw_range, text_range) = self.packed_record_extent(&siblings);
-            idx = siblings[0];
-            old_span = self.tree[idx].span.clone();
-            old_span.raw_range = raw_range;
-            old_span.text_range = text_range;
-
             packed_next_sibling_of_run = self.tree[last].next_sibling;
             packed_seam_after = self.tree[last].doc_next;
             if let Some(parent) = self.tree[idx].parent {
@@ -1803,189 +1819,6 @@ impl App {
                 packed_orphans.push(s);
                 self.collect_descendants(s, &mut packed_orphans);
             }
-        }
-
-        let field_number = old_span.field_number;
-        let field_name = self.field_name_for(idx);
-        let renamed = self
-            .resolve_active_override_entry(idx)
-            .and_then(|e| e.name.clone())
-            .is_some();
-        // An un-renamed extension's schema name must be shown in
-        // prototext's `[fqdn]` bracket convention (mirrors `prototext_
-        // core::FieldOrExt::display_name`) so the patched header both
-        // reads correctly and re-colorizes as an extension reference
-        // (`colorize`'s highlight query keys off the brackets) — plain
-        // `field_name_for` deliberately returns the bare name here since
-        // its other callers (`export_descriptor::synthetic_field_name`/
-        // `synthetic_message_name`, which need a valid identifier) must
-        // not see brackets.
-        let header_field_name =
-            if !renamed && matches!(self.parent_field(idx), Some(ParentFieldOrExt::Ext(_))) {
-                format!("[{field_name}]")
-            } else {
-                field_name.clone()
-            };
-
-        // Resolve `target` into the synthetic field's declared `Type`
-        // (spec 0135 G1's "second subtlety" + G3, spec 0137 §G3/§G4): a
-        // message FQDN yields `Type::Group` only when the node's real
-        // wire framing is `WT_START_GROUP`, else `Type::Message`; a
-        // primitive keyword yields the matching primitive `Type`
-        // directly; an enum FQDN yields `Type::Enum`; the reserved
-        // `None` sentinel string and a plain `Option::None` (raw) both
-        // yield no synthetic field at all.
-        let (target_desc, field_type) = match &target {
-            None => (None, None),
-            Some(name) if name == "protolens_internal.None" => (None, None),
-            Some(name) => {
-                if let Some(desc) = self.ctx.pool().get_message_by_name(name) {
-                    let ft = if old_span.wire_type == prototext_core::helpers::WT_START_GROUP {
-                        Type::Group
-                    } else {
-                        Type::Message
-                    };
-                    (Some(decode::WrapperTarget::Message(desc)), Some(ft))
-                } else if let Some(prim) = decode::primitive_type_for_keyword(name) {
-                    (None, Some(prim))
-                } else if let Some(enum_desc) = self.ctx.pool().get_enum_by_name(name) {
-                    (
-                        Some(decode::WrapperTarget::Enum(enum_desc)),
-                        Some(Type::Enum),
-                    )
-                } else {
-                    return Err(format!("type '{name}' not found in descriptor set"));
-                }
-            }
-        };
-
-        // Decode `idx`'s own real tag+payload bytes directly (spec 0135
-        // G1) — no synthetic tag prepended.
-        let mut field_bytes = self.blob[old_span.raw_range.clone()].to_vec();
-
-        // Spec 0174: only a live preview is speculative and needs
-        // bounding — a confirmed override must render completely (G5).
-        // Bounding the renderer's *input* bounds its decode, its render,
-        // its span count and its line count together, which is why
-        // `prototext-core` itself carries no budget.
-        let mut span_shift = 0usize;
-        let mut truncated = false;
-        if is_preview {
-            let shape = trunc_shape_for(field_type, old_span.wire_type);
-            if let Some((cut, shift)) =
-                truncate_interior(&field_bytes, self.override_preview_byte_budget, shape)
-            {
-                field_bytes = cut;
-                span_shift = shift;
-                truncated = true;
-            }
-        }
-
-        // Render-cache key: `(interior_range, target)` — no longer
-        // `field_name` (G2 makes the cached render field-name-invariant).
-        // `interior_range` is the same "interior" quantity the cache
-        // already keyed on before this spec, just computed from the
-        // resolved `raw_range`, with `packed_record_start` always `None`
-        // (the packed case has already been normalized above).
-        let interior_range = extract::message_payload_range(&self.blob, &old_span.raw_range, None);
-        // Spec 0163: `is_preview` is part of the key -- a budget-
-        // truncated preview render and a full confirmed render of the
-        // same `(range, target)` must never be conflated, or confirming
-        // an override could silently reuse a truncated preview render.
-        let cache_key = (interior_range, target.clone(), is_preview);
-        let (mut new_lines, new_spans, new_style_hints) = match self.render_cache.get(&cache_key) {
-            Some(cached) => cached,
-            None => {
-                let wrapper_desc = match field_type {
-                    Some(ft) => Some(
-                        decode::register_wrapper(
-                            self.ctx.pool_mut(),
-                            field_number,
-                            ft,
-                            target_desc,
-                        )
-                        .map_err(|e| e.to_string())?,
-                    ),
-                    None => None,
-                };
-                let opts = DecodeRenderOpts {
-                    // Always on (spec 0133): annotations are a pure
-                    // main-pane display concern, not a decode-time input.
-                    annotations: true,
-                    indent_size: self.indent_size,
-                    initial_level: old_span.level,
-                    emit_header: false,
-                    // Any/MessageSet expansion is handled by protolens
-                    // itself, as automatic overrides (spec 0120), not by
-                    // prototext-core's own virtual-node expansion.
-                    expand_any: false,
-                    expand_message_set: false,
-                    ..Default::default()
-                };
-                let (new_text, new_spans) =
-                    decode_and_render_indexed(&field_bytes, wrapper_desc.as_ref(), opts);
-                let new_text = String::from_utf8(new_text)
-                    .map_err(|e| format!("rendered text is not valid UTF-8: {e}"))?;
-                let new_lines: Vec<String> = new_text.lines().map(str::to_string).collect();
-                let new_style_hints = colorize::colorize(&new_text);
-                let value = (new_lines, new_spans, new_style_hints);
-                self.render_cache.insert(cache_key, value.clone());
-                value
-            }
-        };
-
-        // G2: the only remaining header patch is a plain substring
-        // replacement of the synthetic field's placeholder name (`"_"`,
-        // `register_wrapper`'s fixed literal) with the real display name
-        // — the header line itself is otherwise already correct (spec
-        // 0135 G1). Nor for `Type::Group`: `TextSink::begin_nested` labels
-        // a group header with the group's own message type name, never
-        // the field's declared name — standard proto2 group text-format
-        // convention — so the `"_"` placeholder is never actually
-        // present there. Any group target that needs a display name
-        // other than its own type name must instead be named that way
-        // at the source (e.g. `register_message_set_item`'s synthetic
-        // shape is itself named `Item`, matching `prototext-core`'s own
-        // native MessageSet rendering convention) rather than patched
-        // here after the fact. For the raw (`target: None`) case, there
-        // is no synthetic field/placeholder to patch — the header
-        // already shows the node's own numeric field number straight off
-        // the wire — except when an active override entry gives this
-        // node its own rename (spec 0119 §G4), which must still show up
-        // in place of that bare field number even though the node stays
-        // raw.
-        let mut new_line_styles = colorize::hints_by_line(&new_lines, &new_style_hints);
-        let patched_header = match field_type {
-            Some(ft) if ft != Type::Group => {
-                decode::patch_synthetic_field_name(&new_lines[0], &header_field_name)
-            }
-            None if renamed => {
-                decode::patch_raw_field_name(&new_lines[0], field_number, &field_name)
-            }
-            _ => None,
-        };
-        if let Some(patched) = patched_header {
-            new_lines[0] = patched;
-            new_line_styles[0] =
-                colorize::hints_by_line(&new_lines[..1], &colorize::colorize(&new_lines[0]))
-                    .remove(0);
-        }
-
-        // Spec 0174 §S4: a truncated preview ends with a literal `...`,
-        // so the user sees there is more. Done here, on the rendered
-        // lines, rather than in `prototext-core`: `...` is not part of
-        // the prototext grammar, and doing it after `colorize()` has run
-        // means the highlighter never has to parse it. The line carries
-        // empty styles and no `NodeSpan`, so it is not selectable, not
-        // navigable, and not part of any span range.
-        let mut new_spans = new_spans;
-        if truncated {
-            insert_truncation_marker(
-                &mut new_lines,
-                &mut new_line_styles,
-                &mut new_spans,
-                self.indent_size,
-            );
         }
 
         let delta = new_lines.len() as isize
@@ -2225,6 +2058,249 @@ impl App {
         }
 
         Ok(patch_idx)
+    }
+
+    /// Spec 0185 S3: render `idx` as if it were `target`, without
+    /// touching the tree, the line buffers, or anything else document-
+    /// sized. Returns the node the rendering actually applies to — for a
+    /// packed-repeated element that is the run's *leader*, not the
+    /// element the caller named (spec 0135 G1's sibling merge, spec
+    /// 0184's "the record is the addressable unit") — that node's span
+    /// widened to the whole run's byte and line extent, and the
+    /// rendering itself.
+    ///
+    /// `splice_override` calls this and proceeds to splice the result in;
+    /// the live preview (`preview_override_highlight`) calls it and
+    /// stops, holding the result as an overlay. There is deliberately no
+    /// second rendering path: a preview and the commit that follows it
+    /// must be byte-identical (spec 0185 G3), and sharing this function
+    /// is what guarantees it.
+    ///
+    /// `is_preview` caps the *interior bytes* handed to the renderer at
+    /// `override_preview_byte_budget` (spec 0174) and is part of the
+    /// render-cache key, so a truncated preview render and a full
+    /// confirmed render of the same `(range, target)` are never
+    /// conflated.
+    pub(super) fn render_node_as(
+        &mut self,
+        mut idx: usize,
+        target: Option<&str>,
+        is_preview: bool,
+    ) -> Result<(usize, NodeSpan, RenderedAs), String> {
+        // Spec 0160 G2: `self.tree[idx].span` is already authoritative
+        // by the time this is called — either `render_overrides_inner`'s
+        // prologue already applied `idx`'s own pending correction (and,
+        // for a packed member, every other member of its run too), or
+        // this is a standalone call (`override_batch_depth == 0`), where
+        // `pending_shift == 0` because the tree is already fully
+        // reconciled from the previous batch.
+        let mut old_span = self.tree[idx].span.clone();
+
+        // Packed-record reconstruction (spec 0135 G1): the whole run is
+        // one addressable record, so resolve `idx` to `siblings[0]` and
+        // widen `old_span` to the record's own extent before proceeding.
+        if old_span.packed_record_start.is_some() {
+            let siblings = self.packed_record_siblings(idx);
+            let (raw_range, text_range) = self.packed_record_extent(&siblings);
+            idx = siblings[0];
+            old_span = self.tree[idx].span.clone();
+            old_span.raw_range = raw_range;
+            old_span.text_range = text_range;
+        }
+
+        let field_number = old_span.field_number;
+        let field_name = self.field_name_for(idx);
+        let renamed = self
+            .resolve_active_override_entry(idx)
+            .and_then(|e| e.name.clone())
+            .is_some();
+        // An un-renamed extension's schema name must be shown in
+        // prototext's `[fqdn]` bracket convention (mirrors `prototext_
+        // core::FieldOrExt::display_name`) so the patched header both
+        // reads correctly and re-colorizes as an extension reference
+        // (`colorize`'s highlight query keys off the brackets) — plain
+        // `field_name_for` deliberately returns the bare name here since
+        // its other callers (`export_descriptor::synthetic_field_name`/
+        // `synthetic_message_name`, which need a valid identifier) must
+        // not see brackets.
+        let header_field_name =
+            if !renamed && matches!(self.parent_field(idx), Some(ParentFieldOrExt::Ext(_))) {
+                format!("[{field_name}]")
+            } else {
+                field_name.clone()
+            };
+
+        // Resolve `target` into the synthetic field's declared `Type`
+        // (spec 0135 G1's "second subtlety" + G3, spec 0137 §G3/§G4): a
+        // message FQDN yields `Type::Group` only when the node's real
+        // wire framing is `WT_START_GROUP`, else `Type::Message`; a
+        // primitive keyword yields the matching primitive `Type`
+        // directly; an enum FQDN yields `Type::Enum`; the reserved
+        // `None` sentinel string and a plain `Option::None` (raw) both
+        // yield no synthetic field at all.
+        let (target_desc, field_type) = match target {
+            None => (None, None),
+            Some("protolens_internal.None") => (None, None),
+            Some(name) => {
+                if let Some(desc) = self.ctx.pool().get_message_by_name(name) {
+                    let ft = if old_span.wire_type == prototext_core::helpers::WT_START_GROUP {
+                        Type::Group
+                    } else {
+                        Type::Message
+                    };
+                    (Some(decode::WrapperTarget::Message(desc)), Some(ft))
+                } else if let Some(prim) = decode::primitive_type_for_keyword(name) {
+                    (None, Some(prim))
+                } else if let Some(enum_desc) = self.ctx.pool().get_enum_by_name(name) {
+                    (
+                        Some(decode::WrapperTarget::Enum(enum_desc)),
+                        Some(Type::Enum),
+                    )
+                } else {
+                    return Err(format!("type '{name}' not found in descriptor set"));
+                }
+            }
+        };
+
+        // Decode `idx`'s own real tag+payload bytes directly (spec 0135
+        // G1) — no synthetic tag prepended.
+        let mut field_bytes = self.blob[old_span.raw_range.clone()].to_vec();
+
+        // Spec 0174: only a live preview is speculative and needs
+        // bounding — a confirmed override must render completely (G5).
+        // Bounding the renderer's *input* bounds its decode, its render,
+        // its span count and its line count together, which is why
+        // `prototext-core` itself carries no budget.
+        let mut span_shift = 0usize;
+        let mut truncated = false;
+        if is_preview {
+            let shape = trunc_shape_for(field_type, old_span.wire_type);
+            if let Some((cut, shift)) =
+                truncate_interior(&field_bytes, self.override_preview_byte_budget, shape)
+            {
+                field_bytes = cut;
+                span_shift = shift;
+                truncated = true;
+            }
+        }
+
+        // Render-cache key: `(interior_range, target)` — no longer
+        // `field_name` (G2 makes the cached render field-name-invariant).
+        // `interior_range` is the same "interior" quantity the cache
+        // already keyed on before this spec, just computed from the
+        // resolved `raw_range`, with `packed_record_start` always `None`
+        // (the packed case has already been normalized above).
+        let interior_range = extract::message_payload_range(&self.blob, &old_span.raw_range, None);
+        // Spec 0163: `is_preview` is part of the key -- a budget-
+        // truncated preview render and a full confirmed render of the
+        // same `(range, target)` must never be conflated, or confirming
+        // an override could silently reuse a truncated preview render.
+        let cache_key = (interior_range, target.map(str::to_string), is_preview);
+        let (mut new_lines, new_spans, new_style_hints) = match self.render_cache.get(&cache_key) {
+            Some(cached) => cached,
+            None => {
+                let wrapper_desc = match field_type {
+                    Some(ft) => Some(
+                        decode::register_wrapper(
+                            self.ctx.pool_mut(),
+                            field_number,
+                            ft,
+                            target_desc,
+                        )
+                        .map_err(|e| e.to_string())?,
+                    ),
+                    None => None,
+                };
+                let opts = DecodeRenderOpts {
+                    // Always on (spec 0133): annotations are a pure
+                    // main-pane display concern, not a decode-time input.
+                    annotations: true,
+                    indent_size: self.indent_size,
+                    initial_level: old_span.level,
+                    emit_header: false,
+                    // Any/MessageSet expansion is handled by protolens
+                    // itself, as automatic overrides (spec 0120), not by
+                    // prototext-core's own virtual-node expansion.
+                    expand_any: false,
+                    expand_message_set: false,
+                    ..Default::default()
+                };
+                let (new_text, new_spans) =
+                    decode_and_render_indexed(&field_bytes, wrapper_desc.as_ref(), opts);
+                let new_text = String::from_utf8(new_text)
+                    .map_err(|e| format!("rendered text is not valid UTF-8: {e}"))?;
+                let new_lines: Vec<String> = new_text.lines().map(str::to_string).collect();
+                let new_style_hints = colorize::colorize(&new_text);
+                let value = (new_lines, new_spans, new_style_hints);
+                self.render_cache.insert(cache_key, value.clone());
+                value
+            }
+        };
+
+        // G2: the only remaining header patch is a plain substring
+        // replacement of the synthetic field's placeholder name (`"_"`,
+        // `register_wrapper`'s fixed literal) with the real display name
+        // — the header line itself is otherwise already correct (spec
+        // 0135 G1). Nor for `Type::Group`: `TextSink::begin_nested` labels
+        // a group header with the group's own message type name, never
+        // the field's declared name — standard proto2 group text-format
+        // convention — so the `"_"` placeholder is never actually
+        // present there. Any group target that needs a display name
+        // other than its own type name must instead be named that way
+        // at the source (e.g. `register_message_set_item`'s synthetic
+        // shape is itself named `Item`, matching `prototext-core`'s own
+        // native MessageSet rendering convention) rather than patched
+        // here after the fact. For the raw (`target: None`) case, there
+        // is no synthetic field/placeholder to patch — the header
+        // already shows the node's own numeric field number straight off
+        // the wire — except when an active override entry gives this
+        // node its own rename (spec 0119 §G4), which must still show up
+        // in place of that bare field number even though the node stays
+        // raw.
+        let mut new_line_styles = colorize::hints_by_line(&new_lines, &new_style_hints);
+        let patched_header = match field_type {
+            Some(ft) if ft != Type::Group => {
+                decode::patch_synthetic_field_name(&new_lines[0], &header_field_name)
+            }
+            None if renamed => {
+                decode::patch_raw_field_name(&new_lines[0], field_number, &field_name)
+            }
+            _ => None,
+        };
+        if let Some(patched) = patched_header {
+            new_lines[0] = patched;
+            new_line_styles[0] =
+                colorize::hints_by_line(&new_lines[..1], &colorize::colorize(&new_lines[0]))
+                    .remove(0);
+        }
+
+        // Spec 0174 §S4: a truncated preview ends with a literal `...`,
+        // so the user sees there is more. Done here, on the rendered
+        // lines, rather than in `prototext-core`: `...` is not part of
+        // the prototext grammar, and doing it after `colorize()` has run
+        // means the highlighter never has to parse it. The line carries
+        // empty styles and no `NodeSpan`, so it is not selectable, not
+        // navigable, and not part of any span range.
+        let mut new_spans = new_spans;
+        if truncated {
+            insert_truncation_marker(
+                &mut new_lines,
+                &mut new_line_styles,
+                &mut new_spans,
+                self.indent_size,
+            );
+        }
+
+        Ok((
+            idx,
+            old_span,
+            RenderedAs {
+                lines: new_lines,
+                line_styles: new_line_styles,
+                spans: new_spans,
+                span_shift,
+            },
+        ))
     }
 
     /// Every current sibling of `idx` that shares the same

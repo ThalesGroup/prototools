@@ -568,6 +568,41 @@ const HELP_TEXT: &[&str] = &[
     "j/k or PageUp/PageDown scroll this help; q, Esc, or F1 closes it.",
 ];
 
+/// Spec 0185: the override selection pane's live preview, as a block of
+/// rendered lines standing in for the target's committed rows at draw
+/// time. It is *not* part of the document: `tree`, `lines`,
+/// `line_styles`, `line_to_node` and `visible_rows` are all untouched by
+/// it, which is what makes a preview cost only the (byte-bounded) decode
+/// and render of the target's own interior.
+///
+/// `first_row`/`covered_rows` are positions in `visible_rows`, computed
+/// once when the overlay is built. They stay valid because S5 locks
+/// focus to the selection pane for the overlay's whole lifetime: the
+/// only two things that rebuild `visible_rows` — folding and splicing —
+/// are unreachable while it is up. A terminal resize changes the pane
+/// height only, not `visible_rows`, so it is harmless.
+pub(super) struct PreviewOverlay {
+    /// Index into `visible_rows` of the first row the committed target's
+    /// `text_range` covers. For a packed run that target is the run's
+    /// leader and the range is the whole run's (spec 0184: the record is
+    /// the addressable unit), since that is what a commit would splice.
+    first_row: usize,
+    /// How many `visible_rows` entries that `text_range` covers.
+    covered_rows: usize,
+    lines: Vec<String>,
+    line_styles: Vec<LineStyles>,
+}
+
+/// Spec 0185 S2: one row of the main pane as actually drawn — either a
+/// line of the committed document or a line of the preview overlay
+/// standing in for it. Overlay rows have no node, hence no heat cue, no
+/// override hint, no fold marker and no selection (S4).
+#[derive(Clone, Copy)]
+pub(super) enum DisplayRow {
+    Committed(usize),
+    Overlay(usize),
+}
+
 /// Owns all cursor/fold/scroll/jumplist state — kept separate from
 /// `render()`'s drawing calls (spec 0111 §4, ratatui testability pattern).
 pub struct App {
@@ -744,14 +779,14 @@ pub struct App {
     /// message/group node whose byte range it targets (spec 0114 §1/§2);
     /// `None` when closed.
     override_target: Option<usize>,
-    /// `self.tree.len()` captured just before the first live-preview
-    /// splice of the current override-pane session (spec 0161). `None`
-    /// when no preview has been spliced yet this session. Every
-    /// subsequent preview truncates `self.tree`/`self.heat_states` back
-    /// to this watermark before splicing its own candidate, so at most
-    /// one outstanding preview's worth of disposable nodes exists at a
-    /// time. Reset to `None` in `close_override`.
-    preview_tree_watermark: Option<usize>,
+    /// Spec 0185: the live preview of the highlighted candidate, held
+    /// beside the committed document and substituted for the target's
+    /// rows at render time. `None` when nothing is being previewed.
+    /// Dropped by plain assignment — a preview mutates nothing, so
+    /// there is nothing to undo (this replaces spec 0161's
+    /// `preview_tree_watermark` and the five tree/map fix-ups that
+    /// existed only to back a preview splice out again).
+    preview_overlay: Option<PreviewOverlay>,
     /// Spec 0174: `splice_override`'s live-preview interior byte budget —
     /// see `OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT`'s doc comment. Defaults
     /// to that constant, overridable at startup via `main.rs`'s
@@ -1193,7 +1228,7 @@ impl App {
             manage_pan_offset: 0,
             command_pan_offset: 0,
             override_target: None,
-            preview_tree_watermark: None,
+            preview_overlay: None,
             override_preview_byte_budget: Self::OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT,
             override_focus: false,
             override_opened_from_manage: false,

@@ -253,26 +253,20 @@ impl App {
     /// entries keep only the first N lines" (spec 0152 N8: relocked onto
     /// the shared cache, logic otherwise unchanged).
     ///
-    /// Spec 0132 §G3: first settles `override_target`'s main-pane
-    /// rendering back to its actual effective type — reverting whatever
-    /// the live preview last spliced in. Uses the full recursive
-    /// `render_overrides` (not the single-node `resettle_node`): the live
-    /// preview's own `splice_override` call rebuilds `idx`'s entire
-    /// subtree from scratch, with no overrides applied to any of the
-    /// fresh descendants (§G2's "no live nested Any/MessageSet preview"
-    /// non-goal) — a `resettle_node`-only revert would fix `idx` itself
-    /// but leave every previously-auto-expanded Any/MessageSet descendant
-    /// un-re-expanded. `render_overrides`'s recursion re-seeds/reapplies
-    /// every descendant's own override exactly as it does on any other
-    /// pass. A no-op when nothing was ever previewed (the `Enter`-confirm
-    /// call site already ran `render_overrides` itself, which leaves
-    /// `rendered_as` matching everywhere, so this becomes the cheap
-    /// "already current" path throughout the subtree).
+    /// Spec 0185 G2/Q3: closing re-renders **nothing**. It used to open
+    /// with a full recursive `render_overrides(override_target)` pass,
+    /// because the live preview's own `splice_override` rebuilt the
+    /// target's whole subtree from scratch with no overrides applied to
+    /// any of the fresh descendants, so anything less than the full
+    /// recursion would leave every previously-auto-expanded
+    /// `Any`/`MessageSet` descendant un-re-expanded. That damage existed
+    /// *because* the preview mutated the tree. An overlay never does, so
+    /// there is nothing to re-seed and nothing to revert — dropping the
+    /// overlay is the whole revert. A re-render is now triggered only by
+    /// the events that change committed state: confirming a type, or
+    /// (de)activating an entry in the management pane.
     pub(super) fn close_override(&mut self) {
-        if let Some(idx) = self.override_target {
-            self.render_overrides(idx);
-        }
-        self.preview_tree_watermark = None;
+        self.preview_overlay = None;
         if let Some(range) = self.active_override_range.take() {
             let n = self.override_list_height.max(1);
             let stats = heat_cue::derive_stats(&self.override_inferred_raw);
@@ -756,104 +750,75 @@ impl App {
             .unwrap_or(0)
     }
 
-    /// Spec 0132 §G2: live-previews the currently-highlighted override
-    /// candidate by splicing it directly into the main pane — cheap,
-    /// single-node `splice_override` call that deliberately does not
-    /// touch `self.overrides`, so a later `Enter`-confirm (which does
-    /// touch it) is entirely unaffected by whatever was last previewed.
+    /// Spec 0132 §G2, reworked by spec 0185: live-previews the
+    /// currently-highlighted override candidate as a **render-time
+    /// overlay** — a block of rendered lines held beside the committed
+    /// document and substituted for the target's rows while drawing.
     /// No-op if the override pane isn't open. `override_highlight`
     /// indexes `override_candidates` directly (spec 0137 §G4) — no more
     /// pinned row 0; raw (`Option::None`) is reached only via the
     /// `None` sentinel entry in alphabetic mode.
     ///
-    /// `idx`'s own `rendered_as` *is* deliberately invalidated
-    /// (`None`'d out) on every successful preview splice — unlike a real
-    /// `render_overrides`/`resettle_node` splice, which records the
-    /// splice's own target into `rendered_as` so a later pass can no-op
-    /// when nothing changed. A preview splice's target is provisional,
-    /// not `idx`'s real effective type, so `rendered_as` must not claim
-    /// otherwise: leaving it stale (matching whatever it held before the
-    /// pane opened) would make a later revert's `resettle_node` — which
-    /// compares against `rendered_as` to decide whether to re-splice at
-    /// all — wrongly conclude nothing needs re-splicing whenever the
-    /// previewed row happens to coincide with what was already recorded
-    /// (e.g. the common case of previewing the raw/no-type row on a node
-    /// whose real effective type is itself schema-inferred, not an
-    /// explicit override), permanently leaving the preview's content on
-    /// screen instead of actually reverting (2026-07-15 feedback: `Esc`
-    /// silently failed to restore nested Any/MessageSet auto-expansion,
-    /// root-caused to exactly this).
+    /// It used to *apply* the override instead, calling the same
+    /// `splice_override` a confirmed `Enter` calls with one flag
+    /// flipped. A splice is a document-wide operation, so every `j`/`k`
+    /// in the candidate list rebuilt `lines`/`line_styles`, walked
+    /// `doc_next` to shift every following node, refilled
+    /// `line_to_node`/`footer_line_to_node`, and re-scanned
+    /// `visible_rows`. Backing that out then needed six further pieces
+    /// of state (spec 0161's tree watermark, three `retain`s, hand-nulled
+    /// child pointers, a force-`None`d `rendered_as`) plus a full
+    /// `render_overrides` pass in `close_override` — all of it existing
+    /// only to undo something that should never have been done.
+    ///
+    /// A preview needs to change what the user *sees*, not what the
+    /// document *is*: nothing downstream reads the spliced state (the
+    /// candidate list is already computed, scoring runs against raw byte
+    /// ranges, and confirming re-derives everything from the entry).
+    /// So this now renders and stops. Rebuilding is a plain overwrite
+    /// and discarding is a plain assignment.
+    ///
+    /// `render_node_as` is shared verbatim with the committed path,
+    /// which is what makes the preview byte-identical to the splice it
+    /// stands in for (G3), and it resolves a packed-run element to the
+    /// run's leader, so previewing one element of a run covers the whole
+    /// record — what a commit would actually replace (S1, spec 0184).
     pub(super) fn preview_override_highlight(&mut self) {
         let Some(idx) = self.override_target else {
             return;
         };
-        match self.preview_tree_watermark {
-            Some(watermark) => {
-                // `idx.doc_next`, once `idx` has been given a
-                // multi-node subtree by an earlier splice, points to
-                // that subtree's own first child — *inside* the range
-                // about to be truncated below — not "always outside
-                // idx's subtree" as an earlier fix here assumed (see
-                // `document-tree.md`'s `doc_next` invariant section).
-                // Recompute it now, while `first_child`/`last_child`
-                // still describe the pre-truncation subtree, by
-                // skipping forward past every one of idx's own
-                // descendants to the first live node genuinely outside
-                // it. Otherwise `idx.doc_next` is left pointing at an
-                // index that `self.tree.len()` will make valid again
-                // (reused by the *next* splice's freshly-pushed
-                // subtree), wiring a cycle into the doc-order chain
-                // that hangs `finalize_override_batch`'s forward walk
-                // (2026-07-25 bug).
-                let mut old_descendants_vec = Vec::new();
-                self.collect_descendants(idx, &mut old_descendants_vec);
-                let old_descendants: HashSet<usize> = old_descendants_vec.into_iter().collect();
-                self.tree[idx].doc_next =
-                    self.doc_next_after_subtree(self.tree[idx].doc_next, &old_descendants);
-
-                self.tree.truncate(watermark);
-                self.heat_states.truncate(watermark);
-                self.folded.retain(|&i| i < watermark);
-                // Between this preview and the previous one, an
-                // unrelated full `render_overrides` pass (e.g. the
-                // background root-type resolution landing via
-                // `apply_resolved_root_type`) may have rebuilt these
-                // two maps — via `finalize_override_batch` — against a
-                // tree grown past `watermark`. The truncation above just
-                // invalidated any such entries; without this, a later
-                // lookup (e.g. `heat_cue_for`) can hand `can_override`
-                // an index that's now out of bounds, panicking on the
-                // very next render (2026-07-24 bug report: crashed on
-                // hitting `t` right away against a descriptor set whose
-                // scoring graph resolved to an absent root type).
-                self.line_to_node.retain(|_, idx| *idx < watermark);
-                self.footer_line_to_node.retain(|_, idx| *idx < watermark);
-                // The truncation above just invalidated whatever `idx`'s
-                // `first_child`/`last_child` previously pointed at (the
-                // prior preview's now-discarded subtree — always at or
-                // past `watermark`). `splice_override` below
-                // unconditionally overwrites both fields on success, but
-                // if it returns `Err` before reaching that point (every
-                // error path precedes any tree mutation), these must not
-                // keep dangling, out-of-bounds indices around. Null them
-                // defensively so a failed splice leaves `idx` merely
-                // childless (harmless — the override pane, not the main
-                // pane, has focus here) rather than referencing truncated
-                // memory. `doc_next` was already corrected above, before
-                // the truncation invalidated the descendant set it's
-                // computed from.
-                self.tree[idx].first_child = None;
-                self.tree[idx].last_child = None;
-            }
-            None => self.preview_tree_watermark = Some(self.tree.len()),
-        }
         let tentative = self
             .override_candidates
             .get(self.override_highlight)
             .map(|(fqdn, _)| fqdn.clone());
-        match self.splice_override(idx, tentative, true, None) {
-            Ok(_) => self.tree[idx].rendered_as = None,
-            Err(e) => self.message = format!("cannot preview override: {e}"),
+        match self.render_node_as(idx, tentative.as_deref(), true) {
+            Ok((_target, span, rendered)) => {
+                // `visible_rows` is sorted ascending, so the run of rows
+                // the committed node covers is a binary search away.
+                // Both numbers stay valid for the overlay's whole
+                // lifetime because S5's focus lock makes the only two
+                // things that rebuild `visible_rows` — folding and
+                // splicing — unreachable while it is up.
+                let first_row = self
+                    .visible_rows
+                    .partition_point(|&l| l < span.text_range.start);
+                let covered_rows =
+                    self.visible_rows[first_row..].partition_point(|&l| l < span.text_range.end);
+                self.preview_overlay = Some(PreviewOverlay {
+                    first_row,
+                    covered_rows,
+                    lines: rendered.lines,
+                    line_styles: rendered.line_styles,
+                });
+            }
+            // Spec 0185 S6: a candidate that fails to render leaves the
+            // main pane showing committed content — the same outcome as
+            // a failed preview before this spec, reached without a
+            // partial mutation to back out.
+            Err(e) => {
+                self.preview_overlay = None;
+                self.message = format!("cannot preview override: {e}");
+            }
         }
     }
 

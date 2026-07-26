@@ -141,11 +141,14 @@ fn f1_opens_help_regardless_of_focus() {
     assert!(app.help_open);
 }
 
-/// Spec 0114 §3: `Tab` toggles focus between the main pane and the
-/// open override pane; main-pane navigation keys are inert while the
-/// override pane has focus.
+/// Spec 0185 S5/Q2 (superseding spec 0114 §3's `Tab` toggle): `Tab` no
+/// longer leaves the override *selection* pane — focus is locked to it,
+/// which is what keeps the preview overlay's `visible_rows` anchor
+/// valid. The management pane keeps `Tab`: it splices for real, so its
+/// main-pane content is committed content and nothing there depends on
+/// an immutable anchor.
 #[test]
-fn tab_toggles_focus_between_main_and_override_panes() {
+fn tab_is_locked_out_of_the_override_pane_but_not_the_manage_pane() {
     let mut app = message_node_app();
     app.splash = false;
     app.term_width = 120;
@@ -153,11 +156,15 @@ fn tab_toggles_focus_between_main_and_override_panes() {
     assert!(app.override_focus);
 
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    assert!(!app.override_focus);
-    assert_eq!(app.override_target, Some(0)); // pane stays open
+    assert!(app.override_focus, "Tab must not leave the selection pane");
+    assert_eq!(app.override_target, Some(0), "...and the pane stays open");
 
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.manage_open);
+    assert!(app.manage_focus);
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    assert!(app.override_focus);
+    assert!(!app.manage_focus, "the manage pane does not get the lock");
 }
 
 /// Item 3 (spec 0139 follow-up): `Enter` on a main-pane node with an

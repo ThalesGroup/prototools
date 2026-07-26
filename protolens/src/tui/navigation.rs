@@ -246,13 +246,19 @@ impl App {
     /// currently visible window — the basis for `pan_right`'s clamping
     /// bound (spec 0113 D24: "recomputed as the cursor/scroll position
     /// changes").
+    /// Spec 0185 G4: measured over the *composed* window, so a preview
+    /// overlay whose lines are wider than the committed rows they stand
+    /// in for can still be panned all the way to its own right edge —
+    /// which is exactly the case a preview exists for, since a
+    /// structurally wrong candidate is what renders wide.
     pub(super) fn max_visible_line_len(&self) -> usize {
         let pane_height = self.main_area.height as usize;
-        let start = self.scroll_offset.min(self.visible_rows.len());
-        let end = (self.scroll_offset + pane_height).min(self.visible_rows.len());
-        self.visible_rows[start..end]
-            .iter()
-            .map(|&li| self.render_line_content(li).chars().count())
+        let total = self.composed_row_count();
+        let start = self.scroll_offset.min(total);
+        let end = (self.scroll_offset + pane_height).min(total);
+        (start..end)
+            .filter_map(|d| self.display_row(d))
+            .map(|row| self.row_content(row).chars().count())
             .max()
             .unwrap_or(0)
     }
@@ -309,9 +315,13 @@ impl App {
     /// cursor, bounded only by the content itself, no longer by the
     /// cursor's own row (2026-07-19 feedback item 1, supersedes the
     /// 2026-07-18 "cursor must never leave view" bound).
+    ///
+    /// Spec 0185 S2: bounded by the *composed* row count, so a preview
+    /// overlay taller than the block it stands in for can be scrolled
+    /// through in full.
     fn pan_vertical(&mut self, step: usize, up: bool) {
         let height = self.main_area.height as usize;
-        let max_scroll = self.visible_rows.len().saturating_sub(height);
+        let max_scroll = self.composed_row_count().saturating_sub(height);
         pan_vertical_by_step(&mut self.scroll_offset, max_scroll, step, up);
     }
 

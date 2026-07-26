@@ -976,11 +976,12 @@ fn main_pane_search_matches_the_current_not_original_rendering() {
     assert_eq!(app.cursor, 1); // matches the overridden text
 }
 
-/// `Esc` closes the override pane regardless of which pane currently
-/// has focus — same "works regardless of focus" treatment as `t`
-/// (spec 0114 §8's key-bindings table).
+/// `Esc` closes the override pane (spec 0114 §8's key-bindings table).
+/// Since spec 0185 S5 locks focus to the pane, `Esc` from the pane's
+/// own focus is the only way in — and it is also the only way out, so
+/// it must work from every entry point the pane has.
 #[test]
-fn esc_closes_the_override_pane_from_either_focus() {
+fn esc_closes_the_override_pane() {
     let mut app = message_node_app();
     app.splash = false;
     app.term_width = 120;
@@ -989,9 +990,10 @@ fn esc_closes_the_override_pane_from_either_focus() {
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.override_target, None);
 
+    // `Tab` cannot break the lock, so `Esc` still finds the pane.
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    assert!(!app.override_focus);
+    assert!(app.override_focus);
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.override_target, None);
 }
@@ -1399,12 +1401,12 @@ fn override_pane_auto_completes_from_polling_alone_without_scrolling() {
 /// 2026-07-25 feedback ("pressing `t` no longer auto-renders in
 /// preview mode with the first candidate"): on a cold cache,
 /// `toggle_override`'s spec 0132 §G2 preview runs against a
-/// still-empty candidate list, so it splices *raw*.
+/// still-empty candidate list, so it renders *raw*.
 /// `poll_pending_override_work` then fills the list and resets the
 /// highlight to row 0 — but used to re-preview only along its
 /// `override_seek_target` branch, leaving the `open_override_on_
 /// default` path (no active override, no natural type) stuck on that
-/// raw splice for the rest of the session.
+/// raw render for the rest of the session.
 #[test]
 fn poll_pending_override_work_previews_the_newly_arrived_top_candidate() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
@@ -1414,13 +1416,19 @@ fn poll_pending_override_work_previews_the_newly_arrived_top_candidate() {
     app.override_list_height = 4;
 
     // The cold-open state `toggle_override` leaves behind: nothing to
-    // preview yet, so the splice went in raw.
+    // preview yet, so the overlay was rendered raw.
     app.override_candidates.clear();
     app.override_highlight = 0;
     app.preview_override_highlight();
-    assert_eq!(
-        app.tree[inner_idx].span.type_fqdn, None,
-        "the cold-open preview must have spliced raw"
+    let raw_preview = app
+        .preview_overlay
+        .as_ref()
+        .expect("the cold open must still preview, raw")
+        .lines
+        .clone();
+    assert!(
+        !raw_preview.iter().any(|l| l.contains("Outer")),
+        "the cold-open preview must have rendered raw: {raw_preview:?}"
     );
 
     // The worker's answer lands in the shared cache.
@@ -1445,11 +1453,15 @@ fn poll_pending_override_work_previews_the_newly_arrived_top_candidate() {
     assert!(!app.override_candidates_pending);
     assert_eq!(app.override_highlight, 0);
     assert_eq!(app.override_candidates[0].0, "test.Outer");
-    assert_eq!(
-        app.tree[inner_idx].span.type_fqdn.as_deref(),
-        Some("test.Outer"),
+    let previewed = &app
+        .preview_overlay
+        .as_ref()
+        .expect("the arriving top candidate must be previewed")
+        .lines;
+    assert!(
+        previewed.iter().any(|l| l.contains("Outer")),
         "the main pane must be previewing the highlighted top candidate, \
-         not the raw splice left over from the cold open"
+         not the raw render left over from the cold open: {previewed:?}"
     );
 }
 
@@ -1512,13 +1524,13 @@ fn override_pane_seeks_the_active_overrides_type_once_the_complete_list_arrives(
     );
 }
 
-/// Spec 0161 G1/G2: successive live previews truncate the *previous*
-/// preview's disposable subtree back to the session's watermark before
-/// splicing the newly highlighted candidate in — so `self.tree`'s
-/// growth across previews is bounded by the current splice's own size,
-/// not by the sum of every candidate previewed so far this session.
+/// Spec 0185 G1/G2: a preview is a render-time overlay, so it touches
+/// nothing the committed document is made of — and it is discarded by
+/// assignment, with nothing to revert. Asserted rather than timed: a
+/// timing test would pass for the wrong reasons on a fixture this
+/// small.
 #[test]
-fn preview_override_highlight_truncates_prior_preview_before_splicing_next() {
+fn preview_override_highlight_touches_no_committed_state() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
     app.override_target = Some(inner_idx);
     app.override_candidates = vec![
@@ -1526,113 +1538,196 @@ fn preview_override_highlight_truncates_prior_preview_before_splicing_next() {
         ("test.Outer".to_string(), None),
     ];
 
-    app.override_highlight = 0;
-    app.preview_override_highlight();
-    let watermark = app
-        .preview_tree_watermark
-        .expect("watermark must be captured on the first preview");
-    let len_after_a = app.tree.len();
-    assert!(len_after_a >= watermark);
+    let tree_len = app.tree.len();
+    let lines = app.lines.clone();
+    let line_styles = app.line_styles.clone();
+    let line_to_node = app.line_to_node.clone();
+    let visible_rows = app.visible_rows.clone();
+    let folded = app.folded.clone();
 
-    app.override_highlight = 1;
-    app.preview_override_highlight();
-    assert!(
-        app.tree.len() >= watermark,
-        "second preview must still start from the watermark, not from len_after_a"
-    );
-
-    // Same candidate/bytes as the first preview, spliced from the same
-    // watermark again — must exactly reproduce A's own tree length, not
-    // accumulate A + B + A.
-    app.override_highlight = 0;
-    app.preview_override_highlight();
-    assert_eq!(app.tree.len(), len_after_a);
-}
-
-/// Spec 0161 G1 (second bullet of the Test plan): cycling through many
-/// previews in a loop must not accumulate growth proportional to the
-/// number of cycles — `self.tree.len()` must settle back to the same
-/// bounded value every time the same candidate is re-previewed.
-#[test]
-fn repeated_previews_do_not_accumulate_tree_growth() {
-    let (mut app, inner_idx, _id_idx) = type_as_fixture();
-    app.override_target = Some(inner_idx);
-    app.override_candidates = vec![
-        ("test.Inner".to_string(), None),
-        ("test.Outer".to_string(), None),
-    ];
-
-    app.override_highlight = 0;
-    app.preview_override_highlight();
-    let len_after_single_preview = app.tree.len();
-
+    // Forty alternating previews: each one overwrites the overlay, and
+    // nothing accumulates because nothing was ever spliced.
     for i in 0..40 {
         app.override_highlight = i % 2;
         app.preview_override_highlight();
+        assert!(app.preview_overlay.is_some(), "candidate {i} must preview");
+        assert_eq!(app.tree.len(), tree_len);
+        assert_eq!(app.lines, lines);
+        assert_eq!(app.line_styles, line_styles);
+        assert_eq!(app.line_to_node, line_to_node);
+        assert_eq!(app.visible_rows, visible_rows);
+        assert_eq!(app.folded, folded);
     }
-    app.override_highlight = 0;
-    app.preview_override_highlight();
 
-    assert_eq!(
-        app.tree.len(),
-        len_after_single_preview,
-        "40 cycles of preview-switching must not accumulate tree growth"
-    );
+    app.close_override();
+    assert!(app.preview_overlay.is_none());
+    assert_eq!(app.tree.len(), tree_len);
+    assert_eq!(app.lines, lines);
+    assert_eq!(app.line_styles, line_styles);
+    assert_eq!(app.line_to_node, line_to_node);
+    assert_eq!(app.visible_rows, visible_rows);
+    assert_eq!(app.folded, folded);
 }
 
-/// Spec 0161 G5: a node folded while it's part of the currently
-/// previewed subtree must not survive as a stale index in `self.folded`
-/// once a later preview truncates that subtree away.
+/// Spec 0185 G3, the acceptance criterion: the overlay's lines and
+/// styles must be exactly what a real `splice_override` of the same
+/// node under the same candidate produces. This is the test that
+/// catches an S3 factoring which dropped the header patch, the
+/// truncation marker, or the indentation level.
 #[test]
-fn preview_truncation_drops_stale_folded_entries() {
+fn overlay_lines_match_the_committed_splice() {
+    for candidate in ["test.Inner", "test.Outer"] {
+        let (mut app_a, inner_idx_a, _) = type_as_fixture();
+        app_a.override_target = Some(inner_idx_a);
+        app_a.override_candidates = vec![(candidate.to_string(), None)];
+        app_a.override_highlight = 0;
+        app_a.preview_override_highlight();
+        let overlay = app_a
+            .preview_overlay
+            .as_ref()
+            .unwrap_or_else(|| panic!("{candidate} must preview: {}", app_a.message));
+
+        let (mut app_b, inner_idx_b, _) = type_as_fixture();
+        app_b
+            .splice_override(inner_idx_b, Some(candidate.to_string()), false, None)
+            .expect("the committed splice must succeed");
+        let committed = app_b.tree[inner_idx_b].span.text_range.clone();
+
+        assert_eq!(
+            overlay.lines,
+            app_b.lines[committed.clone()],
+            "{candidate}: the overlay must render the committed splice's own lines"
+        );
+        assert_eq!(
+            overlay.line_styles, app_b.line_styles[committed],
+            "{candidate}: ...with the committed splice's own styles"
+        );
+    }
+}
+
+/// Spec 0185 S2: the display-row map is arithmetic over one contiguous
+/// substituted span. Checked at the boundaries — the row before
+/// `first_row`, the first and last overlay rows, the first committed
+/// row after, and one past the end — for an overlay shorter than,
+/// equal to, and longer than the block it stands in for.
+#[test]
+fn display_row_map_holds_at_the_substitution_boundaries() {
+    let (mut app, _inner_idx, _) = type_as_fixture();
+    app.visible_rows = (0..10).collect();
+
+    for overlay_len in [1usize, 3, 6] {
+        app.preview_overlay = Some(PreviewOverlay {
+            first_row: 4,
+            covered_rows: 3,
+            lines: vec!["x".to_string(); overlay_len],
+            line_styles: vec![Vec::new(); overlay_len],
+        });
+        assert_eq!(app.composed_row_count(), 10 - 3 + overlay_len);
+        assert!(matches!(app.display_row(3), Some(DisplayRow::Committed(3))));
+        assert!(matches!(app.display_row(4), Some(DisplayRow::Overlay(0))));
+        assert!(
+            matches!(app.display_row(4 + overlay_len - 1), Some(DisplayRow::Overlay(i)) if i == overlay_len - 1)
+        );
+        // The first committed row after the substituted block is
+        // `visible_rows[4 + 3]`, wherever the overlay's own length put
+        // it in composed space.
+        assert!(matches!(
+            app.display_row(4 + overlay_len),
+            Some(DisplayRow::Committed(7))
+        ));
+        assert!(app.display_row(app.composed_row_count()).is_none());
+    }
+}
+
+/// Spec 0185 S1 × spec 0184: previewing *any* element of a packed run
+/// stands in for the whole run, because the record is the addressable
+/// unit and the whole record is what a commit would splice. Getting
+/// this wrong shows as a preview that replaces one line of a run and
+/// leaves the rest.
+#[test]
+fn previewing_one_packed_element_covers_the_whole_run() {
+    let (mut app, elems, _tail, _a, _b) = packed_run_with_tail_fixture();
+    let run_first_line = app.tree[elems[0]].span.text_range.start;
+    let run_end_line = app.tree[elems[2]].span.text_range.end;
+
+    for &elem in &elems {
+        app.override_target = Some(elem);
+        app.override_candidates = vec![("uint64".to_string(), None)];
+        app.override_highlight = 0;
+        app.preview_override_highlight();
+
+        let o = app
+            .preview_overlay
+            .as_ref()
+            .unwrap_or_else(|| panic!("element {elem} must preview: {}", app.message));
+        assert_eq!(
+            app.visible_rows[o.first_row], run_first_line,
+            "the overlay must anchor at the run's leader, not at element {elem}"
+        );
+        assert_eq!(
+            o.covered_rows,
+            app.visible_rows[o.first_row..].partition_point(|&l| l < run_end_line),
+            "...and stand in for every row of the run"
+        );
+        assert!(o.covered_rows > 1, "the fixture's run spans several rows");
+    }
+}
+
+/// Spec 0185 S4: the overlay has no node, so `folded` is never
+/// consulted for it and never mutated by it. A folded target renders in
+/// full for the overlay's lifetime and goes back to folded when the
+/// overlay is dropped — no saved state, because none was changed.
+#[test]
+fn previewing_a_folded_target_renders_it_in_full_and_leaves_folded_alone() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
-    app.override_target = Some(inner_idx);
-    app.override_candidates = vec![
-        ("test.Inner".to_string(), None),
-        ("test.Outer".to_string(), None),
-    ];
+    app.folded.insert(inner_idx);
+    app.rebuild_visible_rows();
+    let folded_before = app.folded.clone();
+    let visible_rows = app.visible_rows.clone();
 
+    app.override_target = Some(inner_idx);
+    app.override_candidates = vec![("test.Inner".to_string(), None)];
     app.override_highlight = 0;
     app.preview_override_highlight();
-    let watermark = app.preview_tree_watermark.unwrap();
-    let child_to_fold = app.tree[inner_idx]
-        .first_child
-        .expect("previewing test.Inner over id: 5 must decode a child field");
-    assert!(
-        child_to_fold >= watermark,
-        "the folded node must belong to the just-previewed (disposable) subtree"
-    );
-    app.folded.insert(child_to_fold);
 
-    // A different preview triggers truncation back to `watermark`,
-    // which must also drop `child_to_fold` from `folded` — no stale
-    // index left behind.
-    app.override_highlight = 1;
-    app.preview_override_highlight();
-    assert!(!app.folded.contains(&child_to_fold));
+    let o = app.preview_overlay.as_ref().expect("must preview");
+    assert!(
+        o.lines.len() > o.covered_rows,
+        "the overlay must render the folded target in full: {:?} over {} rows",
+        o.lines,
+        o.covered_rows
+    );
+    assert_eq!(app.folded, folded_before);
+    assert_eq!(app.visible_rows, visible_rows);
+
+    app.close_override();
+    assert!(app.preview_overlay.is_none());
+    assert_eq!(app.folded, folded_before);
+    assert_eq!(app.visible_rows, visible_rows);
 }
 
-/// Spec 0161 hidden-flaw fix: if a preview's truncation runs but the
-/// *following* `splice_override` call then fails (e.g. an unresolvable
-/// candidate type), `idx`'s `first_child`/`last_child`/`doc_next` must
-/// not keep dangling, out-of-bounds indices into the just-truncated
-/// range — they must be left in a safe, merely-childless state.
+/// Spec 0185 S6: a candidate that fails to render leaves the overlay at
+/// `None` and the main pane showing committed content — reached without
+/// a partial mutation to back out, which is the whole point of the
+/// overlay. The committed subtree the previous, successful preview
+/// stood in for is untouched throughout.
 #[test]
-fn preview_override_highlight_survives_a_failing_splice_after_truncation() {
+fn a_failing_candidate_drops_the_overlay_and_leaves_the_document_intact() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
     app.override_target = Some(inner_idx);
     app.override_candidates = vec![
         ("test.Inner".to_string(), None),
         ("nonexistent.Type".to_string(), None),
     ];
+    let lines = app.lines.clone();
+    let first_child = app.tree[inner_idx].first_child;
 
     app.override_highlight = 0;
     app.preview_override_highlight();
     assert!(app.message.is_empty(), "first preview must succeed cleanly");
+    assert!(app.preview_overlay.is_some());
 
-    // Second preview's candidate type doesn't exist in the descriptor
-    // pool — `splice_override` returns `Err` after truncation already
-    // ran.
+    // The second candidate's type doesn't exist in the descriptor pool.
     app.override_highlight = 1;
     app.preview_override_highlight();
     assert!(
@@ -1640,64 +1735,106 @@ fn preview_override_highlight_survives_a_failing_splice_after_truncation() {
         "unresolvable candidate must report an error: {}",
         app.message
     );
-    assert_eq!(app.tree[inner_idx].first_child, None);
-    assert_eq!(app.tree[inner_idx].last_child, None);
-    assert_eq!(app.tree[inner_idx].doc_next, None);
-
-    // Must not panic walking `idx`'s (now empty) children.
-    let mut child = app.tree[inner_idx].first_child;
-    let mut count = 0;
-    while let Some(c) = child {
-        count += 1;
-        child = app.tree[c].next_sibling;
-    }
-    assert_eq!(count, 0);
+    assert!(app.preview_overlay.is_none());
+    assert_eq!(app.lines, lines);
+    assert_eq!(app.tree[inner_idx].first_child, first_child);
 }
 
-/// 2026-07-24 bug report: hitting `t` right away against a descriptor
-/// set whose scoring graph resolves the root to a type absent from the
-/// descriptor pool panicked in `can_override` with an out-of-bounds
-/// tree index. Root cause: an unrelated full `render_overrides` pass
-/// landing between two live previews (e.g. the background root-type
-/// resolution's `apply_resolved_root_type`) rebuilds `line_to_node`/
-/// `footer_line_to_node` — via `finalize_override_batch` — against a
-/// tree grown past the watermark. The next preview's truncation must
-/// purge any such now-out-of-bounds entries from both maps, exactly as
-/// it already does for `self.folded`.
+/// Spec 0185 S5/G5: while the override-selection pane is open, focus is
+/// locked to it — not by `Tab`, not by a main-pane click. The lock is
+/// load-bearing rather than cosmetic: it is what keeps the overlay's
+/// `visible_rows` anchor valid. Panning (G4) is deliberately exempt.
 #[test]
-fn preview_truncation_drops_stale_line_to_node_entries() {
+fn the_selection_pane_holds_focus_but_still_lets_the_main_pane_pan() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
-    app.override_target = Some(inner_idx);
-    app.override_candidates = vec![
-        ("test.Inner".to_string(), None),
-        ("test.Outer".to_string(), None),
-    ];
+    app.cursor = inner_idx;
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert!(app.override_target.is_some());
+    assert!(app.override_focus);
 
+    let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert!(app.override_focus, "Tab must not leave the selection pane");
+
+    let cursor = app.cursor;
+    app.select_anchor = None;
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: app.main_area.x + 1,
+        row: app.main_area.y + 1,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(app.override_focus, "a main-pane click must not steal focus");
+    assert_eq!(app.cursor, cursor, "...nor move the cursor");
+    assert_eq!(app.select_anchor, None, "...nor start a selection");
+
+    // G4: a one-row-high pane is what gives this three-line fixture
+    // something to scroll.
+    app.main_area.height = 1;
+    app.scroll_offset = 0;
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::ALT));
+    assert!(app.scroll_offset > 0, "Alt-Down must pan the main pane");
+    assert_eq!(app.cursor, cursor);
+
+    app.scroll_offset = 0;
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: app.main_area.x,
+        row: app.main_area.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(
+        app.scroll_offset, WHEEL_PAN_STEP,
+        "the wheel must still pan"
+    );
+    assert_eq!(app.cursor, cursor);
+}
+
+/// Spec 0185 S7/Q1: the lock is announced in words on the main pane's
+/// statusline, tied to the selection pane being open rather than to an
+/// overlay existing — so it is shown for a candidate that failed to
+/// render too, where the lock still holds but no overlay does.
+#[test]
+fn the_main_statusline_announces_the_focus_lock() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.cursor = inner_idx;
+
+    let mut terminal = Terminal::new(TestBackend::new(200, 24)).unwrap();
+    let main_statusline = |app: &App, terminal: &Terminal<TestBackend>| -> String {
+        let buffer = terminal.backend().buffer();
+        let y = app.main_area.y + app.main_area.height;
+        (app.main_area.x..app.main_area.x + app.main_area.width)
+            .map(|x| buffer[(x, y)].symbol().to_string())
+            .collect()
+    };
+
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert!(!main_statusline(&app, &terminal).contains("locked"));
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let row = main_statusline(&app, &terminal);
+    assert!(
+        row.contains("preview (main pane locked)"),
+        "a live preview must say so: {row:?}"
+    );
+
+    app.override_candidates = vec![("nonexistent.Type".to_string(), None)];
     app.override_highlight = 0;
     app.preview_override_highlight();
-    assert!(app.preview_tree_watermark.is_some());
-
-    // Simulate an intervening `finalize_override_batch` call (e.g. via
-    // `apply_resolved_root_type`) rebuilding both maps against a tree
-    // grown past the watermark.
-    let stale_idx = app.tree.len();
-    app.line_to_node.insert(999_999, stale_idx);
-    app.footer_line_to_node.insert(999_998, stale_idx);
-
-    // A different preview triggers truncation back to `watermark` —
-    // must also drop the now out-of-bounds entries above, not just
-    // truncate `self.tree` itself.
-    app.override_highlight = 1;
-    app.preview_override_highlight();
-    let new_len = app.tree.len();
+    assert!(app.preview_overlay.is_none());
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let row = main_statusline(&app, &terminal);
     assert!(
-        app.line_to_node.values().all(|&idx| idx < new_len),
-        "line_to_node must not keep entries past the truncated tree's end"
+        row.contains("main pane locked") && !row.contains("preview"),
+        "a failed preview still reports the lock, without claiming a preview: {row:?}"
     );
-    assert!(
-        app.footer_line_to_node.values().all(|&idx| idx < new_len),
-        "footer_line_to_node must not keep entries past the truncated tree's end"
-    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert!(!main_statusline(&app, &terminal).contains("locked"));
 }
 
 /// Spec 0161 regression: confirming an override with `Enter` after

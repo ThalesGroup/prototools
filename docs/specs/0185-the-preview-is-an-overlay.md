@@ -6,8 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0185 — the override preview is an overlay, not a splice
 
-Status: draft
-Implemented in:
+Status: implemented
+Implemented in: 2026-07-26
 App: protolens
 Refs: docs/protolens/rendering-flaws.md (P3),
       docs/specs/0135-protolens-override-raw-tag-rewrap.md (G1),
@@ -122,25 +122,28 @@ rows while drawing, and dropped by assignment.
 
 ```rust
 struct PreviewOverlay {
-    /// The committed node the preview stands in for.
-    target: usize,
-    /// Its committed `text_range` at the moment the overlay was built.
-    committed: Range<usize>,
-    /// Index into `visible_rows` of the first row `committed` covers.
+    /// Index into `visible_rows` of the first row the committed
+    /// target's `text_range` covers.
     first_row: usize,
-    /// How many `visible_rows` entries `committed` covers.
+    /// How many `visible_rows` entries that `text_range` covers.
     covered_rows: usize,
     lines: Vec<String>,
-    line_styles: Vec<Vec<(Range<usize>, SyntaxRole)>>,
+    line_styles: Vec<LineStyles>,
 }
 ```
 
 held as `App::preview_overlay: Option<PreviewOverlay>` — replacing
 `preview_tree_watermark`.
 
+*(As implemented: the `target` and `committed` fields this spec first
+sketched are not carried. Nothing reads them — `target` is consumed at
+construction time to find the anchor, `committed` only to compute it —
+and a field no code reads is a field that can drift out of agreement
+with the two that matter.)*
+
 `first_row` is found by binary search: `visible_rows` is sorted
-ascending, so `partition_point(|&l| l < committed.start)` gives it, and
-`covered_rows` is the run of entries below `committed.end`. Both are
+ascending, so `partition_point(|&l| l < text_range.start)` gives it, and
+`covered_rows` is the run of entries below `text_range.end`. Both are
 computed once, when the overlay is built.
 
 **Spec 0184 interaction.** If `target` is an element of a packed run,
@@ -173,7 +176,20 @@ committed and overlay rows reach the same span-building, `pan_spans`
 that is how G3 is met, and reviewing it is how G3 is checked.
 
 `scroll_offset` is clamped against the composed row count, not
-`visible_rows.len()`.
+`visible_rows.len()` — which also bounds keyboard and wheel panning
+(G4), since both go through `pan_vertical`.
+
+**Two cursor-row spaces, kept apart.** `cursor_display_row()` is a
+binary search into `visible_rows`, so it answers in *committed* row
+space, and that is the space `last_cursor_row` and `clamp_pan_offset`'s
+guard compare against. The render loop's `REVERSED` comparison needs
+*composed* space instead, because it compares against rows it is
+drawing. So it uses `cursor_composed_row()`, which carries the same
+answer across the substitution; a cursor inside the block the overlay
+stands in for — the usual case, since the preview's target *is* the
+node the cursor is on — resolves to the overlay's own first row.
+Conflating the two shows as the highlight bar drifting by `delta` rows
+while a preview is up.
 
 ### S3. Building the overlay
 
@@ -185,10 +201,43 @@ the synthetic field name into the header, and appends spec 0174's
 truncation marker. The splice proper begins at `:1780` with
 `let delta = ...`.
 
-Factor `:1653-1779` out as `render_node_as(idx, target) ->
-Result<(Vec<String>, Vec<Vec<(Range, SyntaxRole)>>, Vec<NodeSpan>), String>`.
-`splice_override` calls it and proceeds; the preview calls it and stops.
-The `NodeSpan`s the preview receives are **discarded** (N6).
+Factor `:1653-1779` out as `render_node_as`. `splice_override` calls it
+and proceeds; the preview calls it and stops. The `NodeSpan`s the
+preview receives are **discarded** (N6).
+
+As implemented the signature carries three things this spec's sketch
+left out, each of them load-bearing:
+
+```rust
+fn render_node_as(
+    &mut self,
+    idx: usize,
+    target: Option<&str>,
+    is_preview: bool,
+) -> Result<(usize, NodeSpan, RenderedAs), String>;
+
+struct RenderedAs {
+    lines: Vec<String>,
+    line_styles: Vec<LineStyles>,
+    spans: Vec<NodeSpan>,
+    span_shift: usize,
+}
+```
+
+- `is_preview` selects spec 0174's interior truncation. It has to be a
+  parameter rather than "true for the preview, false for the splice",
+  because both callers are now the same function and only the caller
+  knows which it is.
+- The returned `usize` is the **resolved** index. Spec 0184's packed
+  normalization happens inside `render_node_as` (it is what decides
+  which bytes to render), so it is what redirects a packed element to
+  its run's leader and widens `old_span` to the record's extent — which
+  is exactly the S1 interaction above, obtained rather than
+  reimplemented.
+- `span_shift` (spec 0174 §S3) is how far a truncated preview's interior
+  moved left because the rewritten LEN framing is narrower. Only
+  `splice_override` needs it, to correct `spans`' byte ranges; the
+  preview discards it with the spans.
 
 This is the one real refactor in this spec, and the risk is that the
 extracted half quietly depends on state the splice half sets. It does
@@ -237,10 +286,19 @@ While `override_target.is_some()`:
 - **Panning still works.** Wheel events already route by geometry
   rather than by focus (`mouse.rs:107-124`), so `wheel_pan_up`/`down`
   and the horizontal `wheel_pan_left`/`right` (`:87-91`) keep working
-  unchanged. Keyboard panning does not: `Ctrl-Up`/`Ctrl-Down`/
-  `Ctrl-Left`/`Ctrl-Right` are handled only in the main-pane branch, so
-  `handle_override_key` gains them, delegating to the same
-  `pan_vertical`/`pan_left`/`pan_right` (`navigation.rs:312-316`).
+  unchanged. Keyboard panning does not, so `handle_override_key` gains
+  arrow keys that delegate to the main pane's own
+  `pan_vertical_up`/`down`/`pan_left`/`pan_right`
+  (`navigation.rs:292-333`).
+
+  **Deviation: Alt-arrows, not Ctrl-arrows.** This spec first said
+  `Ctrl-Up`/`Down`/`Left`/`Right`, on the grounds that they are handled
+  only in the main-pane branch. That is wrong — `handle_override_key`
+  already binds all four to the *candidate list's* own pan
+  (`key_dispatch.rs:37-54`), so taking them would have silently
+  replaced a working binding. `Alt` was free (bound only in
+  `handle_command_key`), so main-pane panning from the selection pane is
+  `Alt-Up`/`Down`/`Left`/`Right` and the candidate list keeps `Ctrl`.
 - The cursor does not move for the overlay's whole lifetime, so
   `render.rs:305-308`'s `last_cursor_row` guard never fires and
   `clamp_scroll_to_visible` never fights the user's panning.
@@ -293,12 +351,15 @@ holds but no overlay does.
 ## Test plan
 
 - **G3 is asserted by byte equality, and it is the acceptance
-  criterion.** For each of several targets and candidate types: build
-  the overlay, capture the composed display rows; separately
-  `splice_override` the same node for real and capture the same rows
-  from the committed state. They must be identical, spans and styles
-  included. This is the test that catches an S3 factoring that dropped
-  the header patch, the truncation marker, or the indentation level.
+  criterion.** For each of several candidate types: build the overlay,
+  then separately `splice_override` the same node for real and slice
+  the committed `lines`/`line_styles` by its resulting `text_range`.
+  They must be identical, styles included. This is the test that catches
+  an S3 factoring that dropped the header patch, the truncation marker,
+  or the indentation level. (The comparison is on the *lines*, not on
+  `row_content`: display-time fold markers are S4's documented
+  difference between an overlay row and a committed one, so comparing
+  rendered rows would assert the opposite of what S4 specifies.)
 - **G1 by assertion, not by timing:** after a preview, `lines.len()`,
   `tree.len()`, `line_to_node.len()` and `visible_rows` are all
   bit-for-bit what they were before it, and after dropping the overlay
@@ -312,14 +373,42 @@ holds but no overlay does.
   candidate that failed to render, and drops it on close.
 - **Focus lock (S5):** with the pane open, `Tab` leaves
   `override_focus` set; a synthesized left-click in `main_area` leaves
-  focus, `cursor` and `select_anchor` untouched; `Ctrl-Down` and a wheel
-  event both change `scroll_offset` and neither changes `cursor`.
+  focus, `cursor` and `select_anchor` untouched; `Alt-Down` and a wheel
+  event both change `scroll_offset` and neither changes `cursor`. The
+  management pane's own `Tab` still works, so that Q2's deliberate
+  difference is pinned rather than merely intended.
 - **Packed run (S1):** previewing an element of a run replaces the
   whole run's rows, not one.
 - **Fold (S4):** previewing a folded target renders the overlay in
   full and leaves `folded` unchanged; dropping the overlay restores the
   folded rendering.
 - `reuse lint` and `nix-build -A ci`.
+
+## Measured outcome
+
+`profile_preview_root_versus_first_child_on_db3`
+(`tui/tests/profiling.rs`, `#[ignore]`d) on the 1.1 MB `db3.desc`
+(149,359 nodes / 196,701 lines), 20 alternating previews each:
+
+| target | per preview |
+|---|---|
+| root | 245 µs |
+| first child | 32 µs |
+
+with `tree.len()` and `lines.len()` unchanged across both runs — G1
+observed on a real document, not just on a fixture.
+
+This settles the 2026-07-26 report that "browsing types for the first
+child is faster than for the root, but still noticeably slower". The
+asymmetry was never in the decode or the render, both of which the byte
+budget already bounds identically: it was `finalize_override_batch`'s
+four O(document) passes, which the *root's* splice happened to make
+cheap because replacing the root replaces the whole document, leaving
+nothing for the passes to walk. Splicing the first child left the other
+~196,000 lines in place, so all four ran at full size on every
+keystroke. Removing the preview as their caller removes the asymmetry
+with them; what is left is the render, where the root is now the slower
+of the two.
 
 ## Resolved questions
 

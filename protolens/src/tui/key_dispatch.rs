@@ -25,8 +25,20 @@ impl App {
         self.pending_g = false;
 
         match key.code {
-            KeyCode::Tab => self.override_focus = false,
+            // Spec 0185 S5: `Tab` no longer hands focus to the main
+            // pane. While the selection pane is open, focus is locked to
+            // it — that lock is what makes the preview overlay's anchor
+            // (`first_row`/`covered_rows`, positions in `visible_rows`)
+            // immutable for the overlay's whole lifetime. It falls
+            // through to the catch-all arm below.
             KeyCode::Esc | KeyCode::Char('t') | KeyCode::Char('q') => self.close_override(),
+            // Spec 0185 S5/G4: the main pane can still be panned while
+            // the preview is up. Ctrl-arrows already pan this pane's own
+            // candidate list (below), so the main pane gets Alt-arrows.
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => self.pan_vertical_up(),
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => self.pan_vertical_down(),
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => self.pan_left(),
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => self.pan_right(),
             // Horizontal pan (item 14 of 2026-07-17 feedback), mirroring
             // the main pane's own Ctrl-Left/Ctrl-Right (spec 0113 D24)
             // and the mouse's Shift-wheel/native horizontal-scroll pan
@@ -138,6 +150,10 @@ impl App {
                 // alike, not just `path` (unlike the old one-shot
                 // `apply_override`, which only ever fired for `path`).
                 self.overrides.activate(origin.clone(), new_fqdn.clone());
+                // Spec 0185 S6: the overlay must not be alive while a
+                // splice runs — its anchor is a position in
+                // `visible_rows`, which the splice is about to rebuild.
+                self.preview_overlay = None;
                 self.render_overrides(self.first_node);
                 // Spec 0119 G3: land in the management pane, highlighting
                 // the entry just created/reactivated, instead of just
@@ -620,13 +636,16 @@ impl App {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.copy_current_selection_or_line()
             }
-            KeyCode::Tab if self.override_target.is_some() => self.override_focus = true,
+            // Spec 0185 S5: there is no `Tab`-into-the-override-pane arm
+            // any more — it was unreachable once the pane's focus lock
+            // meant the main pane never holds focus while it is open.
 
             // Override management pane (spec 0117 §3): `o` opens/closes
             // it, mirroring `t`. `Tab` moves focus back into it while
-            // it's open, mirroring the override selection pane (a
-            // main-pane mouse click can also shift focus here without
-            // closing the pane — `handle_mouse`, 2026-07-14 feedback).
+            // it's open (Q2: the management pane deliberately does *not*
+            // get the selection pane's focus lock — it performs actual
+            // splices, so its main-pane content is committed content and
+            // nothing there depends on an immutable anchor).
             KeyCode::Char('o') => self.toggle_manage_pane(),
             KeyCode::Tab if self.manage_open => self.manage_focus = true,
 
