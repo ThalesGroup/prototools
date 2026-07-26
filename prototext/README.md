@@ -167,7 +167,7 @@ $ prototext --descriptor-set my.desc list-schemas unknown.pb
 $ prototext --descriptor-set my.desc decode unknown.pb
 #@ prototext: protoc
 # Type: google.type.PostalAddress
-# Score: 13  (matched: 13, unknown: 0, mismatches: 0, non_canonical: 0)
+# Score: 13  (matched: 13, unknown: 0, out_of_range: 0, non_canonical: 0, mismatches: 0)
 
 revision: 448
 region_code: "US"

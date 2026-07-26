@@ -151,13 +151,17 @@ fn read_descriptor_file(path: &Path) -> Result<Vec<u8>, String> {
 const MAX_AMBIGUOUS_TYPES: usize = 10;
 
 /// Result of auto-inference: the winning FQDN and its score breakdown.
+///
+/// The counters are declared — and reported — in increasing order of suspicion
+/// (spec 0178 S4), which is also the order their coefficients rank in.
 pub struct InferredType {
     pub fqdn: String,
     pub score: i64,
     pub matches: u64,
     pub unknowns: u64,
-    pub mismatches: u64,
+    pub out_of_range: u64,
     pub non_canonical: u64,
+    pub mismatches: u64,
 }
 
 /// Outcome of attempting to infer the message type of a protobuf blob.
@@ -220,8 +224,9 @@ pub fn infer_type(
                 score: r.score(),
                 matches: r.matches,
                 unknowns: r.unknowns,
-                mismatches: r.mismatches,
+                out_of_range: r.out_of_range,
                 non_canonical: r.non_canonical,
+                mismatches: r.mismatches,
             })
             .collect();
         ambiguous.sort_by(|a, b| a.fqdn.cmp(&b.fqdn));
@@ -235,8 +240,9 @@ pub fn infer_type(
         score: top_score,
         matches: winner.matches,
         unknowns: winner.unknowns,
-        mismatches: winner.mismatches,
+        out_of_range: winner.out_of_range,
         non_canonical: winner.non_canonical,
+        mismatches: winner.mismatches,
     }))
 }
 
@@ -248,18 +254,20 @@ fn inferred_header(inferred: &InferredType) -> String {
         inferred.score.to_string()
     };
     format!(
-        "# Type: {}\n# Score: {}  (matched: {}, unknown: {}, mismatches: {}, non_canonical: {})\n\n",
+        "# Type: {}\n# Score: {}  (matched: {}, unknown: {}, out_of_range: {}, \
+         non_canonical: {}, mismatches: {})\n\n",
         inferred.fqdn,
         score_str,
         inferred.matches,
         inferred.unknowns,
-        inferred.mismatches,
+        inferred.out_of_range,
         inferred.non_canonical,
+        inferred.mismatches,
     )
 }
 
 /// Write a YAML type-entry block (used by both `InferFailureReporter` and
-/// `list_schemas_one`).  When `detailed_score` is true the four sub-dimensions
+/// `list_schemas_one`).  When `detailed_score` is true the five sub-dimensions
 /// are included; otherwise only `type` and `score` are emitted.
 fn write_type_entry(w: &mut dyn Write, indent: &str, t: &InferredType, detailed_score: bool) {
     let _ = writeln!(w, "{indent}- type: {}", t.fqdn);
@@ -267,8 +275,9 @@ fn write_type_entry(w: &mut dyn Write, indent: &str, t: &InferredType, detailed_
     if detailed_score {
         let _ = writeln!(w, "{indent}  matched: {}", t.matches);
         let _ = writeln!(w, "{indent}  unknown: {}", t.unknowns);
-        let _ = writeln!(w, "{indent}  mismatches: {}", t.mismatches);
+        let _ = writeln!(w, "{indent}  out_of_range: {}", t.out_of_range);
         let _ = writeln!(w, "{indent}  non_canonical: {}", t.non_canonical);
+        let _ = writeln!(w, "{indent}  mismatches: {}", t.mismatches);
     }
 }
 
@@ -365,8 +374,9 @@ pub fn list_schemas_one(
             score: r.score(),
             matches: r.matches,
             unknowns: r.unknowns,
-            mismatches: r.mismatches,
+            out_of_range: r.out_of_range,
             non_canonical: r.non_canonical,
+            mismatches: r.mismatches,
         })
         .collect();
 
@@ -410,7 +420,6 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
             assume_binary,
             no_annotations,
             detailed_score,
-            relax_ranges,
             no_expand_any,
             no_expand_message_set,
             hide_unknown_fields,
@@ -420,7 +429,6 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
             let annotations = !no_annotations;
             let output_root = cli.output_root.clone();
             let scoring_opts = ScoringOpts {
-                strict_ranges: !relax_ranges,
                 expand_any: !no_expand_any,
             };
 
@@ -483,7 +491,6 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
             top,
             assume_binary,
             detailed_score,
-            relax_ranges,
             no_expand_any,
             paths,
         } => {
@@ -497,7 +504,6 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
                 }
             })?;
             let scoring_opts = ScoringOpts {
-                strict_ranges: !relax_ranges,
                 expand_any: !no_expand_any,
             };
             run_list_schemas(
@@ -515,7 +521,6 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
         Command::Score {
             r#type,
             assume_binary,
-            relax_ranges,
             no_expand_any,
             paths,
         } => {
@@ -529,7 +534,6 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
                 }
             })?;
             let scoring_opts = ScoringOpts {
-                strict_ranges: !relax_ranges,
                 expand_any: !no_expand_any,
             };
             run_score(
@@ -1047,16 +1051,26 @@ fn run_score(
         .clone()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
+    /// The score breakdown, reported in increasing order of suspicion
+    /// (spec 0178 S4). `serde` emits the fields in declaration order, so this
+    /// is also the YAML key order.
+    #[derive(Serialize)]
+    struct Breakdown {
+        score: i64,
+        matches: u64,
+        unknowns: u64,
+        out_of_range: u64,
+        non_canonical: u64,
+        mismatches: u64,
+    }
+
     #[derive(Serialize)]
     #[serde(untagged)]
     enum ScoreEntry {
         Scored {
             path: String,
-            score: i64,
-            matches: u64,
-            unknowns: u64,
-            mismatches: u64,
-            non_canonical: u64,
+            #[serde(flatten)]
+            breakdown: Breakdown,
         },
         Vetoed {
             path: String,
@@ -1064,7 +1078,9 @@ fn run_score(
         },
     }
 
-    let score_input = |data: &[u8]| -> Result<(bool, i64, u64, u64, u64, u64), String> {
+    // Returns the veto flag separately from the breakdown: a vetoed candidate
+    // reports only `vetoed: true`, so its counters are never read.
+    let score_input = |data: &[u8]| -> Result<(bool, Breakdown), String> {
         let binary = render_as_bytes(
             data,
             RenderOpts {
@@ -1080,12 +1096,23 @@ fn run_score(
             .ok_or_else(|| format!("type '{}' not found in scoring graph", type_name))?;
         Ok((
             result.vetoed,
-            result.score(),
-            result.matches,
-            result.unknowns,
-            result.mismatches,
-            result.non_canonical,
+            Breakdown {
+                score: result.score(),
+                matches: result.matches,
+                unknowns: result.unknowns,
+                out_of_range: result.out_of_range,
+                non_canonical: result.non_canonical,
+                mismatches: result.mismatches,
+            },
         ))
+    };
+
+    let entry = |path: String, (vetoed, breakdown): (bool, Breakdown)| {
+        if vetoed {
+            ScoreEntry::Vetoed { path, vetoed: true }
+        } else {
+            ScoreEntry::Scored { path, breakdown }
+        }
     };
 
     let mut entries: Vec<ScoreEntry> = Vec::new();
@@ -1095,44 +1122,14 @@ fn run_score(
         io::stdin()
             .read_to_end(&mut data)
             .map_err(|e| format!("reading stdin: {}", e))?;
-        let (vetoed, score, matches, unknowns, mismatches, non_canonical) = score_input(&data)?;
-        if vetoed {
-            entries.push(ScoreEntry::Vetoed {
-                path: "<stdin>".into(),
-                vetoed: true,
-            });
-        } else {
-            entries.push(ScoreEntry::Scored {
-                path: "<stdin>".into(),
-                score,
-                matches,
-                unknowns,
-                mismatches,
-                non_canonical,
-            });
-        }
+        entries.push(entry("<stdin>".into(), score_input(&data)?));
     } else {
         let all_files = expand_all_paths(paths, &base)?;
         for f in &all_files {
             let data = std::fs::read(&f.abs)
                 .map_err(|e| format!("reading '{}': {}", f.abs.display(), e))?;
             let label = f.abs.display().to_string();
-            let (vetoed, score, matches, unknowns, mismatches, non_canonical) = score_input(&data)?;
-            if vetoed {
-                entries.push(ScoreEntry::Vetoed {
-                    path: label,
-                    vetoed: true,
-                });
-            } else {
-                entries.push(ScoreEntry::Scored {
-                    path: label,
-                    score,
-                    matches,
-                    unknowns,
-                    mismatches,
-                    non_canonical,
-                });
-            }
+            entries.push(entry(label, score_input(&data)?));
         }
     }
 

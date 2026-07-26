@@ -336,8 +336,9 @@ costs correctness.
 **Scheduling.** Step 1 was **deferred** on 2026-07-25 as decision D-g in
 [protolens/rendering-worklist.md](protolens/rendering-worklist.md), then
 **dropped** on 2026-07-26: spec 0176 obtains the same outcome in `reproto`
-alone, so the graph format was never opened. See C12 for the part of the
-question that genuinely remains.
+alone, so the graph format was never opened. The part of the question that
+genuinely remained — the two range vetoes left standing — became C12, and was
+closed the same day by spec 0178.
 
 ### C7. Packed vs. unpacked repeated fields **[confirmed 2026-07-25]**
 
@@ -558,9 +559,15 @@ exercise any of this: a four-message input produced an identical
 `hopcroft.rkyv` even before the fix, because Hopcroft never had to split a
 block. The regression test therefore imports the WKTs.
 
-### C12. The two surviving range vetoes are not vetoes of the impossible **[open]**
+### C12. The two surviving range vetoes are not vetoes of the impossible **[fixed 2026-07-26]**
 
 *Raised 2026-07-26 by spec 0176, which deliberately does not fix it.*
+
+> **Fixed** by [specs/0178-out-of-range-is-a-penalty-not-a-veto.md](specs/0178-out-of-range-is-a-penalty-not-a-veto.md).
+> The out-of-range check is now a penalty in its own counter, `out_of_range`,
+> weighted `-15`. `ScoringOpts::strict_ranges` and `--relax-ranges` are gone —
+> the fix took the shape the note below recommended (demote both, delete the
+> knob) rather than adding a second knob.
 
 **Where:** `prototext-graph/src/score/walk.rs`, the `Range` arm of
 `check_varint_value`, gated on `ScoringOpts::strict_ranges`.
@@ -584,6 +591,21 @@ Note the asymmetry this leaves. `--relax-ranges` is the only escape, and it
 is coarse: it disables the check for bool and closed enum together. If this is
 ever revisited, the shape to prefer is demoting both to `non_canonical`
 unconditionally and deleting the knob, rather than adding a second knob.
+
+**What settled it.** The real cost of demoting a veto is not lost precision —
+`non_canonical` already carried a `-20` weight, so the signal was never too
+weak to rank on. It is lost **pruning**: a veto empties the candidate's
+`ActiveEntry`, and when the active set empties the byte scan stops early. But
+`ScoringOpts::default()` had `strict_ranges: false`, and that default is what
+`protolens` reads — so the interactive, latency-sensitive consumer had *always*
+run without this prune. Only the `prototext` CLI (which computed
+`strict_ranges: !relax_ranges` from a bare flag) ever had it. A prune that the
+hot path demonstrably does not need is not worth a wrong answer.
+
+Spec 0178 also reordered the four other coefficients while it was there, having
+found that `mismatches` — the *only* increment site of which is a declared
+`required` field absent from the blob — was weighted `-10`, less than the
+`-20` on a merely sloppy encoding. See its S1 for the evidence-split argument.
 
 ---
 
@@ -764,24 +786,34 @@ head rather than in a function. **The highest-leverage fix in either
 report is a single shared, tested, documented helper module for
 wire-format bounds arithmetic**, used by both.
 
-**Veto is absorbing, and it is used too freely.** C5, C6 and C7 are all the
-same failure: a *soft* signal — an encoding choice, a forward-compatible
+**Veto is absorbing, and it was used too freely.** C5, C6, C7 and C12 are all
+the same failure: a *soft* signal — an encoding choice, a forward-compatible
 unknown value — is treated as *proof* the candidate is wrong. Because veto
 cannot be recovered from, one such signal anywhere in a large blob eliminates
-the correct answer. The scoring model already has a graded penalty
-(`non_canonical`, `-20`) designed for exactly this. The rule worth stating
-explicitly in the design doc: **veto only for what the wire format makes
-impossible; score everything that is merely unlikely.** (All three are fixed
-as of 2026-07-26: specs 0172, 0175 and 0176.)
+the correct answer. The scoring model already has graded penalties designed for
+exactly this. The rule worth stating explicitly in the design doc: **veto only
+for what the wire format makes impossible; score everything that is merely
+unlikely.** (All four are fixed as of 2026-07-26: specs 0172, 0175, 0176 and
+0178.)
+
+**The real cost of a veto-to-penalty demotion is pruning, not precision
+(established 2026-07-26 by spec 0178).** A veto empties the candidate's
+`ActiveEntry`, and when the active set empties the byte scan returns early — so
+veto is the only mechanism making scoring sublinear in blob size. Ranking power
+is *not* at stake: the penalties are tens of times a single match, so a demoted
+signal still dominates. Weigh a demotion against the prune it removes, and
+check which consumers were relying on it — for C12 the answer was none, because
+`ScoringOpts::default()` had the check off and that default is what `protolens`
+reads.
 
 **That principle bounds veto, not penalty (confirmed 2026-07-26).** The
 scoring heuristic **deliberately penalizes suspicious serialization as much as
 erroneous serialization** — that is a voluntary posture, and it is the entire
-reason `non_canonical` exists. Legal-but-no-conformant-writer-emits-it is
-exactly what it is for: a 5-byte negative `int32`, a varint with overhang, a
-`bool` of `2`, a zero-length packed run. Do not "fix" a `non_canonical`
-penalty by citing the principle above; only vetoes are in question. The two
-vetoes the principle *does* still indict are C12.
+reason `non_canonical` and `out_of_range` exist. Legal-but-no-conformant-writer-
+emits-it is exactly what they are for: a 5-byte negative `int32`, a varint with
+overhang, a `bool` of `2`, a zero-length packed run. Do not "fix" such a
+penalty by citing the principle above; only vetoes are in question. As of spec
+0178 the principle indicts no surviving veto.
 
 The test for "suspicious" is: **would a conformant writer of the schema under
 test produce it?** If no, penalize. If yes routinely, it must cost nothing —

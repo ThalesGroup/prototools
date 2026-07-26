@@ -177,20 +177,11 @@ pub enum Command {
         #[arg(long = "no-annotations")]
         no_annotations: bool,
 
-        /// Add individual score dimensions (matched, unknown, mismatches,
-        /// non_canonical) to the ambiguous-type warning YAML.
+        /// Add individual score dimensions (matched, unknown, out_of_range,
+        /// non_canonical, mismatches) to the ambiguous-type warning YAML.
         /// Only effective when type inference is ambiguous.
         #[arg(long = "detailed-score", help_heading = "Advanced options")]
         detailed_score: bool,
-
-        /// Downgrade out-of-range RANGE (bool/enum) vetoes to non-canonical
-        /// penalties. 32-bit overflow always vetoes regardless.
-        #[arg(
-            long = "relax-ranges",
-            alias = "no-strict-ranges",
-            help_heading = "Advanced options"
-        )]
-        relax_ranges: bool,
 
         /// Suppress google.protobuf.Any expansion; render value as raw bytes.
         #[arg(long = "no-expand-any", help_heading = "Advanced options")]
@@ -253,19 +244,11 @@ pub enum Command {
         #[arg(long = "assume-binary")]
         assume_binary: bool,
 
-        /// Add individual score dimensions (matched, unknown, mismatches,
-        /// non_canonical) alongside the consolidated score for each type.
+        /// Add individual score dimensions (matched, unknown, out_of_range,
+        /// non_canonical, mismatches) alongside the consolidated score for
+        /// each type.
         #[arg(long = "detailed-score", help_heading = "Advanced options")]
         detailed_score: bool,
-
-        /// Downgrade out-of-range RANGE (bool/enum) vetoes to non-canonical
-        /// penalties. 32-bit overflow always vetoes regardless.
-        #[arg(
-            long = "relax-ranges",
-            alias = "no-strict-ranges",
-            help_heading = "Advanced options"
-        )]
-        relax_ranges: bool,
 
         /// Suppress google.protobuf.Any expansion; score value as plain bytes.
         #[arg(long = "no-expand-any", help_heading = "Advanced options")]
@@ -298,15 +281,6 @@ pub enum Command {
         /// auto-detection on the input files.
         #[arg(long = "assume-binary")]
         assume_binary: bool,
-
-        /// Downgrade out-of-range RANGE (bool/enum) vetoes to non-canonical
-        /// penalties. 32-bit overflow always vetoes regardless.
-        #[arg(
-            long = "relax-ranges",
-            alias = "no-strict-ranges",
-            help_heading = "Advanced options"
-        )]
-        relax_ranges: bool,
 
         /// Suppress google.protobuf.Any expansion; score value as plain bytes.
         #[arg(long = "no-expand-any", help_heading = "Advanced options")]

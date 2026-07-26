@@ -11,13 +11,19 @@ Emitting a `[min, max]` range for one therefore vetoed a blob that its
 own true schema fully accepts. A *closed* enum (proto2, or editions with
 CLOSED) does reject unrecognized numbers, so its range must survive.
 
-These assertions have to run through the shipped `prototext` binary.
-Asserting at the `score_all` level would pick up `ScoringOpts::default()`,
-where `strict_ranges` is already `false`, and pass vacuously while the CLI
--- which computes `strict_ranges: !relax_ranges` from a bare flag, hence
-defaults to strict -- still failed. The proto2 case below is the control
-that keeps the proto3 case from passing for the wrong reason: it proves
-the range veto is live on this exact path.
+These assertions run through the shipped `prototext` binary. When this
+file was written that was load-bearing: `ScoringOpts::default()` had
+`strict_ranges: false` while the CLI computed `strict_ranges:
+!relax_ranges` from a bare flag and so defaulted to strict, meaning a
+`score_all`-level assertion would have passed vacuously. Spec 0178 has
+since deleted the knob, so there is only one behavior -- but the binary
+remains the right level, because it is what a user sees.
+
+The proto2 case below is the control that keeps the proto3 case from
+passing for the wrong reason. Spec 0178 sharpened it: both enums now take
+the same non-vetoing path and differ only in the `out_of_range` counter,
+so the control proves the closed enum's range is still *emitted and
+consulted* rather than merely that something somewhere still vetoes.
 """
 
 from __future__ import annotations
@@ -122,13 +128,15 @@ _CLOSED_ENUM_PROTO = """\
 
 def test_E1_open_enum_unknown_value_is_not_vetoed(tmp_path: Path) -> None:
     """A proto3 enum value outside the declared set scores as a plain
-    match against its own true schema, under the CLI's own (strict)
-    range defaults (spec 0176 S1)."""
+    match against its own true schema -- not merely un-vetoed, but
+    un-penalized, because an open enum has no range to be outside of
+    (spec 0176 S1)."""
     db_path = _build_db(tmp_path, "openenum", _OPEN_ENUM_PROTO)
     out = _prototext(db_path, _payload(tmp_path), "score", "--type",
                      "openenum.Paint")
     assert "vetoed" not in out, f"open enum must not veto:\n{out}"
     assert "matches: 1" in out, out
+    assert "out_of_range: 0" in out, f"an open enum has no range:\n{out}"
 
 
 def test_E2_open_enum_true_type_wins_the_ranking(tmp_path: Path) -> None:
@@ -139,14 +147,21 @@ def test_E2_open_enum_true_type_wins_the_ranking(tmp_path: Path) -> None:
     assert "type: openenum.Paint" in out, out
 
 
-def test_E3_closed_enum_unknown_value_still_vetoes(tmp_path: Path) -> None:
-    """Control (spec 0176 N1): the identical bytes against a proto2
-    *closed* enum still veto, so E1/E2 are not passing merely because the
-    CLI stopped checking ranges."""
+def test_E3_closed_enum_unknown_value_is_penalized(tmp_path: Path) -> None:
+    """Control (spec 0176 N1, spec 0178 S2): the identical bytes against a
+    proto2 *closed* enum are charged `out_of_range`, so E1/E2 are not
+    passing merely because the CLI stopped checking ranges at all.
+
+    Before spec 0178 this asserted a veto. The charge is now a penalty --
+    an unrecognized closed-enum number goes to the unknown-field set
+    rather than failing the parse -- so the candidate survives ranking.
+    """
     db_path = _build_db(tmp_path, "closedenum", _CLOSED_ENUM_PROTO)
     payload = _payload(tmp_path)
     out = _prototext(db_path, payload, "score", "--type", "closedenum.Paint")
-    assert "vetoed: true" in out, f"closed enum must veto:\n{out}"
+    assert "vetoed" not in out, f"out of range is not impossible:\n{out}"
+    assert "out_of_range: 1" in out, f"closed enum keeps its range:\n{out}"
+    assert "non_canonical: 0" in out, f"the encoding itself is fine:\n{out}"
 
     ranked = _prototext(db_path, payload, "list-schemas", "--top", "5")
-    assert "closedenum.Paint" not in ranked, ranked
+    assert "closedenum.Paint" in ranked, ranked

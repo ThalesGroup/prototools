@@ -102,7 +102,7 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
 
 ```
 # Type: google.type.PostalAddress
-# Score: 9  (matched: 9, unknown: 0, mismatches: 0, non_canonical: 0)
+# Score: 9  (matched: 9, unknown: 0, out_of_range: 0, non_canonical: 0, mismatches: 0)
 
 revision: 1
 organization: "S3NS"
@@ -228,7 +228,7 @@ prototext --descriptor-set stash/wkt.desc \
 
 ```
 # Type: google.protobuf.FileDescriptorSet
-# Score: 1846  (matched: 1846, unknown: 0, mismatches: 0, non_canonical: 0)
+# Score: 1846  (matched: 1846, unknown: 0, out_of_range: 0, non_canonical: 0, mismatches: 0)
 
 file {
  name: "google/protobuf/descriptor.proto"
@@ -260,7 +260,7 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
 ```
 #@ prototext: protoc
 # Type: google.type.PostalAddress
-# Score: 9  (matched: 9, unknown: 0, mismatches: 0, non_canonical: 0)
+# Score: 9  (matched: 9, unknown: 0, out_of_range: 0, non_canonical: 0, mismatches: 0)
 
 revision: 1  #@ int32 = 1
 organization: "S3NS"  #@ string = 11
@@ -336,7 +336,7 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
 ```
 #@ prototext: protoc
 # Type: google.type.PostalAddress
-# Score: -11  (matched: 9, unknown: 0, mismatches: 0, non_canonical: 1)
+# Score: -11  (matched: 9, unknown: 0, out_of_range: 0, non_canonical: 1, mismatches: 0)
 
 revision: 1  #@ int32 = 1; val_ohb: 1
 organization: "S3NS"  #@ string = 11
@@ -405,7 +405,7 @@ prototext --descriptor-set $GOOGLEAPIS_DB decode stash/postal_hidden.pb
 
 ```
 # Type: google.type.PostalAddress
-# Score: 9  (matched: 9, unknown: 0, mismatches: 0, non_canonical: 0)
+# Score: 9  (matched: 9, unknown: 0, out_of_range: 0, non_canonical: 0, mismatches: 0)
 
 organization: "Entrance secret PIN code: 666*"
 organization: "S3NS"

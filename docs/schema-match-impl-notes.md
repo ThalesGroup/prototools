@@ -65,12 +65,18 @@ verdicts:
 
 | Verdict | Condition | Effect |
 |---|---|---|
-| **Veto** | Wire parse error; wire-type mismatch on a declared field; invalid UTF-8 on a string field; enum value out of declared range; mismatched or open-ended group | Candidate is permanently eliminated |
+| **Veto** | Wire parse error; wire-type mismatch on a declared field; invalid UTF-8 on a string field; a varint on a 32-bit field that is neither encoding of any 32-bit number; mismatched or open-ended group | Candidate is permanently eliminated |
 | **Match** | Field number declared in schema at current state; wire content compatible | `matches += 1` |
 | **Unknown** | Field number not declared in schema at current state | `unknowns += 1` |
 
+A veto is reserved for what the wire format makes **impossible**. A value
+outside a `bool`'s or a closed enum's declared range is merely implausible —
+`bool` decodes as `value != 0`, and an unrecognized closed-enum number goes to
+the unknown-field set — so it accumulates in `out_of_range` instead
+(spec 0178).
+
 Non-canonical encodings (overhang bytes on varints, field numbers 0 or
-≥ 2²⁹) do not veto by themselves; they accumulate in `non_canonical`.
+≥ 2²⁹) likewise do not veto; they accumulate in `non_canonical`.
 
 At the end of each message or group frame, cardinality checks apply
 over all transitions from the current state:
@@ -80,11 +86,25 @@ over all transitions from the current state:
 - Required field seen more than once: `non_canonical += count − 1`
 - Repeated field: no constraint
 
+This is the **only** site that increments `mismatches`, so despite the name the
+counter means exactly one thing: *a proto2 `required` field this schema declares
+is absent from the blob*. A wire-type mismatch on a declared field vetoes and
+never reaches this counter.
+
 The final integer score is:
 
 ```
-score = matches×1 − unknowns×10 − mismatches×10 − non_canonical×20
+score = matches×1 − unknowns×10 − out_of_range×15
+                 − non_canonical×20 − mismatches×30
 ```
+
+The coefficients rank the counters by how damning the signal is, which is also
+the order the reports print them in. `unknowns` and `mismatches` are
+*schema-fit* evidence — the schema is contradicted — while `out_of_range` and
+`non_canonical` are *writer-conformance* evidence: the schema fits, but the
+writer was odd. An unknown field has a benign explanation (a newer sender);
+a declared `required` field absent from the blob does not, which is why
+`mismatches` is the heaviest.
 
 ---
 

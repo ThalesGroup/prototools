@@ -10,6 +10,14 @@ SPDX-License-Identifier: MIT
 **Implemented in:** 2026-05-11
 **App:** score-graph
 
+> **Score expectations superseded (2026-07-26).** Spec
+> [0178](0178-out-of-range-is-a-penalty-not-a-veto.md) S1 reweighted
+> `mismatches` from `-10` to `-30`, having found that its *only* increment site
+> is a declared `required` field absent from the blob — the same signal this
+> spec introduced. GL-05's `score=-10` below is therefore now `-30`. The
+> cardinality *rules* are unchanged; only the coefficient moved. Left as the
+> record of what this spec implemented rather than edited in place.
+
 ---
 
 ## Background

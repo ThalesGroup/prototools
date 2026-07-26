@@ -131,10 +131,12 @@ Two corrections it also forces:
   first whether the thing being qualified should exist at all. Deleting the
   range was cheaper than describing it.
 
-What genuinely remains is narrower and is *not* D-g: whether the two surviving
-range **vetoes** — bool, and closed enum — should be vetoes rather than
-penalties, since neither value is impossible on the wire. Tracked as C12 in
-[../scoring-flaws.md](../scoring-flaws.md).
+What genuinely remained was narrower and was *not* D-g: whether the two
+surviving range **vetoes** — bool, and closed enum — should be vetoes rather
+than penalties, since neither value is impossible on the wire. Tracked as C12 in
+[../scoring-flaws.md](../scoring-flaws.md), and closed the same day by spec
+[0178](../specs/0178-out-of-range-is-a-penalty-not-a-veto.md): both are
+penalties now, and `strict_ranges`/`--relax-ranges` are gone.
 
 ---
 
@@ -533,8 +535,16 @@ practical proof.
 > carries no information a scorer may act on precisely because both
 > encodings are always legal. So no format change and no version bump:
 > `Verdict::FoundPacked` reads and validates the run instead.
+>
+> **The deviation is retracted (2026-07-26).** Spec 0178 demotes the
+> out-of-range check unconditionally, as this item originally asked, and deletes
+> `ScoringOpts::strict_ranges` and `--relax-ranges` outright. The knob's stated
+> justification was that it would let the D-g format bump re-enable vetoing for
+> closed enums — but D-g was dropped (spec 0176 needed no format change), so the
+> knob was preserving an option nobody was going to take, while the CLI's
+> reading of it was the one path where C6 stayed live.
 
-**Fixes:** [scoring C5, C6, C7](../scoring-flaws.md).
+**Fixes:** [scoring C5, C6, C7, C12](../scoring-flaws.md).
 
 **Files:** `prototext-graph/src/score/walk.rs:933-961`.
 

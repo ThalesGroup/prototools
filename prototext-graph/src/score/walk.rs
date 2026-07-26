@@ -51,17 +51,40 @@ pub struct EntryScore<'g> {
     pub fqdn: &'g str,
     pub matches: u64,
     pub unknowns: u64,
-    pub mismatches: u64,
+    /// Values outside a `Range` leaf's declared extent: a `bool` other than
+    /// 0/1, or a closed enum's undeclared number (spec 0178 S1). Legal on the
+    /// wire, so never a veto — but no conformant writer emits one.
+    ///
+    /// Separate from `non_canonical` so a consumer can tell "outside the
+    /// declared range" from "sloppy encoding"; the two are adjacent, not
+    /// equal, in weight.
+    pub out_of_range: u64,
     pub non_canonical: u64,
+    /// A `required` field this schema declares that the blob does not contain
+    /// (`apply_cardinality_multi`, label 1, count 0 — the only site).
+    ///
+    /// Despite the name this is **not** a wire-type mismatch, which vetoes and
+    /// never reaches here.
+    pub mismatches: u64,
     pub vetoed: bool,
 }
 
 impl EntryScore<'_> {
+    /// Coefficients rank by how damning the signal is (spec 0178 S1), which is
+    /// also the order the reports print them in.
+    ///
+    /// `unknowns` is mildest because it has a benign explanation — a newer
+    /// sender talking to an older schema is what forward compatibility is for.
+    /// `out_of_range` and `non_canonical` are evidence about *writer
+    /// conformance*: the schema still fits, the writer was odd. `mismatches` is
+    /// the heaviest because it is evidence about *schema fit* with no benign
+    /// reading: `required` is precisely what a conformant writer cannot omit.
     pub fn score(&self) -> i64 {
         self.matches as i64
             - 10 * self.unknowns as i64
-            - 10 * self.mismatches as i64
+            - 15 * self.out_of_range as i64
             - 20 * self.non_canonical as i64
+            - 30 * self.mismatches as i64
     }
 }
 
@@ -117,7 +140,6 @@ struct WalkState<'a, 'g> {
     vetoed: Vec<u64>,
     /// If set, print a message to stderr whenever this FQDN is vetoed.
     debug_fqdn: Option<String>,
-    strict_ranges: bool,
     expand_any: bool,
 }
 
@@ -134,7 +156,6 @@ impl<'a, 'g> WalkState<'a, 'g> {
             scores,
             vetoed: vec![0u64; words],
             debug_fqdn: std::env::var("PROTOTEXT_DEBUG_FQDN").ok(),
-            strict_ranges: opts.strict_ranges,
             expand_any: opts.expand_any,
         }
     }
@@ -189,11 +210,6 @@ fn group_by_state(pairs: impl Iterator<Item = (u32, u16)>) -> Vec<ActiveEntry> {
 
 /// Options controlling walk behaviour.
 pub struct ScoringOpts {
-    /// If true, out-of-range RANGE (bool/enum) values veto the candidate.
-    /// If false (the default since spec 0172), they increment
-    /// `non_canonical` instead. No binary in this workspace exposes a
-    /// flag for it; it is a library knob.
-    pub strict_ranges: bool,
     /// If true (default), google.protobuf.Any fields are expanded using the
     /// type resolved from type_url and scored against the wrapped type.
     /// If false (--no-expand-any), value scores as a plain bytes match.
@@ -202,26 +218,7 @@ pub struct ScoringOpts {
 
 impl Default for ScoringOpts {
     fn default() -> Self {
-        Self {
-            // Spec 0172 S3: vetoing on an out-of-range enum value
-            // requires knowing the enum is *closed*, and the compiled
-            // graph carries no syntax information (`serial.rs`'s
-            // `NodeEntry` is wire_type + is_string + range_idx). Under
-            // proto3 every enum is open, so an unknown value is legal,
-            // forward-compatible, and common — vetoing eliminates the
-            // blob's own correct FQDN and hands the win to an unrelated
-            // type. Penalizing instead costs the right answer some
-            // points and still lets it win.
-            //
-            // The same reasoning covers bool, whose range is 0..=1 but
-            // whose wire encoding accepts any nonzero varint as `true`.
-            //
-            // Revisit when the graph format carries syntax per enum node
-            // (deferred decision D-g), at which point closed enums can
-            // veto again and this default can go back to `true`.
-            strict_ranges: false,
-            expand_any: true,
-        }
+        Self { expand_any: true }
     }
 }
 
@@ -249,8 +246,9 @@ pub fn score_all<'g>(
             fqdn: r.fqdn.as_str(),
             matches: 0,
             unknowns: 0,
-            mismatches: 0,
+            out_of_range: 0,
             non_canonical: 0,
+            mismatches: 0,
             vetoed: false,
         })
         .collect();
@@ -289,8 +287,9 @@ pub fn score_one<'g>(
         fqdn: root.fqdn.as_str(),
         matches: 0,
         unknowns: 0,
-        mismatches: 0,
+        out_of_range: 0,
         non_canonical: 0,
+        mismatches: 0,
         vetoed: false,
     }];
 
@@ -713,11 +712,15 @@ fn check_varint_value(
             if signed >= min && signed <= max {
                 return false;
             }
-            if ws.strict_ranges {
-                return true;
-            }
+            // Spec 0178 S2: a penalty, never a veto. Out of range is not out of
+            // bounds — a `bool` is `value != 0` in every generated parser, so 2
+            // reads as `true`, and a closed enum moves an undeclared number to
+            // the unknown-field set rather than failing the parse. Both are
+            // strong evidence against the candidate, which is what
+            // `out_of_range`'s -15 is for, but neither is impossible, and the
+            // governing principle vetoes only the impossible.
             for &e in &ae.entries {
-                ws.scores[e as usize].non_canonical += 1;
+                ws.scores[e as usize].out_of_range += 1;
             }
             false
         }
@@ -1488,7 +1491,6 @@ mod set_vetoed_tests {
             scores,
             vetoed: vec![0u64; words],
             debug_fqdn,
-            strict_ranges: false,
             expand_any: true,
         }
     }
@@ -1530,8 +1532,9 @@ mod set_vetoed_tests {
             fqdn,
             matches: 0,
             unknowns: 0,
-            mismatches: 0,
+            out_of_range: 0,
             non_canonical: 0,
+            mismatches: 0,
             vetoed: false,
         }
     }

@@ -193,6 +193,53 @@ fn varint_ohb(v: u64, ohb: u8) -> Vec<u8> {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
+// ── The score coefficients (spec 0178 S1) ────────────────────────────────────
+
+/// Each counter's weight in isolation, and — the part that matters — their
+/// *order*.
+///
+/// This is the only guard on the coefficients: before spec 0178 no test
+/// asserted a numeric score with `mismatches > 0` at all, which is how
+/// `mismatches` sat at `-10` while `non_canonical` sat at `-20` even though a
+/// missing `required` field is the more damning signal. The ordering assertion
+/// is what stops that contradiction from reappearing.
+#[test]
+fn score_coefficients_rank_by_suspicion() {
+    let one = |f: fn(&mut walk::EntryScore<'static>)| -> i64 {
+        let mut s = walk::EntryScore {
+            fqdn: "M",
+            matches: 0,
+            unknowns: 0,
+            out_of_range: 0,
+            non_canonical: 0,
+            mismatches: 0,
+            vetoed: false,
+        };
+        f(&mut s);
+        s.score()
+    };
+
+    let matched = one(|s| s.matches = 1);
+    let unknown = one(|s| s.unknowns = 1);
+    let oor = one(|s| s.out_of_range = 1);
+    let non_canon = one(|s| s.non_canonical = 1);
+    let missing_required = one(|s| s.mismatches = 1);
+
+    assert_eq!(matched, 1);
+    assert_eq!(unknown, -10);
+    assert_eq!(oor, -15);
+    assert_eq!(non_canon, -20);
+    assert_eq!(missing_required, -30);
+
+    // Increasing suspicion, which is also the order the reports print.
+    assert!(
+        matched > unknown && unknown > oor && oor > non_canon && non_canon > missing_required,
+        "coefficients must rank by suspicion: \
+         matched {matched} > unknown {unknown} > out_of_range {oor} > \
+         non_canonical {non_canon} > mismatches {missing_required}"
+    );
+}
+
 /// TC-01: Perfect match — all fields present, canonical.
 #[test]
 fn tc01_perfect_match() {
@@ -267,8 +314,8 @@ fn tc04_invalid_utf8_veto() {
 /// Retargeted by spec 0172 S3 (this is its C6 proving test): the compiled
 /// graph carries no syntax bit, and under proto3 every enum is open, so an
 /// unknown value is forward-compatible rather than impossible. Vetoing
-/// eliminated the blob's own correct FQDN. `tc77_02_enum_range_veto_strict`
-/// keeps the `strict_ranges: true` behavior covered.
+/// eliminated the blob's own correct FQDN. Spec 0178 then made the penalty
+/// unconditional and moved it to its own counter.
 #[test]
 fn tc05_enum_out_of_range_penalized_by_default() {
     let g = build_graph();
@@ -282,7 +329,8 @@ fn tc05_enum_out_of_range_penalized_by_default() {
         !s.vetoed,
         "enum value 99 outside [0..2] should survive by default"
     );
-    assert_eq!(s.non_canonical, 1, "out-of-range enum should be penalized");
+    assert_eq!(s.out_of_range, 1, "out-of-range enum should be penalized");
+    assert_eq!(s.non_canonical, 0, "the encoding itself is canonical");
     assert_eq!(s.matches, 2, "both fields still resolve");
 }
 
@@ -717,30 +765,32 @@ fn mt05_len_prefix_overhang_increments_all_active_entries() {
     assert_eq!(inner.non_canonical, 1, "Inner: len-prefix overhang counted");
 }
 
-/// MT-06: Enum out-of-range vetoes only the entry with the enum leaf.
+/// MT-06: Enum out-of-range charges only the entry with the enum leaf.
 ///
 /// Outer declares field 5 as ENUM [0..2].  Inner has no field 5.
-/// Send field 5 = 99 (out of range) → Outer vetoed, Inner gets unknown.
+/// Send field 5 = 99 (out of range) → Outer penalized, Inner gets unknown.
 ///
-/// The subject here is the *isolation* of a veto to the entry that owns the
-/// offending leaf, so spec 0172 S3 leaves it opted into `strict_ranges: true`
-/// rather than retargeting it — with the new default there would be no veto
-/// left to isolate.
+/// The subject is the *isolation* of the charge to the entry that owns the
+/// offending leaf — a per-candidate signal must not leak across the shared
+/// walk. Spec 0172 S3 kept that testable by opting into `strict_ranges: true`;
+/// with the knob gone (spec 0178 S3) the same isolation is asserted on
+/// `out_of_range`, which is the counter the charge now lands in.
 #[test]
-fn mt06_enum_oor_vetoes_only_enum_entry() {
+fn mt06_enum_oor_charges_only_enum_entry() {
     let g = build_two_entry_graph();
     let pb = field_varint(5, 99);
-    let opts = walk::ScoringOpts {
-        strict_ranges: true,
-        ..Default::default()
-    };
-    let results = walk::score_all(&pb, &g, &opts);
+    let results = walk::score_all(&pb, &g, &walk::ScoringOpts::default());
 
     let outer = entry_score(&results, "Outer");
     let inner = entry_score(&results, "Inner");
 
-    assert!(outer.vetoed, "Outer: enum 99 outside [0..2] should veto");
+    assert!(!outer.vetoed, "Outer: 99 still parses, so no veto");
+    assert_eq!(outer.out_of_range, 1, "Outer owns the enum leaf");
     assert!(!inner.vetoed, "Inner: field 5 is unknown, no veto");
+    assert_eq!(
+        inner.out_of_range, 0,
+        "Inner has no enum leaf; the charge must not leak to it"
+    );
     assert_eq!(inner.unknowns, 1);
 }
 
@@ -760,6 +810,7 @@ fn so01_matches_score_all_entry() {
     assert_eq!(one.fqdn, expected.fqdn);
     assert_eq!(one.matches, expected.matches);
     assert_eq!(one.unknowns, expected.unknowns);
+    assert_eq!(one.out_of_range, expected.out_of_range);
     assert_eq!(one.mismatches, expected.mismatches);
     assert_eq!(one.non_canonical, expected.non_canonical);
     assert_eq!(one.vetoed, expected.vetoed);
@@ -942,70 +993,56 @@ fn build_single_field_graph(
     score_load::load_graph(&path).unwrap()
 }
 
-/// TC-77-01: RANGE/bool strict — wire value 2 on bool field → vetoed.
+/// TC-77-01: RANGE/bool — wire value 2 on a bool field → `out_of_range`, no veto.
 ///
-/// Both TC-77-01 and TC-77-02 were written against `strict_ranges`'s old
-/// `true` default; spec 0172 S3 flipped that default, so they now opt in
-/// explicitly. That keeps them testing what they were written to test —
-/// that the range check fires — and makes them the "the knob is
-/// demonstrably live" companions to TC-77-03 and TC-05.
+/// The cleanest instance of what spec 0178 fixes: `bool` is decoded as
+/// `value != 0` in every generated parser, so 2 reads as `true`. Vetoing it
+/// eliminated a candidate over a value that decodes fine.
+///
+/// TC-77-01 and TC-77-02 used to opt into `strict_ranges: true` to assert the
+/// veto; there is now one behavior, so TC-77-03 (which asserted the penalty
+/// path under the old default) has been folded into them.
 #[test]
-fn tc77_01_bool_range_veto() {
+fn tc77_01_bool_out_of_range_is_penalized() {
     let g = build_single_field_graph(ScoringKind::Range, Some((0, 1)));
     let pb = field_varint(1, 2);
-    let opts = walk::ScoringOpts {
-        strict_ranges: true,
-        ..Default::default()
-    };
-    let s = score_entry_opts(&pb, &g, "M", &opts);
-    assert!(s.vetoed, "bool value 2 should be vetoed");
+    let s = score_entry(&pb, &g, "M");
+    assert!(!s.vetoed, "bool value 2 parses as `true`; it must not veto");
+    assert_eq!(s.out_of_range, 1, "outside [0,1] is penalized");
+    assert_eq!(s.non_canonical, 0, "the encoding itself is canonical");
 }
 
-/// TC-77-02: RANGE/enum strict — wire value outside [0,2] → vetoed.
+/// TC-77-02: RANGE/enum — wire value outside [0,2] → `out_of_range`, no veto.
+///
+/// A closed enum moves an undeclared number to the unknown-field set rather
+/// than failing the parse, so the message still round-trips.
 #[test]
-fn tc77_02_enum_range_veto_strict() {
+fn tc77_02_enum_out_of_range_is_penalized() {
     let g = build_single_field_graph(ScoringKind::Range, Some((0, 2)));
     let pb = field_varint(1, 99);
-    let opts = walk::ScoringOpts {
-        strict_ranges: true,
-        ..Default::default()
-    };
-    let s = score_entry_opts(&pb, &g, "M", &opts);
-    assert!(s.vetoed, "enum value 99 outside [0,2] should be vetoed");
+    let s = score_entry(&pb, &g, "M");
+    assert!(!s.vetoed, "99 still parses; it must not veto");
+    assert_eq!(s.out_of_range, 1);
+    assert_eq!(s.non_canonical, 0);
+    // One match (+1) against one out-of-range value (-15).
+    assert_eq!(s.score(), -14);
 }
 
-/// TC-77-03: RANGE/enum non-strict — out-of-range → non_canonical++, not vetoed.
-#[test]
-fn tc77_03_enum_range_no_strict() {
-    let g = build_single_field_graph(ScoringKind::Range, Some((0, 2)));
-    let pb = field_varint(1, 99);
-    let opts = walk::ScoringOpts {
-        strict_ranges: false,
-        expand_any: true,
-    };
-    let s = score_entry_opts(&pb, &g, "M", &opts);
-    assert!(!s.vetoed, "should not be vetoed with --no-strict-ranges");
-    assert!(s.non_canonical > 0, "should increment non_canonical");
-}
-
-/// TC-77-04: RANGE, val in the impossible varint gap — always vetoed, even
-/// with `strict_ranges: false`.
+/// TC-77-04: RANGE, val in the impossible varint gap — still vetoed.
 ///
 /// Spec 0172 S2 narrowed the veto condition from `val >= 2^32` to the gap
 /// `0xFFFF_FFFF < val < 0xFFFF_FFFF_8000_0000` — values that are neither a
-/// u32 nor a sign-extended i32. `1u64 << 32` sits in that gap, so this test
-/// is unaffected by the narrowing and now doubles as the proof that S2 did
-/// not simply delete the check.
+/// u32 nor a sign-extended i32. `1u64 << 32` sits in that gap.
+///
+/// This is spec 0178's load-bearing guard: it proves the demotion took only
+/// the *legal* half of the arm. If this ever flips to a penalty, the veto of
+/// the genuinely impossible has been lost and the arm is toothless.
 #[test]
 fn tc77_04_range_32bit_overflow_always_veto() {
     let g = build_single_field_graph(ScoringKind::Range, Some((0, 2)));
     let pb = field_varint(1, 1u64 << 32);
-    let opts = walk::ScoringOpts {
-        strict_ranges: false,
-        expand_any: true,
-    };
-    let s = score_entry_opts(&pb, &g, "M", &opts);
-    assert!(s.vetoed, "val >= 2^32 on RANGE should always veto");
+    let s = score_entry(&pb, &g, "M");
+    assert!(s.vetoed, "a value in the impossible gap must still veto");
 }
 
 /// TC-77-05: UINT32 — wire value 2^32 → vetoed (always).
@@ -1098,10 +1135,10 @@ fn tc77_11_uint64_large_value() {
 /// This is the core discrimination benefit introduced by spec 0077: before
 /// this change both schemas collapsed into a single VARINT leaf and 802
 /// looked equally plausible under either. Spec 0172 S3 downgraded the
-/// penalty from a veto to `non_canonical`, so the assertion is now on the
-/// resulting score gap rather than on elimination — the discrimination is
-/// what spec 0077 bought, and it survives; the veto was only ever how it
-/// happened to be expressed.
+/// penalty from a veto to a counter, and spec 0178 S1 moved it to its own
+/// `out_of_range` counter, so the assertion is on the resulting score gap
+/// rather than on elimination — the discrimination is what spec 0077 bought,
+/// and it survives; the veto was only ever how it happened to be expressed.
 #[test]
 fn tc77_12_bool_vs_int32_discrimination() {
     let merged = Merged {
@@ -1147,8 +1184,9 @@ fn tc77_12_bool_vs_int32_discrimination() {
 
     assert!(!bool_s.vetoed, "Bool: out-of-range no longer vetoes");
     assert!(!int32_s.vetoed, "Int32: 802 is a valid positive int32");
-    assert_eq!(bool_s.non_canonical, 1, "Bool: 802 outside [0,1] penalized");
-    assert_eq!(int32_s.non_canonical, 0, "Int32: nothing to penalize");
+    assert_eq!(bool_s.out_of_range, 1, "Bool: 802 outside [0,1] penalized");
+    assert_eq!(bool_s.non_canonical, 0, "Bool: the encoding itself is fine");
+    assert_eq!(int32_s.out_of_range, 0, "Int32: nothing to penalize");
     assert!(
         int32_s.score() > bool_s.score(),
         "Int32 must outrank Bool on 802: {} vs {}",
@@ -1446,9 +1484,10 @@ fn canonical_negative_enum_is_not_vetoed() {
 }
 
 /// C5/S2 companion: a negative *outside* the declared range is treated like
-/// any other out-of-range value — penalized by default, vetoed under
-/// `strict_ranges`. What matters is that it is decoded as a negative at all
-/// rather than short-circuited by the old `>= 2^32` test.
+/// any other out-of-range value — penalized, never vetoed (spec 0178 S2, which
+/// removed the `strict_ranges` arm this test used to also exercise). What
+/// matters is that it is decoded as a negative at all rather than
+/// short-circuited by the old `>= 2^32` test.
 #[test]
 fn negative_enum_outside_range_is_penalized_not_vetoed() {
     let g = build_single_field_graph(ScoringKind::Range, Some((0, 3)));
@@ -1456,14 +1495,11 @@ fn negative_enum_outside_range_is_penalized_not_vetoed() {
 
     let s = score_entry(&pb, &g, "M");
     assert!(!s.vetoed, "out of range is unlikely, not impossible");
-    assert_eq!(s.non_canonical, 1);
-
-    let strict = walk::ScoringOpts {
-        strict_ranges: true,
-        ..Default::default()
-    };
-    let s = score_entry_opts(&pb, &g, "M", &strict);
-    assert!(s.vetoed, "strict_ranges still vetoes -99 outside [0, 3]");
+    assert_eq!(s.out_of_range, 1);
+    assert_eq!(
+        s.non_canonical, 0,
+        "ten bytes is the canonical encoding of a negative"
+    );
 }
 
 /// C5/S2 regression: the four-byte truncation of a negative — the encoding
@@ -1776,8 +1812,13 @@ fn packed_enum_element_scores_like_the_expanded_one() {
     assert!(!packed.vetoed);
     assert!(!expanded.vetoed);
     assert_eq!(
-        packed.non_canonical, expanded.non_canonical,
+        packed.out_of_range, expanded.out_of_range,
         "the out-of-range enum penalty must not depend on the encoding"
     );
-    assert_eq!(packed.non_canonical, 1);
+    assert_eq!(packed.out_of_range, 1);
+    assert_eq!(
+        packed.non_canonical, expanded.non_canonical,
+        "neither encoding is itself non-canonical here"
+    );
+    assert_eq!(packed.non_canonical, 0);
 }
