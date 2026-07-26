@@ -228,6 +228,14 @@ pub fn minimize(
             x_in_block.entry(block_of[node]).or_default().push(node);
         }
 
+        // Sorted, because each split below allocates `y1_id = blocks.len()`:
+        // iterating the `HashMap` directly made block *numbering* differ
+        // between processes (spec 0177 S3). Which nodes share a block is
+        // unaffected either way — the refinement's fixed point is the unique
+        // coarsest partition.
+        let mut x_in_block: Vec<(usize, Vec<usize>)> = x_in_block.into_iter().collect();
+        x_in_block.sort_unstable_by_key(|(y_id, _)| *y_id);
+
         for (y_id, y1_nodes) in x_in_block {
             // Y₁ = Y ∩ X = y1_nodes; Y₂ = Y \ X = blocks[y_id] after removal.
             if y1_nodes.len() == blocks[y_id].len() {

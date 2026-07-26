@@ -15,7 +15,7 @@ use pyo3::types::PyBytes;
 use pyo3_stub_gen::derive::gen_stub_pyfunction;
 
 use prototext_graph::build_scoring_graph::build_from_strings;
-use prototext_graph::fds_index::{to_bytes as fds_index_to_bytes, FdsIndex};
+use prototext_graph::fds_index::{canonical_map, to_bytes as fds_index_to_bytes, FdsIndex};
 
 // ── API functions ─────────────────────────────────────────────────────────────
 
@@ -105,11 +105,16 @@ fn build_fds_index<'py>(
     dep_graph: HashMap<String, Vec<String>>,
     ext_to_file: HashMap<String, String>,
 ) -> PyResult<Bound<'py, PyBytes>> {
+    // The parameters stay plain `HashMap` so neither `FromPyObject` nor
+    // `pyo3-stub-gen`'s `PyStubType` has to be generic over the hasher. Their
+    // iteration order is per-process random, so they go through
+    // `canonical_map` (spec 0177 S1) — one sort per map, at build time, over
+    // an index that is written exactly once.
     let index = FdsIndex {
-        type_to_file,
-        file_to_span,
-        dep_graph,
-        ext_to_file,
+        type_to_file: canonical_map(type_to_file),
+        file_to_span: canonical_map(file_to_span),
+        dep_graph: canonical_map(dep_graph),
+        ext_to_file: canonical_map(ext_to_file),
     };
     let bytes = fds_index_to_bytes(&index).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
     Ok(PyBytes::new(py, &bytes))

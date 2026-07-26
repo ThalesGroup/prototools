@@ -193,18 +193,29 @@ pub fn build(merged: &Merged) -> (RawGraph, LeafRegistry) {
     node_ids.insert("google.protobuf.Any".to_owned(), ANY_NODE_ID);
     node_ids.insert("google.protobuf.MessageSet".to_owned(), MESSAGE_SET_NODE_ID);
 
+    // `merged.states` is a `HashMap`, so every loop below walks it in sorted
+    // key order instead (spec 0177 S2). Iterating it directly made three
+    // things differ between processes — node IDs, the order unreferenced child
+    // FQDNs are discovered, and the order `LeafRegistry` first sees each
+    // distinct range, which fixes `range_idx` — and each of those changes the
+    // Hopcroft initial partition's labels and so the whole `hopcroft.rkyv`
+    // byte layout. All three are internal, so ordering them changes nothing
+    // but the bytes.
+    let mut state_fqdns: Vec<&String> = merged.states.keys().collect();
+    state_fqdns.sort_unstable();
+
     // Assign dense IDs to non-leaf nodes, starting from 2.
     let mut next_id: u32 = 2;
-    for fqdn in merged.states.keys() {
-        node_ids.entry(fqdn.clone()).or_insert_with(|| {
+    for fqdn in &state_fqdns {
+        node_ids.entry((*fqdn).clone()).or_insert_with(|| {
             let id = next_id;
             next_id += 1;
             id
         });
     }
     // Also ensure every child FQDN referenced but not defined gets a node ID.
-    for fields in merged.states.values() {
-        for f in fields {
+    for fqdn in &state_fqdns {
+        for f in &merged.states[*fqdn] {
             if let Some(child) = &f.child {
                 if !node_ids.contains_key(child) {
                     node_ids.insert(child.clone(), next_id);
@@ -226,9 +237,9 @@ pub fn build(merged: &Merged) -> (RawGraph, LeafRegistry) {
     }
 
     let mut edges = Vec::new();
-    for (fqdn, fields) in &merged.states {
-        let src = node_ids[fqdn];
-        for f in fields {
+    for fqdn in &state_fqdns {
+        let src = node_ids[*fqdn];
+        for f in &merged.states[*fqdn] {
             let dst = if f.kind.is_node() {
                 let child_fqdn = f.child.as_deref().unwrap();
                 node_ids[child_fqdn]

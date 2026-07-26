@@ -486,15 +486,77 @@ also notes that widening `ActiveEntry::entries` to `u32` is not free: it
 is the hottest structure in the walk, so it wants a measurement rather
 than an assumption.
 
-### C11. HashMap iteration order **[unverified]**
+### C11. HashMap iteration order **[not a scoring bug; artifact half fixed 2026-07-26]**
 
-The audit reports at least one place where scoring results depend on
-`HashMap` iteration order, which is randomized per process by
-`RandomState`. If confirmed, this means two runs of protolens on the same
-blob can rank tied candidates differently — a reproducibility bug that
-would also make any regression test on candidate ordering flaky. Verify,
-and if real, switch the affected map to `BTreeMap` or sort before
-consuming.
+The audit reported that scoring results depend on `HashMap` iteration order,
+which is randomized per process by `RandomState`, and that two runs of
+protolens on the same blob could therefore rank tied candidates differently.
+
+**Measured, and the ranking claim is false.** The scoring walk contains no
+`HashMap` at all — only the graph *builder* does. And all four consumers of
+`score_all` apply the identical total order:
+
+```rust
+(false, false) => b.score().cmp(&a.score()).then(a.fqdn.cmp(b.fqdn)),
+```
+
+`prototext/src/run.rs:194` (decode auto-infer), `:334` (list-schemas),
+`protolens/src/decode.rs:194` (root winner), `protolens/src/override_pane.rs:62`
+(candidate pane). FQDNs are unique, so the final tie-break is a total order and
+the ranking is fully determined. There is no per-candidate cap or
+first-match-wins anywhere in the walk that could make processing order
+observable; every active entry accumulates its own score independently.
+
+Verified end to end: `descriptor.proto` compiled four times in four separate
+processes, then `list-schemas --top 15` run against each. All four outputs are
+byte-identical, including the 8-way tie at score `-110`, which comes out in
+FQDN order every time. Five consecutive runs against one DB are likewise
+identical.
+
+**What is real is narrower, and is not about scoring: the compiled artifacts
+are not byte-reproducible.** The same four builds produced four *different*
+`hopcroft.rkyv` files and four different `index.rkyv` files. Two independent
+causes:
+
+- **State-ID assignment.** `graph::build` numbers nodes by iterating
+  `merged.states.keys()` (`graph.rs:198`), and Hopcroft's refinement loop
+  allocates new block IDs while iterating `x_in_block`
+  (`hopcroft.rs:231`), both `HashMap`s. Hopcroft is confluent — the coarsest
+  partition is unique regardless of worklist order — so only the *numbering*
+  moves, never the equivalence classes. That is exactly why the scores above
+  are invariant.
+- **`FdsIndex`.** Its four fields are `HashMap`s in an rkyv `Archive` struct
+  (`fds_index.rs:22-40`), and rkyv serializes a `HashMap` in iteration order.
+  All four are consumed only by `.get()` in `lazy_pool.rs:157-267`, never
+  iterated, so again only the bytes move.
+
+Both are invisible to behavior; what they cost is the ability to treat a
+schema DB as content-addressable — you cannot verify one by digest, cache or
+dedupe by digest, or diff two DBs to tell "the schema changed" from "someone
+rebuilt it".
+
+**Fixed** by `docs/specs/0177-reproducible-schema-db-artifacts.md`
+(2026-07-26), and at no cost to the format: the `FdsIndex` half turned out not
+to need `BTreeMap` at all, because `HashMap<K, V, S>` archives to
+`ArchivedHashMap<K, V>` — the source hasher never reaches the archive, and
+archived lookups use `FxHasher64` regardless. Fixing the source seed and
+inserting in sorted key order makes the layout a function of the key set alone,
+leaving the archived type, the reader, `VERSION` and lookup cost untouched, so
+existing DBs stay readable.
+
+Note that `docs/specs/0059-hopcroft-test-harness.md:175` is *not* an instance
+of this. It requires two map-entry types to stay in distinct states "regardless
+of HashMap iteration order", which is an assertion about the partition, not the
+numbering — and the partition is invariant, so that assumption holds.
+
+One lesson worth keeping: the graph half needed *three* sorts, not two. Sorting
+`graph.rs:198` and `hopcroft.rs:231` left `hopcroft.rkyv` still varying, because
+`LeafRegistry::range_sentinel` assigns each distinct range a `range_idx` in
+first-seen order and the edge-build loop was walking `merged.states` unordered —
+so the initial partition's leaf labels moved too. And a small schema does not
+exercise any of this: a four-message input produced an identical
+`hopcroft.rkyv` even before the fix, because Hopcroft never had to split a
+block. The regression test therefore imports the WKTs.
 
 ### C12. The two surviving range vetoes are not vetoes of the impossible **[open]**
 
