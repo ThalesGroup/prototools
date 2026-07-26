@@ -828,7 +828,7 @@ fn heat_cue_for_resolves_once_a_real_worker_populates_the_cache() {
     // `by_range`'s window could never fill.
     app.blob = vec![0x22, 0x08, 0x08, 0x01, 0x08, 0x02, 0x08, 0x03, 0x08, 0x04];
     let idx = 0;
-    let graph = app.ctx.graph.as_ref().unwrap().graph;
+    let graph = Arc::clone(app.ctx.graph.as_ref().unwrap());
     let blob = Arc::new(app.blob.clone());
     let (tx, _rx) = mpsc::channel();
     app.heat_worker = Some(HeatWorkerHandle::spawn(

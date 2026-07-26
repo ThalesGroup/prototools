@@ -569,7 +569,21 @@ Also require enough room for the archived root itself, not merely
 comment tying it to a validated invariant, which is why the gap was
 invisible.
 
-### C9. The loaded graph is handed out as `&'static` **[verified open 2026-07-26]**
+### C9. The loaded graph is handed out as `&'static` **[fixed 2026-07-26]**
+
+> **Resolved.** Spec
+> [0180](specs/0180-own-the-scoring-graph-by-arc.md). `LoadedGraph::graph`
+> is **private**, with a `graph(&self) -> &ArchivedCompiledGraph` accessor
+> beside the existing `Deref`, so both ways out shorten the lifetime to
+> `&self` and the `transmute` below is discharged by the module rather than
+> asserted to callers. protolens holds `Arc<LoadedGraph>` and both of its
+> background threads own a handle, so the never-joined detached thread at
+> `mod.rs:1680` — the unmitigated instance this entry identified — is sound
+> without being joined, which is what it wanted to be all along.
+>
+> The prediction below held: a compiler check replaced the field ordering,
+> and `App`'s field-order comment is now a historical note. `load_graph`
+> still returns a plain `LoadedGraph`, not an `Arc` — see the spec's N2.
 
 **Where:** `prototext-graph/src/score/load.rs:138` fabricates the lifetime:
 

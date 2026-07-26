@@ -21,7 +21,24 @@ enum GraphBacking {
 pub struct LoadedGraph {
     _backing: GraphBacking,
     /// Zero-copy view into the backing storage.
-    pub graph: &'static ArchivedCompiledGraph,
+    ///
+    /// **Private on purpose (spec 0180 S1).** The `'static` is manufactured
+    /// by the `transmute` in `load_graph`, and `&'static T` is `Copy`: while
+    /// this field was `pub`, any caller could copy the reference out and
+    /// outlive the mapping, which is exactly what protolens's detached
+    /// root-type thread did. Privacy is what discharges that `transmute`'s
+    /// safety argument — read `graph()` and the `Deref` impl as the only two
+    /// ways out, both of which shorten the lifetime to `&self`.
+    graph: &'static ArchivedCompiledGraph,
+}
+
+impl LoadedGraph {
+    /// The archived graph, borrowed for as long as `self` — which is the
+    /// lifetime the backing mmap actually has, as opposed to the `'static`
+    /// the field is stored with.
+    pub fn graph(&self) -> &ArchivedCompiledGraph {
+        self.graph
+    }
 }
 
 impl std::ops::Deref for LoadedGraph {
@@ -141,6 +158,11 @@ pub fn load_graph(path: &Path) -> Result<LoadedGraph, Box<dyn std::error::Error>
         // `payload` borrows `mmap`, which `LoadedGraph` keeps alive for
         // exactly as long as `graph`. The bytes themselves are validated
         // by rkyv's checked `access` below.
+        //
+        // That first sentence is only true because the field is **private**
+        // (spec 0180 S1). `&'static T` is `Copy`, so a `pub` field would let
+        // any caller lift the reference out of the struct that owns the
+        // mapping and keep it afterwards — and one did. Do not re-expose it.
         let payload: &'static [u8] = std::mem::transmute::<&[u8], &'static [u8]>(payload);
         access::<ArchivedCompiledGraph, rkyv::rancor::Error>(payload)
             .map_err(|e| format!("{}: rkyv access failed: {e}", path.display()))?

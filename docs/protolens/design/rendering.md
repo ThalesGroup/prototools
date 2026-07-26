@@ -281,31 +281,44 @@ lowest tier — so a prefetch wave can never displace what the user is
 looking at, and an over-capacity prefetch push is `Rejected` (which is
 how `prefetch_step` learns to stop walking).
 
-Thread lifetime is the one part of this that is not type-enforced, and
-it is the pipeline's weakest joint. Both background threads hold
-`graph: &'static ArchivedCompiledGraph` — but that `'static` is
-fabricated by a `from_raw_parts` lifetime extension over an `Mmap`
-(`prototext-graph/src/score/load.rs:82-89`), and its real validity ends
-when `App::ctx` drops. The type system is not tracking this at all; two
-hand-maintained mechanisms are:
+Thread lifetime **is** type-enforced, as of
+[spec 0180](../../specs/0180-own-the-scoring-graph-by-arc.md). Every
+thread that touches the scoring graph holds an `Arc<LoadedGraph>` and
+calls `.graph()` at the point of use, so the mapping cannot be unmapped
+while a scorer is reading it, whatever order anything drops in.
+
+This used to be the pipeline's weakest joint, and the history is worth
+keeping because the shape of the mistake recurs. `LoadedGraph` holds a
+`graph: &'static ArchivedCompiledGraph` whose `'static` is fabricated by
+a lifetime extension over an `Mmap`
+(`prototext-graph/src/score/load.rs`), and whose real validity ends when
+`App::ctx` drops. While that field was `pub`, `&'static T` being `Copy`
+meant any caller could lift the reference out of the struct that owned
+the mapping — so the `Deref` impl that was supposed to be the only
+access path was simply bypassed. Two hand-maintained mechanisms stood in
+for the compiler:
 
 - `run` joins the heat worker explicitly before returning
-  (`tui/mod.rs:1698-1703`), and
-- `App` declares `heat_worker` **before** `ctx`, so field drop order
-  stops the thread before the mmap is unmapped (`tui/mod.rs:727-742`) —
-  needed because the join is not reached on a panic-unwind path.
-  Getting this order wrong was an intermittent segfault.
+  (`tui/mod.rs`), and
+- `App` declared `heat_worker` **before** `ctx`, so field drop order
+  stopped the thread before the mmap was unmapped — needed because the
+  join is not reached on a panic-unwind path. Getting this order wrong
+  was an intermittent segfault.
 
-There is a **third** thread, and it is covered by neither: the detached,
-one-shot root-type sweep spawned at `tui/mod.rs:1673-1684`. It copies
-the same `&'static` graph out and is deliberately never joined, so
-quitting mid-sweep unmaps the file underneath a running thread. See
-[../rendering-flaws.md](../rendering-flaws.md) C3, and A5 for the `pub`
-field that makes copying it out possible in the first place. That thread
-exists only to run the root-type sweep *late*;
-[spec 0168](../../specs/0168-protolens-resolve-root-type-before-decode.md)
-proposes deleting it by running the sweep before the single decode
-instead.
+Neither covered the **third** thread: the detached, one-shot root-type
+sweep, which copied the same `&'static` out and is deliberately never
+joined, so quitting mid-sweep unmapped the file underneath a running
+thread. That is the tell — a safety invariant expressed as a source-line
+ordering covers only the threads that happen to have a handle to drop.
+Spec 0180 made the field private and gave both threads an owning `Arc`;
+the field order is now merely tidy, and the detached thread stays
+detached, which is what it wanted. See
+[../rendering-flaws.md](../rendering-flaws.md) C3 and A5.
+
+Both scoring threads also name `SCORING_THREAD_STACK_SIZE` (16 MiB,
+`tui/mod.rs`). It lives in the parent of both spawn sites on purpose:
+while it lived in `heat_worker.rs` the root-type sweep silently ran the
+same deep recursion on `std`'s 2 MiB default.
 
 Independently of that, the right fix retires this whole subsection: hold
 the graph as `Arc<LoadedGraph>` and the lifetime becomes real rather than

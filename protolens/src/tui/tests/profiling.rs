@@ -89,12 +89,12 @@ fn profile_override_pane_down_on_db3() {
     // `heat_lookup` requests would enqueue and sit forever, unlike a real
     // interactive session.
     if let Some(graph) = &app.ctx.graph {
-        let graph_ref = graph.graph;
+        let graph_ref = std::sync::Arc::clone(graph);
         let blob = std::sync::Arc::new(app.blob.clone());
         let (tx, _rx) = std::sync::mpsc::channel();
         app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
             std::sync::Arc::clone(&app.heat_caches),
-            graph_ref,
+            std::sync::Arc::clone(&graph_ref),
             blob,
             tx,
         ));
@@ -202,12 +202,12 @@ fn profile_override_pane_enter_on_pdb() {
 
     let mut rx = None;
     if let Some(graph) = &app.ctx.graph {
-        let graph_ref = graph.graph;
+        let graph_ref = std::sync::Arc::clone(graph);
         let blob = std::sync::Arc::new(app.blob.clone());
         let (tx, worker_rx) = std::sync::mpsc::channel();
         app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
             std::sync::Arc::clone(&app.heat_caches),
-            graph_ref,
+            std::sync::Arc::clone(&graph_ref),
             blob,
             tx,
         ));
@@ -395,12 +395,12 @@ fn profile_main_pane_down_on_db3() {
     // which is why it never reproduced the reported slowdown.
     let mut rx = None;
     if let Some(graph) = &app.ctx.graph {
-        let graph_ref = graph.graph;
+        let graph_ref = std::sync::Arc::clone(graph);
         let blob = std::sync::Arc::new(app.blob.clone());
         let (tx, worker_rx) = std::sync::mpsc::channel();
         app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
             std::sync::Arc::clone(&app.heat_caches),
-            graph_ref,
+            std::sync::Arc::clone(&graph_ref),
             blob,
             tx,
         ));
@@ -486,19 +486,19 @@ fn repro_crash_down_t_enter_on_pdb() {
 
     let mut rx = None;
     if let Some(graph) = &app.ctx.graph {
-        let graph_ref = graph.graph;
+        let graph_ref = std::sync::Arc::clone(graph);
         let blob = std::sync::Arc::new(app.blob.clone());
         let (tx, worker_rx) = std::sync::mpsc::channel();
         app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
             std::sync::Arc::clone(&app.heat_caches),
-            graph_ref,
+            std::sync::Arc::clone(&graph_ref),
             blob,
             tx.clone(),
         ));
         rx = Some(worker_rx);
 
         let original_blob = app.blob[app.wrapper_offset..].to_vec();
-        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref) {
+        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref.graph()) {
             eprintln!("resolved root type: {fqdn}");
             app.apply_resolved_root_type(fqdn);
         }
@@ -604,18 +604,18 @@ fn repro_crash_down_t_enter_immediate_on_pdb() {
     terminal.draw(|frame| app.render(frame)).unwrap();
 
     if let Some(graph) = &app.ctx.graph {
-        let graph_ref = graph.graph;
+        let graph_ref = std::sync::Arc::clone(graph);
         let blob = std::sync::Arc::new(app.blob.clone());
         let (tx, _worker_rx) = std::sync::mpsc::channel();
         app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
             std::sync::Arc::clone(&app.heat_caches),
-            graph_ref,
+            std::sync::Arc::clone(&graph_ref),
             blob,
             tx,
         ));
 
         let original_blob = app.blob[app.wrapper_offset..].to_vec();
-        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref) {
+        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref.graph()) {
             eprintln!("resolved root type: {fqdn}");
             app.apply_resolved_root_type(fqdn);
         }
@@ -691,9 +691,9 @@ fn repro_crash_forced_resplice_on_pdb() {
     app.term_width = 120;
 
     if let Some(graph) = &app.ctx.graph {
-        let graph_ref = graph.graph;
+        let graph_ref = std::sync::Arc::clone(graph);
         let original_blob = app.blob[app.wrapper_offset..].to_vec();
-        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref) {
+        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref.graph()) {
             eprintln!("resolved root type: {fqdn}");
             app.apply_resolved_root_type(fqdn);
         }
@@ -762,9 +762,9 @@ fn repro_crash_activate_then_close_on_pdb() {
     app.term_width = 120;
 
     if let Some(graph) = &app.ctx.graph {
-        let graph_ref = graph.graph;
+        let graph_ref = std::sync::Arc::clone(graph);
         let original_blob = app.blob[app.wrapper_offset..].to_vec();
-        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref) {
+        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref.graph()) {
             eprintln!("resolved root type: {fqdn}");
             app.apply_resolved_root_type(fqdn);
         }
@@ -847,9 +847,9 @@ fn repro_crash_real_t_then_manual_confirm_on_pdb() {
     app.term_width = 120;
 
     if let Some(graph) = &app.ctx.graph {
-        let graph_ref = graph.graph;
+        let graph_ref = std::sync::Arc::clone(graph);
         let original_blob = app.blob[app.wrapper_offset..].to_vec();
-        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref) {
+        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref.graph()) {
             eprintln!("resolved root type: {fqdn}");
             app.apply_resolved_root_type(fqdn);
         }
@@ -931,9 +931,9 @@ fn repro_crash_two_previews_then_manual_confirm_on_pdb() {
     app.term_width = 120;
 
     if let Some(graph) = &app.ctx.graph {
-        let graph_ref = graph.graph;
+        let graph_ref = std::sync::Arc::clone(graph);
         let original_blob = app.blob[app.wrapper_offset..].to_vec();
-        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref) {
+        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref.graph()) {
             eprintln!("resolved root type: {fqdn}");
             app.apply_resolved_root_type(fqdn);
         }
@@ -1027,9 +1027,9 @@ fn repro_crash_raw_then_typed_preview_then_manual_confirm_on_pdb() {
     app.term_width = 120;
 
     if let Some(graph) = &app.ctx.graph {
-        let graph_ref = graph.graph;
+        let graph_ref = std::sync::Arc::clone(graph);
         let original_blob = app.blob[app.wrapper_offset..].to_vec();
-        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref) {
+        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref.graph()) {
             eprintln!("resolved root type: {fqdn}");
             app.apply_resolved_root_type(fqdn);
         }
@@ -1130,19 +1130,19 @@ fn repro_crash_natural_highlight_on_pdb() {
 
     let mut rx = None;
     if let Some(graph) = &app.ctx.graph {
-        let graph_ref = graph.graph;
+        let graph_ref = std::sync::Arc::clone(graph);
         let blob = std::sync::Arc::new(app.blob.clone());
         let (tx, worker_rx) = std::sync::mpsc::channel();
         app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
             std::sync::Arc::clone(&app.heat_caches),
-            graph_ref,
+            std::sync::Arc::clone(&graph_ref),
             blob,
             tx.clone(),
         ));
         rx = Some(worker_rx);
 
         let original_blob = app.blob[app.wrapper_offset..].to_vec();
-        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref) {
+        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref.graph()) {
             eprintln!("resolved root type: {fqdn}");
             app.apply_resolved_root_type(fqdn);
         }
@@ -1264,12 +1264,12 @@ fn diagnose_sim_t_stall() {
     app.term_width = 120;
 
     if let Some(graph) = &app.ctx.graph {
-        let graph_ref = graph.graph;
+        let graph_ref = std::sync::Arc::clone(graph);
         let blob_arc = std::sync::Arc::new(app.blob.clone());
         let (tx, _rx) = std::sync::mpsc::channel();
         app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
             std::sync::Arc::clone(&app.heat_caches),
-            graph_ref,
+            std::sync::Arc::clone(&graph_ref),
             blob_arc,
             tx,
         ));
@@ -1352,12 +1352,12 @@ fn diagnose_sim_node3_t_down_stall() {
     app.term_width = 120;
 
     if let Some(graph) = &app.ctx.graph {
-        let graph_ref = graph.graph;
+        let graph_ref = std::sync::Arc::clone(graph);
         let blob_arc = std::sync::Arc::new(app.blob.clone());
         let (tx, _rx) = std::sync::mpsc::channel();
         app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
             std::sync::Arc::clone(&app.heat_caches),
-            graph_ref,
+            std::sync::Arc::clone(&graph_ref),
             blob_arc,
             tx,
         ));

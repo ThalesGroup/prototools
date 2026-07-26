@@ -296,9 +296,14 @@ impl App {
         // `[pending]` in that case either). `heat_states[idx]` is left
         // untouched (still unsettled) so a cache write from elsewhere
         // is still picked up on a later call.
-        let Some(graph) = self.ctx.graph.as_ref().map(|g| g.graph) else {
+        // Cloned rather than borrowed (spec 0180 S2): this used to be a
+        // `&'static` copy, which detached from `self` for free; an `Arc`
+        // clone is the honest equivalent and keeps `self` free to be
+        // borrowed mutably below.
+        let Some(graph) = self.ctx.graph.clone() else {
             return HeatDisplay::None;
         };
+        let graph = graph.graph();
         let range_bytes = &self.blob[range.clone()];
         let state = if state.best.is_some() {
             // Window already covered — only the current type's score is

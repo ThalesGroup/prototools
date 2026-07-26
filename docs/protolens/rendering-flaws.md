@@ -135,9 +135,20 @@ unmeasurable. Either:
 
 ---
 
-### C3. The detached root-type thread outlives the mmap it reads, and runs the deep scoring recursion on the default stack
+### C3. ✔ The detached root-type thread outlives the mmap it reads, and runs the deep scoring recursion on the default stack
 
 **Where:** `protolens/src/tui/mod.rs:1673-1684`
+
+> ✔ **Both halves fixed 2026-07-26** by
+> [spec 0180](../specs/0180-own-the-scoring-graph-by-arc.md), which took
+> the `Arc` route rather than waiting for spec 0168's deletion of the
+> spawn site (see the Note below — that spec is still unimplemented, and
+> "will be deleted eventually" is not a reason to leave a
+> use-after-unmap live). S1/S2 made `LoadedGraph::graph` private and
+> `DescriptorContext.graph` an `Option<Arc<LoadedGraph>>`, so (a) is
+> closed by the type system rather than by the field order; S4 moved the
+> stack-size constant to `tui/mod.rs` as `SCORING_THREAD_STACK_SIZE` and
+> gave this spawn a `thread::Builder`, closing (b) exactly as proposed.
 
 Two independent defects at one spawn site.
 
@@ -713,9 +724,21 @@ being asked.
 
 ---
 
-### A5. `LoadedGraph` publishes the `&'static` it exists to protect
+### A5. ✔ `LoadedGraph` publishes the `&'static` it exists to protect
 
 **Where:** `prototext-graph/src/score/load.rs:21-25`, `:82-89`
+
+> ✔ **Fixed 2026-07-26** by
+> [spec 0180](../specs/0180-own-the-scoring-graph-by-arc.md) S1/S2. The
+> field is private, `graph()` exists, and protolens holds an
+> `Arc<LoadedGraph>`. One deviation from the correction below, recorded
+> as the spec's non-goal N2: **the loader still returns a plain
+> `LoadedGraph`**, not an `Arc`. The soundness property comes from
+> privacy, not from `Arc`; `prototext`'s CLI is single-threaded and holds
+> the graph in its own `DescriptorContext`, so forcing an `Arc` on it
+> would buy an allocation and an indirection and nothing else. `Arc` is
+> applied where a reference must outlive a borrow, which is protolens and
+> only protolens.
 
 **What happens.** The safety comment says the `'static` lifetime
 extension is sound "as long as `_mmap` lives as long as `graph` —

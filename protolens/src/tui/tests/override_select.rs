@@ -1366,7 +1366,7 @@ fn override_pane_auto_completes_from_polling_alone_without_scrolling() {
     // distinct requests.
     app.override_list_height = 2;
 
-    let graph = app.ctx.graph.as_ref().unwrap().graph;
+    let graph = Arc::clone(app.ctx.graph.as_ref().unwrap());
     let blob = Arc::new(app.blob.clone());
     let (tx, _rx) = mpsc::channel();
     app.heat_worker = Some(HeatWorkerHandle::spawn(
@@ -1478,7 +1478,7 @@ fn override_pane_seeks_the_active_overrides_type_once_the_complete_list_arrives(
         Some("Msg7".to_string()),
     );
 
-    let graph = app.ctx.graph.as_ref().unwrap().graph;
+    let graph = Arc::clone(app.ctx.graph.as_ref().unwrap());
     let blob = Arc::new(app.blob.clone());
     let (tx, _rx) = mpsc::channel();
     app.heat_worker = Some(HeatWorkerHandle::spawn(

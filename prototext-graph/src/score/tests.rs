@@ -1437,11 +1437,11 @@ fn tc_of1_a_corpus_past_the_old_u16_ceiling_loads_and_scores() {
     let _ = std::mem::ManuallyDrop::new(dir);
 
     let g = score_load::load_graph(&path).expect("a 65 536-root graph must load");
-    assert_eq!(g.graph.roots.len(), n);
+    assert_eq!(g.graph().roots.len(), n);
 
     // Field 1, varint 7 — a match for every root in the corpus.
     let pb = field_varint(1, 7);
-    let scores = walk::score_all(&pb, g.graph, &walk::ScoringOpts::default());
+    let scores = walk::score_all(&pb, g.graph(), &walk::ScoringOpts::default());
 
     assert_eq!(scores.len(), n, "one score per root");
     assert!(

@@ -168,11 +168,11 @@ fn bench_packed_vs_expanded(c: &mut Criterion) {
         let graph = build_graph(n);
         g.throughput(Throughput::Bytes(packed.len() as u64));
         g.bench_with_input(BenchmarkId::new("packed", n), &n, |b, _| {
-            b.iter(|| score_all(black_box(&packed), graph.graph, &opts))
+            b.iter(|| score_all(black_box(&packed), graph.graph(), &opts))
         });
         g.throughput(Throughput::Bytes(expanded.len() as u64));
         g.bench_with_input(BenchmarkId::new("expanded", n), &n, |b, _| {
-            b.iter(|| score_all(black_box(&expanded), graph.graph, &opts))
+            b.iter(|| score_all(black_box(&expanded), graph.graph(), &opts))
         });
     }
 
@@ -189,7 +189,7 @@ fn bench_score_all_roots(c: &mut Criterion) {
     for &n in &[64usize, 256, 1024, 4096] {
         let graph = build_graph(n);
         g.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
-            b.iter(|| score_all(black_box(&pb), graph.graph, &opts))
+            b.iter(|| score_all(black_box(&pb), graph.graph(), &opts))
         });
     }
 
@@ -207,7 +207,7 @@ fn bench_score_all_setup(c: &mut Criterion) {
     for &n in &[1024usize, 4096] {
         let graph = build_graph(n);
         g.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
-            b.iter(|| score_all(black_box(&pb), graph.graph, &opts))
+            b.iter(|| score_all(black_box(&pb), graph.graph(), &opts))
         });
     }
 
@@ -225,7 +225,7 @@ fn bench_score_one(c: &mut Criterion) {
     g.throughput(Throughput::Bytes(pb.len() as u64));
 
     g.bench_function("Msg0 out of 1024 roots", |b| {
-        b.iter(|| score_one(black_box(&pb), "Msg0", graph.graph, &opts))
+        b.iter(|| score_one(black_box(&pb), "Msg0", graph.graph(), &opts))
     });
 
     g.finish();

@@ -301,16 +301,28 @@ all still restore the terminal.
 
 ---
 
-### W4. ~~Root-type thread: stack size and lifetime~~ — **DROPPED**
+### W4. ~~Root-type thread: stack size and lifetime~~ — **DONE 2026-07-26, via spec 0180**
 
-**Dropped 2026-07-25 by decision D-a.** This was the interim patch for
-[C3](rendering-flaws.md) (a) and (b), to be done *only* if spec 0168 were
-deferred. 0168 is being implemented, and W6 deletes the spawn site
-outright — which deletes both defects rather than mitigating them.
+**Dropped 2026-07-25 by decision D-a**, then **un-dropped and done
+2026-07-26.** This was the interim patch for [C3](rendering-flaws.md)
+(a) and (b), to be done *only* if spec 0168 were deferred; the drop
+reasoned that 0168 was being implemented and W6 would delete the spawn
+site outright.
 
-**Do not implement this item.** It is kept here, struck through, so that
-a reader who finds C3 in the flaws report can see where it went. C3 is
-fixed by **W6**.
+**The drop was wrong, for a reason worth recording.** 0168 was not in
+fact implemented, so "a later spec will delete this code" left a
+use-after-unmap and a 3.6×-margin stack live in the shipping binary for
+a spec that had not landed. A pending deletion is not a fix, and the
+cost of being wrong about the schedule was a `SIGSEGV` at quit.
+
+Both halves are now closed by
+[spec 0180](../specs/0180-own-the-scoring-graph-by-arc.md): (a) by the
+`Arc<LoadedGraph>` of W8 part 1, which is strictly better than this
+item's interim patch because it makes the guarantee structural rather
+than mitigating it; (b) by S4, which moved the constant to
+`tui/mod.rs` as `SCORING_THREAD_STACK_SIZE` and gave this spawn a
+`thread::Builder` — exactly this item's proposal. If W6/0168 later
+deletes the spawn site, it deletes an already-sound one.
 
 ---
 
@@ -839,11 +851,26 @@ re-open the pane on the same range, and assert a cache hit (no second
 
 ---
 
-### W8. Share the blob and the graph by `Arc`
+### W8. Share the blob and the graph by `Arc` — **part 1 done 2026-07-26**
 
-**Fixes:** [P4](rendering-flaws.md), [A5](rendering-flaws.md),
-[S4(1)](rendering-scaling-roadmap.md) and its S10 rider; retires C3's
-lifetime half permanently.
+> **Part 1 (the graph) is done**, by
+> [spec 0180](../specs/0180-own-the-scoring-graph-by-arc.md): the field
+> is private, `graph()` exists, `DescriptorContext.graph` is
+> `Option<Arc<LoadedGraph>>`, and A5 and both halves of C3 are closed.
+> One deviation, recorded as that spec's N2: **the loader still returns
+> a plain `LoadedGraph`**, because the soundness property comes from
+> privacy rather than from `Arc`, and `prototext`'s single-threaded CLI
+> would pay an allocation and an indirection for nothing.
+>
+> **Part 2 (the blob) remains open**, and is the whole of what is left
+> here: it is a memory optimization with no soundness content, it
+> touches the override-splicing paths that mutate the blob, and bundling
+> it with a safety fix would have made the safety fix hard to review.
+> The 3×→1× blob win below is still unbanked, so P4 stays open.
+
+**Fixes:** [P4](rendering-flaws.md), ~~[A5](rendering-flaws.md)~~ (done),
+[S4(1)](rendering-scaling-roadmap.md) and its S10 rider; ~~retires C3's
+lifetime half permanently~~ (done).
 
 **Files:** `prototext-graph/src/score/load.rs:21-25`, `:82-89`;
 `protolens/src/tui/mod.rs` (the `DescriptorContext` field and both

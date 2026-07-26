@@ -16,7 +16,7 @@ use std::thread::{self, JoinHandle};
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use prototext_graph::build_scoring_graph::serial::ArchivedCompiledGraph;
+use prototext_graph::score::load::LoadedGraph;
 
 use super::event::AppEvent;
 use super::heat_cue;
@@ -30,23 +30,6 @@ use crate::override_pane;
 /// *distinct* ranges are simultaneously unresolved, not expected in
 /// practice.
 pub(super) const HEAT_REQUEST_QUEUE_MAX_ENTRIES: usize = 512;
-
-/// Stack size for the worker thread spawned by `HeatWorkerHandle::spawn`.
-/// `score_message_multi` (`prototext-graph`) recurses once per nested
-/// message/group level of whatever candidate type it's scoring a range
-/// against; on a schema mismatch (e.g. decoding a range against a
-/// candidate whose shape doesn't actually match the bytes) this can run
-/// noticeably deeper than a well-formed decode of the same bytes would.
-/// `std::thread::spawn`'s default stack (2 MiB) is smaller than the main
-/// thread's own (commonly 8 MiB, per the process's `RLIMIT_STACK`), so
-/// scoring that would be safely within budget on the main thread could
-/// overflow the worker's smaller default. Not the cause of the
-/// 2026-07-25 segfault report (that turned out to be an unrelated
-/// `App`-field-drop-order use-after-unmap race — see `mod.rs`'s
-/// `heat_worker`/`ctx` field-ordering comment), but kept as reasonable
-/// defense-in-depth: 16 MiB comfortably exceeds the main thread's own
-/// default, rather than merely matching it.
-const HEAT_WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
 
 /// One request for the worker thread (spec 0152 "plain terms"/G3):
 /// which node's payload range, its currently-assigned type (if any),
@@ -345,10 +328,13 @@ impl App {
 pub(super) fn heat_worker_loop(
     queue: Arc<HeatRequestQueue>,
     caches: Arc<Mutex<HeatCaches>>,
-    graph: &'static ArchivedCompiledGraph,
+    graph: Arc<LoadedGraph>,
     blob: Arc<Vec<u8>>,
     progress: mpsc::Sender<AppEvent>,
 ) {
+    // Spec 0180 S2: the worker owns a handle to the mapping rather than a
+    // `&'static` copied out of one, so the borrow below cannot outlive it.
+    let graph = graph.graph();
     while let Some((start, req)) = queue.pop_blocking() {
         let (covers_window, covers_current) = {
             let mut c = caches.lock().unwrap_or_else(|e| e.into_inner());
@@ -434,7 +420,7 @@ pub(super) struct HeatWorkerHandle {
 impl HeatWorkerHandle {
     pub(super) fn spawn(
         caches: Arc<Mutex<HeatCaches>>,
-        graph: &'static ArchivedCompiledGraph,
+        graph: Arc<LoadedGraph>,
         blob: Arc<Vec<u8>>,
         progress: mpsc::Sender<AppEvent>,
     ) -> Self {
@@ -442,7 +428,7 @@ impl HeatWorkerHandle {
         let worker_queue = Arc::clone(&queue);
         let join = thread::Builder::new()
             .name("heat-worker".to_string())
-            .stack_size(HEAT_WORKER_STACK_SIZE)
+            .stack_size(super::SCORING_THREAD_STACK_SIZE)
             .spawn(move || heat_worker_loop(worker_queue, caches, graph, blob, progress))
             .expect("spawn heat worker thread");
         HeatWorkerHandle {
@@ -701,14 +687,18 @@ messages:
     /// call counter).
     #[test]
     fn heat_caches_worker_round_trip() {
-        let graph = test_scoring_graph();
-        let graph: &'static ArchivedCompiledGraph = graph.graph;
+        let graph = Arc::new(test_scoring_graph());
         // A valid encoding of field 1 (varint) = 5: tag 0x08, value 0x05.
         let range_bytes = vec![0x08, 0x05];
         let blob = Arc::new(range_bytes.clone());
         let caches = Arc::new(Mutex::new(HeatCaches::new(8)));
         let (tx, rx) = mpsc::channel::<AppEvent>();
-        let worker = HeatWorkerHandle::spawn(Arc::clone(&caches), graph, Arc::clone(&blob), tx);
+        let worker = HeatWorkerHandle::spawn(
+            Arc::clone(&caches),
+            Arc::clone(&graph),
+            Arc::clone(&blob),
+            tx,
+        );
 
         worker.push(
             HeatRequest {
@@ -736,7 +726,7 @@ messages:
         rx.recv_timeout(Duration::from_secs(2))
             .expect("progress must fire for the first request");
 
-        let expected_candidates = override_pane::inferred_candidates(&range_bytes, graph);
+        let expected_candidates = override_pane::inferred_candidates(&range_bytes, graph.graph());
         let expected_stats = heat_cue::derive_stats(&expected_candidates);
         assert_eq!(entry.best_score, expected_stats.best_score);
         assert_eq!(entry.best_count, expected_stats.best_count);
@@ -778,13 +768,17 @@ messages:
     /// covered by `heat_caches_worker_round_trip` above.)
     #[test]
     fn worker_uses_cheap_fast_path_when_only_current_is_missing() {
-        let graph = test_scoring_graph();
-        let graph: &'static ArchivedCompiledGraph = graph.graph;
+        let graph = Arc::new(test_scoring_graph());
         let range_bytes = vec![0x08, 0x05];
         let blob = Arc::new(range_bytes.clone());
         let caches = Arc::new(Mutex::new(HeatCaches::new(8)));
         let (tx, rx) = mpsc::channel::<AppEvent>();
-        let worker = HeatWorkerHandle::spawn(Arc::clone(&caches), graph, Arc::clone(&blob), tx);
+        let worker = HeatWorkerHandle::spawn(
+            Arc::clone(&caches),
+            Arc::clone(&graph),
+            Arc::clone(&blob),
+            tx,
+        );
 
         // Prime the window via a full sweep first.
         worker.push(
@@ -910,13 +904,17 @@ messages:
     /// subsequent `Visible`-tier request for a different range does.
     #[test]
     fn worker_does_not_notify_on_prefetch_tier_completion() {
-        let graph = test_scoring_graph();
-        let graph: &'static ArchivedCompiledGraph = graph.graph;
+        let graph = Arc::new(test_scoring_graph());
         let range_bytes = vec![0x08, 0x05, 0x08, 0x05];
         let blob = Arc::new(range_bytes.clone());
         let caches = Arc::new(Mutex::new(HeatCaches::new(8)));
         let (tx, rx) = mpsc::channel::<AppEvent>();
-        let worker = HeatWorkerHandle::spawn(Arc::clone(&caches), graph, Arc::clone(&blob), tx);
+        let worker = HeatWorkerHandle::spawn(
+            Arc::clone(&caches),
+            Arc::clone(&graph),
+            Arc::clone(&blob),
+            tx,
+        );
 
         worker.push(
             HeatRequest {

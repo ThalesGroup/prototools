@@ -114,6 +114,28 @@ const WARMUP_FIRST_DRAW_DELAY: Duration = Duration::from_millis(300);
 /// line turns out to be.
 const WARMUP_REDRAW_INTERVAL: Duration = Duration::from_millis(300);
 
+/// Stack size for every thread protolens spawns that runs the scorer
+/// (spec 0180 S4). Declared *here*, in the parent of both spawn sites,
+/// rather than in `heat_worker.rs` where it started life: it lived next
+/// to one of its two users, so the other one — the detached root-type
+/// sweep in `run` — silently never got it (rendering-flaws C3(b)).
+///
+/// `score_message_multi` (`prototext-graph`) recurses once per nested
+/// message/group level of whatever candidate type it is scoring a range
+/// against; on a schema mismatch (e.g. decoding a range against a
+/// candidate whose shape doesn't actually match the bytes) this can run
+/// noticeably deeper than a well-formed decode of the same bytes would.
+/// `MAX_WIRE_DEPTH`'s doc comment (`prototext-core`) records the
+/// measurement: the scorer consumes ~576 KiB for a full-cap nest in
+/// release, so `std::thread::spawn`'s 2 MiB default leaves a 3.6×
+/// margin — the binding margin in the whole workspace, and negative in
+/// a debug build. 16 MiB restores the ~28× every other (walker, thread)
+/// pair already has, and comfortably exceeds the main thread's own
+/// default (commonly 8 MiB, per the process's `RLIMIT_STACK`) rather
+/// than merely matching it. A stack reservation costs address space,
+/// not resident pages.
+pub(super) const SCORING_THREAD_STACK_SIZE: usize = 16 * 1024 * 1024;
+
 /// Byte budget for `App::render_cache` (spec 0116 §8) — tuned generously
 /// for a short-lived interactive session (spec 0114 §6's original
 /// `candidate_cache` reasoning, since superseded by spec 0152's
@@ -724,17 +746,28 @@ pub struct App {
     /// fork that checks `heat_worker.is_some()` falls through to the
     /// existing synchronous logic when it's `None`.
     ///
-    /// Declared (and thus dropped) before `ctx` below: `heat_worker`
-    /// holds a `&'static ArchivedCompiledGraph` borrowed from `ctx`'s
-    /// mmap-backed `LoadedGraph` (`prototext_graph::score::load`'s
-    /// safety contract requires the backing mmap to outlive every
-    /// reference into it), and `HeatWorkerHandle`'s `Drop` is what
-    /// actually stops and joins the background thread using that
-    /// reference. Rust drops struct fields in declaration order, so
-    /// `ctx` must come *after* `heat_worker` here, or `App`'s own
-    /// teardown would unmap the graph out from under a still-running
-    /// worker thread — a use-after-unmap race hit intermittently at
-    /// process exit (2026-07-25 bug report).
+    /// **This field's position is no longer load-bearing** (spec 0180
+    /// S2), but it is left where it is, with the history, because the
+    /// history is the argument for the fix.
+    ///
+    /// It used to matter. `heat_worker` held a `&'static
+    /// ArchivedCompiledGraph` borrowed from `ctx`'s mmap-backed
+    /// `LoadedGraph`, `HeatWorkerHandle`'s `Drop` is what stops and joins
+    /// the background thread using that reference, and Rust drops struct
+    /// fields in declaration order — so `ctx` declared before
+    /// `heat_worker` would unmap the graph out from under a still-running
+    /// worker. That was a real use-after-unmap race, hit intermittently
+    /// at process exit (2026-07-25 bug report), and reordering these two
+    /// fields is what fixed it.
+    ///
+    /// It was the wrong kind of fix: a safety invariant expressed as a
+    /// source-line ordering, which the compiler does not check and which
+    /// covered only the thread that happened to have a handle to drop —
+    /// the detached root-type sweep in `run()` had the identical bug and
+    /// this fix did nothing for it. The worker now holds an
+    /// `Arc<LoadedGraph>`, so it cannot outlive the mapping in any drop
+    /// order at all. Do not re-derive an ordering requirement from this
+    /// comment.
     heat_worker: Option<heat_worker::HeatWorkerHandle>,
     /// Type-lookup/scoring context (spec 0114 §3) — owned by `App` after
     /// `decode()` returns it, so the override pane can resolve/score
@@ -1657,7 +1690,10 @@ pub fn run(app: &mut App) -> io::Result<()> {
     // large scoring graph, which the warm-up pass used to cause by
     // always running before any worker existed to hand work off to.
     if let Some(graph) = &app.ctx.graph {
-        let graph_ref = graph.graph; // 'static, Copy — spec 0152 G2
+        // Spec 0180 S2: an owning handle, not a `&'static` copied out of the
+        // mapping. Each `Arc::clone` below is a refcount bump, and it is what
+        // makes both spawns below independent of when `App` drops.
+        let graph = Arc::clone(graph);
         let blob = Arc::new(app.blob.clone()); // one-time clone, G2
 
         // Spec NNNN: root-type inference is a single, one-shot `score_
@@ -1665,27 +1701,46 @@ pub fn run(app: &mut App) -> io::Result<()> {
         // requests, it's never repeated, so it gets its own detached,
         // fire-and-forget thread rather than a `HeatRequestQueue` entry.
         // Not joined anywhere (deliberately, unlike `heat_worker`/
-        // `input_reader` below): it holds only `'static`/`Arc`-owned
-        // data, so an early `should_quit` simply lets the OS reclaim it
-        // mid-sweep — joining would otherwise make quitting wait out the
-        // very sweep this whole feature exists to get off the critical
-        // path.
+        // `input_reader` below): it holds only `Arc`-owned data, so an
+        // early `should_quit` simply lets the OS reclaim it mid-sweep —
+        // joining would otherwise make quitting wait out the very sweep
+        // this whole feature exists to get off the critical path.
+        //
+        // That claim was **false until spec 0180 S2**, and this was the
+        // worst place for it to be false: the graph was a `&'static`
+        // transmuted out of `ctx`'s mmap, so `App` dropping while the
+        // longest scoring operation in the program was still running
+        // unmapped the pages underneath it. `graph` is an owning
+        // `Arc<LoadedGraph>` now, so the mapping survives exactly as long
+        // as this thread needs it and the sentence above is true as
+        // written. Do not turn it back into a borrow.
         if app.root_type_pending {
             let root_type_tx = tx.clone();
+            let root_type_graph = Arc::clone(&graph);
             // `determine_root_type` (spec NNNN's synchronous ancestor)
             // scores the caller's original, unwrapped blob — recover it
             // from the wrapped one `Decoded::blob` carries (see `Decoded::
             // wrapper_offset`'s doc comment).
             let original_blob = app.blob[app.wrapper_offset..].to_vec();
-            thread::spawn(move || {
-                let fqdn = decode::resolve_root_winner_fqdn(&original_blob, graph_ref);
-                let _ = root_type_tx.send(event::AppEvent::RootTypeResolved(fqdn));
-            });
+            // Spec 0180 S4: a `Builder`, not a bare `thread::spawn`. This
+            // thread runs `score_all` over the whole blob — the deepest
+            // input the scorer ever sees — and used to take `std`'s 2 MiB
+            // default while the heat worker running the identical code got
+            // 16 MiB, purely because the constant lived in `heat_worker.rs`.
+            thread::Builder::new()
+                .name("root-type".to_string())
+                .stack_size(SCORING_THREAD_STACK_SIZE)
+                .spawn(move || {
+                    let fqdn =
+                        decode::resolve_root_winner_fqdn(&original_blob, root_type_graph.graph());
+                    let _ = root_type_tx.send(event::AppEvent::RootTypeResolved(fqdn));
+                })
+                .expect("spawn root-type thread");
         }
 
         app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
             Arc::clone(&app.heat_caches),
-            graph_ref,
+            graph,
             blob,
             tx.clone(),
         ));
@@ -1695,9 +1750,13 @@ pub fn run(app: &mut App) -> io::Result<()> {
 
     let result = run_loop(&mut terminal, app, &rx, &mut input_reader, &tx);
 
-    // Spec 0152 G9: both threads joined, unconditionally, before
-    // `App`'s `ctx.graph` can drop — load-bearing for the worker's
-    // `'static` graph reference (see "Shutdown and safety").
+    // Spec 0152 G9: both threads joined, unconditionally (see "Shutdown
+    // and safety"). No longer load-bearing for *memory* safety — spec
+    // 0180 S2 gave the worker an owning `Arc<LoadedGraph>`, so it cannot
+    // observe an unmapped page whether or not this runs. It is still
+    // wanted: joining is what stops the worker writing to the terminal
+    // after `restore_terminal` below, and what keeps the process from
+    // lingering on a background sweep the user has already quit.
     if let Some(worker) = app.heat_worker.take() {
         worker.shutdown();
     }

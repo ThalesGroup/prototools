@@ -11,6 +11,7 @@
 
 use std::fmt;
 use std::path::Path;
+use std::sync::Arc;
 
 use prost_reflect::prost_types::field_descriptor_proto::{Label, Type};
 use prost_reflect::prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto};
@@ -56,7 +57,12 @@ impl std::error::Error for DecodeError {}
 /// Hopcroft scoring graph (`<stem>/hopcroft.rkyv` sidecar, if present).
 pub struct DescriptorContext {
     pool: DescriptorPool,
-    pub graph: Option<LoadedGraph>,
+    /// `Arc` rather than a bare `LoadedGraph` (spec 0180 S2): protolens hands
+    /// the graph to two background threads, and one of them — the detached
+    /// root-type sweep in `tui::run` — is deliberately never joined. An
+    /// owning handle is what lets that thread outlive `App` without reading
+    /// an unmapped page. Cloning it is a refcount bump, not a copy.
+    pub graph: Option<Arc<LoadedGraph>>,
     /// Canonicalized binary bytes `load()` decoded `pool` from — i.e.
     /// after `read_descriptor_file`'s `#@ prototext`-to-binary conversion,
     /// same normalization `main.rs` applies to the target blob (spec 0114
@@ -88,9 +94,9 @@ impl DescriptorContext {
         let stem = path.with_extension("");
         let rkyv_path = stem.join("hopcroft.rkyv");
         let graph = if rkyv_path.exists() {
-            Some(load_graph(&rkyv_path).map_err(|e| {
+            Some(Arc::new(load_graph(&rkyv_path).map_err(|e| {
                 DecodeError::Schema(format!("loading graph '{}': {e}", rkyv_path.display()))
-            })?)
+            })?))
         } else {
             None
         };
@@ -139,7 +145,7 @@ impl DescriptorContext {
     pub(crate) fn for_test_with_graph(graph: LoadedGraph) -> Self {
         DescriptorContext {
             pool: DescriptorPool::new(),
-            graph: Some(graph),
+            graph: Some(Arc::new(graph)),
             raw_bytes: Vec::new(),
         }
     }
@@ -181,8 +187,9 @@ pub(crate) fn read_descriptor_file(path: &Path) -> Result<Vec<u8>, DecodeError> 
 /// `determine_root_type`'s synchronous graph branch and the TUI's
 /// asynchronous root-type worker (spec NNNN) — factored out so both can
 /// run the identical selection logic against a bare `ArchivedCompiledGraph`
-/// reference (the worker thread has no `DescriptorContext`/pool, only the
-/// `'static` graph and the blob, mirroring spec 0152's heat worker). `None`
+/// reference (the worker thread has no `DescriptorContext`/pool, only an
+/// owning `Arc<LoadedGraph>` and the blob, mirroring spec 0152's heat
+/// worker — see spec 0180 S2 for why it owns rather than borrows). `None`
 /// when there's no clean winner: no candidates, every candidate vetoed, or
 /// a top-score tie.
 pub(crate) fn resolve_root_winner_fqdn(
