@@ -1606,3 +1606,178 @@ fn survivors_keep_their_own_verdict_after_a_mismatch_retain() {
     );
     assert_eq!(unknown.matches, 0);
 }
+
+// ── Packed and expanded repeated scalars (spec 0175) ──────────────────────────
+
+/// A single root `P` covering every packability case:
+///
+/// ```text
+/// message P {
+///   repeated uint64 nums    = 1;  // packable, varint elements
+///   repeated fixed64 f64s   = 2;  // packable, 8-byte elements
+///   repeated fixed32 f32s   = 3;  // packable, 4-byte elements
+///   optional uint64  one    = 4;  // NOT packable — not repeated
+///   repeated string  strs   = 5;  // NOT packable — LEN element
+///   repeated Status  states = 6;  // packable, range [0..2]
+/// }
+/// ```
+fn build_packed_graph() -> score_load::LoadedGraph {
+    let f = |number: u32, kind: ScoringKind, range, label| ScoringField {
+        number,
+        kind,
+        child: None,
+        range,
+        label,
+    };
+    let fields = vec![
+        f(1, ScoringKind::Uint64, None, FieldLabel::Repeated),
+        f(2, ScoringKind::I64, None, FieldLabel::Repeated),
+        f(3, ScoringKind::I32, None, FieldLabel::Repeated),
+        f(4, ScoringKind::Uint64, None, FieldLabel::Optional),
+        f(5, ScoringKind::LenString, None, FieldLabel::Repeated),
+        f(6, ScoringKind::Range, Some((0, 2)), FieldLabel::Repeated),
+    ];
+
+    let mut states = std::collections::HashMap::new();
+    states.insert("P".to_string(), fields);
+    let merged = Merged {
+        states,
+        node_kinds: std::collections::HashMap::new(),
+        roots: vec!["P".to_string()],
+    };
+
+    let (raw, reg) = graph::build(&merged);
+    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_, _| {});
+    let compiled = graph::compile(&raw, &reg, &partition, &merged.roots);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("packed.bin");
+    serial::write(&compiled, &path).expect("write");
+    let _ = std::mem::ManuallyDrop::new(dir);
+    score_load::load_graph(&path).expect("load")
+}
+
+/// A repeated varint field accepts the packed encoding, and scores it as one
+/// wire occurrence rather than one per element.
+#[test]
+fn packed_varint_run_matches() {
+    let g = build_packed_graph();
+
+    let mut payload = varint(1);
+    payload.extend(varint(300));
+    payload.extend(varint(u64::MAX));
+    let s = score_entry(&field_len(1, &payload), &g, "P");
+
+    assert!(
+        !s.vetoed,
+        "packed encoding of a repeated field must not veto"
+    );
+    assert_eq!(
+        s.matches, 1,
+        "a packed run is one wire occurrence, not three"
+    );
+    assert_eq!(s.non_canonical, 0);
+}
+
+/// The expanded encoding of the same field still works — the regression guard
+/// on the path spec 0175 did not mean to touch.
+#[test]
+fn expanded_varint_run_still_matches() {
+    let g = build_packed_graph();
+
+    let mut pb = field_varint(1, 1);
+    pb.extend(field_varint(1, 300));
+    pb.extend(field_varint(1, u64::MAX));
+    let s = score_entry(&pb, &g, "P");
+
+    assert!(!s.vetoed);
+    assert_eq!(s.matches, 3, "three tags are three wire occurrences");
+    assert_eq!(s.non_canonical, 0);
+}
+
+/// A packed 8-byte-element run whose length is not a multiple of 8 cannot
+/// exist, so it vetoes rather than being penalized.
+#[test]
+fn packed_fixed64_run_of_wrong_length_vetoes() {
+    let g = build_packed_graph();
+    let s = score_entry(&field_len(2, &[0u8; 12]), &g, "P");
+    assert!(s.vetoed, "12 bytes cannot be a run of fixed64");
+}
+
+/// The same 12 bytes are a valid run of three fixed32.
+#[test]
+fn packed_fixed32_run_of_right_length_matches() {
+    let g = build_packed_graph();
+    let s = score_entry(&field_len(3, &[0u8; 12]), &g, "P");
+    assert!(!s.vetoed);
+    assert_eq!(s.matches, 1);
+}
+
+/// A packed varint run whose last element's continuation bit is set runs past
+/// the payload, which is impossible rather than merely unlikely.
+#[test]
+fn packed_varint_run_past_payload_end_vetoes() {
+    let g = build_packed_graph();
+
+    let mut payload = varint(1);
+    payload.push(0x80); // continuation bit set, no following byte
+    let s = score_entry(&field_len(1, &payload), &g, "P");
+
+    assert!(s.vetoed, "unterminated packed varint should veto");
+}
+
+/// A zero-length run is legal — zero elements — but no conformant writer emits
+/// one, so it matches and is penalized rather than vetoed.
+#[test]
+fn packed_empty_run_matches_and_is_penalized() {
+    let g = build_packed_graph();
+    let s = score_entry(&field_len(1, b""), &g, "P");
+
+    assert!(!s.vetoed, "an empty packed run is legal");
+    assert_eq!(s.matches, 1);
+    assert_eq!(
+        s.non_canonical, 1,
+        "protoc omits the field rather than emitting a zero-length run"
+    );
+}
+
+/// The narrowness guard (Goal 4): packability requires the field to be
+/// repeated. A LEN tag on an `optional` varint field is still a mismatch.
+#[test]
+fn len_tag_on_optional_varint_field_still_vetoes() {
+    let g = build_packed_graph();
+    let s = score_entry(&field_len(4, &varint(7)), &g, "P");
+    assert!(s.vetoed, "only a repeated field is packable");
+}
+
+/// Packability must not run backwards: a varint tag on a repeated *string*
+/// field is still a wire-type mismatch.
+#[test]
+fn varint_tag_on_repeated_string_field_still_vetoes() {
+    let g = build_packed_graph();
+    let s = score_entry(&field_varint(5, 7), &g, "P");
+    assert!(s.vetoed, "a string element has no expanded varint form");
+}
+
+/// Spec 0175 S4: a packed element is scored by exactly the same rules as the
+/// expanded encoding of the same values. Asserted against that encoding rather
+/// than a hardcoded number, so the two forms are pinned to each other.
+#[test]
+fn packed_enum_element_scores_like_the_expanded_one() {
+    let g = build_packed_graph();
+
+    let mut packed_payload = varint(1);
+    packed_payload.extend(varint(99)); // outside [0..2]
+    let packed = score_entry(&field_len(6, &packed_payload), &g, "P");
+
+    let mut expanded = field_varint(6, 1);
+    expanded.extend(field_varint(6, 99));
+    let expanded = score_entry(&expanded, &g, "P");
+
+    assert!(!packed.vetoed);
+    assert!(!expanded.vetoed);
+    assert_eq!(
+        packed.non_canonical, expanded.non_canonical,
+        "the out-of-range enum penalty must not depend on the encoding"
+    );
+    assert_eq!(packed.non_canonical, 1);
+}

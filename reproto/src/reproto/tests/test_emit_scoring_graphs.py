@@ -107,6 +107,13 @@ def test_TC1_basic_emission(tmp_path: Path) -> None:
     msg_field = complex_fields[1]
     assert msg_field["type"] == "message"
     assert msg_field["child"] == "test.field.NestedMessage"
+
+    # req_enum = 4 is a proto2 enum, hence *closed*: a value outside the
+    # declared set is genuine evidence against this candidate, so the range is
+    # emitted and kept (spec 0176 Finding 2).  Contrast TC-4, where an open
+    # proto3 enum has no range at all.
+    assert complex_fields[4]["type"] == "enum"
+    assert complex_fields[4]["range"] == [0, 2]  # Status: UNKNOWN..INACTIVE
     assert "child" not in complex_fields[4]  # enum field — no child
 
     # No child on scalar fields
@@ -231,11 +238,18 @@ def test_TC3_cross_file_reference(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# TC-4: Proto3 implicit packing
+# TC-4: the [packed] option does not affect the emitted kind
 # ---------------------------------------------------------------------------
 
-def test_TC4_proto3_implicit_packing(tmp_path: Path) -> None:
-    """default_int (no [packed] option) -> LEN_PACKED; explicit_false -> VARINT."""
+def test_TC4_packed_option_is_not_consulted(tmp_path: Path) -> None:
+    """Every repeated scalar emits its element kind, whatever [packed] says.
+
+    Spec 0175: a repeated scalar has two legal wire encodings and a reader must
+    accept both, so the option carries no information a scorer may act on.
+    Emitting the old `LEN_PACKED` collapse traded away the one thing the scorer
+    does need — the element type — for a bit it then had to ignore.  All three
+    fields below differ only in their [packed] option, so all three must agree.
+    """
     pb_dir = tmp_path / "pb"
     pb_dir.mkdir()
     out_dir = tmp_path / "out"
@@ -248,9 +262,24 @@ def test_TC4_proto3_implicit_packing(tmp_path: Path) -> None:
     data = _load_yaml(out_dir / "packed_proto3.yaml")
     fields = {f["number"]: f for f in data["messages"]["mockup.Packed"]["fields"]}
 
-    assert fields[1]["type"] == "LEN_PACKED"  # default_int: implicitly packed in proto3
-    assert fields[2]["type"] == "LEN_PACKED"  # explicit_true
-    assert fields[3]["type"] == "int32"       # explicit_false (repeated int32, not packed)
+    assert fields[1]["type"] == "int32"   # default_int: implicitly packed in proto3
+    assert fields[2]["type"] == "int32"   # explicit_true
+    assert fields[3]["type"] == "int32"   # explicit_false
+    assert fields[9]["type"] == "double"  # doubles_def: implicitly packed
+    assert fields[10]["type"] == "float"  # floats_true
+
+    # `label: repeated` is what tells the scorer the field is packable; it is
+    # emitted independently of [packed] and must be present on all of them.
+    for n in (1, 2, 3, 9, 10):
+        assert fields[n].get("label") == "repeated", n
+
+    # enums_default = 6 is `repeated Status` in proto3, so the enum is *open*:
+    # every 32-bit value is legal and forward-compatible, so it has no range
+    # and is emitted as int32 (spec 0176).  `label: repeated` also makes it
+    # packable, so this one field pins both specs at once.
+    assert fields[6]["type"] == "int32"
+    assert "range" not in fields[6]
+    assert fields[6].get("label") == "repeated"
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +313,44 @@ def test_TC5_group_child_fqdn(tmp_path: Path) -> None:
     # The group message entries must have kind GROUP at the message level
     assert messages["test.field.GroupTest.RepeatedGroup"]["kind"] == "GROUP"
     assert messages["test.field.GroupTest.OptionalGroup"]["kind"] == "GROUP"
+
+
+# ---------------------------------------------------------------------------
+# TC-9: enum openness under editions
+# ---------------------------------------------------------------------------
+
+def test_TC9_editions_closed_enum_keeps_its_range(tmp_path: Path) -> None:
+    """Openness comes from `is_closed`, not from the file's syntax.
+
+    `editions_roundtrip.proto` is `edition = "2023"` with
+    `features.enum_type = CLOSED`, so `Status` is closed even though the file
+    is neither proto2 nor proto3.  This is the case a test on the declaring
+    file's `syntax` would get wrong, which is why spec 0176 uses
+    `enum_type.is_closed` — it resolves the edition feature.
+    """
+    pb_dir = tmp_path / "pb"
+    pb_dir.mkdir()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    pbs = compile_proto(
+        pb_dir,
+        "editions_roundtrip.proto",
+        "editions_custom_option_dep.proto",
+        "weak_import_proto2_dep.proto",
+    )
+    result = _run_reproto(list(pbs), out_dir)
+    assert result.returncode == 0, result.stderr
+
+    data = _load_yaml(out_dir / "editions_roundtrip.yaml")
+    fields = {
+        f["number"]: f
+        for f in data["messages"]["mockup.editions.AllFeatures"]["fields"]
+    }
+
+    # status = 7 is `Status`, closed by the file- and enum-level feature.
+    assert fields[7]["type"] == "enum"
+    assert fields[7]["range"] == [0, 2]  # STATUS_UNKNOWN..STATUS_INACTIVE
 
 
 # ---------------------------------------------------------------------------

@@ -92,7 +92,7 @@ fn leaf_for_field(field: &ScoringField, reg: &mut LeafRegistry) -> u32 {
             reg.range_sentinel(min, max)
         }
         ScoringKind::I64 => LEAF_I64,
-        ScoringKind::LenBytes | ScoringKind::LenPacked => LEAF_LEN,
+        ScoringKind::LenBytes => LEAF_LEN,
         ScoringKind::LenString => LEAF_STRING,
         ScoringKind::I32 => LEAF_I32,
         ScoringKind::Node => {

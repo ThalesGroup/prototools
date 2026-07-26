@@ -37,6 +37,9 @@ const WT_START_GROUP: u32 = 3;
 const WT_END_GROUP: u32 = 4;
 const WT_I32: u32 = 5;
 
+/// `TransitionEntry::label` for a repeated field (`graph.rs:238-242`).
+const LABEL_REPEATED: u8 = 2;
+
 // ── Multi-entry types (spec 0048) ─────────────────────────────────────────────
 
 /// Per-entry scoring counters for the multi-entry walk.
@@ -70,6 +73,11 @@ enum Verdict {
     Unknown,
     Mismatch,
     Found(u32, u8), // (child_state_id, label)
+    /// A LEN tag on a repeated scalar field: the packed encoding of the same
+    /// values the field's own wire type would carry expanded (spec 0175 S2).
+    /// The element wire type is carried instead of the label, since only a
+    /// repeated field is packable and the LEN arm needs it to read the run.
+    FoundPacked(u32, u8), // (child_state_id, element wire type)
 }
 
 /// One entry in the active set: a state_id shared by one or more entry indices.
@@ -614,6 +622,108 @@ fn record_occurrence(occurrences: &mut Vec<(u32, u64)>, field_number: u32) {
     }
 }
 
+// ── Packed / expanded repeated scalars (spec 0175) ────────────────────────────
+
+/// True iff `payload` is a run of varints ending exactly at its end.
+///
+/// A varint whose continuation bit runs past the payload, or that overflows 64
+/// bits, makes the run *impossible* rather than merely unlikely — which is what
+/// separates this check from a `non_canonical` penalty.
+fn packed_varints_terminate(payload: &[u8]) -> bool {
+    let mut p = 0usize;
+    while p < payload.len() {
+        let vr = parse_varint(payload, p);
+        if vr.garbage.is_some() {
+            return false;
+        }
+        p = vr.next_pos;
+    }
+    true
+}
+
+/// Per-element varint checks, shared by the expanded and the packed encoding of
+/// the same values (spec 0175 S4): the value-overhang penalty, C5's 32-bit gap
+/// veto, the `non_canonical` penalty for a negative written in the truncated
+/// 5-byte form, and the `Range` leaf's `[min, max]` test.
+///
+/// Returns true iff the value vetoes. The caller owns the veto and match
+/// bookkeeping, which differ between one expanded occurrence and one element of
+/// a packed run.
+fn check_varint_value(
+    ws: &mut WalkState<'_, '_>,
+    ae: &ActiveEntry,
+    node: Option<&ArchivedNodeEntry>,
+    val: u64,
+    overhang: u64,
+) -> bool {
+    if overhang > 0 {
+        for &e in &ae.entries {
+            ws.scores[e as usize].non_canonical += 1;
+        }
+    }
+    let Some(n) = node else {
+        return false;
+    };
+    let ri = n.range_idx.to_native();
+    match n.wire_type {
+        9 => {
+            // INT32: veto if in invalid gap (0xFFFF_FFFF, 0xFFFF_FFFF_8000_0000)
+            if val > 0xFFFF_FFFF && val < 0xFFFF_FFFF_8000_0000u64 {
+                return true;
+            }
+            if (0x8000_0000u64..=0xFFFF_FFFFu64).contains(&val) {
+                // truncated negative int32 (4-byte encoding)
+                for &e in &ae.entries {
+                    ws.scores[e as usize].non_canonical += 1;
+                }
+            }
+            false
+        }
+        8 => {
+            // UINT32: veto if > 32-bit
+            val > 0xFFFF_FFFF
+        }
+        0 if ri != 0xFFFF => {
+            // RANGE (bool / enum). Spec 0172 S2: mirrors the INT32 arm above. A
+            // negative enum value is sign-extended to 64 bits on the wire, so
+            // -1 arrives as 0xFFFF_FFFF_FFFF_FFFF; the only genuinely
+            // impossible values are those in the gap between "too big for u32"
+            // and "smallest sign-extended i32", which are neither encoding of
+            // any 32-bit number. Vetoing on `val >= 1<<32` instead made the
+            // *canonical* encoding fatal while merely penalizing the sloppy
+            // 5-byte one.
+            if val > 0xFFFF_FFFF && val < 0xFFFF_FFFF_8000_0000u64 {
+                return true;
+            }
+            if (0x8000_0000u64..=0xFFFF_FFFFu64).contains(&val) {
+                // Negative written in the non-canonical 5-byte form.
+                for &e in &ae.entries {
+                    ws.scores[e as usize].non_canonical += 1;
+                }
+            }
+            let Some(range) = ws.graph.ranges.get(ri as usize) else {
+                return false;
+            };
+            let (min, max) = (range.0.to_native() as i64, range.1.to_native() as i64);
+            // The explicit `as u32` step makes this correct for both encodings:
+            // it truncates the sign-extended form back to 32 bits, and is a
+            // no-op on the 5-byte one.
+            let signed = val as u32 as i32 as i64;
+            if signed >= min && signed <= max {
+                return false;
+            }
+            if ws.strict_ranges {
+                return true;
+            }
+            for &e in &ae.entries {
+                ws.scores[e as usize].non_canonical += 1;
+            }
+            false
+        }
+        _ => false, // UINT64 or non-varint: no range check
+    }
+}
+
 // ── Multi-entry parallel walk (spec 0048) ─────────────────────────────────────
 
 /// Veto all entries in `active` and clear the set.
@@ -891,6 +1001,20 @@ fn score_message_multi(
                         let expected_wt = node_wire_type(ws.graph, tr.child_state_id) as u32;
                         if wire_type == expected_wt {
                             Verdict::Found(tr.child_state_id, tr.label)
+                        } else if wire_type == WT_LEN
+                            && tr.label == LABEL_REPEATED
+                            && matches!(expected_wt, WT_VARINT | WT_I64 | WT_I32)
+                        {
+                            // Spec 0175 S2: a repeated scalar has two legal
+                            // wire encodings and a reader must accept both.
+                            // The element-wire-type clause is what keeps the
+                            // rule from degrading into "LEN is always
+                            // acceptable": string, bytes and message children
+                            // report 2 and groups 3, so all of them fall
+                            // outside {0, 1, 5} without a special case —
+                            // including an empty message state, which has no
+                            // transitions but still reports 2.
+                            Verdict::FoundPacked(tr.child_state_id, expected_wt as u8)
                         } else {
                             Verdict::Mismatch
                         }
@@ -939,88 +1063,8 @@ fn score_message_multi(
                             }
                         }
                         Verdict::Found(child, _label) => {
-                            // Value overhang: only for Found entries.
-                            if vr.overhang > 0 {
-                                for &e in &ae.entries {
-                                    ws.scores[e as usize].non_canonical += 1;
-                                }
-                            }
                             let node = find_node(ws.graph, child);
-                            let mut do_veto = false;
-                            if let Some(n) = node {
-                                let wt = n.wire_type;
-                                let ri = n.range_idx.to_native();
-                                match wt {
-                                    9 => {
-                                        // INT32: veto if in invalid gap (0xFFFF_FFFF, 0xFFFF_FFFF_8000_0000)
-                                        if val > 0xFFFF_FFFF && val < 0xFFFF_FFFF_8000_0000u64 {
-                                            do_veto = true;
-                                        } else if (0x8000_0000u64..=0xFFFF_FFFFu64).contains(&val) {
-                                            // truncated negative int32 (4-byte encoding)
-                                            for &e in &ae.entries {
-                                                ws.scores[e as usize].non_canonical += 1;
-                                            }
-                                        }
-                                    }
-                                    8 => {
-                                        // UINT32: veto if > 32-bit
-                                        if val > 0xFFFF_FFFF {
-                                            do_veto = true;
-                                        }
-                                    }
-                                    0 if ri != 0xFFFF => {
-                                        // RANGE (bool / enum). Spec 0172 S2:
-                                        // mirrors the INT32 arm above. A
-                                        // negative enum value is sign-extended
-                                        // to 64 bits on the wire, so -1 arrives
-                                        // as 0xFFFF_FFFF_FFFF_FFFF; the only
-                                        // genuinely impossible values are those
-                                        // in the gap between "too big for u32"
-                                        // and "smallest sign-extended i32",
-                                        // which are neither encoding of any
-                                        // 32-bit number. Vetoing on `val >=
-                                        // 1<<32` instead made the *canonical*
-                                        // encoding fatal while merely
-                                        // penalizing the sloppy 5-byte one.
-                                        if val > 0xFFFF_FFFF && val < 0xFFFF_FFFF_8000_0000u64 {
-                                            do_veto = true;
-                                        } else {
-                                            if (0x8000_0000u64..=0xFFFF_FFFFu64).contains(&val) {
-                                                // Negative written in the
-                                                // non-canonical 5-byte form.
-                                                for &e in &ae.entries {
-                                                    ws.scores[e as usize].non_canonical += 1;
-                                                }
-                                            }
-                                            let range = ws.graph.ranges.get(ri as usize);
-                                            if let Some(range) = range {
-                                                let (min, max) = (
-                                                    range.0.to_native() as i64,
-                                                    range.1.to_native() as i64,
-                                                );
-                                                // The explicit `as u32` step
-                                                // makes this correct for both
-                                                // encodings: it truncates the
-                                                // sign-extended form back to 32
-                                                // bits, and is a no-op on the
-                                                // 5-byte one.
-                                                let signed = val as u32 as i32 as i64;
-                                                if signed < min || signed > max {
-                                                    if ws.strict_ranges {
-                                                        do_veto = true;
-                                                    } else {
-                                                        for &e in &ae.entries {
-                                                            ws.scores[e as usize].non_canonical +=
-                                                                1;
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    _ => {} // UINT64 or non-varint: no range check
-                                }
-                            }
+                            let do_veto = check_varint_value(ws, ae, node, val, vr.overhang);
                             if do_veto {
                                 for &e in &ae.entries {
                                     ws.set_vetoed(e, || {
@@ -1035,7 +1079,13 @@ fn score_message_multi(
                                 }
                             }
                         }
-                        Verdict::Mismatch => {} // already handled above
+                        // `FoundPacked` is produced only for a LEN tag, so it
+                        // cannot occur here. It is inert rather than
+                        // `unreachable!()` on purpose: a panic reachable from
+                        // wire-format-derived state is the shape of flaws C1
+                        // through C4, and an unreachable-but-inert arm costs
+                        // nothing.
+                        Verdict::Mismatch | Verdict::FoundPacked(_, _) => {}
                     }
                 }
                 active.retain(|ae| !ae.entries.is_empty());
@@ -1060,7 +1110,7 @@ fn score_message_multi(
                                 ws.scores[e as usize].matches += 1;
                             }
                         }
-                        Verdict::Mismatch => {}
+                        Verdict::Mismatch | Verdict::FoundPacked(_, _) => {}
                     }
                 }
             }
@@ -1091,11 +1141,95 @@ fn score_message_multi(
 
                 let mut child_pairs: Vec<(u32, u16)> = Vec::new();
 
+                // Spec 0175 S3: whether a packed varint run terminates at the
+                // payload end depends on the payload alone, so it is scanned at
+                // most once per LEN tag and memoized across every candidate
+                // that reads this payload as one. Written as the natural inner
+                // check it would be O(A × payload) per tag — the exact shape
+                // spec 0173 removed from the verdict loop one arm above.
+                let mut packed_varints_ok: Option<bool> = None;
+
                 for ae in active.iter_mut() {
                     match ae.verdict {
                         Verdict::Unknown => {
                             for &e in &ae.entries {
                                 ws.scores[e as usize].unknowns += 1;
+                            }
+                        }
+                        Verdict::FoundPacked(child, elem_wt) => {
+                            let run_ok = match elem_wt as u32 {
+                                WT_I64 => payload.len().is_multiple_of(8),
+                                WT_I32 => payload.len().is_multiple_of(4),
+                                _ => *packed_varints_ok
+                                    .get_or_insert_with(|| packed_varints_terminate(payload)),
+                            };
+                            if !run_ok {
+                                for &e in &ae.entries {
+                                    ws.set_vetoed(e, || {
+                                        format!(
+                                            "invalid packed run on field {field_number} \
+                                             (element wire type {elem_wt}, {} payload bytes)",
+                                            payload.len()
+                                        )
+                                    });
+                                }
+                                ae.entries.clear();
+                                continue;
+                            }
+
+                            // A zero-length run is legal but no conformant
+                            // writer emits one — protoc omits the field
+                            // instead. Legal-but-suspicious is what
+                            // `non_canonical` is for.
+                            if payload.is_empty() {
+                                for &e in &ae.entries {
+                                    ws.scores[e as usize].non_canonical += 1;
+                                }
+                            }
+
+                            // Spec 0175 S4: a packed element is scored by the
+                            // same rules as the expanded encoding of the same
+                            // value. Leaves with nothing to check are skipped
+                            // outright: only int32/uint32 (the 32-bit gap) and
+                            // bool/enum (the range) have a per-element verdict.
+                            let node = find_node(ws.graph, child);
+                            let needs_element_check = elem_wt as u32 == WT_VARINT
+                                && node.is_some_and(|n| {
+                                    matches!(n.wire_type, 8 | 9)
+                                        || n.range_idx.to_native() != 0xFFFF
+                                });
+                            let mut do_veto = false;
+                            if needs_element_check {
+                                let mut p = 0usize;
+                                while p < payload.len() {
+                                    let vr = parse_varint(payload, p);
+                                    p = vr.next_pos;
+                                    if check_varint_value(ws, ae, node, vr.value, vr.overhang) {
+                                        do_veto = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if do_veto {
+                                for &e in &ae.entries {
+                                    ws.set_vetoed(e, || {
+                                        format!(
+                                            "packed varint value out of range on field \
+                                             {field_number}"
+                                        )
+                                    });
+                                }
+                                ae.entries.clear();
+                            } else {
+                                // One wire occurrence, not one per element:
+                                // awarding N would make the two legal encodings
+                                // of identical data score differently, and since
+                                // every candidate sees the same bytes the
+                                // inflation discriminates between nothing.
+                                record_occurrence(&mut ae.occurrences, field_number as u32);
+                                for &e in &ae.entries {
+                                    ws.scores[e as usize].matches += 1;
+                                }
                             }
                         }
                         Verdict::Found(child, _label) => {
@@ -1205,7 +1339,7 @@ fn score_message_multi(
                                 stay_out_entries.push(e);
                             }
                         }
-                        Verdict::Mismatch => {} // already vetoed above
+                        Verdict::Mismatch | Verdict::FoundPacked(_, _) => {} // already vetoed above
                     }
                 }
 
@@ -1325,7 +1459,7 @@ fn score_message_multi(
                                 ws.scores[e as usize].matches += 1;
                             }
                         }
-                        Verdict::Mismatch => {}
+                        Verdict::Mismatch | Verdict::FoundPacked(_, _) => {}
                     }
                 }
             }

@@ -76,7 +76,7 @@ scoped the way it is.
 | ~~**D-d**~~ | ~~Spec 0165 (heat-cue pool sizing) in or out of scope?~~ **In.** `--heat-cue-stats` in particular is wanted. | **W20 becomes "implement 0165"**. W9 is unchanged — its two parts are this review's findings, are not in 0165, and land first |
 | ~~**D-e**~~ | ~~Is the 24.5 MB class a real target?~~ **Yes.** Opening `googleapis.desc` (24.5 MB) is a required capability. | all of **Phase 8** is in scope, not conditional |
 | ~~**D-f**~~ | ~~Do W16, knowing W24 deletes rather than accelerates it?~~ **No — skip it.** | **W16 is dropped.** S2 is resolved by W24 instead. W17 is unaffected and still in |
-| ~~**D-g**~~ | ~~Scoring-graph format version bump for a per-enum open/closed bit?~~ **Deferred** — see [Deferred](#deferred-out-of-scope-for-this-worklist). | W30 ships the interim (demote the enum veto unconditionally) and accepts the precision loss. W30 is thereby unblocked and self-contained |
+| ~~**D-g**~~ | ~~Scoring-graph format version bump for a per-enum open/closed bit?~~ **Answered, 2026-07-26 — no format change needed.** Spec [0176](../specs/0176-open-enums-have-no-range.md): an open enum has no range, so it emits `type: int32` in `reproto` and the bit has nothing to qualify. | W30's interim is superseded, and its precision loss is recovered rather than accepted: a closed enum keeps its full range. See [Deferred](#deferred-out-of-scope-for-this-worklist) item 2 |
 | ~~**D-h**~~ | ~~Widen the `u16` 65 535-root ceiling, or correct the design doc?~~ **Deferred** — see [Deferred](#deferred-out-of-scope-for-this-worklist). | W29 still converts the `assert!` into an `Err`, which is right either way, but **does not widen the index** |
 
 **Three items are struck through and must not be implemented: W4**
@@ -87,15 +87,14 @@ it went, rather than nowhere.
 
 ### Deferred (out of scope for this worklist)
 
-Both are real and neither is urgent. They are orthogonal to everything
-above — no item in this worklist waits on them, and both were rescoped so
-that the work they touch is self-contained without them. Recorded here so
-they are not rediscovered from scratch.
+D-h is real and is not urgent. D-g **is closed** (2026-07-26) and is kept
+below only so that the reasoning is not rediscovered from scratch. They are
+orthogonal to everything above — no item in this worklist waits on them, and
+both were rescoped so that the work they touch is self-contained without them.
 
-**Take D-h first, then D-g.** D-h is a sizing question with a known
-answer shape; D-g is a format change, and a format bump is the kind of
-thing worth batching, so it should go second and pick up whatever else
-has accumulated by then.
+**Only D-h is left.** The batching advice that used to stand here ("take D-h
+first, then D-g, because a format bump is worth batching") is moot: there is
+no format bump.
 
 **1. D-h — the 65 535-root ceiling.** `ActiveEntry::entries` holds `u16`
 indices, so `score_all` asserts `graph.roots.len() <= u16::MAX`
@@ -109,25 +108,33 @@ W29 converts the panic into a clean `Err` regardless, so the failure mode
 until then is a legible error message, not an abort. That is what makes
 this deferrable rather than merely postponed.
 
-**2. D-g — a per-enum open/closed bit in the compiled graph.** In proto3
-enums are *open*: a value outside the declared set is legal and is
-exactly what a newer sender emits to an older reader. The compiled graph
-records no syntax at all (grep for `syntax|proto3|open_enum|closed` in
-`prototext-graph/src` → zero matches), so scoring cannot distinguish an
-open enum from a closed one.
+**2. ~~D-g — a per-enum open/closed bit in the compiled graph.~~ Closed
+2026-07-26 — spec [0176](../specs/0176-open-enums-have-no-range.md), with no
+format change.**
 
-W30's interim resolves the *correctness* half by demoting the veto
-unconditionally, at a cost in precision: a proto2 enum's out-of-range
-value is genuinely strong evidence against a candidate, and after W30 it
-only contributes `non_canonical`. Recovering that precision needs one bit
-per enum, set from the declaring file's `syntax` at graph-build time,
-which is a format change and therefore wants a version bump.
+The framing was wrong, and the wrongness is worth keeping on the record. It
+asked how to *qualify* an open enum's range, so every answer was a new bit
+somewhere and therefore a format bump. But **an open enum has no range**:
+every 32-bit value is legal. `type: int32` says precisely that, is already a
+kind the builder and the walk both understand, and leaves standing the one
+check that should survive (C5's 32-bit gap veto). The whole change is four
+lines in `reproto/src/reproto/phases.py`.
 
-Scope it as: bump the graph version, add the bit in
-`reproto --emit-scoring-graphs` and the `build-scoring-graph` compiler,
-and make `walk.rs`'s range check veto only for closed enums under
-`strict_ranges`. W30 will have left a doc comment at the one line that
-changes.
+Two corrections it also forces:
+
+- W30's interim was **not** the correctness half at the cost of precision. It
+  gave up a closed enum's discriminating power *and* did not actually reach the
+  `prototext` CLI (see the correction under W30), so it bought less than it
+  cost. Spec 0176 recovers both: closed enums keep their full range, open enums
+  have none.
+- Generalizing: when a deferral's scope is "add a bit to the format", check
+  first whether the thing being qualified should exist at all. Deleting the
+  range was cheaper than describing it.
+
+What genuinely remains is narrower and is *not* D-g: whether the two surviving
+range **vetoes** — bool, and closed enum — should be vetoes rather than
+penalties, since neither value is impossible on the wire. Tracked as C12 in
+[../scoring-flaws.md](../scoring-flaws.md).
 
 ---
 
@@ -500,20 +507,34 @@ practical proof.
 > `ScoringOpts::strict_ranges` survives as an opt-in knob (spec 0172 N3),
 > because the knob is what lets the D-g format bump re-enable vetoing for
 > genuinely closed enums without re-introducing the mechanism, and it is
-> what the strict-mode tests now exercise. Nothing in this workspace sets
-> it, so the shipped behavior is what this item asked for.
+> what the strict-mode tests now exercise.
 >
-> **C7 is now confirmed, and is not fixed here.** A repeated scalar's leaf
-> carries the *element's* wire type (`graph.rs:19-28`; `node_wire_type`
-> maps the internal 8/9 discriminants back to 0), so a packed encoding
-> arrives as wire type 2, takes the `Verdict::Mismatch` branch at
-> `walk.rs:865-869`, and is vetoed unconditionally at `:882-892`. Both
-> encodings are legal for any repeated scalar in both syntaxes. This is
-> the same *class* as C5/C6 but not the same fix — it lives in the verdict
-> loop, not the RANGE arm, and needs the graph to record that a leaf is a
-> repeated scalar. It wants its own spec.
+> **Correction (2026-07-26): "nothing in this workspace sets it" was false,
+> and C6 was therefore not done.** This block used to close with that claim.
+> All three of the `prototext` CLI's scoring entry points compute
+> `strict_ranges: !relax_ranges` (`prototext/src/run.rs:423`, `:500`, `:532`)
+> from a bare `clap` boolean, so **the CLI's shipped default is strict** and
+> C6 stayed fully live on the primary user-facing path. Only `protolens` reads
+> `ScoringOpts::default()`. The lesson: flipping a `Default` impl does not
+> change shipped behavior when a CLI builds the struct field by field, so an
+> "interim" of that shape needs a test through the binary — which is why spec
+> 0176's end-to-end test drives the `prototext` binary rather than `score_all`.
+> **C6 is closed by spec 0176 instead**, at the source: an open enum emits no
+> range, so `strict_ranges` has nothing to be strict about, and a closed enum
+> keeps its full range (the precision loss below is recovered, not accepted).
+>
+> **C7 done (2026-07-26).** Spec 0175, its own spec as this item asked.
+> One claim above was wrong: it does **not** need the graph to record that
+> a leaf is a repeated scalar. `label` has been on every
+> `TransitionEntry` since spec 0045 and spec 0173 already routed it into
+> the verdict loop as `tr.label`. What was actually missing was the
+> *element type*, which `reproto` was discarding — all seven packable
+> types collapsed to `LEN_PACKED` — in exchange for `is_packed`, a bit that
+> carries no information a scorer may act on precisely because both
+> encodings are always legal. So no format change and no version bump:
+> `Verdict::FoundPacked` reads and validates the run instead.
 
-**Fixes:** [scoring C5, C6](../scoring-flaws.md), and C7 once verified.
+**Fixes:** [scoring C5, C6, C7](../scoring-flaws.md).
 
 **Files:** `prototext-graph/src/score/walk.rs:933-961`.
 
@@ -549,7 +570,9 @@ Two causes; **this item fixes both, without a graph format change.**
 **Proving test.** Score a blob carrying a negative enum value against its
 own true schema and assert the true FQDN wins. Same for a proto3 enum
 value outside the declared set. Both should be trivially true and are
-not.
+not. *(The proto3 half landed with spec 0176 as
+`reproto/src/reproto/tests/test_open_enum_scoring.py` — through the `prototext`
+binary, since that is the only venue where the assertion is not vacuous.)*
 
 **Blocked by:** nothing — the D-g deferral is what makes this
 self-contained. **Verify [scoring C7](../scoring-flaws.md) first** — if

@@ -75,7 +75,6 @@ pub enum ScoringKind {
     /// Non-leaf node (length-delimited message or group).  The actual framing
     /// (LENDEL vs GROUP) is encoded in the source node's NodeKind (spec 0058).
     Node,
-    LenPacked,
     I32,
 }
 
@@ -201,7 +200,6 @@ fn parse_kind(s: &str) -> Option<ScoringKind> {
         "string" => Some(ScoringKind::LenString),
         "bytes" => Some(ScoringKind::LenBytes),
         "message" | "group" => Some(ScoringKind::Node),
-        "LEN_PACKED" => Some(ScoringKind::LenPacked),
         "float" => Some(ScoringKind::I32),
         "double" => Some(ScoringKind::I64),
         _ => None,

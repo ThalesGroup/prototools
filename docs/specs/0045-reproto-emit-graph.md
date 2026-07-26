@@ -169,25 +169,35 @@ Notes:
 ### §3 — ScoringKind and label mapping
 
 The `kind` field is one of eight string values derived from each field's
-proto type and packing state.  The mapping uses `FieldDescriptor` objects
-from `ctx.pool` rather than raw `FieldDescriptorProto` bytes: this is
-important because `FieldDescriptor.is_packed` already accounts for proto3
-default packing rules, so no manual syntax-version check is needed.
+proto type.  The mapping uses `FieldDescriptor` objects from `ctx.pool`
+rather than raw `FieldDescriptorProto` bytes, so that the enum openness test
+below resolves edition features correctly.
 
-| Proto type(s) | `.is_packed`? | Field `kind` | Message entry `kind` |
+**The packing state is deliberately not consulted (spec 0175).** Every
+repeated scalar has two legal wire encodings, and a reader must accept both
+whichever the option names, so `is_packed` carries no information a scorer may
+act on — while the `LEN_PACKED` kind it used to select discarded the element
+type, which is the one thing the scorer does need.  `label: repeated` plus the
+element kind is enough: the walk derives packability from those two
+(`walk.rs`, `Verdict::FoundPacked`).
+
+| Proto type(s) | Condition | Field `kind` | Message entry `kind` |
 |---|---|---|---|
-| TYPE_INT32, TYPE_INT64, TYPE_UINT32, TYPE_UINT64, TYPE_SINT32, TYPE_SINT64, TYPE_BOOL | false | `VARINT` | — |
-| same | true | `LEN_PACKED` | — |
-| TYPE_ENUM | false | `ENUM` (with `enum_min`, `enum_max`) | — |
-| TYPE_ENUM | true | `LEN_PACKED` | — |
-| TYPE_FIXED64, TYPE_SFIXED64, TYPE_DOUBLE | false | `I64` | — |
-| TYPE_FIXED64, TYPE_SFIXED64, TYPE_DOUBLE | true | `LEN_PACKED` | — |
-| TYPE_FIXED32, TYPE_SFIXED32, TYPE_FLOAT | false | `I32` | — |
-| TYPE_FIXED32, TYPE_SFIXED32, TYPE_FLOAT | true | `LEN_PACKED` | — |
+| TYPE_INT32, TYPE_INT64, TYPE_UINT32, TYPE_UINT64, TYPE_SINT32, TYPE_SINT64, TYPE_BOOL | n/a | `VARINT` | — |
+| TYPE_ENUM | `enum_type.is_closed` | `ENUM` (with `enum_min`, `enum_max`) | — |
+| TYPE_ENUM | open enum | `int32` | — |
+| TYPE_FIXED64, TYPE_SFIXED64, TYPE_DOUBLE | n/a | `I64` | — |
+| TYPE_FIXED32, TYPE_SFIXED32, TYPE_FLOAT | n/a | `I32` | — |
 | TYPE_STRING | n/a | `LEN_STRING` | — |
 | TYPE_BYTES | n/a | `LEN_BYTES` | — |
 | TYPE_MESSAGE | n/a | `MESSAGE` | `LENDEL` |
 | TYPE_GROUP | n/a | `MESSAGE` | `GROUP` |
+
+The open-enum row is spec 0176: an open enum has no range, because every
+32-bit value is legal and preserved on round-trip.  `int32` states exactly
+that, and is what an enum is on the wire.  `is_closed` resolves the edition
+feature `features.enum_type`, so it is right for proto2, proto3 and editions
+alike; it is a **property**, not a method.
 
 The message entry `kind` (`LENDEL` or `GROUP`) is a property of the message
 node itself, not of the field referencing it.  A message is tagged `GROUP` if
@@ -299,23 +309,21 @@ def _scoring_kind(field) -> tuple[str, str | None]:
     if TYPE == FD.TYPE_BYTES:
         return "LEN_BYTES", None
     if TYPE in (FD.TYPE_DOUBLE, FD.TYPE_FIXED64, FD.TYPE_SFIXED64):
-        if field.is_packed:
-            return "LEN_PACKED", None
         return "I64", None
     if TYPE in (FD.TYPE_FLOAT, FD.TYPE_FIXED32, FD.TYPE_SFIXED32):
-        if field.is_packed:
-            return "LEN_PACKED", None
         return "I32", None
     varint_types = {
         FD.TYPE_INT32, FD.TYPE_INT64, FD.TYPE_UINT32, FD.TYPE_UINT64,
         FD.TYPE_SINT32, FD.TYPE_SINT64, FD.TYPE_BOOL, FD.TYPE_ENUM,
     }
     if TYPE in varint_types:
-        if field.is_packed:   # True for proto3 implicit packing too
-            return "LEN_PACKED", None
         return "VARINT", None
     raise ValueError(f"Unknown field type: {TYPE}")
 ```
+
+`is_packed` was consulted here originally and is not any more (spec 0175); see
+§3.  The live implementation also splits the varint types apart to carry the
+enum range and the open-enum case (specs 0077 and 0176).
 
 ### §5 — Changes to existing files
 
@@ -358,13 +366,12 @@ imports `phone_number.proto`).  Assert:
 - The YAML for `address_book.yaml` does NOT contain the phone-number
   message type as a key in `messages` (it belongs to `phone_number.yaml`).
 
-**TC-4 — proto3 implicit packing**: compile `packed_proto3.proto`
-(`default_int = 1` is a `repeated int32` with no explicit `[packed]`
-option).  Assert `kind: LEN_PACKED` is emitted for that field.
-Also assert that `explicit_false = 3` (explicit `[packed=false]`) emits
-`kind: VARINT`.  Also assert that `doubles_def = 9` (`repeated double`,
-packed in proto3) emits `kind: LEN_PACKED`, and `floats_true = 10`
-(`repeated float [packed=true]`) emits `kind: LEN_PACKED`.
+**TC-4 — the `[packed]` option does not affect the kind** (retargeted by spec
+0175; it originally asserted `LEN_PACKED`): compile `packed_proto3.proto` and
+assert that `default_int = 1` (no option, so packed by proto3 default),
+`explicit_true = 2` and `explicit_false = 3` all emit the same `int32`, and
+that all three carry `label: repeated`.  Likewise `doubles_def = 9` → `double`
+and `floats_true = 10` → `float`.
 
 **TC-5 — group child FQDN**: `field_comprehensive.proto` contains
 `GroupTest` with `RepeatedGroup` and `OptionalGroup` (proto2 group fields).

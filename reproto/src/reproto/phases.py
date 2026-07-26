@@ -1836,7 +1836,14 @@ def _field_label(field: Any) -> str:
 
 
 def _scoring_kind(field: Any) -> 'tuple[str, str | None, tuple[int, int] | None]':
-    """Map a FieldDescriptor to a (type_str, child_fqdn, range) tuple (spec 0077 §5)."""
+    """Map a FieldDescriptor to a (type_str, child_fqdn, range) tuple (spec 0077 §5).
+
+    `field.is_packed` is deliberately not consulted (spec 0175). Every repeated
+    scalar has two legal wire encodings — packed and expanded — and a reader
+    must accept both whatever the option says, so the option carries no
+    information a scorer may act on. What the scorer does need is the element
+    type, which the old `LEN_PACKED` collapse discarded.
+    """
     from google.protobuf.descriptor import FieldDescriptor as FD
     TYPE = field.type
     if TYPE == FD.TYPE_MESSAGE:
@@ -1848,33 +1855,29 @@ def _scoring_kind(field: Any) -> 'tuple[str, str | None, tuple[int, int] | None]
     if TYPE == FD.TYPE_BYTES:
         return 'bytes', None, None
     if TYPE in (FD.TYPE_DOUBLE, FD.TYPE_FIXED64, FD.TYPE_SFIXED64):
-        if field.is_packed:
-            return 'LEN_PACKED', None, None
         return 'double', None, None
     if TYPE in (FD.TYPE_FLOAT, FD.TYPE_FIXED32, FD.TYPE_SFIXED32):
-        if field.is_packed:
-            return 'LEN_PACKED', None, None
         return 'float', None, None
     if TYPE == FD.TYPE_BOOL:
-        if field.is_packed:
-            return 'LEN_PACKED', None, None
         return 'bool', None, (0, 1)
     if TYPE == FD.TYPE_ENUM:
-        if field.is_packed:
-            return 'LEN_PACKED', None, None
+        # An *open* enum has no range: every 32-bit value is legal, is
+        # preserved on round-trip, and is exactly what a newer sender emits to
+        # an older reader (spec 0176). `int32` states precisely that, and is
+        # what an enum is on the wire — a 32-bit two's-complement varint, with
+        # negatives sign-extended to ten bytes. `is_closed` resolves the
+        # edition feature `features.enum_type`, so it is right for proto2,
+        # proto3 and editions alike; a test on the declaring file's `syntax`
+        # would silently get editions wrong.  It is a property, not a method.
+        if not field.enum_type.is_closed:
+            return 'int32', None, None
         values = list(field.enum_type.values_by_number.keys())
         return 'enum', None, (min(values), max(values))
     if TYPE == FD.TYPE_INT32:
-        if field.is_packed:
-            return 'LEN_PACKED', None, None
         return 'int32', None, None
     if TYPE in (FD.TYPE_UINT32, FD.TYPE_SINT32):
-        if field.is_packed:
-            return 'LEN_PACKED', None, None
         return 'uint32', None, None
     if TYPE in (FD.TYPE_INT64, FD.TYPE_UINT64, FD.TYPE_SINT64):
-        if field.is_packed:
-            return 'LEN_PACKED', None, None
         return 'uint64', None, None
     raise ValueError(f'Unknown field type: {TYPE}')
 

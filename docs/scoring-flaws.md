@@ -279,13 +279,25 @@ arm should mirror it.
 
 ### C6. Enum range checking has no notion of proto3 open enums
 
-> **Partly resolved (2026-07-25).** Spec 0172 S3 flipped
-> `ScoringOpts::strict_ranges` to default `false`, so an out-of-range enum
-> or bool value is penalized (`non_canonical += 1`, −20 points) instead of
-> eliminating the candidate. That is the interim: with no syntax bit in the
-> graph the value is merely unlikely, not impossible. The precision loss
-> stands — a genuinely closed proto2 enum is now under-penalized — and is
-> only recoverable via the format version bump deferred as decision D-g.
+> **Resolved (2026-07-26).** Spec 0176. An **open** enum now emits
+> `type: int32` and therefore carries no range at all, so there is nothing left
+> for a range check to be strict about. A **closed** enum keeps its range and
+> keeps its full discriminating power, so the precision loss noted in the
+> interim below is also gone. No compiled-graph format change and no version
+> bump: D-g is *answered*, not implemented. The "record syntax as one bit per
+> enum" proposal below was the wrong shape — an open enum does not have a range
+> that needs qualifying, it has **no range**, and `int32` states exactly that.
+>
+> **The 2026-07-25 interim was incomplete, and on the path that matters most.**
+> Spec 0172 S3 flipped `ScoringOpts::default()`'s `strict_ranges` to `false`,
+> which is what `protolens` reads — but the `prototext` CLI never consults that
+> default. All three of its scoring entry points compute
+> `strict_ranges: !relax_ranges` (`prototext/src/run.rs:423`, `:500`, `:532`)
+> from a bare `clap` boolean, so **the CLI's default is strict** and C6 stayed
+> fully live on the primary user-facing path for a day. This is the general
+> hazard: a `Default` impl is not the shipped behavior when a CLI builds the
+> struct field by field. Spec 0176 closes C6 at the source instead, which is
+> immune to it.
 
 **Where:** `prototext-graph/src/score/walk.rs:943-959`, and the absence
 is repo-wide: grepping `prototext-graph/src` for
@@ -321,12 +333,26 @@ out-of-range enum veto to `non_canonical` unconditionally. Losing the
 discriminating power of a proto2 enum veto costs precision; keeping it
 costs correctness.
 
-**Scheduling (2026-07-25).** Step 1 is **deferred** — decision D-g in
-[protolens/rendering-worklist.md](protolens/rendering-worklist.md). Only
-the interim is in scope for now. Do not open the graph format as part of
-this fix.
+**Scheduling.** Step 1 was **deferred** on 2026-07-25 as decision D-g in
+[protolens/rendering-worklist.md](protolens/rendering-worklist.md), then
+**dropped** on 2026-07-26: spec 0176 obtains the same outcome in `reproto`
+alone, so the graph format was never opened. See C12 for the part of the
+question that genuinely remains.
 
 ### C7. Packed vs. unpacked repeated fields **[confirmed 2026-07-25]**
+
+> **Resolved (2026-07-26).** Spec 0175. Both encodings now match, in both
+> directions, with no compiled-graph format change and no version bump — the
+> premise below that "it needs the graph to know a leaf is a repeated scalar
+> (which today it does not)" was wrong on the second half. `label` has been on
+> every `TransitionEntry` since spec 0045, and spec 0173 already routed it into
+> the verdict loop as `tr.label`. The only genuinely missing piece was the
+> *element type*, which `reproto` was discarding — collapsing all seven packable
+> types to `LEN_PACKED` — in exchange for `is_packed`, a bit that carries no
+> information a scorer may act on precisely because both encodings are always
+> legal. Deleting the collapse gave back the element type; `Verdict::FoundPacked`
+> reads the run and validates it, which is where the discriminating power lost to
+> the collapse comes back.
 
 The audit reports that a repeated scalar field encoded in the form the
 schema does not name (packed where the graph expects unpacked, or the
@@ -469,6 +495,33 @@ blob can rank tied candidates differently — a reproducibility bug that
 would also make any regression test on candidate ordering flaky. Verify,
 and if real, switch the affected map to `BTreeMap` or sort before
 consuming.
+
+### C12. The two surviving range vetoes are not vetoes of the impossible **[open]**
+
+*Raised 2026-07-26 by spec 0176, which deliberately does not fix it.*
+
+**Where:** `prototext-graph/src/score/walk.rs`, the `Range` arm of
+`check_varint_value`, gated on `ScoringOpts::strict_ranges`.
+
+After spec 0176 the `Range` leaf reaches exactly two kinds of field: `bool`,
+with range `(0, 1)`, and a **closed** enum. Under `strict_ranges` an
+out-of-range value on either vetoes. Neither value is impossible on the wire:
+
+- A `bool` is `value != 0` in every generated parser, so any nonzero varint
+  is a legal `bool`. `2` parses to `true`.
+- A closed enum moves an unrecognized number to the unknown-field set rather
+  than failing the parse (proto2 semantics), so the message still parses.
+
+By the governing principle below — veto only for what the wire format makes
+impossible — both should be penalties, not vetoes. They remain vetoes because
+they are strong evidence and because `--relax-ranges` turns them off, so
+nothing is trapped. The `non_canonical` **penalty** on the same values is
+separately correct and is not part of this entry: see the posture note below.
+
+Note the asymmetry this leaves. `--relax-ranges` is the only escape, and it
+is coarse: it disables the check for bool and closed enum together. If this is
+ever revisited, the shape to prefer is demoting both to `non_canonical`
+unconditionally and deleting the knob, rather than adding a second knob.
 
 ---
 
@@ -649,15 +702,33 @@ head rather than in a function. **The highest-leverage fix in either
 report is a single shared, tested, documented helper module for
 wire-format bounds arithmetic**, used by both.
 
-**Veto is absorbing, and it is used too freely.** C5, C6, and (if
-confirmed) C7 are all the same failure: a *soft* signal — an encoding
-choice, a forward-compatible unknown value — is treated as *proof* the
-candidate is wrong. Because veto cannot be recovered from, one such
-signal anywhere in a large blob eliminates the correct answer. The
-scoring model already has a graded penalty (`non_canonical`, `-20`)
-designed for exactly this. The rule worth stating explicitly in the
-design doc: **veto only for what the wire format makes impossible; score
-everything that is merely unlikely.**
+**Veto is absorbing, and it is used too freely.** C5, C6 and C7 are all the
+same failure: a *soft* signal — an encoding choice, a forward-compatible
+unknown value — is treated as *proof* the candidate is wrong. Because veto
+cannot be recovered from, one such signal anywhere in a large blob eliminates
+the correct answer. The scoring model already has a graded penalty
+(`non_canonical`, `-20`) designed for exactly this. The rule worth stating
+explicitly in the design doc: **veto only for what the wire format makes
+impossible; score everything that is merely unlikely.** (All three are fixed
+as of 2026-07-26: specs 0172, 0175 and 0176.)
+
+**That principle bounds veto, not penalty (confirmed 2026-07-26).** The
+scoring heuristic **deliberately penalizes suspicious serialization as much as
+erroneous serialization** — that is a voluntary posture, and it is the entire
+reason `non_canonical` exists. Legal-but-no-conformant-writer-emits-it is
+exactly what it is for: a 5-byte negative `int32`, a varint with overhang, a
+`bool` of `2`, a zero-length packed run. Do not "fix" a `non_canonical`
+penalty by citing the principle above; only vetoes are in question. The two
+vetoes the principle *does* still indict are C12.
+
+The test for "suspicious" is: **would a conformant writer of the schema under
+test produce it?** If no, penalize. If yes routinely, it must cost nothing —
+which is what makes an out-of-set value on an *open* enum unpenalizable (it is
+the designed forward-compatibility mechanism, C6), and likewise the expanded
+encoding of a default-packed proto3 repeated scalar, or the packed encoding of
+a `[packed=false]` one (writers routinely do either, C7). Penalizing those
+charges the *correct* schema for ordinary valid traffic, which is C6's failure
+mode in penalty form.
 
 **Adversarial input is the design point, not an edge case.** Every
 correctness bug here (C1, C3, C4, C8) is a crash or UB on malformed
