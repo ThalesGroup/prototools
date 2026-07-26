@@ -1121,6 +1121,118 @@ fn message_set_group_items_auto_expand_through_render_overrides() {
     );
 }
 
+/// Spec 0183 S1: auto-expansion must reach an `Any` buried under plain
+/// message ancestors that carry no override of their own. Those
+/// ancestors are exactly what the old `is_message` gate descended
+/// through for free and what the seed scan's upward marking walk now
+/// has to account for — a fixture with the `Any` directly under the
+/// root would pass with that walk missing entirely.
+#[test]
+fn a_deeply_nested_any_is_auto_expanded() {
+    let app = nested_any_fixture();
+
+    assert!(
+        app.tree
+            .iter()
+            .any(|n| n.span.type_fqdn.as_deref() == Some("acme.Payload")),
+        "an Any three message levels down must still auto-expand: {:#?}",
+        app.lines
+    );
+    assert!(
+        app.lines
+            .iter()
+            .any(|l| l.contains("label") && l.contains("hello")),
+        "the expanded Any payload's own field must appear in the \
+         rendered text: {:?}",
+        app.lines
+    );
+
+    // The expansion must come from the auto-override mechanism
+    // (`auto_expand_type` seeding a real entry, spec 0120), not from
+    // `decode`'s own paint — this is what makes the fixture a test of
+    // the walk at all. `decode` deliberately leaves `Any` unexpanded
+    // (see `decode_leaves_any_fields_unexpanded_with_real_type_url_
+    // and_value_spans`), so a missing entry here would mean the
+    // fixture is proving nothing.
+    let value_idx = app
+        .tree
+        .iter()
+        .position(|n| n.span.type_fqdn.as_deref() == Some("acme.Payload"))
+        .expect("the Any's value must resolve to acme.Payload");
+    let value_path = app.positional_path(value_idx);
+    assert!(
+        app.overrides.entries().iter().any(|e| {
+            e.active
+                && e.auto
+                && matches!(&e.origin, OverrideOrigin::Path { path } if *path == value_path)
+                && e.r#type.as_deref() == Some("acme.Payload")
+        }),
+        "the expansion must be a real, persisted, active *auto* \
+         override entry: {:#?}",
+        app.overrides.entries()
+    );
+}
+
+/// Spec 0183 S1, the half that breaks silently: MessageSet tier 1 (the
+/// `Item` group wrapper) is deliberately not an
+/// `is_auto_expand_candidate`, on the recorded grounds that the
+/// `is_message` disjunct reaches it. Both tiers must survive that
+/// disjunct's removal, and must do so from under plain ancestors.
+#[test]
+fn a_deeply_nested_message_set_is_auto_expanded_at_both_tiers() {
+    let app = nested_message_set_fixture();
+
+    assert!(
+        app.tree
+            .iter()
+            .any(|n| n.span.type_fqdn.as_deref() == Some(crate::decode::MESSAGE_SET_ITEM_FQDN)),
+        "tier 1: the Item group wrapper must be retyped to the \
+         synthetic Item shape: {:#?}",
+        app.lines
+    );
+    assert!(
+        app.tree
+            .iter()
+            .any(|n| n.span.type_fqdn.as_deref() == Some("ms_test.ExtPayload")),
+        "tier 2: the Item's message must resolve to the extension \
+         type: {:#?}",
+        app.lines
+    );
+    assert!(
+        app.lines
+            .iter()
+            .any(|l| l.contains("label") && l.contains("hi")),
+        "the expanded extension payload's own field must appear in the \
+         rendered text: {:?}",
+        app.lines
+    );
+
+    // Both tiers must be real auto-override entries, for the same
+    // reason as in `a_deeply_nested_any_is_auto_expanded`.
+    for (fqdn, tier) in [
+        (crate::decode::MESSAGE_SET_ITEM_FQDN, "tier 1"),
+        ("ms_test.ExtPayload", "tier 2"),
+    ] {
+        let idx = app
+            .tree
+            .iter()
+            .position(|n| n.span.type_fqdn.as_deref() == Some(fqdn))
+            .expect("the tier's node must exist");
+        let path = app.positional_path(idx);
+        assert!(
+            app.overrides.entries().iter().any(|e| {
+                e.active
+                    && e.auto
+                    && matches!(&e.origin, OverrideOrigin::Path { path: p } if *p == path)
+                    && e.r#type.as_deref() == Some(fqdn)
+            }),
+            "{tier} must be a real, persisted, active *auto* override \
+             entry: {:#?}",
+            app.overrides.entries()
+        );
+    }
+}
+
 /// Regression test (2026-07-18 feedback item 4): the internal,
 /// globally-shared `decode::MESSAGE_SET_ITEM_FQDN` (`protolens_internal
 /// .Item`) must never leak into the two places a tier-1 Item node's
