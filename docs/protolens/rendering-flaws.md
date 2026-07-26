@@ -222,9 +222,20 @@ merits (see A5), because the heat worker's `&'static` remains.
 
 ---
 
-### C4. Two `?` early returns in `run` sit above the terminal-restore block
+### C4. ✔ Two `?` early returns in `run` sit above the terminal-restore block
 
 **Where:** `protolens/src/tui/mod.rs:1631`, `protolens/src/tui/mod.rs:1694`
+
+> ✔ **Fixed 2026-07-26.** The fallible middle of `run` — from
+> `terminal.size()` through `run_loop` — is now an immediately-invoked
+> closure whose `Result` is captured, so a `?` returns from the closure
+> and the cleanup block is reached on every path by construction. Two
+> things beyond the item as written: the panic hook moved *above* the
+> first fallible call (a panic during setup previously unwound with raw
+> mode on and no hook installed), and the setup window itself
+> (`push_keyboard_enhancement`, `EnterAlternateScreen`,
+> `Terminal::new`) got its own captured `Result` — it cannot share the
+> main cleanup block, because `terminal` does not exist yet.
 
 **What happens.** `run` enables raw mode, enters the alternate screen and
 enables mouse capture at `mod.rs:1618-1621`, and restores all three at

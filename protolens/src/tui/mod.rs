@@ -1723,30 +1723,40 @@ where
 
 /// Run the interactive TUI loop against a real terminal.
 pub fn run(app: &mut App) -> io::Result<()> {
-    enable_raw_mode()?;
-    push_keyboard_enhancement()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-    // Safe upper bound (spec 0151 G6/G8): the real, render-computed
-    // `override_list_height` (set by the override pane's own first
-    // render, `render.rs`) is always <= the raw terminal height, since
-    // it's an inner-area height net of borders/header rows. Setting it
-    // eagerly here means G6's cross-population cap isn't stuck at `1`
-    // (its `App::new` default) for the warm-up pass or any ordinary
-    // browsing before the user's first `t` press.
-    app.override_list_height = terminal.size()?.height.max(1) as usize;
-
     // A panic mid-session (e.g. an indexing bug) would otherwise unwind
     // straight out of this function, skipping the cleanup below and
     // leaving the terminal stuck in raw/alt-screen/mouse-capture mode.
     // Restore it first, then hand off to the default panic printer.
+    //
+    // Flaw C4 (worklist W3): installed *before* the first fallible call,
+    // not after terminal setup — a panic during setup used to unwind
+    // with raw mode already on and no hook installed to undo it.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         restore_terminal();
         default_hook(info);
     }));
+
+    // Terminal setup, up to and including the `Terminal` itself. Every
+    // line after the first is fallible *with raw mode already on*, and
+    // `terminal` does not exist yet, so this window cannot be covered by
+    // the cleanup block at the end of this function — it gets its own
+    // captured `Result` instead.
+    let setup = (|| -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
+        enable_raw_mode()?;
+        push_keyboard_enhancement()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        Terminal::new(CrosstermBackend::new(stdout))
+    })();
+    let mut terminal = match setup {
+        Ok(terminal) => terminal,
+        Err(e) => {
+            restore_terminal();
+            let _ = std::panic::take_hook();
+            return Err(e);
+        }
+    };
 
     let (tx, rx) = mpsc::channel();
     // `Option`-wrapped (2026-07-20 feedback) so `run_loop` can `take()`
@@ -1754,76 +1764,98 @@ pub fn run(app: &mut App) -> io::Result<()> {
     // `run_loop`'s own doc comment on that block for why.
     let mut input_reader = Some(event::InputReaderHandle::spawn(tx.clone()));
 
-    // Spec 0152 G1: spawned only when a scoring graph is loaded — with
-    // no graph, `app.heat_worker` stays `None` for the whole session,
-    // and every fork that checks `heat_worker.is_some()` falls through
-    // to the existing synchronous logic. Spawned *before* `warm_up_
-    // heat_cues` below (2026-07-19 feedback) so its initial-viewport
-    // pass can push requests onto the worker's queue and return
-    // immediately instead of scoring synchronously on this thread —
-    // fixes the multi-second "black screen" startup freeze against a
-    // large scoring graph, which the warm-up pass used to cause by
-    // always running before any worker existed to hand work off to.
-    if let Some(graph) = &app.ctx.graph {
-        // Spec 0180 S2: an owning handle, not a `&'static` copied out of the
-        // mapping. Each `Arc::clone` below is a refcount bump, and it is what
-        // makes both spawns below independent of when `App` drops.
-        let graph = Arc::clone(graph);
-        let blob = Arc::new(app.blob.clone()); // one-time clone, G2
+    // Flaw C4 (worklist W3): everything fallible from here to `run_loop`
+    // lives inside this closure, whose `Result` is *captured* rather than
+    // propagated. A `?` in here returns from the closure, so the cleanup
+    // block below is reached on every path by construction rather than by
+    // review — `terminal.size()?` and `warm_up_heat_cues(..)?` both used
+    // to return straight out of `run`, leaving the terminal in raw/
+    // alternate-screen/mouse-capture mode for whatever ran next. Any
+    // future `?` added to this region is covered for free, which is the
+    // point: spec 0168 adds two more.
+    let result = (|| -> io::Result<()> {
+        // Safe upper bound (spec 0151 G6/G8): the real, render-computed
+        // `override_list_height` (set by the override pane's own first
+        // render, `render.rs`) is always <= the raw terminal height, since
+        // it's an inner-area height net of borders/header rows. Setting it
+        // eagerly here means G6's cross-population cap isn't stuck at `1`
+        // (its `App::new` default) for the warm-up pass or any ordinary
+        // browsing before the user's first `t` press.
+        app.override_list_height = terminal.size()?.height.max(1) as usize;
 
-        // Spec NNNN: root-type inference is a single, one-shot `score_
-        // all` sweep over the *whole* blob — unlike heat-cue/override
-        // requests, it's never repeated, so it gets its own detached,
-        // fire-and-forget thread rather than a `HeatRequestQueue` entry.
-        // Not joined anywhere (deliberately, unlike `heat_worker`/
-        // `input_reader` below): it holds only `Arc`-owned data, so an
-        // early `should_quit` simply lets the OS reclaim it mid-sweep —
-        // joining would otherwise make quitting wait out the very sweep
-        // this whole feature exists to get off the critical path.
-        //
-        // That claim was **false until spec 0180 S2**, and this was the
-        // worst place for it to be false: the graph was a `&'static`
-        // transmuted out of `ctx`'s mmap, so `App` dropping while the
-        // longest scoring operation in the program was still running
-        // unmapped the pages underneath it. `graph` is an owning
-        // `Arc<LoadedGraph>` now, so the mapping survives exactly as long
-        // as this thread needs it and the sentence above is true as
-        // written. Do not turn it back into a borrow.
-        if app.root_type_pending {
-            let root_type_tx = tx.clone();
-            let root_type_graph = Arc::clone(&graph);
-            // `determine_root_type` (spec NNNN's synchronous ancestor)
-            // scores the caller's original, unwrapped blob — recover it
-            // from the wrapped one `Decoded::blob` carries (see `Decoded::
-            // wrapper_offset`'s doc comment).
-            let original_blob = app.blob[app.wrapper_offset..].to_vec();
-            // Spec 0180 S4: a `Builder`, not a bare `thread::spawn`. This
-            // thread runs `score_all` over the whole blob — the deepest
-            // input the scorer ever sees — and used to take `std`'s 2 MiB
-            // default while the heat worker running the identical code got
-            // 16 MiB, purely because the constant lived in `heat_worker.rs`.
-            thread::Builder::new()
-                .name("root-type".to_string())
-                .stack_size(SCORING_THREAD_STACK_SIZE)
-                .spawn(move || {
-                    let fqdn =
-                        decode::resolve_root_winner_fqdn(&original_blob, root_type_graph.graph());
-                    let _ = root_type_tx.send(event::AppEvent::RootTypeResolved(fqdn));
-                })
-                .expect("spawn root-type thread");
+        // Spec 0152 G1: spawned only when a scoring graph is loaded — with
+        // no graph, `app.heat_worker` stays `None` for the whole session,
+        // and every fork that checks `heat_worker.is_some()` falls through
+        // to the existing synchronous logic. Spawned *before* `warm_up_
+        // heat_cues` below (2026-07-19 feedback) so its initial-viewport
+        // pass can push requests onto the worker's queue and return
+        // immediately instead of scoring synchronously on this thread —
+        // fixes the multi-second "black screen" startup freeze against a
+        // large scoring graph, which the warm-up pass used to cause by
+        // always running before any worker existed to hand work off to.
+        if let Some(graph) = &app.ctx.graph {
+            // Spec 0180 S2: an owning handle, not a `&'static` copied out of the
+            // mapping. Each `Arc::clone` below is a refcount bump, and it is what
+            // makes both spawns below independent of when `App` drops.
+            let graph = Arc::clone(graph);
+            let blob = Arc::new(app.blob.clone()); // one-time clone, G2
+
+            // Spec NNNN: root-type inference is a single, one-shot `score_
+            // all` sweep over the *whole* blob — unlike heat-cue/override
+            // requests, it's never repeated, so it gets its own detached,
+            // fire-and-forget thread rather than a `HeatRequestQueue` entry.
+            // Not joined anywhere (deliberately, unlike `heat_worker`/
+            // `input_reader` below): it holds only `Arc`-owned data, so an
+            // early `should_quit` simply lets the OS reclaim it mid-sweep —
+            // joining would otherwise make quitting wait out the very sweep
+            // this whole feature exists to get off the critical path.
+            //
+            // That claim was **false until spec 0180 S2**, and this was the
+            // worst place for it to be false: the graph was a `&'static`
+            // transmuted out of `ctx`'s mmap, so `App` dropping while the
+            // longest scoring operation in the program was still running
+            // unmapped the pages underneath it. `graph` is an owning
+            // `Arc<LoadedGraph>` now, so the mapping survives exactly as long
+            // as this thread needs it and the sentence above is true as
+            // written. Do not turn it back into a borrow.
+            if app.root_type_pending {
+                let root_type_tx = tx.clone();
+                let root_type_graph = Arc::clone(&graph);
+                // `determine_root_type` (spec NNNN's synchronous ancestor)
+                // scores the caller's original, unwrapped blob — recover it
+                // from the wrapped one `Decoded::blob` carries (see `Decoded::
+                // wrapper_offset`'s doc comment).
+                let original_blob = app.blob[app.wrapper_offset..].to_vec();
+                // Spec 0180 S4: a `Builder`, not a bare `thread::spawn`. This
+                // thread runs `score_all` over the whole blob — the deepest
+                // input the scorer ever sees — and used to take `std`'s 2 MiB
+                // default while the heat worker running the identical code got
+                // 16 MiB, purely because the constant lived in `heat_worker.rs`.
+                thread::Builder::new()
+                    .name("root-type".to_string())
+                    .stack_size(SCORING_THREAD_STACK_SIZE)
+                    .spawn(move || {
+                        let fqdn = decode::resolve_root_winner_fqdn(
+                            &original_blob,
+                            root_type_graph.graph(),
+                        );
+                        let _ = root_type_tx.send(event::AppEvent::RootTypeResolved(fqdn));
+                    })
+                    .expect("spawn root-type thread");
+            }
+
+            app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
+                Arc::clone(&app.heat_caches),
+                graph,
+                blob,
+                tx.clone(),
+            ));
         }
 
-        app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
-            Arc::clone(&app.heat_caches),
-            graph,
-            blob,
-            tx.clone(),
-        ));
-    }
+        warm_up_heat_cues(&mut terminal, app)?;
 
-    warm_up_heat_cues(&mut terminal, app)?;
-
-    let result = run_loop(&mut terminal, app, &rx, &mut input_reader, &tx);
+        run_loop(&mut terminal, app, &rx, &mut input_reader, &tx)
+    })();
 
     // Spec 0152 G9: both threads joined, unconditionally (see "Shutdown
     // and safety"). No longer load-bearing for *memory* safety — spec

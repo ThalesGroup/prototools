@@ -276,7 +276,16 @@ the directed message (assert form). Either way the test must run under
 
 ---
 
-### W3. Make `run`'s terminal restore structurally unconditional
+### W3. Make `run`'s terminal restore structurally unconditional — **DONE 2026-07-26**
+
+Done as specified (closure whose `Result` is captured; panic hook moved
+above the first fallible call), plus one addition the item did not
+anticipate: the *setup* window — `push_keyboard_enhancement`,
+`EnterAlternateScreen`/`EnableMouseCapture`, `Terminal::new` — is also
+fallible with raw mode already on, and cannot be covered by the main
+cleanup block because `terminal` does not exist yet. It got its own
+captured `Result` with an explicit `restore_terminal()` on the error arm.
+No `?` now remains between the setup and the cleanup.
 
 **Fixes:** [C4](rendering-flaws.md).
 
