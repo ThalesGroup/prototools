@@ -64,27 +64,33 @@ fn check_header(bytes: &[u8], label: &str) -> Result<usize, Box<dyn std::error::
     Ok(root_offset)
 }
 
-/// `score_all` addresses candidates by `u16` index
+/// `score_all` addresses candidates by `u32` index
 /// (`ActiveEntry::entries`), so a graph with more roots than that cannot
 /// be scored. Rejecting at load (spec 0172 S5) is what makes the walk's
 /// `debug_assert!` a genuine invariant rather than a live abort in a
-/// background thread: a corpus with more than 65 535 message types is
-/// input, not a programming error.
+/// background thread: an oversized corpus is input, not a programming
+/// error.
 ///
-/// Whether 65 535 is the *right* ceiling is a separate, open question —
-/// widening `ActiveEntry::entries` is deferred decision D-h
-/// (`docs/protolens/rendering-worklist.md`), since `entries` is the
-/// hottest structure in the walk and wants a measurement rather than an
-/// assumption. This check is correct wherever that lands.
+/// The ceiling was `u16::MAX` — 65 535 — until spec 0179 S1, which was
+/// deferred decision D-h. It was not hypothetical: googleapis alone
+/// compiles to 49 255 roots, 75% of the old ceiling, against the
+/// "100,000+" target stated in `docs/schema-match.md`. Widening measured
+/// allocation-neutral, because the inline capacity of `entries` did not
+/// change with the element width.
+///
+/// The check is kept rather than deleted: `roots.len()` is a `usize`, so
+/// a 64-bit target can still express more roots than the index addresses.
+/// Note it bounds only what can be *addressed* — whether a corpus that
+/// large scores fast enough is a separate question.
 fn check_root_count(
     graph: &ArchivedCompiledGraph,
     label: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if graph.roots.len() > u16::MAX as usize {
+    if graph.roots.len() > u32::MAX as usize {
         return Err(format!(
             "{label}: scoring graph has {} root entries, exceeding the {} the scorer can address",
             graph.roots.len(),
-            u16::MAX
+            u32::MAX
         )
         .into());
     }

@@ -624,6 +624,20 @@ active back-references (assuming neither has been vetoed).
 - Active states at depth d: shrinks rapidly; most schemas become incompatible
   after the first few nesting levels
 
+**The implementation now exceeds this target rather than contradicting it**
+(2026-07-26). Until spec
+[0179](specs/0179-active-entry-field-widths.md), the scorer indexed
+candidates with a `u16`, capping a corpus at 65 535 roots — below the
+"100,000+" stated above, and not by a comfortable margin: googleapis alone
+compiles to 49 255. The index is now a `u32`, so the addressable ceiling is
+4 294 967 295 and the load-time check that enforces it is no longer within
+reach of a real corpus.
+
+Note what that bounds and what it does not: it is the number of roots the
+scorer can *address*. Whether a 100 000-root corpus scores fast enough is a
+separate question, and this document's own decay model above is the place it
+is argued — not the index width.
+
 ### Memory Layout (Compiled Once)
 
 ```

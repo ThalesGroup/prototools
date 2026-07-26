@@ -23,6 +23,21 @@
 //     structurally distinct, so Hopcroft cannot merge them and `A` really is
 //     the root count.
 //
+// DO NOT use this workload to reason about the walk's *allocation* shape.
+// That second bullet is what makes `A` controllable, and it is also what makes
+// the allocation profile unrepresentative: because Hopcroft can merge nothing,
+// every `ActiveEntry` holds exactly one entry and `entries` never spills out of
+// its inline buffer — erasing a term that is 17.1% of allocations on a real
+// corpus. The workload also holds `A` large against only 64 records, which
+// maximizes the O(log A) per-frame `Vec`s that real input barely reaches
+// (2 608 `group_by_state` calls across the whole of googleapis). Reading this
+// bench as an allocation profile says "the per-frame `Vec`s dominate"; the
+// corpus says they are 1.3% and `occurrences` was 81.6%. See spec 0179 and the
+// P3 entry of docs/scoring-flaws.md — measure allocations on `googleapis.desc`.
+//
+// Timing has its own caveat: this target's same-binary noise floor is +15.9%,
+// so a single Criterion `--baseline` delta below that is not evidence.
+//
 // Run with:  cargo bench -p prototext-graph --bench score
 // HTML report in:  target/criterion/
 

@@ -112,10 +112,34 @@ struct ActiveEntry {
     /// Entry indices (into `WalkState::scores`) routing through this state
     /// at the current nesting level.  SmallVec avoids heap allocation for the
     /// common case of few entries per state.
-    entries: SmallVec<[u16; 4]>,
+    ///
+    /// The index is `u32` rather than `u16` (spec 0179 S1) because the
+    /// `u16` capped a corpus at 65 535 root message types while
+    /// `docs/schema-match.md` targets 100 000+; googleapis alone compiles
+    /// to 49 255. It is a runtime index only — nothing in the serialized
+    /// graph changed.
+    ///
+    /// The inline capacity is 4, and that is the load-bearing number, not
+    /// the element width: it covers 93.4% of states on a real corpus, and
+    /// keeping it unchanged is what makes the widening allocation-neutral
+    /// (every spill decision is bit-identical to the `u16` version).
+    /// `[u32; 2]` has the same `size_of` and looks free for that reason —
+    /// measured, it costs 21.9% more allocations. `[u32; 8]` removes
+    /// allocations and is *slower*, with higher peak RSS. See spec 0179.
+    entries: SmallVec<[u32; 4]>,
     /// Per-frame occurrence counts for fields that received a Found verdict.
     /// field_number → how many times seen in this message/group frame.
-    occurrences: Vec<(u32, u64)>, // sorted by field_number
+    ///
+    /// Inline rather than a `Vec` (spec 0179 S2) because this was the
+    /// walk's single largest allocation site: 81.6% of everything
+    /// `score_all` allocated. Half of all `ActiveEntry` record nothing at
+    /// all — those never allocated either way — but the other half took a
+    /// 64-byte heap block (a `Vec`'s first capacity for a 16-byte element)
+    /// to hold, 98% of the time, one or two pairs.
+    ///
+    /// Capacity 2 covers 98.15% of frames; capacity 4 covers 99.87% and
+    /// measured slower and larger.
+    occurrences: SmallVec<[(u32, u32); 2]>, // sorted by field_number
     /// This entry's verdict for the wire tag currently being processed.
     /// Overwritten at the top of every tag iteration and never read across
     /// iterations.
@@ -160,7 +184,7 @@ impl<'a, 'g> WalkState<'a, 'g> {
         }
     }
 
-    fn is_vetoed(&self, e: u16) -> bool {
+    fn is_vetoed(&self, e: u32) -> bool {
         let e = e as usize;
         (self.vetoed[e / 64] >> (e % 64)) & 1 == 1
     }
@@ -170,7 +194,7 @@ impl<'a, 'g> WalkState<'a, 'g> {
     /// production. It used to be a `&str`, which meant the `format!` call
     /// sites below built and dropped a `String` once per candidate per
     /// mismatching tag.
-    fn set_vetoed(&mut self, e: u16, reason: impl FnOnce() -> String) {
+    fn set_vetoed(&mut self, e: u32, reason: impl FnOnce() -> String) {
         let ei = e as usize;
         if self.vetoed[ei / 64] & (1 << (ei % 64)) != 0 {
             return; // already vetoed
@@ -186,8 +210,8 @@ impl<'a, 'g> WalkState<'a, 'g> {
 }
 
 /// Group entries by their state_id, producing one `ActiveEntry` per distinct state.
-fn group_by_state(pairs: impl Iterator<Item = (u32, u16)>) -> Vec<ActiveEntry> {
-    let mut v: Vec<(u32, u16)> = pairs.collect();
+fn group_by_state(pairs: impl Iterator<Item = (u32, u32)>) -> Vec<ActiveEntry> {
+    let mut v: Vec<(u32, u32)> = pairs.collect();
     v.sort_unstable_by_key(|&(s, _)| s);
     let mut result = Vec::new();
     let mut i = 0;
@@ -201,7 +225,7 @@ fn group_by_state(pairs: impl Iterator<Item = (u32, u16)>) -> Vec<ActiveEntry> {
         result.push(ActiveEntry {
             state_id,
             entries,
-            occurrences: Vec::new(),
+            occurrences: SmallVec::new(),
             verdict: Verdict::Unknown,
         });
     }
@@ -233,9 +257,14 @@ pub fn score_all<'g>(
     // which turns an oversized corpus into an `Err` instead of aborting
     // the process from inside a background scoring thread. This is the
     // invariant restated, not the check.
+    //
+    // Spec 0179 S1 widened the index from `u16` to `u32`, so the bound is
+    // now 4 294 967 295 rather than 65 535. It stays an assertion rather
+    // than becoming unreachable: `roots.len()` is a `usize`, so on a
+    // 64-bit target it can still outrun what the index addresses.
     debug_assert!(
-        graph.roots.len() <= u16::MAX as usize,
-        "entry count {} exceeds u16::MAX (load::check_root_count should have rejected this graph)",
+        graph.roots.len() <= u32::MAX as usize,
+        "entry count {} exceeds u32::MAX (load::check_root_count should have rejected this graph)",
         graph.roots.len()
     );
 
@@ -258,7 +287,7 @@ pub fn score_all<'g>(
             .roots
             .iter()
             .enumerate()
-            .map(|(i, r)| (r.state_id.to_native(), i as u16)),
+            .map(|(i, r)| (r.state_id.to_native(), i as u32)),
     );
 
     let mut ws = WalkState::new(graph, &mut scores, opts);
@@ -293,12 +322,12 @@ pub fn score_one<'g>(
         vetoed: false,
     }];
 
-    let mut entries: SmallVec<[u16; 4]> = SmallVec::new();
+    let mut entries: SmallVec<[u32; 4]> = SmallVec::new();
     entries.push(0);
     let initial_active = vec![ActiveEntry {
         state_id: root.state_id.to_native(),
         entries,
-        occurrences: Vec::new(),
+        occurrences: SmallVec::new(),
         verdict: Verdict::Unknown,
     }];
 
@@ -614,9 +643,18 @@ fn state_has_transitions(graph: &ArchivedCompiledGraph, state_id: u32) -> bool {
 // ── Cardinality check helpers ─────────────────────────────────────────────────
 
 /// Increment occurrences[field_number] by 1.  The vec is kept sorted.
-fn record_occurrence(occurrences: &mut Vec<(u32, u64)>, field_number: u32) {
+///
+/// The count saturates (spec 0179 S2). It is the number of times one field
+/// number appears in one message frame, and every occurrence costs at least
+/// a tag byte, so reaching `u32::MAX` needs a single frame larger than
+/// 4 GiB — not reachable in practice. But the value is derived from
+/// attacker-chosen bytes, and a plain `+= 1` on a `u32` wraps silently in a
+/// release build (`overflow-checks` is off), which is the defect class spec
+/// 0171 exists to prevent. `saturating_add` is one instruction and total,
+/// so the reachability argument does not have to be relied on.
+fn record_occurrence(occurrences: &mut SmallVec<[(u32, u32); 2]>, field_number: u32) {
     match occurrences.binary_search_by_key(&field_number, |&(f, _)| f) {
-        Ok(i) => occurrences[i].1 += 1,
+        Ok(i) => occurrences[i].1 = occurrences[i].1.saturating_add(1),
         Err(i) => occurrences.insert(i, (field_number, 1)),
     }
 }
@@ -778,7 +816,7 @@ fn apply_cardinality_multi(
             0 => {
                 if count > 1 {
                     for &e in &ae.entries {
-                        scores[e as usize].non_canonical += count - 1;
+                        scores[e as usize].non_canonical += (count - 1) as u64;
                     }
                 }
             }
@@ -789,7 +827,7 @@ fn apply_cardinality_multi(
                     }
                 } else if count > 1 {
                     for &e in &ae.entries {
-                        scores[e as usize].non_canonical += count - 1;
+                        scores[e as usize].non_canonical += (count - 1) as u64;
                     }
                 }
             }
@@ -1143,7 +1181,7 @@ fn score_message_multi(
                 let payload = &buf[pos..end];
                 pos = end;
 
-                let mut child_pairs: Vec<(u32, u16)> = Vec::new();
+                let mut child_pairs: Vec<(u32, u32)> = Vec::new();
 
                 // Spec 0175 S3: whether a packed varint run terminates at the
                 // payload end depends on the payload alone, so it is scanned at
@@ -1328,8 +1366,8 @@ fn score_message_multi(
 
             WT_START_GROUP => {
                 // Split active into recurse_into (Found) and stay_out (Unknown).
-                let mut recurse_into: Vec<(u32, u16)> = Vec::new();
-                let mut stay_out_entries: Vec<u16> = Vec::new();
+                let mut recurse_into: Vec<(u32, u32)> = Vec::new();
+                let mut stay_out_entries: Vec<u32> = Vec::new();
 
                 for ae in active.iter_mut() {
                     match ae.verdict {
@@ -1587,5 +1625,43 @@ mod set_vetoed_tests {
             "why".to_string()
         });
         assert_eq!(built.get(), 1, "a repeat veto must not build it again");
+    }
+}
+
+// ── Tests: `record_occurrence`'s saturating count (spec 0179 S2) ─────────────
+
+#[cfg(test)]
+mod record_occurrence_tests {
+    use super::*;
+
+    /// The count is a `u32` since spec 0179 S2, so it *can* be driven to its
+    /// ceiling — where the previous `u64` could not. Reaching it through the
+    /// walk would take a single message frame over 4 GiB, so the function is
+    /// called directly: the guarantee is the same and it costs nothing.
+    ///
+    /// What this guards against is a silent wrap in a release build, where
+    /// `overflow-checks` is off and a plain `+= 1` would turn `u32::MAX`
+    /// occurrences into zero — reading, downstream, as "the field was never
+    /// seen", which is a *worse* answer than "seen very many times".
+    #[test]
+    fn the_count_saturates_rather_than_wrapping() {
+        let mut occ: SmallVec<[(u32, u32); 2]> = SmallVec::new();
+        occ.push((7, u32::MAX));
+
+        record_occurrence(&mut occ, 7);
+
+        assert_eq!(occ.as_slice(), &[(7, u32::MAX)]);
+    }
+
+    /// Insertion keeps the vec sorted by field number, which is what makes the
+    /// `binary_search_by_key` in `apply_cardinality_multi` valid. Fields arrive
+    /// in wire order, which is attacker-chosen and need not be ascending.
+    #[test]
+    fn entries_stay_sorted_regardless_of_arrival_order() {
+        let mut occ: SmallVec<[(u32, u32); 2]> = SmallVec::new();
+        for f in [9, 2, 5, 2] {
+            record_occurrence(&mut occ, f);
+        }
+        assert_eq!(occ.as_slice(), &[(2, 2), (5, 1), (9, 1)]);
     }
 }

@@ -77,7 +77,7 @@ scoped the way it is.
 | ~~**D-e**~~ | ~~Is the 24.5 MB class a real target?~~ **Yes.** Opening `googleapis.desc` (24.5 MB) is a required capability. | all of **Phase 8** is in scope, not conditional |
 | ~~**D-f**~~ | ~~Do W16, knowing W24 deletes rather than accelerates it?~~ **No — skip it.** | **W16 is dropped.** S2 is resolved by W24 instead. W17 is unaffected and still in |
 | ~~**D-g**~~ | ~~Scoring-graph format version bump for a per-enum open/closed bit?~~ **Answered, 2026-07-26 — no format change needed.** Spec [0176](../specs/0176-open-enums-have-no-range.md): an open enum has no range, so it emits `type: int32` in `reproto` and the bit has nothing to qualify. | W30's interim is superseded, and its precision loss is recovered rather than accepted: a closed enum keeps its full range. See [Deferred](#deferred-out-of-scope-for-this-worklist) item 2 |
-| ~~**D-h**~~ | ~~Widen the `u16` 65 535-root ceiling, or correct the design doc?~~ **Deferred** — see [Deferred](#deferred-out-of-scope-for-this-worklist). | W29 still converts the `assert!` into an `Err`, which is right either way, but **does not widen the index** |
+| ~~**D-h**~~ | ~~Widen the `u16` 65 535-root ceiling, or correct the design doc?~~ **Answered, 2026-07-26 — widen it.** Spec [0179](../specs/0179-active-entry-field-widths.md): `ActiveEntry::entries` is `SmallVec<[u32; 4]>`, measured allocation-neutral because the inline capacity did not change. **No format change** — the index is runtime-only. | W29's `assert!`→`Err` conversion stands and the check is kept, now against `u32::MAX`. See [Deferred](#deferred-out-of-scope-for-this-worklist) item 1 |
 
 **Three items are struck through and must not be implemented: W4**
 (superseded by W6), **W16** (superseded by W24), and **spec 0169**
@@ -87,26 +87,38 @@ it went, rather than nowhere.
 
 ### Deferred (out of scope for this worklist)
 
-D-h is real and is not urgent. D-g **is closed** (2026-07-26) and is kept
-below only so that the reasoning is not rediscovered from scratch. They are
-orthogonal to everything above — no item in this worklist waits on them, and
-both were rescoped so that the work they touch is self-contained without them.
+**Both are now closed** (2026-07-26) and are kept below only so that the
+reasoning is not rediscovered from scratch. They were orthogonal to
+everything above — no item in this worklist waited on them, and both were
+rescoped so that the work they touch is self-contained without them.
 
-**Only D-h is left.** The batching advice that used to stand here ("take D-h
-first, then D-g, because a format bump is worth batching") is moot: there is
-no format bump.
+Neither needed a format bump, which retires the batching advice that used to
+stand here ("take D-h first, then D-g, because a format bump is worth
+batching").
 
-**1. D-h — the 65 535-root ceiling.** `ActiveEntry::entries` holds `u16`
-indices, so `score_all` asserts `graph.roots.len() <= u16::MAX`
-(`walk.rs:187-191`). [../schema-match.md](../schema-match.md) states a
-"100,000+ FDPs" target. Both cannot be right. Either widen the index to
-`u32` — which costs memory in the hottest structure in the scoring walk,
-so measure it rather than assuming it is free — or correct the design
-doc's stated scale. Do not leave the contradiction standing.
+**1. ~~D-h — the 65 535-root ceiling.~~ Closed 2026-07-26 — spec
+[0179](../specs/0179-active-entry-field-widths.md), with no format change.**
 
-W29 converts the panic into a clean `Err` regardless, so the failure mode
-until then is a legible error message, not an abort. That is what makes
-this deferrable rather than merely postponed.
+`ActiveEntry::entries` held `u16` indices, so `score_all` asserted
+`graph.roots.len() <= u16::MAX`, while [../schema-match.md](../schema-match.md)
+states a "100,000+ FDPs" target. Both could not be right, and the
+contradiction was live rather than theoretical: googleapis alone compiles to
+**49 255 roots**, 75% of the old ceiling. Resolved by widening, not by
+correcting the doc.
+
+The measurement this deferral asked for was made, and it moved the answer.
+The concern was that `u32` "costs memory in the hottest structure in the
+scoring walk" — true of `size_of`, false of what matters. The load-bearing
+number is the *inline capacity*, and holding it at 4 makes every spill
+decision bit-identical to the `u16` version, so the widening is
+allocation-neutral. `SmallVec<[u32; 2]>` keeps `size_of` unchanged and looks
+like the frugal choice for exactly that reason; measured, it costs **+21.9%
+allocations**.
+
+W29 had already converted the panic into a clean `Err`, so the failure mode
+in the meantime was a legible error message rather than an abort — which is
+what made this deferrable rather than merely postponed. That check is kept,
+now against `u32::MAX`.
 
 **2. ~~D-g — a per-enum open/closed bit in the compiled graph.~~ Closed
 2026-07-26 — spec [0176](../specs/0176-open-enums-have-no-range.md), with no
@@ -489,6 +501,14 @@ Converting the panic into an error is correct regardless of where the
 ceiling ends up, and is all this item does. Leave a doc comment on the
 new check pointing at D-h so the deferral is visible at the constraint
 rather than only in this document.
+
+> **D-h has since been answered** (2026-07-26, spec
+> [0179](../specs/0179-active-entry-field-widths.md)): the index is `u32`
+> and the ceiling is 4 294 967 295. The check this item created is *kept*
+> — `roots.len()` is a `usize`, so a 64-bit target can still express more
+> roots than the index addresses — and its doc comment now records the
+> answer instead of the deferral. The split was the right one: this item's
+> `assert!`→`Err` conversion needed nothing from the width decision.
 
 **Proving test.** A truncated and a `root_offset`-corrupted fixture must
 both produce an `Err`, not a crash. Run the loader tests under Miri if

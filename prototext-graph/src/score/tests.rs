@@ -32,6 +32,7 @@ use crate::build_scoring_graph::{
     serial,
 };
 use crate::score::{load as score_load, walk};
+use prototext_core::helpers::MAX_WIRE_DEPTH;
 
 /// Score `pb` against the graph and return the result for entry `fqdn`.
 fn score_entry<'g>(
@@ -561,6 +562,40 @@ fn tc19_repeated_field_multiple_occurrences() {
     let s = score_entry(&pb, &g, "Outer");
     assert!(!s.vetoed);
     assert_eq!(s.matches, 4); // id + 3× tags
+    assert_eq!(s.unknowns, 0);
+}
+
+/// Spec 0179 S2: cardinality is still right when `occurrences` spills out of
+/// its inline buffer.
+///
+/// `ActiveEntry::occurrences` is a `SmallVec<[(u32, u32); 2]>`, so a frame
+/// carrying three or more *distinct* field numbers moves the whole vec to the
+/// heap mid-frame. That happens in 1.85% of real frames — rare enough that the
+/// other fixtures here would never reach it by accident, and common enough that
+/// it must not be left to chance. The vec is kept sorted and is
+/// binary-searched by `apply_cardinality_multi`, so a spill that reordered or
+/// truncated it would show up as wrong counts rather than as a crash.
+#[test]
+fn tc19b_occurrences_spilling_past_the_inline_buffer() {
+    let g = build_graph();
+
+    // Five distinct field numbers, one of them repeated: `occurrences` ends as
+    // [(1,1), (2,3), (3,1), (4,1), (5,1)] — 5 pairs against an inline 2.
+    let mut pb = field_varint(1, 1); // id (required) ×1
+    pb.extend(field_len(2, b"aa")); // name (optional) ×3 → non-canonical
+    pb.extend(field_len(2, b"bb"));
+    pb.extend(field_len(2, b"cc"));
+    pb.extend(field_varint(3, 10)); // tags (repeated) ×1
+    pb.extend(field_len(4, &field_varint(1, 5))); // inner (optional) ×1
+    pb.extend(field_varint(5, 1)); // enum in (0,2) ×1
+
+    let s = score_entry(&pb, &g, "Outer");
+    assert!(!s.vetoed);
+    // Only the thrice-repeated optional field 2 is non-canonical, and it
+    // contributes count - 1 = 2. Everything else appears exactly once, so a
+    // spill that lost or duplicated a pair would move this number.
+    assert_eq!(s.non_canonical, 2);
+    assert_eq!(s.mismatches, 0, "the required field 1 is present");
     assert_eq!(s.unknowns, 0);
 }
 
@@ -1351,21 +1386,25 @@ fn any_expansion_empty_value() {
     assert!(!s.vetoed, "Any with empty value must not veto");
 }
 
-// ── Entry-count guard hardening (spec 0140 G6) ───────────────────────────────
+// ── Entry-count ceiling (spec 0140 G6, 0172 S5, 0179 S1) ─────────────────────
 
-/// TC-OF1: an entry count exceeding `u16::MAX` must be rejected rather than
-/// silently wrapping/truncating the `as u16` cast used to pack entry indices.
-/// Nested-type entries (spec 0140) grow the corpus well past what a
-/// top-level-only schema set would ever reach, so this guard is no longer
-/// purely academic.
+/// TC-OF1: a corpus past the old `u16` ceiling loads and scores.
 ///
-/// Spec 0172 S5 moved the enforcement from an `assert!` inside `score_all` to
-/// `load::check_root_count`: such a corpus is input, not a programming error,
-/// and aborting the process from a background scoring thread is the wrong
-/// response. This test correspondingly moved from `#[should_panic]` on the
-/// walk to an `Err` from the load.
+/// This test has been inverted twice, and both turns are the point of
+/// keeping it. Spec 0140 G6 added it as a `#[should_panic]` guard on the
+/// `as u16` cast that packed entry indices. Spec 0172 S5 made it assert an
+/// `Err` from `load::check_root_count` instead — such a corpus is input,
+/// not a programming error, and aborting from a background scoring thread
+/// is the wrong response. Spec 0179 S1 widened the index to `u32`, so the
+/// corpus this test builds is now simply *valid*, and what needs guarding
+/// is that it stays that way.
+///
+/// The 65 536 roots are structurally identical, so Hopcroft merges them
+/// onto a single state and the blob is scored against **one `ActiveEntry`
+/// holding 65 536 entries** — which is what actually exercises the width
+/// of `ActiveEntry::entries` rather than merely the load-time check.
 #[test]
-fn tc_of1_entry_count_over_u16_max_is_a_load_error() {
+fn tc_of1_a_corpus_past_the_old_u16_ceiling_loads_and_scores() {
     let n = usize::from(u16::MAX) + 1;
     let field = vec![ScoringField {
         number: 1,
@@ -1397,14 +1436,24 @@ fn tc_of1_entry_count_over_u16_max_is_a_load_error() {
     serial::write(&compiled, &path).expect("write graph");
     let _ = std::mem::ManuallyDrop::new(dir);
 
-    let err = score_load::load_graph(&path)
-        .err()
-        .expect("a 65 536-root graph must not load")
-        .to_string();
+    let g = score_load::load_graph(&path).expect("a 65 536-root graph must load");
+    assert_eq!(g.graph.roots.len(), n);
+
+    // Field 1, varint 7 — a match for every root in the corpus.
+    let pb = field_varint(1, 7);
+    let scores = walk::score_all(&pb, g.graph, &walk::ScoringOpts::default());
+
+    assert_eq!(scores.len(), n, "one score per root");
     assert!(
-        err.contains("65536") && err.contains("65535"),
-        "load error should name the count and the ceiling: {err}"
+        scores.iter().all(|s| !s.vetoed && s.matches == 1),
+        "every root declares field 1 as uint32, so every root must match it"
     );
+
+    // The last root is the one an index that wrapped would have written over,
+    // so it is named explicitly rather than left to the `all` above.
+    let last = scores.last().expect("n > 0");
+    assert_eq!(last.fqdn, format!("M{}", n - 1));
+    assert_eq!(last.matches, 1);
 }
 
 // ── Bounds arithmetic and depth caps (spec 0171) ──────────────────────────────
@@ -1433,6 +1482,97 @@ fn blind_group_walk_does_not_overflow_the_stack() {
     // The groups are all open-ended, so the walk vetoes; the point of the
     // test is that it returns at all.
     assert!(r.vetoed);
+}
+
+/// `message Node { optional Node child = 1; }` — self-recursive, so a nest of
+/// LEN fields on field 1 keeps matching all the way down and the walk really
+/// recurses instead of vetoing at the first tag.
+fn build_recursive_graph() -> score_load::LoadedGraph {
+    let merged = Merged {
+        states: {
+            let mut m = std::collections::HashMap::new();
+            m.insert(
+                "Node".to_string(),
+                vec![ScoringField {
+                    number: 1,
+                    kind: ScoringKind::Node,
+                    child: Some("Node".to_string()),
+                    range: None,
+                    label: FieldLabel::Optional,
+                }],
+            );
+            m
+        },
+        node_kinds: std::collections::HashMap::new(),
+        roots: vec!["Node".to_string()],
+    };
+    let (raw, reg) = graph::build(&merged);
+    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_, _| {});
+    let compiled = graph::compile(&raw, &reg, &partition, &merged.roots);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("node.bin");
+    serial::write(&compiled, &path).unwrap();
+    let _ = std::mem::ManuallyDrop::new(dir);
+    score_load::load_graph(&path).unwrap()
+}
+
+/// Flaw C2: `MAX_WIRE_DEPTH` frames of `score_message_multi` must fit in the
+/// smallest stack any consumer of `score_all` gives it, which is
+/// `std::thread::spawn`'s 2 MiB default. The constant's justification used to
+/// be the word "comfortably"; this is the margin, measured.
+///
+/// Bisecting `stack_size` against this blob puts the walk's requirement at
+/// 288 KiB for 501 frames and 576 KiB for 1002 — i.e. **≈ 590 bytes per
+/// frame**, so the full cap costs ~576 KiB against this thread's 2 MiB.
+///
+/// This is **not** the binding constraint on the shared cap: `render_message`
+/// in `prototext-core` needs ~1408 KiB for the same depth, 2.4× more. See
+/// `MAX_WIRE_DEPTH`'s own doc comment for both figures and the real margin.
+///
+/// **Release only**, deliberately. The same bisection on a debug build puts
+/// the frame at ≈ 4.8 KiB — 8× larger — so the cap wants ~4.7 MiB there and
+/// 2 MiB is not enough. Release is what ships and what this repo builds, so
+/// the release contract is the honest thing to assert; in debug this would
+/// abort the test binary over a configuration no shipped code runs in.
+/// (`prototext-core`'s two `deeply_nested_len_*` tests have the same
+/// property but are not gated — that is pre-existing, and why `cargo test`
+/// without `--release` already aborts there.)
+///
+/// Note the failure mode: a stack overflow is a `SIGSEGV`, which aborts the
+/// whole test process rather than failing this test alone. That is loud and
+/// unmistakable ("fatal runtime error: stack overflow"), but it does take the
+/// sibling tests with it — so if this binary dies without naming a test, look
+/// here first.
+#[test]
+#[cfg(not(debug_assertions))]
+fn max_depth_walk_fits_in_a_default_thread_stack() {
+    // Two levels past the cap, so the depth guard is what stops the descent
+    // and the deepest frame really is reached.
+    let levels = MAX_WIRE_DEPTH + 2;
+    let outcome = std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(move || {
+            let g = build_recursive_graph();
+            let mut pb = Vec::new();
+            for _ in 0..levels {
+                pb = field_len(1, &pb);
+            }
+            let s = score_entry(&pb, &g, "Node");
+            (s.vetoed, s.matches)
+        })
+        .expect("spawn")
+        .join()
+        .expect("the walk must not overflow a 2 MiB stack");
+
+    let (vetoed, matches) = outcome;
+    assert!(vetoed, "past the cap the walk vetoes rather than guessing");
+    assert_eq!(
+        matches,
+        MAX_WIRE_DEPTH as u64 + 1,
+        "one match per level entered before the guard fires — if this drops, \
+         the walk stopped early and the deep frames were never allocated, \
+         which would make the stack assertion vacuous"
+    );
 }
 
 // ── Veto correctness and load validation (spec 0172) ─────────────────────────
