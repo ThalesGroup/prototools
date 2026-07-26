@@ -44,6 +44,50 @@ fn seed_range_heat_entry(
     );
 }
 
+/// Spec 0184 S6: a packed run is one wire record and one unit of
+/// action, so its cue describes the record — every element scores over
+/// the *record's* payload, not its own few bytes.
+///
+/// Two consequences asserted here: the cue the user sees agrees with
+/// what `t` would act on, and the run's N lines share one
+/// `heat_caches` entry rather than holding N (G3).
+#[test]
+fn a_packed_run_scores_one_cue_over_the_whole_record() {
+    let (mut app, elems, tail, _a, _b) = packed_run_with_tail_fixture();
+
+    let record = app.heat_scored_range(elems[0]);
+    for &e in &elems {
+        assert_eq!(
+            app.heat_scored_range(e),
+            record,
+            "every element of the run must score the same range"
+        );
+        assert_ne!(
+            app.heat_scored_range(e),
+            app.tree[e].span.raw_range,
+            "and that range must not be the element's own bytes"
+        );
+    }
+    assert_eq!(record.len(), 3, "the record's payload is its 3 elements");
+
+    // A non-packed sibling is unaffected: still its own payload.
+    assert_eq!(
+        app.heat_scored_range(tail),
+        extract::message_payload_range(&app.blob, &app.tree[tail].span.raw_range, None)
+    );
+
+    // One seeded entry, keyed on the record's payload start, is enough
+    // to light up every line of the run.
+    seed_range_heat_entry(&mut app, record.start, Some(50), 1, "int32", Some(10));
+    for &e in &elems {
+        let line = app.tree[e].span.text_range.start;
+        assert!(
+            matches!(app.heat_cue_for(line), HeatDisplay::Cue(_)),
+            "element line {line} must show the record's cue"
+        );
+    }
+}
+
 /// Spec 0138 G5: the Fibonacci boundaries partition the score axis into
 /// exactly 12 levels, each boundary itself belonging to the *lower*
 /// level (`<=`), one past it starting the next.

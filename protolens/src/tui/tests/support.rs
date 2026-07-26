@@ -168,10 +168,14 @@ pub(super) fn sibling_leaves_app(texts: &[&str]) -> App {
 /// `Outer { repeated int32 vals = 1; }`, packed, 3 elements (`5, 6,
 /// 7`), document order — spec 0124's shared fixture: gives a
 /// `PathField`/`FqdnField` origin (parent path `/`, field `1`) 3
-/// matches, and a `Path` origin (e.g. `/2`) exactly 1 match. Uses a
-/// packed *scalar* repeated field (one `NodeSpan` per element, spec
-/// 0115) rather than a repeated message field, to keep the fixture's
-/// tree shape simple (no nested-message decode involved).
+/// matches. Uses a packed *scalar* repeated field (one `NodeSpan` per
+/// element, spec 0115) rather than a repeated message field, to keep
+/// the fixture's tree shape simple (no nested-message decode
+/// involved).
+///
+/// Spec 0184: the 3 elements are one wire record, so they all share
+/// the single positional path `/1`. A test that needs three siblings
+/// with *distinct* paths wants `repeated_message_fixture` instead.
 pub(super) fn repeated_scalar_fixture() -> (App, Vec<usize>) {
     use prost::Message as _;
     use prost_types::field_descriptor_proto::{Label, Type};
@@ -235,6 +239,226 @@ pub(super) fn repeated_scalar_fixture() -> (App, Vec<usize>) {
     items.sort_by_key(|&i| app.positional_path(i));
     assert_eq!(items.len(), 3, "fixture must contain 3 packed elements");
     (app, items)
+}
+
+/// `Outer { repeated Item items = 1; }` with 3 `Item { int32 v = 1; }`
+/// submessages — three genuinely distinct sibling nodes at `/1`, `/2`,
+/// `/3` that nonetheless share a parent type and field number.
+///
+/// This is the shape the manage pane's ambiguity machinery (spec 0134)
+/// needs: an `FqdnField`/`PathField` origin matching several nodes that
+/// derive *different* `Path` origins. `repeated_scalar_fixture` used to
+/// serve that role, until spec 0184 made a packed run occupy a single
+/// positional ordinal — an unpacked repeated *message* field is one
+/// wire record per element and so keeps distinct paths by construction.
+pub(super) fn repeated_message_fixture() -> (App, Vec<usize>) {
+    use prost::Message as _;
+    use prost_types::field_descriptor_proto::{Label, Type};
+    use prost_types::{
+        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+    };
+
+    use crate::decode::{decode, DescriptorContext};
+
+    let item_desc = DescriptorProto {
+        name: Some("Item".to_string()),
+        field: vec![FieldDescriptorProto {
+            name: Some("v".to_string()),
+            number: Some(1),
+            label: Some(Label::Optional as i32),
+            r#type: Some(Type::Int32 as i32),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let outer_desc = DescriptorProto {
+        name: Some("Outer".to_string()),
+        field: vec![FieldDescriptorProto {
+            name: Some("items".to_string()),
+            number: Some(1),
+            label: Some(Label::Repeated as i32),
+            r#type: Some(Type::Message as i32),
+            type_name: Some(".test.Item".to_string()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let file = FileDescriptorProto {
+        name: Some("test_repeated_message.proto".to_string()),
+        package: Some("test".to_string()),
+        message_type: vec![outer_desc, item_desc],
+        syntax: Some("proto3".to_string()),
+        ..Default::default()
+    };
+    let fds = FileDescriptorSet { file: vec![file] };
+
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let descriptor_path =
+        std::env::temp_dir().join(format!("protolens-tui-repeated-message-descriptor-{n}.pb"));
+    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
+    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
+    std::fs::remove_file(&descriptor_path).unwrap();
+
+    // items: field 1 (tag 0x0A, LEN), thrice, each wrapping
+    // Item { v: 5 | 6 | 7 } (field 1, tag 0x08, one-byte varint).
+    let blob = [
+        0x0Au8, 0x02, 0x08, 0x05, //
+        0x0A, 0x02, 0x08, 0x06, //
+        0x0A, 0x02, 0x08, 0x07,
+    ];
+    let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, false).unwrap();
+    let mut app = App::new(
+        decoded,
+        "test.pb",
+        PathBuf::from("test.pb"),
+        2,
+        ctx,
+        ThemeKind::Dark,
+        None,
+    );
+    app.splash = false;
+    app.term_width = 120;
+
+    // Walk the *live* child chain rather than scanning the arena:
+    // `App::new`'s startup `render_overrides` already resettled each
+    // `Item` to its natural type, and `splice_override` abandons the
+    // superseded nodes in place rather than removing them, so a plain
+    // scan would also pick up three orphans.
+    let root = app
+        .tree
+        .iter()
+        .position(|n| n.parent.is_none())
+        .expect("tree must have a root");
+    let mut items = Vec::new();
+    let mut c = app.tree[root].first_child;
+    while let Some(i) = c {
+        items.push(i);
+        c = app.tree[i].next_sibling;
+    }
+    assert_eq!(items.len(), 3, "fixture must contain 3 Item submessages");
+    (app, items)
+}
+
+/// `Outer { repeated int32 vals = 1; Inner tail = 2; int32 a = 3;
+/// int32 b = 4; }` — a packed run of 3 elements followed by three
+/// ordinary siblings. Returns `(app, elems, tail, a, b)`.
+///
+/// The shape spec 0184 is about: the run must occupy exactly one
+/// positional ordinal (`/1`) so that `tail`/`a`/`b` sit at `/2`/`/3`/
+/// `/4` whatever the run's element count and whatever its override
+/// state, while `a` and `b` — two consecutive *non-packed* scalars —
+/// must still get distinct ordinals of their own (the S1 trap).
+pub(super) fn packed_run_with_tail_fixture() -> (App, Vec<usize>, usize, usize, usize) {
+    use prost::Message as _;
+    use prost_types::field_descriptor_proto::{Label, Type};
+    use prost_types::{
+        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+    };
+
+    use crate::decode::{decode, DescriptorContext};
+
+    let scalar = |name: &str, number: i32| FieldDescriptorProto {
+        name: Some(name.to_string()),
+        number: Some(number),
+        label: Some(Label::Optional as i32),
+        r#type: Some(Type::Int32 as i32),
+        ..Default::default()
+    };
+    let inner_desc = DescriptorProto {
+        name: Some("Inner".to_string()),
+        field: vec![scalar("id", 3)],
+        ..Default::default()
+    };
+    let outer_desc = DescriptorProto {
+        name: Some("Outer".to_string()),
+        field: vec![
+            FieldDescriptorProto {
+                name: Some("vals".to_string()),
+                number: Some(1),
+                label: Some(Label::Repeated as i32),
+                r#type: Some(Type::Int32 as i32),
+                ..Default::default()
+            },
+            FieldDescriptorProto {
+                name: Some("tail".to_string()),
+                number: Some(2),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Message as i32),
+                type_name: Some(".test.Inner".to_string()),
+                ..Default::default()
+            },
+            scalar("a", 3),
+            scalar("b", 4),
+        ],
+        ..Default::default()
+    };
+    let file = FileDescriptorProto {
+        name: Some("test_packed_run_with_tail.proto".to_string()),
+        package: Some("test".to_string()),
+        message_type: vec![outer_desc, inner_desc],
+        syntax: Some("proto3".to_string()),
+        ..Default::default()
+    };
+    let fds = FileDescriptorSet { file: vec![file] };
+
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let descriptor_path =
+        std::env::temp_dir().join(format!("protolens-tui-packed-run-with-tail-{n}.pb"));
+    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
+    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
+    std::fs::remove_file(&descriptor_path).unwrap();
+
+    // vals: field 1 (tag 0x0A, LEN/packed), 3 one-byte elements;
+    // tail: field 2 (tag 0x12, LEN) wrapping Inner { id: 5 };
+    // a: field 3 (tag 0x18, varint) = 42; b: field 4 (tag 0x20) = 43.
+    let blob = [
+        0x0Au8, 0x03, 0x05, 0x06, 0x07, //
+        0x12, 0x02, 0x18, 0x05, //
+        0x18, 0x2A, //
+        0x20, 0x2B,
+    ];
+    let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, false).unwrap();
+    let mut app = App::new(
+        decoded,
+        "test.pb",
+        PathBuf::from("test.pb"),
+        2,
+        ctx,
+        ThemeKind::Dark,
+        None,
+    );
+    app.splash = false;
+    app.term_width = 120;
+
+    // The live children, in document order — not an arena scan: the
+    // startup `render_overrides` resettles `tail` to its natural type
+    // and `splice_override` abandons the superseded nodes in place.
+    let root = app
+        .tree
+        .iter()
+        .position(|node| node.parent.is_none())
+        .expect("tree must have a root");
+    let mut children = Vec::new();
+    let mut c = app.tree[root].first_child;
+    while let Some(i) = c {
+        children.push(i);
+        c = app.tree[i].next_sibling;
+    }
+    assert_eq!(
+        children.len(),
+        6,
+        "fixture must decode 3 packed elements plus tail, a, b"
+    );
+    let elems = children[..3].to_vec();
+    for &e in &elems {
+        assert!(
+            app.tree[e].span.packed_record_start.is_some(),
+            "the first three children must be the packed run"
+        );
+    }
+    (app, elems, children[3], children[4], children[5])
 }
 
 /// Builds the same `Outer { inner: Inner { id: 5 } }` fixture as

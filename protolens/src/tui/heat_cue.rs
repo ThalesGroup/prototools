@@ -227,6 +227,39 @@ impl App {
         display
     }
 
+    /// The byte range a node's heat cue is scored over.
+    ///
+    /// For an ordinary node that is its payload, tag and length prefix
+    /// stripped. For an element of a packed run it is the **whole
+    /// record's** payload (spec 0184 S6), not the element's own few
+    /// bytes: a packed run is one wire record and one unit of action —
+    /// `t` on any element overrides the record (`splice_override`'s
+    /// `siblings[0]` merge) and `current_type_key` resolves the
+    /// record's override, since every element shares the record's
+    /// positional path (S2). Scoring the element's own bytes would
+    /// compare a record-level type key against element-level content.
+    ///
+    /// Computed in O(1) from `packed_record_start` — the record's tag
+    /// offset — rather than by walking the run, so this stays cheap on
+    /// a run with many elements. It also means all N element lines
+    /// share a single `heat_caches` entry, keyed on the payload start.
+    pub(super) fn heat_scored_range(&self, idx: usize) -> std::ops::Range<usize> {
+        let node = &self.tree[idx].span;
+        let Some(record_start) = node.packed_record_start else {
+            return extract::message_payload_range(&self.blob, &node.raw_range, None);
+        };
+        // The element's own `raw_range` ends where the element does, so
+        // the record's end has to come from the record's own length
+        // varint (same reconstruction as `packed_record_extent`).
+        // Clamped, because a malformed length must not produce a range
+        // that later slices out of bounds.
+        let tag = prototext_core::helpers::parse_wiretag(&self.blob, record_start);
+        let len = prototext_core::helpers::parse_varint(&self.blob, tag.next_pos);
+        let start = len.next_pos.min(self.blob.len());
+        let end = (start + len.varint.unwrap_or(0) as usize).min(self.blob.len());
+        start..end
+    }
+
     /// The shared core of `heat_cue_for` and `recheck_pending_heat_
     /// states` (spec 0152 G6/G8, spec 0154 G4) — everything past the
     /// line-index-to-node/eligibility gating, keyed directly on node
@@ -235,10 +268,7 @@ impl App {
         if self.heat_states[idx].settled() {
             return heat_display(self.heat_states[idx]);
         }
-        let range = {
-            let node = &self.tree[idx].span;
-            extract::message_payload_range(&self.blob, &node.raw_range, node.packed_record_start)
-        };
+        let range = self.heat_scored_range(idx);
         let start = range.start;
         let current_key = self.current_type_key(idx);
 

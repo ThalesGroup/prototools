@@ -282,6 +282,148 @@ fn splice_override_on_an_incompatible_scalar_does_not_panic() {
     );
 }
 
+/// Spec 0184 G1: a packed run's elements must not be separately
+/// numbered children, because committing an override on the run
+/// collapses them into one node (`splice_override`'s `siblings[0]`
+/// merge) — which used to renumber every later sibling and silently
+/// re-point any path recorded before the commit.
+#[test]
+fn overriding_a_packed_run_does_not_renumber_later_siblings() {
+    let (mut app, elems, tail, _a, _b) = packed_run_with_tail_fixture();
+
+    // The paths a user's override entries would have recorded, before
+    // the packed run is touched at all.
+    let before: Vec<String> = [tail, _a, _b]
+        .iter()
+        .map(|&i| app.positional_path(i))
+        .collect();
+    assert_eq!(before, ["/2", "/3", "/4"]);
+    for (&idx, path) in [tail, _a, _b].iter().zip(&before) {
+        assert_eq!(
+            app.resolve_path(path),
+            Some(idx),
+            "precondition: {path} designates the node it was taken from"
+        );
+    }
+
+    app.override_target = Some(elems[0]);
+    app.splice_override(elems[0], None, false, None)
+        .expect("raw override on a packed element must succeed");
+
+    for (&idx, path) in [tail, _a, _b].iter().zip(&before) {
+        assert_eq!(
+            app.resolve_path(path),
+            Some(idx),
+            "a path recorded before the override must still designate \
+             the same node afterwards"
+        );
+        assert_eq!(app.positional_path(idx), *path);
+    }
+}
+
+/// Spec 0184 test plan, "ordinal stability across override state": the
+/// whole path map is identical before an override on a packed run,
+/// while it is active, and after deactivating it. This is the property
+/// the previous test checks pointwise, asserted over every live node
+/// and across the full activate/deactivate cycle — the direction that
+/// used to shift ordinals *back*.
+#[test]
+fn packed_run_ordinals_are_stable_across_the_override_lifecycle() {
+    let (mut app, elems, tail, a, b) = packed_run_with_tail_fixture();
+
+    let path_map = |app: &App| -> Vec<(usize, String)> {
+        let root = app
+            .tree
+            .iter()
+            .position(|n| n.parent.is_none())
+            .expect("tree must have a root");
+        let mut out = Vec::new();
+        let mut cur = Some(root);
+        while let Some(i) = cur {
+            out.push((i, app.positional_path(i)));
+            cur = app.tree[i].doc_next;
+        }
+        out
+    };
+
+    let baseline = path_map(&app);
+    let watched: Vec<String> = [tail, a, b]
+        .iter()
+        .map(|&i| app.positional_path(i))
+        .collect();
+
+    let origin = OverrideOrigin::Path {
+        path: app.positional_path(elems[0]),
+    };
+    app.overrides.activate(origin.clone(), None);
+    app.render_overrides(app.first_node);
+    let while_active: Vec<String> = [tail, a, b]
+        .iter()
+        .map(|&i| app.positional_path(i))
+        .collect();
+    assert_eq!(while_active, watched, "ordinals must not move on activate");
+
+    let entry_idx = app
+        .overrides
+        .entries()
+        .iter()
+        .position(|e| e.origin == origin)
+        .expect("the entry must exist");
+    app.overrides.toggle_active(entry_idx);
+    app.render_overrides(app.first_node);
+    let after: Vec<String> = [tail, a, b]
+        .iter()
+        .map(|&i| app.positional_path(i))
+        .collect();
+    assert_eq!(after, watched, "ordinals must not move back on deactivate");
+
+    // The nodes that were live at the start are still live, still in
+    // document order, and still at the same paths.
+    let final_map = path_map(&app);
+    let baseline_paths: HashMap<usize, String> = baseline.into_iter().collect();
+    for (idx, path) in final_map {
+        if let Some(before) = baseline_paths.get(&idx) {
+            assert_eq!(&path, before, "node {idx} changed path");
+        }
+    }
+}
+
+/// Spec 0184 S5: `positional_path`'s backward walk and
+/// `render_overrides_inner`'s forward ordinal counter are two
+/// independent implementations of the same rule, and a divergence
+/// between them fails *silently* — an override stored under one path
+/// and looked up under another.
+///
+/// Asserted end-to-end: an entry registered under the path
+/// `positional_path` computes for a node *after* a packed run must be
+/// found and applied by the walk, which reaches that node only through
+/// `child_path` plus its own ordinal counter.
+#[test]
+fn the_forward_and_backward_ordinal_walks_agree_across_a_packed_run() {
+    let (mut app, _elems, tail, _a, _b) = packed_run_with_tail_fixture();
+
+    let tail_path = app.positional_path(tail);
+    assert_eq!(tail_path, "/2");
+    app.overrides.activate(
+        OverrideOrigin::Path {
+            path: tail_path.clone(),
+        },
+        Some("test.Outer".to_string()),
+    );
+    app.render_overrides(app.first_node);
+
+    assert_eq!(
+        app.tree[tail]
+            .rendered_as
+            .as_ref()
+            .map(|(target, _)| target.clone()),
+        Some(Some(Some("test.Outer".to_string()))),
+        "the walk must have reached {tail_path} and applied its entry — \
+         if it did not, the forward counter disagrees with \
+         `positional_path`"
+    );
+}
+
 /// Spec 0143 regression (2026-07-18 feedback): overriding a
 /// varint-wire-framed field to an incompatible primitive type (any
 /// `Kind::Double`/`Float`/`Fixed32`/`Fixed64`/`String`/`Bytes`/

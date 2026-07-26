@@ -4,6 +4,29 @@
 
 use super::*;
 
+/// Whether two *adjacent* sibling spans belong to the same packed wire
+/// record (spec 0184 S1) — the single definition of the record boundary
+/// that positional-path ordinals are counted over. Shared by
+/// `sibling_position` (backward walk), `render_overrides_inner`'s
+/// forward ordinal counter, and `nth_child`'s resolution, so the three
+/// cannot drift apart.
+///
+/// Note the shape: this is deliberately **not**
+/// `a.packed_record_start == b.packed_record_start`. Two adjacent
+/// ordinary scalars both carry `None`, and that comparison would fuse
+/// them into one ordinal — renumbering nearly every path in nearly every
+/// document. `None` means "not part of a packed record", never "the same
+/// record as".
+pub(super) fn same_packed_record(
+    a: &prototext_core::serialize::render_text::NodeSpan,
+    b: &prototext_core::serialize::render_text::NodeSpan,
+) -> bool {
+    match (a.packed_record_start, b.packed_record_start) {
+        (Some(x), Some(y)) => x == y,
+        _ => false,
+    }
+}
+
 impl App {
     /// Whether `idx` is a bracketed node — has its own distinct header
     /// *and* footer line, so it's foldable and carries a fold marker.
@@ -438,11 +461,21 @@ impl App {
     /// children (or among root-level siblings, if `idx` has no parent —
     /// root-level nodes are sibling-linked despite having no `parent`, see
     /// D16), in document order (spec 0113 D25).
+    ///
+    /// Ordinals count wire *records*, not nodes (spec 0184 S2): a packed
+    /// run's N element `NodeSpan`s (spec 0115) are one record, so they
+    /// all share one ordinal and the sibling after the run is numbered
+    /// one past it, whatever N is. Without this, applying an override to
+    /// a run — which collapses it to a single node
+    /// (`splice_override`'s `siblings[0]` merge) — would renumber every
+    /// later sibling and silently re-point paths recorded beforehand.
     pub(super) fn sibling_position(&self, idx: usize) -> usize {
         let mut pos = 1;
         let mut cur = idx;
         while let Some(prev) = self.tree[cur].prev_sibling {
-            pos += 1;
+            if !same_packed_record(&self.tree[prev].span, &self.tree[cur].span) {
+                pos += 1;
+            }
             cur = prev;
         }
         pos

@@ -333,7 +333,7 @@ fn manage_pane_z_single_candidate_resolves_without_cursor_match() {
 /// instead of repeating the identical ambiguous outcome.
 #[test]
 fn manage_pane_z_ambiguous_candidates_advance_on_repeated_press() {
-    let (mut app, items) = repeated_scalar_fixture();
+    let (mut app, items) = repeated_message_fixture();
     app.manage_focus = true;
     app.manage_open = true;
 
@@ -350,7 +350,7 @@ fn manage_pane_z_ambiguous_candidates_advance_on_repeated_press() {
         .expect("root node must exist");
     app.cursor = outside;
 
-    // FqdnField -> Path: all 3 packed elements derive distinct Path
+    // FqdnField -> Path: all 3 Item submessages derive distinct Path
     // origins, and the cursor isn't on any of them -> ambiguous.
     app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
     assert_eq!(app.message, "z: pick an override target (<-/->)");
@@ -382,7 +382,7 @@ fn manage_pane_z_ambiguous_candidates_advance_on_repeated_press() {
 /// it) and resolves via the cursor-match branch.
 #[test]
 fn manage_pane_z_ambiguous_then_resolved_via_cursor_move() {
-    let (mut app, items) = repeated_scalar_fixture();
+    let (mut app, items) = repeated_message_fixture();
     app.manage_focus = true;
     app.manage_open = true;
 
@@ -425,7 +425,7 @@ fn manage_pane_z_ambiguous_then_resolved_via_cursor_move() {
 /// treating it as "cursor unchanged" and advancing past it.
 #[test]
 fn manage_pane_z_down_then_up_round_trip_counts_as_movement() {
-    let (mut app, items) = repeated_scalar_fixture();
+    let (mut app, items) = repeated_message_fixture();
     app.manage_focus = true;
     app.manage_open = true;
 
@@ -803,7 +803,7 @@ fn manage_pane_d_deletes_highlighted_entry() {
 /// deactivating any other entry sharing its origin.
 #[test]
 fn manage_pane_shift_down_moves_and_activates_destination() {
-    let (mut app, items) = repeated_scalar_fixture();
+    let (mut app, items) = repeated_message_fixture();
     app.manage_focus = true;
     app.manage_open = true;
 

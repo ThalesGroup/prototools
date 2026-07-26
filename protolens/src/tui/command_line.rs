@@ -696,13 +696,22 @@ impl App {
     }
 
     /// `idx`'s `pos`-th child (1-based, document order) — the sibling-chain
-    /// counterpart to `sibling_position`.
+    /// counterpart to `sibling_position`, and like it counting wire
+    /// *records* rather than nodes (spec 0184 S3). For a packed run this
+    /// returns the run's **first** element, which is the node
+    /// `splice_override` already redirects every element of the run to,
+    /// i.e. the node that can actually be acted upon.
     pub(super) fn nth_child(&self, idx: usize, pos: usize) -> Option<usize> {
-        let mut cur = self.tree[idx].first_child;
-        for _ in 1..pos {
-            cur = cur.and_then(|c| self.tree[c].next_sibling);
+        let mut cur = self.tree[idx].first_child?;
+        let mut seen = 1;
+        while seen < pos {
+            let next = self.tree[cur].next_sibling?;
+            if !navigation::same_packed_record(&self.tree[cur].span, &self.tree[next].span) {
+                seen += 1;
+            }
+            cur = next;
         }
-        cur
+        Some(cur)
     }
 
     /// Inverse of `positional_path`: resolves a canonical `/1/2/3`-style

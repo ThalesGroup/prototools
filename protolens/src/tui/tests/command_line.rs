@@ -437,9 +437,63 @@ fn tab_completes_type_as_fqdn_argument() {
     assert_eq!(app.command_buffer.as_deref(), Some("type-as test.Inner"));
 }
 
+/// Spec 0184 S1, the trap: ordinals count wire *records*, so the
+/// record test must not be `a.packed_record_start ==
+/// b.packed_record_start` — two adjacent ordinary scalars both carry
+/// `None`, and that comparison would fuse them into a single ordinal,
+/// renumbering nearly every path in nearly every document.
+///
+/// `a` and `b` here are consecutive non-packed scalar siblings and must
+/// keep distinct ordinals, `/3` and `/4`.
+#[test]
+fn two_consecutive_scalar_siblings_keep_distinct_ordinals() {
+    let (app, _elems, _tail, a, b) = packed_run_with_tail_fixture();
+
+    let a_path = app.positional_path(a);
+    let b_path = app.positional_path(b);
+    assert_eq!(a_path, "/3");
+    assert_eq!(b_path, "/4");
+    assert_ne!(a_path, b_path);
+    assert_eq!(app.resolve_path(&a_path), Some(a));
+    assert_eq!(app.resolve_path(&b_path), Some(b));
+}
+
+/// Spec 0184 S7: `resolve_path` is no longer an identity inverse of
+/// `positional_path`, because a packed run's N elements share the
+/// record's one path. The invariant it replaces the identity with is
+/// stronger, not weaker — resolving a path always yields **the node
+/// that can be acted upon**, which for a run is its leader, exactly the
+/// node `splice_override` already redirects every element to.
+#[test]
+fn resolve_path_yields_the_actionable_node_for_a_packed_run() {
+    let (app, elems, tail, _a, _b) = packed_run_with_tail_fixture();
+
+    let run_path = app.positional_path(elems[0]);
+    assert_eq!(run_path, "/1");
+    for &e in &elems {
+        assert_eq!(
+            app.positional_path(e),
+            run_path,
+            "every element of the run shares the record's path"
+        );
+        assert_eq!(
+            app.resolve_path(&app.positional_path(e)),
+            Some(elems[0]),
+            "resolving it yields the run's leader, not the element"
+        );
+    }
+
+    // Everything that is not a packed element still round-trips as an
+    // identity.
+    assert_eq!(app.resolve_path(&app.positional_path(tail)), Some(tail));
+}
+
 /// Spec 0117 §4: `resolve_path` is the inverse of `positional_path`
 /// for every node reachable from the root, and `None` for a path that
-/// doesn't resolve against the current tree.
+/// doesn't resolve against the current tree. Spec 0184 S7 restates
+/// this for packed elements (see
+/// `resolve_path_yields_the_actionable_node_for_a_packed_run`); this
+/// fixture has none, so the plain identity still holds here.
 #[test]
 fn resolve_path_is_the_inverse_of_positional_path() {
     let (app, inner_idx, id_idx) = type_as_fixture();

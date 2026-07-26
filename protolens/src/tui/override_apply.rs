@@ -1246,8 +1246,19 @@ impl App {
         let initial_child_owed = child_owed;
         let mut child = self.tree[idx].first_child;
         let mut ordinal = 0usize;
+        let mut prev_child: Option<usize> = None;
         while let Some(c) = child {
-            ordinal += 1;
+            // Spec 0184 S4: the forward counterpart of
+            // `sibling_position`'s backward walk — ordinals count wire
+            // records, so a packed run's elements all share the ordinal
+            // its first element opened. Both directions go through
+            // `same_packed_record` so they cannot drift.
+            if !prev_child.is_some_and(|p| {
+                navigation::same_packed_record(&self.tree[p].span, &self.tree[c].span)
+            }) {
+                ordinal += 1;
+            }
+            prev_child = Some(c);
             // Recurse into every node actually rendered as message/group
             // (`NodeSpan::is_message`) — the set of nodes that can carry
             // nested overridable children at all (spec 0119) — plus the
