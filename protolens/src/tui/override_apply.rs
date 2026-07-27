@@ -17,8 +17,7 @@ use prototext_core::serialize::render_text::NodeSpan;
 /// `render_overrides_inner`'s `patch_scope` doc comment for why a patch
 /// can be nested inside another, not-yet-materialized one.
 pub(super) enum LinePatchTarget {
-    /// A range in `self.lines`/`self.line_styles` as they stood before
-    /// this batch began.
+    /// A range in `self.lines` as it stood before this batch began.
     Original(Range<usize>),
     /// `(parent_patch_index, local_range_within_that_patch's_own_lines)`.
     Nested(usize, Range<usize>),
@@ -46,7 +45,6 @@ pub(super) struct LinePatch {
     pub(super) global_start: usize,
     pub(super) children_base_shift: isize,
     pub(super) lines: Vec<String>,
-    pub(super) styles: Vec<LineStyles>,
 }
 
 /// Spec 0185 S3: one node's complete rendering under a candidate type,
@@ -56,7 +54,6 @@ pub(super) struct LinePatch {
 /// preview and the commit byte-identical (G3).
 pub(super) struct RenderedAs {
     pub(super) lines: Vec<String>,
-    pub(super) line_styles: Vec<LineStyles>,
     /// Discarded by the preview (spec 0185 N6: overlay rows have no
     /// identity); consumed by `splice_override` to build the new subtree.
     pub(super) spans: Vec<NodeSpan>,
@@ -239,9 +236,14 @@ pub(super) fn trunc_shape_for(field_type: Option<Type>, wire_type: u32) -> Trunc
 /// where the elided content would have been, or after the value line for
 /// a `string`/`bytes`/packed target, which has no brace. Insertion shifts
 /// every later line, so span text ranges are corrected accordingly.
+///
+/// Spec 0187 S2: the marker carries no highlighting because `window_text`
+/// blanks it before the parser ever sees it — `...` is not in the
+/// prototext grammar, and now that highlighting happens at draw time
+/// there is no longer a "colorize first, splice the marker after"
+/// ordering to hide behind.
 fn insert_truncation_marker(
     lines: &mut Vec<String>,
-    styles: &mut Vec<LineStyles>,
     spans: &mut Vec<NodeSpan>,
     indent_size: usize,
 ) {
@@ -260,13 +262,11 @@ fn insert_truncation_marker(
     let marker = format!("{}...", " ".repeat(indent));
     if replacing {
         lines[at] = marker;
-        styles[at] = Vec::new();
         // Leaf spans confined to this one line only — an enclosing
         // message's span spills past it and must survive.
         spans.retain(|s| !(s.text_range.start >= at && s.text_range.end <= at + 1));
     } else {
         lines.insert(at, marker);
-        styles.insert(at, Vec::new());
         for s in spans.iter_mut() {
             if s.text_range.start >= at {
                 s.text_range.start += 1;
@@ -1546,7 +1546,47 @@ impl App {
                 self.render_overrides_inner(c, child_owed, &c_path, child_scope);
                 child_owed += self.pending_shift - before;
             } else if child_owed != 0 {
-                Self::shift_span(&mut self.tree[c].span, child_owed);
+                // `c`'s *whole subtree* owes the correction, not just `c`
+                // itself — and the subtree has to be shifted here because
+                // the recursion above is the only thing that would
+                // otherwise reach it, and pruning just decided not to.
+                //
+                // This is what spec 0183 G1's gate silently changed. The
+                // gate used to be `span.is_message || ...`, so the walk
+                // entered every interior node and the carried-down
+                // correction reached every descendant; a child that fell
+                // through to this arm was a scalar, and a scalar has no
+                // descendants, so shifting `c` alone was complete. Once
+                // the gate became "can this subtree's *rendering*
+                // change?", the arm started catching whole message
+                // subtrees whose rendering is fixed but whose line
+                // numbers still move, and their interiors were left at
+                // pre-splice coordinates. Nothing downstream notices:
+                // `line_to_node` is rebuilt *from* these ranges, so the
+                // map faithfully records the wrong lines and the G3
+                // equivalence check agrees with itself.
+                //
+                // A subtree is contiguous in doc order, so this is a
+                // `doc_next` run from `c` to its deepest `last_child` —
+                // the same walk, and the same contiguity assumption, as
+                // `finalize_override_batch`'s pass 2. Summed over the
+                // pruned siblings of a batch it is O(nodes after the
+                // first splice), which that pass already costs and which
+                // pass 1's re-mapping already costs unconditionally, so
+                // the pruning keeps the saving it was actually for: not
+                // resolving an override and a path per node.
+                let mut sub_last = c;
+                while let Some(lc) = self.tree[sub_last].last_child {
+                    sub_last = lc;
+                }
+                let mut cur = Some(c);
+                while let Some(n) = cur {
+                    Self::shift_span(&mut self.tree[n].span, child_owed);
+                    if n == sub_last {
+                        break;
+                    }
+                    cur = self.tree[n].doc_next;
+                }
             }
             child = self.tree[c].next_sibling;
         }
@@ -1707,7 +1747,107 @@ impl App {
         // deliberate loss of self-healing.
         #[cfg(test)]
         if self.verify_repair {
+            self.assert_spans_agree_with_text();
             self.assert_repair_matches_full_rebuild();
+        }
+    }
+
+    /// The line ranges themselves have to make sense — asserted against
+    /// the tree's own shape and against the rendered text, and
+    /// deliberately never against `line_to_node`.
+    ///
+    /// `assert_repair_matches_full_rebuild` structurally cannot see a
+    /// wrong `text_range`, and that is worth being explicit about
+    /// because it looks like a total check and is not: it *derives* its
+    /// reference `line_to_node` from `text_range`, so a corrupted range
+    /// corrupts the reference and the incremental repair identically,
+    /// and the comparison succeeds. It proves the map agrees with the
+    /// tree; it says nothing about whether the tree agrees with the
+    /// document.
+    ///
+    /// A whole bug class lives in that gap: a splice's line-count delta
+    /// failing to reach part of the document, leaving every node there
+    /// at pre-splice coordinates. There is no panic and no failing
+    /// assertion — the fold handle, the heat cue and the fold extent
+    /// just attach to a neighboring line, and the reported symptom is
+    /// "the marker is on the closing brace".
+    ///
+    /// So this asserts the things that are true of a correct document
+    /// however the tree was arrived at:
+    ///
+    ///  * doc order really is line order;
+    ///  * a child's lines lie strictly inside its parent's, and a
+    ///    parent's closing line is exactly the line after its last
+    ///    child's last line;
+    ///  * a node spanning more than one line closes on a line that is
+    ///    genuinely a closing brace, indented exactly as the line it
+    ///    opened on.
+    ///
+    /// The last one is the only check tied to the text rather than to
+    /// the tree, and it is what catches a shift that is wrong
+    /// *consistently* — which the structural checks alone would accept.
+    #[cfg(test)]
+    fn assert_spans_agree_with_text(&self) {
+        let n_lines = self.lines.len();
+        let indent_of = |l: usize| self.lines[l].len() - self.lines[l].trim_start().len();
+        let mut prev: Option<usize> = None;
+        let mut cur = Some(self.first_node);
+        while let Some(c) = cur {
+            let r = self.tree[c].span.text_range.clone();
+            assert!(
+                r.start < r.end && r.end <= n_lines,
+                "node {c} spans {r:?}, outside the {n_lines}-line document"
+            );
+            if let Some(p) = prev {
+                assert!(
+                    r.start > p,
+                    "node {c} starts at line {} but the previous node in \
+                     document order starts at {p}: doc order must be line order",
+                    r.start
+                );
+            }
+            prev = Some(r.start);
+
+            if let Some(p) = self.tree[c].parent {
+                let pr = self.tree[p].span.text_range.clone();
+                assert!(
+                    pr.start < r.start && r.end < pr.end,
+                    "node {c}'s lines {r:?} are not strictly inside its \
+                     parent {p}'s {pr:?} — the usual cause is a splice \
+                     whose line-count delta reached one of them and not \
+                     the other"
+                );
+            }
+
+            if r.end - 1 > r.start {
+                let open = &self.lines[r.start];
+                let code = open.split("  #@").next().unwrap_or(open).trim_end();
+                assert!(
+                    code.ends_with('{'),
+                    "node {c} spans {r:?}, so line {} is its opening line, \
+                     but that line reads {open:?}",
+                    r.start
+                );
+                let close = &self.lines[r.end - 1];
+                assert!(
+                    close.trim_start().starts_with('}'),
+                    "node {c} spans {r:?}, so line {} is its closing line, \
+                     but that line reads {close:?}",
+                    r.end - 1
+                );
+                assert_eq!(
+                    indent_of(r.end - 1),
+                    indent_of(r.start),
+                    "node {c}'s closing line {} is indented differently from \
+                     its opening line {}: {:?} vs {:?}",
+                    r.end - 1,
+                    r.start,
+                    close,
+                    self.lines[r.start]
+                );
+            }
+
+            cur = self.tree[c].doc_next;
         }
     }
 
@@ -1776,9 +1916,8 @@ impl App {
     }
 
     /// Spec 0167: applies every patch collected during the current batch
-    /// to `self.lines`/`self.line_styles` in one pass, instead of one
-    /// `Vec::splice` per patch (each an O(document length) memmove — spec
-    /// 0160 N1).
+    /// to `self.lines` in one pass, instead of one `Vec::splice` per
+    /// patch (each an O(document length) memmove — spec 0160 N1).
     ///
     /// Patches form a tree, not a flat sequence: a `Nested` patch's
     /// content must be resolved into its parent's own content *before*
@@ -1788,8 +1927,8 @@ impl App {
     /// nesting happens at all. Resolving bottom-up like this keeps each
     /// individual merge bounded to the size of the patch's own content
     /// (not the whole document); only the single final merge against
-    /// `self.lines`/`self.line_styles` (for the top-level `Original`
-    /// patches) is O(document length), and it happens exactly once.
+    /// `self.lines` (for the top-level `Original` patches) is
+    /// O(document length), and it happens exactly once.
     pub(super) fn materialize_line_patches(&mut self) {
         if self.pending_line_patches.is_empty() {
             return;
@@ -1833,7 +1972,6 @@ impl App {
 
         let mut patches: Vec<Option<LinePatch>> = raw_patches.into_iter().map(Some).collect();
         let old_lines = std::mem::take(&mut self.lines);
-        let old_line_styles = std::mem::take(&mut self.line_styles);
         // Spec 0188 S2: the two line maps ride along with `lines` through
         // the same merge, so a splice's effect on them is the array
         // operation it already is for the text. The replaced range
@@ -1846,7 +1984,6 @@ impl App {
         let old_footers = std::mem::take(&mut self.footer_line_to_node);
         let old_len = old_lines.len();
         let mut new_lines = Vec::with_capacity(old_len);
-        let mut new_line_styles = Vec::with_capacity(old_len);
         let mut new_headers = Vec::with_capacity(old_len);
         let mut new_footers = Vec::with_capacity(old_len);
 
@@ -1854,18 +1991,16 @@ impl App {
         // them. `extend_from_slice` on a `Vec<String>` *clones* every
         // element — one `malloc` plus one `memcpy` per line, across the
         // whole document, to apply a patch that replaces a handful of
-        // them; `Vec<LineStyles>` is worse still, each element being
-        // itself a `Vec`. Moving 24-byte `String` headers instead leaves
-        // this pass touching the heap only for the lines the batch
-        // actually replaces. It is the only one of the batch's passes
-        // that was doing per-line heap work.
+        // them. Moving 24-byte `String` headers instead leaves this pass
+        // touching the heap only for the lines the batch actually
+        // replaces. It is the only one of the batch's passes that was
+        // doing per-line heap work.
         //
         // Soundness rests on the sort above. `by_ref().take(range.start -
         // cursor)` would *underflow* on a patch sitting behind the
         // cursor, where the slicing version would at least have panicked;
         // the two asserts below keep both failure modes loud.
         let mut old_lines = old_lines.into_iter();
-        let mut old_styles = old_line_styles.into_iter();
         let mut old_headers = old_headers.into_iter();
         let mut old_footers = old_footers.into_iter();
         let mut cursor = 0usize;
@@ -1892,59 +2027,51 @@ impl App {
                 range.end
             );
             new_lines.extend(old_lines.by_ref().take(range.start - cursor));
-            new_line_styles.extend(old_styles.by_ref().take(range.start - cursor));
             new_headers.extend(old_headers.by_ref().take(range.start - cursor));
             new_footers.extend(old_footers.by_ref().take(range.start - cursor));
-            let (lines, styles) = Self::resolve_line_patch(&mut patches, &children_of, idx);
+            let lines = Self::resolve_line_patch(&mut patches, &children_of, idx);
             new_headers.resize(new_headers.len() + lines.len(), None);
             new_footers.resize(new_footers.len() + lines.len(), None);
             new_lines.extend(lines);
-            new_line_styles.extend(styles);
             // Discard the lines this patch replaces.
             for _ in range.start..range.end {
                 old_lines.next();
-                old_styles.next();
                 old_headers.next();
                 old_footers.next();
             }
             cursor = range.end;
         }
         new_lines.extend(old_lines);
-        new_line_styles.extend(old_styles);
         new_headers.extend(old_headers);
         new_footers.extend(old_footers);
         self.lines = new_lines;
-        self.line_styles = new_line_styles;
         self.line_to_node = new_headers;
         self.footer_line_to_node = new_footers;
     }
 
     /// Spec 0167: recursively resolves patch `idx` — splicing in every
     /// one of its own direct `Nested` children (themselves first
-    /// resolved the same way) — into a single flat
-    /// `(lines, line_styles)` pair. `patches[idx]` is taken (never
-    /// visited twice; every patch is either a `top_level` entry or
-    /// exactly one patch's `Nested` child, per `materialize_line_
-    /// patches`'s grouping pass).
+    /// resolved the same way) — into a single flat `lines` vector.
+    /// `patches[idx]` is taken (never visited twice; every patch is
+    /// either a `top_level` entry or exactly one patch's `Nested` child,
+    /// per `materialize_line_patches`'s grouping pass).
     fn resolve_line_patch(
         patches: &mut [Option<LinePatch>],
         children_of: &HashMap<usize, Vec<usize>>,
         idx: usize,
-    ) -> (Vec<String>, Vec<LineStyles>) {
-        let LinePatch { lines, styles, .. } = patches[idx]
+    ) -> Vec<String> {
+        let LinePatch { lines, .. } = patches[idx]
             .take()
             .expect("spec 0167: each patch is resolved at most once");
         let Some(children) = children_of.get(&idx) else {
-            return (lines, styles);
+            return lines;
         };
         let local_len = lines.len();
         let mut new_lines = Vec::with_capacity(local_len);
-        let mut new_styles = Vec::with_capacity(local_len);
         // Spec 0186 S1: the same consuming merge as `materialize_line_
         // patches`, for consistency of shape rather than for speed — this
         // one is bounded by the patch's own content, not by the document.
         let mut lines = lines.into_iter();
-        let mut styles = styles.into_iter();
         let mut cursor = 0usize;
         for &child_idx in children {
             let local_range = match &patches[child_idx].as_ref().unwrap().target {
@@ -1968,21 +2095,15 @@ impl App {
                 local_range.end
             );
             new_lines.extend(lines.by_ref().take(local_range.start - cursor));
-            new_styles.extend(styles.by_ref().take(local_range.start - cursor));
-            let (child_lines, child_styles) =
-                Self::resolve_line_patch(patches, children_of, child_idx);
-            new_lines.extend(child_lines);
-            new_styles.extend(child_styles);
+            new_lines.extend(Self::resolve_line_patch(patches, children_of, child_idx));
             // Discard the lines this child replaces.
             for _ in local_range.start..local_range.end {
                 lines.next();
-                styles.next();
             }
             cursor = local_range.end;
         }
         new_lines.extend(lines);
-        new_styles.extend(styles);
-        (new_lines, new_styles)
+        new_lines
     }
 
     /// Spec 0174: default for `App::override_preview_byte_budget` — the
@@ -2062,7 +2183,6 @@ impl App {
         let (idx, old_span, rendered) = self.render_node_as(idx, target.as_deref(), is_preview)?;
         let RenderedAs {
             lines: new_lines,
-            line_styles: new_line_styles,
             spans: new_spans,
             span_shift,
         } = rendered;
@@ -2105,8 +2225,8 @@ impl App {
         // own delta is folded in — `old_span.text_range` above is already
         // corrected for every earlier splice in this batch (spec 0160
         // G2), so subtracting this pre-increment value recovers the
-        // position `self.lines`/`self.line_styles` still have it at,
-        // since those buffers are no longer touched eagerly (see below).
+        // position `self.lines` still has it at, since that buffer is no
+        // longer touched eagerly (see below).
         let pending_shift_before = self.pending_shift;
         self.pending_shift += delta;
 
@@ -2141,7 +2261,7 @@ impl App {
         // Replace `idx`'s *whole* line range (header, interior, and
         // footer alike) — not just its interior, unlike the old
         // `apply_override`. Spec 0167: rather than eagerly
-        // `Vec::splice`-ing `self.lines`/`self.line_styles` here (an
+        // `Vec::splice`-ing `self.lines` here (an
         // O(document length) memmove *per splice*, dominating a batch
         // with many qualifying splices — spec 0160 N1), record a patch
         // and defer the actual buffer write to a single materialization
@@ -2204,7 +2324,6 @@ impl App {
             global_start,
             children_base_shift: self.pending_shift,
             lines: new_lines,
-            styles: new_line_styles,
         });
 
         // Translate the freshly built local tree (raw_range-relative
@@ -2479,7 +2598,7 @@ impl App {
         // same `(range, target)` must never be conflated, or confirming
         // an override could silently reuse a truncated preview render.
         let cache_key = (interior_range, target.map(str::to_string), is_preview);
-        let (mut new_lines, new_spans, new_style_hints) = match self.render_cache.get(&cache_key) {
+        let (mut new_lines, new_spans) = match self.render_cache.get(&cache_key) {
             Some(cached) => cached,
             None => {
                 let wrapper_desc = match field_type {
@@ -2513,8 +2632,7 @@ impl App {
                 let new_text = String::from_utf8(new_text)
                     .map_err(|e| format!("rendered text is not valid UTF-8: {e}"))?;
                 let new_lines: Vec<String> = new_text.lines().map(str::to_string).collect();
-                let new_style_hints = colorize::colorize(&new_text);
-                let value = (new_lines, new_spans, new_style_hints);
+                let value = (new_lines, new_spans);
                 self.render_cache.insert(cache_key, value.clone());
                 value
             }
@@ -2540,7 +2658,15 @@ impl App {
         // node its own rename (spec 0119 §G4), which must still show up
         // in place of that bare field number even though the node stays
         // raw.
-        let mut new_line_styles = colorize::hints_by_line(&new_lines, &new_style_hints);
+        //
+        // Spec 0187 S5: the text patch is all there is. There used to be
+        // a parallel `new_line_styles` to repair here, re-`colorize`-ing
+        // the patched header *in isolation* — the second of flaw D4's
+        // two unsound "highlight one line out of context" sites. Since
+        // highlighting is now computed per frame over the on-screen
+        // window (`render::window_styles_for`), which frames that window
+        // in synthetic braces before parsing it, that repair has no
+        // counterpart and is simply gone.
         let patched_header = match field_type {
             Some(ft) if ft != Type::Group => {
                 decode::patch_synthetic_field_name(&new_lines[0], &header_field_name)
@@ -2552,26 +2678,18 @@ impl App {
         };
         if let Some(patched) = patched_header {
             new_lines[0] = patched;
-            new_line_styles[0] =
-                colorize::hints_by_line(&new_lines[..1], &colorize::colorize(&new_lines[0]))
-                    .remove(0);
         }
 
         // Spec 0174 §S4: a truncated preview ends with a literal `...`,
         // so the user sees there is more. Done here, on the rendered
         // lines, rather than in `prototext-core`: `...` is not part of
-        // the prototext grammar, and doing it after `colorize()` has run
-        // means the highlighter never has to parse it. The line carries
-        // empty styles and no `NodeSpan`, so it is not selectable, not
-        // navigable, and not part of any span range.
+        // the prototext grammar. It carries no `NodeSpan`, so it is not
+        // selectable, not navigable, and not part of any span range;
+        // and per spec 0187 S2 the highlighter never sees it either,
+        // because `render::window_text` blanks it before parsing.
         let mut new_spans = new_spans;
         if truncated {
-            insert_truncation_marker(
-                &mut new_lines,
-                &mut new_line_styles,
-                &mut new_spans,
-                self.indent_size,
-            );
+            insert_truncation_marker(&mut new_lines, &mut new_spans, self.indent_size);
         }
 
         Ok((
@@ -2579,7 +2697,6 @@ impl App {
             old_span,
             RenderedAs {
                 lines: new_lines,
-                line_styles: new_line_styles,
                 spans: new_spans,
                 span_shift,
             },

@@ -28,8 +28,6 @@ use prototext_graph::score::{
 };
 use sha2::{Digest, Sha256};
 
-use crate::colorize::{self, SyntaxRole};
-
 // ── Errors ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -435,11 +433,6 @@ pub struct Decoded {
     /// from any `raw_range` coordinate to recover the caller's original
     /// (pre-wrap) numbering.
     pub wrapper_offset: usize,
-    /// Syntax-highlighting spans (spec 0116 §7), one entry per `lines`,
-    /// each holding that line's `(column range, role)` pairs — the
-    /// initial-load counterpart of `apply_override`'s per-splice
-    /// colorize pass (`protolens/src/tui.rs`).
-    pub style_hints: Vec<Vec<(std::ops::Range<usize>, SyntaxRole)>>,
     /// Score-descending, non-vetoed candidate types for the root's own
     /// payload range, as produced by the root-type inference sweep
     /// (spec 0168 G3). Empty whenever no sweep ran — `RootType::Named`,
@@ -855,17 +848,21 @@ pub fn render_resolved(
     let text = String::from_utf8(text)
         .map_err(|e| DecodeError::Schema(format!("rendered text is not valid UTF-8: {e}")))?;
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    let mut style_hints = colorize::hints_by_line(&lines, &colorize::colorize(&text));
     // Spec 0135 §G2: `register_wrapper`'s sole field is always named the
     // fixed placeholder `"_"` — patch in the real display name (the root
     // is always field `1` of the virtual encompassing message, wrapped
     // via `wrap_blob(1, ..)` above, and has no schema field name of its
     // own to show instead).
+    //
+    // Spec 0187 S5: the text patch is all there is. There is no longer a
+    // parallel `style_hints` to repair, so the single-line re-`colorize`
+    // that used to follow — one of flaw D4's two "highlight a line in
+    // isolation" sites, which is exactly the unsound primitive S3 exists
+    // to avoid — is simply gone. The patched line gets highlighted in
+    // its real context when it is next drawn.
     if wrapper_desc.is_some() {
         if let Some(patched) = patch_synthetic_field_name(&lines[0], "1") {
             lines[0] = patched;
-            style_hints[0] =
-                colorize::hints_by_line(&lines[..1], &colorize::colorize(&lines[0])).remove(0);
         }
     }
     let tree = build_tree(spans);
@@ -876,7 +873,6 @@ pub fn render_resolved(
         root_type,
         blob: wrapped_blob,
         wrapper_offset,
-        style_hints,
         root_candidates,
     })
 }

@@ -101,7 +101,6 @@ fn prefetch_fixture(n: usize) -> App {
         root_type: "google.protobuf.FileDescriptorProto".to_string(),
         blob,
         wrapper_offset: 0,
-        style_hints: Vec::new(),
         root_candidates: Vec::new(),
     };
     App::new(

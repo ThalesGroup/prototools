@@ -578,9 +578,9 @@ const HELP_TEXT: &[&str] = &[
 /// Spec 0185: the override selection pane's live preview, as a block of
 /// rendered lines standing in for the target's committed rows at draw
 /// time. It is *not* part of the document: `tree`, `lines`,
-/// `line_styles`, `line_to_node` and `visible_rows` are all untouched by
-/// it, which is what makes a preview cost only the (byte-bounded) decode
-/// and render of the target's own interior.
+/// `line_to_node` and `visible_rows` are all untouched by it, which is
+/// what makes a preview cost only the (byte-bounded) decode and render
+/// of the target's own interior.
 ///
 /// `first_row`/`covered_rows` are positions in `visible_rows`, computed
 /// once when the overlay is built. They stay valid because S5 locks
@@ -597,7 +597,6 @@ pub(super) struct PreviewOverlay {
     /// How many `visible_rows` entries that `text_range` covers.
     covered_rows: usize,
     lines: Vec<String>,
-    line_styles: Vec<LineStyles>,
 }
 
 /// Spec 0185 S2: one row of the main pane as actually drawn — either a
@@ -627,19 +626,24 @@ pub struct App {
     blob_path: PathBuf,
     /// Whether the main pane currently shows each line's trailing `#@ ...`
     /// annotation (spec 0133) — a pure *display* attribute, toggled by the
-    /// `a` key, decoupled from the underlying `lines`/`line_styles`, which
-    /// always carry full annotations regardless of this flag.
+    /// `a` key, decoupled from the underlying `lines`, which always carry
+    /// full annotations regardless of this flag.
     annotations: bool,
     /// Indentation step (spaces per nesting level) this session was decoded
     /// with — reused by `apply_override` (spec 0114 §5) so a splice
     /// re-render matches the rest of the document's own indentation.
     indent_size: usize,
     lines: Vec<String>,
-    /// Syntax-highlighting spans (spec 0116 §7), index-parallel to `lines`
-    /// — each entry holds that line's `(column range, role)` pairs.
-    /// Spliced in lockstep with `lines` by `apply_override`, so no
-    /// separate offset-shifting bookkeeping is needed.
-    line_styles: Vec<LineStyles>,
+    /// Spec 0187 S3: syntax hints for the rows drawn by the *current*
+    /// frame's `window`, in window order — recomputed each `render()`,
+    /// never retained across frames, never document-sized. Index `i` is
+    /// `window[i]`'s.
+    ///
+    /// It replaces a `Vec<LineStyles>` parallel to `lines`, which cost
+    /// one whole-document tree-sitter parse per load and per commit
+    /// (85% of a commit, measured) to produce data of which only the
+    /// ~50 rows on screen were ever read.
+    window_styles: Vec<LineStyles>,
     /// Resolved color theme (spec 0116 §9) — fixed for the session, never
     /// `ThemeKind::System` (resolved once in `main.rs` before `App::new`).
     theme: ThemeKind,
@@ -742,8 +746,8 @@ pub struct App {
     /// doc comment, and `render_overrides_inner`'s `patch_scope`
     /// parameter, for why a patch can be nested inside another,
     /// not-yet-materialized one. Always empty outside of an active
-    /// batch; drained and applied to `self.lines`/`self.line_styles` in
-    /// one pass by `finalize_override_batch`.
+    /// batch; drained and applied to `self.lines` in one pass by
+    /// `finalize_override_batch`.
     pending_line_patches: Vec<override_apply::LinePatch>,
     /// Spec 0186 S2: the lowest line index any patch in the current batch
     /// touches, in the batch-corrected frame `materialize_line_patches`
@@ -1261,7 +1265,7 @@ impl App {
             annotations: true,
             indent_size,
             lines: decoded.lines,
-            line_styles: decoded.style_hints,
+            window_styles: Vec::new(),
             theme,
             tree: decoded.tree,
             line_to_node,

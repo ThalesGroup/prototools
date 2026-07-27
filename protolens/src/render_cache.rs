@@ -2,15 +2,13 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Render cache: `(range, type) -> (text, spans, style hints)` (spec 0116
-//! §8) — a byte-bounded MRU cache, structurally identical to
+//! Render cache: `(range, type) -> (text, spans)` (spec 0116 §8) — a
+//! byte-bounded MRU cache, structurally identical to
 //! `override_pane::CandidateCache` (spec 0114 §6).
 
 use std::ops::Range;
 
 use prototext_core::serialize::render_text::NodeSpan;
-
-use crate::colorize::StyleHint;
 
 /// Key: the same `payload_range` `apply_override` already computes via
 /// `extract::message_payload_range`, plus the type it was rendered under
@@ -32,26 +30,25 @@ use crate::colorize::StyleHint;
 type RenderKey = (Range<usize>, Option<String>, bool);
 
 /// Value: everything `apply_override` derives from a fresh
-/// `decode_and_render_indexed` call plus the colorize pass (§7) — a
-/// cache hit skips *both* passes.
-type RenderValue = (Vec<String>, Vec<NodeSpan>, Vec<StyleHint>);
+/// `decode_and_render_indexed` call. Spec 0187 S4: no longer a third
+/// `Vec<StyleHint>` element — highlighting is recomputed per frame over
+/// the on-screen window only, so there is nothing render-scoped left to
+/// cache.
+type RenderValue = (Vec<String>, Vec<NodeSpan>);
 
 /// Approximate heap footprint of a cached render, for `RenderCache`'s
 /// byte budget — rendered lines' string bytes plus `new_spans.len() *
-/// size_of::<NodeSpan>()` plus `style_hints.len() *
-/// size_of::<StyleHint>()`, deliberately approximate (same
-/// "not correctness-sensitive" caveat as `CandidateCache::
-/// candidates_bytes`'s doc comment).
+/// size_of::<NodeSpan>()`, deliberately approximate (same "not
+/// correctness-sensitive" caveat as `CandidateCache::candidates_bytes`'s
+/// doc comment).
 fn render_bytes(value: &RenderValue) -> usize {
-    let (lines, spans, hints) = value;
+    let (lines, spans) = value;
     let lines_bytes: usize = lines.iter().map(String::len).sum();
-    lines_bytes
-        + spans.len() * std::mem::size_of::<NodeSpan>()
-        + hints.len() * std::mem::size_of::<StyleHint>()
+    lines_bytes + spans.len() * std::mem::size_of::<NodeSpan>()
 }
 
 /// Session-scoped, byte-bounded MRU cache of `(range, type) -> (lines,
-/// spans, style hints)` renders (spec 0116 §8/Goal 10) — no invalidation
+/// spans)` renders (spec 0116 §8/Goal 10) — no invalidation
 /// beyond ordinary MRU eviction needed, since a cached entry's key is
 /// tied to immutable input (`App::blob`'s bytes never change once a
 /// document is loaded).
@@ -103,10 +100,9 @@ impl RenderCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::colorize::SyntaxRole;
 
     fn value(line: &str) -> RenderValue {
-        (vec![line.to_string()], Vec::new(), Vec::new())
+        (vec![line.to_string()], Vec::new())
     }
 
     #[test]
@@ -150,20 +146,5 @@ mod tests {
         let mut cache = RenderCache::new(1);
         cache.insert((0..10, None, false), value("way too big for the budget"));
         assert!(cache.get(&(0..10, None, false)).is_some());
-    }
-
-    #[test]
-    fn render_cache_stores_style_hints() {
-        let mut cache = RenderCache::new(1_000_000);
-        let hints = vec![StyleHint {
-            range: 0..4,
-            role: SyntaxRole::Attribute,
-        }];
-        cache.insert(
-            (0..10, None, false),
-            (vec!["flag".to_string()], Vec::new(), hints.clone()),
-        );
-        let (_, _, cached_hints) = cache.get(&(0..10, None, false)).unwrap();
-        assert_eq!(cached_hints, hints);
     }
 }

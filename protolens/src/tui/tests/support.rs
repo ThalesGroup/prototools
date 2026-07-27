@@ -17,7 +17,6 @@ pub(super) fn empty_app() -> App {
         root_type: "google.protobuf.Empty".to_string(),
         blob: Vec::new(),
         wrapper_offset: 0,
-        style_hints: Vec::new(),
         root_candidates: Vec::new(),
     };
     App::new(
@@ -75,7 +74,6 @@ pub(super) fn message_node_app_with_root_candidates(
         // splices this node's contents at pane-open time.
         blob: vec![0x22, 0x08, 0, 0, 0, 0, 0, 0, 0, 0],
         wrapper_offset: 0,
-        style_hints: vec![Vec::new(); 2],
         root_candidates,
     };
     App::new(
@@ -160,7 +158,6 @@ pub(super) fn sibling_leaves_app(texts: &[&str]) -> App {
         root_type: "google.protobuf.FileDescriptorProto".to_string(),
         blob: Vec::new(),
         wrapper_offset: 0,
-        style_hints: Vec::new(),
         root_candidates: Vec::new(),
     };
     App::new(

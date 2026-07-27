@@ -13,7 +13,6 @@ fn q_confirmation_is_cancelled_by_any_other_key() {
         root_type: "google.protobuf.Empty".to_string(),
         blob: Vec::new(),
         wrapper_offset: 0,
-        style_hints: Vec::new(),
         root_candidates: Vec::new(),
     };
     let mut app = App::new(
@@ -57,7 +56,6 @@ fn ctrl_z_sets_should_suspend_without_disturbing_quit_confirm() {
         root_type: "google.protobuf.Empty".to_string(),
         blob: Vec::new(),
         wrapper_offset: 0,
-        style_hints: Vec::new(),
         root_candidates: Vec::new(),
     };
     let mut app = App::new(
@@ -782,7 +780,6 @@ fn default_export_descriptor_path_falls_back_to_the_numeric_range_when_unresolva
         root_type: "google.protobuf.FileDescriptorProto".to_string(),
         blob,
         wrapper_offset: 0,
-        style_hints: vec![Vec::new(); 2],
         root_candidates: Vec::new(),
     };
     let mut app = App::new(

@@ -808,7 +808,6 @@ impl App {
                     first_row,
                     covered_rows,
                     lines: rendered.lines,
-                    line_styles: rendered.line_styles,
                 });
             }
             // Spec 0185 S6: a candidate that fails to render leaves the

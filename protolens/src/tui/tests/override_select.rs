@@ -125,7 +125,6 @@ fn t_opens_the_override_pane_on_an_unresolved_message_node() {
         // this node's contents at pane-open time.
         blob: vec![0x0A, 0x00],
         wrapper_offset: 0,
-        style_hints: vec![Vec::new(); 2],
         root_candidates: Vec::new(),
     };
     let mut app = App::new(
@@ -182,7 +181,6 @@ fn t_opens_the_override_pane_on_a_varint_scalar_field() {
         // time.
         blob: vec![0x08, 0x01],
         wrapper_offset: 0,
-        style_hints: vec![Vec::new()],
         root_candidates: Vec::new(),
     };
     let mut app = App::new(
@@ -347,10 +345,6 @@ fn t_opens_the_override_pane_on_a_length_delimited_scalar_field() {
         root_type: "test.Scalar".to_string(),
         blob: vec![0x0A, 0x02, b'h', b'i'],
         wrapper_offset: 0,
-        // One entry per `lines` (spec 0132's live preview now
-        // splices this node at pane-open time, which requires
-        // `line_styles` to stay index-aligned with `lines`).
-        style_hints: vec![Vec::new(); 1],
         root_candidates: Vec::new(),
     };
     let mut app = App::new(
@@ -1540,7 +1534,6 @@ fn preview_override_highlight_touches_no_committed_state() {
 
     let tree_len = app.tree.len();
     let lines = app.lines.clone();
-    let line_styles = app.line_styles.clone();
     let line_to_node = app.line_to_node.clone();
     let visible_rows = app.visible_rows.clone();
     let folded = app.folded.clone();
@@ -1553,7 +1546,6 @@ fn preview_override_highlight_touches_no_committed_state() {
         assert!(app.preview_overlay.is_some(), "candidate {i} must preview");
         assert_eq!(app.tree.len(), tree_len);
         assert_eq!(app.lines, lines);
-        assert_eq!(app.line_styles, line_styles);
         assert_eq!(app.line_to_node, line_to_node);
         assert_eq!(app.visible_rows, visible_rows);
         assert_eq!(app.folded, folded);
@@ -1563,17 +1555,21 @@ fn preview_override_highlight_touches_no_committed_state() {
     assert!(app.preview_overlay.is_none());
     assert_eq!(app.tree.len(), tree_len);
     assert_eq!(app.lines, lines);
-    assert_eq!(app.line_styles, line_styles);
     assert_eq!(app.line_to_node, line_to_node);
     assert_eq!(app.visible_rows, visible_rows);
     assert_eq!(app.folded, folded);
 }
 
-/// Spec 0185 G3, the acceptance criterion: the overlay's lines and
-/// styles must be exactly what a real `splice_override` of the same
-/// node under the same candidate produces. This is the test that
-/// catches an S3 factoring which dropped the header patch, the
-/// truncation marker, or the indentation level.
+/// Spec 0185 G3, the acceptance criterion: the overlay's lines must be
+/// exactly what a real `splice_override` of the same node under the
+/// same candidate produces. This is the test that catches an S3
+/// factoring which dropped the header patch, the truncation marker, or
+/// the indentation level.
+///
+/// Spec 0187 S3 makes this the whole of the criterion: highlighting is
+/// a pure function of the drawn rows' text, so equal lines *are* equal
+/// colors. There is no longer a separate style vector that could agree
+/// or disagree independently of the text.
 #[test]
 fn overlay_lines_match_the_committed_splice() {
     for candidate in ["test.Inner", "test.Outer"] {
@@ -1598,10 +1594,6 @@ fn overlay_lines_match_the_committed_splice() {
             app_b.lines[committed.clone()],
             "{candidate}: the overlay must render the committed splice's own lines"
         );
-        assert_eq!(
-            overlay.line_styles, app_b.line_styles[committed],
-            "{candidate}: ...with the committed splice's own styles"
-        );
     }
 }
 
@@ -1620,7 +1612,6 @@ fn display_row_map_holds_at_the_substitution_boundaries() {
             first_row: 4,
             covered_rows: 3,
             lines: vec!["x".to_string(); overlay_len],
-            line_styles: vec![Vec::new(); overlay_len],
         });
         assert_eq!(app.composed_row_count(), 10 - 3 + overlay_len);
         assert!(matches!(app.display_row(3), Some(DisplayRow::Committed(3))));

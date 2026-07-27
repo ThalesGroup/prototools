@@ -31,12 +31,29 @@ fn extract_field_number(lhs: &str, ann: &Ann<'_>) -> u64 {
     lhs.trim().parse::<u64>().unwrap_or(0)
 }
 
-/// Split a line into `(value_part, annotation_str)`.
+/// Locate a line's trailing `  #@ ...` annotation, as
+/// `(end of the value part, start of the annotation's own text)`.
 ///
 /// The separator is `  #@ ` (2 spaces + `#` + `@` + space).  We scan right-to-left
 /// so that quoted string values containing `  #@ ` don't confuse the split.
+///
+/// Two branches, and both matter to callers:
+///
+/// 1. a confirmed `  #@ ` separator — the value part ends at `p - 2`, i.e.
+///    *before* the two separator spaces;
+/// 2. a line whose content before the `#` is entirely whitespace — the whole
+///    line is annotation, its leading indentation included, so the value part
+///    is empty.
+///
+/// Branch 1 is tried first and is the wider net: a comment-only line indented
+/// by two or more spaces satisfies it too, and yields a value part of that
+/// indentation *less its last two columns* rather than an empty one. Branch 2
+/// therefore only ever fires on a comment-only line with under two columns of
+/// leading whitespace (or with a tab in them) — in this renderer's output,
+/// exactly the un-indented `#@ prototext:` header. An empty packed record,
+/// though also comment-only, is indented, so it goes down branch 1.
 #[inline]
-fn split_at_annotation(line: &str) -> (&str, &str) {
+fn annotation_bounds(line: &str) -> Option<(usize, usize)> {
     // Find the rightmost "  #@ " separator using SIMD-accelerated memrchr for '#',
     // then verify the surrounding bytes.  Falls back leftward on false positives
     // (a bare '#' inside a string value).
@@ -50,21 +67,44 @@ fn split_at_annotation(line: &str) -> (&str, &str) {
             && b[p + 1] == b'@'
             && b[p + 2] == b' '
         {
-            // "  #@ " confirmed: field part ends at p-2, annotation starts at p+3
-            return (&line[..p - 2], &line[p + 3..]);
+            return Some((p - 2, p + 3));
         }
-        // Also recognize a line whose non-whitespace content starts with "#@ "
-        // (comment-only annotation line, no value token before it).
         if b[..p].iter().all(|c| *c == b' ' || *c == b'\t')
             && p + 2 < b.len()
             && b[p + 1] == b'@'
             && b[p + 2] == b' '
         {
-            return ("", &line[p + 3..]);
+            return Some((0, p + 3));
         }
         end = p; // keep searching leftward
     }
-    (line, "")
+    None
+}
+
+/// Split a line into `(value_part, annotation_str)`.
+#[inline]
+fn split_at_annotation(line: &str) -> (&str, &str) {
+    match annotation_bounds(line) {
+        Some((value_end, ann_start)) => (&line[..value_end], &line[ann_start..]),
+        None => (line, ""),
+    }
+}
+
+/// Byte offset in `line` at which its trailing `  #@ ...` annotation starts,
+/// or `None` if it has none.
+///
+/// The inverse view of `split_at_annotation`'s first return value, exposed for
+/// callers that need to *hide* an annotation rather than parse it: `&line[..
+/// annotation_start(line)?]` is exactly the value part `split_at_annotation`
+/// would hand the encoder. The returned offset therefore **excludes the two
+/// separator spaces** — the caller needs no `trim_end` of its own — and it is
+/// `Some(0)` for an un-indented comment-only line, whose whole content is
+/// annotation (branch 2 above). An *indented* comment-only line goes down
+/// branch 1 instead and keeps its indentation less two columns; see
+/// `annotation_bounds`.
+#[inline]
+pub fn annotation_start(line: &str) -> Option<usize> {
+    annotation_bounds(line).map(|(value_end, _)| value_end)
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -361,6 +401,57 @@ mod tests {
         let (field, ann) = split_at_annotation("name: 42  #@x");
         assert_eq!(field, "name: 42  #@x");
         assert_eq!(ann, "");
+    }
+
+    // ── annotation_start ──────────────────────────────────────────────────────
+
+    /// `annotation_start` is the same rule as `split_at_annotation`, read
+    /// from the other end: truncating there must reproduce the value part
+    /// exactly, separator spaces included, with no `trim_end` of the
+    /// caller's own.
+    #[test]
+    fn annotation_start_agrees_with_split_at_annotation() {
+        for line in [
+            "name: 42",
+            "name: 42  #@ varint = 1",
+            "  name: \"a  #@ b\"  #@ string = 2",
+            "  name: \"a  #@ b\"",
+            "  }  #@ close",
+            "#@ prototext: protoc",
+            "    #@ packed = 7",
+            "name: 42  #",
+            "name: 42  #@",
+            "name: 42  #@x",
+        ] {
+            let (value, _) = split_at_annotation(line);
+            let truncated = match annotation_start(line) {
+                Some(p) => &line[..p],
+                None => line,
+            };
+            assert_eq!(truncated, value, "line {line:?}");
+        }
+    }
+
+    /// Branch 2: an un-indented comment-only line is annotation all the
+    /// way to column zero, so hiding annotations leaves nothing at all.
+    /// This is the `#@ prototext:` header's case.
+    #[test]
+    fn annotation_start_is_zero_for_an_unindented_comment_only_line() {
+        assert_eq!(annotation_start("#@ prototext: protoc"), Some(0));
+        assert_eq!(annotation_start(" #@ packed = 7"), Some(0));
+        assert_eq!(annotation_start("\t#@ packed = 7"), Some(0));
+    }
+
+    /// ...but branch 1 is tried first and claims any comment-only line
+    /// indented by two or more spaces, leaving that indentation *less
+    /// two columns* as the value part. Pinned because it is a genuine
+    /// asymmetry between two lines that look alike, and because
+    /// protolens's annotation-hiding display must reproduce whatever
+    /// the encoder's own split does, not a tidier rule of its own.
+    #[test]
+    fn an_indented_comment_only_line_keeps_its_indentation_less_two() {
+        assert_eq!(annotation_start("    #@ packed = 7"), Some(2));
+        assert_eq!(split_at_annotation("    #@ packed = 7").0, "  ");
     }
 
     // ── parse_field_decl_into — enum suffix forms ─────────────────────────────

@@ -187,6 +187,29 @@ truncation point is unchanged; state which one the helper returns in its
 doc comment and drop the now-redundant `trim_end` if the helper already
 excludes the separator.
 
+**`split_at_annotation` has two branches, and both must be carried over**
+(resolved open question Q1). The second one is easy to miss and is
+reachable in practice:
+
+1. Rightmost `"  #@ "` separator: the field part ends at `p - 2`.
+2. A line whose content *before* the `#` is entirely whitespace: the
+   whole line is annotation, indentation included — it returns `("", …)`.
+
+`annotation_start_in` has no equivalent of (2). Being tree-sitter-based
+it reports the comment token's own column, so hiding the annotation
+leaves the leading indentation behind as a row of blanks. Branch (2) is
+not hypothetical: `render_text/packed.rs:327-344` emits exactly that
+shape for an **empty packed record** (a `push_indent` followed by a
+comment-only annotation), and the `#@ prototext: protoc` header is the
+same shape.
+
+`annotation_start` therefore returns `Some(0)` for a comment-only line,
+matching the format's own rule, and such a line renders as empty rather
+than as whitespace when annotations are hidden. This is a deliberate,
+named exception to G4: protolens is made faithful to what `prototext`
+itself considers annotation rather than to its own previous
+approximation of it.
+
 **Scope note.** This adds one public function to `prototext-core`. It is
 a pure query over a `&str`, adds no state, and extends neither the
 rendered grammar nor the encoder's accepted input — the two things
@@ -211,11 +234,67 @@ Add:
 /// committed line or overlay line each `DisplayRow` draws, untruncated
 /// and unfolded (fold markers and the annotation transform are display
 /// insertions applied downstream, and must not reach the parser).
+///
+/// Rows that are not prototext at all are emitted as `""` — see the
+/// non-grammar-line rule below. The result is always index-parallel
+/// with `window`.
 fn window_text(&self, window: &[DisplayRow]) -> Vec<String>;
 ```
 
 built from `display_row_source`'s existing two arms, minus the hints
 element.
+
+#### Lines that are not prototext are blanked, not parsed
+
+`lines` is not purely prototext. `insert_truncation_marker`
+(`override_apply.rs:242-279`) writes a literal `...` row into a
+truncated preview's lines, and `...` is not in the grammar. Today that
+is harmless because of an invariant stated at `override_apply.rs:2560`:
+
+> `...` is not part of the prototext grammar, and doing it after
+> `colorize()` has run means the highlighter never has to parse it.
+
+**This spec destroys that invariant.** Once highlighting happens at draw
+time, the marker is in `lines` when the window is parsed. It is a syntax
+error, and error recovery in this grammar swallows *following* siblings
+— the effect the existing regression test
+`bare_decimal_field_name_does_not_corrupt_sibling_captures` was written
+for. So the marker would silently strip the color off the rows beneath
+it, inside a truncated preview, which is exactly what is on screen while
+the user is choosing a type.
+
+The rule, therefore: **`window_text` emits `""` for any row that is not
+grammatical prototext.** A blank line is valid, produces no captures,
+and leaves the line count untouched — so `hints_by_line` still returns
+exactly `window.len()` buckets and the row's bucket is empty by
+construction. No index surgery and no re-insertion pass, which is why
+this is preferable to omitting the row from the parser's input.
+
+**Scope of the marker, precisely.** `insert_truncation_marker` has one
+caller — `render_node_as`, under `if truncated` — and truncation is
+preview-only (`confirmed_override_is_not_truncated` pins this). So a
+`...` row appears only in an override-pane preview overlay, never in a
+committed document. That bounds the blast radius but does not reduce the
+need for the rule: the preview overlay *is* the thing on screen while
+the user is comparing candidate types, which is the moment highlighting
+is doing its most useful work.
+
+The corollary is worth stating for whoever implements this: the blanking
+only ever has to fire on `DisplayRow::Overlay` rows. Do not use that as
+a shortcut — test it through `window_text` rather than through the
+overlay arm — because the invariant being protected is "non-prototext
+rows do not reach the parser", not "overlay rows are special".
+
+At present the marker is the only such row. It is called out here rather
+than special-cased at the call site so that any future non-grammar
+insertion has an obvious place to be handled — the same reasoning that
+put fold markers and the annotation transform downstream of the parser
+in the first place.
+
+This also supersedes S4's disposal of `insert_truncation_marker`'s
+`styles` parameter: dropping the parameter is right, but the sentence
+"the parser simply sees it" is not — the parser must specifically *not*
+see it.
 
 ### S3. The window is parsed inside a synthetic enclosing context
 
@@ -241,7 +320,21 @@ issue here.
 
 The fix is cheap because the rendering is deterministic in indentation: a
 line at nesting level `k` is indented by exactly `k * indent_size`
-spaces. So:
+spaces. Verified (resolved open question Q2): every line `render_text`
+emits takes its prefix from `push_indent`, which writes exactly
+`INDENT_SIZE * LEVEL` spaces — `wfl_prefix`, `wfl_prefix_n`,
+`wob_prefix_n`, `write_close_brace`, and packed's empty-record line are
+the complete set of writers. There are no continuation lines and no
+wrapped values. The one un-indented line is the `#@ prototext: protoc`
+header, which is only ever line 0, where `d0` is 0 regardless.
+
+Also verified for step 2: `render_text` emits `{` and `}` as its only
+message delimiters. The grammar additionally captures `<`/`>` and
+multi-line `[...]` lists, so the brace-delta rule below is *not* a
+general prototext rule — it is complete for what this renderer produces,
+and would need extending if the renderer ever emitted the others.
+
+So:
 
 1. `d0` = (leading spaces of the window's first line) / `indent_size`,
    plus 1 if that line's first non-blank character is `}`.
@@ -289,10 +382,9 @@ Removed outright:
   type (`:2346`).
 - `insert_truncation_marker`'s `styles: &mut Vec<LineStyles>` parameter
   (`override_apply.rs:389`). Spec 0174 S4's requirement that the `...`
-  marker line carry no highlighting is now met by construction — it is
-  in `lines`, it has no `NodeSpan`, and the parser simply sees it. If the
-  grammar gives `...` a capture, the marker line is excluded explicitly
-  at S3 step 4 rather than by carrying an empty style vector.
+  marker line carry no highlighting is now met by S2's non-grammar-line
+  rule: `window_text` blanks the row, so its bucket is empty by
+  construction and nothing needs to carry an empty style vector.
 - The `override_select.rs:811` overlay construction's `line_styles`
   field.
 
@@ -444,6 +536,14 @@ Background, a 24-line parse costs 5.71 µs/line against a 200-line parse's
    `hints_by_line(colorize(whole document))` sliced to the same lines.
    They must be equal. This is the test that S3's synthetic context
    exists to pass, and it fails without it.
+1b. **A truncation marker does not decolor the rows beneath it** (S2's
+   non-grammar-line rule). Take a truncated override-pane preview whose
+   `...` row has several highlightable rows after it *inside the same
+   window*, and assert those rows' hints are identical to what they get
+   in a window with no marker. Without the blanking this fails through
+   tree-sitter's error recovery — silently, only in previews, and only
+   below the marker: the exact shape of bug this codebase keeps finding
+   late.
 2. **The synthetic context is dropped, not drawn.** Assert
    `window_styles.len() == window.len()` and that no hint's range exceeds
    its line's length, for a window starting at a deeply nested line.
@@ -453,6 +553,18 @@ Background, a 24-line parse costs 5.71 µs/line against a 200-line parse's
    `split_at_annotation`'s leftward fallback exists for, and the case
    where the tree-sitter route and the format route could have
    disagreed.
+3b. **Annotation hiding on a comment-only line changes, deliberately**
+   (S1 branch 2). Over an **empty packed record** — the reachable
+   producer of that shape, per `render_text/packed.rs:327-344` — assert
+   the row hides to `""` and not to a run of blanks. This is the one
+   place the spec knowingly changes what the user sees, so it gets a
+   test that fails if someone "fixes" it back.
+3c. **The two annotation rules agree everywhere else.** Over a fixture
+   covering both branches, assert `annotation_start(line)` and the
+   deleted `annotation_start_in`'s truncation point pick the same byte
+   offset for every line that is not comment-only. Pins that the
+   crate-boundary move is behavior-preserving apart from the single
+   documented exception.
 4. **Clipboard copy works outside the viewport.** With `annotations`
    off, select a range entirely below the visible window and assert
    `selected_text` returns annotation-free lines. This is the case S1
@@ -482,18 +594,31 @@ Background, a 24-line parse costs 5.71 µs/line against a 200-line parse's
     the design worth having, and it is the one a regression would break
     first.
 
-## Open questions
+## Open questions — all resolved
 
-- **Q1.** Does `annotation_start` belong in `prototext-core` (S1's
-  preference) or as a protolens-local copy? Decide before implementing
-  S1, since it is the only cross-crate change in the spec.
-- **Q2.** S3 derives nesting depth from leading whitespace and
-  `indent_size`. Is there any rendered line whose indentation is not
-  `level * indent_size` — a continuation line, a wrapped value, the
-  truncation marker? Confirm against `render_text`'s writers before
-  implementing, and if one exists, fall back to `line_to_node` +
-  `span.level` for the window's first line.
-- **Q3.** Does `queries/highlights.scm` give the synthetic `_ {` opener
-  any capture that could bleed into the first real line's bucket? It
-  should not (each hint is bucketed by the line it starts on), but assert
-  it in test 2.
+- **Q1 — resolved: shared helper in `prototext-core`, returning
+  `Some(0)` for a comment-only line.** `annotation_start` adds no token,
+  no grammar, no state and no encoder input, so it does not touch what
+  `prototext-core`'s scope discipline guards. The substantive part of the
+  question turned out not to be *where* it lives but *what it returns*:
+  see S1's two-branch note. protolens becomes faithful to `prototext`'s
+  own annotation rule, at the cost of one named G4 exception.
+- **Q2 — resolved: the invariant holds.** `push_indent` is the sole
+  source of leading whitespace in `render_text`, and there are no
+  continuation or wrapped lines. Details and the `<`/`>` caveat are
+  folded into S3. No `line_to_node`/`span.level` fallback is needed.
+
+  The question did, however, surface something it did not ask about: the
+  `...` truncation marker's *indentation* is fine (it is copied from a
+  real line, so it is always a multiple of `indent_size`), but its
+  *content* is not prototext at all. That is S2's new
+  non-grammar-line rule, and it is the one correction this review made
+  to the design rather than to its justification.
+- **Q3 — resolved: no bleed.** `_ {` produces two captures —
+  `(field_name) @attribute` on `_` and `(open_squiggly)
+  @punctuation.bracket` on `{` — both single-line tokens wholly inside
+  the opener line. `hints_by_line` (`colorize.rs:186-200`) buckets each
+  hint by the line containing `hint.range.start` and clips `col_end` to
+  that line's length, so a capture cannot reach a later bucket. Assert it
+  in test 2 anyway, since it is the cheap guard on a rule that lives in
+  a query file this spec does not own.

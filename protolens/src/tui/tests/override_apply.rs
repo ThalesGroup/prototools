@@ -745,13 +745,18 @@ fn splice_override_on_a_group_field_keeps_the_group_prefix() {
 
 /// The header-line patch (spec 0122 §2) usually changes the header's
 /// byte length (e.g. bare `#@ group` growing into `#@ group; NewGroup
-/// = 5`) — `line_styles`' per-line color buckets must stay aligned
-/// with `self.lines`' actual text for every line *after* the header,
-/// not just the header itself (2026-07-15 regression: colors drifted
+/// = 5`) — the per-line color buckets must stay aligned with
+/// `self.lines`' actual text for every line *after* the header, not
+/// just the header itself (2026-07-15 regression: colors drifted
 /// starting right after the first patched `#@ group;` header,
 /// because `hints_by_line` was bucketing hints computed against the
 /// *cached* (unpatched) header length using the *patched* line
 /// array's lengths).
+///
+/// Spec 0187 S3 removes that failure mode by construction — highlighting
+/// is now parsed from the very strings about to be drawn, so there is no
+/// second, staler copy of the text to disagree with. The property is
+/// still worth pinning, now through the window path it actually travels.
 #[test]
 fn splice_override_keeps_colors_aligned_after_a_header_length_change() {
     let (mut app, grp_idx) = group_type_fixture();
@@ -761,16 +766,28 @@ fn splice_override_keeps_colors_aligned_after_a_header_length_change() {
         .first_child
         .expect("NewGroup has at least one child");
     let line_idx = app.tree[value_idx].span.text_range.start;
-    let line = &app.lines[line_idx];
+    let line = app.lines[line_idx].clone();
     let value_pos = line
         .find('5')
         .expect("value line must contain the scalar 5");
+
+    let window: Vec<DisplayRow> = app
+        .visible_rows
+        .iter()
+        .map(|&l| DisplayRow::Committed(l))
+        .collect();
+    let window_index = app
+        .visible_rows
+        .iter()
+        .position(|&l| l == line_idx)
+        .expect("the value line is visible — nothing is folded in this fixture");
+    app.refresh_window_styles(&window);
+    let styles = &app.window_styles[window_index];
     assert!(
-        app.line_styles[line_idx]
+        styles
             .iter()
             .any(|(range, role)| *role == SyntaxRole::Number && range.contains(&value_pos)),
-        "expected a Number-colored span covering the '5' in {line:?}, got {:?}",
-        app.line_styles[line_idx]
+        "expected a Number-colored span covering the '5' in {line:?}, got {styles:?}"
     );
 }
 
@@ -1881,8 +1898,24 @@ fn truncated_preview_ends_with_an_ellipsis_line() {
         app.lines
     );
     // S4: the marker line carries no styles and no `NodeSpan` — it is
-    // not selectable, not navigable, not part of any span range.
-    assert!(app.line_styles[marker].is_empty());
+    // not selectable, not navigable, not part of any span range. Spec
+    // 0187 S2 keeps the "no styles" half true by blanking the marker in
+    // `window_text`, so the highlighter never sees a row that is not
+    // prototext; the row still exists, so the buckets stay one-to-one
+    // with the window.
+    let window: Vec<DisplayRow> = app
+        .visible_rows
+        .iter()
+        .map(|&l| DisplayRow::Committed(l))
+        .collect();
+    let marker_row = app
+        .visible_rows
+        .iter()
+        .position(|&l| l == marker)
+        .expect("the marker line is visible");
+    app.refresh_window_styles(&window);
+    assert_eq!(app.window_styles.len(), window.len());
+    assert!(app.window_styles[marker_row].is_empty());
     assert!(
         !app.tree
             .iter()
@@ -2009,7 +2042,6 @@ fn preview_child_spans_survive_the_length_prefix_shift() {
 /// whatever the fixture happened to render.
 fn seed_committed_lines(app: &mut App, n: usize) {
     app.lines = (0..n).map(|i| format!("old{i}")).collect();
-    app.line_styles = vec![Vec::new(); n];
 }
 
 fn original_patch(range: Range<usize>, lines: &[&str]) -> LinePatch {
@@ -2018,7 +2050,6 @@ fn original_patch(range: Range<usize>, lines: &[&str]) -> LinePatch {
         global_start: range.start,
         children_base_shift: 0,
         lines: lines.iter().map(|l| l.to_string()).collect(),
-        styles: vec![Vec::new(); lines.len()],
     }
 }
 
@@ -2046,7 +2077,6 @@ fn top_level_line_patches_merge_correctly_when_queued_out_of_order() {
     app.materialize_line_patches();
 
     assert_eq!(app.lines, ["old0", "A0", "A1", "old2", "old3", "B"]);
-    assert_eq!(app.line_styles.len(), app.lines.len());
     assert!(app.pending_line_patches.is_empty());
 }
 
@@ -2063,7 +2093,6 @@ fn nested_line_patches_merge_correctly_when_queued_out_of_order() {
         global_start: 0,
         children_base_shift: 0,
         lines: vec![line.to_string()],
-        styles: vec![Vec::new()],
     };
     app.pending_line_patches = vec![
         original_patch(1..3, &["p0", "p1", "p2", "p3"]),
@@ -2073,7 +2102,6 @@ fn nested_line_patches_merge_correctly_when_queued_out_of_order() {
     app.materialize_line_patches();
 
     assert_eq!(app.lines, ["old0", "X", "p1", "Y", "p3", "old3"]);
-    assert_eq!(app.line_styles.len(), app.lines.len());
 }
 
 /// Flaw C2: overlap is a genuine contradiction rather than a permutation

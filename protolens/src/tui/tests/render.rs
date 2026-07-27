@@ -2,8 +2,10 @@
 //
 // SPDX-License-Identifier: MIT
 
+use super::super::render::window_styles_for;
 use super::super::*;
 use super::support::*;
+use prototext_core::serialize::encode_text::annotation_start;
 
 /// Regression test: a legitimately-empty decode (e.g. reopening an
 /// extracted `google.protobuf.Empty`, or any all-default submessage —
@@ -18,7 +20,6 @@ fn empty_tree_renders_and_handles_keys_without_panicking() {
         root_type: "google.protobuf.Empty".to_string(),
         blob: Vec::new(),
         wrapper_offset: 0,
-        style_hints: Vec::new(),
         root_candidates: Vec::new(),
     };
     let mut app = App::new(
@@ -147,7 +148,6 @@ fn message_is_not_dismissed_while_a_prompt_or_quit_confirm_is_active() {
 #[test]
 fn a_toggles_the_main_pane_annotation_display() {
     let line = "  id: 5  #@ int32 = 1".to_string();
-    let comment_start = line.find("#@").unwrap();
     let node = TreeNode {
         span: NodeSpan {
             field_number: 1,
@@ -174,7 +174,6 @@ fn a_toggles_the_main_pane_annotation_display() {
         root_type: "test.Msg".to_string(),
         blob: vec![0x08, 0x05],
         wrapper_offset: 0,
-        style_hints: vec![vec![(comment_start..line.len(), SyntaxRole::Comment)]],
         root_candidates: Vec::new(),
     };
     let mut app = App::new(
@@ -194,8 +193,14 @@ fn a_toggles_the_main_pane_annotation_display() {
     app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
     assert!(!app.annotations);
     assert_eq!(app.render_line_content(0), "  id: 5");
+    // Spec 0187 S3: `row_spans` reads `window_styles`, which is a
+    // per-frame product of the rows being drawn, so the window has to be
+    // established before the row's spans can be asked for. Index 0 is
+    // this one-row window's only position.
+    let window = [DisplayRow::Committed(0)];
+    app.refresh_window_styles(&window);
     let spanned: String = app
-        .row_spans(DisplayRow::Committed(0))
+        .row_spans(window[0], 0)
         .iter()
         .map(|s| s.content.as_ref())
         .collect();
@@ -449,4 +454,209 @@ fn global_command_message_row_stays_fixed_height() {
         app.main_area.height, main_height,
         "main content area must not resize during active command entry"
     );
+}
+
+// ── Spec 0187: highlighting is a property of the viewport ────────────────
+
+/// Test plan item 1. The whole point of S3's synthetic enclosing
+/// context: a window parsed on its own must be colored exactly as those
+/// same lines are colored inside the complete document. Checked for
+/// *every* scroll offset and every window height, because the failure
+/// mode is offset-dependent — a window that happens to start at depth
+/// zero passes even with no framing at all.
+#[test]
+fn window_highlighting_matches_whole_document_highlighting() {
+    let app = nested_message_set_fixture();
+    let lines = &app.lines;
+    let document = colorize::hints_by_line(lines, &colorize::colorize(&lines.join("\n")));
+
+    for height in 1..=lines.len() {
+        for start in 0..=(lines.len() - height) {
+            let window = lines[start..start + height].to_vec();
+            let got = window_styles_for(&window, app.indent_size);
+            assert_eq!(
+                got,
+                document[start..start + height],
+                "window {start}..{} (height {height}) must be colored as the \
+                 document colors those same lines; window text was {window:#?}",
+                start + height
+            );
+        }
+    }
+}
+
+/// Test plan item 2. The synthetic openers and closers S3 wraps the
+/// window in are parser scaffolding, not content: they must not appear
+/// as extra buckets, and no hint may be attributed to a line it does not
+/// fit inside. Exercised from a window that starts at the deepest line
+/// of the fixture, where the scaffolding is largest.
+#[test]
+fn the_synthetic_context_is_dropped_not_drawn() {
+    let app = nested_message_set_fixture();
+    let deepest = app
+        .lines
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, l)| l.len() - l.trim_start().len())
+        .map(|(i, _)| i)
+        .expect("the fixture has lines");
+
+    for height in 1..=(app.lines.len() - deepest) {
+        let window = app.lines[deepest..deepest + height].to_vec();
+        let styles = window_styles_for(&window, app.indent_size);
+        assert_eq!(
+            styles.len(),
+            window.len(),
+            "one bucket per drawn row, with the {height}-row window at line {deepest}"
+        );
+        for (line, hints) in window.iter().zip(&styles) {
+            for (range, role) in hints {
+                assert!(
+                    range.end <= line.len(),
+                    "hint {range:?} ({role:?}) runs past the end of {line:?}"
+                );
+            }
+        }
+    }
+}
+
+/// Test plan item 1b. `insert_truncation_marker` writes a literal `...`
+/// row, which is not in the prototext grammar. Before this spec that was
+/// harmless because the marker was spliced in *after* the document was
+/// colorized; now the marker can be inside the window being parsed.
+///
+/// Left unblanked it does not merely fail to color itself —
+/// tree-sitter's error recovery swallows *following* siblings (see
+/// `colorize::bare_decimal_field_name_does_not_corrupt_sibling_captures`),
+/// so the rows *beneath* it would silently lose their colors. That is
+/// the assertion here: the rows after the marker are colored exactly as
+/// they are with no marker present at all.
+#[test]
+fn a_truncation_marker_does_not_decolor_the_rows_beneath_it() {
+    let mut app = nested_message_set_fixture();
+    // Cut the fixture just after a value line, so the marker lands in
+    // the middle of the window with several colorable rows below it.
+    let cut = 8;
+    let without = app.lines.clone();
+    let expected = window_styles_for(&without, app.indent_size);
+
+    let mut with: Vec<String> = without[..cut].to_vec();
+    with.push("            ...".to_string());
+    with.extend(without[cut..].iter().cloned());
+
+    let rows: Vec<DisplayRow> = (0..with.len()).map(DisplayRow::Overlay).collect();
+    app.preview_overlay = Some(PreviewOverlay {
+        first_row: 0,
+        covered_rows: 0,
+        lines: with.clone(),
+    });
+    app.refresh_window_styles(&rows);
+    let got = &app.window_styles;
+
+    assert_eq!(got.len(), with.len(), "one bucket per drawn row");
+    assert!(
+        got[cut].is_empty(),
+        "the marker row itself is not prototext and gets no hints, got {:?}",
+        got[cut]
+    );
+    assert_eq!(
+        &got[..cut],
+        &expected[..cut],
+        "the rows above the marker are unaffected"
+    );
+    assert_eq!(
+        &got[cut + 1..],
+        &expected[cut..],
+        "the rows below the marker must be colored exactly as they are \
+         when no marker is present — this is the assertion tree-sitter's \
+         error recovery breaks if the marker reaches the parser"
+    );
+}
+
+/// Test plan item 3. Hiding annotations is now driven by the format's
+/// own `  #@ ` rule (`prototext_core::serialize::encode_text::
+/// annotation_start`) rather than by the highlighter's Comment capture.
+/// The case that separates a correct implementation from a naive one is
+/// a line whose *string value* itself contains a literal `#@`: only a
+/// rightmost-first scan with a leftward fallback gets it right.
+#[test]
+fn hiding_annotations_respects_a_hash_at_inside_a_string_value() {
+    let line = "  name: \"a  #@ b\"  #@ string = 2".to_string();
+    let mut app = sibling_leaves_app(&["x"]);
+    app.lines = vec![line.clone()];
+    app.annotations = false;
+    assert_eq!(app.render_line_content(0), "  name: \"a  #@ b\"");
+    app.annotations = true;
+    assert_eq!(app.render_line_content(0), line);
+}
+
+/// Test plan item 3b. The one place this spec knowingly changes what the
+/// user sees. An empty packed record renders as a comment-only line
+/// (`render_text/packed.rs`'s `pack_size == 0` arm: indentation, then
+/// the annotation with no value token before it). The old rule cut at
+/// the highlighter's Comment capture and then trimmed, leaving `""`
+/// only by accident of the trim; the format's rule reaches the same
+/// answer deliberately, because the two separator spaces it excludes
+/// *are* the line's whole indentation at level 1.
+///
+/// A test rather than a comment because someone reading a blank row
+/// might reasonably "fix" it back into a run of spaces.
+#[test]
+fn an_empty_packed_record_row_hides_to_nothing() {
+    let mut app = sibling_leaves_app(&["x"]);
+    app.lines = vec!["  #@ = 7 pack_size: 0".to_string()];
+    app.annotations = false;
+    assert_eq!(app.render_line_content(0), "");
+}
+
+/// Test plan item 3c. The rule moved across a crate boundary, from the
+/// highlighter's Comment capture to the encoder's own byte scan. Pin
+/// that the move is behavior-preserving: over real renderer output, the
+/// old rule (first Comment hint's start, then `trim_end`) and the new
+/// one must pick the same truncation point on every line.
+#[test]
+fn the_format_rule_and_the_parser_rule_agree_on_rendered_lines() {
+    for app in [nested_message_set_fixture(), nested_any_fixture()] {
+        let per_line =
+            colorize::hints_by_line(&app.lines, &colorize::colorize(&app.lines.join("\n")));
+        for (line, hints) in app.lines.iter().zip(&per_line) {
+            let old = hints
+                .iter()
+                .find(|(_, role)| *role == SyntaxRole::Comment)
+                .map(|(range, _)| line[..range.start].trim_end())
+                .unwrap_or(line.as_str());
+            let new = match annotation_start(line) {
+                Some(pos) => &line[..pos],
+                None => line.as_str(),
+            };
+            assert_eq!(new, old, "the two rules disagree on {line:?}");
+        }
+    }
+}
+
+/// Test plan item 4. `row_content` no longer consults any hint vector,
+/// which is what lets it keep working on lines that are nowhere near
+/// the viewport. Selecting a range entirely below the visible window and
+/// copying it must still strip annotations — under the old rule this
+/// read `line_styles` at an index the viewport had never populated.
+#[test]
+fn clipboard_copy_strips_annotations_outside_the_viewport() {
+    let mut app = nested_message_set_fixture();
+    app.annotations = false;
+    // A window covering only the first two rows; everything selected
+    // below is outside it.
+    app.refresh_window_styles(&[DisplayRow::Committed(0), DisplayRow::Committed(1)]);
+
+    let last = app.lines.len() - 1;
+    app.select_anchor = Some(last - 3);
+    app.select_end = Some(last);
+    let (count, copied) = app.selected_text().expect("the selection must yield text");
+
+    assert_eq!(count, 4);
+    for line in copied.lines() {
+        assert!(
+            !line.contains("#@"),
+            "annotations must be stripped outside the viewport too, got {line:?}"
+        );
+    }
 }

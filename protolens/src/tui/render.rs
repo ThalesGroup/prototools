@@ -4,16 +4,92 @@
 
 use super::*;
 
-/// Byte offset where a line's trailing `#@ ...` annotation starts, if it
-/// has one (spec 0133 G4) — reuses the tree-sitter `SyntaxRole::Comment`
-/// span already computed for that line. Takes the hints rather than a
-/// line index so that spec 0185's overlay rows, which are not in
-/// `self.line_styles`, go through the same rule.
-fn annotation_start_in(hints: &LineStyles) -> Option<usize> {
-    hints
+use prototext_core::serialize::encode_text::annotation_start;
+
+/// Stand-in for a row that has no styles at all.
+static NO_STYLES: LineStyles = Vec::new();
+
+/// Spec 0174 §S4's truncation marker, trimmed. Not prototext (see
+/// `window_text`).
+const TRUNCATION_MARKER: &str = "...";
+
+/// A rendered line with its trailing `#@ ...` annotation removed (spec
+/// 0187 S1) — the part of the line the *format* considers a value.
+/// Used both for the display-time annotation hiding of spec 0133 G4 and,
+/// in `window_styles_for`, for depth arithmetic that must not be
+/// confused by a brace inside an annotation.
+fn code_part(line: &str) -> &str {
+    match annotation_start(line) {
+        Some(pos) => &line[..pos],
+        None => line,
+    }
+}
+
+/// Spec 0187 S3: syntax hints for one window's worth of rendered lines,
+/// parsed *inside a synthetic enclosing context* so that each row is
+/// highlighted at its true nesting depth.
+///
+/// Parsing a window on its own is not equivalent to parsing it inside
+/// the document: a window scrolled into the middle typically starts on a
+/// nested field and contains a bare `}` with no matching `{`, which
+/// drives tree-sitter into error recovery — and error recovery in this
+/// grammar swallows *following* siblings, losing their captures (see
+/// `colorize.rs::bare_decimal_field_name_does_not_corrupt_sibling_
+/// captures`). Highlighting would visibly degrade whenever the user is
+/// not scrolled to the top.
+///
+/// The repair is cheap because the rendering is deterministic in
+/// indentation: `render_text` takes every line's prefix from
+/// `push_indent`, which writes exactly `indent_size * level` spaces, and
+/// emits no continuation or wrapped lines. So the window's own opening
+/// depth is readable off its first line, and the depth it leaves open is
+/// that plus the net brace delta. Wrapping the window in that many
+/// synthetic `_ {` openers and `}` closers makes it a syntactically
+/// complete document; the synthetic rows' own buckets are then dropped.
+///
+/// `render_text` emits `{`/`}` as its only message delimiters — the
+/// grammar also has `<`/`>` and multi-line `[...]`, so the brace rule
+/// below is complete for this renderer rather than general.
+pub(super) fn window_styles_for(text: &[String], indent_size: usize) -> Vec<LineStyles> {
+    let indent_size = indent_size.max(1);
+    // Blank rows carry no indentation to read a depth from — `window_
+    // text` blanks non-grammar rows, and a comment-only line's value
+    // part is empty by branch 2 of the annotation rule. Skipping to the
+    // first row that does carry one is exact except when the window
+    // *starts* on such a row, where it is off by at most the difference
+    // between that row's depth and the next's.
+    let d0 = text
         .iter()
-        .find(|(_, role)| *role == SyntaxRole::Comment)
-        .map(|(range, _)| range.start)
+        .map(|l| code_part(l))
+        .find(|c| !c.trim().is_empty())
+        .map_or(0, |c| {
+            let indent = c.len() - c.trim_start().len();
+            indent / indent_size + usize::from(c.trim_start().starts_with('}'))
+        });
+    let mut depth = d0 as isize;
+    for line in text {
+        let c = code_part(line).trim();
+        if c.ends_with('{') {
+            depth += 1;
+        } else if c == "}" {
+            depth -= 1;
+        }
+    }
+    let dn = depth.max(0) as usize;
+
+    let mut framed: Vec<String> = Vec::with_capacity(d0 + text.len() + dn);
+    for level in 0..d0 {
+        framed.push(format!("{}_ {{", " ".repeat(level * indent_size)));
+    }
+    framed.extend_from_slice(text);
+    for level in (0..dn).rev() {
+        framed.push(format!("{}}}", " ".repeat(level * indent_size)));
+    }
+    let joined = framed.join("\n");
+    let mut buckets = colorize::hints_by_line(&framed, &colorize::colorize(&joined));
+    buckets.truncate(buckets.len() - dn);
+    buckets.drain(..d0);
+    buckets
 }
 
 impl App {
@@ -64,19 +140,15 @@ impl App {
         }
     }
 
-    /// Spec 0185 S2: the `(content, syntax hints, node)` triple a
-    /// display row draws from — the single point where committed and
-    /// overlay rows converge, so that everything downstream of it is
-    /// shared. An overlay row has no node (S4): no heat cue, no
-    /// active-override hint, no fold marker, no selection.
-    fn display_row_source(&self, row: DisplayRow) -> (&str, &LineStyles, Option<usize>) {
-        /// Stand-in for a row that has no styles at all, so that the
-        /// two arms can share one return type.
-        static NO_STYLES: LineStyles = Vec::new();
+    /// Spec 0185 S2: the `(content, node)` pair a display row draws
+    /// from — the single point where committed and overlay rows
+    /// converge, so that everything downstream of it is shared. An
+    /// overlay row has no node (S4): no heat cue, no active-override
+    /// hint, no fold marker, no selection.
+    fn display_row_source(&self, row: DisplayRow) -> (&str, Option<usize>) {
         match row {
             DisplayRow::Committed(l) => (
                 self.lines.get(l).map(String::as_str).unwrap_or(""),
-                self.line_styles.get(l).unwrap_or(&NO_STYLES),
                 self.node_at_header_line(l),
             ),
             DisplayRow::Overlay(i) => {
@@ -84,9 +156,49 @@ impl App {
                     .preview_overlay
                     .as_ref()
                     .expect("an Overlay row is only ever produced while an overlay is held");
-                (&o.lines[i], &o.line_styles[i], None)
+                (&o.lines[i], None)
             }
         }
+    }
+
+    /// Spec 0187 S2: the rows currently on screen, as the highlighter
+    /// sees them — the committed line or overlay line each `DisplayRow`
+    /// draws, untruncated and unfolded (fold markers and the annotation
+    /// transform are display insertions applied downstream, and must not
+    /// reach the parser).
+    ///
+    /// Rows that are not prototext at all are emitted as `""`. `lines`
+    /// is not purely prototext: spec 0174 §S4's `...` truncation marker
+    /// is a literal row in a truncated preview's lines, and `...` is not
+    /// in the grammar. That used to be harmless because the marker was
+    /// spliced in after `colorize()` had already run; highlighting at
+    /// draw time removes that protection, and a syntax error here would
+    /// silently strip the color off every row *beneath* the marker via
+    /// tree-sitter's error recovery. Substituting a blank line rather
+    /// than dropping the row keeps the result index-parallel with
+    /// `window`, so the row's own bucket comes out empty by construction
+    /// and no index surgery is needed.
+    fn window_text(&self, window: &[DisplayRow]) -> Vec<String> {
+        window
+            .iter()
+            .map(|&row| {
+                let line = self.display_row_source(row).0;
+                if line.trim() == TRUNCATION_MARKER {
+                    String::new()
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect()
+    }
+
+    /// Spec 0187 S3: recompute `window_styles` for the rows this frame
+    /// is about to draw. Called once per `render()`, from `render()`
+    /// only — the result is never retained across frames and is never
+    /// document-sized.
+    pub(super) fn refresh_window_styles(&mut self, window: &[DisplayRow]) {
+        let text = self.window_text(window);
+        self.window_styles = window_styles_for(&text, self.indent_size);
     }
 
     /// A foldable node's line, with its fold marker inserted right after
@@ -108,12 +220,9 @@ impl App {
     /// Spec 0185 S2: `render_line_content` for any display row, overlay
     /// rows included — there must not be a second line-rendering path.
     pub(super) fn row_content(&self, row: DisplayRow) -> String {
-        let (full_content, hints, node) = self.display_row_source(row);
+        let (full_content, node) = self.display_row_source(row);
         let content = if !self.annotations {
-            match annotation_start_in(hints) {
-                Some(pos) => full_content[..pos].trim_end(),
-                None => full_content,
-            }
+            code_part(full_content)
         } else {
             full_content
         };
@@ -157,12 +266,17 @@ impl App {
     /// preview and the commit that follows it are required to be
     /// byte-identical (G3), and both reaching this same function is how
     /// that is met.
-    pub(super) fn row_spans(&self, row: DisplayRow) -> Vec<Span<'static>> {
-        let (full_content, full_hints, node) = self.display_row_source(row);
+    ///
+    /// Spec 0187 S3: `window_index` is the row's position in the window
+    /// `refresh_window_styles` was last called with, which is the
+    /// coordinate system `self.window_styles` lives in.
+    pub(super) fn row_spans(&self, row: DisplayRow, window_index: usize) -> Vec<Span<'static>> {
+        let (full_content, node) = self.display_row_source(row);
+        let full_hints = self.window_styles.get(window_index).unwrap_or(&NO_STYLES);
         let (content, hints): (&str, LineStyles) =
-            match (!self.annotations, annotation_start_in(full_hints)) {
+            match (!self.annotations, annotation_start(full_content)) {
                 (true, Some(pos)) => {
-                    let truncated = full_content[..pos].trim_end();
+                    let truncated = &full_content[..pos];
                     let clipped = full_hints
                         .iter()
                         .filter(|(r, _)| r.start < truncated.len())
@@ -401,6 +515,12 @@ impl App {
             .filter_map(|d| self.display_row(d))
             .collect();
 
+        // Spec 0187 S3: highlight exactly the rows about to be drawn,
+        // and nothing else. Its own `&mut self` pass, ahead of the
+        // immutable-`self` `text_lines` closure below — the same shape
+        // and the same reason as the heat-cue pass that follows.
+        self.refresh_window_styles(&window);
+
         // Spec 0129 §G1: the drag-selected `line_idx` range (if any) gets
         // the same `REVERSED` treatment as the single cursor row below —
         // the two can coexist harmlessly since `REVERSED` on an already-
@@ -440,7 +560,7 @@ impl App {
                     DisplayRow::Committed(l) => Some(l),
                     DisplayRow::Overlay(_) => None,
                 };
-                let mut spans = pan_spans(self.row_spans(display_row), self.pan_offset);
+                let mut spans = pan_spans(self.row_spans(display_row, row), self.pan_offset);
                 if line_idx.is_some_and(|l| self.line_has_active_override(l)) {
                     for span in &mut spans {
                         span.style = span.style.add_modifier(Modifier::BOLD);
