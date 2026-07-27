@@ -6,7 +6,14 @@ SPDX-License-Identifier: MIT
 
 # 0186 — a commit touches only what moved
 
-Status: draft
+Status: draft — implemented, then measured; see `Measured outcome`.
+        The performance claims in G1 and G4 are **withdrawn**: the four
+        passes this spec removes are 1.4% of a commit, and 85% is one
+        whole-document tree-sitter parse in `colorize::colorize` that no
+        part of this spec touches. Read `Measured outcome` before the
+        Goals below, which are left as originally written so the record
+        of what was believed, and on what evidence it was overturned,
+        stays legible.
 App: protolens
 Refs: docs/protolens/rendering-flaws.md (P3),
       docs/protolens/rendering-scaling-roadmap.md (S2, S3),
@@ -307,6 +314,136 @@ other caller keeps calling `rebuild_visible_rows()` (N4).
   /tmp/prototools-bench.lock taskset -c 4 ...`.
 - `cargo clippy --release --no-default-features --workspace -- -D
   warnings`, `reuse lint`, `nix-build -A ci`.
+
+## Measured outcome
+
+**Summary: this spec's premise is wrong, and the measurement says so.**
+The four passes it set out to remove are together **1.4%** of a commit.
+**85% is one whole-document tree-sitter parse** in `colorize::colorize`,
+which no part of this spec touches.
+
+Measured 2026-07-27 on `/tmp/pdb.desc` (146,511 nodes / 193,072 lines at
+load), `cargo test --release --bin protolens`, under `flock -n -x
+/tmp/prototools-bench.lock taskset -c 4`. Per-phase wall-clock
+accumulators were added temporarily to `override_apply.rs`; logs in
+`/tmp/0186-phases2.log`, `/tmp/0186-nested3.log`, `/tmp/0186-noop.log`.
+
+### Regime 1 — the document-wide commit
+
+`profile_override_pane_enter_on_pdb`. One splice, whose replaced content
+is essentially the whole document.
+
+| phase | 1st Enter | 2nd Enter |
+|---|---|---|
+| `compute_descend_marks` (spec 0183) | 0.016 s (0.1%) | 0.042 s (0.3%) |
+| `splice_override` **total** | 14.558 s (97.7%) | 13.020 s (96.4%) |
+| ↳ `render_node_as` | 13.969 s (93.7%) | 12.130 s (89.8%) |
+| ↳↳ `decode_and_render_indexed` | 0.464 s (3.1%) | 0.340 s (2.5%) |
+| ↳↳ **`colorize::colorize`** | **12.976 s (87.1%)** | **11.325 s (83.8%)** |
+| ↳↳ `render_cache` insert (deep clone) | 0.177 s (1.2%) | 0.160 s (1.2%) |
+| ↳↳ `hints_by_line` | 0.250 s (1.7%) | 0.231 s (1.7%) |
+| **S1** `materialize_line_patches` | 0.036 s (0.2%) | 0.135 s (1.0%) |
+| **S3** line-map repair | 0.166 s (1.1%) | 0.196 s (1.4%) |
+| **S4** `rebuild_visible_rows_from` | 0.005 s (0.03%) | 0.002 s (0.02%) |
+| walk overhead | 0.084 s (0.6%) | 0.081 s (0.6%) |
+| **total** | **14.904 s** | **13.510 s** |
+
+`from` is **0** in both. The batch's earliest patch is the document's
+first line, so S3's retained prefix is empty and S4's is empty: the
+incremental path degenerates to the full rebuild it replaced. This is not
+a harness artifact — see regime 3.
+
+End-to-end before/after (baseline worktree at `02b61a8`,
+`/tmp/0186-before.log` vs `/tmp/0186-after.log`): 14.75 s / 13.67 s
+baseline against 14.89 s / 13.67 s with S1–S4. **Parity.** G4 is not
+satisfied and cannot be by this spec.
+
+### Regime 2 — the nested commit
+
+`profile_nested_commit_on_pdb` (added by this spec). Root type resolved
+first (382,032 nodes / 276,515 lines), then an override confirmed on
+`google.protobuf.SourceCodeInfo` at lines 276,247..276,513 — 2 splices,
+757 lines re-rendered, `from = 276,023 of 276,515`.
+
+| phase | | |
+|---|---|---|
+| **S3** line-map repair | 0.069 s | **55.1%** |
+| `render_cache` insert (deep clone) | 0.026 s | 20.8% |
+| `compute_descend_marks` (spec 0183) | 0.017 s | 13.5% |
+| `mark_fresh_subtree` | 0.003 s | 2.4% |
+| **S1** `materialize_line_patches` | 0.003 s | 2.2% |
+| `colorize::colorize` | 0.004 s | 3.3% |
+| `decode_and_render_indexed` | 0.000 s | 0.2% |
+| **S4** `rebuild_visible_rows_from` | 0.000 s | 0.01% |
+| **total** | **0.125 s** | |
+
+Here the boundary is as favorable as it can get — 99.8% of the document
+is below it — and **S3 is still the single largest item**. The reason is
+structural and fatal to the approach:
+
+> `line_to_node.retain(|&line, _| line < from)` is **O(map size)
+> regardless of `from`**. `HashMap::retain` visits every occupied bucket
+> to decide what to drop. S3 replaced an O(document) clear-and-refill
+> with an O(document) scan. The re-insertion was removed; the traversal
+> was not. No choice of boundary makes it sublinear in a `HashMap`.
+
+`compute_descend_marks` (spec 0183, not this spec) has the same shape —
+`vec![false; tree.len()]` plus a scan of every node, per batch — and is
+13.5% here for the same reason.
+
+### Regime 3 — why `from` is 0 in regime 1
+
+A confirmed override becomes an `OverrideOrigin::PathField { path:
+positional_path(parent), field }` — "field N of *that* parent", which
+matches **every** child of that parent bearing that field number. In
+regime 1 the target is a `file` entry whose parent is the document root,
+so the rule matches all 465 `FileDescriptorProto`s and the commit is
+document-wide by construction, not by accident. An intermediate run that
+picked the same shape confirmed it directly: **465 splices, all of
+pre-existing nodes, all with an override entry, 276,513 lines
+re-rendered** — the whole document — in 1.97 s, of which `colorize` was
+1.50 s (76%).
+
+This also disposes of a hypothesis raised while diagnosing: that a commit
+re-splices every previously-overridden node. It does not.
+`resettle_node` (`override_apply.rs:1141`) splices only on `(target,
+field_name) != rendered_as`, and two consecutive no-op batches on a
+settled 382,032-node document splice **zero** nodes each, in 69 ms and
+72 ms. The batch machinery is idempotent.
+
+### What the numbers imply
+
+- **S1 stands on its own.** It removes a `malloc` + `memcpy` per line
+  from a pass that still runs unconditionally. Small, local, no
+  invariant surrendered. Nothing here argues against it.
+- **S2/S3/S4 do not deliver G1 and cannot.** In regime 1 the boundary is
+  0; in regime 2 the boundary is irrelevant because the drop step is
+  linear anyway. They also cost N3 — the maps stopped being
+  self-healing — for no measured return.
+- **G3 earned its keep regardless.** Asserting bit-identity against a
+  full rebuild after *every* splice in the suite found a real
+  pre-existing bug on its first run: `App::new` called `render_overrides`
+  before the first `rebuild_visible_rows`, so the first batch of every
+  session ran against a `visible_rows` that had never been built. The
+  full rebuild masked it; that is exactly the class of latent
+  inconsistency a self-healing structure hides.
+- **P3 is misdiagnosed and stays open.** Its four O(document) passes are
+  1.4% of the commit. The real item is
+  [roadmap S6](../protolens/rendering-scaling-roadmap.md) — highlight
+  lazily, per viewport — which the roadmap currently files as a
+  *startup and memory* item marked "gate it on measurement, it may not
+  pay off". The measurement is now in: it is also the commit path's
+  bottleneck, at 84–87%.
+- **A note for S6's own design.** Coloring in one large chunk was not
+  cheaper per line than coloring in many small ones: 12.2 µs/line for a
+  single 1,067,034-line parse, versus 5.4 µs/line across 465 parses
+  totalling 276,513 lines. Batching the viewport into one joined parse is
+  therefore a convenience, not a performance argument.
+
+**Decision pending.** Whether S2/S3/S4 are reverted, or kept as
+correct-but-inert code, is not settled by this section and is deliberately
+left open here rather than assumed. What *is* settled: the performance
+claim in G1/G4 is withdrawn.
 
 ## Resolved questions
 

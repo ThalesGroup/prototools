@@ -77,7 +77,7 @@ impl App {
             DisplayRow::Committed(l) => (
                 self.lines.get(l).map(String::as_str).unwrap_or(""),
                 self.line_styles.get(l).unwrap_or(&NO_STYLES),
-                self.line_to_node.get(&l).copied(),
+                self.node_at_header_line(l),
             ),
             DisplayRow::Overlay(i) => {
                 let o = self
@@ -249,11 +249,10 @@ impl App {
     /// pane).
     pub(super) fn line_has_active_override(&self, line_idx: usize) -> bool {
         let idx = self
-            .line_to_node
-            .get(&line_idx)
-            .or_else(|| self.footer_line_to_node.get(&line_idx));
+            .node_at_header_line(line_idx)
+            .or_else(|| self.node_at_footer_line(line_idx));
         match idx {
-            Some(&idx) => self.resolve_active_override(idx).is_some(),
+            Some(idx) => self.resolve_active_override(idx).is_some(),
             None => false,
         }
     }

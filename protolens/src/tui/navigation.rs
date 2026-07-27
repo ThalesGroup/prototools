@@ -58,21 +58,61 @@ impl App {
     /// method, so the pane is never left stuck blank regardless of which
     /// direction shrank the content.
     pub(super) fn rebuild_visible_rows(&mut self) {
+        self.rebuild_visible_rows_from(0);
+    }
+
+    /// Spec 0186 S4: `rebuild_visible_rows` restricted to lines at or
+    /// after `from`. Lines below it keep both their content and their
+    /// index, so their visibility cannot have changed and the prefix of
+    /// `visible_rows` describing them can simply be kept.
+    ///
+    /// Only `finalize_override_batch` passes a non-zero `from`; the fold
+    /// path deliberately still passes `0` (spec 0186 N4).
+    pub(super) fn rebuild_visible_rows_from(&mut self, from: usize) {
         let total = self.lines.len();
-        let mut hidden = vec![false; total];
+        // A splice can shrink the document below `from`'s own value in a
+        // degenerate batch; clamping keeps the slicing below in bounds
+        // and turns the whole call into "truncate to what still exists".
+        let from = from.min(total);
+
+        // `visible_rows` is sorted ascending by construction — spec 0185's
+        // overlay anchor relies on that too — so the surviving prefix is
+        // just a `partition_point` away, with no allocation and no move.
+        let keep = self.visible_rows.partition_point(|&l| l < from);
+        self.visible_rows.truncate(keep);
+
+        // Taken out of `self` so the `self.folded`/`self.tree` reads
+        // below can borrow immutably, and put back at the end. Reusing
+        // the buffer across calls is what removes the per-call
+        // `vec![false; total]` (193 kB on the 1.1 MB fixture).
+        let mut hidden = std::mem::take(&mut self.hidden_mask);
+        hidden.resize(total, false);
+        // Clear exactly the range about to be marked, not the whole
+        // buffer: below `from` nothing is read, and above it a stale
+        // `true` left by a previous call would hide a line that is now
+        // visible.
+        hidden[from..total].fill(false);
         for &idx in &self.folded {
             let r = &self.tree[idx].span.text_range;
+            // Clamping to the tail keeps the marking cost proportional
+            // to `total - from` rather than to the folded ranges' full
+            // extents, however far back they start.
+            let start = (r.start + 1).max(from);
             let end = r.end.min(total);
-            for h in hidden.iter_mut().take(end).skip(r.start + 1) {
-                *h = true;
+            if start < end {
+                hidden[start..end].fill(true);
             }
         }
-        self.visible_rows = (0..total).filter(|&l| !hidden[l]).collect();
+        self.visible_rows
+            .extend((from..total).filter(|&l| !hidden[l]));
+        self.hidden_mask = hidden;
+
         self.clamp_pan_offset();
         // Spec 0164 G7: any fold/unfold or content-shape change can
         // shift rendered line numbers or invalidate prefetch
         // eligibility — bumping this makes `App::prefetch_step` notice
-        // and restart its walk from scratch.
+        // and restart its walk from scratch. A *partial* rebuild is
+        // still a structural change, so this stays unconditional.
         self.structural_version += 1;
     }
 
@@ -143,6 +183,29 @@ impl App {
         }
     }
 
+    /// The node whose text *starts* on `line`, if any.
+    ///
+    /// Spec 0188 S1: the maps are `Vec<Option<u32>>`, so a lookup is an
+    /// in-bounds test and a widening. These two accessors exist so the
+    /// `u32` does not leak to the half-dozen call sites that only ever
+    /// want an arena index.
+    pub(super) fn node_at_header_line(&self, line: usize) -> Option<usize> {
+        self.line_to_node
+            .get(line)
+            .copied()
+            .flatten()
+            .map(|n| n as usize)
+    }
+
+    /// The node whose own closing `}` sits on `line`, if any.
+    pub(super) fn node_at_footer_line(&self, line: usize) -> Option<usize> {
+        self.footer_line_to_node
+            .get(line)
+            .copied()
+            .flatten()
+            .map(|n| n as usize)
+    }
+
     /// Resolve a visible line back to a `(node, is_footer)` cursor stop
     /// (spec 0142) — `line_to_node` (header) checked first,
     /// `footer_line_to_node` (footer) as fallback; the two never
@@ -150,10 +213,10 @@ impl App {
     /// with a nonempty body, so its closing line always differs from
     /// its own header line).
     fn resolve_cursor_line(&self, line: usize) -> Option<(usize, bool)> {
-        if let Some(&idx) = self.line_to_node.get(&line) {
+        if let Some(idx) = self.node_at_header_line(line) {
             return Some((idx, false));
         }
-        self.footer_line_to_node.get(&line).map(|&idx| (idx, true))
+        self.node_at_footer_line(line).map(|idx| (idx, true))
     }
 
     /// Moves the cursor to the next/previous visible *line* (spec

@@ -721,7 +721,19 @@ impl App {
     /// validation). `pub(crate)`: also reused by `main.rs`'s batch `extract`
     /// subcommand (spec 0123) to resolve its `path` argument.
     pub(crate) fn resolve_path(&self, path: &str) -> Option<usize> {
-        let root = self.tree.iter().position(|n| n.parent.is_none())?;
+        // Spec 0188 G1: `self.first_node`, not a search for the arena's
+        // parentless node. That search was a linear scan of the whole
+        // arena — 382 k nodes of 256 bytes each on a 25 MB descriptor —
+        // and it ran once per `Path` override entry per batch, which is
+        // how it stayed invisible for so long: it was smaller than the
+        // full-arena mark scan next to it until spec 0188 S4 deleted
+        // that, and then it *was* the batch.
+        //
+        // The two agree because nothing ever appends a second parentless
+        // node: `splice_override` re-decodes a subtree under an existing
+        // node and always links what it appends. Asserted by
+        // `the_root_stays_the_first_node_across_a_root_respice`.
+        let root = self.first_node;
         if path == "/" {
             return Some(root);
         }

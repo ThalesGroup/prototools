@@ -514,6 +514,39 @@ fn resolve_path_is_the_inverse_of_positional_path() {
     assert_eq!(app.resolve_path("/99"), None);
 }
 
+/// Spec 0188 G1: `resolve_path` starts from `self.first_node` instead
+/// of searching the arena for its parentless node, which is only
+/// correct while those two are the same node.
+///
+/// The way that could stop being true is a splice appending a second
+/// parentless node, so the case worth checking is a splice on the root
+/// itself — retyped to raw and back, which re-decodes the entire
+/// document twice and appends two full copies of it to the arena. If
+/// either copy brought its own detached root, the search and the field
+/// would disagree here.
+#[test]
+fn the_root_stays_the_first_node_across_a_root_respice() {
+    let mut app = nested_any_fixture();
+    let root = app.first_node;
+    let origin = OverrideOrigin::Path {
+        path: "/".to_string(),
+    };
+
+    app.overrides.activate(origin.clone(), None);
+    app.render_overrides(root);
+    app.overrides
+        .activate(origin, Some("acme.Envelope".to_string()));
+    app.render_overrides(root);
+
+    assert_eq!(
+        Some(app.first_node),
+        app.tree.iter().position(|n| n.parent.is_none()),
+        "the arena must hold exactly one parentless node, and it must \
+         be `first_node`"
+    );
+    assert_eq!(app.resolve_path("/"), Some(app.first_node));
+}
+
 /// Spec 0117 §4's restore-time validation: `origin_resolves` checks
 /// each of the three origin kinds against the current tree/descriptor
 /// pool.

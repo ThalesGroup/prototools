@@ -4,7 +4,15 @@
 
 // Throwaway diagnostic for the 2026-07-24 override-pane `Down` slowdown
 // report — not meant to stay in the tree. Run with:
-//   cargo test --release -p protolens --lib tui::tests::profiling -- --ignored --nocapture
+//   cargo test --release --bin protolens tui::tests::profiling -- --ignored --nocapture
+//
+// Every harness below sets `app.verify_repair = false` (spec 0186 G3):
+// that check re-runs the full O(document) line-map and `visible_rows`
+// rebuild after each splice — precisely the work spec 0186 removed — so
+// leaving it on would have these tests report the old cost on top of
+// the new one. The `App::new` figure each test prints does still
+// include one such pass, since the flag cannot be cleared before the
+// constructor's own startup render.
 
 use std::path::Path;
 use std::time::Instant;
@@ -79,6 +87,7 @@ fn profile_override_pane_down_on_db3() {
         None,
     );
     app.splash = false;
+    app.verify_repair = false;
     app.term_width = 120;
     eprintln!("App::new: {:?}", t2.elapsed());
     eprintln!("total lines: {}", app.lines.len());
@@ -193,6 +202,7 @@ fn profile_preview_root_versus_first_child_on_db3() {
         None,
     );
     app.splash = false;
+    app.verify_repair = false;
     app.term_width = 120;
     eprintln!(
         "tree.len()={} lines.len()={}",
@@ -268,6 +278,7 @@ fn profile_override_pane_enter_on_pdb() {
         None,
     );
     app.splash = false;
+    app.verify_repair = false;
     app.term_width = 120;
     eprintln!("App::new: {:?}", t2.elapsed());
     eprintln!("total lines: {}", app.lines.len());
@@ -390,6 +401,7 @@ fn profile_override_pane_first_candidate_enter_on_pdb() {
         None,
     );
     app.splash = false;
+    app.verify_repair = false;
     app.term_width = 120;
     eprintln!("total tree nodes: {}", app.tree.len());
 
@@ -451,6 +463,7 @@ fn profile_main_pane_down_on_db3() {
         None,
     );
     app.splash = false;
+    app.verify_repair = false;
     app.term_width = 120;
     eprintln!("App::new: {:?}", t2.elapsed());
     eprintln!("total lines: {}", app.lines.len());
@@ -550,6 +563,7 @@ fn repro_crash_down_t_enter_on_pdb() {
         None,
     );
     app.splash = false;
+    app.verify_repair = false;
     app.term_width = 120;
     eprintln!("total tree nodes: {}", app.tree.len());
 
@@ -666,6 +680,7 @@ fn repro_crash_down_t_enter_immediate_on_pdb() {
         None,
     );
     app.splash = false;
+    app.verify_repair = false;
     app.term_width = 120;
     eprintln!(
         "root rendered_as after App::new: {:?}",
@@ -761,6 +776,7 @@ fn repro_crash_forced_resplice_on_pdb() {
         None,
     );
     app.splash = false;
+    app.verify_repair = false;
     app.term_width = 120;
 
     if let Some(graph) = &app.ctx.graph {
@@ -832,6 +848,7 @@ fn repro_crash_activate_then_close_on_pdb() {
         None,
     );
     app.splash = false;
+    app.verify_repair = false;
     app.term_width = 120;
 
     if let Some(graph) = &app.ctx.graph {
@@ -917,6 +934,7 @@ fn repro_crash_real_t_then_manual_confirm_on_pdb() {
         None,
     );
     app.splash = false;
+    app.verify_repair = false;
     app.term_width = 120;
 
     if let Some(graph) = &app.ctx.graph {
@@ -1001,6 +1019,7 @@ fn repro_crash_two_previews_then_manual_confirm_on_pdb() {
         None,
     );
     app.splash = false;
+    app.verify_repair = false;
     app.term_width = 120;
 
     if let Some(graph) = &app.ctx.graph {
@@ -1097,6 +1116,7 @@ fn repro_crash_raw_then_typed_preview_then_manual_confirm_on_pdb() {
         None,
     );
     app.splash = false;
+    app.verify_repair = false;
     app.term_width = 120;
 
     if let Some(graph) = &app.ctx.graph {
@@ -1195,6 +1215,7 @@ fn repro_crash_natural_highlight_on_pdb() {
         None,
     );
     app.splash = false;
+    app.verify_repair = false;
     app.term_width = 120;
 
     let backend = ratatui::backend::TestBackend::new(120, 50);
@@ -1334,6 +1355,7 @@ fn diagnose_sim_t_stall() {
         None,
     );
     app.splash = false;
+    app.verify_repair = false;
     app.term_width = 120;
 
     if let Some(graph) = &app.ctx.graph {
@@ -1422,6 +1444,7 @@ fn diagnose_sim_node3_t_down_stall() {
         None,
     );
     app.splash = false;
+    app.verify_repair = false;
     app.term_width = 120;
 
     if let Some(graph) = &app.ctx.graph {
@@ -1507,5 +1530,145 @@ fn diagnose_sim_node3_t_down_stall() {
         app.override_candidates.len(),
         app.override_candidates_complete,
         app.heat_worker.as_ref().map_or(0, |w| w.score_all_calls()),
+    );
+}
+
+/// Spec 0186 G4: the *nested*-commit counterpart of `profile_override_
+/// pane_enter_on_pdb`. That harness confirms an override on the root's
+/// first child, whose content is nearly the whole document, so
+/// `finalize_override_batch`'s `from` lands at line 1 and "touch only
+/// what moved" degenerates to "touch everything" — it cannot show the
+/// win spec 0186 was written for, whatever the win is worth. This one
+/// commits far down the document instead, so `from` is large and the
+/// prefix the repair keeps is most of the buffer.
+///
+/// The target is chosen by scanning for a message node with a resolved
+/// type whose header sits past the document's midpoint and whose
+/// subtree is big enough for the splice to cost something. The confirm
+/// itself replays `handle_override_key`'s `Enter` arm directly
+/// (`overrides.activate` + `render_overrides(first_node)`), the same
+/// shortcut `repro_crash_activate_then_close_on_pdb` uses.
+#[test]
+#[ignore]
+fn profile_nested_commit_on_pdb() {
+    let desc_path = Path::new("/tmp/pdb.desc");
+    if !desc_path.exists() {
+        eprintln!("skipping: /tmp/pdb.desc not present");
+        return;
+    }
+
+    let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
+    let blob = std::fs::read(desc_path).expect("read blob");
+    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let mut app = App::new(
+        decoded,
+        "pdb.desc",
+        std::path::PathBuf::from(desc_path),
+        2,
+        ctx,
+        ThemeKind::Dark,
+        None,
+    );
+    app.splash = false;
+    app.verify_repair = false;
+    app.term_width = 120;
+
+    // Resolve the root type first, so the document below is schema-typed
+    // and deep nodes actually carry a `type_fqdn` to re-confirm.
+    if let Some(graph) = &app.ctx.graph {
+        let graph_ref = std::sync::Arc::clone(graph);
+        let original_blob = app.blob[app.wrapper_offset..].to_vec();
+        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref.graph()) {
+            eprintln!("resolved root type: {fqdn}");
+            app.apply_resolved_root_type(fqdn);
+        }
+    }
+    eprintln!(
+        "after root resolution: lines={} tree.len()={}",
+        app.lines.len(),
+        app.tree.len()
+    );
+
+    // Control: two batches that change *nothing*. `resettle_node`
+    // splices only when `(target, field_name) != rendered_as`, so on a
+    // settled tree these should splice zero nodes. Anything else means
+    // a batch is not idempotent, and every later measurement is really
+    // measuring that instead of the commit.
+    for round in 1..=2 {
+        let t = Instant::now();
+        app.render_overrides(app.first_node);
+        eprintln!(
+            "no-op batch #{round}: {:?}, lines={} tree.len()={}",
+            t.elapsed(),
+            app.lines.len(),
+            app.tree.len()
+        );
+    }
+
+    // The target must be a node whose override matches *one* node.
+    // `override_origin_for_kind` yields `PathField { parent path, field
+    // number }`, which matches every child of that parent carrying that
+    // field number — so a repeated field (e.g. `file` on the root, 465
+    // elements in this fixture) retypes the whole document and is not a
+    // nested commit at all. Require the parent to be a non-root node and
+    // the field number to be unique among its children.
+    let midpoint = app.lines.len() / 2;
+    let target = (0..app.tree.len())
+        .filter(|&i| {
+            let s = &app.tree[i].span;
+            if !(s.is_message
+                && s.type_fqdn.is_some()
+                && s.text_range.start > midpoint
+                && s.text_range.end - s.text_range.start > 100)
+            {
+                return false;
+            }
+            let Some(parent) = app.tree[i].parent else {
+                return false;
+            };
+            if parent == app.first_node {
+                return false;
+            }
+            let field = s.field_number;
+            let mut siblings = 0usize;
+            let mut c = app.tree[parent].first_child;
+            while let Some(ci) = c {
+                if app.tree[ci].span.field_number == field {
+                    siblings += 1;
+                }
+                c = app.tree[ci].next_sibling;
+            }
+            siblings == 1
+        })
+        .max_by_key(|&i| app.tree[i].span.text_range.start)
+        .expect("a deep, sizeable, uniquely-addressable typed message node");
+    let own_fqdn = app.tree[target].span.type_fqdn.clone();
+    eprintln!(
+        "target node {target}: fqdn={own_fqdn:?} lines {}..{} of {}",
+        app.tree[target].span.text_range.start,
+        app.tree[target].span.text_range.end,
+        app.lines.len(),
+    );
+
+    // Force a real re-splice, exactly as `toggle_override` does before
+    // every confirm.
+    app.tree[target].rendered_as = None;
+    let origin = app
+        .override_origin_for_kind(target)
+        .expect("origin for target");
+    app.overrides.activate(origin, own_fqdn);
+
+    // Left with the G3 equivalence check *off*: it performs exactly the
+    // full rebuild spec 0186 S3/S4 replaced, and it runs inside
+    // `finalize_override_batch`, so its cost lands in the figure printed
+    // below. Turn it on by hand to get the "commit + one reference
+    // rebuild" reading and subtract, but not for a timing run.
+    let t = Instant::now();
+    app.render_overrides(app.first_node);
+    eprintln!("nested commit: {:?}", t.elapsed());
+    eprintln!(
+        "after: lines={} tree.len()={}",
+        app.lines.len(),
+        app.tree.len()
     );
 }

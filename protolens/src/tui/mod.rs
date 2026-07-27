@@ -645,18 +645,29 @@ pub struct App {
     /// `ThemeKind::System` (resolved once in `main.rs` before `App::new`).
     theme: ThemeKind,
     tree: Vec<TreeNode>,
-    /// Line index (in `lines`) -> node index, for nodes whose text starts
-    /// on that line. Used for the fold-indicator gutter.
-    line_to_node: HashMap<usize, usize>,
-    /// Line index -> node index, for message/group nodes' own closing
-    /// (`}`) line (`text_range.end - 1`) — the counterpart to
-    /// `line_to_node`'s opening-line mapping, both maintained in lockstep
-    /// at the same two sites (`App::new`, `splice_override`'s rebuild).
-    /// Used by spec 0113 D33's bold override hint, which needs to
+    /// Line index (in `lines`) -> the node whose text *starts* on that
+    /// line, or `None` for a line that opens no node (a message's own
+    /// closing `}` line, the truncation marker). Used for the
+    /// fold-indicator gutter.
+    ///
+    /// Spec 0188 S1: dense and exactly `lines.len()` long, spliced in
+    /// lockstep with `lines` by `materialize_line_patches`. It is an
+    /// array and not a `HashMap` because a splice shifts a *suffix* of
+    /// line numbers by a constant — a `memmove` here, a full rehash
+    /// there. `HashMap::retain` is O(map size) whatever the predicate,
+    /// so the repair spec 0186 introduced could never be sublinear.
+    ///
+    /// Where a packed run renders several nodes onto one line, the last
+    /// writer wins — exactly what the `HashMap` did.
+    line_to_node: Vec<Option<u32>>,
+    /// The same, for a message/group node's own closing (`}`) line
+    /// (`text_range.end - 1`) — the counterpart to `line_to_node`'s
+    /// opening-line mapping, both maintained in lockstep at the same
+    /// sites. Used by spec 0113 D33's bold override hint, which needs to
     /// recognize a node's own closing line as directly "its own" (not a
     /// descendant's), the same way `line_to_node` already recognizes its
     /// own opening line.
-    footer_line_to_node: HashMap<usize, usize>,
+    footer_line_to_node: Vec<Option<u32>>,
     /// Spec 0160 G1: whether a `render_overrides` batch is currently
     /// active — `0` outside of one, `1` while the outer (caller-
     /// initiated) call is running. `splice_override` uses this to decide
@@ -673,16 +684,30 @@ pub struct App {
     /// `Vec` read instead of the old `is_message` blanket that
     /// descended into every interior node of the document.
     ///
-    /// Recomputed by `compute_descend_marks` at the start of each
-    /// batch (when `override_batch_depth` goes `0` -> `1`) and read
-    /// only during it. Indices are arena indices, which is sound
-    /// because the arena is append-only: `splice_override` translates
-    /// fresh nodes by `base = tree.len()` and abandons superseded ones
-    /// in place, so no existing index ever moves. Nodes created
-    /// *during* a batch therefore sit past the end of this `Vec` and
-    /// read as unmarked — correctly, since freshly spliced content is
-    /// descended by `render_overrides_inner`'s `fresh` flag (S3)
-    /// rather than by a mark.
+    /// Extended by `compute_descend_marks` at the start of each batch
+    /// (when `override_batch_depth` goes `0` -> `1`) and by
+    /// `mark_fresh_subtree` after each splice within one. Indices are
+    /// arena indices, which is sound because the arena is append-only:
+    /// `splice_override` translates fresh nodes by `base = tree.len()`
+    /// and abandons superseded ones in place, so no existing index
+    /// ever moves.
+    ///
+    /// Spec 0188 S4: **monotone — never cleared**, and its length
+    /// doubles as the watermark for how much of the arena has already
+    /// been examined. Rebuilding it per batch meant a scan of every
+    /// node in the arena (13.5% of a nested commit at 382 k nodes, and
+    /// growing with the arena rather than with the document); keeping
+    /// it means each node is examined once, when it first appears.
+    ///
+    /// Keeping a mark that a later batch would not re-derive is safe
+    /// in a way that dropping one is not: a stale mark costs one
+    /// wasted descent into a node that turns out to need nothing,
+    /// while a missing mark is silent staleness — the node is never
+    /// revisited and keeps the text it was last rendered with (spec
+    /// 0183 L3). And a mark is only ever stale in the first place if
+    /// the override entry that produced it went away, in which case
+    /// the node it names was spliced and so carries `rendered_as`,
+    /// which would have marked it permanently regardless.
     descend: Vec<bool>,
     /// Test-only escape hatch restoring the pre-spec-0183 recursion
     /// gate (`is_message || is_auto_expand_candidate || <has an active
@@ -696,6 +721,18 @@ pub struct App {
     /// reachable from a release build.
     #[cfg(test)]
     pub(super) unpruned_walk: bool,
+    /// Spec 0186 G3: whether `finalize_override_batch` re-runs the full
+    /// map/`visible_rows` rebuild and asserts the incremental repair
+    /// produced the same thing. Defaults to `true` so that every splice
+    /// in the suite is a case without opting in — the opposite of
+    /// `unpruned_walk` above, because here the checked path is the
+    /// production one and the check is what must be universal.
+    ///
+    /// The profiling harness turns it off: it does the very O(document)
+    /// work this spec removes, so leaving it on would make the harness
+    /// measure the old cost plus the new one.
+    #[cfg(test)]
+    pub(super) verify_repair: bool,
     /// Spec 0160 G2: running total of line-count deltas accumulated by
     /// `splice_override` calls in the current `render_overrides` batch.
     /// Always `0` outside of an active batch.
@@ -709,6 +746,22 @@ pub struct App {
     /// batch; drained and applied to `self.lines`/`self.line_styles` in
     /// one pass by `finalize_override_batch`.
     pending_line_patches: Vec<override_apply::LinePatch>,
+    /// Spec 0186 S2: the lowest line index any patch in the current batch
+    /// touches, in the batch-corrected frame `materialize_line_patches`
+    /// resolves against — i.e. the first line whose *content* or *owner*
+    /// this batch can possibly have changed. `None` when the batch queued
+    /// no patches at all.
+    ///
+    /// This is the boundary that makes `finalize_override_batch`'s line-
+    /// map repair and `visible_rows` rebuild incremental: everything
+    /// strictly below it keeps both its content and its index, so it
+    /// needs no work. Always `None` outside of an active batch.
+    ///
+    /// Note that it is *not* interchangeable with `pending_shift != 0`:
+    /// a batch can shift without patching, and can patch with a net
+    /// shift of zero while still changing which node owns a line. See
+    /// `finalize_override_batch`.
+    pending_patch_min_line: Option<usize>,
     cursor: usize,
     /// `true` when the cursor is visually resting on `cursor`'s own
     /// closing `}` line rather than its header line (spec 0142).
@@ -751,6 +804,13 @@ pub struct App {
     /// Rows currently visible (line indices in `lines`, folded-away lines
     /// excluded) — rebuilt only on fold-state changes, not every frame.
     visible_rows: Vec<usize>,
+    /// Spec 0186 S4: scratch buffer for `rebuild_visible_rows_from`'s
+    /// folded-away mask, one entry per line. Kept on `App` purely so the
+    /// allocation is reused across calls rather than being a
+    /// `vec![false; lines.len()]` per rebuild. Carries no meaning
+    /// between calls — the range about to be marked is always cleared
+    /// first.
+    hidden_mask: Vec<bool>,
     scroll_offset: usize,
     /// `cursor_display_row()`'s value as of the last render pass that
     /// applied `clamp_scroll_to_visible` to `scroll_offset` (2026-07-19
@@ -1161,10 +1221,10 @@ impl App {
     ) -> Self {
         let all_type_fqdns = override_pane::all_type_fqdns(ctx.pool());
         let tree_len = decoded.tree.len();
-        let mut line_to_node = HashMap::new();
-        let mut footer_line_to_node = HashMap::new();
+        let mut line_to_node = vec![None; decoded.lines.len()];
+        let mut footer_line_to_node = vec![None; decoded.lines.len()];
         for (idx, node) in decoded.tree.iter().enumerate() {
-            line_to_node.insert(node.span.text_range.start, idx);
+            line_to_node[node.span.text_range.start] = Some(idx as u32);
             // A distinct footer line only exists when the node's own
             // header and closing `}` aren't the same line — not the
             // same as `first_child.is_some()` (spec 0142 fix, 2026-07-
@@ -1174,7 +1234,7 @@ impl App {
             // a real, distinct footer line that must be a reachable
             // cursor stop.
             if node.span.text_range.end - 1 > node.span.text_range.start {
-                footer_line_to_node.insert(node.span.text_range.end - 1, idx);
+                footer_line_to_node[node.span.text_range.end - 1] = Some(idx as u32);
             }
         }
         let header = format!("protolens — {blob_label} — {}", decoded.root_type);
@@ -1218,8 +1278,11 @@ impl App {
             descend: Vec::new(),
             #[cfg(test)]
             unpruned_walk: false,
+            #[cfg(test)]
+            verify_repair: true,
             pending_shift: 0,
             pending_line_patches: Vec::new(),
+            pending_patch_min_line: None,
             cursor,
             cursor_footer: false,
             cursor_moves: 0,
@@ -1229,6 +1292,7 @@ impl App {
             pending_double_click: false,
             folded: HashSet::new(),
             visible_rows: Vec::new(),
+            hidden_mask: Vec::new(),
             scroll_offset: 0,
             last_cursor_row: None,
             pan_offset: 0,
@@ -1337,10 +1401,20 @@ impl App {
         // matching the pre-spec-0120 behavior where `decode()` expanded
         // it directly via prototext-core. Guarded like the block above:
         // an empty tree has no node at `cursor` to render.
+        //
+        // Spec 0186 S4 moved this `rebuild_visible_rows` from *after*
+        // that pass to before it. `finalize_override_batch` now repairs
+        // `visible_rows` incrementally, keeping the prefix below the
+        // batch's first patched line — which requires that prefix to
+        // already describe the current `lines`. This was the one place
+        // in the program where a batch ran against a `visible_rows` that
+        // had never been built at all, so the invariant "`visible_rows`
+        // is always consistent with `lines` and `folded`" now holds
+        // everywhere, rather than only after startup.
+        app.rebuild_visible_rows();
         if !app.tree.is_empty() {
             app.render_overrides(cursor);
         }
-        app.rebuild_visible_rows();
         app
     }
 }
@@ -1466,7 +1540,7 @@ impl App {
                 return PrefetchStep::Idle;
             };
             let line = self.visible_rows[row];
-            let Some(&idx) = self.line_to_node.get(&line) else {
+            let Some(idx) = self.node_at_header_line(line) else {
                 continue;
             };
             if !self.can_override(idx) || self.heat_states[idx].settled() {

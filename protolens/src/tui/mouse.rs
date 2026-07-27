@@ -339,7 +339,7 @@ impl App {
             return;
         };
 
-        if let Some(&idx) = self.line_to_node.get(&line_idx) {
+        if let Some(idx) = self.node_at_header_line(line_idx) {
             // A click on a foldable node's own fold marker toggles it
             // without moving the cursor there (2026-07-18 feedback) —
             // the marker is a pure fold control, not a row-selection
@@ -372,7 +372,7 @@ impl App {
         // `line_to_node`, only in `footer_line_to_node`) moves the
         // cursor there — no fold-marker check applies, since footer
         // lines never carry a fold glyph.
-        if let Some(&idx) = self.footer_line_to_node.get(&line_idx) {
+        if let Some(idx) = self.node_at_footer_line(line_idx) {
             if idx != self.cursor || !self.cursor_footer {
                 self.record_jump(self.cursor);
                 self.cursor = idx;

@@ -85,10 +85,11 @@ fn live_shapes(app: &App) -> Vec<Shape> {
     out
 }
 
-fn shaped_map(app: &App, map: &std::collections::HashMap<usize, usize>) -> Vec<(usize, Shape)> {
-    let mut out: Vec<(usize, Shape)> = map.iter().map(|(&l, &n)| (l, shape_of(app, n))).collect();
-    out.sort_by_key(|(l, _)| *l);
-    out
+fn shaped_map(app: &App, map: &[Option<u32>]) -> Vec<(usize, Shape)> {
+    map.iter()
+        .enumerate()
+        .filter_map(|(l, n)| n.map(|n| (l, shape_of(app, n as usize))))
+        .collect()
 }
 
 fn assert_unpruned_walk_changes_nothing(app: &mut App, what: &str) {

@@ -180,11 +180,11 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
     // `line_to_node` must stay fully consistent with the doc chain:
     // every reachable node via `doc_next` from `first_node`, and
     // nothing else.
-    let mut expected = HashMap::new();
+    let mut expected: Vec<Option<u32>> = vec![None; app.lines.len()];
     let mut cur = Some(app.first_node);
     let mut count = 0;
     while let Some(c) = cur {
-        expected.insert(app.tree[c].span.text_range.start, c);
+        expected[app.tree[c].span.text_range.start] = Some(c as u32);
         count += 1;
         assert!(count <= app.tree.len(), "doc chain must not cycle");
         cur = app.tree[c].doc_next;
@@ -2082,4 +2082,188 @@ fn overlapping_line_patches_panic_with_a_directed_message() {
 
     app.pending_line_patches = vec![original_patch(0..3, &["A"]), original_patch(2..4, &["B"])];
     app.materialize_line_patches();
+}
+
+/// Spec 0186 S3, the crux. `finalize_override_batch` grows every
+/// ancestor's `text_range.end`, so an ancestor's *footer* line moves
+/// while its *header* line does not — which is why the map repair
+/// filters by line index rather than by subtree. An implementation that
+/// keyed off "the batch origin's subtree" would leave a live entry
+/// behind at each ancestor's old footer line.
+///
+/// Note what this asserts beyond "the new footer resolves": that
+/// *nothing* still claims the old one. A stale duplicate passes the
+/// weaker check and then navigates the user to the wrong node.
+#[test]
+fn a_deeply_nested_splice_moves_its_ancestors_footers_without_leaving_stale_entries() {
+    let mut app = nested_any_fixture();
+    // The auto-expanded `Any` itself, three message levels down —
+    // deliberately not its `acme.Payload` value, every alternative
+    // rendering of which happens to occupy the same three lines in this
+    // fixture, so no ancestor footer would move at all.
+    let payload = app
+        .tree
+        .iter()
+        .position(|n| n.span.type_fqdn.as_deref() == Some("acme.Payload"))
+        .expect("the Any's value must resolve to acme.Payload");
+    let target = app.tree[payload]
+        .parent
+        .expect("the payload must sit inside the Any");
+
+    // Only ancestors that actually have a footer line of their own — a
+    // single-line node's `end - 1` is its header, and the full rebuild
+    // records no footer entry for it either.
+    let mut ancestors: Vec<(usize, usize)> = Vec::new();
+    let mut p = app.tree[target].parent;
+    while let Some(pi) = p {
+        let r = &app.tree[pi].span.text_range;
+        if r.end - 1 > r.start {
+            ancestors.push((pi, r.end - 1));
+        }
+        p = app.tree[pi].parent;
+    }
+    assert!(
+        ancestors.len() >= 3,
+        "the fixture must be deep enough to exercise the ancestor walk, \
+         got {} ancestors with footers",
+        ancestors.len()
+    );
+
+    // Collapse the whole `Any` subtree into a single mismatched scalar
+    // line, so every one of those ancestor footers moves up.
+    let lines_before = app.lines.len();
+    app.splice_override(target, Some("int32".to_string()), false, None)
+        .expect("re-typing the Any as a scalar must succeed (as a mismatch)");
+    assert!(
+        app.lines.len() < lines_before,
+        "the fixture must actually shrink the document: {:#?}",
+        app.lines
+    );
+
+    for &(ancestor, old_footer) in &ancestors {
+        let new_footer = app.tree[ancestor].span.text_range.end - 1;
+        assert_ne!(
+            new_footer, old_footer,
+            "the fixture is not proving anything unless ancestor \
+             {ancestor}'s footer actually moved"
+        );
+        assert_eq!(
+            app.node_at_footer_line(new_footer),
+            Some(ancestor),
+            "ancestor {ancestor}'s footer must be mapped at its new line \
+             {new_footer}"
+        );
+        assert_ne!(
+            app.node_at_footer_line(old_footer),
+            Some(ancestor),
+            "a stale entry survived at ancestor {ancestor}'s *old* footer \
+             line {old_footer}"
+        );
+    }
+}
+
+/// Spec 0186 S3's asymmetry: the shift walk is guarded by `delta != 0`,
+/// the map repair must not be. Re-splicing a node as the type it already
+/// has shifts nothing at all, but the repair still dropped every entry
+/// at or after the patch and owes them back.
+#[test]
+fn a_zero_delta_splice_still_repairs_the_line_maps() {
+    let mut app = nested_any_fixture();
+    let target = app
+        .tree
+        .iter()
+        .position(|n| n.span.type_fqdn.as_deref() == Some("acme.Payload"))
+        .expect("the Any's value must resolve to acme.Payload");
+    let lines_before = app.lines.clone();
+
+    app.splice_override(target, Some("acme.Payload".to_string()), false, None)
+        .expect("re-splicing a node as its current type must succeed");
+
+    assert_eq!(
+        app.lines, lines_before,
+        "this is only the zero-delta case if the content is unchanged"
+    );
+    let mut cur = Some(app.first_node);
+    while let Some(c) = cur {
+        let r = app.tree[c].span.text_range.clone();
+        assert_eq!(
+            app.node_at_header_line(r.start),
+            Some(c),
+            "node {c}'s header line {} lost its map entry to a repair \
+             that ran only because lines moved",
+            r.start
+        );
+        if r.end - 1 > r.start {
+            assert_eq!(
+                app.node_at_footer_line(r.end - 1),
+                Some(c),
+                "node {c}'s footer line {} lost its map entry",
+                r.end - 1
+            );
+        }
+        cur = app.tree[c].doc_next;
+    }
+}
+
+/// Spec 0186 S2 / spec 0188 G1: a batch that queues no patches leaves
+/// `pending_patch_min_line` at `None`, and the finalizer then returns
+/// without touching anything.
+///
+/// Spec 0186 read that `None` as "no safe lower bound" and rebuilt the
+/// whole document from it. It is the opposite: no patch means no text
+/// was replaced and no span was shifted, so there is nothing to
+/// rebuild. What this test pins is that the skip really is a no-op —
+/// lines, rows and both line maps must come out byte-identical.
+#[test]
+fn a_batch_that_patches_nothing_leaves_the_document_intact() {
+    let mut app = nested_any_fixture();
+    let lines_before = app.lines.clone();
+    let rows_before = app.visible_rows.clone();
+    let headers_before = app.line_to_node.clone();
+    let footers_before = app.footer_line_to_node.clone();
+
+    // The fixture's own construction already ran this pass, so a second
+    // one has nothing left to resettle.
+    let cursor = app.cursor;
+    app.render_overrides(cursor);
+
+    assert!(
+        app.pending_patch_min_line.is_none(),
+        "a second identical pass must queue no patches"
+    );
+    assert_eq!(app.lines, lines_before);
+    assert_eq!(app.visible_rows, rows_before);
+    assert_eq!(app.line_to_node, headers_before);
+    assert_eq!(app.footer_line_to_node, footers_before);
+}
+
+/// Spec 0186 S4 retains the prefix of `visible_rows` with a
+/// `partition_point`, which is only sound while the vector is sorted
+/// ascending. Spec 0185's overlay anchor does a `partition_point` on the
+/// same vector, so this is load-bearing in two places and worth pinning.
+#[test]
+fn visible_rows_stays_sorted_across_a_splice() {
+    let mut app = nested_any_fixture();
+    assert!(
+        app.visible_rows.windows(2).all(|w| w[0] < w[1]),
+        "visible_rows must be sorted ascending before the splice"
+    );
+
+    let target = app
+        .tree
+        .iter()
+        .position(|n| n.span.type_fqdn.as_deref() == Some("acme.Payload"))
+        .expect("the Any's value must resolve to acme.Payload");
+    app.splice_override(target, None, false, None)
+        .expect("collapsing the payload to raw bytes must succeed");
+
+    assert!(
+        app.visible_rows.windows(2).all(|w| w[0] < w[1]),
+        "...and after it: {:?}",
+        app.visible_rows
+    );
+    assert!(
+        app.visible_rows.iter().all(|&l| l < app.lines.len()),
+        "no retained row may point past the spliced document"
+    );
 }

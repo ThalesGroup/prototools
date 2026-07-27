@@ -534,7 +534,7 @@ fn move_down_and_up_step_over_display_only_lines() {
 
     // Line 1 is rendered but has no node behind it, exactly as a
     // malformed or virtual-scalar line does.
-    app.line_to_node.remove(&1);
+    app.line_to_node[1] = None;
 
     app.cursor = 0;
     app.cursor_footer = false;

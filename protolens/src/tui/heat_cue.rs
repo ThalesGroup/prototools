@@ -214,7 +214,7 @@ impl App {
     /// are already warm the moment the user un-hides them; only the
     /// returned value (what's actually shown) is suppressed here.
     pub(super) fn heat_cue_for(&mut self, line_idx: usize) -> HeatDisplay {
-        let Some(&idx) = self.line_to_node.get(&line_idx) else {
+        let Some(idx) = self.node_at_header_line(line_idx) else {
             return HeatDisplay::None;
         };
         if !self.can_override(idx) {

@@ -1164,12 +1164,12 @@ impl App {
         }
     }
 
-    /// Spec 0183 S2: recomputes `self.descend` from scratch for a
-    /// batch about to start. A node is a *target* if this pass could
-    /// change how it renders; every target and every ancestor of one
-    /// gets marked, so that `render_overrides_inner`'s child gate can
-    /// prune whole subtrees instead of descending into every message
-    /// in the document.
+    /// Spec 0183 S2: extends `self.descend` for a batch about to
+    /// start. A node is a *target* if this pass could change how it
+    /// renders; every target and every ancestor of one gets marked, so
+    /// that `render_overrides_inner`'s child gate can prune whole
+    /// subtrees instead of descending into every message in the
+    /// document.
     ///
     /// Marking ancestors — not just targets — is the point, and it is
     /// the part that is easy to get wrong (spec 0183 L3). A node-level
@@ -1186,9 +1186,40 @@ impl App {
     /// superseded by earlier splices, which are unreachable from the
     /// walk but are scanned here; marking them only over-marks their
     /// still-live ancestors.
+    ///
+    /// Spec 0188 S4/S5: this used to reallocate `descend` and walk the
+    /// whole arena every batch, at a measured 35-44 ns/node — 17 ms on
+    /// a 382 k-node arena, and growing with the arena rather than with
+    /// the document, since the arena also holds every node superseded
+    /// by an earlier splice. Two of the three per-node target sources
+    /// do not need re-examining: a node's auto-expand eligibility is a
+    /// structural property that can only change by re-decoding the
+    /// node (which produces a *different* node, scanned as fresh), and
+    /// `rendered_as` only ever goes from `None` to `Some` in
+    /// production. So the marks are kept and only the arena's
+    /// unexamined suffix is scanned — normally empty, since
+    /// `mark_fresh_subtree` already covered whatever the last batch
+    /// appended.
+    ///
+    /// The exception, and the reason `start` is not simply the
+    /// watermark, is an `FqdnField` origin: "field N of every message
+    /// of type T, anywhere" is a genuine search with no path to
+    /// follow, and a newly activated one has to find its matches among
+    /// nodes that were examined long ago. That case pays the old
+    /// full-arena scan; it is also the rare one (it has no keyboard
+    /// shortcut and is never auto-seeded).
     fn compute_descend_marks(&mut self) {
-        self.descend = vec![false; self.tree.len()];
-        let targets = self.collect_descend_targets(0, self.tree.len(), None);
+        // The already-examined prefix — see `descend`'s own comment for
+        // why the mark array's length is exactly that watermark.
+        let scanned = self.descend.len();
+        self.descend.resize(self.tree.len(), false);
+        let has_fqdn_origin = self
+            .overrides
+            .entries()
+            .iter()
+            .any(|e| matches!(e.origin, OverrideOrigin::FqdnField { .. }));
+        let start = if has_fqdn_origin { 0 } else { scanned };
+        let targets = self.collect_descend_targets(start, self.tree.len(), None);
         self.mark_targets(targets);
     }
 
@@ -1246,7 +1277,11 @@ impl App {
     fn collect_descend_targets(&self, start: usize, end: usize, under: Option<&str>) -> Vec<usize> {
         let mut targets: Vec<usize> = Vec::new();
 
-        {
+        // Spec 0188 S5: the guard is on the whole loop, not just on the
+        // `FqdnField` test inside it. With the marks kept across
+        // batches (S4) `start == end` is the ordinary case, and then
+        // there is nothing here to allocate, hash or walk at all.
+        if start < end {
             // Active `FqdnField` origins as a set, so the per-node test
             // below is one hash lookup rather than a scan of
             // `entries()` (spec 0183 G3). This is exact — every node
@@ -1289,41 +1324,47 @@ impl App {
                     }
                 }
             }
+        }
 
-            // Source 1, the path-shaped part. Resolved per entry rather
-            // than per node, since a node does not know its own path
-            // without an O(depth) walk. Entry state is not filtered on
-            // `active`: a deactivated entry still has to be reached, so
-            // that its node can be settled back to its natural type.
-            let scope = under.map(|p| OverrideOrigin::Path {
-                path: p.to_string(),
-            });
-            for e in self.overrides.entries() {
-                if let Some(scope) = &scope {
-                    if !override_pane::origin_is_at_or_under(&e.origin, scope) {
-                        continue;
-                    }
+        // Source 1, the path-shaped part. Resolved per entry rather
+        // than per node, since a node does not know its own path
+        // without an O(depth) walk. Entry state is not filtered on
+        // `active`: a deactivated entry still has to be reached, so
+        // that its node can be settled back to its natural type.
+        //
+        // Outside the `start < end` guard on purpose: this part costs
+        // O(entries x depth) and never touches the arena, so it is
+        // re-derived every batch. That is what keeps S4's kept marks
+        // from having to be *removed* — an entry that goes away simply
+        // stops being re-derived here.
+        let scope = under.map(|p| OverrideOrigin::Path {
+            path: p.to_string(),
+        });
+        for e in self.overrides.entries() {
+            if let Some(scope) = &scope {
+                if !override_pane::origin_is_at_or_under(&e.origin, scope) {
+                    continue;
                 }
-                match &e.origin {
-                    OverrideOrigin::Path { path } => {
-                        targets.extend(self.resolve_path(path));
-                    }
-                    OverrideOrigin::PathField { path, field } => {
-                        // The entry names the *parent*; the nodes whose
-                        // rendering it governs are that parent's
-                        // children bearing `field`.
-                        if let Some(parent) = self.resolve_path(path) {
-                            let mut c = self.tree[parent].first_child;
-                            while let Some(ci) = c {
-                                if self.tree[ci].span.field_number == *field {
-                                    targets.push(ci);
-                                }
-                                c = self.tree[ci].next_sibling;
+            }
+            match &e.origin {
+                OverrideOrigin::Path { path } => {
+                    targets.extend(self.resolve_path(path));
+                }
+                OverrideOrigin::PathField { path, field } => {
+                    // The entry names the *parent*; the nodes whose
+                    // rendering it governs are that parent's children
+                    // bearing `field`.
+                    if let Some(parent) = self.resolve_path(path) {
+                        let mut c = self.tree[parent].first_child;
+                        while let Some(ci) = c {
+                            if self.tree[ci].span.field_number == *field {
+                                targets.push(ci);
                             }
+                            c = self.tree[ci].next_sibling;
                         }
                     }
-                    OverrideOrigin::FqdnField { .. } => {}
                 }
+                OverrideOrigin::FqdnField { .. } => {}
             }
         }
 
@@ -1559,49 +1600,204 @@ impl App {
     /// followed by the `line_to_node`/`footer_line_to_node` rebuild and
     /// `rebuild_visible_rows()` (formerly redone on every splice).
     fn finalize_override_batch(&mut self, idx: usize) {
+        // Spec 0186 S2: the first line this batch can have disturbed, in
+        // the final buffer's frame.
+        //
+        // Spec 0188 G1: `None` means the batch queued no patches at all,
+        // and that is not a "no safe lower bound, rebuild everything"
+        // case — it is a batch that spliced nothing. `pending_patch_min_
+        // line` and `pending_line_patches` are written at one site, so
+        // no patch means no text was replaced; `pending_shift` is
+        // accumulated at that same site, so it is zero and no span was
+        // shifted either. Nothing below has anything to repair.
+        //
+        // This is the common case, not an exotic one: opening or
+        // closing the override pane, toggling a management-pane entry
+        // that resolves to what is already rendered, and the second of
+        // two identical passes all land here. It used to clear both
+        // line maps in full and re-map every node in `idx`'s subtree —
+        // 20 ms on a 382 k-node arena, to fix nothing.
+        //
+        // The G3 equivalence check still runs, so every no-patch batch
+        // in the suite asserts that skipping was in fact a no-op.
+        let Some(from) = self.pending_patch_min_line else {
+            #[cfg(test)]
+            if self.verify_repair {
+                self.assert_repair_matches_full_rebuild();
+            }
+            return;
+        };
         // Spec 0167: materialize this batch's line-buffer patches first —
         // `rebuild_visible_rows()` below reads `self.lines.len()`, which
         // must already reflect the batch's final content.
         self.materialize_line_patches();
         let delta = self.pending_shift;
-        if delta != 0 {
-            // Doc-order-last live descendant of `idx` — `last_child`,
-            // walked to its own leaf, since `build_tree`/`splice_
-            // override` always keep it as the doc-order-last direct
-            // child (see `packed_run_is_last_child`'s existing use of
-            // this same invariant).
-            let mut last = idx;
-            while let Some(lc) = self.tree[last].last_child {
-                last = lc;
+
+        // Doc-order-last live descendant of `idx` — `last_child`, walked
+        // to its own leaf, since `build_tree`/`splice_override` always
+        // keep it as the doc-order-last direct child (see
+        // `packed_run_is_last_child`'s existing use of this same
+        // invariant).
+        let mut last = idx;
+        while let Some(lc) = self.tree[last].last_child {
+            last = lc;
+        }
+
+        // Spec 0188 S2 step 1: drop the entries at or after the batch's
+        // earliest patch, so the three walks below own that whole
+        // region. `materialize_line_patches` has already moved the maps
+        // in lockstep with `lines`, so the arrays are the right length
+        // and the untouched prefix below `from` is already correct.
+        //
+        // The suffix must still be cleared rather than trusted, and the
+        // reason is not obvious: an entry that rides the splice's
+        // memmove moves by the batch's line delta, but the *node* it
+        // names does not always move by that same delta. A packed run's
+        // elements are re-spanned by the normalization (spec 0135 G1)
+        // rather than shifted, so an entry can land on a line its node
+        // no longer starts on. Positional preservation is therefore not
+        // sound on its own; clearing and letting the walks re-assert is.
+        //
+        // This is what spec 0186 S3 did with `HashMap::retain` — and
+        // `retain` is O(map size) whatever the predicate, so it scanned
+        // the whole document to drop a handful of entries (55% of a
+        // nested commit, spec 0188's Background). `fill` here is O(the
+        // suffix that actually moved), which is the same region the
+        // walks below already traverse: on the measured nested commit,
+        // 492 entries instead of 276,515 hash slots.
+        //
+        // The three walks are unchanged, and must still run when
+        // `delta == 0`: a batch that replaces N lines with exactly N
+        // lines shifts nothing, yet can still change which node owns a
+        // line inside the replaced range.
+        self.line_to_node[from..].fill(None);
+        self.footer_line_to_node[from..].fill(None);
+
+        // Steps 2 and 3 fold the re-inserts into the walks the shift
+        // already performs, rather than walking the document again.
+        //
+        // Only the `shift_span`/`+= delta` inside these walks is
+        // conditional on `delta != 0`, never the mapping: a batch that
+        // replaces N lines with exactly N lines shifts nothing, yet can
+        // still change which node owns a line inside the replaced range.
+        // Hanging the repair off `delta` would leave those lines unowned.
+
+        // `idx`'s own subtree — freshly spliced, so it already carries
+        // correct line numbers (`render_overrides_inner`'s carried-down
+        // correction) and needs mapping but no shift.
+        let mut cur = Some(idx);
+        while let Some(c) = cur {
+            self.map_node_lines(c);
+            if c == last {
+                break;
             }
-            let mut after = self.tree[last].doc_next;
-            while let Some(a) = after {
+            cur = self.tree[c].doc_next;
+        }
+
+        // Everything strictly after `idx`'s subtree — shifted, then
+        // mapped. This walk is pass 2 and stays O(nodes after the
+        // splice) by construction (spec 0186 N1).
+        let mut after = self.tree[last].doc_next;
+        while let Some(a) = after {
+            if delta != 0 {
                 Self::shift_span(&mut self.tree[a].span, delta);
-                after = self.tree[a].doc_next;
             }
-            let mut p = self.tree[idx].parent;
-            while let Some(pi) = p {
+            self.map_node_lines(a);
+            after = self.tree[a].doc_next;
+        }
+
+        // `idx`'s ancestors — only `text_range.end` moves, so re-mapping
+        // rewrites the footer entry the retain dropped and re-writes the
+        // header entry with the value it already has.
+        let mut p = self.tree[idx].parent;
+        while let Some(pi) = p {
+            if delta != 0 {
                 self.tree[pi].span.text_range.end =
                     (self.tree[pi].span.text_range.end as isize + delta) as usize;
-                p = self.tree[pi].parent;
             }
+            self.map_node_lines(pi);
+            p = self.tree[pi].parent;
         }
-        self.line_to_node.clear();
-        self.footer_line_to_node.clear();
+
+        self.pending_shift = 0;
+        self.pending_patch_min_line = None;
+        self.rebuild_visible_rows_from(from);
+
+        // Spec 0186 G3. Hung off the finalizer rather than written as one
+        // dedicated test, so that *every* splice in the whole suite is a
+        // case: the interesting inputs (nested patches, packed runs,
+        // repeated overrides of one node, folded targets, auto-expanded
+        // `Any`/`MessageSet` descendants) are already fixtured, and none
+        // of them would think to opt in. This is what bounds N3's
+        // deliberate loss of self-healing.
+        #[cfg(test)]
+        if self.verify_repair {
+            self.assert_repair_matches_full_rebuild();
+        }
+    }
+
+    /// Spec 0186 G3: the incremental repair must be bit-identical to the
+    /// full rebuild it replaced. Redoes the rebuild from scratch and
+    /// compares, leaving the from-scratch result in place (which the
+    /// assertions prove is the same one).
+    ///
+    /// Not reachable from a release build — like `unpruned_walk` (spec
+    /// 0183), this is an equivalence that nothing weaker is worth
+    /// asserting, because the failure mode is silent: a stale map entry
+    /// resolves to a live node at the wrong line and simply navigates
+    /// somewhere unexpected.
+    #[cfg(test)]
+    fn assert_repair_matches_full_rebuild(&mut self) {
+        let repaired_headers = self.line_to_node.clone();
+        let repaired_footers = self.footer_line_to_node.clone();
+        let repaired_rows = self.visible_rows.clone();
+        // `rebuild_visible_rows` below bumps this, and it is an
+        // invalidation signal the tests are entitled to observe; a
+        // check must not be visible in what it checks.
+        let structural_version = self.structural_version;
+
+        self.line_to_node = vec![None; self.lines.len()];
+        self.footer_line_to_node = vec![None; self.lines.len()];
         let mut cur = Some(self.first_node);
         while let Some(c) = cur {
-            let node = &self.tree[c];
-            self.line_to_node.insert(node.span.text_range.start, c);
-            // See `App::new`'s matching build site (spec 0142 fix) for
-            // why this checks the line span rather than `first_child`.
-            if node.span.text_range.end - 1 > node.span.text_range.start {
-                self.footer_line_to_node
-                    .insert(node.span.text_range.end - 1, c);
-            }
-            cur = node.doc_next;
+            self.map_node_lines(c);
+            cur = self.tree[c].doc_next;
         }
-        self.pending_shift = 0;
         self.rebuild_visible_rows();
+        self.structural_version = structural_version;
+
+        assert_eq!(
+            self.line_to_node, repaired_headers,
+            "spec 0186 G3: the incrementally repaired `line_to_node` \
+             differs from a full rebuild"
+        );
+        assert_eq!(
+            self.footer_line_to_node, repaired_footers,
+            "spec 0186 G3: the incrementally repaired `footer_line_to_node` \
+             differs from a full rebuild — the usual cause is a stale entry \
+             left at an ancestor's *old* footer line"
+        );
+        assert_eq!(
+            self.visible_rows, repaired_rows,
+            "spec 0186 G3: the incrementally extended `visible_rows` \
+             differs from a full rebuild"
+        );
+    }
+
+    /// Spec 0186 S3: (re-)insert `c`'s header line — and its footer line
+    /// when it has one — into `line_to_node`/`footer_line_to_node`.
+    ///
+    /// See `App::new`'s matching build site (spec 0142 fix) for why the
+    /// footer test is on the line span rather than on `first_child`.
+    fn map_node_lines(&mut self, c: usize) {
+        let (start, end) = {
+            let r = &self.tree[c].span.text_range;
+            (r.start, r.end)
+        };
+        self.line_to_node[start] = Some(c as u32);
+        if end - 1 > start {
+            self.footer_line_to_node[end - 1] = Some(c as u32);
+        }
     }
 
     /// Spec 0167: applies every patch collected during the current batch
@@ -1663,8 +1859,40 @@ impl App {
         let mut patches: Vec<Option<LinePatch>> = raw_patches.into_iter().map(Some).collect();
         let old_lines = std::mem::take(&mut self.lines);
         let old_line_styles = std::mem::take(&mut self.line_styles);
-        let mut new_lines = Vec::with_capacity(old_lines.len());
-        let mut new_line_styles = Vec::with_capacity(old_line_styles.len());
+        // Spec 0188 S2: the two line maps ride along with `lines` through
+        // the same merge, so a splice's effect on them is the array
+        // operation it already is for the text. The replaced range
+        // becomes a run of `None` of the resolved content's length —
+        // `resolve_line_patch` has already flattened every nested patch
+        // by the time a top-level patch's content is handed over, so that
+        // length is known here — and `finalize_override_batch`'s three
+        // walks fill it immediately afterwards.
+        let old_headers = std::mem::take(&mut self.line_to_node);
+        let old_footers = std::mem::take(&mut self.footer_line_to_node);
+        let old_len = old_lines.len();
+        let mut new_lines = Vec::with_capacity(old_len);
+        let mut new_line_styles = Vec::with_capacity(old_len);
+        let mut new_headers = Vec::with_capacity(old_len);
+        let mut new_footers = Vec::with_capacity(old_len);
+
+        // Spec 0186 S1/G2: consume the old buffers instead of slicing
+        // them. `extend_from_slice` on a `Vec<String>` *clones* every
+        // element — one `malloc` plus one `memcpy` per line, across the
+        // whole document, to apply a patch that replaces a handful of
+        // them; `Vec<LineStyles>` is worse still, each element being
+        // itself a `Vec`. Moving 24-byte `String` headers instead leaves
+        // this pass touching the heap only for the lines the batch
+        // actually replaces. It is the only one of the batch's passes
+        // that was doing per-line heap work.
+        //
+        // Soundness rests on the sort above. `by_ref().take(range.start -
+        // cursor)` would *underflow* on a patch sitting behind the
+        // cursor, where the slicing version would at least have panicked;
+        // the two asserts below keep both failure modes loud.
+        let mut old_lines = old_lines.into_iter();
+        let mut old_styles = old_line_styles.into_iter();
+        let mut old_headers = old_headers.into_iter();
+        let mut old_footers = old_footers.into_iter();
         let mut cursor = 0usize;
         for idx in top_level {
             let range = match &patches[idx].as_ref().unwrap().target {
@@ -1679,17 +1907,41 @@ impl App {
                 patches[idx].as_ref().unwrap().global_start,
                 range.start
             );
-            new_lines.extend_from_slice(&old_lines[cursor..range.start]);
-            new_line_styles.extend_from_slice(&old_line_styles[cursor..range.start]);
+            assert!(
+                range.end <= old_len,
+                "spec 0186 (S1): top-level line patch {idx} (global_start \
+                 {}) covers lines {}..{}, past the {old_len}-line document \
+                 it is being merged into",
+                patches[idx].as_ref().unwrap().global_start,
+                range.start,
+                range.end
+            );
+            new_lines.extend(old_lines.by_ref().take(range.start - cursor));
+            new_line_styles.extend(old_styles.by_ref().take(range.start - cursor));
+            new_headers.extend(old_headers.by_ref().take(range.start - cursor));
+            new_footers.extend(old_footers.by_ref().take(range.start - cursor));
             let (lines, styles) = Self::resolve_line_patch(&mut patches, &children_of, idx);
+            new_headers.resize(new_headers.len() + lines.len(), None);
+            new_footers.resize(new_footers.len() + lines.len(), None);
             new_lines.extend(lines);
             new_line_styles.extend(styles);
+            // Discard the lines this patch replaces.
+            for _ in range.start..range.end {
+                old_lines.next();
+                old_styles.next();
+                old_headers.next();
+                old_footers.next();
+            }
             cursor = range.end;
         }
-        new_lines.extend_from_slice(&old_lines[cursor..]);
-        new_line_styles.extend_from_slice(&old_line_styles[cursor..]);
+        new_lines.extend(old_lines);
+        new_line_styles.extend(old_styles);
+        new_headers.extend(old_headers);
+        new_footers.extend(old_footers);
         self.lines = new_lines;
         self.line_styles = new_line_styles;
+        self.line_to_node = new_headers;
+        self.footer_line_to_node = new_footers;
     }
 
     /// Spec 0167: recursively resolves patch `idx` — splicing in every
@@ -1710,8 +1962,14 @@ impl App {
         let Some(children) = children_of.get(&idx) else {
             return (lines, styles);
         };
-        let mut new_lines = Vec::with_capacity(lines.len());
-        let mut new_styles = Vec::with_capacity(styles.len());
+        let local_len = lines.len();
+        let mut new_lines = Vec::with_capacity(local_len);
+        let mut new_styles = Vec::with_capacity(local_len);
+        // Spec 0186 S1: the same consuming merge as `materialize_line_
+        // patches`, for consistency of shape rather than for speed — this
+        // one is bounded by the patch's own content, not by the document.
+        let mut lines = lines.into_iter();
+        let mut styles = styles.into_iter();
         let mut cursor = 0usize;
         for &child_idx in children {
             let local_range = match &patches[child_idx].as_ref().unwrap().target {
@@ -1727,16 +1985,28 @@ impl App {
                  {cursor}, child {child_idx} starts at local line {}",
                 local_range.start
             );
-            new_lines.extend_from_slice(&lines[cursor..local_range.start]);
-            new_styles.extend_from_slice(&styles[cursor..local_range.start]);
+            assert!(
+                local_range.end <= local_len,
+                "spec 0186 (S1): nested line patch {child_idx} covers local \
+                 lines {}..{}, past patch {idx}'s own {local_len} lines",
+                local_range.start,
+                local_range.end
+            );
+            new_lines.extend(lines.by_ref().take(local_range.start - cursor));
+            new_styles.extend(styles.by_ref().take(local_range.start - cursor));
             let (child_lines, child_styles) =
                 Self::resolve_line_patch(patches, children_of, child_idx);
             new_lines.extend(child_lines);
             new_styles.extend(child_styles);
+            // Discard the lines this child replaces.
+            for _ in local_range.start..local_range.end {
+                lines.next();
+                styles.next();
+            }
             cursor = local_range.end;
         }
-        new_lines.extend_from_slice(&lines[cursor..]);
-        new_styles.extend_from_slice(&styles[cursor..]);
+        new_lines.extend(lines);
+        new_styles.extend(styles);
         (new_lines, new_styles)
     }
 
@@ -1941,6 +2211,18 @@ impl App {
                 LinePatchTarget::Nested(parent_idx, local_start..local_end)
             }
         };
+        // Spec 0186 S2: remember the earliest line this batch can have
+        // disturbed. `global_start` is `old_span.text_range.start`, i.e.
+        // already batch-corrected (spec 0160 G2), so it is this patch's
+        // position in the *final* buffer — the frame the line-map repair
+        // and `visible_rows` rebuild both work in. A `Nested` patch lies
+        // inside its parent's content and so can only raise this, but it
+        // costs nothing to fold it in at the one site where every patch
+        // passes.
+        self.pending_patch_min_line = Some(match self.pending_patch_min_line {
+            Some(existing) => existing.min(global_start),
+            None => global_start,
+        });
         let patch_idx = self.pending_line_patches.len();
         self.pending_line_patches.push(LinePatch {
             target: target_range,

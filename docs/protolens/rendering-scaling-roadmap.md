@@ -307,6 +307,31 @@ conservative (clear on *any* mismatch).
 
 ## S6. Highlight lazily, per line, on first draw
 
+> **Superseded by [spec 0187](../specs/0187-highlighting-is-a-property-of-the-viewport.md).**
+> Two corrections, both established by measurement or by reading the
+> grammar, not by argument:
+>
+> - The "Caveat — measure first" below has been answered. One
+>   whole-document parse is **85% of an override commit** (12.98 s of
+>   14.90 s on a 1.1 M-line document) and is the largest single cost in
+>   protolens. Batching is not even cheaper *per line*: 12.2 µs/line for
+>   one 1,067,034-line parse against 5.4 µs/line spread over 465 smaller
+>   parses. The only lever is parsing fewer lines.
+> - The soundness argument below — that `hints_by_line`'s newline
+>   clipping makes a per-line parse equivalent to a document parse — is
+>   **wrong**. Clipping constrains the *output*; it says nothing about
+>   the parse seeing the right *context*. A window that starts mid-message
+>   or contains an unmatched `}` drives tree-sitter into error recovery,
+>   which this repo already has a regression test showing will swallow
+>   following siblings. This is the same effect [D4](rendering-flaws.md)
+>   documents.
+>
+> Spec 0187 therefore highlights the **window**, not the line, and wraps
+> it in a synthetic enclosing context reconstructed from indentation, so
+> the parse is complete. It also deletes `line_styles` outright rather
+> than making it `Option`-valued, which the per-line shape below could
+> not do.
+
 **Fixes:** the whole-document tree-sitter parse at startup, and the
 `Vec<Vec<(Range, SyntaxRole)>>` residency (193 k inner `Vec`s = ~4.6 MB
 of headers alone before content).
