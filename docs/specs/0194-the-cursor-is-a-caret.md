@@ -52,7 +52,8 @@ Spec 0193 S2 wanted to identify the cursor node's `{` and its matching
 `theme::brace_match_style`, bright red plus bold — and its own non-goal
 N1 recorded the intended replacement: under a block caret the pair stops
 being a *color* and becomes a *shape*, with the matching brace drawn as a
-dimmer copy of the caret.
+dimmer copy of the caret. S4 keeps the first half of that and inverts the
+second — it is the *match* that gets the strong treatment, not the caret.
 
 What spec 0193 does leave behind is the mechanism. `cut_segments`
 (`render.rs:93-111`) removes a byte range from a row's syntax segments so
@@ -107,8 +108,10 @@ move with the pan at all.
 
 - **G1.** The cursor is drawn as a vim-style **block caret** over exactly
   one character of one row, not as a full-row highlight.
-- **G2.** When the caret is on a brace, its match is drawn as a *dimmer*
-  caret. Spec 0193's red brace pair goes away.
+- **G2.** When the caret is on a brace whose match is on screen, the
+  *match* is the inverted cell and the caret dims to a tint; when the
+  match is off screen, the caret keeps its inversion and nothing else
+  lights up. Spec 0193's red brace pair goes away.
 - **G3.** The caret moves horizontally by one character, and its column
   survives vertical movement: a remembered desired column, clamped to
   each row without being forgotten, with one sticky special case (S5).
@@ -181,7 +184,9 @@ Using spec 0193's mechanism: cut the caret character's byte range out of
 the row's segments and re-emit it as a styled insertion carrying
 `theme::caret_style`, which is `Modifier::REVERSED` over whatever the
 character's syntax color already was. In the suffix zone the suffix is a
-single span already, so it is split rather than cut.
+single span already, so it is split rather than cut. The same cut is what
+S4 uses to restyle the matching brace, and S4 is also the one case where
+the caret's own cell gets a style other than `caret_style`.
 
 The row-wide loop at `render.rs:855-859` splits in three:
 
@@ -224,13 +229,62 @@ The heat *glyph* in column 0 stays unreachable: it is left of the text
 origin, and the suffix already gives the caret somewhere to stand to ask
 about the cue.
 
-### S4. The matching brace becomes a dimmer caret
+### S4. The brace pair swaps which member is inverted
 
-`theme::brace_match_style` (spec 0193 S2) is replaced by
-`theme::caret_match_style`: the caret's own treatment at lower contrast,
-with no hue of its own. The pair then reads as one shape at two
-intensities rather than as a color the theme has to justify, and it stops
-competing with the heat cue's red for meaning.
+`theme::brace_match_style` (spec 0193 S2) goes away, and the pair is
+drawn with two styles that between them answer two different questions:
+
+| the caret is on | caret's cell | matching brace |
+|-----------------|--------------|----------------|
+| not a brace | `caret_style` (reversed) | — |
+| a brace, match **not** in the window | `caret_style` (reversed) | — |
+| a brace, match **in** the window | `caret_paired_style` (a background tint, *not* reversed) | `caret_style` (reversed) |
+
+So the strong cue moves to the member the user is *looking for*. The
+caret's own position is already known — it is where the last keypress
+left it, and the row cue (G7) still marks its row — whereas the
+partner's position is the question being asked. Inverting the answer
+rather than the question is the whole idea.
+
+The three-state shape also makes the middle row carry information for
+free: when the caret is on a brace and nothing else lights up, that
+*means* the match is off-screen. No extra glyph, no message.
+
+This is vim's behavior, and it is worth being precise about the
+mechanism because protolens has to reproduce the effect deliberately
+where vim gets it as a side effect. The bundled `matchparen` plugin
+highlights **both** members with the same `MatchParen` group — by
+default a background color, `term=reverse` only as the no-color
+fallback — and limits its search to the lines visible in the window, so
+an off-screen match produces no highlight at all. The asymmetry a user
+sees in a terminal comes from the terminal's own block cursor being
+drawn on top of one of the two. protolens draws both itself (Background
+3, N3), so it specifies the asymmetry instead of inheriting it from
+whichever terminal is running.
+
+**Visibility is dynamic, and is resolved at draw time.** Panning and
+scrolling move the window without moving the caret, so whether the match
+is visible is a property of the frame, not of the cursor state. A brace
+counts as visible when its row is within the scrolled window *and* its
+column survives the pan — the same coordinate discipline as G6. Pan the
+match out of view and the caret returns to `caret_style` with no key
+pressed; pan it back and the pair lights up again.
+
+Two consequences worth stating:
+
+- A **folded** node draws `{ ... }` on one row (spec 0193's collapse
+  summary), so both members are on the caret's own row and are always
+  co-visible. The row cue cannot disambiguate which cell is the caret in
+  that case; the two styles still can, which is why they must be
+  distinguishable from each other and not merely from ordinary text.
+- `caret_paired_style` is drawn *over* `cursor_row_style`, since the
+  caret is by definition on the caret's row, so the two backgrounds must
+  differ as well — otherwise the caret disappears into its own row cue
+  in exactly the state where it is weakest.
+- The caret's weakest rendering happens exactly when a second strong cue
+  has appeared within a screen or two of it. G7 is not weakened: the row
+  cue is unchanged, and there is more on screen pointing at the caret's
+  neighborhood, not less.
 
 The rule for *which* brace is matched is inherited unchanged from spec
 0193's `cursor_brace` (`render.rs:384`), including its bracketed-node
@@ -282,10 +336,18 @@ tree, `z` folds.**
 | `J` / `Shift-Down` | next sibling | unchanged |
 | `K` / `Shift-Up` | previous sibling | unchanged |
 | `Backspace` | move to parent (alias) | — |
+| `n` / `N` | repeat the last search, same / opposite direction | unchanged (spec 0195 S4 made the reverse `N`; it was `p`) |
 | `Space` | toggle fold | unchanged |
 | `za` / `zc` / `zo` | toggle / close / open this node's fold | bare `z` toggled |
 | `zA` / `zC` / `zO` | the same for all siblings | `H` / `Shift-Left` / `Shift-Right` |
 | `Ctrl-Left` / `Ctrl-Right` | pan | unchanged |
+
+`n`/`N` are listed because they are the one pair that breaks the
+organizing rule — `N` is shifted and does not move in the tree. It is
+kept anyway: it is vim's, spec 0195 S4 has already made it so, and a
+search repeat is a *motion*, which is the family the unshifted column
+belongs to. The rule covers the keys this spec reassigns, not every key
+on the pane.
 
 Two costs are worth naming rather than hiding. `h`/`l` change meaning for
 every existing user; that is the price of the caret and there is no
@@ -558,22 +620,34 @@ Throughout, "one visible unit" rather than "one `char`" — see A5.
 10. A search hit puts the caret on the first character of the match
     (S8), including when the match is in the row's indentation, where it
     clamps to the first non-blank.
-11. The matching brace carries `caret_match_style` and the caret's own
-    brace carries `caret_style`; no span anywhere carries a red brace
-    style — spec 0193 S2's test rewritten rather than deleted.
-12. `%` moves between a node's `{` and `}`, flipping `cursor_footer`,
+11. The three states of S4's table, each asserted on the spans: off a
+    brace, and on a brace whose match is scrolled or panned out of the
+    window, the caret's own cell carries `caret_style` and nothing else
+    is styled; on a brace whose match is in the window, the caret's cell
+    carries `caret_paired_style` and the *match* carries `caret_style`.
+    No span anywhere carries a red brace style — spec 0193 S2's test
+    rewritten rather than deleted.
+12. Visibility is re-resolved every frame: from the third state, a pan
+    or a scroll that takes the match out of the window returns the
+    caret's cell to `caret_style` and leaves no partner span, and
+    reversing it restores the pair — with no key that moves the cursor
+    pressed in between.
+13. A folded node draws both braces on the caret's row, and the two
+    still carry different styles there.
+14. `%` moves between a node's `{` and `}`, flipping `cursor_footer`,
     and reports a message on an unbracketed node.
-13. A click sets the column; a click on the fold marker toggles the fold
+15. A click sets the column; a click on the fold marker toggles the fold
     and leaves the caret alone; a click in the gutter clamps to the first
     non-blank (S7).
-14. On a blank row and past a short row's end, the caret is drawn on a
+16. On a blank row and past a short row's end, the caret is drawn on a
     synthetic trailing space rather than vanishing.
-15. `h`/`l`/`H`/`L`/`z`-prefix all dispatch to what S6's table says, and
-    no reclaimed key retains its old behavior.
-16. On a row whose string value contains a multi-byte character, one
+17. `h`/`l`/`H`/`L`/`z`-prefix all dispatch to what S6's table says, and
+    no reclaimed key retains its old behavior. `n` and `N` still repeat
+    the last search, in their two directions.
+18. On a row whose string value contains a multi-byte character, one
     press crosses it, and no column-to-byte conversion panics on a
     character boundary (A5's non-deferred half).
-17. `Ctrl-o` after a jump restores the node, `cursor_footer` *and* the
+19. `Ctrl-o` after a jump restores the node, `cursor_footer` *and* the
     column; a `Ctrl-o` to a row that has shrunk since (a fold toggled
     under it) clamps rather than pointing past the row's end (S10).
 
