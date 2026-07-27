@@ -2301,3 +2301,208 @@ fn visible_rows_stays_sorted_across_a_splice() {
         "no retained row may point past the spliced document"
     );
 }
+
+/// A splice's line-count delta has to reach *inside* every subtree that
+/// follows it, including the ones the override walk prunes.
+///
+/// The user-visible failure is the fold handle and the heat cue landing
+/// on the closing brace instead of the opening one, on scalar lines, or
+/// nowhere at all — everywhere below an override, and only after one has
+/// been applied or removed. `line_to_node` is rebuilt *from* the spans,
+/// so a shifted-by-one span silently registers the node on its
+/// neighbor's line and everything downstream faithfully agrees.
+///
+/// Retyping `head` from `Wrap` to `Blob` reads the same four bytes as
+/// one string line instead of a nested `leaf { v: 5 }`, shortening the
+/// document by two lines. `tail` renders identically either way, so the
+/// walk prunes it — and its `leaf`/`v` interior is what used to be left
+/// two lines behind.
+#[test]
+fn a_splice_shifts_the_interior_of_the_subtrees_the_walk_prunes() {
+    use crate::override_pane::OverrideOrigin;
+
+    let (mut app, _head, tail, tail_leaf, tail_v) = pruned_tail_fixture();
+    let root = app.first_node;
+
+    assert_eq!(
+        app.lines,
+        vec![
+            "1 {  #@ Outer = 1",
+            "  head {  #@ Wrap = 1",
+            "    leaf {  #@ Leaf = 1",
+            "      v: 5  #@ int32 = 1",
+            "    }",
+            "  }",
+            "  tail {  #@ Wrap = 2",
+            "    leaf {  #@ Leaf = 1",
+            "      v: 5  #@ int32 = 1",
+            "    }",
+            "  }",
+            "}",
+        ],
+        "fixture must start out as two identically shaped Wraps"
+    );
+
+    app.overrides.activate(
+        OverrideOrigin::Path {
+            path: "/1".to_string(),
+        },
+        Some("test.Blob".to_string()),
+    );
+    app.render_overrides(root);
+
+    assert_eq!(
+        app.lines,
+        vec![
+            "1 {  #@ Outer = 1",
+            "  head {  #@ Blob = 1",
+            "    leaf: \"\\010\\005\"  #@ string = 1",
+            "  }",
+            "  tail {  #@ Wrap = 2",
+            "    leaf {  #@ Leaf = 1",
+            "      v: 5  #@ int32 = 1",
+            "    }",
+            "  }",
+            "}",
+        ],
+        "retyping head as Blob must shorten the document by two lines"
+    );
+
+    // The premise: had the walk descended into `tail`, the recursion
+    // would have shifted its interior and this test would prove nothing.
+    // Marks persist across batches (spec 0188 S4), so this reads the
+    // decision the batch actually made.
+    assert!(
+        !app.descend[tail],
+        "the walk must have pruned `tail` for this test to mean anything"
+    );
+
+    for (node, name, want) in [
+        (tail, "tail", 4..9),
+        (tail_leaf, "tail.leaf", 5..8),
+        (tail_v, "tail.leaf.v", 6..7),
+    ] {
+        assert_eq!(
+            app.tree[node].span.text_range, want,
+            "{name} kept pre-splice line numbers: the delta reached the \
+             pruned subtree's root but not its interior"
+        );
+    }
+
+    // And the symptom itself: the handle and the cue come from these two
+    // maps alone, so this is the assertion a user would recognize.
+    assert_eq!(app.line_to_node[4], Some(tail as u32), "tail's `{{` line");
+    assert_eq!(
+        app.footer_line_to_node[8],
+        Some(tail as u32),
+        "tail's `}}` line"
+    );
+    assert_eq!(
+        app.line_to_node[5],
+        Some(tail_leaf as u32),
+        "tail.leaf's `{{` line"
+    );
+    assert_eq!(
+        app.footer_line_to_node[7],
+        Some(tail_leaf as u32),
+        "tail.leaf's `}}` line"
+    );
+    assert_eq!(
+        app.line_to_node[6],
+        Some(tail_v as u32),
+        "tail.leaf.v is a scalar and must own its own line, with no footer"
+    );
+    assert_eq!(
+        app.footer_line_to_node[6], None,
+        "a scalar line must never carry a fold handle"
+    );
+}
+
+/// A seeded random walk of override activations and toggles over every
+/// document shape the suite has a fixture for.
+///
+/// The hand-written tests around it each pin one situation someone
+/// already thought of. This one exists for the situations nobody did —
+/// and the bug it was written after is exactly that kind: it needed a
+/// splice *followed by* a subtree the walk prunes, a combination no
+/// fixture had, because a fixture is built to demonstrate one mechanism
+/// and this bug lives in the interaction of two.
+///
+/// It asserts nothing itself. Everything it can catch is asserted by
+/// `finalize_override_batch` under `verify_repair` — the span/text
+/// consistency oracle and the spec 0186 G3 map equivalence — so this is
+/// purely an input generator, and any new invariant hung off that
+/// finalizer is exercised by these sequences for free.
+///
+/// Deliberately seeded rather than randomly seeded: a failure has to
+/// replay exactly, and a test that fails one run in twenty is a test
+/// people learn to re-run.
+#[test]
+fn randomized_override_sequences_keep_every_span_consistent() {
+    use crate::override_pane::OverrideOrigin;
+
+    for seed in 1u64..=6 {
+        for (shape, mut app) in [
+            ("pruned_tail", pruned_tail_fixture().0),
+            ("repeated_message", repeated_message_fixture().0),
+            ("packed_run_with_tail", packed_run_with_tail_fixture().0),
+            ("nested_any", nested_any_fixture()),
+            ("message_set", message_set_fixture()),
+            ("nested_message_set", nested_message_set_fixture()),
+        ] {
+            // The candidate types are the ones this document actually
+            // mentions, plus raw — so each shape is retyped into things
+            // that are plausible for it rather than into a fixed list
+            // that most fixtures would reject outright.
+            let mut types: Vec<Option<String>> = vec![None];
+            let mut cur = Some(app.first_node);
+            while let Some(c) = cur {
+                if let Some(t) = app.tree[c].span.type_fqdn.clone() {
+                    if !types.iter().any(|k| k.as_deref() == Some(t.as_str())) {
+                        types.push(Some(t));
+                    }
+                }
+                cur = app.tree[c].doc_next;
+            }
+
+            let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let mut next = move || {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (state >> 33) as usize
+            };
+
+            for step in 0..40 {
+                if next() % 10 < 7 {
+                    let mut pick = None;
+                    for _ in 0..50 {
+                        let l = next() % app.lines.len();
+                        if let Some(i) = app.node_at_header_line(l) {
+                            if app.can_override(i) {
+                                pick = Some(i);
+                                break;
+                            }
+                        }
+                    }
+                    let Some(idx) = pick else { continue };
+                    let ty = types[next() % types.len()].clone();
+                    let path = app.positional_path(idx);
+                    // Printed, not asserted: cargo shows a failing
+                    // test's stdout, so the sequence that reached the
+                    // failure is in the report without costing anything
+                    // on the passing runs.
+                    println!("{shape} seed {seed} step {step}: {path} as {ty:?}");
+                    app.overrides
+                        .activate(OverrideOrigin::Path { path }, ty.clone());
+                    app.render_overrides(app.first_node);
+                } else if !app.overrides.entries().is_empty() {
+                    let e = next() % app.overrides.entries().len();
+                    println!("{shape} seed {seed} step {step}: toggle entry {e}");
+                    app.overrides.toggle_active(e);
+                    app.render_overrides(app.first_node);
+                }
+            }
+        }
+    }
+}

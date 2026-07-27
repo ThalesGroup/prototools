@@ -1369,3 +1369,121 @@ pub(super) fn export_fields_group_error_fixture() -> App {
     app.term_width = 120;
     app
 }
+
+/// `Outer { Wrap head = 1; Wrap tail = 2; }`, with `Wrap { Leaf leaf =
+/// 1; }`, `Leaf { int32 v = 1; }`, and a `Blob { string leaf = 1; }`
+/// that reads the very same bytes as one line instead of three.
+///
+/// The shape a splice's line-count delta gets lost in, and the one no
+/// other fixture here has: a node that can be retyped into a *shorter*
+/// rendering, followed by a sibling whose own rendering cannot change —
+/// so the override walk prunes it — but which still has an interior
+/// that has to move. Returns `(app, head, tail, tail_leaf, tail_v)`.
+pub(super) fn pruned_tail_fixture() -> (App, usize, usize, usize, usize) {
+    use prost::Message as _;
+    use prost_types::field_descriptor_proto::{Label, Type};
+    use prost_types::{
+        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+    };
+
+    use crate::decode::{decode, DescriptorContext, RootType};
+
+    let leaf_desc = DescriptorProto {
+        name: Some("Leaf".to_string()),
+        field: vec![FieldDescriptorProto {
+            name: Some("v".to_string()),
+            number: Some(1),
+            label: Some(Label::Optional as i32),
+            r#type: Some(Type::Int32 as i32),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let wrap_desc = DescriptorProto {
+        name: Some("Wrap".to_string()),
+        field: vec![FieldDescriptorProto {
+            name: Some("leaf".to_string()),
+            number: Some(1),
+            label: Some(Label::Optional as i32),
+            r#type: Some(Type::Message as i32),
+            type_name: Some(".test.Leaf".to_string()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let blob_desc = DescriptorProto {
+        name: Some("Blob".to_string()),
+        field: vec![FieldDescriptorProto {
+            name: Some("leaf".to_string()),
+            number: Some(1),
+            label: Some(Label::Optional as i32),
+            r#type: Some(Type::String as i32),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let outer_desc = DescriptorProto {
+        name: Some("Outer".to_string()),
+        field: vec![
+            FieldDescriptorProto {
+                name: Some("head".to_string()),
+                number: Some(1),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Message as i32),
+                type_name: Some(".test.Wrap".to_string()),
+                ..Default::default()
+            },
+            FieldDescriptorProto {
+                name: Some("tail".to_string()),
+                number: Some(2),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Message as i32),
+                type_name: Some(".test.Wrap".to_string()),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let file = FileDescriptorProto {
+        name: Some("test_pruned_tail.proto".to_string()),
+        package: Some("test".to_string()),
+        message_type: vec![outer_desc, wrap_desc, blob_desc, leaf_desc],
+        syntax: Some("proto3".to_string()),
+        ..Default::default()
+    };
+    let fds = FileDescriptorSet { file: vec![file] };
+
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let descriptor_path =
+        std::env::temp_dir().join(format!("protolens-tui-pruned-tail-descriptor-{n}.pb"));
+    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
+    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
+    std::fs::remove_file(&descriptor_path).unwrap();
+
+    // head (field 1, LEN) then tail (field 2, LEN), each holding
+    // `Wrap { leaf: Leaf { v: 5 } }` == `0A 02 08 05`.
+    let blob = [
+        0x0Au8, 0x04, 0x0A, 0x02, 0x08, 0x05, //
+        0x12, 0x04, 0x0A, 0x02, 0x08, 0x05,
+    ];
+    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
+    let mut app = App::new(
+        decoded,
+        "test.pb",
+        PathBuf::from("test.pb"),
+        2,
+        ctx,
+        ThemeKind::Dark,
+        None,
+    );
+    app.splash = false;
+    app.term_width = 120;
+
+    let root = app.first_node;
+    let head = app.tree[root].first_child.expect("Outer has children");
+    let tail = app.tree[head].next_sibling.expect("Outer has two children");
+    let tail_leaf = app.tree[tail].first_child.expect("tail wraps a Leaf");
+    let tail_v = app.tree[tail_leaf].first_child.expect("Leaf holds v");
+    (app, head, tail, tail_leaf, tail_v)
+}
