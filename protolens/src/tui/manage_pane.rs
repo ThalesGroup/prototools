@@ -848,7 +848,13 @@ impl App {
             .map(|e| e.origin.label())
             .unwrap_or_default();
         let left = format!("{origin_path} - type overrides");
-        let right = format!("L{}/{}", highlighted_row + 1, total_rows);
+        // Spec 0193 S4.
+        let right = format!(
+            "L{}/{}  {}",
+            highlighted_row + 1,
+            total_rows,
+            viewport_label(start, list_height, total_rows),
+        );
         let text = statusline_text(&left, Some(&right), split[1].width as usize);
         frame.render_widget(Paragraph::new(Line::styled(text, style)), split[1]);
 

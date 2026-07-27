@@ -28,6 +28,88 @@ const TRUNCATION_MARKER: &str = "...";
 /// cues survive.
 pub(super) const ACTIVITY_GLYPH: &str = "●";
 
+/// Spec 0193 S1: the fold marker's glyphs, open (children shown) and
+/// closed (children collapsed into `{ ... }`).
+const FOLD_GLYPH_OPEN: char = '▾';
+const FOLD_GLYPH_CLOSED: char = '▸';
+
+/// Spec 0193 S1: how many columns the fold field reserves left of the
+/// row's own text. Two, because that is the marker plus the space that
+/// keeps it from reading as part of the identifier beside it (`▾options`
+/// is one token to the eye; `▾ options` is not).
+///
+/// The field is reserved unconditionally, exactly as spec 0138 N1's
+/// heat-cue column is: a field that appeared and vanished with the
+/// window's contents would move the text origin as the user scrolls,
+/// which is worse than spending the two columns.
+pub(super) const FOLD_FIELD_WIDTH: usize = 2;
+
+/// Spec 0193 S1: the two-column fold field followed by the line's own
+/// indentation, with `marker` — when there is one — placed in the two
+/// display columns *immediately left of* the line's first non-blank
+/// character.
+///
+/// When the indentation is at least `FOLD_FIELD_WIDTH` wide the marker
+/// overwrites its last two columns and the field stays blank; when it is
+/// narrower (a root-level row, or any row under `--indent 0`/`1`) those
+/// columns would fall left of the pane's text origin, so the marker goes
+/// in the reserved field instead. Either way the result is exactly
+/// `FOLD_FIELD_WIDTH + indent_len` columns wide, which is what keeps a
+/// foldable row's text aligned with a non-foldable one's (G1).
+fn fold_margin(indent_len: usize, marker: Option<char>) -> String {
+    match marker {
+        Some(m) if indent_len < FOLD_FIELD_WIDTH => format!("{m} {}", " ".repeat(indent_len)),
+        Some(m) => format!("{}{m} ", " ".repeat(indent_len)),
+        None => " ".repeat(FOLD_FIELD_WIDTH + indent_len),
+    }
+}
+
+/// Spec 0193 S1/G6: the column a foldable line's marker occupies within
+/// the rendered row — `mouse.rs`'s fold-marker hit test, which adds back
+/// the heat-cue column `render` prepends downstream.
+///
+/// This is the same rule `fold_margin` draws with, and must stay so:
+/// under the default `--indent 2` it happens to be `indent_len` for
+/// every level below the root, which is what the pre-0193 implementation
+/// returned unconditionally — and is why that implementation was correct
+/// by coincidence and wrong at `--indent 1`.
+pub(super) fn marker_column(line: &str) -> u16 {
+    let indent_len = line.len() - line.trim_start().len();
+    if indent_len < FOLD_FIELD_WIDTH {
+        0
+    } else {
+        indent_len as u16
+    }
+}
+
+/// Spec 0193 S1/S2: drop `cut`'s bytes from `segments`, which stay in
+/// their original `content` coordinates — the bytes are simply never
+/// emitted by `spans_with_insertions`.
+///
+/// Two callers: the leading indentation, which `fold_margin` replaces
+/// wholesale, and a brace that is re-emitted as a styled insertion at
+/// the very same position. A segment straddling both ends of `cut`
+/// survives as two.
+fn cut_segments(segments: &mut Vec<(Range<usize>, Option<SyntaxRole>)>, cut: Range<usize>) {
+    if cut.is_empty() {
+        return;
+    }
+    let mut kept = Vec::with_capacity(segments.len() + 1);
+    for (range, role) in segments.drain(..) {
+        if range.end <= cut.start || range.start >= cut.end {
+            kept.push((range, role));
+            continue;
+        }
+        if range.start < cut.start {
+            kept.push((range.start..cut.start, role));
+        }
+        if range.end > cut.end {
+            kept.push((cut.end..range.end, role));
+        }
+    }
+    *segments = kept;
+}
+
 /// A rendered line with its trailing `#@ ...` annotation removed (spec
 /// 0187 S1) — the part of the line the *format* considers a value.
 /// Used both for the display-time annotation hiding of spec 0133 G4 and,
@@ -216,59 +298,113 @@ impl App {
         self.window_styles = window_styles_for(&text, self.indent_size);
     }
 
-    /// A foldable node's line, with its fold marker inserted right after
-    /// the line's own leading indentation (kept intact — not shortened by
-    /// one column to make room) and immediately before the first
-    /// non-blank token, with no extra space either side — see
-    /// `marker_column`. Lines with no associated foldable node are
-    /// returned unchanged.
+    /// A row as it is drawn, fold margin included — the row's own text
+    /// with `fold_margin` in front of it, so a foldable line's first
+    /// token lands in the same column as a non-foldable one's at the
+    /// same depth (spec 0193 G1).
     ///
-    /// When `self.annotations` is off, the line's trailing `#@ ...`
-    /// annotation (and the whitespace that used to separate it from the
-    /// value) is hidden — a purely cosmetic, display-time transform (spec
-    /// 0133 G4); the underlying `self.lines` always carries the full
-    /// annotation regardless.
-    pub(super) fn render_line_content(&self, line_idx: usize) -> String {
-        self.row_content(DisplayRow::Committed(line_idx))
+    /// Spec 0185 S2: takes a display row, so overlay rows come through
+    /// here too — **there must not be a second line-rendering path.**
+    pub(super) fn row_content(&self, row: DisplayRow) -> String {
+        let text = self.row_text(row);
+        let (margin, body_start) = self.fold_margin_of(row, &text);
+        format!("{margin}{}", &text[body_start..])
     }
 
-    /// Spec 0185 S2: `render_line_content` for any display row, overlay
-    /// rows included — there must not be a second line-rendering path.
-    pub(super) fn row_content(&self, row: DisplayRow) -> String {
-        let (full_content, node) = self.display_row_source(row);
+    /// Spec 0193 S1: the row's text *without* the fold margin — the
+    /// annotation transform (spec 0133 G4) and a folded node's `{ ... }`
+    /// collapse summary, both of which are properties of the content,
+    /// and neither of which is chrome.
+    ///
+    /// This is what a clipboard copy wants (`selected_text`): the margin
+    /// and its `▾`/`▸` are gutter furniture, and pasting them back into
+    /// a `.textproto` would not parse.
+    pub(super) fn row_text(&self, row: DisplayRow) -> String {
+        let (full_content, _) = self.display_row_source(row);
         let content = if !self.annotations {
             code_part(full_content)
         } else {
             full_content
         };
-        let Some(idx) = node else {
-            return content.to_string();
-        };
-        if !self.has_children(idx) {
-            return content.to_string();
-        }
-        let folded = self.folded.contains(&idx);
-        let marker = if folded { '▸' } else { '▾' };
-        let indent_len = content.len() - content.trim_start().len();
-        let mut s = format!(
-            "{}{marker}{}",
-            &content[..indent_len],
-            &content[indent_len..]
-        );
-        if folded {
-            match s.rfind('{') {
-                Some(pos) => s.insert_str(pos + 1, " ... }"),
-                None => s.push_str(" ... }"),
+        let mut text = content.to_string();
+        if self.fold_marker(row) == Some(FOLD_GLYPH_CLOSED) {
+            match text.rfind('{') {
+                Some(pos) => text.insert_str(pos + 1, " ... }"),
+                None => text.push_str(" ... }"),
             }
         }
-        s
+        text
+    }
+
+    /// Spec 0193 S1: `(the row's left margin, the byte offset in
+    /// `content` at which the margin's coverage ends)`. The margin
+    /// subsumes the line's own leading indentation, so the caller emits
+    /// `content` from `body_start` onwards and never re-emits the
+    /// indent.
+    ///
+    /// An all-blank row gets no margin at all: there is nothing on it to
+    /// align, and padding it would only lengthen the row that
+    /// `max_visible_line_len` measures for panning.
+    fn fold_margin_of(&self, row: DisplayRow, content: &str) -> (String, usize) {
+        let trimmed = content.trim_start();
+        if trimmed.is_empty() {
+            return (String::new(), content.len());
+        }
+        let indent_len = content.len() - trimmed.len();
+        (fold_margin(indent_len, self.fold_marker(row)), indent_len)
+    }
+
+    /// The fold glyph this row's node currently warrants, or `None` when
+    /// the row has no node of its own (footer and overlay rows) or its
+    /// node has nothing to fold.
+    fn fold_marker(&self, row: DisplayRow) -> Option<char> {
+        let (_, node) = self.display_row_source(row);
+        let idx = node?;
+        if !self.has_children(idx) {
+            return None;
+        }
+        Some(if self.folded.contains(&idx) {
+            FOLD_GLYPH_CLOSED
+        } else {
+            FOLD_GLYPH_OPEN
+        })
+    }
+
+    /// Spec 0193 S2: the byte offset in `content` of the brace to draw
+    /// in `theme::brace_match_style` — the `{` on the cursor node's own
+    /// header line, or the `}` on its own footer line.
+    ///
+    /// `None` for every other row, and for a node with no *distinct*
+    /// footer line, which is exactly the test `line_to_node`'s
+    /// construction uses (`mod.rs`) to decide a node is bracketed at
+    /// all: an unbracketed scalar's `{` would otherwise be a brace
+    /// inside a string literal. Overlay rows are excluded too — they
+    /// have no committed node, so nothing on them belongs to the
+    /// cursor's.
+    fn cursor_brace(&self, row: DisplayRow, content: &str) -> Option<usize> {
+        let DisplayRow::Committed(line_idx) = row else {
+            return None;
+        };
+        let node = self.tree.get(self.cursor)?;
+        let header = node.span.text_range.start;
+        let footer = node.span.text_range.end.checked_sub(1)?;
+        if footer <= header {
+            return None;
+        }
+        if line_idx == header {
+            content.rfind('{')
+        } else if line_idx == footer {
+            content.rfind('}')
+        } else {
+            None
+        }
     }
 
     /// Styled counterpart of `row_content` (spec 0116 §7/§9): applies the
-    /// row's syntax-highlighting spans via `theme::style_for`, then
-    /// splices in the same fold-marker / `" ... }"` collapse-summary text
-    /// `row_content` inserts — as unstyled spans, so highlighting and
-    /// folding compose cleanly.
+    /// row's syntax-highlighting spans via `theme::style_for`, prepends
+    /// the same `fold_margin` `row_content` does, and splices in the same
+    /// `" ... }"` collapse-summary text — the two **must** agree
+    /// byte for byte, and a test asserts they do.
     ///
     /// Follows the same display-time annotation-hiding truncation as
     /// `row_content` (spec 0133 G4) — any hint extending past the
@@ -301,45 +437,63 @@ impl App {
                 }
                 _ => (full_content, full_hints.to_vec()),
             };
-        let segments = segment_line(content, &hints);
+        let mut segments = segment_line(content, &hints);
 
-        let Some(idx) = node else {
-            return self.spans_with_insertions(content, segments, Vec::new());
-        };
-        if !self.has_children(idx) {
-            return self.spans_with_insertions(content, segments, Vec::new());
+        // Spec 0193 S1: the margin *replaces* the line's indentation
+        // rather than displacing it, so those bytes are cut from the
+        // segments and re-emitted as one raw span in front.
+        let (margin, body_start) = self.fold_margin_of(row, content);
+        cut_segments(&mut segments, 0..body_start);
+        let mut spans = Vec::with_capacity(segments.len() + 4);
+        if !margin.is_empty() {
+            spans.push(Span::raw(margin));
         }
-        let folded = self.folded.contains(&idx);
-        let marker = if folded { '▸' } else { '▾' };
-        let indent_len = content.len() - content.trim_start().len();
 
-        let mut insertions = vec![(indent_len, marker.to_string())];
-        if folded {
+        let brace_style = theme::brace_match_style(self.theme);
+        let brace = self.cursor_brace(row, content);
+        let mut insertions: Vec<(usize, String, Option<Style>)> = Vec::new();
+        if node.is_some_and(|idx| self.folded.contains(&idx) && self.has_children(idx)) {
             let insert_at = match content.rfind('{') {
                 Some(pos) => pos + 1,
                 None => content.len(),
             };
-            insertions.push((insert_at, " ... }".to_string()));
+            // Two insertions at one position rather than one `" ... }"`:
+            // the synthetic closing brace is part of the cursor node's
+            // pair when the cursor is here, and the ellipsis beside it
+            // never is. `sort_by_key` is stable, so they keep this order.
+            insertions.push((insert_at, " ... ".to_string(), None));
+            insertions.push((insert_at, "}".to_string(), brace.map(|_| brace_style)));
         }
-        self.spans_with_insertions(content, segments, insertions)
+        if let Some(pos) = brace {
+            // Spec 0193 S2: the real `{`/`}` carries a real `SyntaxRole`,
+            // so it is cut and re-emitted as a styled insertion at the
+            // same position — the one mechanism that can override a
+            // role's own color without inventing a 14th role for it.
+            cut_segments(&mut segments, pos..pos + 1);
+            insertions.push((pos, content[pos..pos + 1].to_string(), Some(brace_style)));
+        }
+        spans.extend(self.spans_with_insertions(content, segments, insertions));
+        spans
     }
 
     /// Turns `content`'s `segments` (byte ranges tagged with an optional
-    /// `SyntaxRole`, covering all of `content`) into styled `Span`s,
-    /// splicing in `insertions` — `(byte position in content, literal
-    /// text)` pairs, each rendered as its own unstyled `Span` at that
-    /// point (fold-marker/collapse-summary text is never part of the
-    /// highlighted source, so it never carries a role).
+    /// `SyntaxRole`) into styled `Span`s, splicing in `insertions` —
+    /// `(byte position in content, literal text, optional style)` triples,
+    /// each rendered as its own `Span` at that point.
+    ///
+    /// `segments` need not cover all of `content`: `cut_segments` removes
+    /// the bytes the fold margin replaces, and those an insertion stands
+    /// in for (spec 0193). Anything cut is simply never emitted.
     pub(super) fn spans_with_insertions(
         &self,
         content: &str,
         segments: Vec<(Range<usize>, Option<SyntaxRole>)>,
-        mut insertions: Vec<(usize, String)>,
+        mut insertions: Vec<(usize, String, Option<Style>)>,
     ) -> Vec<Span<'static>> {
-        insertions.sort_by_key(|(pos, _)| *pos);
+        insertions.sort_by_key(|(pos, _, _)| *pos);
         let mut segments: std::collections::VecDeque<_> = segments.into();
         let mut result = Vec::new();
-        for (ins_pos, ins_text) in insertions {
+        for (ins_pos, ins_text, ins_style) in insertions {
             while let Some((range, role)) = segments.pop_front() {
                 if range.end <= ins_pos {
                     result.push(self.make_span(content[range].to_string(), role));
@@ -352,7 +506,10 @@ impl App {
                     break;
                 }
             }
-            result.push(Span::raw(ins_text));
+            result.push(match ins_style {
+                Some(style) => Span::styled(ins_text, style),
+                None => Span::raw(ins_text),
+            });
         }
         for (range, role) in segments {
             result.push(self.make_span(content[range].to_string(), role));
@@ -743,26 +900,37 @@ impl App {
                 Some((t, _)) => format!("{path_label} {node_path}: {t}"),
                 None => format!("{path_label} {node_path}"),
             };
-            // Spec 0185 S7/Q1: the focus lock is announced in words
-            // rather than shown — the cursor is deliberately left
-            // unrestyled, so that the main pane looks exactly as it
-            // would after a real splice (G3). The notice is tied to the
-            // pane being open, not to an overlay existing, so it is
-            // shown for a candidate that failed to render too, where
-            // the lock still holds but no overlay does.
-            let left = if self.override_target.is_some() {
-                match self.preview_overlay {
-                    Some(_) => format!("{left} - preview (main pane locked)"),
-                    None => format!("{left} - main pane locked"),
-                }
-            } else {
-                left
+            // Spec 0185 S7/Q1 announced the focus lock in words here —
+            // the cursor is deliberately left unrestyled, so the main
+            // pane looks exactly as it would after a real splice (G3),
+            // and something had to say why it was inert.
+            //
+            // Spec 0193 S3 drops that half: the lock is redundant with
+            // `OVERRIDE_FOCUS_LOCK_MESSAGE`, which already fires in the
+            // command/message row on both ways of trying to leave and
+            // says strictly more (including the way out). What is left
+            // means exactly one thing — *what you are looking at is
+            // hypothetical* — and its absence correctly means committed
+            // content, which is what a candidate that failed to render
+            // leaves on screen anyway.
+            let left = match self.preview_overlay {
+                Some(_) => format!("{left} (preview)"),
+                None => left,
             };
             // The byte-range ruler is dropped (not truncated) once a side
             // pane is open and the main pane is only half-width, since
             // there's rarely enough room for both halves — but the line
             // number is short enough to always fit, so it stays.
-            let line_ruler = format!("L{}/{}", self.cursor_line() + 1, self.lines.len());
+            // Spec 0193 S4: the cursor ruler answers "where am I", the
+            // viewport label answers "where is the window" — panning
+            // (`z`/`x`, the wheel) moves the second without moving the
+            // first, which is what made a lone cursor ruler look stuck.
+            let line_ruler = format!(
+                "L{}/{}  {}",
+                self.cursor_line() + 1,
+                self.lines.len(),
+                viewport_label(self.scroll_offset, window.len(), total_rows),
+            );
             let right = if right_outer.is_some() {
                 line_ruler
             } else {
@@ -942,13 +1110,6 @@ impl App {
             SortMode::Inferred => "inferred types",
         };
         let left = format!("{node_path} - {mode_label}");
-        let right = format!(
-            "L{}/{}",
-            self.override_highlight + 1,
-            self.override_candidates.len(),
-        );
-        let text = statusline_text(&left, Some(&right), split[1].width as usize);
-        frame.render_widget(Paragraph::new(Line::styled(text, style)), split[1]);
 
         let list_height = inner.height as usize;
         self.override_list_height = list_height;
@@ -967,6 +1128,18 @@ impl App {
         }
         let end = (self.override_scroll + list_height).min(total_rows);
         let start = self.override_scroll.min(total_rows);
+
+        // Spec 0193 S4: drawn only now, since the viewport label needs
+        // the scroll offset this pane's own clamp above just settled.
+        let right = format!(
+            "L{}/{}  {}",
+            self.override_highlight + 1,
+            total_rows,
+            viewport_label(start, list_height, total_rows),
+        );
+        let text = statusline_text(&left, Some(&right), split[1].width as usize);
+        frame.render_widget(Paragraph::new(Line::styled(text, style)), split[1]);
+
         // 2026-07-20 feedback: warm the wrapper-descriptor registration
         // for the whole currently-visible window ahead of time, so
         // arrowing through already-visible rows never re-pays the

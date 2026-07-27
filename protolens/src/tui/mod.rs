@@ -348,9 +348,14 @@ fn pane_focus_style(focused: bool, theme: ThemeKind) -> Style {
 /// Spec 0147 G2: compose a pane's local statusline as `left` flush-left
 /// and `right` flush-right (if any) within `width` columns — mirroring
 /// vim's own statusline layout. `right` is always shown in full, never
-/// truncated; if `left` would overlap it, `left` is cut short with a
-/// single trailing `<` marker at the cut point instead (mirrors vim's
-/// `%<`).
+/// truncated.
+///
+/// Spec 0193 S3: when `left` would overlap `right`, what survives is
+/// `left`'s **tail**, marked with a single leading `<` (vim's `%<`
+/// again, but at the other end). `left` reads
+/// `<blob path> <node path>: <type>`, longest-lived field first, so its
+/// head is the part a user has already read and its tail is the part
+/// that changes as the cursor moves.
 fn statusline_text(left: &str, right: Option<&str>, width: usize) -> String {
     let Some(right) = right else {
         return left.chars().take(width).collect();
@@ -368,11 +373,35 @@ fn statusline_text(left: &str, right: Option<&str>, width: usize) -> String {
         line.push_str(&right);
         line
     } else {
-        let mut line: String = left_chars.into_iter().take(budget - 1).collect();
-        line.push('<');
+        let dropped = left_chars.len() - (budget - 1);
+        let mut line = String::from("<");
+        line.extend(left_chars.into_iter().skip(dropped));
         line.push_str(&right);
         line
     }
+}
+
+/// Spec 0193 S4: vim's viewport indicator, to be shown *alongside* the
+/// cursor's own `L<n>/<m>` rather than instead of it (A6) — it answers
+/// "where is the window", which panning changes and the cursor ruler
+/// cannot report.
+///
+/// `All` when everything fits, `Top`/`Bot` at the ends, and otherwise
+/// the window's position as a percentage of the scrollable range — not
+/// of the document, so the last scroll position before `Bot` reads as a
+/// high percentage rather than as `total - height`'s fraction. This is
+/// vim's own arithmetic.
+fn viewport_label(first_visible: usize, height: usize, total: usize) -> String {
+    if total <= height {
+        return "All".to_string();
+    }
+    if first_visible == 0 {
+        return "Top".to_string();
+    }
+    if first_visible + height >= total {
+        return "Bot".to_string();
+    }
+    format!("{}%", first_visible * 100 / (total - height))
 }
 
 /// Resolve a typed command `name` against `COMMANDS`, with **exact match
@@ -1891,14 +1920,6 @@ fn emit_osc52_copy(text: &str) {
     let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
     let _ = write!(std::io::stdout(), "\x1b]52;c;{encoded}\x07");
     let _ = std::io::stdout().flush();
-}
-
-/// Column where a fold marker is inserted by `App::render_line_content` —
-/// right after the line's own leading indentation (column 0 for an
-/// unindented, root-level line).
-fn marker_column(line: &str) -> u16 {
-    let indent_len = line.len() - line.trim_start().len();
-    indent_len as u16
 }
 
 /// Drain any input events already queued in the terminal's input buffer

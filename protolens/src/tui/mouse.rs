@@ -229,19 +229,23 @@ impl App {
     }
 
     /// Spec 0129 §G2: the currently-selected main-pane lines' full
-    /// (untruncated) text, one `render_line_content` per line in
+    /// (untruncated) text, one `row_text` per line in
     /// `min(select_anchor, select_end)..=max(...)`, joined with `\n`,
     /// alongside the line count — `None` if there is no active
     /// selection. Split out from `copy_selection_to_clipboard` so the
     /// text-building logic is testable independent of real OS clipboard
     /// access (unavailable e.g. in headless/CI environments).
+    ///
+    /// `row_text`, not `row_content`: spec 0193 S1's fold margin is
+    /// gutter furniture, and a `▾` (or the two blank columns that stand
+    /// in for one) pasted into a `.textproto` would not parse.
     pub(super) fn selected_text(&self) -> Option<(usize, String)> {
         let (Some(anchor), Some(end)) = (self.select_anchor, self.select_end) else {
             return None;
         };
         let (start, stop) = (anchor.min(end), anchor.max(end));
         let text = (start..=stop)
-            .map(|i| self.render_line_content(i))
+            .map(|i| self.row_text(DisplayRow::Committed(i)))
             .collect::<Vec<_>>()
             .join("\n");
         Some((stop - start + 1, text))
@@ -355,7 +359,7 @@ impl App {
                 // a glyph or a reserved blank, never part of the
                 // line's own text) — the marker sits one column
                 // further right.
-                if rel_col >= 1 && rel_col - 1 == marker_column(&self.lines[line_idx]) {
+                if rel_col >= 1 && rel_col - 1 == render::marker_column(&self.lines[line_idx]) {
                     self.toggle_fold(idx);
                     return;
                 }

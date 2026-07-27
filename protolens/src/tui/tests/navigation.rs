@@ -294,6 +294,10 @@ fn display_range_strips_tag_and_length_for_scalars_including_packed() {
 /// 0138 N1) leaves only `main_area.width - 1` columns for line text, so
 /// `pan_right`'s clamp must account for it or panning stops one
 /// character short of the line's true end.
+///
+/// Spec 0193 S1 puts the fold field *inside* the panned row rather than
+/// beside it, so it lengthens the row `max_visible_line_len` measures —
+/// unlike the heat-cue column, which is prepended after panning.
 #[test]
 fn pan_right_reaches_the_true_end_of_the_longest_visible_line() {
     let line = "x".repeat(50);
@@ -308,7 +312,7 @@ fn pan_right_reaches_the_true_end_of_the_longest_visible_line() {
     let usable_width = app.main_area.width as usize - 1;
     assert_eq!(
         app.pan_offset,
-        line.len() - usable_width,
+        line.len() + render::FOLD_FIELD_WIDTH - usable_width,
         "pan_offset must clamp so the last column of the pane shows the \
          line's last character, leaving room for the 1-column heat-cue \
          gutter"

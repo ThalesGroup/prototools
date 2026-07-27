@@ -1796,10 +1796,13 @@ fn the_selection_pane_holds_focus_but_still_lets_the_main_pane_pan() {
     assert_eq!(app.cursor, cursor);
 }
 
-/// Spec 0185 S7/Q1: the lock is announced in words on the main pane's
-/// statusline, tied to the selection pane being open rather than to an
-/// overlay existing — so it is shown for a candidate that failed to
-/// render too, where the lock still holds but no overlay does.
+/// Spec 0193 S3 reverses spec 0185 S7/Q1: the statusline no longer
+/// spells out the focus lock, because the user learns of it the moment
+/// they try to focus the main pane and the command/message row answers
+/// with `OVERRIDE_FOCUS_LOCK_MESSAGE`. What the statusline still owes
+/// the reader is that the content on display is not the real document,
+/// so the suffix survives — shortened to ` (preview)`, and now tied to
+/// an overlay actually existing rather than to the pane being open.
 #[test]
 fn the_main_statusline_announces_the_focus_lock() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
@@ -1815,14 +1818,18 @@ fn the_main_statusline_announces_the_focus_lock() {
     };
 
     terminal.draw(|frame| app.render(frame)).unwrap();
-    assert!(!main_statusline(&app, &terminal).contains("locked"));
+    assert!(!main_statusline(&app, &terminal).contains("preview"));
 
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
     terminal.draw(|frame| app.render(frame)).unwrap();
     let row = main_statusline(&app, &terminal);
     assert!(
-        row.contains("preview (main pane locked)"),
+        row.contains("(preview)"),
         "a live preview must say so: {row:?}"
+    );
+    assert!(
+        !row.contains("locked"),
+        "the lock is the command/message row's business, not the statusline's: {row:?}"
     );
 
     app.override_candidates = vec![("nonexistent.Type".to_string(), None)];
@@ -1832,13 +1839,13 @@ fn the_main_statusline_announces_the_focus_lock() {
     terminal.draw(|frame| app.render(frame)).unwrap();
     let row = main_statusline(&app, &terminal);
     assert!(
-        row.contains("main pane locked") && !row.contains("preview"),
-        "a failed preview still reports the lock, without claiming a preview: {row:?}"
+        !row.contains("preview"),
+        "a failed preview leaves the real document on display, so it claims nothing: {row:?}"
     );
 
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     terminal.draw(|frame| app.render(frame)).unwrap();
-    assert!(!main_statusline(&app, &terminal).contains("locked"));
+    assert!(!main_statusline(&app, &terminal).contains("preview"));
 }
 
 /// Spec 0161 regression: confirming an override with `Enter` after

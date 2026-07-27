@@ -717,7 +717,10 @@ fn deactivating_override_recomputes_the_pan_bound_against_the_post_splice_scroll
         .iter()
         .position(|l| l.contains(WIDE_FIELD_NAME))
         .expect("revert must restore the wide field");
-    let wide_field_len = app.render_line_content(wide_field_row).chars().count();
+    let wide_field_len = app
+        .row_content(DisplayRow::Committed(wide_field_row))
+        .chars()
+        .count();
 
     let max_len = app.max_visible_line_len();
     assert!(

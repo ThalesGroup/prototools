@@ -376,6 +376,47 @@ pub fn manage_entry_style(auto: bool, theme: ThemeKind) -> Style {
     }
 }
 
+/// Purpose-designed red for the brace pair of the node under the cursor
+/// (spec 0193 S2) — not borrowed from `dark_rgb`/`light_rgb`, whose
+/// VSCode source expresses its own bracket-match cue as a *border*
+/// around the cell, which a terminal cell cannot draw. Follows
+/// `heat_rgb`'s precedent of a small purpose-built palette instead.
+mod brace_rgb {
+    use ratatui::style::Color;
+
+    /// "Red Orange" — bright against a dark background, and still
+    /// legible once the cursor row's `REVERSED` turns it into one.
+    pub const DARK: Color = Color::Rgb(0xFF, 0x45, 0x3A);
+    /// "Boston University Red" — dark enough to read on a light
+    /// background, where `DARK`'s orange cast washes out.
+    pub const LIGHT: Color = Color::Rgb(0xCC, 0x00, 0x00);
+}
+
+/// Spec 0193 S2: the brace pair of the message/group under the cursor —
+/// its opening `{` and its matching `}`, including the synthetic one a
+/// folded node renders as `{ ... }`.
+///
+/// Like `manage_entry_style` above, this is a standalone style function
+/// rather than a `SyntaxRole`: `SyntaxRole`/`RECOGNIZED_NAMES` are
+/// strictly one variant per `queries/highlights.scm` capture name, and
+/// where the cursor happens to be is not something tree-sitter can
+/// capture. The *hue* is deliberately theme-independent — red in both,
+/// like `focus_style`'s accent — since the point is salience rather
+/// than palette harmony; only the shade adapts, for contrast against
+/// the respective background.
+pub fn brace_match_style(theme: ThemeKind) -> Style {
+    let color = match theme {
+        ThemeKind::Dark if supports_rgb() => brace_rgb::DARK,
+        ThemeKind::Dark => Color::LightRed,
+        ThemeKind::Light if supports_rgb() => brace_rgb::LIGHT,
+        ThemeKind::Light => Color::Red,
+        ThemeKind::System => {
+            unreachable!("ThemeKind::System must be resolved before rendering — see main.rs")
+        }
+    };
+    Style::default().fg(color).add_modifier(Modifier::BOLD)
+}
+
 /// Focused-pane local-statusline style, shared by every focus-tracked
 /// pane (main/override/manage — see `tui/mod.rs`'s `pane_focus_style`).
 /// Vim-style inverted video (`REVERSED`): `Color::White` is ANSI code 15

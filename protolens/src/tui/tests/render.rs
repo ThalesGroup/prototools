@@ -287,12 +287,17 @@ fn a_toggles_the_main_pane_annotation_display() {
     );
     app.splash = false;
 
+    // Spec 0193 S1: every row carries the two-column fold field, blank
+    // here since this node has nothing to fold.
     assert!(app.annotations);
-    assert_eq!(app.render_line_content(0), line);
+    assert_eq!(
+        app.row_content(DisplayRow::Committed(0)),
+        format!("  {line}")
+    );
 
     app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
     assert!(!app.annotations);
-    assert_eq!(app.render_line_content(0), "  id: 5");
+    assert_eq!(app.row_content(DisplayRow::Committed(0)), "    id: 5");
     // Spec 0187 S3: `row_spans` reads `window_styles`, which is a
     // per-frame product of the rows being drawn, so the window has to be
     // established before the row's spans can be asked for. Index 0 is
@@ -304,11 +309,14 @@ fn a_toggles_the_main_pane_annotation_display() {
         .iter()
         .map(|s| s.content.as_ref())
         .collect();
-    assert_eq!(spanned, "  id: 5");
+    assert_eq!(spanned, "    id: 5");
 
     app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
     assert!(app.annotations);
-    assert_eq!(app.render_line_content(0), line);
+    assert_eq!(
+        app.row_content(DisplayRow::Committed(0)),
+        format!("  {line}")
+    );
 }
 
 /// Spec 0113 D33: the bold override hint applies to a node's own
@@ -435,10 +443,12 @@ fn main_statusline_shows_the_full_command_line_path_not_just_the_filename() {
     );
 }
 
-/// Spec 0147 G2's truncation rule (mirroring vim's `%<`): when the
+/// Spec 0193 S3 revises spec 0147 G2's truncation rule: when the
 /// terminal is too narrow for the local statusline's full left-hand
-/// content, it is cut short with a trailing `<` marker, while the
-/// right-flushed ruler remains shown in full.
+/// content, the *head* is dropped and a leading `<` marker announces
+/// it, so the reader keeps the informative tail (the node's own name
+/// and span, rather than the enclosing file path). The right-flushed
+/// ruler remains shown in full either way.
 #[test]
 fn main_statusline_truncates_the_left_side_with_a_marker_when_narrow() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
@@ -453,11 +463,19 @@ fn main_statusline_truncates_the_left_side_with_a_marker_when_narrow() {
         .map(|x| buffer[(x, statusline_row)].symbol().to_string())
         .collect();
     assert!(
-        row_text.contains('<'),
-        "narrow terminal: the left side must be truncated with a marker: {row_text:?}"
+        row_text.starts_with('<'),
+        "narrow terminal: the dropped head must be marked with a leading `<`: {row_text:?}"
     );
     assert!(
-        row_text.contains("..") && row_text.trim_end().ends_with(char::is_numeric),
+        row_text.contains("[message][2..4)"),
+        "the left side's tail must survive the truncation: {row_text:?}"
+    );
+    assert!(
+        !row_text.contains("test.pb"),
+        "it is the head that is dropped, not the tail: {row_text:?}"
+    );
+    assert!(
+        row_text.trim_end().ends_with("All"),
         "the right-flushed ruler must still be shown in full: {row_text:?}"
     );
 }
@@ -781,9 +799,16 @@ fn hiding_annotations_respects_a_hash_at_inside_a_string_value() {
     let mut app = sibling_leaves_app(&["x"]);
     app.lines = vec![line.clone()];
     app.annotations = false;
-    assert_eq!(app.render_line_content(0), "  name: \"a  #@ b\"");
+    // Spec 0193 S1's blank fold field accounts for the two extra columns.
+    assert_eq!(
+        app.row_content(DisplayRow::Committed(0)),
+        "    name: \"a  #@ b\""
+    );
     app.annotations = true;
-    assert_eq!(app.render_line_content(0), line);
+    assert_eq!(
+        app.row_content(DisplayRow::Committed(0)),
+        format!("  {line}")
+    );
 }
 
 /// Test plan item 3b. The one place this spec knowingly changes what the
@@ -802,7 +827,7 @@ fn an_empty_packed_record_row_hides_to_nothing() {
     let mut app = sibling_leaves_app(&["x"]);
     app.lines = vec!["  #@ = 7 pack_size: 0".to_string()];
     app.annotations = false;
-    assert_eq!(app.render_line_content(0), "");
+    assert_eq!(app.row_content(DisplayRow::Committed(0)), "");
 }
 
 /// Test plan item 3c. The rule moved across a crate boundary, from the
@@ -855,4 +880,294 @@ fn clipboard_copy_strips_annotations_outside_the_viewport() {
             "annotations must be stripped outside the viewport too, got {line:?}"
         );
     }
+}
+
+/// Every span the frame draws in `brace_match_style`, as
+/// `(committed line index, span text)` — the observable form of spec
+/// 0193 S2. Refreshes the window styles over the whole document first,
+/// since `row_spans` reads them by window position.
+fn brace_match_spans(app: &mut App) -> Vec<(usize, String)> {
+    let window: Vec<DisplayRow> = (0..app.composed_row_count())
+        .filter_map(|d| app.display_row(d))
+        .collect();
+    app.refresh_window_styles(&window);
+    let want = crate::theme::brace_match_style(app.theme);
+    let mut found = Vec::new();
+    for (i, &row) in window.iter().enumerate() {
+        let DisplayRow::Committed(line) = row else {
+            continue;
+        };
+        for span in app.row_spans(row, i) {
+            if span.style == want {
+                found.push((line, span.content.to_string()));
+            }
+        }
+    }
+    found
+}
+
+/// The display column `needle` is drawn in, in characters — not bytes,
+/// since the fold marker is three bytes wide and one column wide.
+fn column_of(content: &str, needle: &str) -> usize {
+    let byte = content
+        .find(needle)
+        .unwrap_or_else(|| panic!("{content:?} must contain {needle:?}"));
+    content[..byte].chars().count()
+}
+
+/// Spec 0193 test-plan items 1 and 2 (G1, G2). `nested_any_fixture`
+/// renders `type_url: "..."` and `value {` as siblings at the same
+/// depth — one with nothing to fold, one foldable — which is exactly
+/// the pair the complaint was about: today the second one's name sits
+/// one column right of the first's.
+#[test]
+fn the_fold_marker_does_not_displace_the_row_it_marks() {
+    let app = nested_any_fixture();
+    let line_of = |needle: &str| {
+        app.lines
+            .iter()
+            .position(|l| l.trim_start().starts_with(needle))
+            .unwrap_or_else(|| panic!("fixture must render a {needle:?} line"))
+    };
+    let plain = app.row_content(DisplayRow::Committed(line_of("type_url:")));
+    let foldable = app.row_content(DisplayRow::Committed(line_of("value {")));
+    assert_eq!(
+        column_of(&plain, "type_url"),
+        column_of(&foldable, "value"),
+        "a foldable row's text must start in the same column as its \
+         non-foldable sibling's: {plain:?} against {foldable:?}"
+    );
+
+    // Item 2, at both ends of the S1 rule: `value {` is indented deeply
+    // enough for the marker to take the last two columns of its own
+    // indentation, while the root row has no indentation at all and
+    // falls back to the reserved field.
+    let root = app.row_content(DisplayRow::Committed(0));
+    for (content, token) in [(&foldable, "value"), (&root, "1 {")] {
+        assert_eq!(
+            column_of(content, "\u{25be}") + render::FOLD_FIELD_WIDTH,
+            column_of(content, token),
+            "the marker must sit immediately left of the token: {content:?}"
+        );
+    }
+}
+
+/// Spec 0193 test-plan item 3 (G6). `marker_column` is what the mouse's
+/// fold hit test steers by, so it must report the column the glyph is
+/// actually drawn in — for every `--indent`, not just the default 2.
+/// The `1` case is the one that discriminates: the marker cannot fit in
+/// a one-column indent, so it falls back into the reserved field and
+/// its column stops tracking the indent.
+#[test]
+fn marker_column_agrees_with_what_is_drawn_at_every_indent_width() {
+    for width in [0usize, 1, 2, 4] {
+        let mut app = nested_any_fixture();
+        // Re-indent the document as `--indent width` would have. Only
+        // the leading whitespace changes, so every node's line range —
+        // and therefore every fold marker — stays where it was.
+        app.lines = app
+            .lines
+            .iter()
+            .map(|l| {
+                let depth = (l.len() - l.trim_start().len()) / 2;
+                format!("{}{}", " ".repeat(depth * width), l.trim_start())
+            })
+            .collect();
+
+        let window: Vec<DisplayRow> = (0..app.composed_row_count())
+            .filter_map(|d| app.display_row(d))
+            .collect();
+        app.refresh_window_styles(&window);
+        for (i, &row) in window.iter().enumerate() {
+            let DisplayRow::Committed(line) = row else {
+                continue;
+            };
+            let drawn: String = app
+                .row_spans(row, i)
+                .iter()
+                .map(|s| s.content.to_string())
+                .collect();
+            let Some(marker) = drawn.chars().position(|c| c == '\u{25be}') else {
+                continue;
+            };
+            assert_eq!(
+                marker,
+                render::marker_column(&app.lines[line]) as usize,
+                "--indent {width}, line {line}: the hit test and the drawn \
+                 glyph must agree on the column: {drawn:?}"
+            );
+        }
+    }
+}
+
+/// Spec 0193 test-plan item 4. Spec 0185 G3 requires a preview and the
+/// commit that follows it to be byte-identical, which rests on
+/// `row_content` and `row_spans` staying in step; S1 and S2 edit both.
+/// The fixture is folded partway through so the collapse summary, the
+/// margin and the brace highlight all appear.
+#[test]
+fn row_content_and_row_spans_agree_byte_for_byte() {
+    let (mut app, items) = repeated_message_fixture();
+    app.toggle_fold(items[1]);
+    app.cursor = items[0];
+
+    let window: Vec<DisplayRow> = (0..app.composed_row_count())
+        .filter_map(|d| app.display_row(d))
+        .collect();
+    app.refresh_window_styles(&window);
+    assert!(window.len() > 4, "the fixture must have rows to compare");
+    for (i, &row) in window.iter().enumerate() {
+        let drawn: String = app
+            .row_spans(row, i)
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
+        assert_eq!(drawn, app.row_content(row), "row {i} disagrees");
+    }
+}
+
+/// Spec 0193 test-plan item 5 (G3, N2). The cursor node's own braces
+/// are styled and nothing else is — in particular not the identically
+/// shaped braces of its two siblings, which is what N2 rules out.
+#[test]
+fn only_the_cursor_nodes_own_braces_are_styled() {
+    let (mut app, items) = repeated_message_fixture();
+    app.cursor = items[1];
+    let range = app.tree[items[1]].span.text_range.clone();
+
+    assert_eq!(
+        brace_match_spans(&mut app),
+        vec![
+            (range.start, "{".to_string()),
+            (range.end - 1, "}".to_string()),
+        ],
+        "exactly the cursor node's header `{{` and footer `}}`"
+    );
+}
+
+/// Spec 0193 test-plan item 6. A folded node carries its whole pair on
+/// one row, and the closing half of it is synthetic — text that exists
+/// only as an insertion. The ellipsis beside it is not part of the
+/// pair and must stay plain, which is the reason `spans_with_insertions`
+/// takes a per-insertion style rather than one style for the lot.
+#[test]
+fn a_folded_nodes_synthetic_closing_brace_is_styled_but_its_ellipsis_is_not() {
+    let (mut app, items) = repeated_message_fixture();
+    app.cursor = items[0];
+    app.toggle_fold(items[0]);
+    let header = app.tree[items[0]].span.text_range.start;
+
+    assert_eq!(
+        brace_match_spans(&mut app),
+        vec![(header, "{".to_string()), (header, "}".to_string())],
+        "the folded row carries both halves of the pair"
+    );
+
+    let window: Vec<DisplayRow> = (0..app.composed_row_count())
+        .filter_map(|d| app.display_row(d))
+        .collect();
+    app.refresh_window_styles(&window);
+    let row = window
+        .iter()
+        .position(|r| matches!(r, DisplayRow::Committed(l) if *l == header))
+        .expect("the folded node's header row is still drawn");
+    let ellipsis = app
+        .row_spans(window[row], row)
+        .into_iter()
+        .find(|s| s.content == " ... ")
+        .expect("a folded row draws its collapse summary");
+    assert_eq!(
+        ellipsis.style,
+        Style::default(),
+        "the collapse summary is not part of the brace pair"
+    );
+}
+
+/// Spec 0193 test-plan item 7. The highlight is a property of where the
+/// cursor is now, so it must move with it — a version computed once and
+/// cached would leave the old node lit.
+#[test]
+fn moving_the_cursor_off_a_node_clears_its_braces() {
+    let (mut app, items) = repeated_message_fixture();
+    app.cursor = items[0];
+    let first = app.tree[items[0]].span.text_range.clone();
+    let second = app.tree[items[1]].span.text_range.clone();
+    assert_eq!(
+        brace_match_spans(&mut app),
+        vec![
+            (first.start, "{".to_string()),
+            (first.end - 1, "}".to_string()),
+        ]
+    );
+
+    app.cursor = items[1];
+    assert_eq!(
+        brace_match_spans(&mut app),
+        vec![
+            (second.start, "{".to_string()),
+            (second.end - 1, "}".to_string()),
+        ],
+        "the highlight follows the cursor rather than staying behind"
+    );
+}
+
+/// Spec 0193 test-plan item 10 (S4). vim's own rule, boundaries
+/// included — the last full screen must read `Bot` rather than `99%`,
+/// which is the case a naive percentage gets wrong.
+#[test]
+fn viewport_label_matches_vims_rule_at_the_boundaries() {
+    for (first, height, total, want) in [
+        (0usize, 10usize, 10usize, "All"),
+        (0, 10, 3, "All"),
+        (0, 10, 100, "Top"),
+        (90, 10, 100, "Bot"),
+        (89, 10, 100, "98%"),
+        (45, 10, 100, "50%"),
+        (1, 10, 100, "1%"),
+    ] {
+        assert_eq!(
+            viewport_label(first, height, total),
+            want,
+            "viewport_label({first}, {height}, {total})"
+        );
+    }
+}
+
+/// Spec 0193 test-plan item 11 (G5) — the reported complaint, end to
+/// end. Panning moves the whole screen without moving the cursor, so
+/// `L<n>/<m>` is right to sit still; what was missing was anything at
+/// all that reported the viewport.
+#[test]
+fn panning_changes_the_viewport_label_and_not_the_cursor_ruler() {
+    let mut app = wide_sibling_scalars_app(200);
+    app.splash = false;
+    let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    let statusline = |app: &App, terminal: &Terminal<TestBackend>| -> String {
+        let buffer = terminal.backend().buffer();
+        let y = app.main_area.y + app.main_area.height;
+        (app.main_area.x..app.main_area.x + app.main_area.width)
+            .map(|x| buffer[(x, y)].symbol().to_string())
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    };
+
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let before = statusline(&app, &terminal);
+    assert!(before.ends_with("L1/200  Top"), "at rest: {before:?}");
+
+    let cursor = app.cursor;
+    // Five `PAN_STEP`s down: far enough to be neither `Top` nor `Bot`,
+    // so the indicator has to answer with a real percentage.
+    for _ in 0..5 {
+        app.pan_vertical_down();
+    }
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let after = statusline(&app, &terminal);
+
+    assert_eq!(app.cursor, cursor, "panning must not move the cursor");
+    assert!(
+        after.ends_with("L1/200  22%"),
+        "the cursor ruler stands still and the viewport indicator moves: {after:?}"
+    );
 }
