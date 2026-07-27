@@ -77,6 +77,7 @@ f: 1043E-04f
 # <- attribute
 #^ punctuation.delimiter
 #    ^ number
+#          ^ number
 h: 0xfffFF00aeF
 # <- attribute
 #^ punctuation.delimiter
@@ -92,6 +93,33 @@ i: 48.8566e2
 #    ^ number
 #       ^ number
 #          ^ number
+
+esc: "\027\002\\"  #@ string
+# <- attribute
+#     ^ string.escape
+#         ^ string.escape
+#             ^ string.escape
+#                  ^ comment
+bts: "\n\004\000hello"
+# <- attribute
+#     ^ string.escape
+#       ^ string.escape
+#           ^ string.escape
+#               ^ string
+uni: "\u00e9\U0001F600\U0010FFFF"
+# <- attribute
+#     ^ string.escape
+#           ^ string.escape
+#                     ^ string.escape
+j: 1.5f
+# <- attribute
+#  ^ number
+#     ^ number
+end: 6
+# <- attribute
+# ^ attribute
+#  ^ punctuation.delimiter
+#    ^ number
 
 status: ACTIVE
 # <- attribute

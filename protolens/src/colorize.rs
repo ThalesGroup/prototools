@@ -276,16 +276,23 @@ mod tests {
     }
 
     #[test]
-    fn float_still_number() {
+    fn float_suffix_joins_the_literal() {
         // `test/highlight/textproto.txt`'s own fixture line (spec 0116
-        // §7's Test-plan item 7) — the trailing `f` float suffix is a
-        // known upstream tree-sitter-textproto grammar limitation (it
-        // never joins the preceding `float_lit`, parsing as a sibling
-        // `ERROR` node instead, confirmed against the pinned grammar
-        // commit), so only the successfully parsed `1043E-04` portion is
-        // asserted here.
+        // §7's Test-plan item 7). The trailing `f`/`F` float suffix used
+        // to be an upstream grammar limitation — a plain `/[Ff]/` ties
+        // with `identifier` on length in the same state, so it never
+        // attached and parsed as a sibling `ERROR` — until spec 0196 S5
+        // made it `token.immediate`.
         let text = "f: 1043E-04f\n";
-        assert_eq!(roles_at(text, "1043E-04"), vec![SyntaxRole::Number]);
+        assert_eq!(roles_at(text, "1043E-04f"), vec![SyntaxRole::Number]);
+        let text = "f: 1.5f\n";
+        assert_eq!(roles_at(text, "1.5f"), vec![SyntaxRole::Number]);
+
+        // `immediate` is what separates the suffix from the next field's
+        // name: with whitespace between, `f` is a field again.
+        let text = "x: 1.5\nf: 2\n";
+        assert_eq!(roles_at(text, "1.5"), vec![SyntaxRole::Number]);
+        assert_eq!(roles_at(text, "f"), vec![SyntaxRole::Attribute]);
     }
 
     #[test]
@@ -366,6 +373,135 @@ mod tests {
         // digits (e.g. "48.8566e2"), for the same underlying reason.
         let text = "latitude: 48.8566e2\n";
         assert_eq!(roles_at(text, "48.8566e2"), vec![SyntaxRole::Number]);
+    }
+
+    /// Every role assigned to any byte of `needle`, deduplicated in
+    /// first-seen order — for the escape tests, where the defect being
+    /// asserted against is precisely that a span gets *split*, so
+    /// `roles_at`'s exact-range match would report an empty vector for
+    /// both the fixed and the broken grammar.
+    fn roles_across(text: &str, needle: &str) -> Vec<SyntaxRole> {
+        let start = text.find(needle).expect("needle not found in text");
+        let end = start + needle.len();
+        let mut seen: Vec<SyntaxRole> = Vec::new();
+        for hint in colorize(text) {
+            if hint.range.start < end && start < hint.range.end && !seen.contains(&hint.role) {
+                seen.push(hint.role);
+            }
+        }
+        seen
+    }
+
+    #[test]
+    fn a_backslash_escape_does_not_swallow_the_closing_quote() {
+        // Spec 0196 S1. Upstream's escape list spelled `"\\\""` and
+        // `'\\"'`, which are the same two characters in JavaScript — so
+        // it held `\"` twice and `\\` never. A `\\` lexed as a lone `\`
+        // followed by `\"`, which ate the string's own closing quote:
+        // the string ran to end of line and the trailing annotation
+        // comment colored as string.
+        let text = "s: \"\\027\\002\\\\\"  #@ string\n";
+        assert_eq!(roles_across(text, "\\\\"), vec![SyntaxRole::StringEscape]);
+        assert_eq!(roles_at(text, "#@ string"), vec![SyntaxRole::Comment]);
+    }
+
+    #[test]
+    fn an_escape_is_one_span_including_its_optional_digits() {
+        // Spec 0196 S2. The octal and hex escapes were sequences of
+        // separate tokens, so after `\0` the lexer could take either a
+        // one-character `oct` or the greedy `double_string_contents`;
+        // longest-match won and `\004` colored as an escape `\0` plus
+        // ordinary contents `04`.
+        let text = "location: \"\\n\\004\\004\\000hello\"  #@ bytes\n";
+        for escape in ["\\n", "\\004", "\\000"] {
+            assert_eq!(
+                roles_across(text, escape),
+                vec![SyntaxRole::StringEscape],
+                "{escape} is not a single escape span",
+            );
+        }
+        assert_eq!(roles_across(text, "hello"), vec![SyntaxRole::StringLiteral]);
+        assert_eq!(roles_at(text, "#@ bytes"), vec![SyntaxRole::Comment]);
+
+        // Same defect, hex form, and an octal escape whose value is out
+        // of range for a byte — still one token (spec 0196 N2: the
+        // grammar delimits, it does not range-check).
+        for text in ["s: \"\\x41\"\n", "s: \"\\400\"\n"] {
+            let escape = &text[4..text.len() - 3];
+            assert_eq!(
+                roles_across(text, escape),
+                vec![SyntaxRole::StringEscape],
+                "{escape} is not a single escape span",
+            );
+        }
+    }
+
+    #[test]
+    fn every_protobuf_escape_parses() {
+        // Spec 0196 S2. `\U0010FFFF` did not parse at all before:
+        // upstream's second `\U` arm was `\U010` plus four hex digits —
+        // a seven-digit `\U` — so the whole top plane was unreachable.
+        let text = "s: \"\\a\\b\\f\\n\\r\\t\\v\\?\\'\\\"\\\\\"\n";
+        assert_eq!(
+            colorize(text)
+                .iter()
+                .filter(|h| h.role == SyntaxRole::StringEscape)
+                .count(),
+            11,
+        );
+        for text in [
+            "s: \"\\u00e9\"\n",
+            "s: \"\\U0001F600\"\n",
+            "s: \"\\U0010FFFF\"\n",
+        ] {
+            let escape = &text[4..text.len() - 3];
+            assert_eq!(
+                roles_across(text, escape),
+                vec![SyntaxRole::StringEscape],
+                "{escape} does not parse as an escape",
+            );
+        }
+    }
+
+    #[test]
+    fn an_identifier_after_a_number_keeps_its_first_letter() {
+        // Spec 0196 S3. `exp`'s leading `token(prec(2, /[Ee][-+]?/))`
+        // outranked `identifier` — tree-sitter compares explicit token
+        // precedence before match length — so a one-character `e` beat
+        // the whole word wherever `exp` was valid, which after spec
+        // 0121's `field_no` state merge is right after a top-level
+        // scalar number. `end: 6` became a stray `e` plus a field named
+        // `nd`.
+        for value in ["1", "1.5", "48.8566", "0755", "0xff", "1e5"] {
+            for name in ["end", "Email"] {
+                let text = format!("x: {value}\n{name}: 6\n");
+                assert_eq!(
+                    roles_at(&text, name),
+                    vec![SyntaxRole::Attribute],
+                    "{name} after {value} lost its first letter",
+                );
+            }
+        }
+
+        // The worst case: a single-letter `e` field name after a float
+        // used to make the parser join both lines into one `number`.
+        let text = "x: 1.5\ne: 6\n";
+        assert_eq!(roles_at(text, "e"), vec![SyntaxRole::Attribute]);
+        assert_eq!(roles_at(text, "6"), vec![SyntaxRole::Number]);
+    }
+
+    #[test]
+    fn an_empty_or_comment_only_document_parses() {
+        // Spec 0196 S4. `message` was defined twice in one object
+        // literal, so the later `repeat1($.field)` silently won — and
+        // `message` being the start rule too, a document with no field
+        // in it parsed as ERROR.
+        assert!(colorize("").is_empty());
+        assert!(colorize("\n").is_empty());
+        assert_eq!(
+            roles_at("# just a comment\n", "# just a comment"),
+            vec![SyntaxRole::Comment],
+        );
     }
 
     #[test]

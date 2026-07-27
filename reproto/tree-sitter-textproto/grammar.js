@@ -10,6 +10,13 @@
 // field number (protolens's own rendering convention for an
 // unknown/unresolved field) parses as a valid `field_name` instead of
 // triggering tree-sitter's error-recovery mode.
+//
+// docs/specs/0196-the-textproto-grammars-lexer-loses-tokens.md then
+// fixed seven further defects, six of them upstream's — see the "Local
+// fix (spec 0196 ...)" comments at `document`, `string_escape`, `exp`,
+// `float`, and above `extras`. Tracking upstream would reintroduce
+// them, which is a second reason this copy is vendored rather than
+// fetched.
 
 // https://protobuf.dev/reference/protobuf/textformat-spec/
 
@@ -17,7 +24,16 @@ module.exports = grammar({
   name: 'textproto',
 
   rules: {
-    message: $ => repeat($.field),
+    // Local fix (spec 0196 S4): upstream defines `message` twice — once
+    // here as `repeat($.field)` and again below as `repeat1($.field)`.
+    // It is one JavaScript object literal, so the second silently won
+    // and this one was dead code; `message` being the start rule as
+    // well, an empty (or comment-only) document parsed as ERROR. The
+    // two uses want different rules and now get them: a document may be
+    // empty, a message *body* may not — `message` has to stay
+    // `repeat1`, because `message_value` already wraps it in
+    // `optional()` and a nullable rule under `optional` is ambiguous.
+    document: $ => repeat($.field),
 
     field: $ => choice($.message_field, $.scalar_field),
 
@@ -172,27 +188,39 @@ module.exports = grammar({
     single_string_contents: $ => /[^\n'\\]+/,
     double_string_contents: $ => /[^\n"\\]+/,
 
-    string_escape: $ => choice(
-      "\\a",
-      "\\b",
-      "\\f",
-      "\\n",
-      "\\r",
-      "\\t",
-      "\\v",
-      "\\?",
-      "\\\"",
-      "\\'",
-      '\\"',
-      seq("\\", $.oct, optional($.oct), optional($.oct)),
-      seq("\\x", $.hex, optional($.hex)),
-      seq("\\u", $.hex, $.hex, $.hex, $.hex),
-      seq("\\U000", $.hex, $.hex, $.hex, $.hex, $.hex),
-      seq("\\U010", $.hex, $.hex, $.hex, $.hex),
-    ),
-
-    oct: $ => /[0-7]/,
-    hex: $ => /[0-9A-Fa-f]/,
+    // Local fix (spec 0196 S1/S2). Three defects in upstream's own
+    // version of this rule:
+    //
+    //   1. Its character-escape list spelled `"\\\""` and `'\\"'`, which
+    //      are the *same* two characters in JavaScript — so it contained
+    //      `\"` twice and `\\` not at all. A `\\` in a payload lexed as a
+    //      lone `\` followed by `\"`, eating the string's own closing
+    //      quote and swallowing the rest of the line.
+    //   2. It was a *sequence* of nodes, so after `\0` the lexer could
+    //      take either `oct` (one character) or `double_string_contents`
+    //      (`/[^\n"\\]+/`, greedy). Longest-match won and the optional
+    //      trailing octal/hex digits were never taken: `\004` parsed as
+    //      an escape `\0` plus ordinary contents `04`. `\uXXXX` escaped
+    //      this because all four of its digits are required.
+    //   3. `\U010` + 4 hex is a seven-digit `\U`; protobuf's takes
+    //      eight, and the intent is plainly `\U0010` + 4 (the sibling
+    //      `\U000` + 5 covers U+00000-U+FFFFF, this one covers
+    //      U+100000-U+10FFFF). As written, `\U0010FFFF` did not parse.
+    //
+    // Wrapping the whole rule in `token()` fixes 2 at the source — the
+    // lexer commits to an entire escape or to none of it — and is why
+    // upstream's `oct`/`hex` rules are gone: `token()` requires terminal
+    // contents, so they are inlined as the character classes they were.
+    // Nothing outside this rule referenced them (`highlights.scm`
+    // captures `(string_escape)` whole).
+    string_escape: $ => token(choice(
+      seq("\\", /[abfnrtv?'"\\]/),
+      seq("\\", /[0-7]/, optional(/[0-7]/), optional(/[0-7]/)),
+      seq("\\x", /[0-9A-Fa-f]/, optional(/[0-9A-Fa-f]/)),
+      seq("\\u", /[0-9A-Fa-f]{4}/),
+      seq("\\U000", /[0-9A-Fa-f]{5}/),
+      seq("\\U0010", /[0-9A-Fa-f]{4}/),
+    )),
 
     number: $ => choice(
       $.dec_int,
@@ -239,23 +267,38 @@ module.exports = grammar({
     // anonymous inline /\d+/) so the fraction digits get their own
     // node distinct from `dec_int`.
     frac_digits: $ => token(prec(2, /\d+/)),
-    exp: $ => seq(
-      token(prec(2, /[Ee][-+]?/)),
-      /\d+/,
-    ),
+    // Local fix (spec 0196 S3): `exp` used to be `seq(token(prec(2,
+    // /[Ee][-+]?/)), /\d+/)`. tree-sitter's lexer compares explicit
+    // token precedence *before* match length, so that leading one-
+    // character token beat `identifier` wherever `exp` was valid — which,
+    // after the `field_no` state merge above, is immediately after a
+    // top-level scalar number, i.e. exactly where field names live.
+    // `end: 6` after a scalar field lexed as a stray `e` plus a field
+    // named `nd`. Requiring the digits in the *same* token keeps spec
+    // 0121's precedence (still needed for `48.8566e2`) while making the
+    // token unable to match a bare identifier's first letter.
+    exp: $ => token(prec(2, /[Ee][-+]?[0-9]+/)),
+    // Local fix (spec 0196 S5): the suffix used to be a plain `/[Ff]/`,
+    // which ties with `identifier` on length in the same state, so it
+    // never attached — `1.5f` parsed as `float_lit` plus a sibling
+    // ERROR. `token.immediate` matches only with no preceding
+    // whitespace, which is exactly what separates a float suffix from
+    // the next field's name.
     float: $ => choice(
-      seq($.float_lit, optional(/[Ff]/)),
-      seq($.dec_int, /[Ff]/),
+      seq($.float_lit, optional(token.immediate(/[Ff]/))),
+      seq($.dec_int, token.immediate(/[Ff]/)),
     ),
 
     comment: $ => seq('#', /.*/)
   },
 
+  // Local removal (spec 0196 S6): upstream also declared
+  //   precedences: $ => [["message_list", "scalar_list"]],
+  // which orders two *named* precedences. Neither name is ever used —
+  // `message_list` and `scalar_list` carry numeric `prec(2)`/`prec(1)` —
+  // so the block had no effect.
   extras: $ => [
     /\s/,
     $.comment,
-  ],
-  precedences: $ => [
-    ["message_list", "scalar_list"],
   ],
 });
