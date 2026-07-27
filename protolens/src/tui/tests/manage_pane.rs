@@ -1111,10 +1111,51 @@ fn manage_pane_search_forward_and_backward() {
     );
 }
 
-/// `p` repeats the last management-pane search in the opposite
-/// direction (vim's `N` counterpart to `n`).
+/// Spec 0195 G2 in the management pane — the third of the three
+/// searches that were all case-blind in the same way, because they were
+/// three copies of the same two lines.
 #[test]
-fn manage_pane_search_repeat_with_p_reverses_direction() {
+fn manage_pane_search_is_smartcase() {
+    let (mut app, items) = repeated_scalar_fixture();
+    app.manage_focus = true;
+    app.manage_open = true;
+
+    for (item, ty) in items.iter().zip(["pkg.alpha", "pkg.beta", "pkg.Beta"]) {
+        let origin = OverrideOrigin::Path {
+            path: app.positional_path(*item),
+        };
+        app.overrides.activate(origin, Some(ty.to_string()));
+    }
+
+    // `entries()` is sorted, not in activation order, so locate the two
+    // by type rather than assuming where they landed.
+    let index_of = |app: &App, ty: &str| {
+        app.overrides
+            .entries()
+            .iter()
+            .position(|e| e.r#type.as_deref() == Some(ty))
+            .expect("the fixture activated this type")
+    };
+    let lower = index_of(&app, "pkg.beta");
+    let upper = index_of(&app, "pkg.Beta");
+
+    // A lowercase pattern folds, so searching on from the capitalized
+    // entry reaches the lowercase one.
+    app.manage_highlight = upper;
+    app.jump_to_manage_match(SearchDir::Forward, "beta");
+    assert_eq!(app.manage_highlight, lower);
+
+    // A capitalized pattern does not, so searching on from the lowercase
+    // entry walks past everything else back to the capitalized one.
+    app.manage_highlight = lower;
+    app.jump_to_manage_match(SearchDir::Forward, "Beta");
+    assert_eq!(app.manage_highlight, upper);
+}
+
+/// `N` repeats the last management-pane search in the opposite
+/// direction, as it does in vim.
+#[test]
+fn manage_pane_search_repeat_with_capital_n_reverses_direction() {
     let (mut app, items) = repeated_scalar_fixture();
     app.manage_focus = true;
     app.manage_open = true;
@@ -1139,10 +1180,10 @@ fn manage_pane_search_repeat_with_p_reverses_direction() {
         Some("pkg.Alpha")
     );
 
-    // `p` repeats backward (opposite of the forward `/` that landed on
+    // `N` repeats backward (opposite of the forward `/` that landed on
     // Alpha), wrapping past the root entry to the last `pkg.`-matching
     // entry.
-    app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::NONE));
     assert_eq!(
         app.overrides.entries()[app.manage_highlight]
             .r#type
@@ -1150,8 +1191,8 @@ fn manage_pane_search_repeat_with_p_reverses_direction() {
         Some("pkg.Gamma")
     );
 
-    // A second `p` continues backward, landing on the entry before it.
-    app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+    // A second `N` continues backward, landing on the entry before it.
+    app.handle_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::NONE));
     assert_eq!(
         app.overrides.entries()[app.manage_highlight]
             .r#type

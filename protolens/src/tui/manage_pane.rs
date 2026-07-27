@@ -226,15 +226,16 @@ impl App {
 
     /// Find the next management-pane entry (spec 0117 §3's `/`/`?`/`n`)
     /// whose search text (`manage_search_text`) contains `pattern`
-    /// (case-insensitive), searching in `dir` from just past the current
-    /// highlight, wrapping around. Moves the highlight there on success;
+    /// (smartcase — spec 0195 S2), searching in `dir` from just past the
+    /// current highlight, wrapping around. Moves the highlight there on
+    /// success;
     /// otherwise leaves it unchanged and sets a status-line message.
     pub(super) fn jump_to_manage_match(&mut self, dir: SearchDir, pattern: &str) {
         let n = self.overrides.entries().len();
         if pattern.is_empty() || n == 0 {
             return;
         }
-        let needle = pattern.to_lowercase();
+        let needle = SearchPattern::new(pattern);
         // Convert to the 0-based `start` convention `search_wrap` expects
         // (index to check first, not "current + 1" or "current - 1").
         let start = match dir {
@@ -242,7 +243,7 @@ impl App {
             SearchDir::Backward => (self.manage_highlight + n - 1) % n,
         };
         match search_wrap(n, start, dir, |i| {
-            self.manage_search_text(i).to_lowercase().contains(&needle)
+            needle.is_match(&self.manage_search_text(i))
         }) {
             Some(i) => {
                 self.manage_highlight = i;
@@ -470,7 +471,7 @@ impl App {
                     self.jump_to_manage_match(dir, &pattern);
                 }
             }
-            KeyCode::Char('p') => {
+            KeyCode::Char('N') => {
                 if let Some((dir, pattern)) = self.last_manage_search.clone() {
                     self.jump_to_manage_match(dir.reverse(), &pattern);
                 }

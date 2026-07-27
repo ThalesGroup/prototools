@@ -823,25 +823,22 @@ impl App {
 
     /// Find the next `override_candidates` entry (0-based, direct index
     /// — spec 0137 §G4: no more pinned raw row excluded from matching)
-    /// whose FQDN contains `pattern` (case-insensitive), searching in
-    /// `dir` from just past the currently highlighted row, wrapping
-    /// around. Moves the highlight there on success; otherwise leaves it
-    /// unchanged and sets a status-line message.
+    /// whose FQDN contains `pattern` (smartcase — spec 0195 S2),
+    /// searching in `dir` from just past the currently highlighted row,
+    /// wrapping around. Moves the highlight there on success; otherwise
+    /// leaves it unchanged and sets a status-line message.
     pub(super) fn jump_to_override_match(&mut self, dir: SearchDir, pattern: &str) {
         if pattern.is_empty() || self.override_candidates.is_empty() {
             return;
         }
-        let needle = pattern.to_lowercase();
+        let needle = SearchPattern::new(pattern);
         let n = self.override_candidates.len();
         let start = match dir {
             SearchDir::Forward => (self.override_highlight + 1) % n,
             SearchDir::Backward => (self.override_highlight + n - 1) % n,
         };
         match search_wrap(n, start, dir, |i| {
-            self.override_candidates[i]
-                .0
-                .to_lowercase()
-                .contains(&needle)
+            needle.is_match(&self.override_candidates[i].0)
         }) {
             Some(i) => {
                 self.override_highlight = i;
@@ -859,8 +856,8 @@ impl App {
     /// `doc_next`/`doc_prev` — not just currently visible/unfolded nodes,
     /// so a folded-away match is still found and then revealed) whose own
     /// opening line (`self.lines[node.span.text_range.start]`) contains
-    /// `pattern` (case-insensitive), searching in `dir` from just past the
-    /// cursor and wrapping around at the ends of the chain via
+    /// `pattern` (smartcase — spec 0195 S2), searching in `dir` from just
+    /// past the cursor and wrapping around at the ends of the chain via
     /// `first_node`/`last_node()` (spec 0114 §4, extended to the main
     /// pane). Always matches against `self.lines`' *current* rendered
     /// text, so a range whose type has been overridden (spec 0114 §5)
@@ -874,15 +871,21 @@ impl App {
         if pattern.is_empty() || self.tree.is_empty() {
             return;
         }
-        let needle = pattern.to_lowercase();
+        let needle = SearchPattern::new(pattern);
         let mut cur = self.cursor;
         loop {
+            // Spec 0195 S1: `unwrap_or_else`, not `unwrap_or`. The
+            // latter evaluates its argument on every step, and
+            // `last_node()` walks the whole `doc_next` chain — which
+            // made a backward search cost O(steps x nodes) where the
+            // forward arm, reading the `first_node` *field*, cost
+            // O(steps).
             cur = match dir {
                 SearchDir::Forward => self.tree[cur].doc_next.unwrap_or(self.first_node),
-                SearchDir::Backward => self.tree[cur].doc_prev.unwrap_or(self.last_node()),
+                SearchDir::Backward => self.tree[cur].doc_prev.unwrap_or_else(|| self.last_node()),
             };
             let line_idx = self.tree[cur].span.text_range.start;
-            if self.lines[line_idx].to_lowercase().contains(&needle) {
+            if needle.is_match(&self.lines[line_idx]) {
                 if cur != self.cursor {
                     self.record_jump(self.cursor);
                     self.set_cursor(cur);

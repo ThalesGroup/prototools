@@ -642,10 +642,11 @@ fn override_search_jump_previews_the_reached_candidate() {
     );
 }
 
-/// `p` repeats the last search in the opposite direction (vim's `N`
-/// counterpart to `n`).
+/// `N` repeats the last search in the opposite direction, as it does in
+/// vim (spec 0195: this was `p` until protolens noticed that `p` is
+/// vim's *put*).
 #[test]
-fn override_search_repeat_with_p_reverses_direction() {
+fn override_search_repeat_with_capital_n_reverses_direction() {
     let mut app = message_node_app();
     app.splash = false;
     app.term_width = 120;
@@ -666,13 +667,13 @@ fn override_search_repeat_with_p_reverses_direction() {
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.override_highlight, 1); // pkg.Beta
 
-    // `p` repeats backward (opposite of the forward `/` that set this
+    // `N` repeats backward (opposite of the forward `/` that set this
     // pattern), wrapping to pkg.Beta2.
-    app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::NONE));
     assert_eq!(app.override_highlight, 3); // pkg.Beta2
 
-    // A second `p` continues backward, wrapping to pkg.Beta.
-    app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+    // A second `N` continues backward, wrapping to pkg.Beta.
+    app.handle_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::NONE));
     assert_eq!(app.override_highlight, 1); // pkg.Beta
 }
 
@@ -842,9 +843,9 @@ fn main_pane_search_forward_backward_and_repeat_with_n() {
     assert!(app.message.contains("not found"));
 }
 
-/// `p` repeats the last main-pane search in the opposite direction.
+/// `N` repeats the last main-pane search in the opposite direction.
 #[test]
-fn main_pane_search_repeat_with_p_reverses_direction() {
+fn main_pane_search_repeat_with_capital_n_reverses_direction() {
     let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "gamma: 3", "beta2: 4"]);
     app.splash = false;
     app.term_width = 120;
@@ -856,12 +857,12 @@ fn main_pane_search_repeat_with_p_reverses_direction() {
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.cursor, 1); // beta
 
-    // `p` repeats backward, wrapping to beta2.
-    app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+    // `N` repeats backward, wrapping to beta2.
+    app.handle_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::NONE));
     assert_eq!(app.cursor, 3); // beta2
 
-    // A second `p` continues backward, wrapping to beta.
-    app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+    // A second `N` continues backward, wrapping to beta.
+    app.handle_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::NONE));
     assert_eq!(app.cursor, 1); // beta
 }
 
@@ -971,6 +972,94 @@ fn main_pane_search_matches_the_current_not_original_rendering() {
     }
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.cursor, 1); // matches the overridden text
+}
+
+/// Spec 0195 S2, at the matcher itself: vim's smartcase. An
+/// all-lowercase pattern folds; a pattern carrying any uppercase
+/// character matches exactly. "Any uppercase character" is the rule, not
+/// "mixed case" — an all-uppercase pattern is case-sensitive too, which
+/// is the case a `pattern != pattern.to_lowercase()` test would get
+/// right by luck and a `is_mixed_case` test would get wrong.
+#[test]
+fn smartcase_folds_only_an_all_lowercase_pattern() {
+    let lower = SearchPattern::new("beta");
+    assert!(lower.is_match("beta: 1"));
+    assert!(lower.is_match("Beta: 1"));
+    assert!(lower.is_match("BETA: 1"));
+
+    let mixed = SearchPattern::new("Beta");
+    assert!(mixed.is_match("Beta: 1"));
+    assert!(!mixed.is_match("beta: 1"));
+    assert!(!mixed.is_match("BETA: 1"));
+
+    let upper = SearchPattern::new("BETA");
+    assert!(upper.is_match("BETA: 1"));
+    assert!(!upper.is_match("beta: 1"));
+    assert!(!upper.is_match("Beta: 1"));
+}
+
+/// Spec 0195 S2: the case fold runs per `char` and streams, because a
+/// few characters lowercase to more than one — `İ` becomes `i` plus a
+/// combining dot. A one-to-one fold would misalign the comparison from
+/// that character onwards rather than merely missing this match.
+#[test]
+fn the_case_fold_handles_a_multi_character_lowercase_mapping() {
+    let dotted = SearchPattern::new("i\u{307}d");
+    assert!(dotted.is_match("\u{130}d: 7"));
+}
+
+/// Spec 0195 Background 4 / test plan 8: nothing trims the pattern, so a
+/// leading space is part of it and does distinguish an indented token
+/// from one that starts its own line. The 2026-07-27 report read as
+/// though the space were dropped; it is not, and this pins that.
+#[test]
+fn a_leading_space_is_part_of_the_pattern() {
+    let spaced = SearchPattern::new(" id");
+    assert!(spaced.is_match("  id: 7"));
+    assert!(!spaced.is_match("id: 7"));
+}
+
+/// Spec 0195 G2 in the main pane: a lowercase pattern reaches a
+/// capitalized node, and a capitalized pattern walks straight past the
+/// lowercase one.
+#[test]
+fn main_pane_search_is_smartcase() {
+    let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "Beta: 3"]);
+
+    app.jump_to_match(SearchDir::Forward, "beta");
+    assert_eq!(app.cursor, 1);
+    // Folds onto the capitalized node rather than stopping at "beta".
+    app.jump_to_match(SearchDir::Forward, "beta");
+    assert_eq!(app.cursor, 2);
+
+    app.set_cursor(0);
+    app.jump_to_match(SearchDir::Forward, "Beta");
+    assert_eq!(app.cursor, 2); // skipped the lowercase node entirely
+}
+
+/// Spec 0195 G2 in the override pane. FQDNs are where case carries the
+/// most meaning: `pkg.Beta` is a message and `pkg.beta` would be a
+/// field, and the pane's whole job is telling them apart.
+#[test]
+fn override_pane_search_is_smartcase() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.term_width = 120;
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+
+    app.override_candidates = vec![
+        ("pkg.alpha".to_string(), None),
+        ("pkg.beta".to_string(), None),
+        ("pkg.Beta".to_string(), None),
+    ];
+
+    app.override_highlight = 0;
+    app.jump_to_override_match(SearchDir::Forward, "beta");
+    assert_eq!(app.override_highlight, 1);
+
+    app.override_highlight = 0;
+    app.jump_to_override_match(SearchDir::Forward, "Beta");
+    assert_eq!(app.override_highlight, 2);
 }
 
 /// `Esc` closes the override pane (spec 0114 §8's key-bindings table).

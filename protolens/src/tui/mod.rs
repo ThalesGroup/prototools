@@ -255,6 +255,67 @@ fn search_wrap(
     None
 }
 
+/// Spec 0195 S2: the pattern behind every pane's `/`/`?`/`n`, carrying
+/// vim's `smartcase` rule — an all-lowercase pattern matches
+/// case-insensitively, a pattern containing any uppercase character
+/// matches exactly.
+///
+/// The rule is decided once, at construction, rather than per candidate:
+/// the three searches this replaces each lowercased *both* sides inside
+/// their walk, which is how they came to allocate two `String`s per node
+/// on the one hot path spec 0195 S1 is about.
+pub(super) struct SearchPattern {
+    /// Already lowercased when the search is case-insensitive, so the
+    /// per-candidate comparison only has to fold the haystack.
+    needle: String,
+    case_sensitive: bool,
+}
+
+impl SearchPattern {
+    pub(super) fn new(pattern: &str) -> Self {
+        let case_sensitive = pattern.chars().any(char::is_uppercase);
+        let needle = if case_sensitive {
+            pattern.to_string()
+        } else {
+            pattern.to_lowercase()
+        };
+        Self {
+            needle,
+            case_sensitive,
+        }
+    }
+
+    pub(super) fn is_match(&self, haystack: &str) -> bool {
+        if self.case_sensitive {
+            return haystack.contains(&self.needle);
+        }
+        haystack
+            .char_indices()
+            .any(|(i, _)| starts_with_folded(&haystack[i..], &self.needle))
+    }
+}
+
+/// Whether `haystack`, lowercased one `char` at a time, begins with
+/// `needle` — which the caller has already lowercased.
+///
+/// Folding as we compare is what keeps `is_match` allocation-free (spec
+/// 0195 G4). It goes through `char::to_lowercase`, which yields an
+/// iterator rather than a `char`, because a few characters lowercase to
+/// more than one (`İ` to `i` plus a combining dot) and a one-to-one fold
+/// would silently misalign the comparison from there on.
+fn starts_with_folded(haystack: &str, needle: &str) -> bool {
+    let mut folded = haystack.chars().flat_map(char::to_lowercase);
+    let mut wanted = needle.chars();
+    loop {
+        let Some(w) = wanted.next() else {
+            return true;
+        };
+        if folded.next() != Some(w) {
+            return false;
+        }
+    }
+}
+
 /// Shared clamp arithmetic behind the override- and manage-pane highlight
 /// movement (`move_override_highlight`, `move_manage_highlight`): moves
 /// `current` by `delta`, staying within `0..=max`.
@@ -446,8 +507,9 @@ enum SearchDir {
 }
 
 impl SearchDir {
-    /// The opposite direction — `p` (previous) repeats the last search
-    /// in the reverse direction, vim's `N` counterpart to `n`.
+    /// The opposite direction — `N` repeats the last search the other
+    /// way, exactly as vim's `N` is the counterpart to its `n`. Before
+    /// spec 0195 this was bound to `p`, which in vim is *put*.
     fn reverse(self) -> Self {
         match self {
             SearchDir::Forward => SearchDir::Backward,

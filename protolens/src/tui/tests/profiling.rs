@@ -1681,3 +1681,40 @@ fn measure_root_type_sweep_against_decode() {
         false,
     );
 }
+
+/// Spec 0195 test plan 1: a backward no-match search scales linearly.
+///
+/// Before spec 0195 S1 this doubled to roughly 4x per doubling of the
+/// node count, because the backward arm's `unwrap_or(self.last_node())`
+/// evaluated a whole-chain walk on every step. Measured then, release:
+/// 142 ms / 429 ms / 1 564 ms at 5 000 / 10 000 / 20 000 nodes, against
+/// a forward search's 0.59 / 0.63 / 1.30 ms.
+///
+/// Kept `#[ignore]`d and asserted with wide slack: this is a complexity
+/// check, not a benchmark, and the only thing it must never do again is
+/// quadruple.
+#[test]
+#[ignore]
+fn backward_search_scales_linearly() {
+    fn no_match_wrap(nodes: usize, dir: SearchDir) -> std::time::Duration {
+        let mut app = super::support::wide_sibling_scalars_app(nodes);
+        let t = Instant::now();
+        app.jump_to_match(dir, "no-such-pattern-anywhere");
+        t.elapsed()
+    }
+
+    let mut backward = Vec::new();
+    for &n in &[5_000usize, 10_000, 20_000] {
+        let back = no_match_wrap(n, SearchDir::Backward);
+        let fwd = no_match_wrap(n, SearchDir::Forward);
+        eprintln!("nodes={n:6}  backward={back:?}  forward={fwd:?}");
+        backward.push(back.as_secs_f64());
+    }
+
+    let ratio = backward[2] / backward[1];
+    eprintln!("20k/10k backward ratio = {ratio:.2} (linear ~2, quadratic ~4)");
+    assert!(
+        ratio < 3.0,
+        "backward search must scale linearly, got a {ratio:.2}x ratio per doubling"
+    );
+}
