@@ -467,6 +467,102 @@ pub(super) fn packed_run_with_tail_fixture() -> (App, Vec<usize>, usize, usize, 
     (app, elems, children[3], children[4], children[5])
 }
 
+/// `Holder { int32 pad = 1; bytes blob = 2; }` whose `blob` holds an
+/// encoded `Payload { repeated int32 vals = 1; }` — i.e. a packed run
+/// that only exists *after* an override retypes `blob`, and that the
+/// splice therefore has to translate from the retyped node's own byte
+/// frame into the document's.
+///
+/// `pad` is there to make that translation observable: the field being
+/// retyped has to start somewhere other than byte 0, or the two frames
+/// coincide and any missing translation is invisible.
+///
+/// Byte layout, which the tests assert against directly:
+///
+/// ```text
+///   0: 0A 09        RootType::Named's synthetic wrapper field
+///   2: 08 01        pad = 1
+///   4: 12 05        blob, LEN 5            <- retyped node's tag
+///   6: 0A 03        Payload.vals, packed   <- the packed record's tag
+///   8: 05 06 07     the three elements
+/// ```
+pub(super) fn nested_packed_run_fixture() -> App {
+    use prost::Message as _;
+    use prost_types::field_descriptor_proto::{Label, Type};
+    use prost_types::{
+        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+    };
+
+    use crate::decode::{decode, DescriptorContext, RootType};
+
+    let payload_desc = DescriptorProto {
+        name: Some("Payload".to_string()),
+        field: vec![FieldDescriptorProto {
+            name: Some("vals".to_string()),
+            number: Some(1),
+            label: Some(Label::Repeated as i32),
+            r#type: Some(Type::Int32 as i32),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let holder_desc = DescriptorProto {
+        name: Some("Holder".to_string()),
+        field: vec![
+            FieldDescriptorProto {
+                name: Some("pad".to_string()),
+                number: Some(1),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Int32 as i32),
+                ..Default::default()
+            },
+            FieldDescriptorProto {
+                name: Some("blob".to_string()),
+                number: Some(2),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Bytes as i32),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let file = FileDescriptorProto {
+        name: Some("test_nested_packed_run.proto".to_string()),
+        package: Some("test".to_string()),
+        message_type: vec![holder_desc, payload_desc],
+        syntax: Some("proto3".to_string()),
+        ..Default::default()
+    };
+    let fds = FileDescriptorSet { file: vec![file] };
+
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let descriptor_path =
+        std::env::temp_dir().join(format!("protolens-tui-nested-packed-run-{n}.pb"));
+    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
+    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
+    std::fs::remove_file(&descriptor_path).unwrap();
+
+    let blob = [
+        0x08u8, 0x01, //
+        0x12, 0x05, //
+        0x0A, 0x03, 0x05, 0x06, 0x07,
+    ];
+    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Holder"), 2).unwrap();
+    let mut app = App::new(
+        decoded,
+        "test.pb",
+        PathBuf::from("test.pb"),
+        2,
+        ctx,
+        ThemeKind::Dark,
+        None,
+    );
+    app.splash = false;
+    app.term_width = 120;
+    app
+}
+
 /// Builds the same `Outer { inner: Inner { id: 5 } }` fixture as
 /// `enter_key_applies_override_and_closes_pane`, for the `:type-as`/
 /// `:type-as-raw` command tests (spec 0114 §7).

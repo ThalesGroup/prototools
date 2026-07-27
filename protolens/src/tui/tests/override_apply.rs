@@ -2446,6 +2446,7 @@ fn randomized_override_sequences_keep_every_span_consistent() {
             ("pruned_tail", pruned_tail_fixture().0),
             ("repeated_message", repeated_message_fixture().0),
             ("packed_run_with_tail", packed_run_with_tail_fixture().0),
+            ("nested_packed_run", nested_packed_run_fixture()),
             ("nested_any", nested_any_fixture()),
             ("message_set", message_set_fixture()),
             ("nested_message_set", nested_message_set_fixture()),
@@ -2505,4 +2506,67 @@ fn randomized_override_sequences_keep_every_span_consistent() {
             }
         }
     }
+}
+
+/// A packed element's `packed_record_start` is a byte offset into
+/// `self.blob`, read back with `parse_wiretag`/`parse_varint` by
+/// `packed_record_extent`, `extract::message_payload_range` and the heat
+/// cue. When a *splice* creates such an element, `prototext-core` hands
+/// it back in the retyped node's own byte frame, and `splice_override`
+/// has to translate it into the document's — exactly as it already does
+/// for `raw_range`.
+///
+/// It did not, and the consequence was not a cosmetic one. On
+/// `/tmp/pdb.desc`, retyping a `SourceCodeInfo.Location` and then one of
+/// the `span:` elements the retype produced made `packed_record_extent`
+/// parse a tag and a length out of unrelated bytes near the start of the
+/// file: a 2-byte varint was replaced by a re-render of the whole 1 MB
+/// blob, the tree came back with a node as its own descendant, and
+/// `collect_descendants` recursed until the stack ran out. A 256 MB
+/// stack did not help, which is what identified it as unbounded rather
+/// than deep.
+#[test]
+fn a_splice_translates_packed_record_starts_into_the_documents_byte_frame() {
+    use crate::override_pane::OverrideOrigin;
+
+    let mut app = nested_packed_run_fixture();
+    // The two frames must genuinely differ, or this test proves nothing:
+    // `blob`'s own tag is at byte 2, so everything the retype decodes is
+    // reported 2 bytes lower than it really sits.
+    assert_eq!(
+        &app.blob[..],
+        &[0x0A, 0x09, 0x08, 0x01, 0x12, 0x05, 0x0A, 0x03, 0x05, 0x06, 0x07]
+    );
+    let blob_node = app.resolve_path("/2").expect("blob is /2");
+    assert_eq!(app.tree[blob_node].span.raw_range, 4..11);
+
+    app.overrides.activate(
+        OverrideOrigin::Path {
+            path: "/2".to_string(),
+        },
+        Some("test.Payload".to_string()),
+    );
+    app.render_overrides(app.first_node);
+
+    let mut elems = Vec::new();
+    let mut c = app.tree[blob_node].first_child;
+    while let Some(i) = c {
+        elems.push(i);
+        c = app.tree[i].next_sibling;
+    }
+    assert_eq!(elems.len(), 3, "Payload.vals decodes as three packed ints");
+
+    for &e in &elems {
+        assert_eq!(
+            app.tree[e].span.packed_record_start,
+            Some(6),
+            "the packed record's tag is at byte 6 of the document; a \
+             value of 2 is the retyped node's own frame leaking out"
+        );
+    }
+    // The offset is only ever used by way of a re-parse, so assert the
+    // thing that re-parse produces: tag 0x0A at 6, length 3 at 7,
+    // payload 8..11.
+    let (raw, _text) = app.packed_record_extent(&elems);
+    assert_eq!(raw, 6..11);
 }

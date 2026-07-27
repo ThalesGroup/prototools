@@ -2350,6 +2350,23 @@ impl App {
                 ..(span.raw_range.end as isize + byte_offset) as usize;
             span.text_range = (span.text_range.start + old_span.text_range.start)
                 ..(span.text_range.end + old_span.text_range.start);
+            // `packed_record_start` is a byte offset in exactly the same
+            // frame as `raw_range` (`sink.rs` builds it as
+            // `base + raw_range.start`), so it needs exactly the same
+            // translation. Leaving it local is not a cosmetic slip: it is
+            // read back with `parse_wiretag`/`parse_varint` against
+            // `self.blob` — by `packed_record_extent`, `extract::
+            // message_payload_range` and the heat cue — so a local value
+            // makes those parse a tag and a length out of unrelated bytes
+            // near the start of the file. Overriding an element of a
+            // packed run that a previous splice had produced then widened
+            // the "run" to a garbage extent (observed: a 2-byte varint
+            // replaced by a re-render of the whole 1 MB blob), which
+            // relinks the tree into a cycle and sends
+            // `collect_descendants` into unbounded recursion.
+            span.packed_record_start = span
+                .packed_record_start
+                .map(|p| (p as isize + byte_offset) as usize);
             let translate = |o: Option<usize>| o.map(|i| i + base);
             // `idx`'s new self is *not* pushed as a separate live entry
             // (its own span/children are folded into `self.tree[idx]`
