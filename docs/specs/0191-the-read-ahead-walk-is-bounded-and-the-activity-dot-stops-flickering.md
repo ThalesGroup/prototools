@@ -6,8 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0191 — the read-ahead walk is bounded, and the activity dot stops flickering
 
-Status: draft
-Implemented in:
+Status: implemented
+Implemented in: 2026-07-27
 App: protolens
 Refs: docs/specs/0151-protolens-heat-cue-cache-and-startup-progress.md,
       docs/specs/0164-protolens-heat-cue-tiered-priority-and-prefetch.md,
@@ -342,6 +342,17 @@ above. What *is* unit-tested is the contract that makes S3 possible at
 all: that the widget renders `activity_shown` and not a live probe
 (item 5), which is the assertion that fails against the pre-0191
 implementation.
+
+Test-plan items 6 and 7 were left resting on interactive observation
+alone at the time. Spec 0192 S5's `PROTOLENS_TRACE` later made both
+machine-checkable after the fact, and a headless 40-keystroke session on
+`googleapis.desc` corroborates them: every one of the 42 `wave` lines
+reports `rows=2048` — the budget is reached and enforced on each wave,
+never exceeded — and only 12 of the session's 128 draws were
+activity-driven, i.e. the dot changed state 12 times across 40
+keystrokes rather than once per completed request. Neither is a
+substitute for a `run_loop` harness, but both are now numbers rather
+than impressions.
 
 `prefetch_fixture` gained cycling field numbers (1..=15). It previously
 counted field numbers up from 1 and wrote the tag as a single `as u8`,
