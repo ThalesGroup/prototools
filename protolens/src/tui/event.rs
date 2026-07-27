@@ -24,11 +24,6 @@ const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(200);
 pub(super) enum AppEvent {
     Term(event::Event),
     HeatWorkerProgress,
-    /// The one-shot background root-type resolver (spec NNNN) finished:
-    /// `Some(fqdn)` on a clean winner, `None` on no clean winner (same
-    /// "leave it raw" outcome `determine_root_type` returns synchronously
-    /// today).
-    RootTypeResolved(Option<String>),
 }
 
 /// Owns the input-reader thread's join handle and shutdown flag (spec

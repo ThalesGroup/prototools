@@ -19,7 +19,7 @@ fn empty_tree_renders_and_handles_keys_without_panicking() {
         blob: Vec::new(),
         wrapper_offset: 0,
         style_hints: Vec::new(),
-        root_type_deferred: false,
+        root_candidates: Vec::new(),
     };
     let mut app = App::new(
         decoded,
@@ -175,7 +175,7 @@ fn a_toggles_the_main_pane_annotation_display() {
         blob: vec![0x08, 0x05],
         wrapper_offset: 0,
         style_hints: vec![vec![(comment_start..line.len(), SyntaxRole::Comment)]],
-        root_type_deferred: false,
+        root_candidates: Vec::new(),
     };
     let mut app = App::new(
         decoded,

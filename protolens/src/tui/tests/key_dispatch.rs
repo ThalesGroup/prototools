@@ -14,7 +14,7 @@ fn q_confirmation_is_cancelled_by_any_other_key() {
         blob: Vec::new(),
         wrapper_offset: 0,
         style_hints: Vec::new(),
-        root_type_deferred: false,
+        root_candidates: Vec::new(),
     };
     let mut app = App::new(
         decoded,
@@ -58,7 +58,7 @@ fn ctrl_z_sets_should_suspend_without_disturbing_quit_confirm() {
         blob: Vec::new(),
         wrapper_offset: 0,
         style_hints: Vec::new(),
-        root_type_deferred: false,
+        root_candidates: Vec::new(),
     };
     let mut app = App::new(
         decoded,
@@ -783,7 +783,7 @@ fn default_export_descriptor_path_falls_back_to_the_numeric_range_when_unresolva
         blob,
         wrapper_offset: 0,
         style_hints: vec![Vec::new(); 2],
-        root_type_deferred: false,
+        root_candidates: Vec::new(),
     };
     let mut app = App::new(
         decoded,

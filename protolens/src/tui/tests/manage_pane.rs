@@ -516,7 +516,7 @@ fn manage_pane_z_rotation_survives_a_concurrent_auto_seed_reshuffle() {
         DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
     };
 
-    use crate::decode::{decode, DescriptorContext};
+    use crate::decode::{decode, DescriptorContext, RootType};
 
     let any_msg = DescriptorProto {
         name: Some("Any".to_string()),
@@ -617,7 +617,7 @@ fn manage_pane_z_rotation_survives_a_concurrent_auto_seed_reshuffle() {
     blob.push(any_bytes.len() as u8);
     blob.extend_from_slice(&any_bytes);
 
-    let decoded = decode(&blob, &mut ctx, Some("acme.Container"), 2, false).unwrap();
+    let decoded = decode(&blob, &mut ctx, RootType::Named("acme.Container"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",

@@ -663,6 +663,107 @@ fn g6_cross_population_caps_to_override_list_height() {
 }
 
 // ---------------------------------------------------------------------
+// Root-range seeding from the startup sweep (spec 0168 G3)
+// ---------------------------------------------------------------------
+
+/// The whole point of G3: the root-type sweep already scored the root
+/// node's payload range, so `App::new` writes that result into the
+/// caches and the very first `heat_cue_for` on the root is a hit —
+/// asserted against a graph-less `App`, where a miss could only
+/// short-circuit to `None`, so a `Cue` proves the seed was used and no
+/// re-score happened.
+///
+/// Both caches are checked, since they answer different callers:
+/// `by_range` is what the cue reads, `complete` is what the override
+/// pane reads.
+#[test]
+fn g3_the_startup_sweep_seeds_the_root_range() {
+    let candidates: Vec<(String, i64)> = (0..HEAT_CUE_PREVIEW + 4)
+        .map(|i| (format!("a.Type{i}"), 50 - i as i64))
+        .collect();
+    let mut app = message_node_app_with_root_candidates(candidates.clone());
+    app.splash = false;
+    assert!(app.ctx.graph.is_none(), "a hit here must not be a re-score");
+
+    let range = app.heat_scored_range(app.first_node);
+    let mut caches = app.heat_caches.lock().unwrap();
+    let entry = caches
+        .by_range
+        .peek(&range.start, Tier::User)
+        .expect("the root's payload start must be seeded");
+    assert_eq!(entry.best_score, Some(50));
+    assert_eq!(entry.best_count, 1);
+    assert_eq!(
+        caches.complete.as_ref().map(|(r, c)| (r.clone(), c.len())),
+        Some((range.clone(), candidates.len())),
+        "`complete` holds the full list, keyed by the root's range"
+    );
+    drop(caches);
+
+    // The seeded entry is enough to answer the cue outright.
+    app.heat_caches.lock().unwrap().current_score.upsert(
+        (range.start, "google.protobuf.DescriptorProto".to_string()),
+        Some(10),
+        Tier::User,
+    );
+    let header_line = app.tree[app.first_node].span.text_range.start;
+    assert!(matches!(app.heat_cue_for(header_line), HeatDisplay::Cue(_)));
+}
+
+/// `by_range`'s `top_n` is seeded at the same cap `heat_cue_resolve`
+/// applies, not at full width — seeding the whole list would be exactly
+/// the oversized entry `rendering-flaws.md` P5 describes, on the single
+/// widest range in the document. `override_list_height` is still 0 when
+/// `App::new` runs, so the cap is `HEAT_CUE_PREVIEW`.
+///
+/// `complete` is deliberately *not* capped: it is where the unbounded
+/// list belongs, and the override pane needs all of it.
+#[test]
+fn g3_seeded_top_n_is_capped_but_complete_is_not() {
+    let candidates: Vec<(String, i64)> = (0..HEAT_CUE_PREVIEW + 4)
+        .map(|i| (format!("a.Type{i}"), 50 - i as i64))
+        .collect();
+    let app = message_node_app_with_root_candidates(candidates.clone());
+
+    let range = app.heat_scored_range(app.first_node);
+    let mut caches = app.heat_caches.lock().unwrap();
+    let entry = caches.by_range.peek(&range.start, Tier::User).unwrap();
+    assert_eq!(entry.top_n.len(), HEAT_CUE_PREVIEW);
+    assert_eq!(
+        caches.complete.as_ref().unwrap().1.len(),
+        candidates.len(),
+        "the uncapped list belongs in `complete`"
+    );
+}
+
+/// No sweep ran (`--type`, `--raw`, or no scoring graph): the empty
+/// candidate list must leave both caches untouched rather than writing
+/// an empty entry, which would read as a legitimate "every candidate
+/// vetoed" answer and permanently suppress the root's cue.
+#[test]
+fn g3_no_sweep_seeds_nothing() {
+    let app = message_node_app();
+    let range = app.heat_scored_range(app.first_node);
+    let mut caches = app.heat_caches.lock().unwrap();
+    assert!(caches.by_range.peek(&range.start, Tier::User).is_none());
+    assert!(caches.complete.is_none());
+}
+
+/// The seeding is only sound because the sweep's input and the cue's
+/// cache key are the same bytes: `heat_scored_range` strips the root
+/// node's tag/length prefix, and in a real `Decoded` that prefix *is*
+/// the virtual wrapper, so the result is `wrapper_offset..blob.len()`
+/// — exactly the slice handed to `resolve_root_winner_and_candidates`.
+///
+/// That last equality is not asserted here, because the fixtures in
+/// this file carry a stub `wrapper_offset: 0` alongside a blob that
+/// does have a two-byte prefix, so they cannot express it. What is
+/// asserted instead is the consequence that actually matters, and it
+/// is covered end-to-end by
+/// `g3_the_startup_sweep_seeds_the_root_range`: the root's very first
+/// cue is answered from the seeded entry, on an `App` with no graph,
+/// where a wrong key could only miss.
+// ---------------------------------------------------------------------
 // warm_up_heat_cues (spec 0151 G8)
 // ---------------------------------------------------------------------
 

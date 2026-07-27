@@ -18,7 +18,7 @@ pub(super) fn empty_app() -> App {
         blob: Vec::new(),
         wrapper_offset: 0,
         style_hints: Vec::new(),
-        root_type_deferred: false,
+        root_candidates: Vec::new(),
     };
     App::new(
         decoded,
@@ -35,6 +35,15 @@ pub(super) fn empty_app() -> App {
 /// minimal fixture needed to exercise `t`'s override-target
 /// validation (spec 0114 §1).
 pub(super) fn message_node_app() -> App {
+    message_node_app_with_root_candidates(Vec::new())
+}
+
+/// `message_node_app` carrying a root-type inference result on its
+/// `Decoded` (spec 0168 G3) — the shape startup hands `App::new` when
+/// the sweep ran, so `seed_root_heat` has something to seed from.
+pub(super) fn message_node_app_with_root_candidates(
+    root_candidates: crate::decode::RankedCandidates,
+) -> App {
     let lines: Vec<String> = vec!["message_type {".to_string(), "}".to_string()];
     let node = TreeNode {
         span: NodeSpan {
@@ -67,7 +76,7 @@ pub(super) fn message_node_app() -> App {
         blob: vec![0x22, 0x08, 0, 0, 0, 0, 0, 0, 0, 0],
         wrapper_offset: 0,
         style_hints: vec![Vec::new(); 2],
-        root_type_deferred: false,
+        root_candidates,
     };
     App::new(
         decoded,
@@ -152,7 +161,7 @@ pub(super) fn sibling_leaves_app(texts: &[&str]) -> App {
         blob: Vec::new(),
         wrapper_offset: 0,
         style_hints: Vec::new(),
-        root_type_deferred: false,
+        root_candidates: Vec::new(),
     };
     App::new(
         decoded,
@@ -183,7 +192,7 @@ pub(super) fn repeated_scalar_fixture() -> (App, Vec<usize>) {
         DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
     };
 
-    use crate::decode::{decode, DescriptorContext};
+    use crate::decode::{decode, DescriptorContext, RootType};
 
     let outer_desc = DescriptorProto {
         name: Some("Outer".to_string()),
@@ -216,7 +225,7 @@ pub(super) fn repeated_scalar_fixture() -> (App, Vec<usize>) {
     // vals: field 1 (tag 0x0A, LEN/packed), length 3, payload
     // [0x05, 0x06, 0x07] (three one-byte varint elements).
     let blob = [0x0Au8, 0x03, 0x05, 0x06, 0x07];
-    let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, false).unwrap();
+    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -258,7 +267,7 @@ pub(super) fn repeated_message_fixture() -> (App, Vec<usize>) {
         DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
     };
 
-    use crate::decode::{decode, DescriptorContext};
+    use crate::decode::{decode, DescriptorContext, RootType};
 
     let item_desc = DescriptorProto {
         name: Some("Item".to_string()),
@@ -307,7 +316,7 @@ pub(super) fn repeated_message_fixture() -> (App, Vec<usize>) {
         0x0A, 0x02, 0x08, 0x06, //
         0x0A, 0x02, 0x08, 0x07,
     ];
-    let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, false).unwrap();
+    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -356,7 +365,7 @@ pub(super) fn packed_run_with_tail_fixture() -> (App, Vec<usize>, usize, usize, 
         DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
     };
 
-    use crate::decode::{decode, DescriptorContext};
+    use crate::decode::{decode, DescriptorContext, RootType};
 
     let scalar = |name: &str, number: i32| FieldDescriptorProto {
         name: Some(name.to_string()),
@@ -419,7 +428,7 @@ pub(super) fn packed_run_with_tail_fixture() -> (App, Vec<usize>, usize, usize, 
         0x18, 0x2A, //
         0x20, 0x2B,
     ];
-    let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, false).unwrap();
+    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -471,7 +480,7 @@ pub(super) fn type_as_fixture() -> (App, usize, usize) {
         DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
     };
 
-    use crate::decode::{decode, DescriptorContext};
+    use crate::decode::{decode, DescriptorContext, RootType};
 
     let inner_desc = DescriptorProto {
         name: Some("Inner".to_string()),
@@ -518,7 +527,7 @@ pub(super) fn type_as_fixture() -> (App, usize, usize) {
 
     // Outer { inner: Inner { id: 5 } }.
     let blob = [0x0Au8, 0x02, 0x08, 0x05];
-    let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, false).unwrap();
+    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -557,7 +566,7 @@ pub(super) fn empty_message_fixture() -> (App, usize) {
         DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
     };
 
-    use crate::decode::{decode, DescriptorContext};
+    use crate::decode::{decode, DescriptorContext, RootType};
 
     let inner_desc = DescriptorProto {
         name: Some("Inner".to_string()),
@@ -601,7 +610,7 @@ pub(super) fn empty_message_fixture() -> (App, usize) {
 
     // Outer { inner: Inner {} } — field 1 (LEN), length 0, no payload.
     let blob = [0x0Au8, 0x00];
-    let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, false).unwrap();
+    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -639,7 +648,7 @@ pub(super) fn enum_field_fixture() -> (App, usize) {
         FileDescriptorProto, FileDescriptorSet,
     };
 
-    use crate::decode::{decode, DescriptorContext};
+    use crate::decode::{decode, DescriptorContext, RootType};
 
     let durability_enum = EnumDescriptorProto {
         name: Some("Durability".to_string()),
@@ -690,7 +699,7 @@ pub(super) fn enum_field_fixture() -> (App, usize) {
     // Outer3 { durability: EPHEMERAL (0) } — field 1 (tag 0x08),
     // varint value 0.
     let blob = [0x08u8, 0x00];
-    let decoded = decode(&blob, &mut ctx, Some("test.Outer3"), 2, false).unwrap();
+    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Outer3"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -737,7 +746,7 @@ pub(super) fn group_type_fixture_with_blob(blob: &[u8]) -> (App, usize) {
         DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
     };
 
-    use crate::decode::{decode, DescriptorContext};
+    use crate::decode::{decode, DescriptorContext, RootType};
 
     let my_group_desc = DescriptorProto {
         name: Some("MyGroup".to_string()),
@@ -793,7 +802,7 @@ pub(super) fn group_type_fixture_with_blob(blob: &[u8]) -> (App, usize) {
     let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
     std::fs::remove_file(&descriptor_path).unwrap();
 
-    let decoded = decode(blob, &mut ctx, Some("test.Outer2"), 2, false).unwrap();
+    let decoded = decode(blob, &mut ctx, RootType::Named("test.Outer2"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -827,7 +836,7 @@ pub(super) fn message_set_fixture() -> App {
         MessageOptions,
     };
 
-    use crate::decode::{decode, DescriptorContext};
+    use crate::decode::{decode, DescriptorContext, RootType};
 
     let message_set_msg = DescriptorProto {
         name: Some("TestMessageSet".to_string()),
@@ -908,7 +917,7 @@ pub(super) fn message_set_fixture() -> App {
     let mut blob = vec![0x12u8, item_bytes.len() as u8];
     blob.extend_from_slice(&item_bytes);
 
-    let decoded = decode(&blob, &mut ctx, Some("ms_test.Container"), 2, false).unwrap();
+    let decoded = decode(&blob, &mut ctx, RootType::Named("ms_test.Container"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -942,7 +951,7 @@ pub(super) fn nested_any_fixture() -> App {
         DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
     };
 
-    use crate::decode::{decode, DescriptorContext};
+    use crate::decode::{decode, DescriptorContext, RootType};
 
     let any_msg = DescriptorProto {
         name: Some("Any".to_string()),
@@ -1040,7 +1049,7 @@ pub(super) fn nested_any_fixture() -> App {
         blob = next;
     }
 
-    let decoded = decode(&blob, &mut ctx, Some("acme.Level1"), 2, false).unwrap();
+    let decoded = decode(&blob, &mut ctx, RootType::Named("acme.Level1"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -1076,7 +1085,7 @@ pub(super) fn nested_message_set_fixture() -> App {
         MessageOptions,
     };
 
-    use crate::decode::{decode, DescriptorContext};
+    use crate::decode::{decode, DescriptorContext, RootType};
 
     let message_set_msg = DescriptorProto {
         name: Some("TestMessageSet".to_string()),
@@ -1175,7 +1184,7 @@ pub(super) fn nested_message_set_fixture() -> App {
     let mut blob = vec![0x0au8, mid_bytes.len() as u8];
     blob.append(&mut mid_bytes);
 
-    let decoded = decode(&blob, &mut ctx, Some("ms_test.Top"), 2, false).unwrap();
+    let decoded = decode(&blob, &mut ctx, RootType::Named("ms_test.Top"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -1219,7 +1228,7 @@ pub(super) fn export_fields_fixture() -> App {
         DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
     };
 
-    use crate::decode::{decode, DescriptorContext};
+    use crate::decode::{decode, DescriptorContext, RootType};
 
     let msg = DescriptorProto {
         name: Some("Msg".to_string()),
@@ -1302,7 +1311,7 @@ pub(super) fn export_fields_fixture() -> App {
         0x40, 0x01, // 8: 1
         0x40, 0x02, // 8: 2
     ];
-    let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, false).unwrap();
+    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -1324,7 +1333,7 @@ pub(super) fn export_fields_group_error_fixture() -> App {
     use prost::Message as _;
     use prost_types::{DescriptorProto, FileDescriptorProto, FileDescriptorSet};
 
-    use crate::decode::{decode, DescriptorContext};
+    use crate::decode::{decode, DescriptorContext, RootType};
 
     let holder = DescriptorProto {
         name: Some("GroupHolder".to_string()),
@@ -1349,7 +1358,7 @@ pub(super) fn export_fields_group_error_fixture() -> App {
 
     // field 9 (undeclared): START_GROUP then END_GROUP.
     let blob = vec![0x4B, 0x4C];
-    let decoded = decode(&blob, &mut ctx, Some("test.GroupHolder"), 2, false).unwrap();
+    let decoded = decode(&blob, &mut ctx, RootType::Named("test.GroupHolder"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",

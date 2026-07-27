@@ -13,7 +13,6 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
@@ -956,14 +955,6 @@ pub struct App {
     /// `heat_worker` (when spawned) read and write this same structure
     /// directly — see `heat_worker::HeatCaches`.
     heat_caches: Arc<Mutex<heat_worker::HeatCaches>>,
-    /// `true` from `App::new` until the one-shot background root-type
-    /// resolver (spec NNNN) reports back via `AppEvent::RootTypeResolved`
-    /// — set from `Decoded::root_type_deferred`. `run()` only spawns the
-    /// resolver thread while this is `true`; the run-loop's event handler
-    /// clears it unconditionally on `RootTypeResolved`, whether or not a
-    /// winner was found, since either way there's nothing left to wait
-    /// for.
-    root_type_pending: bool,
     /// Per-node heat-cue resolution state (spec 0152 G6), parallel to
     /// `tree` — `Pending` until a cache check (only ever attempted on a
     /// worker-progress wakeup or a real redraw-triggering input event)
@@ -1211,7 +1202,7 @@ pub struct App {
 
 impl App {
     pub fn new(
-        decoded: Decoded,
+        mut decoded: Decoded,
         blob_label: &str,
         blob_path: PathBuf,
         indent_size: usize,
@@ -1221,6 +1212,7 @@ impl App {
     ) -> Self {
         let all_type_fqdns = override_pane::all_type_fqdns(ctx.pool());
         let tree_len = decoded.tree.len();
+        let root_candidates = std::mem::take(&mut decoded.root_candidates);
         let mut line_to_node = vec![None; decoded.lines.len()];
         let mut footer_line_to_node = vec![None; decoded.lines.len()];
         for (idx, node) in decoded.tree.iter().enumerate() {
@@ -1318,7 +1310,6 @@ impl App {
                 heat_cue::HEAT_CACHE_MAX_ENTRIES,
             ))),
             heat_worker: None,
-            root_type_pending: decoded.root_type_deferred,
             heat_states: vec![heat_cue::HeatState::default(); tree_len],
             pending_heat_recheck: HashSet::new(),
             prefetch_walk: PrefetchWalk::exhausted(),
@@ -1415,7 +1406,50 @@ impl App {
         if !app.tree.is_empty() {
             app.render_overrides(cursor);
         }
+        app.seed_root_heat(root_candidates);
         app
+    }
+
+    /// Spec 0168 G3: the root-type sweep already scored exactly the root
+    /// node's interior payload range, so write its result into the heat
+    /// caches instead of letting `heat_cue_for` and the override pane
+    /// re-run `score_all` over the same bytes. That range is the single
+    /// most expensive one in the document and it is the one the cursor
+    /// starts on, so it is also the one they ask about first.
+    ///
+    /// A no-op when the sweep didn't run (`--type`, `--raw`, or no
+    /// scoring graph), which is why the empty list is not special-cased
+    /// anywhere else.
+    ///
+    /// `by_range`'s `top_n` is truncated to the same
+    /// `max(override_list_height, HEAT_CUE_PREVIEW)` cap
+    /// `heat_cue_resolve` applies, rather than holding the full list —
+    /// `complete` is where the unbounded list belongs, and a full-width
+    /// `by_range` entry is exactly the oversized entry
+    /// `rendering-flaws.md` P5 describes.
+    fn seed_root_heat(&mut self, candidates: decode::RankedCandidates) {
+        if candidates.is_empty() || self.tree.is_empty() {
+            return;
+        }
+        let range = self.heat_scored_range(self.first_node);
+        let stats = heat_cue::derive_stats(&candidates);
+        let cap = self
+            .override_list_height
+            .max(1)
+            .max(heat_cue::HEAT_CUE_PREVIEW);
+        let top_n: Vec<_> = candidates.iter().take(cap).cloned().collect();
+
+        let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
+        caches.by_range.upsert(
+            range.start,
+            heat_worker::RangeHeatEntry {
+                best_score: stats.best_score,
+                best_count: stats.best_count,
+                top_n,
+            },
+            tiered::Tier::User,
+        );
+        caches.complete = Some((range, candidates));
     }
 }
 
@@ -1874,50 +1908,13 @@ pub fn run(app: &mut App) -> io::Result<()> {
             let graph = Arc::clone(graph);
             let blob = Arc::new(app.blob.clone()); // one-time clone, G2
 
-            // Spec NNNN: root-type inference is a single, one-shot `score_
-            // all` sweep over the *whole* blob — unlike heat-cue/override
-            // requests, it's never repeated, so it gets its own detached,
-            // fire-and-forget thread rather than a `HeatRequestQueue` entry.
-            // Not joined anywhere (deliberately, unlike `heat_worker`/
-            // `input_reader` below): it holds only `Arc`-owned data, so an
-            // early `should_quit` simply lets the OS reclaim it mid-sweep —
-            // joining would otherwise make quitting wait out the very sweep
-            // this whole feature exists to get off the critical path.
-            //
-            // That claim was **false until spec 0180 S2**, and this was the
-            // worst place for it to be false: the graph was a `&'static`
-            // transmuted out of `ctx`'s mmap, so `App` dropping while the
-            // longest scoring operation in the program was still running
-            // unmapped the pages underneath it. `graph` is an owning
-            // `Arc<LoadedGraph>` now, so the mapping survives exactly as long
-            // as this thread needs it and the sentence above is true as
-            // written. Do not turn it back into a borrow.
-            if app.root_type_pending {
-                let root_type_tx = tx.clone();
-                let root_type_graph = Arc::clone(&graph);
-                // `determine_root_type` (spec NNNN's synchronous ancestor)
-                // scores the caller's original, unwrapped blob — recover it
-                // from the wrapped one `Decoded::blob` carries (see `Decoded::
-                // wrapper_offset`'s doc comment).
-                let original_blob = app.blob[app.wrapper_offset..].to_vec();
-                // Spec 0180 S4: a `Builder`, not a bare `thread::spawn`. This
-                // thread runs `score_all` over the whole blob — the deepest
-                // input the scorer ever sees — and used to take `std`'s 2 MiB
-                // default while the heat worker running the identical code got
-                // 16 MiB, purely because the constant lived in `heat_worker.rs`.
-                thread::Builder::new()
-                    .name("root-type".to_string())
-                    .stack_size(SCORING_THREAD_STACK_SIZE)
-                    .spawn(move || {
-                        let fqdn = decode::resolve_root_winner_fqdn(
-                            &original_blob,
-                            root_type_graph.graph(),
-                        );
-                        let _ = root_type_tx.send(event::AppEvent::RootTypeResolved(fqdn));
-                    })
-                    .expect("spawn root-type thread");
-            }
-
+            // Spec 0168 removed a second, detached "root-type" thread that
+            // used to run here: it re-scored the whole blob to infer the root
+            // type, and its answer then re-decoded and re-rendered the entire
+            // document through the splice machinery, underneath a reader who
+            // had already started browsing. `decode::decode` now resolves the
+            // type before rendering, so by the time `App` exists the document
+            // is already what it is.
             app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
                 Arc::clone(&app.heat_caches),
                 graph,
@@ -2080,12 +2077,6 @@ where
             Some(event::AppEvent::HeatWorkerProgress) => {
                 app.recheck_pending_heat_states();
                 app.poll_pending_override_work();
-            }
-            Some(event::AppEvent::RootTypeResolved(fqdn_opt)) => {
-                app.root_type_pending = false;
-                if let Some(fqdn) = fqdn_opt {
-                    app.apply_resolved_root_type(fqdn);
-                }
             }
             None => {} // deadline elapsed with nothing received
         }

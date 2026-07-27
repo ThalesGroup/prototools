@@ -102,7 +102,7 @@ fn prefetch_fixture(n: usize) -> App {
         blob,
         wrapper_offset: 0,
         style_hints: Vec::new(),
-        root_type_deferred: false,
+        root_candidates: Vec::new(),
     };
     App::new(
         decoded,

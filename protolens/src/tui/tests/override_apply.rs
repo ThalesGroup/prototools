@@ -21,7 +21,7 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
         DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
     };
 
-    use crate::decode::{decode, DescriptorContext};
+    use crate::decode::{decode, DescriptorContext, RootType};
 
     let leaf_desc = DescriptorProto {
         name: Some("Leaf".to_string()),
@@ -89,7 +89,7 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
     let mut blob = vec![0x0Au8, node_payload.len() as u8];
     blob.extend_from_slice(&node_payload);
 
-    let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, false).unwrap();
+    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -200,7 +200,7 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
 /// here, in the header-patching path spec 0135 has since deleted).
 #[test]
 fn splice_override_on_an_incompatible_scalar_does_not_panic() {
-    use crate::decode::{decode, DescriptorContext};
+    use crate::decode::{decode, DescriptorContext, RootType};
     use prost::Message as _;
     use prost_types::field_descriptor_proto::{Label, Type};
     use prost_types::{
@@ -249,7 +249,7 @@ fn splice_override_on_an_incompatible_scalar_does_not_panic() {
     let label = b"hello";
     let mut blob = vec![0x0Au8, label.len() as u8];
     blob.extend_from_slice(label);
-    let decoded = decode(&blob, &mut ctx, Some("incompat.StrHolder"), 2, false).unwrap();
+    let decoded = decode(&blob, &mut ctx, RootType::Named("incompat.StrHolder"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -436,7 +436,7 @@ fn the_forward_and_backward_ordinal_walks_agree_across_a_packed_run() {
 /// `TYPEtype_idMISMATCH`.
 #[test]
 fn splice_override_on_a_varint_mismatch_does_not_corrupt_type_mismatch_annotation() {
-    use crate::decode::{decode, DescriptorContext};
+    use crate::decode::{decode, DescriptorContext, RootType};
     use prost::Message as _;
     use prost_types::field_descriptor_proto::{Label, Type};
     use prost_types::{
@@ -472,7 +472,13 @@ fn splice_override_on_a_varint_mismatch_does_not_corrupt_type_mismatch_annotatio
 
     // IntHolder { type_id: 5 } — field 2, varint wire type.
     let blob = vec![0x10u8, 0x05];
-    let decoded = decode(&blob, &mut ctx, Some("varint_mismatch.IntHolder"), 2, false).unwrap();
+    let decoded = decode(
+        &blob,
+        &mut ctx,
+        RootType::Named("varint_mismatch.IntHolder"),
+        2,
+    )
+    .unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -577,7 +583,7 @@ fn deactivating_override_recomputes_the_pan_bound_against_the_post_splice_scroll
         DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
     };
 
-    use crate::decode::{decode, DescriptorContext};
+    use crate::decode::{decode, DescriptorContext, RootType};
 
     // The long field name is the fixture's whole point: once `inner`
     // reverts to its natural 4-line shape, this field's row must be
@@ -655,7 +661,7 @@ fn deactivating_override_recomputes_the_pan_bound_against_the_post_splice_scroll
         0x10, 0x01, // pad_a: 1
         0x18, 0x02, // pad_b: 2
     ];
-    let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, false).unwrap();
+    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -901,7 +907,7 @@ fn splice_override_reactivating_root_type_still_expands_any_fields() {
         DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
     };
 
-    use crate::decode::{decode, DescriptorContext};
+    use crate::decode::{decode, DescriptorContext, RootType};
 
     let any_msg = DescriptorProto {
         name: Some("Any".to_string()),
@@ -987,7 +993,7 @@ fn splice_override_reactivating_root_type_still_expands_any_fields() {
     let mut blob = vec![0x0au8, any_bytes.len() as u8];
     blob.extend_from_slice(&any_bytes);
 
-    let decoded = decode(&blob, &mut ctx, Some("acme.Container"), 2, false).unwrap();
+    let decoded = decode(&blob, &mut ctx, RootType::Named("acme.Container"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -1340,13 +1346,13 @@ fn the_override_preview_leaves_nested_message_set_auto_expansion_alone() {
 /// not wrongly claim "already settled").
 #[test]
 fn no_resolved_root_type_seeds_no_override_and_still_renders_raw() {
-    use crate::decode::{decode, DescriptorContext};
+    use crate::decode::{decode, DescriptorContext, RootType};
 
     let mut ctx = DescriptorContext::empty_for_test();
     // A single varint field (tag 0x08, value 5) — no --type, and this
     // context has no hopcroft.rkyv, so autoinference is unavailable.
     let blob = [0x08u8, 0x05];
-    let decoded = decode(&blob, &mut ctx, None, 2, false).unwrap();
+    let decoded = decode(&blob, &mut ctx, RootType::Infer, 2).unwrap();
     assert_eq!(decoded.root_type, "<raw / no type>");
 
     let app = App::new(
@@ -1569,7 +1575,7 @@ fn preview_budget_fixture_bytes(payload: &[u8]) -> (App, usize) {
     };
     use prototext_core::helpers::{write_tag, write_varint, WT_LEN};
 
-    use crate::decode::{decode, DescriptorContext};
+    use crate::decode::{decode, DescriptorContext, RootType};
 
     // `Empty` has no declared fields, so retyping `blob` to it makes
     // every entry of the reinterpreted payload land as an unknown
@@ -1644,7 +1650,7 @@ fn preview_budget_fixture_bytes(payload: &[u8]) -> (App, usize) {
     write_varint(payload.len() as u64, &mut blob);
     blob.extend_from_slice(payload);
 
-    let decoded = decode(&blob, &mut ctx, Some("test.Holder"), 2, false).unwrap();
+    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Holder"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",

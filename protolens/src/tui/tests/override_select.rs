@@ -126,7 +126,7 @@ fn t_opens_the_override_pane_on_an_unresolved_message_node() {
         blob: vec![0x0A, 0x00],
         wrapper_offset: 0,
         style_hints: vec![Vec::new(); 2],
-        root_type_deferred: false,
+        root_candidates: Vec::new(),
     };
     let mut app = App::new(
         decoded,
@@ -183,7 +183,7 @@ fn t_opens_the_override_pane_on_a_varint_scalar_field() {
         blob: vec![0x08, 0x01],
         wrapper_offset: 0,
         style_hints: vec![Vec::new()],
-        root_type_deferred: false,
+        root_candidates: Vec::new(),
     };
     let mut app = App::new(
         decoded,
@@ -351,7 +351,7 @@ fn t_opens_the_override_pane_on_a_length_delimited_scalar_field() {
         // splices this node at pane-open time, which requires
         // `line_styles` to stay index-aligned with `lines`).
         style_hints: vec![Vec::new(); 1],
-        root_type_deferred: false,
+        root_candidates: Vec::new(),
     };
     let mut app = App::new(
         decoded,
@@ -1009,7 +1009,7 @@ fn enter_key_applies_override_and_closes_pane() {
         DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
     };
 
-    use crate::decode::{decode, DescriptorContext};
+    use crate::decode::{decode, DescriptorContext, RootType};
 
     let inner_desc = DescriptorProto {
         name: Some("Inner".to_string()),
@@ -1050,7 +1050,7 @@ fn enter_key_applies_override_and_closes_pane() {
 
     // Outer { inner: Inner { id: 5 } }.
     let blob = [0x0Au8, 0x02, 0x08, 0x05];
-    let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, false).unwrap();
+    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",

@@ -183,19 +183,30 @@ pub(crate) fn read_descriptor_file(path: &Path) -> Result<Vec<u8>, DecodeError> 
 
 // ── Root-type determination ────────────────────────────────────────────────
 
-/// The `score_all` + veto/tie-break winner-selection rule shared by
-/// `determine_root_type`'s synchronous graph branch and the TUI's
-/// asynchronous root-type worker (spec NNNN) — factored out so both can
-/// run the identical selection logic against a bare `ArchivedCompiledGraph`
-/// reference (the worker thread has no `DescriptorContext`/pool, only an
-/// owning `Arc<LoadedGraph>` and the blob, mirroring spec 0152's heat
-/// worker — see spec 0180 S2 for why it owns rather than borrows). `None`
-/// when there's no clean winner: no candidates, every candidate vetoed, or
-/// a top-score tie.
-pub(crate) fn resolve_root_winner_fqdn(
+/// Score-descending, non-vetoed `(fqdn, score)` pairs from one
+/// `score_all` sweep — the shape `override_pane::inferred_candidates`
+/// and `heat_worker::HeatCaches` both traffic in, named here so the
+/// signatures that thread it through say what they carry.
+pub type RankedCandidates = Vec<(String, i64)>;
+
+/// The `score_all` + veto/tie-break winner-selection rule, plus the full
+/// ranked list of non-vetoed candidates the same sweep already produced.
+///
+/// Spec 0168 G3: startup has to run this sweep anyway to know what type to
+/// decode the blob as, and it scores exactly the root node's payload range
+/// — the single most expensive range in the document, and the one the
+/// cursor starts on. Returning the candidates alongside the winner lets
+/// the caller seed `HeatCaches` with them, so neither `heat_cue_for` nor
+/// the override pane re-scores those same bytes.
+///
+/// The winner is `None` when there's no clean one: no candidates, every
+/// candidate vetoed, or a top-score tie. The candidate list is
+/// score-descending and excludes vetoed entries, matching what
+/// `override_pane::inferred_candidates` computes from the identical sweep.
+pub(crate) fn resolve_root_winner_and_candidates(
     blob: &[u8],
     graph: &ArchivedCompiledGraph,
-) -> Option<String> {
+) -> (Option<String>, RankedCandidates) {
     let scoring_opts = ScoringOpts::default();
     let mut results = score_all(blob, graph, &scoring_opts);
     results.sort_by(|a, b| match (a.vetoed, b.vetoed) {
@@ -205,56 +216,90 @@ pub(crate) fn resolve_root_winner_fqdn(
         (false, false) => b.score().cmp(&a.score()).then(a.fqdn.cmp(b.fqdn)),
     });
 
-    if results.is_empty() {
-        return None;
-    }
-    let non_vetoed: Vec<_> = results.iter().filter(|r| !r.vetoed).collect();
-    if non_vetoed.is_empty() {
-        return None;
-    }
+    let candidates: RankedCandidates = results
+        .iter()
+        .filter(|r| !r.vetoed)
+        .map(|r| (r.fqdn.to_owned(), r.score()))
+        .collect();
 
-    let top_score = non_vetoed[0].score();
-    let tied = non_vetoed.iter().filter(|r| r.score() == top_score).count();
+    if candidates.is_empty() {
+        return (None, candidates);
+    }
+    let top_score = candidates[0].1;
+    let tied = candidates.iter().filter(|c| c.1 == top_score).count();
     if tied > 1 {
-        return None;
+        return (None, candidates);
     }
 
-    Some(non_vetoed[0].fqdn.to_owned())
+    (Some(candidates[0].0.clone()), candidates)
 }
 
-/// Resolve the root message type to decode `blob` as.
+/// Which type the caller wants the blob decoded as — the three mutually
+/// exclusive startup modes, one per command-line shape.
 ///
-/// - `type_override` given: looked up directly in the pool; a lookup
-///   failure is a hard error (the user asked for a specific type).
-/// - `type_override` absent: tries autoinference via a scoring graph
-///   (`ctx.graph`). Returns `Ok(None)` — not an error — whenever inference
-///   doesn't produce a clean winner (no graph available, no candidates,
-///   all candidates vetoed, or a top-score tie): the caller then renders
-///   the blob with no type known (spec 0114, "protolens command line
-///   should not require --type").
+/// This used to be an `Option<&str>` plus a separate `defer_root_type`
+/// boolean, which made "a named type, but also deferred" expressible and
+/// meaningless. As one enum the three modes are exhaustive and the
+/// impossible combination cannot be written.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RootType<'a> {
+    /// Infer it from the scoring graph (`protolens` with no type flag).
+    /// Falls back to no type at all when inference can't produce a clean
+    /// winner.
+    #[default]
+    Infer,
+    /// Decode as exactly this type (`protolens --type <fqdn>`). A
+    /// pool-lookup failure is a hard error — the user named it.
+    Named(&'a str),
+    /// Decode with no type at all (`protolens --raw`), skipping the
+    /// inference sweep entirely. The escape hatch for when inference is
+    /// wrong, or just too slow to wait for on a large schema database.
+    Raw,
+}
+
+/// Resolve the root message type to decode `blob` as, along with the
+/// ranked candidate list the `Infer` sweep produced on its way to the
+/// winner.
+///
+/// `Named` is looked up directly in the pool; a lookup failure is a hard
+/// error (the user asked for a specific type). `Raw` is `Ok(None)`
+/// without touching the graph. `Infer` tries autoinference via a scoring
+/// graph (`ctx.graph`), and also returns `Ok(None)` — not an error —
+/// whenever inference doesn't produce a clean winner (no graph available,
+/// no candidates, all candidates vetoed, or a top-score tie): the caller
+/// then renders the blob with no type known (spec 0114, "protolens
+/// command line should not require --type").
+///
+/// The candidate list is empty for `Named`/`Raw`, and for `Infer` with
+/// no graph, since no sweep ran in those cases. It is returned (spec
+/// 0168 G3) so startup can seed `HeatCaches` for the root range from the
+/// sweep it already had to run: that range is the single most expensive
+/// one in the document, and it is the one the cursor starts on, so
+/// leaving the heat cue and the override pane to re-score it was paying
+/// for the same `score_all` twice.
 pub fn determine_root_type(
     blob: &[u8],
     ctx: &DescriptorContext,
-    type_override: Option<&str>,
-) -> Result<Option<MessageDescriptor>, DecodeError> {
-    if let Some(fqdn) = type_override {
-        return ctx
+    root_type: RootType<'_>,
+) -> Result<(Option<MessageDescriptor>, RankedCandidates), DecodeError> {
+    match root_type {
+        RootType::Named(fqdn) => ctx
             .pool()
             .get_message_by_name(fqdn)
-            .map(Some)
+            .map(|desc| (Some(desc), Vec::new()))
             .ok_or_else(|| {
                 DecodeError::Determination(format!("type '{fqdn}' not found in descriptor set"))
-            });
+            }),
+        RootType::Raw => Ok((None, Vec::new())),
+        RootType::Infer => {
+            let Some(graph) = ctx.graph.as_ref() else {
+                return Ok((None, Vec::new()));
+            };
+            let (winner, candidates) = resolve_root_winner_and_candidates(blob, graph);
+            let desc = winner.and_then(|fqdn| ctx.pool().get_message_by_name(&fqdn));
+            Ok((desc, candidates))
+        }
     }
-
-    let Some(graph) = ctx.graph.as_ref() else {
-        return Ok(None);
-    };
-
-    let Some(fqdn) = resolve_root_winner_fqdn(blob, graph) else {
-        return Ok(None);
-    };
-    Ok(ctx.pool().get_message_by_name(&fqdn))
 }
 
 // ── Navigation tree ─────────────────────────────────────────────────────────
@@ -395,13 +440,12 @@ pub struct Decoded {
     /// initial-load counterpart of `apply_override`'s per-splice
     /// colorize pass (`protolens/src/tui.rs`).
     pub style_hints: Vec<Vec<(std::ops::Range<usize>, SyntaxRole)>>,
-    /// `true` when `decode()`'s caller asked to skip synchronous graph-
-    /// based root-type inference (`defer_root_type`, spec NNNN) — always
-    /// paired with `root_type == "<raw / no type>"`. `App::new` picks this
-    /// up to know whether it should hand root-type resolution off to the
-    /// TUI's background worker instead of treating the raw fallback as
-    /// final.
-    pub root_type_deferred: bool,
+    /// Score-descending, non-vetoed candidate types for the root's own
+    /// payload range, as produced by the root-type inference sweep
+    /// (spec 0168 G3). Empty whenever no sweep ran — `RootType::Named`,
+    /// `RootType::Raw`, or no scoring graph. See
+    /// `determine_root_type`.
+    pub root_candidates: RankedCandidates,
 }
 
 /// Deterministic short name for a synthetic one-field wrapper descriptor
@@ -737,26 +781,41 @@ pub(crate) fn wrap_blob(field_number: u64, blob: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Resolve the root type, then render the whole document under it.
+///
+/// Spec 0168 G1: the resolution happens before the render, always. This
+/// used to take a `defer_root_type` flag that skipped the graph sweep,
+/// leaving `root_desc` `None` so the TUI could render the document raw
+/// and resolve the type on a background thread — which then re-decoded
+/// and re-rendered the whole document through the splice machinery, at
+/// several times the cost of the decode it was refining, and swapped it
+/// under the reader. The document is now decoded once, as what it is.
+/// Callers who don't want to pay for the sweep at all ask for
+/// `RootType::Raw` and get a raw render that stays raw.
 pub fn decode(
     blob: &[u8],
     ctx: &mut DescriptorContext,
-    type_override: Option<&str>,
+    root_type_request: RootType<'_>,
     indent_size: usize,
-    defer_root_type: bool,
 ) -> Result<Decoded, DecodeError> {
-    // `defer_root_type` (spec NNNN): an explicit `type_override` is an
-    // O(1) pool lookup, never worth deferring — only the graph-based
-    // `score_all` sweep is. Skipping it here leaves `root_desc` `None`,
-    // same as `determine_root_type`'s own "no clean winner" outcome; the
-    // caller (`App::new`, via `Decoded::root_type_deferred`) is
-    // responsible for actually resolving it later and applying the
-    // result, or the root just stays the raw/no-type fallback forever.
-    let root_type_deferred = defer_root_type && type_override.is_none() && ctx.graph.is_some();
-    let root_desc = if root_type_deferred {
-        None
-    } else {
-        determine_root_type(blob, ctx, type_override)?
-    };
+    let (root_desc, root_candidates) = determine_root_type(blob, ctx, root_type_request)?;
+    render_resolved(blob, ctx, root_desc, root_candidates, indent_size)
+}
+
+/// `decode`'s second half, with the root type already resolved.
+///
+/// Split out for `main`, which needs to announce the two phases
+/// separately: the sweep and the render are both multi-second on a large
+/// blob, and a single message spanning both makes whichever one is
+/// running look like a hang in the other. Every other caller wants
+/// `decode`.
+pub fn render_resolved(
+    blob: &[u8],
+    ctx: &mut DescriptorContext,
+    root_desc: Option<MessageDescriptor>,
+    root_candidates: RankedCandidates,
+    indent_size: usize,
+) -> Result<Decoded, DecodeError> {
     let (root_type, wrapper_desc) = match &root_desc {
         Some(desc) => (
             desc.full_name().to_string(),
@@ -818,7 +877,7 @@ pub fn decode(
         blob: wrapped_blob,
         wrapper_offset,
         style_hints,
-        root_type_deferred,
+        root_candidates,
     })
 }
 
@@ -826,6 +885,7 @@ pub fn decode(
 mod tests {
     use prost::Message as _;
     use prost_reflect::prost_types::FileDescriptorSet;
+    use prototext_graph::build_scoring_graph::build_from_strings;
 
     use super::*;
 
@@ -833,8 +893,99 @@ mod tests {
     fn determine_root_type_returns_none_without_override_or_graph() {
         let ctx = DescriptorContext::empty_for_test();
         let blob = [0x08u8, 0x05];
-        let resolved = determine_root_type(&blob, &ctx, None).unwrap();
+        let (resolved, candidates) = determine_root_type(&blob, &ctx, RootType::Infer).unwrap();
         assert!(resolved.is_none());
+        assert!(candidates.is_empty(), "no graph means no sweep ran");
+    }
+
+    /// A minimal real scoring graph, built in memory with no file I/O,
+    /// so the `Raw`/`Named` branches can be shown to short-circuit
+    /// *despite* a graph being available — which is the only
+    /// interesting case: with no graph they would return `None`
+    /// regardless and prove nothing.
+    fn one_entry_graph() -> LoadedGraph {
+        let yaml = "entries:\n- Msg\nmessages:\n  Msg:\n    fields:\n    - number: 1\n      \
+                    type: uint64\n"
+            .to_string();
+        let (bytes, _, _) =
+            build_from_strings(&[yaml], false, false, |_, _| {}).expect("test graph must build");
+        LoadedGraph::from_static_bytes(Box::leak(bytes.into_boxed_slice()))
+            .expect("test graph must load")
+    }
+
+    /// Spec 0168 (`--raw`): the sweep is skipped outright, not merely
+    /// ignored. Asserted via the empty candidate list — a sweep that
+    /// ran would have produced entries for the graph's one message —
+    /// since skipping it is the entire point of the flag on a large
+    /// descriptor pool.
+    #[test]
+    fn raw_never_sweeps_even_when_a_graph_is_loaded() {
+        let ctx = DescriptorContext::for_test_with_graph(one_entry_graph());
+        let blob = [0x08u8, 0x05];
+
+        let (resolved, candidates) = determine_root_type(&blob, &ctx, RootType::Raw).unwrap();
+
+        assert!(resolved.is_none());
+        assert!(candidates.is_empty(), "--raw must not run the sweep");
+    }
+
+    /// Spec 0168 G6: `--type` is an O(1) pool lookup with no sweep. A
+    /// name the pool does not know is an error, not a quiet fallback to
+    /// inference — otherwise a typo would silently open the wrong type
+    /// and look like a scoring bug.
+    #[test]
+    fn a_named_type_is_looked_up_not_swept_and_a_bad_name_errors() {
+        let ctx = DescriptorContext::for_test_with_graph(one_entry_graph());
+        let blob = [0x08u8, 0x05];
+
+        let err = determine_root_type(&blob, &ctx, RootType::Named("no.such.Type")).unwrap_err();
+
+        assert!(
+            matches!(err, DecodeError::Determination(_)),
+            "unknown --type must error: {err:?}"
+        );
+    }
+
+    /// The two explicit modes against one blob and one pool: `--type`
+    /// decodes under the named type, `--raw` decodes the same bytes
+    /// under none. Pins `--raw`'s actual guarantee — the render stays
+    /// raw — which is what distinguishes it from the deleted
+    /// `defer_root_type` flag, whose raw render was replaced under the
+    /// reader seconds later.
+    #[test]
+    fn named_types_the_root_and_raw_leaves_it_untyped() {
+        let file = FileDescriptorProto {
+            name: Some("test_root_type_modes.proto".to_string()),
+            package: Some("test".to_string()),
+            message_type: vec![DescriptorProto {
+                name: Some("Inner".to_string()),
+                field: vec![FieldDescriptorProto {
+                    name: Some("id".to_string()),
+                    number: Some(1),
+                    label: Some(Label::Optional as i32),
+                    r#type: Some(Type::Int32 as i32),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            syntax: Some("proto3".to_string()),
+            ..Default::default()
+        };
+        let fds = FileDescriptorSet { file: vec![file] };
+        let descriptor_path = std::env::temp_dir().join("protolens-root-type-modes-descriptor.pb");
+        std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
+        let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
+        std::fs::remove_file(&descriptor_path).unwrap();
+
+        let blob = [0x08u8, 0x05];
+
+        let named = decode(&blob, &mut ctx, RootType::Named("test.Inner"), 2).unwrap();
+        assert_eq!(named.root_type, "test.Inner");
+        assert!(named.root_candidates.is_empty(), "no sweep for --type");
+
+        let raw = decode(&blob, &mut ctx, RootType::Raw, 2).unwrap();
+        assert_eq!(raw.root_type, "<raw / no type>");
+        assert!(raw.root_candidates.is_empty(), "no sweep for --raw");
     }
 
     /// Spec 0143: the placeholder is anchored on its exact structural
@@ -921,7 +1072,7 @@ mod tests {
         // context has no hopcroft.rkyv, so autoinference is unavailable.
         let blob = [0x08u8, 0x05];
 
-        let decoded = decode(&blob, &mut ctx, None, 2, false).unwrap();
+        let decoded = decode(&blob, &mut ctx, RootType::Infer, 2).unwrap();
         assert_eq!(decoded.root_type, "<raw / no type>");
         // The wrapper's own top-level field (the "virtual encompassing
         // message", spec 0114 §1.1) — level 0, no type resolved.
@@ -965,7 +1116,7 @@ mod tests {
         std::fs::remove_file(&descriptor_path).unwrap();
 
         let blob = [0x08u8, 0x05];
-        let decoded = decode(&blob, &mut ctx, Some("test.Msg"), 2, false).unwrap();
+        let decoded = decode(&blob, &mut ctx, RootType::Named("test.Msg"), 2).unwrap();
         assert!(
             decoded.lines[0].starts_with("1 "),
             "root header line must show the root field number: {:?}",
@@ -1068,7 +1219,7 @@ mod tests {
         let mut blob = vec![0x0au8, any_bytes.len() as u8];
         blob.extend_from_slice(&any_bytes);
 
-        let decoded = decode(&blob, &mut ctx, Some("acme.Container"), 2, false).unwrap();
+        let decoded = decode(&blob, &mut ctx, RootType::Named("acme.Container"), 2).unwrap();
         let any_idx = decoded
             .tree
             .iter()

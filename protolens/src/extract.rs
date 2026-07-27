@@ -277,7 +277,7 @@ mod tests {
             DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
         };
 
-        use crate::decode::{decode, DescriptorContext};
+        use crate::decode::{decode, DescriptorContext, RootType};
 
         let inner_desc = DescriptorProto {
             name: Some("Inner".to_string()),
@@ -322,7 +322,7 @@ mod tests {
         // Outer wraps it as field 1 (LEN): tag (1<<3)|2 = 0x0A, len 2.
         let blob = [0x0Au8, 0x02, inner_bytes[0], inner_bytes[1]];
 
-        let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, false).unwrap();
+        let decoded = decode(&blob, &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
         let inner_node = decoded
             .tree
             .iter()
@@ -340,7 +340,7 @@ mod tests {
         // `extracted == inner_bytes` above already proves byte-for-byte
         // fidelity; this only additionally checks for the specific garbling
         // symptom reported (a field misread as an unrelated one).
-        let reopened = decode(extracted, &mut ctx, Some("test.Inner"), 2, false).unwrap();
+        let reopened = decode(extracted, &mut ctx, RootType::Named("test.Inner"), 2).unwrap();
         assert!(
             !reopened.lines.join("\n").contains("INVALID_STRING"),
             "re-decoded Inner extract must not contain garbled fields: {:?}",

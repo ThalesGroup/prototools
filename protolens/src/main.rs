@@ -72,9 +72,20 @@ struct Cli {
     #[arg(
         short = 't',
         long = "type",
+        conflicts_with = "raw",
         add = ArgValueCompleter::new(complete::complete_type_names),
     )]
     r#type: Option<String>,
+
+    /// Skip root-type inference and open the blob with no type at all,
+    /// as raw wire bytes (spec 0168). Inference is the one startup phase
+    /// whose cost scales with the size of the schema *database* rather
+    /// than the blob, so on a large descriptor set this is the fast way
+    /// in; it is also the way to look at a blob whose inferred type is
+    /// wrong. A type can still be chosen interactively afterwards, via
+    /// the override pane.
+    #[arg(long = "raw")]
+    raw: bool,
 
     /// Number of spaces per nesting level in the rendered text.
     #[arg(long = "indent", default_value_t = 2)]
@@ -177,6 +188,18 @@ fn resolve_proto_root(
     })
 }
 
+/// `" (N MB)"` for a startup progress message, or `""`.
+///
+/// Best effort (spec 0151 G7): a metadata read failure simply omits the
+/// size suffix rather than aborting or erroring, since this is pure UX
+/// decoration, not load-bearing for correctness.
+fn size_suffix(p: &Path) -> String {
+    match std::fs::metadata(p) {
+        Ok(m) => format!(" ({} MB)", m.len() / (1024 * 1024)),
+        Err(_) => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,30 +296,19 @@ fn main() -> ExitCode {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| descriptor_set.display().to_string());
-                // Best effort (spec 0151 G7): a metadata read failure simply
-                // omits the size suffix rather than aborting or erroring, since
-                // this is pure UX decoration, not load-bearing for correctness.
-                let size_suffix = |p: &Path| -> String {
-                    match std::fs::metadata(p) {
-                        Ok(m) => format!(" ({} MB)", m.len() / (1024 * 1024)),
-                        Err(_) => String::new(),
-                    }
-                };
-                // Mirrors the sibling-graph check `DescriptorContext::load`
-                // itself performs (`decode.rs:87-89`).
-                let rkyv_path = descriptor_set.with_extension("").join("hopcroft.rkyv");
-                if rkyv_path.exists() {
-                    eprintln!(
-                        "protolens: loading descriptor set '{name}'{} and scoring graph{}...",
-                        size_suffix(descriptor_set),
-                        size_suffix(&rkyv_path)
-                    );
-                } else {
-                    eprintln!(
-                        "protolens: loading descriptor set '{name}'{}...",
-                        size_suffix(descriptor_set)
-                    );
-                }
+                // The sibling `hopcroft.rkyv` scoring graph, if present, is
+                // loaded in the same phase but is not named here: it runs
+                // about a fifth of the descriptor set's size (4.6 MB against
+                // 24.5 MB for googleapis; 209 KB against 1.0 MB for a
+                // protoc descriptor pool), so the descriptor size alone
+                // already tells the reader what this wait is proportional
+                // to. Whether a graph was found shows up in the next two
+                // messages anyway — no graph means no inference phase and a
+                // raw root.
+                eprintln!(
+                    "protolens: loading descriptor set '{name}'{}...",
+                    size_suffix(descriptor_set)
+                );
             }
             None => {
                 eprintln!("protolens: no --descriptor-set — decoding without a schema...");
@@ -316,23 +328,57 @@ fn main() -> ExitCode {
         }
     };
 
-    // Root-type inference (`score_all` over the whole blob) is deferred to
-    // the TUI's background worker when entering the TUI without an
-    // explicit `--type` (spec NNNN) — the batch `Extract` path has no
-    // event loop to hand it off to, so it always resolves synchronously,
-    // same as an explicit `--type`.
-    let defer_root_type = cli.command.is_none() && cli.r#type.is_none();
-    if cli.command.is_none() && ctx.graph.is_some() && !defer_root_type {
-        eprintln!("protolens: resolving root type...");
-    }
+    let root_type = match (cli.raw, cli.r#type.as_deref()) {
+        (true, _) => decode::RootType::Raw,
+        (false, Some(fqdn)) => decode::RootType::Named(fqdn),
+        (false, None) => decode::RootType::Infer,
+    };
 
-    let decoded = match decode::decode(
-        &blob,
-        &mut ctx,
-        cli.r#type.as_deref(),
-        cli.indent,
-        defer_root_type,
-    ) {
+    // Spec 0168 G1/G4: root-type inference runs here, synchronously, for
+    // the TUI exactly as it always has for the batch paths — it used to be
+    // handed to a background thread whose answer then re-decoded the whole
+    // document under the reader. Announced on stderr, alongside the
+    // messages the phases before it already print — the alternate screen
+    // is not entered until `tui::run`, so there is no frame to draw into
+    // and none is needed.
+    //
+    // Announced separately from the render below, rather than as one
+    // "inferring and decoding" line, because both are multi-second on a
+    // large blob and they are wildly unequal: on a 24 MB blob the sweep is
+    // a few seconds of a half-minute wait. A single message spanning both
+    // makes whichever phase is actually running look like a hang in the
+    // other. This is also why `decode` is split into `determine_root_type`
+    // + `render_resolved` here instead of being called whole.
+    //
+    // `--type` is an O(1) pool lookup and `--raw` skips the sweep
+    // outright, so neither gets this line (G6).
+    let announce = cli.command.is_none();
+    let decoded = if announce {
+        if root_type == decode::RootType::Infer && ctx.graph.is_some() {
+            eprintln!(
+                "protolens: inferring root type{}...",
+                size_suffix(&cli.blob)
+            );
+        }
+        decode::determine_root_type(&blob, &ctx, root_type).and_then(
+            |(root_desc, root_candidates)| {
+                eprintln!(
+                    "protolens: rendering root node as {}{}...",
+                    root_desc
+                        .as_ref()
+                        .map(|d| d.full_name())
+                        .unwrap_or("<raw / no type>"),
+                    size_suffix(&cli.blob)
+                );
+                decode::render_resolved(&blob, &mut ctx, root_desc, root_candidates, cli.indent)
+            },
+        )
+    } else {
+        // Batch mode prints no progress at all, so it has no reason to
+        // hold the two halves apart.
+        decode::decode(&blob, &mut ctx, root_type, cli.indent)
+    };
+    let decoded = match decoded {
         Ok(d) => d,
         Err(e) => {
             eprintln!("error: {e}");
@@ -366,6 +412,15 @@ fn main() -> ExitCode {
         }
         Some(_) => theme::ThemeKind::Dark,
     };
+
+    // The last unannounced startup phase, and on a descriptor set the
+    // largest: `App::new` builds both line maps, seeds the override
+    // collection, and runs one full `render_overrides` pass over the whole
+    // document — 5.2 s on a 1.1 MB descriptor set, longer than the render
+    // that precedes it.
+    if announce {
+        eprintln!("protolens: indexing {} lines...", decoded.lines.len());
+    }
 
     let proto_root = resolve_proto_root(cli.proto_root.clone(), descriptor_set);
     let mut app = tui::App::new(

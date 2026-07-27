@@ -44,7 +44,7 @@ fn wrapper_offset_and_display_range_restore_pre_wrap_coordinates() {
         DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
     };
 
-    use crate::decode::{decode, DescriptorContext};
+    use crate::decode::{decode, DescriptorContext, RootType};
 
     let inner_desc = DescriptorProto {
         name: Some("Inner".to_string()),
@@ -88,7 +88,7 @@ fn wrapper_offset_and_display_range_restore_pre_wrap_coordinates() {
     // Outer wraps it as field 1 (LEN): tag (1<<3)|2 = 0x0A, len 2.
     let blob = [0x0Au8, 0x02, inner_bytes[0], inner_bytes[1]];
 
-    let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, false).unwrap();
+    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
     // tag(1 byte) + length-varint(1 byte, blob.len() == 4 fits in 1 byte).
     assert_eq!(decoded.wrapper_offset, 2);
     assert_eq!(decoded.blob.len(), blob.len() + 2);
@@ -145,7 +145,7 @@ fn display_range_strips_tag_and_length_for_scalars_including_packed() {
         DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
     };
 
-    use crate::decode::{decode, DescriptorContext};
+    use crate::decode::{decode, DescriptorContext, RootType};
 
     let msg_desc = DescriptorProto {
         name: Some("Msg".to_string()),
@@ -187,7 +187,7 @@ fn display_range_strips_tag_and_length_for_scalars_including_packed() {
     // [0x01, 0x02, 0x03] (three varint elements 1, 2, 3).
     let blob = [0x08u8, 0x05, 0x12, 0x03, 0x01, 0x02, 0x03];
 
-    let decoded = decode(&blob, &mut ctx, Some("test.Msg"), 2, false).unwrap();
+    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Msg"), 2).unwrap();
     let app = App::new(
         decoded,
         "test.pb",

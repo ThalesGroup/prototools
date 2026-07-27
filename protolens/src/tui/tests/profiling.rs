@@ -18,7 +18,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use super::super::*;
-use crate::decode::decode;
+use crate::decode::{decode, RootType};
 
 /// Throwaway diagnostic: does `/tmp/pdb.desc`'s decoded tree contain
 /// any parent with a very large number of direct children? Hypothesis
@@ -37,7 +37,7 @@ fn diagnose_pdb_max_children_per_parent() {
     }
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(desc_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let decoded = decode(&blob, &mut ctx, RootType::Raw, 2).expect("decode");
     eprintln!("total tree nodes: {}", decoded.tree.len());
 
     let mut children_count = vec![0usize; decoded.tree.len()];
@@ -73,7 +73,7 @@ fn profile_override_pane_down_on_db3() {
 
     let blob = std::fs::read(desc_path).expect("read blob");
     let t1 = Instant::now();
-    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let decoded = decode(&blob, &mut ctx, RootType::Raw, 2).expect("decode");
     eprintln!("decode: {:?}", t1.elapsed());
 
     let t2 = Instant::now();
@@ -191,7 +191,7 @@ fn profile_preview_root_versus_first_child_on_db3() {
 
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(desc_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let decoded = decode(&blob, &mut ctx, RootType::Raw, 2).expect("decode");
     let mut app = App::new(
         decoded,
         "db3.desc",
@@ -264,7 +264,7 @@ fn profile_override_pane_enter_on_pdb() {
 
     let blob = std::fs::read(desc_path).expect("read blob");
     let t1 = Instant::now();
-    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let decoded = decode(&blob, &mut ctx, RootType::Raw, 2).expect("decode");
     eprintln!("decode: {:?}", t1.elapsed());
 
     let t2 = Instant::now();
@@ -390,7 +390,7 @@ fn profile_override_pane_first_candidate_enter_on_pdb() {
 
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(desc_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let decoded = decode(&blob, &mut ctx, RootType::Raw, 2).expect("decode");
     let mut app = App::new(
         decoded,
         "pdb.desc",
@@ -449,7 +449,7 @@ fn profile_main_pane_down_on_db3() {
 
     let blob = std::fs::read(desc_path).expect("read blob");
     let t1 = Instant::now();
-    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let decoded = decode(&blob, &mut ctx, RootType::Raw, 2).expect("decode");
     eprintln!("decode: {:?}", t1.elapsed());
 
     let t2 = Instant::now();
@@ -552,7 +552,7 @@ fn repro_crash_down_t_enter_on_pdb() {
 
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(desc_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let decoded = decode(&blob, &mut ctx, RootType::Infer, 2).expect("decode");
     let mut app = App::new(
         decoded,
         "pdb.desc",
@@ -583,12 +583,6 @@ fn repro_crash_down_t_enter_on_pdb() {
             tx.clone(),
         ));
         rx = Some(worker_rx);
-
-        let original_blob = app.blob[app.wrapper_offset..].to_vec();
-        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref.graph()) {
-            eprintln!("resolved root type: {fqdn}");
-            app.apply_resolved_root_type(fqdn);
-        }
     }
     terminal.draw(|frame| app.render(frame)).unwrap();
 
@@ -650,9 +644,9 @@ fn repro_crash_down_t_enter_on_pdb() {
 
 /// Repro attempt #2 for the 2026-07-25 crash report, per the user's
 /// more precise follow-up: `Down` (into the first `FileDescriptorProto`
-/// -- root having *already* been rendered twice by this point: once as
-/// `None`/raw at `App::new`, then re-rendered as `FileDescriptorSet`
-/// once `apply_resolved_root_type` lands), then immediately `t` then
+/// -- the root already carrying its inferred `FileDescriptorSet` type,
+/// since spec 0168 resolves it before the render rather than splicing it
+/// in afterwards), then immediately `t` then
 /// `Enter` -- confirming the pane's *default* initial highlight with no
 /// waiting for candidates to settle and no candidate navigation, unlike
 /// `repro_crash_down_t_enter_on_pdb` above (which polled up to 120s for
@@ -669,7 +663,7 @@ fn repro_crash_down_t_enter_immediate_on_pdb() {
 
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(desc_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let decoded = decode(&blob, &mut ctx, RootType::Infer, 2).expect("decode");
     let mut app = App::new(
         decoded,
         "pdb.desc",
@@ -701,15 +695,9 @@ fn repro_crash_down_t_enter_immediate_on_pdb() {
             blob,
             tx,
         ));
-
-        let original_blob = app.blob[app.wrapper_offset..].to_vec();
-        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref.graph()) {
-            eprintln!("resolved root type: {fqdn}");
-            app.apply_resolved_root_type(fqdn);
-        }
     }
     eprintln!(
-        "root rendered_as after apply_resolved_root_type: {:?}",
+        "root rendered_as after decode: {:?}",
         app.tree[app.first_node].rendered_as
     );
     terminal.draw(|frame| app.render(frame)).unwrap();
@@ -765,7 +753,7 @@ fn repro_crash_forced_resplice_on_pdb() {
 
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(desc_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let decoded = decode(&blob, &mut ctx, RootType::Infer, 2).expect("decode");
     let mut app = App::new(
         decoded,
         "pdb.desc",
@@ -779,16 +767,8 @@ fn repro_crash_forced_resplice_on_pdb() {
     app.verify_repair = false;
     app.term_width = 120;
 
-    if let Some(graph) = &app.ctx.graph {
-        let graph_ref = std::sync::Arc::clone(graph);
-        let original_blob = app.blob[app.wrapper_offset..].to_vec();
-        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref.graph()) {
-            eprintln!("resolved root type: {fqdn}");
-            app.apply_resolved_root_type(fqdn);
-        }
-    }
     eprintln!(
-        "root rendered_as after apply_resolved_root_type: {:?}",
+        "root rendered_as after decode: {:?}",
         app.tree[app.first_node].rendered_as
     );
 
@@ -837,7 +817,7 @@ fn repro_crash_activate_then_close_on_pdb() {
 
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(desc_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let decoded = decode(&blob, &mut ctx, RootType::Infer, 2).expect("decode");
     let mut app = App::new(
         decoded,
         "pdb.desc",
@@ -850,15 +830,6 @@ fn repro_crash_activate_then_close_on_pdb() {
     app.splash = false;
     app.verify_repair = false;
     app.term_width = 120;
-
-    if let Some(graph) = &app.ctx.graph {
-        let graph_ref = std::sync::Arc::clone(graph);
-        let original_blob = app.blob[app.wrapper_offset..].to_vec();
-        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref.graph()) {
-            eprintln!("resolved root type: {fqdn}");
-            app.apply_resolved_root_type(fqdn);
-        }
-    }
 
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     let cursor = app.cursor;
@@ -923,7 +894,7 @@ fn repro_crash_real_t_then_manual_confirm_on_pdb() {
 
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(desc_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let decoded = decode(&blob, &mut ctx, RootType::Infer, 2).expect("decode");
     let mut app = App::new(
         decoded,
         "pdb.desc",
@@ -936,15 +907,6 @@ fn repro_crash_real_t_then_manual_confirm_on_pdb() {
     app.splash = false;
     app.verify_repair = false;
     app.term_width = 120;
-
-    if let Some(graph) = &app.ctx.graph {
-        let graph_ref = std::sync::Arc::clone(graph);
-        let original_blob = app.blob[app.wrapper_offset..].to_vec();
-        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref.graph()) {
-            eprintln!("resolved root type: {fqdn}");
-            app.apply_resolved_root_type(fqdn);
-        }
-    }
 
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     let cursor = app.cursor;
@@ -1008,7 +970,7 @@ fn repro_crash_two_previews_then_manual_confirm_on_pdb() {
 
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(desc_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let decoded = decode(&blob, &mut ctx, RootType::Infer, 2).expect("decode");
     let mut app = App::new(
         decoded,
         "pdb.desc",
@@ -1021,15 +983,6 @@ fn repro_crash_two_previews_then_manual_confirm_on_pdb() {
     app.splash = false;
     app.verify_repair = false;
     app.term_width = 120;
-
-    if let Some(graph) = &app.ctx.graph {
-        let graph_ref = std::sync::Arc::clone(graph);
-        let original_blob = app.blob[app.wrapper_offset..].to_vec();
-        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref.graph()) {
-            eprintln!("resolved root type: {fqdn}");
-            app.apply_resolved_root_type(fqdn);
-        }
-    }
 
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     let cursor = app.cursor;
@@ -1105,7 +1058,7 @@ fn repro_crash_raw_then_typed_preview_then_manual_confirm_on_pdb() {
 
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(desc_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let decoded = decode(&blob, &mut ctx, RootType::Infer, 2).expect("decode");
     let mut app = App::new(
         decoded,
         "pdb.desc",
@@ -1118,15 +1071,6 @@ fn repro_crash_raw_then_typed_preview_then_manual_confirm_on_pdb() {
     app.splash = false;
     app.verify_repair = false;
     app.term_width = 120;
-
-    if let Some(graph) = &app.ctx.graph {
-        let graph_ref = std::sync::Arc::clone(graph);
-        let original_blob = app.blob[app.wrapper_offset..].to_vec();
-        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref.graph()) {
-            eprintln!("resolved root type: {fqdn}");
-            app.apply_resolved_root_type(fqdn);
-        }
-    }
 
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     let cursor = app.cursor;
@@ -1204,7 +1148,7 @@ fn repro_crash_natural_highlight_on_pdb() {
 
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(desc_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let decoded = decode(&blob, &mut ctx, RootType::Infer, 2).expect("decode");
     let mut app = App::new(
         decoded,
         "pdb.desc",
@@ -1234,12 +1178,6 @@ fn repro_crash_natural_highlight_on_pdb() {
             tx.clone(),
         ));
         rx = Some(worker_rx);
-
-        let original_blob = app.blob[app.wrapper_offset..].to_vec();
-        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref.graph()) {
-            eprintln!("resolved root type: {fqdn}");
-            app.apply_resolved_root_type(fqdn);
-        }
     }
     terminal.draw(|frame| app.render(frame)).unwrap();
 
@@ -1342,7 +1280,7 @@ fn diagnose_sim_t_stall() {
 
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(blob_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let decoded = decode(&blob, &mut ctx, RootType::Raw, 2).expect("decode");
     eprintln!("total tree nodes: {}", decoded.tree.len());
 
     let mut app = App::new(
@@ -1432,7 +1370,7 @@ fn diagnose_sim_node3_t_down_stall() {
 
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(blob_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let decoded = decode(&blob, &mut ctx, RootType::Raw, 2).expect("decode");
 
     let mut app = App::new(
         decoded,
@@ -1559,7 +1497,7 @@ fn profile_nested_commit_on_pdb() {
 
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(desc_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, None, 2, true).expect("decode");
+    let decoded = decode(&blob, &mut ctx, RootType::Infer, 2).expect("decode");
     let mut app = App::new(
         decoded,
         "pdb.desc",
@@ -1575,14 +1513,6 @@ fn profile_nested_commit_on_pdb() {
 
     // Resolve the root type first, so the document below is schema-typed
     // and deep nodes actually carry a `type_fqdn` to re-confirm.
-    if let Some(graph) = &app.ctx.graph {
-        let graph_ref = std::sync::Arc::clone(graph);
-        let original_blob = app.blob[app.wrapper_offset..].to_vec();
-        if let Some(fqdn) = decode::resolve_root_winner_fqdn(&original_blob, graph_ref.graph()) {
-            eprintln!("resolved root type: {fqdn}");
-            app.apply_resolved_root_type(fqdn);
-        }
-    }
     eprintln!(
         "after root resolution: lines={} tree.len()={}",
         app.lines.len(),
@@ -1670,5 +1600,84 @@ fn profile_nested_commit_on_pdb() {
         "after: lines={} tree.len()={}",
         app.lines.len(),
         app.tree.len()
+    );
+}
+
+/// Spec 0168's implementation gate ("Open question — measure before
+/// implementing"): 0168 ran the root-type sweep *synchronously* before
+/// `decode()`, so that the document is decoded once under the type it
+/// will actually be shown as, instead of being decoded raw and then
+/// re-spliced under the resolved type. That was only worth doing if the
+/// sweep is cheap relative to the pass it removes — it is (4% of the
+/// decode on a 1.1 MB descriptor set), which is why 0168 was
+/// implemented. Kept as the standing measurement of the two costs
+/// `--raw` now lets a user trade off against each other.
+///
+/// Prints, per fixture: the sweep, the raw decode (`--raw`), and the
+/// typed decode (the default).
+fn measure_root_type_gate(desc_path: &Path, decode_too: bool) {
+    if !desc_path.exists() {
+        eprintln!("skipping: {} not present", desc_path.display());
+        return;
+    }
+    let bytes = std::fs::metadata(desc_path).map(|m| m.len()).unwrap_or(0);
+    eprintln!(
+        "\n=== {} ({:.1} MB) ===",
+        desc_path.display(),
+        bytes as f64 / 1e6
+    );
+
+    let t = Instant::now();
+    let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
+    eprintln!("DescriptorContext::load      {:?}", t.elapsed());
+
+    let blob = std::fs::read(desc_path).expect("read blob");
+
+    let Some(graph) = ctx.graph.clone() else {
+        eprintln!("no scoring graph — the sweep does not run at all here");
+        return;
+    };
+    let t = Instant::now();
+    let (winner, candidates) = decode::resolve_root_winner_and_candidates(&blob, graph.graph());
+    let sweep = t.elapsed();
+    eprintln!(
+        "root-type sweep              {sweep:?}  -> {winner:?} ({} candidates)",
+        candidates.len()
+    );
+
+    if !decode_too {
+        eprintln!("(decode skipped for this fixture)");
+        return;
+    }
+
+    let t = Instant::now();
+    let raw = decode(&blob, &mut ctx, RootType::Raw, 2).expect("decode raw");
+    eprintln!(
+        "decode(raw, deferred)        {:?}  lines={} nodes={}",
+        t.elapsed(),
+        raw.lines.len(),
+        raw.tree.len()
+    );
+    drop(raw);
+
+    let t = Instant::now();
+    let typed = decode(&blob, &mut ctx, RootType::Infer, 2).expect("decode typed");
+    eprintln!(
+        "decode(typed, up front)      {:?}  lines={} nodes={}",
+        t.elapsed(),
+        typed.lines.len(),
+        typed.tree.len()
+    );
+}
+
+#[test]
+#[ignore]
+fn measure_root_type_sweep_against_decode() {
+    measure_root_type_gate(Path::new("/tmp/pdb.desc"), true);
+    measure_root_type_gate(
+        Path::new(
+            "/nix/store/695l9cncycqw4wynbaifk5hxn870hka6-full-tests/googleapis-db/googleapis.desc",
+        ),
+        false,
     );
 }

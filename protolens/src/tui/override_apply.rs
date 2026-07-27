@@ -1053,31 +1053,6 @@ impl App {
         }
     }
 
-    /// Applies the winning fqdn from the async root-type resolver (spec
-    /// NNNN) to the document root — the deferred counterpart of
-    /// `App::new`'s `overrides.seed_root` + real-wrapper-descriptor
-    /// construction for the synchronous case. Seeding then delegating to
-    /// `render_overrides` (rather than a bespoke splice) reuses the exact
-    /// same mismatch-detection/splice/recurse path any other override
-    /// activation already goes through — including seeding Any/
-    /// MessageSet auto-expansion on the freshly-typed children
-    /// `splice_override` builds, and `splice_override`'s own `line_to_
-    /// node`/`rebuild_visible_rows` bookkeeping. A no-op if the user
-    /// already made their own choice for the root (`t`, a `type-as`
-    /// command, or explicitly confirming raw) by the time this lands —
-    /// an existing entry for the root's own origin always wins over the
-    /// worker's answer.
-    pub(super) fn apply_resolved_root_type(&mut self, fqdn: String) {
-        if self
-            .resolve_active_override_entry(self.first_node)
-            .is_some()
-        {
-            return;
-        }
-        self.overrides.seed_root(Some(fqdn));
-        self.render_overrides(self.first_node);
-    }
-
     /// Whether `entry` (assumed `auto == true`) would still be re-derived
     /// with the same `r#type` if `render_overrides` visited its node
     /// again right now — i.e. it is still "in scope" (spec 0125 §G2).
