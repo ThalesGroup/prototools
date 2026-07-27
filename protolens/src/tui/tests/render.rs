@@ -2,7 +2,8 @@
 //
 // SPDX-License-Identifier: MIT
 
-use super::super::render::window_styles_for;
+use super::super::heat_worker::{HeatRequest, HeatWorkerHandle};
+use super::super::render::{window_styles_for, ACTIVITY_GLYPH};
 use super::super::*;
 use super::support::*;
 use prototext_core::serialize::encode_text::annotation_start;
@@ -57,6 +58,104 @@ fn empty_tree_renders_and_handles_keys_without_panicking() {
     assert!(!app.should_quit);
     app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
     assert!(app.should_quit);
+}
+
+/// Spec 0192 G1: a frame costs the same wherever the cursor is. The
+/// regression this guards is `positional_path` becoming O(ordinal)
+/// again — which it was, via `sibling_position`'s `prev_sibling` walk,
+/// once per drawn row. On a 20 000-sibling document that made the last
+/// screenful roughly four orders of magnitude more expensive to draw
+/// than the first (measured on `googleapis.desc`: 80 us of override
+/// resolution at the top, 17 080 us at the end).
+///
+/// A timing assertion, because the property is about cost and nothing
+/// structural distinguishes the two frames. The bound is deliberately
+/// loose — a regression here is not a 3x one, it is a 100x one — so
+/// scheduler noise cannot produce a false failure.
+#[test]
+fn a_frame_costs_the_same_at_the_end_of_a_wide_document_as_at_the_start() {
+    const N: usize = 20_000;
+    let mut app = wide_sibling_scalars_app(N);
+    app.splash = false;
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+
+    // Draw once before timing anything: the first frame of a fresh
+    // `App` pays one-off warm-up (the startup render's line map, the
+    // syntax-highlighting window's first fill) that belongs to neither
+    // position.
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    let time_here = |app: &mut App, terminal: &mut Terminal<TestBackend>| {
+        // Best of several: the minimum is the run least disturbed by
+        // the scheduler, and it is the ratio of the two minima that
+        // carries the signal.
+        (0..5)
+            .map(|_| {
+                let t = Instant::now();
+                terminal.draw(|frame| app.render(frame)).unwrap();
+                t.elapsed()
+            })
+            .min()
+            .expect("at least one sample")
+    };
+
+    // `render` clamps `scroll_offset` to the cursor itself
+    // (render.rs:507), so moving the cursor is all it takes.
+    app.cursor = 0;
+    let at_start = time_here(&mut app, &mut terminal);
+
+    app.cursor = N - 1;
+    let at_end = time_here(&mut app, &mut terminal);
+
+    assert!(
+        at_end.as_nanos() <= at_start.as_nanos().saturating_mul(10),
+        "drawing the end of a {N}-sibling document took {at_end:?} against \
+         {at_start:?} at the start — a per-row cost that scales with the \
+         cursor's ordinal position is back"
+    );
+}
+
+/// Spec 0192 S2: the active-override check runs once per addressable
+/// record, not once per drawn row — a packed run's N element rows are N
+/// nodes but one record (spec 0184 S2), so they share one positional
+/// path and one answer.
+#[test]
+fn the_override_check_runs_once_per_record_not_once_per_row() {
+    let (app, elems, ..) = packed_run_with_tail_fixture();
+    let window: Vec<DisplayRow> = (0..app.composed_row_count())
+        .filter_map(|d| app.display_row(d))
+        .collect();
+
+    let (flags, resolutions) = app.override_bold_flags(&window);
+    assert_eq!(flags.len(), window.len());
+
+    // Or the count assertion below would pass vacuously.
+    assert!(elems.len() > 1, "fixture must contain a multi-element run");
+
+    // The whole answer, recomputed with no collapsing at all.
+    let naive: Vec<bool> = window
+        .iter()
+        .map(|&row| match row {
+            DisplayRow::Committed(l) => app
+                .node_at_own_line(l)
+                .is_some_and(|idx| app.resolve_active_override(idx).is_some()),
+            DisplayRow::Overlay(_) => false,
+        })
+        .collect();
+    assert_eq!(flags, naive, "collapsing must not change the answer");
+
+    let rows_with_a_node = window
+        .iter()
+        .filter(|&&row| match row {
+            DisplayRow::Committed(l) => app.node_at_own_line(l).is_some(),
+            DisplayRow::Overlay(_) => false,
+        })
+        .count();
+    assert!(
+        resolutions < rows_with_a_node,
+        "{resolutions} resolutions for {rows_with_a_node} rows carrying a \
+         node — the per-row work did not collapse at all"
+    );
 }
 
 /// A passive status message auto-dismisses once `MESSAGE_TIMEOUT` has
@@ -166,6 +265,7 @@ fn a_toggles_the_main_pane_annotation_display() {
         prev_sibling: None,
         doc_next: None,
         doc_prev: None,
+        sibling_ordinal: 1,
         rendered_as: None,
     };
     let decoded = Decoded {
@@ -215,7 +315,14 @@ fn a_toggles_the_main_pane_annotation_display() {
 /// header and (when it has children) footer line, but must not
 /// cascade to descendant lines.
 #[test]
-fn line_has_active_override_marks_header_and_footer_but_not_children() {
+fn the_active_override_hint_marks_header_and_footer_but_not_children() {
+    // `render`'s hoisted override pass (spec 0192 S2) asks exactly this
+    // of every drawn row.
+    fn bolded(app: &App, line_idx: usize) -> bool {
+        app.node_at_own_line(line_idx)
+            .is_some_and(|idx| app.resolve_active_override(idx).is_some())
+    }
+
     let (mut app, inner_idx, id_idx) = type_as_fixture();
     app.cursor = inner_idx;
     app.run_command("type-as test.Inner");
@@ -226,11 +333,11 @@ fn line_has_active_override_marks_header_and_footer_but_not_children() {
 
     let header_line = app.tree[inner_idx].span.text_range.start;
     let footer_line = app.tree[inner_idx].span.text_range.end - 1;
-    assert!(app.line_has_active_override(header_line));
-    assert!(app.line_has_active_override(footer_line));
+    assert!(bolded(&app, header_line));
+    assert!(bolded(&app, footer_line));
 
     let id_line = app.tree[id_idx].span.text_range.start;
-    assert!(!app.line_has_active_override(id_line));
+    assert!(!bolded(&app, id_line));
 }
 
 /// 2026-07-18 feedback: when the cursor rests on a node's own closing
@@ -454,6 +561,95 @@ fn global_command_message_row_stays_fixed_height() {
         app.main_area.height, main_height,
         "main content area must not resize during active command entry"
     );
+}
+
+// ── Spec 0190: the activity dot ──────────────────────────────────────────
+
+/// Spec 0190 test plan item 5 / spec 0191 test plan item 5. The dot
+/// occupies column 0 of the bottom row and renders `App::activity_shown`
+/// — the value `run_loop` decided — rather than probing the worker's
+/// atomics at draw time (0191 S2). Installing a worker and pushing to it
+/// must therefore *not* change the cell on its own; only the field does.
+///
+/// The color is asserted, not just the glyph: `heat_style`'s levels are
+/// all >= 4 precisely so this cell is never blank-because-invisible on
+/// an ANSI-16 terminal, and the tiers must stay distinguishable there.
+#[test]
+fn the_activity_dot_renders_the_decided_level_in_column_zero() {
+    let mut app = message_node_app();
+    app.splash = false;
+    let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+    let dot = (0u16, 9u16); // column 0 of the bottom (global) row
+
+    // Nothing decided yet — the cell is blank and the command row still
+    // starts one column in.
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert_eq!(
+        terminal.backend().buffer()[dot].symbol(),
+        " ",
+        "no decided activity means nothing to report"
+    );
+
+    // A live worker with a queued request is *not* enough: the dot is no
+    // longer a probe. This is the assertion that pins 0191 S2 — it fails
+    // against the pre-0191 implementation, which read `heat_activity()`
+    // here and would light the cell from the render's own cue lookups.
+    app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
+    app.heat_worker.as_ref().unwrap().push(
+        HeatRequest {
+            range: usize::MAX - 1..usize::MAX,
+            current_key: None,
+            start: 0,
+            end: 1,
+            tier: tiered::Tier::User,
+        },
+        tiered::Tier::User,
+    );
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert_eq!(
+        terminal.backend().buffer()[dot].symbol(),
+        " ",
+        "a queued request the loop has not yet accounted for must not light the dot"
+    );
+
+    app.activity_shown = Some(tiered::Tier::Visible);
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let visible_style = terminal.backend().buffer()[dot].style();
+    assert_eq!(terminal.backend().buffer()[dot].symbol(), ACTIVITY_GLYPH);
+
+    app.activity_shown = Some(tiered::Tier::User);
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert_eq!(terminal.backend().buffer()[dot].symbol(), ACTIVITY_GLYPH);
+    assert_ne!(
+        terminal.backend().buffer()[dot].style(),
+        visible_style,
+        "User must outrank Visible and look different, ANSI-16 included"
+    );
+}
+
+/// Test plan item 6. Reserving column 0 must move the command row, and
+/// everything derived from it, one column right — the cursor included.
+/// This is the assertion that would catch an implementation that inset
+/// the dot at each use site instead of re-binding `cmd_row`.
+#[test]
+fn reserving_the_dot_column_shifts_the_command_row_and_its_cursor() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.command_buffer = Some("cmd".to_string());
+    app.command_cursor = 3;
+    let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let cmd_area = app.cmd_area.expect("an active command buffer draws a row");
+    assert_eq!(cmd_area.x, 1, "the command row starts after the dot column");
+    assert_eq!(cmd_area.width, 79, "and is one column narrower");
+    assert_eq!(
+        terminal.backend().buffer()[(1u16, 9u16)].symbol(),
+        ":",
+        "the command prefix must land in column 1, not column 0"
+    );
+    // ":cmd" with the cursor past the last char => column 1 + 4.
+    assert_eq!(terminal.get_cursor_position().unwrap().x, 5);
 }
 
 // ── Spec 0187: highlighting is a property of the viewport ────────────────

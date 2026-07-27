@@ -21,7 +21,12 @@ pub(super) const HEAT_CUE_PREVIEW: usize = 8;
 /// a single terminal cell width in both light and dark themes, and is
 /// distinct from the fold marker (`▸`/`▾`) and every other glyph this
 /// crate already uses.
-pub(super) const HEAT_GLYPH: char = '●';
+///
+/// A `&'static str` rather than a `char` (spec 0190 S9): every render
+/// of every visible cue built a `String` from it, one heap allocation
+/// per cue per frame, and the activity dot (S5) is a third consumer
+/// that would have copied the same mistake.
+pub(super) const HEAT_GLYPH: &str = "●";
 
 /// A node's computed heat cue (spec 0138 G2-G4, G9-G12): either a
 /// `Mismatch` (red — the original gate, `best` strictly exceeds

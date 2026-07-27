@@ -62,6 +62,7 @@ pub(super) fn message_node_app_with_root_candidates(
         prev_sibling: None,
         doc_next: None,
         doc_prev: None,
+        sibling_ordinal: 1,
         rendered_as: None,
     };
     let decoded = Decoded {
@@ -149,6 +150,7 @@ pub(super) fn sibling_leaves_app(texts: &[&str]) -> App {
             prev_sibling: i.checked_sub(1),
             doc_next: (i + 1 < n).then_some(i + 1),
             doc_prev: i.checked_sub(1),
+            sibling_ordinal: i as u32 + 1,
             rendered_as: None,
         })
         .collect();
@@ -344,6 +346,70 @@ pub(super) fn repeated_message_fixture() -> (App, Vec<usize>) {
     }
     assert_eq!(items.len(), 3, "fixture must contain 3 Item submessages");
     (app, items)
+}
+
+/// `n` document-order sibling scalar (`WT_VARINT`) fields, one line
+/// each, each backed by a real 2-byte tag+value encoding in `blob` —
+/// unlike `sibling_leaves_app`'s synthetic, unbacked ranges, this
+/// fixture's `raw_range`s are real slices of a non-empty blob, needed
+/// since `prefetch_step` runs every candidate through `extract::
+/// message_payload_range`, which indexes into `blob` at `raw_range.
+/// start` and panics on an out-of-bounds/empty one.
+///
+/// Field numbers cycle through 1..=15 rather than counting up, so the
+/// tag always fits the single byte written here — `n` runs into the
+/// thousands for the spec 0191 budget tests, and a wider tag would need
+/// a real varint. Nodes stay distinct because each has its own
+/// `raw_range`, which is what keys the request queue.
+pub(super) fn wide_sibling_scalars_app(n: usize) -> App {
+    let lines: Vec<String> = (0..n).map(|i| format!("field_{i}: 0")).collect();
+    let mut blob = Vec::new();
+    let tree: Vec<TreeNode> = (0..n)
+        .map(|i| {
+            let field_number = (i % 15) as u64 + 1;
+            let start = blob.len();
+            blob.push(((field_number << 3) | WT_VARINT as u64) as u8);
+            blob.push(0);
+            TreeNode {
+                span: NodeSpan {
+                    field_number,
+                    raw_range: start..start + 2,
+                    text_range: i..i + 1,
+                    level: 0,
+                    type_fqdn: None,
+                    is_message: false,
+                    packed_record_start: None,
+                    wire_type: WT_VARINT,
+                },
+                parent: None,
+                first_child: None,
+                last_child: None,
+                next_sibling: (i + 1 < n).then_some(i + 1),
+                prev_sibling: i.checked_sub(1),
+                doc_next: (i + 1 < n).then_some(i + 1),
+                doc_prev: i.checked_sub(1),
+                sibling_ordinal: i as u32 + 1,
+                rendered_as: None,
+            }
+        })
+        .collect();
+    let decoded = Decoded {
+        lines,
+        tree,
+        root_type: "google.protobuf.FileDescriptorProto".to_string(),
+        blob,
+        wrapper_offset: 0,
+        root_candidates: Vec::new(),
+    };
+    App::new(
+        decoded,
+        "test.pb",
+        PathBuf::from("test.pb"),
+        2,
+        DescriptorContext::empty_for_test(),
+        ThemeKind::Dark,
+        None,
+    )
 }
 
 /// `Outer { repeated int32 vals = 1; Inner tail = 2; int32 a = 3;

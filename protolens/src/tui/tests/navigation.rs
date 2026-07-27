@@ -5,6 +5,68 @@
 use super::super::*;
 use super::support::*;
 
+/// Spec 0192 S1: `sibling_position` used to *compute* the ordinal by
+/// walking the `prev_sibling` chain; it now reads a field derived once,
+/// where that chain is built. A derived value that silently drifts from
+/// the structure it describes would mis-address every override entry,
+/// so pin it against the walk it replaced — the walk is the definition.
+///
+/// Checked over every node of a real decode, before and after a splice:
+/// a splice is the one operation that relinks sibling chains after
+/// `build_tree` has run (`splice_override`'s packed-run absorption and
+/// its merge of the two locally numbered child sequences), so it is the
+/// only place the derivation could fall behind.
+#[test]
+fn every_stored_sibling_ordinal_equals_the_walk_it_replaced() {
+    // The walk `sibling_position` had before spec 0192, verbatim.
+    fn by_walking(app: &App, idx: usize) -> usize {
+        let mut pos = 1;
+        let mut cur = idx;
+        while let Some(prev) = app.tree[cur].prev_sibling {
+            if !crate::decode::same_packed_record(&app.tree[prev].span, &app.tree[cur].span) {
+                pos += 1;
+            }
+            cur = prev;
+        }
+        pos
+    }
+    // Over the *live* tree: a splice abandons the nodes it absorbs in
+    // place rather than compacting the array (`splice_override`'s
+    // "abandon in place" pattern), and an abandoned node keeps stale
+    // links that no longer describe anything. Document order from the
+    // root is exactly the set `positional_path` is ever asked about.
+    let check = |app: &App, when: &str| {
+        let mut cur = app
+            .tree
+            .iter()
+            .position(|n| n.parent.is_none())
+            .or(Some(0))
+            .filter(|_| !app.tree.is_empty());
+        let mut visited = 0;
+        while let Some(idx) = cur {
+            assert_eq!(
+                app.sibling_position(idx),
+                by_walking(app, idx),
+                "node {idx} ordinal disagrees with the walk {when}"
+            );
+            visited += 1;
+            cur = app.tree[idx].doc_next;
+        }
+        assert!(visited > 1, "fixture must have a tree to walk {when}");
+    };
+
+    let (mut app, elems, ..) = packed_run_with_tail_fixture();
+    check(&app, "as decoded");
+
+    // Absorbs the whole packed run into its leader and relinks the
+    // followers, then rebuilds `elems[0]`'s child list out of two
+    // independently numbered local sequences.
+    app.override_target = Some(elems[0]);
+    app.splice_override(elems[0], None, false, None)
+        .expect("raw override on a packed element must succeed");
+    check(&app, "after a splice");
+}
+
 /// Spec 0126 G2: Shift-Down/Shift-Up alias `J`/`K`'s sibling-skip
 /// move, no-op-with-message on a childless-of-siblings node either
 /// way.

@@ -10,11 +10,12 @@
 //! "The approach, in plain terms" for the overall design.
 
 use std::ops::Range;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 
 #[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 
 use prototext_graph::score::load::LoadedGraph;
 
@@ -24,12 +25,21 @@ use super::tiered::{Tier, TieredBounded, UpsertOutcome};
 use super::App;
 use crate::override_pane;
 
-/// Defensive memory cap for `HeatRequestQueue` (spec 0152 G3) — a
-/// purely defensive bound: entries are merged by key, not duplicated,
-/// so reaching it during ordinary interactive use would mean this many
-/// *distinct* ranges are simultaneously unresolved, not expected in
-/// practice.
-pub(super) const HEAT_REQUEST_QUEUE_MAX_ENTRIES: usize = 512;
+/// Backpressure limit for `HeatRequestQueue` (spec 0152 G3, revised by
+/// spec 0189 G6) — not a defensive bound that is never reached. When
+/// `upsert` answers `Rejected`, `App::prefetch_step` returns
+/// `PrefetchStep::Idle`, which parks the read-ahead walk until the
+/// worker frees a slot; under a fast walk that is the designed steady
+/// state, not an anomaly. Because the walk radiates outward from the
+/// cursor's row, the cap truncates its *far* end and never the near
+/// end.
+///
+/// The useful depth is bounded by what the worker can drain before the
+/// next cursor move — not by document size, since a restart re-ranks
+/// everything from the new origin — so raising this buys speculation
+/// that the next restart supersedes. 2048 is a judgment call; a
+/// counter on `Rejected` is the prerequisite to changing it again.
+pub(super) const HEAT_REQUEST_QUEUE_MAX_ENTRIES: usize = 2048;
 
 /// One request for the worker thread (spec 0152 "plain terms"/G3):
 /// which node's payload range, its currently-assigned type (if any),
@@ -60,6 +70,28 @@ struct HeatRequestQueueState {
 pub(super) struct HeatRequestQueue {
     state: Mutex<HeatRequestQueueState>,
     condvar: Condvar,
+    /// Lock-free mirror of `state.mru.band_occupancy()` (spec 0190
+    /// G2/S2), so `render` can read what the queue is holding without
+    /// taking the `Mutex` the worker thread holds across every pop.
+    ///
+    /// `Relaxed` is sufficient *and* exact: every store happens while
+    /// the `Mutex` is held, so the stores are already totally ordered
+    /// with respect to each other and each one publishes the state the
+    /// storing thread just established. The reader tolerates a
+    /// slightly old value by construction — it re-reads on the next
+    /// tick (G3).
+    queued: AtomicU8,
+    /// The tier of the request the worker is executing right now, or 0
+    /// for "idle" (spec 0190 S3). Written by the worker thread only,
+    /// *outside* the `Mutex`.
+    ///
+    /// Kept separate from `queued` rather than packed into the same
+    /// byte precisely because the two are written by different threads
+    /// at different moments: separated, each writer does a plain
+    /// `store` and never a read-modify-write, and there is no window
+    /// in which one writer's update is half-applied from the other's
+    /// point of view.
+    in_flight: AtomicU8,
     /// Test-only full-sweep call counter (spec 0152/0154 test plans) —
     /// proves the "no second `score_all` call" claim for a request the
     /// cache already covers by the time the worker re-checks it.
@@ -84,8 +116,59 @@ impl HeatRequestQueue {
                 stop: false,
             }),
             condvar: Condvar::new(),
+            queued: AtomicU8::new(0),
+            in_flight: AtomicU8::new(0),
             #[cfg(test)]
             score_all_calls: AtomicUsize::new(0),
+        }
+    }
+
+    /// Republishes `queued` from the state the caller has just
+    /// established (spec 0190 S2). Every mutating operation calls this
+    /// as its last act *before* releasing the lock, which is what
+    /// makes the `Relaxed` store exact rather than approximate.
+    fn publish_occupancy(&self, state: &HeatRequestQueueState) {
+        self.queued
+            .store(state.mru.band_occupancy(), Ordering::Relaxed);
+    }
+
+    /// Spec 0190 S3: called by `heat_worker_loop` around the scoring
+    /// of one popped request. `Some(tier)` on entry, `None` once that
+    /// request is done — including on the early-out path where the
+    /// cache already covers it by the time the worker re-checks.
+    /// Encoded as the same bitmask `band_occupancy` uses, so
+    /// `activity` can simply `|` the two together; 0 means idle.
+    fn set_in_flight(&self, tier: Option<Tier>) {
+        let encoded = match tier {
+            None => 0,
+            Some(Tier::User) => 0b001,
+            Some(Tier::Visible) => 0b010,
+            Some(Tier::Prefetch) => 0b100,
+        };
+        self.in_flight.store(encoded, Ordering::Relaxed);
+    }
+
+    /// Spec 0190 S4: the highest-priority tier that is live — queued
+    /// or in flight — or `None` when the worker has nothing to do at
+    /// all. Two relaxed loads and some bit twiddling; no lock, which
+    /// is the whole point (G2).
+    ///
+    /// The in-flight tier is folded in because reporting only what is
+    /// *queued* would make `User` practically invisible: a `User` push
+    /// wakes the worker through the condvar, which pops it
+    /// immediately, so the bit is set and cleared within microseconds
+    /// and almost never survives to a draw — yet a `User` sweep is
+    /// exactly the one the user is waiting on.
+    pub(super) fn activity(&self) -> Option<Tier> {
+        let live = self.queued.load(Ordering::Relaxed) | self.in_flight.load(Ordering::Relaxed);
+        if live & 0b001 != 0 {
+            Some(Tier::User)
+        } else if live & 0b010 != 0 {
+            Some(Tier::Visible)
+        } else if live & 0b100 != 0 {
+            Some(Tier::Prefetch)
+        } else {
+            None
         }
     }
 
@@ -113,6 +196,7 @@ impl HeatRequestQueue {
             None => HeatRequest { tier, ..req },
         };
         let outcome = state.mru.upsert(key, merged, tier);
+        self.publish_occupancy(&state);
         self.condvar.notify_one();
         outcome
     }
@@ -125,6 +209,14 @@ impl HeatRequestQueue {
     /// an expensive `inferred_candidates` call; the one request already
     /// popped and mid-flight when `stop` was set still finishes
     /// normally — unavoidable, and bounded to one item).
+    ///
+    /// Spec 0189 S3: with nothing live to do, the worker reclaims
+    /// superseded requests instead of scoring them — `pop_highest` no
+    /// longer serves `prefetch_previous` at all. The mutex is released
+    /// and retaken around each reclaimed entry, so a whole superseded
+    /// wave can never block a UI-thread `push` (G4); the alternative,
+    /// draining the band under one lock hold, would reintroduce on the
+    /// worker exactly the batch this spec moved off the UI thread.
     fn pop_blocking(&self) -> Option<(usize, HeatRequest)> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         loop {
@@ -132,7 +224,13 @@ impl HeatRequestQueue {
                 return None;
             }
             if let Some(entry) = state.mru.pop_highest() {
+                self.publish_occupancy(&state);
                 return Some(entry);
+            }
+            if state.mru.discard_one_superseded() {
+                drop(state);
+                state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                continue;
             }
             state = self.condvar.wait(state).unwrap_or_else(|e| e.into_inner());
         }
@@ -144,12 +242,19 @@ impl HeatRequestQueue {
         self.condvar.notify_all();
     }
 
-    /// Spec 0164 G7: demotes the whole in-progress `Prefetch` wave to
-    /// `prefetch_previous` (`TieredBounded::start_new_wave`, G2) —
-    /// called by `App::prefetch_step` on a walk restart.
+    /// Spec 0164 G7: sets the in-progress `Prefetch` wave aside in one
+    /// O(1) splice — called by `App::prefetch_step` on a walk restart.
+    ///
+    /// Unlike the `HeatCaches` maps, where a superseded entry is a
+    /// computed result worth serving later, a superseded entry here is
+    /// an unpaid `score_all` on a range ranked from an origin the
+    /// cursor has already left. Spec 0189 keeps the splice — it is on
+    /// the UI thread's critical path — and makes the *worker* discard
+    /// the demoted entries rather than score them.
     fn start_new_wave(&self) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.mru.start_new_wave();
+        self.publish_occupancy(&state);
     }
 
     /// Test-only entry-count introspection (spec 0152 test plan).
@@ -336,6 +441,12 @@ pub(super) fn heat_worker_loop(
     // `&'static` copied out of one, so the borrow below cannot outlive it.
     let graph = graph.graph();
     while let Some((start, req)) = queue.pop_blocking() {
+        // Spec 0190 S3: bracket the whole handling of one request, so
+        // the activity dot shows a `User` sweep the user is actually
+        // waiting on. The `(true, true)` "already done" arm is inside
+        // the bracket too — it is short, but leaving it out would mean
+        // a stretch of work reported as idle.
+        queue.set_in_flight(Some(req.tier));
         let (covers_window, covers_current) = {
             let mut c = caches.lock().unwrap_or_else(|e| e.into_inner());
             let covers_window = c
@@ -401,6 +512,7 @@ pub(super) fn heat_worker_loop(
         // Spec 0164 G10: a `Prefetch`-tier completion writes its cache
         // entry but never wakes the main thread — a large read-ahead
         // burst would otherwise mean thousands of no-op redraws.
+        queue.set_in_flight(None);
         if req.tier != Tier::Prefetch {
             let _ = progress.send(AppEvent::HeatWorkerProgress);
         }
@@ -441,9 +553,16 @@ impl HeatWorkerHandle {
         self.queue.push(req, tier)
     }
 
-    /// Spec 0164 G7: passthrough to `HeatRequestQueue::start_new_wave`.
+    /// Spec 0164 G7: passthrough to
+    /// `HeatRequestQueue::start_new_wave`.
     pub(super) fn start_new_wave(&self) {
         self.queue.start_new_wave();
+    }
+
+    /// Spec 0190 S4: passthrough to `HeatRequestQueue::activity` —
+    /// what the activity dot renders. Lock-free on both sides.
+    pub(super) fn activity(&self) -> Option<Tier> {
+        self.queue.activity()
     }
 
     /// Signal stop, then block until the worker exits. Shared body
@@ -493,7 +612,7 @@ impl Drop for HeatWorkerHandle {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use prototext_graph::build_scoring_graph::build_from_strings;
     use prototext_graph::score::load::LoadedGraph;
@@ -569,6 +688,129 @@ mod tests {
         queue.push(req(1, 0, 1), Tier::User);
         assert_eq!(queue.pop_blocking().unwrap().0, 2);
         assert_eq!(queue.pop_blocking().unwrap().0, 1);
+    }
+
+    // ── Activity reporting (spec 0190 test plan) ────────────────────
+
+    fn req_at(range_start: usize, tier: Tier) -> HeatRequest {
+        HeatRequest {
+            tier,
+            ..req(range_start, 0, 1)
+        }
+    }
+
+    /// Spec 0190 S2: every mutating operation republishes `queued`
+    /// before releasing the lock, so a lock-free reader sees the exact
+    /// state — not an approximation that drifts.
+    #[test]
+    fn queued_occupancy_tracks_push_pop_and_supersede() {
+        let queue = HeatRequestQueue::new();
+        assert_eq!(queue.activity(), None);
+
+        queue.push(req_at(1, Tier::Prefetch), Tier::Prefetch);
+        assert_eq!(queue.activity(), Some(Tier::Prefetch));
+
+        queue.push(req_at(2, Tier::Visible), Tier::Visible);
+        assert_eq!(
+            queue.activity(),
+            Some(Tier::Visible),
+            "the highest live tier wins, not the most recent push"
+        );
+
+        queue.push(req_at(3, Tier::User), Tier::User);
+        assert_eq!(queue.activity(), Some(Tier::User));
+
+        queue.pop_blocking(); // User
+        assert_eq!(queue.activity(), Some(Tier::Visible));
+        queue.pop_blocking(); // Visible
+        assert_eq!(queue.activity(), Some(Tier::Prefetch));
+
+        queue.push(req_at(4, Tier::Prefetch), Tier::Prefetch);
+        queue.start_new_wave();
+        assert_eq!(
+            queue.activity(),
+            None,
+            "superseding the wave must republish it as no longer live \
+             (spec 0189 S6), even though the entries are still queued"
+        );
+    }
+
+    /// Spec 0189 S3: the worker reclaims superseded requests instead
+    /// of returning them to be scored. With nothing live queued,
+    /// `pop_blocking` must drain the superseded wave and then block —
+    /// not hand any of it back — and must still serve a live request
+    /// pushed afterwards.
+    #[test]
+    fn pop_blocking_discards_a_superseded_wave_instead_of_serving_it() {
+        let queue = Arc::new(HeatRequestQueue::new());
+        queue.push(req_at(1, Tier::Prefetch), Tier::Prefetch);
+        queue.push(req_at(2, Tier::Prefetch), Tier::Prefetch);
+        queue.start_new_wave();
+        assert_eq!(queue.len(), 2, "superseded, but still occupying slots");
+
+        let worker_queue = Arc::clone(&queue);
+        let join = thread::spawn(move || worker_queue.pop_blocking());
+
+        // The worker must consume the superseded wave without ever
+        // returning it, then block on the condvar.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while queue.len() > 0 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(queue.len(), 0, "the superseded wave must be reclaimed");
+
+        queue.push(req_at(3, Tier::User), Tier::User);
+        let served = join.join().expect("worker thread must not panic");
+        assert_eq!(
+            served.map(|(key, _)| key),
+            Some(3),
+            "only the live request may be served"
+        );
+    }
+
+    /// Spec 0190 S3: the in-flight tier is reported even though the
+    /// entry is no longer *queued*. Without this a `User` sweep — the
+    /// one the user is actually waiting on — would be invisible,
+    /// because the condvar wakes the worker to pop it within
+    /// microseconds of the push.
+    #[test]
+    fn a_popped_request_is_still_reported_as_activity_while_in_flight() {
+        let queue = HeatRequestQueue::new();
+        queue.push(req_at(1, Tier::User), Tier::User);
+        let (_, popped) = queue.pop_blocking().unwrap();
+        assert_eq!(
+            queue.activity(),
+            None,
+            "nothing queued and nothing bracketed yet"
+        );
+
+        queue.set_in_flight(Some(popped.tier));
+        assert_eq!(queue.activity(), Some(Tier::User));
+
+        queue.set_in_flight(None);
+        assert_eq!(queue.activity(), None);
+    }
+
+    /// Spec 0190 S4: the two sources are combined by priority, not by
+    /// recency — a queued `User` outranks an in-flight `Prefetch` and
+    /// vice versa.
+    #[test]
+    fn activity_takes_the_highest_tier_across_queued_and_in_flight() {
+        let queue = HeatRequestQueue::new();
+        queue.set_in_flight(Some(Tier::Prefetch));
+        queue.push(req_at(1, Tier::User), Tier::User);
+        assert_eq!(queue.activity(), Some(Tier::User));
+
+        queue.pop_blocking();
+        assert_eq!(
+            queue.activity(),
+            Some(Tier::Prefetch),
+            "the in-flight prefetch must remain visible"
+        );
+
+        queue.set_in_flight(Some(Tier::User));
+        queue.push(req_at(2, Tier::Prefetch), Tier::Prefetch);
+        assert_eq!(queue.activity(), Some(Tier::User));
     }
 
     /// Spec 0164 G1/G3: a `Tier::Visible` push for a brand-new key

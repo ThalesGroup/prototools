@@ -302,6 +302,26 @@ pub fn determine_root_type(
 
 // ── Navigation tree ─────────────────────────────────────────────────────────
 
+/// Whether two *adjacent* sibling spans belong to the same packed wire
+/// record (spec 0184 S1) — the single definition of the record boundary
+/// that positional-path ordinals are counted over. Shared by
+/// `build_tree`'s `sibling_ordinal` derivation, `render_overrides_inner`'s
+/// forward ordinal counter, and `nth_child`'s resolution, so the three
+/// cannot drift apart.
+///
+/// Note the shape: this is deliberately **not**
+/// `a.packed_record_start == b.packed_record_start`. Two adjacent
+/// ordinary scalars both carry `None`, and that comparison would fuse
+/// them into one ordinal — renumbering nearly every path in nearly every
+/// document. `None` means "not part of a packed record", never "the same
+/// record as".
+pub(crate) fn same_packed_record(a: &NodeSpan, b: &NodeSpan) -> bool {
+    match (a.packed_record_start, b.packed_record_start) {
+        (Some(x), Some(y)) => x == y,
+        _ => false,
+    }
+}
+
 /// One node of the local arena built over the flat `Vec<NodeSpan>` returned
 /// by `decode_and_render_indexed` — see spec 0111 "Tree construction
 /// (ingestion)".
@@ -325,6 +345,17 @@ pub struct TreeNode {
     pub prev_sibling: Option<usize>,
     pub doc_next: Option<usize>,
     pub doc_prev: Option<usize>,
+    /// Spec 0192 S1: this node's 1-based position among its siblings,
+    /// counting a whole packed run as a single position (spec 0184 S2 —
+    /// every element of a packed record shares the record's positional
+    /// path). Precomputed here so `sibling_position` is a field read and
+    /// `positional_path` is O(depth) rather than O(depth x sibling
+    /// ordinal); see `App::positional_path` for why that matters.
+    ///
+    /// A derived structural fact, not a cache: it is written wherever
+    /// `prev_sibling` is written, and cannot go stale independently of
+    /// it.
+    pub sibling_ordinal: u32,
     /// Which override (if any) currently produced this node's rendering,
     /// paired with the field name it was rendered under (spec 0118 §2.1,
     /// extended by spec 0119 G4) — `None` until the first `render()` pass
@@ -360,6 +391,7 @@ pub(crate) fn build_tree(spans: Vec<NodeSpan>) -> Vec<TreeNode> {
             prev_sibling: None,
             doc_next: None,
             doc_prev: None,
+            sibling_ordinal: 1,
             rendered_as: None,
         })
         .collect();
@@ -396,6 +428,13 @@ pub(crate) fn build_tree(spans: Vec<NodeSpan>) -> Vec<TreeNode> {
             if top_level == level {
                 nodes[i].prev_sibling = Some(top);
                 nodes[top].next_sibling = Some(i);
+                // Spec 0192 S1: derived in the same place `prev_sibling`
+                // is, which is what keeps the two from diverging. A
+                // packed run's elements all share one record, so they
+                // all share one position — the same rule
+                // `sibling_position` used to apply while walking.
+                nodes[i].sibling_ordinal = nodes[top].sibling_ordinal
+                    + u32::from(!same_packed_record(&nodes[top].span, &nodes[i].span));
             }
         }
 

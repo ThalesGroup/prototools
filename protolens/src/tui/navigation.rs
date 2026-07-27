@@ -4,28 +4,11 @@
 
 use super::*;
 
-/// Whether two *adjacent* sibling spans belong to the same packed wire
-/// record (spec 0184 S1) — the single definition of the record boundary
-/// that positional-path ordinals are counted over. Shared by
-/// `sibling_position` (backward walk), `render_overrides_inner`'s
-/// forward ordinal counter, and `nth_child`'s resolution, so the three
-/// cannot drift apart.
-///
-/// Note the shape: this is deliberately **not**
-/// `a.packed_record_start == b.packed_record_start`. Two adjacent
-/// ordinary scalars both carry `None`, and that comparison would fuse
-/// them into one ordinal — renumbering nearly every path in nearly every
-/// document. `None` means "not part of a packed record", never "the same
-/// record as".
-pub(super) fn same_packed_record(
-    a: &prototext_core::serialize::render_text::NodeSpan,
-    b: &prototext_core::serialize::render_text::NodeSpan,
-) -> bool {
-    match (a.packed_record_start, b.packed_record_start) {
-        (Some(x), Some(y)) => x == y,
-        _ => false,
-    }
-}
+/// Moved to `crate::decode` by spec 0192 S1, which made `build_tree` a
+/// fourth caller — the ordinal it is counted over is now derived there.
+/// Re-exported here so this module's name stays the one the other tui
+/// call sites use.
+pub(super) use crate::decode::same_packed_record;
 
 impl App {
     /// Whether `idx` is a bracketed node — has its own distinct header
@@ -542,16 +525,13 @@ impl App {
     /// a run — which collapses it to a single node
     /// (`splice_override`'s `siblings[0]` merge) — would renumber every
     /// later sibling and silently re-point paths recorded beforehand.
+    ///
+    /// Spec 0192 S1: this used to walk the `prev_sibling` chain, making
+    /// it O(position among siblings) and `positional_path` O(document)
+    /// deep in a wide message — which `render` paid once per drawn row.
+    /// The count is now derived once, where the chain is built.
     pub(super) fn sibling_position(&self, idx: usize) -> usize {
-        let mut pos = 1;
-        let mut cur = idx;
-        while let Some(prev) = self.tree[cur].prev_sibling {
-            if !same_packed_record(&self.tree[prev].span, &self.tree[cur].span) {
-                pos += 1;
-            }
-            cur = prev;
-        }
-        pos
+        self.tree[idx].sibling_ordinal as usize
     }
 
     /// Slash-separated positional path from the root to `idx` (spec 0113

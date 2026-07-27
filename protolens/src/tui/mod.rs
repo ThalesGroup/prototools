@@ -121,6 +121,49 @@ const WARMUP_FIRST_DRAW_DELAY: Duration = Duration::from_millis(300);
 /// line turns out to be.
 const WARMUP_REDRAW_INTERVAL: Duration = Duration::from_millis(300);
 
+/// How long protolens may sit unattended before re-examining the
+/// heat-cue activity byte (spec 0190 S7/G3). Bounds the activity dot's
+/// staleness without requiring every path that drains the request queue
+/// to emit an `AppEvent` — an event-maintained dot would freeze in
+/// whatever state it was last drawn in, showing "busy" over an idle
+/// worker.
+///
+/// Deliberately a flat interval rather than a timer armed per queue
+/// event: queue events are far too frequent, and each one would
+/// reschedule. The cost of a tick that changes nothing is two relaxed
+/// atomic loads and a comparison — `run_loop` skips the frame entirely
+/// (S8).
+const ACTIVITY_TICK: Duration = Duration::from_millis(250);
+
+/// Spec 0192 S3: the shortest interval between two frames drawn
+/// *solely* because background scoring completed. Keystrokes, mouse
+/// events, resizes and message/splash deadlines are never delayed by it
+/// — only the repaint that shows a newly arrived cue is, and that
+/// repaint is a visual refinement of a frame the user is already
+/// looking at.
+///
+/// The worker notifies once per completed non-`Prefetch` request
+/// (`heat_worker.rs`), and a fresh page queues one per unsettled
+/// visible row, so without this a single keystroke costs a screenful of
+/// full frames. At 50 ms a progressive fill costs at most 20 frames per
+/// second, which is a refresh rate the user cannot distinguish from
+/// immediate.
+const HEAT_REPAINT_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Spec 0192 S4: read-ahead steps guaranteed per main-loop iteration,
+/// regardless of how busy the event channel is. Read-ahead is still
+/// opportunistic — the `TryRecvError::Empty` arm in `run_loop` spends
+/// as many steps as the user's idleness allows — but it is no longer
+/// possible for a steady event stream to reduce it to zero, which is
+/// what a burst of `HeatWorkerProgress` events did: read-ahead ran
+/// exactly twice across a forty-keystroke session, both times before
+/// the first keystroke.
+///
+/// Small enough that the guaranteed work cannot itself add perceptible
+/// latency to a keystroke: one step is a walk of a few rows plus at
+/// most one `TieredBounded::upsert`.
+const PREFETCH_STEPS_PER_ITERATION: usize = 8;
+
 /// Stack size for every thread protolens spawns that runs the scorer
 /// (spec 0180 S4). Declared *here*, in the parent of both spawn sites,
 /// rather than in `heat_worker.rs` where it started life: it lived next
@@ -977,6 +1020,18 @@ pub struct App {
     /// Spec 0164 G7: main-pane zigzag read-ahead prefetch walk state,
     /// persisted across `run_loop` iterations.
     prefetch_walk: PrefetchWalk,
+    /// Per-wave counters for `PROTOLENS_TRACE`. Maintained
+    /// unconditionally (a handful of increments per walk step) but only
+    /// reported when the trace is on.
+    prefetch_trace: PrefetchTrace,
+    /// Spec 0191 G3/G4: the activity level the dot should show, decided
+    /// by `run_loop` from a high-water sample rather than probed at draw
+    /// time. `render_activity_dot` reads this instead of calling
+    /// `heat_activity()` directly, because the value that matters spans
+    /// the whole interval since the last frame — including the requests
+    /// that frame's own `heat_cue_for` calls queued, which a probe taken
+    /// before `terminal.draw` can never see.
+    activity_shown: Option<tiered::Tier>,
     /// Incremented every time `rebuild_visible_rows` runs (fold/unfold,
     /// content-shape change) — `App::prefetch_step`'s staleness signal
     /// (spec 0164 G7) for restarting its walk when rendered line
@@ -1317,6 +1372,8 @@ impl App {
             heat_states: vec![heat_cue::HeatState::default(); tree_len],
             pending_heat_recheck: HashSet::new(),
             prefetch_walk: PrefetchWalk::exhausted(),
+            prefetch_trace: PrefetchTrace::default(),
+            activity_shown: None,
             structural_version: 0,
             override_candidates_pending: false,
             override_complete_pending: false,
@@ -1457,6 +1514,31 @@ impl App {
     }
 }
 
+/// Spec 0191 G1: how many rows one read-ahead wave may visit before it
+/// reports `Idle` and lets both threads park. Without it the walk's only
+/// stopping condition is running off *both* ends of the document, so a
+/// single cursor move sweeps every expanded row there is — keeping the
+/// main thread in `prefetch_step`'s `Progressed` branch (never reaching
+/// `recv_timeout`) and the worker in back-to-back `score_all` calls, on
+/// a large `FileDescriptorSet` for tens of thousands of rows.
+///
+/// A budget across both ends, not a reach limit per side, so a cursor
+/// near the top of the document still gets its full allowance downward.
+///
+/// Deliberately *not* derived from `HEAT_REQUEST_QUEUE_MAX_ENTRIES`,
+/// which happens to hold the same number (spec 0191 N1): that one bounds
+/// requests outstanding against the worker, this one bounds rows visited
+/// per wave. Raising one to smooth out stalls must not silently double
+/// the other's reach.
+const PREFETCH_WALK_MAX_ROWS: usize = 2048;
+
+/// Spec 0191 G2. Past the result cache's capacity a prefetch result
+/// evicts *itself* on insert — `evict_one` takes `prefetch_current`'s
+/// tail, the same end `upsert` inserts at — so the worker would pay a
+/// whole `score_all` for an answer nobody can ever read. This is the
+/// one relation the walk budget genuinely has to another constant.
+const _: () = assert!(PREFETCH_WALK_MAX_ROWS <= heat_cue::HEAT_CACHE_MAX_ENTRIES);
+
 /// Spec 0164 G7: per-`App` zigzag-walk state, persisted across
 /// `run_loop` iterations (not rebuilt on every call) — reset only when
 /// the cursor's display row or the document's structural/reflow state
@@ -1495,10 +1577,27 @@ impl PrefetchWalk {
     /// Advances the walk to the next unexplored row, alternating above/
     /// below (always the nearer of the two unexplored ends), and
     /// returns its index into `visible_rows`. `None` once both ends
-    /// are exhausted.
+    /// are exhausted, or once the wave has spent its
+    /// `PREFETCH_WALK_MAX_ROWS` budget (spec 0191 S1).
+    ///
+    /// The budget bounds rows *visited*, not requests *pushed*:
+    /// `prefetch_step` skips non-header, non-overridable and
+    /// already-settled rows without pushing, and it is the visiting
+    /// loop — not the pushing — that holds the main thread.
     fn next_row(&mut self, visible_len: usize) -> Option<usize> {
         loop {
             if self.above_done && self.below_done {
+                return None;
+            }
+            // `above`/`below` count steps taken on each end, so their
+            // sum is exactly the number of rows returned so far. Both
+            // `_done` flags are set rather than returning `None`
+            // directly, so the walk has a single "exhausted" state and
+            // the next call takes the early-out above without
+            // re-deriving the budget.
+            if self.above + self.below >= PREFETCH_WALK_MAX_ROWS {
+                self.above_done = true;
+                self.below_done = true;
                 return None;
             }
             let try_above = if self.above_done {
@@ -1535,19 +1634,85 @@ pub(super) enum PrefetchStep {
     Idle,
 }
 
+/// What one read-ahead wave did, for `PROTOLENS_TRACE`. A wave is the
+/// span between two `prefetch_walk` resets, which is exactly the span
+/// between two cursor moves — so one line per wave answers "how much did
+/// that keystroke actually cost the read-ahead".
+///
+/// `rows` counts candidates the zigzag visited; `skipped` those it
+/// dismissed without a lookup (no node on the line, not overridable, or
+/// already settled — the last of which is the "already known" case);
+/// `hits` those already in the result cache; `pushes` those it had to
+/// queue for the worker. `hits` + `skipped` versus `pushes` is the
+/// number the "most of it should already be cached" intuition is about.
+///
+/// `busy` is the sum of the time actually spent inside `prefetch_step`,
+/// not the wall time the wave spanned: the walk is interleaved with
+/// drawing and event handling, so wall time mostly measures the rest of
+/// the loop and says nothing about what read-ahead costs.
+#[derive(Default)]
+struct PrefetchTrace {
+    busy: Duration,
+    rows: u32,
+    skipped: u32,
+    hits: u32,
+    pushes: u32,
+    live: bool,
+    reported: bool,
+}
+
+impl PrefetchTrace {
+    fn restart(&mut self) {
+        *self = Self {
+            live: true,
+            ..Self::default()
+        };
+    }
+
+    fn report(&mut self, why: &str) {
+        if self.reported || !self.live {
+            return;
+        }
+        self.reported = true;
+        trace::trace!(
+            "wave {why} rows={} skipped={} hits={} pushes={} busy_ms={:.1}",
+            self.rows,
+            self.skipped,
+            self.hits,
+            self.pushes,
+            self.busy.as_secs_f64() * 1000.0,
+        );
+    }
+}
+
 impl App {
     /// Advances the zigzag prefetch walk by one candidate, pushing it
     /// at `Tier::Prefetch` if it isn't already settled/cached (spec
     /// 0164 G7). First resets `self.prefetch_walk` to a fresh walk
     /// from the cursor's current display row if either the cursor's
     /// row or `self.structural_version` has changed since the walk
-    /// began — calling `start_new_wave()` (G2) on the request queue
+    /// began — superseding the in-progress wave in the request queue
     /// and both `HeatCaches` maps before the reset; otherwise resumes
     /// exactly where the previous call left off. Returns `Idle` once
     /// the document is fully walked, the last push returned
     /// `UpsertOutcome::Rejected` (G6), or no worker is running at all
     /// (nothing to prefetch into).
+    /// Spec 0190 S4: what the activity dot reports — the highest-
+    /// priority tier the heat-cue subsystem is working for, or `None`
+    /// when it is idle or no worker is running at all. Lock-free: two
+    /// relaxed atomic loads.
+    pub(in crate::tui) fn heat_activity(&self) -> Option<tiered::Tier> {
+        self.heat_worker.as_ref().and_then(|w| w.activity())
+    }
+
     pub(super) fn prefetch_step(&mut self) -> PrefetchStep {
+        let entered_at = Instant::now();
+        let step = self.prefetch_step_inner();
+        self.prefetch_trace.busy += entered_at.elapsed();
+        step
+    }
+
+    fn prefetch_step_inner(&mut self) -> PrefetchStep {
         if self.heat_worker.is_none() {
             return PrefetchStep::Idle;
         }
@@ -1555,6 +1720,17 @@ impl App {
         if self.prefetch_walk.origin_line != origin_row
             || self.prefetch_walk.structural_version != self.structural_version
         {
+            // All three supersede with the same O(1) splice, and spec
+            // 0189 keeps it that way deliberately: this runs on the UI
+            // thread, so the restart path must not walk a wave. What
+            // differs is the fate of the demoted entries. A cache entry
+            // is a *result* — a later hit on it saves a whole sweep, so
+            // it stays servable. A queue entry is *pending work* — an
+            // unpaid sweep on a range ranked from an origin the cursor
+            // has left — so the worker discards it rather than scoring
+            // it (`pop_highest` no longer reaches `prefetch_previous`).
+            self.prefetch_trace.report("superseded");
+            self.prefetch_trace.restart();
             if let Some(worker) = &self.heat_worker {
                 worker.start_new_wave();
             }
@@ -1575,13 +1751,17 @@ impl App {
 
         loop {
             let Some(row) = self.prefetch_walk.next_row(self.visible_rows.len()) else {
+                self.prefetch_trace.report("exhausted");
                 return PrefetchStep::Idle;
             };
+            self.prefetch_trace.rows += 1;
             let line = self.visible_rows[row];
             let Some(idx) = self.node_at_header_line(line) else {
+                self.prefetch_trace.skipped += 1;
                 continue;
             };
             if !self.can_override(idx) || self.heat_states[idx].settled() {
+                self.prefetch_trace.skipped += 1;
                 continue;
             }
             let range = {
@@ -1600,8 +1780,15 @@ impl App {
                 heat_cue::HEAT_CUE_PREVIEW,
                 tiered::Tier::Prefetch,
             );
+            match outcome {
+                None => self.prefetch_trace.hits += 1,
+                Some(_) => self.prefetch_trace.pushes += 1,
+            }
             return match outcome {
-                Some(tiered::UpsertOutcome::Rejected) => PrefetchStep::Idle,
+                Some(tiered::UpsertOutcome::Rejected) => {
+                    self.prefetch_trace.report("rejected");
+                    PrefetchStep::Idle
+                }
                 _ => PrefetchStep::Progressed,
             };
         }
@@ -2005,8 +2192,54 @@ fn run_loop<B: Backend>(
 where
     io::Error: From<B::Error>,
 {
+    // Spec 0190 S8: an activity tick that changes nothing must not cost
+    // a frame. The gate has to sit *above* `terminal.draw` — skipping
+    // work inside `render` would not work, because ratatui resets the
+    // back buffer every frame, so a span that is not re-emitted is
+    // erased rather than preserved.
+    let mut redraw = true;
+    // `PROTOLENS_TRACE` only: which of the three gate clauses below
+    // forced this frame. Without it a trace full of back-to-back draws
+    // says how much they cost but not who asked for them.
+    let mut redraw_why = "initial";
+    // Spec 0191 S3: a two-window sliding maximum of the activity level.
+    // `Tier` is `Ord` (`Prefetch < Visible < User`) and `Option<T>`
+    // orders `None < Some(_)`, so "highest seen" is just `max`. One
+    // window is one iteration of this loop; the dot shows
+    // `max(previous, current)`, so a rise lands on the very next frame
+    // while a fall has to be confirmed by two consecutive quiet windows.
+    //
+    // Both windows are *reset*, never merely accumulated. An earlier
+    // draft kept a single high-water mark reset only at a draw, which
+    // deadlocked: with the mark stuck high and the dot already showing
+    // that level, the gate below saw no difference, so no draw
+    // happened, so the mark was never reset — the dot stayed lit
+    // forever after a read-ahead wave finished.
+    let mut activity_window: Option<tiered::Tier> = None;
+    let mut activity_prev_window: Option<tiered::Tier> = None;
+    // Spec 0192 S3: a completed heat request marks the frame dirty
+    // instead of forcing one. `last_heat_frame` is stamped by *any*
+    // draw, not only a heat-driven one — a frame the user just caused
+    // has already shown whatever cues had arrived, so the interval
+    // should run from it.
+    let mut heat_dirty = false;
+    let mut last_heat_frame = Instant::now();
     loop {
-        terminal.draw(|frame| app.render(frame))?;
+        if redraw {
+            app.activity_shown = activity_prev_window.max(activity_window);
+            let drawn_at = Instant::now();
+            terminal.draw(|frame| app.render(frame))?;
+            heat_dirty = false;
+            last_heat_frame = drawn_at;
+            trace::trace!("draw {redraw_why} us={}", drawn_at.elapsed().as_micros());
+            // Sample again immediately after the draw. `render` is
+            // itself a producer — `heat_cue_for` pushes a `Visible`
+            // request per unsettled visible row — so the requests this
+            // draw just queued belong to the current window. Sampling
+            // only before the draw is what made the dot emit one dark
+            // frame per completed request (G4).
+            activity_window = activity_window.max(app.heat_activity());
+        }
         // While a status message is pending auto-dismissal
         // (`message_deadline`, `track_message_timeout`) or the splash
         // screen hasn't yet auto-dismissed (`splash_deadline`, item 13
@@ -2022,11 +2255,36 @@ where
         // sleeps until there's a reason to wake instead of polling on a
         // fixed schedule.
         let splash_deadline = app.splash.then_some(app.splash_deadline);
-        let deadline = match (app.message_deadline, splash_deadline) {
+        let ui_deadline = match (app.message_deadline, splash_deadline) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (Some(d), None) | (None, Some(d)) => Some(d),
             (None, None) => None,
         };
+        // Spec 0190 S7: the activity tick is a third candidate deadline
+        // alongside those two. Because it is always present the receive
+        // below is always `recv_timeout` — the old `None => rx.recv()`
+        // arm is gone, and protolens no longer blocks indefinitely. It
+        // wakes four times a second forever, which is a real change
+        // from "genuinely idle" to "polling slowly"; each such wake
+        // costs two relaxed loads and a comparison, and no frame.
+        let activity_deadline = Instant::now() + ACTIVITY_TICK;
+        let mut deadline = ui_deadline.map_or(activity_deadline, |d| d.min(activity_deadline));
+        // Spec 0192 S3: a deferred heat repaint is a fourth candidate
+        // deadline. Without it, a completion arriving inside the
+        // interval would be shown only when some unrelated event next
+        // woke the loop — the same class of self-deadlock spec 0191 S3
+        // hit, and the activity tick would merely bound it at 250 ms
+        // rather than remove it.
+        if heat_dirty {
+            deadline = deadline.min(last_heat_frame + HEAT_REPAINT_INTERVAL);
+        }
+        // Spec 0192 S4: read-ahead's guaranteed slice, taken before the
+        // receive loop below rather than only in its `Empty` arm.
+        for _ in 0..PREFETCH_STEPS_PER_ITERATION {
+            if matches!(app.prefetch_step(), PrefetchStep::Idle) {
+                break;
+            }
+        }
         // Spec 0164 G7: interleave one unit of inline prefetch work
         // with a non-blocking channel check on every idle-wait
         // iteration, so read-ahead never holds the thread for more
@@ -2051,18 +2309,55 @@ where
                 Err(mpsc::TryRecvError::Empty) => match app.prefetch_step() {
                     PrefetchStep::Progressed => continue,
                     PrefetchStep::Idle => {
-                        break match deadline {
-                            Some(deadline) => {
-                                let timeout = deadline.saturating_duration_since(Instant::now());
-                                rx.recv_timeout(timeout).ok() // timeout elapsed => None
-                            }
-                            None => rx.recv().ok(),
-                        };
+                        let timeout = deadline.saturating_duration_since(Instant::now());
+                        break rx.recv_timeout(timeout).ok(); // timeout elapsed => None
                     }
                 },
                 Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
             }
         };
+        // Spec 0190 S8. Three reasons to draw, checked here rather than
+        // after the dispatch below because that block can `return`, and
+        // because nothing in it can change the activity byte without
+        // also having produced the event that already forces a redraw.
+        //
+        // Spec 0191 S4: the third reason now compares the debounced
+        // value, not a fresh probe. Every trough between two requests
+        // used to force a frame; folding them into the sliding maximum
+        // means high-frequency toggling stops costing main-thread frames
+        // during exactly the period when the worker wants the CPU.
+        activity_window = activity_window.max(app.heat_activity());
+        // Spec 0192 S3: a completed heat request is the one event that
+        // does not force its own frame. Its *state* is still applied
+        // immediately by the dispatch below — only the repaint waits.
+        if matches!(received, Some(event::AppEvent::HeatWorkerProgress)) {
+            heat_dirty = true;
+        }
+        let event_forces =
+            received.is_some() && !matches!(received, Some(event::AppEvent::HeatWorkerProgress));
+        let heat_forces = heat_dirty && Instant::now() >= last_heat_frame + HEAT_REPAINT_INTERVAL;
+        let deadline_forces = ui_deadline.is_some_and(|d| Instant::now() >= d);
+        let activity_forces = activity_prev_window.max(activity_window) != app.activity_shown;
+        redraw = event_forces || heat_forces || deadline_forces || activity_forces;
+        redraw_why = if event_forces {
+            match &received {
+                Some(event::AppEvent::Term(Event::Key(_))) => "key",
+                Some(event::AppEvent::Term(Event::Mouse(_))) => "mouse",
+                _ => "term",
+            }
+        } else if heat_forces {
+            "heat"
+        } else if deadline_forces {
+            "deadline"
+        } else {
+            "activity"
+        };
+        // Close the window. Everything above sampled into
+        // `activity_window`; from here it is history, and the next
+        // iteration starts clean. This is the reset the earlier
+        // single-high-water-mark draft lacked.
+        activity_prev_window = activity_window;
+        activity_window = None;
         match received {
             // Some Kitty-protocol-aware terminals report a `Release`
             // event for a keystroke in addition to `Press`, even though
@@ -2074,7 +2369,13 @@ where
             // no-op — surfacing as a keypress "leaking" into both panes.
             // Ignore anything but `Press`/`Repeat`.
             Some(event::AppEvent::Term(Event::Key(key))) if key.kind != KeyEventKind::Release => {
-                app.handle_key(key)
+                let dispatched_at = Instant::now();
+                app.handle_key(key);
+                trace::trace!(
+                    "key {:?} us={}",
+                    key.code,
+                    dispatched_at.elapsed().as_micros()
+                );
             }
             Some(event::AppEvent::Term(Event::Mouse(mouse))) => app.handle_mouse(mouse),
             Some(event::AppEvent::Term(_)) => {}
@@ -2133,6 +2434,7 @@ mod override_apply;
 mod override_select;
 mod render;
 mod tiered;
+mod trace;
 
 #[cfg(test)]
 mod tests;

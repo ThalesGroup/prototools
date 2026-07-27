@@ -2387,6 +2387,13 @@ impl App {
                 prev_sibling: translate(node.prev_sibling),
                 doc_next: translate(node.doc_next),
                 doc_prev: translate(node.doc_prev),
+                // Correct as `build_tree` derived it within the local
+                // tree, which is exactly right for every level below
+                // `idx`: those sibling chains are copied over intact.
+                // `idx`'s own child chain is the one exception — it
+                // merges two independently numbered local sequences —
+                // and is renumbered once, below.
+                sibling_ordinal: node.sibling_ordinal,
                 rendered_as: None,
             });
         }
@@ -2428,6 +2435,29 @@ impl App {
                     self.tree[parent].last_child = Some(idx);
                 }
             }
+        }
+
+        // Spec 0192 S1: `idx`'s child chain is the one place a splice
+        // joins two sequences that were numbered independently (the
+        // local root's own children and the local root-level nodes, both
+        // remapped to parent `idx` above), so it is the one place the
+        // derived ordinals need restating. Renumbering is bounded by
+        // `idx`'s child count — a splice-local quantity. Nothing else
+        // needs repair: `idx`'s own ordinal is untouched, deeper chains
+        // came over intact, and absorbing a packed run into `idx`
+        // preserves the run's single position among its siblings (spec
+        // 0184 S2), so the followers relinked just above keep theirs.
+        let mut child = self.tree[idx].first_child;
+        let mut ordinal = 0u32;
+        let mut prev: Option<usize> = None;
+        while let Some(c) = child {
+            ordinal += match prev {
+                Some(p) if decode::same_packed_record(&self.tree[p].span, &self.tree[c].span) => 0,
+                _ => 1,
+            };
+            self.tree[c].sibling_ordinal = ordinal;
+            prev = Some(c);
+            child = self.tree[c].next_sibling;
         }
 
         if local_len > 1 {

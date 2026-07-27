@@ -375,6 +375,7 @@ mod tests {
             prev_sibling: None,
             doc_next: None,
             doc_prev: None,
+            sibling_ordinal: 1,
             rendered_as: None,
         };
         let path = std::env::temp_dir().join("protolens-extract-header-test.pb");
@@ -417,6 +418,7 @@ mod tests {
             prev_sibling: None,
             doc_next: None,
             doc_prev: None,
+            sibling_ordinal: 1,
             rendered_as: None,
         };
         let path = std::env::temp_dir().join("protolens-extract-message-text-test.pb");
@@ -462,6 +464,7 @@ mod tests {
             prev_sibling: None,
             doc_next: None,
             doc_prev: None,
+            sibling_ordinal: 1,
             rendered_as: None,
         };
         let path = std::env::temp_dir().join("protolens-extract-group-text-test.pb");

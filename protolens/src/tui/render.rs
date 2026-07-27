@@ -13,6 +13,21 @@ static NO_STYLES: LineStyles = Vec::new();
 /// `window_text`).
 const TRUNCATION_MARKER: &str = "...";
 
+/// The activity dot's glyph (spec 0190 S5/S6) — deliberately its own
+/// constant rather than a reuse of `heat_cue::HEAT_GLYPH`, which carries
+/// its own meaning (this row's inferred type disagrees with the
+/// assigned one). The two say unrelated things and must be free to
+/// diverge; that they currently share a character is a separate,
+/// narrower fact.
+///
+/// That shared character is not an aesthetic choice: `●` and its
+/// plausible alternatives are East-Asian Ambiguous width, so in a
+/// CJK-configured terminal they render double-width and would overflow
+/// the dot's one-cell slot. Picking the glyph the app already depends on
+/// everywhere means the dot cannot break in a configuration the heat
+/// cues survive.
+pub(super) const ACTIVITY_GLYPH: &str = "●";
+
 /// A rendered line with its trailing `#@ ...` annotation removed (spec
 /// 0187 S1) — the part of the line the *format* considers a value.
 /// Used both for the display-time annotation hiding of spec 0133 G4 and,
@@ -352,23 +367,69 @@ impl App {
         }
     }
 
-    /// Spec 0113 D33: `true` when `line_idx` is one of *its own* node's
-    /// header/footer lines (`line_to_node`'s opening-line mapping, or
-    /// `footer_line_to_node`'s closing-line mapping — never a
-    /// descendant's own lines, which is what keeps this from cascading
-    /// visual weight down a whole overridden subtree) and that node
-    /// currently carries an active override, of whichever kind (a single
-    /// boolean state — the three override kinds are not visually
-    /// distinguished here, they're already visible in the management
-    /// pane).
-    pub(super) fn line_has_active_override(&self, line_idx: usize) -> bool {
-        let idx = self
-            .node_at_header_line(line_idx)
-            .or_else(|| self.node_at_footer_line(line_idx));
-        match idx {
-            Some(idx) => self.resolve_active_override(idx).is_some(),
-            None => false,
-        }
+    /// Spec 0113 D33: the node `line_idx` is one of the *own*
+    /// header/footer lines of (`line_to_node`'s opening-line mapping, or
+    /// `footer_line_to_node`'s closing-line mapping) — never a node one
+    /// of whose descendants owns the line, which is what keeps the
+    /// active-override weight from cascading down a whole overridden
+    /// subtree.
+    ///
+    /// Spec 0192 S2: this used to be `line_has_active_override`, which
+    /// folded the `resolve_active_override` call in. `render`'s hoisted
+    /// override pass needs the node itself, so it can skip re-resolving
+    /// when consecutive rows belong to one node.
+    pub(super) fn node_at_own_line(&self, line_idx: usize) -> Option<usize> {
+        self.node_at_header_line(line_idx)
+            .or_else(|| self.node_at_footer_line(line_idx))
+    }
+
+    /// Spec 0192 S2: which of `window`'s rows draw in bold because the
+    /// node they belong to carries an active override, plus how many
+    /// `resolve_active_override` calls that took.
+    ///
+    /// Hoisted out of `render`'s `text_lines` closure into a pass of its
+    /// own — same shape and position as the heat-cue pass (spec 0154 G6)
+    /// and the highlighting pass (spec 0187 S2), and for the same borrow
+    /// reason.
+    ///
+    /// Consecutive rows resolving to one *record* are resolved once. In
+    /// practice that means a packed run: its N element rows are N
+    /// distinct nodes but one addressable record (spec 0184 S2), so they
+    /// share one positional path and therefore one answer. Rows of one
+    /// node are not otherwise adjacent — a message's header and footer
+    /// rows have its whole subtree between them — so a one-entry memo is
+    /// all the collapsing there is to do here.
+    ///
+    /// The returned count is what makes that claim testable rather than
+    /// merely asserted.
+    pub(super) fn override_bold_flags(&self, window: &[DisplayRow]) -> (Vec<bool>, usize) {
+        let mut resolutions = 0;
+        let mut last: Option<(usize, bool)> = None;
+        let flags = window
+            .iter()
+            .map(|&row| {
+                let DisplayRow::Committed(line_idx) = row else {
+                    return false;
+                };
+                let Some(idx) = self.node_at_own_line(line_idx) else {
+                    return false;
+                };
+                let reusable = last.filter(|&(seen, _)| {
+                    seen == idx
+                        || decode::same_packed_record(&self.tree[seen].span, &self.tree[idx].span)
+                });
+                match reusable {
+                    Some((_, answer)) => answer,
+                    None => {
+                        resolutions += 1;
+                        let answer = self.resolve_active_override(idx).is_some();
+                        last = Some((idx, answer));
+                        answer
+                    }
+                }
+            })
+            .collect();
+        (flags, resolutions)
     }
 
     /// Auto-dismiss `self.message` after `MESSAGE_TIMEOUT` of it staying
@@ -511,15 +572,19 @@ impl App {
         // mutate `self.heat_range_cache`/`self.heat_current_score_cache`
         // — a plain slice would keep `self` borrowed immutably for the
         // rest of this block.
+        let t_window = std::time::Instant::now();
         let window: Vec<DisplayRow> = (self.scroll_offset.min(total_rows)..end)
             .filter_map(|d| self.display_row(d))
             .collect();
+        let d_window = t_window.elapsed();
 
         // Spec 0187 S3: highlight exactly the rows about to be drawn,
         // and nothing else. Its own `&mut self` pass, ahead of the
         // immutable-`self` `text_lines` closure below — the same shape
         // and the same reason as the heat-cue pass that follows.
+        let t_styles = std::time::Instant::now();
         self.refresh_window_styles(&window);
+        let d_styles = t_styles.elapsed();
 
         // Spec 0129 §G1: the drag-selected `line_idx` range (if any) gets
         // the same `REVERSED` treatment as the single cursor row below —
@@ -539,6 +604,7 @@ impl App {
         // no cue. That is correct rather than merely convenient — a cue
         // reports how well a *committed* node's bytes score as its
         // current type, and an overlay row has no committed node.
+        let t_heat = std::time::Instant::now();
         let heat_displays: Vec<heat_cue::HeatDisplay> = window
             .iter()
             .map(|&row| match row {
@@ -546,6 +612,11 @@ impl App {
                 DisplayRow::Overlay(_) => heat_cue::HeatDisplay::None,
             })
             .collect();
+        let d_heat = t_heat.elapsed();
+        let t_ovr = std::time::Instant::now();
+        let (row_overridden, _) = self.override_bold_flags(&window);
+        let d_ovr = t_ovr.elapsed();
+        let t_lines = std::time::Instant::now();
 
         let text_lines: Vec<Line> = window
             .iter()
@@ -561,7 +632,7 @@ impl App {
                     DisplayRow::Overlay(_) => None,
                 };
                 let mut spans = pan_spans(self.row_spans(display_row, row), self.pan_offset);
-                if line_idx.is_some_and(|l| self.line_has_active_override(l)) {
+                if row_overridden[row] {
                     for span in &mut spans {
                         span.style = span.style.add_modifier(Modifier::BOLD);
                     }
@@ -605,10 +676,7 @@ impl App {
                                     }
                                 };
                                 spans.push(suffix);
-                                spans.insert(
-                                    0,
-                                    Span::styled(heat_cue::HEAT_GLYPH.to_string(), style),
-                                );
+                                spans.insert(0, Span::styled(heat_cue::HEAT_GLYPH, style));
                             }
                             None => spans.insert(0, Span::raw(" ")),
                         }
@@ -635,7 +703,17 @@ impl App {
                 Line::from(spans)
             })
             .collect();
+        let d_lines = t_lines.elapsed();
         frame.render_widget(Paragraph::new(text_lines), inner);
+        trace::trace!(
+            "render window_us={} styles_us={} heat_us={} ovr_us={} lines_us={} rows={}",
+            d_window.as_micros(),
+            d_styles.as_micros(),
+            d_heat.as_micros(),
+            d_ovr.as_micros(),
+            d_lines.as_micros(),
+            window.len(),
+        );
 
         // Local statusline (spec 0147 G2): the main pane's own position/
         // selection info, plain-styled (`main_style`, the same accent
@@ -729,7 +807,18 @@ impl App {
                 None => self.message.clone(),
             },
         };
-        let cmd_row = chunks[1];
+        // Spec 0190 S5: column 0 of the global row is reserved for the
+        // activity dot, unconditionally — so the command row's geometry
+        // never shifts underneath the user mid-edit. Everything
+        // downstream (`cmd_area` for mouse hit-testing, `width` for pan
+        // clamping, `set_cursor_position`) already derives from
+        // `cmd_row`, so re-binding it here is the whole change.
+        let global_row = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .split(chunks[1]);
+        self.render_activity_dot(frame, global_row[0]);
+        let cmd_row = global_row[1];
         if cmd_text.is_empty() {
             self.cmd_area = None;
             frame.render_widget(Paragraph::new(""), cmd_row);
@@ -780,6 +869,42 @@ impl App {
         } else if self.help_open {
             self.render_help(frame, area);
         }
+    }
+
+    /// Spec 0190 S5/S6: one cell reporting the highest-priority tier the
+    /// heat-cue subsystem is currently working for — queued or in flight
+    /// — or a blank when it has nothing to do.
+    ///
+    /// Spec 0191 S2: reads `self.activity_shown`, the value `run_loop`
+    /// decided from its high-water sample, rather than probing
+    /// `heat_activity()` here. A probe taken at draw time cannot see the
+    /// requests this very draw is about to queue (`heat_cue_for` runs
+    /// per visible row below), which is what made the dot emit one dark
+    /// frame per completed request.
+    ///
+    /// Colors reuse `theme::heat_style`'s existing light/dark-aware
+    /// ramps rather than inventing any, and every level is deliberately
+    /// at least 4: `heat_style` returns `None` for `level <= 3` on the
+    /// ANSI-16 fallback, and a diagnostic that silently vanishes on a 16-color
+    /// terminal would be worse than no diagnostic. On that fallback
+    /// these three collapse to `LightRed`/`Red`/`Blue` — still three
+    /// distinguishable states, still darkening along the priority
+    /// order.
+    ///
+    fn render_activity_dot(&mut self, frame: &mut Frame, area: Rect) {
+        let style = self.activity_shown.and_then(|tier| {
+            let (hue, level) = match tier {
+                tiered::Tier::User => (theme::HeatHue::Red, 12),
+                tiered::Tier::Visible => (theme::HeatHue::Red, 5),
+                tiered::Tier::Prefetch => (theme::HeatHue::Blue, 5),
+            };
+            theme::heat_style(level, hue, self.theme)
+        });
+        let span = match style {
+            Some(style) => Span::styled(ACTIVITY_GLYPH, style),
+            None => Span::raw(" "),
+        };
+        frame.render_widget(Paragraph::new(Line::from(span)), area);
     }
 
     /// Ephemeral right-hand override pane (spec 0114 §2): local statusline

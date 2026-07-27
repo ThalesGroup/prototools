@@ -453,9 +453,8 @@ fn render_shows_the_glyph_column_and_suffix_when_a_cue_is_present() {
 
     terminal.draw(|frame| app.render(frame)).unwrap();
     let header_row = row_text(terminal.backend().buffer(), inner, inner.y);
-    assert_eq!(
-        header_row.chars().next().unwrap(),
-        HEAT_GLYPH,
+    assert!(
+        header_row.starts_with(HEAT_GLYPH),
         "leading column must show the glyph: {header_row:?}"
     );
     assert!(
@@ -516,9 +515,8 @@ fn render_shows_the_tie_count_suffix_when_tied_for_best() {
 
     terminal.draw(|frame| app.render(frame)).unwrap();
     let header_row = row_text(terminal.backend().buffer(), inner, inner.y);
-    assert_eq!(
-        header_row.chars().next().unwrap(),
-        HEAT_GLYPH,
+    assert!(
+        header_row.starts_with(HEAT_GLYPH),
         "leading column must show the glyph: {header_row:?}"
     );
     assert!(
@@ -558,8 +556,7 @@ fn cue_never_appears_in_the_override_pane() {
     let side_area = app.side_area;
     let buffer = terminal.backend().buffer();
     let found = (side_area.x..side_area.x + side_area.width).any(|x| {
-        (side_area.y..side_area.y + side_area.height)
-            .any(|y| buffer[(x, y)].symbol() == HEAT_GLYPH.to_string())
+        (side_area.y..side_area.y + side_area.height).any(|y| buffer[(x, y)].symbol() == HEAT_GLYPH)
     });
     assert!(!found, "heat glyph must never render in the override pane");
 }

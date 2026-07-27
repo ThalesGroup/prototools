@@ -58,60 +58,58 @@ fn next_row_keeps_walking_the_open_end_once_the_other_is_exhausted() {
     assert_eq!(order, vec![0, 2, 3, 4]);
 }
 
-/// `n` document-order sibling scalar (`WT_VARINT`) fields, one line
-/// each, each backed by a real 2-byte tag+value encoding in `blob` —
-/// unlike `sibling_leaves_app`'s synthetic, unbacked ranges, this
-/// fixture's `raw_range`s are real slices of a non-empty blob, needed
-/// since `prefetch_step` runs every candidate through `extract::
-/// message_payload_range`, which indexes into `blob` at `raw_range.
-/// start` and panics on an out-of-bounds/empty one.
-fn prefetch_fixture(n: usize) -> App {
-    let lines: Vec<String> = (0..n).map(|i| format!("field_{i}: 0")).collect();
-    let mut blob = Vec::new();
-    let tree: Vec<TreeNode> = (0..n)
-        .map(|i| {
-            let start = blob.len();
-            blob.push((((i as u64 + 1) << 3) | WT_VARINT as u64) as u8);
-            blob.push(0);
-            TreeNode {
-                span: NodeSpan {
-                    field_number: i as u64 + 1,
-                    raw_range: start..start + 2,
-                    text_range: i..i + 1,
-                    level: 0,
-                    type_fqdn: None,
-                    is_message: false,
-                    packed_record_start: None,
-                    wire_type: WT_VARINT,
-                },
-                parent: None,
-                first_child: None,
-                last_child: None,
-                next_sibling: (i + 1 < n).then_some(i + 1),
-                prev_sibling: i.checked_sub(1),
-                doc_next: (i + 1 < n).then_some(i + 1),
-                doc_prev: i.checked_sub(1),
-                rendered_as: None,
-            }
-        })
-        .collect();
-    let decoded = Decoded {
-        lines,
-        tree,
-        root_type: "google.protobuf.FileDescriptorProto".to_string(),
-        blob,
-        wrapper_offset: 0,
-        root_candidates: Vec::new(),
+// ---------------------------------------------------------------------
+// Spec 0191 S1 — the row budget
+// ---------------------------------------------------------------------
+
+/// Test plan item 1. With both ends far from the document's edges, the
+/// walk stops after exactly `PREFETCH_WALK_MAX_ROWS` rows rather than
+/// sweeping to both ends, and stays stopped — this is the property that
+/// lets `prefetch_step` report `Idle`, which is in turn what lets the
+/// main thread reach `recv_timeout` instead of spinning.
+#[test]
+fn next_row_stops_after_the_row_budget_is_spent() {
+    let mut walk = PrefetchWalk {
+        origin_line: 100_000,
+        above: 0,
+        below: 0,
+        above_done: false,
+        below_done: false,
+        structural_version: 0,
     };
-    App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        DescriptorContext::empty_for_test(),
-        ThemeKind::Dark,
-        None,
-    )
+    let mut visited = 0;
+    while walk.next_row(200_000).is_some() {
+        visited += 1;
+        assert!(visited <= PREFETCH_WALK_MAX_ROWS, "must not overrun");
+    }
+    assert_eq!(visited, PREFETCH_WALK_MAX_ROWS);
+    assert!(
+        walk.next_row(200_000).is_none(),
+        "an exhausted walk must stay exhausted"
+    );
+}
+
+/// Test plan item 2. The budget is shared across both ends, not applied
+/// per side: with the origin at row 0 the upward end is exhausted after
+/// its very first attempt, and the walk must still spend its full
+/// allowance downward instead of settling for half of it.
+#[test]
+fn the_row_budget_is_shared_across_both_ends() {
+    let mut walk = PrefetchWalk {
+        origin_line: 0,
+        above: 0,
+        below: 0,
+        above_done: false,
+        below_done: false,
+        structural_version: 0,
+    };
+    let mut rows = Vec::new();
+    while let Some(row) = walk.next_row(200_000) {
+        rows.push(row);
+    }
+    assert_eq!(rows.len(), PREFETCH_WALK_MAX_ROWS);
+    assert_eq!(rows.first(), Some(&1), "origin at 0 can only walk downward");
+    assert_eq!(rows.last(), Some(&PREFETCH_WALK_MAX_ROWS));
 }
 
 // ---------------------------------------------------------------------
@@ -125,7 +123,7 @@ fn prefetch_fixture(n: usize) -> App {
 /// stays `Idle` on further calls without pushing again.
 #[test]
 fn prefetch_step_walks_every_eligible_node_once_then_goes_idle() {
-    let mut app = prefetch_fixture(5);
+    let mut app = wide_sibling_scalars_app(5);
     app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
     app.set_cursor(2);
 
@@ -155,7 +153,7 @@ fn prefetch_step_walks_every_eligible_node_once_then_goes_idle() {
 /// immediately, with no further push.
 #[test]
 fn a_rejected_push_makes_the_next_call_idle_with_no_further_push() {
-    let mut app = prefetch_fixture(2);
+    let mut app = wide_sibling_scalars_app(2);
     app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
     app.set_cursor(0);
 
@@ -189,13 +187,18 @@ fn a_rejected_push_makes_the_next_call_idle_with_no_further_push() {
 
 /// Moving the cursor between calls restarts the walk from the new
 /// origin — `prefetch_walk.origin_line` tracks the new cursor's
-/// display row, not the old one — and the old wave's own entry
-/// survives the restart's `start_new_wave()` call (demoted to
-/// `prefetch_previous`, not discarded): the queue ends up holding
-/// both the old and the new entry, not just the new one.
+/// display row, not the old one.
+///
+/// The old wave's entry is still *in* the queue afterwards: the
+/// restart is an O(1) splice on the UI thread, not a walk (spec 0189
+/// G2). What changed with 0189 is that the entry is no longer
+/// reachable by `pop_highest`, so the worker reclaims it rather than
+/// spending a `score_all` on a range ranked from an origin that no
+/// longer exists. That reclamation is the worker's job and is covered
+/// by `pop_blocking_discards_a_superseded_wave_instead_of_serving_it`.
 #[test]
-fn changing_cursor_restarts_the_walk_without_discarding_the_old_wave() {
-    let mut app = prefetch_fixture(5);
+fn changing_cursor_restarts_the_walk_and_supersedes_the_old_wave() {
+    let mut app = wide_sibling_scalars_app(5);
     app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
     app.set_cursor(2);
 
@@ -216,8 +219,41 @@ fn changing_cursor_restarts_the_walk_without_discarding_the_old_wave() {
     assert_eq!(
         app.heat_worker.as_ref().unwrap().queue_len(),
         2,
-        "the old wave's entry must survive the restart, not be discarded"
+        "the restart must not walk the old wave — it is spliced aside, \
+         and the worker reclaims it"
     );
+}
+
+/// Spec 0191 test plan item 4, and the whole point of the budget: on a
+/// document with more eligible rows than the walk may spend, the wave
+/// ends anyway. `Idle` is what breaks `run_loop` out of its
+/// `PrefetchStep::Progressed => continue` branch and onto
+/// `recv_timeout`, so without this the main thread never blocks.
+///
+/// The walk — not the request queue — must be what stops it. Both caps
+/// hold 2048 today, so a saturated queue would produce the same
+/// `Progressed` count; asserting the walk's own exhausted state is what
+/// distinguishes the two.
+#[test]
+fn prefetch_step_stops_after_the_row_budget_even_with_rows_to_spare() {
+    let mut app = wide_sibling_scalars_app(PREFETCH_WALK_MAX_ROWS + 100);
+    app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
+    app.set_cursor(PREFETCH_WALK_MAX_ROWS / 2);
+
+    let mut progressed = 0;
+    while let PrefetchStep::Progressed = app.prefetch_step() {
+        progressed += 1;
+        assert!(
+            progressed <= PREFETCH_WALK_MAX_ROWS,
+            "the walk must not outrun its budget"
+        );
+    }
+    assert_eq!(progressed, PREFETCH_WALK_MAX_ROWS);
+    assert!(
+        app.prefetch_walk.above_done && app.prefetch_walk.below_done,
+        "the walk itself must be what ended the wave, not a full queue"
+    );
+    assert!(matches!(app.prefetch_step(), PrefetchStep::Idle));
 }
 
 /// No worker running at all: `prefetch_step` is `Idle` immediately —

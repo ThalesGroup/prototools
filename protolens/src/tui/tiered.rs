@@ -86,6 +86,23 @@ fn link_at_tail<K, V>(slots: &mut [Option<Slot<K, V>>], band: &mut Band, idx: us
 /// store for `HeatRequestQueue` and both of `HeatCaches`' per-range
 /// maps — structurally-identical but independently-instantiated
 /// structures, not one shared pool (G2).
+///
+/// Why `Prefetch` alone gets two bands, when the obvious spelling
+/// would be a fourth `Tier` below it (spec 0189 N1): `Slot` stores a
+/// `Tier`, so making the band *be* the tier would turn `start_new_wave`
+/// from an O(1) pointer splice into a rewrite of every slot in the
+/// wave — on the UI thread, in `App::prefetch_step`. The O(1) restart
+/// is the entire justification for the subtlety, and it is what pays
+/// for the `else if` fallbacks in `fix_head_if_matches` /
+/// `fix_tail_if_matches`, which exist solely because one tier maps to
+/// two bands.
+///
+/// Spec 0189: a superseded entry is never *served*. `pop_highest`
+/// stops at `prefetch_current`; `prefetch_previous` is drained only by
+/// `discard_one_superseded` or by `evict_one`. Owners whose entries are
+/// computed results (both `HeatCaches` maps) are unaffected, because
+/// they never pop at all — they read through `peek`, for which the two
+/// bands are indistinguishable.
 pub(super) struct TieredBounded<K: Eq + Hash + Clone, V: Clone> {
     slots: Vec<Option<Slot<K, V>>>,
     free: Vec<usize>,
@@ -118,23 +135,43 @@ impl<K: Eq + Hash + Clone, V: Clone> TieredBounded<K, V> {
     }
 
     /// Promoting read (G9): if `key` is tracked at a tier lower than
-    /// `tier`, bumps it to `tier` (relinking to the new tier's
-    /// insertion end — `prefetch_current`'s tail if promoting *to*
-    /// `Prefetch`, which cannot happen in practice) before returning
-    /// the value. No-op reorder if already at `tier` or higher.
+    /// `tier`, bumps it to `tier`, relinking to the new tier's
+    /// insertion end, before returning the value.
+    ///
+    /// A same-tier `Prefetch` read relinks too, to `prefetch_current`'s
+    /// tail — **re-reading revives**, exactly as re-asking does in
+    /// `upsert` (spec 0189 G3/S4). Without it a cached result sitting in
+    /// `prefetch_previous` stays there no matter how often the live wave
+    /// reads it, and since `start_new_wave` *concatenates* onto that band
+    /// and `evict_one` drains its tail first, the results a wave is
+    /// actively re-reading would be permanently first in the eviction
+    /// line. 0189 established this rule for the queue's write path and
+    /// this read path was overlooked.
+    ///
+    /// Relinking to the *tail* is right for the cache as well as the
+    /// queue, even though the tail is `evict_one`'s first target within
+    /// the band: `prefetch_step` walks outward from the cursor, so
+    /// position in `prefetch_current` encodes distance from the cursor,
+    /// not age. Appending re-reads in wave order keeps the band sorted
+    /// near-to-far, which is exactly what makes evicting its tail evict
+    /// the farthest result.
+    ///
+    /// Any other same-tier read is a no-op reorder, as is a read at a
+    /// tier below the entry's own — a tier never moves down.
     pub(super) fn peek(&mut self, key: &K, tier: Tier) -> Option<V> {
         let idx = *self.index.get(key)?;
         let cur_tier = self.slots[idx]
             .as_ref()
             .expect("indexed slot must be occupied")
             .tier;
-        if tier > cur_tier {
+        let new_tier = cur_tier.max(tier);
+        if new_tier > cur_tier || new_tier == Tier::Prefetch {
             self.unlink(idx);
             self.slots[idx]
                 .as_mut()
                 .expect("indexed slot must be occupied")
-                .tier = tier;
-            self.link_at_insertion_end(tier, idx);
+                .tier = new_tier;
+            self.link_at_insertion_end(new_tier, idx);
         }
         Some(
             self.slots[idx]
@@ -148,10 +185,20 @@ impl<K: Eq + Hash + Clone, V: Clone> TieredBounded<K, V> {
     /// `existing_tier.max(tier)` decides the resulting tier (G5).
     /// - Promotion (tier increases): relinks to the new tier's
     ///   insertion end.
-    /// - Same-tier update (any tier): payload updates in place, no
-    ///   reordering — for `Prefetch` this holds even if the key
-    ///   currently lives in `prefetch_previous` (G5): it is refreshed
-    ///   in place, not moved to `prefetch_current`.
+    /// - Any update landing at `Prefetch`: relinks to `prefetch_
+    ///   current`'s tail, *including* when the key currently lives in
+    ///   `prefetch_previous`. Re-asking revives (spec 0189 G3/S4).
+    ///   This amends spec 0164 G5, which refreshed such an entry in
+    ///   place: since 0189 the worker discards superseded entries
+    ///   rather than serving them, so leaving a re-asked range in
+    ///   `prefetch_previous` would throw away a request the live wave
+    ///   is asking for. The price is that a re-push of a key already
+    ///   in `prefetch_current` also goes to that band's tail instead
+    ///   of holding its FIFO position — a case that does not arise,
+    ///   since `prefetch_step` visits each row once per wave and the
+    ///   other push site pushes at `Tier::Visible`.
+    /// - Same-tier update at `User`/`Visible`: payload updates in
+    ///   place, no reordering.
     /// - Brand-new key: links at its tier's insertion end (new
     ///   `Prefetch` keys always go to `prefetch_current`).
     /// - Whenever this pushes the structure over `max_entries`,
@@ -166,7 +213,7 @@ impl<K: Eq + Hash + Clone, V: Clone> TieredBounded<K, V> {
                 .expect("indexed slot must be occupied")
                 .tier;
             let new_tier = cur_tier.max(tier);
-            if new_tier > cur_tier {
+            if new_tier > cur_tier || new_tier == Tier::Prefetch {
                 self.unlink(idx);
                 {
                     let s = self.slots[idx]
@@ -233,17 +280,51 @@ impl<K: Eq + Hash + Clone, V: Clone> TieredBounded<K, V> {
         self.prefetch_current.tail = None;
     }
 
+    /// Spec 0190 S1: which bands hold work worth reporting, as a
+    /// bitmask — bit 0 `user`, bit 1 `visible`, bit 2
+    /// `prefetch_current`. O(1): three head-pointer tests, no
+    /// traversal and no counting.
+    ///
+    /// `prefetch_previous` is deliberately excluded (spec 0189 S6).
+    /// Since 0189 those entries are destined to be discarded, not
+    /// scored, so counting them would light the activity dot for a
+    /// subsystem that has nothing left to do for the user.
+    pub(super) fn band_occupancy(&self) -> u8 {
+        u8::from(self.user.head.is_some())
+            | (u8::from(self.visible.head.is_some()) << 1)
+            | (u8::from(self.prefetch_current.head.is_some()) << 2)
+    }
+
+    /// Reclaims one superseded entry — `prefetch_previous`'s head —
+    /// and reports whether there was one (spec 0189 S2).
+    ///
+    /// One entry per call rather than a drain, on purpose: the caller
+    /// holds a lock, and draining a whole wave under it would block a
+    /// `push` for as long as the wave is (G4). `pop_blocking` releases
+    /// and retakes the mutex around each call.
+    pub(super) fn discard_one_superseded(&mut self) -> bool {
+        let Some(idx) = self.prefetch_previous.head else {
+            return false;
+        };
+        self.remove_by_idx(idx);
+        true
+    }
+
     /// Unlinks and returns an entry from the highest-priority
     /// non-empty band, checked in this order: `user`'s head,
-    /// `visible`'s head, `prefetch_current`'s head, `prefetch_
-    /// previous`'s head.
+    /// `visible`'s head, `prefetch_current`'s head.
+    ///
+    /// `prefetch_previous` is **not** served (spec 0189 S1): a
+    /// superseded request is an unpaid `score_all` on a range ranked
+    /// from an origin the cursor has left, so it leaves this structure
+    /// only via `discard_one_superseded` or `evict_one` — never by
+    /// being handed to a caller that would compute it.
     pub(super) fn pop_highest(&mut self) -> Option<(K, V)> {
         let idx = self
             .user
             .head
             .or(self.visible.head)
-            .or(self.prefetch_current.head)
-            .or(self.prefetch_previous.head)?;
+            .or(self.prefetch_current.head)?;
         Some(self.remove_by_idx(idx))
     }
 
@@ -485,15 +566,22 @@ mod tests {
         assert_eq!(m.pop_highest().map(|(k, _)| k), Some(2));
     }
 
+    /// Spec 0189 S4, amending spec 0164 G5: a `Prefetch` re-push
+    /// relinks to `prefetch_current`'s tail rather than updating in
+    /// place. Pinned rather than merely deleted, because the amendment
+    /// is deliberate — the acknowledged price of "re-asking revives".
     #[test]
-    fn prefetch_repush_updates_in_place_without_moving() {
+    fn prefetch_repush_relinks_to_the_current_tail() {
         let mut m = new_map(10);
         m.upsert(1, 1, Tier::Prefetch);
         m.upsert(2, 2, Tier::Prefetch);
-        // Re-pushing key 1 must not move it ahead of key 2.
         m.upsert(1, 999, Tier::Prefetch);
+        assert_eq!(
+            m.pop_highest(),
+            Some((2, 2)),
+            "the re-pushed key moves behind the untouched one"
+        );
         assert_eq!(m.pop_highest(), Some((1, 999)));
-        assert_eq!(m.pop_highest(), Some((2, 2)));
     }
 
     #[test]
@@ -508,24 +596,33 @@ mod tests {
         assert_eq!(m.pop_highest().map(|(k, _)| k), Some(2));
     }
 
+    /// Spec 0189 S1: superseding a wave takes it out of service. The
+    /// entries are still *there* — `len` still counts them, and
+    /// `evict_one` will spend them — but `pop_highest` will not hand
+    /// them to a caller that would score them.
     #[test]
-    fn start_new_wave_preserves_order_and_layers_correctly() {
+    fn pop_highest_never_serves_a_superseded_wave() {
         let mut m = new_map(10);
         m.upsert(1, 1, Tier::Prefetch);
         m.upsert(2, 2, Tier::Prefetch);
         m.start_new_wave();
-        assert_eq!(m.len(), 2);
-        // Both now served from prefetch_previous, in original order.
         m.upsert(3, 3, Tier::Prefetch);
         m.upsert(4, 4, Tier::Prefetch);
-        // Fresh prefetch_current entries are served before any
-        // prefetch_previous leftover.
+
         assert_eq!(m.pop_highest().map(|(k, _)| k), Some(3));
         assert_eq!(m.pop_highest().map(|(k, _)| k), Some(4));
-        assert_eq!(m.pop_highest().map(|(k, _)| k), Some(1));
-        assert_eq!(m.pop_highest().map(|(k, _)| k), Some(2));
+        assert_eq!(
+            m.pop_highest(),
+            None,
+            "the superseded wave must not be served"
+        );
+        assert_eq!(m.len(), 2, "but it is still occupying the structure");
     }
 
+    /// Spec 0164 G7: successive restarts layer onto
+    /// `prefetch_previous`'s head, so the *oldest* wave stays at its
+    /// tail and is spent first. Observed through `evict_one` now that
+    /// `pop_highest` no longer reaches the band (spec 0189 S1).
     #[test]
     fn start_new_wave_two_resets_layer_without_disturbing_older_order() {
         let mut m = new_map(10);
@@ -534,9 +631,9 @@ mod tests {
         m.start_new_wave(); // previous: [1, 2]
         m.upsert(3, 3, Tier::Prefetch);
         m.start_new_wave(); // previous: [3, 1, 2]
-        assert_eq!(m.pop_highest().map(|(k, _)| k), Some(3));
-        assert_eq!(m.pop_highest().map(|(k, _)| k), Some(1));
-        assert_eq!(m.pop_highest().map(|(k, _)| k), Some(2));
+        assert_eq!(m.evict_one().map(|(k, _)| k), Some(2));
+        assert_eq!(m.evict_one().map(|(k, _)| k), Some(1));
+        assert_eq!(m.evict_one().map(|(k, _)| k), Some(3));
     }
 
     #[test]
@@ -552,17 +649,107 @@ mod tests {
         assert_eq!(outcome, UpsertOutcome::Applied { evicted: Some(2) });
     }
 
+    /// Spec 0190 S1 with spec 0189 S6: one bit per tier, and the
+    /// prefetch bit tracks `prefetch_current` alone — superseded
+    /// entries are about to be discarded, so reporting them would show
+    /// the activity dot as busy for work nobody will do.
     #[test]
-    fn repush_of_a_previous_layer_key_stays_in_previous() {
+    fn band_occupancy_reports_one_bit_per_tier() {
+        let mut m = new_map(10);
+        assert_eq!(m.band_occupancy(), 0b000, "empty");
+
+        m.upsert(1, 1, Tier::Prefetch);
+        assert_eq!(m.band_occupancy(), 0b100, "prefetch_current alone");
+
+        m.start_new_wave();
+        assert_eq!(
+            m.band_occupancy(),
+            0b000,
+            "a superseded wave is not reportable activity"
+        );
+
+        m.upsert(2, 2, Tier::Visible);
+        assert_eq!(m.band_occupancy(), 0b010);
+        m.upsert(3, 3, Tier::User);
+        assert_eq!(m.band_occupancy(), 0b011);
+
+        m.pop_highest(); // the User entry
+        assert_eq!(m.band_occupancy(), 0b010);
+        m.pop_highest(); // the Visible entry
+        assert_eq!(m.band_occupancy(), 0b000);
+    }
+
+    /// Spec 0189 S2: one entry per call, taken from `prefetch_
+    /// previous`'s head, and nothing else is touched — it is not a
+    /// "clear all prefetch" shortcut.
+    #[test]
+    fn discard_one_superseded_takes_exactly_one_from_the_previous_band() {
+        let mut m = new_map(10);
+        m.upsert(1, 1, Tier::Prefetch);
+        m.upsert(2, 2, Tier::Prefetch);
+        m.start_new_wave(); // previous: [1, 2]
+        m.upsert(3, 3, Tier::Prefetch); // current: [3]
+        m.upsert(4, 4, Tier::Visible);
+        m.upsert(5, 5, Tier::User);
+
+        assert!(m.discard_one_superseded());
+        assert_eq!(m.len(), 4, "exactly one entry goes");
+        assert!(m.discard_one_superseded());
+        assert_eq!(m.len(), 3);
+        assert!(
+            !m.discard_one_superseded(),
+            "an empty previous band reports nothing to reclaim"
+        );
+
+        // The live bands are untouched, in their usual order.
+        assert_eq!(m.pop_highest().map(|(k, _)| k), Some(5));
+        assert_eq!(m.pop_highest().map(|(k, _)| k), Some(4));
+        assert_eq!(m.pop_highest().map(|(k, _)| k), Some(3));
+        assert_eq!(m.pop_highest(), None);
+    }
+
+    /// Spec 0189 S2: the slot is genuinely reclaimed, not merely
+    /// unlinked — an upsert that would have been `Rejected` at
+    /// saturation becomes `Applied` once the superseded entry is gone.
+    #[test]
+    fn discard_one_superseded_reclaims_the_slot() {
+        let mut m = new_map(2);
+        m.upsert(1, 1, Tier::User);
+        m.upsert(2, 2, Tier::Prefetch);
+        m.start_new_wave();
+        assert_eq!(m.len(), 2);
+        assert!(m.discard_one_superseded());
+        assert_eq!(m.len(), 1);
+        assert_eq!(
+            m.upsert(3, 3, Tier::Prefetch),
+            UpsertOutcome::Applied { evicted: None },
+            "the freed slot must be reusable without evicting the User entry"
+        );
+    }
+
+    /// Spec 0189 G3/S4: re-asking revives. A `Prefetch` upsert on a key
+    /// sitting in `prefetch_previous` moves it into `prefetch_current`,
+    /// so a range the live wave wants is served rather than discarded.
+    /// Without this, `pop_highest`'s refusal to serve the superseded
+    /// band would silently drop it.
+    #[test]
+    fn a_prefetch_repush_revives_a_superseded_key() {
         let mut m = new_map(10);
         m.upsert(1, 1, Tier::Prefetch);
         m.start_new_wave();
         m.upsert(2, 2, Tier::Prefetch);
-        // Re-push key 1 (in prefetch_previous) — updates in place,
-        // must not jump ahead of key 2 (in prefetch_current).
         m.upsert(1, 111, Tier::Prefetch);
+
         assert_eq!(m.pop_highest(), Some((2, 2)));
-        assert_eq!(m.pop_highest(), Some((1, 111)));
+        assert_eq!(
+            m.pop_highest(),
+            Some((1, 111)),
+            "the revived key must be served, not stranded"
+        );
+        assert!(
+            !m.discard_one_superseded(),
+            "and it must have left the superseded band"
+        );
     }
 
     #[test]
@@ -583,7 +770,7 @@ mod tests {
     }
 
     #[test]
-    fn peek_promotes_and_is_a_no_op_reorder_at_same_or_higher_tier() {
+    fn peek_promotes_to_a_higher_tier() {
         let mut m = new_map(10);
         m.upsert(1, 1, Tier::Prefetch);
         m.upsert(2, 2, Tier::Prefetch);
@@ -592,5 +779,27 @@ mod tests {
         // must now pop before Prefetch.
         assert_eq!(m.pop_highest().map(|(k, _)| k), Some(1));
         assert_eq!(m.pop_highest().map(|(k, _)| k), Some(2));
+    }
+
+    #[test]
+    fn a_prefetch_peek_revives_a_superseded_key() {
+        let mut m = new_map(10);
+        m.upsert(1, 1, Tier::Prefetch);
+        m.start_new_wave();
+        m.upsert(2, 2, Tier::Prefetch);
+        assert_eq!(m.peek(&1, Tier::Prefetch), Some(1));
+
+        // Re-reading revives, exactly as re-asking does: key 1 has left
+        // the superseded band and is now the current wave's newest.
+        assert_eq!(m.pop_highest(), Some((2, 2)));
+        assert_eq!(
+            m.pop_highest(),
+            Some((1, 1)),
+            "the re-read key must be served, not stranded"
+        );
+        assert!(
+            !m.discard_one_superseded(),
+            "and it must have left the superseded band"
+        );
     }
 }

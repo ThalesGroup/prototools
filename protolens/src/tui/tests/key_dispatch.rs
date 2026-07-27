@@ -768,6 +768,7 @@ fn default_export_descriptor_path_falls_back_to_the_numeric_range_when_unresolva
         prev_sibling,
         doc_next: next_sibling,
         doc_prev: prev_sibling,
+        sibling_ordinal: prev_sibling.map_or(1, |p| p as u32 + 2),
         rendered_as: None,
     };
     let tree = vec![
