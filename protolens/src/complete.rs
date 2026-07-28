@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 
 use clap_complete::engine::CompletionCandidate;
 use prototext_core::decode_pool;
+use prototext_graph::score::load::load_graph;
 
 use crate::decode::read_descriptor_file;
 
@@ -62,22 +63,51 @@ fn flag_value_from_args(long: &str) -> Option<OsString> {
 /// Complete message type names for `--type`, reading whichever
 /// `--descriptor-set` was already typed on the partial command line.
 /// Empty if `--descriptor-set` is missing, unreadable, or invalid.
+///
+/// Prefers the `hopcroft.rkyv` sidecar, whose root list is exactly the
+/// descriptor set's message types — the set `--type` accepts, enums
+/// excluded — and which costs a mmap rather than a full `decode_pool`
+/// (25 MB on googleapis, per TAB). Spec 0197 §S4. The fallback to
+/// decoding is silent here: a completion subprocess has no stderr a user
+/// reads and no `App` to hold a message, and the same descriptor set
+/// produces the ordinary warning on the next real launch.
 pub fn complete_type_names(incomplete: &OsStr) -> Vec<CompletionCandidate> {
     let Some(path) = flag_value_from_args("--descriptor-set") else {
         return vec![];
     };
-    let Ok(bytes) = read_descriptor_file(Path::new(&path)) else {
+    type_names_from_descriptor(Path::new(&path), &incomplete.to_string_lossy())
+        .into_iter()
+        .map(CompletionCandidate::new)
+        .collect()
+}
+
+/// The candidate names themselves, split out from the argv scan above so
+/// they can be tested — a completion subprocess's input is `args_os()`,
+/// which a unit test cannot supply.
+fn type_names_from_descriptor(path: &Path, prefix: &str) -> Vec<String> {
+    let rkyv_path = path.with_extension("").join("hopcroft.rkyv");
+    if rkyv_path.exists() {
+        if let Ok(graph) = load_graph(&rkyv_path) {
+            return graph
+                .graph()
+                .roots
+                .iter()
+                .map(|r| r.fqdn.as_str().to_string())
+                .filter(|name| name.starts_with(prefix))
+                .collect();
+        }
+    }
+
+    let Ok(bytes) = read_descriptor_file(path) else {
         return vec![];
     };
     let Ok(pool) = decode_pool(&bytes) else {
         return vec![];
     };
 
-    let prefix = incomplete.to_string_lossy();
     pool.all_messages()
         .map(|m| m.full_name().to_string())
-        .filter(|name| name.starts_with(prefix.as_ref()))
-        .map(CompletionCandidate::new)
+        .filter(|name| name.starts_with(prefix))
         .collect()
 }
 
@@ -156,4 +186,47 @@ pub fn complete_any_path(incomplete: &OsStr) -> Vec<CompletionCandidate> {
 pub fn complete_dir_path(incomplete: &OsStr) -> Vec<CompletionCandidate> {
     let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     complete_path_under(incomplete, &base, true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Spec 0197 test 15 (§S4). Completion runs once per TAB and used to
+    /// decode the whole descriptor set each time — 25 MB on googleapis.
+    ///
+    /// That the pool is never touched is proved by making it undecodable:
+    /// the descriptor here is not a `FileDescriptorSet` at all, so any
+    /// path through `decode_pool` yields an empty list. Getting names back
+    /// means they came from the sidecar.
+    #[test]
+    fn completion_reads_the_sidecar_and_never_decodes_the_pool() {
+        use prototext_graph::build_scoring_graph::build_from_strings;
+
+        let dir = std::env::temp_dir().join("protolens-0197-completion");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("schema")).unwrap();
+        std::fs::write(dir.join("schema.pb"), b"not a descriptor set").unwrap();
+
+        let yaml = "entries:\n- alpha.Msg\n- beta.Other\nmessages:\n  alpha.Msg:\n    \
+                    fields:\n    - number: 1\n      type: uint64\n  beta.Other:\n    \
+                    fields:\n    - number: 1\n      type: uint64\n"
+            .to_string();
+        let (bytes, _, _) =
+            build_from_strings(&[yaml], false, false, |_, _| {}).expect("test graph must build");
+        std::fs::write(dir.join("schema").join("hopcroft.rkyv"), &bytes).unwrap();
+
+        let pb = dir.join("schema.pb");
+        let mut all = type_names_from_descriptor(&pb, "");
+        all.sort();
+        assert_eq!(all, vec!["alpha.Msg".to_string(), "beta.Other".to_string()]);
+
+        assert_eq!(
+            type_names_from_descriptor(&pb, "alpha."),
+            vec!["alpha.Msg".to_string()],
+            "the typed prefix still filters"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

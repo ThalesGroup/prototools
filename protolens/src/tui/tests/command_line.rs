@@ -552,7 +552,7 @@ fn the_root_stays_the_first_node_across_a_root_respice() {
 /// pool.
 #[test]
 fn origin_resolves_checks_path_field_and_fqdn_field_origins() {
-    let (app, inner_idx, _) = type_as_fixture();
+    let (mut app, inner_idx, _) = type_as_fixture();
     let inner_path = app.positional_path(inner_idx);
 
     assert!(app.origin_resolves(&OverrideOrigin::Path {

@@ -629,6 +629,60 @@ pub(super) fn nested_packed_run_fixture() -> App {
     app
 }
 
+/// An `App` opened over a descriptor set with no `index.rkyv` sidecar,
+/// so `DescriptorContext::load` took the eager path and recorded spec
+/// 0197 §S3's warning.
+///
+/// Returned untouched — splash still up, status line still carrying the
+/// warning — because those two are exactly what the §S3 tests inspect.
+pub(super) fn eager_fallback_app() -> App {
+    use prost::Message as _;
+    use prost_types::field_descriptor_proto::{Label, Type};
+    use prost_types::{
+        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+    };
+
+    use crate::decode::{decode, DescriptorContext, RootType};
+
+    let file = FileDescriptorProto {
+        name: Some("test_eager_fallback.proto".to_string()),
+        package: Some("test".to_string()),
+        message_type: vec![DescriptorProto {
+            name: Some("Inner".to_string()),
+            field: vec![FieldDescriptorProto {
+                name: Some("id".to_string()),
+                number: Some(1),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Int32 as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        syntax: Some("proto3".to_string()),
+        ..Default::default()
+    };
+    let fds = FileDescriptorSet { file: vec![file] };
+
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let descriptor_path = std::env::temp_dir().join(format!("protolens-tui-eager-fallback-{n}.pb"));
+    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
+    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
+    std::fs::remove_file(&descriptor_path).unwrap();
+
+    let blob = [0x08u8, 0x05];
+    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Inner"), 2).unwrap();
+    App::new(
+        decoded,
+        "test.pb",
+        PathBuf::from("test.pb"),
+        2,
+        ctx,
+        ThemeKind::Dark,
+        None,
+    )
+}
+
 /// Builds the same `Outer { inner: Inner { id: 5 } }` fixture as
 /// `enter_key_applies_override_and_closes_pane`, for the `:type-as`/
 /// `:type-as-raw` command tests (spec 0114 §7).
@@ -698,6 +752,10 @@ pub(super) fn type_as_fixture() -> (App, usize, usize) {
     );
     app.splash = false;
     app.term_width = 120;
+    // The fixture writes a bare `.pb` with no `index.rkyv` beside it, so
+    // `App::new` seeds the status line with spec 0197 §S3's eager-fallback
+    // warning. Clear it: tests here assert on messages *they* provoke.
+    app.message.clear();
 
     let inner_idx = app
         .tree

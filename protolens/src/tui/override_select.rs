@@ -683,17 +683,16 @@ impl App {
             if name == "protolens_internal.None" {
                 continue;
             }
-            let (target_desc, field_type) =
-                if let Some(desc) = self.ctx.pool().get_message_by_name(&name) {
-                    let ft = if is_group { Type::Group } else { Type::Message };
-                    (Some(decode::WrapperTarget::Message(desc)), ft)
-                } else if let Some(prim) = decode::primitive_type_for_keyword(&name) {
-                    (None, prim)
-                } else if let Some(enum_desc) = self.ctx.pool().get_enum_by_name(&name) {
-                    (Some(decode::WrapperTarget::Enum(enum_desc)), Type::Enum)
-                } else {
-                    continue;
-                };
+            let (target_desc, field_type) = if let Some(desc) = self.ctx.message(&name) {
+                let ft = if is_group { Type::Group } else { Type::Message };
+                (Some(decode::WrapperTarget::Message(desc)), ft)
+            } else if let Some(prim) = decode::primitive_type_for_keyword(&name) {
+                (None, prim)
+            } else if let Some(enum_desc) = self.ctx.enumeration(&name) {
+                (Some(decode::WrapperTarget::Enum(enum_desc)), Type::Enum)
+            } else {
+                continue;
+            };
             let _ = decode::register_wrapper(
                 self.ctx.pool_mut(),
                 field_number,
@@ -708,6 +707,13 @@ impl App {
     /// feedback item 4) so `override_max_visible_line_len` can compute
     /// exactly what will be rendered without duplicating the FQDN-
     /// formatting logic.
+    ///
+    /// The ` [enum]` suffix needs the name resolved in the pool, which on
+    /// the lazy branch (spec 0197) means its file must already be loaded.
+    /// It is: `render_override_pane` calls `warm_visible_override_wrappers`
+    /// over the same row window first, and that resolves every candidate —
+    /// an enum name misses `get_message_by_name` but has still had its
+    /// file's closure loaded by then.
     pub(super) fn override_row_display(&self, row: usize) -> (String, Style) {
         let (fqdn, score) = &self.override_candidates[row];
         let (display_fqdn, base_style) = if fqdn == "protolens_internal.None" {

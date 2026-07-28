@@ -15,8 +15,11 @@ use complete::{
 
 pub mod complete;
 pub mod inputs;
-pub mod lazy_pool;
 pub mod run;
+
+/// `LazyPool` lives in `prototext-schema` so that `protolens` can share it
+/// (spec 0197 §S1); re-exported here for the call sites that predate the move.
+pub use prototext_schema::lazy_pool;
 
 // ── Embedded descriptor ───────────────────────────────────────────────────────
 

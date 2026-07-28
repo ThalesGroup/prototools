@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+[package]
+name        = "prototext-schema"
+version     = "0.1.0"
+edition     = "2021"
+description = "On-demand FileDescriptorProto loading from a mmapped descriptor set and its rkyv index"
+license     = "MIT"
+repository  = "https://github.com/ThalesGroup/prototools"
+
+[lib]
+name       = "prototext_schema"
+crate-type = ["rlib"]
+
+[dependencies]
+prototext-graph = { path = "../prototext-graph", version = "0.2.1" }
+memmap2         = "0.9"
+rkyv            = { version = "0.8", features = ["little_endian"] }
+prost           = "0.14"
+prost-reflect   = "0.16"
+prost-types     = "0.14"
+workspace-hack  = { version = "0.1", path = "../workspace-hack" }

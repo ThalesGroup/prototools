@@ -328,6 +328,22 @@ fn main() -> ExitCode {
         }
     };
 
+    // Spec 0197 §S3: the on-demand path was declined, so the user is about
+    // to wait seconds that a `reproto` re-run would remove. Printed here,
+    // between the "loading descriptor set" line and the wait it explains,
+    // so it is on screen *while* they wait rather than after. The splash
+    // pane and the status line carry the same text for a launch nobody was
+    // watching stderr for.
+    //
+    // Batch mode stays silent, like every other progress line above: its
+    // stderr is a machine-readable "did anything go wrong" channel, and a
+    // performance note is not something going wrong.
+    if cli.command.is_none() {
+        if let Some(fallback) = &ctx.fallback {
+            eprintln!("protolens: warning: {}", fallback.message);
+        }
+    }
+
     let root_type = match (cli.raw, cli.r#type.as_deref()) {
         (true, _) => decode::RootType::Raw,
         (false, Some(fqdn)) => decode::RootType::Named(fqdn),
@@ -360,7 +376,7 @@ fn main() -> ExitCode {
                 size_suffix(&cli.blob)
             );
         }
-        decode::determine_root_type(&blob, &ctx, root_type).and_then(
+        decode::determine_root_type(&blob, &mut ctx, root_type).and_then(
             |(root_desc, root_candidates)| {
                 eprintln!(
                     "protolens: rendering root node as {}{}...",

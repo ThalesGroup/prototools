@@ -620,7 +620,10 @@ impl App {
     /// builds the `FileDescriptorSet` (`export_descriptor::build`), as
     /// raw bytes, or (`as_prototext`) rendered through the `#@ prototext`
     /// pipeline against G7's located meta-schema.
-    pub(crate) fn export_descriptor_bytes(&self, as_prototext: bool) -> Result<Vec<u8>, String> {
+    pub(crate) fn export_descriptor_bytes(
+        &mut self,
+        as_prototext: bool,
+    ) -> Result<Vec<u8>, String> {
         let span = &self.tree[self.cursor].span;
         if !span.is_message {
             return Err("export --descriptor: cursor node is not a message/group".to_string());
@@ -632,6 +635,10 @@ impl App {
         use prost_reflect::prost::Message as _;
         let bytes = fds.encode_to_vec();
         if as_prototext {
+            // The meta-schema is one specific message, not a namespace
+            // scan (spec 0197 §S4): JIT-load it by name first, then let
+            // `locate_file_descriptor_set_type` search the pool as before.
+            self.ctx.message("google.protobuf.FileDescriptorSet");
             let fds_type = export_descriptor::locate_file_descriptor_set_type(self.ctx.pool())
                 .ok_or_else(|| {
                     "export --descriptor --prototext: no descriptor.proto (with \
@@ -654,7 +661,11 @@ impl App {
 
     /// `path`-writing counterpart of `export_descriptor_bytes`, used by
     /// the TUI's `:export --descriptor-*` command (spec 0156 G6/G7).
-    pub(super) fn export_descriptor(&self, path: &str, as_prototext: bool) -> Result<(), String> {
+    pub(super) fn export_descriptor(
+        &mut self,
+        path: &str,
+        as_prototext: bool,
+    ) -> Result<(), String> {
         let bytes = self.export_descriptor_bytes(as_prototext)?;
         std::fs::write(path, bytes).map_err(|e| format!("export error: {e}"))
     }
@@ -688,11 +699,11 @@ impl App {
     /// SHA-256 hex digests of the currently-loaded blob/descriptor set,
     /// canonicalized-binary bytes (spec 0117 §4's `blob_sha256`/
     /// `descriptor_set_sha256`) — the caller's original (pre-wrap) blob,
-    /// and the descriptor set's own canonicalized bytes (`ctx.raw_bytes`).
+    /// and the descriptor set's own canonicalized bytes (re-read from disk
+    /// on demand, spec 0197 §S6).
     pub(super) fn target_hashes(&self) -> (String, String) {
         let blob_sha256 = override_pane::sha256_hex(&self.blob[self.wrapper_offset..]);
-        let descriptor_set_sha256 = override_pane::sha256_hex(&self.ctx.raw_bytes);
-        (blob_sha256, descriptor_set_sha256)
+        (blob_sha256, self.ctx.descriptor_sha256())
     }
 
     /// `idx`'s `pos`-th child (1-based, document order) — the sibling-chain
@@ -751,7 +762,7 @@ impl App {
     /// needs that node to have at least one child with the given field
     /// number; `FqdnField` needs the FQDN to resolve in the descriptor
     /// pool and that message to declare the given field number.
-    pub(super) fn origin_resolves(&self, origin: &OverrideOrigin) -> bool {
+    pub(super) fn origin_resolves(&mut self, origin: &OverrideOrigin) -> bool {
         match origin {
             OverrideOrigin::Path { path } => self.resolve_path(path).is_some(),
             OverrideOrigin::PathField { path, field } => match self.resolve_path(path) {
@@ -767,10 +778,11 @@ impl App {
                 }
                 None => false,
             },
+            // A restored collection names types the current render may
+            // never have touched, so this JIT-loads (spec 0197 §S5).
             OverrideOrigin::FqdnField { fqdn, field } => self
                 .ctx
-                .pool()
-                .get_message_by_name(fqdn)
+                .message(fqdn)
                 .and_then(|m| m.get_field(*field as u32))
                 .is_some(),
         }

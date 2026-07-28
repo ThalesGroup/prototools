@@ -1405,11 +1405,26 @@ impl App {
             .border_type(BorderType::Rounded);
         let inner = block.inner(popup);
         frame.render_widget(block, popup);
-        let text = vec![
+        let mut text = vec![
             Line::from(self.header.as_str()),
             Line::from(""),
             Line::from("Press F1 for help."),
         ];
-        frame.render_widget(Paragraph::new(text).alignment(Alignment::Center), inner);
+        // Spec 0197 §S3: the descriptor set had to be decoded whole. Said
+        // here as well as on stderr, because a TUI launch is exactly the
+        // case where nobody was watching stderr.
+        if let Some(fallback) = &self.ctx.fallback {
+            text.push(Line::from(""));
+            text.push(Line::styled(
+                format!("warning: {}", fallback.message),
+                Style::default().fg(Color::Yellow),
+            ));
+        }
+        frame.render_widget(
+            Paragraph::new(text)
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: true }),
+            inner,
+        );
     }
 }

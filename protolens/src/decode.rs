@@ -5,12 +5,12 @@
 //! Decode a binary protobuf blob into rendered text plus a navigation tree.
 //!
 //! Mirrors (simplified) `prototext`'s own `DescriptorContext` / `infer_type`
-//! machinery (`prototext/src/run.rs`) — no `LazyPool`/`index.rkyv` fast path,
-//! no embedded-WKT-descriptor fallback: spec 0111 v1 always requires an
-//! explicit `--descriptor-set`.
+//! machinery (`prototext/src/run.rs`) — same `LazyPool`/`index.rkyv` fast
+//! path (spec 0197), but no embedded-WKT-descriptor fallback: spec 0111 v1
+//! always requires an explicit `--descriptor-set`.
 
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use prost_reflect::prost_types::field_descriptor_proto::{Label, Type};
@@ -26,6 +26,7 @@ use prototext_graph::score::{
     load::{load_graph, LoadedGraph},
     score_all, ScoringOpts,
 };
+use prototext_schema::LazyPool;
 use sha2::{Digest, Sha256};
 
 // ── Errors ──────────────────────────────────────────────────────────────────
@@ -51,44 +52,114 @@ impl std::error::Error for DecodeError {}
 
 // ── DescriptorContext ─────────────────────────────────────────────────────
 
+/// Why the on-demand path was declined and the whole descriptor set had to
+/// be decoded up front (spec 0197 §S3). Rendered as a warning on three
+/// channels — stderr, the splash pane and the status line — because the
+/// fallback costs the user seconds and the remedy is a `reproto` re-run.
+pub struct EagerFallback {
+    pub message: String,
+}
+
 /// A resolved `--descriptor-set`: a pool for type lookup plus an optional
 /// Hopcroft scoring graph (`<stem>/hopcroft.rkyv` sidecar, if present).
+///
+/// The pool comes from one of two branches (spec 0197). With an
+/// `index.rkyv` sidecar beside the descriptor, `lazy` holds a `LazyPool`
+/// that decodes a file's dependency closure only when a type from it is
+/// first asked for; otherwise `pool` holds the whole descriptor set,
+/// decoded eagerly as before.
+///
+/// **`App` must not hold a `MessageDescriptor` or `EnumDescriptor` across
+/// an event-loop iteration.** prost-reflect's `add_file_descriptor_proto`
+/// uses `Arc::make_mut`, so when a JIT load forks the pool, a descriptor
+/// obtained before it is blind to everything registered after
+/// (`prototext/src/run.rs:648-652`). Re-fetch at each use site.
 pub struct DescriptorContext {
+    /// The eager branch's pool, and the schemaless empty pool.
     pool: DescriptorPool,
+    /// The on-demand branch. Its own `pool` field is the live one when set.
+    lazy: Option<LazyPool>,
     /// `Arc` rather than a bare `LoadedGraph` (spec 0180 S2): protolens hands
     /// the graph to two background threads, and one of them — the detached
     /// root-type sweep in `tui::run` — is deliberately never joined. An
     /// owning handle is what lets that thread outlive `App` without reading
     /// an unmapped page. Cloning it is a refcount bump, not a copy.
     pub graph: Option<Arc<LoadedGraph>>,
-    /// Canonicalized binary bytes `load()` decoded `pool` from — i.e.
-    /// after `read_descriptor_file`'s `#@ prototext`-to-binary conversion,
-    /// same normalization `main.rs` applies to the target blob (spec 0114
-    /// §1.1). Basis for `override_pane::sha256_hex`'s
-    /// `descriptor_set_sha256` (spec 0117 §4).
-    pub raw_bytes: Vec<u8>,
+    /// Where the descriptor set was read from. `descriptor_set_sha256`
+    /// (spec 0117 §4) re-reads and hashes it at `:save` time rather than
+    /// retaining the bytes: on googleapis that is 25 MB of resident memory
+    /// held all session for a value most sessions never read (spec 0197 §S6).
+    source: Option<PathBuf>,
+    /// Set when the on-demand path was declined; see `EagerFallback`.
+    pub fallback: Option<EagerFallback>,
 }
 
 impl DescriptorContext {
+    /// The live pool. On the lazy branch this is the `LazyPool`'s own pool,
+    /// which starts empty and grows as types are asked for — so a caller
+    /// that needs a specific type must JIT-load it first via
+    /// [`message`](Self::message) / [`enumeration`](Self::enumeration)
+    /// rather than reaching in here.
     pub fn pool(&self) -> &DescriptorPool {
-        &self.pool
+        match &self.lazy {
+            Some(lazy) => &lazy.pool,
+            None => &self.pool,
+        }
     }
 
     /// Mutable pool access — needed by `tui.rs`'s `splice_override` (spec
     /// 0118 §4) to call `register_wrapper` for an arbitrary target type,
     /// mirroring `decode()`'s own (in-module, private-field) access.
     pub(crate) fn pool_mut(&mut self) -> &mut DescriptorPool {
-        &mut self.pool
+        match &mut self.lazy {
+            Some(lazy) => &mut lazy.pool,
+            None => &mut self.pool,
+        }
+    }
+
+    /// Resolve a message by name, loading its file's dependency closure
+    /// first on the lazy branch. A load error is a miss, not a crash —
+    /// same rule as `prototext`'s `install_any_loader`.
+    pub(crate) fn message(&mut self, fqdn: &str) -> Option<MessageDescriptor> {
+        if let Some(lazy) = self.lazy.as_mut() {
+            let _ = lazy.get_message(fqdn);
+        }
+        self.pool()
+            .get_message_by_name(fqdn.trim_start_matches('.'))
+    }
+
+    /// Resolve an enum by name; see [`message`](Self::message).
+    pub(crate) fn enumeration(&mut self, fqdn: &str) -> Option<EnumDescriptor> {
+        if let Some(lazy) = self.lazy.as_mut() {
+            let _ = lazy.get_enum(fqdn);
+        }
+        self.pool().get_enum_by_name(fqdn.trim_start_matches('.'))
+    }
+
+    /// JIT-load the file declaring an extension on `extendee` at `number`
+    /// (spec 0100 §5.1, MessageSet expansion). A no-op on the eager branch,
+    /// where every extension is already in the pool.
+    pub(crate) fn load_extension(&mut self, extendee: &str, number: u32) {
+        if let Some(lazy) = self.lazy.as_mut() {
+            let _ = lazy.get_extension(extendee, number);
+        }
+    }
+
+    /// Every type name the schema knows, sorted: messages and enums,
+    /// nested types included. On the lazy branch this reads `index.rkyv`'s
+    /// `type_to_file` and decodes nothing; the two sources are equal sets
+    /// (spec 0197 §5).
+    pub(crate) fn all_type_fqdns(&self) -> Vec<String> {
+        match &self.lazy {
+            Some(lazy) => lazy.all_type_fqdns(),
+            None => crate::override_pane::all_type_fqdns(&self.pool),
+        }
     }
 
     /// Load a `DescriptorContext` from a `--descriptor-set` path. v1 has no
     /// schemaless/embedded-WKT fallback (spec 0111 Goal 2): the caller must
     /// always supply a path.
     pub fn load(path: &Path) -> Result<Self, DecodeError> {
-        let bytes = read_descriptor_file(path)?;
-        let pool = decode_pool(&bytes)
-            .map_err(|e| DecodeError::Schema(format!("descriptor '{}': {e}", path.display())))?;
-
         let stem = path.with_extension("");
         let rkyv_path = stem.join("hopcroft.rkyv");
         let graph = if rkyv_path.exists() {
@@ -99,11 +170,70 @@ impl DescriptorContext {
             None
         };
 
+        let name = path.display();
+        let index_path = stem.join("index.rkyv");
+        let fallback = if is_prototext_descriptor(path)? {
+            // `LazyPool` slices FDPs out of the mmapped file by byte offset,
+            // and those offsets describe the binary wire encoding. A `#@`
+            // descriptor is converted to binary in memory by
+            // `read_descriptor_file`, and that buffer was never indexed.
+            Some(format!(
+                "'{name}' is #@ prototext — loading the whole descriptor set; \
+                 a binary .pb descriptor can be loaded on demand"
+            ))
+        } else if !index_path.exists() {
+            Some(format!(
+                "no index.rkyv beside '{name}' — loading the whole descriptor set; \
+                 re-run reproto to build one"
+            ))
+        } else {
+            // A version-skewed or corrupt sidecar degrades to the eager
+            // path; it is never fatal.
+            match LazyPool::open(path, &index_path, &[]) {
+                Ok(lazy) => {
+                    return Ok(DescriptorContext {
+                        pool: DescriptorPool::new(),
+                        lazy: Some(lazy),
+                        graph,
+                        source: Some(path.to_path_buf()),
+                        fallback: None,
+                    })
+                }
+                Err(e) => Some(format!(
+                    "'{}': {e} — loading the whole descriptor set; \
+                     re-run reproto to regenerate it",
+                    index_path.display()
+                )),
+            }
+        };
+
+        let bytes = read_descriptor_file(path)?;
+        let pool = decode_pool(&bytes)
+            .map_err(|e| DecodeError::Schema(format!("descriptor '{}': {e}", path.display())))?;
+
         Ok(DescriptorContext {
             pool,
+            lazy: None,
             graph,
-            raw_bytes: bytes,
+            source: Some(path.to_path_buf()),
+            fallback: fallback.map(|message| EagerFallback { message }),
         })
+    }
+
+    /// SHA-256 of the canonicalized binary descriptor bytes — i.e. after
+    /// `read_descriptor_file`'s `#@ prototext`-to-binary conversion, the
+    /// same normalization `main.rs` applies to the target blob (spec 0114
+    /// §1.1). Basis for `descriptor_set_sha256` (spec 0117 §4).
+    ///
+    /// Re-read from disk on demand rather than retained: `:save` is a
+    /// deliberate once-per-session action, and the bytes are large
+    /// (spec 0197 §S6). A schemaless context hashes the empty string.
+    pub(crate) fn descriptor_sha256(&self) -> String {
+        let bytes = match &self.source {
+            Some(path) => read_descriptor_file(path).unwrap_or_default(),
+            None => Vec::new(),
+        };
+        crate::override_pane::sha256_hex(&bytes)
     }
 
     /// A trivially empty pool/no-graph context — `tui.rs`'s unit tests
@@ -115,11 +245,7 @@ impl DescriptorContext {
     /// way for another module's tests to build one.
     #[cfg(test)]
     pub(crate) fn empty_for_test() -> Self {
-        DescriptorContext {
-            pool: DescriptorPool::new(),
-            graph: None,
-            raw_bytes: Vec::new(),
-        }
+        Self::schemaless()
     }
 
     /// A schemaless `DescriptorContext` (spec 0157 G3): empty pool, no
@@ -129,8 +255,10 @@ impl DescriptorContext {
     pub(crate) fn schemaless() -> Self {
         DescriptorContext {
             pool: DescriptorPool::new(),
+            lazy: None,
             graph: None,
-            raw_bytes: Vec::new(),
+            source: None,
+            fallback: None,
         }
     }
 
@@ -142,10 +270,24 @@ impl DescriptorContext {
     #[cfg(test)]
     pub(crate) fn for_test_with_graph(graph: LoadedGraph) -> Self {
         DescriptorContext {
-            pool: DescriptorPool::new(),
             graph: Some(Arc::new(graph)),
-            raw_bytes: Vec::new(),
+            ..Self::schemaless()
         }
+    }
+}
+
+/// Whether `path` holds a `#@ prototext` descriptor rather than a binary
+/// one — decided from the two magic bytes, without reading the rest.
+fn is_prototext_descriptor(path: &Path) -> Result<bool, DecodeError> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| DecodeError::Io(format!("cannot read '{}': {e}", path.display())))?;
+    let mut magic = [0u8; 2];
+    match file.read_exact(&mut magic) {
+        Ok(()) => Ok(&magic == b"#@"),
+        // Shorter than two bytes: not `#@`, and the eager path will report
+        // whatever is actually wrong with it.
+        Err(_) => Ok(false),
     }
 }
 
@@ -277,24 +419,23 @@ pub enum RootType<'a> {
 /// for the same `score_all` twice.
 pub fn determine_root_type(
     blob: &[u8],
-    ctx: &DescriptorContext,
+    ctx: &mut DescriptorContext,
     root_type: RootType<'_>,
 ) -> Result<(Option<MessageDescriptor>, RankedCandidates), DecodeError> {
     match root_type {
         RootType::Named(fqdn) => ctx
-            .pool()
-            .get_message_by_name(fqdn)
+            .message(fqdn)
             .map(|desc| (Some(desc), Vec::new()))
             .ok_or_else(|| {
                 DecodeError::Determination(format!("type '{fqdn}' not found in descriptor set"))
             }),
         RootType::Raw => Ok((None, Vec::new())),
         RootType::Infer => {
-            let Some(graph) = ctx.graph.as_ref() else {
+            let Some(graph) = ctx.graph.clone() else {
                 return Ok((None, Vec::new()));
             };
-            let (winner, candidates) = resolve_root_winner_and_candidates(blob, graph);
-            let desc = winner.and_then(|fqdn| ctx.pool().get_message_by_name(&fqdn));
+            let (winner, candidates) = resolve_root_winner_and_candidates(blob, &graph);
+            let desc = winner.and_then(|fqdn| ctx.message(&fqdn));
             Ok((desc, candidates))
         }
     }
@@ -852,7 +993,7 @@ pub fn render_resolved(
         Some(desc) => (
             desc.full_name().to_string(),
             Some(register_wrapper(
-                &mut ctx.pool,
+                ctx.pool_mut(),
                 1,
                 Type::Message,
                 Some(WrapperTarget::Message(desc.clone())),
@@ -926,9 +1067,9 @@ mod tests {
 
     #[test]
     fn determine_root_type_returns_none_without_override_or_graph() {
-        let ctx = DescriptorContext::empty_for_test();
+        let mut ctx = DescriptorContext::empty_for_test();
         let blob = [0x08u8, 0x05];
-        let (resolved, candidates) = determine_root_type(&blob, &ctx, RootType::Infer).unwrap();
+        let (resolved, candidates) = determine_root_type(&blob, &mut ctx, RootType::Infer).unwrap();
         assert!(resolved.is_none());
         assert!(candidates.is_empty(), "no graph means no sweep ran");
     }
@@ -955,10 +1096,10 @@ mod tests {
     /// descriptor pool.
     #[test]
     fn raw_never_sweeps_even_when_a_graph_is_loaded() {
-        let ctx = DescriptorContext::for_test_with_graph(one_entry_graph());
+        let mut ctx = DescriptorContext::for_test_with_graph(one_entry_graph());
         let blob = [0x08u8, 0x05];
 
-        let (resolved, candidates) = determine_root_type(&blob, &ctx, RootType::Raw).unwrap();
+        let (resolved, candidates) = determine_root_type(&blob, &mut ctx, RootType::Raw).unwrap();
 
         assert!(resolved.is_none());
         assert!(candidates.is_empty(), "--raw must not run the sweep");
@@ -970,10 +1111,11 @@ mod tests {
     /// and look like a scoring bug.
     #[test]
     fn a_named_type_is_looked_up_not_swept_and_a_bad_name_errors() {
-        let ctx = DescriptorContext::for_test_with_graph(one_entry_graph());
+        let mut ctx = DescriptorContext::for_test_with_graph(one_entry_graph());
         let blob = [0x08u8, 0x05];
 
-        let err = determine_root_type(&blob, &ctx, RootType::Named("no.such.Type")).unwrap_err();
+        let err =
+            determine_root_type(&blob, &mut ctx, RootType::Named("no.such.Type")).unwrap_err();
 
         assert!(
             matches!(err, DecodeError::Determination(_)),
@@ -1293,6 +1435,527 @@ mod tests {
                 &decoded.tree[type_url_idx].span,
                 &decoded.tree[value_idx].span
             )
+        );
+    }
+
+    // ── Spec 0197: on-demand descriptor loading ──────────────────────────
+
+    /// A four-file descriptor set shaped so the on-demand branch can be
+    /// told apart from the eager one by observation alone:
+    ///
+    /// - `leaf.proto` — `t.Leaf`, in `t.Root`'s closure, with an extension
+    ///   range so an extension can be hung off it.
+    /// - `root.proto` — `t.Root`, importing `leaf.proto`, carrying one
+    ///   nested message and one nested enum (spec 0137's namespace).
+    /// - `stray.proto` — `t.Stray` and `t.Mood`, imported by nobody, so
+    ///   they are *outside* `t.Root`'s closure and must not appear in a
+    ///   lazy pool until asked for.
+    /// - `ext.proto` — extends `t.Leaf` at field 100, likewise outside the
+    ///   closure, so `ext_to_file` is the only way to find it.
+    ///
+    /// proto2 throughout: proto3 has no extension ranges.
+    fn fixture_files() -> Vec<FileDescriptorProto> {
+        use prost_reflect::prost_types::{
+            descriptor_proto::ExtensionRange, EnumDescriptorProto, EnumValueDescriptorProto,
+        };
+
+        let scalar = |name: &str, number: i32| FieldDescriptorProto {
+            name: Some(name.to_string()),
+            number: Some(number),
+            label: Some(Label::Optional as i32),
+            r#type: Some(Type::Int32 as i32),
+            ..Default::default()
+        };
+
+        let leaf = FileDescriptorProto {
+            name: Some("leaf.proto".to_string()),
+            package: Some("t".to_string()),
+            message_type: vec![DescriptorProto {
+                name: Some("Leaf".to_string()),
+                field: vec![scalar("id", 1)],
+                extension_range: vec![ExtensionRange {
+                    start: Some(100),
+                    end: Some(200),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            syntax: Some("proto2".to_string()),
+            ..Default::default()
+        };
+
+        let root = FileDescriptorProto {
+            name: Some("root.proto".to_string()),
+            package: Some("t".to_string()),
+            dependency: vec!["leaf.proto".to_string()],
+            message_type: vec![DescriptorProto {
+                name: Some("Root".to_string()),
+                field: vec![
+                    FieldDescriptorProto {
+                        name: Some("leaf".to_string()),
+                        number: Some(1),
+                        label: Some(Label::Optional as i32),
+                        r#type: Some(Type::Message as i32),
+                        type_name: Some(".t.Leaf".to_string()),
+                        ..Default::default()
+                    },
+                    scalar("n", 2),
+                ],
+                nested_type: vec![DescriptorProto {
+                    name: Some("Nested".to_string()),
+                    field: vec![scalar("k", 1)],
+                    ..Default::default()
+                }],
+                enum_type: vec![EnumDescriptorProto {
+                    name: Some("Color".to_string()),
+                    value: vec![EnumValueDescriptorProto {
+                        name: Some("RED".to_string()),
+                        number: Some(0),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            syntax: Some("proto2".to_string()),
+            ..Default::default()
+        };
+
+        let stray = FileDescriptorProto {
+            name: Some("stray.proto".to_string()),
+            package: Some("t".to_string()),
+            message_type: vec![DescriptorProto {
+                name: Some("Stray".to_string()),
+                field: vec![scalar("s", 1)],
+                ..Default::default()
+            }],
+            enum_type: vec![EnumDescriptorProto {
+                name: Some("Mood".to_string()),
+                value: vec![EnumValueDescriptorProto {
+                    name: Some("CALM".to_string()),
+                    number: Some(0),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            syntax: Some("proto2".to_string()),
+            ..Default::default()
+        };
+
+        let ext = FileDescriptorProto {
+            name: Some("ext.proto".to_string()),
+            package: Some("t".to_string()),
+            dependency: vec!["leaf.proto".to_string()],
+            extension: vec![FieldDescriptorProto {
+                name: Some("tag".to_string()),
+                number: Some(100),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Int32 as i32),
+                extendee: Some(".t.Leaf".to_string()),
+                ..Default::default()
+            }],
+            syntax: Some("proto2".to_string()),
+            ..Default::default()
+        };
+
+        vec![leaf, root, stray, ext]
+    }
+
+    /// The FDS wire encoding plus each file's `(start, end)` span within
+    /// it. Laid out by hand rather than via `FileDescriptorSet::encode`
+    /// because the spans only exist while the records are being written,
+    /// and they are precisely what `LazyPool` slices FDPs out of.
+    fn encode_fds(files: &[FileDescriptorProto]) -> (Vec<u8>, Vec<(String, (u64, u64))>) {
+        let mut buf = Vec::new();
+        let mut spans = Vec::new();
+        for file in files {
+            let body = file.encode_to_vec();
+            write_tag(1, WT_LEN, &mut buf);
+            write_varint(body.len() as u64, &mut buf);
+            let start = buf.len() as u64;
+            buf.extend_from_slice(&body);
+            spans.push((file.name().to_owned(), (start, buf.len() as u64)));
+        }
+        (buf, spans)
+    }
+
+    fn collect_types(
+        prefix: &str,
+        msg: &DescriptorProto,
+        file: &str,
+        out: &mut Vec<(String, String)>,
+    ) {
+        let fqdn = format!("{prefix}{}", msg.name());
+        out.push((fqdn.clone(), file.to_owned()));
+        let inner = format!("{fqdn}.");
+        for nested in &msg.nested_type {
+            collect_types(&inner, nested, file, out);
+        }
+        for e in &msg.enum_type {
+            out.push((format!("{inner}{}", e.name()), file.to_owned()));
+        }
+    }
+
+    /// Build the `FdsIndex` `reproto` would have written for `files`.
+    ///
+    /// There is no Rust-side index builder to reuse — `reproto` assembles
+    /// the maps in Python across the pyo3 boundary — so this reproduces
+    /// the four maps `fds_index.rs:57-79` documents, through
+    /// `canonical_map` so the archive is laid out the same way.
+    fn build_index(
+        files: &[FileDescriptorProto],
+        spans: Vec<(String, (u64, u64))>,
+    ) -> prototext_graph::fds_index::FdsIndex {
+        use prototext_graph::fds_index::{canonical_map, FdsIndex};
+
+        let mut types = Vec::new();
+        let mut deps = Vec::new();
+        let mut exts = Vec::new();
+        for file in files {
+            let fname = file.name().to_owned();
+            let pkg = file.package();
+            let prefix = if pkg.is_empty() {
+                String::new()
+            } else {
+                format!("{pkg}.")
+            };
+            for msg in &file.message_type {
+                collect_types(&prefix, msg, &fname, &mut types);
+            }
+            for e in &file.enum_type {
+                types.push((format!("{prefix}{}", e.name()), fname.clone()));
+            }
+            deps.push((fname.clone(), file.dependency.clone()));
+            for x in &file.extension {
+                let extendee = x.extendee().trim_start_matches('.');
+                exts.push((format!("{extendee}/{}", x.number()), fname.clone()));
+            }
+        }
+
+        FdsIndex {
+            type_to_file: canonical_map(types),
+            file_to_span: canonical_map(spans),
+            dep_graph: canonical_map(deps),
+            ext_to_file: canonical_map(exts),
+        }
+    }
+
+    /// `<dir>/schema.pb` plus the `<dir>/schema/` sidecar directory — the
+    /// layout `DescriptorContext::load`'s probe expects, since it derives
+    /// the sidecar directory from `path.with_extension("")`.
+    struct Fixture {
+        dir: PathBuf,
+        pb: PathBuf,
+        index: PathBuf,
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    impl Fixture {
+        /// A binary descriptor with no sidecar: the eager branch.
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("protolens-0197-{tag}"));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join("schema")).unwrap();
+            let pb = dir.join("schema.pb");
+            std::fs::write(&pb, encode_fds(&fixture_files()).0).unwrap();
+            Fixture {
+                index: dir.join("schema").join("index.rkyv"),
+                pb,
+                dir,
+            }
+        }
+
+        /// Add the sidecar, enabling the on-demand branch.
+        fn with_index(self) -> Self {
+            let (_, spans) = encode_fds(&fixture_files());
+            let index = build_index(&fixture_files(), spans);
+            prototext_graph::fds_index::write(&index, &self.index).unwrap();
+            self
+        }
+
+        /// Add a sidecar whose PTSGRAPH version field is one the reader
+        /// does not accept — the state every existing schema-db is in the
+        /// moment this ships.
+        fn with_version_skewed_index(self) -> Self {
+            let (_, spans) = encode_fds(&fixture_files());
+            let index = build_index(&fixture_files(), spans);
+            let mut bytes = prototext_graph::fds_index::to_bytes(&index).unwrap();
+            bytes[8..12].copy_from_slice(&99u32.to_le_bytes());
+            std::fs::write(&self.index, &bytes).unwrap();
+            self
+        }
+
+        /// Rewrite the descriptor as `#@ prototext` text. Round-tripped
+        /// through the codec so `read_descriptor_file` recovers exactly
+        /// the binary the sidecar's spans were measured against.
+        fn as_prototext(self) -> Self {
+            let binary = std::fs::read(&self.pb).unwrap();
+            let text = prototext_core::render_as_text(
+                &binary,
+                None,
+                RenderOpts {
+                    assume_binary: true,
+                    include_annotations: true,
+                    indent: 1,
+                    expand_any: false,
+                    ..RenderOpts::default()
+                },
+            )
+            .unwrap();
+            std::fs::write(&self.pb, &text).unwrap();
+            self
+        }
+
+        fn load(&self) -> DescriptorContext {
+            DescriptorContext::load(&self.pb).unwrap()
+        }
+    }
+
+    /// `Root { leaf { id: 5 } n: 7 }`.
+    const ROOT_BLOB: &[u8] = &[0x0a, 0x02, 0x08, 0x05, 0x10, 0x07];
+
+    fn message_names(ctx: &DescriptorContext) -> Vec<String> {
+        let mut names: Vec<String> = ctx
+            .pool()
+            .all_messages()
+            .map(|m| m.full_name().to_string())
+            .collect();
+        names.sort_unstable();
+        names
+    }
+
+    /// Spec 0197 test 1 + G5. The branch is an implementation detail: the
+    /// same blob under the same root type must render the same text
+    /// whether the schema arrived one file at a time or all at once.
+    #[test]
+    fn both_branches_render_the_same_document() {
+        let lazy = Fixture::new("same-render-lazy").with_index();
+        let eager = Fixture::new("same-render-eager");
+
+        let mut lazy_ctx = lazy.load();
+        let mut eager_ctx = eager.load();
+        assert!(lazy_ctx.lazy.is_some(), "sidecar present: on-demand branch");
+        assert!(eager_ctx.lazy.is_none(), "no sidecar: eager branch");
+
+        let from_lazy = decode(ROOT_BLOB, &mut lazy_ctx, RootType::Named("t.Root"), 2).unwrap();
+        let from_eager = decode(ROOT_BLOB, &mut eager_ctx, RootType::Named("t.Root"), 2).unwrap();
+
+        assert_eq!(from_lazy.lines, from_eager.lines);
+        assert_eq!(from_lazy.root_type, from_eager.root_type);
+    }
+
+    /// Spec 0197 tests 2 and 3. The whole point of the branch — the pool
+    /// starts with nothing in it, grows to exactly the root's file
+    /// closure, and grows again only when a name outside that closure is
+    /// asked for.
+    #[test]
+    fn the_lazy_pool_starts_empty_and_grows_only_on_demand() {
+        let fixture = Fixture::new("grows-on-demand").with_index();
+        let mut ctx = fixture.load();
+
+        assert!(
+            message_names(&ctx).is_empty(),
+            "a freshly opened lazy pool holds no types at all"
+        );
+
+        ctx.message("t.Root").expect("root must resolve");
+        assert_eq!(
+            message_names(&ctx),
+            vec![
+                "t.Leaf".to_string(),
+                "t.Root".to_string(),
+                "t.Root.Nested".to_string()
+            ],
+            "exactly root.proto's closure — leaf.proto came in as its import, \
+             stray.proto did not come in at all"
+        );
+
+        ctx.message("t.Stray")
+            .expect("a name outside the closure must still resolve");
+        assert!(
+            message_names(&ctx).contains(&"t.Stray".to_string()),
+            "the on-demand load must have added stray.proto"
+        );
+    }
+
+    /// Spec 0197 tests 4 and 5, and the measured property of §5: the
+    /// index's key set *is* the pool's type namespace, enums included.
+    /// Equality of the ordered lists, not just the sets — the override
+    /// pane's lexicographic mode indexes into this by row.
+    #[test]
+    fn all_type_fqdns_agrees_across_branches_and_keeps_enums() {
+        let lazy = Fixture::new("fqdns-lazy").with_index();
+        let eager = Fixture::new("fqdns-eager");
+
+        let from_index = lazy.load().all_type_fqdns();
+        let from_pool = eager.load().all_type_fqdns();
+
+        assert_eq!(from_index, from_pool);
+        // Spec 0137's enums, one nested and one top-level, both present.
+        assert!(from_index.contains(&"t.Root.Color".to_string()));
+        assert!(from_index.contains(&"t.Mood".to_string()));
+    }
+
+    /// Spec 0197 test 6 (§S3, first cause). A missing sidecar is the
+    /// ordinary case for a hand-built descriptor: eager, and the user is
+    /// told which file to make and how.
+    #[test]
+    fn a_missing_index_falls_back_and_names_the_missing_sidecar() {
+        let fixture = Fixture::new("missing-index");
+        let ctx = fixture.load();
+
+        assert!(ctx.lazy.is_none());
+        let warning = &ctx
+            .fallback
+            .as_ref()
+            .expect("fallback must be recorded")
+            .message;
+        assert!(
+            warning.contains("no index.rkyv beside") && warning.contains("re-run reproto"),
+            "{warning}"
+        );
+    }
+
+    /// Spec 0197 test 7 (§S3, second cause). The load must *degrade*, not
+    /// fail: a version-skewed sidecar is what every existing schema-db
+    /// looks like on the day this ships, and erroring there would make
+    /// the feature a breaking change.
+    #[test]
+    fn a_version_skewed_index_falls_back_without_erroring() {
+        let fixture = Fixture::new("skewed-index").with_version_skewed_index();
+        let ctx = fixture.load();
+
+        assert!(ctx.lazy.is_none());
+        let warning = &ctx
+            .fallback
+            .as_ref()
+            .expect("fallback must be recorded")
+            .message;
+        assert!(
+            warning.contains("unsupported version 99") && warning.contains("re-run reproto"),
+            "{warning}"
+        );
+    }
+
+    /// Spec 0197 test 8 (§S3, third cause / §S7). The sidecar's spans
+    /// index the binary encoding; a `#@` descriptor on disk is not that
+    /// encoding, so a present and perfectly valid sidecar must still be
+    /// declined.
+    #[test]
+    fn a_prototext_descriptor_falls_back_even_with_a_valid_index() {
+        let fixture = Fixture::new("prototext-descriptor")
+            .with_index()
+            .as_prototext();
+        let mut ctx = fixture.load();
+
+        assert!(ctx.lazy.is_none());
+        let warning = ctx
+            .fallback
+            .as_ref()
+            .expect("fallback must be recorded")
+            .message
+            .clone();
+        assert!(warning.contains("is #@ prototext"), "{warning}");
+        // And the eager pool it fell back to is a working one.
+        assert!(ctx.message("t.Root").is_some());
+    }
+
+    /// Spec 0197 test 11 (§S6). The bytes are no longer retained, so the
+    /// hash is recomputed from `source` — and must not have changed
+    /// value, since spec 0117's `descriptor_set_sha256` is written into
+    /// override files that already exist.
+    #[test]
+    fn the_descriptor_hash_is_identical_across_branches() {
+        let lazy = Fixture::new("hash-lazy").with_index();
+        let eager = Fixture::new("hash-eager");
+
+        let from_lazy = lazy.load().descriptor_sha256();
+        let from_eager = eager.load().descriptor_sha256();
+
+        assert_eq!(from_lazy, from_eager);
+        assert_eq!(
+            from_lazy,
+            crate::override_pane::sha256_hex(&encode_fds(&fixture_files()).0),
+            "the hash is still over the canonicalized descriptor bytes"
+        );
+    }
+
+    /// Spec 0197 test 12 (§S6, last paragraph). No `--descriptor-set` at
+    /// all: nothing to be lazy about, nothing to warn about, and the hash
+    /// keeps the value it has always had.
+    #[test]
+    fn the_schemaless_context_has_no_lazy_branch_and_hashes_the_empty_string() {
+        let ctx = DescriptorContext::schemaless();
+
+        assert!(ctx.lazy.is_none());
+        assert!(ctx.fallback.is_none());
+        assert!(ctx.pool().all_messages().next().is_none());
+        assert_eq!(
+            ctx.descriptor_sha256(),
+            crate::override_pane::sha256_hex(&[])
+        );
+    }
+
+    /// Spec 0197 test 14 (§S5, the staleness rule). Overriding a range to
+    /// a type from outside the root's closure loads a file into a pool
+    /// that already has live descriptors handed out of it, which is
+    /// exactly when prost-reflect's `Arc::make_mut` forks it. The wrapper
+    /// registration and the re-render that follow must see the new
+    /// symbol, not the pre-fork snapshot.
+    #[test]
+    fn a_type_loaded_after_the_root_can_still_be_rendered_through() {
+        let fixture = Fixture::new("override-fresh-type").with_index();
+        let mut ctx = fixture.load();
+
+        decode(ROOT_BLOB, &mut ctx, RootType::Named("t.Root"), 2).unwrap();
+
+        // `Stray { s: 9 }`, the payload an override would splice.
+        let stray_blob = [0x08u8, 0x09];
+        let desc = ctx.message("t.Stray").expect("must load on demand");
+        let decoded = render_resolved(&stray_blob, &mut ctx, Some(desc), Vec::new(), 2).unwrap();
+
+        assert_eq!(decoded.root_type, "t.Stray");
+        assert!(
+            decoded.lines.iter().any(|l| l.contains("s: 9")),
+            "the freshly loaded type must render by name: {:?}",
+            decoded.lines
+        );
+    }
+
+    /// Spec 0197 test 13 (§S5). MessageSet expansion resolves a payload
+    /// through an *extension* on the enclosing type, and the file
+    /// declaring that extension need never be in the root's closure —
+    /// `ext_to_file` is the only route to it, which is why
+    /// `load_extension` exists alongside `message`.
+    #[test]
+    fn an_extension_jit_loads_from_outside_the_root_closure() {
+        let fixture = Fixture::new("extension-jit").with_index();
+        let mut ctx = fixture.load();
+
+        ctx.message("t.Root").expect("root must resolve");
+        assert!(
+            ctx.pool()
+                .get_message_by_name("t.Leaf")
+                .expect("Leaf is in the closure")
+                .get_extension(100)
+                .is_none(),
+            "ext.proto is outside the closure, so its extension is not there yet"
+        );
+
+        ctx.load_extension("t.Leaf", 100);
+
+        assert!(
+            ctx.pool()
+                .get_message_by_name("t.Leaf")
+                .expect("Leaf is still there")
+                .get_extension(100)
+                .is_some(),
+            "load_extension must have pulled ext.proto in"
         );
     }
 }

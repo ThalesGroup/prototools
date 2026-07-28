@@ -794,11 +794,10 @@ impl App {
                 Some(slash) => &type_url[slash + 1..],
                 None => type_url.as_str(),
             };
-            return self
-                .ctx
-                .pool()
-                .get_message_by_name(fqdn)
-                .map(|d| d.full_name().to_string());
+            // A `type_url` names any type in the schema, not necessarily
+            // one in the root's file closure — so it JIT-loads (spec 0197
+            // §S5), exactly as `prototext`'s own `Any` loader does.
+            return self.ctx.message(fqdn).map(|d| d.full_name().to_string());
         }
 
         // MessageSet tier 1: the "Item" group wrapper (field 1,
@@ -827,6 +826,10 @@ impl App {
                 let type_id_idx = self.find_sibling(idx, 2)?;
                 let type_id = self.read_varint_field(type_id_idx)?;
                 let grandparent_fqdn = self.tree[grandparent].span.type_fqdn.clone()?;
+                // The extension is declared in whatever file extends the
+                // MessageSet, which need not be in the root closure; the
+                // index's `ext_to_file` names it (spec 0100 §5.1, 0197 §S5).
+                self.ctx.load_extension(&grandparent_fqdn, type_id as u32);
                 let extendee = self.ctx.pool().get_message_by_name(&grandparent_fqdn)?;
                 let ext = extendee.get_extension(type_id as u32)?;
                 if let prost_reflect::Kind::Message(inner) = ext.kind() {
@@ -2591,7 +2594,7 @@ impl App {
             None => (None, None),
             Some("protolens_internal.None") => (None, None),
             Some(name) => {
-                if let Some(desc) = self.ctx.pool().get_message_by_name(name) {
+                if let Some(desc) = self.ctx.message(name) {
                     let ft = if old_span.wire_type == prototext_core::helpers::WT_START_GROUP {
                         Type::Group
                     } else {
@@ -2600,7 +2603,7 @@ impl App {
                     (Some(decode::WrapperTarget::Message(desc)), Some(ft))
                 } else if let Some(prim) = decode::primitive_type_for_keyword(name) {
                     (None, Some(prim))
-                } else if let Some(enum_desc) = self.ctx.pool().get_enum_by_name(name) {
+                } else if let Some(enum_desc) = self.ctx.enumeration(name) {
                     (
                         Some(decode::WrapperTarget::Enum(enum_desc)),
                         Some(Type::Enum),

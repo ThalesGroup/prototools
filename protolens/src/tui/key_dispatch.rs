@@ -746,6 +746,10 @@ impl App {
             self.message = "no declaration to jump to here".to_string();
             return;
         };
+        // JIT-load the name's file before locating it (spec 0197 §S5): on
+        // the lazy branch nothing outside the root closure is in the pool
+        // yet, and `locate_declaration` reads the pool only.
+        self.ctx.message(&fqdn);
         let Some((rel_path, line, col)) = neovim::locate_declaration(self.ctx.pool(), &fqdn) else {
             self.message = format!("unknown type: {fqdn}");
             return;

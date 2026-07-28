@@ -212,6 +212,66 @@ fn splash_auto_dismisses_after_timeout() {
     assert!(!app.splash);
 }
 
+/// Spec 0197 test 9 (§S3, second channel). A TUI launch is exactly the
+/// case where nobody was watching stderr, so the splash pane repeats
+/// the eager-fallback warning.
+#[test]
+fn the_eager_fallback_warning_reaches_the_splash_pane() {
+    let mut app = eager_fallback_app();
+    assert!(app.splash);
+
+    let backend = TestBackend::new(80, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(
+        text.contains("warning:") && text.contains("index.rkyv"),
+        "the splash must name the fallback: {text:?}"
+    );
+}
+
+/// Spec 0197 test 10 (§S3, third channel). The splash pane is gone
+/// after `SPLASH_TIMEOUT`, which is the case the status line covers: a
+/// user who is still reading the document at t+10 s can still find out
+/// why startup was slow.
+///
+/// The bound on this is spec 0147 G5, asserted below: the *first
+/// keypress* clears the status line unconditionally, and that rule is
+/// not carved out for this warning. So the third channel buys
+/// persistence in wall-clock time, not persistence across interaction.
+#[test]
+fn the_eager_fallback_warning_survives_the_splash_timing_out() {
+    let mut app = eager_fallback_app();
+    assert!(
+        app.message.contains("index.rkyv"),
+        "App::new must seed the status line: {:?}",
+        app.message
+    );
+
+    let backend = TestBackend::new(80, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    app.splash_deadline = Instant::now() - Duration::from_millis(1);
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert!(!app.splash, "the splash must have timed out");
+
+    assert!(
+        app.message.contains("index.rkyv"),
+        "the warning must outlive the pane that also showed it: {:?}",
+        app.message
+    );
+
+    // ...but only until the user does something. Spec 0147 G5.
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+    assert!(app.message.is_empty());
+}
+
 /// A message never auto-dismisses while the bottom bar is actively
 /// serving as a text-entry prompt (`command_buffer`) or a pending `q`
 /// quit confirmation — both are actively awaiting a keypress, unlike

@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0197 — the descriptor set is loaded on demand
 
-Status: draft
+Status: implemented
+Implemented in: 2026-07-28
 App: protolens
 Refs: docs/specs/0068-lazy-fds-index.md (the `FdsIndex` artifact),
       docs/specs/0069-lazy-pool.md (`LazyPool`, the prototext original),
@@ -296,11 +297,21 @@ The splash pane alone is not enough exposure. It is a startup screen,
 not a persistent panel: `track_splash_timeout` (`render.rs:785-788`)
 dismisses it after `SPLASH_TIMEOUT = 3 s` (`mod.rs:110`), and the first
 key (`key_dispatch.rs:314`) or mouse event (`mouse.rs:30`) dismisses it
-sooner. A user who starts typing immediately never reads it. So the
-warning is seeded into the status line as well (`app.message`), where it
-stays until the next thing that writes there. Three channels, one text:
-stderr for the scripted run, the splash for the idle start, the status
-line for the impatient one.
+sooner. A user still reading the document at t+10 s has nothing on
+screen to explain the wait. So the warning is seeded into the status
+line as well (`app.message`), where it stays until the next thing that
+writes there. Three channels, one text: stderr for the scripted run, the
+splash for the first three seconds, the status line for the rest of the
+idle period.
+
+What the status line does **not** buy is persistence across
+interaction. Spec 0147 G5 clears `app.message` unconditionally at the
+top of every keypress and every mouse event, and this warning gets no
+exception: a stale-message rule that holds for every other notice would
+stop being a rule if it did. So a user who starts typing immediately
+sees the warning on stderr and in the splash frame that was already
+drawn, and nowhere after that — which is the right trade, since by then
+they have decided the wait was tolerable.
 
 The "rejected" case must not be fatal. A version-skewed `index.rkyv`
 (`check_header` returns "unsupported version N") is exactly the state
@@ -477,9 +488,10 @@ same information.
    the third warning.
 9. **The warning reaches the splash pane.** Render a frame after a
    fallback and assert the pane contains the text.
-10. **The warning survives the splash.** After a fallback, dismiss the
-    splash (a key event) and assert the status line still carries the
-    warning — the ephemerality guard of §S3.
+10. **The warning survives the splash.** After a fallback, let the
+    splash time out and assert the status line still carries the warning
+    — the ephemerality guard of §S3 — and, in the same test, that the
+    next keypress clears it, pinning spec 0147 G5's precedence.
 11. **`:save` hashes identically across branches.** The
     `descriptor_set_sha256` written from a lazy context must equal the
     one written from an eager context over the same descriptor, and both
@@ -508,7 +520,26 @@ recorded in `Measured outcome` — not part of the regression suite, per
 
 ## Measured outcome
 
-(To be filled in on implementation.)
+End to end, googleapis: `googleapis.desc` with its sidecars, blob
+`instances/google/container/v1beta1/ParallelstoreCsiDriverConfig.pb`,
+`--type google.container.v1beta1.ParallelstoreCsiDriverConfig … export /`,
+release build, 2026-07-28. The eager column is the same tree with
+`index.rkyv` moved aside — `hopcroft.rkyv` still present, so the only
+difference is which branch `load` takes.
+
+| | on demand | eager |
+|---|---|---|
+| wall time, four runs | 0.049 / 0.054 / 0.069 / 0.070 s | 3.866 / 3.877 / 3.834 / 3.402 s |
+| peak RSS | 27.5 MB | 978.9 MB |
+
+Roughly 60× on wall time and 36× on resident memory. Both the startup
+`decode_pool` and the exit `drop(pool)` of the baseline table below are
+gone in the same stroke: the pool that is never built is also never
+destroyed, which is why the improvement exceeds the 1 698 ms startup
+figure on its own.
+
+Test-plan items 16-19 are the two columns above; the per-phase costs
+they decompose into are the baseline table, unchanged.
 
 Baseline, googleapis (`googleapis.desc`, 25.6 MB, 7 771 files, 58 777
 types), release build, measured 2026-07-28:

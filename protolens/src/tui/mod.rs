@@ -29,7 +29,7 @@ use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 
 use prototext_core::serialize::render_text::{
@@ -1418,7 +1418,19 @@ impl App {
         theme: ThemeKind,
         proto_root: Option<PathBuf>,
     ) -> Self {
-        let all_type_fqdns = override_pane::all_type_fqdns(ctx.pool());
+        // Spec 0197 §S4: on the lazy branch this reads `index.rkyv`'s
+        // `type_to_file` instead of walking a decoded pool. Same names,
+        // messages and enums alike; it stays eager because it is 11-13 ms
+        // on googleapis either way.
+        let all_type_fqdns = ctx.all_type_fqdns();
+        // Spec 0197 §S3, third channel. The splash pane carries the same
+        // warning, but it is dismissed by the first key — a user who
+        // starts typing straight away would never read it. The status
+        // line survives until the next thing writes there.
+        let fallback_warning = match &ctx.fallback {
+            Some(fallback) => format!("warning: {}", fallback.message),
+            None => String::new(),
+        };
         let tree_len = decoded.tree.len();
         let root_candidates = std::mem::take(&mut decoded.root_candidates);
         let mut line_to_node = vec![None; decoded.lines.len()];
@@ -1567,7 +1579,7 @@ impl App {
             main_area: Rect::default(),
             side_area: Rect::default(),
             cmd_area: None,
-            message: String::new(),
+            message: fallback_warning,
             last_message_seen: String::new(),
             message_deadline: None,
             should_quit: false,

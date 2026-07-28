@@ -14,8 +14,6 @@ use prost_types::{FileDescriptorProto, FileDescriptorSet};
 use prototext_graph::fds_index::ArchivedFdsIndex;
 use rkyv::api::access_unchecked;
 
-use crate::EMBEDDED_DESCRIPTOR;
-
 const MAGIC: &[u8; 8] = b"PTSGRAPH";
 const VERSION: u32 = 4;
 
@@ -85,7 +83,17 @@ impl LazyPool {
     ///
     /// The pool starts empty.  Validates the PTSGRAPH header (version 3)
     /// before the rkyv pointer cast.
-    pub fn open(pb_path: &Path, idx_path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+    ///
+    /// `wkt_fallback` is an encoded `FileDescriptorSet` whose files stand in
+    /// for dependencies absent from the FDS span map.  Callers that build
+    /// self-contained descriptor sets (`protoc --include_imports`, which is
+    /// what `reproto` emits) can pass `&[]`: the fallback branch is then
+    /// unreachable, because every dependency has a span.
+    pub fn open(
+        pb_path: &Path,
+        idx_path: &Path,
+        wkt_fallback: &[u8],
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let raw_file =
             std::fs::File::open(pb_path).map_err(|e| format!("{}: {e}", pb_path.display()))?;
         let idx_file =
@@ -117,7 +125,7 @@ impl LazyPool {
         // (e.g. google/protobuf/*.proto injected by reproto as fallbacks).
         // The FDS version always takes priority: ensure_loaded checks the span
         // map first and only falls back here when no span is found.
-        let wkt_fds = FileDescriptorSet::decode(EMBEDDED_DESCRIPTOR)
+        let wkt_fds = FileDescriptorSet::decode(wkt_fallback)
             .map_err(|e| format!("decoding embedded WKT descriptor: {e}"))?;
         let wkt_fdps: HashMap<String, FileDescriptorProto> = wkt_fds
             .file
@@ -256,6 +264,23 @@ impl LazyPool {
             self.ensure_loaded(file.as_str())?;
         }
         Ok(())
+    }
+
+    /// Every type name the index knows, sorted.
+    ///
+    /// Messages and enums, nested types included — this set is equal to the
+    /// eagerly decoded pool's `all_messages() + all_enums()` (spec 0197 §5),
+    /// so it can serve the override pane's lexicographic list without
+    /// decoding anything.
+    pub fn all_type_fqdns(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .index
+            .type_to_file
+            .keys()
+            .map(|s| s.as_str().to_owned())
+            .collect();
+        names.sort_unstable();
+        names
     }
 
     /// Load every FDP in the index into the pool.

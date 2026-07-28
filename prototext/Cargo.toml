@@ -40,6 +40,7 @@ path = "src/gen_man.rs"
 [dependencies]
 prototext-core  = { path = "../prototext-core", version = "0.3.0", features = ["prost-bug-workaround"] }
 prototext-graph = { path = "../prototext-graph", version = "0.2.1" }
+prototext-schema = { workspace = true }
 memmap2         = "0.9"
 rkyv            = { version = "0.8", features = ["little_endian"] }
 clap            = { version = "4.5", features = ["derive"] }

@@ -100,7 +100,7 @@ impl DescriptorContext {
                     };
 
                 if index_path.exists() {
-                    let lazy = LazyPool::open(p, &index_path)
+                    let lazy = LazyPool::open(p, &index_path, crate::EMBEDDED_DESCRIPTOR)
                         .map_err(|e| format!("opening lazy pool: {e}"))?;
                     Ok(DescriptorContext {
                         pool: None,

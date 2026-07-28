@@ -1862,6 +1862,7 @@ dependencies = [
  "prost-types",
  "prototext-core",
  "prototext-graph",
+ "prototext-schema",
  "ratatui",
  "serde",
  "serde_norway",
@@ -1888,6 +1889,7 @@ dependencies = [
  "prost-types",
  "prototext-core",
  "prototext-graph",
+ "prototext-schema",
  "rkyv",
  "serde",
  "serde_yaml",
@@ -1924,6 +1926,19 @@ dependencies = [
  "smallvec",
  "tempfile",
  "walkdir",
+ "workspace-hack",
+]
+
+[[package]]
+name = "prototext-schema"
+version = "0.1.0"
+dependencies = [
+ "memmap2",
+ "prost",
+ "prost-reflect",
+ "prost-types",
+ "prototext-graph",
+ "rkyv",
  "workspace-hack",
 ]
 
