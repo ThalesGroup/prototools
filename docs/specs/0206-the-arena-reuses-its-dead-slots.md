@@ -26,7 +26,10 @@ Refs: docs/specs/0111-protolens-v1-decode-navigate-extract.md (the arena
       docs/specs/0202-an-override-is-refused-rather-than-fatal.md (the
         headroom guard, which stays),
       docs/specs/0203-the-override-arena-is-compacted.md (`dead`,
-        `mark_dead`, `verify_arena`, and the rejection this revises)
+        `mark_dead`, `verify_arena`, and the rejection this revises),
+      docs/specs/0207-where-the-override-memory-work-stands.md (the
+        wrap-up: the other two transients, and the open questions this
+        spec depends on)
 
 ## Background
 
@@ -49,9 +52,51 @@ end of the `Vec`.
 
 So the change is to hand them back. `tree.len()` then becomes the
 high-water mark of the *live* set and never exceeds it — 4 499 336
-rather than 8 998 671 — and the peak disappears rather than being
+rather than 8 998 671 — and the arena's peak is prevented rather than
 reclaimed. On the measured workload a root retype frees 4.5 M nodes and
 draws 4.5 M back, growing by nothing.
+
+### What this does not fix, and how much of the peak it leaves
+
+The first draft of this spec said the process peak disappears. It does
+not, and the correction matters enough to state before the goals.
+
+A root retype has three large transients live at once, and the arena is
+only one of them:
+
+| transient | on a 4 499 336-node root retype |
+|---|---|
+| the arena's second copy | ~1.37 GB, at ~305 B/node — **what this spec removes** |
+| `local_tree` (`override_apply.rs:2566`) | 4.5 M × 264 B = 1.19 GB |
+| `render_cache`'s clone of the render | 4.5 M × `size_of::<NodeSpan>()` = 432 MB, plus a second `Vec<String>` of every rendered line |
+
+`local_tree` is `build_tree`'s output, built in full before the push
+loop at `:2567` consumes it, and `Vec` does not release its buffer
+incrementally — so all 1.19 GB stays resident until the loop ends,
+which is precisely when the arena is also at its widest. The render
+cache's copy comes from `:2908`'s `value.clone()` on a miss and
+`render_cache.rs:77`'s clone on a hit, so it is paid on every path.
+
+The arithmetic, stated so it can be checked rather than believed. The
+arena at 0203's peak is 8 998 671 × ~305 B = 2.74 GB; plus
+`local_tree`'s 1.19 GB that is 3.93 GB, against a measured 3.9–4.0
+GiB. The two largest transients therefore account for the whole
+observed figure on their own — which means the render cache's 432 MB
+is *not* visible in it, and one of three things is true: the
+~305 B/node estimate is generous, the sampling window missed the
+insert, or the cache had been evicted. That discrepancy is not
+resolved and should be resolved by the measurement this spec produces,
+rather than reasoned about now.
+
+Removing the arena's garbage half leaves 1.37 GB of arena plus
+`local_tree`'s 1.19 GB, so the expected peak under this spec is around
+2.6 GB — not the size of the live set.
+
+The other two are separate work, deliberately not folded in here: they
+are changes to the *splice*, whereas this spec is a change to the
+*allocator*, and the in-place variant of `local_tree` depends on this
+spec having landed first (a node can only be built in place once its
+destination slot is known). Both are carried in spec 0207.
 
 ### Why the earlier rejections no longer hold
 
@@ -105,12 +150,19 @@ policy, or a coalescing rule.
 ## Goals
 
 - **G1.** `tree.len()` never exceeds the high-water mark of the live
-  set. The transient double of a retype is removed, not reclaimed.
+  set. The arena's transient double on a retype is removed, not
+  reclaimed. This is a goal about the arena; the process peak is
+  addressed only in proportion (see "What this does not fix").
 - **G2.** There is exactly one record of which slots are free. `dead`
   is it; no second structure exists that can disagree with it.
-- **G3.** Allocation adds no term to a batch that the batch does not
-  already pay. The scan is amortized across the batch's own
-  allocations, never repeated per node.
+- **G3.** In the expected case allocation adds no term to a batch that
+  the batch does not already pay: the cursor is monotone, so the scan
+  is amortized across the batch's own allocations rather than repeated
+  per node. This is not a worst-case claim. A batch that frees little,
+  allocates little, and meets an arena whose holes are all high pays
+  an `O(tree.len())` scan for a handful of slots. That shape is
+  admitted rather than prevented, and the summary level that would
+  bound it is N5.
 - **G4.** Nothing user-visible changes: the rendered document, the
   cursor, the folds, the heat cues and the override entries are what
   they were.
@@ -168,11 +220,32 @@ Allocation is a scan over the bitmap, guided by one cursor:
 
 - `free_cursor: usize`, with the invariant **no free slot exists below
   `free_cursor`**.
-- `alloc_slot()` advances `free_cursor` to the first set flag, clears
-  it, decrements `dead_count`, and returns the index. If it reaches
-  `tree.len()`, it falls back to `tree.push` and the parallel arrays
-  grow with it.
 - `mark_dead(idx)` lowers `free_cursor` to `min(free_cursor, idx)`.
+- `alloc_slots(n) -> Vec<u32>` returns `n` slot indices. It advances
+  `free_cursor` to each successive set flag, clearing it and
+  decrementing `dead_count`; when the cursor reaches `tree.len()` the
+  remaining `k` slots are the range `tree.len()..tree.len() + k`,
+  reserved by growing `tree`, `heat_states`, `dead` and `descend`
+  together.
+
+The plural form is not a convenience. A single `alloc_slot()` cannot
+"fall back to `tree.push`", because at the moment a slot is reserved
+there is no `TreeNode` to push: `TreeNode` derives only `Debug`
+(`decode.rs:479`) — no `Default`, no `Clone` — and S3 requires every
+slot to be known *before* the first node is written. Reservation and
+writing are therefore two steps, and the tail has to be reserved by
+resizing arrays that can be resized (`heat_states`, `dead`, `descend`)
+while `tree` itself is grown by the push loop that follows, which fills
+exactly those indices in order. Whichever way the implementation
+arranges that, it must state the arrangement: this is the one place
+where "reserved" and "initialized" come apart, and a panic between the
+two would leave the arena short.
+
+An alternative that avoids the split is to give `TreeNode` a cheap
+`Default` (all links `None`, an empty span) and reserve the tail with
+`resize_with`. It costs one write per fresh node that the push loop
+immediately overwrites. Worth taking if the two-step version turns out
+to need a guard.
 
 Lowering the cursor is always sound; raising it past a free slot is the
 only way to break the invariant. `relocate_node` fills holes and can
@@ -220,27 +293,45 @@ change together:
 - `(base..base + local_len).find(...)` (`:2690`).
 
 `base` is replaced by `slots: Vec<u32>`, of length `local_len`,
-obtained by calling `alloc_slot()` `local_len` times **before** the
-push loop begins. Up front rather than per node, because `build_tree`
-emits a post-order local tree whose nodes name each other in both
-directions: `translate` resolves forward references, so every slot must
-be known before the first node is written.
+obtained from one `alloc_slots(local_len)` call **before** the push
+loop begins. Up front rather than per node, because `build_tree` emits
+a post-order local tree whose nodes name each other in both directions:
+`translate` resolves forward references, so every slot must be known
+before the first node is written.
 
 Then `translate = |o| o.map(|i| slots[i] as usize)`, the parent case
 takes the same map, `new_self_idx = slots[local_root_idx]`, and the
-document-order scan iterates `slots` instead of a range.
+document-order scan at `:2690` iterates `slots` instead of a range.
+
+`slots` is itself a transient the arena did not previously carry: 4 B
+per local node, 18 MB on a root retype, and `translate` gathers from it
+at random on the batch's hot path. Small against the 1.19 GB
+`local_tree` beside it, and it disappears entirely if spec 0207's
+in-place construction lands (`build_tree` would emit global indices
+directly and there would be nothing to translate) — but it is a real
+term and it is what the "Alternatives considered" extent argument turns
+on, so it is stated here rather than left implicit.
 
 `mark_fresh_subtree(base, path)` (`:1375`, called at `:1659`) takes the
 slot list instead of a base, and `collect_descend_targets` is given
-that list rather than the range `base..tree.len()`.
+that list rather than the range `base..tree.len()`. Its
+`if self.tree.len() <= base { return; }` guard (`:1376`) goes with the
+base: under reuse `tree.len()` does not grow, so the guard as written
+would fire on the common case and mark nothing at all. See S4.
 
 The local root's slot is allocated and then immediately marked dead at
 `:2638`, as today — its span and child links are folded into the
-surviving `tree[idx]` and it is never referenced again (spec 0118 §7).
-Allocating a slot only to free it is deliberate: the node has to be
-materialized somewhere in order to be read at `:2639` and `:2646-2647`,
-and special-casing it would buy one slot per splice at the cost of a
-second code path through the translation.
+surviving `tree[idx]` (spec 0118 §7). Allocating a slot only to free it
+is deliberate: the node has to be materialized somewhere in order to be
+read, and special-casing it would buy one slot per splice at the cost
+of a second code path through the translation.
+
+That slot is read *after* it is freed, which under reuse is no longer
+a free action. `:2639` (`span.clone()`), `:2646-2647` (the child links)
+and `:2689` (`self.tree[new_self_idx].doc_next`, fifty lines later)
+all dereference a slot that `dead` already advertises as available.
+Nothing allocates in between today, so it is correct today; it is
+correct only by accident of ordering, and S5 states the constraint.
 
 ### S4. `descend`'s watermark survives, and why
 
@@ -250,14 +341,36 @@ arena prefix already examined for descent targets.
 examines only `scanned..tree.len()`. That identity assumes the arena
 grows only at the end, which is exactly what this spec stops.
 
-It nevertheless holds, for a reason worth stating rather than assuming.
-`descend.len()` is kept equal to `tree.len()` by the `resize` at
-`:1343` and `:1379`, so the unexamined suffix is empty whenever the
-arena did not grow — which under reuse is the normal case. Fresh nodes
-landing in reused slots are not covered by that range, and are instead
-marked explicitly by `mark_fresh_subtree`, which S3 gives the actual
-slot list. Every fresh node is therefore examined exactly once, by
-name.
+It nevertheless holds, for a reason worth stating rather than assuming
+— and the reason is not the one an earlier draft of this section gave.
+
+`descend.len() == tree.len()` is **not** a standing invariant.
+`descend` is `Vec::new()` at construction (`mod.rs:1564`) while the
+arena is already full, so before the first batch the watermark is 0 and
+the whole arena is unexamined, which is exactly what the watermark is
+for. What is true is narrower: the `resize` calls at `:1343` and
+`:1379` raise `descend.len()` to `tree.len()` whenever they run, so
+*after* a batch the two agree. Under reuse `tree.len()` does not grow,
+so both resizes become no-ops, `scanned == tree.len()`, and
+`collect_descend_targets(scanned, tree.len())` scans an empty range.
+That is the intended outcome, not a degradation.
+
+Fresh nodes landing in reused slots are not covered by that range and
+are instead marked explicitly by `mark_fresh_subtree`, which S3 gives
+the actual slot list. Every fresh node is therefore examined exactly
+once, by name. This is load-bearing rather than incidental: with the
+suffix empty, `mark_fresh_subtree` becomes the *only* thing that marks
+a fresh node, where today the suffix scan would have caught it anyway.
+Its `tree.len() <= base` early return (`:1376`) must go with the base
+for the same reason — under reuse it would fire on every splice.
+
+The claim that spec 0188's other two per-node target sources need no
+re-examination (a node's auto-expand eligibility, and `rendered_as`
+going `None` → `Some`) was checked against `compute_descend_marks`'s
+own reasoning only. It has *not* been checked against the
+override-activation path, which is where a source could change without
+the node being re-decoded. That verification is a precondition of
+implementing this section.
 
 What remains is the stale mark a reused slot inherits. Spec 0183 L3
 records the asymmetry that settles it: **over-marking costs a wasted
@@ -282,15 +395,40 @@ and nothing in slot granularity touches it.
 Three things address it, in decreasing order of weight.
 
 **The window is one splice long, and auditable.** `mark_dead` runs at
-`:2436` and the first `alloc_slot` at `:2555`. Every index computed
+`:2436` and the first allocation at `:2555`. Every index computed
 before the free and read after the allocation is a candidate. The audit
-is over that span of one function, not over the program: `after`,
-`packed_next_sibling_of_run` and `packed_run_is_last_child` are the
-indices that cross it, and each must be shown to lie outside the freed
-set (`after` is the document-order successor of the old subtree;
-`packed_next_sibling_of_run` is past the absorbed run). This audit is
-part of the implementation, and its conclusion belongs in a comment at
-`:2436` where the free happens.
+is over that span of one function, not over the program: `after` and
+`packed_next_sibling_of_run` are the indices that cross it, and each
+must be shown to lie outside the freed set (`after` is the
+document-order successor of the old subtree; `packed_next_sibling_of_
+run` is past the absorbed run, captured at `:2389` *before* the free).
+`packed_run_is_last_child` is a `bool`, not an index, and carries no
+aliasing risk. This audit is part of the implementation, and its
+conclusion belongs in a comment at `:2436` where the free happens.
+
+**Two orderings inside the splice become load-bearing.** Both are
+satisfied by the code as it stands, and neither is stated anywhere,
+which is the problem: an innocuous reordering would break them
+silently.
+
+1. *Everything that reads a freed node's links must precede the first
+   allocation.* `doc_next_after_subtree` (`:2479`) walks
+   `doc_next` chains **through** the freed subtree to find the seam,
+   and the holder repair (`:2454-2467`) tests `cursor`, `first_node`,
+   `override_target` and `pending_heat_recheck` against
+   `old_descendants`. Both run on slots `dead` has already released.
+   They are at `:2454-2479` and allocation is at `:2555`, so the order
+   holds — by fifty lines of unrelated code, not by construction.
+2. *The local root's slot must not be reallocated between `:2638` and
+   `:2689.`* It is marked dead at `:2638` and read at `:2639`,
+   `:2646-2647` and `:2689`. No allocation intervenes within one
+   splice, and a nested splice (spec 0118) is a separate call that
+   cannot begin mid-function. Still true, still unstated.
+
+The cheapest way to make both durable is to assert them rather than
+comment them: a debug-only "no allocation has occurred since" counter
+checked at `:2479` and `:2689` costs nothing in release and fails
+loudly on the reordering that would otherwise be silent.
 
 **The invariant is checked continuously.** W2 — every link field and
 every index holder names a live node — is precisely the property that
@@ -336,6 +474,18 @@ Two changes:
   — to gain one slot. Shrink-to-exact next to an allocator that reuses
   is the classic ping-pong.
 - Truncation must clamp `free_cursor`, per S1.
+
+`reset_compaction` (`compact.rs:271`) becomes load-bearing, and S6 has
+to say so. `splice_override` calls it at `:2362` to abandon a
+half-finished pass, because a pass's two cursors were taken against an
+arena that has since changed underneath them. That call is today an
+optimization — an abandoned pass leaves a partially compacted but
+entirely consistent arena. Under reuse it is a correctness
+requirement: a live pass and the allocator are two writers of `dead`,
+and `relocate_node` clears a flag the allocator may have just cleared
+for a slot it is about to fill. Test-plan item 3 exists for exactly
+this, and the call site deserves a comment saying which of the two
+roles it is playing.
 
 The shrink policy is future work (N2), and the design is recorded here
 so it is not rederived: release only when `live * 4 <= capacity`, and
@@ -390,10 +540,13 @@ under test.
    audit as a test: cursor, first node, override target, folds and
    heat rechecks all name the right content after a retype that frees
    and reallocates around them.
-7. The spec 0202 reproduction, extended: the same three
-   `t`/`Enter`/`o`/`d` cycles on a doubled `googleapis.desc`, asserting
-   the *peak* rather than the settled figure. This is the measurement
-   spec 0203 could not make.
+Item 7 is not a test. The spec 0202 reproduction — the same three
+`t`/`Enter`/`o`/`d` cycles on a doubled `googleapis.desc` under the pty
+driver, sampling peak RSS rather than the settled figure — is a manual
+measurement, and it belongs under "Measured outcome". No fixture
+reaches the scale at which the arena's peak is observable, which is
+also why S5 requires the verifier to be reachable from the shipping
+binary.
 
 ## Alternatives considered
 
@@ -459,7 +612,11 @@ The figures to report, against the spec 0203 baseline of a flat
 
 - `tree.len()` at batch start and end, expected equal;
 - peak RSS during a batch, against the 3.9–4.0 GiB spec 0203 leaves
-  unchanged — this is the number the spec exists for;
+  unchanged. Expected around 2.6 GB, **not** the live-set size: this
+  spec removes one of three concurrent transients, and "What this does
+  not fix" itemizes the other two. A result near the live set would
+  mean the accounting there is wrong, and is as interesting as a
+  result near 2.6 GB;
 - settled RSS across six batches, against 2594 → 2722 MiB, which
   includes a +128 MiB drift spec 0203 could not attribute to the arena
   and which this spec does not claim to fix;

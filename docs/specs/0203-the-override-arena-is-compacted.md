@@ -28,7 +28,9 @@ Refs: docs/specs/0118-protolens-recursive-override-rendering.md (§7, a
         stop-gap this replaces),
       docs/specs/0206-the-arena-reuses-its-dead-slots.md (slot reuse,
         which revises the free-list rejection below and narrows this
-        spec's job)
+        spec's job),
+      docs/specs/0207-where-the-override-memory-work-stands.md (the
+        wrap-up: what this spec's N2 peak is actually made of)
 
 ## Background
 
@@ -59,26 +61,35 @@ which argument failed is worth recording.
 The cheaper fix is to push each splice's superseded subtree onto a
 free list and reuse those slots.
 
-**It does not bound memory.** ~~A free list is subject to external
-fragmentation, and the arena's allocation pattern is close to the
-worst case for it: subtrees are *contiguous extents* of wildly
-different sizes (measured: 260 944 nodes for `/5767` down to single
-nodes), and a freed extent can only be reused by a request that fits
-inside it. A 27 000-node hole satisfying a 30 000-node request is
-worth nothing.~~
+**It does not bound memory.** As written, this ground held that a free
+list is subject to external fragmentation, the arena's allocation
+pattern being close to the worst case for it: subtrees are *contiguous
+extents* of wildly different sizes (measured: 260 944 nodes for `/5767`
+down to single nodes), a freed extent can only be reused by a request
+that fits inside it, and a 27 000-node hole satisfying a 30 000-node
+request is worth nothing.
 
-Void as written. It is an argument about *extents*, and the arena does
-not allocate extents — it allocates slots, every one an identical
-264-byte `TreeNode`. At slot granularity a hole always fits a request,
-so external fragmentation cannot occur. The extent framing came from
-the splice's affine addressing (`translate = |i| i + base`), which is
-self-imposed and which spec 0206 replaces.
+Void as written (revised 2026-07-28). It is an argument about
+*extents*, and the arena does not allocate extents — it allocates
+slots, every one an identical 264-byte `TreeNode`. At slot granularity
+a hole always fits a request, so external fragmentation cannot occur.
+The extent framing came from the splice's affine addressing
+(`translate = |i| i + base`), which is self-imposed and which spec 0206
+replaces.
 
 The bound is in fact the other way round. Because `splice_override`
 frees before it allocates, reuse holds `tree.len()` at the high-water
-mark of the *live* set — 4 499 336 rather than 8 998 671 — which is
-tighter than what compaction achieves, since it prevents the peak
-instead of reclaiming after it. That peak is this spec's own N2.
+mark of the *live* set — 4 499 336 rather than 8 998 671 — tighter than
+what compaction achieves *for the arena*, since it prevents the arena's
+peak instead of reclaiming after it. That peak is this spec's own N2.
+
+It does not follow that the *process* peak goes with it, and the second
+revision of this paragraph is where that was noticed. A splice also
+materializes `local_tree`, a second full `Vec<TreeNode>` living outside
+the arena (`override_apply.rs:2566`), and the render it is built from
+is held twice over by `render_cache`. Spec 0206's Background carries
+the arithmetic. The point here is only that "reuse bounds the arena"
+and "reuse bounds the process" are different claims.
 
 **It has no checkable postcondition.** Half right. There is indeed no
 "the arena now holds exactly the live set" moment, which is
