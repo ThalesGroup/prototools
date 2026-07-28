@@ -133,3 +133,13 @@ flag2: false
 # <- attribute
 #    ^ punctuation.delimiter
 #        ^ boolean
+
+h: "\022#tail"  #@ bytes
+# <- attribute
+#    ^ string.escape
+#       ^ string
+#               ^ comment
+i: 'has # hash'  # real
+# <- attribute
+#       ^ string
+#                ^ comment

@@ -464,6 +464,54 @@ mod tests {
     }
 
     #[test]
+    fn a_hash_inside_a_string_is_an_ordinary_character() {
+        // Spec 0201 S1. `comment` is an `extra`, and tree-sitter offers
+        // extras in every lex state — including the ones between a
+        // string's own tokens. At a `#` the contents token could only
+        // reach the next backslash while `comment` reached end of line,
+        // so longest match gave the rest of the payload to `comment` and
+        // the string ran on past its closing quote into the next line.
+        let text = "4: \"\\022#\\n\\rexport_x\"  #@ bytes = 4\nnext_field: 1\n";
+        // `find` reaches the `#` inside the string before the real one.
+        assert_eq!(roles_across(text, "#"), vec![SyntaxRole::StringLiteral]);
+        assert_eq!(
+            roles_across(text, "export_x"),
+            vec![SyntaxRole::StringLiteral]
+        );
+        assert_eq!(roles_at(text, "#@ bytes = 4"), vec![SyntaxRole::Comment]);
+        // The string closed, so the following line is still a field.
+        assert_eq!(roles_at(text, "next_field"), vec![SyntaxRole::Attribute]);
+
+        // A `#` in an ordinary run, and one in a single-quoted string.
+        for (text, needle) in [
+            ("s: \"trail#\"  # real\n", "trail#"),
+            ("s: 'has # hash'  # real\n", "has # hash"),
+        ] {
+            assert_eq!(roles_across(text, needle), vec![SyntaxRole::StringLiteral]);
+            assert_eq!(roles_at(text, "# real"), vec![SyntaxRole::Comment]);
+        }
+    }
+
+    #[test]
+    fn a_space_after_an_escape_stays_inside_the_string() {
+        // Spec 0201 G2, the same lex state boundary: the space starting
+        // a contents run was skipped as a whitespace `extra` rather than
+        // taken into the string.
+        let text = "b: \"p\\n q\"\n";
+        assert_eq!(roles_across(text, " q"), vec![SyntaxRole::StringLiteral]);
+    }
+
+    #[test]
+    fn adjacent_strings_still_concatenate() {
+        // Spec 0201 test 3: raising the string body's token precedence
+        // must not disturb the whitespace *between* two strings, which
+        // `scalar_value`'s `repeat1($.string)` needs.
+        let text = "a: \"x\" \"y\"\n";
+        assert_eq!(roles_at(text, "\"x\""), vec![SyntaxRole::StringLiteral]);
+        assert_eq!(roles_at(text, "\"y\""), vec![SyntaxRole::StringLiteral]);
+    }
+
+    #[test]
     fn an_identifier_after_a_number_keeps_its_first_letter() {
         // Spec 0196 S3. `exp`'s leading `token(prec(2, /[Ee][-+]?/))`
         // outranked `identifier` — tree-sitter compares explicit token

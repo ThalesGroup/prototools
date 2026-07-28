@@ -17,6 +17,13 @@
 // `float`, and above `extras`. Tracking upstream would reintroduce
 // them, which is a second reason this copy is vendored rather than
 // fetched.
+//
+// docs/specs/0201-a-hash-inside-a-string-is-not-a-comment.md then fixed
+// an eighth, also upstream's: a `#` inside a quoted string started a
+// `comment`, because comments are `extras` and extras are offered in
+// every lex state — including the states between a string's own tokens.
+// See the "Local fix (spec 0201 S1)" comment at
+// `single_string_contents`.
 
 // https://protobuf.dev/reference/protobuf/textformat-spec/
 
@@ -185,10 +192,24 @@ module.exports = grammar({
       '"',
     ),
 
-    single_string_contents: $ => /[^\n'\\]+/,
-    double_string_contents: $ => /[^\n"\\]+/,
+    // Local fix (spec 0201 S1): the `prec(1, …)` is not upstream's. A
+    // string is not one token — `double_string` is `seq('"', repeat(…),
+    // '"')` — so there is a lex state between its inner tokens, and
+    // tree-sitter offers every `extra` as a candidate in every lex
+    // state. At a `#` inside a string, the contents token could only
+    // reach the next backslash while `comment` reached end of line;
+    // longest match handed the rest of the payload to `comment`, and the
+    // string then ran on past its own closing quote. Explicit token
+    // precedence is compared *before* match length, so precedence 1
+    // settles that contest — and only that one, since these tokens are
+    // valid in no state outside a string body. It also keeps a leading
+    // space from being skipped as a whitespace extra: `"p\n q"`'s space
+    // now belongs to the string.
+    single_string_contents: $ => token(prec(1, /[^\n'\\]+/)),
+    double_string_contents: $ => token(prec(1, /[^\n"\\]+/)),
 
-    // Local fix (spec 0196 S1/S2). Three defects in upstream's own
+    // Local fix (spec 0196 S1/S2, and the `prec(1, …)` of spec 0201 S1 —
+    // see `double_string_contents` above). Three defects in upstream's own
     // version of this rule:
     //
     //   1. Its character-escape list spelled `"\\\""` and `'\\"'`, which
@@ -213,14 +234,14 @@ module.exports = grammar({
     // contents, so they are inlined as the character classes they were.
     // Nothing outside this rule referenced them (`highlights.scm`
     // captures `(string_escape)` whole).
-    string_escape: $ => token(choice(
+    string_escape: $ => token(prec(1, choice(
       seq("\\", /[abfnrtv?'"\\]/),
       seq("\\", /[0-7]/, optional(/[0-7]/), optional(/[0-7]/)),
       seq("\\x", /[0-9A-Fa-f]/, optional(/[0-9A-Fa-f]/)),
       seq("\\u", /[0-9A-Fa-f]{4}/),
       seq("\\U000", /[0-9A-Fa-f]{5}/),
       seq("\\U0010", /[0-9A-Fa-f]{4}/),
-    )),
+    ))),
 
     number: $ => choice(
       $.dec_int,
