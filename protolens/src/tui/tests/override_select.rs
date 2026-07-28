@@ -2008,3 +2008,48 @@ fn esc_after_several_previews_reverts_to_original_content() {
     assert_eq!(app.lines, original_lines);
     assert_eq!(app.tree[inner_idx].span.type_fqdn, original_type_fqdn);
 }
+
+/// Spec 0194 test-plan item 9 (S8). Every node-level jump goes through
+/// `set_cursor`, whose job is now to put the caret on the row's first
+/// non-blank — landing on a new row with the caret still at the old
+/// row's column would be arbitrary.
+#[test]
+fn a_node_level_jump_puts_the_caret_on_the_first_non_blank() {
+    let (mut app, items) = repeated_message_fixture();
+    app.set_cursor(items[0]);
+    app.caret_to_line_end();
+    assert!(app.cursor_column > 0, "the caret starts away from the edge");
+
+    app.first_child_move();
+    assert_ne!(app.cursor, items[0]);
+    assert_eq!(app.cursor_column, app.caret_bounds().0);
+    assert_eq!(app.desired_column, app.cursor_column);
+
+    app.caret_to_line_end();
+    app.parent_move();
+    assert_eq!(app.cursor, items[0]);
+    assert_eq!(app.cursor_column, app.caret_bounds().0);
+}
+
+/// Spec 0194 test-plan item 10 (S8). A search hit is the one jump that
+/// knows a better column than the row's start: the match's own first
+/// character. A match reaching back into the indentation still clamps,
+/// since the indentation is unreachable (S3).
+#[test]
+fn a_search_hit_puts_the_caret_on_the_match() {
+    let mut app = sibling_leaves_app(&["alpha: 1", "  beta: 2"]);
+
+    app.jump_to_match(SearchDir::Forward, "beta");
+    assert_eq!(app.cursor, 1);
+    assert_eq!(app.cursor_column, 2, "on the match's first character");
+    assert_eq!(app.desired_column, 2);
+
+    // Within the row the caret still follows the match.
+    app.jump_to_match(SearchDir::Forward, "2");
+    assert_eq!(app.cursor, 1);
+    assert_eq!(app.cursor_column, "  beta: ".chars().count());
+
+    // A pattern whose first character is in the indentation clamps.
+    app.jump_to_match(SearchDir::Forward, " beta");
+    assert_eq!(app.cursor_column, 2, "clamped onto the first non-blank");
+}

@@ -286,12 +286,20 @@ impl SearchPattern {
     }
 
     pub(super) fn is_match(&self, haystack: &str) -> bool {
+        self.find(haystack).is_some()
+    }
+
+    /// Byte offset of the first match in `haystack`, which spec 0194 S8
+    /// needs so a search hit can put the caret on the match rather than
+    /// merely on its row.
+    pub(super) fn find(&self, haystack: &str) -> Option<usize> {
         if self.case_sensitive {
-            return haystack.contains(&self.needle);
+            return haystack.find(&self.needle);
         }
         haystack
             .char_indices()
-            .any(|(i, _)| starts_with_folded(&haystack[i..], &self.needle))
+            .find(|&(i, _)| starts_with_folded(&haystack[i..], &self.needle))
+            .map(|(i, _)| i)
     }
 }
 
@@ -562,13 +570,20 @@ enum ExportChord {
 const HELP_TEXT: &[&str] = &[
     "protolens — key bindings",
     "",
-    "Movement",
+    "Movement — unshifted moves in the text, shifted moves in the tree",
+    "  h / Left         caret one character left (stops at first",
+    "                   non-blank)",
+    "  l / Right        caret one character right (stops at the end of",
+    "                   the heat cue)",
+    "  0 / ^            caret to first non-blank",
+    "  $                caret to last reachable column",
+    "  %                jump between the cursor node's { and }",
     "  j / Down         next node (document order)",
     "  k / Up           previous node",
     "  J / Shift-Down   next sibling",
     "  K / Shift-Up     previous sibling",
-    "  h / Left         close node, or move to parent",
-    "  l / Right        open node, or move to first child",
+    "  H / Shift-Left / Backspace   move to parent",
+    "  L / Shift-Right  move to first child",
     "  Home / gg        jump to first node",
     "  End / G          jump to last visible node",
     "  PageDown         scroll down one page",
@@ -584,9 +599,9 @@ const HELP_TEXT: &[&str] = &[
     "                   OS clipboard; Esc clears the selection",
     "",
     "Fold / unfold",
-    "  z / Space        toggle fold on the node under the cursor",
-    "  H / Shift-Left   fold all siblings at this level",
-    "  Shift-Right      unfold all siblings at this level",
+    "  Space / za       toggle fold on the node under the cursor",
+    "  zc / zo          close / open that node's fold",
+    "  zA / zC / zO     the same three, for all siblings at this level",
     "",
     "Display",
     "  a                toggle main-pane #@ annotation display",
@@ -618,7 +633,8 @@ const HELP_TEXT: &[&str] = &[
     "                   current, possibly-overridden rendering)",
     "  ?                search backward",
     "  n                repeat the last search, same direction",
-    "  p                repeat the last search, opposite direction",
+    "  N                repeat the last search, opposite direction",
+    "  (a hit puts the caret on the match itself)",
     "  (confirming / or ? with no typed pattern reuses the last one)",
     "",
     "Override pane",
@@ -628,7 +644,7 @@ const HELP_TEXT: &[&str] = &[
     "                   override pane (while it is open)",
     "  i                toggle candidate sort: inferred score (default)",
     "                   or alphanumeric",
-    "  /  ?  n  p       search / search backward / repeat / repeat",
+    "  /  ?  n  N       search / search backward / repeat / repeat",
     "                   opposite direction (pane focused)",
     "  j/k, PageUp/Down, Home/End   move the highlighted candidate",
     "                   (pane focused)",
@@ -659,7 +675,7 @@ const HELP_TEXT: &[&str] = &[
     "  Ctrl-Left/Ctrl-Right         pan the pane horizontally",
     "  Ctrl-Up/Ctrl-Down            pan the pane vertically, highlight",
     "                   stays in view",
-    "  /  ?  n  p       search / search backward / repeat / repeat",
+    "  /  ?  n  N       search / search backward / repeat / repeat",
     "                   opposite direction",
     "  a / Space        toggle the highlighted entry active/inactive",
     "  A / Shift-Space  same, but also cascades the new state to every",
@@ -737,10 +753,21 @@ pub(super) struct PreviewOverlay {
 /// line of the committed document or a line of the preview overlay
 /// standing in for it. Overlay rows have no node, hence no heat cue, no
 /// override hint, no fold marker and no selection (S4).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum DisplayRow {
     Committed(usize),
     Overlay(usize),
+}
+
+/// Spec 0194 S10: a whole cursor position — the node, which of its two
+/// lines the cursor rests on (spec 0142's half-coordinate), and the
+/// caret's column within that line. What the jumplist stores, so that
+/// `Ctrl-o` returns to a *place* rather than to a node.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) struct CursorPos {
+    node: usize,
+    footer: bool,
+    column: usize,
 }
 
 /// Owns all cursor/fold/scroll/jumplist state — kept separate from
@@ -909,6 +936,30 @@ pub struct App {
     /// "acts as if on the opening bracket" requirement with no extra
     /// redirection.
     cursor_footer: bool,
+    /// Spec 0194 S1: where the caret rests along the cursor row's
+    /// *caret track* — the row's own text (`row_text`, fold margin
+    /// excluded) followed by its heat suffix, counted in `char`s.
+    ///
+    /// Deliberately neither a screen column nor an offset into
+    /// `row_content`: the fold gutter's width and the horizontal pan are
+    /// display transforms `render` already applies, and folding them in
+    /// here would make the caret slide across characters whenever the
+    /// user pans (spec 0194 A4).
+    cursor_column: usize,
+    /// Spec 0194 S5: the column vertical movement tries to return to.
+    /// Set by every *horizontal* move and left alone by every vertical
+    /// one, so crossing a short row and coming back restores the
+    /// original column — vim's rule.
+    desired_column: usize,
+    /// Spec 0194 S1/S3: how many characters the heat suffix contributed
+    /// to the cursor row's caret track in the last frame drawn, which is
+    /// how far right of the text `l`/`$` may go.
+    ///
+    /// Read off the frame rather than recomputed on demand because
+    /// resolving a row's cue is `&mut self` (it populates the heat
+    /// caches and can enqueue work), and a keypress must not do that.
+    /// The text half of the range is computed exactly, every time.
+    caret_suffix_len: usize,
     /// Incremented every time `self.cursor` changes (via `set_cursor`),
     /// regardless of whether the new value differs from any prior one —
     /// a real "did the cursor move since X" signal (spec-0117-adjacent
@@ -1235,14 +1286,21 @@ pub struct App {
     /// Management pane's visible row count as of the last
     /// `render_manage_pane()` call — basis for `PageUp`/`PageDown`.
     manage_list_height: usize,
-    back_stack: Vec<usize>,
-    fwd_stack: Vec<usize>,
+    /// Spec 0194 S10: whole cursor *positions*, not bare node indices —
+    /// so `Ctrl-o` returns to the character the user was reading, and to
+    /// the right half of a bracketed node.
+    back_stack: Vec<CursorPos>,
+    fwd_stack: Vec<CursorPos>,
     /// Document-order first node — `Home`/`gg` target.
     first_node: usize,
     /// Set by a first `g` press, consumed (and cleared) by a second `g`
     /// press within the very next keystroke (`gg` chord, vim-style); any
     /// other key clears it.
     pending_g: bool,
+    /// Spec 0194 S6: set by a `z` press, consumed by the next key —
+    /// vim's fold prefix (`za`/`zc`/`zo` and their sibling-wide
+    /// capitals). Same shape as `pending_g` above.
+    pending_z: bool,
     /// Export-chord leader state (spec 0156 G3): `None` (no chord
     /// armed), `Leader` (a lone `x` was just pressed), `Descriptor`
     /// (`xd` was just pressed — one more key selects binary vs.
@@ -1427,6 +1485,9 @@ impl App {
             pending_patch_min_line: None,
             cursor,
             cursor_footer: false,
+            cursor_column: 0,
+            desired_column: 0,
+            caret_suffix_len: 0,
             cursor_moves: 0,
             select_anchor: None,
             select_end: None,
@@ -1490,6 +1551,7 @@ impl App {
             fwd_stack: Vec::new(),
             first_node: cursor,
             pending_g: false,
+            pending_z: false,
             pending_x: ExportChord::None,
             command_buffer: None,
             command_kind: CommandLineKind::Command,
@@ -2073,10 +2135,15 @@ where
 {
     restore_terminal();
     // `Terminal::draw()` hides the hardware cursor unless the render
-    // callback calls `Frame::set_cursor_position()` — which protolens never
-    // does — so the last `draw()` call before this suspend left it hidden.
-    // Without this, the shell prompt gets no visible cursor after `fg`
-    // (feedback, 2026-07-16).
+    // callback calls `Frame::set_cursor_position()`. Spec 0194 S11: this
+    // used to claim protolens never does, which has been false since
+    // spec 0147 G4 gave the one hardware cursor to the command/search/
+    // rename row. The call below is still needed — that row is usually
+    // closed, so the last `draw()` before a suspend typically did leave
+    // the cursor hidden, and without it the shell prompt gets no visible
+    // cursor after `fg` (feedback, 2026-07-16). The main pane's own
+    // caret is drawn rather than delegated (spec 0194 N3), so it never
+    // enters into this.
     terminal.show_cursor()?;
     // SAFETY: raising a signal on our own process is always sound.
     unsafe {

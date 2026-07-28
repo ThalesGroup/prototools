@@ -178,9 +178,39 @@ impl App {
         }
     }
 
-    pub(super) fn record_jump(&mut self, from: usize) {
-        self.back_stack.push(from);
+    /// Spec 0194 S10: push the position being left, not just the node
+    /// being left — `Ctrl-o` returns to a *place*. This also fixes a
+    /// pre-existing loss: `cursor_footer` was never recorded, so a jump
+    /// back from a node's `}` landed on its `{`.
+    pub(super) fn record_jump(&mut self) {
+        self.back_stack.push(self.cursor_pos());
         self.fwd_stack.clear();
+    }
+
+    /// The cursor's whole current position (spec 0194 S10).
+    pub(super) fn cursor_pos(&self) -> CursorPos {
+        CursorPos {
+            node: self.cursor,
+            footer: self.cursor_footer,
+            column: self.cursor_column,
+        }
+    }
+
+    /// Restore a position pushed by `record_jump`.
+    ///
+    /// The column is clamped rather than trusted: the row may have
+    /// shrunk since it was recorded — a fold toggled under it, an
+    /// override respliced the subtree — and a stale column would
+    /// otherwise point past the row's end. It is not restored as a
+    /// *desired* column: a jump back reinstates a position, and
+    /// `desired_column` follows it as after any other horizontal move.
+    fn restore_cursor_pos(&mut self, pos: CursorPos) {
+        self.set_cursor(pos.node);
+        self.unfold_ancestors(pos.node);
+        self.cursor_footer = pos.footer;
+        self.cursor_column = pos.column;
+        self.clamp_caret_column();
+        self.desired_column = self.cursor_column;
     }
 
     /// Propose a default `:export`/`x` path, in the same directory as the
@@ -395,6 +425,29 @@ impl App {
         }
         self.pending_g = false;
 
+        // Spec 0194 S6: `z` is vim's fold prefix. `za`/`zc`/`zo` act on
+        // the cursor node, and their capitals on the whole sibling
+        // level — which is where `H`, `Shift-Left` and `Shift-Right`'s
+        // old fold-all duties went when tree motion reclaimed them.
+        // Same shape as the `gg` chord above; any other key cancels.
+        if self.pending_z {
+            self.pending_z = false;
+            match key.code {
+                KeyCode::Char('a') => self.toggle_cursor_fold(),
+                KeyCode::Char('c') => self.fold_cursor(),
+                KeyCode::Char('o') => self.unfold_cursor(),
+                KeyCode::Char('A') => self.toggle_all_siblings(),
+                KeyCode::Char('C') => self.fold_all_siblings(),
+                KeyCode::Char('O') => self.unfold_all_siblings(),
+                _ => {}
+            }
+            return;
+        }
+        if key.code == KeyCode::Char('z') {
+            self.pending_z = true;
+            return;
+        }
+
         // `x<b|p|d<b|p>>` chord (export-format leader key, spec 0156 G3):
         // a first `x` press arms `ExportChord::Leader` silently; the next
         // keypress either fires a data export (`b`/`p`), arms
@@ -489,58 +542,35 @@ impl App {
             KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => self.pan_left(),
             KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => self.pan_right(),
 
-            // Fold all siblings of the cursor node (alias for `H`).
-            KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.fold_all_siblings()
-            }
-
-            // Parent move / fold (nvim-tree-style: fold an expanded
-            // foldable node first; a second press then moves to parent).
-            // At the root (no parent to move to), fold all root-level
-            // siblings instead — same effect as `H`.
-            KeyCode::Char('h') | KeyCode::Left => {
-                if self.has_children(self.cursor) && !self.folded.contains(&self.cursor) {
-                    self.toggle_fold(self.cursor);
-                } else if let Some(parent) = self.tree[self.cursor].parent {
-                    self.record_jump(self.cursor);
-                    self.set_cursor(parent);
-                } else {
-                    self.fold_all_siblings();
-                }
-            }
-
-            // Fold all siblings of the cursor node (its level under the
-            // same parent, or all root-level nodes if the cursor is at the
-            // root — sibling links are unconditional, see sibling_range).
-            KeyCode::Char('H') => self.fold_all_siblings(),
-
-            // Unfold all siblings of the cursor node.
+            // Spec 0194 S6, the organizing rule: **unshifted moves in
+            // the text, shifted moves in the tree, `z` folds.** `h`/`l`
+            // and the plain arrows are vim's character motions, so tree
+            // navigation moves up one shift level — completing the
+            // family `J`/`K` and spec 0126 G2's `Shift-Down`/`Shift-Up`
+            // already started.
+            KeyCode::Char('H') => self.parent_move(),
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => self.parent_move(),
+            KeyCode::Backspace => self.parent_move(),
+            KeyCode::Char('L') => self.first_child_move(),
             KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.unfold_all_siblings()
+                self.first_child_move()
             }
 
-            // Unfold / child move (ARIA tree-view pattern, symmetric with
-            // `h`/`Left`: open a closed foldable node first, cursor stays;
-            // a second press then moves to the first child).
-            KeyCode::Char('l') | KeyCode::Right => {
-                if self.has_children(self.cursor) && self.folded.contains(&self.cursor) {
-                    self.toggle_fold(self.cursor);
-                } else if let Some(child) = self.tree[self.cursor].first_child {
-                    self.record_jump(self.cursor);
-                    self.set_cursor(child);
-                } else {
-                    self.message = "no children".to_string();
-                }
-            }
+            // Caret motion (spec 0194 S6). No wrapping at either end
+            // (N5), matching vim's default `whichwrap`.
+            KeyCode::Char('h') | KeyCode::Left => self.caret_left(),
+            KeyCode::Char('l') | KeyCode::Right => self.caret_right(),
+            // `0` and `^` are one destination here: column zero is the
+            // fold gutter and unreachable (S3), so vim's two motions
+            // coincide.
+            KeyCode::Char('0') | KeyCode::Char('^') => self.caret_to_line_start(),
+            KeyCode::Char('$') => self.caret_to_line_end(),
+            KeyCode::Char('%') => self.jump_matching_brace(),
 
-            // Fold/unfold toggle.
-            KeyCode::Char('z') | KeyCode::Char(' ') => {
-                if self.has_children(self.cursor) {
-                    self.toggle_fold(self.cursor);
-                } else {
-                    self.message = "not foldable".to_string();
-                }
-            }
+            // Fold/unfold toggle. `Space` is kept precisely because bare
+            // `z` is now vim's fold prefix (below), so the common case
+            // still costs one key.
+            KeyCode::Char(' ') => self.toggle_cursor_fold(),
 
             // Toggle main-pane annotation display (spec 0133 G3) — a
             // pure display attribute, distinct from the override pane's
@@ -563,18 +593,16 @@ impl App {
             // Navigation history.
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(pos) = self.back_stack.pop() {
-                    self.fwd_stack.push(self.cursor);
-                    self.set_cursor(pos);
-                    self.unfold_ancestors(pos);
+                    self.fwd_stack.push(self.cursor_pos());
+                    self.restore_cursor_pos(pos);
                 } else {
                     self.message = "jumplist: at oldest position".to_string();
                 }
             }
             KeyCode::Char('i') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(pos) = self.fwd_stack.pop() {
-                    self.back_stack.push(self.cursor);
-                    self.set_cursor(pos);
-                    self.unfold_ancestors(pos);
+                    self.back_stack.push(self.cursor_pos());
+                    self.restore_cursor_pos(pos);
                 } else {
                     self.message = "jumplist: at newest position".to_string();
                 }

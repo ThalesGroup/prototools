@@ -885,12 +885,21 @@ impl App {
                 SearchDir::Backward => self.tree[cur].doc_prev.unwrap_or_else(|| self.last_node()),
             };
             let line_idx = self.tree[cur].span.text_range.start;
-            if needle.is_match(&self.lines[line_idx]) {
+            if let Some(byte) = needle.find(&self.lines[line_idx]) {
                 if cur != self.cursor {
-                    self.record_jump(self.cursor);
+                    self.record_jump();
                     self.set_cursor(cur);
                     self.unfold_ancestors(cur);
                 }
+                // Spec 0194 S8: land on the match, not merely on its
+                // row. Clamped, since a match inside the row's own
+                // indentation is left of the leftmost reachable column
+                // (S3) — and since `set_cursor` above has already put
+                // the caret at the first non-blank, that clamp is the
+                // whole correction.
+                self.cursor_column = self.lines[line_idx][..byte].chars().count();
+                self.clamp_caret_column();
+                self.desired_column = self.cursor_column;
                 return;
             }
             if cur == self.cursor {

@@ -110,6 +110,83 @@ fn cut_segments(segments: &mut Vec<(Range<usize>, Option<SyntaxRole>)>, cut: Ran
     *segments = kept;
 }
 
+/// Spec 0194 S1/A5: a byte offset into a row's text expressed as a
+/// caret-track column, which counts `char`s. The two coordinates differ
+/// the moment a string value holds a multi-byte character, and a column
+/// must never be used to slice a `str` — this is the only conversion.
+fn char_column(text: &str, byte: usize) -> usize {
+    text[..byte].chars().count()
+}
+
+/// Spec 0194 S2: apply `restyle` to exactly the `index`-th character of
+/// `spans`, splitting whichever span contains it into up to three.
+///
+/// Walking the *final* span list by character index — rather than
+/// cutting a byte range out of the row's syntax segments the way spec
+/// 0193's brace did — is deliberate. `row_text` splices a folded node's
+/// `" ... }"` summary into the text while `row_spans` adds it as an
+/// insertion into an unmodified `content`, so the two disagree on byte
+/// offsets on exactly the rows the brace pair cares about. Characters of
+/// the drawn row are the one coordinate system every zone shares.
+///
+/// An `index` past the row's end pads with spaces and draws on the last
+/// one, which is how a blank row still gets a cell to carry the caret.
+fn restyle_char(
+    spans: &mut Vec<Span<'static>>,
+    index: usize,
+    restyle: impl FnOnce(Style) -> Style,
+) {
+    let mut seen = 0;
+    for i in 0..spans.len() {
+        let count = spans[i].content.chars().count();
+        if index >= seen + count {
+            seen += count;
+            continue;
+        }
+        let style = spans[i].style;
+        let text = spans[i].content.to_string();
+        let (start, ch) = text
+            .char_indices()
+            .nth(index - seen)
+            .expect("index - seen < the span's char count");
+        let end = start + ch.len_utf8();
+        let mut parts = Vec::with_capacity(3);
+        if start > 0 {
+            parts.push(Span::styled(text[..start].to_string(), style));
+        }
+        parts.push(Span::styled(text[start..end].to_string(), restyle(style)));
+        if end < text.len() {
+            parts.push(Span::styled(text[end..].to_string(), style));
+        }
+        spans.splice(i..=i, parts);
+        return;
+    }
+    let base = spans.last().map(|s| s.style).unwrap_or_default();
+    if index > seen {
+        spans.push(Span::styled(" ".repeat(index - seen), base));
+    }
+    spans.push(Span::styled(" ".to_string(), restyle(base)));
+}
+
+/// Spec 0194 S2/S4: put `caret` on the character at `index`.
+///
+/// `Style::patch` composes it over whatever syntax color the character
+/// already had, so the caret keeps the color of what it rests on. But
+/// `REVERSED` is a *toggle*, not a color: adding a second one to a span
+/// that a drag selection has already turned inside out cancels it, and
+/// the caret would vanish on exactly the rows where the two cues
+/// coincide. So the reversal is applied by flipping.
+fn apply_caret(spans: &mut Vec<Span<'static>>, index: usize, caret: Style) {
+    let reversing = caret.add_modifier.contains(Modifier::REVERSED);
+    restyle_char(spans, index, move |style| {
+        let mut out = style.patch(caret);
+        if reversing && style.add_modifier.contains(Modifier::REVERSED) {
+            out.add_modifier.remove(Modifier::REVERSED);
+        }
+        out
+    });
+}
+
 /// A rendered line with its trailing `#@ ...` annotation removed (spec
 /// 0187 S1) — the part of the line the *format* considers a value.
 /// Used both for the display-time annotation hiding of spec 0133 G4 and,
@@ -370,33 +447,62 @@ impl App {
         })
     }
 
-    /// Spec 0193 S2: the byte offset in `content` of the brace to draw
-    /// in `theme::brace_match_style` — the `{` on the cursor node's own
-    /// header line, or the `}` on its own footer line.
+    /// Spec 0194 S4: the cursor node's brace pair, each member given as
+    /// `(line index, caret-track column)` — the `{` on the node's own
+    /// header line and the `}` that closes it.
     ///
-    /// `None` for every other row, and for a node with no *distinct*
-    /// footer line, which is exactly the test `line_to_node`'s
-    /// construction uses (`mod.rs`) to decide a node is bracketed at
-    /// all: an unbracketed scalar's `{` would otherwise be a brace
-    /// inside a string literal. Overlay rows are excluded too — they
-    /// have no committed node, so nothing on them belongs to the
-    /// cursor's.
-    fn cursor_brace(&self, row: DisplayRow, content: &str) -> Option<usize> {
-        let DisplayRow::Committed(line_idx) = row else {
-            return None;
-        };
+    /// `None` for a node with no *distinct* footer line, which is
+    /// exactly the test `line_to_node`'s construction uses (`mod.rs`) to
+    /// decide a node is bracketed at all: an unbracketed scalar's `{`
+    /// would otherwise be a brace inside a string literal. The rule is
+    /// inherited unchanged from spec 0193's `cursor_brace`, which this
+    /// replaces.
+    ///
+    /// A *folded* node draws its whole body as the one-row `{ ... }`
+    /// collapse summary (spec 0193 S1), so both members are on the
+    /// header line and the footer line is not on screen at all.
+    pub(super) fn cursor_brace_pair(&self) -> Option<((usize, usize), (usize, usize))> {
         let node = self.tree.get(self.cursor)?;
         let header = node.span.text_range.start;
         let footer = node.span.text_range.end.checked_sub(1)?;
         if footer <= header {
             return None;
         }
-        if line_idx == header {
-            content.rfind('{')
-        } else if line_idx == footer {
-            content.rfind('}')
+        let header_text = self.row_text(DisplayRow::Committed(header));
+        let open = header_text.rfind('{')?;
+        let open_pos = (header, char_column(&header_text, open));
+        if self.folded.contains(&self.cursor) && self.has_children(self.cursor) {
+            // `row_text` splices the six bytes `" ... }"` in immediately
+            // after the `{`, so the synthetic closing brace is the sixth
+            // of them.
+            let close = char_column(&header_text, open + 6);
+            return Some((open_pos, (header, close)));
+        }
+        let footer_text = self.row_text(DisplayRow::Committed(footer));
+        let close = char_column(&footer_text, footer_text.rfind('}')?);
+        Some((open_pos, (footer, close)))
+    }
+
+    /// Spec 0194 S1/S2: where caret-track column `column` lands in a
+    /// drawn row's final span list, chrome included — so index 0 is the
+    /// heat glyph's reserved column. `None` when a horizontal pan has
+    /// taken the column off the left edge.
+    ///
+    /// The track's two zones map differently: the text zone sits behind
+    /// the `FOLD_FIELD_WIDTH`-wide fold field and moves with the pan,
+    /// while the heat suffix is appended *after* panning and so does not
+    /// move at all. `panned_chars` is the row's own text as it survived
+    /// the pan, which is where the suffix starts.
+    fn caret_draw_index(
+        &self,
+        column: usize,
+        text_chars: usize,
+        panned_chars: usize,
+    ) -> Option<usize> {
+        if column < text_chars {
+            Some((FOLD_FIELD_WIDTH + column).checked_sub(self.pan_offset)? + 1)
         } else {
-            None
+            Some(1 + panned_chars + (column - text_chars))
         }
     }
 
@@ -449,28 +555,18 @@ impl App {
             spans.push(Span::raw(margin));
         }
 
-        let brace_style = theme::brace_match_style(self.theme);
-        let brace = self.cursor_brace(row, content);
+        // Spec 0194 S2: one insertion, not spec 0193 S2's two. The
+        // synthetic closing brace used to be split off so it could carry
+        // `brace_match_style`; the caret now restyles it by character
+        // index over the finished span list instead, so the summary is
+        // one piece of text again.
         let mut insertions: Vec<(usize, String, Option<Style>)> = Vec::new();
         if node.is_some_and(|idx| self.folded.contains(&idx) && self.has_children(idx)) {
             let insert_at = match content.rfind('{') {
                 Some(pos) => pos + 1,
                 None => content.len(),
             };
-            // Two insertions at one position rather than one `" ... }"`:
-            // the synthetic closing brace is part of the cursor node's
-            // pair when the cursor is here, and the ellipsis beside it
-            // never is. `sort_by_key` is stable, so they keep this order.
-            insertions.push((insert_at, " ... ".to_string(), None));
-            insertions.push((insert_at, "}".to_string(), brace.map(|_| brace_style)));
-        }
-        if let Some(pos) = brace {
-            // Spec 0193 S2: the real `{`/`}` carries a real `SyntaxRole`,
-            // so it is cut and re-emitted as a styled insertion at the
-            // same position — the one mechanism that can override a
-            // role's own color without inventing a 14th role for it.
-            cut_segments(&mut segments, pos..pos + 1);
-            insertions.push((pos, content[pos..pos + 1].to_string(), Some(brace_style)));
+            insertions.push((insert_at, " ... }".to_string(), None));
         }
         spans.extend(self.spans_with_insertions(content, segments, insertions));
         spans
@@ -515,6 +611,64 @@ impl App {
             result.push(self.make_span(content[range].to_string(), role));
         }
         result
+    }
+
+    /// Spec 0138 N1/G9: a row's heat chrome — the leading glyph, whose
+    /// column is reserved unconditionally (a blank space when there is
+    /// no cue) so that node indentation never shifts as the user
+    /// scrolls, and the optional trailing ` [current/best]` suffix.
+    ///
+    /// The glyph is shown only for a complete `Cue` — never during a
+    /// partial/pending state, even when `best` alone is known — and
+    /// `heat_style` itself returns `None` on the ANSI-16 fallback for a
+    /// low-confidence `best_score` (G7/G12's narrowing of the gate), in
+    /// which case no cue shows at all, glyph or suffix.
+    ///
+    /// Spec 0194 S1 makes the suffix's *length* the second zone of the
+    /// caret track, which is why this is a function `render` can call
+    /// twice — once to draw, once to measure — rather than the inline
+    /// `match` it used to be.
+    fn heat_chrome(
+        &self,
+        display: &heat_cue::HeatDisplay,
+    ) -> (Span<'static>, Option<Span<'static>>) {
+        let pending_style = || theme::style_for(SyntaxRole::Comment, self.theme);
+        let blank = || Span::raw(" ");
+        match display {
+            heat_cue::HeatDisplay::Cue(c) => {
+                let hue = match c.kind {
+                    heat_cue::HeatCueKind::Mismatch { .. } => theme::HeatHue::Red,
+                    heat_cue::HeatCueKind::Tie { .. } => theme::HeatHue::Blue,
+                };
+                let Some(style) = theme::heat_style(c.level, hue, self.theme) else {
+                    return (blank(), None);
+                };
+                let suffix = match c.kind {
+                    heat_cue::HeatCueKind::Mismatch { current, best } => {
+                        let current = current
+                            .map(|c| c.to_string())
+                            .unwrap_or_else(|| "-".to_string());
+                        Span::styled(
+                            format!(" [{current}/{best}]"),
+                            theme::heat_suffix_style(self.theme),
+                        )
+                    }
+                    heat_cue::HeatCueKind::Tie { tie_count, score } => Span::styled(
+                        format!(" [{tie_count}@{score}]"),
+                        theme::style_for(SyntaxRole::Boolean, self.theme),
+                    ),
+                };
+                (Span::styled(heat_cue::HEAT_GLYPH, style), Some(suffix))
+            }
+            heat_cue::HeatDisplay::PendingCurrent { best } => (
+                blank(),
+                Some(Span::styled(format!(" [?/{best}]"), pending_style())),
+            ),
+            heat_cue::HeatDisplay::Unknown => {
+                (blank(), Some(Span::styled(" [?]", pending_style())))
+            }
+            heat_cue::HeatDisplay::None => (blank(), None),
+        }
     }
 
     pub(super) fn make_span(&self, text: String, role: Option<SyntaxRole>) -> Span<'static> {
@@ -773,6 +927,58 @@ impl App {
         let t_ovr = std::time::Instant::now();
         let (row_overridden, _) = self.override_bold_flags(&window);
         let d_ovr = t_ovr.elapsed();
+
+        // Spec 0194 S1: the caret track's suffix zone is exactly as long
+        // as the heat suffix this frame drew, and `heat_cue_for` — the
+        // only thing that knows — needs `&mut self`, so a keypress
+        // cannot ask. It is carried on the app instead, refreshed here
+        // and read by `caret_bounds`. The column is then clamped into
+        // the track it now describes, which is also what absorbs a row
+        // that shrank under the caret (S11).
+        let suffix_len = if self.tree.is_empty() {
+            0
+        } else {
+            let cursor_row_display = DisplayRow::Committed(self.cursor_line());
+            window
+                .iter()
+                .zip(heat_displays.iter())
+                .find(|&(&r, _)| r == cursor_row_display)
+                .and_then(|(_, display)| self.heat_chrome(display).1)
+                .map_or(0, |s| s.content.chars().count())
+        };
+        self.caret_suffix_len = suffix_len;
+        self.clamp_caret_column();
+
+        // Spec 0194 S4: when the caret rests on one of the cursor node's
+        // braces and the *other* one is on screen, the partner carries
+        // the strong cue and the caret dims. Resolved here, once,
+        // because the partner is routinely on a different row from the
+        // caret — and because visibility is a property of this frame: a
+        // pan or a scroll decides it with no key pressed.
+        //
+        // A brace counts as visible when its row is inside the window
+        // *and* its column survives the pan and the pane's right edge.
+        let caret_cell = (!self.tree.is_empty()).then(|| (self.cursor_line(), self.cursor_column));
+        let partner =
+            self.cursor_brace_pair()
+                .zip(caret_cell)
+                .and_then(|((open, close), caret)| {
+                    if caret == open {
+                        Some(close)
+                    } else if caret == close {
+                        Some(open)
+                    } else {
+                        None
+                    }
+                });
+        let partner_cell = partner.and_then(|(line, column)| {
+            let row = window
+                .iter()
+                .position(|&r| r == DisplayRow::Committed(line))?;
+            let index = (FOLD_FIELD_WIDTH + column).checked_sub(self.pan_offset)? + 1;
+            (index < inner.width as usize).then_some((row, index))
+        });
+
         let t_lines = std::time::Instant::now();
 
         let text_lines: Vec<Line> = window
@@ -794,67 +1000,60 @@ impl App {
                         span.style = span.style.add_modifier(Modifier::BOLD);
                     }
                 }
-                // Leading gutter glyph + trailing suffix (spec 0138 N1,
-                // G9, spec 0154 G6) — the glyph column is always
-                // reserved (a blank space when absent), so node
-                // indentation never shifts; both are appended/prepended
-                // after panning, so neither is affected by horizontal
-                // scroll. The glyph is shown only for a complete
-                // `Cue` — never during a partial/pending state, even
-                // when `best` alone is known — and `heat_style` itself
-                // returns `None` on the ANSI-16 fallback for a
-                // low-confidence `best_score` (G7/G12's narrowing of
-                // the gate), in which case no cue shows at all, glyph
-                // or suffix.
-                let pending_style = || theme::style_for(SyntaxRole::Comment, self.theme);
-                match display {
-                    heat_cue::HeatDisplay::Cue(c) => {
-                        let hue = match c.kind {
-                            heat_cue::HeatCueKind::Mismatch { .. } => theme::HeatHue::Red,
-                            heat_cue::HeatCueKind::Tie { .. } => theme::HeatHue::Blue,
-                        };
-                        match theme::heat_style(c.level, hue, self.theme) {
-                            Some(style) => {
-                                let suffix = match c.kind {
-                                    heat_cue::HeatCueKind::Mismatch { current, best } => {
-                                        let current = current
-                                            .map(|c| c.to_string())
-                                            .unwrap_or_else(|| "-".to_string());
-                                        Span::styled(
-                                            format!(" [{current}/{best}]"),
-                                            theme::heat_suffix_style(self.theme),
-                                        )
-                                    }
-                                    heat_cue::HeatCueKind::Tie { tie_count, score } => {
-                                        Span::styled(
-                                            format!(" [{tie_count}@{score}]"),
-                                            theme::style_for(SyntaxRole::Boolean, self.theme),
-                                        )
-                                    }
-                                };
-                                spans.push(suffix);
-                                spans.insert(0, Span::styled(heat_cue::HEAT_GLYPH, style));
-                            }
-                            None => spans.insert(0, Span::raw(" ")),
-                        }
-                    }
-                    heat_cue::HeatDisplay::PendingCurrent { best } => {
-                        spans.insert(0, Span::raw(" "));
-                        spans.push(Span::styled(format!(" [?/{best}]"), pending_style()));
-                    }
-                    heat_cue::HeatDisplay::Unknown => {
-                        spans.insert(0, Span::raw(" "));
-                        spans.push(Span::styled(" [?]", pending_style()));
-                    }
-                    heat_cue::HeatDisplay::None => {
-                        spans.insert(0, Span::raw(" "));
-                    }
+                // Spec 0194 S1: where the row's own text ends, which is
+                // where the caret track's suffix zone begins. Measured
+                // before the chrome goes on and only on the row that
+                // needs it.
+                let on_cursor_row = self.scroll_offset + row == cursor_draw_row;
+                let panned_chars = on_cursor_row.then(|| {
+                    spans
+                        .iter()
+                        .map(|s| s.content.chars().count())
+                        .sum::<usize>()
+                });
+                let (glyph, suffix) = self.heat_chrome(display);
+                if let Some(suffix) = suffix {
+                    spans.push(suffix);
                 }
+                spans.insert(0, glyph);
+
+                // Spec 0194 S2: the row-wide `REVERSED` this used to be
+                // splits in three. The selection keeps the full reverse;
+                // the caret's *row* gets the weaker `cursor_row_style`
+                // (G7), patched so it colors the background and leaves
+                // every syntax foreground alone; and the caret itself is
+                // a single cell, applied last so it wins.
                 let selected = line_idx
                     .is_some_and(|l| selection_range.as_ref().is_some_and(|r| r.contains(&l)));
-                if self.scroll_offset + row == cursor_draw_row || selected {
+                if on_cursor_row {
+                    let row_style = theme::cursor_row_style(self.theme);
+                    for span in &mut spans {
+                        span.style = span.style.patch(row_style);
+                    }
+                }
+                if selected {
                     for span in &mut spans {
                         span.style = span.style.add_modifier(Modifier::REVERSED);
+                    }
+                }
+                if let Some((partner_row, partner_index)) = partner_cell {
+                    if partner_row == row {
+                        apply_caret(&mut spans, partner_index, theme::caret_style());
+                    }
+                }
+                if let (true, Some(panned_chars)) = (on_cursor_row, panned_chars) {
+                    let text_chars = self.row_text(display_row).chars().count();
+                    if let Some(index) =
+                        self.caret_draw_index(self.cursor_column, text_chars, panned_chars)
+                    {
+                        // Spec 0194 S4: the caret dims to a tint exactly
+                        // when the matching brace is on screen to carry
+                        // the strong cue instead.
+                        let style = match partner_cell {
+                            Some(_) => theme::caret_paired_style(self.theme),
+                            None => theme::caret_style(),
+                        };
+                        apply_caret(&mut spans, index, style);
                     }
                 }
                 Line::from(spans)

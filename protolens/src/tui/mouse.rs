@@ -366,9 +366,10 @@ impl App {
             }
 
             if idx != self.cursor || self.cursor_footer {
-                self.record_jump(self.cursor);
+                self.record_jump();
                 self.set_cursor(idx);
             }
+            self.set_caret_from_click(col, line_idx);
             return;
         }
 
@@ -378,12 +379,46 @@ impl App {
         // lines never carry a fold glyph.
         if let Some(idx) = self.node_at_footer_line(line_idx) {
             if idx != self.cursor || !self.cursor_footer {
-                self.record_jump(self.cursor);
+                self.record_jump();
                 self.cursor = idx;
                 self.cursor_footer = true;
                 self.cursor_moves += 1;
             }
+            self.set_caret_from_click(col, line_idx);
         }
+    }
+
+    /// Spec 0194 S7: invert S1's column-to-screen mapping and put the
+    /// caret where the click landed.
+    ///
+    /// The two zones invert differently, because only one of them pans:
+    /// a click on the row's own text adds `pan_offset` back and drops
+    /// the fold field, while a click past the panned text's right edge
+    /// is in the heat suffix, which is appended after panning and so
+    /// does not move. A click left of the first non-blank — anywhere in
+    /// the gutter — clamps to it rather than being rejected (S3).
+    ///
+    /// Called after the cursor has been moved, since the reachable range
+    /// it clamps into is the *new* row's. Sets `desired_column` too,
+    /// exactly as a horizontal key would.
+    fn set_caret_from_click(&mut self, col: u16, line_idx: usize) {
+        let row = DisplayRow::Committed(line_idx);
+        let text_chars = self.row_text(row).chars().count();
+        let panned = self
+            .row_content(row)
+            .chars()
+            .count()
+            .saturating_sub(self.pan_offset);
+        // Column 0 of the pane is the heat glyph's reserved gutter (spec
+        // 0138 N1), which is never a caret stop.
+        let x = (col.saturating_sub(self.main_area.x) as usize).saturating_sub(1);
+        self.cursor_column = if x < panned {
+            (x + self.pan_offset).saturating_sub(render::FOLD_FIELD_WIDTH)
+        } else {
+            text_chars + (x - panned)
+        };
+        self.clamp_caret_column();
+        self.desired_column = self.cursor_column;
     }
 
     /// Index of `cursor`'s own currently-displayed line (header or

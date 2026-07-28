@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0194 — the cursor is a caret
 
-Status: draft
+Status: implemented
+Implemented in: 2026-07-27
 App: protolens
 Refs: docs/specs/0113-protolens-tui-refinements.md (D24, horizontal pan),
       docs/specs/0126-protolens-focus-independent-keys.md (G2, the
@@ -662,4 +663,52 @@ a schedule.
 
 ## Measured outcome
 
-(To be filled in on implementation.)
+Implemented 2026-07-27, in one pass over `render.rs`, `navigation.rs`,
+`key_dispatch.rs`, `mouse.rs`, `mod.rs`, `override_select.rs` and
+`theme.rs`.
+
+**The caret is drawn by restyling the finished span list, not by cutting
+bytes.** S1 defines the caret's column over the row's own text, and the
+obvious implementation — convert the column to a byte offset and split
+`content` there — does not survive a folded row: `row_text` splices the
+collapse summary `" ... }"` *into* the text, while `row_spans` adds it as
+an *insertion* into an unmodified `content`, so the two byte coordinate
+systems diverge exactly where the folded node's synthetic `}` lives.
+`apply_caret` therefore walks the built span list by character index
+(`restyle_char`), which sidesteps the divergence, composes with the
+character's syntax color for free, and made spec 0193's brace-cutting
+machinery in `row_spans` redundant: the whole thing collapsed into one
+`" ... }"` insertion, and `theme::brace_rgb`/`brace_match_style` were
+deleted.
+
+**The suffix length has to be carried on the app.** `heat_cue_for` takes
+`&mut self` (it populates the cue caches), so a keypress cannot ask how
+long the current row's heat suffix is — but S1 makes that length half of
+the reachable range. The measuring half of the old inline `match` was
+extracted into `heat_chrome(&self)`, which `render` uses both to draw the
+cue and to refresh `caret_suffix_len` once per frame; the *text* half of
+the range is still computed exactly on every call. `clamp_caret_column`
+then runs once per frame, so no mutation of `lines` anywhere can leave
+the caret pointing past a row's end.
+
+**Reversal cancels rather than stacking.** `add_modifier(REVERSED)` on an
+already-reversed span is a no-op, so on a drag-selected row the caret
+would have vanished into the block. `apply_caret` toggles instead
+(`out.add_modifier.remove(Modifier::REVERSED)`), which is what keeps the
+caret visible on a selected row.
+
+**Two coordinate facts, both verified against the drawn frame.** A row
+renders as `fold_margin` — exactly `FOLD_FIELD_WIDTH + indent_len`
+columns — followed by `row_text[body_start..]`, so track column `c` is
+drawn at `1 + FOLD_FIELD_WIDTH + c - pan_offset`; and the heat suffix is
+appended *after* `pan_spans`, so it does not pan and suffix column `k`
+lands at `1 + panned_chars + k`. `mouse.rs`'s `set_caret_from_click`
+inverts both zones separately for that reason.
+
+19 test-plan items, all landed. Three of them are spec 0193's brace tests
+rewritten rather than deleted, per item 11. The drawing assertions read
+the `TestBackend` buffer rather than `row_spans`, since the caret is
+applied in `render`; `sibling_leaves_app` turned out not to be drawable
+(its `raw_range`s point into an empty blob, which the heat cue's payload
+walk trips over), so `text_rows_app` borrows
+`wide_sibling_scalars_app`'s real blob and substitutes the text.

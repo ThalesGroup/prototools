@@ -19,7 +19,7 @@ use super::support::*;
 /// current-type score — bypassing the need for a real scoring
 /// graph/worker, mirroring what a `heat_cue_for` cache hit expects to
 /// find.
-fn seed_range_heat_entry(
+pub(super) fn seed_range_heat_entry(
     app: &mut App,
     start: usize,
     best_score: Option<i64>,

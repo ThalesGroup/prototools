@@ -800,3 +800,144 @@ fn default_export_descriptor_path_falls_back_to_the_numeric_range_when_unresolva
         "expected a numeric range segment, got: {path}"
     );
 }
+
+/// Spec 0194 test-plan item 17 (S6). The whole reassignment, asserted
+/// as a table: the unshifted keys move the caret in the text, the
+/// shifted ones move the cursor in the tree, and folding lives on
+/// `Space` and the `z` chords. Each reclaimed key is also checked for
+/// *not* doing what it used to.
+#[test]
+fn the_reassigned_keys_dispatch_where_the_table_says() {
+    let plain = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+    let (mut app, items) = repeated_message_fixture();
+    app.splash = false;
+    app.set_cursor(items[1]);
+    let base = app.cursor_column;
+
+    // `l`/`h` belong to the caret now. They used to enter the first
+    // child and fold the node.
+    app.handle_key(plain('l'));
+    assert_eq!(app.cursor, items[1], "`l` no longer enters the first child");
+    assert_eq!(app.cursor_column, base + 1);
+    app.handle_key(plain('h'));
+    assert_eq!(app.cursor_column, base);
+    assert!(app.folded.is_empty(), "`h` no longer folds");
+
+    // `$` and `0` are the two ends of the same row.
+    app.handle_key(plain('$'));
+    assert_eq!(app.cursor_column, app.caret_bounds().1);
+    app.handle_key(plain('0'));
+    assert_eq!(app.cursor_column, base);
+    app.handle_key(plain('$'));
+    app.handle_key(plain('^'));
+    assert_eq!(app.cursor_column, base, "`^` is `0`'s twin, not a variant");
+
+    // The tree moves are the shifted pair.
+    app.handle_key(plain('L'));
+    assert_eq!(
+        app.tree[app.cursor].parent,
+        Some(items[1]),
+        "`L` moves to the first child"
+    );
+    app.handle_key(plain('H'));
+    assert_eq!(app.cursor, items[1], "`H` moves back to the parent");
+
+    // `z` is a chord prefix: inert on its own, and folding on its
+    // second half.
+    app.handle_key(plain('z'));
+    assert!(app.folded.is_empty(), "`z` alone does nothing");
+    app.handle_key(plain('c'));
+    assert!(app.folded.contains(&items[1]), "`zc` closes");
+    app.handle_key(plain('z'));
+    app.handle_key(plain('o'));
+    assert!(!app.folded.contains(&items[1]), "`zo` opens");
+    app.handle_key(plain('z'));
+    app.handle_key(plain('a'));
+    assert!(app.folded.contains(&items[1]), "`za` toggles");
+    app.handle_key(plain(' '));
+    assert!(!app.folded.contains(&items[1]), "and so does Space");
+
+    // The capitalized chords act on the whole sibling level.
+    app.handle_key(plain('z'));
+    app.handle_key(plain('C'));
+    assert!(
+        items.iter().all(|i| app.folded.contains(i)),
+        "`zC` closes every sibling"
+    );
+    app.handle_key(plain('z'));
+    app.handle_key(plain('A'));
+    assert!(
+        items.iter().all(|i| !app.folded.contains(i)),
+        "`zA` toggles the level from the cursor's own state"
+    );
+    app.handle_key(plain('z'));
+    app.handle_key(plain('C'));
+    app.handle_key(plain('z'));
+    app.handle_key(plain('O'));
+    assert!(
+        items.iter().all(|i| !app.folded.contains(i)),
+        "`zO` opens every sibling"
+    );
+}
+
+/// Spec 0194 test-plan item 17, search half. `p` was spec 0195's
+/// "previous match" and is gone; `n` and `N` are the two directions,
+/// as vim has them.
+#[test]
+fn n_and_shift_n_repeat_the_last_search_in_both_directions() {
+    let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "beta: 3"]);
+    app.splash = false;
+    app.last_search = Some((SearchDir::Forward, "beta".to_string()));
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+    assert_eq!(app.cursor, 1);
+    app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+    assert_eq!(app.cursor, 2);
+    app.handle_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::NONE));
+    assert_eq!(app.cursor, 1, "`N` runs the same pattern backwards");
+}
+
+/// Spec 0194 test-plan item 19 (S10). A jumplist entry is a caret
+/// position, not a node: `Ctrl-o` has to put back the column and the
+/// header/footer side as well, and clamp them if the row it returns to
+/// has shrunk in the meantime.
+#[test]
+fn ctrl_o_restores_the_whole_caret_position() {
+    let ctrl_o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    let (mut app, items) = repeated_message_fixture();
+    app.splash = false;
+
+    app.set_cursor(items[0]);
+    app.cursor_footer = true;
+    app.cursor_column = app.caret_bounds().1;
+    let was = (app.cursor, app.cursor_footer, app.cursor_column);
+
+    app.record_jump();
+    app.set_cursor(items[2]);
+    app.handle_key(ctrl_o);
+    assert_eq!(
+        (app.cursor, app.cursor_footer, app.cursor_column),
+        was,
+        "the node, the footer side and the column all come back"
+    );
+
+    // The same jump, to a row that has lost most of its text since.
+    app.cursor_footer = false;
+    app.cursor_column = app.caret_bounds().1;
+    let wide = app.cursor_column;
+    app.record_jump();
+    app.set_cursor(items[2]);
+    app.lines[app.tree[items[0]].span.text_range.start] = "x".to_string();
+
+    app.handle_key(ctrl_o);
+    assert_eq!(app.cursor, items[0]);
+    assert!(
+        wide > 0 && app.cursor_column < wide,
+        "the column was clamped"
+    );
+    assert_eq!(
+        app.cursor_column,
+        app.caret_bounds().1,
+        "onto the shrunken row's last reachable column"
+    );
+}

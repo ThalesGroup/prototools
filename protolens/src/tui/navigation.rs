@@ -148,10 +148,124 @@ impl App {
     /// cursor`'s value alone against a stashed old value. Always resets
     /// `cursor_footer` to `false` (spec 0142) — every caller of this
     /// method targets a node's own header row.
+    ///
+    /// Spec 0194 S1: also resets the caret to the new row's first
+    /// reachable column, so a node-level jump lands at the start of the
+    /// row's text. Vertical movement wants the opposite rule and so
+    /// deliberately does not come through here — see `carry_caret`.
     pub(crate) fn set_cursor(&mut self, idx: usize) {
         self.cursor = idx;
         self.cursor_footer = false;
         self.cursor_moves += 1;
+        self.reset_caret_column();
+    }
+
+    /// Spec 0194 S3: the columns of the cursor row's caret track the
+    /// caret may rest on, as an inclusive `(first, last)` pair.
+    ///
+    /// The rule both ends follow: **the caret may rest on anything that
+    /// carries information, and not on a control.** Leftward that stops
+    /// it at the row's first non-blank character (vim's `^`) — the fold
+    /// margin left of it is a click target, not text. Rightward it runs
+    /// to the end of the heat suffix when the row has one, since the
+    /// suffix is a rendered fact about the node.
+    ///
+    /// An all-blank row has no track at all and gets a single column,
+    /// drawn on a synthetic trailing space (S2).
+    pub(super) fn caret_bounds(&self) -> (usize, usize) {
+        if self.tree.is_empty() {
+            return (0, 0);
+        }
+        let text = self.row_text(DisplayRow::Committed(self.cursor_line()));
+        let trimmed = text.trim_start();
+        if trimmed.is_empty() {
+            return (0, 0);
+        }
+        let len = text.chars().count();
+        (
+            len - trimmed.chars().count(),
+            len - 1 + self.caret_suffix_len,
+        )
+    }
+
+    /// Spec 0194 S1: put the caret at the start of the row's text and
+    /// make that the desired column too — what a node-level jump does.
+    pub(super) fn reset_caret_column(&mut self) {
+        let (first, _) = self.caret_bounds();
+        self.cursor_column = first;
+        self.desired_column = first;
+    }
+
+    /// Spec 0194 S11: pull the caret back into the row's reachable range
+    /// without disturbing `desired_column`. Needed wherever the row's
+    /// text changes under a caret that did not move — a fold toggle
+    /// splices in a collapse summary, an override resplices the subtree —
+    /// and once per frame, so no other mutation of `lines` can leave the
+    /// caret pointing past a row's end.
+    pub(super) fn clamp_caret_column(&mut self) {
+        let (first, last) = self.caret_bounds();
+        self.cursor_column = self.cursor_column.clamp(first, last);
+    }
+
+    /// Spec 0194 S5: carry the caret across a *vertical* move. The
+    /// desired column is clamped into the new row's range without being
+    /// forgotten, so crossing a short row and coming back restores it.
+    ///
+    /// `sticky` is the one addition to vim's rule: a caret that was
+    /// sitting exactly on its old row's first non-blank character stays
+    /// on the first non-blank. Since that is also the leftmost reachable
+    /// column, the case cannot be reached by accident — and it is what
+    /// makes `j`/`k` usable down a message whose indentation changes on
+    /// nearly every row (vim's `'startofline'`).
+    fn carry_caret(&mut self, sticky: bool) {
+        let (first, last) = self.caret_bounds();
+        self.cursor_column = if sticky {
+            first
+        } else {
+            self.desired_column.clamp(first, last)
+        };
+    }
+
+    /// Whether the caret is currently on its row's first non-blank
+    /// character — read *before* a vertical move, and handed back to
+    /// `carry_caret` after it.
+    fn caret_at_first_non_blank(&self) -> bool {
+        self.cursor_column == self.caret_bounds().0
+    }
+
+    /// Spec 0194 S6: `h`/`Left`. Silent at the left end — vim's default
+    /// `whichwrap` does not let `h` wrap to the previous line, and
+    /// neither does this (N5).
+    pub(super) fn caret_left(&mut self) {
+        self.clamp_caret_column();
+        self.cursor_column = self
+            .cursor_column
+            .saturating_sub(1)
+            .max(self.caret_bounds().0);
+        self.desired_column = self.cursor_column;
+    }
+
+    /// Spec 0194 S6: `l`/`Right`, stopping at the last character of the
+    /// heat suffix when the row has one.
+    pub(super) fn caret_right(&mut self) {
+        self.clamp_caret_column();
+        let (_, last) = self.caret_bounds();
+        self.cursor_column = (self.cursor_column + 1).min(last);
+        self.desired_column = self.cursor_column;
+    }
+
+    /// Spec 0194 S6: `0`/`^`. The two are one key here — column zero is
+    /// the fold gutter and unreachable (S3), so vim's two motions have
+    /// the same destination.
+    pub(super) fn caret_to_line_start(&mut self) {
+        self.cursor_column = self.caret_bounds().0;
+        self.desired_column = self.cursor_column;
+    }
+
+    /// Spec 0194 S6: `$`.
+    pub(super) fn caret_to_line_end(&mut self) {
+        self.cursor_column = self.caret_bounds().1;
+        self.desired_column = self.cursor_column;
     }
 
     /// `self.cursor`'s own currently-displayed line: its footer line
@@ -228,9 +342,11 @@ impl App {
             .iter()
             .find_map(|&line| self.resolve_cursor_line(line));
         if let Some((idx, footer)) = next {
+            let sticky = self.caret_at_first_non_blank();
             self.cursor = idx;
             self.cursor_footer = footer;
             self.cursor_moves += 1;
+            self.carry_caret(sticky);
         }
     }
 
@@ -244,9 +360,11 @@ impl App {
             .rev()
             .find_map(|&line| self.resolve_cursor_line(line));
         if let Some((idx, footer)) = prev {
+            let sticky = self.caret_at_first_non_blank();
             self.cursor = idx;
             self.cursor_footer = footer;
             self.cursor_moves += 1;
+            self.carry_caret(sticky);
         }
     }
 
@@ -255,7 +373,7 @@ impl App {
     /// there isn't one.
     pub(super) fn next_sibling_move(&mut self) {
         if let Some(next) = self.tree[self.cursor].next_sibling {
-            self.record_jump(self.cursor);
+            self.record_jump();
             self.set_cursor(next);
         } else {
             self.message = "no next sibling".to_string();
@@ -267,7 +385,7 @@ impl App {
     /// there isn't one.
     pub(super) fn prev_sibling_move(&mut self) {
         if let Some(prev) = self.tree[self.cursor].prev_sibling {
-            self.record_jump(self.cursor);
+            self.record_jump();
             self.set_cursor(prev);
         } else {
             self.message = "no previous sibling".to_string();
@@ -408,7 +526,7 @@ impl App {
     /// satisfied and the cursor stays stuck on the last line.
     pub(super) fn move_home(&mut self) {
         if self.cursor != self.first_node || self.cursor_footer {
-            self.record_jump(self.cursor);
+            self.record_jump();
             self.set_cursor(self.first_node);
         }
     }
@@ -425,11 +543,72 @@ impl App {
             return;
         };
         if self.cursor != idx || self.cursor_footer != footer {
-            self.record_jump(self.cursor);
+            self.record_jump();
             self.cursor = idx;
             self.cursor_footer = footer;
             self.cursor_moves += 1;
+            // Spec 0194 S1: a node-level jump, so the caret resets — the
+            // assignment above bypasses `set_cursor` only because that
+            // one always clears `cursor_footer`, and this stop may be a
+            // footer line.
+            self.reset_caret_column();
         }
+    }
+
+    /// Spec 0194 S6/S4: `%`. Both braces belong to the cursor node — the
+    /// `{` on its header line, the `}` on its footer — so this is
+    /// exactly "flip `cursor_footer`, and put the column on the brace".
+    ///
+    /// A *folded* node draws both on one row (spec 0193's `{ ... }`
+    /// collapse summary) and has no visible footer line at all, so there
+    /// the column moves and `cursor_footer` stays put — which falls out
+    /// of deriving it from the target line rather than negating it.
+    ///
+    /// From anywhere other than the closing brace the jump goes to it,
+    /// so `%` is useful from the middle of a header line and not only
+    /// from the brace itself.
+    pub(super) fn jump_matching_brace(&mut self) {
+        let Some((open, close)) = self.cursor_brace_pair() else {
+            self.message = "no matching brace here".to_string();
+            return;
+        };
+        let (line, column) = if (self.cursor_line(), self.cursor_column) == close {
+            open
+        } else {
+            close
+        };
+        self.cursor_footer = line != self.tree[self.cursor].span.text_range.start;
+        self.cursor_column = column;
+        self.desired_column = column;
+        self.cursor_moves += 1;
+    }
+
+    /// Spec 0194 S6: `H`/`Shift-Left`/`Backspace`. `h` used to fold an
+    /// expanded node first and only move to the parent on a second press
+    /// (the nvim-tree pattern); folding is `zc`/`Space` now, so this
+    /// moves immediately.
+    pub(super) fn parent_move(&mut self) {
+        if let Some(parent) = self.tree[self.cursor].parent {
+            self.record_jump();
+            self.set_cursor(parent);
+        } else {
+            self.message = "no parent".to_string();
+        }
+    }
+
+    /// Spec 0194 S6: `L`/`Shift-Right`. Unfolds the node on the way when
+    /// it is closed — a folded node's children are not on screen, so
+    /// there would otherwise be nothing to move to.
+    pub(super) fn first_child_move(&mut self) {
+        let Some(child) = self.tree[self.cursor].first_child else {
+            self.message = "no children".to_string();
+            return;
+        };
+        if self.folded.contains(&self.cursor) {
+            self.toggle_fold(self.cursor);
+        }
+        self.record_jump();
+        self.set_cursor(child);
     }
 
     /// Folds/unfolds `idx`. Folding hides `idx`'s whole body, including
@@ -453,6 +632,51 @@ impl App {
             }
         }
         self.rebuild_visible_rows();
+        // Spec 0194 S11: a fold toggle rewrites the cursor row's text
+        // (the `{ ... }` collapse summary is spliced into `row_text`),
+        // so a caret that did not move may now point past the row's end.
+        // `desired_column` is deliberately left alone.
+        self.clamp_caret_column();
+    }
+
+    /// Spec 0194 S6: `za`/`Space` — toggle the cursor node's own fold.
+    pub(super) fn toggle_cursor_fold(&mut self) {
+        if self.has_children(self.cursor) {
+            self.toggle_fold(self.cursor);
+        } else {
+            self.message = "not foldable".to_string();
+        }
+    }
+
+    /// Spec 0194 S6: `zc` — close the cursor node's fold, a no-op when
+    /// it is already closed (vim's `zc` errors there; a reading tool has
+    /// nothing useful to say about it).
+    pub(super) fn fold_cursor(&mut self) {
+        if !self.has_children(self.cursor) {
+            self.message = "not foldable".to_string();
+        } else if !self.folded.contains(&self.cursor) {
+            self.toggle_fold(self.cursor);
+        }
+    }
+
+    /// Spec 0194 S6: `zo` — open the cursor node's fold.
+    pub(super) fn unfold_cursor(&mut self) {
+        if !self.has_children(self.cursor) {
+            self.message = "not foldable".to_string();
+        } else if self.folded.contains(&self.cursor) {
+            self.toggle_fold(self.cursor);
+        }
+    }
+
+    /// Spec 0194 S6: `zA` — the sibling-wide counterpart of `za`.
+    /// Follows the cursor node's own state so the two stay predictable:
+    /// whatever `za` would do here, `zA` does to the whole level.
+    pub(super) fn toggle_all_siblings(&mut self) {
+        if self.folded.contains(&self.cursor) {
+            self.unfold_all_siblings();
+        } else {
+            self.fold_all_siblings();
+        }
     }
 
     /// True if `idx` is a strict ancestor of `descendant` (i.e.

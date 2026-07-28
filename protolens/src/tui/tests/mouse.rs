@@ -728,3 +728,47 @@ fn click_on_the_main_panes_own_statusline_row_is_not_treated_as_content_row_0() 
         "click on the local statusline row must not move the cursor"
     );
 }
+
+/// Spec 0194 test-plan item 15 (S7). A click is a caret placement, so
+/// it has to invert S1's column-to-screen mapping — and the two
+/// exceptions have to survive it: the fold marker stays a pure fold
+/// control that leaves the caret alone, and the gutter clamps onto the
+/// first non-blank instead of being rejected.
+#[test]
+fn a_click_places_the_caret_except_on_the_fold_marker() {
+    let (mut app, items) = repeated_message_fixture();
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 60, 20);
+
+    let header = app.tree[items[1]].span.text_range.start;
+    let row = app
+        .visible_rows
+        .iter()
+        .position(|&l| l == header)
+        .expect("the header row is visible") as u16;
+    let indent = app.lines[header].len() - app.lines[header].trim_start().len();
+    // The heat-cue column, then the fold field, then the row's text.
+    let text_origin = 1 + render::FOLD_FIELD_WIDTH as u16;
+
+    app.handle_click(text_origin + indent as u16 + 2, row);
+    assert_eq!(app.cursor, items[1], "the click moved the cursor there");
+    assert_eq!(app.cursor_column, indent + 2, "and set the column");
+    assert_eq!(app.desired_column, indent + 2);
+
+    app.handle_click(0, row);
+    assert_eq!(
+        app.cursor_column, indent,
+        "a click in the gutter clamps to the first non-blank"
+    );
+
+    let marker = render::marker_column(&app.lines[header]);
+    app.handle_click(marker + 1, row);
+    assert!(
+        app.folded.contains(&items[1]),
+        "a click on the marker still folds"
+    );
+    assert_eq!(
+        app.cursor_column, indent,
+        "and leaves the caret exactly where it was"
+    );
+}

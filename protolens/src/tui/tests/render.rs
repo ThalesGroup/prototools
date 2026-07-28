@@ -41,14 +41,21 @@ fn empty_tree_renders_and_handles_keys_without_panicking() {
     // handful of keys that are unguarded `self.tree[...]` indexing
     // sites for a non-empty tree.
     app.splash = false;
+    // `z` goes last: spec 0194 S6 made it a chord prefix, so anything
+    // after it would be eaten as the chord's second half.
     for code in [
         KeyCode::Down,
         KeyCode::Up,
         KeyCode::Left,
         KeyCode::Right,
-        KeyCode::Char('z'),
+        KeyCode::Char('0'),
+        KeyCode::Char('$'),
+        KeyCode::Char('%'),
+        KeyCode::Char(' '),
         KeyCode::Char('x'),
         KeyCode::End,
+        KeyCode::Char('z'),
+        KeyCode::Char('c'),
     ] {
         app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
     }
@@ -882,28 +889,68 @@ fn clipboard_copy_strips_annotations_outside_the_viewport() {
     }
 }
 
-/// Every span the frame draws in `brace_match_style`, as
-/// `(committed line index, span text)` — the observable form of spec
-/// 0193 S2. Refreshes the window styles over the whole document first,
-/// since `row_spans` reads them by window position.
-fn brace_match_spans(app: &mut App) -> Vec<(usize, String)> {
-    let window: Vec<DisplayRow> = (0..app.composed_row_count())
-        .filter_map(|d| app.display_row(d))
-        .collect();
-    app.refresh_window_styles(&window);
-    let want = crate::theme::brace_match_style(app.theme);
+/// Draw one frame of `app`, splash dismissed. Spec 0194 draws the caret
+/// in `render`, over the finished span list, so its assertions have to
+/// read the frame rather than `row_spans`.
+fn drawn_frame(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {
+    app.splash = false;
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    terminal
+}
+
+/// Every main-pane cell of a drawn frame whose style satisfies `pick`,
+/// as `(committed line index, symbol)`.
+fn marked_cells(
+    app: &App,
+    terminal: &Terminal<TestBackend>,
+    pick: impl Fn(Style) -> bool,
+) -> Vec<(usize, String)> {
+    let area = app.main_area;
+    let buffer = terminal.backend().buffer();
     let mut found = Vec::new();
-    for (i, &row) in window.iter().enumerate() {
-        let DisplayRow::Committed(line) = row else {
+    for y in area.y..area.y + area.height {
+        let Some(&line) = app
+            .visible_rows
+            .get(app.scroll_offset + (y - area.y) as usize)
+        else {
             continue;
         };
-        for span in app.row_spans(row, i) {
-            if span.style == want {
-                found.push((line, span.content.to_string()));
+        for x in area.x..area.x + area.width {
+            let cell = &buffer[(x, y)];
+            if pick(cell.style()) {
+                found.push((line, cell.symbol().to_string()));
             }
         }
     }
     found
+}
+
+/// The cells drawn in `theme::caret_style` — the one inverted character
+/// (spec 0194 S2).
+fn caret_cells(app: &App, terminal: &Terminal<TestBackend>) -> Vec<(usize, String)> {
+    marked_cells(app, terminal, |s| {
+        s.add_modifier.contains(Modifier::REVERSED)
+    })
+}
+
+/// The cells drawn in `theme::caret_paired_style` — the caret dimmed to
+/// a tint because its matching brace is on screen carrying the strong
+/// cue instead (spec 0194 S4).
+fn paired_cells(app: &App, terminal: &Terminal<TestBackend>) -> Vec<(usize, String)> {
+    let want = crate::theme::caret_paired_style(app.theme).bg;
+    marked_cells(app, terminal, move |s| s.bg == want)
+}
+
+/// Put the caret on one member of the cursor node's brace pair.
+fn put_caret_on_brace(app: &mut App, closing: bool) -> (usize, usize) {
+    let (open, close) = app
+        .cursor_brace_pair()
+        .expect("the cursor node must be bracketed");
+    let (line, column) = if closing { close } else { open };
+    app.cursor_footer = line != app.tree[app.cursor].span.text_range.start;
+    app.cursor_column = column;
+    (line, column)
 }
 
 /// The display column `needle` is drawn in, in characters — not bytes,
@@ -1026,89 +1073,435 @@ fn row_content_and_row_spans_agree_byte_for_byte() {
     }
 }
 
-/// Spec 0193 test-plan item 5 (G3, N2). The cursor node's own braces
-/// are styled and nothing else is — in particular not the identically
-/// shaped braces of its two siblings, which is what N2 rules out.
+/// Spec 0194 test-plan item 11 — spec 0193's brace-highlight test
+/// rewritten rather than deleted. Spec 0193 lit both of the cursor
+/// node's braces in a color of their own, all the time; spec 0194 keeps
+/// only the pairing *the caret is standing on*, and splits the cue in
+/// two so the strong half marks the brace the user is looking for.
+/// The three states of S4's table, in order.
 #[test]
-fn only_the_cursor_nodes_own_braces_are_styled() {
+fn a_brace_pairs_with_its_match_only_when_the_caret_is_on_it() {
+    // Off a brace: one inverted cell, and no partner tint anywhere.
     let (mut app, items) = repeated_message_fixture();
-    app.cursor = items[1];
-    let range = app.tree[items[1]].span.text_range.clone();
-
+    app.set_cursor(items[1]);
+    let header = app.tree[items[1]].span.text_range.start;
+    let first_non_blank = app.lines[header]
+        .trim_start()
+        .chars()
+        .next()
+        .expect("the header row is not blank")
+        .to_string();
+    let terminal = drawn_frame(&mut app, 40, 12);
     assert_eq!(
-        brace_match_spans(&mut app),
-        vec![
-            (range.start, "{".to_string()),
-            (range.end - 1, "}".to_string()),
-        ],
-        "exactly the cursor node's header `{{` and footer `}}`"
+        caret_cells(&app, &terminal),
+        vec![(header, first_non_blank)],
+        "the caret alone, on the row's first non-blank"
+    );
+    assert!(
+        paired_cells(&app, &terminal).is_empty(),
+        "nothing is paired with a caret that is not on a brace"
+    );
+
+    // On a brace whose match is scrolled out of the window: the caret
+    // keeps the strong cue, since there is nothing on screen to point
+    // at with it.
+    let (mut app, items) = repeated_message_fixture();
+    app.set_cursor(items[2]);
+    let (footer, _) = put_caret_on_brace(&mut app, true);
+    let mut terminal = drawn_frame(&mut app, 40, 8);
+    // No cursor movement in between, so `render`'s auto-pan-into-view
+    // guard leaves this alone.
+    app.scroll_offset = footer;
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert_eq!(
+        caret_cells(&app, &terminal),
+        vec![(footer, "}".to_string())],
+        "an unmatchable brace is drawn like any other caret"
+    );
+    assert!(paired_cells(&app, &terminal).is_empty());
+
+    // On a brace whose match is in the window: the caret dims to a
+    // tint and the *match* takes the inversion.
+    let (mut app, items) = repeated_message_fixture();
+    app.set_cursor(items[1]);
+    let (open_line, _) = put_caret_on_brace(&mut app, false);
+    let close_line = app.tree[items[1]].span.text_range.end - 1;
+    let terminal = drawn_frame(&mut app, 40, 12);
+    assert_eq!(
+        caret_cells(&app, &terminal),
+        vec![(close_line, "}".to_string())],
+        "the strong cue belongs to the brace the user is looking for"
+    );
+    assert_eq!(
+        paired_cells(&app, &terminal),
+        vec![(open_line, "{".to_string())],
+        "and the caret itself keeps only the tint"
     );
 }
 
-/// Spec 0193 test-plan item 6. A folded node carries its whole pair on
-/// one row, and the closing half of it is synthetic — text that exists
-/// only as an insertion. The ellipsis beside it is not part of the
-/// pair and must stay plain, which is the reason `spans_with_insertions`
-/// takes a per-insertion style rather than one style for the lot.
+/// Spec 0194 test-plan item 12. Whether the match is on screen is a
+/// property of the frame, not of the last keypress, so it has to be
+/// re-resolved on every draw: panning the match off the left edge must
+/// hand the strong cue back to the caret, and panning back must undo
+/// that — with nothing that moves the cursor pressed in between.
 #[test]
-fn a_folded_nodes_synthetic_closing_brace_is_styled_but_its_ellipsis_is_not() {
+fn losing_sight_of_the_match_returns_the_strong_cue_to_the_caret() {
     let (mut app, items) = repeated_message_fixture();
-    app.cursor = items[0];
+    app.set_cursor(items[1]);
+    let (open_line, _) = put_caret_on_brace(&mut app, false);
+    let close_line = app.tree[items[1]].span.text_range.end - 1;
+    let mut terminal = drawn_frame(&mut app, 40, 12);
+    assert_eq!(
+        paired_cells(&app, &terminal).len(),
+        1,
+        "paired to begin with"
+    );
+
+    // Pan just far enough to take the closing brace off the left edge.
+    // The caret's own `{` is further right on a more deeply indented
+    // row, so it survives the same pan and stays drawn.
+    let (_, (_, close_column)) = app.cursor_brace_pair().expect("the node is bracketed");
+    app.pan_offset = render::FOLD_FIELD_WIDTH + close_column + 1;
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert_eq!(
+        caret_cells(&app, &terminal),
+        vec![(open_line, "{".to_string())],
+        "with the match panned out the caret takes the strong cue back"
+    );
+    assert!(paired_cells(&app, &terminal).is_empty());
+
+    app.pan_offset = 0;
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert_eq!(
+        caret_cells(&app, &terminal),
+        vec![(close_line, "}".to_string())],
+        "and panning back restores the pair"
+    );
+    assert_eq!(
+        paired_cells(&app, &terminal),
+        vec![(open_line, "{".to_string())]
+    );
+}
+
+/// Spec 0194 test-plan item 13. A folded node carries its whole pair on
+/// one row, and the closing half of it is synthetic — text that exists
+/// only as an insertion, at a byte offset `row_text` and `row_spans`
+/// disagree about. Drawing the caret by character index over the
+/// finished span list is what keeps the two halves apart here.
+#[test]
+fn a_folded_node_pairs_its_synthetic_closing_brace_on_the_same_row() {
+    let (mut app, items) = repeated_message_fixture();
+    app.set_cursor(items[0]);
     app.toggle_fold(items[0]);
     let header = app.tree[items[0]].span.text_range.start;
+    put_caret_on_brace(&mut app, false);
 
+    let terminal = drawn_frame(&mut app, 40, 12);
     assert_eq!(
-        brace_match_spans(&mut app),
-        vec![(header, "{".to_string()), (header, "}".to_string())],
-        "the folded row carries both halves of the pair"
+        caret_cells(&app, &terminal),
+        vec![(header, "}".to_string())],
+        "the collapse summary's closing brace is the match"
     );
-
-    let window: Vec<DisplayRow> = (0..app.composed_row_count())
-        .filter_map(|d| app.display_row(d))
-        .collect();
-    app.refresh_window_styles(&window);
-    let row = window
-        .iter()
-        .position(|r| matches!(r, DisplayRow::Committed(l) if *l == header))
-        .expect("the folded node's header row is still drawn");
-    let ellipsis = app
-        .row_spans(window[row], row)
-        .into_iter()
-        .find(|s| s.content == " ... ")
-        .expect("a folded row draws its collapse summary");
     assert_eq!(
-        ellipsis.style,
-        Style::default(),
-        "the collapse summary is not part of the brace pair"
+        paired_cells(&app, &terminal),
+        vec![(header, "{".to_string())],
+        "both halves are on the caret's row, styled differently"
     );
 }
 
-/// Spec 0193 test-plan item 7. The highlight is a property of where the
-/// cursor is now, so it must move with it — a version computed once and
-/// cached would leave the old node lit.
+/// A drawable app whose rows read exactly `texts`.
+///
+/// `sibling_leaves_app` cannot be drawn: its `raw_range`s point into an
+/// empty blob, and the heat cue's payload walk trips over that on the
+/// first frame. This borrows `wide_sibling_scalars_app`'s real
+/// two-byte-per-node blob — one node per row either way, so substituting
+/// the text leaves every `text_range` valid.
+fn text_rows_app(texts: &[&str]) -> App {
+    let mut app = wide_sibling_scalars_app(texts.len());
+    app.lines = texts.iter().map(|s| s.to_string()).collect();
+    app
+}
+
+/// The character (not byte) column `needle` was drawn in. The heat and
+/// fold glyphs are multi-byte, so a byte offset would be off by their
+/// width.
+fn drawn_column_of(row: &str, needle: &str) -> usize {
+    let byte = row
+        .find(needle)
+        .unwrap_or_else(|| panic!("{row:?} must contain {needle:?}"));
+    row[..byte].chars().count()
+}
+
+/// One drawn main-pane row, as a string — used where an assertion is
+/// about *where* something landed on screen rather than how it is
+/// styled.
+fn drawn_row(app: &App, terminal: &Terminal<TestBackend>, row: u16) -> String {
+    let area = app.main_area;
+    let buffer = terminal.backend().buffer();
+    (area.x..area.x + area.width)
+        .map(|x| buffer[(x, area.y + row)].symbol())
+        .collect::<String>()
+        .trim_end()
+        .to_string()
+}
+
+/// The foregrounds of one drawn main-pane row.
+fn drawn_row_fgs(app: &App, terminal: &Terminal<TestBackend>, row: u16) -> Vec<Color> {
+    let area = app.main_area;
+    let buffer = terminal.backend().buffer();
+    (area.x..area.x + area.width)
+        .map(|x| buffer[(x, area.y + row)].fg)
+        .collect()
+}
+
+/// Spec 0194 test-plan item 1 (G1). vim's caret, not vim's
+/// `cursorline`: one cell inverted, and the rest of the row still in
+/// the syntax colors it would have had with the cursor elsewhere.
 #[test]
-fn moving_the_cursor_off_a_node_clears_its_braces() {
-    let (mut app, items) = repeated_message_fixture();
-    app.cursor = items[0];
-    let first = app.tree[items[0]].span.text_range.clone();
-    let second = app.tree[items[1]].span.text_range.clone();
+fn the_caret_covers_one_cell_and_leaves_the_rows_colors_alone() {
+    let mut app = text_rows_app(&["a: 1", "b: 2"]);
+    app.cursor = 0;
+    app.reset_caret_column();
+    let terminal = drawn_frame(&mut app, 40, 6);
     assert_eq!(
-        brace_match_spans(&mut app),
-        vec![
-            (first.start, "{".to_string()),
-            (first.end - 1, "}".to_string()),
-        ]
+        caret_cells(&app, &terminal).len(),
+        1,
+        "one cell, not the whole row"
+    );
+    let with_caret = drawn_row_fgs(&app, &terminal, 0);
+
+    app.cursor = 1;
+    app.reset_caret_column();
+    let terminal = drawn_frame(&mut app, 40, 6);
+    assert_eq!(
+        with_caret,
+        drawn_row_fgs(&app, &terminal, 0),
+        "the caret's row keeps every foreground it has without one"
+    );
+}
+
+/// Spec 0194 test-plan item 2 (S2, G7). The caret's row gets vim's
+/// `cursorline` tint, a drag selection gets the reversal it has always
+/// had, and a row that is both stays readable: the caret cell's own
+/// reversal cancels against the selection's, so the caret is still
+/// visible rather than merging into the block.
+#[test]
+fn a_selected_row_and_the_caret_row_stay_distinguishable() {
+    let mut app = text_rows_app(&["a: 1", "b: 2", "c: 3"]);
+    app.cursor = 0;
+    app.reset_caret_column();
+    app.select_anchor = Some(0);
+    app.select_end = Some(1);
+    let terminal = drawn_frame(&mut app, 40, 6);
+
+    let area = app.main_area;
+    let buffer = terminal.backend().buffer();
+    // The heat-cue column, the fold field and the row's own four
+    // characters — the cells the row's spans actually cover.
+    let drawn = 1 + render::FOLD_FIELD_WIDTH as u16 + 4;
+    let reversed = |row: u16, x: u16| {
+        buffer[(area.x + x, area.y + row)]
+            .style()
+            .add_modifier
+            .contains(Modifier::REVERSED)
+    };
+
+    assert!(
+        (0..drawn).all(|x| reversed(1, x)),
+        "a selected row that is not the caret's is reversed throughout"
+    );
+    let plain: Vec<u16> = (0..drawn).filter(|&x| !reversed(0, x)).collect();
+    assert_eq!(
+        plain.len(),
+        1,
+        "on a row that is both, exactly the caret cell cancels back"
+    );
+    assert_eq!(
+        buffer[(area.x, area.y)].style().bg,
+        crate::theme::cursor_row_style(app.theme).bg,
+        "and the caret's row carries the cursorline tint underneath"
+    );
+    assert!(
+        !reversed(2, 0),
+        "the unselected row below is left entirely alone"
+    );
+}
+
+/// Spec 0194 test-plan item 5 (S1, S3), drawing half. The heat suffix
+/// is reachable even though it is drawn past the row's text; the heat
+/// glyph in the first column is not, because the caret's screen index
+/// is one-based by construction.
+#[test]
+fn the_caret_reaches_the_heat_suffix_but_never_the_heat_glyph() {
+    let mut app = message_node_app();
+    let idx = 0;
+    let range = extract::message_payload_range(
+        &app.blob,
+        &app.tree[idx].span.raw_range,
+        app.tree[idx].span.packed_record_start,
+    );
+    super::heat_cue::seed_range_heat_entry(
+        &mut app,
+        range.start,
+        Some(50),
+        1,
+        "google.protobuf.DescriptorProto",
+        Some(10),
+    );
+    app.cursor = idx;
+    let header = app.tree[idx].span.text_range.start;
+
+    // `$` — the last reachable column is the suffix's closing bracket.
+    let terminal = drawn_frame(&mut app, 60, 8);
+    assert!(
+        drawn_row(&app, &terminal, 0).ends_with("[10/50]"),
+        "the fixture must actually draw a heat suffix: {:?}",
+        drawn_row(&app, &terminal, 0)
+    );
+    app.caret_to_line_end();
+    let terminal = drawn_frame(&mut app, 60, 8);
+    assert_eq!(
+        caret_cells(&app, &terminal),
+        vec![(header, "]".to_string())]
     );
 
-    app.cursor = items[1];
-    assert_eq!(
-        brace_match_spans(&mut app),
-        vec![
-            (second.start, "{".to_string()),
-            (second.end - 1, "}".to_string()),
-        ],
-        "the highlight follows the cursor rather than staying behind"
+    // `0` — and the leftmost is the row's first character, never the
+    // glyph column the cue itself occupies.
+    app.caret_to_line_start();
+    let terminal = drawn_frame(&mut app, 60, 8);
+    let area = app.main_area;
+    assert!(
+        !terminal.backend().buffer()[(area.x, area.y)]
+            .style()
+            .add_modifier
+            .contains(Modifier::REVERSED),
+        "column 0 belongs to the heat glyph and is unreachable"
     );
+    assert_eq!(caret_cells(&app, &terminal).len(), 1);
+}
+
+/// Spec 0194 test-plan item 8 (G6). The caret addresses a character,
+/// not a screen column, so nothing that only moves the row sideways may
+/// move it: a horizontal pan, or the fold marker appearing beside it.
+/// The heat suffix is appended after the pan, so it does not slide
+/// either — and the caret standing in it does not slide within it.
+#[test]
+fn the_caret_holds_its_character_across_a_pan_and_a_fold() {
+    let mut app = text_rows_app(&["    abcdefgh"]);
+    app.cursor = 0;
+    app.cursor_column = 7;
+    app.desired_column = 7;
+    let mut terminal = drawn_frame(&mut app, 40, 6);
+    assert_eq!(caret_cells(&app, &terminal), vec![(0, "d".to_string())]);
+
+    app.pan_offset = 3;
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert_eq!(
+        caret_cells(&app, &terminal),
+        vec![(0, "d".to_string())],
+        "the pan slides the row, not the caret"
+    );
+
+    // The marker appearing beside a row must not shift its text either
+    // — spec 0193 reserves the field whether or not it is used.
+    let (mut app, items) = repeated_message_fixture();
+    app.set_cursor(items[1]);
+    app.caret_right();
+    let mut terminal = drawn_frame(&mut app, 60, 12);
+    let before = caret_cells(&app, &terminal);
+    app.toggle_fold(items[1]);
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert_eq!(
+        caret_cells(&app, &terminal),
+        before,
+        "folding the row under the caret does not move it"
+    );
+}
+
+/// Spec 0194 test-plan item 8, suffix half. The heat suffix is appended
+/// after the pan is applied, so it stays put while the text slides
+/// underneath it.
+#[test]
+fn the_heat_suffix_does_not_slide_under_a_pan() {
+    let mut app = message_node_app();
+    let range = extract::message_payload_range(
+        &app.blob,
+        &app.tree[0].span.raw_range,
+        app.tree[0].span.packed_record_start,
+    );
+    super::heat_cue::seed_range_heat_entry(
+        &mut app,
+        range.start,
+        Some(50),
+        1,
+        "google.protobuf.DescriptorProto",
+        Some(10),
+    );
+    app.cursor = 0;
+
+    let mut terminal = drawn_frame(&mut app, 60, 8);
+    let unpanned = drawn_row(&app, &terminal, 0);
+    let suffix_at = drawn_column_of(&unpanned, "[10/50]");
+
+    app.caret_to_line_end();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let caret_at_end = caret_cells(&app, &terminal);
+
+    app.pan_offset = 3;
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let panned = drawn_row(&app, &terminal, 0);
+    assert_eq!(
+        drawn_column_of(&panned, "[10/50]"),
+        suffix_at - 3,
+        "the suffix keeps its place relative to the text it follows"
+    );
+    assert_ne!(panned, unpanned, "the text itself did pan");
+    assert_eq!(
+        caret_cells(&app, &terminal),
+        caret_at_end,
+        "and the caret does not move within the suffix"
+    );
+}
+
+/// Spec 0194 test-plan item 16 (S1). A row with no text of its own —
+/// or none past the fold field — still has one reachable column, drawn
+/// on a synthetic trailing space. Without it the caret would simply
+/// vanish on such a row.
+#[test]
+fn the_caret_is_drawn_on_a_synthetic_space_on_a_blank_row() {
+    for text in ["", "   "] {
+        let mut app = text_rows_app(&[text, "a: 1"]);
+        app.cursor = 0;
+        app.reset_caret_column();
+        let terminal = drawn_frame(&mut app, 40, 6);
+        assert_eq!(
+            caret_cells(&app, &terminal),
+            vec![(0, " ".to_string())],
+            "a blank row keeps exactly one reachable column, on {text:?}"
+        );
+    }
+}
+
+/// Spec 0194 test-plan item 18 (A5). The caret's column counts
+/// characters, so one press crosses a multi-byte character whole — and
+/// the character-index walk that draws it never splits one, which a
+/// byte-offset version would.
+#[test]
+fn the_caret_crosses_a_multi_byte_character_in_one_press() {
+    let text = "s: \"héllo\"";
+    let mut app = text_rows_app(&[text]);
+    app.cursor = 0;
+    app.reset_caret_column();
+
+    for want in text.chars() {
+        let terminal = drawn_frame(&mut app, 40, 6);
+        assert_eq!(
+            caret_cells(&app, &terminal),
+            vec![(0, want.to_string())],
+            "one press per character, including the multi-byte one"
+        );
+        app.caret_right();
+    }
 }
 
 /// Spec 0193 test-plan item 10 (S4). vim's own rule, boundaries

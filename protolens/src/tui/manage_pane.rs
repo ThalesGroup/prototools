@@ -733,7 +733,7 @@ impl App {
                     None if forward => affected[0],
                     None => affected[affected.len() - 1],
                 };
-                self.record_jump(self.cursor);
+                self.record_jump();
                 self.set_cursor(next);
             }
         }

@@ -376,45 +376,77 @@ pub fn manage_entry_style(auto: bool, theme: ThemeKind) -> Style {
     }
 }
 
-/// Purpose-designed red for the brace pair of the node under the cursor
-/// (spec 0193 S2) — not borrowed from `dark_rgb`/`light_rgb`, whose
-/// VSCode source expresses its own bracket-match cue as a *border*
-/// around the cell, which a terminal cell cannot draw. Follows
-/// `heat_rgb`'s precedent of a small purpose-built palette instead.
-mod brace_rgb {
+/// Purpose-designed backgrounds for spec 0194's caret cues — not
+/// borrowed from `dark_rgb`/`light_rgb`, which are foreground palettes.
+/// Follows `heat_rgb`'s precedent of a small purpose-built palette.
+///
+/// The two shades of each pair must differ from each other and not only
+/// from the terminal's own background: the caret sits *on* the caret's
+/// row by definition, so the weaker cue is always underneath the
+/// stronger one (spec 0194 S4).
+mod caret_rgb {
     use ratatui::style::Color;
 
-    /// "Red Orange" — bright against a dark background, and still
-    /// legible once the cursor row's `REVERSED` turns it into one.
-    pub const DARK: Color = Color::Rgb(0xFF, 0x45, 0x3A);
-    /// "Boston University Red" — dark enough to read on a light
-    /// background, where `DARK`'s orange cast washes out.
-    pub const LIGHT: Color = Color::Rgb(0xCC, 0x00, 0x00);
+    /// Dark theme, the caret's row — VSCode dark's own list-hover
+    /// background, a barely-there lift off `#1E1E1E`.
+    pub const DARK_ROW: Color = Color::Rgb(0x2A, 0x2D, 0x2E);
+    /// Dark theme, the caret's own cell while its brace partner is
+    /// showing — several steps lighter than `DARK_ROW`, so the caret
+    /// still reads as a cell rather than as part of its row.
+    pub const DARK_PAIRED: Color = Color::Rgb(0x51, 0x5C, 0x6A);
+    /// Light theme, the caret's row.
+    pub const LIGHT_ROW: Color = Color::Rgb(0xEC, 0xEC, 0xEC);
+    /// Light theme, the caret's own cell while its brace partner is
+    /// showing.
+    pub const LIGHT_PAIRED: Color = Color::Rgb(0xC8, 0xD3, 0xE0);
 }
 
-/// Spec 0193 S2: the brace pair of the message/group under the cursor —
-/// its opening `{` and its matching `}`, including the synthetic one a
-/// folded node renders as `{ ... }`.
+/// Spec 0194 S2: the caret itself — one character drawn inside out,
+/// keeping whatever syntax color it already had.
 ///
-/// Like `manage_entry_style` above, this is a standalone style function
-/// rather than a `SyntaxRole`: `SyntaxRole`/`RECOGNIZED_NAMES` are
-/// strictly one variant per `queries/highlights.scm` capture name, and
-/// where the cursor happens to be is not something tree-sitter can
-/// capture. The *hue* is deliberately theme-independent — red in both,
-/// like `focus_style`'s accent — since the point is salience rather
-/// than palette harmony; only the shade adapts, for contrast against
-/// the respective background.
-pub fn brace_match_style(theme: ThemeKind) -> Style {
-    let color = match theme {
-        ThemeKind::Dark if supports_rgb() => brace_rgb::DARK,
-        ThemeKind::Dark => Color::LightRed,
-        ThemeKind::Light if supports_rgb() => brace_rgb::LIGHT,
-        ThemeKind::Light => Color::Red,
+/// Theme-independent, and deliberately a bare modifier rather than a
+/// color pair: reversing is what a terminal block cursor does, so it
+/// lands correctly on any palette the user has configured, including
+/// ones this crate knows nothing about. Spec 0194 S4 hands the same
+/// style to the *matching* brace when there is one, which is the point
+/// of it being the strong cue rather than the caret's own.
+pub fn caret_style() -> Style {
+    Style::default().add_modifier(Modifier::REVERSED)
+}
+
+/// Spec 0194 S4: the caret's own cell while its matching brace is on
+/// screen and carrying `caret_style` instead. A background tint, not a
+/// reversal — the strong cue belongs to the member the user is looking
+/// *for*, not to the one they just moved to.
+pub fn caret_paired_style(theme: ThemeKind) -> Style {
+    Style::default().bg(match theme {
+        ThemeKind::Dark if supports_rgb() => caret_rgb::DARK_PAIRED,
+        ThemeKind::Dark => Color::Blue,
+        ThemeKind::Light if supports_rgb() => caret_rgb::LIGHT_PAIRED,
+        ThemeKind::Light => Color::Cyan,
         ThemeKind::System => {
             unreachable!("ThemeKind::System must be resolved before rendering — see main.rs")
         }
-    };
-    Style::default().fg(color).add_modifier(Modifier::BOLD)
+    })
+}
+
+/// Spec 0194 S2/G7: vim's `cursorline` — a dim background across the
+/// caret's whole drawn row, chrome included, so one inverted cell on a
+/// full screen is never something the user has to hunt for.
+///
+/// Visibly weaker than the drag selection's full reversal, which is what
+/// keeps spec 0194 G4's two cues apart now that they no longer share a
+/// modifier.
+pub fn cursor_row_style(theme: ThemeKind) -> Style {
+    Style::default().bg(match theme {
+        ThemeKind::Dark if supports_rgb() => caret_rgb::DARK_ROW,
+        ThemeKind::Dark => Color::DarkGray,
+        ThemeKind::Light if supports_rgb() => caret_rgb::LIGHT_ROW,
+        ThemeKind::Light => Color::Gray,
+        ThemeKind::System => {
+            unreachable!("ThemeKind::System must be resolved before rendering — see main.rs")
+        }
+    })
 }
 
 /// Focused-pane local-statusline style, shared by every focus-tracked

@@ -561,7 +561,9 @@ fn navigation_passes_through_an_empty_bracketed_message() {
 
 /// Spec 0142 empty-message fix: an empty-but-bracketed message is
 /// still foldable — it has its own fold marker/handle (`has_children`)
-/// and can be folded via `Left`.
+/// and can be folded from the keyboard. The key was `Left` until spec
+/// 0194 S6 handed the unshifted arrows to the caret and moved folding
+/// onto `Space`.
 #[test]
 fn empty_bracketed_message_is_foldable() {
     let (mut app, inner_idx) = empty_message_fixture();
@@ -574,11 +576,167 @@ fn empty_bracketed_message_is_foldable() {
 
     app.cursor = inner_idx;
     app.cursor_footer = false;
-    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
     assert!(
         app.folded.contains(&inner_idx),
-        "Left must fold an empty message"
+        "Space must fold an empty message"
+    );
+}
+
+/// Spec 0194 test-plan item 3 (S6, N5). One character per press, and
+/// neither end wraps onto the neighboring row — vim's default
+/// `whichwrap`, which leaves `h` and `l` line-bound.
+#[test]
+fn the_caret_moves_one_character_and_stops_at_both_ends() {
+    let mut app = sibling_leaves_app(&["  ab", "cd"]);
+    app.cursor = 0;
+    app.reset_caret_column();
+    assert_eq!(app.cursor_column, 2, "a fresh caret sits on the text");
+
+    app.caret_left();
+    assert_eq!(app.cursor_column, 2, "no wrap off the left end");
+    app.caret_right();
+    assert_eq!(app.cursor_column, 3);
+    app.caret_right();
+    assert_eq!(app.cursor_column, 3, "no wrap off the right end");
+    assert_eq!(app.cursor, 0, "and neither end changes the cursor node");
+}
+
+/// Spec 0194 test-plan item 4 (S3). The indentation is not reachable at
+/// any width — including 0, where there is none, and 1, where spec 0193
+/// cannot fit the fold marker into it and falls back to the reserved
+/// field instead.
+#[test]
+fn the_caret_never_enters_the_indentation_at_any_indent_width() {
+    for indent in [0usize, 1, 2, 4] {
+        let line = format!("{}x: 1", " ".repeat(indent));
+        let mut app = sibling_leaves_app(&[&line]);
+        app.cursor = 0;
+        app.reset_caret_column();
+        assert_eq!(app.cursor_column, indent, "--indent {indent}");
+        for _ in 0..10 {
+            app.caret_left();
+        }
+        assert_eq!(
+            app.cursor_column, indent,
+            "--indent {indent}: `h` must stop at the first non-blank"
+        );
+        app.caret_to_line_start();
+        assert_eq!(app.cursor_column, indent, "--indent {indent}: so must `0`");
+    }
+}
+
+/// Spec 0194 test-plan item 5 (S1). The heat suffix is part of the
+/// row's reachable range even though it is drawn outside the text, so
+/// `$` lands on its last character rather than on the text's.
+#[test]
+fn the_heat_suffix_is_reachable_and_bounds_the_row() {
+    let mut app = sibling_leaves_app(&["a: 1"]);
+    app.cursor = 0;
+    let suffix = " [2/7]";
+    app.caret_suffix_len = suffix.chars().count();
+    app.reset_caret_column();
+
+    let text_len = "a: 1".chars().count();
+    assert_eq!(
+        app.caret_bounds(),
+        (0, text_len - 1 + suffix.chars().count())
+    );
+
+    app.caret_to_line_end();
+    assert_eq!(app.cursor_column, text_len - 1 + suffix.chars().count());
+    app.caret_right();
+    assert_eq!(
+        app.cursor_column,
+        text_len - 1 + suffix.chars().count(),
+        "`l` stops on the suffix's last character"
+    );
+
+    // And it really is the suffix that extended the range: drop the cue
+    // and the same `$` lands on the text's last character.
+    app.caret_suffix_len = 0;
+    app.caret_to_line_end();
+    assert_eq!(app.cursor_column, text_len - 1);
+}
+
+/// Spec 0194 test-plan item 6 (S5). vim's desired-column rule: a
+/// vertical move clamps the caret into the new row without forgetting
+/// where it wanted to be, so a detour across a short row is undone on
+/// the way back. A naive clamp loses the column permanently.
+#[test]
+fn a_detour_across_a_short_row_restores_the_desired_column() {
+    let mut app = sibling_leaves_app(&["abcdef", "ab", "abcdef"]);
+    app.cursor = 0;
+    app.cursor_column = 4;
+    app.desired_column = 4;
+
+    app.move_down();
+    assert_eq!(app.cursor, 1);
+    assert_eq!(app.cursor_column, 1, "clamped into the short row");
+
+    app.move_down();
+    assert_eq!(app.cursor, 2);
+    assert_eq!(app.cursor_column, 4, "and restored on the far side");
+}
+
+/// Spec 0194 test-plan item 7 (S5). The one addition to vim's rule: a
+/// caret on the first non-blank stays on the first non-blank, which is
+/// what makes `j` usable down a message whose indentation changes on
+/// nearly every row. A caret one column to its right does not stick —
+/// otherwise the rule would swallow ordinary vertical movement.
+#[test]
+fn a_caret_on_the_first_non_blank_sticks_to_it_across_rows() {
+    for (start, want) in [(4usize, 2usize), (5, 5)] {
+        let mut app = sibling_leaves_app(&["    abcd", "  wxyz"]);
+        app.cursor = 0;
+        app.cursor_column = start;
+        app.desired_column = start;
+        app.move_down();
+        assert_eq!(app.cursor, 1);
+        assert_eq!(
+            app.cursor_column, want,
+            "from column {start} on a row indented 4, onto one indented 2"
+        );
+    }
+}
+
+/// Spec 0194 test-plan item 14 (S6). `%` crosses between the cursor
+/// node's own braces, which means crossing between its header and
+/// footer rows — so it owns `cursor_footer` as well as the column.
+#[test]
+fn percent_moves_between_the_cursor_nodes_braces() {
+    let (mut app, items) = repeated_message_fixture();
+    app.set_cursor(items[1]);
+    let (open, close) = app
+        .cursor_brace_pair()
+        .expect("a message node is bracketed");
+    app.cursor_column = open.1;
+
+    app.jump_matching_brace();
+    assert!(app.cursor_footer, "the closing brace is on the footer row");
+    assert_eq!((app.cursor_line(), app.cursor_column), close);
+
+    app.jump_matching_brace();
+    assert!(!app.cursor_footer);
+    assert_eq!((app.cursor_line(), app.cursor_column), open);
+}
+
+/// Spec 0194 test-plan item 14, second half. A scalar has no braces to
+/// cross, so `%` says so rather than moving the caret somewhere
+/// arbitrary.
+#[test]
+fn percent_on_an_unbracketed_node_reports_rather_than_moving() {
+    let mut app = sibling_leaves_app(&["a: 1"]);
+    app.cursor = 0;
+    app.reset_caret_column();
+
+    app.jump_matching_brace();
+    assert_eq!(app.cursor_column, 0, "the caret has not moved");
+    assert!(
+        app.message.contains("no matching brace"),
+        "got {:?}",
+        app.message
     );
 }
 
