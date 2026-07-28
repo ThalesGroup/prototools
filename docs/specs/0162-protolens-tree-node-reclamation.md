@@ -337,6 +337,15 @@ accumulated.
 Keeps survivor indices stable, so nothing needs remapping, and the sweep
 is trivially incremental.
 
+**Adopted, as spec 0206** (revised 2026-07-28). It was rejected here on
+one ground — aliasing — and that ground was answered by work this spec
+did not anticipate: spec 0203 built `verify_arena`, which is precisely
+the "moment" the paragraph below says a free list lacks. The rest of
+the analysis held up and 0206 uses it, so it is left standing rather
+than rewritten, with the verdict corrected.
+
+The original reasoning follows.
+
 **Rejected, but on one ground rather than two** (revised 2026-07-27).
 
 The contiguity objection is weaker than it first looked. Both the splice
@@ -364,8 +373,23 @@ pass and can be *asserted* correct afterwards (test plan 2), whereas a
 free list has no such moment, and a table entry someone forgets to scrub
 stays wrong indefinitely.
 
+> That last clause is what stopped being true. `verify_arena` (spec
+> 0203 S6) decides the same property — every link and every index
+> holder names a reachable node — without needing a collection cycle to
+> hang off, and spec 0186's hook runs it after every batch in the
+> override suite. The hazard is unchanged and is spec 0206's principal
+> risk; what changed is that it is now detectable.
+
 And it still does not return memory: peak `tree.len()` never drops, it
 only stops rising.
+
+> Also still true, and now the division of labour rather than an
+> objection: spec 0206 stops the rise, spec 0203 does the returning.
+> The contiguity paragraph above is the one 0206 leans on hardest —
+> its point that a free list can *supply* contiguity is right, and
+> address-ordered first fit over a bitmap supplies it without needing
+> a list of runs at all. The `descend` watermark it flags is spec 0206
+> S4.
 
 ### A3 — payload-only drop
 
