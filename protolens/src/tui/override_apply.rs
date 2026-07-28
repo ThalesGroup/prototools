@@ -11,6 +11,31 @@ use prototext_core::helpers::{
 };
 use prototext_core::serialize::render_text::NodeSpan;
 
+/// Round bytes to the largest unit that leaves a value at or above 1,
+/// for the memory-guard's refusal message.
+fn format_bytes(bytes: u64) -> String {
+    const GIB: u64 = 1 << 30;
+    const MIB: u64 = 1 << 20;
+    if bytes >= GIB {
+        format!("{:.1} GiB", bytes as f64 / GIB as f64)
+    } else {
+        format!("{} MiB", bytes / MIB)
+    }
+}
+
+/// TEMPORARY debug instrumentation for the arena-growth investigation.
+/// Counters are reset at the start of each `render_overrides` batch and
+/// reported at its end, under `PROTOLENS_TRACE`.
+pub(super) mod probe {
+    use std::sync::atomic::AtomicUsize;
+    /// `render_overrides_inner` calls.
+    pub(super) static VISITS: AtomicUsize = AtomicUsize::new(0);
+    /// Of those, ones where `resettle_node` actually spliced.
+    pub(super) static SPLICES: AtomicUsize = AtomicUsize::new(0);
+    /// Arena nodes appended by those splices.
+    pub(super) static NODES: AtomicUsize = AtomicUsize::new(0);
+}
+
 /// Spec 0167 (N1 follow-up to spec 0160): where a single
 /// `splice_override` call's freshly decoded content ultimately belongs
 /// once the active `render_overrides` batch finishes — see
@@ -1129,6 +1154,24 @@ impl App {
     pub(super) fn render_overrides(&mut self, idx: usize) {
         if self.override_batch_depth == 0 {
             self.compute_descend_marks();
+            if let Some(refusal) = self
+                .available_memory_bytes()
+                .and_then(|available| self.override_batch_refusal(available))
+            {
+                self.message = refusal;
+                return;
+            }
+            if crate::tui::trace::enabled() {
+                use std::sync::atomic::Ordering::Relaxed;
+                probe::VISITS.store(0, Relaxed);
+                probe::SPLICES.store(0, Relaxed);
+                probe::NODES.store(0, Relaxed);
+                crate::tui::trace::trace!(
+                    "PROBE batch start tree={} marks={}",
+                    self.tree.len(),
+                    self.descend.iter().filter(|m| **m).count(),
+                );
+            }
         }
         self.override_batch_depth += 1;
         let path = self.positional_path(idx);
@@ -1139,7 +1182,114 @@ impl App {
         self.override_batch_depth -= 1;
         if self.override_batch_depth == 0 {
             self.finalize_override_batch(idx);
+            if crate::tui::trace::enabled() {
+                let rss = std::fs::read_to_string("/proc/self/statm")
+                    .ok()
+                    .and_then(|s| {
+                        s.split_whitespace()
+                            .nth(1)
+                            .and_then(|v| v.parse::<u64>().ok())
+                    })
+                    .unwrap_or(0)
+                    * 4096
+                    / (1 << 20);
+                use std::sync::atomic::Ordering::Relaxed;
+                crate::tui::trace::trace!(
+                    "PROBE render_overrides tree={} tree_cap={} lines={} lines_cap={} overrides={} rss_mib={} visits={} splices={} nodes={}",
+                    self.tree.len(),
+                    self.tree.capacity(),
+                    self.lines.len(),
+                    self.lines.capacity(),
+                    self.overrides.entries().len(),
+                    rss,
+                    probe::VISITS.load(Relaxed),
+                    probe::SPLICES.load(Relaxed),
+                    probe::NODES.load(Relaxed),
+                );
+            }
         }
+    }
+
+    /// `MemAvailable` from `/proc/meminfo`, in bytes. `None` when it
+    /// cannot be read — the guard then does not fire at all, which is
+    /// the right failure mode: an inability to measure must never
+    /// block a user from an override.
+    pub(super) fn available_memory_bytes(&self) -> Option<u64> {
+        #[cfg(test)]
+        if let Some(bytes) = self.memory_available {
+            return Some(bytes);
+        }
+        if std::env::var_os("PROTOLENS_NO_MEMORY_GUARD").is_some() {
+            return None;
+        }
+        let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+        let kb: u64 = meminfo
+            .lines()
+            .find_map(|l| l.strip_prefix("MemAvailable:"))?
+            .split_whitespace()
+            .next()?
+            .parse()
+            .ok()?;
+        Some(kb * 1024)
+    }
+
+    /// The refusal message for a batch that cannot safely run, or
+    /// `None` to let it proceed.
+    ///
+    /// The override arena is append-only: every splice appends a fresh
+    /// copy of its target's subtree and the superseded one is never
+    /// freed, so a document-wide override costs a whole second copy of
+    /// the document each time it is applied *or removed*. Measured on
+    /// googleapis (7 771 top-level records retyped by one `path:field`
+    /// origin): +4 499 335 nodes and +1.4 GiB per batch, with the live
+    /// set flat at 4 499 336 throughout. The third batch is
+    /// reproducibly killed by the OOM killer. Refusing an override
+    /// costs the user that override; being killed costs them the whole
+    /// session.
+    ///
+    /// The rule deliberately does *not* try to predict the batch. An
+    /// estimate built from the descent marks was written first and
+    /// discarded: `descend` marks every node whose rendering *could*
+    /// change, which at startup is the root alone — so it charged the
+    /// batch the whole document for a pass that in fact splices
+    /// nothing (measured: 5 278 324 lines projected, 0 nodes
+    /// appended). Predicting accurately means running
+    /// `resettle_node`'s own comparison for every marked node, i.e.
+    /// half the batch; over-predicting means refusing harmless work.
+    /// So the rule uses only quantities that are already exact.
+    ///
+    /// What it checks is headroom for one more batch: the worst case
+    /// is a document-wide override, which appends about as many nodes
+    /// as the arena already holds. If that would not fit in half of
+    /// `MemAvailable`, refuse. Half rather than all because the arena
+    /// is not the only thing a batch allocates — the line buffer, the
+    /// patches, and the decode's own working set grow too — and
+    /// because leaving the machine with no headroom invites the OOM
+    /// killer to take some *other* process instead.
+    ///
+    /// The cost of not predicting is that once the arena is large,
+    /// *every* override is refused, including a one-node one that
+    /// would have been harmless. That is the honest trade for a guard
+    /// that cannot itself misfire on a fresh document, and it
+    /// disappears once the arena stops accumulating garbage.
+    pub(super) fn override_batch_refusal(&self, available: u64) -> Option<String> {
+        // Nodes carry an `Option<String>` type name, so the heap cost
+        // per node exceeds `size_of` by roughly this much (measured
+        // ~305 B/node against a 250 B struct).
+        const STRING_ALLOWANCE: usize = 64;
+        let per_node = (std::mem::size_of::<TreeNode>() + STRING_ALLOWANCE) as u64;
+        let arena = (self.tree.len() as u64).saturating_mul(per_node);
+        let budget = available / 2;
+        if arena <= budget {
+            return None;
+        }
+        Some(format!(
+            "override skipped: protolens is already holding {} of decoded nodes and \
+             another override could need that much again, but only {} is free — \
+             restart protolens to reclaim what earlier overrides are still holding",
+            format_bytes(arena),
+            format_bytes(available),
+        ))
     }
 
     /// Spec 0183 S2: extends `self.descend` for a batch about to
@@ -1486,6 +1636,18 @@ impl App {
         let base = self.tree.len();
         let spliced_patch = self.resettle_node(idx, path, patch_scope);
         let spliced = spliced_patch.is_some();
+        if crate::tui::trace::enabled() {
+            use std::sync::atomic::Ordering::Relaxed;
+            probe::VISITS.fetch_add(1, Relaxed);
+            if spliced {
+                let n = self.tree.len() - base;
+                probe::SPLICES.fetch_add(1, Relaxed);
+                probe::NODES.fetch_add(n, Relaxed);
+                if n >= 10_000 {
+                    crate::tui::trace::trace!("PROBE big splice n={n} path={path}");
+                }
+            }
+        }
         // Spec 0167: if `idx` was just spliced, its fresh children's
         // content lives inside `idx`'s own new patch; otherwise, they
         // remain wherever `idx` itself was already found (the same
@@ -1900,6 +2062,16 @@ impl App {
             "spec 0186 G3: the incrementally extended `visible_rows` \
              differs from a full rebuild"
         );
+
+        // Spec 0203 S6. Compaction is only sound on a well-formed
+        // arena, and its own tests can exercise a handful of fixtures at
+        // most. Checking here instead makes every override test in the
+        // suite — including the randomized sequences — a witness for the
+        // properties it depends on, at the one moment they are required
+        // to hold: after a batch, when a pass is allowed to run.
+        if let Err(e) = self.verify_arena() {
+            panic!("spec 0203 S3: the arena is not well-formed after this batch: {e}");
+        }
     }
 
     /// Spec 0186 S3: (re-)insert `c`'s header line — and its footer line
@@ -2178,6 +2350,16 @@ impl App {
         is_preview: bool,
         patch_scope: Option<usize>,
     ) -> Result<usize, String> {
+        // Spec 0203: this is the arena's only mutator — the only `tree.
+        // push` in the crate and the only producer of dead slots — so it
+        // is the one place that has to abandon a compaction pass in
+        // flight. Doing it here rather than in `render_overrides` is not
+        // a stylistic choice: the live preview splice (`override_select.
+        // rs`) reaches this function without going through a batch at
+        // all, and would otherwise leave the pass's cursors describing an
+        // arena that has since grown and lost nodes underneath them.
+        // Abandoning costs nothing but the scanning already done.
+        self.reset_compaction();
         // Spec 0185 S3: the "what does this node look like as `target`"
         // half now lives in `render_node_as`, shared verbatim with the
         // live preview — including the packed-record normalization,
@@ -2246,8 +2428,43 @@ impl App {
         old_descendants.extend(packed_orphans);
         for d in &old_descendants {
             self.folded.remove(d);
+            // This is the moment the node stops being reachable, and the
+            // only place that knows it — recording it here is what lets
+            // `compact.rs` reclaim without a mark pass. `idx` itself is
+            // deliberately absent: it keeps its own arena identity across
+            // a retype (spec 0118 §7).
+            self.mark_dead(*d);
         }
         let old_descendants: HashSet<usize> = old_descendants.into_iter().collect();
+
+        // Spec 0203 P2: no surviving index holder may name an abandoned
+        // node. `folded` is scrubbed above; these are the rest.
+        //
+        // `idx` is the right destination for all of them: it is the node
+        // that replaces what is being abandoned — the ancestor of every
+        // old descendant, and the leader the absorbed run collapses into
+        // (spec 0135 G1). A heat recheck is instead simply dropped, its
+        // answer being about content that no longer exists.
+        //
+        // Latent before compaction rather than harmless: an abandoned
+        // node is never freed today, so a cursor left on one keeps a
+        // stale-but-plausible `text_range` and merely navigates oddly.
+        // Once its slot can be reused and truncated away, the same
+        // dangling index is an unrelated node or a panic.
+        if old_descendants.contains(&self.cursor) {
+            self.cursor = idx;
+        }
+        if old_descendants.contains(&self.first_node) {
+            self.first_node = idx;
+        }
+        if self
+            .override_target
+            .is_some_and(|t| old_descendants.contains(&t))
+        {
+            self.override_target = Some(idx);
+        }
+        self.pending_heat_recheck
+            .retain(|n| !old_descendants.contains(n));
 
         // The live node immediately following the *whole* old subtree in
         // document order — the seam the new subtree must be spliced back
@@ -2408,12 +2625,17 @@ impl App {
         self.heat_states
             .resize(self.tree.len(), heat_cue::HeatState::default());
         self.heat_states[idx] = heat_cue::HeatState::default();
+        // Keep `dead` parallel too. Freshly pushed nodes are live; the
+        // one exception is `new_self_idx`, marked below once it has
+        // been read.
+        self.dead.resize(self.tree.len(), false);
 
         // The pushed copy of the local root (at `new_self_idx`) is left
         // orphaned, never referenced again — its span/children are copied
         // into the live `idx` entry instead, same "abandon in place"
         // pattern already used for old descendants.
         let new_self_idx = base + local_root_idx;
+        self.mark_dead(new_self_idx);
         let mut new_self_span = self.tree[new_self_idx].span.clone();
         // Defensive restatement: byte-offset translation above already
         // reproduces `old_span.raw_range` exactly, since `field_bytes` is

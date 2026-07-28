@@ -148,6 +148,16 @@ enum Command {
         #[arg(short = 'o', long = "output")]
         output: Option<PathBuf>,
     },
+
+    /// Run every startup phase and exit, without entering the
+    /// interactive TUI (spec 0198) — the startup-time benchmark target.
+    ///
+    /// Takes no options of its own: it is the root command's own
+    /// arguments, run for their cost. Everything before the subcommand
+    /// dispatch — descriptor load, root-type resolution, decode,
+    /// `App::new` — already runs for every mode, so this variant stays
+    /// a faithful measurement without listing the phases it covers.
+    Exit,
 }
 
 /// Mirrors the TUI's `:export` flags (spec 0156 G2/G8) — a separate
@@ -368,7 +378,13 @@ fn main() -> ExitCode {
     //
     // `--type` is an O(1) pool lookup and `--raw` skips the sweep
     // outright, so neither gets this line (G6).
-    let announce = cli.command.is_none();
+    // Spec 0198 S2: spelled as a positive list rather than as
+    // `!matches!(.., Export)`, so a future subcommand is silent by
+    // default and has to opt in — `tests/batch_export.rs` asserts a
+    // successful `export` writes nothing at all to stderr, and that is
+    // the contract every batch subcommand but `exit` should inherit.
+    // `exit` opts in because the phase lines *are* its output.
+    let announce = matches!(cli.command, None | Some(Command::Exit));
     let decoded = if announce {
         if root_type == decode::RootType::Infer && ctx.graph.is_some() {
             eprintln!(
@@ -411,6 +427,14 @@ fn main() -> ExitCode {
     // Theme/color resolution is irrelevant to batch mode's plain stdout/
     // file output (spec 0123 Non-goals) — only resolved, and only probes
     // the terminal, when actually about to enter the TUI.
+    //
+    // `exit` skips both for a second reason (spec 0198 S3/G4): each
+    // writes an escape sequence and waits for a reply under a timeout,
+    // so under a benchmark harness with no terminal to answer, what they
+    // contribute to a measurement is the timeout rather than any
+    // protolens work. Excluding them costs nothing else — the theme is
+    // stored by `App::new` and first read when a frame is drawn, and
+    // `exit` draws none.
     let theme = match &cli.command {
         None => {
             // Resolved exactly once, before any rendering (spec 0116 §9)
@@ -451,6 +475,9 @@ fn main() -> ExitCode {
     app.override_preview_byte_budget = cli.override_preview_byte_budget;
 
     match cli.command {
+        // Spec 0198 S1: every startup phase has already run above; this
+        // arm is the whole subcommand.
+        Some(Command::Exit) => ExitCode::SUCCESS,
         Some(Command::Export {
             path,
             load_overrides,

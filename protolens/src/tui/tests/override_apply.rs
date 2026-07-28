@@ -2573,3 +2573,95 @@ fn a_splice_translates_packed_record_starts_into_the_documents_byte_frame() {
     let (raw, _text) = app.packed_record_extent(&elems);
     assert_eq!(raw, 6..11);
 }
+
+/// The override arena is append-only: every splice appends a fresh copy
+/// of its target's subtree and never frees the superseded one, so a
+/// document-wide override costs a whole second copy of the document
+/// each time it is applied *or removed*. On googleapis that is +1.4 GiB
+/// per batch with the live set flat, and the third batch is
+/// reproducibly killed by the OOM killer.
+///
+/// The guard trades that kill for a refusal. It checks headroom for one
+/// more batch — the worst case appends about as many nodes as the arena
+/// already holds — against half of what the machine has free.
+#[test]
+fn the_memory_guard_refuses_a_batch_with_no_headroom_left() {
+    let (mut app, _head, _tail, _tail_leaf, _tail_v) = pruned_tail_fixture();
+
+    let per_node = (std::mem::size_of::<TreeNode>() + 64) as u64;
+    let arena = app.tree.len() as u64 * per_node;
+    assert!(arena > 0, "the fixture must have decoded some nodes");
+
+    assert_eq!(
+        app.override_batch_refusal(arena * 2),
+        None,
+        "an arena occupying exactly half of what is free still has room \
+         for one more batch"
+    );
+
+    let refusal = app
+        .override_batch_refusal(arena * 2 - 2)
+        .expect("one byte past half of what is free must be refused");
+    assert!(
+        refusal.starts_with("override skipped:"),
+        "the refusal must say so in the status line rather than fail \
+         silently: {refusal}"
+    );
+    assert!(
+        refusal.contains("restart protolens"),
+        "and must say what to do about it: {refusal}"
+    );
+
+    // The guard reads only quantities that are already exact, so it
+    // cannot be fooled by a batch that turns out to splice nothing —
+    // the case that sank an earlier estimate built from the descent
+    // marks (at startup those mark the root alone, charging the batch
+    // the whole document for a pass that splices nothing).
+    app.memory_available = Some(u64::MAX);
+    assert_eq!(app.override_batch_refusal(u64::MAX), None);
+}
+
+/// A refused batch must leave the document exactly as it was. The
+/// refusal happens before `render_overrides` touches anything, so the
+/// override entry stays active and visible in the management pane while
+/// the text keeps its previous rendering — recoverable, unlike being
+/// killed.
+#[test]
+fn a_refused_batch_leaves_the_document_untouched() {
+    use crate::override_pane::OverrideOrigin;
+
+    let (mut app, _head, _tail, _tail_leaf, _tail_v) = pruned_tail_fixture();
+    let root = app.first_node;
+    let before = app.lines.clone();
+    let tree_before = app.tree.len();
+
+    // Two bytes short of the arena's own size doubled: no headroom.
+    let per_node = (std::mem::size_of::<TreeNode>() + 64) as u64;
+    app.memory_available = Some(app.tree.len() as u64 * per_node * 2 - 2);
+
+    app.overrides.activate(
+        OverrideOrigin::Path {
+            path: "/1".to_string(),
+        },
+        Some("test.Blob".to_string()),
+    );
+    app.render_overrides(root);
+
+    assert_eq!(app.lines, before, "a refused batch must not re-render");
+    assert_eq!(
+        app.tree.len(),
+        tree_before,
+        "and must not append to the arena either"
+    );
+    assert!(
+        app.message.starts_with("override skipped:"),
+        "the user must be told why nothing happened: {}",
+        app.message
+    );
+
+    // With headroom restored the very same batch goes through, so the
+    // guard refuses rather than corrupts.
+    app.memory_available = Some(u64::MAX);
+    app.render_overrides(root);
+    assert_ne!(app.lines, before, "the batch runs once there is room");
+}

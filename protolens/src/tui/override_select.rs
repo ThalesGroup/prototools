@@ -306,12 +306,17 @@ impl App {
         self.override_seek_target = None;
         self.override_target = None;
         self.override_focus = false;
-        // Item 11 (2026-07-17 feedback): a pane opened from the
-        // management pane always returns there on close — the Enter-
-        // confirm call site (`handle_override_key`) already sets these
-        // same three fields itself right after calling this, so setting
-        // them here too is harmless there; it's the cancelling call
-        // sites (`Esc`/`t`/`q`) that actually need it.
+        // Spec 0200 S3: unconditional, unlike the flag below — it is
+        // read inside an `if`, whereas a leaked origin kind would apply
+        // to the *next* pane opening, where it would be wrong.
+        self.override_origin_kind = None;
+        // Item 11 (2026-07-17 feedback), extended by spec 0200 S2: a
+        // pane opened from the management pane always returns there on
+        // close, and this is now the only place that decides so. The
+        // `Enter`-confirm call site used to set these same fields itself
+        // unconditionally (spec 0119 G3); it now only adds the entry
+        // highlight, and reads `override_opened_from_manage` *before*
+        // calling here, since this clears it.
         if self.override_opened_from_manage {
             self.override_opened_from_manage = false;
             self.manage_open = true;
@@ -323,10 +328,14 @@ impl App {
     /// (item 11, 2026-07-17 feedback): opens the selection pane on that
     /// entry's own origin, initially highlighted on its own current type
     /// (Step A/B's mode-selection rule, reused via `open_override_on_
-    /// type`), to let the user pick an alternate type. Confirming lands
-    /// back in the management pane (spec 0119 G3, unconditional); Esc/
-    /// `t`/`q` also return there — without mutating the entry — via
-    /// `override_opened_from_manage` (`close_override`).
+    /// type`), to let the user pick an alternate type. Every exit —
+    /// `Enter`, `Esc` and `t` — returns to the management pane via
+    /// `override_opened_from_manage` (`close_override`); only `Enter`
+    /// mutates the entry.
+    ///
+    /// Spec 0200 S3: the entry's own origin kind is recorded too, so
+    /// confirming retypes *this* entry rather than creating a
+    /// `path:field` one beside it.
     pub(super) fn open_override_from_manage(&mut self) {
         let Some(entry) = self.overrides.entries().get(self.manage_highlight) else {
             return;
@@ -348,6 +357,7 @@ impl App {
         self.last_override_highlight = None;
         self.override_pan_offset = 0;
         self.override_opened_from_manage = true;
+        self.override_origin_kind = Some(origin.kind());
         self.open_override_on_type(current_type);
         self.preview_override_highlight();
     }
@@ -906,6 +916,10 @@ impl App {
                 self.cursor_column = self.lines[line_idx][..byte].chars().count();
                 self.clamp_caret_column();
                 self.desired_column = self.cursor_column;
+                // Spec 0199 S10: a search landing is a position, and a
+                // match at an end of the row is a coincidence — so it
+                // must not arm `h`'s fold or `l`'s descent.
+                self.caret_anchor = CaretAnchor::Free;
                 return;
             }
             if cur == self.cursor {

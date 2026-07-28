@@ -401,6 +401,10 @@ impl App {
     /// Called after the cursor has been moved, since the reachable range
     /// it clamps into is the *new* row's. Sets `desired_column` too,
     /// exactly as a horizontal key would.
+    ///
+    /// The caret anchor is always forfeited (spec 0199 S10), even when the
+    /// click lands squarely on an end of the row: a click expresses
+    /// *where*, never *why*, so it must not arm a fold.
     fn set_caret_from_click(&mut self, col: u16, line_idx: usize) {
         let row = DisplayRow::Committed(line_idx);
         let text_chars = self.row_text(row).chars().count();
@@ -419,6 +423,7 @@ impl App {
         };
         self.clamp_caret_column();
         self.desired_column = self.cursor_column;
+        self.caret_anchor = CaretAnchor::Free;
     }
 
     /// Index of `cursor`'s own currently-displayed line (header or

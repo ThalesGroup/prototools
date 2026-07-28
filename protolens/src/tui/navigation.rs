@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
+use super::command_line::{next_word_boundary, prev_word_boundary};
 use super::*;
 
 /// Moved to `crate::decode` by spec 0192 S1, which made `build_tree` a
@@ -190,10 +191,33 @@ impl App {
 
     /// Spec 0194 S1: put the caret at the start of the row's text and
     /// make that the desired column too — what a node-level jump does.
+    ///
+    /// Spec 0199 S1 rule 1: a node-level jump *declares* the anchor. The
+    /// user asked to be at this node, and the first non-blank is where
+    /// its content begins, so arriving there is as deliberate as `^`.
     pub(super) fn reset_caret_column(&mut self) {
         let (first, _) = self.caret_bounds();
         self.cursor_column = first;
         self.desired_column = first;
+        self.caret_anchor = CaretAnchor::Home;
+    }
+
+    /// Spec 0199 S1 rule 2: derive the anchor from the column a caret
+    /// motion just reached — an end reached by walking there is as
+    /// deliberate as one reached by `^`/`$`.
+    ///
+    /// On a one-column row `first == last` and `Home` wins: such a row
+    /// is a `}` footer or a blank, where folding is a plausible intent
+    /// and descending is not.
+    fn settle_anchor(&mut self) {
+        let (first, last) = self.caret_bounds();
+        self.caret_anchor = if self.cursor_column == first {
+            CaretAnchor::Home
+        } else if self.cursor_column == last {
+            CaretAnchor::End
+        } else {
+            CaretAnchor::Free
+        };
     }
 
     /// Spec 0194 S11: pull the caret back into the row's reachable range
@@ -207,65 +231,169 @@ impl App {
         self.cursor_column = self.cursor_column.clamp(first, last);
     }
 
-    /// Spec 0194 S5: carry the caret across a *vertical* move. The
-    /// desired column is clamped into the new row's range without being
-    /// forgotten, so crossing a short row and coming back restores it.
+    /// Spec 0194 S5 / spec 0199 S3: carry the caret across a *vertical*
+    /// move. A `Free` caret keeps its desired column, clamped into the
+    /// new row's range without being forgotten, so crossing a short row
+    /// and coming back restores it — vim's rule.
     ///
-    /// `sticky` is the one addition to vim's rule: a caret that was
-    /// sitting exactly on its old row's first non-blank character stays
-    /// on the first non-blank. Since that is also the leftmost reachable
-    /// column, the case cannot be reached by accident — and it is what
-    /// makes `j`/`k` usable down a message whose indentation changes on
-    /// nearly every row (vim's `'startofline'`).
-    fn carry_caret(&mut self, sticky: bool) {
+    /// An *anchored* caret keeps the anchor instead of the column, which
+    /// is what makes `^`/`j` walk down the first non-blank of each row
+    /// (vim's `'startofline'`) and `$`/`j` walk down the last column of
+    /// each row (vim's `curswant = MAXCOL`). The anchor is deliberately
+    /// left untouched here: a vertical move relocates the caret but
+    /// expresses nothing about whether the user meant to be at an end,
+    /// and that distinction is the whole point of the field.
+    fn carry_caret(&mut self) {
         let (first, last) = self.caret_bounds();
-        self.cursor_column = if sticky {
-            first
-        } else {
-            self.desired_column.clamp(first, last)
+        self.cursor_column = match self.caret_anchor {
+            CaretAnchor::Home => first,
+            CaretAnchor::End => last,
+            CaretAnchor::Free => self.desired_column.clamp(first, last),
         };
     }
 
-    /// Whether the caret is currently on its row's first non-blank
-    /// character — read *before* a vertical move, and handed back to
-    /// `carry_caret` after it.
-    fn caret_at_first_non_blank(&self) -> bool {
-        self.cursor_column == self.caret_bounds().0
+    /// The cursor node is foldable and currently open — the state in
+    /// which a leftward key folds instead of moving (spec 0199 G3).
+    ///
+    /// `has_children` is the *bracketed-node* test rather than the
+    /// has-descendants test (see its doc comment, spec 0142), which is
+    /// exactly what is wanted here: an empty-but-bracketed message is
+    /// foldable and must fold.
+    fn cursor_expanded(&self) -> bool {
+        self.has_children(self.cursor) && !self.folded.contains(&self.cursor)
     }
 
-    /// Spec 0194 S6: `h`/`Left`. Silent at the left end — vim's default
-    /// `whichwrap` does not let `h` wrap to the previous line, and
-    /// neither does this (N5).
+    /// The cursor node is currently folded — the state in which a
+    /// rightward key unfolds instead of moving (spec 0199 G4).
+    fn cursor_folded(&self) -> bool {
+        self.folded.contains(&self.cursor)
+    }
+
+    /// Spec 0194 S6 / spec 0199 S5: `h`, `Left`, `Backspace`.
+    ///
+    /// Three regimes, in the order the code tests them. Away from the
+    /// row's first column it is plain caret motion. At the first column
+    /// with the anchor not yet `Home`, the caret was pushed here by a
+    /// vertical move's clamp, so the press *adopts* the position rather
+    /// than acting on it (G2) — not a wasted keystroke, since it also
+    /// collapses `desired_column` onto the real column, which is vim's
+    /// own rule for a horizontal motion. At a voluntary `Home` it
+    /// delegates to `parent_move`, i.e. to the whole fold-then-parent
+    /// sequence of S7 including its `no parent` message, not to a bare
+    /// fold.
+    ///
+    /// `clamp_caret_column` runs first, so the comparison is against the
+    /// row's real current bounds rather than a stale column (0194 S11).
     pub(super) fn caret_left(&mut self) {
         self.clamp_caret_column();
-        self.cursor_column = self
-            .cursor_column
-            .saturating_sub(1)
-            .max(self.caret_bounds().0);
-        self.desired_column = self.cursor_column;
+        let (first, _) = self.caret_bounds();
+        if self.cursor_column > first {
+            self.cursor_column -= 1;
+            self.desired_column = self.cursor_column;
+            self.settle_anchor();
+            return;
+        }
+        if self.caret_anchor != CaretAnchor::Home {
+            self.caret_anchor = CaretAnchor::Home;
+            self.desired_column = self.cursor_column;
+            return;
+        }
+        self.parent_move();
     }
 
-    /// Spec 0194 S6: `l`/`Right`, stopping at the last character of the
-    /// heat suffix when the row has one.
+    /// Spec 0194 S6 / spec 0199 S6: `l`, `Right`. Stops at the last
+    /// character of the heat suffix when the row has one.
+    ///
+    /// The unfold branch is tested first and gated on all three of
+    /// anchor, column and fold state. The fold state, because on an
+    /// expanded node there is nothing to unfold and the key is plain
+    /// motion. The column, because a folded node's header row still
+    /// carries a whole line of text (`Name { ... }`) that an
+    /// unconditional unfold would make unreachable by caret. The anchor,
+    /// because an involuntary `Home` means the user was passing over
+    /// this row, not aiming at it.
+    ///
+    /// Then the mirror of `caret_left`: plain motion while there is row
+    /// left, one press to adopt an involuntary `End`, and a descent from
+    /// a voluntary one — the opening brace *is* the row's last
+    /// character, so continuing right through it is where the tree
+    /// actually lies on screen.
+    ///
+    /// Order matters on a one-column row (`first == last`): the unfold
+    /// branch runs first, and an unfolded such row still falls through
+    /// to the `End`-adopting branch.
     pub(super) fn caret_right(&mut self) {
         self.clamp_caret_column();
-        let (_, last) = self.caret_bounds();
-        self.cursor_column = (self.cursor_column + 1).min(last);
-        self.desired_column = self.cursor_column;
+        let (first, last) = self.caret_bounds();
+        if self.caret_anchor == CaretAnchor::Home
+            && self.cursor_column == first
+            && self.cursor_folded()
+        {
+            self.toggle_fold(self.cursor);
+            return;
+        }
+        if self.cursor_column < last {
+            self.cursor_column += 1;
+            self.desired_column = self.cursor_column;
+            self.settle_anchor();
+            return;
+        }
+        if self.caret_anchor != CaretAnchor::End {
+            self.caret_anchor = CaretAnchor::End;
+            self.desired_column = self.cursor_column;
+            return;
+        }
+        self.first_child_move();
     }
 
     /// Spec 0194 S6: `0`/`^`. The two are one key here — column zero is
     /// the fold gutter and unreachable (S3), so vim's two motions have
-    /// the same destination.
+    /// the same destination. Declares the anchor (spec 0199 S1 rule 1).
     pub(super) fn caret_to_line_start(&mut self) {
         self.cursor_column = self.caret_bounds().0;
         self.desired_column = self.cursor_column;
+        self.caret_anchor = CaretAnchor::Home;
     }
 
-    /// Spec 0194 S6: `$`.
+    /// Spec 0194 S6: `$`. Declares the anchor (spec 0199 S1 rule 1).
     pub(super) fn caret_to_line_end(&mut self) {
         self.cursor_column = self.caret_bounds().1;
         self.desired_column = self.cursor_column;
+        self.caret_anchor = CaretAnchor::End;
+    }
+
+    /// Spec 0199 S8: `Alt-Left`, the command line's `Alt-b` applied to
+    /// the cursor row. The word definition is shared with
+    /// `command_line.rs` rather than restated — a main pane that broke
+    /// words differently from the `:` prompt on the same screen would be
+    /// a defect, not a feature.
+    pub(super) fn caret_word_left(&mut self) {
+        self.clamp_caret_column();
+        let chars = self.caret_row_chars();
+        self.cursor_column = prev_word_boundary(&chars, self.cursor_column);
+        self.clamp_caret_column();
+        self.desired_column = self.cursor_column;
+        self.settle_anchor();
+    }
+
+    /// Spec 0199 S8: `Alt-Right`, the command line's `Alt-f`.
+    pub(super) fn caret_word_right(&mut self) {
+        self.clamp_caret_column();
+        let chars = self.caret_row_chars();
+        self.cursor_column = next_word_boundary(&chars, self.cursor_column);
+        self.clamp_caret_column();
+        self.desired_column = self.cursor_column;
+        self.settle_anchor();
+    }
+
+    /// The cursor row's own text, as `char`s — the same text
+    /// `caret_bounds` measures its first component from. Columns beyond
+    /// it belong to the heat suffix (spec 0194 S3) and are reached by
+    /// clamping, not by scanning.
+    fn caret_row_chars(&self) -> Vec<char> {
+        self.row_text(DisplayRow::Committed(self.cursor_line()))
+            .chars()
+            .collect()
     }
 
     /// `self.cursor`'s own currently-displayed line: its footer line
@@ -342,11 +470,10 @@ impl App {
             .iter()
             .find_map(|&line| self.resolve_cursor_line(line));
         if let Some((idx, footer)) = next {
-            let sticky = self.caret_at_first_non_blank();
             self.cursor = idx;
             self.cursor_footer = footer;
             self.cursor_moves += 1;
-            self.carry_caret(sticky);
+            self.carry_caret();
         }
     }
 
@@ -360,11 +487,10 @@ impl App {
             .rev()
             .find_map(|&line| self.resolve_cursor_line(line));
         if let Some((idx, footer)) = prev {
-            let sticky = self.caret_at_first_non_blank();
             self.cursor = idx;
             self.cursor_footer = footer;
             self.cursor_moves += 1;
-            self.carry_caret(sticky);
+            self.carry_caret();
         }
     }
 
@@ -580,14 +706,32 @@ impl App {
         self.cursor_footer = line != self.tree[self.cursor].span.text_range.start;
         self.cursor_column = column;
         self.desired_column = column;
+        // Spec 0199 S10: `%` lands on a brace, and a header row's
+        // opening brace *is* its last column. Anchoring `End` there
+        // would make the next `l` descend, which is not what `%`
+        // promised.
+        self.caret_anchor = CaretAnchor::Free;
         self.cursor_moves += 1;
     }
 
-    /// Spec 0194 S6: `H`/`Shift-Left`/`Backspace`. `h` used to fold an
-    /// expanded node first and only move to the parent on a second press
-    /// (the nvim-tree pattern); folding is `zc`/`Space` now, so this
-    /// moves immediately.
+    /// Spec 0199 S7: what `caret_left` delegates to at a voluntary
+    /// `Home`. Since spec 0199 S9 gave `H`/`Shift-Left` to sibling
+    /// folding, this has no key of its own — it is reachable only
+    /// through `h`/`Left`/`Backspace`, which is why the fold-first
+    /// branch lives here rather than in the caller.
+    ///
+    /// Folds an expanded node first, and only moves to the parent once
+    /// it is closed — the nvim-tree pattern spec 0194 S6 had removed.
+    ///
+    /// At the root with the fold already closed there is nothing left to
+    /// do; it reports `no parent` rather than folding the root's
+    /// siblings, which is what the pre-caret code did and is `H`/`zC`
+    /// now (N2).
     pub(super) fn parent_move(&mut self) {
+        if self.cursor_expanded() {
+            self.toggle_fold(self.cursor);
+            return;
+        }
         if let Some(parent) = self.tree[self.cursor].parent {
             self.record_jump();
             self.set_cursor(parent);
@@ -596,17 +740,31 @@ impl App {
         }
     }
 
-    /// Spec 0194 S6: `L`/`Shift-Right`. Unfolds the node on the way when
-    /// it is closed — a folded node's children are not on screen, so
-    /// there would otherwise be nothing to move to.
+    /// Spec 0199 S7: what `caret_right` delegates to at a voluntary
+    /// `End`. Like `parent_move` it has no key of its own since S9 gave
+    /// `L`/`Shift-Right` to sibling unfolding.
+    ///
+    /// Unfolds a closed node and *stops*, so a second press descends.
+    /// This used to unfold and move in the same press, on the reasoning
+    /// that a folded node's children are not on screen and there would
+    /// otherwise be nothing to move to — which is answered by the fact
+    /// that after the first press there is. What the split buys is that
+    /// `l` at `End` and `h` at `Home` become inverses: closing a node
+    /// and reopening it returns the tree *and* the cursor to where they
+    /// were, which the one-press form made impossible.
+    ///
+    /// The descent goes through `set_cursor`, so the caret lands on the
+    /// child row's first non-blank with the anchor `Home` — the child's
+    /// name, which is what the user descended to read (spec 0199 Q2).
     pub(super) fn first_child_move(&mut self) {
+        if self.cursor_folded() {
+            self.toggle_fold(self.cursor);
+            return;
+        }
         let Some(child) = self.tree[self.cursor].first_child else {
             self.message = "no children".to_string();
             return;
         };
-        if self.folded.contains(&self.cursor) {
-            self.toggle_fold(self.cursor);
-        }
         self.record_jump();
         self.set_cursor(child);
     }

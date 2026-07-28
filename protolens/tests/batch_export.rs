@@ -816,3 +816,63 @@ fn type_with_no_descriptor_set_fails_before_reading_the_blob() {
         "expected the --type-requires-descriptor-set diagnostic, got: {stderr}"
     );
 }
+
+// ── Spec 0198: the `exit` subcommand ────────────────────────────────────
+
+/// Spec 0198 test plan items 1 and 2. `exit` runs every startup phase and
+/// then returns, which is a thing only a subprocess test can observe: as
+/// with `export_unresolvable_path_fails_without_entering_the_tui` above,
+/// `Command::output()` would hang forever on a child that reached
+/// `tui::run`, so this test completing at all is the proof that it did
+/// not.
+#[test]
+fn exit_runs_the_startup_phases_and_returns() {
+    let (descriptor, blob) = outer_inner_fixture();
+    let out = run(&[
+        "--descriptor-set",
+        descriptor.path(),
+        "--type",
+        "test.Outer",
+        blob.path(),
+        "exit",
+    ]);
+    assert!(
+        out.status.success(),
+        "exit must succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "exit produces no output: {:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    // Spec 0198 S2: the phase lines *are* `exit`'s contribution — a
+    // single number with no breakdown would make a regression findable
+    // only by bisection.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("rendering root node as") && stderr.contains("indexing"),
+        "exit must announce its phases: {stderr}"
+    );
+}
+
+/// Spec 0198 test plan item 4. `--type` is an O(1) pool lookup and
+/// `--raw` skips the inference sweep outright (spec 0168 G6), so these
+/// are the two root-option combinations whose phase lines differ — and
+/// the two that would break if `exit` grew options of its own.
+#[test]
+fn exit_accepts_the_root_options() {
+    let (_descriptor, blob) = outer_inner_fixture();
+    let out = run(&["--raw", blob.path(), "exit"]);
+    assert!(
+        out.status.success(),
+        "exit --raw must succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("inferring root type"),
+        "--raw skips the inference sweep: {stderr}"
+    );
+}

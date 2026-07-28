@@ -32,7 +32,16 @@ impl App {
             // immutable for the overlay's whole lifetime. Say so rather
             // than doing nothing, which reads as a broken key.
             KeyCode::Tab => self.message = OVERRIDE_FOCUS_LOCK_MESSAGE.to_string(),
-            KeyCode::Esc | KeyCode::Char('t') | KeyCode::Char('q') => self.close_override(),
+            // Spec 0200 S1: `q` is *not* bound here. In the main pane it
+            // is `request_quit`, with a confirmation behind it; this
+            // pane locks focus (spec 0185 S5), so a `q` typed out of
+            // habit to leave protolens used to silently discard the
+            // highlighted candidate instead, with no prompt. `Esc` and
+            // `t` are two ways out already. It falls to `_ => {}` below
+            // and does nothing, with no message: `Tab` gets one because
+            // a user has a specific expectation of it that the focus
+            // lock defeats, whereas `q` has no meaning here to explain.
+            KeyCode::Esc | KeyCode::Char('t') => self.close_override(),
             // Spec 0185 S5/G4: the main pane can still be panned while
             // the preview is up. Ctrl-arrows already pan this pane's own
             // candidate list (below), so the main pane gets Alt-arrows.
@@ -139,7 +148,26 @@ impl App {
                 // Spec 0117 §2: per-kind origin — errors (wrapper root,
                 // unresolved parent FQDN) abort before either the
                 // collection or 0114's splice-render is touched.
-                let origin = match self.override_origin_for_kind(idx) {
+                //
+                // Spec 0200 S3: when the pane was opened on an existing
+                // entry, that entry's kind wins over the `path:field`
+                // default. An entry's kind is deliberate — the manage
+                // pane's `z`/`Z` set it (spec 0124 G2) — and deriving a
+                // `path:field` origin instead would not retype the entry
+                // at all: `activate` deactivates only entries with the
+                // *same* origin, so the old one would stay active and a
+                // second one would appear beside it.
+                //
+                // The error path is deliberately not softened into a
+                // fallback. If the kind no longer resolves, the parent's
+                // type has become unresolved since the entry was
+                // created, and silently retyping under a different kind
+                // is precisely the defect above.
+                let origin = match self.override_origin_kind {
+                    Some(kind) => self.origin_for_kind(idx, kind),
+                    None => self.override_origin_for_kind(idx),
+                };
+                let origin = match origin {
                     Ok(origin) => origin,
                     Err(e) => {
                         self.message = format!("cannot create override: {e}");
@@ -156,23 +184,34 @@ impl App {
                 // `visible_rows`, which the splice is about to rebuild.
                 self.preview_overlay = None;
                 self.render_overrides(self.first_node);
-                // Spec 0119 G3: land in the management pane, highlighting
-                // the entry just created/reactivated, instead of just
-                // closing the pane. `activate` guarantees at most one
-                // entry per origin is active, so this origin/type pair
-                // unambiguously identifies it.
+                // Spec 0119 G3, narrowed by spec 0200 S2: land in the
+                // management pane and highlight the entry just created/
+                // reactivated — but only when the management pane is
+                // where this pane was opened from. `Esc`/`t` have always
+                // returned to the caller; `Enter` was the one exit that
+                // ignored it, so a `t` from the main pane ended in a
+                // pane the user had not asked for, covering the document
+                // they had just changed. `activate` guarantees at most
+                // one entry per origin is active, so this origin/type
+                // pair unambiguously identifies it.
+                //
+                // `manage_open`/`manage_focus` are not set here at all:
+                // `close_override` sets them from
+                // `override_opened_from_manage`, and clears that flag as
+                // it goes — hence reading it out first.
                 let target_highlight = self
                     .overrides
                     .entries()
                     .iter()
                     .position(|e| e.origin == origin && e.r#type == new_fqdn);
+                let returning_to_manage = self.override_opened_from_manage;
                 self.close_override();
-                self.manage_open = true;
-                self.manage_focus = true;
-                self.manage_highlight = target_highlight.unwrap_or(0);
-                self.manage_scroll = 0;
-                self.last_manage_highlight = None;
-                self.manage_pan_offset = 0;
+                if returning_to_manage {
+                    self.manage_highlight = target_highlight.unwrap_or(0);
+                    self.manage_scroll = 0;
+                    self.last_manage_highlight = None;
+                    self.manage_pan_offset = 0;
+                }
             }
             _ => {}
         }
@@ -204,6 +243,8 @@ impl App {
     /// otherwise point past the row's end. It is not restored as a
     /// *desired* column: a jump back reinstates a position, and
     /// `desired_column` follows it as after any other horizontal move.
+    /// The caret anchor is forfeited for the same reason (spec 0199 S10):
+    /// a restored position carries no intent, so it must not arm a fold.
     fn restore_cursor_pos(&mut self, pos: CursorPos) {
         self.set_cursor(pos.node);
         self.unfold_ancestors(pos.node);
@@ -211,6 +252,7 @@ impl App {
         self.cursor_column = pos.column;
         self.clamp_caret_column();
         self.desired_column = self.cursor_column;
+        self.caret_anchor = CaretAnchor::Free;
     }
 
     /// Propose a default `:export`/`x` path, in the same directory as the
@@ -542,23 +584,38 @@ impl App {
             KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => self.pan_left(),
             KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => self.pan_right(),
 
-            // Spec 0194 S6, the organizing rule: **unshifted moves in
-            // the text, shifted moves in the tree, `z` folds.** `h`/`l`
-            // and the plain arrows are vim's character motions, so tree
-            // navigation moves up one shift level — completing the
-            // family `J`/`K` and spec 0126 G2's `Shift-Down`/`Shift-Up`
-            // already started.
-            KeyCode::Char('H') => self.parent_move(),
-            KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => self.parent_move(),
-            KeyCode::Backspace => self.parent_move(),
-            KeyCode::Char('L') => self.first_child_move(),
-            KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.first_child_move()
+            // Word motion (spec 0199 S8), over the same word definition
+            // the `:` prompt uses. Checked before the plain arms below.
+            // `Alt-h`/`Alt-l` alias the arrows, as everywhere else in
+            // this table.
+            KeyCode::Left | KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.caret_word_left()
+            }
+            KeyCode::Right | KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.caret_word_right()
             }
 
-            // Caret motion (spec 0194 S6). No wrapping at either end
-            // (N5), matching vim's default `whichwrap`.
-            KeyCode::Char('h') | KeyCode::Left => self.caret_left(),
+            // Spec 0199 S9's amendment of spec 0194 S6's organizing rule:
+            // **motion happens in the text until the text runs out and
+            // then continues into the tree; `Shift` widens a fold to the
+            // sibling level; `z` folds.** `Shift-h` *is* `H`, so the two
+            // spellings of one gesture must agree — and neither is `h`.
+            // These reuse the very functions `zC`/`zO` call.
+            KeyCode::Char('H') => self.fold_all_siblings(),
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.fold_all_siblings()
+            }
+            KeyCode::Char('L') => self.unfold_all_siblings(),
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.unfold_all_siblings()
+            }
+
+            // Caret motion (spec 0194 S6, amended by spec 0199 S5/S6). No
+            // wrapping at either end (N5), matching vim's default
+            // `whichwrap`; but at a *voluntary* end the motion continues
+            // into the tree. `Backspace` joins them because vim's `<BS>`
+            // is a plain left motion in normal mode.
+            KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => self.caret_left(),
             KeyCode::Char('l') | KeyCode::Right => self.caret_right(),
             // `0` and `^` are one destination here: column zero is the
             // fold gutter and unreachable (S3), so vim's two motions
@@ -576,8 +633,9 @@ impl App {
             // pure display attribute, distinct from the override pane's
             // own `a` (candidate sort toggle) and the manage pane's own
             // `a` (entry active toggle), both gated behind their own
-            // focus checks and unreachable here.
-            KeyCode::Char('a') => self.annotations = !self.annotations,
+            // focus checks and unreachable here. Guarded to plain `a`
+            // (spec 0199 S9) so `Ctrl-a` no longer toggles it.
+            KeyCode::Char('a') if key.modifiers.is_empty() => self.annotations = !self.annotations,
 
             // Toggle the main-pane inference-mismatch heat cue (spec
             // 0138, item 12 of 2026-07-17 feedback) — hides/shows the

@@ -570,11 +570,15 @@ enum ExportChord {
 const HELP_TEXT: &[&str] = &[
     "protolens — key bindings",
     "",
-    "Movement — unshifted moves in the text, shifted moves in the tree",
-    "  h / Left         caret one character left (stops at first",
-    "                   non-blank)",
-    "  l / Right        caret one character right (stops at the end of",
-    "                   the heat cue)",
+    "Movement — the text first, then on past its edges into the tree",
+    "  h / Left / Backspace",
+    "                   caret one character left; at the first non-blank,",
+    "                   fold this node, then move to its parent",
+    "  l / Right        caret one character right; at the first non-blank",
+    "                   of a folded node, unfold it; at the last",
+    "                   reachable column, move to the first child",
+    "  Alt-Left / Alt-h caret one word left",
+    "  Alt-Right / Alt-l  caret one word right",
     "  0 / ^            caret to first non-blank",
     "  $                caret to last reachable column",
     "  %                jump between the cursor node's { and }",
@@ -582,8 +586,6 @@ const HELP_TEXT: &[&str] = &[
     "  k / Up           previous node",
     "  J / Shift-Down   next sibling",
     "  K / Shift-Up     previous sibling",
-    "  H / Shift-Left / Backspace   move to parent",
-    "  L / Shift-Right  move to first child",
     "  Home / gg        jump to first node",
     "  End / G          jump to last visible node",
     "  PageDown         scroll down one page",
@@ -602,6 +604,8 @@ const HELP_TEXT: &[&str] = &[
     "  Space / za       toggle fold on the node under the cursor",
     "  zc / zo          close / open that node's fold",
     "  zA / zC / zO     the same three, for all siblings at this level",
+    "  H / Shift-Left   fold all siblings at this level (as zC)",
+    "  L / Shift-Right  unfold all siblings at this level (as zO)",
     "",
     "Display",
     "  a                toggle main-pane #@ annotation display",
@@ -759,10 +763,32 @@ pub(super) enum DisplayRow {
     Overlay(usize),
 }
 
+/// Spec 0199 S1: whether the caret's position at an end of its row was
+/// chosen or merely arrived at.
+///
+/// The caret reaches an end two ways that look identical on screen and
+/// mean opposite things: the user put it there (`^`, `$`, or walking
+/// into it), or a vertical move clamped a longer desired column into a
+/// shorter row. Keys that act on the tree at an end — `h` folding, `l`
+/// descending — must fire only for the first, or passing over a short
+/// row and pressing an arrow folds a node nobody asked about.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum CaretAnchor {
+    /// In the middle of the row, or pushed onto an end by a clamp.
+    Free,
+    /// Deliberately on the row's first non-blank character.
+    Home,
+    /// Deliberately on the row's last reachable column.
+    End,
+}
+
 /// Spec 0194 S10: a whole cursor position — the node, which of its two
 /// lines the cursor rests on (spec 0142's half-coordinate), and the
 /// caret's column within that line. What the jumplist stores, so that
 /// `Ctrl-o` returns to a *place* rather than to a node.
+///
+/// Deliberately does **not** carry the caret anchor (spec 0199 S10): it
+/// records where the cursor was, and the anchor is not part of where.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) struct CursorPos {
     node: usize,
@@ -897,6 +923,12 @@ pub struct App {
     /// measure the old cost plus the new one.
     #[cfg(test)]
     pub(super) verify_repair: bool,
+    /// Test-only stand-in for `MemAvailable`, so the memory guard's
+    /// refusal path can be exercised without depending on how much
+    /// memory the machine running the suite happens to have free.
+    /// `None` reads `/proc/meminfo` as production does.
+    #[cfg(test)]
+    pub(super) memory_available: Option<u64>,
     /// Spec 0160 G2: running total of line-count deltas accumulated by
     /// `splice_override` calls in the current `render_overrides` batch.
     /// Always `0` outside of an active batch.
@@ -951,6 +983,15 @@ pub struct App {
     /// one, so crossing a short row and coming back restores the
     /// original column — vim's rule.
     desired_column: usize,
+    /// Spec 0199 S1: whether the caret's position at an end of its row
+    /// was *chosen* or merely arrived at.
+    ///
+    /// Distinct from `desired_column`, and not derivable from it:
+    /// `carry_caret`'s `Home` arm pins `cursor_column` to each row's
+    /// first non-blank while leaving `desired_column` at its pre-move
+    /// value, so the two disagree in exactly the case where the position
+    /// is voluntary (S2).
+    caret_anchor: CaretAnchor,
     /// Spec 0194 S1/S3: how many characters the heat suffix contributed
     /// to the cursor row's caret track in the last frame drawn, which is
     /// how far right of the text `l`/`$` may go.
@@ -1054,12 +1095,24 @@ pub struct App {
     /// `true` when the override pane was opened via `Enter`/double-click
     /// on an entry in the management pane (item 11, 2026-07-17
     /// feedback), rather than via `t`/item 3's smart open on a main-pane
-    /// node. Confirming (`Enter`) already lands back in the management
-    /// pane unconditionally (spec 0119 G3); this flag makes cancelling
-    /// (`Esc`/`t`/`q`) do the same — `close_override` reopens the
-    /// management pane instead of leaving focus on the main pane — and
-    /// is cleared as soon as it's acted on.
+    /// node. Every exit from the selection pane consults it —
+    /// `close_override` reopens the management pane instead of leaving
+    /// focus on the main pane — and it is cleared as soon as it's acted
+    /// on. That used to be true of the cancelling exits (`Esc`/`t`)
+    /// only, `Enter` landing in the management pane unconditionally
+    /// (spec 0119 G3); spec 0200 S2 made all of them agree.
     override_opened_from_manage: bool,
+    /// The origin kind to confirm a new type under, when the selection
+    /// pane was opened on an *existing* entry (spec 0200 S3). `None` —
+    /// the pane opened on a bare main-pane node — means the `path:field`
+    /// default of `override_origin_for_kind`.
+    ///
+    /// Set by `open_override_from_manage` from the entry's own origin,
+    /// so that retyping an entry keeps the kind the user chose for it
+    /// with the management pane's `z`/`Z` (spec 0124 G2), instead of
+    /// leaving that entry active and adding a second, `path:field` one
+    /// beside it.
+    override_origin_kind: Option<OverrideKind>,
     /// The background scoring worker thread (spec 0152 G1) — `None`
     /// whenever no scoring graph is loaded (mirroring the warm-up
     /// pass's own gate) or before `tui::run()` has spawned it; every
@@ -1149,6 +1202,27 @@ pub struct App {
     /// worker-progress wakeup or a real redraw-triggering input event)
     /// resolves it; `Resolved` nodes are read directly, no cache lock.
     heat_states: Vec<heat_cue::HeatState>,
+    /// Which arena slots hold a node no longer reachable from the
+    /// document root, parallel to `tree`. Not derived by a mark pass:
+    /// `splice_override` is the only producer of garbage and it already
+    /// computes exactly what it abandons (`old_descendants`, the packed
+    /// orphans, and the pushed copy of the local root), so liveness is
+    /// recorded at the one site that knows it rather than recovered
+    /// afterwards by walking the whole arena.
+    dead: Vec<bool>,
+    /// How many of `dead` are set. Maintained alongside it because the
+    /// decision to start a pass is taken on every idle iteration of the
+    /// event loop, and counting four and a half million booleans that
+    /// often is precisely the kind of arena-wide work `compact.rs`
+    /// exists to avoid.
+    dead_count: usize,
+    /// Incremental compaction's two cursors (`compact.rs`): everything
+    /// below `compact_dst` is live and packed, `compact_dst
+    /// ..compact_src` is dead, and `compact_src..tree.len()` has not
+    /// been examined by the current pass. Both zero when no pass is in
+    /// flight.
+    compact_dst: usize,
+    compact_src: usize,
     /// Node indices with an outstanding worker request (spec 0152 G6/
     /// G8) — populated by `heat_cue_resolve` whenever it finds a node
     /// still unsettled with a worker present, drained by
@@ -1492,6 +1566,8 @@ impl App {
             unpruned_walk: false,
             #[cfg(test)]
             verify_repair: true,
+            #[cfg(test)]
+            memory_available: None,
             pending_shift: 0,
             pending_line_patches: Vec::new(),
             pending_patch_min_line: None,
@@ -1499,6 +1575,10 @@ impl App {
             cursor_footer: false,
             cursor_column: 0,
             desired_column: 0,
+            // Spec 0199 S1: the first frame's caret sits on the first
+            // node's first non-blank, put there by the same node-level
+            // placement every later `set_cursor` performs.
+            caret_anchor: CaretAnchor::Home,
             caret_suffix_len: 0,
             cursor_moves: 0,
             select_anchor: None,
@@ -1519,6 +1599,7 @@ impl App {
             override_preview_byte_budget: Self::OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT,
             override_focus: false,
             override_opened_from_manage: false,
+            override_origin_kind: None,
             ctx,
             all_type_fqdns,
             override_sort: SortMode::Inferred,
@@ -1534,6 +1615,10 @@ impl App {
             ))),
             heat_worker: None,
             heat_states: vec![heat_cue::HeatState::default(); tree_len],
+            dead: vec![false; tree_len],
+            dead_count: 0,
+            compact_dst: 0,
+            compact_src: 0,
             pending_heat_recheck: HashSet::new(),
             prefetch_walk: PrefetchWalk::exhausted(),
             prefetch_trace: PrefetchTrace::default(),
@@ -2471,6 +2556,19 @@ where
                 Err(mpsc::TryRecvError::Empty) => match app.prefetch_step() {
                     PrefetchStep::Progressed => continue,
                     PrefetchStep::Idle => {
+                        // Spec 0203: arena compaction takes a slice here,
+                        // strictly behind read-ahead — read-ahead is
+                        // latency the user will feel, compaction is
+                        // housekeeping nobody is waiting on. A slice is
+                        // bounded, and the arena is fully consistent
+                        // between slices, so this yields to a pending
+                        // event exactly like the prefetch arm above.
+                        if !matches!(
+                            app.compact_slice(compact::COMPACT_SLICE_NODES),
+                            compact::CompactStep::Idle
+                        ) {
+                            continue;
+                        }
                         let timeout = deadline.saturating_duration_since(Instant::now());
                         break rx.recv_timeout(timeout).ok(); // timeout elapsed => None
                     }
@@ -2583,6 +2681,7 @@ where
 }
 
 mod command_line;
+mod compact;
 mod event;
 mod heat_cue;
 mod heat_worker;

@@ -801,11 +801,11 @@ fn default_export_descriptor_path_falls_back_to_the_numeric_range_when_unresolva
     );
 }
 
-/// Spec 0194 test-plan item 17 (S6). The whole reassignment, asserted
-/// as a table: the unshifted keys move the caret in the text, the
-/// shifted ones move the cursor in the tree, and folding lives on
-/// `Space` and the `z` chords. Each reclaimed key is also checked for
-/// *not* doing what it used to.
+/// Spec 0194 test-plan item 17 (S6), amended by spec 0199 S9. The whole
+/// reassignment, asserted as a table: the unshifted keys move the caret
+/// in the text, the shifted ones widen a fold to the sibling level, and
+/// folding also lives on `Space` and the `z` chords. Each reclaimed key
+/// is also checked for *not* doing what it used to.
 #[test]
 fn the_reassigned_keys_dispatch_where_the_table_says() {
     let plain = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
@@ -832,15 +832,20 @@ fn the_reassigned_keys_dispatch_where_the_table_says() {
     app.handle_key(plain('^'));
     assert_eq!(app.cursor_column, base, "`^` is `0`'s twin, not a variant");
 
-    // The tree moves are the shifted pair.
-    app.handle_key(plain('L'));
-    assert_eq!(
-        app.tree[app.cursor].parent,
-        Some(items[1]),
-        "`L` moves to the first child"
-    );
+    // The shifted pair is the sibling-wide fold (spec 0199 S9). It used
+    // to be parent/first-child motion, which `h`/`l` absorbed.
     app.handle_key(plain('H'));
-    assert_eq!(app.cursor, items[1], "`H` moves back to the parent");
+    assert!(
+        items.iter().all(|i| app.folded.contains(i)),
+        "`H` folds the whole sibling level"
+    );
+    assert_eq!(app.cursor, items[1], "and moves no cursor");
+    app.handle_key(plain('L'));
+    assert!(
+        items.iter().all(|i| !app.folded.contains(i)),
+        "`L` unfolds it again"
+    );
+    assert_eq!(app.cursor, items[1]);
 
     // `z` is a chord prefix: inert on its own, and folding on its
     // second half.

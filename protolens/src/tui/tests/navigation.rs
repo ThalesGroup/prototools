@@ -587,6 +587,14 @@ fn empty_bracketed_message_is_foldable() {
 /// Spec 0194 test-plan item 3 (S6, N5). One character per press, and
 /// neither end wraps onto the neighboring row — vim's default
 /// `whichwrap`, which leaves `h` and `l` line-bound.
+///
+/// Both ends read as "no wrap" here only because `sibling_leaves_app`'s
+/// nodes are parentless, childless leaves *and* `reset_caret_column`
+/// leaves the anchor `Home`: under spec 0199 S5/S6 a press at either
+/// voluntary end falls through to `parent_move`/`first_child_move`,
+/// which on this fixture have nothing to fold, no parent and no child.
+/// A fixture with a real tree gets the tree assertions instead — see
+/// `h_at_a_voluntary_home_folds_before_it_moves_to_the_parent`.
 #[test]
 fn the_caret_moves_one_character_and_stops_at_both_ends() {
     let mut app = sibling_leaves_app(&["  ab", "cd"]);
@@ -670,6 +678,9 @@ fn a_detour_across_a_short_row_restores_the_desired_column() {
     app.cursor = 0;
     app.cursor_column = 4;
     app.desired_column = 4;
+    // Mid-row, so neither end is anchored (spec 0199 S1) — without this
+    // the fresh `App`'s first-frame `Home` would pin the caret instead.
+    app.caret_anchor = CaretAnchor::Free;
 
     app.move_down();
     assert_eq!(app.cursor, 1);
@@ -685,13 +696,21 @@ fn a_detour_across_a_short_row_restores_the_desired_column() {
 /// what makes `j` usable down a message whose indentation changes on
 /// nearly every row. A caret one column to its right does not stick —
 /// otherwise the rule would swallow ordinary vertical movement.
+///
+/// Spec 0199 S2 is why the two cases differ by the *anchor* rather than
+/// by the column: the caret can sit on a row's first non-blank without
+/// having chosen to, and only the chosen one sticks.
 #[test]
 fn a_caret_on_the_first_non_blank_sticks_to_it_across_rows() {
-    for (start, want) in [(4usize, 2usize), (5, 5)] {
+    for (start, want, anchor) in [
+        (4usize, 2usize, CaretAnchor::Home),
+        (5, 5, CaretAnchor::Free),
+    ] {
         let mut app = sibling_leaves_app(&["    abcd", "  wxyz"]);
         app.cursor = 0;
         app.cursor_column = start;
         app.desired_column = start;
+        app.caret_anchor = anchor;
         app.move_down();
         assert_eq!(app.cursor, 1);
         assert_eq!(
@@ -773,4 +792,436 @@ fn move_down_and_up_step_over_display_only_lines() {
         app.cursor, 0,
         "move_up must skip the span-less line, not stall on it"
     );
+}
+
+// ── Spec 0199: the arrow keys fold before they leave the node ──────────
+
+/// Spec 0199 test-plan item 1 (G1). The distinction the whole anchor
+/// exists for: a vertical move onto a shorter row leaves the caret at
+/// that row's last column without the user ever having asked to be
+/// there, so the anchor must stay `Free` and the next `l` must not
+/// descend into the tree.
+#[test]
+fn a_vertical_move_onto_a_shorter_row_does_not_anchor_the_caret() {
+    let mut app = sibling_leaves_app(&["abcdef", "ab"]);
+    app.cursor = 0;
+    app.cursor_column = 4;
+    app.desired_column = 4;
+    app.caret_anchor = CaretAnchor::Free;
+
+    app.move_down();
+    assert_eq!(app.cursor, 1);
+    assert_eq!(app.cursor_column, 1, "clamped onto the short row's end");
+    assert_eq!(
+        app.caret_anchor,
+        CaretAnchor::Free,
+        "an end reached by clamping is not a chosen end"
+    );
+}
+
+/// Spec 0199 test-plan items 2 and 3 (G7). Both ends are sticky across
+/// a vertical move: `^` then `j` walks down the rows' first non-blanks
+/// (spec 0194 S5's `'startofline'` rule, preserved through the rewrite)
+/// and `$` then `j` walks down their last columns.
+#[test]
+fn both_caret_anchors_stick_across_a_vertical_move() {
+    let mut app = sibling_leaves_app(&["    abcd", "  wxyz"]);
+    app.cursor = 0;
+    app.caret_to_line_start();
+    assert_eq!(app.caret_anchor, CaretAnchor::Home);
+    assert_eq!(app.cursor_column, 4);
+    app.move_down();
+    assert_eq!(app.cursor_column, 2, "`^` then `j` follows the indent");
+    assert_eq!(app.caret_anchor, CaretAnchor::Home);
+
+    let mut app = sibling_leaves_app(&["    abcd", "  wxyz"]);
+    app.cursor = 0;
+    app.caret_to_line_end();
+    assert_eq!(app.caret_anchor, CaretAnchor::End);
+    assert_eq!(app.cursor_column, 7);
+    app.move_down();
+    assert_eq!(app.cursor_column, 5, "`$` then `j` follows the row's end");
+    assert_eq!(app.caret_anchor, CaretAnchor::End);
+}
+
+/// Spec 0199 test-plan item 4 (G8, S10). A click expresses *where*,
+/// never *why* — so even a click that lands squarely on the row's first
+/// non-blank leaves the anchor `Free`, and the `h` that follows it is
+/// spent adopting the position rather than folding the node.
+#[test]
+fn a_click_never_anchors_the_caret() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.main_area = Rect::new(0, 0, 40, 20);
+    app.set_cursor(inner_idx);
+    assert_eq!(app.caret_anchor, CaretAnchor::Home);
+
+    let line_idx = app.tree[inner_idx].span.text_range.start;
+    let first = app.caret_bounds().0;
+    // Pane column of text column `first`: the heat-cue gutter (1) plus
+    // the fold field, which `set_caret_from_click` subtracts back out.
+    let column = (first + render::FOLD_FIELD_WIDTH + 1) as u16;
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column,
+        row: line_idx as u16,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(app.cursor, inner_idx);
+    assert_eq!(app.cursor_column, first, "the click landed on Home");
+    assert_eq!(app.caret_anchor, CaretAnchor::Free);
+
+    app.caret_left();
+    assert!(
+        !app.folded.contains(&inner_idx),
+        "a click must not arm the fold"
+    );
+    assert_eq!(app.caret_anchor, CaretAnchor::Home);
+}
+
+/// Spec 0199 test-plan item 5. Away from either end `h` is the
+/// unchanged caret motion of spec 0194 S6 — the behavior this spec must
+/// not trade away to get the fold back.
+#[test]
+fn h_away_from_an_end_still_moves_the_caret() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.set_cursor(inner_idx);
+    app.caret_to_line_end();
+    let column = app.cursor_column;
+    assert!(
+        column > app.caret_bounds().0 + 1,
+        "fixture must have a wide row"
+    );
+
+    app.caret_left();
+    app.caret_left();
+    assert_eq!(app.cursor_column, column - 2);
+    assert!(!app.folded.contains(&inner_idx), "and folds nothing");
+    assert_eq!(app.cursor, inner_idx);
+}
+
+/// Spec 0199 test-plan items 6, 7 and 8 (G2, G3). The three-press
+/// sequence at the row's first column: an involuntary Home is *adopted*
+/// (nothing folds, and `desired_column` collapses onto the real column,
+/// which is vim's own rule for a horizontal motion), the next press
+/// folds without moving the cursor, and only the third leaves the node.
+#[test]
+fn h_at_a_voluntary_home_folds_before_it_moves_to_the_parent() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.set_cursor(inner_idx);
+    assert!(app.has_children(inner_idx), "inner must be foldable");
+    // Arrive at the first column the way a vertical move would: pinned
+    // there by a clamp, with a longer column still wanted.
+    app.caret_anchor = CaretAnchor::Free;
+    app.desired_column = app.cursor_column + 5;
+
+    app.caret_left();
+    assert!(
+        !app.folded.contains(&inner_idx),
+        "an involuntary Home must not fold"
+    );
+    assert_eq!(app.caret_anchor, CaretAnchor::Home);
+    assert_eq!(app.desired_column, app.cursor_column);
+
+    app.caret_left();
+    assert!(app.folded.contains(&inner_idx), "the next press folds");
+    assert_eq!(app.cursor, inner_idx, "and does not move the cursor");
+
+    app.caret_left();
+    assert_eq!(
+        app.cursor,
+        app.tree[inner_idx].parent.unwrap(),
+        "the third press moves to the parent"
+    );
+}
+
+/// Spec 0199 test-plan item 9. A scalar node has no fold to close
+/// first, so leftward costs one press rather than two — `has_children`
+/// is what separates the two cases.
+#[test]
+fn h_on_a_scalar_moves_to_the_parent_immediately() {
+    let (mut app, inner_idx, id_idx) = type_as_fixture();
+    app.set_cursor(id_idx);
+    assert!(!app.has_children(id_idx));
+    assert_eq!(app.caret_anchor, CaretAnchor::Home);
+
+    app.caret_left();
+    assert_eq!(app.cursor, inner_idx);
+    assert!(app.folded.is_empty(), "nothing was folded on the way");
+}
+
+/// Spec 0199 test-plan item 10 (N2). At the root there is no
+/// sibling-wide fold to fall back on: `h` folds the root itself like
+/// any other node, and the press after that reports rather than
+/// widening its reach. Widening is `H`'s job now.
+#[test]
+fn h_on_the_root_folds_it_and_then_reports_no_parent() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    let root = app.tree[inner_idx].parent.unwrap();
+    assert!(app.tree[root].parent.is_none());
+    app.set_cursor(root);
+
+    app.caret_left();
+    assert!(app.folded.contains(&root), "the root folds like any node");
+    app.message.clear();
+    app.caret_left();
+    assert_eq!(app.message, "no parent");
+}
+
+/// Spec 0199 test-plan items 11, 12 and 13 (G4, S6). `l` unfolds only
+/// where it has nothing else to do *and* there is something to unfold —
+/// both halves of the condition, since either alone would be wrong:
+/// without the fold test it would never step into a row's text, and
+/// without the anchor test a folded node's `Name { ... }` row would be
+/// unreachable by caret.
+#[test]
+fn l_unfolds_only_at_a_voluntary_home_on_a_folded_row() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.set_cursor(inner_idx);
+    app.toggle_fold(inner_idx);
+    app.set_cursor(inner_idx);
+
+    // Item 13: folded, but the caret is mid-row — plain caret motion.
+    // Placed with `$`/`h` rather than with `l`, since `l` from the start
+    // of the row is the very key under test and would have unfolded on
+    // the way out.
+    app.caret_to_line_end();
+    app.caret_left();
+    let column = app.cursor_column;
+    assert!(column > app.caret_bounds().0);
+    app.caret_right();
+    assert_eq!(app.cursor_column, column + 1);
+    assert!(
+        app.folded.contains(&inner_idx),
+        "no unfold away from a voluntary Home"
+    );
+
+    // Item 11: back at Home, it unfolds and stays put.
+    app.caret_to_line_start();
+    app.caret_right();
+    assert!(!app.folded.contains(&inner_idx), "the press unfolds");
+    assert_eq!(app.cursor, inner_idx, "and does not move the cursor");
+
+    // Item 12: expanded now, so the same key at the same anchor is
+    // caret motion again.
+    let first = app.caret_bounds().0;
+    app.caret_to_line_start();
+    app.caret_right();
+    assert_eq!(app.cursor_column, first + 1);
+    assert_eq!(app.cursor, inner_idx);
+}
+
+/// Spec 0199 test-plan items 14 and 15 (G2, G4). The right edge is a
+/// tree edge: an involuntary End is adopted first, and a voluntary End
+/// walks through the node's opening brace into its first child. Landing
+/// there anchors `Home` on the child's own name (Q2).
+#[test]
+fn l_at_a_voluntary_end_descends_into_the_first_child() {
+    let (mut app, inner_idx, id_idx) = type_as_fixture();
+    app.set_cursor(inner_idx);
+    let (_, last) = app.caret_bounds();
+    // Item 14: pinned onto the end by a clamp, not by choice.
+    app.cursor_column = last;
+    app.desired_column = last + 5;
+    app.caret_anchor = CaretAnchor::Free;
+
+    app.caret_right();
+    assert_eq!(app.cursor, inner_idx, "an involuntary End must not descend");
+    assert_eq!(app.caret_anchor, CaretAnchor::End);
+    assert_eq!(app.desired_column, app.cursor_column);
+
+    app.caret_right();
+    assert_eq!(app.cursor, id_idx, "the next press descends");
+    assert_eq!(app.caret_anchor, CaretAnchor::Home);
+    assert_eq!(
+        app.cursor_column,
+        app.caret_bounds().0,
+        "landing on the child's name, which is what was descended to read"
+    );
+
+    // Item 15: `$` declares the anchor, so from there it is one press.
+    let (mut app, inner_idx, id_idx) = type_as_fixture();
+    app.set_cursor(inner_idx);
+    app.caret_to_line_end();
+    app.caret_right();
+    assert_eq!(app.cursor, id_idx);
+}
+
+/// Spec 0199 test-plan items 16 and 17 (S7). `l` at End on a *folded*
+/// node unfolds instead of descending, and stops — which is what makes
+/// `h` at Home its inverse: the round trip returns both the fold set
+/// and the cursor to where they started.
+#[test]
+fn l_at_an_end_unfolds_before_it_descends_and_h_undoes_it() {
+    let (mut app, inner_idx, id_idx) = type_as_fixture();
+    app.set_cursor(inner_idx);
+    app.toggle_fold(inner_idx);
+    app.set_cursor(inner_idx);
+    app.caret_to_line_end();
+
+    app.caret_right();
+    assert!(!app.folded.contains(&inner_idx), "the first press unfolds");
+    assert_eq!(app.cursor, inner_idx, "and does not descend");
+    app.caret_right();
+    assert_eq!(app.cursor, id_idx, "the second press descends");
+
+    // Item 17: the inverse property the split exists for.
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.set_cursor(inner_idx);
+    app.toggle_fold(inner_idx);
+    app.set_cursor(inner_idx);
+    app.caret_to_line_end();
+    app.caret_right();
+    app.caret_to_line_start();
+    app.caret_left();
+    assert!(
+        app.folded.contains(&inner_idx),
+        "`h` at Home closed what `l` at End opened"
+    );
+    assert_eq!(app.cursor, inner_idx);
+}
+
+/// Spec 0199 test-plan items 18 and 19 (G5, N3/N4). `H`/`L` are the
+/// sibling-wide fold: unconditional, at any caret column and from any
+/// anchor, and they never move the cursor. No column condition, because
+/// a shifted arrow has no caret meaning to defer to and such a
+/// condition would be invisible to the user.
+#[test]
+fn shift_left_and_shift_right_fold_the_whole_sibling_level() {
+    let (mut app, items) = repeated_message_fixture();
+    assert!(items.len() > 1, "fixture must have siblings");
+    app.set_cursor(items[0]);
+    app.caret_to_line_end();
+    app.caret_left();
+    app.caret_anchor = CaretAnchor::Free;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    for &item in &items {
+        assert!(app.folded.contains(&item), "`H` folds every sibling");
+    }
+    assert_eq!(app.cursor, items[0], "and moves no cursor");
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT));
+    for &item in &items {
+        assert!(!app.folded.contains(&item), "`L` unfolds every sibling");
+    }
+    assert_eq!(app.cursor, items[0]);
+}
+
+/// Spec 0199 test-plan item 20. `Shift-h` *is* `H` — one gesture with
+/// two spellings, since a terminal reports a capital letter as a
+/// character and a shifted arrow as a key plus a modifier. Pinned so
+/// the two rows of the binding table cannot drift apart again.
+#[test]
+fn the_shifted_arrows_and_the_capital_letters_are_one_binding() {
+    let folded_after = |code: KeyCode, mods: KeyModifiers| {
+        let (mut app, items) = repeated_message_fixture();
+        app.set_cursor(items[0]);
+        app.handle_key(KeyEvent::new(code, mods));
+        let cursor = app.cursor;
+        let mut folded: Vec<usize> = app.folded.iter().copied().collect();
+        folded.sort_unstable();
+        (folded, cursor)
+    };
+
+    assert_eq!(
+        folded_after(KeyCode::Char('H'), KeyModifiers::SHIFT),
+        folded_after(KeyCode::Left, KeyModifiers::SHIFT),
+    );
+    // `L`/`Shift-Right` unfold, so fold everything first to have
+    // something to compare.
+    let unfolded_after = |code: KeyCode, mods: KeyModifiers| {
+        let (mut app, items) = repeated_message_fixture();
+        app.set_cursor(items[0]);
+        app.fold_all_siblings();
+        app.handle_key(KeyEvent::new(code, mods));
+        let mut folded: Vec<usize> = app.folded.iter().copied().collect();
+        folded.sort_unstable();
+        (folded, app.cursor)
+    };
+    assert_eq!(
+        unfolded_after(KeyCode::Char('L'), KeyModifiers::SHIFT),
+        unfolded_after(KeyCode::Right, KeyModifiers::SHIFT),
+    );
+}
+
+/// Spec 0199 test-plan item 21 (G6). `Ctrl-Left`/`Ctrl-Right` keep
+/// spec 0113 D24's horizontal pan. This is the regression the amended
+/// table is most likely to cause, since `Ctrl` and `Shift` are
+/// independent modifier checks over the same key code.
+#[test]
+fn ctrl_arrows_still_pan_without_touching_the_caret() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.set_cursor(inner_idx);
+    app.pan_offset = 4;
+    let column = app.cursor_column;
+
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+    assert!(app.pan_offset < 4, "Ctrl-Left must still pan");
+    assert_eq!(app.cursor_column, column, "and must not move the caret");
+    assert_eq!(app.cursor, inner_idx);
+    assert!(app.folded.is_empty(), "nor fold anything");
+}
+
+/// Spec 0199 test-plan item 22 (G6, S8). `Alt`-arrows move by word,
+/// over the very boundaries the `:` prompt uses — a main pane that
+/// broke words differently from the command line on the same screen
+/// would be a defect, not a feature.
+#[test]
+fn alt_arrows_move_the_caret_by_the_command_lines_own_words() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.set_cursor(inner_idx);
+    let line_idx = app.tree[inner_idx].span.text_range.start;
+    let chars: Vec<char> = app.lines[line_idx].chars().collect();
+    let home = app.cursor_column;
+
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+    let forward = command_line::next_word_boundary(&chars, home);
+    assert!(forward > home, "the fixture row must contain a word");
+    assert_eq!(app.cursor_column, forward);
+
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+    assert_eq!(
+        app.cursor_column,
+        command_line::prev_word_boundary(&chars, forward)
+    );
+    assert_eq!(app.cursor_column, home, "and the pair round-trips");
+
+    // `Alt-h`/`Alt-l` alias the arrows, as the letters do everywhere
+    // else in the table.
+    app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::ALT));
+    assert_eq!(app.cursor_column, forward, "`Alt-l` is `Alt-Right`");
+    app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::ALT));
+    assert_eq!(app.cursor_column, home, "`Alt-h` is `Alt-Left`");
+}
+
+/// Spec 0199 test-plan item 23. `a` toggles the annotation display;
+/// `Ctrl-a`, which used to reach the same arm through an unguarded
+/// pattern, no longer does.
+#[test]
+fn only_an_unmodified_a_toggles_the_annotation_display() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.set_cursor(inner_idx);
+    let before = app.annotations;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    assert_eq!(app.annotations, before, "Ctrl-a must not toggle");
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+    assert_ne!(app.annotations, before, "plain `a` still does");
+}
+
+/// Spec 0199 test-plan item 24 (S9). `Backspace` is a plain left motion
+/// in vim's normal mode; its old parent-move binding was a protolens
+/// invention with no muscle memory behind it.
+#[test]
+fn backspace_moves_the_caret_left_rather_than_to_the_parent() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.set_cursor(inner_idx);
+    app.caret_to_line_end();
+    let column = app.cursor_column;
+
+    app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    assert_eq!(app.cursor_column, column - 1);
+    assert_eq!(app.cursor, inner_idx, "and stays on the node");
+    assert!(app.folded.is_empty());
 }

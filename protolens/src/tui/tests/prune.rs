@@ -47,51 +47,6 @@ fn only_lost_the_repeated_qualifier(pruned: &str, unpruned: &str) -> bool {
     pruned == unpruned || pruned.replace("#@ repeated ", "#@ ") == unpruned
 }
 
-/// A node's identity by *content*, not by arena index.
-///
-/// The arena is append-only: a re-splice pushes a fresh copy of the
-/// subtree and abandons the old one in place, so the reference walk
-/// legitimately renumbers every node it resettles. Comparing
-/// `app.tree` or the raw `line_to_node` values across the two walks
-/// would therefore report a difference that says nothing about
-/// reachability. Projecting through this instead compares what the two
-/// walks actually have to agree on.
-type Shape = (usize, u64, Option<String>, std::ops::Range<usize>);
-
-fn shape_of(app: &App, idx: usize) -> Shape {
-    let s = &app.tree[idx].span;
-    (
-        s.level,
-        s.field_number,
-        s.type_fqdn.clone(),
-        s.text_range.clone(),
-    )
-}
-
-/// Every node still reachable from the root, in document order.
-fn live_shapes(app: &App) -> Vec<Shape> {
-    let mut out = Vec::new();
-    let mut stack = vec![app.first_node];
-    while let Some(i) = stack.pop() {
-        out.push(shape_of(app, i));
-        let mut kids = Vec::new();
-        let mut c = app.tree[i].first_child;
-        while let Some(ci) = c {
-            kids.push(ci);
-            c = app.tree[ci].next_sibling;
-        }
-        stack.extend(kids.into_iter().rev());
-    }
-    out
-}
-
-fn shaped_map(app: &App, map: &[Option<u32>]) -> Vec<(usize, Shape)> {
-    map.iter()
-        .enumerate()
-        .filter_map(|(l, n)| n.map(|n| (l, shape_of(app, n as usize))))
-        .collect()
-}
-
 fn assert_unpruned_walk_changes_nothing(app: &mut App, what: &str) {
     let lines = app.lines.clone();
     let shapes = live_shapes(app);

@@ -10,6 +10,51 @@ use prototext_graph::build_scoring_graph::build_from_strings;
 use prototext_graph::score::load::LoadedGraph;
 pub(super) use ratatui::backend::TestBackend;
 
+/// A node's identity by *content*, not by arena index.
+///
+/// The arena renumbers nodes for two independent reasons — a re-splice
+/// pushes a fresh copy of a subtree and abandons the old one (spec
+/// 0118), and compaction relocates survivors into the holes that leaves
+/// (spec 0203) — so comparing `app.tree` or raw `line_to_node` values
+/// across either operation reports differences that say nothing about
+/// what the user sees. Projecting through this compares what actually
+/// has to be preserved.
+pub(super) type Shape = (usize, u64, Option<String>, std::ops::Range<usize>);
+
+pub(super) fn shape_of(app: &App, idx: usize) -> Shape {
+    let s = &app.tree[idx].span;
+    (
+        s.level,
+        s.field_number,
+        s.type_fqdn.clone(),
+        s.text_range.clone(),
+    )
+}
+
+/// Every node still reachable from the root, in document order.
+pub(super) fn live_shapes(app: &App) -> Vec<Shape> {
+    let mut out = Vec::new();
+    let mut stack = vec![app.first_node];
+    while let Some(i) = stack.pop() {
+        out.push(shape_of(app, i));
+        let mut kids = Vec::new();
+        let mut c = app.tree[i].first_child;
+        while let Some(ci) = c {
+            kids.push(ci);
+            c = app.tree[ci].next_sibling;
+        }
+        stack.extend(kids.into_iter().rev());
+    }
+    out
+}
+
+pub(super) fn shaped_map(app: &App, map: &[Option<u32>]) -> Vec<(usize, Shape)> {
+    map.iter()
+        .enumerate()
+        .filter_map(|(l, n)| n.map(|n| (l, shape_of(app, n as usize))))
+        .collect()
+}
+
 pub(super) fn empty_app() -> App {
     let decoded = Decoded {
         lines: Vec::new(),

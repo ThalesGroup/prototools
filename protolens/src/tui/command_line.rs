@@ -407,10 +407,7 @@ impl App {
             .unwrap_or(0)
     }
 
-    /// Char index of the start of the whitespace-delimited word the
-    /// cursor sits in/after (Alt-b/Alt-Left): skip any whitespace
-    /// immediately behind the cursor, then skip back to the start of the
-    /// non-whitespace run before it.
+    /// `prev_word_boundary` over the command buffer (Alt-b/Alt-Left).
     pub(super) fn prev_word_boundary(&self) -> usize {
         let chars: Vec<char> = self
             .command_buffer
@@ -418,20 +415,10 @@ impl App {
             .unwrap_or("")
             .chars()
             .collect();
-        let mut i = self.command_cursor.min(chars.len());
-        while i > 0 && chars[i - 1].is_whitespace() {
-            i -= 1;
-        }
-        while i > 0 && !chars[i - 1].is_whitespace() {
-            i -= 1;
-        }
-        i
+        prev_word_boundary(&chars, self.command_cursor)
     }
 
-    /// Char index just past the end of the whitespace-delimited word
-    /// the cursor sits in/before (Alt-f/Alt-Right): skip any whitespace
-    /// at/after the cursor, then skip forward to the end of the
-    /// following non-whitespace run.
+    /// `next_word_boundary` over the command buffer (Alt-f/Alt-Right).
     pub(super) fn next_word_boundary(&self) -> usize {
         let chars: Vec<char> = self
             .command_buffer
@@ -439,15 +426,7 @@ impl App {
             .unwrap_or("")
             .chars()
             .collect();
-        let len = chars.len();
-        let mut i = self.command_cursor.min(len);
-        while i < len && chars[i].is_whitespace() {
-            i += 1;
-        }
-        while i < len && !chars[i].is_whitespace() {
-            i += 1;
-        }
-        i
+        next_word_boundary(&chars, self.command_cursor)
     }
 
     /// Byte offset in `command_buffer` of the `char_idx`-th character (or
@@ -896,4 +875,39 @@ impl App {
             Err(e) => format!("restore error: {e}"),
         };
     }
+}
+
+/// Char index of the start of the whitespace-delimited word `from` sits in
+/// or just after: skip any whitespace immediately behind it, then skip back
+/// over the non-whitespace run before it.
+///
+/// Spec 0199 S8: shared with the main pane's `Alt`-arrow caret motion
+/// rather than restated there — a main pane that broke words differently
+/// from the `:` prompt on the same screen would be a defect, not a feature.
+pub(super) fn prev_word_boundary(chars: &[char], from: usize) -> usize {
+    let mut i = from.min(chars.len());
+    while i > 0 && chars[i - 1].is_whitespace() {
+        i -= 1;
+    }
+    while i > 0 && !chars[i - 1].is_whitespace() {
+        i -= 1;
+    }
+    i
+}
+
+/// Char index just past the end of the whitespace-delimited word `from`
+/// sits in or just before: skip any whitespace at/after it, then skip
+/// forward to the end of the non-whitespace run.
+///
+/// The mirror of `prev_word_boundary`; see its note on sharing.
+pub(super) fn next_word_boundary(chars: &[char], from: usize) -> usize {
+    let len = chars.len();
+    let mut i = from.min(len);
+    while i < len && chars[i].is_whitespace() {
+        i += 1;
+    }
+    while i < len && !chars[i].is_whitespace() {
+        i += 1;
+    }
+    i
 }

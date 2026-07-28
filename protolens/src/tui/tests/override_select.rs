@@ -30,10 +30,14 @@ fn t_opens_and_closes_the_override_pane_on_a_message_node() {
     assert!(!app.override_focus);
 }
 
-/// `q` closes the override pane (not just blurs focus, unlike
-/// `Tab`).
+/// Spec 0200 test-plan item 1 (S1). `q` is not bound in the selection
+/// pane. It used to close it, which collided with the main pane's own
+/// `q` (`request_quit`, with a confirmation behind it): the pane locks
+/// focus (spec 0185 S5), so a `q` typed out of habit to leave protolens
+/// silently discarded the highlighted candidate instead. This test
+/// asserted the old binding and is rewritten, not added to.
 #[test]
-fn override_pane_q_closes_pane() {
+fn override_pane_q_is_unbound() {
     let mut app = message_node_app();
     app.splash = false;
     app.term_width = 120;
@@ -41,10 +45,16 @@ fn override_pane_q_closes_pane() {
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
     assert_eq!(app.override_target, Some(0));
     assert!(app.override_focus);
+    let highlight = app.override_highlight;
 
     app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+    assert_eq!(app.override_target, Some(0), "the pane stays open");
+    assert!(app.override_focus);
+    assert_eq!(app.override_highlight, highlight, "and nothing is selected");
+
+    // The two documented ways out still work.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.override_target, None);
-    assert!(!app.override_focus);
 }
 
 /// Spec 0134 G1: the override selection pane no longer has a `z`/`Z`
@@ -1170,11 +1180,15 @@ fn enter_key_applies_override_and_closes_pane() {
     assert!(app.override_target.is_none(), "pane must close on success");
     assert_eq!(app.tree[inner_idx].span.type_fqdn, None);
     assert!(app.message.is_empty(), "no error expected: {}", app.message);
-    // Spec 0119 G3: `Enter` lands in the management pane instead of
-    // just closing outright.
-    assert!(app.manage_open, "must open the management pane (G3)");
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(!app.manage_open);
+    // Spec 0200 test-plan item 2 (S2), narrowing spec 0119 G3: this
+    // pane was opened with `t` from the main pane, so `Enter` returns
+    // *there*. G3's management-pane landing is now conditional on the
+    // management pane being the caller — see
+    // `enter_from_the_manage_pane_returns_there_and_keeps_the_kind`.
+    assert!(
+        !app.manage_open,
+        "a pane opened with `t` must not land in the management pane"
+    );
 
     // A ranked candidate row: re-open, switch to lexicographic sort
     // (no scoring graph in this fixture), and select the first real
@@ -2052,4 +2066,159 @@ fn a_search_hit_puts_the_caret_on_the_match() {
     // A pattern whose first character is in the indentation clamps.
     app.jump_to_match(SearchDir::Forward, " beta");
     assert_eq!(app.cursor_column, 2, "clamped onto the first non-blank");
+}
+
+// ── Spec 0200: the selection pane returns to its caller ────────────────
+
+/// Spec 0200 test-plan items 3, 4 and 6 (S2, S3). Opened from the
+/// management pane on an `fqdn:field` entry, confirming a new type
+/// returns *there*, highlights the entry it just retyped, and keeps the
+/// kind — instead of leaving that entry active and adding a second,
+/// `path:field` one beside it, which is what deriving the origin from
+/// the default did.
+#[test]
+fn enter_from_the_manage_pane_returns_there_and_keeps_the_kind() {
+    let (mut app, items) = repeated_message_fixture();
+    app.manage_focus = true;
+    app.manage_open = true;
+
+    let fqdn_origin = app
+        .origin_for_kind(items[0], OverrideKind::FqdnField)
+        .expect("field's parent type is known");
+    app.overrides.activate(fqdn_origin.clone(), None);
+    app.manage_highlight = app.overrides.entries().len() - 1;
+
+    app.open_override_from_manage();
+    assert!(app.override_target.is_some(), "the selection pane opened");
+    assert_eq!(app.override_origin_kind, Some(OverrideKind::FqdnField));
+
+    app.override_sort = SortMode::Lexicographic;
+    app.recompute_override_candidates();
+    let chosen = app.all_type_fqdns[0].clone();
+    app.override_highlight = app
+        .override_candidates
+        .iter()
+        .position(|(f, _)| *f == chosen)
+        .expect("chosen FQDN must be a candidate");
+    app.message.clear();
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(app.override_target.is_none(), "the pane closed");
+    assert!(app.manage_open, "and returned to its caller");
+    assert!(app.manage_focus);
+
+    // The kind survived, so this retyped the entry rather than shadowing
+    // it. `activate` keeps the superseded (origin, type) pair in the list
+    // as *inactive*, so the total count is not the question — the question
+    // is how many *active* overrides this one origin now has.
+    let entries = app.overrides.entries();
+    assert_eq!(entries[app.manage_highlight].origin, fqdn_origin);
+    assert_eq!(
+        entries[app.manage_highlight].r#type.as_deref(),
+        Some(chosen.as_str())
+    );
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|e| e.active && e.origin == fqdn_origin)
+            .count(),
+        1,
+        "exactly one active override for this origin"
+    );
+    assert!(
+        !entries
+            .iter()
+            .any(|e| e.active && e.origin.kind() == OverrideKind::PathField),
+        "and no `path:field` entry appeared beside it"
+    );
+
+    // Item 8: the kind does not leak into the next pane opening.
+    assert_eq!(app.override_origin_kind, None);
+}
+
+/// Spec 0200 test-plan item 7 (S3). The fix is not special-cased to
+/// `fqdn:field` — a plain positional `path` entry keeps its kind too.
+#[test]
+fn enter_from_the_manage_pane_keeps_a_path_kind() {
+    let (mut app, items) = repeated_message_fixture();
+    app.manage_focus = true;
+    app.manage_open = true;
+    app.set_cursor(items[0]);
+
+    let path_origin = app
+        .origin_for_kind(items[0], OverrideKind::Path)
+        .expect("a positional path always derives");
+    app.overrides.activate(path_origin.clone(), None);
+    app.manage_highlight = app.overrides.entries().len() - 1;
+
+    app.open_override_from_manage();
+    app.override_sort = SortMode::Lexicographic;
+    app.recompute_override_candidates();
+    let chosen = app.all_type_fqdns[0].clone();
+    app.override_highlight = app
+        .override_candidates
+        .iter()
+        .position(|(f, _)| *f == chosen)
+        .expect("chosen FQDN must be a candidate");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(
+        app.overrides.entries()[app.manage_highlight].origin,
+        path_origin
+    );
+}
+
+/// Spec 0200 test-plan items 4, 5 and 8. `Esc` and `Enter` agree about
+/// where they land — the pane-level property G2 is really about — and a
+/// `t` from the main pane after a management-pane session still gets the
+/// `path:field` default, which is what a leaked `override_origin_kind`
+/// would break.
+#[test]
+fn esc_and_enter_land_in_the_same_place_and_the_default_kind_returns() {
+    let (mut app, items) = repeated_message_fixture();
+    app.manage_focus = true;
+    app.manage_open = true;
+
+    let fqdn_origin = app
+        .origin_for_kind(items[0], OverrideKind::FqdnField)
+        .expect("field's parent type is known");
+    app.overrides.activate(fqdn_origin, None);
+    app.manage_highlight = app.overrides.entries().len() - 1;
+
+    // Cancelling from a management-pane-opened session returns there,
+    // exactly as confirming now does.
+    app.open_override_from_manage();
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.override_target.is_none());
+    assert!(app.manage_open, "Esc returns to the caller too");
+    assert_eq!(app.override_origin_kind, None, "and clears the kind");
+
+    // A fresh `t` from the main pane: no caller kind, so the
+    // `path:field` default applies (N5 — untouched by this spec).
+    app.manage_open = false;
+    app.manage_focus = false;
+    app.set_cursor(items[1]);
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert_eq!(app.override_origin_kind, None);
+    app.override_sort = SortMode::Lexicographic;
+    app.recompute_override_candidates();
+    let chosen = app.all_type_fqdns[0].clone();
+    app.override_highlight = app
+        .override_candidates
+        .iter()
+        .position(|(f, _)| *f == chosen)
+        .expect("chosen FQDN must be a candidate");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(
+        !app.manage_open,
+        "a `t`-opened pane does not land in the management pane"
+    );
+    let created = app
+        .overrides
+        .entries()
+        .iter()
+        .find(|e| e.active && e.r#type.as_deref() == Some(chosen.as_str()))
+        .expect("the override was created");
+    assert_eq!(created.origin.kind(), OverrideKind::PathField);
 }
