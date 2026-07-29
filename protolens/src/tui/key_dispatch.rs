@@ -150,13 +150,14 @@ impl App {
                 // collection or 0114's splice-render is touched.
                 //
                 // Spec 0200 S3: when the pane was opened on an existing
-                // entry, that entry's kind wins over the `path:field`
-                // default. An entry's kind is deliberate — the manage
-                // pane's `z`/`Z` set it (spec 0124 G2) — and deriving a
-                // `path:field` origin instead would not retype the entry
-                // at all: `activate` deactivates only entries with the
-                // *same* origin, so the old one would stay active and a
-                // second one would appear beside it.
+                // entry, that entry's kind wins over the default (plain
+                // `path` since spec 0208 S2). An entry's kind is
+                // deliberate — the manage pane's `z`/`Z` set it (spec
+                // 0124 G2) — and deriving the default kind instead would
+                // not retype the entry at all: `activate` deactivates
+                // only entries with the *same* origin, so the old one
+                // would stay active and a second one would appear beside
+                // it.
                 //
                 // The error path is deliberately not softened into a
                 // fallback. If the kind no longer resolves, the parent's
@@ -620,8 +621,23 @@ impl App {
             // `0` and `^` are one destination here: column zero is the
             // fold gutter and unreachable (S3), so vim's two motions
             // coincide.
+            //
+            // Spec 0208 S1: `Ctrl-a`/`Ctrl-e` alias them, as every other
+            // text surface the user touches (the shell, the `:` command
+            // line) binds those two to the same destinations. Separate
+            // guarded arms rather than `|`-alternatives, because the
+            // unmodified spellings are accepted under any modifier state
+            // and there is no reason to tighten that. `Ctrl-a` is free
+            // only because spec 0199 S9 guarded the annotation toggle
+            // below to a bare `a`; `Ctrl-e` was never bound.
             KeyCode::Char('0') | KeyCode::Char('^') => self.caret_to_line_start(),
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.caret_to_line_start()
+            }
             KeyCode::Char('$') => self.caret_to_line_end(),
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.caret_to_line_end()
+            }
             KeyCode::Char('%') => self.jump_matching_brace(),
 
             // Fold/unfold toggle. `Space` is kept precisely because bare

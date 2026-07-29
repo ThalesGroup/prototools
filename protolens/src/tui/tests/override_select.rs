@@ -59,10 +59,8 @@ fn override_pane_q_is_unbound() {
 
 /// Spec 0134 G1: the override selection pane no longer has a `z`/`Z`
 /// kind-rotation key — pressing either is a no-op (no panic, pane stays
-/// open, no kind rotation). `Enter` defaults to a `PathField`-kind
-/// origin (feedback, 2026-07-21), falling back to `Path` at the
-/// wrapper root — this fixture's single node has no parent, so it
-/// exercises that fallback and still asserts `Path`.
+/// open, no kind rotation). `Enter` defaults to a plain `Path`-kind
+/// origin (spec 0208 S2).
 /// (Spec 0147 G5: every keypress, `z`/`Z` included, now unconditionally
 /// dismisses a stale `self.message` — so unlike before spec 0147, `z`/`Z`
 /// are no longer asserted to leave `self.message` untouched.)
@@ -2171,8 +2169,9 @@ fn enter_from_the_manage_pane_keeps_a_path_kind() {
 /// Spec 0200 test-plan items 4, 5 and 8. `Esc` and `Enter` agree about
 /// where they land — the pane-level property G2 is really about — and a
 /// `t` from the main pane after a management-pane session still gets the
-/// `path:field` default, which is what a leaked `override_origin_kind`
-/// would break.
+/// default kind, which is what a leaked `override_origin_kind` would
+/// break. That default is plain `path` since spec 0208 S2; before it,
+/// `path:field`.
 #[test]
 fn esc_and_enter_land_in_the_same_place_and_the_default_kind_returns() {
     let (mut app, items) = repeated_message_fixture();
@@ -2193,8 +2192,8 @@ fn esc_and_enter_land_in_the_same_place_and_the_default_kind_returns() {
     assert!(app.manage_open, "Esc returns to the caller too");
     assert_eq!(app.override_origin_kind, None, "and clears the kind");
 
-    // A fresh `t` from the main pane: no caller kind, so the
-    // `path:field` default applies (N5 — untouched by this spec).
+    // A fresh `t` from the main pane: no caller kind, so the plain
+    // `path` default applies (spec 0208 S2).
     app.manage_open = false;
     app.manage_focus = false;
     app.set_cursor(items[1]);
@@ -2220,5 +2219,12 @@ fn esc_and_enter_land_in_the_same_place_and_the_default_kind_returns() {
         .iter()
         .find(|e| e.active && e.r#type.as_deref() == Some(chosen.as_str()))
         .expect("the override was created");
-    assert_eq!(created.origin.kind(), OverrideKind::PathField);
+    assert_eq!(created.origin.kind(), OverrideKind::Path);
+    assert_eq!(
+        created.origin,
+        OverrideOrigin::Path {
+            path: app.positional_path(items[1])
+        },
+        "the entry names the node the user pointed at, not its parent"
+    );
 }

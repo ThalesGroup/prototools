@@ -1536,12 +1536,12 @@ fn profile_nested_commit_on_pdb() {
     }
 
     // The target must be a node whose override matches *one* node.
-    // `override_origin_for_kind` yields `PathField { parent path, field
-    // number }`, which matches every child of that parent carrying that
-    // field number — so a repeated field (e.g. `file` on the root, 465
-    // elements in this fixture) retypes the whole document and is not a
-    // nested commit at all. Require the parent to be a non-root node and
-    // the field number to be unique among its children.
+    // Since spec 0208 S2 `override_origin_for_kind` yields a plain
+    // `Path`, which already addresses a single node — but the
+    // sibling-uniqueness filter below is kept so this run picks the same
+    // target as the earlier readings it is compared against (under the
+    // old `PathField` default a repeated field, e.g. `file` on the root
+    // with 465 elements, retyped the whole document instead).
     let midpoint = app.lines.len() / 2;
     let target = (0..app.tree.len())
         .filter(|&i| {

@@ -1280,7 +1280,8 @@ fn manage_pane_rename_updates_entry_and_rerenders_active_override() {
 /// The `f` rename feature (spec 0119 §G4) applies to the document root
 /// exactly like any other node: `type-as`-ing the root creates an
 /// active `Path { path: "/" }` entry (`override_origin_for_kind`'s
-/// root fallback), which the manage pane's `f` handler renames and
+/// plain-`path` default, spec 0208 S2), which the manage pane's `f`
+/// handler renames and
 /// re-renders in place, same as a non-root node.
 #[test]
 fn manage_pane_rename_works_on_the_document_root_with_a_real_type() {

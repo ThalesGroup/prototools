@@ -667,12 +667,13 @@ mod tests {
     }
 
     /// Pushing distinct ranges pops the most-recently-pushed one first
-    /// (LIFO order across distinct keys, `Tier::User`'s head-insert/
-    /// head-pop); a later same-tier merging push for an already-queued
-    /// key updates its window in place without reordering it (spec
-    /// 0164 G5).
+    /// (LIFO order across distinct keys, head-insert/head-pop); and,
+    /// since spec 0208 S4c, a later *same-tier* merging push for an
+    /// already-queued key counts as a fresh query and moves it back to
+    /// the head. It used to update the window in place without
+    /// reordering (spec 0164 G5) — asking again carried no information.
     #[test]
-    fn pop_returns_most_recently_pushed_first_and_merges_do_not_reorder() {
+    fn pop_returns_most_recently_pushed_first_and_a_reask_moves_to_the_head() {
         let queue = HeatRequestQueue::new();
         queue.push(req(1, 0, 1), Tier::User);
         queue.push(req(2, 0, 1), Tier::User);
@@ -683,11 +684,15 @@ mod tests {
 
         queue.push(req(1, 0, 1), Tier::User);
         queue.push(req(2, 0, 1), Tier::User);
-        // Re-touching key 1 via a same-tier merging push does not
-        // reorder it (spec 0164 G5: only a tier promotion relinks).
-        queue.push(req(1, 0, 1), Tier::User);
+        queue.push(req(1, 1, 3), Tier::User);
+        let (key, merged) = queue.pop_blocking().unwrap();
+        assert_eq!(key, 1, "the re-asked key jumps back ahead of key 2");
+        assert_eq!(
+            (merged.start, merged.end),
+            (0, 3),
+            "and its window is still the union of both pushes"
+        );
         assert_eq!(queue.pop_blocking().unwrap().0, 2);
-        assert_eq!(queue.pop_blocking().unwrap().0, 1);
     }
 
     // ── Activity reporting (spec 0190 test plan) ────────────────────

@@ -1194,9 +1194,42 @@ fn alt_arrows_move_the_caret_by_the_command_lines_own_words() {
     assert_eq!(app.cursor_column, home, "`Alt-h` is `Alt-Left`");
 }
 
-/// Spec 0199 test-plan item 23. `a` toggles the annotation display;
+/// Spec 0208 test-plan items 1 and 2 (S1). `Ctrl-a`/`Ctrl-e` reach the
+/// same two destinations as `^`/`$`, as every other text surface the
+/// user touches binds them. Asserted against the vim spellings rather
+/// than against literal columns, so the pair cannot drift apart.
+#[test]
+fn ctrl_a_and_ctrl_e_alias_the_line_end_motions() {
+    let column_after = |code: KeyCode, mods: KeyModifiers| {
+        let (mut app, inner_idx, _) = type_as_fixture();
+        app.set_cursor(inner_idx);
+        app.handle_key(KeyEvent::new(code, mods));
+        app.cursor_column
+    };
+
+    let start = column_after(KeyCode::Char('^'), KeyModifiers::NONE);
+    let end = column_after(KeyCode::Char('$'), KeyModifiers::NONE);
+    assert_ne!(
+        start, end,
+        "the fixture row must be wide enough for the two to differ"
+    );
+
+    assert_eq!(
+        column_after(KeyCode::Char('a'), KeyModifiers::CONTROL),
+        start,
+        "`Ctrl-a` is `^`"
+    );
+    assert_eq!(
+        column_after(KeyCode::Char('e'), KeyModifiers::CONTROL),
+        end,
+        "`Ctrl-e` is `$`"
+    );
+}
+
+/// Spec 0199 test-plan item 23, still holding after spec 0208 S1 gave
+/// `Ctrl-a` a motion to perform. `a` toggles the annotation display;
 /// `Ctrl-a`, which used to reach the same arm through an unguarded
-/// pattern, no longer does.
+/// pattern, does not.
 #[test]
 fn only_an_unmodified_a_toggles_the_annotation_display() {
     let (mut app, inner_idx, _) = type_as_fixture();

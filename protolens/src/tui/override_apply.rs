@@ -3022,16 +3022,22 @@ impl App {
     }
 
     /// Origin for a brand-new override, targeting node `idx` — created
-    /// as kind `PathField` by default (feedback, 2026-07-21), since
-    /// path:field origins survive sibling reordering/insertion better
-    /// than a plain positional `Path`. Falls back to `Path` when `idx`
-    /// is the wrapper root (no parent), the one case `PathField` can
-    /// never resolve. Delegates to `origin_for_kind`.
+    /// as kind `Path` (spec 0208 S2). This used to derive `PathField`
+    /// by default (feedback, 2026-07-21), on the grounds that a
+    /// path:field origin survives sibling reordering/insertion better
+    /// than a plain positional `Path`; the robustness holds, but it is
+    /// the wrong thing for a *default* to optimize. The user points at
+    /// one node, and a `PathField` entry is expressed in terms of that
+    /// node's **parent** plus a field number, so it reads as being
+    /// about somewhere else and silently covers every same-numbered
+    /// sibling. `z`/`Z` in the management pane (spec 0124 G2) still
+    /// promote an entry to `path:field` for whoever wants it.
+    ///
+    /// Keeps returning `Result` although `OverrideKind::Path` cannot
+    /// fail: the sole call site sits opposite `origin_for_kind(idx,
+    /// kind)`, which genuinely can, and both arms must agree on a type.
     pub(super) fn override_origin_for_kind(&self, idx: usize) -> Result<OverrideOrigin, String> {
-        match self.origin_for_kind(idx, OverrideKind::PathField) {
-            Ok(origin) => Ok(origin),
-            Err(_) => self.origin_for_kind(idx, OverrideKind::Path),
-        }
+        self.origin_for_kind(idx, OverrideKind::Path)
     }
 
     /// Origin for an arbitrary `kind`, targeting node `idx` (spec 0117

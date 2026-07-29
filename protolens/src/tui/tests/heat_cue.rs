@@ -1003,3 +1003,75 @@ fn heat_cue_for_resolves_once_a_real_worker_populates_the_cache() {
         "the real worker must resolve the cache within the bounded poll"
     );
 }
+
+// ---------------------------------------------------------------------
+// Per-node request tier (spec 0208 S3 test plan)
+// ---------------------------------------------------------------------
+
+/// Spec 0208 test-plan item 6 (S3/G3). The node under the cursor asks
+/// at `Tier::User`; every other visible node asks at `Tier::Visible`.
+///
+/// Observed through the queue's own `activity()` — the highest live
+/// tier — rather than by inspecting the argument at the call site, so
+/// what is pinned is what the worker will actually serve first. The
+/// ordinary line is resolved *before* the cursor's, since `activity()`
+/// reports a maximum and would hide a wrong answer taken the other way
+/// round.
+#[test]
+fn the_cursor_node_asks_at_user_tier_and_other_visible_nodes_do_not() {
+    let (mut app, items) = repeated_message_fixture();
+    app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
+    let (under_cursor, elsewhere) = (items[0], items[1]);
+    app.set_cursor(under_cursor);
+
+    app.heat_cue_for(app.tree[elsewhere].span.text_range.start);
+    assert_eq!(
+        app.heat_worker.as_ref().unwrap().activity(),
+        Some(Tier::Visible),
+        "an ordinary visible line must not claim user attention"
+    );
+
+    app.heat_cue_for(app.tree[under_cursor].span.text_range.start);
+    assert_eq!(
+        app.heat_worker.as_ref().unwrap().activity(),
+        Some(Tier::User),
+        "the cursor's own node outranks the rest of the viewport"
+    );
+    assert_eq!(
+        app.heat_worker.as_ref().unwrap().queue_len(),
+        2,
+        "two distinct payload ranges, so two entries — not one merged"
+    );
+}
+
+/// Spec 0208 test-plan item 7 (S3). Moving the cursor moves the
+/// promotion with it. The node left behind is *not* demoted — a tier
+/// never moves down (spec 0164 G5) — it simply stops being re-asked at
+/// `User`, which is what makes the ladder stable under a moving cursor
+/// instead of oscillating.
+#[test]
+fn moving_the_cursor_promotes_the_new_node_without_demoting_the_old() {
+    let (mut app, items) = repeated_message_fixture();
+    app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
+    let (first, second) = (items[0], items[1]);
+
+    app.set_cursor(first);
+    app.heat_cue_for(app.tree[first].span.text_range.start);
+    app.set_cursor(second);
+    app.heat_cue_for(app.tree[second].span.text_range.start);
+
+    // Both are `User` now, so both outrank anything else queued, and
+    // the most recently asked one is served first (S4a).
+    let queue = app.heat_worker.as_ref().unwrap();
+    assert_eq!(queue.activity(), Some(Tier::User));
+    assert_eq!(queue.queue_len(), 2);
+
+    // Re-asking for the node the cursor has left now happens at
+    // `Tier::Visible`, which must neither demote it nor re-rank it.
+    app.heat_cue_for(app.tree[first].span.text_range.start);
+    assert_eq!(
+        app.heat_worker.as_ref().unwrap().activity(),
+        Some(Tier::User)
+    );
+    assert_eq!(app.heat_worker.as_ref().unwrap().queue_len(), 2);
+}

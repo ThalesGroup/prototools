@@ -232,6 +232,30 @@ impl App {
         display
     }
 
+    /// The tier a main-pane heat request for node `idx` is asked at
+    /// (spec 0208 S3): `User` for the node under the cursor, `Visible`
+    /// for every other node on screen.
+    ///
+    /// The distinction is the whole of S3. `Tier::Visible` is right for
+    /// the other forty-odd lines — that request runs every frame just
+    /// to re-check its own pending status, and must not repeatedly jump
+    /// ahead of a request a genuine user action queued. It is wrong for
+    /// exactly one line: the node under the cursor is the one whose
+    /// type the status line reports, whose cue the user is waiting on,
+    /// and the one `t` will open the selection pane on.
+    ///
+    /// `self.cursor` is a node index, not a line index, and it names
+    /// the node whose bracket pair the caret belongs to whether the
+    /// caret rests on the header line or the footer (spec 0142) — so
+    /// the comparison is exact and needs no line-map lookup.
+    fn heat_tier_for(&self, idx: usize) -> Tier {
+        if idx == self.cursor {
+            Tier::User
+        } else {
+            Tier::Visible
+        }
+    }
+
     /// The byte range a node's heat cue is scored over.
     ///
     /// For an ordinary node that is its payload, tag and length prefix
@@ -281,33 +305,26 @@ impl App {
         // missing, merged into the queue per G3); the AND-gated return
         // value itself is discarded — `best`/`current` are re-read
         // independently just below, since either may already be known
-        // even when this reports a miss. `Tier::Visible` (spec 0164
-        // G1): this runs every frame for every visible node just to
-        // re-check its own pending status — it must not repeatedly
-        // jump ahead of a request a user action (`t`, arrow keys in
-        // the override pane) just queued.
-        self.heat_lookup(
-            &range,
-            current_key.as_deref(),
-            0,
-            HEAT_CUE_PREVIEW,
-            Tier::Visible,
-        );
+        // even when this reports a miss. See `heat_tier_for` (spec 0208
+        // S3) for why the tier is per-node rather than a flat
+        // `Tier::Visible` (spec 0164 G1).
+        let tier = self.heat_tier_for(idx);
+        self.heat_lookup(&range, current_key.as_deref(), 0, HEAT_CUE_PREVIEW, tier);
 
+        // The cache reads take the same tier as the push, not a flat
+        // `Tier::Visible`: `peek` is a *promoting* read (spec 0164 G9),
+        // so reading the cursor node's own result at `Visible` would
+        // undo the promotion its request earned and hand it back to
+        // eviction ahead of a result the user has stopped looking at.
         let state = {
             let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
-            let best = caches
-                .by_range
-                .peek(&start, Tier::Visible)
-                .map(|e| RangeHeatStats {
-                    best_score: e.best_score,
-                    best_count: e.best_count,
-                });
+            let best = caches.by_range.peek(&start, tier).map(|e| RangeHeatStats {
+                best_score: e.best_score,
+                best_count: e.best_count,
+            });
             let current = match current_key.as_deref() {
                 None => Some(None),
-                Some(key) => caches
-                    .current_score
-                    .peek(&(start, key.to_string()), Tier::Visible),
+                Some(key) => caches.current_score.peek(&(start, key.to_string()), tier),
             };
             HeatState { best, current }
         };
@@ -435,19 +452,19 @@ impl App {
             let start = range.start;
             let current_key = self.current_type_key(idx);
 
+            // Spec 0208 S3: same per-node tier as `heat_cue_resolve`.
+            // This function pushes nothing by design, so the tier only
+            // ever reaches `peek` — it changes eviction ranking and
+            // nothing else.
+            let tier = self.heat_tier_for(idx);
             let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
-            let best = caches
-                .by_range
-                .peek(&start, Tier::Visible)
-                .map(|e| RangeHeatStats {
-                    best_score: e.best_score,
-                    best_count: e.best_count,
-                });
+            let best = caches.by_range.peek(&start, tier).map(|e| RangeHeatStats {
+                best_score: e.best_score,
+                best_count: e.best_count,
+            });
             let current = match current_key.as_deref() {
                 None => Some(None),
-                Some(key) => caches
-                    .current_score
-                    .peek(&(start, key.to_string()), Tier::Visible),
+                Some(key) => caches.current_score.peek(&(start, key.to_string()), tier),
             };
             drop(caches);
 
