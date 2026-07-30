@@ -434,7 +434,9 @@ Add the measurement instead:
   total frame time, so the highlighting share is visible rather than
   inferred.
 - Gate: if worst-case highlighting exceeds **2 ms**, or exceeds 25% of
-  total frame time, take one of the two escalations below, in order.
+  total frame time, take one of the three escalations below. Try
+  Escalation 3 first — it is the only one that stores nothing — then 1,
+  then 2.
 
 **Escalation 1 — memoize the window.** Cache keyed on
 `(scroll_offset, pane_height, structural_version, overlay identity)`,
@@ -452,11 +454,64 @@ has no staleness window (a missing band entry is recomputed inline, not
 drawn wrong), and its unit of work is a window — which only exists as a
 concept after S3.
 
-The point of the gate is that both escalations are new invalidation
+**Escalation 3 — shed the color while input is still queued.** Color is
+the one part of a frame the user cannot use while the view is moving. So
+draw a frame in black and white when there is another *significant* input
+event already waiting, and in color when there is not. A held-down
+PageDown or a rolling mouse wheel then costs no highlighting at all, and
+the frame the user actually stops on is colored.
+
+Three properties make this the most attractive of the three escalations,
+and it should be tried first if the gate fires:
+
+- **It adds no invalidation obligation.** Nothing is stored, so nothing
+  can go stale. Escalations 1 and 2 both buy their speed with a new cache
+  to invalidate; this one buys it by not doing the work.
+- **It is self-regulating.** At a slow key repeat the queue is empty
+  between events, every frame is colored, and the mechanism costs one
+  `poll(Duration::ZERO)`. At a fast repeat every frame is monochrome,
+  which is exactly when color is useless. No threshold to tune.
+- **It degrades in the right direction.** The failure mode is a
+  momentarily uncolored frame, not a wrongly colored one — unlike
+  Escalation 2, whose worst case is drawing a band computed against text
+  that has since changed.
+
+Four things to get right, none of them optional:
+
+1. **The settled frame must be colored, guaranteed.** If the last event
+   of a burst is handled and no further redraw occurs, the user releases
+   the key and is left looking at a monochrome document. Whatever shape
+   the loop takes, "queue became empty" must itself be able to cause one
+   more frame. This is the whole feature; the rest is optimization.
+2. **"Anything queued" is the wrong test.** With the Kitty keyboard
+   protocol a single keystroke delivers Press *and* Release, so one
+   isolated keypress leaves an event queued and would masquerade as a
+   continuing flow — every frame would be monochrome forever. The test
+   must be "is a *significant* event queued", using the **same**
+   classification the key dispatcher already applies (the Release-event
+   filter recorded in `protolens_tui_patterns`), not a second copy of it.
+   A second definition of "significant" is how these two drift apart.
+3. **Mouse `Moved` is noise; `Drag` is not.** Filtering bare motion out
+   of the significance test is right — an uninterrupted pointer sweep is
+   the same continuous flow as a wheel roll. `Drag` must stay
+   significant, since a drag-selection is a user action with a result.
+   Check first whether anything consumes `Moved` at all (hover cues); if
+   nothing does, dropping it from dispatch entirely is a separate small
+   cleanup, not part of this.
+4. **It only exists after S3.** Today highlighting is precomputed
+   document-wide, so a frame has no highlighting cost to shed. This
+   escalation is meaningless before the parse moves into `render()`.
+
+The idea generalizes to any per-frame work whose output is cosmetic —
+heat cues are the obvious second candidate — but widen it only on the
+same evidence, per-item.
+
+The point of the gate is that Escalations 1 and 2 are new invalidation
 obligations, and this codebase's history is that new invalidation
 obligations are where the bugs are (spec 0186's own G3 found a
 pre-existing one on its first run). They should be paid for by a number,
-not assumed.
+not assumed. Escalation 3 is the exception that proves the rule: it is
+cheaper precisely because it stores nothing.
 
 ## Alternatives considered
 
@@ -593,6 +648,13 @@ Background, a 24-line parse costs 5.71 µs/line against a 200-line parse's
     must be within noise of each other. This is the property that makes
     the design worth having, and it is the one a regression would break
     first.
+11. **Only if Escalation 3 is taken: the settled frame is colored.** Feed
+    a burst of page-downs with no gap, then stop, and assert the *last*
+    frame drawn carries styles while the intermediate ones do not. Then
+    feed one single keystroke and assert its frame is colored — that is
+    the Kitty Press/Release trap in Escalation 3's point 2, and it is the
+    case a naive "is anything queued" test fails. Both are cheap to write
+    against a synthetic event queue and neither needs a pty.
 
 ## Open questions — all resolved
 
