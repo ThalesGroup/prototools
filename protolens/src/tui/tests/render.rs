@@ -1274,7 +1274,7 @@ fn a_folded_node_pairs_its_synthetic_closing_brace_on_the_same_row() {
 /// empty blob, and the heat cue's payload walk trips over that on the
 /// first frame. This borrows `wide_sibling_scalars_app`'s real
 /// two-byte-per-node blob — one node per row either way, so substituting
-/// the text leaves every `text_range` valid.
+/// the text leaves every node's line count valid.
 fn text_rows_app(texts: &[&str]) -> App {
     let mut app = wide_sibling_scalars_app(texts.len());
     app.lines = texts.iter().map(|s| s.to_string()).collect();

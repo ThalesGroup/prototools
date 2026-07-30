@@ -15,9 +15,9 @@ pub(super) use ratatui::backend::TestBackend;
 /// The arena renumbers nodes for two independent reasons — a re-splice
 /// pushes a fresh copy of a subtree and abandons the old one (spec
 /// 0118), and compaction relocates survivors into the holes that leaves
-/// (spec 0203) — so comparing `app.tree` or raw `line_to_node` values
-/// across either operation reports differences that say nothing about
-/// what the user sees. Projecting through this compares what actually
+/// (spec 0203) — so comparing raw `app.tree` indices across either
+/// operation reports differences that say nothing about what the user
+/// sees. Projecting through this compares what actually
 /// has to be preserved.
 pub(super) type Shape = (usize, u64, Option<String>, std::ops::Range<usize>);
 

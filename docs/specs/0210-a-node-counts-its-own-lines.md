@@ -6,8 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0210 — a node counts its own lines
 
-Status: step 1 implemented, step 2 draft
-Implemented in: 2026-07-29 (step 1)
+Status: step 1 and S11 implemented, S7 to S9 draft
+Implemented in: 2026-07-29 (step 1), 2026-07-30 (S11)
 App: protolens
 Refs: docs/specs/0135-protolens-packed-run-normalization.md (packed runs
         are re-spanned, not shifted — the one case where a line count
@@ -160,7 +160,7 @@ googleapis this root is the node with 7 771 children.
   was not designed into a corner, and to be revised against step 1's
   measurements before any of it was implemented. That revision is done:
   it added S11, which is now step 2's first change, and corrected S6 and
-  S10. S8 itself still stands as written and is unimplemented.
+  S10. S11 is implemented; S8 itself still stands as written and is not.
 - **N2.** Making decode or render faster. The blob is decoded and
   rendered exactly as today.
 - **N3.** Changing children from a linked list to a contiguous slice.
@@ -187,9 +187,9 @@ residue and unblocks lazy rendering.
 
 The sequence is deliberate: **implement step 1, then revise step 2's
 specification against what step 1 actually measured, then implement
-step 2.** The revision has happened and S11 is its product; S7 to S9
-remain a direction with estimated numbers rather than a settled design,
-the search figures in S9 especially.
+step 2.** The revision has happened and S11 is its product, now
+implemented; S7 to S9 remain a direction with estimated numbers rather
+than a settled design, the search figures in S9 especially.
 
 Step 1 is also a prerequisite, not merely a convenient first half: while
 `text_range` holds absolute indices *into* `lines`, `lines` is obliged
@@ -498,7 +498,7 @@ startup RSS, with the slot unchanged against the compaction target.
 Step 2 adds a further ~−55 MB of `String` headers, and ~0.8 M fewer
 allocations.
 
-### S11. The span-shift machinery is deleted *(step 2, and first)*
+### S11. The span-shift machinery is deleted *(step 2, and first; implemented)*
 
 This section is written last but is to be done first: it is small, it is
 independent of S8, and on its own it is what makes test-plan item 5
@@ -646,6 +646,41 @@ and specifies the deletion. So step 2's first task is not the `lines`
 memmove it was scoped around; it is removing a walk that maintains a
 field nobody reads.
 
+## What S11 measured
+
+The same driver, the same corpus, the same two targets, one run each
+(test-plan item 13). The step-1 column is the table above, for
+comparison.
+
+| | first record | | last record | |
+|---|---|---|---|---|
+| | step 1 | S11 | step 1 | S11 |
+| whole keystroke | 500-541 ms | **102 ms** | 108 ms | **61 ms** |
+| the walk (`render_overrides_inner`) | 401-412 ms | **13.8 ms** | 18.5 ms | **12.7 ms** |
+| …of which the splice itself | 9.2-9.4 ms | 8.9 ms | 12.0 ms | 7.8 ms |
+| the finalizer | 88-100 ms | 87.5 ms | 87 ms | 45.9 ms |
+| …of which the `lines` merge | 82-100 ms | 87.4 ms | 84 ms | 42.9 ms |
+| spans shifted | 4 500 963 | **0** | 0 | 0 |
+
+**Item 5 passes.** The walk is 29× cheaper on the first record and is
+now the same cost there as on the last — 13.8 ms against 12.7 ms, for a
+splice of 42 nodes against one of 1336. The commit no longer knows where
+in the document it is happening. What is left of the keystroke is the
+`lines` merge and nothing else, which is exactly the state S8 was scoped
+for.
+
+One caveat on the step-1 table's "the merge is symmetric" claim: here
+the merge came out 87.4 ms against 42.9 ms, a 2× spread the code does
+not obviously explain. `materialize_line_patches` moves all 5.28 M
+`String` headers wherever the patch lands — `take(range.start)` before
+it, `extend(old_lines)` after — so by inspection the position should not
+matter, and the two commits differ in other ways too (a 2-line shrink
+against a 528-line one, 42 spliced nodes against 1336). **The mechanism
+is unexplained and one run each is not enough to name it.** What the
+number is used for here is unaffected: on both targets the merge is now
+the whole of the residue, and S8 deletes it. Whoever writes S8's test
+plan should re-measure it properly rather than inherit either claim.
+
 ## Test plan
 
 Items 1-11 are step 1; items 12-14 are S11. The rest of step 2's test
@@ -681,10 +716,11 @@ it already asserts that an incremental repair matches a full rebuild, and
    factor. This is the spec's headline claim and needs a real corpus, so
    it belongs with the manual pty driver in
    `docs/protolens/design/arena-and-batch.md`, not in the unit suite.
-   **Measured, and it fails after step 1** — 4.6× apart, because a
-   second copy of the deleted walk survives in
+   **Measured, and it failed after step 1** — 4.6× apart, because a
+   second copy of the deleted walk survived in
    `render_overrides_inner`'s pruned-sibling arm. See "What step 1
-   measured"; it is step 2 that has to make this pass.
+   measured". S11 deleted that arm and item 13 is the re-measurement:
+   it passes.
 6. **Fold is O(depth)** (G3). Toggling a fold does not touch a number of
    nodes proportional to the document.
 7. **Packed runs.** A normalization that re-spans a packed run without
@@ -706,17 +742,24 @@ it already asserts that an incremental repair matches a full rebuild, and
     byte-identity check across the deletion. This is the one that
     matters: S11's whole claim is that it removes work with no
     observable effect, so the way it fails is a document that renders or
-    navigates differently, not a compile error.
+    navigates differently, not a compile error. **Done**, by the whole
+    suite passing unchanged and in particular by
+    `a_pruned_subtree_after_a_splice_still_reports_its_own_lines`, which
+    pins the rendered text on both sides of the splice it makes.
 13. **First field costs like last field, for real** (G2). Item 5
     re-measured through the same pty driver, with the same two targets.
-    The asymmetry must be gone; the residual should be the symmetric
-    `lines` merge alone, which is S8's to remove.
+    The asymmetry must be gone; the residual should be the `lines` merge
+    alone, which is S8's to remove. **Passes** — see "What S11
+    measured".
 14. **The counters still agree with a recount after a pruned splice.**
     Item 1's oracle exercised specifically on a batch that takes S11's
     deleted arm today — a splice with pruned siblings after it, on a
     fixture with a wide top-level sibling group. The arm is the code
     being removed, so the assertion has to run on the path that used to
-    reach it, not merely on the suite at large.
+    reach it, not merely on the suite at large. **Done**: it is the same
+    test as item 12, which runs `render_overrides` under
+    `verify_repair` on `pruned_tail_fixture`, whose pruned `tail` the
+    test asserts was in fact pruned.
 
 ## Open questions
 
@@ -755,8 +798,32 @@ it already asserts that an incremental repair matches a full rebuild, and
 
 ## Measured outcome
 
-**Step 1 only.** Step 2 is unimplemented and its specification is to be
-revised against the numbers above before it is written.
+**Step 1 and S11.** S7 to S9 are unimplemented.
+
+### S11
+
+Landed as specified, and the numbers are in "What S11 measured": the
+walk is 29× cheaper on the document's first top-level record and now
+costs the same there as on its last, which is G2 and test-plan item 5.
+The whole keystroke went 500-541 ms to 102 ms.
+
+Nothing was left to replace the deleted machinery. `text_range` is now
+written twice — once by the renderer, once by `render_node_as` from
+`node_lines` — and read only by the code that runs between those writes
+and their use. `pending_shift` stayed, as S11 said it would.
+
+Two things beyond the deletion list:
+
+- `resettle_node` and `splice_override` carried doc comments explaining
+  how the correction reached a node's descendants and what
+  `finalize_override_batch` owed the rest of the document. Those
+  paragraphs described machinery that no longer exists in either step's
+  code, so they are rewritten rather than trimmed.
+- Test item 3's retirement took `counted_lines` with it (its only
+  caller). `tui/tests/lines.rs`'s module comment now names the two
+  anchors that remain instead of three, and says why the third went.
+
+### Step 1
 
 Step 1 landed as specified: the counters are in the slot, the four side
 structures (`line_to_node`, `footer_line_to_node`, `visible_rows`,
@@ -764,7 +831,8 @@ structures (`line_to_node`, `footer_line_to_node`, `visible_rows`,
 `finalize_override_batch` is reduced to `materialize_line_patches`.
 `size_of::<TreeNode>()` went 264 → 272 B, which raised spec 0202's
 `per_node` constant from 328 to 336. Test-plan items 1-4 and 6-11 pass;
-item 5 does not, for the reason recorded in "What step 1 measured".
+item 5 did not, for the reason recorded in "What step 1 measured", and
+S11 is what fixed it.
 
 Two implementation notes:
 
@@ -781,6 +849,8 @@ Two implementation notes:
   every other rendered line gets, and positional paths shift
   accordingly.
 
-The probe counters that produced the table are in the module
-`override_apply.rs` already marks TEMPORARY; they should be stripped
-with it, but not before step 2 has re-measured the same phases.
+The probe counters that produced both tables are in the module
+`override_apply.rs` already marks TEMPORARY. `SHIFTED` went with the
+walk it counted; the rest should be stripped with the module, but not
+before S8 has re-measured the same phases — the merge is the one term
+left and it is the term S8 is about.

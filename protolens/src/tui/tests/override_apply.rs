@@ -2156,12 +2156,11 @@ fn overlapping_line_patches_panic_with_a_directed_message() {
     app.materialize_line_patches();
 }
 
-/// Spec 0186 S3, the crux. `finalize_override_batch` grows every
-/// ancestor's `text_range.end`, so an ancestor's *footer* line moves
-/// while its *header* line does not — which is why the map repair
-/// filters by line index rather than by subtree. An implementation that
-/// keyed off "the batch origin's subtree" would leave a live entry
-/// behind at each ancestor's old footer line.
+/// Spec 0186 S3, the crux. A splice grows every ancestor's
+/// `lines_total`, so an ancestor's *footer* line moves while its
+/// *header* line does not — the asymmetry the old line maps had to be
+/// repaired by line index rather than by subtree, and the one the
+/// counters now have to reproduce for free.
 ///
 /// Note what this asserts beyond "the new footer resolves": that
 /// *nothing* still claims the old one. A stale duplicate passes the
@@ -2355,15 +2354,23 @@ fn the_visible_row_walk_stays_ordered_across_a_splice() {
     );
 }
 
-/// A splice's line-count delta has to reach *inside* every subtree that
-/// follows it, including the ones the override walk prunes.
+/// Spec 0210 test-plan items 12 and 14: a subtree that follows a splice
+/// and that the override walk *prunes* must still report the right lines.
 ///
-/// The user-visible failure is the fold handle and the heat cue landing
-/// on the closing brace instead of the opening one, on scalar lines, or
-/// nowhere at all — everywhere below an override, and only after one has
-/// been applied or removed. `line_to_node` is rebuilt *from* the spans,
-/// so a shifted-by-one span silently registers the node on its
-/// neighbor's line and everything downstream faithfully agrees.
+/// This is the shape S11's deleted code existed for. The walk used to
+/// carry the splice's line-count delta down the tree and, on reaching a
+/// pruned child, walk that child's whole subtree by `doc_next` to shift
+/// every stored range inside it — which on a real document meant
+/// shifting most of the arena for an override near the top. Now nothing
+/// is shifted, because nothing is stored: `node_lines` sums the
+/// counters, and a count does not care what happened above it.
+///
+/// So the assertions below are unchanged from when they caught the
+/// original bug (fold handles and heat cues landing on the closing brace
+/// instead of the opening one, everywhere below an override), and that
+/// is the point — S11's claim is that it removes work with no observable
+/// effect. Running under `verify_repair` also puts item 1's recount
+/// oracle on the exact path the deleted arm used to take.
 ///
 /// Retyping `head` from `Wrap` to `Blob` reads the same four bytes as
 /// one string line instead of a nested `leaf { v: 5 }`, shortening the
@@ -2371,7 +2378,7 @@ fn the_visible_row_walk_stays_ordered_across_a_splice() {
 /// walk prunes it — and its `leaf`/`v` interior is what used to be left
 /// two lines behind.
 #[test]
-fn a_splice_shifts_the_interior_of_the_subtrees_the_walk_prunes() {
+fn a_pruned_subtree_after_a_splice_still_reports_its_own_lines() {
     use crate::override_pane::OverrideOrigin;
 
     let (mut app, _head, tail, tail_leaf, tail_v) = pruned_tail_fixture();
@@ -2438,8 +2445,8 @@ fn a_splice_shifts_the_interior_of_the_subtrees_the_walk_prunes() {
         assert_eq!(
             app.node_lines(node),
             want,
-            "{name} kept pre-splice line numbers: the delta reached the \
-             pruned subtree's root but not its interior"
+            "{name} reports pre-splice line numbers, so the pruned \
+             subtree's interior did not follow the splice"
         );
     }
 

@@ -143,9 +143,9 @@ plus `dead: Vec<bool>`.
 
 Its parent, siblings and document neighbors are named by its own link
 fields, and each of them holds the reverse link. Its children are on its
-own child chain. Its two line-map entries are found through its own
-`text_range`. The five remaining holders are index-keyed, so a hash
-lookup or an equality test finds them.
+own child chain. No line-keyed structure names it at all any more (spec
+0210 S2 deleted both maps). The five remaining holders are index-keyed,
+so a hash lookup or an equality test finds them.
 
 This is what makes relocation *incremental*: one node can be moved in
 time proportional to its own degree, with no arena-wide pass and no
@@ -255,17 +255,21 @@ splice happens. This is why a no-op batch is cheap, and it is also why
 the first batch after startup is expensive: `rendered_as` is `None`
 everywhere, so it does not match anything.
 
-The walk also carries a running line-count correction (`inherited` /
-`child_owed`) down the tree, so that each node's `text_range` keeps
-naming its *final* position in the finished document even though the
-text buffer has not been written yet.
+The walk carries nothing down the tree but the path and the patch scope.
+It used to carry a running line-count correction as well (`inherited` /
+`child_owed`), to keep every node's stored `text_range` naming its final
+position — including, for a subtree the walk had *pruned*, a `doc_next`
+run over the whole of it. That was the last piece of a commit whose cost
+was proportional to the document rather than to the splice: an override
+on the first of googleapis.desc's top-level records shifted 4.5 M spans,
+402 ms of a 500 ms keystroke. Spec 0210 S11 deleted it. No node stores a
+position now, so there is nothing to correct.
 
-**Phase 4 — finalize.** Runs once per batch, not once per splice. It
-merges the collected text patches into `self.lines` in a single pass,
-clears the two line maps from the batch's earliest disturbed line
-onwards, and re-fills them with three walks (the spliced subtree,
-everything after it, and the ancestors' footers). Then it rebuilds
-`visible_rows`.
+**Phase 4 — finalize.** Runs once per batch, not once per splice, and
+merges the collected text patches into `self.lines` in a single pass.
+That is now all it does: the two line maps and `visible_rows` are gone
+(spec 0210 S2), and each splice fixes its own ancestors' line counts as
+it goes, because the rest of the batch places its patches from them.
 
 **Phase 5 — compaction.** In the event loop's idle branch, strictly
 behind read-ahead, `compact_slice(4096)` moves up to 4 096 live nodes
@@ -446,13 +450,13 @@ has already cost somebody a debugging cycle.
    the terminal) is a prerequisite, not a nicety.
 
 7. **Three coordinate frames coexist during a batch**, and confusing two
-   of them has already caused silent corruption. A node's `text_range`
-   tracks its *final* position in the finished document; a queued
-   patch's own `lines` is a *frozen snapshot* taken when the patch was
-   created and never touched again; and `self.lines` still holds
-   *pre-batch* content for the whole duration. A nested patch's offset
-   into its parent must subtract exactly the growth accumulated since
-   the parent froze.
+   of them has already caused silent corruption. `node_lines(idx)` gives
+   a node's position in the document *as the batch has made it so far*;
+   a queued patch's own `lines` is a *frozen snapshot* taken when the
+   patch was created and never touched again; and `self.lines` still
+   holds *pre-batch* content for the whole duration. A nested patch's
+   offset into its parent must subtract exactly the growth accumulated
+   since the parent froze.
 
 8. **`packed_record_start` is a byte offset and must be rebased on
    splice.** Leaving it in local coordinates made downstream parsers
@@ -670,6 +674,14 @@ A third stale figure lives in the code: `override_apply.rs:1277` says
 ### What the 264 bytes are
 
 Derived from the field list; the total is confirmed by measurement.
+
+This table is the layout **before** spec 0210, which added `lines_total`
+and `lines_visible` (4 B each) and took the slot to 272 B. It is left as
+it was because it is what the eleven opportunities below were sized
+against, and because 0210 changed what `text_range` *means* rather than
+how much it costs: the field is now written at build time and re-derived
+from the counters on demand, so row 3 below could become a deletion
+rather than a narrowing — worth 16 B, not 8.
 
 | field | type | bytes | what it holds |
 | --- | --- | --- | --- |

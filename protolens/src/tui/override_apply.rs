@@ -47,10 +47,6 @@ pub(super) mod probe {
     pub(super) static INNER_US: AtomicUsize = AtomicUsize::new(0);
     /// Microseconds in `finalize_override_batch` (`TEXT_US` included).
     pub(super) static FINALIZE_US: AtomicUsize = AtomicUsize::new(0);
-    /// `shift_span` calls made by the pruned-sibling arm of
-    /// `render_overrides_inner` — the second O(nodes after the splice)
-    /// walk, the one spec 0210 step 1 did *not* delete.
-    pub(super) static SHIFTED: AtomicUsize = AtomicUsize::new(0);
 }
 
 /// Spec 0167 (N1 follow-up to spec 0160): where a single
@@ -66,22 +62,19 @@ pub(super) enum LinePatchTarget {
 }
 
 /// Spec 0167: one collected line-buffer patch. `global_start` is the
-/// patch's own start position in the batch's corrected coordinate frame
-/// (i.e. `App::pending_shift`-corrected `NodeSpan::text_range.start`).
+/// patch's own start position as the batch has the document so far
+/// (i.e. `node_lines(idx).start` at the moment of the splice).
 /// `children_base_shift` is `App::pending_shift`'s value right after
 /// this patch's own delta was folded in — i.e. at the exact moment this
 /// patch's freshly decoded children were translated into the tree. Both
 /// exist solely so a *further-nested* child patch of this one can
-/// compute its own local offset in O(1): `render_overrides_inner`'s
-/// `inherited`-shift propagation keeps every node's `NodeSpan::
-/// text_range` tracking its true *final* position (needed by
-/// `finalize_override_batch`'s `line_to_node` rebuild), which — unlike
-/// this patch's own `lines`, a frozen snapshot never touched again after
-/// creation — keeps growing as later-processed nested siblings
-/// themselves get spliced. A child patch's local offset must undo
-/// exactly that growth (everything accumulated since `children_base_
-/// shift`) to land back in this patch's own frozen coordinate frame —
-/// see `splice_override`'s `Nested` branch.
+/// compute its own local offset in O(1): a node's position is derived
+/// from the line counters, so it keeps growing as later-processed
+/// nested siblings get spliced, while this patch's own `lines` is a
+/// frozen snapshot never touched again after creation. A child patch's
+/// local offset must undo exactly that growth (everything accumulated
+/// since `children_base_shift`) to land back in this patch's own frozen
+/// coordinate frame — see `splice_override`'s `Nested` branch.
 pub(super) struct LinePatch {
     pub(super) target: LinePatchTarget,
     pub(super) global_start: usize,
@@ -1047,16 +1040,6 @@ impl App {
     /// `splice_override` already relies on for a manual override that
     /// no longer cleanly matches its target (a `TYPE_MISMATCH`-style
     /// annotation, not a silent revert to raw).
-    /// Returns `true` iff `idx` was actually re-spliced (i.e. `target`
-    /// disagreed with `idx`'s currently-rendered provenance and
-    /// `splice_override` succeeded) — spec 0160 G2: callers use this to
-    /// distinguish "my own node was just re-spliced, so my children are
-    /// freshly positioned and need no further correction" from "my own
-    /// node was untouched, so my *existing* children still owe whatever
-    /// correction I was just given". This can't be inferred from
-    /// `pending_shift` alone, since a splice whose new content happens
-    /// to have the same line count as the old (`delta == 0`) must still
-    /// count as fresh.
     /// `path` is `idx`'s own already-known positional path, passed down
     /// by the sole caller (`render_overrides_inner`'s hot full-document
     /// walk) rather than recomputed here — see `resolve_active_override_
@@ -1203,7 +1186,6 @@ impl App {
                 probe::SPLICES.store(0, Relaxed);
                 probe::NODES.store(0, Relaxed);
                 probe::SPLICE_US.store(0, Relaxed);
-                probe::SHIFTED.store(0, Relaxed);
                 probe::TEXT_US.store(0, Relaxed);
                 probe::MARKS_US.store(d_marks.as_micros() as usize, Relaxed);
                 crate::tui::trace::trace!(
@@ -1219,7 +1201,7 @@ impl App {
         // patch (spec 0167): it's an already-existing node, never one
         // freshly created within this very call.
         let t_inner = std::time::Instant::now();
-        self.render_overrides_inner(idx, 0, &path, None);
+        self.render_overrides_inner(idx, &path, None);
         let d_inner = t_inner.elapsed();
         self.override_batch_depth -= 1;
         if self.override_batch_depth == 0 {
@@ -1246,7 +1228,7 @@ impl App {
                     / (1 << 20);
                 use std::sync::atomic::Ordering::Relaxed;
                 crate::tui::trace::trace!(
-                    "PROBE render_overrides tree={} tree_cap={} lines={} lines_cap={} overrides={} rss_mib={} visits={} splices={} nodes={} marks_us={} inner_us={} splice_us={} finalize_us={} text_us={} shifted={}",
+                    "PROBE render_overrides tree={} tree_cap={} lines={} lines_cap={} overrides={} rss_mib={} visits={} splices={} nodes={} marks_us={} inner_us={} splice_us={} finalize_us={} text_us={}",
                     self.tree.len(),
                     self.tree.capacity(),
                     self.lines.len(),
@@ -1261,7 +1243,6 @@ impl App {
                     probe::SPLICE_US.load(Relaxed),
                     probe::FINALIZE_US.load(Relaxed),
                     probe::TEXT_US.load(Relaxed),
-                    probe::SHIFTED.load(Relaxed),
                 );
             }
         }
@@ -1574,24 +1555,24 @@ impl App {
         }
     }
 
-    /// Spec 0160 G2: a small private helper applying `delta` to both
-    /// endpoints of `span.text_range` — the `(x as isize + delta) as
-    /// usize` pattern used at several call sites in this file, factored
-    /// out.
-    fn shift_span(span: &mut prototext_core::serialize::render_text::NodeSpan, delta: isize) {
-        span.text_range.start = (span.text_range.start as isize + delta) as usize;
-        span.text_range.end = (span.text_range.end as isize + delta) as usize;
-    }
-
-    /// The actual (self-recursive) body of `render_overrides` (spec 0160
-    /// G2): `inherited` is the line-count correction owed to `idx`'s own
-    /// `span.text_range` by splices that already happened earlier in
-    /// this batch, applied here directly, once — then, unless `idx`
-    /// itself was just re-spliced (in which case its freshly decoded
-    /// children are already positioned correctly), the same correction
-    /// is carried down to each of `idx`'s existing children, accumulating
-    /// each already-processed child's own growth onto what's owed to its
-    /// later siblings.
+    /// The actual (self-recursive) body of `render_overrides`.
+    ///
+    /// Spec 0210 S11: this used to carry a line-count correction down
+    /// the tree — `inherited` into each call, accumulated across
+    /// siblings as `child_owed`, applied to every node's stored
+    /// `span.text_range` and, for a child the walk had pruned, to that
+    /// child's whole subtree by a `doc_next` run. On the reference
+    /// corpus an override on the document's *first* top-level record
+    /// shifted 4 500 963 spans that way, 402 ms of a 500 ms commit,
+    /// while the same override on the last record shifted none.
+    ///
+    /// All of it maintained one field that nothing reads. `text_range`
+    /// is exact when the renderer emits it and is used then, to derive
+    /// `lines_total`; afterwards every caller that wants a line range
+    /// asks `node_lines`, which derives it from the counters and cannot
+    /// go stale. So the correction is gone, and with it the last walk in
+    /// a commit that was proportional to the document rather than to the
+    /// splice.
     ///
     /// `path` is `idx`'s own already-known positional path (spec 0163
     /// follow-up), passed down from the caller rather than recomputed
@@ -1630,36 +1611,7 @@ impl App {
     /// batch (MessageSet tier 2, whose eligibility depends on its
     /// parent having just been retyped by tier 1): they are always
     /// inside fresh content by construction.
-    fn render_overrides_inner(
-        &mut self,
-        idx: usize,
-        inherited: isize,
-        path: &str,
-        patch_scope: Option<usize>,
-    ) {
-        // `idx`'s own node — and, if it's a member of a packed-repeated
-        // run (spec 0135 G1), every other member of that run too, since
-        // `packed_record_extent` (inside `splice_override`, called from
-        // `resettle_node` below) reads the run's first and last members
-        // directly and can't wait for their own turn later in this
-        // function's child loop — needs `inherited` applied now, once,
-        // directly. An override can be triggered on any member of a
-        // packed run, not just the leading one (see `splice_override`'s
-        // own doc comment), so `packed_record_siblings(idx)` may return
-        // `idx` at any position — shift every *other* member explicitly,
-        // never a fixed `[1..]` slice (which would wrongly assume `idx`
-        // is the leader).
-        if inherited != 0 {
-            Self::shift_span(&mut self.tree[idx].span, inherited);
-            if self.tree[idx].span.packed_record_start.is_some() {
-                for s in self.packed_record_siblings(idx) {
-                    if s != idx {
-                        Self::shift_span(&mut self.tree[s].span, inherited);
-                    }
-                }
-            }
-        }
-
+    fn render_overrides_inner(&mut self, idx: usize, path: &str, patch_scope: Option<usize>) {
         let origin = OverrideOrigin::Path {
             path: path.to_string(),
         };
@@ -1715,12 +1667,6 @@ impl App {
         if spliced {
             self.mark_fresh_subtree(base, path);
         }
-        // Fresh children (just pushed by a splice) are already
-        // positioned relative to `idx`'s now-correct start and owe
-        // nothing further; pre-existing children (no splice happened)
-        // still owe whatever `idx` itself was just given.
-        let mut child_owed = if spliced { 0 } else { inherited };
-        let initial_child_owed = child_owed;
         let mut child = self.tree[idx].first_child;
         let mut ordinal = 0usize;
         let mut prev_child: Option<usize> = None;
@@ -1764,83 +1710,21 @@ impl App {
                 self.descend.get(c).copied().unwrap_or(false)
             };
             if descend_here {
-                let before = self.pending_shift;
-                self.render_overrides_inner(c, child_owed, &c_path, child_scope);
-                child_owed += self.pending_shift - before;
-            } else if child_owed != 0 {
-                // `c`'s *whole subtree* owes the correction, not just `c`
-                // itself — and the subtree has to be shifted here because
-                // the recursion above is the only thing that would
-                // otherwise reach it, and pruning just decided not to.
-                //
-                // This is what spec 0183 G1's gate silently changed. The
-                // gate used to be `span.is_message || ...`, so the walk
-                // entered every interior node and the carried-down
-                // correction reached every descendant; a child that fell
-                // through to this arm was a scalar, and a scalar has no
-                // descendants, so shifting `c` alone was complete. Once
-                // the gate became "can this subtree's *rendering*
-                // change?", the arm started catching whole message
-                // subtrees whose rendering is fixed but whose line
-                // numbers still move, and their interiors were left at
-                // pre-splice coordinates. Nothing downstream notices:
-                // `line_to_node` is rebuilt *from* these ranges, so the
-                // map faithfully records the wrong lines and the G3
-                // equivalence check agrees with itself.
-                //
-                // A subtree is contiguous in doc order, so this is a
-                // `doc_next` run from `c` to its deepest `last_child` —
-                // the same walk, and the same contiguity assumption, as
-                // `finalize_override_batch`'s pass 2. Summed over the
-                // pruned siblings of a batch it is O(nodes after the
-                // first splice), which that pass already costs and which
-                // pass 1's re-mapping already costs unconditionally, so
-                // the pruning keeps the saving it was actually for: not
-                // resolving an override and a path per node.
-                let mut sub_last = c;
-                while let Some(lc) = self.tree[sub_last].last_child {
-                    sub_last = lc;
-                }
-                let mut cur = Some(c);
-                let mut shifted = 0usize;
-                while let Some(n) = cur {
-                    Self::shift_span(&mut self.tree[n].span, child_owed);
-                    shifted += 1;
-                    if n == sub_last {
-                        break;
-                    }
-                    cur = self.tree[n].doc_next;
-                }
-                if crate::tui::trace::enabled() {
-                    probe::SHIFTED.fetch_add(shifted, std::sync::atomic::Ordering::Relaxed);
-                }
+                self.render_overrides_inner(c, &c_path, child_scope);
             }
             child = self.tree[c].next_sibling;
-        }
-        // `idx`'s own closing/footer `end` must grow by however much its
-        // children collectively grew during this loop (their own
-        // splices, and/or further-nested descendants' splices) — its
-        // `start` never moves due to its own descendants' growth.
-        let growth = child_owed - initial_child_owed;
-        if growth != 0 {
-            self.tree[idx].span.text_range.end =
-                (self.tree[idx].span.text_range.end as isize + growth) as usize;
         }
     }
 
     /// Spec 0160 G1: runs exactly once, when the outermost
     /// `render_overrides` call for a batch of splices returns (or a
     /// standalone `splice_override` call finishes) — not once per
-    /// splice. Everything *inside* `idx`'s own subtree is already
-    /// correct by this point (`render_overrides_inner`'s carried-down
-    /// correction, or — for a standalone call — `splice_override`'s own
-    /// direct writes); this handles exactly what's left: what a single
-    /// eager splice on `idx` alone would still owe the *rest* of the
-    /// document — every live node strictly after `idx`'s whole subtree,
-    /// and every ancestor of `idx` (its `text_range.end` only) — applied
-    /// once for the whole batch using its aggregate `pending_shift`,
-    /// followed by the `line_to_node`/`footer_line_to_node` rebuild and
-    /// `rebuild_visible_rows()` (formerly redone on every splice).
+    /// splice. Every node's line *counts* are already correct by this
+    /// point: `splice_override` fixes its own target's and carries the
+    /// change up the ancestors as it goes, because the rest of the batch
+    /// derives its patch positions from them. So all that is left here
+    /// is the document *text* — the batch's queued line patches, merged
+    /// into `self.lines` in a single pass.
     fn finalize_override_batch(&mut self) {
         // Spec 0186 S2: the first line this batch can have disturbed, in
         // the final buffer's frame.
@@ -2352,26 +2236,25 @@ impl App {
 
         let delta = new_lines.len() as isize
             - (old_span.text_range.end - old_span.text_range.start) as isize;
-        // Spec 0160 G2: bump the batch's running offset now, rather than
-        // eagerly walking every downstream node's `text_range` —
-        // everything outside `idx`'s own subtree is reconciled once,
-        // lazily, in `finalize_override_batch`; everything inside it is
-        // handled directly, by `render_overrides_inner`'s carried-down
-        // correction.
+        // Spec 0160 G2 / spec 0210 S11: `pending_shift` is the batch's
+        // running line offset, and its only remaining consumer is patch
+        // placement. No node's position is stored, so nothing downstream
+        // has to be walked and corrected; a node's line range is derived
+        // from the counters whenever it is asked for.
         //
         // Spec 0167: capture `pending_shift`'s value *before* this call's
-        // own delta is folded in — `old_span.text_range` above is already
-        // corrected for every earlier splice in this batch (spec 0160
-        // G2), so subtracting this pre-increment value recovers the
-        // position `self.lines` still has it at, since that buffer is no
-        // longer touched eagerly (see below).
+        // own delta is folded in — `old_span.text_range` above is
+        // `node_lines(idx)`, so it already reflects every earlier splice
+        // in this batch, and subtracting this pre-increment value
+        // recovers the position `self.lines` still has it at, that buffer
+        // being patched only at the end of the batch (see below).
         let pending_shift_before = self.pending_shift;
         self.pending_shift += delta;
 
         // Collect old descendants (pointer-based, before any pointer is
-        // overwritten below) and scrub them from `folded` — otherwise
-        // `rebuild_visible_rows` could read their now-meaningless stale
-        // `text_range` and hide unrelated post-splice content. `idx`
+        // overwritten below) and scrub them from `folded` — a fold flag
+        // left on an abandoned node would be honored again if its slot
+        // were ever reused, hiding unrelated content. `idx`
         // itself is deliberately left in `folded` untouched (spec 0118
         // §7 — fold state on `idx` survives its own retype). For a
         // packed sibling merge, `packed_orphans` (siblings[1..] and their
@@ -2400,8 +2283,8 @@ impl App {
         // answer being about content that no longer exists.
         //
         // Latent before compaction rather than harmless: an abandoned
-        // node is never freed today, so a cursor left on one keeps a
-        // stale-but-plausible `text_range` and merely navigates oddly.
+        // node is never freed today, so a cursor left on one merely
+        // navigates oddly, off in a subtree nothing else reaches.
         // Once its slot can be reused and truncated away, the same
         // dangling index is an unrelated node or a panic.
         if old_descendants.contains(&self.cursor) {
@@ -2458,13 +2341,12 @@ impl App {
                 LinePatchTarget::Original(original_start..original_end)
             }
             Some(parent_idx) => {
-                // `text_range.start`/`.end` keep tracking this node's true
-                // *final* document position (`render_overrides_inner`'s
-                // `inherited`-shift propagation — needed by `finalize_
-                // override_batch`'s own rebuild), which grows every time a
-                // sibling processed earlier within the same parent gets
-                // its own splice — but the parent's own `lines` is a
-                // frozen snapshot, never touched again after creation.
+                // `old_span.text_range` is `node_lines(idx)` (see the top
+                // of this function), i.e. this node's true *current*
+                // document position, which grows every time a sibling
+                // processed earlier within the same parent gets its own
+                // splice — but the parent's own `lines` is a frozen
+                // snapshot, never touched again after creation.
                 // Undo exactly that extra growth (everything accumulated
                 // since the parent's `children_base_shift`) to recover
                 // the offset that's actually valid in the parent's frozen
@@ -2521,8 +2403,15 @@ impl App {
             let mut span = node.span;
             span.raw_range = (span.raw_range.start as isize + byte_offset) as usize
                 ..(span.raw_range.end as isize + byte_offset) as usize;
-            span.text_range = (span.text_range.start + old_span.text_range.start)
-                ..(span.text_range.end + old_span.text_range.start);
+            // Spec 0210 S11: `span.text_range` is deliberately left
+            // local. `build_tree` has already read it, to derive each
+            // node's `lines_total`, and that is its last reader —
+            // everything downstream asks `node_lines`, which derives a
+            // line range from the counters. Translating it would only
+            // put a second, staler copy of the same fact in the slot.
+            // `raw_range` above is a different matter: it is genuinely
+            // read against `self.blob` and must be global.
+            //
             // `packed_record_start` is a byte offset in exactly the same
             // frame as `raw_range` (`sink.rs` builds it as
             // `base + raw_range.start`), so it needs exactly the same
@@ -2696,10 +2585,11 @@ impl App {
             self.refresh_line_counts(parent);
         }
 
-        // Spec 0160 G2: no eager forward/ancestor `text_range` shift and
-        // no `line_to_node`/`footer_line_to_node`/`rebuild_visible_rows`
-        // rebuild here anymore — `self.pending_shift += delta` above
-        // already recorded this splice's effect. When called from within
+        // Spec 0160 G2: no eager walk of the document happens here — the
+        // ancestor counts above are the whole structural consequence of
+        // this splice, and `self.pending_shift += delta` records what the
+        // rest of the batch needs to place its patches. When called from
+        // within
         // a `render_overrides` batch (`override_batch_depth > 0`, e.g.
         // via `resettle_node`), reconciliation is deferred to that outer
         // call's own `finalize_override_batch`. `splice_override` is

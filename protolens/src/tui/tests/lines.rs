@@ -14,29 +14,29 @@
 //! it claims to be.
 //!
 //! So each direction is pinned against something that does not share
-//! its arithmetic:
+//! its arithmetic: the downward walks against the upward one, inverted,
+//! and the upward one against a table built outward from the nodes,
+//! which must turn out to name an owner for every line of the document
+//! and for nothing past its end.
 //!
-//! - the upward walk against `span.text_range`, the absolute range the
-//!   renderer itself recorded while emitting the text, and the field
-//!   the old implementation just read. It is trustworthy only on a
-//!   freshly decoded document — a splice does not repair it, which is
-//!   the whole reason spec 0210 exists — so that is where the
-//!   equivalence is asserted, and nowhere else;
-//! - the downward walks against the upward one, inverted.
+//! There used to be a third anchor here, `span.text_range` — the
+//! absolute range the renderer recorded while emitting the text, and
+//! the field the old implementation just read. Spec 0210 S11 retired
+//! both it and the test that used it: the field is exact only until the
+//! first splice, and the machinery that had kept it plausible
+//! afterwards was the last whole-document walk left in a commit.
 //!
 //! `override_apply`'s `assert_line_counts_are_exact` covers the
-//! counters after a *mutation*; what is checked here is the resolution
-//! built on top of them.
+//! counters themselves, against a full recount and against the
+//! indentation of the text — and it runs after every splice in the
+//! whole suite. What is checked here is the resolution built on top.
 
 use super::super::*;
 use super::support::*;
 
-/// Every fixture in the suite that comes from a real decode, and
-/// therefore carries the renderer's own line ranges.
-///
-/// The hand-built fixtures are deliberately absent: they set
-/// `text_range` by hand, so agreeing with it would prove only that the
-/// fixture author and the walk made the same assumption.
+/// Every fixture in the suite that comes from a real decode, and whose
+/// counters therefore came from the renderer's own output rather than
+/// from a fixture author's arithmetic.
 fn real_decodes() -> Vec<(&'static str, App)> {
     vec![
         ("type_as", type_as_fixture().0),
@@ -65,9 +65,9 @@ fn real_decodes() -> Vec<(&'static str, App)> {
 /// `repeated_message_fixture` does: `App::new`'s startup
 /// `render_overrides` resettles nodes to their natural types, and
 /// `splice_override` abandons the superseded subtrees in the arena
-/// rather than removing them. Those orphans keep the ranges they had
-/// when they were current, which is exactly the staleness spec 0210
-/// stopped relying on.
+/// rather than removing them. An orphan still counts its own lines, but
+/// no line of the document belongs to it, so including one would make
+/// the ownership table below claim a line twice.
 fn live_nodes(app: &App) -> Vec<usize> {
     let mut out = Vec::new();
     if app.tree.is_empty() {
@@ -92,46 +92,6 @@ fn live_nodes(app: &App) -> Vec<usize> {
         stack.extend(kids.into_iter().rev());
     }
     out
-}
-
-/// The whole document's length according to the counters — the sum over
-/// the top-level chain, which for a real decode is the single root.
-fn counted_lines(app: &App) -> usize {
-    let mut total = 0;
-    let mut r = (!app.tree.is_empty()).then_some(app.first_node);
-    while let Some(i) = r {
-        total += app.tree[i].lines_total as usize;
-        r = app.tree[i].next_sibling;
-    }
-    total
-}
-
-/// Spec 0210 test-plan item 3: the derived position agrees with the
-/// number the old implementation stored.
-///
-/// This is the equivalence test that makes the change reviewable at
-/// all. Everything else in protolens asks where a node is; if the
-/// answer moved, the answer moved for every caller at once, and no
-/// individual feature test would say which.
-#[test]
-fn every_derived_position_equals_the_range_the_renderer_recorded() {
-    for (name, app) in real_decodes() {
-        let nodes = live_nodes(&app);
-        assert!(!nodes.is_empty(), "{name}: fixture decoded to nothing");
-        for idx in nodes {
-            assert_eq!(
-                app.node_lines(idx),
-                app.tree[idx].span.text_range,
-                "{name}: node {idx} ({:?})",
-                app.tree[idx].span.type_fqdn
-            );
-        }
-        assert_eq!(
-            counted_lines(&app),
-            app.lines.len(),
-            "{name}: the root's own count must span the whole document"
-        );
-    }
 }
 
 /// Spec 0210 test-plan item 4: the descent inverts the position.
