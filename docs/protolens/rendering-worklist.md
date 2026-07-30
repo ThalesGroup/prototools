@@ -1498,13 +1498,13 @@ The memory arithmetic that sets the order (see
 The text is the *smallest* of the three. That is the finding that
 reordered this phase.
 
-### W25. Shrink `TreeNode` from 280 B to ~72 B
+### W25. Shrink `TreeNode` from 280 B to 76 B
 
 **Fixes:** [S12](rendering-scaling-roadmap.md).
 
-**Status: steps 1, 2, 4 and 5 done; 280 B → 120 B.** Only step 3
-(`rendered_as`) and the `build_tree` rider remain. See the per-step notes
-below and spec 0212's Measured outcome for what it delivered.
+**Status: all five steps done; 280 B → 76 B.** Only the `build_tree`
+rider remains. See the per-step notes below, and specs 0211/0212/0213's
+Measured outcomes for what each delivered.
 
 **Files:** `prototext-core/src/serialize/render_text/sink.rs:960-1034`
 (`NodeSpan`), `protolens/src/decode.rs:269-289` (`TreeNode`),
@@ -1531,15 +1531,21 @@ each its own commit:
    [spec 0211](../specs/0211-the-arenas-links-are-half-as-wide.md). Caps
    the arena at ~4.29 G nodes ≈ 7.6 GB of blob at the observed 0.566
    nodes/byte — outside the stated target, and one line to revisit.
-3. **Move `rendered_as` to a side `HashMap<NodeIdx, _>`** (48 B → 0 for
-   the overwhelming majority of nodes, which are never spliced).
-   **Superseded: intern it instead**, into step 1's `FqdnTable`, for 40 B
-   rather than 48. `design/arena-and-batch.md`'s trap 1 has the argument —
-   a side table is a *ninth* structure keyed by node index, which
-   compaction must rekey on every relocation and slot reuse must clear on
-   every free, and 8 B is a cheap price for not adding one. Interning also
-   makes `TreeNode` plain-old-data, which is what lets a free list have a
-   blank slot to push.
+3. ✔ **Intern `rendered_as`** — **done 2026-07-30** by
+   [spec 0213](../specs/0213-the-provenance-is-one-word.md). The plan was
+   a side `HashMap<NodeIdx, _>` (48 B → 0 for the overwhelming majority
+   of nodes, which are never spliced); `design/arena-and-batch.md`'s
+   trap 1 rejected it, because a side table is a *ninth* structure keyed
+   by node index, which compaction must rekey on every relocation and
+   slot reuse must clear on every free. Interning also makes `TreeNode`
+   plain-old-data, which is what lets a free list have a blank slot to
+   push. Two things the plan did not anticipate: it does **not** use
+   step 1's `FqdnTable` — `FqdnId`'s inner field is private to
+   `prototext-core` and the type half of a provenance needs three values
+   that are not a type name, so the *pair* is interned whole into a
+   `ProvenanceTable` of protolens's own, for 4 B rather than 8; and that
+   table needs only **one** reserved id, not step 1's two, because it has
+   no lookup-without-insert to make a miss dangerous.
 4. ✔ **Narrow the scalars** — **done 2026-07-30** by spec 0212:
    `field_number` `u64`→`u32`, both `Range<usize>` → `Range<u32>`,
    `level` → `u16`, `packed_record_start` → `u32` + `NO_PACKED_RECORD`,
@@ -1602,7 +1608,8 @@ the source incrementally.
 **Blocked by:** nothing. **Blocks:** W23, W24.
 
 **Risk: low-to-moderate.** No pipeline invariant changes and the compiler
-finds every site; it is mostly typing. `rendered_as` is the exception.
+finds every site; it is mostly typing. `rendered_as` was the exception,
+and in the event interning kept it mechanical too.
 
 ---
 

@@ -759,7 +759,7 @@ at all (everything is 4-byte aligned or smaller and sorts cleanly).
 | # | change | before | after | saved |
 | --- | --- | --- | --- | --- |
 | 9 | `type_fqdn` → an interned `u32` symbol — **done, spec 0212** | 24 | 4 | **20**, plus ~one heap allocation per message node |
-| 10 | `rendered_as` → a pair of interned symbols | 48 | 8 | **40**, plus up to two allocations per spliced node |
+| 10 | `rendered_as` → one interned symbol for the whole pair — **done, spec 0213** | 48 | 4 | **44**, plus up to two allocations per spliced node |
 
 **Structural, and optional.**
 
@@ -772,14 +772,24 @@ which is exactly the target W25 already set. Counting spec 0210's two
 counters, which arrived after this table, the same rows take today's
 272 B to 72 B.
 
-Spec 0211 landed row 1 and spec 0212 landed rows 2-9, so the slot is
-**120 B** now — `NodeSpan` 96 → **32** and `TreeNode` 272 → 120 — and
-`const _: () = assert!(size_of::<TreeNode>() == 120)` beside `TreeNode`
+Spec 0211 landed row 1, spec 0212 rows 2-9 and spec 0213 row 10, so the
+slot is **76 B** now — `NodeSpan` 96 → **32** and `TreeNode` 272 → 76 —
+and `const _: () = assert!(size_of::<TreeNode>() == 76)` beside `TreeNode`
 plus `assert!(size_of::<NodeSpan>() == 32)` beside `NodeSpan` keep both
 there. The assertions are equalities rather than bounds, so growth is
 caught as well as celebrated, and each later row moves the numbers
-deliberately. Only row 10 (`rendered_as`, 48 B) and row 11 remain, which
-is what puts the slot at the 72 B target.
+deliberately. **Only row 11 remains**, and it saves no bytes — so 76 B,
+not the 72 this table projected, is where the slot stops. The 4 B
+difference is spec 0210's second line counter, which arrived after the
+table was written; every field in the slot is now a 4-byte scalar and
+none of them is spare.
+
+Row 10 beat its own projection by interning the pair as one value rather
+than its two halves separately — 4 B rather than 8. The forcing reason
+was not size but sentinels: `FqdnId`'s inner `u32` is private to
+`prototext-core`, and the type half of a provenance needs *three* values
+that are not a type name (no override, explicit raw, never rendered),
+which is one more than that table has to spare. See spec 0213.
 
 Spec 0212 also took a decision the "Suggested order" below had left open:
 `level` is `u16` with no `debug_assert` needed (`MAX_WIRE_DEPTH` is 1000,
@@ -866,6 +876,17 @@ Seven things that will bite, in the order they will bite.
    every free. The interning route (row 10) keeps it in the slot, costs
    8 B more, and adds no index holder. **Prefer interning.** This is the
    one place where this annex disagrees with the existing plan.
+
+   **Spec 0213 interned, and the side table was rejected on exactly that
+   ground.** It also beat its own projection: interning the *pair* as a
+   single value costs 4 B, not 8, so the side table's 48 B advantage
+   evaporated entirely — the two routes save 44 and 48 B respectively,
+   and only one of them adds a structure keyed by node index. What
+   forced the pair rather than the two halves is unrelated to size:
+   `FqdnId`'s inner field is private to `prototext-core`, so protolens
+   can name only its two reserved ids, and the type half of a provenance
+   needs *three* values that are not a type name — no override, explicit
+   raw, and never rendered.
 2. **The refusal guard must be re-tuned, not merely recompiled.**
    Part 2's `per_node = size_of::<TreeNode>() + 64` picks up the new
    `size_of` automatically, but the `+ 64` exists specifically to cover
@@ -886,6 +907,17 @@ Seven things that will bite, in the order they will bite.
    the first half of the `+ 64` names nothing at all, and left alone the
    guard would silently loosen — a larger document accepted before
    refusal, arrived at by accident. Take it to 0 deliberately there.
+
+   **Spec 0213 did not take it to 0 — that instruction was wrong.** The
+   allowance covered two things, and row 10 removes only one of them:
+   the `heat_states`/`descend`/`dead` parallel arrays are still there,
+   and still cost per node. What 0213 did instead was stop guessing.
+   `arena_bytes_per_node()` now *computes* the figure as
+   `size_of::<TreeNode>() + size_of::<HeatState>() + 2` = 76 + 40 + 2 =
+   118 B, so every future slot change re-tunes the guard by
+   recompilation and no constant can drift away from what it names. The
+   three guard tests call the same function rather than each carrying
+   their own copy of the arithmetic.
 3. **Row 9 crosses the crate boundary.** `type_fqdn` lives on
    `NodeSpan`, which is `prototext-core`'s type, and
    `prototext_core_constraints` records scope discipline there. The
@@ -969,10 +1001,16 @@ Different from S12's, because the batch changes the priorities.
    (`FqdnTable`) is owned by the caller and passed in, not created
    per-call: an id has to mean the same type in a freshly spliced span
    as in the arena around it, and a per-call table would make that
-   silently false. Row 10 reuses it.
-4. **Row 10, `rendered_as`.** Needs row 9's table. Take the interning
-   route, not the side table — see trap 1. This is also where
-   `STRING_ALLOWANCE` must be re-derived, per trap 2.
+   silently false. Row 10 was expected to reuse it, and did not — see
+   below.
+4. ~~**Row 10, `rendered_as`.**~~ **Done, spec 0213**, by the interning
+   route rather than the side table, per trap 1. It did *not* need row
+   9's table: the provenance is interned whole, as a pair, into a
+   `ProvenanceTable` of its own that lives on `App` and is handed to
+   nothing, because a freshly built node is always `NOT_RENDERED` and so
+   only the render pass ever interns. `STRING_ALLOWANCE` was re-derived
+   here as trap 2 required, but to a computed 118 B rather than to the
+   0 that trap predicted.
 5. **Row 11, hot/cold split.** Only if the navigation profile still
    justifies it after the above. It is the one row here that is a
    refactor rather than a retype.

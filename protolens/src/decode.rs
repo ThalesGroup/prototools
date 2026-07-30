@@ -33,6 +33,8 @@ use prototext_graph::score::{
 use prototext_schema::LazyPool;
 use sha2::{Digest, Sha256};
 
+use crate::provenance::{ProvenanceId, NOT_RENDERED};
+
 // ── Errors ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -590,15 +592,21 @@ pub struct TreeNode {
     pub lines_visible: u32,
     /// Which override (if any) currently produced this node's rendering,
     /// paired with the field name it was rendered under (spec 0118 §2.1,
-    /// extended by spec 0119 G4) — `None` until the first `render()` pass
-    /// touches it (freshly built by `build_tree`, whether from the
-    /// initial raw decode or a splice's local tree). Both halves of the
-    /// pair are inputs to the actual rendered text (the type via
+    /// extended by spec 0119 G4) — `NOT_RENDERED` until the first
+    /// `render()` pass touches it (freshly built by `build_tree`, whether
+    /// from the initial raw decode or a splice's local tree). Both halves
+    /// of the pair are inputs to the actual rendered text (the type via
     /// `splice_override`'s target, the name via a synthetic wrapper's
     /// field label), so either one changing must trigger a re-splice —
     /// tracking only the type here would miss a name-only change (e.g.
     /// spec 0119 G4's per-entry rename).
-    pub rendered_as: Option<(Option<Option<String>>, String)>,
+    ///
+    /// Spec 0213: the value itself lives once in `App::provenance` and
+    /// this is a 4-byte index into it. The pair is interned as a whole
+    /// rather than half by half — see `provenance.rs` for why — so the
+    /// three states of the type half survive intact and nothing here
+    /// owns a heap allocation.
+    pub rendered_as: ProvenanceId,
 }
 
 /// Spec 0211 G1. The slot is paid 4.5 M times over on a large descriptor
@@ -609,7 +617,7 @@ pub struct TreeNode {
 /// it. An equality rather than a bound, because growth is the
 /// regression this is here to catch; a spec that legitimately moves the
 /// number moves this line too.
-const _: () = assert!(std::mem::size_of::<TreeNode>() == 120);
+const _: () = assert!(std::mem::size_of::<TreeNode>() == 76);
 
 impl TreeNode {
     /// Spec 0211 S2: pack an optional index into the stored
@@ -707,7 +715,7 @@ pub(crate) fn build_tree(spans: Vec<NodeSpan>) -> Vec<TreeNode> {
                 // Nothing is folded at build time, neither in the initial
                 // decode nor in a splice's local tree.
                 lines_visible: lines,
-                rendered_as: None,
+                rendered_as: NOT_RENDERED,
             }
         })
         .collect();

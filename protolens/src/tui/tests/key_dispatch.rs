@@ -770,7 +770,7 @@ fn default_export_descriptor_path_falls_back_to_the_numeric_range_when_unresolva
         sibling_ordinal: prev_sibling.map_or(1, |p| p as u32 + 2),
         lines_total: 1,
         lines_visible: 1,
-        rendered_as: None,
+        rendered_as: NOT_RENDERED,
     };
     let tree = vec![
         make_node(1, 0..2, Some(1), None),

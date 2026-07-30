@@ -336,7 +336,7 @@ fn a_toggles_the_main_pane_annotation_display() {
         sibling_ordinal: 1,
         lines_total: 1,
         lines_visible: 1,
-        rendered_as: None,
+        rendered_as: NOT_RENDERED,
     };
     let decoded = Decoded {
         lines: vec![line.clone()],

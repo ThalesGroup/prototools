@@ -155,6 +155,14 @@ just removed still needs to fall back to its natural, schema-inferred
 type, and `rendered_as` is what tells the render pass that a splice is
 needed to make that happen.
 
+Since [spec 0213](../../specs/0213-the-provenance-is-one-word.md) the node
+holds a 4-byte `ProvenanceId` rather than the provenance itself; the value
+lives once in `App::provenance`. Nothing above changes — the comparison
+that detects a demotion is now one `u32` against another, and the four
+states it distinguishes are the same four (`protolens/src/provenance.rs`
+enumerates them). The reason the pair is interned whole rather than by its
+two halves is in `arena-and-batch.md`'s trap 1.
+
 ### Any/MessageSet auto-expansion is a recursion-gate widening, not a special path
 
 The render pass that walks the tree applying overrides (`render_overrides`

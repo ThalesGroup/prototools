@@ -160,7 +160,7 @@ fn an_fqdn_field_override_marks_every_node_of_that_type() {
         assert!(
             app.tree[*item]
                 .first_child()
-                .map(|c| app.tree[c].rendered_as.is_some())
+                .map(|c| app.tree[c].rendered_as != NOT_RENDERED)
                 .unwrap_or(false),
             "item {n}'s field 1 must have been settled under the \
              fqdn:field override: {:#?}",

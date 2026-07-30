@@ -11,6 +11,33 @@ use prototext_core::helpers::{
 };
 use prototext_core::serialize::render_text::NodeSpan;
 
+/// What one arena slot really costs the process (spec 0202's memory
+/// guard, re-derived by spec 0213).
+///
+/// A node's own `size_of` is not the whole of it: three structures are
+/// sized to the arena alongside it. `heat_states` is a `Vec<HeatState>`
+/// and `descend` and `dead` are a `Vec<bool>` each.
+///
+/// This used to be a `STRING_ALLOWANCE` of 64 covering both those
+/// structures and the `String`s that hung off every node. Spec 0213
+/// interned the last of those strings (`rendered_as`, after 0212 did
+/// `type_fqdn`), so a `TreeNode` now owns nothing at all and the string
+/// half of the allowance names nothing. The design brief's annex, trap 2,
+/// said to take the constant to 0 at that point; that was wrong — the
+/// parallel arrays are still there and are not small — so the constant is
+/// gone in favor of the sum itself, which cannot drift when one of these
+/// types changes.
+///
+/// A function rather than an expression inside the guard because the
+/// guard's own tests need the same number, and duplicating the formula
+/// there is what made them fail this spec's slot change for a reason that
+/// had nothing to do with the guard.
+pub(super) fn arena_bytes_per_node() -> u64 {
+    (std::mem::size_of::<TreeNode>()
+        + std::mem::size_of::<heat_cue::HeatState>()
+        + 2 * std::mem::size_of::<bool>()) as u64
+}
+
 /// Round bytes to the largest unit that leaves a value at or above 1,
 /// for the memory-guard's refusal message.
 fn format_bytes(bytes: u64) -> String {
@@ -1067,7 +1094,11 @@ impl App {
             .resolve_active_override_entry_index_by_path(idx, path)
             .map(|i| self.overrides.entries()[i].r#type.clone());
         let field_name = self.field_name_for_by_path(idx, path);
-        let current = Some((target.clone(), field_name));
+        // Spec 0213: intern first, so the comparison below is one `u32`
+        // against the node's own. A provenance whose splice then fails is
+        // left in the table — bounded by the number of failed splices,
+        // and cheaper than a second lookup on every visit.
+        let current = self.provenance.intern(&(target.clone(), field_name));
         if current != self.tree[idx].rendered_as {
             let effective = match &target {
                 Some(explicit) => explicit.clone(),
@@ -1318,27 +1349,7 @@ impl App {
     /// that cannot itself misfire on a fresh document, and it
     /// disappears once the arena stops accumulating garbage.
     pub(super) fn override_batch_refusal(&self, available: u64) -> Option<String> {
-        // A node's own `size_of` is not its whole cost. `rendered_as` is
-        // still a `String` pair, so each non-`None` one is a separate
-        // heap allocation, and `heat_states`, `descend` and `dead` are
-        // parallel to the arena at a further ~42 B/node. This allowance
-        // covers both.
-        //
-        // Spec 0211 narrowed the slot from 272 B to 184, and spec 0212
-        // to 120, so `per_node` is 184 today. 0212 also interned
-        // `type_fqdn`, which was the other half of the ~41 B/node of
-        // `String` allocations this allowance used to name; the constant
-        // was re-derived there and deliberately left at 64, since 64
-        // already under-covered the ~42 of parallel arrays on its own
-        // and re-tuning the guard belongs in a spec that has measured
-        // the guard. When `rendered_as` is interned too, the first half
-        // of this allowance stops naming anything at all and the
-        // constant must be taken to 0 deliberately rather than left to
-        // drift — `docs/protolens/design/arena-and-batch.md`'s annex,
-        // trap 2.
-        const STRING_ALLOWANCE: usize = 64;
-        let per_node = (std::mem::size_of::<TreeNode>() + STRING_ALLOWANCE) as u64;
-        let arena = (self.tree.len() as u64).saturating_mul(per_node);
+        let arena = (self.tree.len() as u64).saturating_mul(arena_bytes_per_node());
         let budget = available / 2;
         if arena <= budget {
             return None;
@@ -1361,8 +1372,8 @@ impl App {
     ///
     /// Marking ancestors — not just targets — is the point, and it is
     /// the part that is easy to get wrong (spec 0183 L3). A node-level
-    /// predicate like `rendered_as.is_some()` is only ever consulted if
-    /// the walk *reaches* the node, and under the old gate it always
+    /// predicate like `rendered_as != NOT_RENDERED` is only ever
+    /// consulted if the walk *reaches* the node, and under the old gate it always
     /// did, because `is_message` let it through every plain ancestor on
     /// the way down. Without the upward walk below, a marked node under
     /// unmarked ancestors would simply never be visited, and would keep
@@ -1494,7 +1505,7 @@ impl App {
                 // Source 2: a node spliced under an override at least
                 // once must keep being revisited, so it can fall back
                 // to its natural type once that override goes away.
-                if self.tree[i].rendered_as.is_some() {
+                if self.tree[i].rendered_as != NOT_RENDERED {
                     targets.push(i);
                     continue;
                 }
@@ -1729,7 +1740,7 @@ impl App {
                     || self
                         .resolve_active_override_entry_index_by_path(c, &c_path)
                         .is_some()
-                    || self.tree[c].rendered_as.is_some()
+                    || self.tree[c].rendered_as != NOT_RENDERED
             } else {
                 self.descend.get(c).copied().unwrap_or(false)
             };
@@ -2493,7 +2504,7 @@ impl App {
                 // unfolded, so the two counts agree.
                 lines_total: node.lines_total,
                 lines_visible: node.lines_visible,
-                rendered_as: None,
+                rendered_as: NOT_RENDERED,
             });
         }
 

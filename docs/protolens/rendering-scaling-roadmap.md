@@ -659,11 +659,12 @@ gives:
 | Type | `size_of` when this was written | today |
 |---|---|---|
 | `NodeSpan` | **120 B** | **32 B** (spec 0212) |
-| `TreeNode` (= `NodeSpan` + 7 × `Option<usize>` + `rendered_as`) | **280 B** | **120 B** (specs 0211, 0212) |
+| `TreeNode` (= `NodeSpan` + 7 × `Option<usize>` + `rendered_as`) | **280 B** | **76 B** (specs 0211, 0212, 0213) |
 
-Everything below in this section is the arithmetic as it stood before
-either spec landed; it is kept because the *ratios* are what motivated the
-work. Only `rendered_as` (48 B) and a hot/cold column split remain.
+Everything below in this section is the arithmetic as it stood before any
+of those specs landed; it is kept because the *ratios* are what motivated
+the work. Only a hot/cold column split remains, and it saves no bytes — so
+76 B is where the slot stops.
 
 Applied to the measured node counts (S7's figures, same 1.1 MB fixture),
 and extrapolated at the observed density of 0.566 nodes/byte:
@@ -703,7 +704,7 @@ landable:
 | Field | Now | Proposed | Saves |
 |---|---|---|---|
 | ~~7 × link (`parent`…`doc_prev`)~~ | ~~`Option<usize>` = 16 B ea~~ | ✔ **done 2026-07-29** ([spec 0211](../specs/0211-the-arenas-links-are-half-as-wide.md)) — `type NodeIdx = u32` + `NO_NODE` | 84 B, **banked** |
-| `rendered_as` | `Option<(Option<Option<String>>, String)>` = 48 B | ~~side `HashMap<u32, _>`~~ → a pair of interned symbols; see `design/arena-and-batch.md` trap 1 for why the side table was rejected | 40 B |
+| ~~`rendered_as`~~ | ~~`Option<(Option<Option<String>>, String)>` = 48 B~~ | ✔ **done 2026-07-30** ([spec 0213](../specs/0213-the-provenance-is-one-word.md)) — ~~side `HashMap<u32, _>`~~ → one interned `ProvenanceId` for the *whole pair*, not one per half; `design/arena-and-batch.md` trap 1 has why the side table was rejected and why the halves could not be interned separately | 44 B + up to two heap allocs per spliced node, **banked** |
 | ~~`field_number`~~ | ~~`u64`~~ | ✔ **done 2026-07-30** ([spec 0212](../specs/0212-the-span-is-a-third-as-wide.md)) — `u32`; the wire format bounds it at 2²⁹ − 1, so no saturation was needed | 4 B, **banked** |
 | ~~`raw_range`, `text_range`~~ | ~~`Range<usize>` = 16 B ea~~ | ✔ **done 2026-07-30** (spec 0212) — `Range<u32>` both. `text_range` was *not* deleted: spec 0210's "no production reader" applies to the arena's stale copy, not to the flat list the library returns | 16 B, **banked** |
 | ~~`level`~~ | ~~`usize`~~ | ✔ **done 2026-07-30** (spec 0212) — `u16`; `MAX_WIRE_DEPTH` = 1000 is enforced at decode | 6 B, **banked** |
@@ -732,15 +733,18 @@ spec 0212 alongside the scalars, because both cross the crate boundary
 and their call-site churn almost entirely overlaps. `type_fqdn` was the
 single highest-value remaining entry: 20 B *and* one small heap
 allocation per message node removed. The interning also introduced the
-`FqdnTable` that `rendered_as` — the one row left — reuses.
+`FqdnTable` that `rendered_as` was expected to reuse — in the event it
+could not, and got a table of its own; see spec 0213.
 
 **Measured, not projected.** `NodeSpan` is now **32 B** and `TreeNode`
-**120 B**, both pinned by compile-time equality assertions. On
-`googleapis.desc` (4 501 014 nodes) the two specs together took peak RSS
-from 4.18 GiB to **2.51 GiB** and at-rest from 1.87 GiB to **1.20 GiB**.
-Spec 0212's Measured outcome has the per-spec breakdown; the short
-version is that the peak pays the constant ≈3.06 times and at rest ≈1.12,
-the excess over 1 being the `type_fqdn` heap this row deleted.
+**76 B**, both pinned by compile-time equality assertions. On
+`googleapis.desc` (4 501 014 nodes) the three specs together took peak RSS
+from 4.18 GiB to **2.09 GiB** (−50.0%) and at-rest from 1.87 GiB to
+**1.01 GiB** (−45.7%). Each spec's Measured outcome has its own
+breakdown; the short version is that a *span*-shaped change pays the
+constant ≈3.06 times at the peak and a *slot*-shaped one ≈2.26, because
+the render cache holds `NodeSpan`s and not `TreeNode`s. Spec 0213, which
+touches the slot only, came in at 2.24 and so confirms the split.
 
 **Invariant touched.** "A node's array index is a `usize`." Narrowing to
 `u32` caps the arena at ~4.29 G nodes — 7.6 GB of blob at the observed

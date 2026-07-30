@@ -212,6 +212,7 @@ pub fn extract(
 mod tests {
     use super::*;
     use crate::decode::NO_NODE;
+    use crate::provenance::NOT_RENDERED;
 
     #[test]
     fn extract_binary_field_keeps_tag_and_length() {
@@ -390,7 +391,7 @@ mod tests {
             sibling_ordinal: 1,
             lines_total: 2,
             lines_visible: 2,
-            rendered_as: None,
+            rendered_as: NOT_RENDERED,
         };
         let path = std::env::temp_dir().join("protolens-extract-header-test.pb");
         extract(
@@ -444,7 +445,7 @@ mod tests {
             sibling_ordinal: 1,
             lines_total: 3,
             lines_visible: 3,
-            rendered_as: None,
+            rendered_as: NOT_RENDERED,
         };
         let path = std::env::temp_dir().join("protolens-extract-message-text-test.pb");
         extract(
@@ -501,7 +502,7 @@ mod tests {
             sibling_ordinal: 1,
             lines_total: 3,
             lines_visible: 3,
-            rendered_as: None,
+            rendered_as: NOT_RENDERED,
         };
         let path = std::env::temp_dir().join("protolens-extract-group-text-test.pb");
         extract(

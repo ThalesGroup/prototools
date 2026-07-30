@@ -124,7 +124,7 @@ fn t_opens_the_override_pane_on_an_unresolved_message_node() {
         sibling_ordinal: 1,
         lines_total: 2,
         lines_visible: 2,
-        rendered_as: None,
+        rendered_as: NOT_RENDERED,
     };
     let decoded = Decoded {
         lines,
@@ -184,7 +184,7 @@ fn t_opens_the_override_pane_on_a_varint_scalar_field() {
         sibling_ordinal: 1,
         lines_total: 1,
         lines_visible: 1,
-        rendered_as: None,
+        rendered_as: NOT_RENDERED,
     };
     let decoded = Decoded {
         lines,
@@ -356,7 +356,7 @@ fn t_opens_the_override_pane_on_a_length_delimited_scalar_field() {
         sibling_ordinal: 1,
         lines_total: 1,
         lines_visible: 1,
-        rendered_as: None,
+        rendered_as: NOT_RENDERED,
     };
     let decoded = Decoded {
         lines,

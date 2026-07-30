@@ -426,9 +426,8 @@ fn the_forward_and_backward_ordinal_walks_agree_across_a_packed_run() {
     app.render_overrides(app.first_node);
 
     assert_eq!(
-        app.tree[tail]
-            .rendered_as
-            .as_ref()
+        app.provenance
+            .get(app.tree[tail].rendered_as)
             .map(|(target, _)| target.clone()),
         Some(Some(Some("test.Outer".to_string()))),
         "the walk must have reached {tail_path} and applied its entry — \
@@ -2591,7 +2590,7 @@ fn a_splice_translates_packed_record_starts_into_the_documents_byte_frame() {
 fn the_memory_guard_refuses_a_batch_with_no_headroom_left() {
     let (mut app, _head, _tail, _tail_leaf, _tail_v) = pruned_tail_fixture();
 
-    let per_node = (std::mem::size_of::<TreeNode>() + 64) as u64;
+    let per_node = crate::tui::override_apply::arena_bytes_per_node();
     let arena = app.tree.len() as u64 * per_node;
     assert!(arena > 0, "the fixture must have decoded some nodes");
 
@@ -2638,7 +2637,7 @@ fn a_refused_batch_leaves_the_document_untouched() {
     let tree_before = app.tree.len();
 
     // Two bytes short of the arena's own size doubled: no headroom.
-    let per_node = (std::mem::size_of::<TreeNode>() + 64) as u64;
+    let per_node = crate::tui::override_apply::arena_bytes_per_node();
     app.memory_available = Some(app.tree.len() as u64 * per_node * 2 - 2);
 
     app.overrides.activate(
@@ -2707,7 +2706,7 @@ fn a_refused_override_is_left_deactivated() {
     app.render_overrides(root);
     let applied = app.lines.clone();
 
-    let per_node = (std::mem::size_of::<TreeNode>() + 64) as u64;
+    let per_node = crate::tui::override_apply::arena_bytes_per_node();
     app.memory_available = Some(app.tree.len() as u64 * per_node * 2 - 2);
 
     // Now retype it, which `activate` does by deactivating the raw entry

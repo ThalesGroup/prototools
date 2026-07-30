@@ -52,6 +52,7 @@ pub(crate) use lines::LinePos;
 use crate::export_descriptor;
 use crate::extract::{self, ExtractFormat};
 use crate::override_pane::{self, OverrideKind, OverrideOrigin, SortMode};
+use crate::provenance::{ProvenanceTable, NOT_RENDERED};
 use crate::render_cache::RenderCache;
 use crate::theme::{self, ThemeKind};
 
@@ -855,6 +856,14 @@ pub struct App {
     /// splice sites that need to intern. Direct field access lets the
     /// borrow checker see the fields are disjoint.
     fqdns: FqdnTable,
+    /// Spec 0213: the provenances every `TreeNode::rendered_as` in `tree`
+    /// indexes into. Unlike `fqdns` this one is protolens's own and is
+    /// never handed to anything — a freshly built node is always
+    /// `NOT_RENDERED`, so only the render pass ever interns.
+    ///
+    /// Reach it as `&mut self.provenance`, for the same disjoint-borrow
+    /// reason `fqdns` gives.
+    provenance: ProvenanceTable,
     /// Spec 0160 G1: whether a `render_overrides` batch is currently
     /// active — `0` outside of one, `1` while the outer (caller-
     /// initiated) call is running. `splice_override` uses this to decide
@@ -1540,6 +1549,7 @@ impl App {
             theme,
             tree: decoded.tree,
             fqdns: decoded.fqdns,
+            provenance: ProvenanceTable::new(),
             override_batch_depth: 0,
             descend: Vec::new(),
             #[cfg(test)]
@@ -1668,13 +1678,17 @@ impl App {
         // entry") — not `Some(None)` ("an active entry explicitly says
         // raw"), else the first pass would wrongly conclude nothing
         // needs resettling should the user later seed a real entry.
-        if let Some(node) = app.tree.get_mut(cursor) {
-            // The root's own field name is always "1" (its field number
-            // in the virtual encompassing message — mirrors
-            // `field_name_for`'s no-parent case), and can't yet carry a
-            // §G4 name override at this point (the collection was just
-            // seeded, nothing has been renamed).
-            node.rendered_as = Some((root_override_type.clone().map(Some), "1".to_string()));
+        // The root's own field name is always "1" (its field number in the
+        // virtual encompassing message — mirrors `field_name_for`'s
+        // no-parent case), and can't yet carry a §G4 name override at this
+        // point (the collection was just seeded, nothing has been
+        // renamed). Interned before the node is reached, since the table
+        // and the arena are two disjoint borrows of `app`.
+        if cursor < app.tree.len() {
+            let root_provenance = app
+                .provenance
+                .intern(&(root_override_type.clone().map(Some), "1".to_string()));
+            app.tree[cursor].rendered_as = root_provenance;
         }
         // Spec 0120: Any/MessageSet auto-expansion is computed by
         // `render_overrides` itself (`auto_expand_type`), not by

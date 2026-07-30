@@ -8,6 +8,7 @@ mod decode;
 mod export_descriptor;
 mod extract;
 mod override_pane;
+mod provenance;
 mod render_cache;
 mod theme;
 mod tui;

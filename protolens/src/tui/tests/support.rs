@@ -155,7 +155,7 @@ pub(super) fn message_node_app_with_root_candidates(
         sibling_ordinal: 1,
         lines_total: 2,
         lines_visible: 2,
-        rendered_as: None,
+        rendered_as: NOT_RENDERED,
     };
     let decoded = Decoded {
         lines,
@@ -246,7 +246,7 @@ pub(super) fn sibling_leaves_app(texts: &[&str]) -> App {
             sibling_ordinal: i as u32 + 1,
             lines_total: 1,
             lines_visible: 1,
-            rendered_as: None,
+            rendered_as: NOT_RENDERED,
         })
         .collect();
     let decoded = Decoded {
@@ -487,7 +487,7 @@ pub(super) fn wide_sibling_scalars_app(n: usize) -> App {
                 sibling_ordinal: i as u32 + 1,
                 lines_total: 1,
                 lines_visible: 1,
-                rendered_as: None,
+                rendered_as: NOT_RENDERED,
             }
         })
         .collect();
