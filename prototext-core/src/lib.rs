@@ -60,6 +60,11 @@ pub enum CodecError {
     TextDecodeFailed(String),
     /// The input does not carry the `#@ prototext:` header required by `encode`.
     NotPrototext,
+    /// The input is larger than `decode_and_render_indexed` can index
+    /// (spec 0212 S1): a `NodeSpan`'s offsets are `u32`, and that render's
+    /// own output reservation is eight times the input, so a buffer this
+    /// size was already fatal before it was refused.
+    InputTooLarge { len: usize, max: usize },
 }
 
 impl std::fmt::Display for CodecError {
@@ -71,6 +76,12 @@ impl std::fmt::Display for CodecError {
                 f,
                 "input is not prototext (missing '#@ prototext:' header); \
                  use 'prototext decode' to produce encodable output (annotations on by default)"
+            ),
+            CodecError::InputTooLarge { len, max } => write!(
+                f,
+                "input is too large to index: {len} bytes, limit {max} \
+                 ({} MiB)",
+                max / (1024 * 1024)
             ),
         }
     }

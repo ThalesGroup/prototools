@@ -270,10 +270,9 @@ impl App {
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "extract".to_string());
-        let node = &self.tree[self.cursor].span;
-        let short_type = node
-            .type_fqdn
-            .as_deref()
+        let short_type = self
+            .fqdns
+            .get(self.tree[self.cursor].span.type_fqdn)
             .and_then(|f| f.rsplit('.').next())
             .unwrap_or("node");
         let range = self.display_range(self.cursor);
@@ -316,10 +315,9 @@ impl App {
         let filename = if let Some(name) = renamed {
             format!("{stem}.{name}.desc")
         } else {
-            let node = &self.tree[self.cursor].span;
-            let short_type = node
-                .type_fqdn
-                .as_deref()
+            let short_type = self
+                .fqdns
+                .get(self.tree[self.cursor].span.type_fqdn)
                 .and_then(|f| f.rsplit('.').next())
                 .unwrap_or("node");
             let segment = if self.cursor == self.first_node {
@@ -792,8 +790,8 @@ impl App {
         } else {
             let idx = self.cursor;
             self.tree.get(idx)?;
-            match self.tree[idx].span.type_fqdn.clone() {
-                Some(fqdn) => fqdn,
+            match self.fqdns.get(self.tree[idx].span.type_fqdn) {
+                Some(fqdn) => fqdn.to_owned(),
                 None => {
                     let effective = match self.resolve_active_override(idx) {
                         Some(inner) => inner?,

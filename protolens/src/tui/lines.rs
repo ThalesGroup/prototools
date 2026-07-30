@@ -82,12 +82,12 @@ impl App {
         let mut line = 0usize;
         let mut cur = idx;
         loop {
-            let mut prev = self.tree[cur].prev_sibling;
+            let mut prev = self.tree[cur].prev_sibling();
             while let Some(p) = prev {
                 line += self.tree[p].lines_total as usize;
-                prev = self.tree[p].prev_sibling;
+                prev = self.tree[p].prev_sibling();
             }
-            match self.tree[cur].parent {
+            match self.tree[cur].parent() {
                 // The parent's own header is the single line between it
                 // and its first child.
                 Some(p) => {
@@ -139,11 +139,11 @@ impl App {
         while let Some(n) = cur {
             let mut total = 0u32;
             let mut visible = 0u32;
-            let mut child = self.tree[n].first_child;
+            let mut child = self.tree[n].first_child();
             while let Some(c) = child {
                 total += self.tree[c].lines_total;
                 visible += self.tree[c].lines_visible;
-                child = self.tree[c].next_sibling;
+                child = self.tree[c].next_sibling();
             }
             // The header is always one line; the footer is one line iff
             // the node is bracketed. A node with children always is; a
@@ -165,7 +165,7 @@ impl App {
             }
             self.tree[n].lines_total = want_total;
             self.tree[n].lines_visible = want_visible;
-            cur = self.tree[n].parent;
+            cur = self.tree[n].parent();
         }
     }
 
@@ -225,7 +225,7 @@ impl App {
                 break;
             }
             start += total;
-            cur = self.tree[cur].next_sibling?;
+            cur = self.tree[cur].next_sibling()?;
         }
         loop {
             if line == start {
@@ -245,7 +245,7 @@ impl App {
             // is unreachable while the counts are consistent: a body
             // line with no child to claim it is exactly the corruption
             // spec 0210's invariant rules out.
-            let mut child = self.tree[cur].first_child?;
+            let mut child = self.tree[cur].first_child()?;
             let mut child_start = start + 1;
             loop {
                 let child_total = self.tree[child].lines_total as usize;
@@ -253,7 +253,7 @@ impl App {
                     break;
                 }
                 child_start += child_total;
-                child = self.tree[child].next_sibling?;
+                child = self.tree[child].next_sibling()?;
             }
             cur = child;
             start = child_start;
@@ -267,7 +267,7 @@ impl App {
         let mut cur = self.first_root();
         while let Some(n) = cur {
             total += self.tree[n].lines_visible as usize;
-            cur = self.tree[n].next_sibling;
+            cur = self.tree[n].next_sibling();
         }
         total
     }
@@ -289,7 +289,7 @@ impl App {
             }
             row_base += visible;
             start += self.tree[cur].lines_total as usize;
-            cur = self.tree[cur].next_sibling?;
+            cur = self.tree[cur].next_sibling()?;
         }
         loop {
             if row == row_base {
@@ -315,7 +315,7 @@ impl App {
                     start + total - 1,
                 ));
             }
-            let mut child = self.tree[cur].first_child?;
+            let mut child = self.tree[cur].first_child()?;
             let mut child_row = row_base + 1;
             let mut child_start = start + 1;
             loop {
@@ -325,7 +325,7 @@ impl App {
                 }
                 child_row += child_visible;
                 child_start += self.tree[child].lines_total as usize;
-                child = self.tree[child].next_sibling?;
+                child = self.tree[child].next_sibling()?;
             }
             cur = child;
             row_base = child_row;
@@ -359,7 +359,7 @@ impl App {
             }
             start += total;
             row_base += self.tree[cur].lines_visible as usize;
-            cur = self.tree[cur].next_sibling?;
+            cur = self.tree[cur].next_sibling()?;
         }
         loop {
             if line == start {
@@ -378,7 +378,7 @@ impl App {
             if line == start + total - 1 {
                 return Some(row_base + visible - 1);
             }
-            let mut child = self.tree[cur].first_child?;
+            let mut child = self.tree[cur].first_child()?;
             let mut child_start = start + 1;
             let mut child_row = row_base + 1;
             loop {
@@ -388,7 +388,7 @@ impl App {
                 }
                 child_start += child_total;
                 child_row += self.tree[child].lines_visible as usize;
-                child = self.tree[child].next_sibling?;
+                child = self.tree[child].next_sibling()?;
             }
             cur = child;
             start = child_start;
@@ -431,7 +431,7 @@ impl App {
     pub(super) fn next_visible(&self, pos: LinePos) -> Option<(LinePos, usize)> {
         let node = &self.tree[pos.node];
         if !pos.footer && !self.folded.contains(&pos.node) {
-            if let Some(child) = node.first_child {
+            if let Some(child) = node.first_child() {
                 return Some((
                     LinePos {
                         node: child,
@@ -463,7 +463,7 @@ impl App {
         } else {
             node.lines_total as usize
         };
-        if let Some(sibling) = node.next_sibling {
+        if let Some(sibling) = node.next_sibling() {
             return Some((
                 LinePos {
                     node: sibling,
@@ -476,7 +476,7 @@ impl App {
         // brace, which sits exactly at the end of its last child's
         // extent — no further offset accrues while climbing. The parent
         // cannot be folded, or we would not be inside it.
-        node.parent.map(|parent| {
+        node.parent().map(|parent| {
             (
                 LinePos {
                     node: parent,
@@ -492,7 +492,7 @@ impl App {
     /// `next_visible`, and likewise O(1).
     pub(super) fn prev_visible(&self, pos: LinePos) -> Option<(LinePos, usize)> {
         if pos.footer {
-            return Some(match self.tree[pos.node].last_child {
+            return Some(match self.tree[pos.node].last_child() {
                 Some(child) => self.last_visible_of(child),
                 // Empty-but-bracketed: its own header is the line above
                 // its brace.
@@ -505,11 +505,11 @@ impl App {
                 ),
             });
         }
-        if let Some(sibling) = self.tree[pos.node].prev_sibling {
+        if let Some(sibling) = self.tree[pos.node].prev_sibling() {
             return Some(self.last_visible_of(sibling));
         }
         // First child: the line above is the parent's own header.
-        self.tree[pos.node].parent.map(|parent| {
+        self.tree[pos.node].parent().map(|parent| {
             (
                 LinePos {
                     node: parent,

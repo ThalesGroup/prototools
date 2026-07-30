@@ -656,10 +656,14 @@ sink.rs:960-1034`) and `TreeNode` (`protolens/src/decode.rs:269-289`) are
 plain `repr(Rust)` aggregates; compiling their field lists standalone
 gives:
 
-| Type | `size_of` |
-|---|---|
-| `NodeSpan` | **120 B** |
-| `TreeNode` (= `NodeSpan` + 7 × `Option<usize>` + `rendered_as`) | **280 B** |
+| Type | `size_of` when this was written | today |
+|---|---|---|
+| `NodeSpan` | **120 B** | **32 B** (spec 0212) |
+| `TreeNode` (= `NodeSpan` + 7 × `Option<usize>` + `rendered_as`) | **280 B** | **120 B** (specs 0211, 0212) |
+
+Everything below in this section is the arithmetic as it stood before
+either spec landed; it is kept because the *ratios* are what motivated the
+work. Only `rendered_as` (48 B) and a hot/cold column split remain.
 
 Applied to the measured node counts (S7's figures, same 1.1 MB fixture),
 and extrapolated at the observed density of 0.566 nodes/byte:
@@ -698,15 +702,15 @@ landable:
 
 | Field | Now | Proposed | Saves |
 |---|---|---|---|
-| 7 × link (`parent`…`doc_prev`) | `Option<usize>` = 16 B ea | `u32` with a `u32::MAX` sentinel | 84 B |
-| `rendered_as` | `Option<(Option<Option<String>>, String)>` = 48 B | side `HashMap<u32, _>` — non-`None` only for spliced nodes | 48 B |
-| `field_number` | `u64` | `u32` (field numbers are ≤ 2²⁹) | 4 B |
-| `raw_range`, `text_range` | `Range<usize>` = 16 B ea | `(u32, u32)` | 16 B |
-| `level` | `usize` | `u16` | 6 B |
-| `type_fqdn` | `Option<String>` = 24 B | interned `u32` into a per-document FQDN table | 20 B + one heap alloc per node |
+| ~~7 × link (`parent`…`doc_prev`)~~ | ~~`Option<usize>` = 16 B ea~~ | ✔ **done 2026-07-29** ([spec 0211](../specs/0211-the-arenas-links-are-half-as-wide.md)) — `type NodeIdx = u32` + `NO_NODE` | 84 B, **banked** |
+| `rendered_as` | `Option<(Option<Option<String>>, String)>` = 48 B | ~~side `HashMap<u32, _>`~~ → a pair of interned symbols; see `design/arena-and-batch.md` trap 1 for why the side table was rejected | 40 B |
+| ~~`field_number`~~ | ~~`u64`~~ | ✔ **done 2026-07-30** ([spec 0212](../specs/0212-the-span-is-a-third-as-wide.md)) — `u32`; the wire format bounds it at 2²⁹ − 1, so no saturation was needed | 4 B, **banked** |
+| ~~`raw_range`, `text_range`~~ | ~~`Range<usize>` = 16 B ea~~ | ✔ **done 2026-07-30** (spec 0212) — `Range<u32>` both. `text_range` was *not* deleted: spec 0210's "no production reader" applies to the arena's stale copy, not to the flat list the library returns | 16 B, **banked** |
+| ~~`level`~~ | ~~`usize`~~ | ✔ **done 2026-07-30** (spec 0212) — `u16`; `MAX_WIRE_DEPTH` = 1000 is enforced at decode | 6 B, **banked** |
+| ~~`type_fqdn`~~ | ~~`Option<String>` = 24 B~~ | ✔ **done 2026-07-30** (spec 0212) — an interned `FqdnId` into a caller-owned `FqdnTable`, plus a `NO_FQDN` sentinel | 20 B + one heap alloc per message node, **banked** |
 | ~~`natural_annotation`~~ | ~~`Option<String>` = 24 B~~ | ✔ **deleted 2026-07-26** (spec 0181) — it had zero production readers | 24 B + heap, **banked** |
-| `is_message` + `wire_type` | `bool` + `u32`, 8 B padded | 1 B flag byte (room for spec 0169's `is_elision`) + `u8` wire type | 6 B |
-| `packed_record_start` | `Option<usize>` = 16 B | `u32` sentinel | 12 B |
+| ~~`is_message` + `wire_type`~~ | ~~`bool` + `u32`, 8 B padded~~ | ✔ **done 2026-07-30** (spec 0212) — kept as a `bool` + a `u8` rather than a flag byte; spec 0169's `is_elision` can have its own `bool` and still fit | 6 B, **banked** |
+| ~~`packed_record_start`~~ | ~~`Option<usize>` = 16 B~~ | ✔ **done 2026-07-30** (spec 0212) — `u32` + `NO_PACKED_RECORD`; offset 0 is legal, so not a `NonZeroU32` | 12 B, **banked** |
 
 Landing all of it gives `NodeSpan` ≈ 40 B and `TreeNode` ≈ 72 B: **~1.0
 GB** at 24.5 MB fresh, ~4.3 GB after two commits (which is the argument
@@ -723,13 +727,20 @@ prototext-core's own tests
 It went first because it was the only row with no design question
 attached; **every remaining row still has one.**
 
-**Do the interning first** of the rows that remain. `type_fqdn` is the
-single highest-value entry:
-it saves 20 B *and* removes one small heap allocation per message node —
-13.9 M allocations at 24.5 MB, which is a startup-latency cost as much as
-a memory one. It is also the change that most constrains the others (it
-introduces the per-document intern table the rest can reuse), and it is
-the only one that crosses the crate boundary into `prototext-core`.
+~~**Do the interning first** of the rows that remain.~~ ✔ **Done**, in
+spec 0212 alongside the scalars, because both cross the crate boundary
+and their call-site churn almost entirely overlaps. `type_fqdn` was the
+single highest-value remaining entry: 20 B *and* one small heap
+allocation per message node removed. The interning also introduced the
+`FqdnTable` that `rendered_as` — the one row left — reuses.
+
+**Measured, not projected.** `NodeSpan` is now **32 B** and `TreeNode`
+**120 B**, both pinned by compile-time equality assertions. On
+`googleapis.desc` (4 501 014 nodes) the two specs together took peak RSS
+from 4.18 GiB to **2.51 GiB** and at-rest from 1.87 GiB to **1.20 GiB**.
+Spec 0212's Measured outcome has the per-spec breakdown; the short
+version is that the peak pays the constant ≈3.06 times and at rest ≈1.12,
+the excess over 1 being the `type_fqdn` heap this row deleted.
 
 **Invariant touched.** "A node's array index is a `usize`." Narrowing to
 `u32` caps the arena at ~4.29 G nodes — 7.6 GB of blob at the observed

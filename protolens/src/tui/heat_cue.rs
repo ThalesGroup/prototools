@@ -183,10 +183,19 @@ impl App {
     /// a coincidental `0`.
     ///
     /// `pub(super)`: also used by `App::prefetch_step` (spec 0164 G7).
+    ///
+    /// Spec 0212 N3: this still hands back an owned `String`, resolved out
+    /// of the `FqdnTable`, rather than a `FqdnId`. The heat cache cannot
+    /// take an id, for two reasons that have nothing to do with the arena:
+    /// two of the three sources below are not FQDNs at all (an override
+    /// entry's own name, and `natural_type`'s primitive keywords like
+    /// `int32`), and the cache itself is `Mutex`-shared with the background
+    /// worker across a scoring boundary that takes `&str`. It costs the
+    /// same as the `type_fqdn.clone()` it replaced.
     pub(super) fn current_type_key(&self, idx: usize) -> Option<String> {
         let span = &self.tree[idx].span;
         if span.is_message {
-            return span.type_fqdn.clone();
+            return self.fqdns.get(span.type_fqdn).map(str::to_owned);
         }
         match self.resolve_active_override(idx) {
             Some(inner) => inner,
@@ -274,9 +283,10 @@ impl App {
     /// share a single `heat_caches` entry, keyed on the payload start.
     pub(super) fn heat_scored_range(&self, idx: usize) -> std::ops::Range<usize> {
         let node = &self.tree[idx].span;
-        let Some(record_start) = node.packed_record_start else {
-            return extract::message_payload_range(&self.blob, &node.raw_range, None);
-        };
+        if node.packed_record_start == NO_PACKED_RECORD {
+            return extract::message_payload_range(&self.blob, &node.raw_range, NO_PACKED_RECORD);
+        }
+        let record_start = node.packed_record_start as usize;
         // The element's own `raw_range` ends where the element does, so
         // the record's end has to come from the record's own length
         // varint (same reconstruction as `packed_record_extent`).

@@ -10,6 +10,7 @@
 
 use std::ops::Range;
 
+use super::fqdn::{FqdnId, FqdnTable, NO_FQDN};
 use super::FieldOrExt;
 
 // ── Supporting payload types ────────────────────────────────────────────────
@@ -968,15 +969,35 @@ impl Sink for ProbeSink {
 
 use super::LEVEL;
 
+/// The "not a packed-repeated element" sentinel for
+/// `NodeSpan::packed_record_start` — what `None` used to be (spec 0212 S2).
+///
+/// A real value is a buffer offset, and `MAX_INDEXED_BUFFER` puts
+/// `u32::MAX` out of reach of any offset, so the sentinel cannot collide.
+pub const NO_PACKED_RECORD: u32 = u32::MAX;
+
 /// One node's raw/text extent + metadata, recorded by `IndexingTextSink`
 /// (spec 0110 §3).
+///
+/// 32 bytes, and deliberately so: `protolens` holds one of these per node
+/// of a document — 4.5 million of them on a 25 MB descriptor set — in three
+/// places at once at its peak, so the width of this struct is one of its
+/// dominant memory terms (spec 0212). Every field is the narrowest type
+/// that can hold it, and the sizes are pinned by an assertion below rather
+/// than left to be rediscovered.
 #[derive(Debug, Clone)]
 pub struct NodeSpan {
     /// The field's wire field number. `0` for a virtual wrapper node
     /// (Any's `value {}`, MessageSet's `Item {}`/`message {}`), which has
     /// no real field number of its own — mirrors `Sink::malformed`'s own
     /// `field_number: 0` convention for `MalformedKind::InvalidTagType`.
-    pub field_number: u64,
+    ///
+    /// A `u32`, which is what protobuf itself defines a field number to be
+    /// (and it is in fact capped at 2^29 − 1). The wire *tag* is read as a
+    /// `u64` because an attacker-chosen varint is not bound by that, but a
+    /// tag whose field number does not fit never reaches a span: it is
+    /// reported through `Sink::malformed` instead.
+    pub field_number: u32,
     /// Byte range in the source protobuf, absolute w.r.t. the original
     /// top-level buffer passed to `decode_and_render_indexed` — not local
     /// to this node's immediate parent, even though `render_message`
@@ -985,40 +1006,45 @@ pub struct NodeSpan {
     /// rationale). `IndexingTextSink` reconstructs the absolute offset via
     /// an internal `raw_base` accumulator so consumers never need to
     /// re-derive it themselves.
-    pub raw_range: Range<usize>,
+    ///
+    /// `u32` offsets, which is sound only because
+    /// `MAX_INDEXED_BUFFER` refuses any buffer that could overflow them.
+    pub raw_range: Range<u32>,
     /// Line-number range in the rendered text — not a byte range (spec 0110
     /// § Design rationale): survives `render_group_field`'s post-hoc splice
     /// unmodified, since that splice always lengthens a line but never
     /// inserts a `\n`.
-    pub text_range: Range<usize>,
-    /// Indentation depth (matches `render_text::LEVEL` at the time this
-    /// node was opened).
-    pub level: usize,
+    pub text_range: Range<u32>,
     /// FQDN of the type this node was rendered as, when known: the
     /// declared field type for a regular nested message/group, or — for an
     /// Any/MessageSet-expanded wrapper node — the *resolved* type, which
-    /// generally differs from the field's own declared type. `None` for
+    /// generally differs from the field's own declared type. `NO_FQDN` for
     /// scalar fields and any node whose type genuinely isn't known — this
     /// is *not* a scalar/message discriminator (see `is_message`): a
     /// message/group node with no resolved schema also has `type_fqdn:
-    /// None`.
-    pub type_fqdn: Option<String>,
-    /// `true` for a nested message/group node (`begin_nested`/
-    /// `begin_virtual_nested`..`end_nested`), `false` for a scalar field
-    /// (`scalar_field`) — set independently of `type_fqdn`, which is
-    /// `None` for both a scalar *and* a schema-unresolved message/group.
-    /// This is the structural shape discriminator consumers should use
-    /// (e.g. `protolens`'s override-target validation); `type_fqdn.is_some
-    /// ()` alone is ambiguous (spec 0114 §1.2).
-    pub is_message: bool,
+    /// NO_FQDN`.
+    ///
+    /// An index into the `FqdnTable` the render was given, not an owned
+    /// string (spec 0212 S3) — so two spans are comparable by this field
+    /// only if they were produced against the *same* table. Resolve it
+    /// with `FqdnTable::get`; to test it against a known name, intern the
+    /// name once with `FqdnTable::id_of` and compare ids.
+    pub type_fqdn: FqdnId,
     /// Absolute offset (same coordinate space as `raw_range`) of the
     /// *enclosing packed record's own* tag, when this span is one element
-    /// of a packed-repeated field — `None` for every other node, including
-    /// non-packed scalars (which have their own tag) and the record's own
-    /// summary span in the empty/invalid fallback cases (§2.4/§2.5), which
-    /// again carry their own tag. Purely an internal discriminator (spec
-    /// 0115 Non-goals) — not surfaced in any user-visible rendering.
-    pub packed_record_start: Option<usize>,
+    /// of a packed-repeated field — `NO_PACKED_RECORD` for every other
+    /// node, including non-packed scalars (which have their own tag) and
+    /// the record's own summary span in the empty/invalid fallback cases
+    /// (§2.4/§2.5), which again carry their own tag. Purely an internal
+    /// discriminator (spec 0115 Non-goals) — not surfaced in any
+    /// user-visible rendering.
+    pub packed_record_start: u32,
+    /// Indentation depth (matches `render_text::LEVEL` at the time this
+    /// node was opened).
+    ///
+    /// A `u16`: `MAX_WIRE_DEPTH` is 1000, so `u8` is too small and this
+    /// leaves 65× headroom. Cast at the use site when indexing with it.
+    pub level: u16,
     /// The wire type this node's own value was decoded from — one of
     /// `crate::helpers::{WT_VARINT, WT_I64, WT_LEN, WT_START_GROUP,
     /// WT_I32}`. Set independently of `is_message`/`type_fqdn`: a `LEN`
@@ -1039,7 +1065,43 @@ pub struct NodeSpan {
     /// found outside any group. Consumers matching on the five valid
     /// types need a fallback arm for it; none can validly reinterpret
     /// framing garbage as a value anyway.
-    pub wire_type: u32,
+    ///
+    /// A `u8`, since a wire type is the low three bits of a tag. The
+    /// `WT_*` constants stay `u32` — they are used several hundred times
+    /// across the workspace in tag arithmetic, where `u32` is the natural
+    /// type — so the handful of sites comparing a *span's* wire type cast
+    /// at the comparison.
+    pub wire_type: u8,
+    /// `true` for a nested message/group node (`begin_nested`/
+    /// `begin_virtual_nested`..`end_nested`), `false` for a scalar field
+    /// (`scalar_field`) — set independently of `type_fqdn`, which is
+    /// `NO_FQDN` for both a scalar *and* a schema-unresolved
+    /// message/group. This is the structural shape discriminator consumers
+    /// should use (e.g. `protolens`'s override-target validation);
+    /// `type_fqdn != NO_FQDN` alone is ambiguous (spec 0114 §1.2).
+    pub is_message: bool,
+}
+
+/// Spec 0212 S8. An equality, not an upper bound: this number is quoted in
+/// `protolens`'s override headroom guard, in
+/// `docs/protolens/design/arena-and-batch.md`, and in spec 0212's measured
+/// outcome, so a future field that happens to fit in padding must fail here
+/// rather than silently falsify all three.
+const _: () = assert!(std::mem::size_of::<NodeSpan>() == 32);
+
+/// Narrow a byte offset or line number to the `u32` a `NodeSpan` stores it
+/// in (spec 0212 S2).
+///
+/// Unreachable by construction: `decode_and_render_indexed` refuses any
+/// buffer over `MAX_INDEXED_BUFFER`, which is a quarter of `u32::MAX` even
+/// after allowing two rendered lines per input byte. It is a checked
+/// conversion rather than a bare `as` because the failure mode of a bare
+/// one is a silently wrong offset — a consumer reslicing unrelated bytes
+/// and reporting success — which is far worse than a panic, and the check
+/// is a compare against a render's per-line formatting work.
+#[inline]
+fn narrow(v: usize) -> u32 {
+    u32::try_from(v).expect("offset within MAX_INDEXED_BUFFER fits a u32")
 }
 
 /// Per-`IndexingTextSink` "in-progress nested node" marker: captures what's
@@ -1049,7 +1111,7 @@ pub(super) struct IndexMark {
     field_number: u64,
     text_start: usize,
     level: usize,
-    type_fqdn: Option<String>,
+    type_fqdn: FqdnId,
     is_message: bool,
     wire_type: u32,
     /// `IndexingTextSink::raw_base` as it was *before* this node was
@@ -1062,21 +1124,21 @@ pub(super) struct IndexMark {
 
 /// FQDN of a field's *declared* type, when it's a message-kinded field with
 /// a known schema (covers both LEN-delimited nested messages and GROUPs,
-/// whose `FieldOrExt::kind()` is also `Kind::Message`) — `None` otherwise
-/// (unknown field, or a wire-type mismatch where the schema doesn't
-/// describe a message).
-fn declared_type_fqdn(field_schema: Option<&FieldOrExt>) -> Option<String> {
-    field_schema.and_then(|fs| match fs.kind() {
-        Kind::Message(desc) => Some(desc.full_name().to_owned()),
-        _ => None,
-    })
+/// whose `FieldOrExt::kind()` is also `Kind::Message`) — `NO_FQDN`
+/// otherwise (unknown field, or a wire-type mismatch where the schema
+/// doesn't describe a message).
+fn declared_type_fqdn(field_schema: Option<&FieldOrExt>, fqdns: &mut FqdnTable) -> FqdnId {
+    match field_schema.map(|fs| fs.kind()) {
+        Some(Kind::Message(desc)) => fqdns.intern(desc.full_name()),
+        _ => NO_FQDN,
+    }
 }
 
 /// Wraps a `TextSink` by composition, delegating every `Sink` call to it
 /// unchanged — so its text output is byte-for-byte identical to a plain
 /// `TextSink` — while additionally recording one `NodeSpan` per
 /// `scalar_field`/`end_nested` call (spec 0110 §3).
-pub(super) struct IndexingTextSink {
+pub(super) struct IndexingTextSink<'f> {
     inner: TextSink,
     spans: Vec<NodeSpan>,
     /// Absolute offset (w.r.t. the original top-level buffer) that local
@@ -1087,14 +1149,19 @@ pub(super) struct IndexingTextSink {
     /// `end_nested` pairs via `IndexMark::raw_base` (spec 0110 §3 —
     /// absolute `raw_range`).
     raw_base: usize,
+    /// The type-name table this render interns into, owned by the caller
+    /// and shared with every other render whose spans may be compared with
+    /// these (spec 0212 S4).
+    fqdns: &'f mut FqdnTable,
 }
 
-impl IndexingTextSink {
-    pub(super) fn new(capacity: usize) -> Self {
+impl<'f> IndexingTextSink<'f> {
+    pub(super) fn new(capacity: usize, fqdns: &'f mut FqdnTable) -> Self {
         Self {
             inner: TextSink::new(capacity),
             spans: Vec::new(),
             raw_base: 0,
+            fqdns,
         }
     }
 
@@ -1117,7 +1184,7 @@ impl IndexingTextSink {
     }
 }
 
-impl Sink for IndexingTextSink {
+impl Sink for IndexingTextSink<'_> {
     type Mark = IndexMark;
 
     fn scalar_field(
@@ -1174,18 +1241,18 @@ impl Sink for IndexingTextSink {
             if let Ok(elems) = decode_packed_elems(data, fs) {
                 if !elems.is_empty() {
                     let payload_start = raw_range.end - data.len();
-                    let packed_record_start = Some(base + raw_range.start);
+                    let packed_record_start = narrow(base + raw_range.start);
                     for (i, elem) in elems.iter().enumerate() {
                         self.spans.push(NodeSpan {
-                            field_number,
-                            raw_range: (base + payload_start + elem.byte_range.start)
-                                ..(base + payload_start + elem.byte_range.end),
-                            text_range: (text_start + i)..(text_start + i + 1),
-                            level,
-                            type_fqdn: None,
+                            field_number: field_number as u32,
+                            raw_range: narrow(base + payload_start + elem.byte_range.start)
+                                ..narrow(base + payload_start + elem.byte_range.end),
+                            text_range: narrow(text_start + i)..narrow(text_start + i + 1),
+                            level: level as u16,
+                            type_fqdn: NO_FQDN,
                             is_message: false,
                             packed_record_start,
-                            wire_type: elem_wire_type,
+                            wire_type: elem_wire_type as u8,
                         });
                     }
                     return;
@@ -1196,14 +1263,14 @@ impl Sink for IndexingTextSink {
         // Every other scalar (including an empty or undecodable packed
         // record — spec 0115 §2.4/§2.5): one span for the whole field.
         self.spans.push(NodeSpan {
-            field_number,
-            raw_range: (base + raw_range.start)..(base + raw_range.end),
-            text_range: text_start..text_end,
-            level,
-            type_fqdn: None,
+            field_number: field_number as u32,
+            raw_range: narrow(base + raw_range.start)..narrow(base + raw_range.end),
+            text_range: narrow(text_start)..narrow(text_end),
+            level: level as u16,
+            type_fqdn: NO_FQDN,
             is_message: false,
-            packed_record_start: None,
-            wire_type,
+            packed_record_start: NO_PACKED_RECORD,
+            wire_type: wire_type as u8,
         });
     }
 
@@ -1218,7 +1285,7 @@ impl Sink for IndexingTextSink {
     ) -> IndexMark {
         let text_start = self.inner.line_count();
         let level = LEVEL.with(|c| c.get());
-        let type_fqdn = declared_type_fqdn(field_schema);
+        let type_fqdn = declared_type_fqdn(field_schema, self.fqdns);
         let wire_type = match kind {
             NestedKind::Message => WT_LEN,
             NestedKind::Group => WT_START_GROUP,
@@ -1265,14 +1332,14 @@ impl Sink for IndexingTextSink {
         self.raw_base = raw_base;
         let text_end = self.inner.line_count();
         self.spans.push(NodeSpan {
-            field_number,
-            raw_range: (raw_base + raw_range.start)..(raw_base + raw_range.end),
-            text_range: text_start..text_end,
-            level,
+            field_number: field_number as u32,
+            raw_range: narrow(raw_base + raw_range.start)..narrow(raw_base + raw_range.end),
+            text_range: narrow(text_start)..narrow(text_end),
+            level: level as u16,
             type_fqdn,
             is_message,
-            packed_record_start: None,
-            wire_type,
+            packed_record_start: NO_PACKED_RECORD,
+            wire_type: wire_type as u8,
         });
     }
 
@@ -1300,6 +1367,10 @@ impl Sink for IndexingTextSink {
         let text_start = self.inner.line_count();
         let level = LEVEL.with(|c| c.get());
         let raw_base = self.raw_base;
+        let interned = match type_fqdn {
+            Some(name) => self.fqdns.intern(name),
+            None => NO_FQDN,
+        };
         let inner =
             self.inner
                 .begin_virtual_nested(name, annotation, type_fqdn, raw_start, payload_start);
@@ -1308,7 +1379,7 @@ impl Sink for IndexingTextSink {
             field_number: 0,
             text_start,
             level,
-            type_fqdn: type_fqdn.map(str::to_owned),
+            type_fqdn: interned,
             is_message: true,
             // Always message-shaped; see `NodeSpan::wire_type` doc comment.
             wire_type: WT_LEN,
@@ -1357,14 +1428,14 @@ impl Sink for IndexingTextSink {
         self.inner
             .malformed(field_number, tag, kind, raw, raw_range.clone());
         self.spans.push(NodeSpan {
-            field_number,
-            raw_range: (base + raw_range.start)..(base + raw_range.end),
-            text_range: text_start..(text_start + 1),
-            level,
-            type_fqdn: None,
+            field_number: field_number as u32,
+            raw_range: narrow(base + raw_range.start)..narrow(base + raw_range.end),
+            text_range: narrow(text_start)..narrow(text_start + 1),
+            level: level as u16,
+            type_fqdn: NO_FQDN,
             is_message: false,
-            packed_record_start: None,
-            wire_type,
+            packed_record_start: NO_PACKED_RECORD,
+            wire_type: wire_type as u8,
         });
     }
 

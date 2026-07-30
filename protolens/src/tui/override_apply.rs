@@ -295,18 +295,19 @@ fn insert_truncation_marker(
     };
 
     let marker = format!("{}...", " ".repeat(indent));
+    let at_line = u32::try_from(at).expect("a line index within the input cap fits a u32");
     if replacing {
         lines[at] = marker;
         // Leaf spans confined to this one line only — an enclosing
         // message's span spills past it and must survive.
-        spans.retain(|s| !(s.text_range.start >= at && s.text_range.end <= at + 1));
+        spans.retain(|s| !(s.text_range.start >= at_line && s.text_range.end <= at_line + 1));
     } else {
         lines.insert(at, marker);
         for s in spans.iter_mut() {
-            if s.text_range.start >= at {
+            if s.text_range.start >= at_line {
                 s.text_range.start += 1;
             }
-            if s.text_range.end > at {
+            if s.text_range.end > at_line {
                 s.text_range.end += 1;
             }
         }
@@ -346,11 +347,11 @@ impl App {
     /// once `idx`'s subtree is replaced, so they can be scrubbed from
     /// `self.folded`.
     pub(super) fn collect_descendants(&self, idx: usize, out: &mut Vec<usize>) {
-        let mut child = self.tree[idx].first_child;
+        let mut child = self.tree[idx].first_child();
         while let Some(c) = child {
             out.push(c);
             self.collect_descendants(c, out);
-            child = self.tree[c].next_sibling;
+            child = self.tree[c].next_sibling();
         }
     }
 
@@ -377,7 +378,7 @@ impl App {
         let mut after = start;
         while let Some(a) = after {
             if old_descendants.contains(&a) {
-                after = self.tree[a].doc_next;
+                after = self.tree[a].doc_next();
             } else {
                 break;
             }
@@ -397,16 +398,16 @@ impl App {
     /// field isn't declared at all) — the same failure mode
     /// `natural_type`/`field_name_for` both fall back from.
     pub(super) fn parent_field(&self, idx: usize) -> Option<ParentFieldOrExt> {
-        let parent = self.tree[idx].parent?;
-        let fqdn = self.tree[parent].span.type_fqdn.as_ref()?;
+        let parent = self.tree[idx].parent()?;
+        let fqdn = self.fqdns.get(self.tree[parent].span.type_fqdn)?;
         let field_number = self.tree[idx].span.field_number;
         let message = self.ctx.pool().get_message_by_name(fqdn)?;
         message
-            .get_field(field_number as u32)
+            .get_field(field_number)
             .map(ParentFieldOrExt::Field)
             .or_else(|| {
                 message
-                    .get_extension(field_number as u32)
+                    .get_extension(field_number)
                     .map(ParentFieldOrExt::Ext)
             })
     }
@@ -479,7 +480,7 @@ impl App {
                 _ => None,
             });
         path_field.or_else(|| {
-            let fqdn = self.tree[idx].span.type_fqdn.as_deref()?;
+            let fqdn = self.fqdns.get(self.tree[idx].span.type_fqdn)?;
             self.overrides
                 .entries()
                 .iter()
@@ -514,9 +515,9 @@ impl App {
             count: usize,
         }
         let mut groups: Vec<Group> = Vec::new();
-        let mut child = self.tree[idx].first_child;
+        let mut child = self.tree[idx].first_child();
         while let Some(c) = child {
-            let field_number = self.tree[c].span.field_number;
+            let field_number = u64::from(self.tree[c].span.field_number);
             match groups.iter_mut().find(|g| g.field_number == field_number) {
                 Some(g) => g.count += 1,
                 None => groups.push(Group {
@@ -525,7 +526,7 @@ impl App {
                     count: 1,
                 }),
             }
-            child = self.tree[c].next_sibling;
+            child = self.tree[c].next_sibling();
         }
 
         let mut fields = Vec::with_capacity(groups.len());
@@ -602,10 +603,10 @@ impl App {
                         // reconstructed WT_LEN framing).
                         None => {
                             let span = &self.tree[child].span;
-                            let wire_type = if span.packed_record_start.is_some() {
+                            let wire_type = if span.packed_record_start != NO_PACKED_RECORD {
                                 WT_LEN
                             } else {
-                                span.wire_type
+                                u32::from(span.wire_type)
                             };
                             match wire_type {
                                 WT_VARINT => (Type::Int64, None, None),
@@ -653,8 +654,8 @@ impl App {
             // `resettle_node` keeps `span.type_fqdn`/`is_message` in sync
             // with the currently effective override on every render pass
             // — no separate override lookup needed for this branch.
-            let fqdn = span.type_fqdn.as_ref()?;
-            let tag = if span.wire_type == prototext_core::helpers::WT_START_GROUP {
+            let fqdn = self.fqdns.get(span.type_fqdn)?;
+            let tag = if u32::from(span.wire_type) == prototext_core::helpers::WT_START_GROUP {
                 "group"
             } else {
                 "message"
@@ -687,7 +688,10 @@ impl App {
     /// `true` when `idx`'s resolved type is `google.protobuf.Any` — spec
     /// 0120 §G1's detection rule, a plain FQDN match (per review).
     pub(super) fn is_any_typed(&self, idx: usize) -> bool {
-        self.tree[idx].span.type_fqdn.as_deref() == Some("google.protobuf.Any")
+        // Spec 0212 S6: `id_of`'s miss is `UNINTERNED`, not `NO_FQDN`, so a
+        // document containing no `Any` at all answers `false` here rather
+        // than `true` for every typeless node.
+        self.tree[idx].span.type_fqdn == self.fqdns.id_of("google.protobuf.Any")
     }
 
     /// `true` when `idx`'s resolved type is a MessageSet — spec 0120 §G2's
@@ -699,7 +703,7 @@ impl App {
     /// `ctx.pool()` access and needs no new plumbing (spec 0120's
     /// assessment).
     pub(super) fn is_message_set_typed(&self, idx: usize) -> bool {
-        let Some(fqdn) = self.tree[idx].span.type_fqdn.as_ref() else {
+        let Some(fqdn) = self.fqdns.get(self.tree[idx].span.type_fqdn) else {
             return false;
         };
         let Some(desc) = self.ctx.pool().get_message_by_name(fqdn) else {
@@ -722,8 +726,8 @@ impl App {
     /// a safe fallback rather than a panic). Display-only: never stored
     /// on a tree node or an override entry (2026-07-18 feedback item 4).
     pub(super) fn message_set_item_display_fqdn(&self, idx: usize) -> Option<String> {
-        let parent = self.tree[idx].parent?;
-        let message_set_fqdn = self.tree[parent].span.type_fqdn.as_deref()?;
+        let parent = self.tree[idx].parent()?;
+        let message_set_fqdn = self.fqdns.get(self.tree[parent].span.type_fqdn)?;
         Some(decode::message_set_item_display_fqdn(message_set_fqdn))
     }
 
@@ -732,13 +736,13 @@ impl App {
     /// `auto_expand_type` to locate Any's `type_url` next to `value`, and
     /// MessageSet's `type_id` next to `message`.
     pub(super) fn find_sibling(&self, idx: usize, field_number: u64) -> Option<usize> {
-        let parent = self.tree[idx].parent?;
-        let mut c = self.tree[parent].first_child;
+        let parent = self.tree[idx].parent()?;
+        let mut c = self.tree[parent].first_child();
         while let Some(ci) = c {
-            if self.tree[ci].span.field_number == field_number {
+            if u64::from(self.tree[ci].span.field_number) == field_number {
                 return Some(ci);
             }
-            c = self.tree[ci].next_sibling;
+            c = self.tree[ci].next_sibling();
         }
         None
     }
@@ -772,7 +776,7 @@ impl App {
     /// spec 0119 bug where every plain scalar LEN-wire field got
     /// incorrectly demoted to raw by being recursed into at all.
     pub(super) fn is_auto_expand_candidate(&self, idx: usize) -> bool {
-        let Some(parent) = self.tree[idx].parent else {
+        let Some(parent) = self.tree[idx].parent() else {
             return false;
         };
         let field_number = self.tree[idx].span.field_number;
@@ -793,15 +797,15 @@ impl App {
         // only by field-1 group nodes, not by every node in the
         // document (spec 0183 S1's cheap-first requirement).
         if field_number == 1
-            && self.tree[idx].span.wire_type == prototext_core::helpers::WT_START_GROUP
+            && u32::from(self.tree[idx].span.wire_type) == prototext_core::helpers::WT_START_GROUP
             && self.is_message_set_typed(parent)
         {
             return true;
         }
         if field_number == 3
-            && self.tree[parent].span.type_fqdn.as_deref() == Some(decode::MESSAGE_SET_ITEM_FQDN)
+            && self.tree[parent].span.type_fqdn == self.fqdns.id_of(decode::MESSAGE_SET_ITEM_FQDN)
         {
-            if let Some(grandparent) = self.tree[parent].parent {
+            if let Some(grandparent) = self.tree[parent].parent() {
                 return self.is_message_set_typed(grandparent);
             }
         }
@@ -816,7 +820,7 @@ impl App {
     /// unresolvable type). Consulted as a fallback tier between an
     /// explicit active override and `natural_type` in `render_overrides`.
     pub(super) fn auto_expand_type(&mut self, idx: usize) -> Option<String> {
-        let parent = self.tree[idx].parent?;
+        let parent = self.tree[idx].parent()?;
         let field_number = self.tree[idx].span.field_number;
 
         // Any's `value` (field 2): FQDN read from the sibling `type_url`
@@ -841,7 +845,7 @@ impl App {
         // `message`) — registered once per pool and reused across every
         // MessageSet occurrence in the document.
         if field_number == 1
-            && self.tree[idx].span.wire_type == prototext_core::helpers::WT_START_GROUP
+            && u32::from(self.tree[idx].span.wire_type) == prototext_core::helpers::WT_START_GROUP
             && self.is_message_set_typed(parent)
         {
             return decode::register_message_set_item(self.ctx.pool_mut())
@@ -854,13 +858,16 @@ impl App {
         // resolved from the sibling `type_id` (field 2), keyed against
         // the MessageSet container's (idx's grandparent) own extensions.
         if field_number == 3
-            && self.tree[parent].span.type_fqdn.as_deref() == Some(decode::MESSAGE_SET_ITEM_FQDN)
+            && self.tree[parent].span.type_fqdn == self.fqdns.id_of(decode::MESSAGE_SET_ITEM_FQDN)
         {
-            let grandparent = self.tree[parent].parent?;
+            let grandparent = self.tree[parent].parent()?;
             if self.is_message_set_typed(grandparent) {
                 let type_id_idx = self.find_sibling(idx, 2)?;
                 let type_id = self.read_varint_field(type_id_idx)?;
-                let grandparent_fqdn = self.tree[grandparent].span.type_fqdn.clone()?;
+                let grandparent_fqdn = self
+                    .fqdns
+                    .get(self.tree[grandparent].span.type_fqdn)?
+                    .to_owned();
                 // The extension is declared in whatever file extends the
                 // MessageSet, which need not be in the root closure; the
                 // index's `ext_to_file` names it (spec 0100 §5.1, 0197 §S5).
@@ -952,7 +959,7 @@ impl App {
         if let Some(pos) = self.active_entry_with_label(path, OverrideKind::Path) {
             return Some(pos);
         }
-        let parent = self.tree[idx].parent?;
+        let parent = self.tree[idx].parent()?;
         let field = self.tree[idx].span.field_number;
         let parent_path = Self::parent_path_of(path);
         if let Some(pos) =
@@ -960,7 +967,7 @@ impl App {
         {
             return Some(pos);
         }
-        let fqdn = self.tree[parent].span.type_fqdn.as_ref()?;
+        let fqdn = self.fqdns.get(self.tree[parent].span.type_fqdn)?;
         self.active_entry_with_label(&format!("{fqdn}:{field}"), OverrideKind::FqdnField)
     }
 
@@ -1311,9 +1318,24 @@ impl App {
     /// that cannot itself misfire on a fresh document, and it
     /// disappears once the arena stops accumulating garbage.
     pub(super) fn override_batch_refusal(&self, available: u64) -> Option<String> {
-        // Nodes carry an `Option<String>` type name, so the heap cost
-        // per node exceeds `size_of` by roughly this much (measured
-        // ~305 B/node against a 250 B struct).
+        // A node's own `size_of` is not its whole cost. `rendered_as` is
+        // still a `String` pair, so each non-`None` one is a separate
+        // heap allocation, and `heat_states`, `descend` and `dead` are
+        // parallel to the arena at a further ~42 B/node. This allowance
+        // covers both.
+        //
+        // Spec 0211 narrowed the slot from 272 B to 184, and spec 0212
+        // to 120, so `per_node` is 184 today. 0212 also interned
+        // `type_fqdn`, which was the other half of the ~41 B/node of
+        // `String` allocations this allowance used to name; the constant
+        // was re-derived there and deliberately left at 64, since 64
+        // already under-covered the ~42 of parallel arrays on its own
+        // and re-tuning the guard belongs in a spec that has measured
+        // the guard. When `rendered_as` is interned too, the first half
+        // of this allowance stops naming anything at all and the
+        // constant must be taken to 0 deliberately rather than left to
+        // drift — `docs/protolens/design/arena-and-batch.md`'s annex,
+        // trap 2.
         const STRING_ALLOWANCE: usize = 64;
         let per_node = (std::mem::size_of::<TreeNode>() + STRING_ALLOWANCE) as u64;
         let arena = (self.tree.len() as u64).saturating_mul(per_node);
@@ -1430,7 +1452,7 @@ impl App {
                     break;
                 }
                 self.descend[c] = true;
-                cur = self.tree[c].parent;
+                cur = self.tree[c].parent();
             }
         }
     }
@@ -1454,12 +1476,16 @@ impl App {
             // carries its parent's resolved type — which is what spec
             // 0183 S5 asked of an FQDN index, without an index to
             // build or to keep patched across splices.
-            let fqdn_fields: HashSet<(&str, u64)> = self
+            // Spec 0212 S6: the origins' names are interned once, here,
+            // rather than each node's id being resolved back to a string.
+            let fqdn_fields: HashSet<(FqdnId, u64)> = self
                 .overrides
                 .entries()
                 .iter()
                 .filter_map(|e| match &e.origin {
-                    OverrideOrigin::FqdnField { fqdn, field } => Some((fqdn.as_str(), *field)),
+                    OverrideOrigin::FqdnField { fqdn, field } => {
+                        Some((self.fqdns.id_of(fqdn), *field))
+                    }
                     _ => None,
                 })
                 .collect();
@@ -1479,11 +1505,8 @@ impl App {
                 }
                 // Source 1, the part that is not path-shaped.
                 if !fqdn_fields.is_empty() {
-                    let field = self.tree[i].span.field_number;
-                    if let Some(fqdn) = self.tree[i]
-                        .parent
-                        .and_then(|p| self.tree[p].span.type_fqdn.as_deref())
-                    {
+                    let field = u64::from(self.tree[i].span.field_number);
+                    if let Some(fqdn) = self.tree[i].parent().map(|p| self.tree[p].span.type_fqdn) {
                         if fqdn_fields.contains(&(fqdn, field)) {
                             targets.push(i);
                         }
@@ -1521,12 +1544,12 @@ impl App {
                     // rendering it governs are that parent's children
                     // bearing `field`.
                     if let Some(parent) = self.resolve_path(path) {
-                        let mut c = self.tree[parent].first_child;
+                        let mut c = self.tree[parent].first_child();
                         while let Some(ci) = c {
-                            if self.tree[ci].span.field_number == *field {
+                            if u64::from(self.tree[ci].span.field_number) == *field {
                                 targets.push(ci);
                             }
-                            c = self.tree[ci].next_sibling;
+                            c = self.tree[ci].next_sibling();
                         }
                     }
                 }
@@ -1625,9 +1648,10 @@ impl App {
                 // MessageSet rendering uses for it ("Item") — spec 0120
                 // §G2's follow-up cosmetic fix.
                 let is_message_set_item = self.tree[idx].span.field_number == 1
-                    && self.tree[idx].span.wire_type == prototext_core::helpers::WT_START_GROUP
+                    && u32::from(self.tree[idx].span.wire_type)
+                        == prototext_core::helpers::WT_START_GROUP
                     && self.tree[idx]
-                        .parent
+                        .parent()
                         .is_some_and(|p| self.is_message_set_typed(p));
                 self.overrides.activate_auto(origin.clone(), Some(t));
                 if is_message_set_item {
@@ -1667,7 +1691,7 @@ impl App {
         if spliced {
             self.mark_fresh_subtree(base, path);
         }
-        let mut child = self.tree[idx].first_child;
+        let mut child = self.tree[idx].first_child();
         let mut ordinal = 0usize;
         let mut prev_child: Option<usize> = None;
         while let Some(c) = child {
@@ -1712,7 +1736,7 @@ impl App {
             if descend_here {
                 self.render_overrides_inner(c, &c_path, child_scope);
             }
-            child = self.tree[c].next_sibling;
+            child = self.tree[c].next_sibling();
         }
     }
 
@@ -1832,10 +1856,10 @@ impl App {
         // a real document, so start from the head of whatever sibling
         // chain `first_node` sits on.
         let mut top = self.first_node;
-        while let Some(p) = self.tree[top].parent {
+        while let Some(p) = self.tree[top].parent() {
             top = p;
         }
-        while let Some(s) = self.tree[top].prev_sibling {
+        while let Some(s) = self.tree[top].prev_sibling() {
             top = s;
         }
 
@@ -1848,7 +1872,7 @@ impl App {
         while let Some(n) = r {
             roots.push((n, start));
             start += self.tree[n].lines_total as usize;
-            r = self.tree[n].next_sibling;
+            r = self.tree[n].next_sibling();
         }
         assert_eq!(
             start, n_lines,
@@ -1864,13 +1888,13 @@ impl App {
             let mut sum_total = 0usize;
             let mut sum_visible = 0usize;
             let mut child_start = start + 1;
-            let mut c = self.tree[n].first_child;
+            let mut c = self.tree[n].first_child();
             while let Some(ci) = c {
                 kids.push((ci, child_start));
                 child_start += self.tree[ci].lines_total as usize;
                 sum_total += self.tree[ci].lines_total as usize;
                 sum_visible += self.tree[ci].lines_visible as usize;
-                c = self.tree[ci].next_sibling;
+                c = self.tree[ci].next_sibling();
             }
 
             // A node with children is bracketed, so it owns a header and
@@ -2209,7 +2233,7 @@ impl App {
             span_shift,
         } = rendered;
 
-        let is_packed = old_span.packed_record_start.is_some();
+        let is_packed = old_span.packed_record_start != NO_PACKED_RECORD;
         // Packed sibling merge (spec 0135 G1): every sibling element of
         // the same packed record is collapsed into `idx`. What remains
         // here — after `render_node_as`'s own normalization — is only
@@ -2223,10 +2247,10 @@ impl App {
             let last = *siblings
                 .last()
                 .expect("packed_record_siblings always returns at least idx itself");
-            packed_next_sibling_of_run = self.tree[last].next_sibling;
-            packed_seam_after = self.tree[last].doc_next;
-            if let Some(parent) = self.tree[idx].parent {
-                packed_run_is_last_child = self.tree[parent].last_child == Some(last);
+            packed_next_sibling_of_run = self.tree[last].next_sibling();
+            packed_seam_after = self.tree[last].doc_next();
+            if let Some(parent) = self.tree[idx].parent() {
+                packed_run_is_last_child = self.tree[parent].last_child() == Some(last);
             }
             for &s in &siblings[1..] {
                 packed_orphans.push(s);
@@ -2310,7 +2334,7 @@ impl App {
         let start = if is_packed {
             packed_seam_after
         } else {
-            self.tree[idx].doc_next
+            self.tree[idx].doc_next()
         };
         let after = self.doc_next_after_subtree(start, &old_descendants);
 
@@ -2331,13 +2355,12 @@ impl App {
         // batch (`render_overrides_inner`'s doc comment), in which case
         // the recorded range is local to that parent patch's own content
         // instead, recovered via the parent's stored `global_start`.
-        let global_start = old_span.text_range.start;
+        let old_lines = widen(&old_span.text_range);
+        let global_start = old_lines.start;
         let target_range = match patch_scope {
             None => {
-                let original_start =
-                    (old_span.text_range.start as isize - pending_shift_before) as usize;
-                let original_end =
-                    (old_span.text_range.end as isize - pending_shift_before) as usize;
+                let original_start = (old_lines.start as isize - pending_shift_before) as usize;
+                let original_end = (old_lines.end as isize - pending_shift_before) as usize;
                 LinePatchTarget::Original(original_start..original_end)
             }
             Some(parent_idx) => {
@@ -2354,10 +2377,8 @@ impl App {
                 let parent = &self.pending_line_patches[parent_idx];
                 let parent_start = parent.global_start as isize;
                 let extra_growth = pending_shift_before - parent.children_base_shift;
-                let local_start =
-                    (old_span.text_range.start as isize - parent_start - extra_growth) as usize;
-                let local_end =
-                    (old_span.text_range.end as isize - parent_start - extra_growth) as usize;
+                let local_start = (old_lines.start as isize - parent_start - extra_growth) as usize;
+                let local_end = (old_lines.end as isize - parent_start - extra_growth) as usize;
                 LinePatchTarget::Nested(parent_idx, local_start..local_end)
             }
         };
@@ -2400,9 +2421,29 @@ impl App {
         let local_root_idx = local_len - 1;
         let local_tree = decode::build_tree(new_spans);
         for node in local_tree {
+            let translate = |o: Option<usize>| TreeNode::pack(o.map(|i| i + base));
+            // `idx`'s new self is *not* pushed as a separate live entry
+            // (its own span/children are folded into `self.tree[idx]`
+            // below) — root-level local nodes (parent `None`) and its
+            // direct children (local parent == the local root) both
+            // become `idx`'s children, so both map their parent to `idx`.
+            let parent = if node.parent().is_none() || node.parent() == Some(local_root_idx) {
+                Some(idx)
+            } else {
+                node.parent().map(|p| p + base)
+            };
+            // Spec 0211: every link is read here, before `span` is moved
+            // out of `node` — a partial move forbids calling `node`'s
+            // accessors afterwards.
+            let first_child = translate(node.first_child());
+            let last_child = translate(node.last_child());
+            let next_sibling = translate(node.next_sibling());
+            let prev_sibling = translate(node.prev_sibling());
+            let doc_next = translate(node.doc_next());
+            let doc_prev = translate(node.doc_prev());
             let mut span = node.span;
-            span.raw_range = (span.raw_range.start as isize + byte_offset) as usize
-                ..(span.raw_range.end as isize + byte_offset) as usize;
+            let shift = |o: u32| (o as isize + byte_offset) as u32;
+            span.raw_range = shift(span.raw_range.start)..shift(span.raw_range.end);
             // Spec 0210 S11: `span.text_range` is deliberately left
             // local. `build_tree` has already read it, to derive each
             // node's `lines_total`, and that is its last reader —
@@ -2426,29 +2467,18 @@ impl App {
             // replaced by a re-render of the whole 1 MB blob), which
             // relinks the tree into a cycle and sends
             // `collect_descendants` into unbounded recursion.
-            span.packed_record_start = span
-                .packed_record_start
-                .map(|p| (p as isize + byte_offset) as usize);
-            let translate = |o: Option<usize>| o.map(|i| i + base);
-            // `idx`'s new self is *not* pushed as a separate live entry
-            // (its own span/children are folded into `self.tree[idx]`
-            // below) — root-level local nodes (parent `None`) and its
-            // direct children (local parent == the local root) both
-            // become `idx`'s children, so both map their parent to `idx`.
-            let parent = if node.parent.is_none() || node.parent == Some(local_root_idx) {
-                Some(idx)
-            } else {
-                node.parent.map(|p| p + base)
-            };
+            if span.packed_record_start != NO_PACKED_RECORD {
+                span.packed_record_start = shift(span.packed_record_start);
+            }
             self.tree.push(TreeNode {
                 span,
-                parent,
-                first_child: translate(node.first_child),
-                last_child: translate(node.last_child),
-                next_sibling: translate(node.next_sibling),
-                prev_sibling: translate(node.prev_sibling),
-                doc_next: translate(node.doc_next),
-                doc_prev: translate(node.doc_prev),
+                parent: TreeNode::pack(parent),
+                first_child,
+                last_child,
+                next_sibling,
+                prev_sibling,
+                doc_next,
+                doc_prev,
                 // Correct as `build_tree` derived it within the local
                 // tree, which is exactly right for every level below
                 // `idx`: those sibling chains are copied over intact.
@@ -2492,6 +2522,10 @@ impl App {
         // 0135 G1) — no synthetic tag ever separates the two.
         new_self_span.raw_range = old_span.raw_range.clone();
         self.tree[idx].span = new_self_span;
+        // Spec 0211: a straight copy of the stored form, not
+        // `set_first_child(self.tree[..].first_child())` — the accessor
+        // pair would need `self.tree` borrowed mutably and immutably in
+        // one statement, and there is nothing to translate here anyway.
         self.tree[idx].first_child = self.tree[new_self_idx].first_child;
         self.tree[idx].last_child = self.tree[new_self_idx].last_child;
         // Spec 0210 S1: `idx` takes over the whole re-rendered subtree, so
@@ -2516,13 +2550,13 @@ impl App {
         // `prev_sibling` and the parent's `first_child` need no change —
         // the run's leading edge is unaffected by absorbing what follows.
         if is_packed {
-            self.tree[idx].next_sibling = packed_next_sibling_of_run;
+            self.tree[idx].set_next_sibling(packed_next_sibling_of_run);
             if let Some(next) = packed_next_sibling_of_run {
-                self.tree[next].prev_sibling = Some(idx);
+                self.tree[next].set_prev_sibling(Some(idx));
             }
             if packed_run_is_last_child {
-                if let Some(parent) = self.tree[idx].parent {
-                    self.tree[parent].last_child = Some(idx);
+                if let Some(parent) = self.tree[idx].parent() {
+                    self.tree[parent].set_last_child(Some(idx));
                 }
             }
         }
@@ -2537,7 +2571,7 @@ impl App {
         // came over intact, and absorbing a packed run into `idx`
         // preserves the run's single position among its siblings (spec
         // 0184 S2), so the followers relinked just above keep theirs.
-        let mut child = self.tree[idx].first_child;
+        let mut child = self.tree[idx].first_child();
         let mut ordinal = 0u32;
         let mut prev: Option<usize> = None;
         while let Some(c) = child {
@@ -2547,26 +2581,26 @@ impl App {
             };
             self.tree[c].sibling_ordinal = ordinal;
             prev = Some(c);
-            child = self.tree[c].next_sibling;
+            child = self.tree[c].next_sibling();
         }
 
         if local_len > 1 {
-            let first_new = self.tree[new_self_idx].doc_next;
+            let first_new = self.tree[new_self_idx].doc_next();
             let last_new = (base..base + local_len)
-                .find(|&i| self.tree[i].doc_next.is_none())
+                .find(|&i| self.tree[i].doc_next().is_none())
                 .expect("local tree with descendants has a document-order last node");
-            self.tree[idx].doc_next = first_new;
+            self.tree[idx].set_doc_next(first_new);
             if let Some(fnw) = first_new {
-                self.tree[fnw].doc_prev = Some(idx);
+                self.tree[fnw].set_doc_prev(Some(idx));
             }
-            self.tree[last_new].doc_next = after;
+            self.tree[last_new].set_doc_next(after);
             if let Some(a) = after {
-                self.tree[a].doc_prev = Some(last_new);
+                self.tree[a].set_doc_prev(Some(last_new));
             }
         } else {
-            self.tree[idx].doc_next = after;
+            self.tree[idx].set_doc_next(after);
             if let Some(a) = after {
-                self.tree[a].doc_prev = Some(idx);
+                self.tree[a].set_doc_prev(Some(idx));
             }
         }
 
@@ -2581,7 +2615,7 @@ impl App {
         // O(depth), and it stops as soon as a node's counts come out
         // unchanged. `idx`'s own counts were taken from the subtree just
         // built, above.
-        if let Some(parent) = self.tree[idx].parent {
+        if let Some(parent) = self.tree[idx].parent() {
             self.refresh_line_counts(parent);
         }
 
@@ -2655,21 +2689,21 @@ impl App {
         // before either caller reads it. Both of them want the line
         // range as it is right now — the preview to pick the rows its
         // overlay stands in for, the splice to know what it replaces.
-        old_span.text_range = self.node_lines(idx);
+        old_span.text_range = decode::narrow(self.node_lines(idx));
 
         // Packed-record reconstruction (spec 0135 G1): the whole run is
         // one addressable record, so resolve `idx` to `siblings[0]` and
         // widen `old_span` to the record's own extent before proceeding.
-        if old_span.packed_record_start.is_some() {
+        if old_span.packed_record_start != NO_PACKED_RECORD {
             let siblings = self.packed_record_siblings(idx);
             let (raw_range, text_range) = self.packed_record_extent(&siblings);
             idx = siblings[0];
             old_span = self.tree[idx].span.clone();
-            old_span.raw_range = raw_range;
-            old_span.text_range = text_range;
+            old_span.raw_range = decode::narrow(raw_range);
+            old_span.text_range = decode::narrow(text_range);
         }
 
-        let field_number = old_span.field_number;
+        let field_number = u64::from(old_span.field_number);
         let field_name = self.field_name_for(idx);
         let renamed = self
             .resolve_active_override_entry(idx)
@@ -2704,7 +2738,9 @@ impl App {
             Some("protolens_internal.None") => (None, None),
             Some(name) => {
                 if let Some(desc) = self.ctx.message(name) {
-                    let ft = if old_span.wire_type == prototext_core::helpers::WT_START_GROUP {
+                    let ft = if u32::from(old_span.wire_type)
+                        == prototext_core::helpers::WT_START_GROUP
+                    {
                         Type::Group
                     } else {
                         Type::Message
@@ -2725,7 +2761,7 @@ impl App {
 
         // Decode `idx`'s own real tag+payload bytes directly (spec 0135
         // G1) — no synthetic tag prepended.
-        let mut field_bytes = self.blob[old_span.raw_range.clone()].to_vec();
+        let mut field_bytes = self.blob[widen(&old_span.raw_range)].to_vec();
 
         // Spec 0174: only a live preview is speculative and needs
         // bounding — a confirmed override must render completely (G5).
@@ -2735,7 +2771,7 @@ impl App {
         let mut span_shift = 0usize;
         let mut truncated = false;
         if is_preview {
-            let shape = trunc_shape_for(field_type, old_span.wire_type);
+            let shape = trunc_shape_for(field_type, u32::from(old_span.wire_type));
             if let Some((cut, shift)) =
                 truncate_interior(&field_bytes, self.override_preview_byte_budget, shape)
             {
@@ -2749,9 +2785,10 @@ impl App {
         // `field_name` (G2 makes the cached render field-name-invariant).
         // `interior_range` is the same "interior" quantity the cache
         // already keyed on before this spec, just computed from the
-        // resolved `raw_range`, with `packed_record_start` always `None`
+        // resolved `raw_range`, with `packed_record_start` always absent
         // (the packed case has already been normalized above).
-        let interior_range = extract::message_payload_range(&self.blob, &old_span.raw_range, None);
+        let interior_range =
+            extract::message_payload_range(&self.blob, &old_span.raw_range, NO_PACKED_RECORD);
         // Spec 0163: `is_preview` is part of the key -- a budget-
         // truncated preview render and a full confirmed render of the
         // same `(range, target)` must never be conflated, or confirming
@@ -2777,7 +2814,7 @@ impl App {
                     // main-pane display concern, not a decode-time input.
                     annotations: true,
                     indent_size: self.indent_size,
-                    initial_level: old_span.level,
+                    initial_level: old_span.level as usize,
                     emit_header: false,
                     // Any/MessageSet expansion is handled by protolens
                     // itself, as automatic overrides (spec 0120), not by
@@ -2786,9 +2823,18 @@ impl App {
                     expand_message_set: false,
                     ..Default::default()
                 };
-                let (new_text, new_spans) =
-                    decode_and_render_indexed(&field_bytes, wrapper_desc.as_ref(), opts);
-                let new_text = String::from_utf8(new_text)
+                // Spec 0212 S4: `self.fqdns` is the one table every span in
+                // this document indexes into, so a spliced subtree's ids
+                // mean the same thing as the arena's around it.
+                let rendered = decode_and_render_indexed(
+                    &field_bytes,
+                    wrapper_desc.as_ref(),
+                    &mut self.fqdns,
+                    opts,
+                )
+                .map_err(|e| e.to_string())?;
+                let new_spans = rendered.spans;
+                let new_text = String::from_utf8(rendered.text)
                     .map_err(|e| format!("rendered text is not valid UTF-8: {e}"))?;
                 let new_lines: Vec<String> = new_text.lines().map(str::to_string).collect();
                 let value = (new_lines, new_spans);
@@ -2868,16 +2914,16 @@ impl App {
     /// least `idx` itself, even when `idx` has no parent.
     pub(super) fn packed_record_siblings(&self, idx: usize) -> Vec<usize> {
         let target = self.tree[idx].span.packed_record_start;
-        let Some(parent) = self.tree[idx].parent else {
+        let Some(parent) = self.tree[idx].parent() else {
             return vec![idx];
         };
         let mut out = Vec::new();
-        let mut c = self.tree[parent].first_child;
+        let mut c = self.tree[parent].first_child();
         while let Some(ci) = c {
             if self.tree[ci].span.packed_record_start == target {
                 out.push(ci);
             }
-            c = self.tree[ci].next_sibling;
+            c = self.tree[ci].next_sibling();
         }
         out
     }
@@ -2891,10 +2937,12 @@ impl App {
         &self,
         siblings: &[usize],
     ) -> (std::ops::Range<usize>, std::ops::Range<usize>) {
-        let start = self.tree[siblings[0]]
-            .span
-            .packed_record_start
-            .expect("packed_record_extent called with non-packed siblings");
+        let start = self.tree[siblings[0]].span.packed_record_start;
+        assert_ne!(
+            start, NO_PACKED_RECORD,
+            "packed_record_extent called with non-packed siblings"
+        );
+        let start = start as usize;
         let tag = prototext_core::helpers::parse_wiretag(&self.blob, start);
         let len = prototext_core::helpers::parse_varint(&self.blob, tag.next_pos);
         let raw_end = len.next_pos + len.varint.unwrap_or(0) as usize;
@@ -2947,25 +2995,25 @@ impl App {
             }),
             OverrideKind::PathField => {
                 let parent = self.tree[idx]
-                    .parent
+                    .parent()
                     .ok_or_else(|| "cursor is the wrapper root (no parent)".to_string())?;
                 Ok(OverrideOrigin::PathField {
                     path: self.positional_path(parent),
-                    field: self.tree[idx].span.field_number,
+                    field: u64::from(self.tree[idx].span.field_number),
                 })
             }
             OverrideKind::FqdnField => {
                 let parent = self.tree[idx]
-                    .parent
+                    .parent()
                     .ok_or_else(|| "cursor is the wrapper root (no parent)".to_string())?;
-                let fqdn = self.tree[parent]
-                    .span
-                    .type_fqdn
-                    .clone()
-                    .ok_or_else(|| "parent's type is unresolved".to_string())?;
+                let fqdn = self
+                    .fqdns
+                    .get(self.tree[parent].span.type_fqdn)
+                    .ok_or_else(|| "parent's type is unresolved".to_string())?
+                    .to_owned();
                 Ok(OverrideOrigin::FqdnField {
                     fqdn,
-                    field: self.tree[idx].span.field_number,
+                    field: u64::from(self.tree[idx].span.field_number),
                 })
             }
         }

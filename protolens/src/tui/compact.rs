@@ -95,42 +95,42 @@ impl App {
         debug_assert!(self.dead[to], "compaction moves into a dead slot");
         debug_assert!(!self.dead[from], "compaction moves a live node");
 
-        let parent = self.tree[from].parent;
-        let prev_sibling = self.tree[from].prev_sibling;
-        let next_sibling = self.tree[from].next_sibling;
-        let doc_prev = self.tree[from].doc_prev;
-        let doc_next = self.tree[from].doc_next;
-        let first_child = self.tree[from].first_child;
+        let parent = self.tree[from].parent();
+        let prev_sibling = self.tree[from].prev_sibling();
+        let next_sibling = self.tree[from].next_sibling();
+        let doc_prev = self.tree[from].doc_prev();
+        let doc_next = self.tree[from].doc_next();
+        let first_child = self.tree[from].first_child();
 
         // A parent names its first and last child separately, and for an
         // only child both are this node.
         if let Some(p) = parent {
-            if self.tree[p].first_child == Some(from) {
-                self.tree[p].first_child = Some(to);
+            if self.tree[p].first_child() == Some(from) {
+                self.tree[p].set_first_child(Some(to));
             }
-            if self.tree[p].last_child == Some(from) {
-                self.tree[p].last_child = Some(to);
+            if self.tree[p].last_child() == Some(from) {
+                self.tree[p].set_last_child(Some(to));
             }
         }
         if let Some(s) = prev_sibling {
-            self.tree[s].next_sibling = Some(to);
+            self.tree[s].set_next_sibling(Some(to));
         }
         if let Some(s) = next_sibling {
-            self.tree[s].prev_sibling = Some(to);
+            self.tree[s].set_prev_sibling(Some(to));
         }
         if let Some(d) = doc_prev {
-            self.tree[d].doc_next = Some(to);
+            self.tree[d].set_doc_next(Some(to));
         }
         if let Some(d) = doc_next {
-            self.tree[d].doc_prev = Some(to);
+            self.tree[d].set_doc_prev(Some(to));
         }
         // The one unbounded step, and the reason the per-node cost is
         // "degree" rather than a constant. It sums to one visit per
         // edge across a whole pass.
         let mut child = first_child;
         while let Some(c) = child {
-            self.tree[c].parent = Some(to);
-            child = self.tree[c].next_sibling;
+            self.tree[c].set_parent(Some(to));
+            child = self.tree[c].next_sibling();
         }
 
         // The node itself, and the two arrays that are parallel to it.
@@ -153,11 +153,12 @@ impl App {
         for end in [
             &mut self.prefetch_walk.above_pos,
             &mut self.prefetch_walk.below_pos,
-        ] {
-            if let Some(pos) = end {
-                if pos.node == from {
-                    pos.node = to;
-                }
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if end.node == from {
+                end.node = to;
             }
         }
 
@@ -332,10 +333,10 @@ impl App {
         // this wrong reports most of the document as unreachable.
         // `build_tree` is post-order, so none of this is index 0.
         let mut top = self.first_node;
-        while let Some(p) = self.tree[top].parent {
+        while let Some(p) = self.tree[top].parent() {
             top = p;
         }
-        while let Some(s) = self.tree[top].prev_sibling {
+        while let Some(s) = self.tree[top].prev_sibling() {
             top = s;
         }
         let mut live = vec![false; len];
@@ -344,7 +345,7 @@ impl App {
         let mut t = Some(top);
         while let Some(n) = t {
             stack.push(n);
-            t = self.tree[n].next_sibling;
+            t = self.tree[n].next_sibling();
         }
         while let Some(n) = stack.pop() {
             if live[n] {
@@ -354,18 +355,18 @@ impl App {
             }
             live[n] = true;
             order.push(n);
-            let mut c = self.tree[n].first_child;
+            let mut c = self.tree[n].first_child();
             while let Some(ci) = c {
                 stack.push(ci);
-                c = self.tree[ci].next_sibling;
+                c = self.tree[ci].next_sibling();
             }
         }
 
         // P1 — soundness of `dead`. Marking a live node is the one error
         // that loses data outright: its slot becomes a hole, gets
         // overwritten, and is truncated away.
-        for n in 0..len {
-            if live[n] && self.dead[n] {
+        for (n, &is_live) in live.iter().enumerate() {
+            if is_live && self.dead[n] {
                 return Err(format!("live node {n} is marked dead"));
             }
         }
@@ -381,13 +382,13 @@ impl App {
         for &n in &order {
             let node = &self.tree[n];
             for (what, link) in [
-                ("parent", node.parent),
-                ("first_child", node.first_child),
-                ("last_child", node.last_child),
-                ("prev_sibling", node.prev_sibling),
-                ("next_sibling", node.next_sibling),
-                ("doc_prev", node.doc_prev),
-                ("doc_next", node.doc_next),
+                ("parent", node.parent()),
+                ("first_child", node.first_child()),
+                ("last_child", node.last_child()),
+                ("prev_sibling", node.prev_sibling()),
+                ("next_sibling", node.next_sibling()),
+                ("doc_prev", node.doc_prev()),
+                ("doc_next", node.doc_next()),
             ] {
                 if let Some(i) = link {
                     if i >= len {
@@ -403,23 +404,23 @@ impl App {
             }
             // Each inverse link, which is what makes every reference to
             // a node discoverable *from* that node.
-            if let Some(s) = node.next_sibling {
-                if self.tree[s].prev_sibling != Some(n) {
+            if let Some(s) = node.next_sibling() {
+                if self.tree[s].prev_sibling() != Some(n) {
                     return Err(format!("{n}.next_sibling = {s}, but not conversely"));
                 }
             }
-            if let Some(s) = node.prev_sibling {
-                if self.tree[s].next_sibling != Some(n) {
+            if let Some(s) = node.prev_sibling() {
+                if self.tree[s].next_sibling() != Some(n) {
                     return Err(format!("{n}.prev_sibling = {s}, but not conversely"));
                 }
             }
-            if let Some(d) = node.doc_next {
-                if self.tree[d].doc_prev != Some(n) {
+            if let Some(d) = node.doc_next() {
+                if self.tree[d].doc_prev() != Some(n) {
                     return Err(format!("{n}.doc_next = {d}, but not conversely"));
                 }
             }
-            if let Some(d) = node.doc_prev {
-                if self.tree[d].doc_next != Some(n) {
+            if let Some(d) = node.doc_prev() {
+                if self.tree[d].doc_next() != Some(n) {
                     return Err(format!("{n}.doc_prev = {d}, but not conversely"));
                 }
             }
@@ -427,22 +428,22 @@ impl App {
             // parent, and must end where `last_child` says it does —
             // together these are what let `relocate_node` repair every
             // `parent` pointer by walking `first_child` alone.
-            let mut c = node.first_child;
+            let mut c = node.first_child();
             let mut last = None;
             while let Some(ci) = c {
-                if self.tree[ci].parent != Some(n) {
+                if self.tree[ci].parent() != Some(n) {
                     return Err(format!(
                         "{ci} is on {n}'s child chain but its parent is {:?}",
-                        self.tree[ci].parent
+                        self.tree[ci].parent()
                     ));
                 }
                 last = Some(ci);
-                c = self.tree[ci].next_sibling;
+                c = self.tree[ci].next_sibling();
             }
-            if last != node.last_child {
+            if last != node.last_child() {
                 return Err(format!(
                     "{n}.last_child = {:?} but its chain ends at {last:?}",
-                    node.last_child
+                    node.last_child()
                 ));
             }
         }
@@ -451,7 +452,7 @@ impl App {
         // or `relocate_node`'s two-step repair of it is repairing a
         // chain that some other node is still hanging off.
         let mut doc_first = top;
-        while let Some(d) = self.tree[doc_first].doc_prev {
+        while let Some(d) = self.tree[doc_first].doc_prev() {
             doc_first = d;
         }
         let mut seen = 0usize;
@@ -464,7 +465,7 @@ impl App {
             if seen > order.len() {
                 return Err("the document chain is cyclic".to_string());
             }
-            cur = self.tree[n].doc_next;
+            cur = self.tree[n].doc_next();
         }
         if seen != order.len() {
             return Err(format!(

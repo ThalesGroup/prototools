@@ -60,7 +60,7 @@ impl App {
 
     /// Unfold every ancestor of `idx`, so it becomes visible.
     pub(super) fn unfold_ancestors(&mut self, idx: usize) {
-        let mut p = self.tree[idx].parent;
+        let mut p = self.tree[idx].parent();
         let mut changed = false;
         while let Some(pi) = p {
             if self.folded.remove(&pi) {
@@ -71,7 +71,7 @@ impl App {
                 // ancestor, which the next iteration then unfolds.
                 self.refresh_line_counts(pi);
             }
-            p = self.tree[pi].parent;
+            p = self.tree[pi].parent();
         }
         if changed {
             self.folds_changed();
@@ -403,7 +403,7 @@ impl App {
     /// cursor's next sibling, or leaves it in place with a message if
     /// there isn't one.
     pub(super) fn next_sibling_move(&mut self) {
-        if let Some(next) = self.tree[self.cursor].next_sibling {
+        if let Some(next) = self.tree[self.cursor].next_sibling() {
             self.record_jump();
             self.set_cursor(next);
         } else {
@@ -415,7 +415,7 @@ impl App {
     /// cursor's previous sibling, or leaves it in place with a message if
     /// there isn't one.
     pub(super) fn prev_sibling_move(&mut self) {
-        if let Some(prev) = self.tree[self.cursor].prev_sibling {
+        if let Some(prev) = self.tree[self.cursor].prev_sibling() {
             self.record_jump();
             self.set_cursor(prev);
         } else {
@@ -635,7 +635,7 @@ impl App {
             self.toggle_fold(self.cursor);
             return;
         }
-        if let Some(parent) = self.tree[self.cursor].parent {
+        if let Some(parent) = self.tree[self.cursor].parent() {
             self.record_jump();
             self.set_cursor(parent);
         } else {
@@ -664,7 +664,7 @@ impl App {
             self.toggle_fold(self.cursor);
             return;
         }
-        let Some(child) = self.tree[self.cursor].first_child else {
+        let Some(child) = self.tree[self.cursor].first_child() else {
             self.message = "no children".to_string();
             return;
         };
@@ -745,12 +745,12 @@ impl App {
     /// `descendant` != `idx` but is reachable by following `parent`
     /// links from `descendant`).
     fn is_strict_descendant(&self, descendant: usize, idx: usize) -> bool {
-        let mut p = self.tree[descendant].parent;
+        let mut p = self.tree[descendant].parent();
         while let Some(pi) = p {
             if pi == idx {
                 return true;
             }
-            p = self.tree[pi].parent;
+            p = self.tree[pi].parent();
         }
         false
     }
@@ -761,14 +761,14 @@ impl App {
     /// nodes (which share sibling links despite having no `parent`).
     pub(super) fn sibling_range(&self, idx: usize) -> Vec<usize> {
         let mut first = idx;
-        while let Some(p) = self.tree[first].prev_sibling {
+        while let Some(p) = self.tree[first].prev_sibling() {
             first = p;
         }
         let mut v = Vec::new();
         let mut cur = Some(first);
         while let Some(i) = cur {
             v.push(i);
-            cur = self.tree[i].next_sibling;
+            cur = self.tree[i].next_sibling();
         }
         v
     }
@@ -838,7 +838,7 @@ impl App {
         let mut cur = Some(idx);
         while let Some(i) = cur {
             segments.push(self.sibling_position(i));
-            cur = self.tree[i].parent;
+            cur = self.tree[i].parent();
         }
         segments.reverse();
         segments.remove(0);

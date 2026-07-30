@@ -51,7 +51,7 @@ fn check(app: &App, what: &str) {
 
 /// Everything a reader can observe, projected so that renumbering — the
 /// entire point of the operation — does not register as a difference.
-fn observable(app: &App) -> (Vec<String>, Vec<Shape>, Vec<(usize, Shape, bool)>) {
+fn observable(app: &App) -> (Vec<String>, Vec<Shape>, Vec<LineOwner>) {
     (app.lines.clone(), live_shapes(app), line_owners(app))
 }
 
@@ -152,13 +152,13 @@ fn index_keyed_state_follows_the_node_it_names() {
     let mut n = Some(app.first_node);
     let mut folded_shapes = Vec::new();
     while let Some(i) = n {
-        if app.tree[i].first_child.is_some() {
+        if app.tree[i].first_child().is_some() {
             app.folded.insert(i);
             app.refresh_line_counts(i);
             folded_shapes.push(shape_of(&app, i));
             app.pending_heat_recheck.insert(i);
         }
-        n = app.tree[i].doc_next;
+        n = app.tree[i].doc_next();
     }
     assert!(
         !folded_shapes.is_empty(),
@@ -255,7 +255,7 @@ fn the_verifier_rejects_a_broken_arena() {
     // fatal, and so the one most worth having a witness for.
     let mut app = app_with_garbage();
     let victim = app.dead.iter().position(|d| *d).unwrap();
-    app.tree[app.first_node].doc_next = Some(victim);
+    app.tree[app.first_node].set_doc_next(Some(victim));
     assert!(
         app.verify_arena().is_err(),
         "a live node pointing at a dead one must be rejected"
@@ -278,7 +278,7 @@ fn the_verifier_rejects_a_broken_arena() {
 
     let mut app = app_with_garbage();
     let root = app.first_node;
-    app.tree[root].last_child = None;
+    app.tree[root].set_last_child(None);
     assert!(
         app.verify_arena().is_err(),
         "a child chain disagreeing with last_child must be rejected"

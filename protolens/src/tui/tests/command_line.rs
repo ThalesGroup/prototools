@@ -281,7 +281,7 @@ fn load_overrides_without_a_root_entry_preserves_the_current_root_type() {
 
     assert!(warnings.is_empty(), "{warnings:?}");
     assert!(
-        app.tree[app.first_node].span.type_fqdn.as_deref() == Some("ms_test.Container"),
+        type_name_of(&app, app.first_node) == Some("ms_test.Container"),
         "root must keep its resolved type across a wholesale \
          override-collection replace, even though the loaded file \
          defines no root entry of its own: {:#?}",
@@ -332,10 +332,7 @@ fn type_as_command_applies_override_bypassing_pane() {
         app.override_target.is_none(),
         "the pane must never open for :type-as"
     );
-    assert_eq!(
-        app.tree[inner_idx].span.type_fqdn.as_deref(),
-        Some("test.Inner")
-    );
+    assert_eq!(type_name_of(&app, inner_idx), Some("test.Inner"));
     assert!(app.message.contains("test.Inner"));
 }
 
@@ -347,7 +344,7 @@ fn type_as_raw_command_marks_raw() {
     app.cursor = inner_idx;
     app.run_command("type-as-raw");
     assert!(app.override_target.is_none());
-    assert_eq!(app.tree[inner_idx].span.type_fqdn, None);
+    assert_eq!(app.tree[inner_idx].span.type_fqdn, NO_FQDN);
 }
 
 /// Spec 0135 §G4 (test plan item 13): `:type-as sint32` on a
@@ -500,7 +497,7 @@ fn resolve_path_is_the_inverse_of_positional_path() {
     let outer_idx = app
         .tree
         .iter()
-        .position(|n| n.parent.is_none())
+        .position(|n| n.parent().is_none())
         .expect("tree must have a wrapper root");
     assert_eq!(
         app.resolve_path(&app.positional_path(outer_idx)),
@@ -540,7 +537,7 @@ fn the_root_stays_the_first_node_across_a_root_respice() {
 
     assert_eq!(
         Some(app.first_node),
-        app.tree.iter().position(|n| n.parent.is_none()),
+        app.tree.iter().position(|n| n.parent().is_none()),
         "the arena must hold exactly one parentless node, and it must \
          be `first_node`"
     );

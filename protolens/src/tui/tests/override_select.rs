@@ -109,18 +109,18 @@ fn t_opens_the_override_pane_on_an_unresolved_message_node() {
             raw_range: 0..2,
             text_range: 0..2,
             level: 0,
-            type_fqdn: None,
+            type_fqdn: NO_FQDN,
             is_message: true,
-            packed_record_start: None,
-            wire_type: WT_LEN,
+            packed_record_start: NO_PACKED_RECORD,
+            wire_type: WT_LEN as u8,
         },
-        parent: None,
-        first_child: None,
-        last_child: None,
-        next_sibling: None,
-        prev_sibling: None,
-        doc_next: None,
-        doc_prev: None,
+        parent: NO_NODE,
+        first_child: NO_NODE,
+        last_child: NO_NODE,
+        next_sibling: NO_NODE,
+        prev_sibling: NO_NODE,
+        doc_next: NO_NODE,
+        doc_prev: NO_NODE,
         sibling_ordinal: 1,
         lines_total: 2,
         lines_visible: 2,
@@ -137,6 +137,7 @@ fn t_opens_the_override_pane_on_an_unresolved_message_node() {
         blob: vec![0x0A, 0x00],
         wrapper_offset: 0,
         root_candidates: Vec::new(),
+        fqdns: FqdnTable::new(),
     };
     let mut app = App::new(
         decoded,
@@ -168,18 +169,18 @@ fn t_opens_the_override_pane_on_a_varint_scalar_field() {
             raw_range: 0..2,
             text_range: 0..1,
             level: 0,
-            type_fqdn: None,
+            type_fqdn: NO_FQDN,
             is_message: false,
-            packed_record_start: None,
-            wire_type: WT_VARINT,
+            packed_record_start: NO_PACKED_RECORD,
+            wire_type: WT_VARINT as u8,
         },
-        parent: None,
-        first_child: None,
-        last_child: None,
-        next_sibling: None,
-        prev_sibling: None,
-        doc_next: None,
-        doc_prev: None,
+        parent: NO_NODE,
+        first_child: NO_NODE,
+        last_child: NO_NODE,
+        next_sibling: NO_NODE,
+        prev_sibling: NO_NODE,
+        doc_next: NO_NODE,
+        doc_prev: NO_NODE,
         sibling_ordinal: 1,
         lines_total: 1,
         lines_visible: 1,
@@ -196,6 +197,7 @@ fn t_opens_the_override_pane_on_a_varint_scalar_field() {
         blob: vec![0x08, 0x01],
         wrapper_offset: 0,
         root_candidates: Vec::new(),
+        fqdns: FqdnTable::new(),
     };
     let mut app = App::new(
         decoded,
@@ -339,18 +341,18 @@ fn t_opens_the_override_pane_on_a_length_delimited_scalar_field() {
             raw_range: 0..4,
             text_range: 0..1,
             level: 0,
-            type_fqdn: None,
+            type_fqdn: NO_FQDN,
             is_message: false,
-            packed_record_start: None,
-            wire_type: WT_LEN,
+            packed_record_start: NO_PACKED_RECORD,
+            wire_type: WT_LEN as u8,
         },
-        parent: None,
-        first_child: None,
-        last_child: None,
-        next_sibling: None,
-        prev_sibling: None,
-        doc_next: None,
-        doc_prev: None,
+        parent: NO_NODE,
+        first_child: NO_NODE,
+        last_child: NO_NODE,
+        next_sibling: NO_NODE,
+        prev_sibling: NO_NODE,
+        doc_next: NO_NODE,
+        doc_prev: NO_NODE,
         sibling_ordinal: 1,
         lines_total: 1,
         lines_visible: 1,
@@ -363,6 +365,7 @@ fn t_opens_the_override_pane_on_a_length_delimited_scalar_field() {
         blob: vec![0x0A, 0x02, b'h', b'i'],
         wrapper_offset: 0,
         root_candidates: Vec::new(),
+        fqdns: FqdnTable::new(),
     };
     let mut app = App::new(
         decoded,
@@ -1163,11 +1166,8 @@ fn enter_key_applies_override_and_closes_pane() {
     app.splash = false;
     app.term_width = 120;
 
-    let inner_idx = app
-        .tree
-        .iter()
-        .position(|n| n.span.type_fqdn.as_deref() == Some("test.Inner"))
-        .expect("tree must contain the Inner submessage");
+    let inner_idx =
+        node_with_type(&app, "test.Inner").expect("tree must contain the Inner submessage");
     app.cursor = inner_idx;
 
     // Spec 0137 §G4: inferred mode has no raw/`None` row at all, so
@@ -1182,7 +1182,7 @@ fn enter_key_applies_override_and_closes_pane() {
     app.override_highlight = 0;
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.override_target.is_none(), "pane must close on success");
-    assert_eq!(app.tree[inner_idx].span.type_fqdn, None);
+    assert_eq!(app.tree[inner_idx].span.type_fqdn, NO_FQDN);
     assert!(app.message.is_empty(), "no error expected: {}", app.message);
     // Spec 0200 test-plan item 2 (S2), narrowing spec 0119 G3: this
     // pane was opened with `t` from the main pane, so `Enter` returns
@@ -1213,10 +1213,7 @@ fn enter_key_applies_override_and_closes_pane() {
     app.override_highlight = row;
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.override_target.is_none());
-    assert_eq!(
-        app.tree[inner_idx].span.type_fqdn.as_deref(),
-        Some(chosen.as_str())
-    );
+    assert_eq!(type_name_of(&app, inner_idx), Some(chosen.as_str()));
 }
 
 /// Spec 0152 G7 test plan: `recompute_override_candidates` in
@@ -1456,7 +1453,7 @@ fn override_pane_auto_completes_from_polling_alone_without_scrolling() {
     // it too, so the cursor node is genuinely typeless as well as
     // override-less, exercising `open_override_on_default` in
     // isolation.
-    app.tree[0].span.type_fqdn = None;
+    app.tree[0].span.type_fqdn = NO_FQDN;
     // Four repeated, structurally valid field-1 varint encodings — an
     // all-zero payload's leading tag byte (field number 0) is
     // structurally invalid and would veto every candidate.
@@ -1852,7 +1849,7 @@ fn a_failing_candidate_drops_the_overlay_and_leaves_the_document_intact() {
         ("nonexistent.Type".to_string(), None),
     ];
     let lines = app.lines.clone();
-    let first_child = app.tree[inner_idx].first_child;
+    let first_child = app.tree[inner_idx].first_child();
 
     app.override_highlight = 0;
     app.preview_override_highlight();
@@ -1869,7 +1866,7 @@ fn a_failing_candidate_drops_the_overlay_and_leaves_the_document_intact() {
     );
     assert!(app.preview_overlay.is_none());
     assert_eq!(app.lines, lines);
-    assert_eq!(app.tree[inner_idx].first_child, first_child);
+    assert_eq!(app.tree[inner_idx].first_child(), first_child);
 }
 
 /// Spec 0185 S5/G5: while the override-selection pane is open, focus is
@@ -2041,7 +2038,7 @@ fn confirming_after_several_previews_matches_confirming_directly() {
 fn esc_after_several_previews_reverts_to_original_content() {
     let (mut app, inner_idx, _) = type_as_fixture();
     let original_lines = app.lines.clone();
-    let original_type_fqdn = app.tree[inner_idx].span.type_fqdn.clone();
+    let original_type_fqdn = app.tree[inner_idx].span.type_fqdn;
 
     app.cursor = inner_idx;
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));

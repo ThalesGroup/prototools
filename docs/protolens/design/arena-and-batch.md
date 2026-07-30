@@ -380,6 +380,27 @@ measured 3.9–4.0 GiB, which leaves the render cache's 432 MB
 **unaccounted for**. That discrepancy is real and unresolved; do not
 assume it is explained.
 
+**Correction, measured 2026-07-30 (spec 0211).** The three terms are not
+"roughly equal", and the table above overstates two of them. Narrowing
+the slot by 88 B moved the peak by **2.29** slot-copies, not three:
+4 379 916 kB → 3 493 144 kB, i.e. 4.18 → 3.33 GiB. The reason is that
+only the *surviving* arena is 4.5 M nodes. The other two terms scale with
+the **replacement** tree, and a raw-message retype of this corpus turns
+5 281 124 lines into 1 487 288 — so `local_tree` and the arena's new half
+are each ≈2.9 M nodes here, not 4.5 M. So:
+
+- The multiplier is **a property of the workload, bounded above by 3**,
+  and reaches 3 only for a size-preserving retype. Quote the workload,
+  not the constant.
+- The render cache's clone holds `NodeSpan`s, so it moved by **0** — it
+  is invariant to the link narrowing and only starts shrinking when rows
+  2-8 narrow the span itself.
+- Two measurement traps, both of which hid this peak from earlier
+  drivers: `:type-as-raw` must be applied on **line 0** (one `Down` first
+  retypes a 35-line record and does not move peak RSS at all), and the
+  **batch** path does not show it either — there, applied and not-applied
+  peak identically and the whole slot delta is the arena at rest.
+
 ### A finding about the render cache worth checking first
 
 `RENDER_CACHE_MAX_BYTES` is `1 << 20` — one mebibyte. But
@@ -676,8 +697,9 @@ A third stale figure lives in the code: `override_apply.rs:1277` says
 Derived from the field list; the total is confirmed by measurement.
 
 This table is the layout **before** spec 0210, which added `lines_total`
-and `lines_visible` (4 B each) and took the slot to 272 B. It is left as
-it was because it is what the eleven opportunities below were sized
+and `lines_visible` (4 B each) and took the slot to 272 B, and before
+spec 0211, which did row 1 and took it to **184 B**. It is left as it
+was because it is what the eleven opportunities below were sized
 against, and because 0210 changed what `text_range` *means* rather than
 how much it costs: the field is now written at build time and re-derived
 from the counters on demand, so row 3 below could become a deletion
@@ -723,20 +745,20 @@ at all (everything is 4-byte aligned or smaller and sorts cleanly).
 
 | # | change | before | after | saved |
 | --- | --- | --- | --- | --- |
-| 1 | 7 links → `type NodeIdx = u32` with a named sentinel | 112 | 28 | **84** |
-| 2 | `raw_range` → `(u32, u32)` | 16 | 8 | 8 |
-| 3 | `text_range` → `(u32, u32)` | 16 | 8 | 8 |
-| 4 | `packed_record_start` → `u32` sentinel | 16 | 4 | 12 |
-| 5 | `field_number` → `u32` | 8 | 4 | 4 |
-| 6 | `level` → `u16` | 8 | 2 | 6 |
-| 7 | `is_message` + `wire_type` → a flag byte + a `u8` | 5 (+3 pad) | 2 | 6 |
-| 8 | `sibling_ordinal` stays `u32` | 4 | 4 | 0 |
+| 1 | 7 links → `type NodeIdx = u32` with a named sentinel — **done, spec 0211** | 112 | 28 | **84** |
+| 2 | `raw_range` → `Range<u32>` — **done, spec 0212** | 16 | 8 | 8 |
+| 3 | `text_range` → `Range<u32>` — **done, spec 0212** | 16 | 8 | 8 |
+| 4 | `packed_record_start` → `u32` sentinel — **done, spec 0212** | 16 | 4 | 12 |
+| 5 | `field_number` → `u32` — **done, spec 0212** | 8 | 4 | 4 |
+| 6 | `level` → `u16` — **done, spec 0212** | 8 | 2 | 6 |
+| 7 | `is_message` + `wire_type` → a `bool` + a `u8` — **done, spec 0212** | 5 (+3 pad) | 2 | 6 |
+| 8 | `sibling_ordinal` stays `u32` — **done, spec 0212** | 4 | 4 | 0 |
 
 **Needs a table, and the table needs an owner.**
 
 | # | change | before | after | saved |
 | --- | --- | --- | --- | --- |
-| 9 | `type_fqdn` → an interned `u32` symbol | 24 | 4 | **20**, plus ~one heap allocation per message node |
+| 9 | `type_fqdn` → an interned `u32` symbol — **done, spec 0212** | 24 | 4 | **20**, plus ~one heap allocation per message node |
 | 10 | `rendered_as` → a pair of interned symbols | 48 | 8 | **40**, plus up to two allocations per spliced node |
 
 **Structural, and optional.**
@@ -746,9 +768,24 @@ at all (everything is 4-byte aligned or smaller and sorts cleanly).
 | 11 | split the arena into a hot link column and a cold span column | 0 bytes, but see below |
 
 Rows 1-10 sum to **192 B**: `NodeSpan` 96 → 32, `TreeNode` 264 → **72**,
-which is exactly the target W25 already set. A
-`const _: () = assert!(size_of::<TreeNode>() <= 72);` should land with
-the last of them so it cannot silently regress.
+which is exactly the target W25 already set. Counting spec 0210's two
+counters, which arrived after this table, the same rows take today's
+272 B to 72 B.
+
+Spec 0211 landed row 1 and spec 0212 landed rows 2-9, so the slot is
+**120 B** now — `NodeSpan` 96 → **32** and `TreeNode` 272 → 120 — and
+`const _: () = assert!(size_of::<TreeNode>() == 120)` beside `TreeNode`
+plus `assert!(size_of::<NodeSpan>() == 32)` beside `NodeSpan` keep both
+there. The assertions are equalities rather than bounds, so growth is
+caught as well as celebrated, and each later row moves the numbers
+deliberately. Only row 10 (`rendered_as`, 48 B) and row 11 remain, which
+is what puts the slot at the 72 B target.
+
+Spec 0212 also took a decision the "Suggested order" below had left open:
+`level` is `u16` with no `debug_assert` needed (`MAX_WIRE_DEPTH` is 1000,
+enforced at decode), `field_number` needs no saturation because a
+protobuf field number is ≤ 2²⁹ − 1 by the wire format, and `text_range`
+did **not** go away — see trap 7.
 
 ### What each is actually worth, on the measured run
 
@@ -767,6 +804,28 @@ Against a ~3.0 GB accounted peak, narrowing removes about **2.2 GB**.
 That is more than lever A (1.37 GB) and more than B and C. The reason is
 that the same constant appears in four different places, so it is the
 only change that pays four times.
+
+**Calibrate that 2.2 GB against specs 0211 and 0212 before relying on
+it.** Row 1 alone predicted 88 B × 4.5 M in each of four places = 1.55 GB
+and delivered **0.89 GB** at the peak (2.29 copies, not 4). Two of the
+four rows in the table above are the reason: the superseded half and
+`local_tree` size with the *replacement* tree, which on this corpus is
+≈2.9 M nodes rather than 4.5 M, and the render cache's span copy does not
+respond to a link change at all. The rows-2-8 and rows-9-10 estimates in
+this table are computed the same optimistic way, so read them as upper
+bounds. The at-rest column is the one that behaved exactly as predicted
+(within 0.04%).
+
+Spec 0212 then narrowed the span itself by the same 64 B, and the fourth
+row *did* respond: it delivered **0.82 GB** more at the peak, a
+multiplier of **3.06** — three arena-shaped copies at 2.29, exactly
+reproducing 0211, plus ≈0.77 (≈212 MiB) of span-shaped copies. So the
+four-place model is right about there being four places; what it gets
+wrong is treating them as interchangeable. Three scale with the *node*
+count of whichever tree is being built, and one scales with the *span*
+count of whatever the render cache is holding. At rest the same spec came
+in at 1.12 rather than 1.00, the extra 12% being 34 MiB of `type_fqdn`
+heap that row 9 deleted (≈8 B/node averaged over the arena — see trap 2).
 
 The FQDN interning (row 9) deserves its own line: at ~59 k distinct type
 names it collapses ~185 MB of scattered small strings into a table of a
@@ -797,7 +856,7 @@ structurally identical cause elsewhere in the program.
 
 ### The traps
 
-Six things that will bite, in the order they will bite.
+Seven things that will bite, in the order they will bite.
 
 1. **`rendered_as` as a side `HashMap<NodeIdx, _>` conflicts with the
    rest of this work.** S12 and W25 both propose it, and on its own it
@@ -810,10 +869,23 @@ Six things that will bite, in the order they will bite.
 2. **The refusal guard must be re-tuned, not merely recompiled.**
    Part 2's `per_node = size_of::<TreeNode>() + 64` picks up the new
    `size_of` automatically, but the `+ 64` exists specifically to cover
-   the per-node `Option<String>` that row 9 deletes. Left alone, the
-   guard silently loosens from 328 to 136 B/node — a 2.4× larger
-   document accepted before refusal, arrived at by accident. Decide the
-   new constant deliberately.
+   the per-node `Option<String>` that row 9 deletes. Spec 0211 left the
+   `+ 64` alone deliberately, because that spec touches neither `String`,
+   so `per_node` falling 336 → 248 tracks a real drop.
+
+   **Spec 0212 re-derived it and left it at 64, deliberately.** Row 9
+   removes the `type_fqdn` half of the ~41 B/node of `String`
+   allocations the allowance names, leaving the `rendered_as` half and
+   all ~42 B/node of the `heat_states`/`descend`/`dead` parallel arrays
+   — so 64 still under-covers what remains, which is the safe direction
+   for a guard, and the allowance goes on tracking something real. What
+   changed is the comment, which no longer claims to cover `type_fqdn`.
+   Re-tuning the number itself needs a measurement of the *guard*, not
+   of the slot, and belongs in whichever spec does that. Row 10 is the
+   one where the choice is forced: once `rendered_as` is interned too,
+   the first half of the `+ 64` names nothing at all, and left alone the
+   guard would silently loosen — a larger document accepted before
+   refusal, arrived at by accident. Take it to 0 deliberately there.
 3. **Row 9 crosses the crate boundary.** `type_fqdn` lives on
    `NodeSpan`, which is `prototext-core`'s type, and
    `prototext_core_constraints` records scope discipline there. The
@@ -822,6 +894,19 @@ Six things that will bite, in the order they will bite.
    `build_tree`. That decouples the change entirely, and has the side
    benefit that `local_tree` (lever B) can then be built narrow even
    before the library moves.
+
+   **Spec 0212 took the crate-boundary route, not the local packed
+   node**, for three reasons. First, a local node would leave `NodeSpan`
+   at 96 B, and the flat span list is *itself* one of the four places
+   the constant is paid — the render cache stores `NodeSpan`s, so a
+   protolens-local narrowing would not move that term at all. Second,
+   the conversion would have to be written and maintained twice over,
+   once each way, since spans travel back out of protolens into
+   `render_node_as`'s splice. Third, the library's own consumers benefit:
+   the narrowing is a pure win for anything indexing a render, and the
+   scope-discipline concern is about *extending* the rendered grammar,
+   not about the width of an index type. The cost is one real semver
+   break for external users of `decode_and_render_indexed`, accepted.
 4. **`build_tree` is `spans.into_iter().map(..).collect()`.** Source and
    destination element sizes already differ, so the source `Vec` stays
    alive alongside the fully allocated destination. Narrowing widens
@@ -831,26 +916,63 @@ Six things that will bite, in the order they will bite.
    nodes. The worst figure ever observed here is `tree.len()` =
    13 499 684, and `capacity()` = 18 004 056 — a 238× margin. Safe, but
    make it a type alias and a named sentinel constant so the cap is one
-   line to revisit rather than a repo-wide `usize` hunt.
+   line to revisit rather than a repo-wide `usize` hunt. Spec 0211 did
+   exactly that: `decode::NodeIdx` and `decode::NO_NODE`. The sentinel is
+   `NodeIdx::MAX` rather than a `NonZeroU32` index-plus-one, because
+   `build_tree` is post-order and slot 0 is a real node.
 6. **`packed_record_start` uses `0` as a legal value.** Part 4 already
    flags this field's rebasing as a live bug source. A `u32::MAX`
    sentinel is correct; a `NonZeroU32` or an index-plus-one is not,
-   because offset 0 is a real offset.
+   because offset 0 is a real offset. Spec 0212 did exactly that:
+   `NO_PACKED_RECORD`.
+7. **An intern table needs exactly two sentinels, not one.** Spec 0212
+   found this the hard way. `NO_FQDN` marks a span with no resolved
+   type, and `id_of` — the lookup that turns a name into an id so it can
+   be compared against a span's — must answer something *else* for a
+   name it has never seen. The idiom that replaces
+   `span.type_fqdn.as_deref() == Some(name)` is
+   `span.type_fqdn == table.id_of(name)`, and the string form is `false`
+   for a typeless span. Were the miss to answer `NO_FQDN` it would
+   instead compare *equal* to every typeless span, so on a document
+   containing no `google.protobuf.Any` every scalar would report itself
+   as an `Any`. A second reserved value (`UNINTERNED`) that no span can
+   hold makes the substitution exact with no guard at the call sites —
+   and there are about fifty of them, so a guard was not an option.
+   Row 10 will want the same shape.
 
 ### Suggested order
 
 Different from S12's, because the batch changes the priorities.
 
-1. **Row 9, FQDN interning.** Largest single win, introduces the intern
-   table rows 10 and 3 (or a protolens-local node) reuse, and is the
-   only one that is also a startup-latency fix.
-2. **Row 1, `NodeIdx`.** 84 B, purely mechanical, and it settles the
-   index type that lever A's free list and any future window store both
-   want to build on.
-3. **Row 10, `rendered_as`.** Needs row 9's table. Take the interning
-   route, not the side table — see trap 1.
-4. **Rows 2-8, the scalars.** One commit, 44 B, no design question left
-   in any of them.
+1. ~~**Row 1, `NodeIdx`.**~~ **Done, spec 0211.** Taken first rather than
+   second: it is the largest single row at 88 B, it lives entirely inside
+   protolens's own type so trap 3 does not apply, its call sites are
+   disjoint from the ones the scalars touch, and it settles the index
+   type that lever A's free list and any future window store both want
+   to build on.
+2. ~~**Rows 2-8, the scalars.**~~ **Done, spec 0212**, together with row
+   9 — the two were taken in one pass because both cross the crate
+   boundary and the call-site churn overlaps almost completely. Three of
+   the four decided points here changed on contact with the code (see
+   trap 3 for the fourth): the cap is `MAX_INDEXED_BUFFER` =
+   `u32::MAX / 8` (511 MiB), refused by
+   `decode_and_render_indexed` rather than at open time, because the
+   renderer already reserved `buf.len() * 8` unconditionally and so had
+   an unnamed ceiling that *aborted* instead of refusing; `field_number`
+   needs no saturation, since the wire format bounds it at 2²⁹ − 1;
+   `level` needs no `debug_assert`, since `MAX_WIRE_DEPTH` = 1000 is
+   enforced at decode. And `text_range` did **not** go away — spec
+   0210's "no production reader" finding is about the *arena's* stale
+   copy, not the flat list the library returns, which has three live
+   readers.
+3. ~~**Row 9, FQDN interning.**~~ **Done, spec 0212.** The table
+   (`FqdnTable`) is owned by the caller and passed in, not created
+   per-call: an id has to mean the same type in a freshly spliced span
+   as in the arena around it, and a per-call table would make that
+   silently false. Row 10 reuses it.
+4. **Row 10, `rendered_as`.** Needs row 9's table. Take the interning
+   route, not the side table — see trap 1. This is also where
+   `STRING_ALLOWANCE` must be re-derived, per trap 2.
 5. **Row 11, hot/cold split.** Only if the navigation profile still
    justifies it after the above. It is the one row here that is a
    refactor rather than a retype.

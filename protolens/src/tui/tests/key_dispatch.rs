@@ -14,6 +14,7 @@ fn q_confirmation_is_cancelled_by_any_other_key() {
         blob: Vec::new(),
         wrapper_offset: 0,
         root_candidates: Vec::new(),
+        fqdns: FqdnTable::new(),
     };
     let mut app = App::new(
         decoded,
@@ -57,6 +58,7 @@ fn ctrl_z_sets_should_suspend_without_disturbing_quit_confirm() {
         blob: Vec::new(),
         wrapper_offset: 0,
         root_candidates: Vec::new(),
+        fqdns: FqdnTable::new(),
     };
     let mut app = App::new(
         decoded,
@@ -475,10 +477,7 @@ fn v_in_main_pane_resolves_an_enum_scalars_natural_type() {
 #[cfg(unix)]
 fn v_is_a_no_op_for_the_internal_message_set_item_fqdn() {
     let mut app = message_set_fixture();
-    let item_idx = app
-        .tree
-        .iter()
-        .position(|n| n.span.type_fqdn.as_deref() == Some(decode::MESSAGE_SET_ITEM_FQDN))
+    let item_idx = node_with_type(&app, decode::MESSAGE_SET_ITEM_FQDN)
         .expect("fixture must contain a MessageSet Item node");
     app.cursor = item_idx;
 
@@ -747,8 +746,8 @@ fn default_export_descriptor_path_falls_back_to_the_numeric_range_when_unresolva
     // parses the wire tag at `raw_range.start`, so an empty/synthetic
     // blob would panic).
     let blob = vec![0x08u8, 0x05, 0x10u8, 0x07];
-    let make_node = |field_number: u64,
-                     raw_range: std::ops::Range<usize>,
+    let make_node = |field_number: u32,
+                     raw_range: std::ops::Range<u32>,
                      next_sibling: Option<usize>,
                      prev_sibling: Option<usize>| TreeNode {
         span: NodeSpan {
@@ -756,18 +755,18 @@ fn default_export_descriptor_path_falls_back_to_the_numeric_range_when_unresolva
             raw_range,
             text_range: 0..1,
             level: 0,
-            type_fqdn: None,
+            type_fqdn: NO_FQDN,
             is_message: false,
-            packed_record_start: None,
-            wire_type: WT_VARINT,
+            packed_record_start: NO_PACKED_RECORD,
+            wire_type: WT_VARINT as u8,
         },
-        parent: None,
-        first_child: None,
-        last_child: None,
-        next_sibling,
-        prev_sibling,
-        doc_next: next_sibling,
-        doc_prev: prev_sibling,
+        parent: NO_NODE,
+        first_child: NO_NODE,
+        last_child: NO_NODE,
+        next_sibling: TreeNode::pack(next_sibling),
+        prev_sibling: TreeNode::pack(prev_sibling),
+        doc_next: TreeNode::pack(next_sibling),
+        doc_prev: TreeNode::pack(prev_sibling),
         sibling_ordinal: prev_sibling.map_or(1, |p| p as u32 + 2),
         lines_total: 1,
         lines_visible: 1,
@@ -784,6 +783,7 @@ fn default_export_descriptor_path_falls_back_to_the_numeric_range_when_unresolva
         blob,
         wrapper_offset: 0,
         root_candidates: Vec::new(),
+        fqdns: FqdnTable::new(),
     };
     let mut app = App::new(
         decoded,

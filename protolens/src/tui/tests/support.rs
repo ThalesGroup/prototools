@@ -21,17 +21,47 @@ pub(super) use ratatui::backend::TestBackend;
 /// has to be preserved.
 pub(super) type Shape = (usize, u64, Option<String>, std::ops::Range<usize>);
 
+/// A rendered line's owner: `(line, the owning node's shape, is_footer)`.
+pub(super) type LineOwner = (usize, Shape, bool);
+
 pub(super) fn shape_of(app: &App, idx: usize) -> Shape {
     let s = &app.tree[idx].span;
     // Spec 0210 S1: the line range is derived from the counters, not
     // read off `span.text_range` — which is the range the node had when
     // the tree was built and is not repaired by a splice.
+    // Spec 0212: widened back out here on purpose. `Shape` exists to be
+    // printed in an assertion failure, and an `FqdnId(37)` says nothing.
     (
-        s.level,
-        s.field_number,
-        s.type_fqdn.clone(),
+        s.level as usize,
+        u64::from(s.field_number),
+        app.fqdns.get(s.type_fqdn).map(str::to_owned),
         app.node_lines(idx),
     )
+}
+
+/// The first node in the arena whose resolved type is `fqdn`.
+///
+/// Spec 0212 S6: the name is interned once, here, and the ids compared.
+/// Resolving each node's id back to a string inside the closure would need
+/// `app.fqdns` borrowed alongside `app.tree` and would turn every one of
+/// these iterator chains into an index loop. `id_of`'s miss is
+/// `UNINTERNED`, which no span holds, so a name the document never
+/// produced finds nothing rather than matching every typeless node.
+pub(super) fn node_with_type(app: &App, fqdn: &str) -> Option<usize> {
+    let want = app.fqdns.id_of(fqdn);
+    app.tree.iter().position(|n| n.span.type_fqdn == want)
+}
+
+/// Whether any node in the arena has resolved type `fqdn` — the `any`
+/// counterpart of `node_with_type`.
+pub(super) fn has_node_with_type(app: &App, fqdn: &str) -> bool {
+    node_with_type(app, fqdn).is_some()
+}
+
+/// `idx`'s resolved type name, for the assertions that want to *print* it
+/// rather than match it.
+pub(super) fn type_name_of(app: &App, idx: usize) -> Option<&str> {
+    app.fqdns.get(app.tree[idx].span.type_fqdn)
 }
 
 /// Every node still reachable from the root, in document order.
@@ -41,10 +71,10 @@ pub(super) fn live_shapes(app: &App) -> Vec<Shape> {
     while let Some(i) = stack.pop() {
         out.push(shape_of(app, i));
         let mut kids = Vec::new();
-        let mut c = app.tree[i].first_child;
+        let mut c = app.tree[i].first_child();
         while let Some(ci) = c {
             kids.push(ci);
-            c = app.tree[ci].next_sibling;
+            c = app.tree[ci].next_sibling();
         }
         stack.extend(kids.into_iter().rev());
     }
@@ -59,7 +89,7 @@ pub(super) fn live_shapes(app: &App) -> Vec<Shape> {
 /// pair. Both maps are gone, so the question "does every line still
 /// resolve to the same node it did" is asked of `line_pos` — which is
 /// the thing every reader now goes through anyway.
-pub(super) fn line_owners(app: &App) -> Vec<(usize, Shape, bool)> {
+pub(super) fn line_owners(app: &App) -> Vec<LineOwner> {
     (0..app.lines.len())
         .filter_map(|l| {
             app.line_pos(l)
@@ -76,6 +106,7 @@ pub(super) fn empty_app() -> App {
         blob: Vec::new(),
         wrapper_offset: 0,
         root_candidates: Vec::new(),
+        fqdns: FqdnTable::new(),
     };
     App::new(
         decoded,
@@ -102,24 +133,25 @@ pub(super) fn message_node_app_with_root_candidates(
     root_candidates: crate::decode::RankedCandidates,
 ) -> App {
     let lines: Vec<String> = vec!["message_type {".to_string(), "}".to_string()];
+    let mut fqdns = FqdnTable::new();
     let node = TreeNode {
         span: NodeSpan {
             field_number: 4,
             raw_range: 0..10,
             text_range: 0..2,
             level: 0,
-            type_fqdn: Some("google.protobuf.DescriptorProto".to_string()),
+            type_fqdn: fqdns.intern("google.protobuf.DescriptorProto"),
             is_message: true,
-            packed_record_start: None,
-            wire_type: WT_LEN,
+            packed_record_start: NO_PACKED_RECORD,
+            wire_type: WT_LEN as u8,
         },
-        parent: None,
-        first_child: None,
-        last_child: None,
-        next_sibling: None,
-        prev_sibling: None,
-        doc_next: None,
-        doc_prev: None,
+        parent: NO_NODE,
+        first_child: NO_NODE,
+        last_child: NO_NODE,
+        next_sibling: NO_NODE,
+        prev_sibling: NO_NODE,
+        doc_next: NO_NODE,
+        doc_prev: NO_NODE,
         sibling_ordinal: 1,
         lines_total: 2,
         lines_visible: 2,
@@ -136,6 +168,7 @@ pub(super) fn message_node_app_with_root_candidates(
         blob: vec![0x22, 0x08, 0, 0, 0, 0, 0, 0, 0, 0],
         wrapper_offset: 0,
         root_candidates,
+        fqdns,
     };
     App::new(
         decoded,
@@ -194,22 +227,22 @@ pub(super) fn sibling_leaves_app(texts: &[&str]) -> App {
     let tree: Vec<TreeNode> = (0..n)
         .map(|i| TreeNode {
             span: NodeSpan {
-                field_number: i as u64 + 1,
-                raw_range: (i * 10)..(i * 10 + 5),
-                text_range: i..i + 1,
+                field_number: i as u32 + 1,
+                raw_range: (i * 10) as u32..(i * 10 + 5) as u32,
+                text_range: i as u32..i as u32 + 1,
                 level: 0,
-                type_fqdn: None,
+                type_fqdn: NO_FQDN,
                 is_message: false,
-                packed_record_start: None,
-                wire_type: WT_VARINT,
+                packed_record_start: NO_PACKED_RECORD,
+                wire_type: WT_VARINT as u8,
             },
-            parent: None,
-            first_child: None,
-            last_child: None,
-            next_sibling: (i + 1 < n).then_some(i + 1),
-            prev_sibling: i.checked_sub(1),
-            doc_next: (i + 1 < n).then_some(i + 1),
-            doc_prev: i.checked_sub(1),
+            parent: NO_NODE,
+            first_child: NO_NODE,
+            last_child: NO_NODE,
+            next_sibling: TreeNode::pack((i + 1 < n).then_some(i + 1)),
+            prev_sibling: TreeNode::pack(i.checked_sub(1)),
+            doc_next: TreeNode::pack((i + 1 < n).then_some(i + 1)),
+            doc_prev: TreeNode::pack(i.checked_sub(1)),
             sibling_ordinal: i as u32 + 1,
             lines_total: 1,
             lines_visible: 1,
@@ -223,6 +256,7 @@ pub(super) fn sibling_leaves_app(texts: &[&str]) -> App {
         blob: Vec::new(),
         wrapper_offset: 0,
         root_candidates: Vec::new(),
+        fqdns: FqdnTable::new(),
     };
     App::new(
         decoded,
@@ -303,7 +337,7 @@ pub(super) fn repeated_scalar_fixture() -> (App, Vec<usize>) {
         .tree
         .iter()
         .enumerate()
-        .filter(|(_, n)| n.span.packed_record_start.is_some())
+        .filter(|(_, n)| n.span.packed_record_start != NO_PACKED_RECORD)
         .map(|(i, _)| i)
         .collect();
     items.sort_by_key(|&i| app.positional_path(i));
@@ -398,13 +432,13 @@ pub(super) fn repeated_message_fixture() -> (App, Vec<usize>) {
     let root = app
         .tree
         .iter()
-        .position(|n| n.parent.is_none())
+        .position(|n| n.parent().is_none())
         .expect("tree must have a root");
     let mut items = Vec::new();
-    let mut c = app.tree[root].first_child;
+    let mut c = app.tree[root].first_child();
     while let Some(i) = c {
         items.push(i);
-        c = app.tree[i].next_sibling;
+        c = app.tree[i].next_sibling();
     }
     assert_eq!(items.len(), 3, "fixture must contain 3 Item submessages");
     (app, items)
@@ -428,28 +462,28 @@ pub(super) fn wide_sibling_scalars_app(n: usize) -> App {
     let mut blob = Vec::new();
     let tree: Vec<TreeNode> = (0..n)
         .map(|i| {
-            let field_number = (i % 15) as u64 + 1;
-            let start = blob.len();
-            blob.push(((field_number << 3) | WT_VARINT as u64) as u8);
+            let field_number = (i % 15) as u32 + 1;
+            let start = blob.len() as u32;
+            blob.push(((field_number << 3) | WT_VARINT) as u8);
             blob.push(0);
             TreeNode {
                 span: NodeSpan {
                     field_number,
                     raw_range: start..start + 2,
-                    text_range: i..i + 1,
+                    text_range: i as u32..i as u32 + 1,
                     level: 0,
-                    type_fqdn: None,
+                    type_fqdn: NO_FQDN,
                     is_message: false,
-                    packed_record_start: None,
-                    wire_type: WT_VARINT,
+                    packed_record_start: NO_PACKED_RECORD,
+                    wire_type: WT_VARINT as u8,
                 },
-                parent: None,
-                first_child: None,
-                last_child: None,
-                next_sibling: (i + 1 < n).then_some(i + 1),
-                prev_sibling: i.checked_sub(1),
-                doc_next: (i + 1 < n).then_some(i + 1),
-                doc_prev: i.checked_sub(1),
+                parent: NO_NODE,
+                first_child: NO_NODE,
+                last_child: NO_NODE,
+                next_sibling: TreeNode::pack((i + 1 < n).then_some(i + 1)),
+                prev_sibling: TreeNode::pack(i.checked_sub(1)),
+                doc_next: TreeNode::pack((i + 1 < n).then_some(i + 1)),
+                doc_prev: TreeNode::pack(i.checked_sub(1)),
                 sibling_ordinal: i as u32 + 1,
                 lines_total: 1,
                 lines_visible: 1,
@@ -464,6 +498,7 @@ pub(super) fn wide_sibling_scalars_app(n: usize) -> App {
         blob,
         wrapper_offset: 0,
         root_candidates: Vec::new(),
+        fqdns: FqdnTable::new(),
     };
     App::new(
         decoded,
@@ -574,13 +609,13 @@ pub(super) fn packed_run_with_tail_fixture() -> (App, Vec<usize>, usize, usize, 
     let root = app
         .tree
         .iter()
-        .position(|node| node.parent.is_none())
+        .position(|node| node.parent().is_none())
         .expect("tree must have a root");
     let mut children = Vec::new();
-    let mut c = app.tree[root].first_child;
+    let mut c = app.tree[root].first_child();
     while let Some(i) = c {
         children.push(i);
-        c = app.tree[i].next_sibling;
+        c = app.tree[i].next_sibling();
     }
     assert_eq!(
         children.len(),
@@ -590,7 +625,7 @@ pub(super) fn packed_run_with_tail_fixture() -> (App, Vec<usize>, usize, usize, 
     let elems = children[..3].to_vec();
     for &e in &elems {
         assert!(
-            app.tree[e].span.packed_record_start.is_some(),
+            app.tree[e].span.packed_record_start != NO_PACKED_RECORD,
             "the first three children must be the packed run"
         );
     }
@@ -821,13 +856,10 @@ pub(super) fn type_as_fixture() -> (App, usize, usize) {
     // warning. Clear it: tests here assert on messages *they* provoke.
     app.message.clear();
 
-    let inner_idx = app
-        .tree
-        .iter()
-        .position(|n| n.span.type_fqdn.as_deref() == Some("test.Inner"))
-        .expect("tree must contain the Inner submessage");
+    let inner_idx =
+        node_with_type(&app, "test.Inner").expect("tree must contain the Inner submessage");
     let id_idx = app.tree[inner_idx]
-        .first_child
+        .first_child()
         .expect("Inner has at least one child");
     (app, inner_idx, id_idx)
 }
@@ -904,13 +936,10 @@ pub(super) fn empty_message_fixture() -> (App, usize) {
     app.splash = false;
     app.term_width = 120;
 
-    let inner_idx = app
-        .tree
-        .iter()
-        .position(|n| n.span.type_fqdn.as_deref() == Some("test.Inner"))
-        .expect("tree must contain the empty Inner submessage");
+    let inner_idx =
+        node_with_type(&app, "test.Inner").expect("tree must contain the empty Inner submessage");
     assert!(
-        app.tree[inner_idx].first_child.is_none(),
+        app.tree[inner_idx].first_child().is_none(),
         "fixture must exercise the no-children case"
     );
     (app, inner_idx)
@@ -1096,11 +1125,8 @@ pub(super) fn group_type_fixture_with_blob(blob: &[u8]) -> (App, usize) {
     app.splash = false;
     app.term_width = 120;
 
-    let grp_idx = app
-        .tree
-        .iter()
-        .position(|n| n.span.type_fqdn.as_deref() == Some("test.MyGroup"))
-        .expect("tree must contain the MyGroup submessage");
+    let grp_idx =
+        node_with_type(&app, "test.MyGroup").expect("tree must contain the MyGroup submessage");
     (app, grp_idx)
 }
 
@@ -1765,9 +1791,11 @@ pub(super) fn pruned_tail_fixture() -> (App, usize, usize, usize, usize) {
     app.term_width = 120;
 
     let root = app.first_node;
-    let head = app.tree[root].first_child.expect("Outer has children");
-    let tail = app.tree[head].next_sibling.expect("Outer has two children");
-    let tail_leaf = app.tree[tail].first_child.expect("tail wraps a Leaf");
-    let tail_v = app.tree[tail_leaf].first_child.expect("Leaf holds v");
+    let head = app.tree[root].first_child().expect("Outer has children");
+    let tail = app.tree[head]
+        .next_sibling()
+        .expect("Outer has two children");
+    let tail_leaf = app.tree[tail].first_child().expect("tail wraps a Leaf");
+    let tail_v = app.tree[tail_leaf].first_child().expect("Leaf holds v");
     (app, head, tail, tail_leaf, tail_v)
 }

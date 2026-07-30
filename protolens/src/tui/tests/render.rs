@@ -22,6 +22,7 @@ fn empty_tree_renders_and_handles_keys_without_panicking() {
         blob: Vec::new(),
         wrapper_offset: 0,
         root_candidates: Vec::new(),
+        fqdns: FqdnTable::new(),
     };
     let mut app = App::new(
         decoded,
@@ -320,18 +321,18 @@ fn a_toggles_the_main_pane_annotation_display() {
             raw_range: 0..2,
             text_range: 0..1,
             level: 0,
-            type_fqdn: None,
+            type_fqdn: NO_FQDN,
             is_message: false,
-            packed_record_start: None,
-            wire_type: WT_VARINT,
+            packed_record_start: NO_PACKED_RECORD,
+            wire_type: WT_VARINT as u8,
         },
-        parent: None,
-        first_child: None,
-        last_child: None,
-        next_sibling: None,
-        prev_sibling: None,
-        doc_next: None,
-        doc_prev: None,
+        parent: NO_NODE,
+        first_child: NO_NODE,
+        last_child: NO_NODE,
+        next_sibling: NO_NODE,
+        prev_sibling: NO_NODE,
+        doc_next: NO_NODE,
+        doc_prev: NO_NODE,
         sibling_ordinal: 1,
         lines_total: 1,
         lines_visible: 1,
@@ -344,6 +345,7 @@ fn a_toggles_the_main_pane_annotation_display() {
         blob: vec![0x08, 0x05],
         wrapper_offset: 0,
         root_candidates: Vec::new(),
+        fqdns: FqdnTable::new(),
     };
     let mut app = App::new(
         decoded,
@@ -403,10 +405,7 @@ fn the_active_override_hint_marks_header_and_footer_but_not_children() {
     let (mut app, inner_idx, id_idx) = type_as_fixture();
     app.cursor = inner_idx;
     app.run_command("type-as test.Inner");
-    assert_eq!(
-        app.tree[inner_idx].span.type_fqdn.as_deref(),
-        Some("test.Inner")
-    );
+    assert_eq!(type_name_of(&app, inner_idx), Some("test.Inner"));
 
     let header_line = app.absolute_start(inner_idx);
     let footer_line = app.node_lines(inner_idx).end - 1;

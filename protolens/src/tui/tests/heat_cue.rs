@@ -64,7 +64,7 @@ fn a_packed_run_scores_one_cue_over_the_whole_record() {
         );
         assert_ne!(
             app.heat_scored_range(e),
-            app.tree[e].span.raw_range,
+            widen(&app.tree[e].span.raw_range),
             "and that range must not be the element's own bytes"
         );
     }
@@ -73,7 +73,7 @@ fn a_packed_run_scores_one_cue_over_the_whole_record() {
     // A non-packed sibling is unaffected: still its own payload.
     assert_eq!(
         app.heat_scored_range(tail),
-        extract::message_payload_range(&app.blob, &app.tree[tail].span.raw_range, None)
+        extract::message_payload_range(&app.blob, &app.tree[tail].span.raw_range, NO_PACKED_RECORD)
     );
 
     // One seeded entry, keyed on the record's payload start, is enough
@@ -746,20 +746,20 @@ fn g3_no_sweep_seeds_nothing() {
     assert!(caches.complete.is_none());
 }
 
-/// The seeding is only sound because the sweep's input and the cue's
-/// cache key are the same bytes: `heat_scored_range` strips the root
-/// node's tag/length prefix, and in a real `Decoded` that prefix *is*
-/// the virtual wrapper, so the result is `wrapper_offset..blob.len()`
-/// — exactly the slice handed to `resolve_root_winner_and_candidates`.
-///
-/// That last equality is not asserted here, because the fixtures in
-/// this file carry a stub `wrapper_offset: 0` alongside a blob that
-/// does have a two-byte prefix, so they cannot express it. What is
-/// asserted instead is the consequence that actually matters, and it
-/// is covered end-to-end by
-/// `g3_the_startup_sweep_seeds_the_root_range`: the root's very first
-/// cue is answered from the seeded entry, on an `App` with no graph,
-/// where a wrong key could only miss.
+// The seeding is only sound because the sweep's input and the cue's
+// cache key are the same bytes: `heat_scored_range` strips the root
+// node's tag/length prefix, and in a real `Decoded` that prefix *is*
+// the virtual wrapper, so the result is `wrapper_offset..blob.len()`
+// — exactly the slice handed to `resolve_root_winner_and_candidates`.
+//
+// That last equality is not asserted here, because the fixtures in
+// this file carry a stub `wrapper_offset: 0` alongside a blob that
+// does have a two-byte prefix, so they cannot express it. What is
+// asserted instead is the consequence that actually matters, and it
+// is covered end-to-end by
+// `g3_the_startup_sweep_seeds_the_root_range`: the root's very first
+// cue is answered from the seeded entry, on an `App` with no graph,
+// where a wrong key could only miss.
 // ---------------------------------------------------------------------
 // warm_up_heat_cues (spec 0151 G8)
 // ---------------------------------------------------------------------

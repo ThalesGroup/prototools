@@ -33,11 +33,20 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 
 use prototext_core::serialize::render_text::{
-    decode_and_render, decode_and_render_indexed, DecodeRenderOpts,
+    decode_and_render, decode_and_render_indexed, DecodeRenderOpts, FqdnId, FqdnTable,
+    NO_PACKED_RECORD,
 };
+// As with `NO_NODE` below: every `NO_FQDN` outside `decode.rs` is in a test
+// module building a literal `NodeSpan`.
+#[cfg(test)]
+use prototext_core::serialize::render_text::NO_FQDN;
 
 use crate::colorize::{self, LineStyles, SyntaxRole};
-use crate::decode::{self, Decoded, DescriptorContext, TreeNode};
+use crate::decode::{self, widen, Decoded, DescriptorContext, TreeNode};
+// Every `NO_NODE` outside `decode.rs` is in a test module building a
+// literal `TreeNode`; those modules reach it through `use super::*`.
+#[cfg(test)]
+use crate::decode::NO_NODE;
 pub(crate) use lines::LinePos;
 
 use crate::export_descriptor;
@@ -836,6 +845,16 @@ pub struct App {
     /// `ThemeKind::System` (resolved once in `main.rs` before `App::new`).
     theme: ThemeKind,
     tree: Vec<TreeNode>,
+    /// Spec 0212 S4: the type names every `span.type_fqdn` in `tree`
+    /// indexes into, moved out of `Decoded` at construction and shared by
+    /// every sub-render of this document for the session's whole life.
+    ///
+    /// Reach it as `&mut self.fqdns` rather than through a `&mut self`
+    /// helper: a method borrows all of `App`, which conflicts with the
+    /// `&self.tree` and `&mut self.render_cache` borrows live at the
+    /// splice sites that need to intern. Direct field access lets the
+    /// borrow checker see the fields are disjoint.
+    fqdns: FqdnTable,
     /// Spec 0160 G1: whether a `render_overrides` batch is currently
     /// active — `0` outside of one, `1` while the outer (caller-
     /// initiated) call is running. `splice_override` uses this to decide
@@ -1491,7 +1510,7 @@ impl App {
         let cursor = decoded
             .tree
             .iter()
-            .position(|n| n.doc_prev.is_none())
+            .position(|n| n.doc_prev().is_none())
             .unwrap_or(0);
         // Spec 0117 §1: seed the root `path` override with whatever type
         // was explicitly requested or inferred; if neither is available,
@@ -1520,6 +1539,7 @@ impl App {
             window_styles: Vec::new(),
             theme,
             tree: decoded.tree,
+            fqdns: decoded.fqdns,
             override_batch_depth: 0,
             descend: Vec::new(),
             #[cfg(test)]

@@ -159,7 +159,7 @@ fn an_fqdn_field_override_marks_every_node_of_that_type() {
     for (n, item) in items.iter().enumerate() {
         assert!(
             app.tree[*item]
-                .first_child
+                .first_child()
                 .map(|c| app.tree[c].rendered_as.is_some())
                 .unwrap_or(false),
             "item {n}'s field 1 must have been settled under the \
@@ -190,13 +190,10 @@ fn a_deactivated_override_still_falls_back_under_unmarked_ancestors() {
     // which is the auto-expansion's own target: overriding that origin
     // supersedes the auto entry, so deactivating would leave the field
     // at its `bytes` natural type and prove nothing about reachability.
-    let payload = app
-        .tree
-        .iter()
-        .position(|n| n.span.type_fqdn.as_deref() == Some("acme.Payload"))
-        .expect("the Any's value must have auto-expanded");
+    let payload =
+        node_with_type(&app, "acme.Payload").expect("the Any's value must have auto-expanded");
     let deep = app.tree[payload]
-        .first_child
+        .first_child()
         .expect("the payload must have its `label` field");
     let deep_path = app.positional_path(deep);
     let origin = override_pane::OverrideOrigin::Path {
@@ -259,9 +256,7 @@ fn a_candidate_that_only_appears_mid_batch_is_still_expanded() {
     app.render_overrides(root);
 
     assert!(
-        app.tree
-            .iter()
-            .any(|n| n.span.type_fqdn.as_deref() == Some("ms_test.ExtPayload")),
+        has_node_with_type(&app, "ms_test.ExtPayload"),
         "tier 2 must be rediscovered inside freshly spliced content: {:#?}",
         app.lines
     );

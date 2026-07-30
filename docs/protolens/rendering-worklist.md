@@ -1502,6 +1502,10 @@ reordered this phase.
 
 **Fixes:** [S12](rendering-scaling-roadmap.md).
 
+**Status: steps 1, 2, 4 and 5 done; 280 B → 120 B.** Only step 3
+(`rendered_as`) and the `build_tree` rider remain. See the per-step notes
+below and spec 0212's Measured outcome for what it delivered.
+
 **Files:** `prototext-core/src/serialize/render_text/sink.rs:960-1034`
 (`NodeSpan`), `protolens/src/decode.rs:269-289` (`TreeNode`),
 `protolens/src/decode.rs:301-315` (`build_tree`).
@@ -1509,25 +1513,48 @@ reordered this phase.
 **Change.** Per-field, per the roadmap's table. Land it in this order,
 each its own commit:
 
-1. **Intern `type_fqdn`** into a per-document FQDN table, `Option<String>`
-   → `u32`. Highest value: 20 B *and* one heap allocation per message
-   node — 13.9 M allocations at 24.5 MB, a startup cost as much as a
-   memory one. It is also the only part that crosses into
-   `prototext-core`, and it introduces the intern table the rest reuses.
-2. **`type NodeIdx = u32;`** with a named sentinel constant, replacing
-   the 7 `Option<usize>` links (112 B → 28 B). Caps the arena at ~4.29 G
-   nodes ≈ 7.6 GB of blob at the observed 0.566 nodes/byte — outside the
-   stated target, and one line to revisit.
+1. ✔ **Intern `type_fqdn`** into a per-document FQDN table,
+   `Option<String>` → `u32` — **done 2026-07-30** by
+   [spec 0212](../specs/0212-the-span-is-a-third-as-wide.md). Highest
+   value: 20 B *and* one heap allocation per message node. It was the only
+   part that crosses into `prototext-core`, and it introduced the
+   `FqdnTable` step 3 reuses. Landed *with* step 4 rather than before it,
+   because both cross the crate boundary and their call-site churn
+   overlaps almost entirely. Two things the plan did not anticipate: the
+   table must be **owned by the caller and passed in**, not created
+   per-call, or an id would name different types in a spliced span and in
+   the arena around it; and the lookup needs a **second** reserved id
+   distinct from the absent-type sentinel, or a name the document never
+   produced compares equal to every typeless node.
+2. ✔ **`type NodeIdx = u32;`** with a named sentinel constant, replacing
+   the 7 `Option<usize>` links (112 B → 28 B) — **done 2026-07-29** by
+   [spec 0211](../specs/0211-the-arenas-links-are-half-as-wide.md). Caps
+   the arena at ~4.29 G nodes ≈ 7.6 GB of blob at the observed 0.566
+   nodes/byte — outside the stated target, and one line to revisit.
 3. **Move `rendered_as` to a side `HashMap<NodeIdx, _>`** (48 B → 0 for
-   the overwhelming majority of nodes, which are never spliced). The one
-   part needing care: splice and reclamation must keep the side table in
-   sync with the arena.
-4. **Narrow the scalars**: `field_number` `u64`→`u32`, both `Range<usize>`
-   → `(u32, u32)`, `level` → `u16`, `packed_record_start` → `u32`
-   sentinel, `is_message` + `wire_type` → a flag byte + `u8`. (An earlier
-   draft reserved a bit here for spec 0169's `is_elision`; decision D-b
-   scoped that field out, so no reservation is needed. Spare bits in the
-   flag byte are free anyway.)
+   the overwhelming majority of nodes, which are never spliced).
+   **Superseded: intern it instead**, into step 1's `FqdnTable`, for 40 B
+   rather than 48. `design/arena-and-batch.md`'s trap 1 has the argument —
+   a side table is a *ninth* structure keyed by node index, which
+   compaction must rekey on every relocation and slot reuse must clear on
+   every free, and 8 B is a cheap price for not adding one. Interning also
+   makes `TreeNode` plain-old-data, which is what lets a free list have a
+   blank slot to push.
+4. ✔ **Narrow the scalars** — **done 2026-07-30** by spec 0212:
+   `field_number` `u64`→`u32`, both `Range<usize>` → `Range<u32>`,
+   `level` → `u16`, `packed_record_start` → `u32` + `NO_PACKED_RECORD`,
+   `wire_type` → `u8`. Three plan details changed on contact: `is_message`
+   stayed a plain `bool` rather than becoming a flag byte (nothing needs
+   the spare bits, and `size_of` is the same either way); `field_number`
+   needs no saturation, since the wire format bounds it at 2²⁹ − 1; and a
+   buffer cap was needed for the `u32` offsets to be sound —
+   `MAX_INDEXED_BUFFER` = `u32::MAX / 8` (511 MiB), refused by
+   `decode_and_render_indexed` rather than at open time, because the
+   renderer already reserved `buf.len() * 8` unconditionally and so had an
+   unnamed ceiling that *aborted* instead of refusing. `text_range` was
+   **not** deleted: spec 0210's "no production reader" finding is about
+   the arena's stale copy, not the flat list the library returns, which
+   has three live readers.
 5. ✔ **Delete `natural_annotation`** — **done 2026-07-26** by
    [spec 0181](../specs/0181-delete-natural-annotation.md). Revised
    2026-07-25: this step used to read "intern it or move it to a side
@@ -1543,18 +1570,26 @@ each its own commit:
    `protolens/src/tui/tests/override_apply.rs:199` was corrected in the
    same commit.
 
-   **Only this step is done. Steps 1-4 and 6 below are untouched**, and
-   the `size_of::<TreeNode>() <= 72` proving test is still unwritten —
-   this one row was carved out precisely because it had no design
-   question attached.
+   At the time this was the only step done, because it was the one row
+   with no design question attached. Steps 1, 2 and 4 have since landed
+   too; only step 3 remains.
 
 Also hoist `build_tree`'s per-node `let mut children = Vec::new();`
 (`decode.rs:324`) out of the loop and `clear()` it. Leaves are already
 free — `Vec::new` does not allocate — but every message node pays today.
 
-**Proving test.** A `const _: () = assert!(size_of::<TreeNode>() <= 72);`
-so the win cannot silently regress, plus a W0 re-run reporting peak RSS
-on the 1.1 MB fixture before and after.
+**Proving test.** ✔ Written, as an **equality** rather than a bound:
+`const _: () = assert!(size_of::<TreeNode>() == 120)` in `decode.rs` and
+`assert!(size_of::<NodeSpan>() == 32)` in `sink.rs`. Equality was chosen
+deliberately — these numbers are quoted in the headroom guard, in the
+design brief and in two specs' measured outcomes, so a future field that
+silently fitted into padding would falsify all of them without failing an
+upper bound. Update both, and the figure below, when step 3 lands.
+
+Measured rather than projected: on `googleapis.desc` (4 501 014 nodes),
+steps 1, 2 and 4 together took peak RSS 4.18 → **2.51 GiB** and at-rest
+1.87 → **1.20 GiB**. Spec 0212's Measured outcome has the breakdown and
+the corrected cost model.
 
 **Watch for.** `build_tree` is
 `spans.into_iter().map(..).collect()`; the element sizes differ, so the

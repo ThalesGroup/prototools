@@ -22,7 +22,7 @@ fn every_stored_sibling_ordinal_equals_the_walk_it_replaced() {
     fn by_walking(app: &App, idx: usize) -> usize {
         let mut pos = 1;
         let mut cur = idx;
-        while let Some(prev) = app.tree[cur].prev_sibling {
+        while let Some(prev) = app.tree[cur].prev_sibling() {
             if !crate::decode::same_packed_record(&app.tree[prev].span, &app.tree[cur].span) {
                 pos += 1;
             }
@@ -39,7 +39,7 @@ fn every_stored_sibling_ordinal_equals_the_walk_it_replaced() {
         let mut cur = app
             .tree
             .iter()
-            .position(|n| n.parent.is_none())
+            .position(|n| n.parent().is_none())
             .or(Some(0))
             .filter(|_| !app.tree.is_empty());
         let mut visited = 0;
@@ -50,7 +50,7 @@ fn every_stored_sibling_ordinal_equals_the_walk_it_replaced() {
                 "node {idx} ordinal disagrees with the walk {when}"
             );
             visited += 1;
-            cur = app.tree[idx].doc_next;
+            cur = app.tree[idx].doc_next();
         }
         assert!(visited > 1, "fixture must have a tree to walk {when}");
     };
@@ -168,22 +168,16 @@ fn wrapper_offset_and_display_range_restore_pre_wrap_coordinates() {
     // The level-0 node is the wrapper's sole field, standing in for
     // the entire original message (spec 0114 §1.1) — it did not exist
     // pre-wrap.
-    let outer_idx = app
-        .tree
-        .iter()
-        .position(|n| n.span.type_fqdn.as_deref() == Some("test.Outer"))
-        .expect("tree must contain the Outer stand-in node");
+    let outer_idx =
+        node_with_type(&app, "test.Outer").expect("tree must contain the Outer stand-in node");
     // Its whole-message payload, offset-corrected, is exactly the
     // caller's original blob.
     assert_eq!(app.display_range(outer_idx), 0..blob.len());
     // The wrapper's own node displays as bare "/".
     assert_eq!(app.positional_path(outer_idx), "/");
 
-    let inner_idx = app
-        .tree
-        .iter()
-        .position(|n| n.span.type_fqdn.as_deref() == Some("test.Inner"))
-        .expect("tree must contain the Inner submessage");
+    let inner_idx =
+        node_with_type(&app, "test.Inner").expect("tree must contain the Inner submessage");
     // Byte offsets 2..4 of the *original* blob, not the wrapped one.
     assert_eq!(app.display_range(inner_idx), 2..blob.len());
     // Leading `/1` leg (descent into the wrapper's sole field) is
@@ -281,7 +275,7 @@ fn display_range_strips_tag_and_length_for_scalars_including_packed() {
     assert_eq!(vals_indices.len(), 3);
     for idx in &vals_indices {
         assert!(!app.tree[*idx].span.is_message);
-        assert!(app.tree[*idx].span.packed_record_start.is_some());
+        assert_ne!(app.tree[*idx].span.packed_record_start, NO_PACKED_RECORD);
     }
     // Each element's own byte, already bare-payload — no further
     // tag/length stripping applied.
@@ -388,7 +382,7 @@ fn down_from_header_reaches_own_footer_line() {
 fn down_from_footer_reaches_the_document_true_last_line() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
     app.splash = false;
-    let outer_idx = app.tree[inner_idx].parent.unwrap();
+    let outer_idx = app.tree[inner_idx].parent().unwrap();
     app.cursor = inner_idx;
     app.cursor_footer = true;
 
@@ -417,7 +411,7 @@ fn up_from_footer_and_from_next_header_are_symmetric_with_down() {
     );
     assert!(!app.cursor_footer);
 
-    let outer_idx = app.tree[inner_idx].parent.unwrap();
+    let outer_idx = app.tree[inner_idx].parent().unwrap();
     app.cursor = outer_idx;
     app.cursor_footer = true;
     app.move_up();
@@ -435,7 +429,7 @@ fn up_from_footer_and_from_next_header_are_symmetric_with_down() {
 fn move_end_reaches_the_document_true_last_line() {
     let (mut app, inner_idx, id_idx) = type_as_fixture();
     app.splash = false;
-    let outer_idx = app.tree[inner_idx].parent.unwrap();
+    let outer_idx = app.tree[inner_idx].parent().unwrap();
     app.cursor = id_idx;
     app.cursor_footer = false;
 
@@ -454,7 +448,7 @@ fn move_end_reaches_the_document_true_last_line() {
 fn move_home_from_the_root_footer_reaches_the_document_true_first_line() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
     app.splash = false;
-    let outer_idx = app.tree[inner_idx].parent.unwrap();
+    let outer_idx = app.tree[inner_idx].parent().unwrap();
     app.cursor = outer_idx;
     app.cursor_footer = true;
 
@@ -534,7 +528,7 @@ fn clicking_a_closing_brace_line_moves_cursor_there_without_folding() {
 fn navigation_passes_through_an_empty_bracketed_message() {
     let (mut app, inner_idx) = empty_message_fixture();
     app.splash = false;
-    let outer_idx = app.tree[inner_idx].parent.unwrap();
+    let outer_idx = app.tree[inner_idx].parent().unwrap();
     app.cursor = outer_idx;
     app.cursor_footer = false;
 
@@ -780,10 +774,10 @@ fn move_down_and_up_step_over_display_only_lines() {
     // out of both chains.
     app.tree[0].lines_total = 3;
     app.tree[0].lines_visible = 3;
-    app.tree[0].next_sibling = Some(3);
-    app.tree[0].doc_next = Some(3);
-    app.tree[3].prev_sibling = Some(0);
-    app.tree[3].doc_prev = Some(0);
+    app.tree[0].set_next_sibling(Some(3));
+    app.tree[0].set_doc_next(Some(3));
+    app.tree[3].set_prev_sibling(Some(0));
+    app.tree[3].set_doc_prev(Some(0));
 
     assert_eq!(app.visible_row_count(), 4);
     assert!(
@@ -948,7 +942,7 @@ fn h_at_a_voluntary_home_folds_before_it_moves_to_the_parent() {
     app.caret_left();
     assert_eq!(
         app.cursor,
-        app.tree[inner_idx].parent.unwrap(),
+        app.tree[inner_idx].parent().unwrap(),
         "the third press moves to the parent"
     );
 }
@@ -975,8 +969,8 @@ fn h_on_a_scalar_moves_to_the_parent_immediately() {
 #[test]
 fn h_on_the_root_folds_it_and_then_reports_no_parent() {
     let (mut app, inner_idx, _) = type_as_fixture();
-    let root = app.tree[inner_idx].parent.unwrap();
-    assert!(app.tree[root].parent.is_none());
+    let root = app.tree[inner_idx].parent().unwrap();
+    assert!(app.tree[root].parent().is_none());
     app.set_cursor(root);
 
     app.caret_left();

@@ -42,7 +42,7 @@ fn diagnose_pdb_max_children_per_parent() {
 
     let mut children_count = vec![0usize; decoded.tree.len()];
     for (idx, node) in decoded.tree.iter().enumerate() {
-        if let Some(p) = node.parent {
+        if let Some(p) = node.parent() {
             children_count[p] += 1;
         }
         let _ = idx;
@@ -211,7 +211,9 @@ fn profile_preview_root_versus_first_child_on_db3() {
     );
 
     let root = app.first_node;
-    let first_child = app.tree[root].first_child.expect("root must have a child");
+    let first_child = app.tree[root]
+        .first_child()
+        .expect("root must have a child");
 
     // Two fixed candidates, alternated, so each measurement is a real
     // re-render rather than a `render_cache` hit.
@@ -833,7 +835,10 @@ fn repro_crash_activate_then_close_on_pdb() {
 
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     let cursor = app.cursor;
-    let own_fqdn = app.tree[cursor].span.type_fqdn.clone();
+    let own_fqdn = app
+        .fqdns
+        .get(app.tree[cursor].span.type_fqdn)
+        .map(str::to_owned);
     eprintln!(
         "cursor after Down: {} type_fqdn={:?} rendered_as={:?}",
         cursor, own_fqdn, app.tree[cursor].rendered_as
@@ -910,7 +915,10 @@ fn repro_crash_real_t_then_manual_confirm_on_pdb() {
 
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     let cursor = app.cursor;
-    let own_fqdn = app.tree[cursor].span.type_fqdn.clone();
+    let own_fqdn = app
+        .fqdns
+        .get(app.tree[cursor].span.type_fqdn)
+        .map(str::to_owned);
     eprintln!("cursor after Down: {cursor} type_fqdn={own_fqdn:?}");
 
     // Real `t` keypress -- no waiting, no candidate polling.
@@ -986,7 +994,10 @@ fn repro_crash_two_previews_then_manual_confirm_on_pdb() {
 
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     let cursor = app.cursor;
-    let own_fqdn = app.tree[cursor].span.type_fqdn.clone();
+    let own_fqdn = app
+        .fqdns
+        .get(app.tree[cursor].span.type_fqdn)
+        .map(str::to_owned);
     eprintln!("cursor after Down: {cursor} type_fqdn={own_fqdn:?}");
 
     // Real `t` keypress -- exactly one preview splice.
@@ -1074,7 +1085,10 @@ fn repro_crash_raw_then_typed_preview_then_manual_confirm_on_pdb() {
 
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     let cursor = app.cursor;
-    let own_fqdn = app.tree[cursor].span.type_fqdn.clone();
+    let own_fqdn = app
+        .fqdns
+        .get(app.tree[cursor].span.type_fqdn)
+        .map(str::to_owned);
     eprintln!("cursor after Down: {cursor} type_fqdn={own_fqdn:?}");
     let baseline_len = app.tree.len();
 
@@ -1547,13 +1561,13 @@ fn profile_nested_commit_on_pdb() {
         .filter(|&i| {
             let s = &app.tree[i].span;
             if !(s.is_message
-                && s.type_fqdn.is_some()
-                && s.text_range.start > midpoint
+                && s.type_fqdn != NO_FQDN
+                && s.text_range.start as usize > midpoint
                 && s.text_range.end - s.text_range.start > 100)
             {
                 return false;
             }
-            let Some(parent) = app.tree[i].parent else {
+            let Some(parent) = app.tree[i].parent() else {
                 return false;
             };
             if parent == app.first_node {
@@ -1561,18 +1575,21 @@ fn profile_nested_commit_on_pdb() {
             }
             let field = s.field_number;
             let mut siblings = 0usize;
-            let mut c = app.tree[parent].first_child;
+            let mut c = app.tree[parent].first_child();
             while let Some(ci) = c {
                 if app.tree[ci].span.field_number == field {
                     siblings += 1;
                 }
-                c = app.tree[ci].next_sibling;
+                c = app.tree[ci].next_sibling();
             }
             siblings == 1
         })
         .max_by_key(|&i| app.absolute_start(i))
         .expect("a deep, sizeable, uniquely-addressable typed message node");
-    let own_fqdn = app.tree[target].span.type_fqdn.clone();
+    let own_fqdn = app
+        .fqdns
+        .get(app.tree[target].span.type_fqdn)
+        .map(str::to_owned);
     eprintln!(
         "target node {target}: fqdn={own_fqdn:?} lines {}..{} of {}",
         app.absolute_start(target),

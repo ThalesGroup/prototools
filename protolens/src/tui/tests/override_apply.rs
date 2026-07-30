@@ -100,17 +100,14 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
         None,
     );
 
-    let node_idx = app
-        .tree
-        .iter()
-        .position(|n| n.span.type_fqdn.as_deref() == Some("test.Node"))
-        .expect("tree must contain the Node submessage");
+    let node_idx =
+        node_with_type(&app, "test.Node").expect("tree must contain the Node submessage");
     let node_level = app.tree[node_idx].span.level;
 
     // Fold the "a" child before overriding, to verify the stale-fold
     // scrubbing (`collect_descendants` cleanup).
     let a_idx_before = app.tree[node_idx]
-        .first_child
+        .first_child()
         .expect("Node has at least one child");
     // Spec 0210 S2: through `refresh_line_counts`, since a fold now moves
     // the line counters the row walk reads.
@@ -119,10 +116,10 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
 
     let assert_children = |app: &App, tag: &str| {
         let mut children = Vec::new();
-        let mut cur = app.tree[node_idx].first_child;
+        let mut cur = app.tree[node_idx].first_child();
         while let Some(c) = cur {
             children.push(c);
-            cur = app.tree[c].next_sibling;
+            cur = app.tree[c].next_sibling();
         }
         assert_eq!(children.len(), 2, "{tag}: expected two children (a, b)");
         for &c in &children {
@@ -133,7 +130,7 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
             );
         }
         assert_eq!(
-            app.tree[children[0]].span.type_fqdn.as_deref(),
+            type_name_of(app, children[0]),
             Some("test.Leaf"),
             "{tag}: first child must resolve to test.Leaf"
         );
@@ -145,10 +142,7 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
     app.splice_override(node_idx, Some("test.Node".to_string()), false, None)
         .expect("re-typing as the same type must succeed");
     assert_children(&app, "re-typed as itself");
-    assert_eq!(
-        app.tree[node_idx].span.type_fqdn.as_deref(),
-        Some("test.Node")
-    );
+    assert_eq!(type_name_of(&app, node_idx), Some("test.Node"));
     assert!(
         !app.folded.contains(&a_idx_before),
         "orphaned old child must be scrubbed from `folded`"
@@ -157,7 +151,7 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
     // 2) Raw override (no schema).
     app.splice_override(node_idx, None, false, None)
         .expect("raw override must succeed");
-    assert_eq!(app.tree[node_idx].span.type_fqdn, None);
+    assert_eq!(app.tree[node_idx].span.type_fqdn, NO_FQDN);
 
     // 3) Re-typed again, on top of two prior overrides — exercises
     // repeated overrides of the same node.
@@ -198,7 +192,7 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
         owners[line] = Some(c as u32);
         count += 1;
         assert!(count <= app.tree.len(), "doc chain must not cycle");
-        cur = app.tree[c].doc_next;
+        cur = app.tree[c].doc_next();
     }
     for (line, owner) in owners.iter().enumerate() {
         if owner.is_none() {
@@ -354,13 +348,13 @@ fn packed_run_ordinals_are_stable_across_the_override_lifecycle() {
         let root = app
             .tree
             .iter()
-            .position(|n| n.parent.is_none())
+            .position(|n| n.parent().is_none())
             .expect("tree must have a root");
         let mut out = Vec::new();
         let mut cur = Some(root);
         while let Some(i) = cur {
             out.push((i, app.positional_path(i)));
-            cur = app.tree[i].doc_next;
+            cur = app.tree[i].doc_next();
         }
         out
     };
@@ -693,11 +687,8 @@ fn deactivating_override_recomputes_the_pan_bound_against_the_post_splice_scroll
     app.term_width = 120;
     app.main_area = Rect::new(0, 0, 10, 3);
 
-    let inner_idx = app
-        .tree
-        .iter()
-        .position(|n| n.span.type_fqdn.as_deref() == Some("test.Inner"))
-        .expect("tree must contain the Inner submessage");
+    let inner_idx =
+        node_with_type(&app, "test.Inner").expect("tree must contain the Inner submessage");
     let pad_a_idx = app
         .tree
         .iter()
@@ -783,7 +774,7 @@ fn splice_override_keeps_colors_aligned_after_a_header_length_change() {
     app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false, None)
         .unwrap();
     let value_idx = app.tree[grp_idx]
-        .first_child
+        .first_child()
         .expect("NewGroup has at least one child");
     let line_idx = app.absolute_start(value_idx);
     let line = app.lines[line_idx].clone();
@@ -1060,9 +1051,7 @@ fn splice_override_reactivating_root_type_still_expands_any_fields() {
     app.render_overrides(app.first_node);
 
     assert!(
-        app.tree
-            .iter()
-            .any(|n| n.span.type_fqdn.as_deref() == Some("acme.Payload")),
+        has_node_with_type(&app, "acme.Payload"),
         "Any field must still expand after retyping the root away and \
          back: {:#?}",
         app.lines
@@ -1095,9 +1084,7 @@ fn message_set_group_items_auto_expand_through_render_overrides() {
     let app = message_set_fixture();
 
     assert!(
-        app.tree
-            .iter()
-            .any(|n| n.span.type_fqdn.as_deref() == Some("ms_test.ExtPayload")),
+        has_node_with_type(&app, "ms_test.ExtPayload"),
         "MessageSet Item's message must auto-expand to the resolved \
          extension type: {:#?}",
         app.lines
@@ -1111,10 +1098,7 @@ fn message_set_group_items_auto_expand_through_render_overrides() {
         app.lines
     );
 
-    let item_idx = app
-        .tree
-        .iter()
-        .position(|n| n.span.type_fqdn.as_deref() == Some(decode::MESSAGE_SET_ITEM_FQDN))
+    let item_idx = node_with_type(&app, decode::MESSAGE_SET_ITEM_FQDN)
         .expect("Item group must be spliced to the synthetic MessageSetItem type");
     let item_path = app.positional_path(item_idx);
     assert!(
@@ -1146,10 +1130,7 @@ fn message_set_group_items_auto_expand_through_render_overrides() {
         app.lines
     );
 
-    let message_idx = app
-        .tree
-        .iter()
-        .position(|n| n.span.type_fqdn.as_deref() == Some("ms_test.ExtPayload"))
+    let message_idx = node_with_type(&app, "ms_test.ExtPayload")
         .expect("message field must resolve to ExtPayload");
     let message_path = app.positional_path(message_idx);
     assert!(
@@ -1175,9 +1156,7 @@ fn a_deeply_nested_any_is_auto_expanded() {
     let app = nested_any_fixture();
 
     assert!(
-        app.tree
-            .iter()
-            .any(|n| n.span.type_fqdn.as_deref() == Some("acme.Payload")),
+        has_node_with_type(&app, "acme.Payload"),
         "an Any three message levels down must still auto-expand: {:#?}",
         app.lines
     );
@@ -1197,11 +1176,8 @@ fn a_deeply_nested_any_is_auto_expanded() {
     // (see `decode_leaves_any_fields_unexpanded_with_real_type_url_
     // and_value_spans`), so a missing entry here would mean the
     // fixture is proving nothing.
-    let value_idx = app
-        .tree
-        .iter()
-        .position(|n| n.span.type_fqdn.as_deref() == Some("acme.Payload"))
-        .expect("the Any's value must resolve to acme.Payload");
+    let value_idx =
+        node_with_type(&app, "acme.Payload").expect("the Any's value must resolve to acme.Payload");
     let value_path = app.positional_path(value_idx);
     assert!(
         app.overrides.entries().iter().any(|e| {
@@ -1226,17 +1202,13 @@ fn a_deeply_nested_message_set_is_auto_expanded_at_both_tiers() {
     let app = nested_message_set_fixture();
 
     assert!(
-        app.tree
-            .iter()
-            .any(|n| n.span.type_fqdn.as_deref() == Some(crate::decode::MESSAGE_SET_ITEM_FQDN)),
+        has_node_with_type(&app, crate::decode::MESSAGE_SET_ITEM_FQDN),
         "tier 1: the Item group wrapper must be retyped to the \
          synthetic Item shape: {:#?}",
         app.lines
     );
     assert!(
-        app.tree
-            .iter()
-            .any(|n| n.span.type_fqdn.as_deref() == Some("ms_test.ExtPayload")),
+        has_node_with_type(&app, "ms_test.ExtPayload"),
         "tier 2: the Item's message must resolve to the extension \
          type: {:#?}",
         app.lines
@@ -1256,11 +1228,7 @@ fn a_deeply_nested_message_set_is_auto_expanded_at_both_tiers() {
         (crate::decode::MESSAGE_SET_ITEM_FQDN, "tier 1"),
         ("ms_test.ExtPayload", "tier 2"),
     ] {
-        let idx = app
-            .tree
-            .iter()
-            .position(|n| n.span.type_fqdn.as_deref() == Some(fqdn))
-            .expect("the tier's node must exist");
+        let idx = node_with_type(&app, fqdn).expect("the tier's node must exist");
         let path = app.positional_path(idx);
         assert!(
             app.overrides.entries().iter().any(|e| {
@@ -1286,10 +1254,7 @@ fn a_deeply_nested_message_set_is_auto_expanded_at_both_tiers() {
 fn message_set_item_status_and_manage_labels_show_the_friendly_fqdn_not_the_internal_one() {
     let app = message_set_fixture();
 
-    let item_idx = app
-        .tree
-        .iter()
-        .position(|n| n.span.type_fqdn.as_deref() == Some(decode::MESSAGE_SET_ITEM_FQDN))
+    let item_idx = node_with_type(&app, decode::MESSAGE_SET_ITEM_FQDN)
         .expect("Item group must be spliced to the synthetic MessageSetItem type");
 
     let (status_label, _tag) = app
@@ -1338,10 +1303,7 @@ fn message_set_item_status_and_manage_labels_show_the_friendly_fqdn_not_the_inte
 #[test]
 fn the_override_preview_leaves_nested_message_set_auto_expansion_alone() {
     let mut app = message_set_fixture();
-    let extensions_idx = app
-        .tree
-        .iter()
-        .position(|n| n.span.type_fqdn.as_deref() == Some("ms_test.TestMessageSet"))
+    let extensions_idx = node_with_type(&app, "ms_test.TestMessageSet")
         .expect("extensions field must resolve to TestMessageSet");
     app.cursor = extensions_idx;
     let lines = app.lines.clone();
@@ -1358,9 +1320,7 @@ fn the_override_preview_leaves_nested_message_set_auto_expansion_alone() {
     assert_eq!(app.override_target, None);
     assert_eq!(app.lines, lines, "...and cancelling must re-render nothing");
     assert!(
-        app.tree
-            .iter()
-            .any(|n| n.span.type_fqdn.as_deref() == Some("ms_test.ExtPayload")),
+        has_node_with_type(&app, "ms_test.ExtPayload"),
         "the nested MessageSet auto-expansion must have survived: {:#?}",
         app.lines
     );
@@ -1955,7 +1915,7 @@ fn truncated_preview_ends_with_an_ellipsis_line() {
         !rendered
             .spans
             .iter()
-            .any(|s| s.text_range.start == marker || s.text_range.end == marker + 1),
+            .any(|s| s.text_range.start == marker as u32 || s.text_range.end == marker as u32 + 1),
         "no span may own the marker line: {:?}",
         rendered.spans
     );
@@ -2055,10 +2015,10 @@ fn preview_child_spans_survive_the_length_prefix_shift() {
     // blob_idx`: the pushed copy of the local root is deliberately left
     // orphaned (it carries `blob_idx`'s own parent link) and is never
     // part of the live tree.
-    let mut child = app.tree[blob_idx].first_child;
+    let mut child = app.tree[blob_idx].first_child();
     let mut count = 0usize;
     while let Some(c) = child {
-        let r = app.tree[c].span.raw_range.clone();
+        let r = widen(&app.tree[c].span.raw_range);
         assert_eq!(
             &app.blob[r.clone()],
             &[0x08u8, 0x01],
@@ -2066,7 +2026,7 @@ fn preview_child_spans_survive_the_length_prefix_shift() {
              on-the-wire bytes"
         );
         count += 1;
-        child = app.tree[c].next_sibling;
+        child = app.tree[c].next_sibling();
     }
     assert_eq!(
         count,
@@ -2172,26 +2132,23 @@ fn a_deeply_nested_splice_moves_its_ancestors_footers_without_leaving_stale_entr
     // deliberately not its `acme.Payload` value, every alternative
     // rendering of which happens to occupy the same three lines in this
     // fixture, so no ancestor footer would move at all.
-    let payload = app
-        .tree
-        .iter()
-        .position(|n| n.span.type_fqdn.as_deref() == Some("acme.Payload"))
-        .expect("the Any's value must resolve to acme.Payload");
+    let payload =
+        node_with_type(&app, "acme.Payload").expect("the Any's value must resolve to acme.Payload");
     let target = app.tree[payload]
-        .parent
+        .parent()
         .expect("the payload must sit inside the Any");
 
     // Only ancestors that actually have a footer line of their own — a
     // single-line node's `end - 1` is its header, and the full rebuild
     // records no footer entry for it either.
     let mut ancestors: Vec<(usize, usize)> = Vec::new();
-    let mut p = app.tree[target].parent;
+    let mut p = app.tree[target].parent();
     while let Some(pi) = p {
         let r = &app.node_lines(pi);
         if r.end - 1 > r.start {
             ancestors.push((pi, r.end - 1));
         }
-        p = app.tree[pi].parent;
+        p = app.tree[pi].parent();
     }
     assert!(
         ancestors.len() >= 3,
@@ -2240,11 +2197,8 @@ fn a_deeply_nested_splice_moves_its_ancestors_footers_without_leaving_stale_entr
 #[test]
 fn a_zero_delta_splice_still_repairs_the_line_maps() {
     let mut app = nested_any_fixture();
-    let target = app
-        .tree
-        .iter()
-        .position(|n| n.span.type_fqdn.as_deref() == Some("acme.Payload"))
-        .expect("the Any's value must resolve to acme.Payload");
+    let target =
+        node_with_type(&app, "acme.Payload").expect("the Any's value must resolve to acme.Payload");
     let lines_before = app.lines.clone();
 
     app.splice_override(target, Some("acme.Payload".to_string()), false, None)
@@ -2272,7 +2226,7 @@ fn a_zero_delta_splice_still_repairs_the_line_maps() {
                 r.end - 1
             );
         }
-        cur = app.tree[c].doc_next;
+        cur = app.tree[c].doc_next();
     }
 }
 
@@ -2330,11 +2284,8 @@ fn the_visible_row_walk_stays_ordered_across_a_splice() {
         "the visible rows must come out ascending before the splice"
     );
 
-    let target = app
-        .tree
-        .iter()
-        .position(|n| n.span.type_fqdn.as_deref() == Some("acme.Payload"))
-        .expect("the Any's value must resolve to acme.Payload");
+    let target =
+        node_with_type(&app, "acme.Payload").expect("the Any's value must resolve to acme.Payload");
     app.splice_override(target, None, false, None)
         .expect("collapsing the payload to raw bytes must succeed");
 
@@ -2513,12 +2464,13 @@ fn randomized_override_sequences_keep_every_span_consistent() {
             let mut types: Vec<Option<String>> = vec![None];
             let mut cur = Some(app.first_node);
             while let Some(c) = cur {
-                if let Some(t) = app.tree[c].span.type_fqdn.clone() {
+                if let Some(t) = type_name_of(&app, c) {
+                    let t = t.to_owned();
                     if !types.iter().any(|k| k.as_deref() == Some(t.as_str())) {
                         types.push(Some(t));
                     }
                 }
-                cur = app.tree[c].doc_next;
+                cur = app.tree[c].doc_next();
             }
 
             let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
@@ -2604,17 +2556,16 @@ fn a_splice_translates_packed_record_starts_into_the_documents_byte_frame() {
     app.render_overrides(app.first_node);
 
     let mut elems = Vec::new();
-    let mut c = app.tree[blob_node].first_child;
+    let mut c = app.tree[blob_node].first_child();
     while let Some(i) = c {
         elems.push(i);
-        c = app.tree[i].next_sibling;
+        c = app.tree[i].next_sibling();
     }
     assert_eq!(elems.len(), 3, "Payload.vals decodes as three packed ints");
 
     for &e in &elems {
         assert_eq!(
-            app.tree[e].span.packed_record_start,
-            Some(6),
+            app.tree[e].span.packed_record_start, 6,
             "the packed record's tag is at byte 6 of the document; a \
              value of 2 is the retyped node's own frame leaking out"
         );

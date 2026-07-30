@@ -24,7 +24,9 @@ use prototext_core::helpers::{
     parse_varint, parse_wiretag, write_tag, WT_END_GROUP, WT_LEN, WT_START_GROUP,
 };
 
-use crate::decode::TreeNode;
+use prototext_core::serialize::render_text::NO_PACKED_RECORD;
+
+use crate::decode::{widen, TreeNode};
 
 /// Same header line `prototext_core::serialize::render_text` writes for a
 /// full-document render (`emit_header`) — not exposed as a public constant
@@ -54,11 +56,13 @@ pub enum ExtractFormat {
 /// For a scalar leaf field (`is_message: false`), `range` is returned
 /// unchanged (tag, length prefix if any, and value all included) — that's
 /// simply the field's own wire-format bytes, not a standalone message.
-pub fn extract_binary<'a>(blob: &'a [u8], range: &Range<usize>, is_message: bool) -> &'a [u8] {
+/// `range` is a `NodeSpan::raw_range`, so `u32` (spec 0212 S2); the slice
+/// it names is indexed with `usize` as ever.
+pub fn extract_binary<'a>(blob: &'a [u8], range: &Range<u32>, is_message: bool) -> &'a [u8] {
     if !is_message {
-        return &blob[range.clone()];
+        return &blob[widen(range)];
     }
-    &blob[message_payload_range(blob, range, None)]
+    &blob[message_payload_range(blob, range, NO_PACKED_RECORD)]
 }
 
 /// For any field's full `tag[+length]+payload` span, return just the
@@ -73,11 +77,11 @@ pub fn extract_binary<'a>(blob: &'a [u8], range: &Range<usize>, is_message: bool
 /// 0114 §1.1, extended).
 ///
 /// `packed_record_start` is `NodeSpan::packed_record_start` (spec 0115
-/// §3): `Some` means `range` is one element of a packed-repeated field —
-/// it has no wire tag of its own (it's a bare value inside the record's
-/// shared LEN payload), so `range` is already the payload and is returned
-/// unstripped; stripping it would misparse the element's own first byte
-/// as a fake tag.
+/// §3): anything but `NO_PACKED_RECORD` means `range` is one element of a
+/// packed-repeated field — it has no wire tag of its own (it's a bare
+/// value inside the record's shared LEN payload), so `range` is already
+/// the payload and is returned unstripped; stripping it would misparse the
+/// element's own first byte as a fake tag.
 ///
 /// The trailing END_GROUP tag is stripped by re-encoding it from the
 /// leading tag's own field number (`write_tag(field_number, WT_END_GROUP,
@@ -90,15 +94,16 @@ pub fn extract_binary<'a>(blob: &'a [u8], range: &Range<usize>, is_message: bool
 /// spurious `INVALID_GROUP_END` entry).
 pub(crate) fn message_payload_range(
     blob: &[u8],
-    range: &Range<usize>,
-    packed_record_start: Option<usize>,
+    range: &Range<u32>,
+    packed_record_start: u32,
 ) -> Range<usize> {
-    if packed_record_start.is_some() {
-        return range.clone();
+    let range = widen(range);
+    if packed_record_start != NO_PACKED_RECORD {
+        return range;
     }
     let tag = parse_wiretag(blob, range.start);
     let Some(wtype) = tag.wtype else {
-        return range.clone();
+        return range;
     };
     if wtype == WT_LEN {
         let len = parse_varint(blob, tag.next_pos);
@@ -206,6 +211,7 @@ pub fn extract(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decode::NO_NODE;
 
     #[test]
     fn extract_binary_field_keeps_tag_and_length() {
@@ -328,10 +334,11 @@ mod tests {
         let blob = [0x0Au8, 0x02, inner_bytes[0], inner_bytes[1]];
 
         let decoded = decode(&blob, &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
+        let inner = decoded.fqdns.id_of("test.Inner");
         let inner_node = decoded
             .tree
             .iter()
-            .find(|n| n.span.type_fqdn.as_deref() == Some("test.Inner"))
+            .find(|n| n.span.type_fqdn == inner)
             .expect("decoded tree must contain the Inner submessage");
 
         // `raw_range` is relative to `decoded.blob` (the wrapped blob, spec
@@ -356,7 +363,7 @@ mod tests {
     #[test]
     fn extract_text_prepends_the_prototext_header() {
         use prototext_core::helpers::WT_LEN;
-        use prototext_core::serialize::render_text::NodeSpan;
+        use prototext_core::serialize::render_text::{NodeSpan, NO_FQDN, NO_PACKED_RECORD};
 
         let lines: Vec<String> = vec!["  options {".to_string(), "  }".to_string()];
         let node = TreeNode {
@@ -365,21 +372,21 @@ mod tests {
                 raw_range: 0..2,
                 text_range: 0..2,
                 level: 1,
-                type_fqdn: None,
+                type_fqdn: NO_FQDN,
                 // Not exercising message-line stripping here — just header
                 // prepending — so left scalar-shaped, same as before this
                 // field existed.
                 is_message: false,
-                packed_record_start: None,
-                wire_type: WT_LEN,
+                packed_record_start: NO_PACKED_RECORD,
+                wire_type: WT_LEN as u8,
             },
-            parent: None,
-            first_child: None,
-            last_child: None,
-            next_sibling: None,
-            prev_sibling: None,
-            doc_next: None,
-            doc_prev: None,
+            parent: NO_NODE,
+            first_child: NO_NODE,
+            last_child: NO_NODE,
+            next_sibling: NO_NODE,
+            prev_sibling: NO_NODE,
+            doc_next: NO_NODE,
+            doc_prev: NO_NODE,
             sibling_ordinal: 1,
             lines_total: 2,
             lines_visible: 2,
@@ -392,7 +399,7 @@ mod tests {
             b"",
             &lines,
             &node,
-            node.span.text_range.clone(),
+            crate::decode::widen(&node.span.text_range),
         )
         .unwrap();
         let written = std::fs::read_to_string(&path).unwrap();
@@ -408,8 +415,9 @@ mod tests {
         // wrapped in the original field, not standalone prototext for the
         // extracted message's own type.
         use prototext_core::helpers::WT_LEN;
-        use prototext_core::serialize::render_text::NodeSpan;
+        use prototext_core::serialize::render_text::{FqdnTable, NodeSpan};
 
+        let mut fqdns = FqdnTable::new();
         let lines: Vec<String> = vec![
             "options {  #@ FileOptions = 8".to_string(),
             "  java_package: \"x\"  #@ string = 1".to_string(),
@@ -421,18 +429,18 @@ mod tests {
                 raw_range: 0..2,
                 text_range: 0..3,
                 level: 0,
-                type_fqdn: Some("google.protobuf.FileOptions".to_string()),
+                type_fqdn: fqdns.intern("google.protobuf.FileOptions"),
                 is_message: true,
-                packed_record_start: None,
-                wire_type: WT_LEN,
+                packed_record_start: NO_PACKED_RECORD,
+                wire_type: WT_LEN as u8,
             },
-            parent: None,
-            first_child: None,
-            last_child: None,
-            next_sibling: None,
-            prev_sibling: None,
-            doc_next: None,
-            doc_prev: None,
+            parent: NO_NODE,
+            first_child: NO_NODE,
+            last_child: NO_NODE,
+            next_sibling: NO_NODE,
+            prev_sibling: NO_NODE,
+            doc_next: NO_NODE,
+            doc_prev: NO_NODE,
             sibling_ordinal: 1,
             lines_total: 3,
             lines_visible: 3,
@@ -445,7 +453,7 @@ mod tests {
             b"",
             &lines,
             &node,
-            node.span.text_range.clone(),
+            crate::decode::widen(&node.span.text_range),
         )
         .unwrap();
         let written = std::fs::read_to_string(&path).unwrap();
@@ -464,8 +472,9 @@ mod tests {
         // message vs. group) is enough to correctly trigger the same
         // wrapping-line stripping.
         use prototext_core::helpers::WT_START_GROUP;
-        use prototext_core::serialize::render_text::NodeSpan;
+        use prototext_core::serialize::render_text::{FqdnTable, NodeSpan};
 
+        let mut fqdns = FqdnTable::new();
         let lines: Vec<String> = vec![
             "MyGroup {  #@ group".to_string(),
             "  id: 7  #@ int32 = 1".to_string(),
@@ -477,18 +486,18 @@ mod tests {
                 raw_range: 0..4,
                 text_range: 0..3,
                 level: 0,
-                type_fqdn: Some("pkg.MyGroup".to_string()),
+                type_fqdn: fqdns.intern("pkg.MyGroup"),
                 is_message: true,
-                packed_record_start: None,
-                wire_type: WT_START_GROUP,
+                packed_record_start: NO_PACKED_RECORD,
+                wire_type: WT_START_GROUP as u8,
             },
-            parent: None,
-            first_child: None,
-            last_child: None,
-            next_sibling: None,
-            prev_sibling: None,
-            doc_next: None,
-            doc_prev: None,
+            parent: NO_NODE,
+            first_child: NO_NODE,
+            last_child: NO_NODE,
+            next_sibling: NO_NODE,
+            prev_sibling: NO_NODE,
+            doc_next: NO_NODE,
+            doc_prev: NO_NODE,
             sibling_ordinal: 1,
             lines_total: 3,
             lines_visible: 3,
@@ -501,7 +510,7 @@ mod tests {
             b"",
             &lines,
             &node,
-            node.span.text_range.clone(),
+            crate::decode::widen(&node.span.text_range),
         )
         .unwrap();
         let written = std::fs::read_to_string(&path).unwrap();

@@ -11,14 +11,14 @@ use super::tiered::Tier;
 impl App {
     /// Whether `idx` is eligible as an override target (`t`, `type-as`,
     /// `type-as-raw`): a message/group node already (`NodeSpan::
-    /// is_message`, spec 0114 §1.2 — *not* `type_fqdn.is_some()`, which is
+    /// is_message`, spec 0114 §1.2 — *not* `type_fqdn != NO_FQDN`, which is
     /// ambiguous between a scalar and a schema-unresolved message/group),
     /// or any scalar with a decodable tag — `wire_type` one of `WT_LEN`
     /// (string, bytes, or an unresolved LEN-wire field, reinterpretable
     /// as an embedded message), `WT_VARINT`, `WT_I32`, `WT_I64` (spec
     /// 0135 §G3: primitive-type overrides, no longer categorically
-    /// excluded). For a packed-repeated element (`packed_record_start.
-    /// is_some()`), eligibility is evaluated against the whole record's
+    /// excluded). For a packed-repeated element (`packed_record_start !=
+    /// NO_PACKED_RECORD`), eligibility is evaluated against the whole record's
     /// own reconstructed wire type, always `WT_LEN` (spec 0135 §G1) — not
     /// the individual element's own `wire_type`. Any/MessageSet
     /// auto-expansion (spec 0120) already reinterprets exactly this kind
@@ -30,10 +30,14 @@ impl App {
     pub(super) fn can_override(&self, idx: usize) -> bool {
         use prototext_core::helpers::{WT_I32, WT_I64, WT_LEN, WT_VARINT};
         let span = &self.tree[idx].span;
-        if span.packed_record_start.is_some() {
+        if span.packed_record_start != NO_PACKED_RECORD {
             return true;
         }
-        span.is_message || matches!(span.wire_type, WT_LEN | WT_VARINT | WT_I32 | WT_I64)
+        span.is_message
+            || matches!(
+                u32::from(span.wire_type),
+                WT_LEN | WT_VARINT | WT_I32 | WT_I64
+            )
     }
 
     /// `t`: toggle the override pane for the node under the cursor (spec
@@ -111,7 +115,7 @@ impl App {
             .or_else(|| {
                 let span = &self.tree[self.cursor].span;
                 if span.is_message {
-                    span.type_fqdn.clone().map(Some)
+                    self.fqdns.get(span.type_fqdn).map(|f| Some(f.to_owned()))
                 } else {
                     self.natural_type(self.cursor).map(Some)
                 }
@@ -685,8 +689,8 @@ impl App {
             return;
         };
         let span = &self.tree[idx].span;
-        let field_number = span.field_number;
-        let is_group = span.wire_type == prototext_core::helpers::WT_START_GROUP;
+        let field_number = u64::from(span.field_number);
+        let is_group = u32::from(span.wire_type) == prototext_core::helpers::WT_START_GROUP;
         let end = end.min(self.override_candidates.len());
         for row in start..end {
             let name = self.override_candidates[row].0.clone();
@@ -818,11 +822,10 @@ impl App {
                 // things that move a row — folding and splicing —
                 // unreachable while it is up.
                 let rows = self.visible_row_count();
-                let first_row = self
-                    .visible_row_of_line(span.text_range.start)
-                    .unwrap_or(rows);
+                let lines = crate::decode::widen(&span.text_range);
+                let first_row = self.visible_row_of_line(lines.start).unwrap_or(rows);
                 let covered_rows = self
-                    .visible_row_of_line(span.text_range.end)
+                    .visible_row_of_line(lines.end)
                     .unwrap_or(rows)
                     .saturating_sub(first_row);
                 self.preview_overlay = Some(PreviewOverlay {

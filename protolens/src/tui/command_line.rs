@@ -230,10 +230,10 @@ impl App {
     /// reconstructed record — spec 0135 §G1).
     pub(super) fn complete_type_as_fqdn(&mut self, cmd: &str, arg_prefix: &str) {
         let span = &self.tree[self.cursor].span;
-        let wire_type = if span.packed_record_start.is_some() {
+        let wire_type = if span.packed_record_start != NO_PACKED_RECORD {
             prototext_core::helpers::WT_LEN
         } else {
-            span.wire_type
+            u32::from(span.wire_type)
         };
         // Collected into owned `String`s upfront (rather than borrowing
         // `self.all_type_fqdns` for `matches`'s lifetime) so the
@@ -522,10 +522,10 @@ impl App {
         if let Some(name) = new_fqdn {
             if decode::primitive_type_for_keyword(name).is_some() {
                 let span = &self.tree[self.cursor].span;
-                let wire_type = if span.packed_record_start.is_some() {
+                let wire_type = if span.packed_record_start != NO_PACKED_RECORD {
                     prototext_core::helpers::WT_LEN
                 } else {
-                    span.wire_type
+                    u32::from(span.wire_type)
                 };
                 if !decode::primitive_keywords_for_wire_type(wire_type).contains(&name) {
                     return Err(format!(
@@ -699,10 +699,10 @@ impl App {
     /// `splice_override` already redirects every element of the run to,
     /// i.e. the node that can actually be acted upon.
     pub(super) fn nth_child(&self, idx: usize, pos: usize) -> Option<usize> {
-        let mut cur = self.tree[idx].first_child?;
+        let mut cur = self.tree[idx].first_child()?;
         let mut seen = 1;
         while seen < pos {
-            let next = self.tree[cur].next_sibling?;
+            let next = self.tree[cur].next_sibling()?;
             if !navigation::same_packed_record(&self.tree[cur].span, &self.tree[next].span) {
                 seen += 1;
             }
@@ -753,12 +753,12 @@ impl App {
             OverrideOrigin::Path { path } => self.resolve_path(path).is_some(),
             OverrideOrigin::PathField { path, field } => match self.resolve_path(path) {
                 Some(idx) => {
-                    let mut child = self.tree[idx].first_child;
+                    let mut child = self.tree[idx].first_child();
                     while let Some(c) = child {
-                        if self.tree[c].span.field_number == *field {
+                        if u64::from(self.tree[c].span.field_number) == *field {
                             return true;
                         }
-                        child = self.tree[c].next_sibling;
+                        child = self.tree[c].next_sibling();
                     }
                     false
                 }

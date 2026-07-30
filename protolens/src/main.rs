@@ -210,59 +210,6 @@ fn size_suffix(p: &Path) -> String {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn resolve_proto_root_keeps_an_explicit_value_regardless_of_the_fallback_dir() {
-        let dir = std::env::temp_dir().join("protolens-resolve-proto-root-explicit");
-        let explicit = PathBuf::from("/explicit/root");
-        assert_eq!(
-            resolve_proto_root(Some(explicit.clone()), Some(&dir.join("schema.desc"))),
-            Some(explicit)
-        );
-    }
-
-    #[test]
-    fn resolve_proto_root_falls_back_to_the_stub_proto_dir_when_it_exists() {
-        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let base = std::env::temp_dir().join(format!("protolens-resolve-proto-root-ok-{n}"));
-        let proto_dir = base.join("schema").join("proto");
-        std::fs::create_dir_all(&proto_dir).unwrap();
-
-        let result = resolve_proto_root(None, Some(&base.join("schema.desc")));
-
-        std::fs::remove_dir_all(&base).unwrap();
-        assert_eq!(result, Some(proto_dir));
-    }
-
-    #[test]
-    fn resolve_proto_root_is_none_when_the_stub_proto_dir_is_missing() {
-        let base = std::env::temp_dir().join("protolens-resolve-proto-root-missing");
-        assert_eq!(
-            resolve_proto_root(None, Some(&base.join("schema.desc"))),
-            None
-        );
-    }
-
-    #[test]
-    fn resolve_proto_root_is_none_when_the_stub_proto_path_is_a_file() {
-        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let base = std::env::temp_dir().join(format!("protolens-resolve-proto-root-file-{n}"));
-        let stub_dir = base.join("schema");
-        std::fs::create_dir_all(&stub_dir).unwrap();
-        std::fs::write(stub_dir.join("proto"), b"").unwrap();
-
-        let result = resolve_proto_root(None, Some(&base.join("schema.desc")));
-
-        std::fs::remove_dir_all(&base).unwrap();
-        assert_eq!(result, None);
-    }
-}
-
 fn main() -> ExitCode {
     // Dynamic shell completion — same model as Cargo/prototext. When
     // PROTOLENS_COMPLETE=<shell> is set, print the completion script and
@@ -576,5 +523,58 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_proto_root_keeps_an_explicit_value_regardless_of_the_fallback_dir() {
+        let dir = std::env::temp_dir().join("protolens-resolve-proto-root-explicit");
+        let explicit = PathBuf::from("/explicit/root");
+        assert_eq!(
+            resolve_proto_root(Some(explicit.clone()), Some(&dir.join("schema.desc"))),
+            Some(explicit)
+        );
+    }
+
+    #[test]
+    fn resolve_proto_root_falls_back_to_the_stub_proto_dir_when_it_exists() {
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!("protolens-resolve-proto-root-ok-{n}"));
+        let proto_dir = base.join("schema").join("proto");
+        std::fs::create_dir_all(&proto_dir).unwrap();
+
+        let result = resolve_proto_root(None, Some(&base.join("schema.desc")));
+
+        std::fs::remove_dir_all(&base).unwrap();
+        assert_eq!(result, Some(proto_dir));
+    }
+
+    #[test]
+    fn resolve_proto_root_is_none_when_the_stub_proto_dir_is_missing() {
+        let base = std::env::temp_dir().join("protolens-resolve-proto-root-missing");
+        assert_eq!(
+            resolve_proto_root(None, Some(&base.join("schema.desc"))),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_proto_root_is_none_when_the_stub_proto_path_is_a_file() {
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!("protolens-resolve-proto-root-file-{n}"));
+        let stub_dir = base.join("schema");
+        std::fs::create_dir_all(&stub_dir).unwrap();
+        std::fs::write(stub_dir.join("proto"), b"").unwrap();
+
+        let result = resolve_proto_root(None, Some(&base.join("schema.desc")));
+
+        std::fs::remove_dir_all(&base).unwrap();
+        assert_eq!(result, None);
     }
 }

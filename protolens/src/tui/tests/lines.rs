@@ -77,17 +77,17 @@ fn live_nodes(app: &App) -> Vec<usize> {
     let mut r = Some(app.first_node);
     while let Some(i) = r {
         roots.push(i);
-        r = app.tree[i].next_sibling;
+        r = app.tree[i].next_sibling();
     }
     let mut stack = roots;
     stack.reverse();
     while let Some(i) = stack.pop() {
         out.push(i);
         let mut kids = Vec::new();
-        let mut c = app.tree[i].first_child;
+        let mut c = app.tree[i].first_child();
         while let Some(ci) = c {
             kids.push(ci);
-            c = app.tree[ci].next_sibling;
+            c = app.tree[ci].next_sibling();
         }
         stack.extend(kids.into_iter().rev());
     }
@@ -187,7 +187,7 @@ fn a_fold_changes_only_the_folded_node_and_its_ancestors() {
         .filter(|&i| app.tree[i].lines_visible != before[i])
         .collect();
     let mut want: Vec<usize> =
-        std::iter::successors(Some(victim), |&i| app.tree[i].parent).collect();
+        std::iter::successors(Some(victim), |&i| app.tree[i].parent()).collect();
     want.sort_unstable();
     assert_eq!(
         changed, want,
@@ -262,7 +262,7 @@ fn teleports_land_on_the_named_line_with_a_fold_above_them() {
     app.toggle_fold(items[0]);
 
     let target = app.tree[*items.last().expect("three items")]
-        .first_child
+        .first_child()
         .expect("each Item has a scalar child");
     let line = app.absolute_start(target);
     let row = app.visible_row_of_line(line).expect("the target is drawn");

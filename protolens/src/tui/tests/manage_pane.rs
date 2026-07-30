@@ -346,7 +346,7 @@ fn manage_pane_z_ambiguous_candidates_advance_on_repeated_press() {
     let outside = app
         .tree
         .iter()
-        .position(|n| n.parent.is_none())
+        .position(|n| n.parent().is_none())
         .expect("root node must exist");
     app.cursor = outside;
 
@@ -395,7 +395,7 @@ fn manage_pane_z_ambiguous_then_resolved_via_cursor_move() {
     let outside = app
         .tree
         .iter()
-        .position(|n| n.parent.is_none())
+        .position(|n| n.parent().is_none())
         .expect("root node must exist");
     app.set_cursor(outside);
 
@@ -438,7 +438,7 @@ fn manage_pane_z_down_then_up_round_trip_counts_as_movement() {
     let outside = app
         .tree
         .iter()
-        .position(|n| n.parent.is_none())
+        .position(|n| n.parent().is_none())
         .expect("root node must exist");
     app.set_cursor(outside);
 
@@ -480,7 +480,7 @@ fn manage_pane_z_no_target_aborts_when_no_kind_applies() {
     let root_idx = app
         .tree
         .iter()
-        .position(|n| n.parent.is_none())
+        .position(|n| n.parent().is_none())
         .expect("root node must exist");
     let root_origin = OverrideOrigin::Path {
         path: app.positional_path(root_idx),
@@ -746,10 +746,7 @@ fn manage_pane_shift_d_duplicate_of_auto_entry_is_manual() {
     app.manage_focus = true;
     app.manage_open = true;
 
-    let item_idx = app
-        .tree
-        .iter()
-        .position(|n| n.span.type_fqdn.as_deref() == Some(decode::MESSAGE_SET_ITEM_FQDN))
+    let item_idx = node_with_type(&app, decode::MESSAGE_SET_ITEM_FQDN)
         .expect("Item group must be spliced to the synthetic MessageSetItem type");
     let item_path = app.positional_path(item_idx);
     let item_entry_idx = app
@@ -974,10 +971,7 @@ fn manage_pane_delete_deactivates_in_scope_auto_but_removes_out_of_scope_auto() 
     app.manage_focus = true;
     app.manage_open = true;
 
-    let item_idx = app
-        .tree
-        .iter()
-        .position(|n| n.span.type_fqdn.as_deref() == Some(decode::MESSAGE_SET_ITEM_FQDN))
+    let item_idx = node_with_type(&app, decode::MESSAGE_SET_ITEM_FQDN)
         .expect("Item group must be spliced to the synthetic MessageSetItem type");
     let item_path = app.positional_path(item_idx);
     let item_entry_idx = app
@@ -989,10 +983,7 @@ fn manage_pane_delete_deactivates_in_scope_auto_but_removes_out_of_scope_auto() 
     assert!(app.overrides.entries()[item_entry_idx].auto);
     assert!(app.overrides.entries()[item_entry_idx].active);
 
-    let message_idx = app
-        .tree
-        .iter()
-        .position(|n| n.span.type_fqdn.as_deref() == Some("ms_test.ExtPayload"))
+    let message_idx = node_with_type(&app, "ms_test.ExtPayload")
         .expect("message field must resolve to ExtPayload");
     let message_path = app.positional_path(message_idx);
     let message_entry_idx = app
@@ -1242,10 +1233,7 @@ fn manage_pane_rename_updates_entry_and_rerenders_active_override() {
     let (mut app, inner_idx, _) = type_as_fixture();
     app.cursor = inner_idx;
     app.run_command("type-as test.Inner");
-    assert_eq!(
-        app.tree[inner_idx].span.type_fqdn.as_deref(),
-        Some("test.Inner")
-    );
+    assert_eq!(type_name_of(&app, inner_idx), Some("test.Inner"));
 
     app.toggle_manage_pane();
     assert!(app.manage_open);
@@ -1404,10 +1392,7 @@ fn manage_pane_rename_works_on_a_raw_typed_non_root_node() {
 fn toggling_message_set_auto_override_off_and_on_sticks() {
     let mut app = message_set_fixture();
 
-    let item_idx = app
-        .tree
-        .iter()
-        .position(|n| n.span.type_fqdn.as_deref() == Some(decode::MESSAGE_SET_ITEM_FQDN))
+    let item_idx = node_with_type(&app, decode::MESSAGE_SET_ITEM_FQDN)
         .expect("Item group must be spliced to the synthetic MessageSetItem type");
     let item_path = app.positional_path(item_idx);
     let entry_idx = app
@@ -1429,7 +1414,7 @@ fn toggling_message_set_auto_override_off_and_on_sticks() {
         app.overrides.entries()
     );
     assert_eq!(
-        app.tree[item_idx].span.type_fqdn.as_deref(),
+        type_name_of(&app, item_idx),
         None,
         "Item node must render raw/natural once its override is \
          deactivated: {:#?}",
@@ -1447,16 +1432,14 @@ fn toggling_message_set_auto_override_off_and_on_sticks() {
         app.overrides.entries()
     );
     assert_eq!(
-        app.tree[item_idx].span.type_fqdn.as_deref(),
+        type_name_of(&app, item_idx),
         Some(decode::MESSAGE_SET_ITEM_FQDN),
         "Item node must re-expand once its override is reactivated: \
          {:#?}",
         app.lines
     );
     assert!(
-        app.tree
-            .iter()
-            .any(|n| n.span.type_fqdn.as_deref() == Some("ms_test.ExtPayload")),
+        has_node_with_type(&app, "ms_test.ExtPayload"),
         "tier-2 auto-expansion must also come back after reactivating \
          tier-1: {:#?}",
         app.lines
@@ -1479,10 +1462,7 @@ fn toggling_message_set_auto_override_off_and_on_sticks() {
 fn deactivating_tier_1_does_not_affect_the_still_active_tier_2_entry() {
     let mut app = message_set_fixture();
 
-    let item_idx = app
-        .tree
-        .iter()
-        .position(|n| n.span.type_fqdn.as_deref() == Some(decode::MESSAGE_SET_ITEM_FQDN))
+    let item_idx = node_with_type(&app, decode::MESSAGE_SET_ITEM_FQDN)
         .expect("Item group must be spliced to the synthetic MessageSetItem type");
     let item_path = app.positional_path(item_idx);
     let item_entry_idx = app
@@ -1491,10 +1471,7 @@ fn deactivating_tier_1_does_not_affect_the_still_active_tier_2_entry() {
         .iter()
         .position(|e| matches!(&e.origin, OverrideOrigin::Path { path } if *path == item_path))
         .expect("tier-1 entry must exist");
-    let message_idx = app
-        .tree
-        .iter()
-        .position(|n| n.span.type_fqdn.as_deref() == Some("ms_test.ExtPayload"))
+    let message_idx = node_with_type(&app, "ms_test.ExtPayload")
         .expect("message field must resolve to ExtPayload");
     let message_path = app.positional_path(message_idx);
     let message_entry_idx = app
@@ -1527,9 +1504,7 @@ fn deactivating_tier_1_does_not_affect_the_still_active_tier_2_entry() {
     app.overrides.toggle_active(item_entry_idx);
     app.render_overrides(app.first_node);
     assert!(
-        app.tree
-            .iter()
-            .any(|n| n.span.type_fqdn.as_deref() == Some("ms_test.ExtPayload")),
+        has_node_with_type(&app, "ms_test.ExtPayload"),
         "tier-2 must still resolve after reactivating tier-1: {:?}",
         app.lines
     );

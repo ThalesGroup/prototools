@@ -121,6 +121,27 @@ pub fn bytes_missing(pos: usize, len: u64, buflen: usize) -> u64 {
 /// bytes always render the same way.
 pub const MAX_WIRE_DEPTH: usize = 1000;
 
+/// Largest input buffer `decode_and_render_indexed` will accept (spec 0212
+/// S1).
+///
+/// `NodeSpan` stores its byte and line ranges as `u32`, so an offset past
+/// `u32::MAX` would wrap silently and every consumer would reslice
+/// unrelated bytes while reporting success. This constant is what makes
+/// those `u32`s sound.
+///
+/// It is *not* a new restriction. `decode_and_render_indexed` opens with an
+/// unconditional `let capacity = buf.len() * 8`, so a buffer this size
+/// already asks the allocator for `u32::MAX` bytes in one go and a 4 GiB
+/// one asks for 32 GiB and aborts. The cap names the limit that was
+/// already there and turns an abort into a refusal — which is why it is
+/// tied to that reservation rather than to `u32::MAX` itself.
+///
+/// It bounds `text_range` too, transitively: a rendered line costs at
+/// least one input byte to exist, so the line count cannot exceed
+/// `2 * buf.len()` (a message contributes an open and a close), leaving
+/// three quarters of a `u32` unused at the cap.
+pub const MAX_INDEXED_BUFFER: usize = u32::MAX as usize / 8;
+
 #[cfg(test)]
 mod tests {
     use super::*;

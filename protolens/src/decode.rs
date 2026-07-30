@@ -10,6 +10,7 @@
 //! always requires an explicit `--descriptor-set`.
 
 use std::fmt;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -17,8 +18,11 @@ use prost_reflect::prost_types::field_descriptor_proto::{Label, Type};
 use prost_reflect::prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto};
 use prost_reflect::{DescriptorPool, EnumDescriptor, MessageDescriptor};
 use prototext_core::helpers::{write_tag, write_varint, WT_LEN};
+// Every `NO_FQDN` here is in a test building a literal `NodeSpan`.
+#[cfg(test)]
+use prototext_core::serialize::render_text::NO_FQDN;
 use prototext_core::serialize::render_text::{
-    decode_and_render_indexed, DecodeRenderOpts, NodeSpan,
+    decode_and_render_indexed, DecodeRenderOpts, FqdnTable, NodeSpan, NO_PACKED_RECORD,
 };
 use prototext_core::{decode_pool, render_as_bytes, RenderOpts};
 use prototext_graph::build_scoring_graph::serial::ArchivedCompiledGraph;
@@ -452,16 +456,68 @@ pub fn determine_root_type(
 ///
 /// Note the shape: this is deliberately **not**
 /// `a.packed_record_start == b.packed_record_start`. Two adjacent
-/// ordinary scalars both carry `None`, and that comparison would fuse
-/// them into one ordinal — renumbering nearly every path in nearly every
-/// document. `None` means "not part of a packed record", never "the same
-/// record as".
+/// ordinary scalars both carry `NO_PACKED_RECORD`, and that comparison
+/// would fuse them into one ordinal — renumbering nearly every path in
+/// nearly every document. The sentinel means "not part of a packed
+/// record", never "the same record as".
 pub(crate) fn same_packed_record(a: &NodeSpan, b: &NodeSpan) -> bool {
-    match (a.packed_record_start, b.packed_record_start) {
-        (Some(x), Some(y)) => x == y,
-        _ => false,
-    }
+    a.packed_record_start != NO_PACKED_RECORD && a.packed_record_start == b.packed_record_start
 }
+
+/// A span's `u32` range widened to the `usize` range that indexes a slice
+/// or a line vector (spec 0212 S2).
+///
+/// The mirror image of `prototext-core`'s own `narrow`: the library stores
+/// these ranges as `u32` because a document holds millions of them, while
+/// everything that *uses* one indexes with a `usize`. Widening is always
+/// lossless, so unlike narrowing it needs no check — which is why this is a
+/// bare cast and its counterpart is not.
+#[inline]
+pub(crate) fn widen(r: &Range<u32>) -> Range<usize> {
+    r.start as usize..r.end as usize
+}
+
+/// A `usize` range narrowed back down to what a span stores (spec 0212 S2).
+///
+/// Needed where protolens *writes* a range into a span it is about to hand
+/// on — re-deriving a stale `text_range` from the line counters, say. The
+/// checked conversion is deliberate: `MAX_INDEXED_BUFFER` bounds every such
+/// range, so an overflow here is a broken invariant rather than a large
+/// document, and a silent wraparound would have a consumer reslice
+/// unrelated bytes and report success.
+#[inline]
+pub(crate) fn narrow(r: Range<usize>) -> Range<u32> {
+    let cvt = |v: usize| u32::try_from(v).expect("an offset within MAX_INDEXED_BUFFER fits a u32");
+    cvt(r.start)..cvt(r.end)
+}
+
+/// How a node names another node (spec 0211 S1).
+///
+/// The arena itself is indexed by `usize` — it is a `Vec` — but a
+/// *stored* index only ever has to span the arena, and the largest arena
+/// ever observed here held 13 499 684 nodes at a capacity of 18 004 056:
+/// a 238x margin under `u32`. Storing each link as an `Option<usize>`
+/// paid 16 bytes for that (8 of payload plus 8 of discriminant using one
+/// bit of them), and there are seven links, so they were 112 of the
+/// slot's 272 bytes. See `docs/protolens/design/arena-and-batch.md`'s
+/// annex for the whole slot.
+///
+/// Nothing bounds the arena at `NodeIdx::MAX` directly. What keeps a
+/// document from approaching it is spec 0202's refusal, which turns down
+/// any batch whose arena would not fit in half of `MemAvailable` — at
+/// 184 bytes a node that binds on available memory long before it binds
+/// on the index type.
+pub type NodeIdx = u32;
+
+/// The absent link (spec 0211 S1).
+///
+/// `NodeIdx::MAX` and not `0`, because index 0 is a real node:
+/// `build_tree` emits post-order, so slot 0 holds a leaf. An
+/// index-plus-one encoding would let `Option<NonZeroU32>` carry absence
+/// for free, but it would put an off-by-one at every link site in
+/// exchange for nothing — `NodeIdx::MAX` is not a reachable index, so
+/// spending it on the sentinel costs no representable node.
+pub const NO_NODE: NodeIdx = NodeIdx::MAX;
 
 /// One node of the local arena built over the flat `Vec<NodeSpan>` returned
 /// by `decode_and_render_indexed` — see spec 0111 "Tree construction
@@ -479,13 +535,20 @@ pub(crate) fn same_packed_record(a: &NodeSpan, b: &NodeSpan) -> bool {
 #[derive(Debug)]
 pub struct TreeNode {
     pub span: NodeSpan,
-    pub parent: Option<usize>,
-    pub first_child: Option<usize>,
-    pub last_child: Option<usize>,
-    pub next_sibling: Option<usize>,
-    pub prev_sibling: Option<usize>,
-    pub doc_next: Option<usize>,
-    pub doc_prev: Option<usize>,
+    /// Spec 0211: the seven links are `NodeIdx`, with `NO_NODE` for
+    /// absent. Read them through the same-named accessors below —
+    /// `node.parent()` hands back the `Option<usize>` the call sites
+    /// want, and the conversion compiles away. The raw fields stay
+    /// public because a `TreeNode` is built by struct literal in a
+    /// dozen places (it has no `Default` — see below) and those want to
+    /// write `parent: NO_NODE` directly.
+    pub parent: NodeIdx,
+    pub first_child: NodeIdx,
+    pub last_child: NodeIdx,
+    pub next_sibling: NodeIdx,
+    pub prev_sibling: NodeIdx,
+    pub doc_next: NodeIdx,
+    pub doc_prev: NodeIdx,
     /// Spec 0192 S1: this node's 1-based position among its siblings,
     /// counting a whole packed run as a single position (spec 0184 S2 —
     /// every element of a packed record shares the record's positional
@@ -517,10 +580,10 @@ pub struct TreeNode {
     /// nothing repairs it.
     pub lines_total: u32,
     /// Spec 0210 S1: the same count with folded subtrees collapsed to
-    /// their single header line — `if folded { 1 } else { 1 + Σ children
-    /// + footer }`. This is what makes "the Nth visible row" a descent
-    /// rather than a lookup into a 5.28 M-entry vector, and what makes
-    /// folding O(depth) rather than a full rebuild.
+    /// their single header line — `if folded { 1 } else { 1 + Σ
+    /// children + footer }`. This is what makes "the Nth visible row" a
+    /// descent rather than a lookup into a 5.28 M-entry vector, and what
+    /// makes folding O(depth) rather than a full rebuild.
     ///
     /// Freshly built nodes are never folded, so `build_tree` sets it
     /// equal to `lines_total`.
@@ -536,6 +599,78 @@ pub struct TreeNode {
     /// tracking only the type here would miss a name-only change (e.g.
     /// spec 0119 G4's per-entry rename).
     pub rendered_as: Option<(Option<Option<String>>, String)>,
+}
+
+/// Spec 0211 G1. The slot is paid 4.5 M times over on a large descriptor
+/// set, and four times over during a commit — once for the live arena,
+/// once for the superseded half a batch leaves behind, once for
+/// `local_tree`, and once more if the render cache holds a copy. Read
+/// `docs/protolens/design/arena-and-batch.md`'s annex before changing
+/// it. An equality rather than a bound, because growth is the
+/// regression this is here to catch; a spec that legitimately moves the
+/// number moves this line too.
+const _: () = assert!(std::mem::size_of::<TreeNode>() == 120);
+
+impl TreeNode {
+    /// Spec 0211 S2: pack an optional index into the stored
+    /// representation. The `debug_assert` documents the ceiling rather
+    /// than enforcing it — see `NodeIdx` for what actually bounds the
+    /// arena.
+    ///
+    /// Public because a `TreeNode` is built by struct literal in a dozen
+    /// places, so a builder needs to name a link's stored form; the
+    /// setters below are how to change a link that already exists.
+    #[inline]
+    pub fn pack(idx: Option<usize>) -> NodeIdx {
+        match idx {
+            Some(i) => {
+                debug_assert!(
+                    i < NO_NODE as usize,
+                    "node index {i} does not fit in a NodeIdx"
+                );
+                i as NodeIdx
+            }
+            None => NO_NODE,
+        }
+    }
+
+    #[inline]
+    fn unpack(idx: NodeIdx) -> Option<usize> {
+        (idx != NO_NODE).then_some(idx as usize)
+    }
+}
+
+/// Spec 0211 S2: one `fn name(&self) -> Option<usize>` and one
+/// `fn set_name(&mut self, Option<usize>)` per link. A method may share
+/// a field's name in Rust, so the call sites read `node.parent()` and the
+/// struct literals still write `parent: NO_NODE` — no site had to invent
+/// a new name for a link.
+macro_rules! link_accessors {
+    ($($field:ident, $setter:ident;)*) => {
+        impl TreeNode {
+            $(
+                #[inline]
+                pub fn $field(&self) -> Option<usize> {
+                    Self::unpack(self.$field)
+                }
+
+                #[inline]
+                pub fn $setter(&mut self, idx: Option<usize>) {
+                    self.$field = Self::pack(idx);
+                }
+            )*
+        }
+    };
+}
+
+link_accessors! {
+    parent, set_parent;
+    first_child, set_first_child;
+    last_child, set_last_child;
+    next_sibling, set_next_sibling;
+    prev_sibling, set_prev_sibling;
+    doc_next, set_doc_next;
+    doc_prev, set_doc_prev;
 }
 
 /// Build the navigation arena from a flat, level-annotated, post-order
@@ -557,16 +692,16 @@ pub(crate) fn build_tree(spans: Vec<NodeSpan>) -> Vec<TreeNode> {
             // splice can invalidate it. Taking the count directly is
             // equivalent to summing the children (every line belongs to
             // exactly one node) and is O(1) rather than a second pass.
-            let lines = (span.text_range.end - span.text_range.start) as u32;
+            let lines = span.text_range.end - span.text_range.start;
             TreeNode {
                 span,
-                parent: None,
-                first_child: None,
-                last_child: None,
-                next_sibling: None,
-                prev_sibling: None,
-                doc_next: None,
-                doc_prev: None,
+                parent: NO_NODE,
+                first_child: NO_NODE,
+                last_child: NO_NODE,
+                next_sibling: NO_NODE,
+                prev_sibling: NO_NODE,
+                doc_next: NO_NODE,
+                doc_prev: NO_NODE,
                 sibling_ordinal: 1,
                 lines_total: lines,
                 // Nothing is folded at build time, neither in the initial
@@ -579,7 +714,7 @@ pub(crate) fn build_tree(spans: Vec<NodeSpan>) -> Vec<TreeNode> {
 
     // Stack of (index, level) for completed subtree roots not yet claimed
     // by a parent.
-    let mut stack: Vec<(usize, usize)> = Vec::new();
+    let mut stack: Vec<(usize, u16)> = Vec::new();
 
     for i in 0..nodes.len() {
         let level = nodes[i].span.level;
@@ -596,19 +731,19 @@ pub(crate) fn build_tree(spans: Vec<NodeSpan>) -> Vec<TreeNode> {
         children.reverse(); // restore left-to-right document order
 
         for &c in &children {
-            nodes[c].parent = Some(i);
+            nodes[c].set_parent(Some(i));
         }
         if let Some(&first) = children.first() {
-            nodes[i].first_child = Some(first);
+            nodes[i].set_first_child(Some(first));
         }
         if let Some(&last) = children.last() {
-            nodes[i].last_child = Some(last);
+            nodes[i].set_last_child(Some(last));
         }
 
         if let Some(&(top, top_level)) = stack.last() {
             if top_level == level {
-                nodes[i].prev_sibling = Some(top);
-                nodes[top].next_sibling = Some(i);
+                nodes[i].set_prev_sibling(Some(top));
+                nodes[top].set_next_sibling(Some(i));
                 // Spec 0192 S1: derived in the same place `prev_sibling`
                 // is, which is what keeps the two from diverging. A
                 // packed run's elements all share one record, so they
@@ -631,8 +766,8 @@ pub(crate) fn build_tree(spans: Vec<NodeSpan>) -> Vec<TreeNode> {
     doc_order.sort_by_key(|&i| nodes[i].span.raw_range.start);
     for w in doc_order.windows(2) {
         let (a, b) = (w[0], w[1]);
-        nodes[a].doc_next = Some(b);
-        nodes[b].doc_prev = Some(a);
+        nodes[a].set_doc_next(Some(b));
+        nodes[b].set_doc_prev(Some(a));
     }
 
     nodes
@@ -659,6 +794,18 @@ pub struct Decoded {
     /// `RootType::Raw`, or no scoring graph. See
     /// `determine_root_type`.
     pub root_candidates: RankedCandidates,
+    /// The type names every `NodeSpan::type_fqdn` in `tree` indexes into
+    /// (spec 0212 S4).
+    ///
+    /// It is born here and lives as long as the document does, because a
+    /// `FqdnId` only means anything against the table that produced it.
+    /// Every later render of a *part* of this document — every override
+    /// splice — must be handed this same table, or the spliced spans'
+    /// ids will disagree with the arena's about what each type is. That
+    /// is also why a re-decode must either keep this table or clear the
+    /// render cache alongside it: cache entries hold ids from whichever
+    /// table produced them.
+    pub fqdns: FqdnTable,
 }
 
 /// Deterministic short name for a synthetic one-field wrapper descriptor
@@ -1063,9 +1210,14 @@ pub fn render_resolved(
         expand_message_set: false,
         ..Default::default()
     };
-    let (text, spans) = decode_and_render_indexed(&wrapped_blob, wrapper_desc.as_ref(), opts);
+    // Spec 0212 S4: the table is created here, at the document's own
+    // birth, and handed to every later sub-render of it.
+    let mut fqdns = FqdnTable::new();
+    let rendered =
+        decode_and_render_indexed(&wrapped_blob, wrapper_desc.as_ref(), &mut fqdns, opts)
+            .map_err(|e| DecodeError::Schema(e.to_string()))?;
 
-    let text = String::from_utf8(text)
+    let text = String::from_utf8(rendered.text)
         .map_err(|e| DecodeError::Schema(format!("rendered text is not valid UTF-8: {e}")))?;
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
     // Spec 0135 §G2: `register_wrapper`'s sole field is always named the
@@ -1085,7 +1237,7 @@ pub fn render_resolved(
             lines[0] = patched;
         }
     }
-    let tree = build_tree(spans);
+    let tree = build_tree(rendered.spans);
 
     Ok(Decoded {
         lines,
@@ -1094,6 +1246,7 @@ pub fn render_resolved(
         blob: wrapped_blob,
         wrapper_offset,
         root_candidates,
+        fqdns,
     })
 }
 
@@ -1104,6 +1257,59 @@ mod tests {
     use prototext_graph::build_scoring_graph::build_from_strings;
 
     use super::*;
+
+    /// Spec 0211 test item 4. A link is stored as a `NodeIdx` with
+    /// `NO_NODE` standing for absence, so the one thing the encoding
+    /// could plausibly get wrong is confusing "no link" with a real
+    /// node — and specifically with node **0**, which an
+    /// index-plus-one encoding would have gotten wrong and which is
+    /// always a real node here (`build_tree` emits post-order, so slot
+    /// 0 holds a leaf).
+    #[test]
+    fn every_link_round_trips_through_index_zero_and_through_absence() {
+        let mut node = build_tree(vec![NodeSpan {
+            field_number: 1,
+            raw_range: 0..2,
+            text_range: 0..1,
+            level: 0,
+            type_fqdn: NO_FQDN,
+            is_message: false,
+            packed_record_start: NO_PACKED_RECORD,
+            wire_type: WT_LEN as u8,
+        }])
+        .pop()
+        .expect("one span builds one node");
+
+        macro_rules! check {
+            ($($get:ident, $set:ident;)*) => {$(
+                assert_eq!(
+                    node.$get(), None,
+                    "a freshly built node has no {}", stringify!($get),
+                );
+                node.$set(Some(0));
+                assert_eq!(
+                    node.$get(), Some(0),
+                    "{} lost node 0", stringify!($get),
+                );
+                node.$set(Some(7));
+                assert_eq!(node.$get(), Some(7), "{} lost node 7", stringify!($get));
+                node.$set(None);
+                assert_eq!(
+                    node.$get(), None,
+                    "{} kept a stale link after being cleared", stringify!($get),
+                );
+            )*};
+        }
+        check! {
+            parent, set_parent;
+            first_child, set_first_child;
+            last_child, set_last_child;
+            next_sibling, set_next_sibling;
+            prev_sibling, set_prev_sibling;
+            doc_next, set_doc_next;
+            doc_prev, set_doc_prev;
+        }
+    }
 
     #[test]
     fn determine_root_type_returns_none_without_override_or_graph() {
@@ -1299,7 +1505,7 @@ mod tests {
             .find(|n| n.span.level == 0)
             .expect("tree must contain the wrapper's top-level node");
         assert!(wrapper.span.is_message);
-        assert_eq!(wrapper.span.type_fqdn, None);
+        assert_eq!(wrapper.span.type_fqdn, NO_FQDN);
     }
 
     /// The document root is field number 1 of the virtual encompassing
@@ -1437,29 +1643,28 @@ mod tests {
         blob.extend_from_slice(&any_bytes);
 
         let decoded = decode(&blob, &mut ctx, RootType::Named("acme.Container"), 2).unwrap();
+        let any = decoded.fqdns.id_of("google.protobuf.Any");
         let any_idx = decoded
             .tree
             .iter()
-            .position(|n| n.span.type_fqdn.as_deref() == Some("google.protobuf.Any"))
+            .position(|n| n.span.type_fqdn == any)
             .expect("tree must contain the unexpanded Any node itself");
         let type_url_idx = decoded.tree[any_idx]
-            .first_child
+            .first_child()
             .expect("Any node must have type_url as its first child");
         let value_idx = decoded.tree[type_url_idx]
-            .next_sibling
+            .next_sibling()
             .expect("Any node must have value as its second child");
         assert_eq!(decoded.tree[type_url_idx].span.field_number, 1);
         assert_eq!(decoded.tree[value_idx].span.field_number, 2);
         assert!(
-            decoded.tree[value_idx].span.type_fqdn.is_none(),
+            decoded.tree[value_idx].span.type_fqdn == NO_FQDN,
             "value must stay unexpanded (plain bytes) at decode() layer: {:#?}",
             decoded.tree[value_idx].span
         );
+        let payload = decoded.fqdns.id_of("acme.Payload");
         assert!(
-            !decoded
-                .tree
-                .iter()
-                .any(|n| n.span.type_fqdn.as_deref() == Some("acme.Payload")),
+            !decoded.tree.iter().any(|n| n.span.type_fqdn == payload),
             "acme.Payload must not appear — auto-expansion is tui.rs's job, \
              not decode()'s: {:#?}",
             decoded.lines
@@ -1601,11 +1806,15 @@ mod tests {
         vec![leaf, root, stray, ext]
     }
 
-    /// The FDS wire encoding plus each file's `(start, end)` span within
-    /// it. Laid out by hand rather than via `FileDescriptorSet::encode`
-    /// because the spans only exist while the records are being written,
-    /// and they are precisely what `LazyPool` slices FDPs out of.
-    fn encode_fds(files: &[FileDescriptorProto]) -> (Vec<u8>, Vec<(String, (u64, u64))>) {
+    /// Each file's `(start, end)` byte span within an encoded FDS,
+    /// keyed by file name.
+    type FdsSpans = Vec<(String, (u64, u64))>;
+
+    /// The FDS wire encoding plus each file's span within it. Laid out
+    /// by hand rather than via `FileDescriptorSet::encode` because the
+    /// spans only exist while the records are being written, and they
+    /// are precisely what `LazyPool` slices FDPs out of.
+    fn encode_fds(files: &[FileDescriptorProto]) -> (Vec<u8>, FdsSpans) {
         let mut buf = Vec::new();
         let mut spans = Vec::new();
         for file in files {
@@ -1733,7 +1942,7 @@ mod tests {
         /// Rewrite the descriptor as `#@ prototext` text. Round-tripped
         /// through the codec so `read_descriptor_file` recovers exactly
         /// the binary the sidecar's spans were measured against.
-        fn as_prototext(self) -> Self {
+        fn with_prototext_descriptor(self) -> Self {
             let binary = std::fs::read(&self.pb).unwrap();
             let text = prototext_core::render_as_text(
                 &binary,
@@ -1890,7 +2099,7 @@ mod tests {
     fn a_prototext_descriptor_falls_back_even_with_a_valid_index() {
         let fixture = Fixture::new("prototext-descriptor")
             .with_index()
-            .as_prototext();
+            .with_prototext_descriptor();
         let mut ctx = fixture.load();
 
         assert!(ctx.lazy.is_none());

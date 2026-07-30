@@ -140,18 +140,33 @@ own.
 protolens is a consumer of `prototext_core`, not an extension of it, and
 this document deliberately does not describe `prototext_core`'s own
 internals (see `docs/prototext/` for those). At the interface, protolens
-depends on exactly three things:
+depends on exactly four things:
 
 1. `decode_and_render_indexed` + `DecodeRenderOpts` — the schema-optional
    decode/render entry point, called with `expand_any`/`expand_message_set`
    always **off** (protolens implements its own Any/MessageSet expansion
    as ordinary overrides — see `document-tree.md` — rather than relying on
-   prototext_core's virtual-node expansion).
+   prototext_core's virtual-node expansion). It is fallible: it refuses a
+   buffer over `MAX_INDEXED_BUFFER` (511 MiB) rather than overflow the
+   `u32` offsets its spans carry.
 2. `NodeSpan` — the flat, per-field record `decode_and_render_indexed`
-   emits, which `document-tree.md`'s arena is built over.
-3. Low-level wire-format helpers (`WT_LEN`, `WT_START_GROUP`,
+   emits, which `document-tree.md`'s arena is built over. 32 bytes, pinned
+   by a compile-time equality assertion (spec 0212); its byte offsets and
+   line numbers are `u32`, and its "absent" fields use the named sentinels
+   `NO_FQDN` and `NO_PACKED_RECORD` rather than `Option`.
+3. `FqdnTable` — the intern table a span's `type_fqdn` indexes into.
+   protolens owns exactly one per document (`Decoded.fqdns`, then
+   `App.fqdns`) and passes it back in on every re-render, because an id
+   must name the same type in a freshly spliced span as in the arena
+   around it. `get` resolves an id to a name; `id_of` interns a name for
+   comparison against a span, and answers a *distinct* reserved id
+   (`UNINTERNED`, never `NO_FQDN`) for a name the document never
+   produced.
+4. Low-level wire-format helpers (`WT_LEN`, `WT_START_GROUP`,
    `parse_varint`, …) — used directly by `extract.rs` and the override
-   machinery to reason about tag/length framing without re-decoding.
+   machinery to reason about tag/length framing without re-decoding. Note
+   the `WT_*` constants are `u32` while a span's `wire_type` is a `u8`, so
+   comparisons against a span cast.
 
 `prototext_graph`'s `score_all`/`ScoringOpts` (a separate crate, the
 `hopcroft.rkyv` scoring sidecar) is the sole source of the "inferred"

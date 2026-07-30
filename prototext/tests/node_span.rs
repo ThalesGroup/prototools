@@ -12,9 +12,11 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use prototext_core::serialize::render_text::{
-    decode_and_render_indexed, DecodeRenderOpts, NodeSpan,
+    decode_and_render_indexed, DecodeRenderOpts, FqdnTable, NodeSpan, NO_FQDN, NO_PACKED_RECORD,
 };
-use prototext_core::{clear_any_loader, parse_schema, schema_from_pool, set_any_loader};
+use prototext_core::{
+    clear_any_loader, parse_schema, schema_from_pool, set_any_loader, MessageDescriptor,
+};
 
 // ── Fixture helpers (duplicated per prototext/tests/*.rs convention — no
 // shared common.rs in this crate; see roundtrip.rs for the same pattern) ──────
@@ -212,22 +214,38 @@ fn any_wire_bytes() -> Vec<u8> {
     wire
 }
 
+// ── Render helper ──────────────────────────────────────────────────────────
+
+/// `decode_and_render_indexed` with a `FqdnTable` of its own, handed back
+/// alongside the spans.
+///
+/// Spec 0212 S4: a span's `type_fqdn` is an index into a caller-owned
+/// table, so the table has to outlive the render for any assertion about
+/// a resolved type to mean anything. Each test here renders once, so a
+/// fresh table per call is exactly right — the ids are only ever compared
+/// against ids from the same table.
+fn render_indexed(
+    buf: &[u8],
+    root_desc: Option<&MessageDescriptor>,
+    opts: DecodeRenderOpts,
+) -> (Vec<u8>, Vec<NodeSpan>, FqdnTable) {
+    let mut fqdns = FqdnTable::new();
+    let rendered = decode_and_render_indexed(buf, root_desc, &mut fqdns, opts)
+        .expect("the render must succeed");
+    (rendered.text, rendered.spans, fqdns)
+}
+
 // ── Span-assertion helpers ─────────────────────────────────────────────────
 
 /// `outer` fully contains `inner` (both endpoints inclusive of `outer`'s
 /// own bounds) — the containment relation `NodeSpan::raw_range`/`text_range`
 /// must satisfy between a parent and any of its descendants (spec 0110 §3,
 /// "Nesting invariant").
-fn contains(outer: &Range<usize>, inner: &Range<usize>) -> bool {
+fn contains(outer: &Range<u32>, inner: &Range<u32>) -> bool {
     outer.start <= inner.start && inner.end <= outer.end
 }
 
-fn assert_contains(
-    outer_label: &str,
-    outer: &Range<usize>,
-    inner_label: &str,
-    inner: &Range<usize>,
-) {
+fn assert_contains(outer_label: &str, outer: &Range<u32>, inner_label: &str, inner: &Range<u32>) {
     assert!(
         contains(outer, inner),
         "{outer_label} range {outer:?} does not contain {inner_label} range {inner:?}"
@@ -236,9 +254,9 @@ fn assert_contains(
 
 /// The rendered text's line at line-number `idx` (0-indexed count of `\n`
 /// bytes written before it — matches `NodeSpan::text_range`'s convention).
-fn line_at(text: &str, idx: usize) -> &str {
+fn line_at(text: &str, idx: u32) -> &str {
     text.split('\n')
-        .nth(idx)
+        .nth(idx as usize)
         .unwrap_or_else(|| panic!("no line {idx} in text: {text:?}"))
 }
 
@@ -247,7 +265,7 @@ fn line_at(text: &str, idx: usize) -> &str {
 #[test]
 fn nesting_invariant_text_and_raw_ranges_are_contained() {
     let schema = message_set_schema("Container");
-    let (text, spans) = decode_and_render_indexed(
+    let (text, spans, fqdns) = render_indexed(
         CONTAINER_WIRE,
         schema.root_descriptor().as_ref(),
         DecodeRenderOpts {
@@ -264,7 +282,7 @@ fn nesting_invariant_text_and_raw_ranges_are_contained() {
         .find(|s| s.field_number == 2 && s.level == 0)
         .expect("extensions span");
     assert_eq!(
-        extensions.type_fqdn.as_deref(),
+        fqdns.get(extensions.type_fqdn),
         Some("test_ms.TestMessageSet")
     );
 
@@ -272,7 +290,7 @@ fn nesting_invariant_text_and_raw_ranges_are_contained() {
     // resolved extension, each nested one level inside `extensions`.
     let items: Vec<&NodeSpan> = spans
         .iter()
-        .filter(|s| s.field_number == 0 && s.level == 1 && s.type_fqdn.is_none())
+        .filter(|s| s.field_number == 0 && s.level == 1 && s.type_fqdn == NO_FQDN)
         .collect();
     assert_eq!(items.len(), 2, "expected 2 Item wrappers");
     for item in &items {
@@ -286,14 +304,14 @@ fn nesting_invariant_text_and_raw_ranges_are_contained() {
     }
 
     // message {} wrapper for ExtPayloadA — resolved type, one level deeper
-    // than its enclosing Item.
+    // than its enclosing Item. Spec 0212 S6: the name is interned once and
+    // the ids compared; `id_of`'s miss is not the absent-type sentinel, so a
+    // type this render never produced finds nothing rather than matching
+    // every typeless span.
+    let want_payload_a = fqdns.id_of("test_ms.ExtPayloadA");
     let msg_a = spans
         .iter()
-        .find(|s| {
-            s.field_number == 0
-                && s.level == 2
-                && s.type_fqdn.as_deref() == Some("test_ms.ExtPayloadA")
-        })
+        .find(|s| s.field_number == 0 && s.level == 2 && s.type_fqdn == want_payload_a)
         .expect("message{} wrapper for ExtPayloadA");
     let item_a = items
         .iter()
@@ -315,8 +333,8 @@ fn nesting_invariant_text_and_raw_ranges_are_contained() {
     );
     for child in &msg_a_children {
         assert!(
-            child.type_fqdn.is_none(),
-            "scalar leaf must have type_fqdn: None"
+            child.type_fqdn == NO_FQDN,
+            "scalar leaf must have no resolved type"
         );
         assert_contains("message", &msg_a.raw_range, "scalar", &child.raw_range);
         assert_contains("message", &msg_a.text_range, "scalar", &child.text_range);
@@ -347,7 +365,7 @@ fn line_number_survival_across_group_splice() {
     // `render_group_field`'s post-hoc "OPEN_GROUP" splice (Design rationale,
     // spec 0110).
     let wire: &[u8] = &[0x6b, 0x08, 0x2a];
-    let (text, spans) = decode_and_render_indexed(
+    let (text, spans, _fqdns) = render_indexed(
         wire,
         schema.root_descriptor().as_ref(),
         DecodeRenderOpts {
@@ -395,8 +413,8 @@ fn any_expansion_value_wrapper_gets_resolved_type() {
     let schema = any_schema();
     let wire = any_wire_bytes();
 
-    let (text, spans) = with_any_loader(&schema, || {
-        decode_and_render_indexed(
+    let (text, spans, fqdns) = with_any_loader(&schema, || {
+        render_indexed(
             &wire,
             schema.root_descriptor().as_ref(),
             DecodeRenderOpts {
@@ -413,7 +431,7 @@ fn any_expansion_value_wrapper_gets_resolved_type() {
         .iter()
         .find(|s| s.field_number == 1 && s.level == 0)
         .expect("payload span");
-    assert_eq!(payload.type_fqdn.as_deref(), Some("google.protobuf.Any"));
+    assert_eq!(fqdns.get(payload.type_fqdn), Some("google.protobuf.Any"));
 
     // value {} wrapper: virtual (field_number 0), one level deeper, resolved
     // to acme.Payload — distinct from both the container's own declared type
@@ -422,7 +440,7 @@ fn any_expansion_value_wrapper_gets_resolved_type() {
         .iter()
         .find(|s| s.field_number == 0 && s.level == 1)
         .expect("value{} wrapper span");
-    assert_eq!(value.type_fqdn.as_deref(), Some("acme.Payload"));
+    assert_eq!(fqdns.get(value.type_fqdn), Some("acme.Payload"));
     assert_ne!(value.type_fqdn, payload.type_fqdn);
     assert_contains("payload", &payload.raw_range, "value", &value.raw_range);
     assert_contains("payload", &payload.text_range, "value", &value.text_range);
@@ -431,7 +449,7 @@ fn any_expansion_value_wrapper_gets_resolved_type() {
         .iter()
         .find(|s| s.field_number == 1 && s.level == 2)
         .expect("label span");
-    assert!(label.type_fqdn.is_none());
+    assert_eq!(label.type_fqdn, NO_FQDN);
     assert_ne!(label.type_fqdn, value.type_fqdn);
     assert_contains("value", &value.raw_range, "label", &label.raw_range);
     assert_contains("value", &value.text_range, "label", &label.text_range);
@@ -442,7 +460,7 @@ fn any_expansion_value_wrapper_gets_resolved_type() {
 #[test]
 fn message_set_expansion_wrapper_nodes_get_resolved_type() {
     let schema = message_set_schema("Container");
-    let (text, spans) = decode_and_render_indexed(
+    let (text, spans, fqdns) = render_indexed(
         CONTAINER_WIRE,
         schema.root_descriptor().as_ref(),
         DecodeRenderOpts {
@@ -461,20 +479,17 @@ fn message_set_expansion_wrapper_nodes_get_resolved_type() {
     // Item {} wrapper: virtual, no type of its own (spec 0110 §3).
     let item = spans
         .iter()
-        .find(|s| s.field_number == 0 && s.level == 1 && s.type_fqdn.is_none())
+        .find(|s| s.field_number == 0 && s.level == 1 && s.type_fqdn == NO_FQDN)
         .expect("Item{} wrapper span");
     assert_contains("extensions", &extensions.raw_range, "Item", &item.raw_range);
 
     // message {} wrapper for ExtPayloadA: virtual, resolved type — distinct
     // from the enclosing MessageSet's own declared type and from its
     // scalar children's (absent) type_fqdn.
+    let want_payload_a = fqdns.id_of("test_ms.ExtPayloadA");
     let msg_a = spans
         .iter()
-        .find(|s| {
-            s.field_number == 0
-                && s.level == 2
-                && s.type_fqdn.as_deref() == Some("test_ms.ExtPayloadA")
-        })
+        .find(|s| s.field_number == 0 && s.level == 2 && s.type_fqdn == want_payload_a)
         .expect("message{} wrapper for ExtPayloadA");
     assert_ne!(msg_a.type_fqdn, extensions.type_fqdn);
     assert_contains(
@@ -494,7 +509,7 @@ fn message_set_expansion_wrapper_nodes_get_resolved_type() {
         .iter()
         .find(|s| s.level == 3 && contains(&msg_a.raw_range, &s.raw_range) && s.field_number == 1)
         .expect("ExtPayloadA.label span");
-    assert!(label.type_fqdn.is_none());
+    assert_eq!(label.type_fqdn, NO_FQDN);
     assert_ne!(label.type_fqdn, msg_a.type_fqdn);
     assert_contains("message", &msg_a.raw_range, "label", &label.raw_range);
 }
@@ -504,7 +519,7 @@ fn message_set_expansion_wrapper_nodes_get_resolved_type() {
 #[test]
 fn scalar_leaf_nodes_have_no_type_fqdn() {
     let schema = message_set_schema("Container");
-    let (_text, spans) = decode_and_render_indexed(
+    let (_text, spans, fqdns) = render_indexed(
         CONTAINER_WIRE,
         schema.root_descriptor().as_ref(),
         DecodeRenderOpts {
@@ -527,10 +542,10 @@ fn scalar_leaf_nodes_have_no_type_fqdn() {
     );
     for leaf in scalar_leaves {
         assert!(
-            leaf.type_fqdn.is_none(),
-            "scalar leaf (field {}) must have type_fqdn: None, got {:?}",
+            leaf.type_fqdn == NO_FQDN,
+            "scalar leaf (field {}) must have no resolved type, got {:?}",
             leaf.field_number,
-            leaf.type_fqdn
+            fqdns.get(leaf.type_fqdn)
         );
     }
 }
@@ -546,7 +561,7 @@ fn a_malformed_field_gets_its_own_one_line_span() {
     // field 1, VARINT, value 5 — well formed.
     // field 2, LEN, length 127 — but the buffer ends, so TRUNCATED_BYTES.
     let wire = [0x08u8, 0x05, 0x12, 0x7f];
-    let (text, spans) = decode_and_render_indexed(
+    let (text, spans, _fqdns) = render_indexed(
         &wire,
         None,
         DecodeRenderOpts {
@@ -574,14 +589,14 @@ fn a_malformed_field_gets_its_own_one_line_span() {
         "every MalformedKind renders exactly one line"
     );
     assert!(!malformed.is_message);
-    assert!(malformed.type_fqdn.is_none());
+    assert_eq!(malformed.type_fqdn, NO_FQDN);
     // The field's full extent, its tag included — the same convention
     // `scalar_field` uses, not the payload-only slice that gets rendered.
-    assert_eq!(malformed.raw_range, 2..wire.len());
+    assert_eq!(malformed.raw_range, 2..wire.len() as u32);
 
     // The whole point: the spans account for every rendered line.
     assert_eq!(
-        spans.iter().map(|s| s.text_range.end).max(),
+        spans.iter().map(|s| s.text_range.end as usize).max(),
         Some(text.lines().count()),
         "spans must cover the rendered text exactly"
     );
@@ -625,7 +640,7 @@ fn packed_repeated_field_gets_one_node_span_per_element() {
     // 0x0a, len 3, payload [0x01, 0x02, 0x03] (three varint elements).
     let wire: &[u8] = &[0x0a, 0x03, 0x01, 0x02, 0x03];
 
-    let (_text, spans) = decode_and_render_indexed(
+    let (_text, spans, _fqdns) = render_indexed(
         wire,
         schema.root_descriptor().as_ref(),
         DecodeRenderOpts {
@@ -640,11 +655,11 @@ fn packed_repeated_field_gets_one_node_span_per_element() {
     for (i, elem) in elems.iter().enumerate() {
         assert!(!elem.is_message);
         assert_eq!(
-            elem.packed_record_start,
-            Some(0),
+            elem.packed_record_start, 0,
             "packed_record_start must point at the record's own tag"
         );
         // Element i's own byte, at offset 2 (tag+length) + i.
+        let i = i as u32;
         assert_eq!(elem.raw_range, (2 + i)..(2 + i + 1));
         // Line i+1: line 0 is the `#@ prototext...` header (emit_header:
         // true).
@@ -687,7 +702,7 @@ fn empty_packed_repeated_field_keeps_a_single_whole_record_span() {
     // vals: field 1 (LEN, packed), tag 0x0a, len 0, no payload.
     let wire: &[u8] = &[0x0a, 0x00];
 
-    let (_text, spans) = decode_and_render_indexed(
+    let (_text, spans, _fqdns) = render_indexed(
         wire,
         schema.root_descriptor().as_ref(),
         DecodeRenderOpts {
@@ -704,7 +719,7 @@ fn empty_packed_repeated_field_keeps_a_single_whole_record_span() {
         "an empty packed record falls back to one whole-record span"
     );
     assert_eq!(elems[0].raw_range, 0..2);
-    assert!(elems[0].packed_record_start.is_none());
+    assert_eq!(elems[0].packed_record_start, NO_PACKED_RECORD);
 }
 
 // ── `raw_range` fidelity ────────────────────────────────────────────────────
@@ -714,8 +729,8 @@ fn raw_range_fidelity_reslices_and_redecodes() {
     let schema = any_schema();
     let wire = any_wire_bytes();
 
-    let (_text, spans) = with_any_loader(&schema, || {
-        decode_and_render_indexed(
+    let (_text, spans, fqdns) = with_any_loader(&schema, || {
+        render_indexed(
             &wire,
             schema.root_descriptor().as_ref(),
             DecodeRenderOpts {
@@ -732,12 +747,12 @@ fn raw_range_fidelity_reslices_and_redecodes() {
         .iter()
         .find(|s| s.field_number == 0 && s.level == 1)
         .expect("value{} wrapper span");
-    assert_eq!(value.type_fqdn.as_deref(), Some("acme.Payload"));
+    assert_eq!(fqdns.get(value.type_fqdn), Some("acme.Payload"));
 
     // Slice `value`'s raw_range directly from the original top-level buf —
     // absolute, no re-slicing through ancestors needed — and independently
     // re-decode it under its own resolved type.
-    let sub_slice = &wire[value.raw_range.clone()];
+    let sub_slice = &wire[value.raw_range.start as usize..value.raw_range.end as usize];
 
     let payload_schema =
         schema_from_pool(schema.pool().clone(), "acme.Payload").expect("payload schema");
@@ -782,9 +797,9 @@ fn raw_range_fidelity_reslices_and_redecodes() {
 fn owners_per_line(text: &str, spans: &[NodeSpan]) -> Vec<usize> {
     let mut owners = vec![0usize; text.matches('\n').count()];
     for s in spans {
-        owners[s.text_range.start] += 1;
+        owners[s.text_range.start as usize] += 1;
         if s.text_range.len() > 1 {
-            owners[s.text_range.end - 1] += 1;
+            owners[s.text_range.end as usize - 1] += 1;
         }
     }
     owners
@@ -796,7 +811,7 @@ fn assert_every_line_owned(label: &str, text: &str, spans: &[NodeSpan]) {
             *count,
             1,
             "{label}: line {line} ({:?}) is claimed by {count} spans",
-            line_at(text, line)
+            line_at(text, line as u32)
         );
     }
 }
@@ -815,7 +830,7 @@ fn assert_every_line_owned(label: &str, text: &str, spans: &[NodeSpan]) {
 #[test]
 fn every_line_of_a_well_formed_render_is_owned_by_exactly_one_span() {
     let schema = message_set_schema("Container");
-    let (text, spans) = decode_and_render_indexed(
+    let (text, spans, _fqdns) = render_indexed(
         CONTAINER_WIRE,
         schema.root_descriptor().as_ref(),
         DecodeRenderOpts {
@@ -852,7 +867,7 @@ fn every_malformity_renders_a_line_owned_by_its_own_span() {
         ("INVALID_GROUP_END", &[0x0C]),
     ];
     for (marker, wire) in cases {
-        let (text, spans) = decode_and_render_indexed(
+        let (text, spans, _fqdns) = render_indexed(
             wire,
             None,
             DecodeRenderOpts {
@@ -869,11 +884,11 @@ fn every_malformity_renders_a_line_owned_by_its_own_span() {
             .expect("the marker is on some line");
         let owner = spans
             .iter()
-            .find(|s| s.text_range.start == line)
+            .find(|s| s.text_range.start == line as u32)
             .unwrap_or_else(|| panic!("{marker}: line {line} has no span: {text:?}"));
         assert_eq!(
             owner.text_range,
-            line..line + 1,
+            line as u32..line as u32 + 1,
             "{marker}: a malformity is one line, so its span is scalar-shaped"
         );
         assert!(!owner.is_message, "{marker}: not a message");
@@ -898,7 +913,7 @@ fn a_malformity_in_the_middle_does_not_displace_the_lines_after_it() {
     let mut wire = vec![0x0Bu8; DEPTH + 1];
     wire.extend(std::iter::repeat_n(0x0Cu8, DEPTH + 1));
 
-    let (text, spans) = decode_and_render_indexed(
+    let (text, spans, _fqdns) = render_indexed(
         &wire,
         None,
         DecodeRenderOpts {

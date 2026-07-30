@@ -3,6 +3,7 @@
 //
 // SPDX-License-Identifier: MIT
 
+mod fqdn;
 mod helpers;
 mod packed;
 mod sink;
@@ -14,14 +15,16 @@ use std::sync::Arc;
 use prost_reflect::{Cardinality, ExtensionDescriptor, FieldDescriptor, Kind, MessageDescriptor};
 
 use crate::helpers::{
-    bytes_missing, parse_varint, parse_wiretag, payload_end, WiretagResult, MAX_WIRE_DEPTH,
-    WT_END_GROUP, WT_I32, WT_I64, WT_LEN, WT_START_GROUP, WT_VARINT,
+    bytes_missing, parse_varint, parse_wiretag, payload_end, WiretagResult, MAX_INDEXED_BUFFER,
+    MAX_WIRE_DEPTH, WT_END_GROUP, WT_I32, WT_I64, WT_LEN, WT_START_GROUP, WT_VARINT,
 };
+use crate::CodecError;
 
 use helpers::{render_group_field, render_len_field, scan_group_extent, FieldCtx};
 use sink::{IndexingTextSink, MalformedKind, ScalarValue, Sink, TagFacts, TextSink};
 
-pub use sink::NodeSpan;
+pub use fqdn::{FqdnId, FqdnTable, NO_FQDN, UNINTERNED};
+pub use sink::{NodeSpan, NO_PACKED_RECORD};
 
 // Magic prefix that identifies a textual prototext payload.
 const PROTOTEXT_MAGIC: &[u8] = b"#@ prototext:";
@@ -374,17 +377,51 @@ pub fn decode_and_render(
     out
 }
 
+/// The output of [`decode_and_render_indexed`].
+///
+/// A named struct rather than a tuple so that a future addition to the
+/// output is not itself a breaking change — this signature has already been
+/// widened twice (spec 0212 S5).
+#[derive(Debug)]
+pub struct IndexedRender {
+    /// The rendered text, byte-for-byte what `decode_and_render` produces
+    /// for the same input.
+    pub text: Vec<u8>,
+    /// One span per node, in post-order (a container follows all of its
+    /// descendants).
+    pub spans: Vec<NodeSpan>,
+}
+
 /// Sibling to `decode_and_render`, sharing the exact same parameter list,
 /// but internally rendering through an `IndexingTextSink` instead of a bare
 /// `TextSink`, and returning both the rendered text and its `NodeSpan`
 /// index alongside it (spec 0110 §3). `decode_and_render` itself stays
 /// `TextSink`-only: its production callers have no use for the index and
 /// shouldn't pay `IndexingTextSink`'s small extra bookkeeping cost.
+///
+/// `fqdns` is the table each node's `type_fqdn` is interned into. It is the
+/// caller's, not this function's, because a `FqdnId` is only meaningful
+/// against the table that produced it: a caller that renders a sub-document
+/// and splices its spans into a larger one — `protolens` does exactly that
+/// on every override — must pass the same table both times, or the two sets
+/// of ids will silently disagree about what type `3` is (spec 0212 S4).
+///
+/// Fails if `buf` exceeds `MAX_INDEXED_BUFFER`, the bound that keeps a
+/// `NodeSpan`'s `u32` offsets sound. This replaces an abort: the
+/// unconditional 8× output reservation below already made a buffer that
+/// size fatal, just without saying so.
 pub fn decode_and_render_indexed(
     buf: &[u8],
     root_desc: Option<&MessageDescriptor>,
+    fqdns: &mut FqdnTable,
     opts: DecodeRenderOpts,
-) -> (Vec<u8>, Vec<NodeSpan>) {
+) -> Result<IndexedRender, CodecError> {
+    if buf.len() > MAX_INDEXED_BUFFER {
+        return Err(CodecError::InputTooLarge {
+            len: buf.len(),
+            max: MAX_INDEXED_BUFFER,
+        });
+    }
     let DecodeRenderOpts {
         annotations,
         indent_size,
@@ -395,7 +432,7 @@ pub fn decode_and_render_indexed(
         emit_header,
     } = opts;
     let capacity = buf.len() * 8;
-    let mut sink = IndexingTextSink::new(capacity);
+    let mut sink = IndexingTextSink::new(capacity, fqdns);
 
     if annotations && emit_header {
         sink.write_header(b"#@ prototext: protoc\n");
@@ -419,7 +456,8 @@ pub fn decode_and_render_indexed(
 
     render_message(buf, 0, None, root_desc, schema_present, &mut sink);
 
-    sink.into_parts()
+    let (text, spans) = sink.into_parts();
+    Ok(IndexedRender { text, spans })
 }
 
 // ── Core recursive render-while-decode ───────────────────────────────────────
@@ -747,6 +785,71 @@ mod tests {
 
     // field 1 (varint) = 42: tag 0x08, value 0x2A.
     const VARINT_FIELD: [u8; 2] = [0x08, 0x2A];
+
+    /// Spec 0212 S1: over the cap the render refuses instead of aborting
+    /// the process on the 8× output reservation, and instead of wrapping a
+    /// `NodeSpan` offset to a plausible-looking wrong value.
+    ///
+    /// The half-gigabyte buffer costs address space, not memory: it is
+    /// zero-allocated, so the pages are never faulted in, and the size
+    /// check runs before anything reads a byte of it.
+    #[test]
+    fn a_buffer_over_the_cap_is_refused() {
+        let oversize = vec![0u8; MAX_INDEXED_BUFFER + 1];
+        let mut fqdns = FqdnTable::new();
+        let err =
+            decode_and_render_indexed(&oversize, None, &mut fqdns, DecodeRenderOpts::default())
+                .expect_err("over the cap");
+        match err {
+            CodecError::InputTooLarge { len, max } => {
+                assert_eq!(len, MAX_INDEXED_BUFFER + 1);
+                assert_eq!(max, MAX_INDEXED_BUFFER);
+            }
+            other => panic!("expected InputTooLarge, got {other:?}"),
+        }
+        // The message names the actual size, so a user can tell how far
+        // over they are rather than only that they are over.
+        assert!(err_text(MAX_INDEXED_BUFFER + 1).contains(&(MAX_INDEXED_BUFFER + 1).to_string()));
+    }
+
+    fn err_text(len: usize) -> String {
+        CodecError::InputTooLarge {
+            len,
+            max: MAX_INDEXED_BUFFER,
+        }
+        .to_string()
+    }
+
+    /// Spec 0212 S4: the table is shared precisely so that spans from two
+    /// different renders can be compared by id. A per-call table would
+    /// make this assertion fail while every span still looked valid.
+    #[test]
+    fn one_table_makes_two_renders_ids_comparable() {
+        let pb: &[u8] = include_bytes!("../../../fixtures/descriptor.pb");
+        let schema = crate::parse_schema(pb, "google.protobuf.FileDescriptorSet")
+            .expect("descriptor.pb is self-describing");
+        let desc = schema.root_descriptor();
+        let mut fqdns = FqdnTable::new();
+        let opts = || DecodeRenderOpts {
+            annotations: true,
+            ..Default::default()
+        };
+        let a = decode_and_render_indexed(pb, desc.as_ref(), &mut fqdns, opts())
+            .expect("within the cap");
+        let b = decode_and_render_indexed(pb, desc.as_ref(), &mut fqdns, opts())
+            .expect("within the cap");
+
+        let want = fqdns.id_of("google.protobuf.FileDescriptorProto");
+        assert_ne!(want, UNINTERNED, "the fixture contains this type");
+        let count = |r: &IndexedRender| r.spans.iter().filter(|s| s.type_fqdn == want).count();
+        assert!(count(&a) > 0);
+        assert_eq!(count(&a), count(&b));
+        // The second render interned nothing new.
+        let before = fqdns.len();
+        let mut once_more = FqdnTable::new();
+        let _ = decode_and_render_indexed(pb, desc.as_ref(), &mut once_more, opts());
+        assert_eq!(before, once_more.len());
+    }
 
     /// Spec 0173 S4: `FieldOrExt::write_display_name` replaced a
     /// `display_name() -> String` that allocated once per schema-named

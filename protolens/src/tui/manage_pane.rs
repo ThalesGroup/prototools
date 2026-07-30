@@ -286,28 +286,29 @@ impl App {
                     return Vec::new();
                 };
                 let mut result = Vec::new();
-                let mut child = self.tree[parent].first_child;
+                let mut child = self.tree[parent].first_child();
                 while let Some(c) = child {
-                    if self.tree[c].span.field_number == *field {
+                    if u64::from(self.tree[c].span.field_number) == *field {
                         result.push(c);
                     }
-                    child = self.tree[c].next_sibling;
+                    child = self.tree[c].next_sibling();
                 }
                 result
             }
             OverrideOrigin::FqdnField { fqdn, field } => {
+                // Spec 0212 S6: intern the needle once rather than resolve
+                // each parent's id back to a string inside the walk.
+                let want = self.fqdns.id_of(fqdn);
                 let mut result = Vec::new();
                 let mut cur = Some(self.first_node);
                 while let Some(c) = cur {
-                    let parent_fqdn = self.tree[c]
-                        .parent
-                        .and_then(|p| self.tree[p].span.type_fqdn.as_deref());
-                    if self.tree[c].span.field_number == *field
-                        && parent_fqdn == Some(fqdn.as_str())
+                    let parent_fqdn = self.tree[c].parent().map(|p| self.tree[p].span.type_fqdn);
+                    if u64::from(self.tree[c].span.field_number) == *field
+                        && parent_fqdn == Some(want)
                     {
                         result.push(c);
                     }
-                    cur = self.tree[c].doc_next;
+                    cur = self.tree[c].doc_next();
                 }
                 result
             }
