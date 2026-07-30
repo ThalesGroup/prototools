@@ -28,6 +28,8 @@ fn next_row_zigzags_outward_nearest_first() {
         below: 0,
         above_done: false,
         below_done: false,
+        above_pos: None,
+        below_pos: None,
         structural_version: 0,
     };
     let mut order = Vec::new();
@@ -49,6 +51,8 @@ fn next_row_keeps_walking_the_open_end_once_the_other_is_exhausted() {
         below: 0,
         above_done: false,
         below_done: false,
+        above_pos: None,
+        below_pos: None,
         structural_version: 0,
     };
     let mut order = Vec::new();
@@ -75,6 +79,8 @@ fn next_row_stops_after_the_row_budget_is_spent() {
         below: 0,
         above_done: false,
         below_done: false,
+        above_pos: None,
+        below_pos: None,
         structural_version: 0,
     };
     let mut visited = 0;
@@ -101,6 +107,8 @@ fn the_row_budget_is_shared_across_both_ends() {
         below: 0,
         above_done: false,
         below_done: false,
+        above_pos: None,
+        below_pos: None,
         structural_version: 0,
     };
     let mut rows = Vec::new();

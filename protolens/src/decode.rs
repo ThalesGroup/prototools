@@ -497,6 +497,34 @@ pub struct TreeNode {
     /// `prev_sibling` is written, and cannot go stale independently of
     /// it.
     pub sibling_ordinal: u32,
+    /// Spec 0210 S1: how many rendered lines this node's whole subtree
+    /// occupies, its own header and footer included. A *size*, not a
+    /// position — the absolute line number is derived by summing the
+    /// counts of preceding siblings up the root path (`App::
+    /// absolute_start`). Storing size rather than position is what makes
+    /// a commit O(depth) instead of O(nodes after the splice): a change
+    /// rewrites the node and its ancestors, never its followers.
+    ///
+    /// The invariant is `lines_total = 1 + Σ children + footer`, where
+    /// the header is always exactly one line and the footer is one line
+    /// iff `lines_total > 1`. It holds exactly (rather than
+    /// approximately) because every rendered line belongs to exactly one
+    /// node — which is why `IndexingTextSink::malformed` had to start
+    /// emitting a span.
+    ///
+    /// `span.text_range` is the source of this value at build time and
+    /// must not be read afterwards: a splice leaves it stale, and
+    /// nothing repairs it.
+    pub lines_total: u32,
+    /// Spec 0210 S1: the same count with folded subtrees collapsed to
+    /// their single header line — `if folded { 1 } else { 1 + Σ children
+    /// + footer }`. This is what makes "the Nth visible row" a descent
+    /// rather than a lookup into a 5.28 M-entry vector, and what makes
+    /// folding O(depth) rather than a full rebuild.
+    ///
+    /// Freshly built nodes are never folded, so `build_tree` sets it
+    /// equal to `lines_total`.
+    pub lines_visible: u32,
     /// Which override (if any) currently produced this node's rendering,
     /// paired with the field name it was rendered under (spec 0118 §2.1,
     /// extended by spec 0119 G4) — `None` until the first `render()` pass
@@ -523,17 +551,29 @@ pub struct TreeNode {
 pub(crate) fn build_tree(spans: Vec<NodeSpan>) -> Vec<TreeNode> {
     let mut nodes: Vec<TreeNode> = spans
         .into_iter()
-        .map(|span| TreeNode {
-            span,
-            parent: None,
-            first_child: None,
-            last_child: None,
-            next_sibling: None,
-            prev_sibling: None,
-            doc_next: None,
-            doc_prev: None,
-            sibling_ordinal: 1,
-            rendered_as: None,
+        .map(|span| {
+            // Spec 0210 S1. `text_range` is exact here and only here —
+            // it is the render's own line counter, read before any
+            // splice can invalidate it. Taking the count directly is
+            // equivalent to summing the children (every line belongs to
+            // exactly one node) and is O(1) rather than a second pass.
+            let lines = (span.text_range.end - span.text_range.start) as u32;
+            TreeNode {
+                span,
+                parent: None,
+                first_child: None,
+                last_child: None,
+                next_sibling: None,
+                prev_sibling: None,
+                doc_next: None,
+                doc_prev: None,
+                sibling_ordinal: 1,
+                lines_total: lines,
+                // Nothing is folded at build time, neither in the initial
+                // decode nor in a splice's local tree.
+                lines_visible: lines,
+                rendered_as: None,
+            }
         })
         .collect();
 

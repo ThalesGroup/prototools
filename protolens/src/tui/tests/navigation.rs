@@ -513,7 +513,6 @@ fn clicking_a_closing_brace_line_moves_cursor_there_without_folding() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
     app.splash = false;
     app.main_area = Rect::new(0, 0, 40, 10);
-    app.rebuild_visible_rows();
     app.cursor = 0;
     app.cursor_footer = false;
 
@@ -759,37 +758,57 @@ fn percent_on_an_unbracketed_node_reports_rather_than_moving() {
     );
 }
 
-/// 2026-07-25 bug: `visible_rows` holds every unfolded rendered line,
-/// but only some of them are cursor stops — a malformed record's line
-/// (`IndexSink::malformed` pushes no `NodeSpan`) and a virtual
-/// scalar's line (Any's `type_url`, MessageSet's `type_id`) are
-/// display-only. `move_down`/`move_up` used to test only the
-/// immediately adjacent row and give up if it didn't resolve, making
-/// any such line an absorbing barrier: reported as "I cannot `Down`
-/// past /3/1" on a node whose mistyped preview rendered an
-/// `INVALID_TAG_TYPE` line.
+/// 2026-07-25 bug: not every rendered line is a cursor stop, and
+/// `move_down`/`move_up` used to test only the immediately adjacent row
+/// and give up if it didn't resolve — making any such line an absorbing
+/// barrier: reported as "I cannot `Down` past /3/1" on a node whose
+/// mistyped preview rendered an `INVALID_TAG_TYPE` line.
+///
+/// Spec 0210 leaves exactly one kind of line with no node behind it: a
+/// truncated preview's `...` marker (spec 0174 S4), which *replaces* the
+/// straddling field's line and drops that field's span. A malformed
+/// record now carries a `NodeSpan` of its own, and a virtual scalar
+/// always did. Such a line can also only ever sit inside a node's body
+/// now, because the line counters leave no room for a gap anywhere else.
 #[test]
 fn move_down_and_up_step_over_display_only_lines() {
-    let mut app = sibling_leaves_app(&["a", "b", "c"]);
+    let mut app = sibling_leaves_app(&["a {", "  ...", "}", "b"]);
     app.splash = false;
-    app.rebuild_visible_rows();
-    assert_eq!(app.visible_rows, vec![0, 1, 2]);
 
-    // Line 1 is rendered but has no node behind it, exactly as a
-    // malformed or virtual-scalar line does.
-    app.line_to_node[1] = None;
+    // Make the first three lines one bracketed node whose body line
+    // belongs to nobody, dropping the two nodes that owned lines 1 and 2
+    // out of both chains.
+    app.tree[0].lines_total = 3;
+    app.tree[0].lines_visible = 3;
+    app.tree[0].next_sibling = Some(3);
+    app.tree[0].doc_next = Some(3);
+    app.tree[3].prev_sibling = Some(0);
+    app.tree[3].doc_prev = Some(0);
+
+    assert_eq!(app.visible_row_count(), 4);
+    assert!(
+        app.line_pos(1).is_none(),
+        "the marker line must belong to no node, or the test is vacuous"
+    );
 
     app.cursor = 0;
     app.cursor_footer = false;
     app.move_down();
-    assert_eq!(
-        app.cursor, 2,
-        "move_down must skip the span-less line, not stall on it"
+    assert!(
+        app.cursor == 0 && app.cursor_footer,
+        "move_down must skip the span-less line and land on the footer, \
+         not stall on it — got {} footer={}",
+        app.cursor,
+        app.cursor_footer
     );
+    app.move_down();
+    assert_eq!(app.cursor, 3, "and then leave the node normally");
 
     app.move_up();
-    assert_eq!(
-        app.cursor, 0,
+    assert!(app.cursor == 0 && app.cursor_footer);
+    app.move_up();
+    assert!(
+        app.cursor == 0 && !app.cursor_footer,
         "move_up must skip the span-less line, not stall on it"
     );
 }
@@ -855,7 +874,7 @@ fn a_click_never_anchors_the_caret() {
     app.set_cursor(inner_idx);
     assert_eq!(app.caret_anchor, CaretAnchor::Home);
 
-    let line_idx = app.tree[inner_idx].span.text_range.start;
+    let line_idx = app.absolute_start(inner_idx);
     let first = app.caret_bounds().0;
     // Pane column of text column `first`: the heat-cue gutter (1) plus
     // the fold field, which `set_caret_from_click` subtracts back out.
@@ -1170,7 +1189,7 @@ fn ctrl_arrows_still_pan_without_touching_the_caret() {
 fn alt_arrows_move_the_caret_by_the_command_lines_own_words() {
     let (mut app, inner_idx, _) = type_as_fixture();
     app.set_cursor(inner_idx);
-    let line_idx = app.tree[inner_idx].span.text_range.start;
+    let line_idx = app.absolute_start(inner_idx);
     let chars: Vec<char> = app.lines[line_idx].chars().collect();
     let home = app.cursor_column;
 

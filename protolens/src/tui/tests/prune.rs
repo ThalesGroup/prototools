@@ -50,8 +50,7 @@ fn only_lost_the_repeated_qualifier(pruned: &str, unpruned: &str) -> bool {
 fn assert_unpruned_walk_changes_nothing(app: &mut App, what: &str) {
     let lines = app.lines.clone();
     let shapes = live_shapes(app);
-    let line_to_node = shaped_map(app, &app.line_to_node);
-    let footer_line_to_node = shaped_map(app, &app.footer_line_to_node);
+    let owners = line_owners(app);
     let entries = format!("{:#?}", app.overrides.entries());
 
     let root = app.first_node;
@@ -80,14 +79,10 @@ fn assert_unpruned_walk_changes_nothing(app: &mut App, what: &str) {
         "{what}: the live tree differs after the unpruned walk"
     );
     assert_eq!(
-        shaped_map(app, &app.line_to_node),
-        line_to_node,
-        "{what}: line_to_node differs after the unpruned walk"
-    );
-    assert_eq!(
-        shaped_map(app, &app.footer_line_to_node),
-        footer_line_to_node,
-        "{what}: footer_line_to_node differs after the unpruned walk"
+        line_owners(app),
+        owners,
+        "{what}: a line resolves to a different node after the unpruned \
+         walk"
     );
     assert_eq!(
         format!("{:#?}", app.overrides.entries()),

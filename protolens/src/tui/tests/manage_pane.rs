@@ -1269,7 +1269,7 @@ fn manage_pane_rename_updates_entry_and_rerenders_active_override() {
         Some("custom_name")
     );
 
-    let line_idx = app.tree[inner_idx].span.text_range.start;
+    let line_idx = app.absolute_start(inner_idx);
     let header = &app.lines[line_idx];
     assert!(
         header.contains("custom_name"),
@@ -1382,7 +1382,7 @@ fn manage_pane_rename_works_on_a_raw_typed_non_root_node() {
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.manage_rename.is_none());
     assert_eq!(app.field_name_for(inner_idx), "custom_raw_name");
-    let line_idx = app.tree[inner_idx].span.text_range.start;
+    let line_idx = app.absolute_start(inner_idx);
     let header = &app.lines[line_idx];
     assert!(
         header.contains("custom_raw_name"),

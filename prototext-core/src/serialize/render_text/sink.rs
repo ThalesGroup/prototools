@@ -173,7 +173,22 @@ pub(super) trait Sink {
 
     /// A structurally invalid field was encountered at the current level.
     /// `field_number` is `0` for `MalformedKind::InvalidTagType`.
-    fn malformed(&mut self, field_number: u64, tag: TagFacts, kind: MalformedKind, raw: &[u8]);
+    ///
+    /// `raw` is what gets *rendered* — usually just the undecodable
+    /// payload, tag excluded. `raw_range` is the field's full extent
+    /// including its tag, in the same local coordinate frame
+    /// `scalar_field` uses, so that `IndexingTextSink` can emit a
+    /// `NodeSpan` for the line (spec 0210 S1). The two differ: an
+    /// `InvalidFixed64` renders `&buf[pos..]` but *occupies*
+    /// `field_start..buflen`.
+    fn malformed(
+        &mut self,
+        field_number: u64,
+        tag: TagFacts,
+        kind: MalformedKind,
+        raw: &[u8],
+        raw_range: Range<usize>,
+    );
 
     /// Whether `render_len_field` should treat every LEN-delimited field as
     /// opaque bytes — skipping its unknown-field cascade (nested-message
@@ -207,7 +222,7 @@ use prost_reflect::Kind;
 
 use crate::helpers::{
     decode_double, decode_fixed32, decode_fixed64, decode_float, decode_sfixed32, decode_sfixed64,
-    WT_I32, WT_I64, WT_LEN, WT_START_GROUP, WT_VARINT,
+    WT_END_GROUP, WT_I32, WT_I64, WT_LEN, WT_START_GROUP, WT_VARINT,
 };
 use crate::serialize::common::{
     escape_bytes_into, escape_string_into, format_double_protoc, format_fixed32_protoc,
@@ -752,7 +767,14 @@ impl Sink for TextSink {
         TextMark::Message
     }
 
-    fn malformed(&mut self, field_number: u64, tag: TagFacts, kind: MalformedKind, raw: &[u8]) {
+    fn malformed(
+        &mut self,
+        field_number: u64,
+        tag: TagFacts,
+        kind: MalformedKind,
+        raw: &[u8],
+        _raw_range: Range<usize>,
+    ) {
         use super::helpers::render_truncated_bytes;
         match kind {
             MalformedKind::InvalidTagType => {
@@ -922,7 +944,14 @@ impl Sink for ProbeSink {
         )
     }
 
-    fn malformed(&mut self, _field_number: u64, _tag: TagFacts, _kind: MalformedKind, _raw: &[u8]) {
+    fn malformed(
+        &mut self,
+        _field_number: u64,
+        _tag: TagFacts,
+        _kind: MalformedKind,
+        _raw: &[u8],
+        _raw_range: Range<usize>,
+    ) {
         self.malformity_count += 1;
     }
 
@@ -1003,6 +1032,13 @@ pub struct NodeSpan {
     /// encoding — always message-shaped, so the exact value only matters
     /// for the `WT_LEN | WT_START_GROUP` recursion-eligibility check,
     /// which either value would satisfy.
+    ///
+    /// A malformed node (spec 0210 S1) reports the wire type its tag
+    /// *claimed*, before the field turned out to be undecodable — which
+    /// is the one place `WT_END_GROUP` appears, for an END_GROUP tag
+    /// found outside any group. Consumers matching on the five valid
+    /// types need a fallback arm for it; none can validly reinterpret
+    /// framing garbage as a value anyway.
     pub wire_type: u32,
 }
 
@@ -1281,8 +1317,55 @@ impl Sink for IndexingTextSink {
         }
     }
 
-    fn malformed(&mut self, field_number: u64, tag: TagFacts, kind: MalformedKind, raw: &[u8]) {
-        self.inner.malformed(field_number, tag, kind, raw);
+    /// Spec 0210 S1: a malformed field gets a `NodeSpan` like any other
+    /// leaf, so that every rendered line belongs to exactly one node and
+    /// a node's line count is the sum of its children's plus its own
+    /// header and footer. Before that spec this method only delegated,
+    /// leaving the rendered line unowned — harmless while positions were
+    /// read straight out of the render's line counter, fatal once they
+    /// are derived by summing counts.
+    ///
+    /// Always exactly one line: all seven `MalformedKind` variants route
+    /// through `render_invalid` / `render_invalid_tag_type` /
+    /// `render_truncated_bytes`, each of which writes one `newline()`.
+    /// So the span is scalar-shaped, and `text_start + 1` is used rather
+    /// than a second `line_count()` read.
+    fn malformed(
+        &mut self,
+        field_number: u64,
+        tag: TagFacts,
+        kind: MalformedKind,
+        raw: &[u8],
+        raw_range: Range<usize>,
+    ) {
+        let text_start = self.inner.line_count();
+        let level = LEVEL.with(|c| c.get());
+        let base = self.raw_base;
+        // The wire type the tag claimed, before the field turned out to
+        // be undecodable. `InvalidTagType` has no usable tag at all — it
+        // is the one variant `field_number` is `0` for — so it reports
+        // the LEN shape every unknown blob defaults to. Read here rather
+        // than after the delegation below, which consumes `kind`.
+        let wire_type = match kind {
+            MalformedKind::InvalidVarint => WT_VARINT,
+            MalformedKind::InvalidFixed64 => WT_I64,
+            MalformedKind::InvalidFixed32 => WT_I32,
+            MalformedKind::InvalidLen | MalformedKind::TruncatedBytes { .. } => WT_LEN,
+            MalformedKind::InvalidGroupEnd => WT_END_GROUP,
+            MalformedKind::InvalidTagType => WT_LEN,
+        };
+        self.inner
+            .malformed(field_number, tag, kind, raw, raw_range.clone());
+        self.spans.push(NodeSpan {
+            field_number,
+            raw_range: (base + raw_range.start)..(base + raw_range.end),
+            text_range: text_start..(text_start + 1),
+            level,
+            type_fqdn: None,
+            is_message: false,
+            packed_record_start: None,
+            wire_type,
+        });
     }
 
     fn treat_len_as_opaque(&self) -> bool {

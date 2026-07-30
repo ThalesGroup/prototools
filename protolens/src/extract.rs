@@ -161,11 +161,17 @@ pub fn dedent(lines: &[String]) -> String {
 /// same bytes `extract` writes to a file, factored out so a caller with
 /// no `Path` to write to (spec 0123's batch mode, writing to stdout) can
 /// reuse the exact same rendering.
+///
+/// Spec 0210 S1: `text_range` is passed in rather than read off
+/// `node.span`, which holds the range the node had when the tree was
+/// built and is not repaired by a splice. The tui derives it from the
+/// line counters (`App::node_lines`).
 pub fn extract_bytes(
     format: ExtractFormat,
     blob: &[u8],
     lines: &[String],
     node: &TreeNode,
+    text_range: Range<usize>,
 ) -> Vec<u8> {
     match format {
         ExtractFormat::Binary => {
@@ -173,12 +179,10 @@ pub fn extract_bytes(
             extract_binary(blob, &node.span.raw_range, is_message).to_vec()
         }
         ExtractFormat::Text => {
-            let is_message = node.span.is_message;
-            let r = &node.span.text_range;
-            let r = if is_message {
-                message_text_range(r)
+            let r = if node.span.is_message {
+                message_text_range(&text_range)
             } else {
-                r.clone()
+                text_range
             };
             let end = r.end.min(lines.len());
             format!("{PROTOTEXT_HEADER}{}", dedent(&lines[r.start..end])).into_bytes()
@@ -194,8 +198,9 @@ pub fn extract(
     blob: &[u8],
     lines: &[String],
     node: &TreeNode,
+    text_range: Range<usize>,
 ) -> io::Result<()> {
-    std::fs::write(path, extract_bytes(format, blob, lines, node))
+    std::fs::write(path, extract_bytes(format, blob, lines, node, text_range))
 }
 
 #[cfg(test)]
@@ -376,10 +381,20 @@ mod tests {
             doc_next: None,
             doc_prev: None,
             sibling_ordinal: 1,
+            lines_total: 2,
+            lines_visible: 2,
             rendered_as: None,
         };
         let path = std::env::temp_dir().join("protolens-extract-header-test.pb");
-        extract(&path, ExtractFormat::Text, b"", &lines, &node).unwrap();
+        extract(
+            &path,
+            ExtractFormat::Text,
+            b"",
+            &lines,
+            &node,
+            node.span.text_range.clone(),
+        )
+        .unwrap();
         let written = std::fs::read_to_string(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(written, "#@ prototext: protoc\noptions {\n}");
@@ -419,10 +434,20 @@ mod tests {
             doc_next: None,
             doc_prev: None,
             sibling_ordinal: 1,
+            lines_total: 3,
+            lines_visible: 3,
             rendered_as: None,
         };
         let path = std::env::temp_dir().join("protolens-extract-message-text-test.pb");
-        extract(&path, ExtractFormat::Text, b"", &lines, &node).unwrap();
+        extract(
+            &path,
+            ExtractFormat::Text,
+            b"",
+            &lines,
+            &node,
+            node.span.text_range.clone(),
+        )
+        .unwrap();
         let written = std::fs::read_to_string(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(
@@ -465,10 +490,20 @@ mod tests {
             doc_next: None,
             doc_prev: None,
             sibling_ordinal: 1,
+            lines_total: 3,
+            lines_visible: 3,
             rendered_as: None,
         };
         let path = std::env::temp_dir().join("protolens-extract-group-text-test.pb");
-        extract(&path, ExtractFormat::Text, b"", &lines, &node).unwrap();
+        extract(
+            &path,
+            ExtractFormat::Text,
+            b"",
+            &lines,
+            &node,
+            node.span.text_range.clone(),
+        )
+        .unwrap();
         let written = std::fs::read_to_string(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(written, "#@ prototext: protoc\nid: 7  #@ int32 = 1");

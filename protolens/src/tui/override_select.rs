@@ -809,17 +809,22 @@ impl App {
             .map(|(fqdn, _)| fqdn.clone());
         match self.render_node_as(idx, tentative.as_deref(), true) {
             Ok((_target, span, rendered)) => {
-                // `visible_rows` is sorted ascending, so the run of rows
-                // the committed node covers is a binary search away.
+                // Spec 0210 S2: the committed node's line range, carried
+                // into visible-row space at both ends. `span.text_range`
+                // is the freshly derived range `render_node_as` puts
+                // there, and for a packed run it is the whole run's.
                 // Both numbers stay valid for the overlay's whole
                 // lifetime because S5's focus lock makes the only two
-                // things that rebuild `visible_rows` — folding and
-                // splicing — unreachable while it is up.
+                // things that move a row — folding and splicing —
+                // unreachable while it is up.
+                let rows = self.visible_row_count();
                 let first_row = self
-                    .visible_rows
-                    .partition_point(|&l| l < span.text_range.start);
-                let covered_rows =
-                    self.visible_rows[first_row..].partition_point(|&l| l < span.text_range.end);
+                    .visible_row_of_line(span.text_range.start)
+                    .unwrap_or(rows);
+                let covered_rows = self
+                    .visible_row_of_line(span.text_range.end)
+                    .unwrap_or(rows)
+                    .saturating_sub(first_row);
                 self.preview_overlay = Some(PreviewOverlay {
                     first_row,
                     covered_rows,
@@ -868,63 +873,73 @@ impl App {
         }
     }
 
-    /// Find the next node (walking the whole document-order chain via
-    /// `doc_next`/`doc_prev` — not just currently visible/unfolded nodes,
-    /// so a folded-away match is still found and then revealed) whose own
-    /// opening line (`self.lines[node.span.text_range.start]`) contains
-    /// `pattern` (smartcase — spec 0195 S2), searching in `dir` from just
-    /// past the cursor and wrapping around at the ends of the chain via
-    /// `first_node`/`last_node()` (spec 0114 §4, extended to the main
-    /// pane). Always matches against `self.lines`' *current* rendered
-    /// text, so a range whose type has been overridden (spec 0114 §5)
-    /// searches the post-override rendering, not the original one — no
-    /// special-casing needed, since overrides mutate `self.lines` in
-    /// place rather than being tracked separately. On a match, moves the
-    /// cursor there (recording a jumplist entry) and unfolds its
-    /// ancestors so it's visible; otherwise leaves the cursor unchanged
-    /// and sets a status-line message.
+    /// Find the next node whose own opening line contains `pattern`
+    /// (smartcase — spec 0195 S2), searching in `dir` from just past the
+    /// cursor and wrapping around at the ends of the document (spec 0114
+    /// §4, extended to the main pane). Folded-away matches are found and
+    /// then revealed, since the scan is over the whole document rather
+    /// than over the visible rows. Always matches against `self.lines`'
+    /// *current* rendered text, so a range whose type has been
+    /// overridden (spec 0114 §5) searches the post-override rendering,
+    /// not the original one — no special-casing needed, since overrides
+    /// mutate `self.lines` in place rather than being tracked
+    /// separately. On a match, moves the cursor there (recording a
+    /// jumplist entry) and unfolds its ancestors so it's visible;
+    /// otherwise leaves the cursor unchanged and sets a status-line
+    /// message.
+    ///
+    /// Spec 0210 S1: a scan over `lines`, not over the `doc_next`/
+    /// `doc_prev` chain. It used to step node by node and read each
+    /// node's stored opening line off `span.text_range`, which no longer
+    /// exists as a stored number — and deriving it per step would have
+    /// been a full root-to-node descent per candidate. Scanning the text
+    /// instead resolves an owner only for the lines that actually match,
+    /// which also retires spec 0195 S1's `last_node()` hazard: neither
+    /// direction walks the chain at all now.
     pub(super) fn jump_to_match(&mut self, dir: SearchDir, pattern: &str) {
-        if pattern.is_empty() || self.tree.is_empty() {
+        if pattern.is_empty() || self.tree.is_empty() || self.lines.is_empty() {
             return;
         }
         let needle = SearchPattern::new(pattern);
-        let mut cur = self.cursor;
-        loop {
-            // Spec 0195 S1: `unwrap_or_else`, not `unwrap_or`. The
-            // latter evaluates its argument on every step, and
-            // `last_node()` walks the whole `doc_next` chain — which
-            // made a backward search cost O(steps x nodes) where the
-            // forward arm, reading the `first_node` *field*, cost
-            // O(steps).
-            cur = match dir {
-                SearchDir::Forward => self.tree[cur].doc_next.unwrap_or(self.first_node),
-                SearchDir::Backward => self.tree[cur].doc_prev.unwrap_or_else(|| self.last_node()),
+        let n = self.lines.len();
+        let from = self.cursor_line();
+        // The cursor's own line comes last in both directions, which is
+        // what makes a wrapped search land back where it started rather
+        // than report "not found".
+        for step in 1..=n {
+            let line_idx = match dir {
+                SearchDir::Forward => (from + step) % n,
+                SearchDir::Backward => (from + n - step) % n,
             };
-            let line_idx = self.tree[cur].span.text_range.start;
-            if let Some(byte) = needle.find(&self.lines[line_idx]) {
-                if cur != self.cursor {
-                    self.record_jump();
-                    self.set_cursor(cur);
-                    self.unfold_ancestors(cur);
-                }
-                // Spec 0194 S8: land on the match, not merely on its
-                // row. Clamped, since a match inside the row's own
-                // indentation is left of the leftmost reachable column
-                // (S3) — and since `set_cursor` above has already put
-                // the caret at the first non-blank, that clamp is the
-                // whole correction.
-                self.cursor_column = self.lines[line_idx][..byte].chars().count();
-                self.clamp_caret_column();
-                self.desired_column = self.cursor_column;
-                // Spec 0199 S10: a search landing is a position, and a
-                // match at an end of the row is a coincidence — so it
-                // must not arm `h`'s fold or `l`'s descent.
-                self.caret_anchor = CaretAnchor::Free;
-                return;
+            let Some(byte) = needle.find(&self.lines[line_idx]) else {
+                continue;
+            };
+            // A closing `}` is not any node's opening line, and a search
+            // has never matched one.
+            let Some(pos) = self.line_pos(line_idx) else {
+                continue;
+            };
+            if pos.footer {
+                continue;
             }
-            if cur == self.cursor {
-                break;
+            if pos.node != self.cursor {
+                self.record_jump();
+                self.set_cursor(pos.node);
+                self.unfold_ancestors(pos.node);
             }
+            // Spec 0194 S8: land on the match, not merely on its row.
+            // Clamped, since a match inside the row's own indentation is
+            // left of the leftmost reachable column (S3) — and since
+            // `set_cursor` above has already put the caret at the first
+            // non-blank, that clamp is the whole correction.
+            self.cursor_column = self.lines[line_idx][..byte].chars().count();
+            self.clamp_caret_column();
+            self.desired_column = self.cursor_column;
+            // Spec 0199 S10: a search landing is a position, and a match
+            // at an end of the row is a coincidence — so it must not arm
+            // `h`'s fold or `l`'s descent.
+            self.caret_anchor = CaretAnchor::Free;
+            return;
         }
         self.message = format!("pattern not found: {pattern}");
     }

@@ -366,7 +366,7 @@ fn type_as_command_rejects_a_wire_incompatible_primitive_keyword() {
         "unexpected message: {}",
         app.message
     );
-    let line = &app.lines[app.tree[id_idx].span.text_range.start];
+    let line = &app.lines[app.absolute_start(id_idx)];
     assert!(
         line.contains("sint32"),
         "expected zigzag-decoded sint32 rendering, got: {line:?}"
@@ -395,7 +395,7 @@ fn deactivating_a_primitive_type_as_override_reverts_the_main_pane_rendering() {
     app.cursor = id_idx;
 
     app.run_command("type-as sint32");
-    let line = app.lines[app.tree[id_idx].span.text_range.start].clone();
+    let line = app.lines[app.absolute_start(id_idx)].clone();
     assert!(
         line.contains("sint32"),
         "expected zigzag-decoded sint32 rendering, got: {line:?}"
@@ -415,7 +415,7 @@ fn deactivating_a_primitive_type_as_override_reverts_the_main_pane_rendering() {
         !app.overrides.entries()[entry_idx].active,
         "deactivating must stick across a render pass"
     );
-    let line = &app.lines[app.tree[id_idx].span.text_range.start];
+    let line = &app.lines[app.absolute_start(id_idx)];
     assert!(
         !line.contains("sint32"),
         "expected the field to revert to its natural (int32) \

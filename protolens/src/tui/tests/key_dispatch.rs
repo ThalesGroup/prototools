@@ -769,6 +769,8 @@ fn default_export_descriptor_path_falls_back_to_the_numeric_range_when_unresolva
         doc_next: next_sibling,
         doc_prev: prev_sibling,
         sibling_ordinal: prev_sibling.map_or(1, |p| p as u32 + 2),
+        lines_total: 1,
+        lines_visible: 1,
         rendered_as: None,
     };
     let tree = vec![
@@ -932,7 +934,8 @@ fn ctrl_o_restores_the_whole_caret_position() {
     let wide = app.cursor_column;
     app.record_jump();
     app.set_cursor(items[2]);
-    app.lines[app.tree[items[0]].span.text_range.start] = "x".to_string();
+    let shrink = app.absolute_start(items[0]);
+    app.lines[shrink] = "x".to_string();
 
     app.handle_key(ctrl_o);
     assert_eq!(app.cursor, items[0]);

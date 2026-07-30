@@ -6,6 +6,7 @@ mod command_line;
 mod compact;
 mod heat_cue;
 mod key_dispatch;
+mod lines;
 mod manage_pane;
 mod mouse;
 mod navigation;

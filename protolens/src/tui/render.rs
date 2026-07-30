@@ -268,30 +268,103 @@ pub(super) fn window_styles_for(text: &[String], indent_size: usize) -> Vec<Line
 
 impl App {
     /// Spec 0185 S2: total number of rows the main pane draws — the
-    /// committed `visible_rows`, adjusted by however many rows the
+    /// committed visible rows, adjusted by however many rows the
     /// preview overlay adds or removes.
     pub(super) fn composed_row_count(&self) -> usize {
         match &self.preview_overlay {
-            Some(o) => (self.visible_rows.len() + o.lines.len()) - o.covered_rows,
-            None => self.visible_rows.len(),
+            Some(o) => (self.visible_row_count() + o.lines.len()) - o.covered_rows,
+            None => self.visible_row_count(),
         }
     }
 
-    /// Spec 0185 S2: resolve a display row to the line it draws. Exactly
-    /// one contiguous span of rows is ever substituted, so this is
-    /// arithmetic rather than a rebuilt vector. `None` past the last row.
-    pub(super) fn display_row(&self, d: usize) -> Option<DisplayRow> {
-        let committed = |l: usize| self.visible_rows.get(l).copied().map(DisplayRow::Committed);
+    /// Spec 0185 S2: the committed visible row a display row draws, or
+    /// `None` if the row belongs to the overlay instead. Exactly one
+    /// contiguous span of rows is ever substituted, so this is
+    /// arithmetic rather than a rebuilt vector.
+    fn committed_row_of(&self, d: usize) -> Option<usize> {
         let Some(o) = &self.preview_overlay else {
-            return committed(d);
+            return Some(d);
         };
         if d < o.first_row {
-            committed(d)
+            Some(d)
         } else if d < o.first_row + o.lines.len() {
-            Some(DisplayRow::Overlay(d - o.first_row))
+            None
         } else {
-            committed((d - o.lines.len()) + o.covered_rows)
+            Some((d - o.lines.len()) + o.covered_rows)
         }
+    }
+
+    /// Spec 0185 S2: resolve a display row to the line it draws. `None`
+    /// past the last row.
+    ///
+    /// Spec 0210 S3: one descent per call, which is why nothing outside
+    /// the tests calls it any more — every production caller wanted a
+    /// whole window and now goes through `build_window`, which resolves
+    /// once and then walks. Kept because it is the direct statement of
+    /// what the overlay's row mapping means, and the tests assert
+    /// against it row by row.
+    #[cfg(test)]
+    pub(super) fn display_row(&self, d: usize) -> Option<DisplayRow> {
+        match self.committed_row_of(d) {
+            Some(row) => self
+                .visible_row_pos(row)
+                .map(|(_, line)| DisplayRow::Committed(line)),
+            None => Some(DisplayRow::Overlay(
+                d - self
+                    .preview_overlay
+                    .as_ref()
+                    .expect("committed_row_of only declines a row while an overlay is held")
+                    .first_row,
+            )),
+        }
+    }
+
+    /// Spec 0210 S3: the `count` display rows starting at `from`, and
+    /// the owner of each committed one recorded in `window_nodes` for
+    /// the passes that follow.
+    ///
+    /// The whole reason absolute line numbers can stop being stored:
+    /// a viewport is one descent plus a walk, so nothing per-frame
+    /// depends on an O(document) index existing. `display_row` in a
+    /// loop would instead be one descent per row, and each of those
+    /// crosses the root's 7 771 children on the reference corpus.
+    ///
+    /// The overlay splits the committed rows into at most two runs
+    /// (before it and after it), each of which is resolved and walked
+    /// on its own.
+    pub(super) fn build_window(&mut self, from: usize, count: usize) -> Vec<DisplayRow> {
+        let mut rows = Vec::with_capacity(count);
+        let mut owners: Vec<(usize, LinePos)> = Vec::with_capacity(count);
+        let mut d = from;
+        while rows.len() < count {
+            let Some(first) = self.committed_row_of(d) else {
+                let o = self
+                    .preview_overlay
+                    .as_ref()
+                    .expect("committed_row_of only declines a row while an overlay is held");
+                rows.push(DisplayRow::Overlay(d - o.first_row));
+                d += 1;
+                continue;
+            };
+            // How many display rows this committed run has left before
+            // the overlay (if any) interrupts it.
+            let run = match &self.preview_overlay {
+                Some(o) if d < o.first_row => o.first_row - d,
+                _ => count - rows.len(),
+            };
+            let run = run.min(count - rows.len());
+            let walked = self.visible_window(first, run);
+            if walked.is_empty() {
+                break;
+            }
+            d += walked.len();
+            for (line, pos) in walked {
+                rows.push(DisplayRow::Committed(line));
+                owners.push((line, pos));
+            }
+        }
+        self.set_window_nodes(&owners);
+        rows
     }
 
     /// Spec 0185 S2: `cursor_display_row()` carried into composed row
@@ -452,22 +525,20 @@ impl App {
     /// header line and the `}` that closes it.
     ///
     /// `None` for a node with no *distinct* footer line, which is
-    /// exactly the test `line_to_node`'s construction uses (`mod.rs`) to
-    /// decide a node is bracketed at all: an unbracketed scalar's `{`
-    /// would otherwise be a brace inside a string literal. The rule is
-    /// inherited unchanged from spec 0193's `cursor_brace`, which this
-    /// replaces.
+    /// exactly the `has_children` test for a node being bracketed at
+    /// all: an unbracketed scalar's `{` would otherwise be a brace
+    /// inside a string literal. The rule is inherited unchanged from
+    /// spec 0193's `cursor_brace`, which this replaces.
     ///
     /// A *folded* node draws its whole body as the one-row `{ ... }`
     /// collapse summary (spec 0193 S1), so both members are on the
     /// header line and the footer line is not on screen at all.
     pub(super) fn cursor_brace_pair(&self) -> Option<((usize, usize), (usize, usize))> {
-        let node = self.tree.get(self.cursor)?;
-        let header = node.span.text_range.start;
-        let footer = node.span.text_range.end.checked_sub(1)?;
-        if footer <= header {
+        if self.cursor >= self.tree.len() || !self.has_children(self.cursor) {
             return None;
         }
+        let header = self.absolute_start(self.cursor);
+        let footer = header + self.tree[self.cursor].lines_total as usize - 1;
         let header_text = self.row_text(DisplayRow::Committed(header));
         let open = header_text.rfind('{')?;
         let open_pos = (header, char_column(&header_text, open));
@@ -884,9 +955,8 @@ impl App {
         // — a plain slice would keep `self` borrowed immutably for the
         // rest of this block.
         let t_window = std::time::Instant::now();
-        let window: Vec<DisplayRow> = (self.scroll_offset.min(total_rows)..end)
-            .filter_map(|d| self.display_row(d))
-            .collect();
+        let first_row = self.scroll_offset.min(total_rows);
+        let window: Vec<DisplayRow> = self.build_window(first_row, end - first_row);
         let d_window = t_window.elapsed();
 
         // Spec 0187 S3: highlight exactly the rows about to be drawn,

@@ -122,6 +122,8 @@ fn t_opens_the_override_pane_on_an_unresolved_message_node() {
         doc_next: None,
         doc_prev: None,
         sibling_ordinal: 1,
+        lines_total: 2,
+        lines_visible: 2,
         rendered_as: None,
     };
     let decoded = Decoded {
@@ -179,6 +181,8 @@ fn t_opens_the_override_pane_on_a_varint_scalar_field() {
         doc_next: None,
         doc_prev: None,
         sibling_ordinal: 1,
+        lines_total: 1,
+        lines_visible: 1,
         rendered_as: None,
     };
     let decoded = Decoded {
@@ -223,7 +227,7 @@ fn t_opens_the_override_pane_on_a_varint_scalar_field() {
 fn esc_after_t_on_a_primitive_field_restores_its_original_rendering() {
     let (mut app, _, id_idx) = type_as_fixture();
     app.cursor = id_idx;
-    let line_idx = app.tree[id_idx].span.text_range.start;
+    let line_idx = app.absolute_start(id_idx);
     let original_line = app.lines[line_idx].clone();
 
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
@@ -307,7 +311,7 @@ fn t_opens_on_a_message_field_highlighting_its_own_natural_type() {
 fn esc_after_t_on_an_enum_field_restores_its_original_rendering() {
     let (mut app, durability_idx) = enum_field_fixture();
     app.cursor = durability_idx;
-    let line_idx = app.tree[durability_idx].span.text_range.start;
+    let line_idx = app.absolute_start(durability_idx);
     let original_line = app.lines[line_idx].clone();
 
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
@@ -348,6 +352,8 @@ fn t_opens_the_override_pane_on_a_length_delimited_scalar_field() {
         doc_next: None,
         doc_prev: None,
         sibling_ordinal: 1,
+        lines_total: 1,
+        lines_visible: 1,
         rendered_as: None,
     };
     let decoded = Decoded {
@@ -1638,8 +1644,8 @@ fn preview_override_highlight_touches_no_committed_state() {
 
     let tree_len = app.tree.len();
     let lines = app.lines.clone();
-    let line_to_node = app.line_to_node.clone();
-    let visible_rows = app.visible_rows.clone();
+    let owners = line_owners(&app);
+    let rows = app.visible_row_count();
     let folded = app.folded.clone();
 
     // Forty alternating previews: each one overwrites the overlay, and
@@ -1650,8 +1656,8 @@ fn preview_override_highlight_touches_no_committed_state() {
         assert!(app.preview_overlay.is_some(), "candidate {i} must preview");
         assert_eq!(app.tree.len(), tree_len);
         assert_eq!(app.lines, lines);
-        assert_eq!(app.line_to_node, line_to_node);
-        assert_eq!(app.visible_rows, visible_rows);
+        assert_eq!(line_owners(&app), owners);
+        assert_eq!(app.visible_row_count(), rows);
         assert_eq!(app.folded, folded);
     }
 
@@ -1659,8 +1665,8 @@ fn preview_override_highlight_touches_no_committed_state() {
     assert!(app.preview_overlay.is_none());
     assert_eq!(app.tree.len(), tree_len);
     assert_eq!(app.lines, lines);
-    assert_eq!(app.line_to_node, line_to_node);
-    assert_eq!(app.visible_rows, visible_rows);
+    assert_eq!(line_owners(&app), owners);
+    assert_eq!(app.visible_row_count(), rows);
     assert_eq!(app.folded, folded);
 }
 
@@ -1691,7 +1697,7 @@ fn overlay_lines_match_the_committed_splice() {
         app_b
             .splice_override(inner_idx_b, Some(candidate.to_string()), false, None)
             .expect("the committed splice must succeed");
-        let committed = app_b.tree[inner_idx_b].span.text_range.clone();
+        let committed = app_b.node_lines(inner_idx_b);
 
         assert_eq!(
             overlay.lines,
@@ -1708,8 +1714,13 @@ fn overlay_lines_match_the_committed_splice() {
 /// equal to, and longer than the block it stands in for.
 #[test]
 fn display_row_map_holds_at_the_substitution_boundaries() {
-    let (mut app, _inner_idx, _) = type_as_fixture();
-    app.visible_rows = (0..10).collect();
+    // Ten root-level one-line leaves, so visible row `r` is line `r` and
+    // the arithmetic under test is the only thing the assertions can be
+    // reading. Spec 0210 S2: this used to be `app.visible_rows = (0..10)
+    // .collect()`, which the counters no longer let a test fake.
+    let texts: Vec<String> = (0..10).map(|i| format!("l{i}: {i}")).collect();
+    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let mut app = sibling_leaves_app(&refs);
 
     for overlay_len in [1usize, 3, 6] {
         app.preview_overlay = Some(PreviewOverlay {
@@ -1742,8 +1753,8 @@ fn display_row_map_holds_at_the_substitution_boundaries() {
 #[test]
 fn previewing_one_packed_element_covers_the_whole_run() {
     let (mut app, elems, _tail, _a, _b) = packed_run_with_tail_fixture();
-    let run_first_line = app.tree[elems[0]].span.text_range.start;
-    let run_end_line = app.tree[elems[2]].span.text_range.end;
+    let run_first_line = app.absolute_start(elems[0]);
+    let run_end_line = app.node_lines(elems[2]).end;
 
     for &elem in &elems {
         app.override_target = Some(elem);
@@ -1755,13 +1766,21 @@ fn previewing_one_packed_element_covers_the_whole_run() {
             .preview_overlay
             .as_ref()
             .unwrap_or_else(|| panic!("element {elem} must preview: {}", app.message));
+        let first_row = o.first_row;
+        let covered = o.covered_rows;
+        // Spec 0210 S2: rows are walked, not indexed out of a vector.
         assert_eq!(
-            app.visible_rows[o.first_row], run_first_line,
+            app.visible_row_pos(first_row).map(|(_, line)| line),
+            Some(run_first_line),
             "the overlay must anchor at the run's leader, not at element {elem}"
         );
+        let rest = app.visible_row_count() - first_row;
         assert_eq!(
-            o.covered_rows,
-            app.visible_rows[o.first_row..].partition_point(|&l| l < run_end_line),
+            covered,
+            app.visible_window(first_row, rest)
+                .into_iter()
+                .take_while(|(l, _)| *l < run_end_line)
+                .count(),
             "...and stand in for every row of the run"
         );
         assert!(o.covered_rows > 1, "the fixture's run spans several rows");
@@ -1775,10 +1794,16 @@ fn previewing_one_packed_element_covers_the_whole_run() {
 #[test]
 fn previewing_a_folded_target_renders_it_in_full_and_leaves_folded_alone() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
-    app.folded.insert(inner_idx);
-    app.rebuild_visible_rows();
+    // Spec 0210 S2: folding through `toggle_fold` rather than by hand, so
+    // that the line counters the row walk reads are refreshed with it.
+    app.toggle_fold(inner_idx);
+    assert!(app.folded.contains(&inner_idx), "the fixture must fold");
     let folded_before = app.folded.clone();
-    let visible_rows = app.visible_rows.clone();
+    let rows_before: Vec<usize> = app
+        .visible_window(0, app.visible_row_count())
+        .into_iter()
+        .map(|(l, _)| l)
+        .collect();
 
     app.override_target = Some(inner_idx);
     app.override_candidates = vec![("test.Inner".to_string(), None)];
@@ -1793,12 +1818,24 @@ fn previewing_a_folded_target_renders_it_in_full_and_leaves_folded_alone() {
         o.covered_rows
     );
     assert_eq!(app.folded, folded_before);
-    assert_eq!(app.visible_rows, visible_rows);
+    assert_eq!(
+        app.visible_window(0, app.visible_row_count())
+            .into_iter()
+            .map(|(l, _)| l)
+            .collect::<Vec<_>>(),
+        rows_before
+    );
 
     app.close_override();
     assert!(app.preview_overlay.is_none());
     assert_eq!(app.folded, folded_before);
-    assert_eq!(app.visible_rows, visible_rows);
+    assert_eq!(
+        app.visible_window(0, app.visible_row_count())
+            .into_iter()
+            .map(|(l, _)| l)
+            .collect::<Vec<_>>(),
+        rows_before
+    );
 }
 
 /// Spec 0185 S6: a candidate that fails to render leaves the overlay at

@@ -1570,13 +1570,13 @@ fn profile_nested_commit_on_pdb() {
             }
             siblings == 1
         })
-        .max_by_key(|&i| app.tree[i].span.text_range.start)
+        .max_by_key(|&i| app.absolute_start(i))
         .expect("a deep, sizeable, uniquely-addressable typed message node");
     let own_fqdn = app.tree[target].span.type_fqdn.clone();
     eprintln!(
         "target node {target}: fqdn={own_fqdn:?} lines {}..{} of {}",
-        app.tree[target].span.text_range.start,
-        app.tree[target].span.text_range.end,
+        app.absolute_start(target),
+        app.node_lines(target).end,
         app.lines.len(),
     );
 

@@ -535,6 +535,58 @@ fn scalar_leaf_nodes_have_no_type_fqdn() {
     }
 }
 
+// ── Malformed fields (spec 0210 S1) ─────────────────────────────────────────
+
+/// A malformed field gets a `NodeSpan` like any other leaf, so that every
+/// rendered line belongs to exactly one node — the property protolens
+/// derives absolute line numbers from (spec 0210 S1). Before that spec
+/// `IndexingTextSink::malformed` only delegated, leaving its line unowned.
+#[test]
+fn a_malformed_field_gets_its_own_one_line_span() {
+    // field 1, VARINT, value 5 — well formed.
+    // field 2, LEN, length 127 — but the buffer ends, so TRUNCATED_BYTES.
+    let wire = [0x08u8, 0x05, 0x12, 0x7f];
+    let (text, spans) = decode_and_render_indexed(
+        &wire,
+        None,
+        DecodeRenderOpts {
+            // Without these the malformity renders as a bare `2: ""` — the
+            // `TRUNCATED_BYTES` marker lives in the annotation. protolens
+            // always renders with annotations on (`decode.rs:1014`).
+            annotations: true,
+            ..Default::default()
+        },
+    );
+    let text = String::from_utf8(text).expect("valid UTF-8 output");
+
+    assert!(
+        text.contains("TRUNCATED_BYTES"),
+        "expected the malformed line to still render: {text:?}"
+    );
+
+    let malformed = spans
+        .iter()
+        .find(|s| s.field_number == 2)
+        .expect("the malformed field must have a span of its own");
+    assert_eq!(
+        malformed.text_range.end - malformed.text_range.start,
+        1,
+        "every MalformedKind renders exactly one line"
+    );
+    assert!(!malformed.is_message);
+    assert!(malformed.type_fqdn.is_none());
+    // The field's full extent, its tag included — the same convention
+    // `scalar_field` uses, not the payload-only slice that gets rendered.
+    assert_eq!(malformed.raw_range, 2..wire.len());
+
+    // The whole point: the spans account for every rendered line.
+    assert_eq!(
+        spans.iter().map(|s| s.text_range.end).max(),
+        Some(text.lines().count()),
+        "spans must cover the rendered text exactly"
+    );
+}
+
 // ── Packed-repeated scalar fields (spec 0115) ───────────────────────────────
 
 #[test]
@@ -707,4 +759,164 @@ fn raw_range_fidelity_reslices_and_redecodes() {
         redecoded.contains("hello"),
         "expected re-decoded raw_range slice to contain label 'hello': {redecoded}"
     );
+}
+
+// ── Every rendered line belongs to exactly one span (spec 0210 S1) ──────────
+
+/// How many spans claim each rendered line, reading only the flat span
+/// list: a one-line span owns its line, and a multi-line span is
+/// bracketed and owns its opening and closing lines. Interior lines
+/// belong to descendants.
+///
+/// Assumes a headerless render. `write_header` counts its lines so that
+/// every `text_range` stays accurate across them, but no span claims
+/// them — protolens skips them by construction, since it splits the body
+/// off before building the tree.
+///
+/// This is the arithmetic protolens now derives every line number from
+/// (spec 0210): a node's line count is one for its header, plus its
+/// children's counts, plus one for its footer. A line no span claims
+/// makes that sum smaller than the text, so every position after it is
+/// wrong — and a line two spans claim breaks it the other way. Neither
+/// shows up as a crash; both show up as the wrong line under the cursor.
+fn owners_per_line(text: &str, spans: &[NodeSpan]) -> Vec<usize> {
+    let mut owners = vec![0usize; text.matches('\n').count()];
+    for s in spans {
+        owners[s.text_range.start] += 1;
+        if s.text_range.len() > 1 {
+            owners[s.text_range.end - 1] += 1;
+        }
+    }
+    owners
+}
+
+fn assert_every_line_owned(label: &str, text: &str, spans: &[NodeSpan]) {
+    for (line, count) in owners_per_line(text, spans).iter().enumerate() {
+        assert_eq!(
+            *count,
+            1,
+            "{label}: line {line} ({:?}) is claimed by {count} spans",
+            line_at(text, line)
+        );
+    }
+}
+
+/// A well-formed document first — the anchor, without which a passing
+/// malformed case might just mean the helper never looks at anything.
+///
+/// Rendered the way protolens renders (`protolens/src/decode.rs`):
+/// `Any`/MessageSet expansion off, because protolens does that itself as
+/// automatic overrides (spec 0120). That is not incidental. The
+/// *expanded* MessageSet form emits its synthetic `type_id` line without
+/// a span of its own, so the ownership invariant does not hold on that
+/// path — and widening this test to cover it would be asserting
+/// something spec 0210 never established, on a path its consumer does
+/// not take.
+#[test]
+fn every_line_of_a_well_formed_render_is_owned_by_exactly_one_span() {
+    let schema = message_set_schema("Container");
+    let (text, spans) = decode_and_render_indexed(
+        CONTAINER_WIRE,
+        schema.root_descriptor().as_ref(),
+        DecodeRenderOpts {
+            annotations: true,
+            expand_any: false,
+            expand_message_set: false,
+            ..Default::default()
+        },
+    );
+    let text = String::from_utf8(text).expect("valid UTF-8 output");
+    assert!(text.lines().count() > 5, "fixture renders too little");
+    assert_every_line_owned("container", &text, &spans);
+}
+
+/// Spec 0210 S1: a malformed field is a node like any other.
+///
+/// `IndexingTextSink::malformed` used to render its line and push no
+/// span, which was invisible while positions were read straight off the
+/// renderer's line counter. All seven `MalformedKind` variants are
+/// covered because the span is pushed once, in `malformed`, but the
+/// *line* is written by three different helpers — so a variant routed
+/// through a fourth would be the way this regresses.
+#[test]
+fn every_malformity_renders_a_line_owned_by_its_own_span() {
+    // The same seven minimal inputs as `every_malformity_marker_round_trips`
+    // in `render_text`'s own test module, one per variant.
+    let cases: [(&str, &[u8]); 7] = [
+        ("INVALID_TAG_TYPE", &[0x0F]),
+        ("INVALID_VARINT", &[0x08, 0xFF]),
+        ("INVALID_FIXED64", &[0x09, 0x01]),
+        ("INVALID_FIXED32", &[0x0D, 0x01]),
+        ("INVALID_LEN", &[0x0A, 0xFF]),
+        ("TRUNCATED_BYTES", &[0x0A, 0x0A, 0x01, 0x02]),
+        ("INVALID_GROUP_END", &[0x0C]),
+    ];
+    for (marker, wire) in cases {
+        let (text, spans) = decode_and_render_indexed(
+            wire,
+            None,
+            DecodeRenderOpts {
+                annotations: true,
+                ..Default::default()
+            },
+        );
+        let text = String::from_utf8(text).expect("valid UTF-8 output");
+        assert!(text.contains(marker), "{marker} not rendered: {text:?}");
+
+        let line = text
+            .lines()
+            .position(|l| l.contains(marker))
+            .expect("the marker is on some line");
+        let owner = spans
+            .iter()
+            .find(|s| s.text_range.start == line)
+            .unwrap_or_else(|| panic!("{marker}: line {line} has no span: {text:?}"));
+        assert_eq!(
+            owner.text_range,
+            line..line + 1,
+            "{marker}: a malformity is one line, so its span is scalar-shaped"
+        );
+        assert!(!owner.is_message, "{marker}: not a message");
+        assert_every_line_owned(marker, &text, &spans);
+    }
+}
+
+/// The case the seven above cannot reach: a malformity with well-formed
+/// lines *after* it.
+///
+/// Every other malformed path consumes the rest of the buffer and
+/// returns, so its line is the document's last and an unowned line there
+/// would shift nothing. The depth cap is the sole path that degrades one
+/// field and carries on (spec 0171 S4), which puts a thousand closing
+/// braces after the malformed line — every one of them at a position
+/// that depends on the malformed line having been counted.
+#[test]
+fn a_malformity_in_the_middle_does_not_displace_the_lines_after_it() {
+    // MAX_WIRE_DEPTH START_GROUP tags for field 1, so the innermost one
+    // is refused at the cap, then a matching END_GROUP for each.
+    const DEPTH: usize = 1000;
+    let mut wire = vec![0x0Bu8; DEPTH + 1];
+    wire.extend(std::iter::repeat_n(0x0Cu8, DEPTH + 1));
+
+    let (text, spans) = decode_and_render_indexed(
+        &wire,
+        None,
+        DecodeRenderOpts {
+            annotations: true,
+            indent_size: 2,
+            ..Default::default()
+        },
+    );
+    let text = String::from_utf8(text).expect("valid UTF-8 output");
+
+    let line = text
+        .lines()
+        .position(|l| l.contains("INVALID_TAG_TYPE"))
+        .expect("the capped group is refused as INVALID_TAG_TYPE");
+    let after = text.matches('\n').count() - line - 1;
+    assert!(
+        after > DEPTH / 2,
+        "the fixture must leave many lines after the malformity, got {after}"
+    );
+    assert_every_line_owned("depth cap", &text, &spans);
 }

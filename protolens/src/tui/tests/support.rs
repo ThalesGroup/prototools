@@ -23,11 +23,14 @@ pub(super) type Shape = (usize, u64, Option<String>, std::ops::Range<usize>);
 
 pub(super) fn shape_of(app: &App, idx: usize) -> Shape {
     let s = &app.tree[idx].span;
+    // Spec 0210 S1: the line range is derived from the counters, not
+    // read off `span.text_range` — which is the range the node had when
+    // the tree was built and is not repaired by a splice.
     (
         s.level,
         s.field_number,
         s.type_fqdn.clone(),
-        s.text_range.clone(),
+        app.node_lines(idx),
     )
 }
 
@@ -48,10 +51,20 @@ pub(super) fn live_shapes(app: &App) -> Vec<Shape> {
     out
 }
 
-pub(super) fn shaped_map(app: &App, map: &[Option<u32>]) -> Vec<(usize, Shape)> {
-    map.iter()
-        .enumerate()
-        .filter_map(|(l, n)| n.map(|n| (l, shape_of(app, n as usize))))
+/// Every line's owner, projected through `Shape`, and whether the line
+/// is that owner's footer.
+///
+/// Spec 0210 S2: the replacement for the `shaped_map(app,
+/// &app.line_to_node)` / `shaped_map(app, &app.footer_line_to_node)`
+/// pair. Both maps are gone, so the question "does every line still
+/// resolve to the same node it did" is asked of `line_pos` — which is
+/// the thing every reader now goes through anyway.
+pub(super) fn line_owners(app: &App) -> Vec<(usize, Shape, bool)> {
+    (0..app.lines.len())
+        .filter_map(|l| {
+            app.line_pos(l)
+                .map(|pos| (l, shape_of(app, pos.node), pos.footer))
+        })
         .collect()
 }
 
@@ -108,6 +121,8 @@ pub(super) fn message_node_app_with_root_candidates(
         doc_next: None,
         doc_prev: None,
         sibling_ordinal: 1,
+        lines_total: 2,
+        lines_visible: 2,
         rendered_as: None,
     };
     let decoded = Decoded {
@@ -196,6 +211,8 @@ pub(super) fn sibling_leaves_app(texts: &[&str]) -> App {
             doc_next: (i + 1 < n).then_some(i + 1),
             doc_prev: i.checked_sub(1),
             sibling_ordinal: i as u32 + 1,
+            lines_total: 1,
+            lines_visible: 1,
             rendered_as: None,
         })
         .collect();
@@ -434,6 +451,8 @@ pub(super) fn wide_sibling_scalars_app(n: usize) -> App {
                 doc_next: (i + 1 < n).then_some(i + 1),
                 doc_prev: i.checked_sub(1),
                 sibling_ordinal: i as u32 + 1,
+                lines_total: 1,
+                lines_visible: 1,
                 rendered_as: None,
             }
         })

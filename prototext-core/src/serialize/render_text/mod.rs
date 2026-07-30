@@ -454,6 +454,7 @@ fn render_message<S: Sink>(
             TagFacts::default(),
             MalformedKind::InvalidTagType,
             &buf[start..],
+            start..buflen,
         );
         return (buflen, None);
     };
@@ -475,6 +476,7 @@ fn render_message<S: Sink>(
                 TagFacts::default(),
                 MalformedKind::InvalidTagType,
                 wtag_gar,
+                field_start..buflen,
             );
             return (buflen, None);
         }
@@ -511,6 +513,7 @@ fn render_message<S: Sink>(
                         },
                         MalformedKind::InvalidVarint,
                         varint_gar,
+                        field_start..buflen,
                     );
                     return (buflen, None);
                 }
@@ -548,6 +551,7 @@ fn render_message<S: Sink>(
                         },
                         MalformedKind::InvalidFixed64,
                         raw,
+                        field_start..buflen,
                     );
                     return (buflen, None);
                 };
@@ -582,6 +586,7 @@ fn render_message<S: Sink>(
                         },
                         MalformedKind::InvalidLen,
                         varint_gar,
+                        field_start..buflen,
                     );
                     return (buflen, None);
                 }
@@ -601,6 +606,7 @@ fn render_message<S: Sink>(
                         },
                         MalformedKind::TruncatedBytes { missing },
                         raw,
+                        field_start..buflen,
                     );
                     return (buflen, None);
                 };
@@ -647,6 +653,7 @@ fn render_message<S: Sink>(
                     TagFacts::default(),
                     MalformedKind::InvalidTagType,
                     &buf[field_start..end],
+                    field_start..end,
                 );
                 pos = end;
             }
@@ -684,6 +691,7 @@ fn render_message<S: Sink>(
                         },
                         MalformedKind::InvalidGroupEnd,
                         raw,
+                        field_start..buflen,
                     );
                     return (buflen, None);
                 }
@@ -704,6 +712,7 @@ fn render_message<S: Sink>(
                         },
                         MalformedKind::InvalidFixed32,
                         raw,
+                        field_start..buflen,
                     );
                     return (buflen, None);
                 };

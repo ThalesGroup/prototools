@@ -231,13 +231,18 @@ pub struct OverrideEntry {
 #[derive(Debug, Default)]
 pub struct OverrideCollection {
     entries: Vec<OverrideEntry>,
+    /// Every entry's `active` flag as it stood before the user's last
+    /// change to one, kept so that a batch which then refuses to run
+    /// can put them back (spec 0202 S4). `None` once a batch has
+    /// actually rendered (`commit_active`): from that point the flags
+    /// are what the document shows, and undoing them would misdescribe
+    /// it in the other direction.
+    active_before: Option<Vec<(OverrideOrigin, Option<String>, bool)>>,
 }
 
 impl OverrideCollection {
     pub fn new() -> Self {
-        Self {
-            entries: Vec::new(),
-        }
+        Self::default()
     }
 
     pub fn entries(&self) -> &[OverrideEntry] {
@@ -292,7 +297,63 @@ impl OverrideCollection {
         self.activate_impl(origin, r#type, true);
     }
 
+    /// Records every entry's `active` flag so `revert_active` can put
+    /// them back if the batch that follows this change is refused for
+    /// lack of memory (spec 0202 S4).
+    ///
+    /// Called by the mutators a keystroke reaches, and deliberately not
+    /// by `activate_auto`: its seeding runs *inside* a batch that has
+    /// already been allowed, so there is nothing to undo, and it would
+    /// clone the whole collection once per seeded entry.
+    fn snapshot_active(&mut self) {
+        self.active_before = Some(
+            self.entries
+                .iter()
+                .map(|e| (e.origin.clone(), e.r#type.clone(), e.active))
+                .collect(),
+        );
+    }
+
+    /// Puts the `active` flags back as `snapshot_active` last saw them,
+    /// forcing an entry that did not exist then to inactive; returns
+    /// whether any flag moved.
+    ///
+    /// Spec 0202 S4: a refused batch renders nothing, so an entry left
+    /// marked active would be claiming a rendering the document does
+    /// not have — and, since the guard keeps refusing until the session
+    /// is restarted, would go on claiming it. An entry the refusal
+    /// deactivates is still there to be seen, edited, or saved; it just
+    /// no longer says it is in effect.
+    ///
+    /// Matching is by `(origin, type)`, not by index: `activate` sorts
+    /// the collection, so an entry's position can differ either side of
+    /// the change being undone.
+    pub fn revert_active(&mut self) -> bool {
+        let Some(before) = self.active_before.take() else {
+            return false;
+        };
+        let mut changed = false;
+        for e in self.entries.iter_mut() {
+            let was = before
+                .iter()
+                .find(|(origin, r#type, _)| *origin == e.origin && *r#type == e.r#type)
+                .is_some_and(|(_, _, active)| *active);
+            changed |= e.active != was;
+            e.active = was;
+        }
+        changed
+    }
+
+    /// Drops the snapshot after a batch that actually rendered, so a
+    /// later refusal cannot reach back past it.
+    pub fn commit_active(&mut self) {
+        self.active_before = None;
+    }
+
     fn activate_impl(&mut self, origin: OverrideOrigin, r#type: Option<String>, auto: bool) {
+        if !auto {
+            self.snapshot_active();
+        }
         for e in self.entries.iter_mut() {
             if e.origin == origin {
                 e.active = false;
@@ -336,8 +397,9 @@ impl OverrideCollection {
             return;
         };
         let target_active = !entry.active;
+        let origin = entry.origin.clone();
+        self.snapshot_active();
         if target_active {
-            let origin = entry.origin.clone();
             for e in self.entries.iter_mut() {
                 if e.origin == origin {
                     e.active = false;
@@ -372,6 +434,7 @@ impl OverrideCollection {
         };
         let origin = entry.origin.clone();
         let target_active = !entry.active;
+        self.snapshot_active();
 
         if !target_active {
             for e in self.entries.iter_mut() {
@@ -410,6 +473,7 @@ impl OverrideCollection {
             return;
         };
         let origin = entry.origin.clone();
+        self.snapshot_active();
         for e in self.entries.iter_mut() {
             if e.origin == origin {
                 e.active = false;
@@ -691,7 +755,10 @@ impl OverrideCollection {
                 },
             })
             .collect();
-        let mut collection = OverrideCollection { entries };
+        let mut collection = OverrideCollection {
+            entries,
+            active_before: None,
+        };
         collection.sort();
         Ok((collection, file.target))
     }

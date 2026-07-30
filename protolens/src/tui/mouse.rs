@@ -275,7 +275,7 @@ impl App {
     /// applies unchanged.
     pub(super) fn copy_current_selection_or_line(&mut self) {
         if self.select_anchor.is_none() {
-            let line_idx = self.visible_rows[self.cursor_display_row()];
+            let line_idx = self.cursor_line();
             self.select_anchor = Some(line_idx);
             self.select_end = Some(line_idx);
         }
@@ -335,7 +335,8 @@ impl App {
             return None;
         }
         let rel_row = (row - area.y) as usize;
-        self.visible_rows.get(self.scroll_offset + rel_row).copied()
+        self.visible_row_pos(self.scroll_offset + rel_row)
+            .map(|(_, line)| line)
     }
 
     pub(super) fn handle_click(&mut self, col: u16, row: u16) {
@@ -426,11 +427,9 @@ impl App {
         self.caret_anchor = CaretAnchor::Free;
     }
 
-    /// Index of `cursor`'s own currently-displayed line (header or
-    /// footer, spec 0142) within `visible_rows`.
+    /// Which drawn row `cursor`'s own currently-displayed line (header
+    /// or footer, spec 0142) is on.
     pub(super) fn cursor_display_row(&self) -> usize {
-        self.visible_rows
-            .binary_search(&self.cursor_line())
-            .unwrap_or_else(|i| i)
+        self.visible_row_of_line(self.cursor_line()).unwrap_or(0)
     }
 }

@@ -38,6 +38,8 @@ use prototext_core::serialize::render_text::{
 
 use crate::colorize::{self, LineStyles, SyntaxRole};
 use crate::decode::{self, Decoded, DescriptorContext, TreeNode};
+pub(crate) use lines::LinePos;
+
 use crate::export_descriptor;
 use crate::extract::{self, ExtractFormat};
 use crate::override_pane::{self, OverrideKind, OverrideOrigin, SortMode};
@@ -731,24 +733,23 @@ const HELP_TEXT: &[&str] = &[
 
 /// Spec 0185: the override selection pane's live preview, as a block of
 /// rendered lines standing in for the target's committed rows at draw
-/// time. It is *not* part of the document: `tree`, `lines`,
-/// `line_to_node` and `visible_rows` are all untouched by it, which is
-/// what makes a preview cost only the (byte-bounded) decode and render
-/// of the target's own interior.
+/// time. It is *not* part of the document: `tree` and `lines` are both
+/// untouched by it, which is what makes a preview cost only the
+/// (byte-bounded) decode and render of the target's own interior.
 ///
-/// `first_row`/`covered_rows` are positions in `visible_rows`, computed
-/// once when the overlay is built. They stay valid because S5 locks
-/// focus to the selection pane for the overlay's whole lifetime: the
-/// only two things that rebuild `visible_rows` — folding and splicing —
-/// are unreachable while it is up. A terminal resize changes the pane
-/// height only, not `visible_rows`, so it is harmless.
+/// `first_row`/`covered_rows` are visible-row positions, computed once
+/// when the overlay is built. They stay valid because S5 locks focus to
+/// the selection pane for the overlay's whole lifetime: the only two
+/// things that move a row — folding and splicing — are unreachable
+/// while it is up. A terminal resize changes the pane height only, not
+/// the row numbering, so it is harmless.
 pub(super) struct PreviewOverlay {
-    /// Index into `visible_rows` of the first row the committed target's
-    /// `text_range` covers. For a packed run that target is the run's
-    /// leader and the range is the whole run's (spec 0184: the record is
-    /// the addressable unit), since that is what a commit would splice.
+    /// The first visible row the committed target's lines cover. For a
+    /// packed run that target is the run's leader and the range is the
+    /// whole run's (spec 0184: the record is the addressable unit),
+    /// since that is what a commit would splice.
     first_row: usize,
-    /// How many `visible_rows` entries that `text_range` covers.
+    /// How many visible rows those lines cover.
     covered_rows: usize,
     lines: Vec<String>,
 }
@@ -835,29 +836,6 @@ pub struct App {
     /// `ThemeKind::System` (resolved once in `main.rs` before `App::new`).
     theme: ThemeKind,
     tree: Vec<TreeNode>,
-    /// Line index (in `lines`) -> the node whose text *starts* on that
-    /// line, or `None` for a line that opens no node (a message's own
-    /// closing `}` line, the truncation marker). Used for the
-    /// fold-indicator gutter.
-    ///
-    /// Spec 0188 S1: dense and exactly `lines.len()` long, spliced in
-    /// lockstep with `lines` by `materialize_line_patches`. It is an
-    /// array and not a `HashMap` because a splice shifts a *suffix* of
-    /// line numbers by a constant — a `memmove` here, a full rehash
-    /// there. `HashMap::retain` is O(map size) whatever the predicate,
-    /// so the repair spec 0186 introduced could never be sublinear.
-    ///
-    /// Where a packed run renders several nodes onto one line, the last
-    /// writer wins — exactly what the `HashMap` did.
-    line_to_node: Vec<Option<u32>>,
-    /// The same, for a message/group node's own closing (`}`) line
-    /// (`text_range.end - 1`) — the counterpart to `line_to_node`'s
-    /// opening-line mapping, both maintained in lockstep at the same
-    /// sites. Used by spec 0113 D33's bold override hint, which needs to
-    /// recognize a node's own closing line as directly "its own" (not a
-    /// descendant's), the same way `line_to_node` already recognizes its
-    /// own opening line.
-    footer_line_to_node: Vec<Option<u32>>,
     /// Spec 0160 G1: whether a `render_overrides` batch is currently
     /// active — `0` outside of one, `1` while the outer (caller-
     /// initiated) call is running. `splice_override` uses this to decide
@@ -1030,16 +1008,16 @@ pub struct App {
     /// or keep the single-line selection `Down` just set (`true`).
     pending_double_click: bool,
     folded: HashSet<usize>,
-    /// Rows currently visible (line indices in `lines`, folded-away lines
-    /// excluded) — rebuilt only on fold-state changes, not every frame.
-    visible_rows: Vec<usize>,
-    /// Spec 0186 S4: scratch buffer for `rebuild_visible_rows_from`'s
-    /// folded-away mask, one entry per line. Kept on `App` purely so the
-    /// allocation is reused across calls rather than being a
-    /// `vec![false; lines.len()]` per rebuild. Carries no meaning
-    /// between calls — the range about to be marked is always cleared
-    /// first.
-    hidden_mask: Vec<bool>,
+    /// Spec 0210 S3: the `(absolute line, owner)` pairs of the rows the
+    /// last frame drew, ascending. A viewport-sized snapshot, not a
+    /// document-sized index — it replaces nothing and is authoritative
+    /// for nothing; `line_pos` consults it and falls back to its
+    /// descent on a miss. See `App::set_window_nodes`.
+    window_nodes: Vec<(usize, LinePos)>,
+    /// The `structural_version` `window_nodes` was filled at. Anything
+    /// older is ignored, since a fold or a commit moves lines out from
+    /// under it.
+    window_nodes_version: u64,
     scroll_offset: usize,
     /// `cursor_display_row()`'s value as of the last render pass that
     /// applied `clamp_scroll_to_visible` to `scroll_offset` (2026-07-19
@@ -1248,10 +1226,10 @@ pub struct App {
     /// that frame's own `heat_cue_for` calls queued, which a probe taken
     /// before `terminal.draw` can never see.
     activity_shown: Option<tiered::Tier>,
-    /// Incremented every time `rebuild_visible_rows` runs (fold/unfold,
-    /// content-shape change) — `App::prefetch_step`'s staleness signal
-    /// (spec 0164 G7) for restarting its walk when rendered line
-    /// numbers may have shifted.
+    /// Incremented on every fold/unfold and every commit — i.e. every
+    /// time a rendered line number may have shifted. `App::
+    /// prefetch_step`'s staleness signal (spec 0164 G7) for restarting
+    /// its walk, and (spec 0210 S3) the guard on `window_nodes`.
     structural_version: u64,
     /// `true` while `recompute_override_candidates`'s `SortMode::
     /// Inferred` branch is waiting on a worker request for the
@@ -1507,22 +1485,6 @@ impl App {
         };
         let tree_len = decoded.tree.len();
         let root_candidates = std::mem::take(&mut decoded.root_candidates);
-        let mut line_to_node = vec![None; decoded.lines.len()];
-        let mut footer_line_to_node = vec![None; decoded.lines.len()];
-        for (idx, node) in decoded.tree.iter().enumerate() {
-            line_to_node[node.span.text_range.start] = Some(idx as u32);
-            // A distinct footer line only exists when the node's own
-            // header and closing `}` aren't the same line — not the
-            // same as `first_child.is_some()` (spec 0142 fix, 2026-07-
-            // 18 feedback): an empty-but-bracketed message (decoded
-            // with zero populated fields, still rendered as `Name {`
-            // then `}` on the next line) has no children yet still has
-            // a real, distinct footer line that must be a reachable
-            // cursor stop.
-            if node.span.text_range.end - 1 > node.span.text_range.start {
-                footer_line_to_node[node.span.text_range.end - 1] = Some(idx as u32);
-            }
-        }
         let header = format!("protolens — {blob_label} — {}", decoded.root_type);
         // Document-order first node (doc_prev == None) — not array index 0,
         // which is post-order (see decode::TreeNode's doc comment).
@@ -1558,8 +1520,6 @@ impl App {
             window_styles: Vec::new(),
             theme,
             tree: decoded.tree,
-            line_to_node,
-            footer_line_to_node,
             override_batch_depth: 0,
             descend: Vec::new(),
             #[cfg(test)]
@@ -1586,8 +1546,8 @@ impl App {
             last_click: None,
             pending_double_click: false,
             folded: HashSet::new(),
-            visible_rows: Vec::new(),
-            hidden_mask: Vec::new(),
+            window_nodes: Vec::new(),
+            window_nodes_version: 0,
             scroll_offset: 0,
             last_cursor_row: None,
             pan_offset: 0,
@@ -1704,16 +1664,11 @@ impl App {
         // it directly via prototext-core. Guarded like the block above:
         // an empty tree has no node at `cursor` to render.
         //
-        // Spec 0186 S4 moved this `rebuild_visible_rows` from *after*
-        // that pass to before it. `finalize_override_batch` now repairs
-        // `visible_rows` incrementally, keeping the prefix below the
-        // batch's first patched line — which requires that prefix to
-        // already describe the current `lines`. This was the one place
-        // in the program where a batch ran against a `visible_rows` that
-        // had never been built at all, so the invariant "`visible_rows`
-        // is always consistent with `lines` and `folded`" now holds
-        // everywhere, rather than only after startup.
-        app.rebuild_visible_rows();
+        // Spec 0210 S2 removed the `rebuild_visible_rows()` that used to
+        // stand here: `build_tree` sets every node's `lines_total` and
+        // `lines_visible` as it builds it, so the row numbering is
+        // already consistent with `lines` and `folded` the moment the
+        // tree exists, with nothing to precompute.
         if !app.tree.is_empty() {
             app.render_overrides(cursor);
         }
@@ -1793,15 +1748,29 @@ const _: () = assert!(PREFETCH_WALK_MAX_ROWS <= heat_cue::HEAT_CACHE_MAX_ENTRIES
 /// `run_loop` iterations (not rebuilt on every call) — reset only when
 /// the cursor's display row or the document's structural/reflow state
 /// (`App::structural_version`) has changed since the walk began.
-/// `origin_line`/`above`/`below` are indices into `App::visible_rows`
-/// (rendered-line space), not raw `App::lines` indices — folded/hidden
-/// content never appears there, so the walk naturally skips it.
+/// `origin_line`/`above`/`below` are visible-row numbers (rendered-line
+/// space), not raw `App::lines` indices — folded/hidden content has no
+/// row, so the walk naturally skips it.
 struct PrefetchWalk {
     origin_line: usize,
     above: usize,
     below: usize,
     above_done: bool,
     below_done: bool,
+    /// Spec 0210 S3: the two ends as *positions* rather than as row
+    /// numbers, stepped one visible line at a time by `prefetch_step`.
+    ///
+    /// The row numbers `next_row` produces would each have to be turned
+    /// back into a node by a `visible_row_pos` descent, and a wave
+    /// visits up to `PREFETCH_WALK_MAX_ROWS` of them — on the reference
+    /// corpus that is 2 048 crossings of the root's 7 771 children, on
+    /// the UI thread. Carrying the positions makes the whole wave one
+    /// descent (when it is seeded) plus O(1) per row.
+    ///
+    /// `None` before the first seeding, and on a document with no rows
+    /// at the origin at all.
+    above_pos: Option<LinePos>,
+    below_pos: Option<LinePos>,
     /// `App::structural_version` as of this walk's start — part of
     /// the staleness signal `prefetch_step` checks on entry (the
     /// exact mechanism the spec left TBD during implementation).
@@ -1820,13 +1789,15 @@ impl PrefetchWalk {
             below: 0,
             above_done: true,
             below_done: true,
+            above_pos: None,
+            below_pos: None,
             structural_version: u64::MAX,
         }
     }
 
     /// Advances the walk to the next unexplored row, alternating above/
     /// below (always the nearer of the two unexplored ends), and
-    /// returns its index into `visible_rows`. `None` once both ends
+    /// returns its visible-row number. `None` once both ends
     /// are exhausted, or once the wave has spent its
     /// `PREFETCH_WALK_MAX_ROWS` budget (spec 0191 S1).
     ///
@@ -1989,27 +1960,67 @@ impl App {
                 caches.by_range.start_new_wave();
                 caches.current_score.start_new_wave();
             }
+            // Spec 0210 S3: the one descent this wave pays. Both ends
+            // start on the origin's own row and step outward from it,
+            // so nothing below has to resolve a row number again.
+            let origin_pos = self.visible_row_pos(origin_row).map(|(pos, _)| pos);
             self.prefetch_walk = PrefetchWalk {
                 origin_line: origin_row,
                 above: 0,
                 below: 0,
                 above_done: false,
                 below_done: false,
+                above_pos: origin_pos,
+                below_pos: origin_pos,
                 structural_version: self.structural_version,
             };
         }
 
         loop {
-            let Some(row) = self.prefetch_walk.next_row(self.visible_rows.len()) else {
+            let Some(row) = self.prefetch_walk.next_row(self.visible_row_count()) else {
                 self.prefetch_trace.report("exhausted");
                 return PrefetchStep::Idle;
             };
             self.prefetch_trace.rows += 1;
-            let line = self.visible_rows[row];
-            let Some(idx) = self.node_at_header_line(line) else {
+            // `next_row` advances exactly one end per call, and always
+            // by one row, so which end it just moved is readable from
+            // the row alone — and stepping that end's position by one
+            // visible line reproduces the row it named.
+            let going_up = row < self.prefetch_walk.origin_line;
+            let from = if going_up {
+                self.prefetch_walk.above_pos
+            } else {
+                self.prefetch_walk.below_pos
+            };
+            let stepped = from.and_then(|pos| {
+                if going_up {
+                    self.prev_visible(pos)
+                } else {
+                    self.next_visible(pos)
+                }
+            });
+            let Some((pos, _)) = stepped else {
+                // The walk's own bounds should have stopped it first;
+                // if they somehow did not, close that end rather than
+                // spinning on it.
+                if going_up {
+                    self.prefetch_walk.above_done = true;
+                } else {
+                    self.prefetch_walk.below_done = true;
+                }
                 self.prefetch_trace.skipped += 1;
                 continue;
             };
+            if going_up {
+                self.prefetch_walk.above_pos = Some(pos);
+            } else {
+                self.prefetch_walk.below_pos = Some(pos);
+            }
+            if pos.footer {
+                self.prefetch_trace.skipped += 1;
+                continue;
+            }
+            let idx = pos.node;
             if !self.can_override(idx) || self.heat_states[idx].settled() {
                 self.prefetch_trace.skipped += 1;
                 continue;
@@ -2405,7 +2416,11 @@ where
         return Ok(());
     }
     let rows = terminal.size()?.height as usize;
-    let lines: Vec<usize> = app.visible_rows.iter().take(rows).copied().collect();
+    let lines: Vec<usize> = app
+        .visible_window(0, rows)
+        .into_iter()
+        .map(|(line, _)| line)
+        .collect();
     let start = Instant::now();
     let mut last_draw = start;
     for (i, &line_idx) in lines.iter().enumerate() {
@@ -2686,6 +2701,7 @@ mod event;
 mod heat_cue;
 mod heat_worker;
 mod key_dispatch;
+mod lines;
 mod manage_pane;
 mod mouse;
 mod navigation;

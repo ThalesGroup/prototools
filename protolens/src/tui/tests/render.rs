@@ -333,6 +333,8 @@ fn a_toggles_the_main_pane_annotation_display() {
         doc_next: None,
         doc_prev: None,
         sibling_ordinal: 1,
+        lines_total: 1,
+        lines_visible: 1,
         rendered_as: None,
     };
     let decoded = Decoded {
@@ -406,12 +408,12 @@ fn the_active_override_hint_marks_header_and_footer_but_not_children() {
         Some("test.Inner")
     );
 
-    let header_line = app.tree[inner_idx].span.text_range.start;
-    let footer_line = app.tree[inner_idx].span.text_range.end - 1;
+    let header_line = app.absolute_start(inner_idx);
+    let footer_line = app.node_lines(inner_idx).end - 1;
     assert!(bolded(&app, header_line));
     assert!(bolded(&app, footer_line));
 
-    let id_line = app.tree[id_idx].span.text_range.start;
+    let id_line = app.absolute_start(id_idx);
     assert!(!bolded(&app, id_line));
 }
 
@@ -423,7 +425,7 @@ fn status_line_reports_the_footer_line_number_for_a_footer_resting_cursor() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
     app.splash = false;
 
-    let footer_line = app.tree[inner_idx].span.text_range.end - 1;
+    let footer_line = app.node_lines(inner_idx).end - 1;
     app.cursor = inner_idx;
     app.cursor_footer = true;
 
@@ -970,10 +972,7 @@ fn marked_cells(
     let buffer = terminal.backend().buffer();
     let mut found = Vec::new();
     for y in area.y..area.y + area.height {
-        let Some(&line) = app
-            .visible_rows
-            .get(app.scroll_offset + (y - area.y) as usize)
-        else {
+        let Some((_, line)) = app.visible_row_pos(app.scroll_offset + (y - area.y) as usize) else {
             continue;
         };
         for x in area.x..area.x + area.width {
@@ -1008,7 +1007,7 @@ fn put_caret_on_brace(app: &mut App, closing: bool) -> (usize, usize) {
         .cursor_brace_pair()
         .expect("the cursor node must be bracketed");
     let (line, column) = if closing { close } else { open };
-    app.cursor_footer = line != app.tree[app.cursor].span.text_range.start;
+    app.cursor_footer = line != app.absolute_start(app.cursor);
     app.cursor_column = column;
     (line, column)
 }
@@ -1144,7 +1143,7 @@ fn a_brace_pairs_with_its_match_only_when_the_caret_is_on_it() {
     // Off a brace: one inverted cell, and no partner tint anywhere.
     let (mut app, items) = repeated_message_fixture();
     app.set_cursor(items[1]);
-    let header = app.tree[items[1]].span.text_range.start;
+    let header = app.absolute_start(items[1]);
     let first_non_blank = app.lines[header]
         .trim_start()
         .chars()
@@ -1185,7 +1184,7 @@ fn a_brace_pairs_with_its_match_only_when_the_caret_is_on_it() {
     let (mut app, items) = repeated_message_fixture();
     app.set_cursor(items[1]);
     let (open_line, _) = put_caret_on_brace(&mut app, false);
-    let close_line = app.tree[items[1]].span.text_range.end - 1;
+    let close_line = app.node_lines(items[1]).end - 1;
     let terminal = drawn_frame(&mut app, 40, 12);
     assert_eq!(
         caret_cells(&app, &terminal),
@@ -1209,7 +1208,7 @@ fn losing_sight_of_the_match_returns_the_strong_cue_to_the_caret() {
     let (mut app, items) = repeated_message_fixture();
     app.set_cursor(items[1]);
     let (open_line, _) = put_caret_on_brace(&mut app, false);
-    let close_line = app.tree[items[1]].span.text_range.end - 1;
+    let close_line = app.node_lines(items[1]).end - 1;
     let mut terminal = drawn_frame(&mut app, 40, 12);
     assert_eq!(
         paired_cells(&app, &terminal).len(),
@@ -1253,7 +1252,7 @@ fn a_folded_node_pairs_its_synthetic_closing_brace_on_the_same_row() {
     let (mut app, items) = repeated_message_fixture();
     app.set_cursor(items[0]);
     app.toggle_fold(items[0]);
-    let header = app.tree[items[0]].span.text_range.start;
+    let header = app.absolute_start(items[0]);
     put_caret_on_brace(&mut app, false);
 
     let terminal = drawn_frame(&mut app, 40, 12);
@@ -1409,7 +1408,7 @@ fn the_caret_reaches_the_heat_suffix_but_never_the_heat_glyph() {
         Some(10),
     );
     app.cursor = idx;
-    let header = app.tree[idx].span.text_range.start;
+    let header = app.absolute_start(idx);
 
     // `$` — the last reachable column is the suffix's closing bracket.
     let terminal = drawn_frame(&mut app, 60, 8);

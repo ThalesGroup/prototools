@@ -19,10 +19,10 @@
 //! A node's parent, siblings and document-order neighbors are named by
 //! its own link fields, and the reverse link in each of them is the one
 //! that has to change. Its children are reachable by walking its own
-//! child chain. Its two line-map entries are found through its own
-//! `text_range`. The remaining holders — `folded`, `pending_heat_
-//! recheck`, `cursor`, `first_node`, `override_target` — are keyed by
-//! index, so a hash lookup or an equality test finds them.
+//! child chain. The remaining holders — `folded`, `pending_heat_
+//! recheck`, `cursor`, `first_node`, `override_target`, and the
+//! read-ahead walk's two ends — are keyed by index, so a hash lookup or
+//! an equality test finds them.
 //!
 //! So a single node can be relocated in time proportional to its own
 //! degree, with no arena-wide pass and no remap table. Summed over the
@@ -101,8 +101,6 @@ impl App {
         let doc_prev = self.tree[from].doc_prev;
         let doc_next = self.tree[from].doc_next;
         let first_child = self.tree[from].first_child;
-        let text_start = self.tree[from].span.text_range.start;
-        let text_end = self.tree[from].span.text_range.end;
 
         // A parent names its first and last child separately, and for an
         // only child both are this node.
@@ -144,20 +142,21 @@ impl App {
         self.dead[to] = false;
         self.dead[from] = true;
 
-        // Both line maps are indexed by line, so this node's own
-        // `text_range` locates its entries directly. The equality test
-        // is deliberate rather than defensive: a node whose header line
-        // is currently attributed to some other node must not have that
-        // attribution stolen by this move.
-        if let Some(slot) = self.line_to_node.get_mut(text_start) {
-            if *slot == Some(from as u32) {
-                *slot = Some(to as u32);
-            }
-        }
-        if text_end > 0 {
-            if let Some(slot) = self.footer_line_to_node.get_mut(text_end - 1) {
-                if *slot == Some(from as u32) {
-                    *slot = Some(to as u32);
+        // Spec 0210 S2: the two line maps used to be repaired here,
+        // located through the moved node's own `text_range`. Both are
+        // gone — a line's owner is now derived from the tree itself, so
+        // a move that keeps the tree consistent keeps the line
+        // numbering consistent for free.
+
+        // Spec 0210 S3: the read-ahead walk's two ends are node indices
+        // now, not row numbers, so they are holders like any other.
+        for end in [
+            &mut self.prefetch_walk.above_pos,
+            &mut self.prefetch_walk.below_pos,
+        ] {
+            if let Some(pos) = end {
+                if pos.node == from {
+                    pos.node = to;
                 }
             }
         }
@@ -228,6 +227,13 @@ impl App {
             let (src, dst) = (self.compact_src, self.compact_dst);
             self.relocate_node(src, dst);
             moved += 1;
+        }
+        if moved > 0 {
+            // Spec 0210 S3: `window_nodes` names nodes by index, and
+            // every move above just changed one. Dropped rather than
+            // repaired — the next frame refills it, and a miss only
+            // costs the descent it was there to avoid.
+            self.window_nodes.clear();
         }
 
         // The pass is over once either cursor runs off the end: no live
@@ -481,6 +487,12 @@ impl App {
                         .iter()
                         .map(|p| ("pending_heat_recheck", *p)),
                 )
+                .chain(
+                    [self.prefetch_walk.above_pos, self.prefetch_walk.below_pos]
+                        .into_iter()
+                        .flatten()
+                        .map(|p| ("prefetch_walk", p.node)),
+                )
                 .collect();
         for (what, i) in holders {
             if i >= len {
@@ -488,38 +500,6 @@ impl App {
             }
             if !live[i] {
                 return Err(format!("{what} names dead node {i}"));
-            }
-        }
-
-        // The line maps, which `relocate_node` repairs through the moved
-        // node's own `text_range` — so an entry filed anywhere else
-        // would be missed.
-        for (l, slot) in self.line_to_node.iter().enumerate() {
-            if let Some(n) = *slot {
-                let n = n as usize;
-                if n >= len || !live[n] {
-                    return Err(format!("line_to_node[{l}] names unusable node {n}"));
-                }
-                if self.tree[n].span.text_range.start != l {
-                    return Err(format!(
-                        "line_to_node[{l}] names node {n}, whose range starts at {}",
-                        self.tree[n].span.text_range.start
-                    ));
-                }
-            }
-        }
-        for (l, slot) in self.footer_line_to_node.iter().enumerate() {
-            if let Some(n) = *slot {
-                let n = n as usize;
-                if n >= len || !live[n] {
-                    return Err(format!("footer_line_to_node[{l}] names unusable node {n}"));
-                }
-                if self.tree[n].span.text_range.end != l + 1 {
-                    return Err(format!(
-                        "footer_line_to_node[{l}] names node {n}, whose range ends at {}",
-                        self.tree[n].span.text_range.end
-                    ));
-                }
             }
         }
         Ok(())

@@ -632,7 +632,7 @@ fn clicking_the_fold_marker_toggles_the_node_despite_the_heat_cue_gutter() {
     assert!(app.has_children(grp_idx));
     assert!(!app.folded.contains(&grp_idx));
 
-    let line_idx = app.tree[grp_idx].span.text_range.start;
+    let line_idx = app.absolute_start(grp_idx);
     let indent_len = (app.lines[line_idx].len() - app.lines[line_idx].trim_start().len()) as u16;
     // Column 0 is the heat-cue gutter, so the marker itself sits at
     // column `indent_len + 1`.
@@ -676,7 +676,7 @@ fn clicking_the_fold_marker_focuses_the_main_pane_without_moving_the_cursor() {
     let original_cursor = app.cursor;
     assert_ne!(original_cursor, grp_idx, "fixture sanity check");
 
-    let line_idx = app.tree[grp_idx].span.text_range.start;
+    let line_idx = app.absolute_start(grp_idx);
     let indent_len = (app.lines[line_idx].len() - app.lines[line_idx].trim_start().len()) as u16;
     let marker_col = indent_len + 1;
 
@@ -740,11 +740,9 @@ fn a_click_places_the_caret_except_on_the_fold_marker() {
     app.splash = false;
     app.main_area = Rect::new(0, 0, 60, 20);
 
-    let header = app.tree[items[1]].span.text_range.start;
+    let header = app.absolute_start(items[1]);
     let row = app
-        .visible_rows
-        .iter()
-        .position(|&l| l == header)
+        .visible_row_of_line(header)
         .expect("the header row is visible") as u16;
     let indent = app.lines[header].len() - app.lines[header].trim_start().len();
     // The heat-cue column, then the fold field, then the row's text.

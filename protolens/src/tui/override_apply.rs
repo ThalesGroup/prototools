@@ -34,6 +34,23 @@ pub(super) mod probe {
     pub(super) static SPLICES: AtomicUsize = AtomicUsize::new(0);
     /// Arena nodes appended by those splices.
     pub(super) static NODES: AtomicUsize = AtomicUsize::new(0);
+    /// Microseconds spent in `compute_descend_marks`.
+    pub(super) static MARKS_US: AtomicUsize = AtomicUsize::new(0);
+    /// Microseconds spent in `splice_override`, summed over the batch.
+    pub(super) static SPLICE_US: AtomicUsize = AtomicUsize::new(0);
+    /// Microseconds spent in `materialize_line_patches` — spec 0210's
+    /// residual whole-document pass over `lines`, and the entire
+    /// justification for its step 2.
+    pub(super) static TEXT_US: AtomicUsize = AtomicUsize::new(0);
+    /// Microseconds in the batch's top-level `render_overrides_inner`
+    /// (splices included), against `FINALIZE_US` for what follows it.
+    pub(super) static INNER_US: AtomicUsize = AtomicUsize::new(0);
+    /// Microseconds in `finalize_override_batch` (`TEXT_US` included).
+    pub(super) static FINALIZE_US: AtomicUsize = AtomicUsize::new(0);
+    /// `shift_span` calls made by the pruned-sibling arm of
+    /// `render_overrides_inner` — the second O(nodes after the splice)
+    /// walk, the one spec 0210 step 1 did *not* delete.
+    pub(super) static SHIFTED: AtomicUsize = AtomicUsize::new(0);
 }
 
 /// Spec 0167 (N1 follow-up to spec 0160): where a single
@@ -277,7 +294,7 @@ fn insert_truncation_marker(
 
     let (at, indent, replacing) = match straddler {
         Some(i) => (i, indent_of(&lines[i]), true),
-        None if lines.last().is_some_and(|l| l.trim_end() == "}") => {
+        None if lines.last().is_some_and(|l| l.trim() == "}") => {
             let close = lines.len() - 1;
             (close, indent_of(&lines[close]) + indent_size, false)
         }
@@ -1066,7 +1083,15 @@ impl App {
                 Some(explicit) => explicit.clone(),
                 None => self.natural_type(idx),
             };
-            match self.splice_override(idx, effective, false, patch_scope) {
+            let t_splice = std::time::Instant::now();
+            let spliced = self.splice_override(idx, effective, false, patch_scope);
+            if crate::tui::trace::enabled() {
+                probe::SPLICE_US.fetch_add(
+                    t_splice.elapsed().as_micros() as usize,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+            }
+            match spliced {
                 Ok(patch_idx) => {
                     self.tree[idx].rendered_as = current;
                     Some(patch_idx)
@@ -1153,12 +1178,23 @@ impl App {
     /// method below.
     pub(super) fn render_overrides(&mut self, idx: usize) {
         if self.override_batch_depth == 0 {
+            let t_marks = std::time::Instant::now();
             self.compute_descend_marks();
+            let d_marks = t_marks.elapsed();
             if let Some(refusal) = self
                 .available_memory_bytes()
                 .and_then(|available| self.override_batch_refusal(available))
             {
-                self.message = refusal;
+                // Spec 0202 S4: nothing is about to be rendered, so an
+                // entry the user just activated must not stay marked
+                // active — the guard goes on refusing for the rest of
+                // the session, so it would claim a rendering the
+                // document is never going to have.
+                self.message = if self.overrides.revert_active() {
+                    format!("{refusal} (the override was left deactivated)")
+                } else {
+                    refusal
+                };
                 return;
             }
             if crate::tui::trace::enabled() {
@@ -1166,6 +1202,10 @@ impl App {
                 probe::VISITS.store(0, Relaxed);
                 probe::SPLICES.store(0, Relaxed);
                 probe::NODES.store(0, Relaxed);
+                probe::SPLICE_US.store(0, Relaxed);
+                probe::SHIFTED.store(0, Relaxed);
+                probe::TEXT_US.store(0, Relaxed);
+                probe::MARKS_US.store(d_marks.as_micros() as usize, Relaxed);
                 crate::tui::trace::trace!(
                     "PROBE batch start tree={} marks={}",
                     self.tree.len(),
@@ -1178,10 +1218,21 @@ impl App {
         // `idx` itself always starts outside any not-yet-materialized
         // patch (spec 0167): it's an already-existing node, never one
         // freshly created within this very call.
+        let t_inner = std::time::Instant::now();
         self.render_overrides_inner(idx, 0, &path, None);
+        let d_inner = t_inner.elapsed();
         self.override_batch_depth -= 1;
         if self.override_batch_depth == 0 {
-            self.finalize_override_batch(idx);
+            let t_finalize = std::time::Instant::now();
+            self.finalize_override_batch();
+            if crate::tui::trace::enabled() {
+                use std::sync::atomic::Ordering::Relaxed;
+                probe::INNER_US.store(d_inner.as_micros() as usize, Relaxed);
+                probe::FINALIZE_US.store(t_finalize.elapsed().as_micros() as usize, Relaxed);
+            }
+            // The flags now describe the document, so a later refusal
+            // must not reach back past this batch to undo them.
+            self.overrides.commit_active();
             if crate::tui::trace::enabled() {
                 let rss = std::fs::read_to_string("/proc/self/statm")
                     .ok()
@@ -1195,7 +1246,7 @@ impl App {
                     / (1 << 20);
                 use std::sync::atomic::Ordering::Relaxed;
                 crate::tui::trace::trace!(
-                    "PROBE render_overrides tree={} tree_cap={} lines={} lines_cap={} overrides={} rss_mib={} visits={} splices={} nodes={}",
+                    "PROBE render_overrides tree={} tree_cap={} lines={} lines_cap={} overrides={} rss_mib={} visits={} splices={} nodes={} marks_us={} inner_us={} splice_us={} finalize_us={} text_us={} shifted={}",
                     self.tree.len(),
                     self.tree.capacity(),
                     self.lines.len(),
@@ -1205,6 +1256,12 @@ impl App {
                     probe::VISITS.load(Relaxed),
                     probe::SPLICES.load(Relaxed),
                     probe::NODES.load(Relaxed),
+                    probe::MARKS_US.load(Relaxed),
+                    probe::INNER_US.load(Relaxed),
+                    probe::SPLICE_US.load(Relaxed),
+                    probe::FINALIZE_US.load(Relaxed),
+                    probe::TEXT_US.load(Relaxed),
+                    probe::SHIFTED.load(Relaxed),
                 );
             }
         }
@@ -1745,12 +1802,17 @@ impl App {
                     sub_last = lc;
                 }
                 let mut cur = Some(c);
+                let mut shifted = 0usize;
                 while let Some(n) = cur {
                     Self::shift_span(&mut self.tree[n].span, child_owed);
+                    shifted += 1;
                     if n == sub_last {
                         break;
                     }
                     cur = self.tree[n].doc_next;
+                }
+                if crate::tui::trace::enabled() {
+                    probe::SHIFTED.fetch_add(shifted, std::sync::atomic::Ordering::Relaxed);
                 }
             }
             child = self.tree[c].next_sibling;
@@ -1779,7 +1841,7 @@ impl App {
     /// once for the whole batch using its aggregate `pending_shift`,
     /// followed by the `line_to_node`/`footer_line_to_node` rebuild and
     /// `rebuild_visible_rows()` (formerly redone on every splice).
-    fn finalize_override_batch(&mut self, idx: usize) {
+    fn finalize_override_batch(&mut self) {
         // Spec 0186 S2: the first line this batch can have disturbed, in
         // the final buffer's frame.
         //
@@ -1800,268 +1862,195 @@ impl App {
         //
         // The G3 equivalence check still runs, so every no-patch batch
         // in the suite asserts that skipping was in fact a no-op.
-        let Some(from) = self.pending_patch_min_line else {
+        if self.pending_patch_min_line.is_none() {
             #[cfg(test)]
             if self.verify_repair {
-                self.assert_repair_matches_full_rebuild();
+                self.assert_line_counts_are_exact();
             }
             return;
-        };
-        // Spec 0167: materialize this batch's line-buffer patches first —
-        // `rebuild_visible_rows()` below reads `self.lines.len()`, which
-        // must already reflect the batch's final content.
+        }
+        // The batch's line-buffer patches, applied in one pass.
+        let t_text = std::time::Instant::now();
         self.materialize_line_patches();
-        let delta = self.pending_shift;
-
-        // Doc-order-last live descendant of `idx` — `last_child`, walked
-        // to its own leaf, since `build_tree`/`splice_override` always
-        // keep it as the doc-order-last direct child (see
-        // `packed_run_is_last_child`'s existing use of this same
-        // invariant).
-        let mut last = idx;
-        while let Some(lc) = self.tree[last].last_child {
-            last = lc;
+        if crate::tui::trace::enabled() {
+            probe::TEXT_US.fetch_add(
+                t_text.elapsed().as_micros() as usize,
+                std::sync::atomic::Ordering::Relaxed,
+            );
         }
 
-        // Spec 0188 S2 step 1: drop the entries at or after the batch's
-        // earliest patch, so the three walks below own that whole
-        // region. `materialize_line_patches` has already moved the maps
-        // in lockstep with `lines`, so the arrays are the right length
-        // and the untouched prefix below `from` is already correct.
+        // Spec 0210 S3: this is now the entire repair.
         //
-        // The suffix must still be cleared rather than trusted, and the
-        // reason is not obvious: an entry that rides the splice's
-        // memmove moves by the batch's line delta, but the *node* it
-        // names does not always move by that same delta. A packed run's
-        // elements are re-spanned by the normalization (spec 0135 G1)
-        // rather than shifted, so an entry can land on a line its node
-        // no longer starts on. Positional preservation is therefore not
-        // sound on its own; clearing and letting the walks re-assert is.
+        // What used to stand here was three walks — the spliced
+        // subtree, *every node after it* in document order, and the
+        // ancestors — each rewriting a stored absolute line number and
+        // re-filing two line-map entries, followed by a `visible_rows`
+        // rebuild from `from`. The second of those walks is the one
+        // that made overriding the document's first field cost a
+        // second: a node's stored position is wrong as soon as anything
+        // above it changes size, so all four and a half million of them
+        // had to be visited.
         //
-        // This is what spec 0186 S3 did with `HashMap::retain` — and
-        // `retain` is O(map size) whatever the predicate, so it scanned
-        // the whole document to drop a handful of entries (55% of a
-        // nested commit, spec 0188's Background). `fill` here is O(the
-        // suffix that actually moved), which is the same region the
-        // walks below already traverse: on the measured nested commit,
-        // 492 entries instead of 276,515 hash slots.
-        //
-        // The three walks are unchanged, and must still run when
-        // `delta == 0`: a batch that replaces N lines with exactly N
-        // lines shifts nothing, yet can still change which node owns a
-        // line inside the replaced range.
-        self.line_to_node[from..].fill(None);
-        self.footer_line_to_node[from..].fill(None);
-
-        // Steps 2 and 3 fold the re-inserts into the walks the shift
-        // already performs, rather than walking the document again.
-        //
-        // Only the `shift_span`/`+= delta` inside these walks is
-        // conditional on `delta != 0`, never the mapping: a batch that
-        // replaces N lines with exactly N lines shifts nothing, yet can
-        // still change which node owns a line inside the replaced range.
-        // Hanging the repair off `delta` would leave those lines unowned.
-
-        // `idx`'s own subtree — freshly spliced, so it already carries
-        // correct line numbers (`render_overrides_inner`'s carried-down
-        // correction) and needs mapping but no shift.
-        let mut cur = Some(idx);
-        while let Some(c) = cur {
-            self.map_node_lines(c);
-            if c == last {
-                break;
-            }
-            cur = self.tree[c].doc_next;
-        }
-
-        // Everything strictly after `idx`'s subtree — shifted, then
-        // mapped. This walk is pass 2 and stays O(nodes after the
-        // splice) by construction (spec 0186 N1).
-        let mut after = self.tree[last].doc_next;
-        while let Some(a) = after {
-            if delta != 0 {
-                Self::shift_span(&mut self.tree[a].span, delta);
-            }
-            self.map_node_lines(a);
-            after = self.tree[a].doc_next;
-        }
-
-        // `idx`'s ancestors — only `text_range.end` moves, so re-mapping
-        // rewrites the footer entry the retain dropped and re-writes the
-        // header entry with the value it already has.
-        let mut p = self.tree[idx].parent;
-        while let Some(pi) = p {
-            if delta != 0 {
-                self.tree[pi].span.text_range.end =
-                    (self.tree[pi].span.text_range.end as isize + delta) as usize;
-            }
-            self.map_node_lines(pi);
-            p = self.tree[pi].parent;
-        }
-
+        // A node stores its subtree's *size* instead, and a size does
+        // not care what happens above it. So a splice is owed exactly
+        // one thing: its ancestors' sizes — and it pays that itself, as
+        // it goes, in `splice_override`, because the rest of the batch
+        // derives its patch positions from them. By the time the batch
+        // ends there is nothing left to repair but the text.
         self.pending_shift = 0;
         self.pending_patch_min_line = None;
-        self.rebuild_visible_rows_from(from);
+        // Line numbers moved, so the read-ahead walk must restart and
+        // `window_nodes` must be ignored.
+        self.structural_version += 1;
+        self.clamp_pan_offset();
 
-        // Spec 0186 G3. Hung off the finalizer rather than written as one
-        // dedicated test, so that *every* splice in the whole suite is a
-        // case: the interesting inputs (nested patches, packed runs,
-        // repeated overrides of one node, folded targets, auto-expanded
-        // `Any`/`MessageSet` descendants) are already fixtured, and none
-        // of them would think to opt in. This is what bounds N3's
-        // deliberate loss of self-healing.
+        // Spec 0186 G3, carried onto spec 0210's own invariant. Hung
+        // off the finalizer rather than written as one dedicated test,
+        // so that *every* splice in the whole suite is a case: the
+        // interesting inputs (nested patches, packed runs, repeated
+        // overrides of one node, folded targets, auto-expanded `Any`/
+        // `MessageSet` descendants) are already fixtured, and none of
+        // them would think to opt in.
         #[cfg(test)]
         if self.verify_repair {
-            self.assert_spans_agree_with_text();
-            self.assert_repair_matches_full_rebuild();
+            self.assert_line_counts_are_exact();
         }
     }
 
-    /// The line ranges themselves have to make sense — asserted against
-    /// the tree's own shape and against the rendered text, and
-    /// deliberately never against `line_to_node`.
+    /// Spec 0210's invariant, checked over the whole document: every
+    /// node's two counts are exactly what its children's are, and the
+    /// positions they imply are exactly where the text has its braces.
     ///
-    /// `assert_repair_matches_full_rebuild` structurally cannot see a
-    /// wrong `text_range`, and that is worth being explicit about
-    /// because it looks like a total check and is not: it *derives* its
-    /// reference `line_to_node` from `text_range`, so a corrupted range
-    /// corrupts the reference and the incremental repair identically,
-    /// and the comparison succeeds. It proves the map agrees with the
-    /// tree; it says nothing about whether the tree agrees with the
-    /// document.
+    /// This replaces spec 0186 G3's "the incremental repair matches a
+    /// full rebuild", which is no longer a meaningful question — there
+    /// is nothing to repair and nothing to rebuild. What is left is
+    /// whether the counters still describe the document, and that is a
+    /// stronger property than the comparison it replaces: the old check
+    /// *derived* its reference from the same `text_range` fields it was
+    /// checking, so a range corrupted consistently corrupted both sides
+    /// and the comparison succeeded.
     ///
-    /// A whole bug class lives in that gap: a splice's line-count delta
-    /// failing to reach part of the document, leaving every node there
-    /// at pre-splice coordinates. There is no panic and no failing
-    /// assertion — the fold handle, the heat cue and the fold extent
-    /// just attach to a neighboring line, and the reported symptom is
-    /// "the marker is on the closing brace".
+    /// The failure it exists to catch is silent. A count that is wrong
+    /// by one puts every position after it out by one, and nothing
+    /// panics — the fold handle, the heat cue and the cursor simply
+    /// attach to a neighboring line, and the reported symptom is "the
+    /// marker is on the closing brace".
     ///
-    /// So this asserts the things that are true of a correct document
-    /// however the tree was arrived at:
-    ///
-    ///  * doc order really is line order;
-    ///  * a child's lines lie strictly inside its parent's, and a
-    ///    parent's closing line is exactly the line after its last
-    ///    child's last line;
-    ///  * a node spanning more than one line closes on a line that is
-    ///    genuinely a closing brace, indented exactly as the line it
-    ///    opened on.
-    ///
-    /// The last one is the only check tied to the text rather than to
-    /// the tree, and it is what catches a shift that is wrong
-    /// *consistently* — which the structural checks alone would accept.
+    /// A single pre-order walk, carrying each node's header line down
+    /// to its children, so it is O(nodes) rather than a descent per
+    /// node. Not reachable from a release build.
     #[cfg(test)]
-    fn assert_spans_agree_with_text(&self) {
+    fn assert_line_counts_are_exact(&self) {
         let n_lines = self.lines.len();
         let indent_of = |l: usize| self.lines[l].len() - self.lines[l].trim_start().len();
-        let mut prev: Option<usize> = None;
-        let mut cur = Some(self.first_node);
-        while let Some(c) = cur {
-            let r = self.tree[c].span.text_range.clone();
-            assert!(
-                r.start < r.end && r.end <= n_lines,
-                "node {c} spans {r:?}, outside the {n_lines}-line document"
+
+        // The top level is a forest in the fixtures and a single root in
+        // a real document, so start from the head of whatever sibling
+        // chain `first_node` sits on.
+        let mut top = self.first_node;
+        while let Some(p) = self.tree[top].parent {
+            top = p;
+        }
+        while let Some(s) = self.tree[top].prev_sibling {
+            top = s;
+        }
+
+        // `(node, its header line)`, pushed in reverse so that popping
+        // yields document order.
+        let mut stack: Vec<(usize, usize)> = Vec::new();
+        let mut start = 0usize;
+        let mut roots = Vec::new();
+        let mut r = Some(top);
+        while let Some(n) = r {
+            roots.push((n, start));
+            start += self.tree[n].lines_total as usize;
+            r = self.tree[n].next_sibling;
+        }
+        assert_eq!(
+            start, n_lines,
+            "the document's roots account for {start} lines but it has {n_lines}"
+        );
+        stack.extend(roots.into_iter().rev());
+
+        while let Some((n, start)) = stack.pop() {
+            let total = self.tree[n].lines_total as usize;
+            let visible = self.tree[n].lines_visible as usize;
+
+            let mut kids = Vec::new();
+            let mut sum_total = 0usize;
+            let mut sum_visible = 0usize;
+            let mut child_start = start + 1;
+            let mut c = self.tree[n].first_child;
+            while let Some(ci) = c {
+                kids.push((ci, child_start));
+                child_start += self.tree[ci].lines_total as usize;
+                sum_total += self.tree[ci].lines_total as usize;
+                sum_visible += self.tree[ci].lines_visible as usize;
+                c = self.tree[ci].next_sibling;
+            }
+
+            // A node with children is bracketed, so it owns a header and
+            // a footer line. A childless one may still be bracketed (an
+            // empty message), which only its own count can say — but it
+            // can then be two lines and no more.
+            let want_total = if sum_total > 0 {
+                sum_total + 2
+            } else if total > 1 {
+                2
+            } else {
+                1
+            };
+            assert_eq!(
+                total,
+                want_total,
+                "node {n}'s lines_total is {total}, but its {} children \
+                 occupy {sum_total} lines",
+                kids.len()
             );
-            if let Some(p) = prev {
-                assert!(
-                    r.start > p,
-                    "node {c} starts at line {} but the previous node in \
-                     document order starts at {p}: doc order must be line order",
-                    r.start
-                );
-            }
-            prev = Some(r.start);
+            let want_visible = if self.folded.contains(&n) {
+                1
+            } else if want_total > 1 {
+                sum_visible + 2
+            } else {
+                1
+            };
+            assert_eq!(
+                visible,
+                want_visible,
+                "node {n}'s lines_visible is {visible} but its children's \
+                 come to {sum_visible} (folded: {})",
+                self.folded.contains(&n)
+            );
 
-            if let Some(p) = self.tree[c].parent {
-                let pr = self.tree[p].span.text_range.clone();
-                assert!(
-                    pr.start < r.start && r.end < pr.end,
-                    "node {c}'s lines {r:?} are not strictly inside its \
-                     parent {p}'s {pr:?} — the usual cause is a splice \
-                     whose line-count delta reached one of them and not \
-                     the other"
-                );
-            }
-
-            if r.end - 1 > r.start {
-                let open = &self.lines[r.start];
+            // The one check tied to the text rather than to the tree,
+            // and the only thing that can catch a set of counts that is
+            // self-consistent and still wrong.
+            if total > 1 {
+                let open = &self.lines[start];
                 let code = open.split("  #@").next().unwrap_or(open).trim_end();
                 assert!(
                     code.ends_with('{'),
-                    "node {c} spans {r:?}, so line {} is its opening line, \
-                     but that line reads {open:?}",
-                    r.start
+                    "node {n} starts at line {start} and spans {total} lines, \
+                     so that is its opening line, but it reads {open:?}"
                 );
-                let close = &self.lines[r.end - 1];
+                let close_at = start + total - 1;
+                let close = &self.lines[close_at];
                 assert!(
                     close.trim_start().starts_with('}'),
-                    "node {c} spans {r:?}, so line {} is its closing line, \
-                     but that line reads {close:?}",
-                    r.end - 1
+                    "node {n} closes at line {close_at}, but that line \
+                     reads {close:?}"
                 );
                 assert_eq!(
-                    indent_of(r.end - 1),
-                    indent_of(r.start),
-                    "node {c}'s closing line {} is indented differently from \
-                     its opening line {}: {:?} vs {:?}",
-                    r.end - 1,
-                    r.start,
-                    close,
-                    self.lines[r.start]
+                    indent_of(close_at),
+                    indent_of(start),
+                    "node {n}'s closing line {close_at} is indented \
+                     differently from its opening line {start}: {close:?} vs {:?}",
+                    self.lines[start]
                 );
             }
 
-            cur = self.tree[c].doc_next;
+            stack.extend(kids.into_iter().rev());
         }
-    }
-
-    /// Spec 0186 G3: the incremental repair must be bit-identical to the
-    /// full rebuild it replaced. Redoes the rebuild from scratch and
-    /// compares, leaving the from-scratch result in place (which the
-    /// assertions prove is the same one).
-    ///
-    /// Not reachable from a release build — like `unpruned_walk` (spec
-    /// 0183), this is an equivalence that nothing weaker is worth
-    /// asserting, because the failure mode is silent: a stale map entry
-    /// resolves to a live node at the wrong line and simply navigates
-    /// somewhere unexpected.
-    #[cfg(test)]
-    fn assert_repair_matches_full_rebuild(&mut self) {
-        let repaired_headers = self.line_to_node.clone();
-        let repaired_footers = self.footer_line_to_node.clone();
-        let repaired_rows = self.visible_rows.clone();
-        // `rebuild_visible_rows` below bumps this, and it is an
-        // invalidation signal the tests are entitled to observe; a
-        // check must not be visible in what it checks.
-        let structural_version = self.structural_version;
-
-        self.line_to_node = vec![None; self.lines.len()];
-        self.footer_line_to_node = vec![None; self.lines.len()];
-        let mut cur = Some(self.first_node);
-        while let Some(c) = cur {
-            self.map_node_lines(c);
-            cur = self.tree[c].doc_next;
-        }
-        self.rebuild_visible_rows();
-        self.structural_version = structural_version;
-
-        assert_eq!(
-            self.line_to_node, repaired_headers,
-            "spec 0186 G3: the incrementally repaired `line_to_node` \
-             differs from a full rebuild"
-        );
-        assert_eq!(
-            self.footer_line_to_node, repaired_footers,
-            "spec 0186 G3: the incrementally repaired `footer_line_to_node` \
-             differs from a full rebuild — the usual cause is a stale entry \
-             left at an ancestor's *old* footer line"
-        );
-        assert_eq!(
-            self.visible_rows, repaired_rows,
-            "spec 0186 G3: the incrementally extended `visible_rows` \
-             differs from a full rebuild"
-        );
 
         // Spec 0203 S6. Compaction is only sound on a well-formed
         // arena, and its own tests can exercise a handful of fixtures at
@@ -2071,22 +2060,6 @@ impl App {
         // to hold: after a batch, when a pass is allowed to run.
         if let Err(e) = self.verify_arena() {
             panic!("spec 0203 S3: the arena is not well-formed after this batch: {e}");
-        }
-    }
-
-    /// Spec 0186 S3: (re-)insert `c`'s header line — and its footer line
-    /// when it has one — into `line_to_node`/`footer_line_to_node`.
-    ///
-    /// See `App::new`'s matching build site (spec 0142 fix) for why the
-    /// footer test is on the line span rather than on `first_child`.
-    fn map_node_lines(&mut self, c: usize) {
-        let (start, end) = {
-            let r = &self.tree[c].span.text_range;
-            (r.start, r.end)
-        };
-        self.line_to_node[start] = Some(c as u32);
-        if end - 1 > start {
-            self.footer_line_to_node[end - 1] = Some(c as u32);
         }
     }
 
@@ -2147,20 +2120,13 @@ impl App {
 
         let mut patches: Vec<Option<LinePatch>> = raw_patches.into_iter().map(Some).collect();
         let old_lines = std::mem::take(&mut self.lines);
-        // Spec 0188 S2: the two line maps ride along with `lines` through
-        // the same merge, so a splice's effect on them is the array
-        // operation it already is for the text. The replaced range
-        // becomes a run of `None` of the resolved content's length —
-        // `resolve_line_patch` has already flattened every nested patch
-        // by the time a top-level patch's content is handed over, so that
-        // length is known here — and `finalize_override_batch`'s three
-        // walks fill it immediately afterwards.
-        let old_headers = std::mem::take(&mut self.line_to_node);
-        let old_footers = std::mem::take(&mut self.footer_line_to_node);
+        // Spec 0210 S2: the two line maps used to ride along with `lines`
+        // through this same merge, the replaced range becoming a run of
+        // `None` for `finalize_override_batch`'s three walks to fill.
+        // Both are gone: a line's owner is derived from the tree's own
+        // counters now, so the text is the only array a splice moves.
         let old_len = old_lines.len();
         let mut new_lines = Vec::with_capacity(old_len);
-        let mut new_headers = Vec::with_capacity(old_len);
-        let mut new_footers = Vec::with_capacity(old_len);
 
         // Spec 0186 S1/G2: consume the old buffers instead of slicing
         // them. `extend_from_slice` on a `Vec<String>` *clones* every
@@ -2176,8 +2142,6 @@ impl App {
         // cursor, where the slicing version would at least have panicked;
         // the two asserts below keep both failure modes loud.
         let mut old_lines = old_lines.into_iter();
-        let mut old_headers = old_headers.into_iter();
-        let mut old_footers = old_footers.into_iter();
         let mut cursor = 0usize;
         for idx in top_level {
             let range = match &patches[idx].as_ref().unwrap().target {
@@ -2202,26 +2166,15 @@ impl App {
                 range.end
             );
             new_lines.extend(old_lines.by_ref().take(range.start - cursor));
-            new_headers.extend(old_headers.by_ref().take(range.start - cursor));
-            new_footers.extend(old_footers.by_ref().take(range.start - cursor));
-            let lines = Self::resolve_line_patch(&mut patches, &children_of, idx);
-            new_headers.resize(new_headers.len() + lines.len(), None);
-            new_footers.resize(new_footers.len() + lines.len(), None);
-            new_lines.extend(lines);
+            new_lines.extend(Self::resolve_line_patch(&mut patches, &children_of, idx));
             // Discard the lines this patch replaces.
             for _ in range.start..range.end {
                 old_lines.next();
-                old_headers.next();
-                old_footers.next();
             }
             cursor = range.end;
         }
         new_lines.extend(old_lines);
-        new_headers.extend(old_headers);
-        new_footers.extend(old_footers);
         self.lines = new_lines;
-        self.line_to_node = new_headers;
-        self.footer_line_to_node = new_footers;
     }
 
     /// Spec 0167: recursively resolves patch `idx` — splicing in every
@@ -2614,6 +2567,13 @@ impl App {
                 // merges two independently numbered local sequences —
                 // and is renumbered once, below.
                 sibling_ordinal: node.sibling_ordinal,
+                // Spec 0210 S1: sizes, not positions — so unlike
+                // `text_range` above they need no translation into the
+                // main arena's frame. The local `build_tree` already
+                // derived them, and a freshly spliced subtree is
+                // unfolded, so the two counts agree.
+                lines_total: node.lines_total,
+                lines_visible: node.lines_visible,
                 rendered_as: None,
             });
         }
@@ -2645,6 +2605,22 @@ impl App {
         self.tree[idx].span = new_self_span;
         self.tree[idx].first_child = self.tree[new_self_idx].first_child;
         self.tree[idx].last_child = self.tree[new_self_idx].last_child;
+        // Spec 0210 S1: `idx` takes over the whole re-rendered subtree, so
+        // it takes over its size too. Absorbing a packed run is no
+        // exception — the local render covers the entire run, which is
+        // exactly what `idx` now stands for. Left behind, `idx` would keep
+        // the size it had *before* the retype (a scalar's single line,
+        // typically) and every position after it would be out by the
+        // difference, silently.
+        self.tree[idx].lines_total = self.tree[new_self_idx].lines_total;
+        // The subtree under `idx` comes over unfolded, but `idx`'s own fold
+        // survives a retype (only its descendants' folds are scrubbed), and
+        // a folded node shows one line whatever is beneath it.
+        self.tree[idx].lines_visible = if self.folded.contains(&idx) {
+            1
+        } else {
+            self.tree[new_self_idx].lines_visible
+        };
 
         // Packed sibling-merge pointer repair (spec 0135 G1): skip
         // `idx`'s sibling linkage past the absorbed run. `idx`'s own
@@ -2705,6 +2681,21 @@ impl App {
             }
         }
 
+        // Spec 0210 S3: the ancestors' sizes, and nothing else. This is
+        // the whole of what used to be `finalize_override_batch`'s three
+        // walks, and it belongs *here*, per splice, not there, once per
+        // batch: a batch splices many nodes, and the position every one of
+        // them is patched at is derived from these counts. Deferring the
+        // refresh to the end of the batch would leave the second splice
+        // reading the first splice's stale ancestors.
+        //
+        // O(depth), and it stops as soon as a node's counts come out
+        // unchanged. `idx`'s own counts were taken from the subtree just
+        // built, above.
+        if let Some(parent) = self.tree[idx].parent {
+            self.refresh_line_counts(parent);
+        }
+
         // Spec 0160 G2: no eager forward/ancestor `text_range` shift and
         // no `line_to_node`/`footer_line_to_node`/`rebuild_visible_rows`
         // rebuild here anymore — `self.pending_shift += delta` above
@@ -2718,7 +2709,7 @@ impl App {
         // immediately itself, exactly matching today's eager-splice
         // behavior for a single standalone splice.
         if self.override_batch_depth == 0 {
-            self.finalize_override_batch(idx);
+            self.finalize_override_batch();
         }
 
         // Spec 0142 G6.1: `idx` keeps its own tree-array identity across
@@ -2769,6 +2760,12 @@ impl App {
         // `pending_shift == 0` because the tree is already fully
         // reconciled from the previous batch.
         let mut old_span = self.tree[idx].span.clone();
+        // Spec 0210 S1: `span.text_range` is the *build-time* line range
+        // and nothing repairs it, so re-derive it from the counters
+        // before either caller reads it. Both of them want the line
+        // range as it is right now — the preview to pick the rows its
+        // overlay stands in for, the splice to know what it replaces.
+        old_span.text_range = self.node_lines(idx);
 
         // Packed-record reconstruction (spec 0135 G1): the whole run is
         // one addressable record, so resolve `idx` to `siblings[0]` and
@@ -3011,14 +3008,17 @@ impl App {
         let tag = prototext_core::helpers::parse_wiretag(&self.blob, start);
         let len = prototext_core::helpers::parse_varint(&self.blob, tag.next_pos);
         let raw_end = len.next_pos + len.varint.unwrap_or(0) as usize;
-        let last = *siblings.last().expect("siblings never empty");
-        // Spec 0160 G2: every member of the run was already corrected by
-        // `render_overrides_inner`'s prologue (or, for a standalone
-        // call, is already reconciled since `pending_shift == 0` then) —
-        // read `text_range` directly, no further correction needed.
-        let text_range =
-            self.tree[siblings[0]].span.text_range.start..self.tree[last].span.text_range.end;
-        (start..raw_end, text_range)
+        // Spec 0210 S1: derived from the counters, not read off
+        // `span.text_range` (which is the build-time range and goes
+        // stale on the first splice). The members are consecutive
+        // siblings, so one descent for the leader plus their sizes is
+        // the whole run's extent.
+        let text_start = self.absolute_start(siblings[0]);
+        let text_len: usize = siblings
+            .iter()
+            .map(|&s| self.tree[s].lines_total as usize)
+            .sum();
+        (start..raw_end, text_start..text_start + text_len)
     }
 
     /// Origin for a brand-new override, targeting node `idx` — created

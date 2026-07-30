@@ -112,7 +112,10 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
     let a_idx_before = app.tree[node_idx]
         .first_child
         .expect("Node has at least one child");
+    // Spec 0210 S2: through `refresh_line_counts`, since a fold now moves
+    // the line counters the row walk reads.
     app.folded.insert(a_idx_before);
+    app.refresh_line_counts(a_idx_before);
 
     let assert_children = |app: &App, tag: &str| {
         let mut children = Vec::new();
@@ -177,19 +180,34 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
         app.heat_cue_for(line);
     }
 
-    // `line_to_node` must stay fully consistent with the doc chain:
-    // every reachable node via `doc_next` from `first_node`, and
-    // nothing else.
-    let mut expected: Vec<Option<u32>> = vec![None; app.lines.len()];
-    let mut cur = Some(app.first_node);
+    // Spec 0210 S2: line ownership must stay fully consistent with the
+    // doc chain. Every node reachable via `doc_next` from `first_node`
+    // owns its own header line, and nothing else does — which is what
+    // the `line_to_node` vector used to be asserted to be, now asked of
+    // the counters instead.
+    let mut owners: Vec<Option<u32>> = vec![None; app.lines.len()];
     let mut count = 0;
+    let mut cur = Some(app.first_node);
     while let Some(c) = cur {
-        expected[app.tree[c].span.text_range.start] = Some(c as u32);
+        let line = app.absolute_start(c);
+        assert_eq!(
+            app.line_pos(line).map(|p| (p.node, p.footer)),
+            Some((c, false)),
+            "line {line} must resolve to node {c}'s header"
+        );
+        owners[line] = Some(c as u32);
         count += 1;
         assert!(count <= app.tree.len(), "doc chain must not cycle");
         cur = app.tree[c].doc_next;
     }
-    assert_eq!(app.line_to_node, expected);
+    for (line, owner) in owners.iter().enumerate() {
+        if owner.is_none() {
+            assert!(
+                app.line_pos(line).is_some_and(|p| p.footer),
+                "line {line} is no node's header, so it must be a footer"
+            );
+        }
+    }
 }
 
 /// Overriding a plain scalar (string) field into an incompatible
@@ -691,7 +709,6 @@ fn deactivating_override_recomputes_the_pan_bound_against_the_post_splice_scroll
     // `scroll_offset`/`last_cursor_row` exactly as they'd be just
     // before the user deactivates the override.
     app.cursor = pad_a_idx;
-    app.rebuild_visible_rows();
 
     app.splice_override(inner_idx, Some("int32".to_string()), false, None)
         .expect("overriding a submessage field as int32 must still succeed (as a type mismatch)");
@@ -739,7 +756,7 @@ fn splice_override_on_a_group_field_keeps_the_group_prefix() {
     let (mut app, grp_idx) = group_type_fixture();
     app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false, None)
         .unwrap();
-    let header = &app.lines[app.tree[grp_idx].span.text_range.start];
+    let header = &app.lines[app.absolute_start(grp_idx)];
     assert!(
         header.contains("#@ group; NewGroup = 5"),
         "expected group; NewGroup = 5 in header, got: {header:?}"
@@ -768,21 +785,20 @@ fn splice_override_keeps_colors_aligned_after_a_header_length_change() {
     let value_idx = app.tree[grp_idx]
         .first_child
         .expect("NewGroup has at least one child");
-    let line_idx = app.tree[value_idx].span.text_range.start;
+    let line_idx = app.absolute_start(value_idx);
     let line = app.lines[line_idx].clone();
     let value_pos = line
         .find('5')
         .expect("value line must contain the scalar 5");
 
+    let rows = app.visible_row_count();
     let window: Vec<DisplayRow> = app
-        .visible_rows
-        .iter()
-        .map(|&l| DisplayRow::Committed(l))
+        .visible_window(0, rows)
+        .into_iter()
+        .map(|(l, _)| DisplayRow::Committed(l))
         .collect();
     let window_index = app
-        .visible_rows
-        .iter()
-        .position(|&l| l == line_idx)
+        .visible_row_of_line(line_idx)
         .expect("the value line is visible — nothing is folded in this fixture");
     app.refresh_window_styles(&window);
     let styles = &app.window_styles[window_index];
@@ -800,14 +816,14 @@ fn splice_override_keeps_colors_aligned_after_a_header_length_change() {
 #[test]
 fn splice_override_on_a_group_field_keeps_the_tag_ohb_modifier() {
     let (mut app, grp_idx) = group_type_fixture_with_tag_ohb();
-    let header_before = app.lines[app.tree[grp_idx].span.text_range.start].clone();
+    let header_before = app.lines[app.absolute_start(grp_idx)].clone();
     assert!(
         header_before.contains("tag_ohb: 1"),
         "fixture must exercise the anomaly modifier, got: {header_before:?}"
     );
     app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false, None)
         .unwrap();
-    let header = &app.lines[app.tree[grp_idx].span.text_range.start];
+    let header = &app.lines[app.absolute_start(grp_idx)];
     assert!(
         header.contains("#@ group; NewGroup = 5; tag_ohb: 1"),
         "expected group; NewGroup = 5; tag_ohb: 1 in header, got: {header:?}"
@@ -822,7 +838,7 @@ fn splice_override_on_a_wt_len_field_has_no_group_prefix() {
     let (mut app, inner_idx, _) = type_as_fixture();
     app.splice_override(inner_idx, Some("test.Outer".to_string()), false, None)
         .unwrap();
-    let header = &app.lines[app.tree[inner_idx].span.text_range.start];
+    let header = &app.lines[app.absolute_start(inner_idx)];
     assert!(
         header.contains("#@ Outer = 1"),
         "expected Outer = 1 in header, got: {header:?}"
@@ -843,11 +859,11 @@ fn splice_override_on_a_wt_len_field_has_no_group_prefix() {
 #[test]
 fn splice_override_preserves_the_header_line_indentation() {
     let (mut app, inner_idx, _) = type_as_fixture();
-    let start = app.tree[inner_idx].span.text_range.start;
+    let start = app.absolute_start(inner_idx);
     let indent_before = app.lines[start].len() - app.lines[start].trim_start().len();
     app.splice_override(inner_idx, Some("test.Outer".to_string()), false, None)
         .unwrap();
-    let header = &app.lines[app.tree[inner_idx].span.text_range.start];
+    let header = &app.lines[app.absolute_start(inner_idx)];
     let indent_after = header.len() - header.trim_start().len();
     assert!(
         indent_after > 0,
@@ -869,7 +885,7 @@ fn splice_override_reverting_a_group_field_restores_bare_group() {
     app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false, None)
         .unwrap();
     app.splice_override(grp_idx, None, false, None).unwrap();
-    let header = &app.lines[app.tree[grp_idx].span.text_range.start];
+    let header = &app.lines[app.absolute_start(grp_idx)];
     assert!(
         header.contains("#@ group"),
         "expected bare group in header, got: {header:?}"
@@ -1707,18 +1723,41 @@ fn preview_budget_fixture(field_count: usize) -> (App, usize) {
     preview_budget_fixture_bytes(&payload)
 }
 
-/// Number of `...` truncation markers (spec 0174 §S4) in `app.lines`.
-fn ellipsis_line_count(app: &App) -> usize {
-    app.lines.iter().filter(|l| l.trim() == "...").count()
+/// Number of `...` truncation markers (spec 0174 §S4).
+fn ellipsis_line_count(lines: &[String]) -> usize {
+    lines.iter().filter(|l| l.trim() == "...").count()
 }
 
-/// `app.lines` with each line's indentation and trailing `#@` annotation
+/// `lines` with each line's indentation and trailing `#@` annotation
 /// stripped, so the assertions below read against the prototext itself.
-fn bare_lines(app: &App) -> Vec<String> {
-    app.lines
+fn bare_lines(lines: &[String]) -> Vec<String> {
+    lines
         .iter()
         .map(|l| l.split("  #@").next().unwrap_or(l).trim().to_string())
         .collect()
+}
+
+/// Render `idx` as `target` the way a live preview actually does it —
+/// through `preview_override_highlight`, which holds the result as an
+/// overlay (spec 0185 S3) and never touches the document.
+///
+/// Spec 0210 S1: the truncation tests below used to *splice* the preview
+/// in. They cannot any more, and nothing in production ever did: a
+/// truncated render carries the `...` marker, which deliberately has no
+/// `NodeSpan` (spec 0174 §S4), so a document holding one has a body line
+/// that no node claims — and a node counting its own lines has nowhere to
+/// put such a line. The byte budget applies only under `is_preview`, and
+/// the one production caller of `splice_override` passes `false`, so the
+/// only way to reach that state was a test.
+fn preview_lines(app: &mut App, idx: usize, target: &str) -> Vec<String> {
+    app.override_target = Some(idx);
+    app.override_candidates = vec![(target.to_string(), None)];
+    app.override_highlight = 0;
+    app.preview_override_highlight();
+    match app.preview_overlay.as_ref() {
+        Some(o) => o.lines.clone(),
+        None => panic!("a preview of {target} must render: {}", app.message),
+    }
 }
 
 /// Spec 0174 (superseding spec 0163): a candidate type structurally
@@ -1729,7 +1768,7 @@ fn bare_lines(app: &App) -> Vec<String> {
 /// this at the *input*: a *live preview* (`is_preview: true`) hands the
 /// renderer at most that many interior bytes, so the decode, the render,
 /// the span count and the line count are all bounded together, and the
-/// splice completes (no hang/panic) with a visible `...` marker in place
+/// render completes (no hang/panic) with a visible `...` marker in place
 /// of the omitted remainder. A confirmed override (`is_preview: false`)
 /// is intentionally exempt — see the companion test below.
 #[test]
@@ -1737,19 +1776,23 @@ fn preview_on_a_pathological_candidate_is_bounded_by_the_byte_budget() {
     let field_count = App::OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT * 2;
     let (mut app, blob_idx) = preview_budget_fixture(field_count);
 
-    app.splice_override(blob_idx, Some("test.Empty".to_string()), true, None)
-        .expect("a pathological candidate splice must still complete");
+    // The span count is the quantity that reached a million on the real
+    // blob this spec came from, so it is asserted on directly rather than
+    // through the arena a splice would have grown from it.
+    let (_, _, rendered) = app
+        .render_node_as(blob_idx, Some("test.Empty"), true)
+        .expect("a pathological candidate render must still complete");
 
-    // The budget admits at most one node per two interior bytes, i.e.
-    // a quarter of `field_count` here — plus the document's own handful.
+    // The budget admits at most one node per two interior bytes, i.e. a
+    // quarter of `field_count` here.
     assert!(
-        app.tree.len() < field_count / 2,
-        "tree footprint must be bounded by the byte budget, not track the \
-         mis-parsed field count: tree.len()={} field_count={field_count}",
-        app.tree.len()
+        rendered.spans.len() < field_count / 2,
+        "the render's footprint must be bounded by the byte budget, not \
+         track the mis-parsed field count: spans={} field_count={field_count}",
+        rendered.spans.len()
     );
     assert_eq!(
-        ellipsis_line_count(&app),
+        ellipsis_line_count(&rendered.lines),
         1,
         "a truncated preview must show exactly one `...` marker"
     );
@@ -1775,7 +1818,7 @@ fn confirmed_override_is_not_truncated() {
         app.tree.len()
     );
     assert_eq!(
-        ellipsis_line_count(&app),
+        ellipsis_line_count(&app.lines),
         0,
         "a confirmed override must show no truncation marker"
     );
@@ -1784,26 +1827,24 @@ fn confirmed_override_is_not_truncated() {
 /// Spec 0174 §S2: `App::override_preview_byte_budget` is a plain field,
 /// not a fixed constant — setting it to a custom value (as `main.rs`'s
 /// `--override-preview-byte-budget` does) must actually change where a
-/// live-preview splice cuts, not just the default.
+/// live preview cuts, not just the default.
 #[test]
 fn preview_respects_a_custom_byte_budget() {
     let field_count = 50;
     let (mut app, blob_idx) = preview_budget_fixture(field_count);
     app.override_preview_byte_budget = 20;
 
-    app.splice_override(blob_idx, Some("test.Empty".to_string()), true, None)
-        .expect("a preview splice must complete under a custom budget");
+    let lines = preview_lines(&mut app, blob_idx, "test.Empty");
 
     // 20 bytes / 2 bytes per entry = 10 entries, well under the 50 the
     // untruncated payload would have produced.
     assert_eq!(
-        bare_lines(&app).iter().filter(|l| *l == "1: 1").count(),
+        bare_lines(&lines).iter().filter(|l| *l == "1: 1").count(),
         10,
         "a lower custom budget must be honored, not fall back to the \
-         default: lines={:?}",
-        app.lines
+         default: lines={lines:?}"
     );
-    assert_eq!(ellipsis_line_count(&app), 1);
+    assert_eq!(ellipsis_line_count(&lines), 1);
 }
 
 /// Spec 0174 G3: the cut is on the *input* bytes, so whatever survives
@@ -1828,13 +1869,12 @@ fn preview_renders_complete_nested_fields_up_to_the_cut() {
     // A multiple of 4 => the cut lands exactly on an entry boundary.
     app.override_preview_byte_budget = 20;
 
-    app.splice_override(blob_idx, Some("test.Wrapper".to_string()), true, None)
-        .expect("a preview splice must complete");
+    let lines = preview_lines(&mut app, blob_idx, "test.Wrapper");
 
-    // Everything below the two enclosing headers, minus the marker.
-    let interior: Vec<String> = bare_lines(&app)
+    // Everything below `blob`'s own header, minus the marker.
+    let interior: Vec<String> = bare_lines(&lines)
         .into_iter()
-        .skip(2)
+        .skip(1)
         .filter(|l| *l != "...")
         .collect();
     let mut expected: Vec<String> = Vec::new();
@@ -1842,12 +1882,10 @@ fn preview_renders_complete_nested_fields_up_to_the_cut() {
         expected.extend(["items {", "v: 1", "}"].map(str::to_string));
     }
     expected.push("}".to_string()); // `blob`'s own closing brace.
-    expected.push("}".to_string()); // the document root's.
     assert_eq!(
         interior, expected,
         "the surviving entries must keep their nesting and declared \
-         types: lines={:?}",
-        app.lines
+         types: lines={lines:?}"
     );
 }
 
@@ -1863,17 +1901,15 @@ fn preview_shows_no_malformity_marker() {
     // its varint payload.
     app.override_preview_byte_budget = 21;
 
-    app.splice_override(blob_idx, Some("test.Empty".to_string()), true, None)
-        .expect("a preview splice must complete on a mid-entry cut");
+    let lines = preview_lines(&mut app, blob_idx, "test.Empty");
 
     assert!(
-        !app.lines.iter().any(|l| l.contains("TRUNCATED_BYTES")
+        !lines.iter().any(|l| l.contains("TRUNCATED_BYTES")
             || l.contains("MALFORMED")
             || l.contains("UNEXPECTED_EOF")),
-        "no malformity marker may leak out of a preview: lines={:?}",
-        app.lines
+        "no malformity marker may leak out of a preview: lines={lines:?}"
     );
-    assert_eq!(ellipsis_line_count(&app), 1);
+    assert_eq!(ellipsis_line_count(&lines), 1);
 }
 
 /// Spec 0174 §S4: the `...` is the *last* thing inside the truncated
@@ -1885,20 +1921,17 @@ fn truncated_preview_ends_with_an_ellipsis_line() {
     let (mut app, blob_idx) = preview_budget_fixture(field_count);
     app.override_preview_byte_budget = 20;
 
-    app.splice_override(blob_idx, Some("test.Empty".to_string()), true, None)
-        .expect("a preview splice must complete");
+    let lines = preview_lines(&mut app, blob_idx, "test.Empty");
 
-    let marker = app
-        .lines
+    let marker = lines
         .iter()
         .position(|l| l.trim() == "...")
         .expect("a truncated preview must carry a `...` marker");
     assert_eq!(
-        app.lines[marker + 1].trim(),
+        lines[marker + 1].trim(),
         "}",
         "the marker must sit immediately before the node's closing brace: \
-         lines={:?}",
-        app.lines
+         lines={lines:?}"
     );
     // S4: the marker line carries no styles and no `NodeSpan` — it is
     // not selectable, not navigable, not part of any span range. Spec
@@ -1906,24 +1939,25 @@ fn truncated_preview_ends_with_an_ellipsis_line() {
     // `window_text`, so the highlighter never sees a row that is not
     // prototext; the row still exists, so the buckets stay one-to-one
     // with the window.
-    let window: Vec<DisplayRow> = app
-        .visible_rows
-        .iter()
-        .map(|&l| DisplayRow::Committed(l))
-        .collect();
-    let marker_row = app
-        .visible_rows
-        .iter()
-        .position(|&l| l == marker)
-        .expect("the marker line is visible");
+    let window: Vec<DisplayRow> = (0..lines.len()).map(DisplayRow::Overlay).collect();
     app.refresh_window_styles(&window);
     assert_eq!(app.window_styles.len(), window.len());
-    assert!(app.window_styles[marker_row].is_empty());
+    assert!(app.window_styles[marker].is_empty());
+    // Spec 0210 S1: asked of the render's own spans rather than of the
+    // document, which never holds a marker (see `preview_lines`).
+    let (_, _, rendered) = app
+        .render_node_as(blob_idx, Some("test.Empty"), true)
+        .expect("the same render must succeed twice");
+    // An enclosing message's span legitimately spans the marker; what may
+    // not exist is a node whose *own* header or footer that line is, since
+    // that is what makes a line selectable.
     assert!(
-        !app.tree
+        !rendered
+            .spans
             .iter()
-            .any(|n| n.span.text_range == (marker..marker + 1)),
-        "no tree node may claim the marker line"
+            .any(|s| s.text_range.start == marker || s.text_range.end == marker + 1),
+        "no span may own the marker line: {:?}",
+        rendered.spans
     );
 }
 
@@ -1934,14 +1968,12 @@ fn truncated_preview_ends_with_an_ellipsis_line() {
 fn untruncated_preview_has_no_ellipsis_line() {
     let (mut app, blob_idx) = preview_budget_fixture(10);
 
-    app.splice_override(blob_idx, Some("test.Empty".to_string()), true, None)
-        .expect("a preview splice must complete");
+    let lines = preview_lines(&mut app, blob_idx, "test.Empty");
 
     assert_eq!(
-        ellipsis_line_count(&app),
+        ellipsis_line_count(&lines),
         0,
-        "an untruncated preview must show no marker: lines={:?}",
-        app.lines
+        "an untruncated preview must show no marker: lines={lines:?}"
     );
 }
 
@@ -1957,24 +1989,22 @@ fn preview_of_a_long_string_stays_valid_utf8() {
     let (mut app, blob_idx) = preview_budget_fixture_bytes(payload.as_bytes());
     app.override_preview_byte_budget = 21;
 
-    app.splice_override(blob_idx, Some("string".to_string()), true, None)
-        .expect("a string preview must complete on a mid-character cut");
+    let lines = preview_lines(&mut app, blob_idx, "string");
 
-    let rendered = app
-        .lines
+    let value = lines
         .iter()
         .find(|l| l.contains('"'))
         .expect("the string value must be rendered");
     assert!(
-        rendered.contains(&"é".repeat(10)) && !rendered.contains(&"é".repeat(11)),
+        value.contains(&"é".repeat(10)) && !value.contains(&"é".repeat(11)),
         "the cut must fall back to the last character boundary at or \
-         before the budget: {rendered}"
+         before the budget: {value}"
     );
     assert!(
-        !rendered.contains("INVALID_STRING"),
-        "the cut must never leave a partial character behind: {rendered}"
+        !value.contains("INVALID_STRING"),
+        "the cut must never leave a partial character behind: {value}"
     );
-    assert_eq!(ellipsis_line_count(&app), 1);
+    assert_eq!(ellipsis_line_count(&lines), 1);
 }
 
 /// Spec 0174 §S3 `TruncShape::Never`: a singular numeric value is
@@ -1986,19 +2016,16 @@ fn preview_of_a_singular_varint_is_never_truncated() {
     app.override_target = Some(id_idx);
     app.override_preview_byte_budget = 1;
 
-    app.splice_override(id_idx, Some("int64".to_string()), true, None)
-        .expect("a scalar preview splice must complete");
+    let lines = preview_lines(&mut app, id_idx, "int64");
 
     assert_eq!(
-        ellipsis_line_count(&app),
+        ellipsis_line_count(&lines),
         0,
-        "a singular varint must never be truncated: lines={:?}",
-        app.lines
+        "a singular varint must never be truncated: lines={lines:?}"
     );
     assert!(
-        bare_lines(&app).iter().any(|l| l == "id: 5"),
-        "the value must survive intact: lines={:?}",
-        app.lines
+        bare_lines(&lines).iter().any(|l| l == "id: 5"),
+        "the value must survive intact: lines={lines:?}"
     );
 }
 
@@ -2012,6 +2039,14 @@ fn preview_of_a_singular_varint_is_never_truncated() {
 fn preview_child_spans_survive_the_length_prefix_shift() {
     let field_count = 8_200; // 16 400 interior bytes => 3-byte length varint.
     let (mut app, blob_idx) = preview_budget_fixture(field_count);
+    // Spec 0210 S1: the one truncation test that still has to splice,
+    // because `span_shift` is folded in by the splice and nowhere else.
+    // The resulting document holds the `...` marker, a line no node claims
+    // (spec 0174 §S4), which is precisely what the line counters cannot
+    // represent — so the counter check is turned off for it. Nothing in
+    // production reaches this state: the budget applies only under
+    // `is_preview`, and `render_overrides` splices with `false`.
+    app.verify_repair = false;
 
     app.splice_override(blob_idx, Some("test.Empty".to_string()), true, None)
         .expect("a preview splice must complete");
@@ -2153,7 +2188,7 @@ fn a_deeply_nested_splice_moves_its_ancestors_footers_without_leaving_stale_entr
     let mut ancestors: Vec<(usize, usize)> = Vec::new();
     let mut p = app.tree[target].parent;
     while let Some(pi) = p {
-        let r = &app.tree[pi].span.text_range;
+        let r = &app.node_lines(pi);
         if r.end - 1 > r.start {
             ancestors.push((pi, r.end - 1));
         }
@@ -2178,7 +2213,7 @@ fn a_deeply_nested_splice_moves_its_ancestors_footers_without_leaving_stale_entr
     );
 
     for &(ancestor, old_footer) in &ancestors {
-        let new_footer = app.tree[ancestor].span.text_range.end - 1;
+        let new_footer = app.node_lines(ancestor).end - 1;
         assert_ne!(
             new_footer, old_footer,
             "the fixture is not proving anything unless ancestor \
@@ -2222,7 +2257,7 @@ fn a_zero_delta_splice_still_repairs_the_line_maps() {
     );
     let mut cur = Some(app.first_node);
     while let Some(c) = cur {
-        let r = app.tree[c].span.text_range.clone();
+        let r = app.node_lines(c);
         assert_eq!(
             app.node_at_header_line(r.start),
             Some(c),
@@ -2250,14 +2285,14 @@ fn a_zero_delta_splice_still_repairs_the_line_maps() {
 /// whole document from it. It is the opposite: no patch means no text
 /// was replaced and no span was shifted, so there is nothing to
 /// rebuild. What this test pins is that the skip really is a no-op —
-/// lines, rows and both line maps must come out byte-identical.
+/// the lines, the visible rows and every line's owner must come out
+/// identical.
 #[test]
 fn a_batch_that_patches_nothing_leaves_the_document_intact() {
     let mut app = nested_any_fixture();
     let lines_before = app.lines.clone();
-    let rows_before = app.visible_rows.clone();
-    let headers_before = app.line_to_node.clone();
-    let footers_before = app.footer_line_to_node.clone();
+    let rows_before = app.visible_row_count();
+    let owners_before = line_owners(&app);
 
     // The fixture's own construction already ran this pass, so a second
     // one has nothing left to resettle.
@@ -2269,21 +2304,31 @@ fn a_batch_that_patches_nothing_leaves_the_document_intact() {
         "a second identical pass must queue no patches"
     );
     assert_eq!(app.lines, lines_before);
-    assert_eq!(app.visible_rows, rows_before);
-    assert_eq!(app.line_to_node, headers_before);
-    assert_eq!(app.footer_line_to_node, footers_before);
+    assert_eq!(app.visible_row_count(), rows_before);
+    assert_eq!(line_owners(&app), owners_before);
 }
 
-/// Spec 0186 S4 retains the prefix of `visible_rows` with a
-/// `partition_point`, which is only sound while the vector is sorted
-/// ascending. Spec 0185's overlay anchor does a `partition_point` on the
-/// same vector, so this is load-bearing in two places and worth pinning.
+/// Spec 0186 S4 retained the prefix of `visible_rows` with a
+/// `partition_point`, which was only sound while the vector was sorted
+/// ascending. Spec 0210 S2 deletes the vector: the visible rows are
+/// walked from the counters, so ascending order is a property of the
+/// walk rather than of a stored array. What is left worth pinning is
+/// that the walk stays within the spliced document and enumerates every
+/// row exactly once, in order.
 #[test]
-fn visible_rows_stays_sorted_across_a_splice() {
+fn the_visible_row_walk_stays_ordered_across_a_splice() {
+    fn walked(app: &App) -> Vec<usize> {
+        app.visible_window(0, app.visible_row_count())
+            .into_iter()
+            .map(|(l, _)| l)
+            .collect()
+    }
+
     let mut app = nested_any_fixture();
+    let before = walked(&app);
     assert!(
-        app.visible_rows.windows(2).all(|w| w[0] < w[1]),
-        "visible_rows must be sorted ascending before the splice"
+        before.windows(2).all(|w| w[0] < w[1]),
+        "the visible rows must come out ascending before the splice"
     );
 
     let target = app
@@ -2294,14 +2339,19 @@ fn visible_rows_stays_sorted_across_a_splice() {
     app.splice_override(target, None, false, None)
         .expect("collapsing the payload to raw bytes must succeed");
 
+    let after = walked(&app);
     assert!(
-        app.visible_rows.windows(2).all(|w| w[0] < w[1]),
-        "...and after it: {:?}",
-        app.visible_rows
+        after.windows(2).all(|w| w[0] < w[1]),
+        "...and after it: {after:?}"
     );
     assert!(
-        app.visible_rows.iter().all(|&l| l < app.lines.len()),
-        "no retained row may point past the spliced document"
+        after.iter().all(|&l| l < app.lines.len()),
+        "no row may point past the spliced document"
+    );
+    assert_eq!(
+        after.len(),
+        app.visible_row_count(),
+        "the walk must yield exactly as many rows as the counters claim"
     );
 }
 
@@ -2386,37 +2436,32 @@ fn a_splice_shifts_the_interior_of_the_subtrees_the_walk_prunes() {
         (tail_v, "tail.leaf.v", 6..7),
     ] {
         assert_eq!(
-            app.tree[node].span.text_range, want,
+            app.node_lines(node),
+            want,
             "{name} kept pre-splice line numbers: the delta reached the \
              pruned subtree's root but not its interior"
         );
     }
 
-    // And the symptom itself: the handle and the cue come from these two
-    // maps alone, so this is the assertion a user would recognize.
-    assert_eq!(app.line_to_node[4], Some(tail as u32), "tail's `{{` line");
+    // And the symptom itself: the fold handle and the heat cue come from
+    // the header/footer resolution alone, so this is the assertion a
+    // user would recognize.
+    for (line, node, name) in [
+        (4, tail, "tail's `{` line"),
+        (5, tail_leaf, "tail.leaf's `{` line"),
+        (6, tail_v, "tail.leaf.v's own scalar line"),
+    ] {
+        assert_eq!(app.node_at_header_line(line), Some(node), "{name}");
+    }
+    for (line, node, name) in [
+        (8, tail, "tail's `}` line"),
+        (7, tail_leaf, "tail.leaf's `}` line"),
+    ] {
+        assert_eq!(app.node_at_footer_line(line), Some(node), "{name}");
+    }
     assert_eq!(
-        app.footer_line_to_node[8],
-        Some(tail as u32),
-        "tail's `}}` line"
-    );
-    assert_eq!(
-        app.line_to_node[5],
-        Some(tail_leaf as u32),
-        "tail.leaf's `{{` line"
-    );
-    assert_eq!(
-        app.footer_line_to_node[7],
-        Some(tail_leaf as u32),
-        "tail.leaf's `}}` line"
-    );
-    assert_eq!(
-        app.line_to_node[6],
-        Some(tail_v as u32),
-        "tail.leaf.v is a scalar and must own its own line, with no footer"
-    );
-    assert_eq!(
-        app.footer_line_to_node[6], None,
+        app.node_at_footer_line(6),
+        None,
         "a scalar line must never carry a fold handle"
     );
 }
@@ -2623,8 +2668,7 @@ fn the_memory_guard_refuses_a_batch_with_no_headroom_left() {
 
 /// A refused batch must leave the document exactly as it was. The
 /// refusal happens before `render_overrides` touches anything, so the
-/// override entry stays active and visible in the management pane while
-/// the text keeps its previous rendering — recoverable, unlike being
+/// text keeps its previous rendering — recoverable, unlike being
 /// killed.
 #[test]
 fn a_refused_batch_leaves_the_document_untouched() {
@@ -2660,8 +2704,103 @@ fn a_refused_batch_leaves_the_document_untouched() {
     );
 
     // With headroom restored the very same batch goes through, so the
-    // guard refuses rather than corrupts.
+    // guard refuses rather than corrupts. The entry has to be activated
+    // again first: the refusal deactivated it (see
+    // `a_refused_override_is_left_deactivated`), which is the whole
+    // point — nothing stays marked as applied that was not applied.
     app.memory_available = Some(u64::MAX);
+    app.overrides.activate(
+        OverrideOrigin::Path {
+            path: "/1".to_string(),
+        },
+        Some("test.Blob".to_string()),
+    );
     app.render_overrides(root);
     assert_ne!(app.lines, before, "the batch runs once there is room");
+}
+
+/// Spec 0202 S4: the entry the user just activated does not stay marked
+/// active through a refusal.
+///
+/// The guard keeps refusing for the rest of the session (S2's
+/// bluntness), so an entry left active would not be a momentary
+/// inconsistency — it would claim, permanently and in the one place the
+/// user goes to check, a rendering the document is never going to get.
+/// The entry itself is kept: it is still listed, editable and savable,
+/// it just no longer says it is in effect.
+///
+/// What is restored is the state the document actually shows, not blanket
+/// deactivation: the root entry that *was* applied stays active, and a
+/// previously-active entry for the same origin is put back rather than
+/// left off by the activation that replaced it.
+#[test]
+fn a_refused_override_is_left_deactivated() {
+    use crate::override_pane::OverrideOrigin;
+
+    let (mut app, _head, _tail, _tail_leaf, _tail_v) = pruned_tail_fixture();
+    let root = app.first_node;
+    let origin = OverrideOrigin::Path {
+        path: "/1".to_string(),
+    };
+
+    // A first, applied override for that origin — the state the
+    // document is left showing.
+    app.overrides.activate(origin.clone(), None);
+    app.render_overrides(root);
+    let applied = app.lines.clone();
+
+    let per_node = (std::mem::size_of::<TreeNode>() + 64) as u64;
+    app.memory_available = Some(app.tree.len() as u64 * per_node * 2 - 2);
+
+    // Now retype it, which `activate` does by deactivating the raw entry
+    // and activating a typed one beside it.
+    app.overrides
+        .activate(origin.clone(), Some("test.Blob".to_string()));
+    app.render_overrides(root);
+
+    assert_eq!(app.lines, applied, "the refused batch rendered nothing");
+    assert!(
+        app.message.contains("left deactivated"),
+        "the refusal must say the override was not left claiming to \
+         apply: {}",
+        app.message
+    );
+
+    let active: Vec<(String, Option<String>)> = app
+        .overrides
+        .entries()
+        .iter()
+        .filter(|e| e.active)
+        .map(|e| (e.origin.label(), e.r#type.clone()))
+        .collect();
+    assert!(
+        !active.contains(&("/1".to_string(), Some("test.Blob".to_string()))),
+        "the refused override must not stay active: {active:?}"
+    );
+    assert!(
+        active.contains(&("/1".to_string(), None)),
+        "and the override the document does show must be active again: \
+         {active:?}"
+    );
+    assert!(
+        app.overrides
+            .entries()
+            .iter()
+            .any(|e| e.origin == origin && e.r#type.as_deref() == Some("test.Blob")),
+        "the entry itself is kept, just inactive"
+    );
+
+    // A refusal must not reach back past a batch that did render: the
+    // applied entry stays applied however many overrides are refused
+    // afterwards.
+    app.overrides
+        .activate(origin.clone(), Some("test.Blob".to_string()));
+    app.render_overrides(root);
+    assert!(
+        app.overrides
+            .entries()
+            .iter()
+            .any(|e| e.origin == origin && e.r#type.is_none() && e.active),
+        "the second refusal must restore the same state as the first"
+    );
 }

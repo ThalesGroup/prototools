@@ -51,20 +51,8 @@ fn check(app: &App, what: &str) {
 
 /// Everything a reader can observe, projected so that renumbering — the
 /// entire point of the operation — does not register as a difference.
-fn observable(
-    app: &App,
-) -> (
-    Vec<String>,
-    Vec<Shape>,
-    Vec<(usize, Shape)>,
-    Vec<(usize, Shape)>,
-) {
-    (
-        app.lines.clone(),
-        live_shapes(app),
-        shaped_map(app, &app.line_to_node),
-        shaped_map(app, &app.footer_line_to_node),
-    )
+fn observable(app: &App) -> (Vec<String>, Vec<Shape>, Vec<(usize, Shape, bool)>) {
+    (app.lines.clone(), live_shapes(app), line_owners(app))
 }
 
 /// `Shape` carries a `Range`, which is not `Ord`, so index-keyed
@@ -166,6 +154,7 @@ fn index_keyed_state_follows_the_node_it_names() {
     while let Some(i) = n {
         if app.tree[i].first_child.is_some() {
             app.folded.insert(i);
+            app.refresh_line_counts(i);
             folded_shapes.push(shape_of(&app, i));
             app.pending_heat_recheck.insert(i);
         }

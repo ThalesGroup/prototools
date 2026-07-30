@@ -80,7 +80,7 @@ fn a_packed_run_scores_one_cue_over_the_whole_record() {
     // to light up every line of the run.
     seed_range_heat_entry(&mut app, record.start, Some(50), 1, "int32", Some(10));
     for &e in &elems {
-        let line = app.tree[e].span.text_range.start;
+        let line = app.absolute_start(e);
         assert!(
             matches!(app.heat_cue_for(line), HeatDisplay::Cue(_)),
             "element line {line} must show the record's cue"
@@ -363,7 +363,7 @@ fn absent_when_no_scoring_graph_is_loaded() {
         app.ctx.graph.is_none(),
         "fixture must have no scoring graph"
     );
-    let header_line = app.tree[inner_idx].span.text_range.start;
+    let header_line = app.absolute_start(inner_idx);
     assert!(matches!(app.heat_cue_for(header_line), HeatDisplay::None));
 }
 
@@ -389,7 +389,7 @@ fn i_toggles_heat_cues_hidden() {
         "google.protobuf.DescriptorProto",
         Some(10),
     );
-    let header_line = app.tree[idx].span.text_range.start;
+    let header_line = app.absolute_start(idx);
 
     assert!(!app.heat_cues_hidden);
     let display = app.heat_cue_for(header_line);
@@ -590,7 +590,7 @@ fn second_call_for_the_same_line_is_a_pure_cache_hit() {
         "google.protobuf.DescriptorProto",
         Some(10),
     );
-    let header_line = app.tree[idx].span.text_range.start;
+    let header_line = app.absolute_start(idx);
 
     // Two calls, both cache hits (no graph loaded, so a miss would
     // short-circuit to `None` via `self.ctx.graph.as_ref()?`).
@@ -703,7 +703,7 @@ fn g3_the_startup_sweep_seeds_the_root_range() {
         Some(10),
         Tier::User,
     );
-    let header_line = app.tree[app.first_node].span.text_range.start;
+    let header_line = app.absolute_start(app.first_node);
     assert!(matches!(app.heat_cue_for(header_line), HeatDisplay::Cue(_)));
 }
 
@@ -810,7 +810,7 @@ fn heat_cue_for_still_pushes_a_request_when_heat_cues_hidden() {
     app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
     app.heat_cues_hidden = true;
     let idx = 0;
-    let header_line = app.tree[idx].span.text_range.start;
+    let header_line = app.absolute_start(idx);
 
     let cue = app.heat_cue_for(header_line);
 
@@ -897,7 +897,7 @@ fn heat_cue_for_pushes_at_most_one_request_while_pending() {
     let mut app = message_node_app();
     app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
     let idx = 0;
-    let header_line = app.tree[idx].span.text_range.start;
+    let header_line = app.absolute_start(idx);
 
     assert!(matches!(
         app.heat_cue_for(header_line),
@@ -941,7 +941,7 @@ fn heat_cue_for_pre_populated_cache_resolves_without_pushing() {
         "google.protobuf.DescriptorProto",
         Some(10),
     );
-    let header_line = app.tree[idx].span.text_range.start;
+    let header_line = app.absolute_start(idx);
 
     let cue = app.heat_cue_for(header_line);
     assert!(matches!(cue, HeatDisplay::Cue(_)));
@@ -979,7 +979,7 @@ fn heat_cue_for_resolves_once_a_real_worker_populates_the_cache() {
         blob,
         tx,
     ));
-    let header_line = app.tree[idx].span.text_range.start;
+    let header_line = app.absolute_start(idx);
 
     assert!(matches!(
         app.heat_cue_for(header_line),
@@ -1024,14 +1024,14 @@ fn the_cursor_node_asks_at_user_tier_and_other_visible_nodes_do_not() {
     let (under_cursor, elsewhere) = (items[0], items[1]);
     app.set_cursor(under_cursor);
 
-    app.heat_cue_for(app.tree[elsewhere].span.text_range.start);
+    app.heat_cue_for(app.absolute_start(elsewhere));
     assert_eq!(
         app.heat_worker.as_ref().unwrap().activity(),
         Some(Tier::Visible),
         "an ordinary visible line must not claim user attention"
     );
 
-    app.heat_cue_for(app.tree[under_cursor].span.text_range.start);
+    app.heat_cue_for(app.absolute_start(under_cursor));
     assert_eq!(
         app.heat_worker.as_ref().unwrap().activity(),
         Some(Tier::User),
@@ -1056,9 +1056,9 @@ fn moving_the_cursor_promotes_the_new_node_without_demoting_the_old() {
     let (first, second) = (items[0], items[1]);
 
     app.set_cursor(first);
-    app.heat_cue_for(app.tree[first].span.text_range.start);
+    app.heat_cue_for(app.absolute_start(first));
     app.set_cursor(second);
-    app.heat_cue_for(app.tree[second].span.text_range.start);
+    app.heat_cue_for(app.absolute_start(second));
 
     // Both are `User` now, so both outrank anything else queued, and
     // the most recently asked one is served first (S4a).
@@ -1068,7 +1068,7 @@ fn moving_the_cursor_promotes_the_new_node_without_demoting_the_old() {
 
     // Re-asking for the node the cursor has left now happens at
     // `Tier::Visible`, which must neither demote it nor re-rank it.
-    app.heat_cue_for(app.tree[first].span.text_range.start);
+    app.heat_cue_for(app.absolute_start(first));
     assert_eq!(
         app.heat_worker.as_ref().unwrap().activity(),
         Some(Tier::User)
