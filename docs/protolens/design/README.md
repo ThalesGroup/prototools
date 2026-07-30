@@ -133,6 +133,7 @@ own.
 | File | Covers |
 |---|---|
 | [rendering.md](rendering.md) | The five rendering stages (eager decode-to-text, whole-document highlight, arena build, per-frame viewport draw, override splice) plus the concurrent heat-cue pipeline; the three coordinate systems and the invariants tying them together; measured costs at scale |
+| [arena-and-batch.md](arena-and-batch.md) | Redesign brief for the eventual-OOM problem: what one splice and one override batch actually do, where the peak memory goes (measured), the constraints a redesign must respect, and the levers ranked by how much each removes |
 
 ## The `prototext_core` boundary
 

@@ -172,10 +172,41 @@ half-applied batch. It sets `self.message` and returns.
 and over-marking is safe by construction (spec 0183) — a refused batch
 therefore leaves marks that the next batch will honor.
 
-The override entry stays active and visible in the management pane
-while the document keeps its previous rendering. That inconsistency is
-deliberate: it is visible, it is recoverable by deactivating the entry,
-and it is strictly better than losing the session.
+### S4. A refused override is left deactivated
+
+The refusal must not leave an entry marked active. S2's bluntness means
+the guard goes on refusing for the rest of the session, so an entry left
+active would not be a momentary inconsistency: it would claim,
+permanently and in the one place the user goes to check, a rendering the
+document is never going to get.
+
+`OverrideCollection` therefore snapshots every entry's `active` flag at
+the start of each mutator a keystroke reaches (`activate`,
+`set_active`, `toggle_active`, `toggle_active_cascading`), and
+`render_overrides` calls `revert_active` on the refusal path — putting
+the flags back as they stood before the keystroke, and forcing an entry
+that did not exist then to inactive. The snapshot is dropped
+(`commit_active`) by every batch that actually renders, so a refusal can
+never reach back past one that did.
+
+Three details are load-bearing:
+
+- `activate_auto` does **not** snapshot. Its seeding runs inside a batch
+  that has already been allowed, so there is nothing to undo, and
+  snapshotting there would clone the whole collection once per seeded
+  entry.
+- Matching is by `(origin, type)`, not by index: `activate` re-sorts the
+  collection, so an entry's position can differ either side of the
+  change being undone.
+- Restoring the previous flags is not the same as blanket deactivation.
+  A retype activates a new entry *and* deactivates the one that was
+  applied; only putting both back describes the document.
+
+The entry itself is kept, not removed — it is still listed, editable and
+savable, it just no longer says it is in effect. `revert_active` reports
+whether anything moved, and the refusal message says so only when it
+did: a batch triggered by a rename, a rotation or a deletion has no
+activation to undo.
 
 ## Test plan
 
@@ -186,7 +217,11 @@ and it is strictly better than losing the session.
    `tree.len()` are unchanged across a refused `render_overrides`,
    `message` explains why, and the same batch then succeeds once
    headroom is restored (so the guard refuses rather than corrupts).
-3. `App::memory_available` (a `#[cfg(test)]` field, following the
+3. `a_refused_override_is_left_deactivated` — after a refused retype,
+   the new entry is present but inactive and the entry the document
+   *does* show is active again; a second refusal restores the same
+   state, so a refusal cannot reach back past a batch that rendered.
+4. `App::memory_available` (a `#[cfg(test)]` field, following the
    `unpruned_walk`/`verify_repair` precedent) stands in for
    `MemAvailable`, so the suite does not depend on how much memory the
    machine running it happens to have free.
@@ -217,6 +252,9 @@ nodes and another override could need that much again, but only
 4.4 GiB is free — restart protolens to reclaim what earlier
 overrides are still holding
 ```
+
+followed by ` (the override was left deactivated)` whenever S4 actually
+undid an activation.
 
 The document keeps its previous rendering across every refused batch,
 and `tree.len()` stays at 9 000 349 instead of climbing to 13 499 684.
