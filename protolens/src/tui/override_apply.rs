@@ -2498,18 +2498,16 @@ impl App {
             Some(ft) if ft != Type::Group && packed && decode::is_packable(ft) => new_lines.len(),
             _ => 1,
         };
-        for row in 0..patch_rows {
+        for line in new_lines.iter_mut().take(patch_rows) {
             let patched = match field_type {
                 Some(ft) if ft != Type::Group => {
-                    decode::patch_synthetic_field_name(&new_lines[row], &header_field_name)
+                    decode::patch_synthetic_field_name(line, &header_field_name)
                 }
-                None if renamed => {
-                    decode::patch_raw_field_name(&new_lines[row], field_number, &field_name)
-                }
+                None if renamed => decode::patch_raw_field_name(line, field_number, &field_name),
                 _ => None,
             };
             if let Some(patched) = patched {
-                new_lines[row] = patched;
+                *line = patched;
             }
         }
 
