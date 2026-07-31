@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # Pane: override selection pane
 
-*last verified: 2026-07-25*
+*last verified: 2026-07-31*
 
 ## Executive summary
 
@@ -36,65 +36,54 @@ reopening the pane on an already-typed node doesn't lose the user's
 place), then the top-ranked inferred candidate, then raw only as a last
 resort.
 
-### Live preview: cheap, provisional, and self-reverting
+### Live preview: an overlay, not a splice
 
-Every time the highlighted row changes, the pane immediately splices the
-highlighted candidate into the main pane using the same
-[`splice_override`](document-tree.md) primitive a real commit would use —
-but deliberately does *not* touch the override collection, and
-deliberately *invalidates* (rather than sets) the node's own `rendered_as`
-provenance after each preview splice. That second detail is what makes
-`Esc` able to cleanly revert: because a preview splice never claims to be
-the node's real resolved state, a later real render pass never
-mistakenly concludes "nothing changed, no need to re-splice" just because
-a previewed row happened to coincide with the node's actual effective
-type. Closing the pane (by any route — `Enter`, `Esc`, or toggling `t`
-again) always ends with one real `render_overrides` pass from the target
-node, which is what actually settles the display back to the collection's
-true state, live-preview history notwithstanding.
+**A preview does not splice** (spec 0185). Every time the highlighted row
+changes, the pane calls `render_node_as` — shared verbatim with the
+committed path, so the preview is byte-identical to the splice it stands
+in for — and holds the result in a read-only `PreviewOverlay`: a first
+row, a covered-row count, and the replacement lines. The draw path
+substitutes that block for the target's contiguous run of rows by
+arithmetic (`committed_row_of`).
 
-Each preview splice is called outside any `render_overrides` batch, so it
-is its own standalone, immediately self-finalizing batch — it pays the
-full [batch-finalization cost](override-collection.md) on every
-highlighted row, not just on commit; on a very large document this is the
-dominant cost of browsing candidates (see spec 0163's non-goals). To keep
-the splice itself affordable independent of that, preview splices alone
-truncate the candidate node's *interior bytes* to
-`OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT` before handing them to the
-renderer (spec 0174) — bounding the input bounds the decode, the render,
-the span count and the line count together, so a huge candidate subtree
-never gets materialized for a mere preview. The truncation rewrites the
-node's own length prefix so the surviving prefix is still well-framed,
-which is what lets it render as complete, correctly-typed, fully nested
-fields rather than one opaque bytes line; a truncated preview ends with a
-literal `...`. The render cache key includes an `is_preview` flag
-specifically so a truncated preview is never mistaken for, or reused as,
-a full confirmed render of the same range.
+Nothing in the document, the arena, the override collection or the
+node's `rendered_as` provenance is mutated. So rebuilding a preview is a
+plain overwrite, discarding one is a plain assignment, and a preview
+that fails to render leaves the committed document on screen with a
+message. Nothing downstream reads spliced state anyway: the candidate
+list is already computed, scoring runs against raw byte ranges, and
+confirming re-derives everything from the entry.
 
-Because the same node gets re-spliced repeatedly as the user browses
-candidates, the pane tracks a `preview_tree_watermark`: the tree's own
-length recorded on the *first* preview of a pane-open session. Every
-subsequent preview (a new highlighted row, or an automatic re-trigger as
-background candidate scoring streams in) first truncates the tree array
-— and the caches indexed by it — back to that watermark, discarding the
-previous preview's now-superseded subtree before splicing the new one in,
-so successive previews don't leak orphaned nodes indefinitely. The
-truncation invalidates the target node's own `first_child`/`last_child`
-(both pointed into the just-discarded range), which are simply nulled;
-its `doc_next` pointed into that range too — at the previous preview's
-own first child — and so must be *recomputed* to the post-subtree seam
-**before** the truncation runs, while the descendant set it is derived
-from still exists. Assuming instead that `doc_next` always points outside
-the subtree left a dangling index that the next splice's freshly-pushed
-nodes made valid again, wiring a cycle into the document-order chain; see
-[document-tree.md](document-tree.md)'s seam section for the full account.
+That is a stronger property than it sounds, and what it replaced is
+worth knowing. The preview used to splice speculatively and then unwind
+— a watermark into the then-growing tree array, truncated back to on
+every new highlighted row, plus hand-nulled child pointers, three
+`retain`s and a forced `rendered_as` reset. Every field pointing into
+the discarded range had to be repaired by hand, and each one missed was
+a live defect: a dangling index made valid again by the next splice's
+fresh nodes, an out-of-bounds line-map entry read by a later heat cue.
+The overlay has none of those obligations because it owns no tree state.
 
-The truncation also scrubs the two line-index maps (`line_to_node`,
-`footer_line_to_node`) of any entry at or past the watermark: an
-unrelated full `render_overrides` pass landing between two previews (e.g.
-background root-type resolution) may have rebuilt them against a tree
-that has since been truncated, and a later `heat_cue_for` lookup would
-otherwise feed an out-of-bounds index straight into an array index.
+Overlay rows have no node, and therefore no heat cue, no override hint,
+no fold marker and no selection.
+
+A preview additionally truncates the candidate node's *interior bytes*
+to `override_preview_byte_budget` before handing them to the renderer
+(spec 0174); a confirmed override never does. Bounding the input bounds
+the decode, the render, the span count and the line count together, so a
+huge candidate subtree never gets materialized for a mere preview. The
+truncation rewrites the node's own length prefix so the surviving prefix
+is still well-framed, which is what lets it render as complete,
+correctly-typed, fully nested fields rather than one opaque bytes line;
+a truncated preview ends with a literal `...`. That marker is not valid
+prototext, which is why the highlighter blanks the row it is on rather
+than parsing it. The render cache key includes an `is_preview` flag so a
+truncated preview is never mistaken for, or reused as, a full confirmed
+render of the same range.
+
+Closing the pane by any route (`Enter`, `Esc`, or toggling `t` again)
+drops the overlay; `Enter` additionally runs the real
+`render_overrides` pass that commits the choice.
 
 Live preview intentionally does not extend into nested Any/MessageSet
 auto-expansion within the previewed subtree — a preview shows the
@@ -128,8 +117,9 @@ statusline accent, not by the divider.
 
 ### Search operates on the FQDN, not the score
 
-The pane's own `/`/`?`/`n` search matches candidate FQDNs
-case-insensitively, independent of whichever sort mode is currently
-active — searching works the same whether the list is inferred-order or
-alphabetical, since it's a text match over the same underlying strings
-either way.
+The pane's own `/`/`?`/`n` search matches candidate FQDNs **smartcase**
+(spec 0195): an all-lowercase pattern matches case-insensitively, a
+pattern with any uppercase character matches exactly — vim's rule, and
+the same helper the main pane and the management pane use. It is
+independent of the sort mode, since it is a text match over the same
+underlying strings either way.

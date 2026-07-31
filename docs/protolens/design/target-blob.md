@@ -36,7 +36,7 @@ user-visible byte offset subtracts `wrapper_offset` to undo it.
 
 The same wrapping happens again, on a much smaller scale, every time an
 override is applied to some node deep in the tree ([see the splice
-mechanic](document-tree.md)): that node's own payload bytes are
+mechanic](arena-and-batch.md)): that node's own payload bytes are
 re-wrapped under its real field number and re-decoded independently. The
 top-level wrap and a mid-document override-triggered wrap are the same
 operation; the root is not special-cased.

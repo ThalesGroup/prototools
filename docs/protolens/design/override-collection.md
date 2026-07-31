@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # Asset: the override collection
 
-*last verified: 2026-07-25*
+*last verified: 2026-07-31*
 
 ## Executive summary
 
@@ -14,8 +14,8 @@ The override collection is the persistent record of every piece of schema
 knowledge the user has attached to this document — "node at this
 position is really this type," recorded durably enough to survive being
 saved to disk, reloaded against a re-decoded document, and re-applied.
-It is deliberately independent from the tree-splicing mechanism described
-in [document-tree.md](document-tree.md): the collection is *what the user
+It is deliberately independent from the splice mechanism described
+in [arena-and-batch.md](arena-and-batch.md): the collection is *what the user
 knows*, the splice pass is *how that knowledge gets drawn on screen*.
 Keeping the two separate is what allows the whole collection to be
 replaced wholesale (`:restore-overrides`) without protolens needing to
@@ -87,86 +87,69 @@ returns to zero — runs a single batch-finalization step.
 The counter's job is narrower than "re-entrancy counter" suggests: no
 call site anywhere invokes `render_overrides` from inside a walk (the
 recursion is `render_overrides_inner` calling *itself*, which never
-touches the counter), so in practice it only ever holds 0 or 1. What it
-actually encodes is a *mode flag* read by `splice_override`: non-zero
-means "you are being called from inside a walk, so defer finalization to
-that walk's own `render_overrides`," while zero means "you are a
-standalone splice — finalize immediately yourself." That second case is
-the live-preview path, and it is exactly why previewing a single
-candidate pays a full batch finalization. Reading the counter as genuine
-nesting support overstates what is exercised or tested.
+touches the counter), so it only ever holds 0 or 1. What it actually
+encodes is a *mode flag* read by `splice_override`: non-zero means
+"defer finalization to the active batch," zero means "you are a
+standalone splice — finalize immediately yourself."
+
+The zero case used to be the live preview, which is why it exists. Since
+spec 0185 made the preview an overlay, **production has exactly one
+`splice_override` caller and it is always inside a batch**; only tests
+reach the standalone path. Reading the counter as genuine nesting
+support overstates what is exercised.
 
 `render_overrides_inner` walks the tree in document order (pre-order,
 left to right) from a given starting node. At each node it:
 
-1. Applies any line-count correction already known to be owed to this
-   node from an earlier sibling's splice earlier in the *same* batch,
-   before doing anything else — so every subsequent step sees an
-   up-to-date `text_range`.
-2. Seeds an auto-expansion override (see
+1. Seeds an auto-expansion override (see
    [document-tree.md](document-tree.md)) if this is an unseeded
    Any/MessageSet candidate.
-3. Resolves the node's currently-applicable override (if any), by origin
+2. Resolves the node's currently-applicable override (if any), by origin
    priority, with auto-entry staleness demotion applied, and falls back
    to the node's *natural* type — what the parent's own schema says this
    field's type should be — when no override applies at all. This
    fallback is what makes clearing an override behave as "revert to what
    the schema says," not "revert to raw."
-4. Compares the resolved target against the node's stored `rendered_as`
+3. Compares the resolved target against the node's stored `rendered_as`
    provenance, and calls `splice_override` only if they differ. As
-   described in [document-tree.md](document-tree.md), the splice itself
-   does not touch the rendered buffers or downstream `text_range`s
-   immediately — it queues a deferred line patch and adds to a
-   batch-wide running line-count total.
-5. Recurses into children — using the same recursion-gate widening for
+   described in [arena-and-batch.md](arena-and-batch.md), the splice
+   itself does not touch the rendered buffers — it queues a deferred
+   line patch.
+4. Recurses into children — using the same recursion-gate widening for
    Any/MessageSet candidates described in
-   [document-tree.md](document-tree.md) — carrying forward whatever
-   line-count correction this node's own splice (if any) owes to its
-   children, and accumulating each child's own growth so later siblings
-   and the node's own closing/footer line stay correct.
+   [document-tree.md](document-tree.md), and only where
+   `compute_descend_marks` says the rendering can change at all.
 
-Because step 4 is a cheap no-op check when nothing changed, calling
+Because step 3 is a cheap no-op check when nothing changed, calling
 `render_overrides` from the document root after *any* collection change
 (activation, deactivation, rename, kind rotation, wholesale collection
 replace) is always correct — it never re-splices anything that didn't
 actually change, so there's no need for callers to reason about which
 subset of the tree a given collection edit could have affected.
 
-### Batch finalization: one O(remaining document) pass, paid once per call
+### Batch finalization: the text, and nothing else
 
-Everything a splice defers — line-buffer materialization, and correcting
-every node whose `text_range` a splice's line-count delta invalidated —
-is settled in a single step, once, when the outermost `render_overrides`
-call (or a standalone splice such as a live-preview update, which is
-always its own one-node batch) is about to return:
+A splice defers exactly one thing — writing the rendered lines — and
+`finalize_override_batch` settles it once, when the outermost
+`render_overrides` call returns (or when a standalone splice finishes).
+It merges the batch's queued line patches into `lines` in a single pass,
+bumps `structural_version` so the read-ahead walk restarts, and
+re-clamps the pan. A batch that queued no patch at all returns
+immediately: no patch means no text was replaced, so there is nothing to
+repair.
 
-1. Flatten every queued line patch from this batch into the rendered
-   `lines`/`line_styles` buffers, in one pass proportional to the final
-   document length.
-2. If the batch's running line-count delta is non-zero, walk the
-   document-order chain (`doc_next`) forward from the end of the
-   outermost spliced node's own subtree to the end of the document,
-   shifting every node's `text_range` by that delta, and walk the
-   `parent` chain upward from the outermost spliced node correcting each
-   ancestor's own closing extent.
-3. Fully rebuild the `line_to_node`/`footer_line_to_node` lookup tables
-   by walking `doc_next` from the very first node.
-4. Reset the batch's running delta, and rebuild the visible-row cache.
+Line *counts* are already correct by that point. `splice_override` fixes
+its own target's and carries the change up its ancestors as it goes,
+because the rest of the batch derives its patch positions from them.
+Nothing below the splice needs touching, because no node stores a
+position — see [rendering.md](rendering.md).
 
-Steps 2 and 3 are each proportional to *the size of the document from the
-spliced node onward* — not to the size of what actually changed. This is
-paid once per `render_overrides` call regardless of how many nodes inside
-that call were actually spliced, which is a deliberate trade-off (see
-spec 0160): it is far cheaper than paying an O(document) correction after
-*every individual splice*, but it is not O(1) or O(change-size), and on a
-large document (order-of-a-million nodes) it is expensive enough to be
-felt directly — every live-preview update in
-[override-select-pane.md](override-select-pane.md) is its own standalone
-batch, so browsing candidates on such a document pays this full cost on
-every highlighted row, not just on commit. Spec 0163's own non-goals
-section flagged this exact cost as a known, deferred problem requiring a
-larger document-representation change to fix properly, rather than a
-targeted one.
+This is why the deferral exists at all: it makes a batch of splices cost
+one line-buffer rewrite instead of one per splice. What used to make the
+finalizer expensive was a second walk over *every node after the splice*
+fixing stored line numbers, plus a full rebuild of two line-index maps;
+both are gone, and with them the reason browsing candidates on a large
+document used to pay a whole-document cost per highlighted row.
 
 ### Persistence: YAML, hash-checked, root-preserving
 

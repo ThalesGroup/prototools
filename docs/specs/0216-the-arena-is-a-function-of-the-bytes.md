@@ -6,9 +6,9 @@ SPDX-License-Identifier: MIT
 
 # 0216 — the arena is a function of the bytes
 
-Status: draft — steps 1-8 implemented (everything but S10, moving the
-        walk off the main thread, which is pure scheduling)
-Implemented in: 2026-07-31 (steps 1-8)
+Status: implemented — S10 shipped in a weaker form than written, and
+        deliberately: see the note under S10
+Implemented in: 2026-07-31
 App: protolens
 Refs: docs/specs/0097-raw-recursive-lendel.md (the unknown-LEN cascade
         whose probe S14 bypasses),
@@ -697,6 +697,18 @@ lookup is arithmetic. That turns a memory fix into a performance one.
   Where inference is skipped (`--raw`, `--type`, no scoring graph) there
   is no second arm, but the walk still overlaps the descriptor load —
   the larger of the two anyway.
+
+  **What shipped, and why it is less than the above.** The walk runs on
+  the *calling* thread as the sweep's `meanwhile`
+  (`decode::resolve_root_type_and_arena`), which is after
+  `DescriptorContext::load`, not before it. Nothing is spawned, so the
+  sized-stack constraint does not arise — the walk keeps the main
+  thread's 8 MiB. Two things removed the reason to go further: spec
+  0217 gave the sweep a `meanwhile` hook that hides the walk for free,
+  and the descriptor load became lazy (`index.rkyv`), so the window
+  S10 wanted to overlap with is no longer seconds long. The residual is
+  the ~70 ms walk running serially under `--raw` and `--type`, where
+  there is no sweep to hide it. Not worth a thread.
 
 ### Consequences
 

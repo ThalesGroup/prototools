@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0187 — highlighting is a property of the viewport
 
-Status: draft
+Status: implemented (S1-S5; S6's measurement half was not written — see S6)
+Implemented in: 2026-07-27
 App: protolens
 Refs: docs/protolens/rendering-scaling-roadmap.md (S6),
       docs/protolens/rendering-flaws.md (P1, P3, P4, D4),
@@ -426,6 +427,14 @@ exactly what scrolling a hundred-line one costs.
 
 Therefore do **not** add a cache for `window_styles` in the first cut.
 Add the measurement instead:
+
+> **As implemented:** no cache was added — S6's actual directive holds.
+> The measurement was not written: `protolens/src/tui/tests/profiling.rs`
+> still has only the heat-cue workload, so test-plan items 9 and 10 are
+> unexercised and "scrolling is unaffected" remains an argument from the
+> Background table rather than a measurement of the shipped code. The
+> gate below therefore cannot fire on its own; a future scroll-latency
+> complaint is what would revive it.
 
 - Extend the existing profiling harness
   (`protolens/src/tui/tests/profiling.rs`) with a scroll workload: load

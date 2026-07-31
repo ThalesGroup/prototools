@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0201 — a hash inside a string is not a comment
 
-Status: draft
+Status: implemented
+Implemented in: 2026-07-28
 App: protolens (and reproto, which links the same grammar)
 Refs: docs/specs/0196-the-textproto-grammars-lexer-loses-tokens.md (the
         previous pass over the same forty lines of `grammar.js`, and the
@@ -154,4 +155,13 @@ the `string_escape` children disappear and escapes lose the distinct
 
 ## Measured outcome
 
-(to be filled in)
+S1 shipped verbatim: the three string-body tokens carry `prec(1)`
+(`grammar.js:208-209`, `237`) and nothing else in the grammar changed.
+The `#` inside a string colors as `@string`, the trailing annotation
+still colors as `@comment`, and spec 0196's escape tests are untouched.
+
+One trap worth keeping: `colorize`'s tests link the parser through
+`TREE_SITTER_TEXTPROTO_LIB_DIR`, a store path frozen when the nix-shell
+was entered. A shell older than the grammar change keeps compiling the
+old parser and reports these tests as failing; `nix-build -A ci`
+regenerates and passes.

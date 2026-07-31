@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # protolens — design
 
-*last verified: 2026-07-25*
+*last verified: 2026-07-31*
 
 ## Executive summary
 
@@ -34,29 +34,34 @@ reverse-engineering wire captures or debugging schema mismatches.
 
 protolens is a Rust binary crate (workspace member) built on `ratatui` +
 `crossterm`. `main.rs` is a `clap`-based CLI entry point with two modes: an
-interactive TUI session (the primary use case) and a non-interactive batch
-`extract` subcommand (spec 0123) that reuses the same decode/tree/override
-machinery headlessly.
+interactive TUI session (the primary use case) and a non-interactive
+`export` subcommand that reuses the same decode/tree/override machinery
+headlessly.
 
-At the top level, protolens is organized into seven single-purpose modules
-plus the `tui` module:
+At the top level:
 
 - `decode.rs` — turns a blob + optional descriptor pool into a
-  `Decoded` value: rendered text, per-line style hints, and a navigable
-  `TreeNode` arena. Owns the synthetic-wrapper trick that lets *any* byte
-  range (not just a real top-level message) be decoded as if it were a
-  message field, which is what makes overrides possible.
-- `extract.rs` — slices a node's own bytes (binary) or re-decodable text
-  back out of the document, independent of the tool's own display state
+  `Decoded` value: rendered lines, the node arena and the overlay over
+  it. Owns the synthetic-wrapper trick that lets *any* byte range (not
+  just a real top-level message) be decoded as if it were a message
+  field, which is what makes overrides possible.
+- `blob.rs` — the wrapped byte buffer and its wrapper offset.
+- `extract.rs` / `export_descriptor.rs` — slice a node's own bytes
+  (binary) or re-decodable text back out of the document, or emit a
+  synthetic schema for it, independent of the tool's own display state
   (fold, pan, etc.).
 - `override_pane.rs` — the persistent, YAML-serializable model of "what
-  the user has told protolens about the schema so far" — despite the name,
-  this is data, not UI (the UI lives in `tui/override_select.rs` and
-  `tui/manage_pane.rs`; `override` is a reserved word in Rust, hence the
-  file's name).
+  the user has told protolens about the schema so far" — despite the
+  name, this is data, not UI (the UI lives in `tui/override_select.rs`
+  and `tui/manage_pane.rs`; `override` is a reserved word in Rust, hence
+  the file's name).
 - `render_cache.rs` / (the `CandidateCache` half of `override_pane.rs`) —
   two structurally identical, byte-bounded MRU caches that make repeated
   re-rendering and re-scoring of the same byte range cheap.
+- `provenance.rs` — the interned `(type, origin)` pair a node records as
+  what it was last rendered as.
+- `sweep.rs` — the parallel root-type inference sweep and the stack-size
+  constant every scoring thread takes.
 - `colorize.rs` / `theme.rs` — syntax highlighting: a tree-sitter grammar
   parses protolens's own rendered text, and a theme layer maps the
   resulting roles to terminal colors with graduated true-color fallback.
@@ -66,8 +71,11 @@ plus the `tui` module:
   sibling files each own one pane's or one concern's behavior — the panes
   and input plumbing (`navigation`, `mouse`, `override_select`,
   `manage_pane`, `override_apply`, `key_dispatch`, `command_line`,
-  `render`, `event`, `neovim`) plus the background heat-cue subsystem
-  (`heat_worker`, `heat_cue`, `tiered`).
+  `render`, `event`, `neovim`), the document's own geometry
+  (`structure` for the arena's derived links, `lines` for line positions
+  derived from subtree sizes), the background heat-cue subsystem
+  (`heat_worker`, `heat_cue`, `tiered`), and `trace` — the only way to
+  instrument a TUI that owns the terminal.
 
 Two ideas recur throughout and are worth naming up front, since later
 scope files lean on both without re-explaining them:
@@ -114,7 +122,8 @@ own.
 |---|---|
 | [target-blob.md](target-blob.md) | The wrapped byte buffer, the synthetic-wrapper trick, payload extraction |
 | [descriptor-context.md](descriptor-context.md) | The descriptor pool, root-type autoinference, synthetic type registration, the `prototext_core`/`prototext_graph` boundary |
-| [document-tree.md](document-tree.md) | The `TreeNode` arena, document order vs. array order, the splice mechanic, Any/MessageSet auto-expansion |
+| [arena-and-batch.md](arena-and-batch.md) | The node arena: how it is built from the bytes alone, what level order buys, the superset property, the splice, and where the memory goes (measured) |
+| [document-tree.md](document-tree.md) | What the arena means to the rest of protolens: provenance and demotion detection, Any/MessageSet auto-expansion |
 | [override-collection.md](override-collection.md) | The override data model, origin/kind system, auto vs. manual entries, YAML persistence, the render-pass architecture |
 | [caches.md](caches.md) | The two MRU byte-bounded caches and why they exist |
 
@@ -133,7 +142,6 @@ own.
 | File | Covers |
 |---|---|
 | [rendering.md](rendering.md) | The five rendering stages (eager decode-to-text, whole-document highlight, arena build, per-frame viewport draw, override splice) plus the concurrent heat-cue pipeline; the three coordinate systems and the invariants tying them together; measured costs at scale |
-| [arena-and-batch.md](arena-and-batch.md) | Redesign brief for the eventual-OOM problem: what one splice and one override batch actually do, where the peak memory goes (measured), the constraints a redesign must respect, and the levers ranked by how much each removes |
 
 ## The `prototext_core` boundary
 
@@ -150,7 +158,7 @@ depends on exactly four things:
    buffer over `MAX_INDEXED_BUFFER` (511 MiB) rather than overflow the
    `u32` offsets its spans carry.
 2. `NodeSpan` — the flat, per-field record `decode_and_render_indexed`
-   emits, which `document-tree.md`'s arena is built over. 32 bytes, pinned
+   emits, which `arena-and-batch.md`'s overlay is built from. 32 bytes, pinned
    by a compile-time equality assertion (spec 0212); its byte offsets and
    line numbers are `u32`, and its "absent" fields use the named sentinels
    `NO_FQDN` and `NO_PACKED_RECORD` rather than `Option`.

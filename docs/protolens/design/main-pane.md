@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # Pane: main pane
 
-*last verified: 2026-07-19*
+*last verified: 2026-07-31*
 
 ## Executive summary
 
@@ -25,30 +25,39 @@ screen and how to draw them.
 
 ## Technical detail
 
-### Movement follows document order, not array order
+### Two movement granularities
 
-Because the tree's array is post-order (see
-[document-tree.md](document-tree.md)), every "next"/"previous" movement
-walks the explicit `doc_next`/`doc_prev` chain, never `index + 1`. Two
-distinct movement granularities exist side by side: plain
-document-order stepping (`j`/`k`), which passes through every visible
-descendant of a container before reaching its next sibling, and
-sibling-skip movement (`J`/`K`), which jumps directly to the next/previous
-node sharing the same parent — the more useful move once a subtree has
-already been inspected once. Both respect fold state identically: a
-folded node's descendants are simply never visited by either.
+Plain document-order stepping (`j`/`k`) passes through every visible
+descendant of a container before reaching its next sibling;
+sibling-skip movement (`J`/`K`) jumps directly to the next/previous node
+sharing the same parent — the more useful move once a subtree has been
+inspected. Both respect fold state identically: a folded node's
+descendants are simply never visited by either.
+
+Neither is a pointer chase. The arena is in level order, so a sibling is
+`idx ± 1` bounded by the parent's child block, and a document-order step
+is `tui/lines.rs`'s `next_visible`/`prev_visible` — O(1), carrying the
+absolute line with it. See [arena-and-batch.md](arena-and-batch.md).
 
 ### Fold state is a `HashSet`, visibility is derived
 
-Folding doesn't remove or hide anything in the tree itself — it only adds
-a node's index to a `folded` set. A separate "visible rows" list is
-recomputed from that set (and only from that set, not on every frame)
-whenever fold state actually changes; the render loop always draws from
-this precomputed list rather than re-deriving visibility per frame. A
-node's own opening line stays visible even when it's folded (with a fold
-marker and a truncated "one-line summary" of its contents), which is what
-keeps the fold-indicator gutter meaningful — folding a node changes how
-much of *its own* line is shown, never whether it appears at all.
+Folding doesn't remove or hide anything in the tree itself — it only
+adds a node's index to a `folded` set. Each node carries `lines_visible`
+alongside `lines_total`, so the number of rows a subtree draws with
+folds applied is already known and a fold toggle corrects only the
+folded node's own count and its ancestors'. There is no visible-row list
+to rebuild; a frame descends once to its first row and then steps.
+
+A node's own opening line stays visible even when it's folded — it gains
+a `{ ... }` collapse summary, and its glyph in the fold gutter flips.
+Folding a node changes how much of *its own* line is shown, never
+whether it appears at all.
+
+The gutter is a real left margin (spec 0193): `fold_margin_of` subsumes
+the line's own leading indentation into it, so a foldable line's first
+token lands in the same column as a non-foldable one's at the same
+depth. An all-blank row gets no margin, because padding it would only
+lengthen the row that horizontal panning measures against.
 
 ### Selection, copy, and the double-click distinction
 
@@ -103,6 +112,9 @@ grammar for that same textproto syntax. This means highlighting is
 entirely decoupled from the decode/override pipeline: any text protolens
 can render, it can highlight, with no per-override-kind special-casing
 needed in the highlighter itself. See `colorize.rs`/`theme.rs` for the
-highlighting pipeline's own internal structure, which this pane consumes
-via `render_line_spans` without needing to know how the roles were
-computed.
+highlighting pipeline's own internal structure.
+
+It is recomputed **per frame, for the window only** (spec 0187) — there
+is no stored per-line style buffer. The window has to be wrapped in a
+synthetic brace frame first, or tree-sitter's error recovery eats
+captures; see [rendering.md](rendering.md)'s stage 3.
