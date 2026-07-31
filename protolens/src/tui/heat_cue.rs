@@ -72,34 +72,120 @@ pub(super) enum HeatDisplay {
     Cue(HeatCue),
 }
 
+/// Not scored / not computed yet — the `None` of both halves below.
+const UNSCORED: i32 = i32::MIN;
+/// Scored, but every candidate was vetoed (`best_score`) or the current
+/// type is vetoed / unresolvable (`current`).
+const VETOED: i32 = i32::MIN + 1;
+/// The most negative *real* score representable. Clamping to this
+/// rather than to `i32::MIN` is load-bearing (spec 0220 S2): a score
+/// that saturated onto a sentinel would read back as "not scored",
+/// `settled()` would answer `false` forever, and `App::prefetch_step`'s
+/// skip would stop firing — the node would be re-scored on every worker
+/// progress event.
+pub(super) const SCORE_FLOOR: i32 = i32::MIN + 2;
+
 /// Per-node heat-cue resolution state (spec 0154 G4), parallel to
 /// `App::tree` (`App::heat_states`) — `best` (from the range's window
 /// sweep) and `current` (the current type's exact score) each arrive
 /// independently, so each is its own pending-vs-available union rather
 /// than one all-or-nothing flag.
-#[derive(Clone, Copy, Default)]
+///
+/// Three plain numbers rather than the two nested `Option`s the
+/// accessors present (spec 0220 S1): as `Option<RangeHeatStats>` +
+/// `Option<Option<i64>>` this was 40 bytes, of which 14 were pure
+/// alignment padding, and there is one of these per arena slot — 4.7M
+/// of them on googleapis, so 190MB. The sentinel encoding stays inside
+/// this file; every call site keeps reading and writing the same
+/// `Option`s via `new`/`best`/`current`.
+#[derive(Clone, Copy)]
 pub(super) struct HeatState {
-    /// `None` — the range hasn't been scored at all yet. `Some(stats)`
-    /// — scored; `stats.best_score: None` means every candidate was
-    /// vetoed.
-    pub(super) best: Option<RangeHeatStats>,
-    /// `None` — the current type's score hasn't been computed yet.
-    /// `Some(None)` — computed, vetoed (or no resolvable current type
-    /// at all). `Some(Some(c))` — computed, score `c`.
-    pub(super) current: Option<Option<i64>>,
+    best_score: i32,
+    current: i32,
+    best_count: u32,
+}
+
+/// Spec 0220 S1. Pinned the way `decode.rs` pins the node slot, and in
+/// the production module for the same reason: a plain `cargo build`
+/// must catch it, since a byte added here is 4.7 MB on googleapis.
+const _: () = assert!(std::mem::size_of::<HeatState>() == 12);
+
+/// Written by hand, not derived (spec 0220 S3): all-zero would mean
+/// "scored, best score 0, current score 0", so every node in a fresh
+/// document would report `settled()` and show a stale cue.
+impl Default for HeatState {
+    fn default() -> Self {
+        Self {
+            best_score: UNSCORED,
+            current: UNSCORED,
+            best_count: 0,
+        }
+    }
 }
 
 impl HeatState {
+    pub(super) fn new(best: Option<RangeHeatStats>, current: Option<Option<i64>>) -> Self {
+        let (best_score, best_count) = match best {
+            None => (UNSCORED, 0),
+            Some(stats) => (
+                match stats.best_score {
+                    None => VETOED,
+                    Some(score) => clamp_score(score),
+                },
+                // Saturating, not truncating: a wrapped count could turn
+                // a real tie into `best_count == 0` and lose a cue.
+                stats.best_count.min(u32::MAX as usize) as u32,
+            ),
+        };
+        Self {
+            best_score,
+            current: match current {
+                None => UNSCORED,
+                Some(None) => VETOED,
+                Some(Some(score)) => clamp_score(score),
+            },
+            best_count,
+        }
+    }
+
+    pub(super) fn best(&self) -> Option<RangeHeatStats> {
+        match self.best_score {
+            UNSCORED => None,
+            VETOED => Some(RangeHeatStats {
+                best_score: None,
+                best_count: self.best_count as usize,
+            }),
+            score => Some(RangeHeatStats {
+                best_score: Some(score as i64),
+                best_count: self.best_count as usize,
+            }),
+        }
+    }
+
+    pub(super) fn current(&self) -> Option<Option<i64>> {
+        match self.current {
+            UNSCORED => None,
+            VETOED => Some(None),
+            score => Some(Some(score as i64)),
+        }
+    }
+
     /// No more per-frame rechecking needed — a computed property, not a
     /// stored tag (spec 0154 G4): either every candidate is vetoed (in
     /// which case `current` is irrelevant), or both `best` and `current`
     /// are individually known.
     pub(super) fn settled(&self) -> bool {
-        match self.best {
-            None => false,
-            Some(stats) => stats.best_score.is_none() || self.current.is_some(),
-        }
+        self.best_score != UNSCORED && (self.best_score == VETOED || self.current != UNSCORED)
     }
+}
+
+/// Clamped at *both* ends, unconditionally (spec 0220 S2). The positive
+/// side is not reachable under today's `EntryScore::score` coefficients,
+/// but a one-sided clamp would silently become wrong the day one of
+/// them changes, and the second compare is free next to the memory the
+/// narrowing saves.
+fn clamp_score(score: i64) -> i32 {
+    score.clamp(SCORE_FLOOR as i64, i32::MAX as i64) as i32
 }
 
 /// Small, fixed-size summary of a range's inference-candidate list
@@ -326,7 +412,7 @@ impl App {
                 None => Some(None),
                 Some(key) => caches.peek_current(start, key, tier),
             };
-            HeatState { best, current }
+            HeatState::new(best, current)
         };
 
         if state.settled() || self.heat_worker.is_some() {
@@ -353,7 +439,7 @@ impl App {
         };
         let graph = graph.graph();
         let range_bytes = &self.blob[range.clone()];
-        let state = if state.best.is_some() {
+        let state = if let Some(best) = state.best() {
             // Window already covered — only the current type's score is
             // missing (spec 0154 G3's cheap path, mirrored here).
             let key = current_key
@@ -364,10 +450,7 @@ impl App {
             caches
                 .current_score
                 .upsert((start, key.to_string()), score, Tier::Visible);
-            HeatState {
-                best: state.best,
-                current: Some(score),
-            }
+            HeatState::new(Some(best), Some(score))
         } else {
             // The whole budget, not the worker's share: this arm is only
             // reached when there is no worker, so nothing else in the
@@ -401,10 +484,7 @@ impl App {
                     .upsert((start, key.clone()), current_entry, Tier::Visible);
             }
             caches.complete = Some((range.clone(), candidates));
-            HeatState {
-                best: Some(stats),
-                current: Some(current_entry),
-            }
+            HeatState::new(Some(stats), Some(current_entry))
         };
 
         self.heat_states[idx] = state;
@@ -464,7 +544,7 @@ impl App {
             };
             drop(caches);
 
-            let state = HeatState { best, current };
+            let state = HeatState::new(best, current);
             self.heat_states[idx] = state;
             if state.settled() {
                 self.pending_heat_recheck.remove(&idx);
@@ -483,13 +563,13 @@ impl App {
 /// otherwise a genuine `Mismatch`/`Tie` cue. `Option`-aware throughout:
 /// a vetoed `current` is never conflated with a genuine `0` score.
 pub(super) fn heat_display(state: HeatState) -> HeatDisplay {
-    let Some(stats) = state.best else {
+    let Some(stats) = state.best() else {
         return HeatDisplay::Unknown;
     };
     let Some(best) = stats.best_score else {
         return HeatDisplay::None; // every candidate vetoed — no cue possible
     };
-    let Some(current) = state.current else {
+    let Some(current) = state.current() else {
         return HeatDisplay::PendingCurrent { best };
     };
     match current {

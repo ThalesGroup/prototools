@@ -4,7 +4,7 @@
 
 use super::super::heat_cue::{
     derive_stats, heat_display, heat_level, score_of, HeatCue, HeatCueKind, HeatDisplay, HeatState,
-    RangeHeatStats, HEAT_CUE_PREVIEW, HEAT_GLYPH,
+    RangeHeatStats, HEAT_CUE_PREVIEW, HEAT_GLYPH, SCORE_FLOOR,
 };
 use std::thread;
 
@@ -172,6 +172,97 @@ fn score_of_finds_by_fqdn_or_returns_none() {
 // ---------------------------------------------------------------------
 
 // ---------------------------------------------------------------------
+// HeatState's sentinel encoding (spec 0220)
+// ---------------------------------------------------------------------
+
+/// Spec 0220 S3: the derived `Default` would be all-zero, which reads
+/// back as "scored, best 0, current 0" — every node in a fresh document
+/// would report `settled()` and show a stale cue. This is the test that
+/// fails if `Default` is ever re-derived.
+#[test]
+fn a_fresh_heat_state_is_unsettled() {
+    let state = HeatState::default();
+    assert!(!state.settled());
+    assert!(state.best().is_none());
+    assert!(state.current().is_none());
+}
+
+/// Spec 0220 S2/S4: every shape a call site can build survives the
+/// sentinel encoding unchanged — including a score of `0`, which must
+/// not be confused with a vetoed half, and a negative score.
+#[test]
+fn a_heat_state_round_trips_every_shape() {
+    let bests = [
+        None,
+        Some(RangeHeatStats {
+            best_score: None,
+            best_count: 0,
+        }),
+        Some(RangeHeatStats {
+            best_score: Some(0),
+            best_count: 1,
+        }),
+        Some(RangeHeatStats {
+            best_score: Some(-7),
+            best_count: 3,
+        }),
+    ];
+    let currents = [None, Some(None), Some(Some(0)), Some(Some(-7))];
+    for best in bests {
+        for current in currents {
+            let state = HeatState::new(best, current);
+            let got = state.best();
+            match (best, got) {
+                (None, None) => {}
+                (Some(want), Some(got)) => {
+                    assert_eq!(got.best_score, want.best_score, "{:?}", want.best_score);
+                    // `best_count` is meaningless when every candidate
+                    // is vetoed, so it is only pinned when it isn't.
+                    if want.best_score.is_some() {
+                        assert_eq!(got.best_count, want.best_count);
+                    }
+                }
+                _ => panic!("best half changed shape"),
+            }
+            assert_eq!(state.current(), current);
+        }
+    }
+}
+
+/// Spec 0220 S2, the load-bearing one: a score that saturates must
+/// still read back as a *score*, never as the "not scored" sentinel.
+/// If it did not, `settled()` would answer `false` forever and
+/// `prefetch_step`'s skip would stop firing — the node would be
+/// re-scored on every worker progress event, which is a scheduling
+/// defect rather than the display-only one S2a bounds. This is the test
+/// that fails if the clamp is ever written against `i32::MIN`, or made
+/// one-sided.
+#[test]
+fn a_saturated_score_is_still_a_score() {
+    let floor = HeatState::new(
+        Some(RangeHeatStats {
+            best_score: Some(i64::MIN),
+            best_count: 1,
+        }),
+        Some(Some(i64::MIN)),
+    );
+    assert_eq!(floor.best().unwrap().best_score, Some(SCORE_FLOOR as i64));
+    assert_eq!(floor.current(), Some(Some(SCORE_FLOOR as i64)));
+    assert!(floor.settled());
+
+    let ceiling = HeatState::new(
+        Some(RangeHeatStats {
+            best_score: Some(i64::MAX),
+            best_count: 1,
+        }),
+        Some(Some(i64::MAX)),
+    );
+    assert_eq!(ceiling.best().unwrap().best_score, Some(i32::MAX as i64));
+    assert_eq!(ceiling.current(), Some(Some(i32::MAX as i64)));
+    assert!(ceiling.settled());
+}
+
+// ---------------------------------------------------------------------
 // heat_display (spec 0151 G5, spec 0138 G4/G9, spec 0154 G6 test plan
 // H-01..H-07)
 // ---------------------------------------------------------------------
@@ -180,15 +271,9 @@ fn score_of_finds_by_fqdn_or_returns_none() {
 /// state (there is no separate `[?/?]` state).
 #[test]
 fn h01_unknown_when_best_is_not_yet_known() {
-    let state = HeatState {
-        best: None,
-        current: None,
-    };
+    let state = HeatState::new(None, None);
     assert!(matches!(heat_display(state), HeatDisplay::Unknown));
-    let state = HeatState {
-        best: None,
-        current: Some(Some(5)),
-    };
+    let state = HeatState::new(None, Some(Some(5)));
     assert!(matches!(heat_display(state), HeatDisplay::Unknown));
     assert!(!state.settled());
 }
@@ -201,10 +286,7 @@ fn h02_none_when_every_candidate_is_vetoed() {
         best_score: None,
         best_count: 0,
     };
-    let state = HeatState {
-        best: Some(stats),
-        current: None,
-    };
+    let state = HeatState::new(Some(stats), None);
     assert!(matches!(heat_display(state), HeatDisplay::None));
     assert!(state.settled());
 }
@@ -217,10 +299,7 @@ fn h03_pending_current_shows_best_only() {
         best_score: Some(50),
         best_count: 1,
     };
-    let state = HeatState {
-        best: Some(stats),
-        current: None,
-    };
+    let state = HeatState::new(Some(stats), None);
     assert!(matches!(
         heat_display(state),
         HeatDisplay::PendingCurrent { best: 50 }
@@ -238,10 +317,7 @@ fn h04_mismatch_for_a_vetoed_current() {
         best_score: Some(0),
         best_count: 1,
     };
-    let state = HeatState {
-        best: Some(stats),
-        current: Some(None),
-    };
+    let state = HeatState::new(Some(stats), Some(None));
     let display = heat_display(state);
     assert!(matches!(
         display,
@@ -264,10 +340,7 @@ fn h05_mismatch_for_a_strictly_lower_current_score() {
         best_score: Some(51),
         best_count: 1,
     };
-    let state = HeatState {
-        best: Some(stats),
-        current: Some(Some(50)),
-    };
+    let state = HeatState::new(Some(stats), Some(Some(50)));
     let display = heat_display(state);
     assert!(matches!(
         display,
@@ -294,10 +367,7 @@ fn h06_tie_when_current_shares_the_top_score_with_others() {
         best_score: Some(50),
         best_count: 2,
     };
-    let state = HeatState {
-        best: Some(stats),
-        current: Some(Some(50)),
-    };
+    let state = HeatState::new(Some(stats), Some(Some(50)));
     assert!(matches!(
         heat_display(state),
         HeatDisplay::Cue(HeatCue {
@@ -313,10 +383,7 @@ fn h06_tie_when_current_shares_the_top_score_with_others() {
         best_score: Some(50),
         best_count: 3,
     };
-    let state = HeatState {
-        best: Some(stats),
-        current: Some(Some(50)),
-    };
+    let state = HeatState::new(Some(stats), Some(Some(50)));
     assert!(matches!(
         heat_display(state),
         HeatDisplay::Cue(HeatCue {
@@ -338,10 +405,7 @@ fn h07_none_for_a_unique_optimum() {
         best_score: Some(50),
         best_count: 1,
     };
-    let state = HeatState {
-        best: Some(stats),
-        current: Some(Some(50)),
-    };
+    let state = HeatState::new(Some(stats), Some(Some(50)));
     assert!(matches!(heat_display(state), HeatDisplay::None));
     assert!(state.settled());
 }
