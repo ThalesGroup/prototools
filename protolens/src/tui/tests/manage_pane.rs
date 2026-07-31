@@ -48,7 +48,7 @@ fn manage_pane_left_right_circulate_affected_fields() {
     assert_eq!(app.cursor, before, "zero matches must be a no-op");
 }
 
-///// Item 10 (2026-07-17 feedback): clicking an entry that is already
+/// Item 10 (2026-07-17 feedback): clicking an entry that is already
 /// the manage-pane's own highlighted entry (i.e. the "current"
 /// override) — anywhere outside the radio marker column, which keeps
 /// its own toggle-active click behavior — does the same as pressing
