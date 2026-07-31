@@ -2069,7 +2069,10 @@ fn a_partition_never_splits_a_state_group() {
         .map(|(i, r)| (i as u32, r.state_id.to_native()))
         .collect();
 
-    for n in 1..=8 {
+    // Past 6 there are more parts asked for than states to fill them, which
+    // is the case spec 0218 leans on: the target part count is a constant,
+    // so a small graph must clamp itself rather than yield empty parts.
+    for n in 1..=20 {
         let parts = walk::partition_roots(&g, n);
         assert!(parts.len() <= n, "n={n}: at most n parts");
         assert!(parts.iter().all(|p| !p.is_empty()), "n={n}: no empty parts");

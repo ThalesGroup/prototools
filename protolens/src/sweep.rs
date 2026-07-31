@@ -19,6 +19,7 @@
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::thread;
 
 use prototext_graph::build_scoring_graph::serial::ArchivedCompiledGraph;
@@ -56,6 +57,37 @@ use crate::decode::RankedCandidates;
 /// homes already, each time next to one of its users, and each time the
 /// other user silently missed it.
 pub(crate) const SCORING_THREAD_STACK_SIZE: usize = 16 * 1024 * 1024;
+
+/// How many parts the roots are cut into, independently of how many
+/// threads will walk them (spec 0218 S1).
+///
+/// A part's cost is how deep into the blob its candidates stay alive,
+/// which is neither its root count nor its group count nor knowable
+/// before the walk. So the partition cannot be balanced; it can only be
+/// made fine enough that the imbalance stops mattering, with threads
+/// taking a new part when they finish one.
+///
+/// **24 is a fit, not a derivation.** Measured on two corpora, each part
+/// timed alone and the 8-worker makespan simulated from those times:
+///
+/// | | googleapis | pdb |
+/// |---|---|---|
+/// | roots / state groups | 49 255 / 17 572 | 1 900 / 1 166 |
+/// | best part count | **24** (0.957 s) | 32-48 (0.019 s) |
+/// | this value costs | 0.957 s | 0.026 s |
+///
+/// googleapis chose 24 at every blob size from 3.2 to 25.7 MB and at 4,
+/// 8 and 12 workers alike; pdb prefers finer, but its whole sweep is
+/// 20 ms, so the 7 ms it gives up here is not a cost. The two differ 15×
+/// in group count and 23× in blob size, yet the optimal *part count*
+/// moves only 24 → 40 while the optimal *groups per part* moves 630 →
+/// 29 — which is why this is a part count and not a work-proportional
+/// target.
+///
+/// Why that should be so is not understood; see spec 0218's "What is not
+/// understood". A third corpus may move this number, which is why it is
+/// one constant in one place.
+pub(crate) const SWEEP_PARTS: usize = 24;
 
 /// The one ranking order (spec 0217 S2): highest score first, ties broken
 /// by FQDN ascending.
@@ -105,6 +137,27 @@ pub(crate) fn effective_jobs(requested: usize) -> usize {
     requested.clamp(1, available_cpus())
 }
 
+/// How many parts to ask [`partition_roots`] for, given the number of
+/// threads that will pull them (spec 0218 S1, S5).
+///
+/// Cut by a constant rather than by the thread count, because the point
+/// of the cursor is that a thread takes another part when it finishes
+/// one. `partition_roots` returns at most one part per state group, so a
+/// small graph clamps itself and needs no lower bound here; the `max`
+/// matters only where `--jobs` exceeds [`SWEEP_PARTS`].
+///
+/// One worker is the exception and takes one part. Cutting finer is
+/// faster on googleapis (6.96 → 5.53 s of total work) and *slower* on pdb
+/// (0.072 → 0.098 s), and the single-threaded path is the escape hatch
+/// for a loaded machine — it must not be a place where a corpus can lose.
+fn target_parts(workers: usize) -> usize {
+    if workers <= 1 {
+        1
+    } else {
+        workers.max(SWEEP_PARTS)
+    }
+}
+
 /// Score `pb` against every root in `graph`, ranked, using up to `jobs`
 /// threads (see [`effective_jobs`] — `jobs` is a ceiling).
 pub(crate) fn ranked(pb: &[u8], graph: &ArchivedCompiledGraph, jobs: usize) -> RankedCandidates {
@@ -133,13 +186,12 @@ pub(crate) fn ranked_with<T>(
     // Clamped here rather than only at the command line, so that every
     // path into the sweep is bounded by the machine whether or not its
     // caller remembered to ask.
-    let parts = partition_roots(graph, effective_jobs(jobs));
+    let workers = effective_jobs(jobs);
 
-    // Spec 0217 G5: one job — or one state group, or no roots at all — is
-    // the un-sharded path, on this thread, with nothing spawned. It is the
-    // escape hatch for a shared machine, so it must stay the code that was
-    // there before rather than a special case of the code that replaced
-    // it.
+    let parts = partition_roots(graph, target_parts(workers));
+
+    // One part — or none, on a graph with no roots — is the un-sharded
+    // path, on this thread, with nothing spawned (spec 0217 G5).
     if parts.len() <= 1 {
         let run = match parts.first() {
             Some(part) => rank(score_subset(pb, graph, &opts, part)),
@@ -148,15 +200,38 @@ pub(crate) fn ranked_with<T>(
         return (run, meanwhile());
     }
 
+    // Spec 0218 S2. `Relaxed` is sufficient: the counter's only job is to
+    // hand each index to exactly one thread, which `fetch_add` guarantees
+    // whatever the ordering. Everything else is either immutable and
+    // published before the scope opens (`pb`, `graph`, `parts`) or
+    // returned through `join`, which synchronizes already.
+    let cursor = AtomicUsize::new(0);
+    // Spec 0218 S3: threads, not parts, bound the spawn. Spawning one per
+    // part would reinstate the fixed assignment the cursor exists to undo.
+    let threads = workers.min(parts.len());
+
     let (runs, meanwhile_result) = thread::scope(|scope| {
-        let handles: Vec<_> = parts
-            .iter()
-            .map(|part| {
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                let cursor = &cursor;
+                let parts = &parts;
+                let opts = &opts;
                 thread::Builder::new()
                     .name("protolens-sweep".to_string())
                     .stack_size(SCORING_THREAD_STACK_SIZE)
-                    .spawn_scoped(scope, || rank(score_subset(pb, graph, &opts, part)))
-                    .expect("spawn sweep shard")
+                    .spawn_scoped(scope, move || {
+                        // Spec 0218 S4: one run per part, kept separate.
+                        // Concatenating a thread's parts would break the
+                        // sortedness `Merged` relies on.
+                        let mut runs = Vec::new();
+                        loop {
+                            let i = cursor.fetch_add(1, AtomicOrdering::Relaxed);
+                            let Some(part) = parts.get(i) else { break };
+                            runs.push(rank(score_subset(pb, graph, opts, part)));
+                        }
+                        runs
+                    })
+                    .expect("spawn sweep worker")
             })
             .collect();
 
@@ -164,9 +239,9 @@ pub(crate) fn ranked_with<T>(
 
         let runs: Vec<RankedCandidates> = handles
             .into_iter()
-            // A shard panicking is the walk panicking; re-raise it here
+            // A worker panicking is the walk panicking; re-raise it here
             // rather than letting a partial ranking look like an answer.
-            .map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+            .flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
             .collect();
         (runs, meanwhile_result)
     });
@@ -331,6 +406,59 @@ mod tests {
         let runs = vec![vec![c("z.Late", 7)], vec![c("a.Early", 7)]];
         let merged: RankedCandidates = Merged::new(runs).collect();
         assert_eq!(merged, vec![c("a.Early", 7), c("z.Late", 7)]);
+    }
+
+    /// Spec 0218 S1/S5: the part count comes from the constant, not from
+    /// the thread count — except at one thread, which keeps the
+    /// un-sharded path it has always had.
+    #[test]
+    fn the_part_count_is_a_constant_not_the_thread_count() {
+        assert_eq!(target_parts(0), 1, "no workers still means one part");
+        assert_eq!(target_parts(1), 1, "one worker takes one part");
+        for workers in 2..=SWEEP_PARTS {
+            assert_eq!(
+                target_parts(workers),
+                SWEEP_PARTS,
+                "{workers} workers should still cut {SWEEP_PARTS} parts"
+            );
+        }
+        // Past the constant the thread count takes over, so a big machine
+        // never has a thread with nothing to draw.
+        assert_eq!(target_parts(SWEEP_PARTS + 1), SWEEP_PARTS + 1);
+        assert_eq!(target_parts(96), 96);
+    }
+
+    /// Spec 0218 S4/G2: a thread that draws several parts contributes
+    /// several runs, and which thread drew what — hence the order the runs
+    /// arrive in — must not reach the ranking.
+    #[test]
+    fn the_merge_is_insensitive_to_run_order() {
+        let runs = vec![
+            vec![c("a.A", 90), c("a.D", 40)],
+            vec![c("a.B", 90), c("a.E", 30)],
+            vec![],
+            vec![c("a.C", 55), c("a.F", 30), c("a.H", -5)],
+        ];
+
+        let expected: RankedCandidates = Merged::new(runs.clone()).collect();
+
+        // Every rotation of the run list is a plausible completion order.
+        for shift in 1..runs.len() {
+            let mut rotated = runs.clone();
+            rotated.rotate_left(shift);
+            assert_eq!(
+                Merged::new(rotated).collect::<RankedCandidates>(),
+                expected,
+                "rotating the runs by {shift} changed the ranking"
+            );
+        }
+
+        let mut reversed = runs;
+        reversed.reverse();
+        assert_eq!(
+            Merged::new(reversed).collect::<RankedCandidates>(),
+            expected
+        );
     }
 
     /// The merge is lazy: taking two elements must not drain the runs
