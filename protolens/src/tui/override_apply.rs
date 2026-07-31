@@ -11,45 +11,6 @@ use prototext_core::helpers::{
 };
 use prototext_core::serialize::render_text::NodeSpan;
 
-/// What one arena slot really costs the process (spec 0202's memory
-/// guard, re-derived by spec 0213).
-///
-/// A node's own `size_of` is not the whole of it: three structures are
-/// sized to the arena alongside it. `heat_states` is a `Vec<HeatState>`
-/// and `descend` and `dead` are a `Vec<bool>` each.
-///
-/// This used to be a `STRING_ALLOWANCE` of 64 covering both those
-/// structures and the `String`s that hung off every node. Spec 0213
-/// interned the last of those strings (`rendered_as`, after 0212 did
-/// `type_fqdn`), so a `TreeNode` now owns nothing at all and the string
-/// half of the allowance names nothing. The design brief's annex, trap 2,
-/// said to take the constant to 0 at that point; that was wrong — the
-/// parallel arrays are still there and are not small — so the constant is
-/// gone in favor of the sum itself, which cannot drift when one of these
-/// types changes.
-///
-/// A function rather than an expression inside the guard because the
-/// guard's own tests need the same number, and duplicating the formula
-/// there is what made them fail this spec's slot change for a reason that
-/// had nothing to do with the guard.
-pub(super) fn arena_bytes_per_node() -> u64 {
-    (std::mem::size_of::<TreeNode>()
-        + std::mem::size_of::<heat_cue::HeatState>()
-        + 2 * std::mem::size_of::<bool>()) as u64
-}
-
-/// Round bytes to the largest unit that leaves a value at or above 1,
-/// for the memory-guard's refusal message.
-fn format_bytes(bytes: u64) -> String {
-    const GIB: u64 = 1 << 30;
-    const MIB: u64 = 1 << 20;
-    if bytes >= GIB {
-        format!("{:.1} GiB", bytes as f64 / GIB as f64)
-    } else {
-        format!("{} MiB", bytes / MIB)
-    }
-}
-
 /// TEMPORARY debug instrumentation for the arena-growth investigation.
 /// Counters are reset at the start of each `render_overrides` batch and
 /// reported at its end, under `PROTOLENS_TRACE`.
@@ -119,10 +80,6 @@ pub(super) struct RenderedAs {
     /// Discarded by the preview (spec 0185 N6: overlay rows have no
     /// identity); consumed by `splice_override` to build the new subtree.
     pub(super) spans: Vec<NodeSpan>,
-    /// Spec 0174 §S3: how far a truncated preview's interior moved left
-    /// because the rewritten LEN framing is narrower than the original.
-    /// Only `splice_override` needs it, to correct `spans`' byte ranges.
-    pub(super) span_shift: usize,
 }
 
 /// Unifies `FieldDescriptor` (regular field) and `ExtensionDescriptor`
@@ -208,10 +165,15 @@ pub(super) enum TruncShape {
 /// field — which is what keeps the cut inside the interior instead of
 /// overrunning the synthetic wrapper's single field.
 ///
-/// Returns `(truncated_bytes, span_shift)`, or `None` when nothing was
-/// cut. `span_shift` is how far the interior moved left because the
-/// rewritten length varint is narrower than the original; the caller adds
-/// it back when translating child spans into document coordinates.
+/// Returns the truncated bytes, or `None` when nothing was cut.
+///
+/// It used to return a `span_shift` alongside them — how far the
+/// interior moved left because the rewritten length varint came out
+/// narrower than the original — which the caller added back when
+/// translating child spans into document coordinates. Spec 0216 S12
+/// does no such translation: the spans a splice keeps take their byte
+/// ranges from the arena, which is expressed against the real blob and
+/// never saw this rewritten copy.
 ///
 /// Preview-only. A confirmed override must render completely, so its
 /// bytes never come through here (G5).
@@ -219,7 +181,7 @@ pub(super) fn truncate_interior(
     field_bytes: &[u8],
     budget: usize,
     shape: TruncShape,
-) -> Option<(Vec<u8>, usize)> {
+) -> Option<Vec<u8>> {
     if shape == TruncShape::Never {
         return None;
     }
@@ -237,14 +199,13 @@ pub(super) fn truncate_interior(
         let mut out = Vec::with_capacity(tag.next_pos + kept);
         out.extend_from_slice(&field_bytes[..tag.next_pos]);
         out.extend_from_slice(&payload[..kept]);
-        return Some((out, 0));
+        return Some(out);
     }
 
     if wire_type != WT_LEN {
         return None;
     }
     let len = parse_varint(field_bytes, tag.next_pos);
-    let original_prefix_len = len.next_pos - tag.next_pos;
     len.varint?;
     let payload = &field_bytes[len.next_pos..];
     let kept = cut_at(payload, budget, shape)?;
@@ -254,7 +215,7 @@ pub(super) fn truncate_interior(
     out.extend_from_slice(&field_bytes[..tag.next_pos]);
     out.extend_from_slice(&new_prefix);
     out.extend_from_slice(&payload[..kept]);
-    Some((out, original_prefix_len - new_prefix.len()))
+    Some(out)
 }
 
 /// Spec 0174 §S3: which cut rule a preview of this candidate needs.
@@ -374,43 +335,12 @@ impl App {
     /// once `idx`'s subtree is replaced, so they can be scrubbed from
     /// `self.folded`.
     pub(super) fn collect_descendants(&self, idx: usize, out: &mut Vec<usize>) {
-        let mut child = self.tree[idx].first_child();
+        let mut child = self.first_child(idx);
         while let Some(c) = child {
             out.push(c);
             self.collect_descendants(c, out);
-            child = self.tree[c].next_sibling();
+            child = self.next_sibling(c);
         }
-    }
-
-    /// The live node immediately following `idx`'s own subtree in document
-    /// order, found by walking forward from `start` (`idx`'s own pre-splice
-    /// `doc_next`) past every node in `old_descendants`, until the first
-    /// live node genuinely outside it (spec 0118's `after` seam —
-    /// `document-tree.md`'s `doc_next` invariant section). Shared between
-    /// `splice_override`'s own re-linking and `preview_override_highlight`'s
-    /// truncate-and-retry path: once `idx` has been given a multi-node
-    /// subtree by an earlier splice, `idx.doc_next` points to that
-    /// subtree's own first child (*inside* it, not outside), so any code
-    /// about to discard `idx`'s current subtree must recompute this before
-    /// discarding it, rather than assume `idx.doc_next` already points
-    /// outside (2026-07-25 bug: `preview_override_highlight`'s retry path
-    /// left `idx.doc_next` untouched across a truncate, leaving it stale
-    /// enough to be reused as an index inside the *next* preview's own
-    /// freshly-pushed subtree, forming a `doc_next` cycle).
-    pub(super) fn doc_next_after_subtree(
-        &self,
-        start: Option<usize>,
-        old_descendants: &HashSet<usize>,
-    ) -> Option<usize> {
-        let mut after = start;
-        while let Some(a) = after {
-            if old_descendants.contains(&a) {
-                after = self.tree[a].doc_next();
-            } else {
-                break;
-            }
-        }
-        after
     }
 
     /// Looks up `idx`'s own field on its parent's schema (spec 0119
@@ -425,7 +355,7 @@ impl App {
     /// field isn't declared at all) — the same failure mode
     /// `natural_type`/`field_name_for` both fall back from.
     pub(super) fn parent_field(&self, idx: usize) -> Option<ParentFieldOrExt> {
-        let parent = self.tree[idx].parent()?;
+        let parent = self.parent(idx)?;
         let fqdn = self.fqdns.get(self.tree[parent].span.type_fqdn)?;
         let field_number = self.tree[idx].span.field_number;
         let message = self.ctx.pool().get_message_by_name(fqdn)?;
@@ -542,7 +472,7 @@ impl App {
             count: usize,
         }
         let mut groups: Vec<Group> = Vec::new();
-        let mut child = self.tree[idx].first_child();
+        let mut child = self.first_child(idx);
         while let Some(c) = child {
             let field_number = u64::from(self.tree[c].span.field_number);
             match groups.iter_mut().find(|g| g.field_number == field_number) {
@@ -553,7 +483,7 @@ impl App {
                     count: 1,
                 }),
             }
-            child = self.tree[c].next_sibling();
+            child = self.next_sibling(c);
         }
 
         let mut fields = Vec::with_capacity(groups.len());
@@ -753,7 +683,7 @@ impl App {
     /// a safe fallback rather than a panic). Display-only: never stored
     /// on a tree node or an override entry (2026-07-18 feedback item 4).
     pub(super) fn message_set_item_display_fqdn(&self, idx: usize) -> Option<String> {
-        let parent = self.tree[idx].parent()?;
+        let parent = self.parent(idx)?;
         let message_set_fqdn = self.fqdns.get(self.tree[parent].span.type_fqdn)?;
         Some(decode::message_set_item_display_fqdn(message_set_fqdn))
     }
@@ -763,13 +693,13 @@ impl App {
     /// `auto_expand_type` to locate Any's `type_url` next to `value`, and
     /// MessageSet's `type_id` next to `message`.
     pub(super) fn find_sibling(&self, idx: usize, field_number: u64) -> Option<usize> {
-        let parent = self.tree[idx].parent()?;
-        let mut c = self.tree[parent].first_child();
+        let parent = self.parent(idx)?;
+        let mut c = self.first_child(parent);
         while let Some(ci) = c {
             if u64::from(self.tree[ci].span.field_number) == field_number {
                 return Some(ci);
             }
-            c = self.tree[ci].next_sibling();
+            c = self.next_sibling(ci);
         }
         None
     }
@@ -780,8 +710,7 @@ impl App {
     /// (or whether) it's currently rendered.
     pub(super) fn read_string_field(&self, idx: usize) -> Option<String> {
         let span = &self.tree[idx].span;
-        let payload =
-            extract::message_payload_range(&self.blob, &span.raw_range, span.packed_record_start);
+        let payload = extract::message_payload_range(&self.blob, &span.raw_range);
         String::from_utf8(self.blob[payload].to_vec()).ok()
     }
 
@@ -789,8 +718,7 @@ impl App {
     /// MessageSet's `type_id` value directly off the wire.
     pub(super) fn read_varint_field(&self, idx: usize) -> Option<u64> {
         let span = &self.tree[idx].span;
-        let payload =
-            extract::message_payload_range(&self.blob, &span.raw_range, span.packed_record_start);
+        let payload = extract::message_payload_range(&self.blob, &span.raw_range);
         prototext_core::helpers::parse_varint(&self.blob, payload.start).varint
     }
 
@@ -803,7 +731,7 @@ impl App {
     /// spec 0119 bug where every plain scalar LEN-wire field got
     /// incorrectly demoted to raw by being recursed into at all.
     pub(super) fn is_auto_expand_candidate(&self, idx: usize) -> bool {
-        let Some(parent) = self.tree[idx].parent() else {
+        let Some(parent) = self.parent(idx) else {
             return false;
         };
         let field_number = self.tree[idx].span.field_number;
@@ -832,7 +760,7 @@ impl App {
         if field_number == 3
             && self.tree[parent].span.type_fqdn == self.fqdns.id_of(decode::MESSAGE_SET_ITEM_FQDN)
         {
-            if let Some(grandparent) = self.tree[parent].parent() {
+            if let Some(grandparent) = self.parent(parent) {
                 return self.is_message_set_typed(grandparent);
             }
         }
@@ -847,7 +775,7 @@ impl App {
     /// unresolvable type). Consulted as a fallback tier between an
     /// explicit active override and `natural_type` in `render_overrides`.
     pub(super) fn auto_expand_type(&mut self, idx: usize) -> Option<String> {
-        let parent = self.tree[idx].parent()?;
+        let parent = self.parent(idx)?;
         let field_number = self.tree[idx].span.field_number;
 
         // Any's `value` (field 2): FQDN read from the sibling `type_url`
@@ -887,7 +815,7 @@ impl App {
         if field_number == 3
             && self.tree[parent].span.type_fqdn == self.fqdns.id_of(decode::MESSAGE_SET_ITEM_FQDN)
         {
-            let grandparent = self.tree[parent].parent()?;
+            let grandparent = self.parent(parent)?;
             if self.is_message_set_typed(grandparent) {
                 let type_id_idx = self.find_sibling(idx, 2)?;
                 let type_id = self.read_varint_field(type_id_idx)?;
@@ -986,7 +914,7 @@ impl App {
         if let Some(pos) = self.active_entry_with_label(path, OverrideKind::Path) {
             return Some(pos);
         }
-        let parent = self.tree[idx].parent()?;
+        let parent = self.parent(idx)?;
         let field = self.tree[idx].span.field_number;
         let parent_path = Self::parent_path_of(path);
         if let Some(pos) =
@@ -1202,22 +1130,6 @@ impl App {
             let t_marks = std::time::Instant::now();
             self.compute_descend_marks();
             let d_marks = t_marks.elapsed();
-            if let Some(refusal) = self
-                .available_memory_bytes()
-                .and_then(|available| self.override_batch_refusal(available))
-            {
-                // Spec 0202 S4: nothing is about to be rendered, so an
-                // entry the user just activated must not stay marked
-                // active — the guard goes on refusing for the rest of
-                // the session, so it would claim a rendering the
-                // document is never going to have.
-                self.message = if self.overrides.revert_active() {
-                    format!("{refusal} (the override was left deactivated)")
-                } else {
-                    refusal
-                };
-                return;
-            }
             if crate::tui::trace::enabled() {
                 use std::sync::atomic::Ordering::Relaxed;
                 probe::VISITS.store(0, Relaxed);
@@ -1250,9 +1162,6 @@ impl App {
                 probe::INNER_US.store(d_inner.as_micros() as usize, Relaxed);
                 probe::FINALIZE_US.store(t_finalize.elapsed().as_micros() as usize, Relaxed);
             }
-            // The flags now describe the document, so a later refusal
-            // must not reach back past this batch to undo them.
-            self.overrides.commit_active();
             if crate::tui::trace::enabled() {
                 let rss = std::fs::read_to_string("/proc/self/statm")
                     .ok()
@@ -1286,83 +1195,6 @@ impl App {
         }
     }
 
-    /// `MemAvailable` from `/proc/meminfo`, in bytes. `None` when it
-    /// cannot be read — the guard then does not fire at all, which is
-    /// the right failure mode: an inability to measure must never
-    /// block a user from an override.
-    pub(super) fn available_memory_bytes(&self) -> Option<u64> {
-        #[cfg(test)]
-        if let Some(bytes) = self.memory_available {
-            return Some(bytes);
-        }
-        if std::env::var_os("PROTOLENS_NO_MEMORY_GUARD").is_some() {
-            return None;
-        }
-        let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
-        let kb: u64 = meminfo
-            .lines()
-            .find_map(|l| l.strip_prefix("MemAvailable:"))?
-            .split_whitespace()
-            .next()?
-            .parse()
-            .ok()?;
-        Some(kb * 1024)
-    }
-
-    /// The refusal message for a batch that cannot safely run, or
-    /// `None` to let it proceed.
-    ///
-    /// The override arena is append-only: every splice appends a fresh
-    /// copy of its target's subtree and the superseded one is never
-    /// freed, so a document-wide override costs a whole second copy of
-    /// the document each time it is applied *or removed*. Measured on
-    /// googleapis (7 771 top-level records retyped by one `path:field`
-    /// origin): +4 499 335 nodes and +1.4 GiB per batch, with the live
-    /// set flat at 4 499 336 throughout. The third batch is
-    /// reproducibly killed by the OOM killer. Refusing an override
-    /// costs the user that override; being killed costs them the whole
-    /// session.
-    ///
-    /// The rule deliberately does *not* try to predict the batch. An
-    /// estimate built from the descent marks was written first and
-    /// discarded: `descend` marks every node whose rendering *could*
-    /// change, which at startup is the root alone — so it charged the
-    /// batch the whole document for a pass that in fact splices
-    /// nothing (measured: 5 278 324 lines projected, 0 nodes
-    /// appended). Predicting accurately means running
-    /// `resettle_node`'s own comparison for every marked node, i.e.
-    /// half the batch; over-predicting means refusing harmless work.
-    /// So the rule uses only quantities that are already exact.
-    ///
-    /// What it checks is headroom for one more batch: the worst case
-    /// is a document-wide override, which appends about as many nodes
-    /// as the arena already holds. If that would not fit in half of
-    /// `MemAvailable`, refuse. Half rather than all because the arena
-    /// is not the only thing a batch allocates — the line buffer, the
-    /// patches, and the decode's own working set grow too — and
-    /// because leaving the machine with no headroom invites the OOM
-    /// killer to take some *other* process instead.
-    ///
-    /// The cost of not predicting is that once the arena is large,
-    /// *every* override is refused, including a one-node one that
-    /// would have been harmless. That is the honest trade for a guard
-    /// that cannot itself misfire on a fresh document, and it
-    /// disappears once the arena stops accumulating garbage.
-    pub(super) fn override_batch_refusal(&self, available: u64) -> Option<String> {
-        let arena = (self.tree.len() as u64).saturating_mul(arena_bytes_per_node());
-        let budget = available / 2;
-        if arena <= budget {
-            return None;
-        }
-        Some(format!(
-            "override skipped: protolens is already holding {} of decoded nodes and \
-             another override could need that much again, but only {} is free — \
-             restart protolens to reclaim what earlier overrides are still holding",
-            format_bytes(arena),
-            format_bytes(available),
-        ))
-    }
-
     /// Spec 0183 S2: extends `self.descend` for a batch about to
     /// start. A node is a *target* if this pass could change how it
     /// renders; every target and every ancestor of one gets marked, so
@@ -1381,24 +1213,23 @@ impl App {
     /// assertion, just stale content.
     ///
     /// Over-marking is safe (it costs a wasted descent); under-marking
-    /// is the silent failure. The arena also still holds nodes
-    /// superseded by earlier splices, which are unreachable from the
-    /// walk but are scanned here; marking them only over-marks their
-    /// still-live ancestors.
+    /// is the silent failure. The arena also holds slots this
+    /// interpretation does not show, which are unreachable from the
+    /// walk; they are skipped here, since a vacant slot carries no span
+    /// to test.
     ///
     /// Spec 0188 S4/S5: this used to reallocate `descend` and walk the
     /// whole arena every batch, at a measured 35-44 ns/node — 17 ms on
-    /// a 382 k-node arena, and growing with the arena rather than with
-    /// the document, since the arena also holds every node superseded
-    /// by an earlier splice. Two of the three per-node target sources
+    /// a 382 k-node arena. Two of the three per-node target sources
     /// do not need re-examining: a node's auto-expand eligibility is a
     /// structural property that can only change by re-decoding the
     /// node (which produces a *different* node, scanned as fresh), and
     /// `rendered_as` only ever goes from `None` to `Some` in
     /// production. So the marks are kept and only the arena's
-    /// unexamined suffix is scanned — normally empty, since
-    /// `mark_fresh_subtree` already covered whatever the last batch
-    /// appended.
+    /// unexamined suffix is scanned. Spec 0216 makes the arena a fixed
+    /// size, so after the first batch that suffix is empty: the whole
+    /// scan happens once, and a splice's re-decoded slots are picked up
+    /// by `mark_fresh_subtree` instead.
     ///
     /// The exception, and the reason `start` is not simply the
     /// watermark, is an `FqdnField` origin: "field N of every message
@@ -1418,7 +1249,7 @@ impl App {
             .iter()
             .any(|e| matches!(e.origin, OverrideOrigin::FqdnField { .. }));
         let start = if has_fqdn_origin { 0 } else { scanned };
-        let targets = self.collect_descend_targets(start, self.tree.len(), None);
+        let targets = self.collect_descend_targets(start..self.tree.len(), None);
         self.mark_targets(targets);
     }
 
@@ -1435,20 +1266,25 @@ impl App {
     /// the blanket descent this spec exists to delete, and does strictly
     /// worse than the old gate: it visits plain scalar leaves too, and
     /// every fresh node has `rendered_as == None`, so `resettle_node`
-    /// re-splices every single one of them — each splice appending
-    /// another copy of its subtree to an append-only arena. It presents
-    /// as a hang at 100% CPU right after the background root-type
-    /// resolution lands, which is how it was found.
+    /// re-splices every single one of them. It presents as a hang at
+    /// 100% CPU right after the background root-type resolution lands,
+    /// which is how it was found.
     ///
     /// Marking instead keeps the bound honest: the cost is one pass over
     /// the fresh nodes, and only the ones that are genuinely targets get
     /// descended into.
-    fn mark_fresh_subtree(&mut self, base: usize, path: &str) {
-        if self.tree.len() <= base {
+    ///
+    /// Spec 0216 S12: "the fresh nodes" used to be the arena's new tail,
+    /// so a range said it. A splice no longer appends — it rewrites the
+    /// overlay on the slots those bytes already had — so the fresh set
+    /// has to be named as what it is, `idx`'s subtree.
+    fn mark_fresh_subtree(&mut self, idx: usize, path: &str) {
+        let mut fresh = Vec::new();
+        self.collect_descendants(idx, &mut fresh);
+        if fresh.is_empty() {
             return;
         }
-        self.descend.resize(self.tree.len(), false);
-        let targets = self.collect_descend_targets(base, self.tree.len(), Some(path));
+        let targets = self.collect_descend_targets(fresh.iter().copied(), Some(path));
         self.mark_targets(targets);
     }
 
@@ -1463,24 +1299,29 @@ impl App {
                     break;
                 }
                 self.descend[c] = true;
-                cur = self.tree[c].parent();
+                cur = self.parent(c);
             }
         }
     }
 
-    /// The nodes in `start..end` whose rendering this batch could
-    /// change. `under`, when set, restricts the path-shaped sources to
-    /// override origins at or under that path — used by
-    /// `mark_fresh_subtree`, where scanning every entry would defeat the
-    /// point of bounding the work by the splice.
-    fn collect_descend_targets(&self, start: usize, end: usize, under: Option<&str>) -> Vec<usize> {
+    /// The nodes among `nodes` whose rendering this batch could change.
+    /// `under`, when set, restricts the path-shaped sources to override
+    /// origins at or under that path — used by `mark_fresh_subtree`,
+    /// where scanning every entry would defeat the point of bounding
+    /// the work by the splice.
+    fn collect_descend_targets(
+        &self,
+        nodes: impl Iterator<Item = usize>,
+        under: Option<&str>,
+    ) -> Vec<usize> {
         let mut targets: Vec<usize> = Vec::new();
 
         // Spec 0188 S5: the guard is on the whole loop, not just on the
         // `FqdnField` test inside it. With the marks kept across
-        // batches (S4) `start == end` is the ordinary case, and then
+        // batches (S4) an empty `nodes` is the ordinary case, and then
         // there is nothing here to allocate, hash or walk at all.
-        if start < end {
+        let mut nodes = nodes.peekable();
+        if nodes.peek().is_some() {
             // Active `FqdnField` origins as a set, so the per-node test
             // below is one hash lookup rather than a scan of
             // `entries()` (spec 0183 G3). This is exact — every node
@@ -1501,7 +1342,12 @@ impl App {
                 })
                 .collect();
 
-            for i in start..end {
+            for i in nodes {
+                // Spec 0216 S12: a slot this interpretation does not
+                // show has no span to test, and nothing can reach it.
+                if !self.tree[i].is_rendered() {
+                    continue;
+                }
                 // Source 2: a node spliced under an override at least
                 // once must keep being revisited, so it can fall back
                 // to its natural type once that override goes away.
@@ -1517,7 +1363,7 @@ impl App {
                 // Source 1, the part that is not path-shaped.
                 if !fqdn_fields.is_empty() {
                     let field = u64::from(self.tree[i].span.field_number);
-                    if let Some(fqdn) = self.tree[i].parent().map(|p| self.tree[p].span.type_fqdn) {
+                    if let Some(fqdn) = self.parent(i).map(|p| self.tree[p].span.type_fqdn) {
                         if fqdn_fields.contains(&(fqdn, field)) {
                             targets.push(i);
                         }
@@ -1555,12 +1401,12 @@ impl App {
                     // rendering it governs are that parent's children
                     // bearing `field`.
                     if let Some(parent) = self.resolve_path(path) {
-                        let mut c = self.tree[parent].first_child();
+                        let mut c = self.first_child(parent);
                         while let Some(ci) = c {
                             if u64::from(self.tree[ci].span.field_number) == *field {
                                 targets.push(ci);
                             }
-                            c = self.tree[ci].next_sibling();
+                            c = self.next_sibling(ci);
                         }
                     }
                 }
@@ -1661,8 +1507,8 @@ impl App {
                 let is_message_set_item = self.tree[idx].span.field_number == 1
                     && u32::from(self.tree[idx].span.wire_type)
                         == prototext_core::helpers::WT_START_GROUP
-                    && self.tree[idx]
-                        .parent()
+                    && self
+                        .parent(idx)
                         .is_some_and(|p| self.is_message_set_typed(p));
                 self.overrides.activate_auto(origin.clone(), Some(t));
                 if is_message_set_item {
@@ -1677,14 +1523,18 @@ impl App {
                 }
             }
         }
-        let base = self.tree.len();
         let spliced_patch = self.resettle_node(idx, path, patch_scope);
         let spliced = spliced_patch.is_some();
         if crate::tui::trace::enabled() {
             use std::sync::atomic::Ordering::Relaxed;
             probe::VISITS.fetch_add(1, Relaxed);
             if spliced {
-                let n = self.tree.len() - base;
+                // Spec 0216 S12: the splice no longer appends, so the
+                // size of what it produced is the size of `idx`'s
+                // subtree rather than the arena's growth.
+                let mut sub = Vec::new();
+                self.collect_descendants(idx, &mut sub);
+                let n = sub.len();
                 probe::SPLICES.fetch_add(1, Relaxed);
                 probe::NODES.fetch_add(n, Relaxed);
                 if n >= 10_000 {
@@ -1700,23 +1550,15 @@ impl App {
         // Spec 0183 S3: the nodes the splice just appended did not
         // exist when the batch's marks were computed, so mark them now.
         if spliced {
-            self.mark_fresh_subtree(base, path);
+            self.mark_fresh_subtree(idx, path);
         }
-        let mut child = self.tree[idx].first_child();
-        let mut ordinal = 0usize;
-        let mut prev_child: Option<usize> = None;
-        while let Some(c) = child {
-            // Spec 0184 S4: the forward counterpart of
-            // `sibling_position`'s backward walk — ordinals count wire
-            // records, so a packed run's elements all share the ordinal
-            // its first element opened. Both directions go through
-            // `same_packed_record` so they cannot drift.
-            if !prev_child.is_some_and(|p| {
-                navigation::same_packed_record(&self.tree[p].span, &self.tree[c].span)
-            }) {
-                ordinal += 1;
-            }
-            prev_child = Some(c);
+        // Spec 0216 S22: a packed run is one slot, so a child's ordinal
+        // is just its position in the block. The `same_packed_record`
+        // merge this used to carry — the forward counterpart of spec
+        // 0184 S4's backward walk — had nothing left to merge.
+        for k in 0..self.child_count(idx) {
+            let c = self.nth_child(idx, k).expect("k is below the child count");
+            let ordinal = k + 1;
             // Spec 0183 G1: descend only where something can actually
             // change. This used to be four disjuncts, the first of
             // which was `span.is_message` — true of essentially every
@@ -1747,7 +1589,6 @@ impl App {
             if descend_here {
                 self.render_overrides_inner(c, &c_path, child_scope);
             }
-            child = self.tree[c].next_sibling();
         }
     }
 
@@ -1867,10 +1708,10 @@ impl App {
         // a real document, so start from the head of whatever sibling
         // chain `first_node` sits on.
         let mut top = self.first_node;
-        while let Some(p) = self.tree[top].parent() {
+        while let Some(p) = self.parent(top) {
             top = p;
         }
-        while let Some(s) = self.tree[top].prev_sibling() {
+        while let Some(s) = self.prev_sibling(top) {
             top = s;
         }
 
@@ -1883,7 +1724,7 @@ impl App {
         while let Some(n) = r {
             roots.push((n, start));
             start += self.tree[n].lines_total as usize;
-            r = self.tree[n].next_sibling();
+            r = self.next_sibling(n);
         }
         assert_eq!(
             start, n_lines,
@@ -1899,52 +1740,61 @@ impl App {
             let mut sum_total = 0usize;
             let mut sum_visible = 0usize;
             let mut child_start = start + 1;
-            let mut c = self.tree[n].first_child();
+            let mut c = self.first_child(n);
             while let Some(ci) = c {
                 kids.push((ci, child_start));
                 child_start += self.tree[ci].lines_total as usize;
                 sum_total += self.tree[ci].lines_total as usize;
                 sum_visible += self.tree[ci].lines_visible as usize;
-                c = self.tree[ci].next_sibling();
+                c = self.next_sibling(ci);
             }
 
-            // A node with children is bracketed, so it owns a header and
-            // a footer line. A childless one may still be bracketed (an
-            // empty message), which only its own count can say — but it
-            // can then be two lines and no more.
-            let want_total = if sum_total > 0 {
-                sum_total + 2
-            } else if total > 1 {
-                2
+            // Spec 0216: whether a node brackets its children is the
+            // node's own property, not something the child count can be
+            // asked about — a bracketed node may legitimately have none
+            // (an empty message), and a flat one may draw many rows (a
+            // packed record draws one per element) while having none.
+            let bracketed = self.tree[n].is_bracketed();
+            if bracketed {
+                // Header and footer, one line each, whatever is between.
+                assert_eq!(
+                    total,
+                    sum_total + 2,
+                    "node {n}'s lines_total is {total}, but its {} children \
+                     occupy {sum_total} lines",
+                    kids.len()
+                );
+                let want_visible = if self.folded.contains(&n) {
+                    1
+                } else {
+                    sum_visible + 2
+                };
+                assert_eq!(
+                    visible,
+                    want_visible,
+                    "node {n}'s lines_visible is {visible} but its children's \
+                     come to {sum_visible} (folded: {})",
+                    self.folded.contains(&n)
+                );
             } else {
-                1
-            };
-            assert_eq!(
-                total,
-                want_total,
-                "node {n}'s lines_total is {total}, but its {} children \
-                 occupy {sum_total} lines",
-                kids.len()
-            );
-            let want_visible = if self.folded.contains(&n) {
-                1
-            } else if want_total > 1 {
-                sum_visible + 2
-            } else {
-                1
-            };
-            assert_eq!(
-                visible,
-                want_visible,
-                "node {n}'s lines_visible is {visible} but its children's \
-                 come to {sum_visible} (folded: {})",
-                self.folded.contains(&n)
-            );
+                assert_eq!(
+                    sum_total,
+                    0,
+                    "flat node {n} owns all {total} of its rows, so it can \
+                     have no children, but it has {}",
+                    kids.len()
+                );
+                assert_eq!(
+                    visible, total,
+                    "flat node {n} cannot be folded, so its two counts must \
+                     agree"
+                );
+            }
 
             // The one check tied to the text rather than to the tree,
             // and the only thing that can catch a set of counts that is
             // self-consistent and still wrong.
-            if total > 1 {
+            if bracketed {
                 let open = &self.lines[start];
                 let code = open.split("  #@").next().unwrap_or(open).trim_end();
                 assert!(
@@ -1969,16 +1819,6 @@ impl App {
             }
 
             stack.extend(kids.into_iter().rev());
-        }
-
-        // Spec 0203 S6. Compaction is only sound on a well-formed
-        // arena, and its own tests can exercise a handful of fixtures at
-        // most. Checking here instead makes every override test in the
-        // suite — including the randomized sequences — a witness for the
-        // properties it depends on, at the one moment they are required
-        // to hold: after a batch, when a pass is allowed to run.
-        if let Err(e) = self.verify_arena() {
-            panic!("spec 0203 S3: the arena is not well-formed after this batch: {e}");
         }
     }
 
@@ -2196,18 +2036,21 @@ impl App {
     /// Background). This is what fixes task #34 (a stale `#@` type
     /// annotation surviving a retype) as a byproduct, for every node.
     ///
-    /// `idx` keeps its own tree-array identity (so `cursor`/`folded`/
-    /// back-jump state referencing it stays valid) — only its `span`
-    /// (`raw_range` excepted: the underlying bytes haven't moved) and its
-    /// children (old ones orphaned via `collect_descendants`, new ones
-    /// appended and stitched in) are replaced.
+    /// `idx` keeps its own slot (so `cursor`/`folded`/back-jump state
+    /// referencing it stays valid), and so does every node under it that
+    /// the new interpretation still shows — spec 0216 S12: the structure
+    /// belongs to the arena, which is a function of the bytes and does
+    /// not move when the type assignment changes. All that happens here
+    /// is that the overlay under `idx` is vacated and rewritten. There is
+    /// no local tree to translate, no pointer to repair, no slot to
+    /// abandon and nothing to compact — which is most of what this
+    /// function used to be.
     ///
-    /// For a packed-repeated element (`packed_record_start.is_some()`),
-    /// `idx` is first reassigned to `siblings[0]` — the packed run's own
-    /// receiving node (spec 0135 G1's "sibling merge"): every sibling
-    /// element sharing the same packed record is collapsed into this one
-    /// node, regardless of which specific element the caller invoked the
-    /// override on.
+    /// A packed run is one slot (S22), so the "sibling merge" spec 0135
+    /// G1 needed is likewise gone: `render_node_as` still resolves `idx`
+    /// to the run and widens `old_span` to its whole extent, but there
+    /// are no sibling nodes left to absorb.
+    ///
     /// `is_preview`: `true` from `preview_override_highlight`'s sole live-
     /// preview call site — caps the *interior bytes* handed to the
     /// renderer at `override_preview_byte_budget` (spec 0174). `false`
@@ -2222,52 +2065,17 @@ impl App {
         is_preview: bool,
         patch_scope: Option<usize>,
     ) -> Result<usize, String> {
-        // Spec 0203: this is the arena's only mutator — the only `tree.
-        // push` in the crate and the only producer of dead slots — so it
-        // is the one place that has to abandon a compaction pass in
-        // flight. Doing it here rather than in `render_overrides` is not
-        // a stylistic choice: the live preview splice (`override_select.
-        // rs`) reaches this function without going through a batch at
-        // all, and would otherwise leave the pass's cursors describing an
-        // arena that has since grown and lost nodes underneath them.
-        // Abandoning costs nothing but the scanning already done.
-        self.reset_compaction();
         // Spec 0185 S3: the "what does this node look like as `target`"
-        // half now lives in `render_node_as`, shared verbatim with the
-        // live preview — including the packed-record normalization,
-        // which is what reassigns `idx` to the run's leader and widens
-        // `old_span` to the whole run's extent (spec 0135 G1).
+        // half lives in `render_node_as`, shared verbatim with the live
+        // preview — including the packed-record normalization, which is
+        // what resolves `idx` to the run and widens `old_span` to the
+        // run's whole extent (spec 0135 G1).
         let (idx, old_span, rendered) = self.render_node_as(idx, target.as_deref(), is_preview)?;
         let RenderedAs {
             lines: new_lines,
             spans: new_spans,
-            span_shift,
+            ..
         } = rendered;
-
-        let is_packed = old_span.packed_record_start != NO_PACKED_RECORD;
-        // Packed sibling merge (spec 0135 G1): every sibling element of
-        // the same packed record is collapsed into `idx`. What remains
-        // here — after `render_node_as`'s own normalization — is only
-        // the pointer bookkeeping the splice itself needs.
-        let mut packed_next_sibling_of_run = None;
-        let mut packed_seam_after = None;
-        let mut packed_run_is_last_child = false;
-        let mut packed_orphans: Vec<usize> = Vec::new();
-        if is_packed {
-            let siblings = self.packed_record_siblings(idx);
-            let last = *siblings
-                .last()
-                .expect("packed_record_siblings always returns at least idx itself");
-            packed_next_sibling_of_run = self.tree[last].next_sibling();
-            packed_seam_after = self.tree[last].doc_next();
-            if let Some(parent) = self.tree[idx].parent() {
-                packed_run_is_last_child = self.tree[parent].last_child() == Some(last);
-            }
-            for &s in &siblings[1..] {
-                packed_orphans.push(s);
-                self.collect_descendants(s, &mut packed_orphans);
-            }
-        }
 
         let delta = new_lines.len() as isize
             - (old_span.text_range.end - old_span.text_range.start) as isize;
@@ -2286,68 +2094,22 @@ impl App {
         let pending_shift_before = self.pending_shift;
         self.pending_shift += delta;
 
-        // Collect old descendants (pointer-based, before any pointer is
-        // overwritten below) and scrub them from `folded` — a fold flag
-        // left on an abandoned node would be honored again if its slot
-        // were ever reused, hiding unrelated content. `idx`
-        // itself is deliberately left in `folded` untouched (spec 0118
-        // §7 — fold state on `idx` survives its own retype). For a
-        // packed sibling merge, `packed_orphans` (siblings[1..] and their
-        // own descendants) are unioned in too (spec 0135 G1).
+        // Everything the *previous* interpretation showed under `idx`,
+        // collected before any of it is vacated. Scrub the whole set from
+        // `folded`: a fold flag on a slot this rendering does not show
+        // would be honored again the moment some later override brings
+        // the slot back, hiding unrelated content. `idx` itself is
+        // deliberately left in `folded` untouched (spec 0118 §7 — fold
+        // state on `idx` survives its own retype).
         let mut old_descendants = Vec::new();
         self.collect_descendants(idx, &mut old_descendants);
-        old_descendants.extend(packed_orphans);
-        for d in &old_descendants {
-            self.folded.remove(d);
-            // This is the moment the node stops being reachable, and the
-            // only place that knows it — recording it here is what lets
-            // `compact.rs` reclaim without a mark pass. `idx` itself is
-            // deliberately absent: it keeps its own arena identity across
-            // a retype (spec 0118 §7).
-            self.mark_dead(*d);
+        for &d in &old_descendants {
+            self.folded.remove(&d);
+            self.tree[d] = decode::TreeNode::vacant();
+            // The cue answered a question about a node this rendering no
+            // longer has; if the slot comes back it must be asked again.
+            self.heat_states[d] = heat_cue::HeatState::default();
         }
-        let old_descendants: HashSet<usize> = old_descendants.into_iter().collect();
-
-        // Spec 0203 P2: no surviving index holder may name an abandoned
-        // node. `folded` is scrubbed above; these are the rest.
-        //
-        // `idx` is the right destination for all of them: it is the node
-        // that replaces what is being abandoned — the ancestor of every
-        // old descendant, and the leader the absorbed run collapses into
-        // (spec 0135 G1). A heat recheck is instead simply dropped, its
-        // answer being about content that no longer exists.
-        //
-        // Latent before compaction rather than harmless: an abandoned
-        // node is never freed today, so a cursor left on one merely
-        // navigates oddly, off in a subtree nothing else reaches.
-        // Once its slot can be reused and truncated away, the same
-        // dangling index is an unrelated node or a panic.
-        if old_descendants.contains(&self.cursor) {
-            self.cursor = idx;
-        }
-        if old_descendants.contains(&self.first_node) {
-            self.first_node = idx;
-        }
-        if self
-            .override_target
-            .is_some_and(|t| old_descendants.contains(&t))
-        {
-            self.override_target = Some(idx);
-        }
-        self.pending_heat_recheck
-            .retain(|n| !old_descendants.contains(n));
-
-        // The live node immediately following the *whole* old subtree in
-        // document order — the seam the new subtree must be spliced back
-        // into. For a packed sibling merge this is `siblings.last()`'s
-        // own `doc_next`, not `idx`'s (spec 0135 G1) — `idx` is now
-        // `siblings[0]`, but the whole run is being replaced.
-        let start = if is_packed {
-            packed_seam_after
-        } else {
-            self.tree[idx].doc_next()
-        };
-        let after = self.doc_next_after_subtree(start, &old_descendants);
 
         // Replace `idx`'s *whole* line range (header, interior, and
         // footer alike) — not just its interior, unlike the old
@@ -2413,206 +2175,41 @@ impl App {
             lines: new_lines,
         });
 
-        // Translate the freshly built local tree (raw_range-relative
-        // coordinates) into this document's global coordinates and append
-        // it at the array's end. `build_tree` always emits a container's
-        // own span last (post-order) — the local tree's final entry is
-        // always idx's *new* self (the decoded field, whatever shape it
-        // turned out to be); everything else is its descendants.
-        let base = self.tree.len();
-        // Spec 0174 §S3: a truncated preview's LEN framing rewrites the
-        // length varint, which may be narrower than the original — the
-        // whole interior then sits `span_shift` bytes earlier in the
-        // buffer core saw than it does in `self.blob`. Folding the
-        // constant in here corrects every child span at once; the local
-        // root needs no care, its `raw_range` is force-overwritten with
-        // `old_span.raw_range` below.
-        let byte_offset = old_span.raw_range.start as isize + span_shift as isize;
-        let local_len = new_spans.len();
-        let local_root_idx = local_len - 1;
-        let local_tree = decode::build_tree(new_spans);
-        for node in local_tree {
-            let translate = |o: Option<usize>| TreeNode::pack(o.map(|i| i + base));
-            // `idx`'s new self is *not* pushed as a separate live entry
-            // (its own span/children are folded into `self.tree[idx]`
-            // below) — root-level local nodes (parent `None`) and its
-            // direct children (local parent == the local root) both
-            // become `idx`'s children, so both map their parent to `idx`.
-            let parent = if node.parent().is_none() || node.parent() == Some(local_root_idx) {
-                Some(idx)
-            } else {
-                node.parent().map(|p| p + base)
-            };
-            // Spec 0211: every link is read here, before `span` is moved
-            // out of `node` — a partial move forbids calling `node`'s
-            // accessors afterwards.
-            let first_child = translate(node.first_child());
-            let last_child = translate(node.last_child());
-            let next_sibling = translate(node.next_sibling());
-            let prev_sibling = translate(node.prev_sibling());
-            let doc_next = translate(node.doc_next());
-            let doc_prev = translate(node.doc_prev());
-            let mut span = node.span;
-            let shift = |o: u32| (o as isize + byte_offset) as u32;
-            span.raw_range = shift(span.raw_range.start)..shift(span.raw_range.end);
-            // Spec 0210 S11: `span.text_range` is deliberately left
-            // local. `build_tree` has already read it, to derive each
-            // node's `lines_total`, and that is its last reader —
-            // everything downstream asks `node_lines`, which derives a
-            // line range from the counters. Translating it would only
-            // put a second, staler copy of the same fact in the slot.
-            // `raw_range` above is a different matter: it is genuinely
-            // read against `self.blob` and must be global.
-            //
-            // `packed_record_start` is a byte offset in exactly the same
-            // frame as `raw_range` (`sink.rs` builds it as
-            // `base + raw_range.start`), so it needs exactly the same
-            // translation. Leaving it local is not a cosmetic slip: it is
-            // read back with `parse_wiretag`/`parse_varint` against
-            // `self.blob` — by `packed_record_extent`, `extract::
-            // message_payload_range` and the heat cue — so a local value
-            // makes those parse a tag and a length out of unrelated bytes
-            // near the start of the file. Overriding an element of a
-            // packed run that a previous splice had produced then widened
-            // the "run" to a garbage extent (observed: a 2-byte varint
-            // replaced by a re-render of the whole 1 MB blob), which
-            // relinks the tree into a cycle and sends
-            // `collect_descendants` into unbounded recursion.
-            if span.packed_record_start != NO_PACKED_RECORD {
-                span.packed_record_start = shift(span.packed_record_start);
-            }
-            self.tree.push(TreeNode {
-                span,
-                parent: TreeNode::pack(parent),
-                first_child,
-                last_child,
-                next_sibling,
-                prev_sibling,
-                doc_next,
-                doc_prev,
-                // Correct as `build_tree` derived it within the local
-                // tree, which is exactly right for every level below
-                // `idx`: those sibling chains are copied over intact.
-                // `idx`'s own child chain is the one exception — it
-                // merges two independently numbered local sequences —
-                // and is renumbered once, below.
-                sibling_ordinal: node.sibling_ordinal,
-                // Spec 0210 S1: sizes, not positions — so unlike
-                // `text_range` above they need no translation into the
-                // main arena's frame. The local `build_tree` already
-                // derived them, and a freshly spliced subtree is
-                // unfolded, so the two counts agree.
-                lines_total: node.lines_total,
-                lines_visible: node.lines_visible,
-                rendered_as: NOT_RENDERED,
-            });
-        }
-
-        // Keep `heat_states` parallel to `tree` (spec 0152 G6) — every
-        // freshly pushed node starts all-pending; `idx` itself was just
-        // retyped, so any previously resolved cue for it is now stale
-        // and must be reset too, not left dangling as settled.
-        self.heat_states
-            .resize(self.tree.len(), heat_cue::HeatState::default());
+        // Spec 0216 S12: write the new rendering into the slots the arena
+        // already has for these bytes. `idx` is the local render's root,
+        // so the local root span lands back on `idx` itself and every
+        // descendant span lands on the slot the wire structure gives it —
+        // no append, no coordinate translation, no pointer repair.
+        //
+        // The byte ranges need no translation either, which is what
+        // spec 0174's `span_shift` used to be for: `overlay_spans` takes
+        // `raw_range` and `packed_record_start` from the arena, and the
+        // arena is expressed against `self.blob` by construction. A
+        // truncated preview's narrower length varint therefore cannot
+        // put a span in the wrong place any more; at worst it produces a
+        // span the maximal walk never saw, which `slots_for_spans`
+        // rejects.
+        //
+        // `idx`'s own slot has to be vacated first, alongside the
+        // descendants above: `overlay_spans` treats a second span landing
+        // on an already-rendered slot as one more row of a packed run and
+        // *adds* its lines, so leaving the old interpretation in place
+        // would count `idx`'s lines twice over.
+        self.tree[idx] = decode::TreeNode::vacant();
+        decode::overlay_spans(&mut self.tree, new_spans, &self.arena, idx);
+        // `idx` itself was just retyped, so any previously resolved cue
+        // for it answers a question about the old interpretation and is
+        // now stale (spec 0152 G6). Its descendants were reset above,
+        // when their slots were vacated.
         self.heat_states[idx] = heat_cue::HeatState::default();
-        // Keep `dead` parallel too. Freshly pushed nodes are live; the
-        // one exception is `new_self_idx`, marked below once it has
-        // been read.
-        self.dead.resize(self.tree.len(), false);
 
-        // The pushed copy of the local root (at `new_self_idx`) is left
-        // orphaned, never referenced again — its span/children are copied
-        // into the live `idx` entry instead, same "abandon in place"
-        // pattern already used for old descendants.
-        let new_self_idx = base + local_root_idx;
-        self.mark_dead(new_self_idx);
-        let mut new_self_span = self.tree[new_self_idx].span.clone();
-        // Defensive restatement: byte-offset translation above already
-        // reproduces `old_span.raw_range` exactly, since `field_bytes` is
-        // `idx`'s complete original tag+payload span decoded as-is (spec
-        // 0135 G1) — no synthetic tag ever separates the two.
-        new_self_span.raw_range = old_span.raw_range.clone();
-        self.tree[idx].span = new_self_span;
-        // Spec 0211: a straight copy of the stored form, not
-        // `set_first_child(self.tree[..].first_child())` — the accessor
-        // pair would need `self.tree` borrowed mutably and immutably in
-        // one statement, and there is nothing to translate here anyway.
-        self.tree[idx].first_child = self.tree[new_self_idx].first_child;
-        self.tree[idx].last_child = self.tree[new_self_idx].last_child;
-        // Spec 0210 S1: `idx` takes over the whole re-rendered subtree, so
-        // it takes over its size too. Absorbing a packed run is no
-        // exception — the local render covers the entire run, which is
-        // exactly what `idx` now stands for. Left behind, `idx` would keep
-        // the size it had *before* the retype (a scalar's single line,
-        // typically) and every position after it would be out by the
-        // difference, silently.
-        self.tree[idx].lines_total = self.tree[new_self_idx].lines_total;
-        // The subtree under `idx` comes over unfolded, but `idx`'s own fold
-        // survives a retype (only its descendants' folds are scrubbed), and
-        // a folded node shows one line whatever is beneath it.
-        self.tree[idx].lines_visible = if self.folded.contains(&idx) {
-            1
-        } else {
-            self.tree[new_self_idx].lines_visible
-        };
-
-        // Packed sibling-merge pointer repair (spec 0135 G1): skip
-        // `idx`'s sibling linkage past the absorbed run. `idx`'s own
-        // `prev_sibling` and the parent's `first_child` need no change —
-        // the run's leading edge is unaffected by absorbing what follows.
-        if is_packed {
-            self.tree[idx].set_next_sibling(packed_next_sibling_of_run);
-            if let Some(next) = packed_next_sibling_of_run {
-                self.tree[next].set_prev_sibling(Some(idx));
-            }
-            if packed_run_is_last_child {
-                if let Some(parent) = self.tree[idx].parent() {
-                    self.tree[parent].set_last_child(Some(idx));
-                }
-            }
-        }
-
-        // Spec 0192 S1: `idx`'s child chain is the one place a splice
-        // joins two sequences that were numbered independently (the
-        // local root's own children and the local root-level nodes, both
-        // remapped to parent `idx` above), so it is the one place the
-        // derived ordinals need restating. Renumbering is bounded by
-        // `idx`'s child count — a splice-local quantity. Nothing else
-        // needs repair: `idx`'s own ordinal is untouched, deeper chains
-        // came over intact, and absorbing a packed run into `idx`
-        // preserves the run's single position among its siblings (spec
-        // 0184 S2), so the followers relinked just above keep theirs.
-        let mut child = self.tree[idx].first_child();
-        let mut ordinal = 0u32;
-        let mut prev: Option<usize> = None;
-        while let Some(c) = child {
-            ordinal += match prev {
-                Some(p) if decode::same_packed_record(&self.tree[p].span, &self.tree[c].span) => 0,
-                _ => 1,
-            };
-            self.tree[c].sibling_ordinal = ordinal;
-            prev = Some(c);
-            child = self.tree[c].next_sibling();
-        }
-
-        if local_len > 1 {
-            let first_new = self.tree[new_self_idx].doc_next();
-            let last_new = (base..base + local_len)
-                .find(|&i| self.tree[i].doc_next().is_none())
-                .expect("local tree with descendants has a document-order last node");
-            self.tree[idx].set_doc_next(first_new);
-            if let Some(fnw) = first_new {
-                self.tree[fnw].set_doc_prev(Some(idx));
-            }
-            self.tree[last_new].set_doc_next(after);
-            if let Some(a) = after {
-                self.tree[a].set_doc_prev(Some(last_new));
-            }
-        } else {
-            self.tree[idx].set_doc_next(after);
-            if let Some(a) = after {
-                self.tree[a].set_doc_prev(Some(idx));
-            }
+        // The subtree under `idx` comes over unfolded, but `idx`'s own
+        // fold survives a retype (only its descendants' folds are
+        // scrubbed, above — spec 0118 §7), and a folded node shows one
+        // line whatever is beneath it. `overlay_spans` cannot know that,
+        // so it set both counts to the full size.
+        if self.folded.contains(&idx) {
+            self.tree[idx].lines_visible = 1;
         }
 
         // Spec 0210 S3: the ancestors' sizes, and nothing else. This is
@@ -2626,7 +2223,7 @@ impl App {
         // O(depth), and it stops as soon as a node's counts come out
         // unchanged. `idx`'s own counts were taken from the subtree just
         // built, above.
-        if let Some(parent) = self.tree[idx].parent() {
+        if let Some(parent) = self.parent(idx) {
             self.refresh_line_counts(parent);
         }
 
@@ -2647,14 +2244,20 @@ impl App {
             self.finalize_override_batch();
         }
 
-        // Spec 0142 G6.1: `idx` keeps its own tree-array identity across
-        // a retype (see this function's own doc comment), so if the
-        // cursor was resting on `idx`'s footer and the retype turned it
-        // into a childless (scalar) node, that footer line no longer
-        // exists — fall back to `idx`'s header rather than leave a
-        // stale footer-cursor referencing a line that's gone.
-        if self.cursor_footer && !self.has_children(self.cursor) {
-            self.cursor_footer = false;
+        // Spec 0142 G6.1: `idx` keeps its own slot across a retype (see
+        // this function's own doc comment), but not its shape, so a
+        // cursor resting anywhere but the header has to be re-placed.
+        // Spec 0216 S7 makes that a coordinate rather than a flag, and
+        // the coordinate is not stable: a message's closing brace moves
+        // whenever the body it encloses changes size, and the retype may
+        // have turned the node flat, in which case the brace is gone.
+        if self.cursor_line_in_node != 0 {
+            let node = &self.tree[self.cursor];
+            self.cursor_line_in_node = if node.is_bracketed() {
+                node.lines_total - 1
+            } else {
+                self.cursor_line_in_node.min(node.lines_total - 1)
+            };
         }
 
         Ok(patch_idx)
@@ -2683,7 +2286,7 @@ impl App {
     /// conflated.
     pub(super) fn render_node_as(
         &mut self,
-        mut idx: usize,
+        idx: usize,
         target: Option<&str>,
         is_preview: bool,
     ) -> Result<(usize, NodeSpan, RenderedAs), String> {
@@ -2703,13 +2306,10 @@ impl App {
         old_span.text_range = decode::narrow(self.node_lines(idx));
 
         // Packed-record reconstruction (spec 0135 G1): the whole run is
-        // one addressable record, so resolve `idx` to `siblings[0]` and
-        // widen `old_span` to the record's own extent before proceeding.
+        // one addressable record, so widen `old_span` to the record's
+        // own extent before proceeding.
         if old_span.packed_record_start != NO_PACKED_RECORD {
-            let siblings = self.packed_record_siblings(idx);
-            let (raw_range, text_range) = self.packed_record_extent(&siblings);
-            idx = siblings[0];
-            old_span = self.tree[idx].span.clone();
+            let (raw_range, text_range) = self.packed_record_extent(idx);
             old_span.raw_range = decode::narrow(raw_range);
             old_span.text_range = decode::narrow(text_range);
         }
@@ -2779,15 +2379,13 @@ impl App {
         // Bounding the renderer's *input* bounds its decode, its render,
         // its span count and its line count together, which is why
         // `prototext-core` itself carries no budget.
-        let mut span_shift = 0usize;
         let mut truncated = false;
         if is_preview {
             let shape = trunc_shape_for(field_type, u32::from(old_span.wire_type));
-            if let Some((cut, shift)) =
+            if let Some(cut) =
                 truncate_interior(&field_bytes, self.override_preview_byte_budget, shape)
             {
                 field_bytes = cut;
-                span_shift = shift;
                 truncated = true;
             }
         }
@@ -2798,8 +2396,7 @@ impl App {
         // already keyed on before this spec, just computed from the
         // resolved `raw_range`, with `packed_record_start` always absent
         // (the packed case has already been normalized above).
-        let interior_range =
-            extract::message_payload_range(&self.blob, &old_span.raw_range, NO_PACKED_RECORD);
+        let interior_range = extract::message_payload_range(&self.blob, &old_span.raw_range);
         // Spec 0163: `is_preview` is part of the key -- a budget-
         // truncated preview render and a full confirmed render of the
         // same `(range, target)` must never be conflated, or confirming
@@ -2914,44 +2511,27 @@ impl App {
             RenderedAs {
                 lines: new_lines,
                 spans: new_spans,
-                span_shift,
             },
         ))
     }
 
-    /// Every current sibling of `idx` that shares the same
-    /// `packed_record_start` (spec 0135 G1) — i.e. every element of the
-    /// same packed-repeated record, in document order. Always returns at
-    /// least `idx` itself, even when `idx` has no parent.
-    pub(super) fn packed_record_siblings(&self, idx: usize) -> Vec<usize> {
-        let target = self.tree[idx].span.packed_record_start;
-        let Some(parent) = self.tree[idx].parent() else {
-            return vec![idx];
-        };
-        let mut out = Vec::new();
-        let mut c = self.tree[parent].first_child();
-        while let Some(ci) = c {
-            if self.tree[ci].span.packed_record_start == target {
-                out.push(ci);
-            }
-            c = self.tree[ci].next_sibling();
-        }
-        out
-    }
-
-    /// The raw-byte and text-line extent of a packed record's whole run
-    /// (spec 0135 G1), re-parsing the record's real tag+length from
-    /// `packed_record_start` (mirroring `extract::message_payload_range`'s
-    /// own packed-record handling). `siblings` must be non-empty and in
-    /// document order, as returned by `packed_record_siblings`.
+    /// The raw-byte and text-line extent of the packed record `idx`
+    /// draws (spec 0135 G1), re-parsing the record's real tag+length
+    /// from `packed_record_start`.
+    ///
+    /// Spec 0115 gave each element of a run a node of its own, so this
+    /// took the whole run — found by scanning the siblings for a
+    /// matching `packed_record_start` — and summed it. Spec 0216 makes
+    /// the run a single node drawing one row per element, so the run
+    /// *is* `idx` and the scan is gone.
     pub(super) fn packed_record_extent(
         &self,
-        siblings: &[usize],
+        idx: usize,
     ) -> (std::ops::Range<usize>, std::ops::Range<usize>) {
-        let start = self.tree[siblings[0]].span.packed_record_start;
+        let start = self.tree[idx].span.packed_record_start;
         assert_ne!(
             start, NO_PACKED_RECORD,
-            "packed_record_extent called with non-packed siblings"
+            "packed_record_extent called with a non-packed node"
         );
         let start = start as usize;
         let tag = prototext_core::helpers::parse_wiretag(&self.blob, start);
@@ -2959,15 +2539,8 @@ impl App {
         let raw_end = len.next_pos + len.varint.unwrap_or(0) as usize;
         // Spec 0210 S1: derived from the counters, not read off
         // `span.text_range` (which is the build-time range and goes
-        // stale on the first splice). The members are consecutive
-        // siblings, so one descent for the leader plus their sizes is
-        // the whole run's extent.
-        let text_start = self.absolute_start(siblings[0]);
-        let text_len: usize = siblings
-            .iter()
-            .map(|&s| self.tree[s].lines_total as usize)
-            .sum();
-        (start..raw_end, text_start..text_start + text_len)
+        // stale on the first splice).
+        (start..raw_end, self.node_lines(idx))
     }
 
     /// Origin for a brand-new override, targeting node `idx` — created
@@ -3005,8 +2578,8 @@ impl App {
                 path: self.positional_path(idx),
             }),
             OverrideKind::PathField => {
-                let parent = self.tree[idx]
-                    .parent()
+                let parent = self
+                    .parent(idx)
                     .ok_or_else(|| "cursor is the wrapper root (no parent)".to_string())?;
                 Ok(OverrideOrigin::PathField {
                     path: self.positional_path(parent),
@@ -3014,8 +2587,8 @@ impl App {
                 })
             }
             OverrideKind::FqdnField => {
-                let parent = self.tree[idx]
-                    .parent()
+                let parent = self
+                    .parent(idx)
                     .ok_or_else(|| "cursor is the wrapper root (no parent)".to_string())?;
                 let fqdn = self
                     .fqdns

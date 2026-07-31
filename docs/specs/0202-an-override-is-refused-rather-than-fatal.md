@@ -6,7 +6,10 @@ SPDX-License-Identifier: MIT
 
 # 0202 — an override is refused rather than fatal
 
-Status: implemented
+Status: superseded (implemented 2026-07-28, superseded 2026-07-31 by
+        spec 0216 S13 — the arena is a function of the bytes and a
+        splice allocates no slots, so the growth this guard stood in
+        front of cannot occur; the guard is deleted)
 Implemented in: 2026-07-28
 App: protolens
 Refs: docs/specs/0118-protolens-recursive-override-rendering.md

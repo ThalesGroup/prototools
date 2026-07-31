@@ -6,9 +6,9 @@ SPDX-License-Identifier: MIT
 
 # 0216 — the arena is a function of the bytes
 
-Status: draft — steps 1-5 (S21, S14, both arena phases, the wrapped
-        blob and producer selection) implemented, steps 6 onward pending
-Implemented in: —
+Status: draft — steps 1-8 implemented (everything but S10, moving the
+        walk off the main thread, which is pure scheduling)
+Implemented in: 2026-07-31 (steps 1-8)
 App: protolens
 Refs: docs/specs/0097-raw-recursive-lendel.md (the unknown-LEN cascade
         whose probe S14 bypasses),
@@ -916,12 +916,61 @@ step is separately testable, and steps 1-4 are prototext-core only.
    arithmetic, derived document order, per-interpretation overlay.
    Deletes `sibling_ordinal`, `doc_next`/`doc_prev` and `build_tree`'s
    sort. Items 3, 4.
+
+   **Done 2026-07-31**, in three passes: build the arena at load and
+   cross-check it against `build_tree`'s own structure, move the
+   readers onto it, then delete the cross-check along with the links it
+   compared. The structural accessors are gathered in
+   `tui/structure.rs`, which is where the two halves — arena and
+   overlay — actually meet.
+
+   Two production defects the migration exposed, neither of them
+   test-only breakage:
+
+   - `splice_override` has to vacate `idx`'s **own** slot before
+     `overlay_spans` writes the new interpretation. `overlay_spans`
+     treats a second span landing on an already-rendered slot as one
+     more row of a packed run and *adds* its lines, so leaving the old
+     interpretation in place counted `idx`'s lines twice.
+   - `absolute_start` never summed the roots preceding `cur`. A loaded
+     document has one root and the term is zero, which is why the bug
+     could exist at all; a fixture handing the arena an unwrapped blob
+     of several top-level records has several, and every one of them
+     reported line 0.
+
+   The verification is `#[cfg(test)]`-gated throughout — the production
+   binary carries no arena probe, env-var-driven or otherwise.
 7. **Display rows** — S6, S7, S22: span-to-slot mapping keyed on
    `same_packed_record`, `LinePos` widened to `line_in_node`. Items 1,
    2, 8.
+
+   **Done 2026-07-31**, with step 6; the two are one change seen from
+   two sides, since a packed run collapsing onto one slot is what makes
+   a node draw more than one row in the first place.
+
+   `cursor_footer: bool` becomes `cursor_line_in_node: u32`, and the
+   footer is `lines_total - 1` — equal to 1 only for a node with
+   nothing between its braces, which is the trap every converted call
+   site fell into once.
+
+   `extract::message_payload_range` **loses its `packed_record_start`
+   parameter**. It existed so a bare packed element, which carries no
+   wire tag of its own, would not have a tag stripped off it; under S22
+   the node's `raw_range` is the whole `WT_LEN` record, an ordinary
+   tagged field, so the generic path is right for it. `packed_record_
+   siblings` goes the same way, a run being a single slot.
 8. **Delete the dynamic arena** — S11, S13, S23: `local_tree` and the
    structural splice go; specs 0203 and 0206 are superseded. Items 7,
    11.
+
+   **Done 2026-07-31.** Falls out of step 6 rather than being separate
+   work: with the arena immutable there is nothing to append, so
+   `local_tree`, the compaction pass (`tui/compact.rs`) and spec 0202's
+   memory guard are all deleted rather than rewritten. Specs 0202, 0203
+   and 0206 are marked superseded.
+
+   `absolute_start` is S23's sequential scan over the preceding
+   siblings' contiguous run, plus one term for the roots below `cur`.
 9. **S10** — move the walk off the main thread. Last, deliberately: it
    is pure scheduling, and everything must be correct serially first.
    Both phases move together; they are one unit of work.
@@ -1241,3 +1290,42 @@ artifact of descriptor data.
 Not measured: the memory comparison proper (Q2) and phase 2 — neither
 its time nor the 34n peak, both of which need a real implementation
 rather than a counting walker.
+
+### After implementation, 2026-07-31
+
+Steps 1-8 landed. Same corpus, same box, `--descriptor-set /tmp/pdb.desc`
+over `googleapis.desc`, driven through a pty; the commit measured is
+`:type-as-raw` **on line 0**, the root retype, which is the only one that
+used to materialize a full-document `local_tree`. The 76 B column is spec
+0213's recorded figure for the identical driver.
+
+| | 0213 (76 B slot) | after 0216 |
+|---|---|---|
+| VmRSS at rest | 1 063 420 kB | **988 280 kB** |
+| VmHWM, root retype | 2 188 064 kB | **1 740 056 kB** |
+| VmRSS after commit | 1 378 684 kB | 1 434 080 kB |
+
+So the peak falls **2.09 → 1.66 GiB (−20.5%)** and at rest **1.01 → 0.94
+GiB**, against a starting point of 4.18 GiB before the slot-narrowing
+specs: **−60% cumulative**. The at-rest saving is smaller than the slot
+alone would suggest because the arena's own `4n + 1` `u32` array is new
+memory — ~81 MB at 4 737 284 slots — paid to delete the seven links.
+
+**The arena is 4 737 284 slots** against 4 501 014 nodes in the old
+render-derived tree: 1.05x, close to the 1.02x the counting walker
+projected. Of those, 2 909 311 are rendered raw and 2 831 045 under
+`FileDescriptorSet` — the arena is roughly 1.6x either interpretation,
+which is the price of describing all the structure the bytes admit rather
+than one reading of it.
+
+`arena_gap`'s three properties — coverage, agreement, all-or-nothing —
+hold over the whole corpus in both interpretations
+(`the_arena_covers_a_real_corpus`). This is the superset claim, and it is
+now checked against real data rather than only against fixtures.
+
+**Spec 0202's crash is gone rather than guarded.** Its reproduction —
+`Down`, then three rounds of `t`, `Enter`, `o`, `d`, `Esc` — reported
+2045 → 3889 → 5256 MiB → OOM kill originally, and a flat 3.9 GiB once
+0203 compacted. It now runs at **995 MiB, flat to 0.2 MiB across all
+three cycles**: a splice allocates no slots, so there is nothing for a
+second cycle to add.

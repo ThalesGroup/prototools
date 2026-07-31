@@ -692,25 +692,6 @@ impl App {
         (blob_sha256, self.ctx.descriptor_sha256())
     }
 
-    /// `idx`'s `pos`-th child (1-based, document order) — the sibling-chain
-    /// counterpart to `sibling_position`, and like it counting wire
-    /// *records* rather than nodes (spec 0184 S3). For a packed run this
-    /// returns the run's **first** element, which is the node
-    /// `splice_override` already redirects every element of the run to,
-    /// i.e. the node that can actually be acted upon.
-    pub(super) fn nth_child(&self, idx: usize, pos: usize) -> Option<usize> {
-        let mut cur = self.tree[idx].first_child()?;
-        let mut seen = 1;
-        while seen < pos {
-            let next = self.tree[cur].next_sibling()?;
-            if !navigation::same_packed_record(&self.tree[cur].span, &self.tree[next].span) {
-                seen += 1;
-            }
-            cur = next;
-        }
-        Some(cur)
-    }
-
     /// Inverse of `positional_path`: resolves a canonical `/1/2/3`-style
     /// path (or bare `/` for the wrapper root) back to a tree index.
     /// `None` if any segment doesn't parse as a 1-based position, or
@@ -725,19 +706,17 @@ impl App {
         // how it stayed invisible for so long: it was smaller than the
         // full-arena mark scan next to it until spec 0188 S4 deleted
         // that, and then it *was* the batch.
-        //
-        // The two agree because nothing ever appends a second parentless
-        // node: `splice_override` re-decodes a subtree under an existing
-        // node and always links what it appends. Asserted by
-        // `the_root_stays_the_first_node_across_a_root_respice`.
         let root = self.first_node;
         if path == "/" {
             return Some(root);
         }
         let mut cur = root;
+        // Spec 0216 S17: one add and a bounds check per segment. The
+        // positions are 1-based on the wire, `nth_child` is 0-based, and
+        // `checked_sub` is what rejects a `/0/` segment.
         for seg in path.trim_start_matches('/').split('/') {
             let pos: usize = seg.parse().ok()?;
-            cur = self.nth_child(cur, pos)?;
+            cur = self.nth_child(cur, pos.checked_sub(1)?)?;
         }
         Some(cur)
     }
@@ -753,12 +732,12 @@ impl App {
             OverrideOrigin::Path { path } => self.resolve_path(path).is_some(),
             OverrideOrigin::PathField { path, field } => match self.resolve_path(path) {
                 Some(idx) => {
-                    let mut child = self.tree[idx].first_child();
+                    let mut child = self.first_child(idx);
                     while let Some(c) = child {
                         if u64::from(self.tree[c].span.field_number) == *field {
                             return true;
                         }
-                        child = self.tree[c].next_sibling();
+                        child = self.next_sibling(c);
                     }
                     false
                 }

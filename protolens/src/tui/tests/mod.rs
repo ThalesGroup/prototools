@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: MIT
 
 mod command_line;
-mod compact;
 mod heat_cue;
 mod key_dispatch;
 mod lines;

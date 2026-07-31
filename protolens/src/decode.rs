@@ -9,6 +9,8 @@
 //! path (spec 0197), but no embedded-WKT-descriptor fallback: spec 0111 v1
 //! always requires an explicit `--descriptor-set`.
 
+#[cfg(test)]
+use std::collections::HashMap;
 use std::fmt;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -21,13 +23,11 @@ use prost_reflect::{DescriptorPool, EnumDescriptor, MessageDescriptor};
 // left here builds fixtures.
 #[cfg(test)]
 use prototext_core::helpers::{write_tag, write_varint, WT_LEN};
-// Every `NO_FQDN` here is in a test building a literal `NodeSpan`.
-#[cfg(test)]
 use prototext_core::serialize::render_text::NO_FQDN;
 use prototext_core::serialize::render_text::{
     decode_and_render_indexed, DecodeRenderOpts, FqdnTable, NodeSpan, NO_PACKED_RECORD,
 };
-use prototext_core::{decode_pool, render_as_bytes, RenderOpts};
+use prototext_core::{build_arena, decode_pool, render_as_bytes, Arena, RenderOpts};
 use prototext_graph::build_scoring_graph::serial::ArchivedCompiledGraph;
 use prototext_graph::score::{
     load::{load_graph, LoadedGraph},
@@ -502,72 +502,53 @@ pub(crate) fn narrow(r: Range<usize>) -> Range<u32> {
 /// How a node names another node (spec 0211 S1).
 ///
 /// The arena itself is indexed by `usize` — it is a `Vec` — but a
-/// *stored* index only ever has to span the arena, and the largest arena
-/// ever observed here held 13 499 684 nodes at a capacity of 18 004 056:
-/// a 238x margin under `u32`. Storing each link as an `Option<usize>`
-/// paid 16 bytes for that (8 of payload plus 8 of discriminant using one
-/// bit of them), and there are seven links, so they were 112 of the
-/// slot's 272 bytes. See `docs/protolens/design/arena-and-batch.md`'s
-/// annex for the whole slot.
+/// *stored* index only ever has to span the arena, and the largest one
+/// ever observed here held 4.74 M slots: a three-orders-of-magnitude
+/// margin under `u32`. Spec 0211 introduced this to shrink seven
+/// `Option<usize>` links to 4 bytes each; spec 0216 then deleted the
+/// links outright, and what is left of the type is the arena's own
+/// arrays and `build_tree`'s span-to-slot map.
 ///
-/// Nothing bounds the arena at `NodeIdx::MAX` directly. What keeps a
-/// document from approaching it is spec 0202's refusal, which turns down
-/// any batch whose arena would not fit in half of `MemAvailable` — at
-/// 184 bytes a node that binds on available memory long before it binds
-/// on the index type.
+/// Nothing bounds the arena at `NodeIdx::MAX` directly. What bounds it
+/// is `MAX_INDEXED_BUFFER`: every slot covers at least a tag byte, so a
+/// buffer `u32` offsets can address cannot hold more slots than a `u32`
+/// can count.
 pub type NodeIdx = u32;
 
-/// The absent link (spec 0211 S1).
+/// No slot (spec 0211 S1).
 ///
-/// `NodeIdx::MAX` and not `0`, because index 0 is a real node:
-/// `build_tree` emits post-order, so slot 0 holds a leaf. An
-/// index-plus-one encoding would let `Option<NonZeroU32>` carry absence
-/// for free, but it would put an off-by-one at every link site in
-/// exchange for nothing — `NodeIdx::MAX` is not a reachable index, so
-/// spending it on the sentinel costs no representable node.
+/// `NodeIdx::MAX` and not `0`, because index 0 is a real node — under
+/// spec 0216's level order it is in fact *the* root. An index-plus-one
+/// encoding would let `Option<NonZeroU32>` carry absence for free, but
+/// it would put an off-by-one at every site in exchange for nothing:
+/// `NodeIdx::MAX` is not a reachable index, so spending it on the
+/// sentinel costs no representable node.
 pub const NO_NODE: NodeIdx = NodeIdx::MAX;
 
-/// One node of the local arena built over the flat `Vec<NodeSpan>` returned
-/// by `decode_and_render_indexed` — see spec 0111 "Tree construction
-/// (ingestion)".
+/// What the *current interpretation* says about one arena slot
+/// (spec 0216 S12).
 ///
-/// NOT index-parallel to document order: `IndexingTextSink` pushes a
-/// container's own `NodeSpan` only in `end_nested`, i.e. *after* all of its
-/// descendants — the emitted `Vec<NodeSpan>` is post-order, not pre-order.
-/// (Spec 0111 originally assumed pre-order; corrected here after discovering
-/// the actual `begin_nested`/`end_nested` call shape in
-/// `prototext-core/src/serialize/render_text/sink.rs`.) `doc_next`/
-/// `doc_prev` provide an explicit document-order chain (by `raw_range.start`)
-/// for `j`/`k`, since raw array-index arithmetic no longer gives that for
-/// free.
+/// Indexed by slot, not by render order, and one per slot in the arena —
+/// including the slots this interpretation does not show, which are
+/// `vacant`. The structure is not here: it is the arena's, it is a
+/// function of the bytes alone, and it does not change when the type
+/// assignment does. Read it through `App`'s `parent`/`first_child`/
+/// `next_sibling` accessors, which is where the two halves meet.
+///
+/// Being slot-indexed is what makes a node's preceding siblings a
+/// contiguous run (S23) and its path a chain of adds (S17).
 #[derive(Debug)]
 pub struct TreeNode {
-    pub span: NodeSpan,
-    /// Spec 0211: the seven links are `NodeIdx`, with `NO_NODE` for
-    /// absent. Read them through the same-named accessors below —
-    /// `node.parent()` hands back the `Option<usize>` the call sites
-    /// want, and the conversion compiles away. The raw fields stay
-    /// public because a `TreeNode` is built by struct literal in a
-    /// dozen places (it has no `Default` — see below) and those want to
-    /// write `parent: NO_NODE` directly.
-    pub parent: NodeIdx,
-    pub first_child: NodeIdx,
-    pub last_child: NodeIdx,
-    pub next_sibling: NodeIdx,
-    pub prev_sibling: NodeIdx,
-    pub doc_next: NodeIdx,
-    pub doc_prev: NodeIdx,
-    /// Spec 0192 S1: this node's 1-based position among its siblings,
-    /// counting a whole packed run as a single position (spec 0184 S2 —
-    /// every element of a packed record shares the record's positional
-    /// path). Precomputed here so `sibling_position` is a field read and
-    /// `positional_path` is O(depth) rather than O(depth x sibling
-    /// ordinal); see `App::positional_path` for why that matters.
+    /// What the render said about this slot.
     ///
-    /// A derived structural fact, not a cache: it is written wherever
-    /// `prev_sibling` is written, and cannot go stale independently of
-    /// it.
-    pub sibling_ordinal: u32,
+    /// `raw_range` is overwritten with the slot's own range at build
+    /// time, which matters for exactly one kind of node: a packed
+    /// record, whose N elements collapse onto this one slot (S22) and
+    /// whose individual element ranges are consequently not stored.
+    /// Recovering element k means re-parsing the record's payload —
+    /// the deliberate trade of S19, storing nothing the bytes already
+    /// say.
+    pub span: NodeSpan,
     /// Spec 0210 S1: how many rendered lines this node's whole subtree
     /// occupies, its own header and footer included. A *size*, not a
     /// position — the absolute line number is derived by summing the
@@ -576,10 +557,18 @@ pub struct TreeNode {
     /// a commit O(depth) instead of O(nodes after the splice): a change
     /// rewrites the node and its ancestors, never its followers.
     ///
-    /// The invariant is `lines_total = 1 + Σ children + footer`, where
-    /// the header is always exactly one line and the footer is one line
-    /// iff `lines_total > 1`. It holds exactly (rather than
-    /// approximately) because every rendered line belongs to exactly one
+    /// **Zero means this slot is not rendered at all** under the current
+    /// interpretation — the greedy walk descended into a payload this
+    /// type assignment prints as a scalar. A rendered node always has at
+    /// least its own header line, so the two states cannot be confused
+    /// and no separate flag is needed.
+    ///
+    /// For a *bracketed* node (`span.is_message`) the invariant is
+    /// `lines_total = 1 + Σ children + 1` — header, body, footer. For a
+    /// flat one it is the node's own row count, which is 1 for an
+    /// ordinary scalar and the element count for a packed record
+    /// (spec 0216 S7). Either way it holds exactly, rather than
+    /// approximately, because every rendered line belongs to exactly one
     /// node — which is why `IndexingTextSink::malformed` had to start
     /// emitting a span.
     ///
@@ -615,176 +604,345 @@ pub struct TreeNode {
     pub rendered_as: ProvenanceId,
 }
 
-/// Spec 0211 G1. The slot is paid 4.5 M times over on a large descriptor
-/// set, and four times over during a commit — once for the live arena,
-/// once for the superseded half a batch leaves behind, once for
-/// `local_tree`, and once more if the render cache holds a copy. Read
-/// `docs/protolens/design/arena-and-batch.md`'s annex before changing
-/// it. An equality rather than a bound, because growth is the
-/// regression this is here to catch; a spec that legitimately moves the
-/// number moves this line too.
-const _: () = assert!(std::mem::size_of::<TreeNode>() == 76);
+/// Spec 0211 G1, narrowed by spec 0216 S12. The slot is paid once per
+/// *arena* slot — 4.74 M on a large descriptor set, a few percent more
+/// than the 4.5 M nodes an interpretation renders — but only once,
+/// because the arena is immutable and there is no superseded copy, no
+/// `local_tree` and nothing to compact.
+///
+/// An equality rather than a bound, because growth is the regression
+/// this is here to catch; a spec that legitimately moves the number
+/// moves this line too.
+const _: () = assert!(std::mem::size_of::<TreeNode>() == 44);
 
 impl TreeNode {
-    /// Spec 0211 S2: pack an optional index into the stored
-    /// representation. The `debug_assert` documents the ceiling rather
-    /// than enforcing it — see `NodeIdx` for what actually bounds the
-    /// arena.
-    ///
-    /// Public because a `TreeNode` is built by struct literal in a dozen
-    /// places, so a builder needs to name a link's stored form; the
-    /// setters below are how to change a link that already exists.
-    #[inline]
-    pub fn pack(idx: Option<usize>) -> NodeIdx {
-        match idx {
-            Some(i) => {
-                debug_assert!(
-                    i < NO_NODE as usize,
-                    "node index {i} does not fit in a NodeIdx"
-                );
-                i as NodeIdx
-            }
-            None => NO_NODE,
-        }
-    }
-
     #[inline]
     fn unpack(idx: NodeIdx) -> Option<usize> {
         (idx != NO_NODE).then_some(idx as usize)
     }
-}
 
-/// Spec 0211 S2: one `fn name(&self) -> Option<usize>` and one
-/// `fn set_name(&mut self, Option<usize>)` per link. A method may share
-/// a field's name in Rust, so the call sites read `node.parent()` and the
-/// struct literals still write `parent: NO_NODE` — no site had to invent
-/// a new name for a link.
-macro_rules! link_accessors {
-    ($($field:ident, $setter:ident;)*) => {
-        impl TreeNode {
-            $(
-                #[inline]
-                pub fn $field(&self) -> Option<usize> {
-                    Self::unpack(self.$field)
-                }
-
-                #[inline]
-                pub fn $setter(&mut self, idx: Option<usize>) {
-                    self.$field = Self::pack(idx);
-                }
-            )*
+    /// An arena slot this interpretation does not show.
+    ///
+    /// The greedy walk descends into every length-delimited payload
+    /// (spec 0216 S2), so a blob has slots for structure no single type
+    /// assignment displays — a `bytes` field whose contents happen to
+    /// parse, for instance. Those slots exist, and stay vacant until
+    /// some override makes them a message.
+    ///
+    /// The span is a placeholder and must not be read; `lines_total ==
+    /// 0` is what says so.
+    pub(crate) fn vacant() -> Self {
+        TreeNode {
+            span: NodeSpan {
+                field_number: 0,
+                raw_range: 0..0,
+                text_range: 0..0,
+                type_fqdn: NO_FQDN,
+                packed_record_start: NO_PACKED_RECORD,
+                level: 0,
+                wire_type: 0,
+                is_message: false,
+            },
+            lines_total: 0,
+            lines_visible: 0,
+            rendered_as: NOT_RENDERED,
         }
-    };
+    }
+
+    /// Whether this slot is part of the current interpretation's tree.
+    #[inline]
+    pub fn is_rendered(&self) -> bool {
+        self.lines_total > 0
+    }
+
+    /// Whether this node is drawn as `name {` ... `}` — a distinct
+    /// header and footer with its children between them.
+    ///
+    /// The discriminator for every line question (spec 0216 S7). A
+    /// bracketed node's own lines are its first and its last, whatever
+    /// its subtree does in between; a flat node's lines are simply its
+    /// own, which is one row for an ordinary scalar and N for a packed
+    /// record. This replaces the old `lines_total > 1` test, which a
+    /// collapsed packed run would have answered wrongly.
+    #[inline]
+    pub fn is_bracketed(&self) -> bool {
+        self.span.is_message
+    }
 }
 
-link_accessors! {
-    parent, set_parent;
-    first_child, set_first_child;
-    last_child, set_last_child;
-    next_sibling, set_next_sibling;
-    prev_sibling, set_prev_sibling;
-    doc_next, set_doc_next;
-    doc_prev, set_doc_prev;
-}
-
-/// Build the navigation arena from a flat, level-annotated, post-order
-/// `Vec<NodeSpan>` in a single `O(n)` pass, using a stack of "subtree roots
-/// completed so far" (spec 0111 "Tree construction (ingestion)").
+/// The arena slot each rendered span occupies, by span index
+/// (spec 0216 S22).
 ///
-/// For each incoming node `i` at `level`, every stack entry with a greater
-/// level is one of `i`'s children (post-order guarantees they were fully
-/// built already) — pop them all, in left-to-right order, as `i`'s children.
-/// The (now topmost) remaining stack entry, if at the same level as `i`, is
-/// `i`'s immediate previous sibling — link incrementally, so by the time any
-/// node is pushed its sibling chain up to that point is already correct.
-pub(crate) fn build_tree(spans: Vec<NodeSpan>) -> Vec<TreeNode> {
-    let mut nodes: Vec<TreeNode> = spans
-        .into_iter()
-        .map(|span| {
-            // Spec 0210 S1. `text_range` is exact here and only here —
-            // it is the render's own line counter, read before any
-            // splice can invalidate it. Taking the count directly is
-            // equivalent to summing the children (every line belongs to
-            // exactly one node) and is O(1) rather than a second pass.
-            let lines = span.text_range.end - span.text_range.start;
-            TreeNode {
-                span,
-                parent: NO_NODE,
-                first_child: NO_NODE,
-                last_child: NO_NODE,
-                next_sibling: NO_NODE,
-                prev_sibling: NO_NODE,
-                doc_next: NO_NODE,
-                doc_prev: NO_NODE,
-                sibling_ordinal: 1,
-                lines_total: lines,
-                // Nothing is folded at build time, neither in the initial
-                // decode nor in a splice's local tree.
-                lines_visible: lines,
-                rendered_as: NOT_RENDERED,
-            }
-        })
-        .collect();
+/// Two linear passes and no hash map. The obvious join — index the arena
+/// by `raw_start` and look each span up — costs a 4.7 M-entry table at
+/// load; this instead *derives* each slot from its parent's, using the
+/// one property S17 already relies on: a rendered node's k-th distinct
+/// child is at `first_child[slot] + k`.
+///
+/// Pass 1 recovers each span's parent and its ordinal among that
+/// parent's children, which is possible in one sweep because
+/// `IndexingTextSink` emits post-order — a node's children are complete,
+/// and in left-to-right order, by the time the node itself arrives.
+/// Pass 2 then runs *backwards*, because reversed post-order visits
+/// every parent before its children, which is exactly the order a
+/// top-down derivation needs.
+///
+/// A packed run's elements share one ordinal and therefore one slot;
+/// that is the many-to-one of S22, and `same_packed_record` is the same
+/// predicate `build_tree` uses for the same purpose.
+///
+/// `root` is the slot the render's own root occupies: 0 for a whole
+/// document, and the re-typed node's own slot for a splice's local
+/// render. A render with several parentless spans is a packed run, whose
+/// elements all belong to `root` — the only way one field's bytes can
+/// produce more than one top-level span.
+///
+/// `NO_NODE` for a span the arena has no slot for. That happens only for
+/// a budget-truncated preview (spec 0174), whose cut can fall inside a
+/// record and so produce structure the walk of the whole bytes never
+/// saw; the caller drops such a span rather than indexing with it.
+fn slots_for_spans(spans: &[NodeSpan], arena: &Arena, root: usize) -> Vec<u32> {
+    let n = spans.len();
+    let mut parent = vec![NO_NODE; n];
+    let mut ordinal = vec![0u32; n];
 
-    // Stack of (index, level) for completed subtree roots not yet claimed
-    // by a parent.
+    // Pass 1: post-order, so a node's children are the stack entries
+    // deeper than it — the same claim `build_tree` makes.
     let mut stack: Vec<(usize, u16)> = Vec::new();
-
-    for i in 0..nodes.len() {
-        let level = nodes[i].span.level;
-
-        let mut children = Vec::new();
+    let mut children: Vec<usize> = Vec::new();
+    for i in 0..n {
+        let level = spans[i].level;
+        children.clear();
         while let Some(&(top, top_level)) = stack.last() {
-            if top_level > level {
-                children.push(top);
-                stack.pop();
-            } else {
+            if top_level <= level {
                 break;
             }
+            children.push(top);
+            stack.pop();
         }
         children.reverse(); // restore left-to-right document order
 
+        let mut k = 0u32;
+        let mut previous: Option<usize> = None;
         for &c in &children {
-            nodes[c].set_parent(Some(i));
-        }
-        if let Some(&first) = children.first() {
-            nodes[i].set_first_child(Some(first));
-        }
-        if let Some(&last) = children.last() {
-            nodes[i].set_last_child(Some(last));
-        }
-
-        if let Some(&(top, top_level)) = stack.last() {
-            if top_level == level {
-                nodes[i].set_prev_sibling(Some(top));
-                nodes[top].set_next_sibling(Some(i));
-                // Spec 0192 S1: derived in the same place `prev_sibling`
-                // is, which is what keeps the two from diverging. A
-                // packed run's elements all share one record, so they
-                // all share one position — the same rule
-                // `sibling_position` used to apply while walking.
-                nodes[i].sibling_ordinal = nodes[top].sibling_ordinal
-                    + u32::from(!same_packed_record(&nodes[top].span, &nodes[i].span));
+            parent[c] = i as NodeIdx;
+            if let Some(p) = previous {
+                if !same_packed_record(&spans[p], &spans[c]) {
+                    k += 1;
+                }
             }
+            ordinal[c] = k;
+            previous = Some(c);
         }
-
         stack.push((i, level));
     }
 
-    // Document-order chain: sort by raw_range.start. Every NodeSpan is
-    // backed by a real tag/length prefix of its own (spec 0120 — Any/
-    // MessageSet expansion is disabled at the prototext-core level, so
-    // no virtual wrapper node with a borrowed/shared range ever reaches
-    // this function), so raw_range.start values never tie.
-    let mut doc_order: Vec<usize> = (0..nodes.len()).collect();
-    doc_order.sort_by_key(|&i| nodes[i].span.raw_range.start);
-    for w in doc_order.windows(2) {
-        let (a, b) = (w[0], w[1]);
-        nodes[a].set_doc_next(Some(b));
-        nodes[b].set_doc_prev(Some(a));
+    // Pass 2: reversed post-order visits parents first.
+    let first_child = arena.first_child();
+    let mut slots = vec![NO_NODE; n];
+    for i in (0..n).rev() {
+        slots[i] = match TreeNode::unpack(parent[i]) {
+            None => root as u32,
+            Some(p) if slots[p] != NO_NODE => {
+                let parent_slot = slots[p] as usize;
+                let slot = first_child[parent_slot] + ordinal[i];
+                if slot < first_child[parent_slot + 1] {
+                    slot
+                } else {
+                    NO_NODE
+                }
+            }
+            // The parent had no slot, so neither can anything under it.
+            Some(_) => NO_NODE,
+        };
+    }
+    slots
+}
+
+/// The maximal tree of `bytes`, for the fixtures that assemble a
+/// [`Decoded`] by hand instead of going through [`render_resolved`].
+#[cfg(test)]
+pub(crate) fn arena_of(bytes: &[u8]) -> Arena {
+    build_arena(bytes).expect("fixture blob is walkable")
+}
+
+/// Whether the arena really is a superset of what the render produced
+/// (spec 0216), and if not, which span broke it.
+///
+/// This is the property the byte-derived arena rests on: the schema names
+/// and types an occurrence but never moves a boundary, so the arena —
+/// built with no schema at all — must contain every interpretation's tree.
+/// A gap here is a node the reader could navigate to and the arena could
+/// not address.
+///
+/// The check has three parts, and none of them implies the others.
+///
+/// 1. **Coverage.** Every span joins, by its tag byte, to a slot whose
+///    byte range is its own. The tag identifies a slot uniquely because
+///    `raw_start` points at it and no two occurrences share one (S19). A
+///    packed element is the one span that is not a slot of its own — it
+///    has no tag, so it joins on its record's and is required to fall
+///    *inside* that slot rather than to equal it (S22).
+///
+/// 2. **Agreement.** The slot [`slots_for_spans`] *derives* for a span is
+///    the slot the tag join *finds*. The two answer the same question by
+///    opposite routes — one descends from the root through `first_child`
+///    and the render's own nesting, the other is a byte lookup — so their
+///    agreeing on every span at once says the arena nests and orders the
+///    slots exactly as the render nests and orders its nodes. This is
+///    what S15 puts the decomposition in one place to guarantee.
+///
+/// 3. **All-or-nothing.** A rendered node's children are either the whole
+///    of its slot's child block or none of it, never a selection. S17's
+///    `first_child[i] + step` needs this and neither of the others gives
+///    it: a path step counts *rendered* children while the arithmetic
+///    counts *arena* children, so a node showing 2 of its slot's 3
+///    children would silently address the wrong sibling. The escape that
+///    makes it hold is the scalar case — a payload the greedy walk
+///    descended into but this interpretation prints as a string has zero
+///    rendered children.
+#[cfg(test)]
+fn arena_gap(spans: &[NodeSpan], arena: &Arena) -> Option<String> {
+    let (raw_start, raw_end) = (arena.raw_start(), arena.raw_end());
+    let first_child = arena.first_child();
+    let mut by_start: HashMap<u32, u32> = HashMap::with_capacity(arena.len());
+    for (slot, &start) in raw_start.iter().enumerate() {
+        by_start.insert(start, slot as u32);
     }
 
+    let derived = slots_for_spans(spans, arena, 0);
+    // How many distinct child slots each slot's rendered children use.
+    let mut used = vec![0u32; arena.len()];
+    let mut previous_child = vec![NO_NODE; arena.len()];
+
+    for (i, span) in spans.iter().enumerate() {
+        let packed = span.packed_record_start != NO_PACKED_RECORD;
+        let tag = if packed {
+            span.packed_record_start
+        } else {
+            span.raw_range.start
+        };
+        let Some(&slot) = by_start.get(&tag) else {
+            return Some(format!(
+                "span {i} ({:?}) has no arena slot starting at {tag}",
+                span.raw_range
+            ));
+        };
+        let (start, end) = (raw_start[slot as usize], raw_end[slot as usize]);
+        let covered = if packed {
+            span.raw_range.start >= start && span.raw_range.end <= end
+        } else {
+            span.raw_range.start == start && span.raw_range.end == end
+        };
+        if !covered {
+            return Some(format!(
+                "span {i} ({:?}) does not match arena slot {slot} ({start}..{end})",
+                span.raw_range
+            ));
+        }
+        if derived[i] != slot {
+            return Some(format!(
+                "span {i} ({:?}) joins to slot {slot} but derives to slot {}",
+                span.raw_range, derived[i]
+            ));
+        }
+        // Count this span against its parent's block, a packed run's N
+        // elements counting once between them.
+        let parent = arena.parent()[slot as usize];
+        if parent != slot && previous_child[parent as usize] != slot {
+            previous_child[parent as usize] = slot;
+            used[parent as usize] += 1;
+        }
+    }
+
+    for slot in 0..arena.len() {
+        let block = first_child[slot + 1] - first_child[slot];
+        if used[slot] != 0 && used[slot] != block {
+            return Some(format!(
+                "slot {slot} renders {} of its {block} children, so a path step \
+                 would not count what the arithmetic counts",
+                used[slot]
+            ));
+        }
+    }
+    None
+}
+
+/// The current interpretation's view of the arena: one entry per slot,
+/// built from the spans the render emitted (spec 0216 S12).
+///
+/// No structure is computed here — the arena already holds it, and it
+/// holds it for every interpretation at once. All this does is decide
+/// which slots this rendering shows and how many lines each occupies.
+///
+/// A packed run's N elements land on the record's single slot (S22), so
+/// their line counts add up rather than overwriting each other, and the
+/// slot keeps the first element's span with the record's own byte range
+/// substituted in. That range substitution is the reason a caller
+/// wanting element k's bytes has to re-parse the payload: the elements'
+/// individual ranges are exactly what collapsing throws away.
+pub(crate) fn build_tree(spans: Vec<NodeSpan>, arena: &Arena) -> Vec<TreeNode> {
+    let mut nodes: Vec<TreeNode> = (0..arena.len()).map(|_| TreeNode::vacant()).collect();
+    overlay_spans(&mut nodes, spans, arena, 0);
     nodes
+}
+
+/// Write one render's spans into the slot-indexed overlay, rooted at
+/// slot `root`.
+///
+/// [`build_tree`] is this over a fresh all-vacant overlay and the whole
+/// document; `splice_override` is this over the live overlay and one
+/// node's re-render. That there is one function rather than two is the
+/// point of spec 0216: a splice no longer builds a tree and stitches it
+/// in, because the structure it would have built is already there.
+///
+/// The caller is responsible for vacating whatever the previous
+/// interpretation of `root`'s subtree occupied — this only writes.
+pub(crate) fn overlay_spans(
+    nodes: &mut [TreeNode],
+    spans: Vec<NodeSpan>,
+    arena: &Arena,
+    root: usize,
+) {
+    let slots = slots_for_spans(&spans, arena, root);
+    let (raw_start, raw_end) = (arena.raw_start(), arena.raw_end());
+
+    for (i, mut span) in spans.into_iter().enumerate() {
+        if slots[i] == NO_NODE {
+            continue;
+        }
+        let slot = slots[i] as usize;
+        // Spec 0210 S1. `text_range` is exact here and only here — it is
+        // the render's own line counter, read before any splice can
+        // invalidate it. Taking the count directly is equivalent to
+        // summing the children (every line belongs to exactly one node)
+        // and is O(1) rather than a second pass.
+        let lines = span.text_range.end - span.text_range.start;
+        if nodes[slot].is_rendered() {
+            // The second and later elements of a packed run: one more
+            // row of a slot that already exists.
+            nodes[slot].lines_total += lines;
+            nodes[slot].lines_visible += lines;
+            continue;
+        }
+        // Spec 0216 S19: both byte coordinates come from the arena
+        // rather than from the span. That is what makes a splice's local
+        // render — whose spans are numbered from the re-decoded field's
+        // own first byte — need no translation at all, and it is also
+        // the *only* correct source for a packed record, whose slot
+        // covers the whole run rather than this one element.
+        span.raw_range = raw_start[slot]..raw_end[slot];
+        if span.packed_record_start != NO_PACKED_RECORD {
+            span.packed_record_start = raw_start[slot];
+        }
+        nodes[slot] = TreeNode {
+            span,
+            lines_total: lines,
+            // Nothing is folded at build time.
+            lines_visible: lines,
+            rendered_as: NOT_RENDERED,
+        };
+    }
 }
 
 // ── Public entry point ──────────────────────────────────────────────────────
@@ -792,6 +950,10 @@ pub(crate) fn build_tree(spans: Vec<NodeSpan>) -> Vec<TreeNode> {
 pub struct Decoded {
     pub lines: Vec<String>,
     pub tree: Vec<TreeNode>,
+    /// The blob's structural decomposition, derived from the bytes alone
+    /// (spec 0216 S1). Unlike `tree` it does not depend on the type
+    /// assignment, so it is built once here and never rebuilt.
+    pub arena: Arena,
     pub root_type: String,
     /// The wrapped blob actually decoded (spec 0114 §1.1): a real tag+length
     /// prefix (field 1, `WT_LEN`) ahead of the file's own bytes, so every
@@ -1237,11 +1399,26 @@ pub fn render_resolved(
             lines[0] = patched;
         }
     }
-    let tree = build_tree(rendered.spans);
-
+    // Spec 0216 S1: the maximal tree is a function of the wrapped bytes,
+    // so it is built from the whole blob — slot 0 is the wrapper itself
+    // and the top-level occurrences are its children. It has to come
+    // first: the overlay is indexed by its slots.
+    let arena = build_arena(&blob).map_err(|e| DecodeError::Schema(e.to_string()))?;
+    // The superset property is what the whole design rests on and is not
+    // checkable after the fact: `build_tree` consumes the spans, and the
+    // overlay it leaves behind is already expressed in the arena's own
+    // terms, so it can no longer disagree with it. Checking here, while
+    // both halves are still in hand, is the only place it means anything
+    // — and being `cfg(test)` it costs the shipped binary nothing.
+    #[cfg(test)]
+    if let Some(gap) = arena_gap(&rendered.spans, &arena) {
+        panic!("spec 0216: the arena is not a superset of the render — {gap}");
+    }
+    let tree = build_tree(rendered.spans, &arena);
     Ok(Decoded {
         lines,
         tree,
+        arena,
         root_type,
         wrapper_offset: blob.wrapper_offset(),
         blob,
@@ -1258,59 +1435,6 @@ mod tests {
 
     use super::*;
     use crate::blob::wrapped;
-
-    /// Spec 0211 test item 4. A link is stored as a `NodeIdx` with
-    /// `NO_NODE` standing for absence, so the one thing the encoding
-    /// could plausibly get wrong is confusing "no link" with a real
-    /// node — and specifically with node **0**, which an
-    /// index-plus-one encoding would have gotten wrong and which is
-    /// always a real node here (`build_tree` emits post-order, so slot
-    /// 0 holds a leaf).
-    #[test]
-    fn every_link_round_trips_through_index_zero_and_through_absence() {
-        let mut node = build_tree(vec![NodeSpan {
-            field_number: 1,
-            raw_range: 0..2,
-            text_range: 0..1,
-            level: 0,
-            type_fqdn: NO_FQDN,
-            is_message: false,
-            packed_record_start: NO_PACKED_RECORD,
-            wire_type: WT_LEN as u8,
-        }])
-        .pop()
-        .expect("one span builds one node");
-
-        macro_rules! check {
-            ($($get:ident, $set:ident;)*) => {$(
-                assert_eq!(
-                    node.$get(), None,
-                    "a freshly built node has no {}", stringify!($get),
-                );
-                node.$set(Some(0));
-                assert_eq!(
-                    node.$get(), Some(0),
-                    "{} lost node 0", stringify!($get),
-                );
-                node.$set(Some(7));
-                assert_eq!(node.$get(), Some(7), "{} lost node 7", stringify!($get));
-                node.$set(None);
-                assert_eq!(
-                    node.$get(), None,
-                    "{} kept a stale link after being cleared", stringify!($get),
-                );
-            )*};
-        }
-        check! {
-            parent, set_parent;
-            first_child, set_first_child;
-            last_child, set_last_child;
-            next_sibling, set_next_sibling;
-            prev_sibling, set_prev_sibling;
-            doc_next, set_doc_next;
-            doc_prev, set_doc_prev;
-        }
-    }
 
     #[test]
     fn determine_root_type_returns_none_without_override_or_graph() {
@@ -1509,6 +1633,130 @@ mod tests {
         assert_eq!(wrapper.span.type_fqdn, NO_FQDN);
     }
 
+    /// Spec 0216, test-plan item 1: the maximal tree is a superset of
+    /// every interpretation's tree.
+    ///
+    /// The same bytes are decoded twice, once with the schema and once
+    /// with none, against a single arena — which is the claim in its
+    /// sharpest form, since the arena is built without either. The blob
+    /// carries a packed run on purpose: those elements have no tag of
+    /// their own, so they are the one kind of rendered node that is a
+    /// display row inside a slot rather than a slot (S22), and the raw
+    /// pass renders the very same bytes as an opaque string instead.
+    #[test]
+    fn the_arena_covers_every_interpretation() {
+        let inner = DescriptorProto {
+            name: Some("Inner".to_string()),
+            field: vec![FieldDescriptorProto {
+                name: Some("id".to_string()),
+                number: Some(1),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Int32 as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let outer = DescriptorProto {
+            name: Some("Outer".to_string()),
+            field: vec![
+                FieldDescriptorProto {
+                    name: Some("xs".to_string()),
+                    number: Some(1),
+                    label: Some(Label::Repeated as i32),
+                    r#type: Some(Type::Int32 as i32),
+                    ..Default::default()
+                },
+                FieldDescriptorProto {
+                    name: Some("inner".to_string()),
+                    number: Some(2),
+                    label: Some(Label::Optional as i32),
+                    r#type: Some(Type::Message as i32),
+                    type_name: Some(".test.Inner".to_string()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let file = FileDescriptorProto {
+            name: Some("test_arena_coverage.proto".to_string()),
+            package: Some("test".to_string()),
+            message_type: vec![inner, outer],
+            syntax: Some("proto3".to_string()),
+            ..Default::default()
+        };
+        let fds = FileDescriptorSet { file: vec![file] };
+
+        let descriptor_path = std::env::temp_dir().join("protolens-arena-coverage-descriptor.pb");
+        std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
+        let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
+        std::fs::remove_file(&descriptor_path).unwrap();
+
+        // field 1: packed [1, 2, 300]; field 2: Inner { id: 7 }.
+        let blob = [0x0A, 0x04, 0x01, 0x02, 0xAC, 0x02, 0x12, 0x02, 0x08, 0x07];
+
+        // `decode` runs `arena_gap` itself under `cfg(test)` and panics
+        // on a gap, so what is left to assert here is only that the run
+        // rendered something — a check over nothing passes vacuously.
+        for root in [RootType::Named("test.Outer"), RootType::Raw] {
+            let decoded = decode(wrapped(&blob), &mut ctx, root, 2).unwrap();
+            let rendered = decoded.tree.iter().filter(|n| n.is_rendered()).count();
+            assert!(
+                rendered > 1,
+                "{root:?}: nothing was rendered, so the check would prove nothing"
+            );
+        }
+    }
+
+    /// The same claim against a blob nobody wrote for it.
+    ///
+    /// A fixture proves the property on shapes chosen to exercise it,
+    /// which is the weaker half of the argument: the arena has to hold
+    /// for whatever a reader opens. This runs the identical checks over
+    /// a real descriptor set, and is `#[ignore]`d because the corpus is
+    /// not in the repository. Point it at one and run it explicitly:
+    ///
+    /// ```text
+    /// PROTOLENS_CORPUS_BLOB=/path/to/googleapis.desc \
+    /// PROTOLENS_CORPUS_DESCRIPTOR=/path/to/googleapis.desc \
+    /// PROTOLENS_CORPUS_TYPE=google.protobuf.FileDescriptorSet \
+    ///   cargo test --release -p protolens --bin protolens \
+    ///     -- --ignored --nocapture the_arena_covers_a_real_corpus
+    /// ```
+    ///
+    /// `--bin protolens` is not optional: without it cargo also runs the
+    /// integration target, where the filter matches nothing and the run
+    /// reports success having checked nothing.
+    ///
+    /// Omit the last two and it checks the raw interpretation instead —
+    /// worth doing both, since they are two different renderings of one
+    /// arena.
+    #[test]
+    #[ignore = "needs a corpus blob in PROTOLENS_CORPUS_BLOB"]
+    fn the_arena_covers_a_real_corpus() {
+        let blob_path = std::env::var("PROTOLENS_CORPUS_BLOB")
+            .expect("set PROTOLENS_CORPUS_BLOB to the blob to check");
+        let bytes = std::fs::read(&blob_path).expect("corpus blob is readable");
+
+        let descriptor = std::env::var("PROTOLENS_CORPUS_DESCRIPTOR").ok();
+        let type_name = std::env::var("PROTOLENS_CORPUS_TYPE").ok();
+        let mut ctx = match &descriptor {
+            Some(path) => DescriptorContext::load(Path::new(path)).expect("descriptor set loads"),
+            None => DescriptorContext::empty_for_test(),
+        };
+        let root = match &type_name {
+            Some(name) => RootType::Named(name),
+            None => RootType::Raw,
+        };
+
+        let decoded = decode(wrapped(&bytes), &mut ctx, root, 2).unwrap();
+        let rendered = decoded.tree.iter().filter(|n| n.is_rendered()).count();
+        assert!(rendered > 1, "nothing was rendered");
+        eprintln!(
+            "the arena covers, and agrees with, all {rendered} rendered nodes, in {} slots",
+            decoded.arena.len()
+        );
+    }
+
     /// The document root is field number 1 of the virtual encompassing
     /// message, and its field number is always shown, same as any other
     /// unnamed field — the root is not special-cased.
@@ -1656,12 +1904,16 @@ mod tests {
             .iter()
             .position(|n| n.span.type_fqdn == any)
             .expect("tree must contain the unexpanded Any node itself");
-        let type_url_idx = decoded.tree[any_idx]
-            .first_child()
-            .expect("Any node must have type_url as its first child");
-        let value_idx = decoded.tree[type_url_idx]
-            .next_sibling()
-            .expect("Any node must have value as its second child");
+        // Spec 0216: the structure is the arena's, and `Decoded` has no
+        // `App` to read it through, so the two child slots are the
+        // arithmetic itself — `Any`'s block starts at `first_child[any]`.
+        let first_child = decoded.arena.first_child();
+        let type_url_idx = first_child[any_idx] as usize;
+        let value_idx = type_url_idx + 1;
+        assert!(
+            value_idx < first_child[any_idx + 1] as usize,
+            "Any node must have type_url and value as its two children"
+        );
         assert_eq!(decoded.tree[type_url_idx].span.field_number, 1);
         assert_eq!(decoded.tree[value_idx].span.field_number, 2);
         assert!(

@@ -158,8 +158,7 @@ fn an_fqdn_field_override_marks_every_node_of_that_type() {
 
     for (n, item) in items.iter().enumerate() {
         assert!(
-            app.tree[*item]
-                .first_child()
+            app.first_child(*item)
                 .map(|c| app.tree[c].rendered_as != NOT_RENDERED)
                 .unwrap_or(false),
             "item {n}'s field 1 must have been settled under the \
@@ -192,8 +191,8 @@ fn a_deactivated_override_still_falls_back_under_unmarked_ancestors() {
     // at its `bytes` natural type and prove nothing about reachability.
     let payload =
         node_with_type(&app, "acme.Payload").expect("the Any's value must have auto-expanded");
-    let deep = app.tree[payload]
-        .first_child()
+    let deep = app
+        .first_child(payload)
         .expect("the payload must have its `label` field");
     let deep_path = app.positional_path(deep);
     let origin = override_pane::OverrideOrigin::Path {

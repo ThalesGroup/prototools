@@ -40,14 +40,11 @@ fn diagnose_pdb_max_children_per_parent() {
     let decoded = decode(wrapped(&blob), &mut ctx, RootType::Raw, 2).expect("decode");
     eprintln!("total tree nodes: {}", decoded.tree.len());
 
-    let mut children_count = vec![0usize; decoded.tree.len()];
-    for (idx, node) in decoded.tree.iter().enumerate() {
-        if let Some(p) = node.parent() {
-            children_count[p] += 1;
-        }
-        let _ = idx;
-    }
-    let mut with_counts: Vec<(usize, usize)> = children_count.into_iter().enumerate().collect();
+    // Spec 0216: a child count is a subtraction on the arena.
+    let first_child = decoded.arena.first_child();
+    let mut with_counts: Vec<(usize, usize)> = (0..decoded.arena.len())
+        .map(|i| (i, (first_child[i + 1] - first_child[i]) as usize))
+        .collect();
     with_counts.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
     eprintln!("top 10 parents by direct-child count:");
     for (idx, c) in with_counts.iter().take(10) {
@@ -211,9 +208,7 @@ fn profile_preview_root_versus_first_child_on_db3() {
     );
 
     let root = app.first_node;
-    let first_child = app.tree[root]
-        .first_child()
-        .expect("root must have a child");
+    let first_child = app.first_child(root).expect("root must have a child");
 
     // Two fixed candidates, alternated, so each measurement is a real
     // re-render rather than a `render_cache` hit.
@@ -1567,7 +1562,7 @@ fn profile_nested_commit_on_pdb() {
             {
                 return false;
             }
-            let Some(parent) = app.tree[i].parent() else {
+            let Some(parent) = app.parent(i) else {
                 return false;
             };
             if parent == app.first_node {
@@ -1575,12 +1570,12 @@ fn profile_nested_commit_on_pdb() {
             }
             let field = s.field_number;
             let mut siblings = 0usize;
-            let mut c = app.tree[parent].first_child();
+            let mut c = app.first_child(parent);
             while let Some(ci) = c {
                 if app.tree[ci].span.field_number == field {
                     siblings += 1;
                 }
-                c = app.tree[ci].next_sibling();
+                c = app.next_sibling(ci);
             }
             siblings == 1
         })

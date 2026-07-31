@@ -401,11 +401,7 @@ impl App {
             SortMode::Inferred => match &self.ctx.graph {
                 Some(_graph) => {
                     let node = &self.tree[idx].span;
-                    let range = extract::message_payload_range(
-                        &self.blob,
-                        &node.raw_range,
-                        node.packed_record_start,
-                    );
+                    let range = extract::message_payload_range(&self.blob, &node.raw_range);
                     if self.active_override_range.as_ref() != Some(&range) {
                         // 2026-07-20 feedback: this directly follows the
                         // user pressing `t`/`i` — it must jump the queue
@@ -485,8 +481,7 @@ impl App {
             return;
         };
         let node = &self.tree[idx].span;
-        let range =
-            extract::message_payload_range(&self.blob, &node.raw_range, node.packed_record_start);
+        let range = extract::message_payload_range(&self.blob, &node.raw_range);
         // 2026-07-20 feedback: directly follows the user opening the
         // pane or scrolling past the loaded window — a user event,
         // jumps the queue.
@@ -545,11 +540,7 @@ impl App {
             .map(|(f, _)| f.clone());
         if self.override_candidates_pending {
             let node = &self.tree[idx].span;
-            let range = extract::message_payload_range(
-                &self.blob,
-                &node.raw_range,
-                node.packed_record_start,
-            );
+            let range = extract::message_payload_range(&self.blob, &node.raw_range);
             // 2026-07-20 feedback: a passive re-check after a worker-
             // progress wakeup, not a fresh user action — must not
             // preempt whatever the user has since asked for.
@@ -917,12 +908,12 @@ impl App {
             let Some(byte) = needle.find(&self.lines[line_idx]) else {
                 continue;
             };
-            // A closing `}` is not any node's opening line, and a search
-            // has never matched one.
+            // A closing `}` draws no content of its own, and a search has
+            // never matched one.
             let Some(pos) = self.line_pos(line_idx) else {
                 continue;
             };
-            if pos.footer {
+            if self.is_footer(pos) {
                 continue;
             }
             if pos.node != self.cursor {
@@ -930,6 +921,10 @@ impl App {
                 self.set_cursor(pos.node);
                 self.unfold_ancestors(pos.node);
             }
+            // Spec 0216 S7: a flat node can own several rows — a packed
+            // run's elements — so landing on the node is not yet landing
+            // on the match. `set_cursor` has just reset this to 0.
+            self.cursor_line_in_node = pos.line_in_node;
             // Spec 0194 S8: land on the match, not merely on its row.
             // Clamped, since a match inside the row's own indentation is
             // left of the leftmost reachable column (S3) — and since

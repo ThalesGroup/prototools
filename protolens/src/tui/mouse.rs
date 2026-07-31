@@ -344,49 +344,41 @@ impl App {
             return;
         };
 
-        if let Some(idx) = self.node_at_header_line(line_idx) {
-            // A click on a foldable node's own fold marker toggles it
-            // without moving the cursor there (2026-07-18 feedback) —
-            // the marker is a pure fold control, not a row-selection
-            // target, mirroring the common tree-view idiom (e.g. VS
-            // Code's file-explorer disclosure triangle). Keyboard
-            // focus still shifts to the main pane regardless
-            // (`handle_mouse` already clears `override_focus`/
-            // `manage_focus` before calling here).
-            if self.has_children(idx) {
-                let area = self.main_area;
-                let rel_col = col - area.x;
-                // Column 0 is always the heat-cue gutter (spec 0138 N1:
-                // a glyph or a reserved blank, never part of the
-                // line's own text) — the marker sits one column
-                // further right.
-                if rel_col >= 1 && rel_col - 1 == render::marker_column(&self.lines[line_idx]) {
-                    self.toggle_fold(idx);
-                    return;
-                }
-            }
-
-            if idx != self.cursor || self.cursor_footer {
-                self.record_jump();
-                self.set_cursor(idx);
-            }
-            self.set_caret_from_click(col, line_idx);
+        let Some(pos) = self.line_pos(line_idx) else {
             return;
+        };
+
+        // A click on a foldable node's own fold marker toggles it
+        // without moving the cursor there (2026-07-18 feedback) — the
+        // marker is a pure fold control, not a row-selection target,
+        // mirroring the common tree-view idiom (e.g. VS Code's
+        // file-explorer disclosure triangle). Keyboard focus still
+        // shifts to the main pane regardless (`handle_mouse` already
+        // clears `override_focus`/`manage_focus` before calling here).
+        //
+        // Spec 0142: a footer line carries no fold glyph, so the check
+        // is confined to the rows a node draws its own content on.
+        if !self.is_footer(pos) && self.has_children(pos.node) {
+            let rel_col = col - self.main_area.x;
+            // Column 0 is always the heat-cue gutter (spec 0138 N1: a
+            // glyph or a reserved blank, never part of the line's own
+            // text) — the marker sits one column further right.
+            if rel_col >= 1 && rel_col - 1 == render::marker_column(&self.lines[line_idx]) {
+                self.toggle_fold(pos.node);
+                return;
+            }
         }
 
-        // Spec 0142: a click on a node's own closing `}` line (never in
-        // `line_to_node`, only in `footer_line_to_node`) moves the
-        // cursor there — no fold-marker check applies, since footer
-        // lines never carry a fold glyph.
-        if let Some(idx) = self.node_at_footer_line(line_idx) {
-            if idx != self.cursor || !self.cursor_footer {
-                self.record_jump();
-                self.cursor = idx;
-                self.cursor_footer = true;
-                self.cursor_moves += 1;
-            }
-            self.set_caret_from_click(col, line_idx);
+        if (self.cursor, self.cursor_line_in_node) != (pos.node, pos.line_in_node) {
+            self.record_jump();
+            self.cursor = pos.node;
+            self.cursor_line_in_node = pos.line_in_node;
+            self.cursor_moves += 1;
         }
+        // Overwrites the column, the desired column and the anchor
+        // outright, so the caret reset a `set_cursor` would have done
+        // above would be invisible.
+        self.set_caret_from_click(col, line_idx);
     }
 
     /// Spec 0194 S7: invert S1's column-to-screen mapping and put the

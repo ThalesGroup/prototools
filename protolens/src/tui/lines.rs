@@ -28,44 +28,57 @@
 
 use super::*;
 
-/// One rendered line, named by the node that owns it.
+/// One rendered line, named by the node that owns it and by which of
+/// that node's own lines it is.
 ///
-/// Every line is either some node's header (its first line) or some
-/// node's footer (its closing `}`). There is no third case: spec 0210
-/// S1 made `IndexingTextSink::malformed` push a span precisely so that
-/// this is exact rather than nearly true, since a line owned by nobody
-/// would make every position after it wrong.
+/// Spec 0210 S1's invariant is unchanged: every line belongs to exactly
+/// one node, because a line belonging to nobody is an absorbing barrier
+/// for the cursor. What spec 0216 S7 changes is that the map became
+/// *many*-to-one rather than two-to-one, so the half-coordinate had to
+/// widen from a `bool` to a count.
 ///
-/// This is the same `(node, footer)` pair the cursor has carried since
-/// spec 0142 (`cursor` + `cursor_footer`).
+/// For a bracketed node (`TreeNode::is_bracketed`) only two values
+/// occur: `0` is the header and `lines_total - 1` is the closing brace.
+/// Everything between them belongs to the subtree drawn inside, which
+/// is why this indexes the node's own lines rather than a screen
+/// offset — the two lines of a message are not adjacent on screen. For
+/// a flat node the values run `0 .. lines_total`, which is one line for
+/// an ordinary scalar and one per element for a packed record.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct LinePos {
     pub(crate) node: usize,
-    pub(crate) footer: bool,
+    pub(crate) line_in_node: u32,
+}
+
+impl LinePos {
+    /// The node's first line.
+    pub(crate) fn header(node: usize) -> Self {
+        LinePos {
+            node,
+            line_in_node: 0,
+        }
+    }
 }
 
 impl App {
-    /// Whether `idx` is a bracketed node — has its own distinct header
-    /// *and* footer line, so it's foldable and carries a fold marker.
-    /// Not the same as `self.tree[idx].first_child.is_some()` (spec
-    /// 0142 fix, 2026-07-18 feedback): an empty-but-bracketed message
-    /// (decoded with zero populated fields, still rendered as `Name {`
-    /// then `}` on the next line) has no children yet is still a real,
-    /// two-line bracketed node — foldable (folding it just hides its
-    /// own footer line, same as any node with an empty body) and
-    /// entitled to a fold marker/handle like any other message node.
+    /// Whether `idx` is drawn with a closing brace of its own — so it is
+    /// foldable and carries a fold marker.
+    ///
+    /// The name is older than the test. It was `first_child.is_some()`
+    /// until spec 0142, when an empty-but-bracketed message (zero
+    /// populated fields, still rendered as `Name {` then `}`) turned out
+    /// to be foldable and marker-worthy despite having no children; it
+    /// then became `lines_total > 1`, which spec 0216 S7 in turn
+    /// falsifies, because a collapsed packed run is one node of N lines
+    /// with no brace anywhere. Ask the shape directly.
     pub(super) fn has_children(&self, idx: usize) -> bool {
-        self.tree[idx].lines_total > 1
+        self.tree[idx].is_bracketed()
     }
 
-    /// The document-order first node, which for a real document is its
-    /// single parentless root: the whole blob is wrapped as field 1 of a
-    /// virtual encompassing message (`Blob::load`), so there is exactly
-    /// one level-0 span and everything else descends from it.
+    /// The document-order first node: slot 0, the whole blob seen as
+    /// field 1 of a virtual encompassing message (spec 0216 S1).
     ///
-    /// `None` only for an empty tree. The hand-built test fixtures are
-    /// the reason the descents below still walk `next_sibling` at the
-    /// top level: several of them link a row of parentless roots.
+    /// `None` only for an empty tree.
     fn first_root(&self) -> Option<usize> {
         (!self.tree.is_empty()).then_some(self.first_node)
     }
@@ -73,31 +86,32 @@ impl App {
     /// The absolute line `idx`'s subtree begins on — its header line.
     ///
     /// Walks the root path, summing the sizes of the siblings that
-    /// precede each step. O(depth x fanout), and on the reference corpus
-    /// the fanout term is the root's 7 771 children — a linked-list
-    /// chase of about half a millisecond. That is fine for a teleport
-    /// (search, jumplist, click, `gg`/`G`) and must be kept off
-    /// everything else; see `next_visible`.
+    /// precede each step. Spec 0216 S23: those siblings are the slots
+    /// immediately below `idx` in the arena, so this is a sequential
+    /// scan of a contiguous run rather than the linked-list chase it
+    /// was — on the reference corpus, 31 KB read forwards instead of
+    /// 7 771 pointer hops scattered across a 4.7 M-slot arena.
     pub(super) fn absolute_start(&self, idx: usize) -> usize {
+        let first_child = self.arena.first_child();
         let mut line = 0usize;
         let mut cur = idx;
-        loop {
-            let mut prev = self.tree[cur].prev_sibling();
-            while let Some(p) = prev {
-                line += self.tree[p].lines_total as usize;
-                prev = self.tree[p].prev_sibling();
+        while let Some(parent) = self.parent(cur) {
+            for sibling in first_child[parent] as usize..cur {
+                line += self.tree[sibling].lines_total as usize;
             }
-            match self.tree[cur].parent() {
-                // The parent's own header is the single line between it
-                // and its first child.
-                Some(p) => {
-                    line += 1;
-                    cur = p;
-                }
-                // The root's start is the sum of nothing, i.e. 0.
-                None => return line,
-            }
+            // The parent's own header is the single line between it and
+            // its first child.
+            line += 1;
+            cur = parent;
         }
+        // `cur` is a root, and level order puts the roots first, so the
+        // ones before it are simply the slots below it. A loaded document
+        // has one root and this loop is empty; a fixture handing the
+        // arena an unwrapped blob of several top-level records does not.
+        for root in 0..cur {
+            line += self.tree[root].lines_total as usize;
+        }
+        line
     }
 
     /// `idx`'s absolute line range, `start .. start + lines_total`.
@@ -111,13 +125,6 @@ impl App {
         start..start + self.tree[idx].lines_total as usize
     }
 
-    /// `idx`'s own closing `}` line. Equal to its header line for a
-    /// one-line node, which is why callers that mean "the footer as a
-    /// distinct cursor stop" must test `has_children` first.
-    pub(super) fn footer_line(&self, idx: usize) -> usize {
-        self.absolute_start(idx) + self.tree[idx].lines_total as usize - 1
-    }
-
     /// `idx`'s subtree just changed shape or fold state — recompute both
     /// of its counts from its children and carry the difference up to
     /// the root.
@@ -129,35 +136,30 @@ impl App {
     /// `lines_visible`, and above a *folded* ancestor even that is
     /// unchanged, because such an ancestor shows one line whatever
     /// happens beneath it.
-    ///
-    /// Before spec 0210 the two callers were a `visible_rows` rebuild
-    /// over all 5.28 M rows (the fold path deliberately passed `from =
-    /// 0`, spec 0186 N4) and `finalize_override_batch`'s three
-    /// document-length walks.
     pub(super) fn refresh_line_counts(&mut self, idx: usize) {
         let mut cur = Some(idx);
         while let Some(n) = cur {
-            let mut total = 0u32;
-            let mut visible = 0u32;
-            let mut child = self.tree[n].first_child();
-            while let Some(c) = child {
-                total += self.tree[c].lines_total;
-                visible += self.tree[c].lines_visible;
-                child = self.tree[c].next_sibling();
-            }
-            // The header is always one line; the footer is one line iff
-            // the node is bracketed. A node with children always is; a
-            // childless one is iff it already was, which is exactly
-            // `lines_total > 1` — nothing on a climb from a splice or a
-            // fold can change that.
-            let bracketed = total > 0 || self.tree[n].lines_total > 1;
-            let want_total = if bracketed { total + 2 } else { 1 };
-            let want_visible = if self.folded.contains(&n) {
-                1
-            } else if bracketed {
-                visible + 2
+            let (want_total, want_visible) = if self.tree[n].is_bracketed() {
+                let mut total = 0u32;
+                let mut visible = 0u32;
+                let mut child = self.first_child(n);
+                while let Some(c) = child {
+                    total += self.tree[c].lines_total;
+                    visible += self.tree[c].lines_visible;
+                    child = self.next_sibling(c);
+                }
+                // Header and footer, one line each, whatever is between.
+                let shown = if self.folded.contains(&n) {
+                    1
+                } else {
+                    visible + 2
+                };
+                (total + 2, shown)
             } else {
-                1
+                // A flat node's rows are its own — a scalar's single line
+                // or a packed record's elements. Nothing below it can
+                // move them, and it cannot be folded.
+                (self.tree[n].lines_total, self.tree[n].lines_total)
             };
             if self.tree[n].lines_total == want_total && self.tree[n].lines_visible == want_visible
             {
@@ -165,12 +167,12 @@ impl App {
             }
             self.tree[n].lines_total = want_total;
             self.tree[n].lines_visible = want_visible;
-            cur = self.tree[n].parent();
+            cur = self.parent(n);
         }
     }
 
-    /// The node owning absolute line `line`, and whether the line is
-    /// that node's footer. `None` past the end of the document.
+    /// The node owning absolute line `line`, and which of that node's
+    /// own lines it is. `None` past the end of the document.
     ///
     /// Descends from the root, at each level handing off to the child
     /// whose extent contains `line`. Replaces the `line_to_node` /
@@ -225,27 +227,32 @@ impl App {
                 break;
             }
             start += total;
-            cur = self.tree[cur].next_sibling()?;
+            cur = self.next_sibling(cur)?;
         }
         loop {
-            if line == start {
+            let total = self.tree[cur].lines_total as usize;
+            // A flat node owns a run of consecutive lines outright,
+            // with nothing nested inside to hand off to.
+            if !self.tree[cur].is_bracketed() {
                 return Some(LinePos {
                     node: cur,
-                    footer: false,
+                    line_in_node: (line - start) as u32,
                 });
             }
-            let total = self.tree[cur].lines_total as usize;
+            if line == start {
+                return Some(LinePos::header(cur));
+            }
             if line == start + total - 1 {
                 return Some(LinePos {
                     node: cur,
-                    footer: true,
+                    line_in_node: total as u32 - 1,
                 });
             }
             // Strictly inside the body, so some child owns it. The `?`
             // is unreachable while the counts are consistent: a body
             // line with no child to claim it is exactly the corruption
             // spec 0210's invariant rules out.
-            let mut child = self.tree[cur].first_child()?;
+            let mut child = self.first_child(cur)?;
             let mut child_start = start + 1;
             loop {
                 let child_total = self.tree[child].lines_total as usize;
@@ -253,7 +260,7 @@ impl App {
                     break;
                 }
                 child_start += child_total;
-                child = self.tree[child].next_sibling()?;
+                child = self.next_sibling(child)?;
             }
             cur = child;
             start = child_start;
@@ -267,7 +274,7 @@ impl App {
         let mut cur = self.first_root();
         while let Some(n) = cur {
             total += self.tree[n].lines_visible as usize;
-            cur = self.tree[n].next_sibling();
+            cur = self.next_sibling(n);
         }
         total
     }
@@ -289,17 +296,23 @@ impl App {
             }
             row_base += visible;
             start += self.tree[cur].lines_total as usize;
-            cur = self.tree[cur].next_sibling()?;
+            cur = self.next_sibling(cur)?;
         }
         loop {
-            if row == row_base {
+            // A flat node is never folded, so its visible rows and its
+            // absolute lines advance together.
+            if !self.tree[cur].is_bracketed() {
+                let k = row - row_base;
                 return Some((
                     LinePos {
                         node: cur,
-                        footer: false,
+                        line_in_node: k as u32,
                     },
-                    start,
+                    start + k,
                 ));
+            }
+            if row == row_base {
+                return Some((LinePos::header(cur), start));
             }
             // Unreachable for a folded node: its `lines_visible` is 1,
             // so the enclosing bound `row < row_base + visible` has
@@ -310,12 +323,12 @@ impl App {
                 return Some((
                     LinePos {
                         node: cur,
-                        footer: true,
+                        line_in_node: total as u32 - 1,
                     },
                     start + total - 1,
                 ));
             }
-            let mut child = self.tree[cur].first_child()?;
+            let mut child = self.first_child(cur)?;
             let mut child_row = row_base + 1;
             let mut child_start = start + 1;
             loop {
@@ -325,7 +338,7 @@ impl App {
                 }
                 child_row += child_visible;
                 child_start += self.tree[child].lines_total as usize;
-                child = self.tree[child].next_sibling()?;
+                child = self.next_sibling(child)?;
             }
             cur = child;
             row_base = child_row;
@@ -344,10 +357,7 @@ impl App {
     /// Folding to the ancestor rather than reporting "hidden" is what
     /// the callers want: a cursor or an overlay anchor on a folded-away
     /// line still has to be drawn *somewhere*, and the fold's own header
-    /// is the row the user sees it at. It also matches what the
-    /// `visible_rows` binary search it replaces did with its miss
-    /// (`unwrap_or_else(|i| i)`), to within the one row between the last
-    /// hidden line and the next shown one.
+    /// is the row the user sees it at.
     pub(super) fn visible_row_of_line(&self, line: usize) -> Option<usize> {
         let mut cur = self.first_root()?;
         let mut start = 0usize;
@@ -359,18 +369,19 @@ impl App {
             }
             start += total;
             row_base += self.tree[cur].lines_visible as usize;
-            cur = self.tree[cur].next_sibling()?;
+            cur = self.next_sibling(cur)?;
         }
         loop {
+            if !self.tree[cur].is_bracketed() {
+                return Some(row_base + (line - start));
+            }
             if line == start {
                 return Some(row_base);
             }
             let visible = self.tree[cur].lines_visible as usize;
             // A single visible row and `line` is not the header: the
             // node is folded and `line` is inside the body it hides, so
-            // this fold's own header row is where it shows up. (A
-            // one-line node cannot reach here — the bound above would
-            // have made `line == start`.)
+            // this fold's own header row is where it shows up.
             if visible == 1 {
                 return Some(row_base);
             }
@@ -378,7 +389,7 @@ impl App {
             if line == start + total - 1 {
                 return Some(row_base + visible - 1);
             }
-            let mut child = self.tree[cur].first_child()?;
+            let mut child = self.first_child(cur)?;
             let mut child_start = start + 1;
             let mut child_row = row_base + 1;
             loop {
@@ -388,7 +399,7 @@ impl App {
                 }
                 child_start += child_total;
                 child_row += self.tree[child].lines_visible as usize;
-                child = self.tree[child].next_sibling()?;
+                child = self.next_sibling(child)?;
             }
             cur = child;
             start = child_start;
@@ -429,58 +440,49 @@ impl App {
     /// S3's "the frame is a walk, the index is not in the per-frame
     /// path".
     pub(super) fn next_visible(&self, pos: LinePos) -> Option<(LinePos, usize)> {
-        let node = &self.tree[pos.node];
-        if !pos.footer && !self.folded.contains(&pos.node) {
-            if let Some(child) = node.first_child() {
-                return Some((
-                    LinePos {
-                        node: child,
-                        footer: false,
-                    },
-                    1,
-                ));
-            }
-            if node.lines_total > 1 {
+        let total = self.tree[pos.node].lines_total;
+        if self.tree[pos.node].is_bracketed() {
+            if pos.line_in_node == 0 && !self.folded.contains(&pos.node) {
+                if let Some(child) = self.first_child(pos.node) {
+                    return Some((LinePos::header(child), 1));
+                }
                 // An empty-but-bracketed message: no children, but its
                 // own closing brace is still a line of its own.
                 return Some((
                     LinePos {
                         node: pos.node,
-                        footer: true,
+                        line_in_node: total - 1,
                     },
-                    node.lines_total as usize - 1,
+                    total as usize - 1,
                 ));
             }
-        }
-        // Everything `pos.node` has to show is behind us, so the next
-        // line is the one just past its extent. From its footer that is
-        // one line on; from its header it is the whole of it — which is
-        // the folded case (the fold hides the footer too, so a folded
-        // node shows its header and nothing else) and the one-line leaf
-        // case, where the two agree anyway.
-        let delta = if pos.footer {
-            1
-        } else {
-            node.lines_total as usize
-        };
-        if let Some(sibling) = node.next_sibling() {
+        } else if pos.line_in_node + 1 < total {
+            // The next element of a packed run.
             return Some((
                 LinePos {
-                    node: sibling,
-                    footer: false,
+                    node: pos.node,
+                    line_in_node: pos.line_in_node + 1,
                 },
-                delta,
+                1,
             ));
+        }
+        // Everything `pos.node` has to show is behind us, so the next
+        // line is the one just past its extent — which from its last
+        // line is one step, and from a folded node's header is the whole
+        // of it. Both are `lines_total - line_in_node`.
+        let delta = (total - pos.line_in_node) as usize;
+        if let Some(sibling) = self.next_sibling(pos.node) {
+            return Some((LinePos::header(sibling), delta));
         }
         // Last child, so the next line is the parent's own closing
         // brace, which sits exactly at the end of its last child's
         // extent — no further offset accrues while climbing. The parent
         // cannot be folded, or we would not be inside it.
-        node.parent().map(|parent| {
+        self.parent(pos.node).map(|parent| {
             (
                 LinePos {
                     node: parent,
-                    footer: true,
+                    line_in_node: self.tree[parent].lines_total - 1,
                 },
                 delta,
             )
@@ -491,33 +493,32 @@ impl App {
     /// it lies. `None` at the start of the document. The mirror of
     /// `next_visible`, and likewise O(1).
     pub(super) fn prev_visible(&self, pos: LinePos) -> Option<(LinePos, usize)> {
-        if pos.footer {
-            return Some(match self.tree[pos.node].last_child() {
+        if pos.line_in_node > 0 {
+            if !self.tree[pos.node].is_bracketed() {
+                return Some((
+                    LinePos {
+                        node: pos.node,
+                        line_in_node: pos.line_in_node - 1,
+                    },
+                    1,
+                ));
+            }
+            return Some(match self.last_child(pos.node) {
                 Some(child) => self.last_visible_of(child),
                 // Empty-but-bracketed: its own header is the line above
                 // its brace.
                 None => (
-                    LinePos {
-                        node: pos.node,
-                        footer: false,
-                    },
+                    LinePos::header(pos.node),
                     self.tree[pos.node].lines_total as usize - 1,
                 ),
             });
         }
-        if let Some(sibling) = self.tree[pos.node].prev_sibling() {
+        if let Some(sibling) = self.prev_sibling(pos.node) {
             return Some(self.last_visible_of(sibling));
         }
         // First child: the line above is the parent's own header.
-        self.tree[pos.node].parent().map(|parent| {
-            (
-                LinePos {
-                    node: parent,
-                    footer: false,
-                },
-                1,
-            )
-        })
+        self.parent(pos.node)
+            .map(|parent| (LinePos::header(parent), 1))
     }
 
     /// `idx`'s last *visible* line, paired with how far back from the
@@ -528,18 +529,12 @@ impl App {
     /// the whole of its extent rather than one line.
     fn last_visible_of(&self, idx: usize) -> (LinePos, usize) {
         if self.folded.contains(&idx) {
-            return (
-                LinePos {
-                    node: idx,
-                    footer: false,
-                },
-                self.tree[idx].lines_total as usize,
-            );
+            return (LinePos::header(idx), self.tree[idx].lines_total as usize);
         }
         (
             LinePos {
                 node: idx,
-                footer: self.tree[idx].lines_total > 1,
+                line_in_node: self.tree[idx].lines_total - 1,
             },
             1,
         )

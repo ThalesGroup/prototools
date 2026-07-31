@@ -12,13 +12,14 @@ pub(super) use ratatui::backend::TestBackend;
 
 /// A node's identity by *content*, not by arena index.
 ///
-/// The arena renumbers nodes for two independent reasons — a re-splice
-/// pushes a fresh copy of a subtree and abandons the old one (spec
-/// 0118), and compaction relocates survivors into the holes that leaves
-/// (spec 0203) — so comparing raw `app.tree` indices across either
-/// operation reports differences that say nothing about what the user
-/// sees. Projecting through this compares what actually
-/// has to be preserved.
+/// The arena used to renumber nodes for two independent reasons — a
+/// re-splice pushed a fresh copy of a subtree and abandoned the old one
+/// (spec 0118), and compaction relocated survivors into the holes that
+/// left (spec 0203) — so comparing raw `app.tree` indices across either
+/// operation reported differences that said nothing about what the user
+/// sees. Spec 0216 freezes the numbering, but the projection is still
+/// what these assertions want: it compares what the reader is shown,
+/// and prints something legible when it differs.
 pub(super) type Shape = (usize, u64, Option<String>, std::ops::Range<usize>);
 
 /// A rendered line's owner: `(line, the owning node's shape, is_footer)`.
@@ -70,12 +71,9 @@ pub(super) fn live_shapes(app: &App) -> Vec<Shape> {
     let mut stack = vec![app.first_node];
     while let Some(i) = stack.pop() {
         out.push(shape_of(app, i));
-        let mut kids = Vec::new();
-        let mut c = app.tree[i].first_child();
-        while let Some(ci) = c {
-            kids.push(ci);
-            c = app.tree[ci].next_sibling();
-        }
+        let kids: Vec<usize> = (0..app.child_count(i))
+            .map(|k| app.nth_child(i, k).expect("k is below the child count"))
+            .collect();
         stack.extend(kids.into_iter().rev());
     }
     out
@@ -93,7 +91,7 @@ pub(super) fn line_owners(app: &App) -> Vec<LineOwner> {
     (0..app.lines.len())
         .filter_map(|l| {
             app.line_pos(l)
-                .map(|pos| (l, shape_of(app, pos.node), pos.footer))
+                .map(|pos| (l, shape_of(app, pos.node), app.is_footer(pos)))
         })
         .collect()
 }
@@ -103,6 +101,7 @@ pub(super) fn empty_app() -> App {
         lines: Vec::new(),
         tree: Vec::new(),
         root_type: "google.protobuf.Empty".to_string(),
+        arena: crate::decode::arena_of(&[]),
         blob: Arc::new(Blob::unwrapped(Vec::new())),
         wrapper_offset: 0,
         root_candidates: Vec::new(),
@@ -134,38 +133,33 @@ pub(super) fn message_node_app_with_root_candidates(
 ) -> App {
     let lines: Vec<String> = vec!["message_type {".to_string(), "}".to_string()];
     let mut fqdns = FqdnTable::new();
-    let node = TreeNode {
-        span: NodeSpan {
-            field_number: 4,
-            raw_range: 0..10,
-            text_range: 0..2,
-            level: 0,
-            type_fqdn: fqdns.intern("google.protobuf.DescriptorProto"),
-            is_message: true,
-            packed_record_start: NO_PACKED_RECORD,
-            wire_type: WT_LEN as u8,
-        },
-        parent: NO_NODE,
-        first_child: NO_NODE,
-        last_child: NO_NODE,
-        next_sibling: NO_NODE,
-        prev_sibling: NO_NODE,
-        doc_next: NO_NODE,
-        doc_prev: NO_NODE,
-        sibling_ordinal: 1,
-        lines_total: 2,
-        lines_visible: 2,
-        rendered_as: NOT_RENDERED,
+    // Tag `0x22` = field 4 << 3 | WT_LEN(2), length varint `0x08` = 8,
+    // then 8 zero payload bytes — a real, `raw_range`-consistent blob,
+    // needed since spec 0132's live preview now splices this node's
+    // contents at pane-open time.
+    let blob = vec![0x22, 0x08, 0, 0, 0, 0, 0, 0, 0, 0];
+    let span = NodeSpan {
+        field_number: 4,
+        raw_range: 0..10,
+        text_range: 0..2,
+        level: 0,
+        type_fqdn: fqdns.intern("google.protobuf.DescriptorProto"),
+        is_message: true,
+        packed_record_start: NO_PACKED_RECORD,
+        wire_type: WT_LEN as u8,
     };
+    // Spec 0216: the shape is the blob's, so the overlay is derived
+    // rather than written out. The zero payload bytes decompose into
+    // malformed child slots the arena keeps and this interpretation
+    // does not show, which is exactly the vacant case.
+    let arena = crate::decode::arena_of(&blob);
+    let tree = crate::decode::build_tree(vec![span], &arena);
     let decoded = Decoded {
         lines,
-        tree: vec![node],
+        tree,
         root_type: "google.protobuf.FileDescriptorProto".to_string(),
-        // Tag `0x22` = field 4 << 3 | WT_LEN(2), length varint `0x08`
-        // = 8, then 8 zero payload bytes — a real, `raw_range`-
-        // consistent blob, needed since spec 0132's live preview now
-        // splices this node's contents at pane-open time.
-        blob: Arc::new(Blob::unwrapped(vec![0x22, 0x08, 0, 0, 0, 0, 0, 0, 0, 0])),
+        arena,
+        blob: Arc::new(Blob::unwrapped(blob)),
         wrapper_offset: 0,
         root_candidates,
         fqdns,
@@ -216,19 +210,39 @@ pub(super) fn message_node_app_with_graph() -> App {
     app
 }
 
-/// `n` document-order-linked scalar sibling nodes at the root level
-/// (spec 0113 D16: root-level nodes are sibling-linked despite having
-/// no `parent`), one line of text each — the minimal fixture for
+/// `n` scalar sibling nodes at the root level (spec 0113 D16:
+/// root-level nodes are siblings of each other despite having no
+/// `parent`), one line of text each — the minimal fixture for
 /// exercising main-pane search (spec 0114 §4, extended from the
-/// override pane), which walks `doc_next`/`doc_prev`.
+/// override pane), which walks the document order.
+///
+/// Spec 0216: the shape is the blob's, so the fixture states bytes and
+/// the arena derives the tree. `n` top-level varint records give `n`
+/// slots at level 0, each its own parent, so node `i` is line `i` and
+/// every call site's hard-coded index still names the leaf it always
+/// named. The blob is deliberately *not* wrapped: wrapping would make
+/// the leaves children of a rendered root that owns a line of its own.
 pub(super) fn sibling_leaves_app(texts: &[&str]) -> App {
     let lines: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
     let n = lines.len();
+    let mut blob: Vec<u8> = Vec::new();
+    for i in 0..n {
+        let mut tag = ((i as u64 + 1) << 3) | u64::from(WT_VARINT);
+        while tag >= 0x80 {
+            blob.push(tag as u8 | 0x80);
+            tag >>= 7;
+        }
+        blob.push(tag as u8);
+        blob.push(0); // the value: varint 0
+    }
+    let arena = crate::decode::arena_of(&blob);
+    assert_eq!(arena.len(), n, "one slot per top-level record");
+    let (raw_start, raw_end) = (arena.raw_start(), arena.raw_end());
     let tree: Vec<TreeNode> = (0..n)
         .map(|i| TreeNode {
             span: NodeSpan {
                 field_number: i as u32 + 1,
-                raw_range: (i * 10) as u32..(i * 10 + 5) as u32,
+                raw_range: raw_start[i]..raw_end[i],
                 text_range: i as u32..i as u32 + 1,
                 level: 0,
                 type_fqdn: NO_FQDN,
@@ -236,14 +250,6 @@ pub(super) fn sibling_leaves_app(texts: &[&str]) -> App {
                 packed_record_start: NO_PACKED_RECORD,
                 wire_type: WT_VARINT as u8,
             },
-            parent: NO_NODE,
-            first_child: NO_NODE,
-            last_child: NO_NODE,
-            next_sibling: TreeNode::pack((i + 1 < n).then_some(i + 1)),
-            prev_sibling: TreeNode::pack(i.checked_sub(1)),
-            doc_next: TreeNode::pack((i + 1 < n).then_some(i + 1)),
-            doc_prev: TreeNode::pack(i.checked_sub(1)),
-            sibling_ordinal: i as u32 + 1,
             lines_total: 1,
             lines_visible: 1,
             rendered_as: NOT_RENDERED,
@@ -253,7 +259,8 @@ pub(super) fn sibling_leaves_app(texts: &[&str]) -> App {
         lines,
         tree,
         root_type: "google.protobuf.FileDescriptorProto".to_string(),
-        blob: Arc::new(Blob::unwrapped(Vec::new())),
+        arena,
+        blob: Arc::new(Blob::unwrapped(blob)),
         wrapper_offset: 0,
         root_candidates: Vec::new(),
         fqdns: FqdnTable::new(),
@@ -270,17 +277,14 @@ pub(super) fn sibling_leaves_app(texts: &[&str]) -> App {
 }
 
 /// `Outer { repeated int32 vals = 1; }`, packed, 3 elements (`5, 6,
-/// 7`), document order — spec 0124's shared fixture: gives a
-/// `PathField`/`FqdnField` origin (parent path `/`, field `1`) 3
-/// matches. Uses a packed *scalar* repeated field (one `NodeSpan` per
-/// element, spec 0115) rather than a repeated message field, to keep
-/// the fixture's tree shape simple (no nested-message decode
-/// involved).
+/// 7`) — the smallest packed run, returned with the node that draws it.
 ///
-/// Spec 0184: the 3 elements are one wire record, so they all share
-/// the single positional path `/1`. A test that needs three siblings
-/// with *distinct* paths wants `repeated_message_fixture` instead.
-pub(super) fn repeated_scalar_fixture() -> (App, Vec<usize>) {
+/// Spec 0184 already had the 3 elements share one wire record and hence
+/// one positional path `/1`; spec 0216 finishes the job by making them
+/// one *node*, drawing three rows. So this fixture no longer offers
+/// three of anything: a test that needs three siblings wants
+/// `repeated_message_fixture`.
+pub(super) fn repeated_scalar_fixture() -> (App, usize) {
     use prost::Message as _;
     use prost_types::field_descriptor_proto::{Label, Type};
     use prost_types::{
@@ -333,16 +337,16 @@ pub(super) fn repeated_scalar_fixture() -> (App, Vec<usize>) {
     app.splash = false;
     app.term_width = 120;
 
-    let mut items: Vec<usize> = app
+    let run = app
         .tree
         .iter()
-        .enumerate()
-        .filter(|(_, n)| n.span.packed_record_start != NO_PACKED_RECORD)
-        .map(|(i, _)| i)
-        .collect();
-    items.sort_by_key(|&i| app.positional_path(i));
-    assert_eq!(items.len(), 3, "fixture must contain 3 packed elements");
-    (app, items)
+        .position(|n| n.span.packed_record_start != NO_PACKED_RECORD)
+        .expect("fixture must contain the packed run");
+    assert_eq!(
+        app.tree[run].lines_total, 3,
+        "the run draws one row per element"
+    );
+    (app, run)
 }
 
 /// `Outer { repeated Item items = 1; }` with 3 `Item { int32 v = 1; }`
@@ -424,38 +428,26 @@ pub(super) fn repeated_message_fixture() -> (App, Vec<usize>) {
     app.splash = false;
     app.term_width = 120;
 
-    // Walk the *live* child chain rather than scanning the arena:
-    // `App::new`'s startup `render_overrides` already resettled each
-    // `Item` to its natural type, and `splice_override` abandons the
-    // superseded nodes in place rather than removing them, so a plain
-    // scan would also pick up three orphans.
-    let root = app
-        .tree
-        .iter()
-        .position(|n| n.parent().is_none())
-        .expect("tree must have a root");
-    let mut items = Vec::new();
-    let mut c = app.tree[root].first_child();
-    while let Some(i) = c {
-        items.push(i);
-        c = app.tree[i].next_sibling();
-    }
+    // Spec 0216: the root is slot 0 — the wrapper — and the `Item`s are
+    // its children, wherever the current interpretation puts them.
+    let items: Vec<usize> = (0..app.child_count(app.first_node))
+        .map(|k| {
+            app.nth_child(app.first_node, k)
+                .expect("k is below the child count")
+        })
+        .collect();
     assert_eq!(items.len(), 3, "fixture must contain 3 Item submessages");
     (app, items)
 }
 
 /// `n` document-order sibling scalar (`WT_VARINT`) fields, one line
 /// each, each backed by a real 2-byte tag+value encoding in `blob` —
-/// unlike `sibling_leaves_app`'s synthetic, unbacked ranges, this
-/// fixture's `raw_range`s are real slices of a non-empty blob, needed
-/// since `prefetch_step` runs every candidate through `extract::
-/// message_payload_range`, which indexes into `blob` at `raw_range.
-/// start` and panics on an out-of-bounds/empty one.
+/// `sibling_leaves_app` at the scale spec 0191's budget tests need,
+/// which run `n` into the thousands.
 ///
 /// Field numbers cycle through 1..=15 rather than counting up, so the
-/// tag always fits the single byte written here — `n` runs into the
-/// thousands for the spec 0191 budget tests, and a wider tag would need
-/// a real varint. Nodes stay distinct because each has its own
+/// tag always fits the single byte written here and a wider tag would
+/// need a real varint. Nodes stay distinct because each has its own
 /// `raw_range`, which is what keys the request queue.
 pub(super) fn wide_sibling_scalars_app(n: usize) -> App {
     let lines: Vec<String> = (0..n).map(|i| format!("field_{i}: 0")).collect();
@@ -477,14 +469,6 @@ pub(super) fn wide_sibling_scalars_app(n: usize) -> App {
                     packed_record_start: NO_PACKED_RECORD,
                     wire_type: WT_VARINT as u8,
                 },
-                parent: NO_NODE,
-                first_child: NO_NODE,
-                last_child: NO_NODE,
-                next_sibling: TreeNode::pack((i + 1 < n).then_some(i + 1)),
-                prev_sibling: TreeNode::pack(i.checked_sub(1)),
-                doc_next: TreeNode::pack((i + 1 < n).then_some(i + 1)),
-                doc_prev: TreeNode::pack(i.checked_sub(1)),
-                sibling_ordinal: i as u32 + 1,
                 lines_total: 1,
                 lines_visible: 1,
                 rendered_as: NOT_RENDERED,
@@ -495,6 +479,7 @@ pub(super) fn wide_sibling_scalars_app(n: usize) -> App {
         lines,
         tree,
         root_type: "google.protobuf.FileDescriptorProto".to_string(),
+        arena: crate::decode::arena_of(&blob),
         blob: Arc::new(Blob::unwrapped(blob)),
         wrapper_offset: 0,
         root_candidates: Vec::new(),
@@ -513,14 +498,17 @@ pub(super) fn wide_sibling_scalars_app(n: usize) -> App {
 
 /// `Outer { repeated int32 vals = 1; Inner tail = 2; int32 a = 3;
 /// int32 b = 4; }` — a packed run of 3 elements followed by three
-/// ordinary siblings. Returns `(app, elems, tail, a, b)`.
+/// ordinary siblings. Returns `(app, run, tail, a, b)`.
 ///
 /// The shape spec 0184 is about: the run must occupy exactly one
 /// positional ordinal (`/1`) so that `tail`/`a`/`b` sit at `/2`/`/3`/
 /// `/4` whatever the run's element count and whatever its override
 /// state, while `a` and `b` — two consecutive *non-packed* scalars —
 /// must still get distinct ordinals of their own (the S1 trap).
-pub(super) fn packed_run_with_tail_fixture() -> (App, Vec<usize>, usize, usize, usize) {
+///
+/// Spec 0216 S22 turns that rule into arithmetic: the run is one node
+/// drawing three rows, so `run` is a single index rather than three.
+pub(super) fn packed_run_with_tail_fixture() -> (App, usize, usize, usize, usize) {
     use prost::Message as _;
     use prost_types::field_descriptor_proto::{Label, Type};
     use prost_types::{
@@ -603,33 +591,24 @@ pub(super) fn packed_run_with_tail_fixture() -> (App, Vec<usize>, usize, usize, 
     app.splash = false;
     app.term_width = 120;
 
-    // The live children, in document order — not an arena scan: the
-    // startup `render_overrides` resettles `tail` to its natural type
-    // and `splice_override` abandons the superseded nodes in place.
-    let root = app
-        .tree
-        .iter()
-        .position(|node| node.parent().is_none())
-        .expect("tree must have a root");
-    let mut children = Vec::new();
-    let mut c = app.tree[root].first_child();
-    while let Some(i) = c {
-        children.push(i);
-        c = app.tree[i].next_sibling();
-    }
+    // Spec 0216 S22: the run is one node, so the root has four children
+    // — the record, then tail, a, b — where it used to have six.
+    let children: Vec<usize> = (0..app.child_count(app.first_node))
+        .map(|k| {
+            app.nth_child(app.first_node, k)
+                .expect("k is below the child count")
+        })
+        .collect();
     assert_eq!(
         children.len(),
-        6,
-        "fixture must decode 3 packed elements plus tail, a, b"
+        4,
+        "fixture must decode the packed run plus tail, a, b"
     );
-    let elems = children[..3].to_vec();
-    for &e in &elems {
-        assert!(
-            app.tree[e].span.packed_record_start != NO_PACKED_RECORD,
-            "the first three children must be the packed run"
-        );
-    }
-    (app, elems, children[3], children[4], children[5])
+    assert!(
+        app.tree[children[0]].span.packed_record_start != NO_PACKED_RECORD,
+        "the first child must be the packed run"
+    );
+    (app, children[0], children[1], children[2], children[3])
 }
 
 /// `Holder { int32 pad = 1; bytes blob = 2; }` whose `blob` holds an
@@ -858,8 +837,8 @@ pub(super) fn type_as_fixture() -> (App, usize, usize) {
 
     let inner_idx =
         node_with_type(&app, "test.Inner").expect("tree must contain the Inner submessage");
-    let id_idx = app.tree[inner_idx]
-        .first_child()
+    let id_idx = app
+        .first_child(inner_idx)
         .expect("Inner has at least one child");
     (app, inner_idx, id_idx)
 }
@@ -939,7 +918,7 @@ pub(super) fn empty_message_fixture() -> (App, usize) {
     let inner_idx =
         node_with_type(&app, "test.Inner").expect("tree must contain the empty Inner submessage");
     assert!(
-        app.tree[inner_idx].first_child().is_none(),
+        app.first_child(inner_idx).is_none(),
         "fixture must exercise the no-children case"
     );
     (app, inner_idx)
@@ -1022,10 +1001,10 @@ pub(super) fn enum_field_fixture() -> (App, usize) {
     app.splash = false;
     app.term_width = 120;
 
+    // Not a scan for field 1: the wrapper occupies slot 0 and is field 1
+    // too (spec 0216 S1), so a scan would find it first.
     let durability_idx = app
-        .tree
-        .iter()
-        .position(|n| n.span.field_number == 1)
+        .nth_child(app.first_node, 0)
         .expect("tree must contain the durability field");
     (app, durability_idx)
 }
@@ -1803,11 +1782,9 @@ pub(super) fn pruned_tail_fixture() -> (App, usize, usize, usize, usize) {
     app.term_width = 120;
 
     let root = app.first_node;
-    let head = app.tree[root].first_child().expect("Outer has children");
-    let tail = app.tree[head]
-        .next_sibling()
-        .expect("Outer has two children");
-    let tail_leaf = app.tree[tail].first_child().expect("tail wraps a Leaf");
-    let tail_v = app.tree[tail_leaf].first_child().expect("Leaf holds v");
+    let head = app.first_child(root).expect("Outer has children");
+    let tail = app.next_sibling(head).expect("Outer has two children");
+    let tail_leaf = app.first_child(tail).expect("tail wraps a Leaf");
+    let tail_v = app.first_child(tail_leaf).expect("Leaf holds v");
     (app, head, tail, tail_leaf, tail_v)
 }

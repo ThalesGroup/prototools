@@ -5,12 +5,6 @@
 use super::command_line::{next_word_boundary, prev_word_boundary};
 use super::*;
 
-/// Moved to `crate::decode` by spec 0192 S1, which made `build_tree` a
-/// fourth caller — the ordinal it is counted over is now derived there.
-/// Re-exported here so this module's name stays the one the other tui
-/// call sites use.
-pub(super) use crate::decode::same_packed_record;
-
 impl App {
     /// What every fold toggle does once the counts agree again — the
     /// pan re-clamp and the prefetch invalidation `rebuild_visible_rows`
@@ -60,7 +54,7 @@ impl App {
 
     /// Unfold every ancestor of `idx`, so it becomes visible.
     pub(super) fn unfold_ancestors(&mut self, idx: usize) {
-        let mut p = self.tree[idx].parent();
+        let mut p = self.parent(idx);
         let mut changed = false;
         while let Some(pi) = p {
             if self.folded.remove(&pi) {
@@ -71,7 +65,7 @@ impl App {
                 // ancestor, which the next iteration then unfolds.
                 self.refresh_line_counts(pi);
             }
-            p = self.tree[pi].parent();
+            p = self.parent(pi);
         }
         if changed {
             self.folds_changed();
@@ -83,7 +77,7 @@ impl App {
     /// round trip that lands back on the same node, e.g. Down then Up)
     /// is observable via `cursor_moves`, unlike comparing `self.
     /// cursor`'s value alone against a stashed old value. Always resets
-    /// `cursor_footer` to `false` (spec 0142) — every caller of this
+    /// `cursor_line_in_node` to `0` (spec 0142) — every caller of this
     /// method targets a node's own header row.
     ///
     /// Spec 0194 S1: also resets the caret to the new row's first
@@ -92,7 +86,7 @@ impl App {
     /// deliberately does not come through here — see `carry_caret`.
     pub(crate) fn set_cursor(&mut self, idx: usize) {
         self.cursor = idx;
-        self.cursor_footer = false;
+        self.cursor_line_in_node = 0;
         self.cursor_moves += 1;
         self.reset_caret_column();
     }
@@ -113,9 +107,9 @@ impl App {
     /// Spec 0215 S7: the owner is handed to `row_text_of` rather than
     /// rediscovered. This reproduces `node_at_header_line`'s answer
     /// exactly rather than approximating it — that function yields
-    /// `None` for a footer line and the owning node for a header line,
-    /// and `cursor_line()` is by definition the cursor's own header or
-    /// footer line, so `(!cursor_footer).then_some(cursor)` *is* the
+    /// `None` for a footer line and the owning node for any other line,
+    /// and `cursor_line()` is by definition one of the cursor's own
+    /// lines, so `(!cursor_on_footer()).then_some(cursor)` *is* the
     /// value the lookup would have walked the document to produce.
     pub(super) fn caret_bounds(&self) -> (usize, usize) {
         if self.tree.is_empty() {
@@ -123,7 +117,7 @@ impl App {
         }
         let text = self.row_text_of(
             DisplayRow::Committed(self.cursor_line()),
-            (!self.cursor_footer).then_some(self.cursor),
+            (!self.cursor_on_footer()).then_some(self.cursor),
         );
         let trimmed = text.trim_start();
         if trimmed.is_empty() {
@@ -343,39 +337,50 @@ impl App {
             .collect()
     }
 
-    /// `self.cursor`'s own currently-displayed line: its footer line if
-    /// `cursor_footer`, else its header line — spec 0142.
+    /// `self.cursor`'s own currently-displayed line — spec 0142.
+    ///
+    /// A node's lines are consecutive from its header, footer included
+    /// (the body between them belongs to the subtree, but it is still
+    /// part of the same run), so this is one addition.
     pub(super) fn cursor_line(&self) -> usize {
-        if self.cursor_footer {
-            self.footer_line(self.cursor)
-        } else {
-            self.absolute_start(self.cursor)
-        }
+        self.absolute_start(self.cursor) + self.cursor_line_in_node as usize
     }
 
-    /// The cursor as a `LinePos` — the same `(node, footer)` pair, in
-    /// the form `next_visible`/`prev_visible` step over.
+    /// The cursor as a `LinePos`, in the form `next_visible` /
+    /// `prev_visible` step over.
     fn cursor_line_pos(&self) -> LinePos {
         LinePos {
             node: self.cursor,
-            footer: self.cursor_footer,
+            line_in_node: self.cursor_line_in_node,
         }
     }
 
-    /// The node whose text *starts* on `line`, if any.
+    /// Whether the cursor rests on its node's own closing `}` rather
+    /// than on a row the node draws its content on.
+    pub(super) fn cursor_on_footer(&self) -> bool {
+        self.is_footer(self.cursor_line_pos())
+    }
+
+    /// Whether `pos` names a bracketed node's closing `}` line.
+    ///
+    /// A flat node has no brace at all, so every one of its rows — the
+    /// single row of a scalar, each element of a packed run — is a row
+    /// it draws content on (spec 0216 S7).
+    pub(super) fn is_footer(&self, pos: LinePos) -> bool {
+        pos.line_in_node > 0 && self.tree[pos.node].is_bracketed()
+    }
+
+    /// The node whose text is drawn on `line`, if any — everything but
+    /// a closing brace, which draws no content of its own.
     pub(super) fn node_at_header_line(&self, line: usize) -> Option<usize> {
-        match self.line_pos(line) {
-            Some(pos) if !pos.footer => Some(pos.node),
-            _ => None,
-        }
+        let pos = self.line_pos(line)?;
+        (!self.is_footer(pos)).then_some(pos.node)
     }
 
     /// The node whose own closing `}` sits on `line`, if any.
     pub(super) fn node_at_footer_line(&self, line: usize) -> Option<usize> {
-        match self.line_pos(line) {
-            Some(pos) if pos.footer => Some(pos.node),
-            _ => None,
-        }
+        let pos = self.line_pos(line)?;
+        self.is_footer(pos).then_some(pos.node)
     }
 
     /// Moves the cursor to the next/previous visible *line* (spec
@@ -406,7 +411,7 @@ impl App {
             return false;
         };
         self.cursor = next.node;
-        self.cursor_footer = next.footer;
+        self.cursor_line_in_node = next.line_in_node;
         self.cursor_moves += 1;
         true
     }
@@ -417,7 +422,7 @@ impl App {
             return false;
         };
         self.cursor = prev.node;
-        self.cursor_footer = prev.footer;
+        self.cursor_line_in_node = prev.line_in_node;
         self.cursor_moves += 1;
         true
     }
@@ -438,7 +443,7 @@ impl App {
     /// cursor's next sibling, or leaves it in place with a message if
     /// there isn't one.
     pub(super) fn next_sibling_move(&mut self) {
-        if let Some(next) = self.tree[self.cursor].next_sibling() {
+        if let Some(next) = self.next_sibling(self.cursor) {
             self.record_jump();
             self.set_cursor(next);
         } else {
@@ -450,7 +455,7 @@ impl App {
     /// cursor's previous sibling, or leaves it in place with a message if
     /// there isn't one.
     pub(super) fn prev_sibling_move(&mut self) {
-        if let Some(prev) = self.tree[self.cursor].prev_sibling() {
+        if let Some(prev) = self.prev_sibling(self.cursor) {
             self.record_jump();
             self.set_cursor(prev);
         } else {
@@ -610,7 +615,7 @@ impl App {
     /// `self.cursor != self.first_node` check alone is falsely
     /// satisfied and the cursor stays stuck on the last line.
     pub(super) fn move_home(&mut self) {
-        if self.cursor != self.first_node || self.cursor_footer {
+        if self.cursor != self.first_node || self.cursor_line_in_node != 0 {
             self.record_jump();
             self.set_cursor(self.first_node);
         }
@@ -625,28 +630,28 @@ impl App {
         let Some((pos, _)) = last_row.and_then(|row| self.visible_row_pos(row)) else {
             return;
         };
-        let (idx, footer) = (pos.node, pos.footer);
-        if self.cursor != idx || self.cursor_footer != footer {
+        if self.cursor != pos.node || self.cursor_line_in_node != pos.line_in_node {
             self.record_jump();
-            self.cursor = idx;
-            self.cursor_footer = footer;
+            self.cursor = pos.node;
+            self.cursor_line_in_node = pos.line_in_node;
             self.cursor_moves += 1;
             // Spec 0194 S1: a node-level jump, so the caret resets — the
             // assignment above bypasses `set_cursor` only because that
-            // one always clears `cursor_footer`, and this stop may be a
-            // footer line.
+            // one always returns to the header row, and this stop may be
+            // a footer line.
             self.reset_caret_column();
         }
     }
 
     /// Spec 0194 S6/S4: `%`. Both braces belong to the cursor node — the
     /// `{` on its header line, the `}` on its footer — so this is
-    /// exactly "flip `cursor_footer`, and put the column on the brace".
+    /// exactly "move to the other of the node's two rows, and put the
+    /// column on the brace".
     ///
     /// A *folded* node draws both on one row (spec 0193's `{ ... }`
     /// collapse summary) and has no visible footer line at all, so there
-    /// the column moves and `cursor_footer` stays put — which falls out
-    /// of deriving it from the target line rather than negating it.
+    /// the column moves and the row stays put — which falls out of
+    /// deriving the row from the target line rather than negating it.
     ///
     /// From anywhere other than the closing brace the jump goes to it,
     /// so `%` is useful from the middle of a header line and not only
@@ -661,7 +666,7 @@ impl App {
         } else {
             close
         };
-        self.cursor_footer = line != self.absolute_start(self.cursor);
+        self.cursor_line_in_node = (line - self.absolute_start(self.cursor)) as u32;
         self.cursor_column = column;
         self.desired_column = column;
         // Spec 0199 S10: `%` lands on a brace, and a header row's
@@ -690,7 +695,7 @@ impl App {
             self.toggle_fold(self.cursor);
             return;
         }
-        if let Some(parent) = self.tree[self.cursor].parent() {
+        if let Some(parent) = self.parent(self.cursor) {
             self.record_jump();
             self.set_cursor(parent);
         } else {
@@ -719,7 +724,7 @@ impl App {
             self.toggle_fold(self.cursor);
             return;
         }
-        let Some(child) = self.tree[self.cursor].first_child() else {
+        let Some(child) = self.first_child(self.cursor) else {
             self.message = "no children".to_string();
             return;
         };
@@ -728,9 +733,9 @@ impl App {
     }
 
     /// Folds/unfolds `idx`. Folding hides `idx`'s whole body, including
-    /// its own footer line — if the cursor was resting there
-    /// (`cursor_footer`) at the moment `idx` itself gets folded, snap
-    /// it back to `idx`'s header (spec 0142 G6.2), since that line is
+    /// its own footer line — if the cursor was resting there at the
+    /// moment `idx` itself gets folded, snap it back to `idx`'s
+    /// header (spec 0142 G6.2), since that line is
     /// no longer visible. More generally, if the cursor was resting on
     /// any strict descendant of `idx` (reachable via a fold-marker
     /// click, not just the cursor's own node), that row also just
@@ -740,11 +745,11 @@ impl App {
     pub(super) fn toggle_fold(&mut self, idx: usize) {
         if !self.folded.remove(&idx) {
             self.folded.insert(idx);
-            if idx == self.cursor && self.cursor_footer {
-                self.cursor_footer = false;
+            if idx == self.cursor {
+                self.cursor_line_in_node = 0;
             } else if self.is_strict_descendant(self.cursor, idx) {
                 self.cursor = idx;
-                self.cursor_footer = false;
+                self.cursor_line_in_node = 0;
             }
         }
         self.refresh_line_counts(idx);
@@ -800,12 +805,12 @@ impl App {
     /// `descendant` != `idx` but is reachable by following `parent`
     /// links from `descendant`).
     fn is_strict_descendant(&self, descendant: usize, idx: usize) -> bool {
-        let mut p = self.tree[descendant].parent();
+        let mut p = self.parent(descendant);
         while let Some(pi) = p {
             if pi == idx {
                 return true;
             }
-            p = self.tree[pi].parent();
+            p = self.parent(pi);
         }
         false
     }
@@ -816,14 +821,14 @@ impl App {
     /// nodes (which share sibling links despite having no `parent`).
     pub(super) fn sibling_range(&self, idx: usize) -> Vec<usize> {
         let mut first = idx;
-        while let Some(p) = self.tree[first].prev_sibling() {
+        while let Some(p) = self.prev_sibling(first) {
             first = p;
         }
         let mut v = Vec::new();
         let mut cur = Some(first);
         while let Some(i) = cur {
             v.push(i);
-            cur = self.tree[i].next_sibling();
+            cur = self.next_sibling(i);
         }
         v
     }
@@ -856,27 +861,6 @@ impl App {
         }
     }
 
-    /// 1-based ordinal position of `idx` among its own parent's direct
-    /// children (or among root-level siblings, if `idx` has no parent —
-    /// root-level nodes are sibling-linked despite having no `parent`, see
-    /// D16), in document order (spec 0113 D25).
-    ///
-    /// Ordinals count wire *records*, not nodes (spec 0184 S2): a packed
-    /// run's N element `NodeSpan`s (spec 0115) are one record, so they
-    /// all share one ordinal and the sibling after the run is numbered
-    /// one past it, whatever N is. Without this, applying an override to
-    /// a run — which collapses it to a single node
-    /// (`splice_override`'s `siblings[0]` merge) — would renumber every
-    /// later sibling and silently re-point paths recorded beforehand.
-    ///
-    /// Spec 0192 S1: this used to walk the `prev_sibling` chain, making
-    /// it O(position among siblings) and `positional_path` O(document)
-    /// deep in a wide message — which `render` paid once per drawn row.
-    /// The count is now derived once, where the chain is built.
-    pub(super) fn sibling_position(&self, idx: usize) -> usize {
-        self.tree[idx].sibling_ordinal as usize
-    }
-
     /// Slash-separated positional path from the root to `idx` (spec 0113
     /// D25) — e.g. `/1/2/3`, each segment a `sibling_position`. No schema
     /// knowledge required, purely structural.
@@ -893,7 +877,7 @@ impl App {
         let mut cur = Some(idx);
         while let Some(i) = cur {
             segments.push(self.sibling_position(i));
-            cur = self.tree[i].parent();
+            cur = self.parent(i);
         }
         segments.reverse();
         segments.remove(0);
@@ -920,8 +904,7 @@ impl App {
     /// as `[0, n)`.
     pub(super) fn display_range(&self, idx: usize) -> Range<usize> {
         let span = &self.tree[idx].span;
-        let raw =
-            extract::message_payload_range(&self.blob, &span.raw_range, span.packed_record_start);
+        let raw = extract::message_payload_range(&self.blob, &span.raw_range);
         (raw.start - self.wrapper_offset)..(raw.end - self.wrapper_offset)
     }
 }

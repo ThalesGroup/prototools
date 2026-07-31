@@ -11,7 +11,7 @@ use super::support::*;
 /// origin is a no-op.
 #[test]
 fn manage_pane_left_right_circulate_affected_fields() {
-    let (mut app, items) = repeated_scalar_fixture();
+    let (mut app, items) = repeated_message_fixture();
     app.manage_focus = true;
     app.manage_open = true;
 
@@ -56,7 +56,7 @@ fn manage_pane_left_right_circulate_affected_fields() {
 /// entry's origin matches.
 #[test]
 fn clicking_the_current_override_advances_to_the_next_impacted_node() {
-    let (mut app, items) = repeated_scalar_fixture();
+    let (mut app, items) = repeated_message_fixture();
     app.manage_focus = true;
     app.manage_open = true;
     app.side_area = Rect::new(0, 0, 40, 20);
@@ -106,7 +106,7 @@ fn clicking_the_current_override_advances_to_the_next_impacted_node() {
 /// having been clicked while already current.
 #[test]
 fn clicking_a_different_override_only_moves_the_highlight() {
-    let (mut app, items) = repeated_scalar_fixture();
+    let (mut app, items) = repeated_message_fixture();
     app.manage_focus = true;
     app.manage_open = true;
     app.side_area = Rect::new(0, 0, 40, 20);
@@ -141,7 +141,7 @@ fn clicking_a_different_override_only_moves_the_highlight() {
 /// closing it outright.
 #[test]
 fn enter_in_manage_pane_opens_the_selection_pane_on_the_highlighted_entry() {
-    let (mut app, items) = repeated_scalar_fixture();
+    let (mut app, items) = repeated_message_fixture();
     app.manage_focus = true;
     app.manage_open = true;
     app.term_width = 120;
@@ -165,7 +165,7 @@ fn enter_in_manage_pane_opens_the_selection_pane_on_the_highlighted_entry() {
 /// entry still highlighted, and without mutating it.
 #[test]
 fn esc_after_opening_from_manage_returns_to_manage_pane_without_mutating() {
-    let (mut app, items) = repeated_scalar_fixture();
+    let (mut app, items) = repeated_message_fixture();
     app.manage_focus = true;
     app.manage_open = true;
     app.term_width = 120;
@@ -201,7 +201,7 @@ fn esc_after_opening_from_manage_returns_to_manage_pane_without_mutating() {
 /// is opened via `t`/item 3.
 #[test]
 fn enter_confirm_after_opening_from_manage_returns_to_manage_pane() {
-    let (mut app, items) = repeated_scalar_fixture();
+    let (mut app, items) = repeated_message_fixture();
     app.manage_focus = true;
     app.manage_open = true;
     app.term_width = 120;
@@ -229,7 +229,7 @@ fn enter_confirm_after_opening_from_manage_returns_to_manage_pane() {
 /// management pane.
 #[test]
 fn double_click_on_a_non_marker_cell_opens_the_selection_pane() {
-    let (mut app, items) = repeated_scalar_fixture();
+    let (mut app, items) = repeated_message_fixture();
     app.manage_focus = true;
     app.manage_open = true;
     app.term_width = 120;
@@ -265,7 +265,7 @@ fn double_click_on_a_non_marker_cell_opens_the_selection_pane() {
 /// `activate`-style invariant, reused unchanged).
 #[test]
 fn manage_pane_z_single_candidate_resolves_without_cursor_match() {
-    let (mut app, items) = repeated_scalar_fixture();
+    let (mut app, items) = repeated_message_fixture();
     app.manage_focus = true;
     app.manage_open = true;
 
@@ -343,11 +343,9 @@ fn manage_pane_z_ambiguous_candidates_advance_on_repeated_press() {
     app.overrides.activate(fqdn_origin.clone(), None);
     app.manage_highlight = app.overrides.entries().len() - 1;
 
-    let outside = app
-        .tree
-        .iter()
-        .position(|n| n.parent().is_none())
-        .expect("root node must exist");
+    // Spec 0216: the root is slot 0, the wrapper, and is not one of
+    // the three `Item`s.
+    let outside = app.first_node;
     app.cursor = outside;
 
     // FqdnField -> Path: all 3 Item submessages derive distinct Path
@@ -392,11 +390,9 @@ fn manage_pane_z_ambiguous_then_resolved_via_cursor_move() {
     app.overrides.activate(fqdn_origin.clone(), None);
     app.manage_highlight = app.overrides.entries().len() - 1;
 
-    let outside = app
-        .tree
-        .iter()
-        .position(|n| n.parent().is_none())
-        .expect("root node must exist");
+    // Spec 0216: the root is slot 0, the wrapper, and is not one of
+    // the three `Item`s.
+    let outside = app.first_node;
     app.set_cursor(outside);
 
     app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
@@ -435,11 +431,9 @@ fn manage_pane_z_down_then_up_round_trip_counts_as_movement() {
     app.overrides.activate(fqdn_origin.clone(), None);
     app.manage_highlight = app.overrides.entries().len() - 1;
 
-    let outside = app
-        .tree
-        .iter()
-        .position(|n| n.parent().is_none())
-        .expect("root node must exist");
+    // Spec 0216: the root is slot 0, the wrapper, and is not one of
+    // the three `Item`s.
+    let outside = app.first_node;
     app.set_cursor(outside);
 
     app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
@@ -473,15 +467,12 @@ fn manage_pane_z_down_then_up_round_trip_counts_as_movement() {
 /// outcome.
 #[test]
 fn manage_pane_z_no_target_aborts_when_no_kind_applies() {
-    let (mut app, _items) = repeated_scalar_fixture();
+    let (mut app, _items) = repeated_message_fixture();
     app.manage_focus = true;
     app.manage_open = true;
 
-    let root_idx = app
-        .tree
-        .iter()
-        .position(|n| n.parent().is_none())
-        .expect("root node must exist");
+    // Spec 0216: the root is slot 0, the wrapper.
+    let root_idx = app.first_node;
     let root_origin = OverrideOrigin::Path {
         path: app.positional_path(root_idx),
     };
@@ -637,9 +628,7 @@ fn manage_pane_z_rotation_survives_a_concurrent_auto_seed_reshuffle() {
     app.term_width = 120;
 
     let val_idx = app
-        .tree
-        .iter()
-        .position(|n| n.span.field_number == 1)
+        .nth_child(app.first_node, 0)
         .expect("must find the val node");
 
     // `App::new` already ran one `render_overrides` pass, which
@@ -712,7 +701,7 @@ fn manage_pane_z_rotation_survives_a_concurrent_auto_seed_reshuffle() {
 /// deletes — see `manage_pane_d_deletes_highlighted_entry`.)
 #[test]
 fn manage_pane_shift_d_duplicates_highlighted_entry_as_inactive() {
-    let (mut app, items) = repeated_scalar_fixture();
+    let (mut app, items) = repeated_message_fixture();
     app.manage_focus = true;
     app.manage_open = true;
 
@@ -783,7 +772,7 @@ fn manage_pane_shift_d_duplicate_of_auto_entry_is_manual() {
 /// special case.
 #[test]
 fn manage_pane_d_deletes_highlighted_entry() {
-    let (mut app, items) = repeated_scalar_fixture();
+    let (mut app, items) = repeated_message_fixture();
     app.manage_focus = true;
     app.manage_open = true;
 
@@ -882,7 +871,7 @@ fn manage_pane_enter_closes_pane_when_empty() {
 /// `Tab`).
 #[test]
 fn manage_pane_q_closes_pane() {
-    let (mut app, _items) = repeated_scalar_fixture();
+    let (mut app, _items) = repeated_message_fixture();
     app.manage_focus = true;
     app.manage_open = true;
 
@@ -898,7 +887,7 @@ fn manage_pane_q_closes_pane() {
 /// `REVERSED` on either, since neither is highlighted here).
 #[test]
 fn manage_pane_entries_style_auto_vs_manual_distinctly() {
-    let (mut app, items) = repeated_scalar_fixture();
+    let (mut app, items) = repeated_message_fixture();
     app.manage_focus = true;
     app.manage_open = true;
 
@@ -1038,7 +1027,7 @@ fn manage_pane_delete_deactivates_in_scope_auto_but_removes_out_of_scope_auto() 
 /// unchanged — removes it outright, no special message.
 #[test]
 fn manage_pane_delete_removes_manual_entry_unchanged() {
-    let (mut app, items) = repeated_scalar_fixture();
+    let (mut app, items) = repeated_message_fixture();
     app.manage_focus = true;
     app.manage_open = true;
 
@@ -1069,7 +1058,7 @@ fn manage_pane_delete_removes_manual_entry_unchanged() {
 /// main-pane cursor or the override pane's own highlight.
 #[test]
 fn manage_pane_search_forward_and_backward() {
-    let (mut app, items) = repeated_scalar_fixture();
+    let (mut app, items) = repeated_message_fixture();
     app.manage_focus = true;
     app.manage_open = true;
 
@@ -1113,7 +1102,7 @@ fn manage_pane_search_forward_and_backward() {
 /// three copies of the same two lines.
 #[test]
 fn manage_pane_search_is_smartcase() {
-    let (mut app, items) = repeated_scalar_fixture();
+    let (mut app, items) = repeated_message_fixture();
     app.manage_focus = true;
     app.manage_open = true;
 
@@ -1153,7 +1142,7 @@ fn manage_pane_search_is_smartcase() {
 /// direction, as it does in vim.
 #[test]
 fn manage_pane_search_repeat_with_capital_n_reverses_direction() {
-    let (mut app, items) = repeated_scalar_fixture();
+    let (mut app, items) = repeated_message_fixture();
     app.manage_focus = true;
     app.manage_open = true;
 
@@ -1204,7 +1193,7 @@ fn manage_pane_search_repeat_with_capital_n_reverses_direction() {
 /// only arms the chord).
 #[test]
 fn manage_pane_gg_and_capital_g_jump_to_first_and_last() {
-    let (mut app, items) = repeated_scalar_fixture();
+    let (mut app, items) = repeated_message_fixture();
     app.manage_focus = true;
     app.manage_open = true;
 
@@ -1528,7 +1517,7 @@ fn deactivating_tier_1_does_not_affect_the_still_active_tier_2_entry() {
 /// state before the first click, not two independent plain toggles.
 #[test]
 fn double_click_on_marker_cascades_like_a_single_shift_click() {
-    let (mut app, _items) = repeated_scalar_fixture();
+    let (mut app, _items) = repeated_message_fixture();
     app.manage_open = true;
     app.manage_focus = true;
     app.side_area = Rect::new(0, 0, 40, 20);
@@ -1698,7 +1687,7 @@ fn o_on_an_empty_override_collection_opens_with_highlight_zero() {
 /// just by a keypress that reaches main-pane handling.
 #[test]
 fn message_is_dismissed_by_the_next_key_in_the_manage_pane() {
-    let (mut app, _items) = repeated_scalar_fixture();
+    let (mut app, _items) = repeated_message_fixture();
     app.manage_focus = true;
     app.manage_open = true;
 
@@ -1717,7 +1706,7 @@ fn message_is_dismissed_by_the_next_key_in_the_manage_pane() {
 /// set, regardless of which pane currently has focus).
 #[test]
 fn esc_closes_the_manage_pane_from_main_pane_focus() {
-    let (mut app, _items) = repeated_scalar_fixture();
+    let (mut app, _items) = repeated_message_fixture();
     app.manage_open = true;
     app.manage_focus = false;
 

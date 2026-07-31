@@ -11,6 +11,7 @@ fn q_confirmation_is_cancelled_by_any_other_key() {
         lines: Vec::new(),
         tree: Vec::new(),
         root_type: "google.protobuf.Empty".to_string(),
+        arena: crate::decode::arena_of(&[]),
         blob: Arc::new(Blob::unwrapped(Vec::new())),
         wrapper_offset: 0,
         root_candidates: Vec::new(),
@@ -55,6 +56,7 @@ fn ctrl_z_sets_should_suspend_without_disturbing_quit_confirm() {
         lines: Vec::new(),
         tree: Vec::new(),
         root_type: "google.protobuf.Empty".to_string(),
+        arena: crate::decode::arena_of(&[]),
         blob: Arc::new(Blob::unwrapped(Vec::new())),
         wrapper_offset: 0,
         root_candidates: Vec::new(),
@@ -745,41 +747,30 @@ fn default_export_descriptor_path_falls_back_to_the_numeric_range_when_unresolva
     // `raw_range` into a real blob (`display_range`'s fallback path
     // parses the wire tag at `raw_range.start`, so an empty/synthetic
     // blob would panic).
+    // Spec 0216: the two records are two top-level slots of the arena,
+    // hence two roots, and the overlay carries no links at all.
     let blob = vec![0x08u8, 0x05, 0x10u8, 0x07];
-    let make_node = |field_number: u32,
-                     raw_range: std::ops::Range<u32>,
-                     next_sibling: Option<usize>,
-                     prev_sibling: Option<usize>| TreeNode {
+    let make_node = |field_number: u32, raw_range: std::ops::Range<u32>| TreeNode {
         span: NodeSpan {
             field_number,
             raw_range,
-            text_range: 0..1,
+            text_range: field_number - 1..field_number,
             level: 0,
             type_fqdn: NO_FQDN,
             is_message: false,
             packed_record_start: NO_PACKED_RECORD,
             wire_type: WT_VARINT as u8,
         },
-        parent: NO_NODE,
-        first_child: NO_NODE,
-        last_child: NO_NODE,
-        next_sibling: TreeNode::pack(next_sibling),
-        prev_sibling: TreeNode::pack(prev_sibling),
-        doc_next: TreeNode::pack(next_sibling),
-        doc_prev: TreeNode::pack(prev_sibling),
-        sibling_ordinal: prev_sibling.map_or(1, |p| p as u32 + 2),
         lines_total: 1,
         lines_visible: 1,
         rendered_as: NOT_RENDERED,
     };
-    let tree = vec![
-        make_node(1, 0..2, Some(1), None),
-        make_node(2, 2..4, None, Some(0)),
-    ];
+    let tree = vec![make_node(1, 0..2), make_node(2, 2..4)];
     let decoded = Decoded {
         lines: vec!["a".to_string(), "b".to_string()],
         tree,
         root_type: "google.protobuf.FileDescriptorProto".to_string(),
+        arena: crate::decode::arena_of(&blob),
         blob: Arc::new(Blob::unwrapped(blob)),
         wrapper_offset: 0,
         root_candidates: Vec::new(),
@@ -915,21 +906,21 @@ fn ctrl_o_restores_the_whole_caret_position() {
     app.splash = false;
 
     app.set_cursor(items[0]);
-    app.cursor_footer = true;
+    app.cursor_line_in_node = app.tree[items[0]].lines_total - 1;
     app.cursor_column = app.caret_bounds().1;
-    let was = (app.cursor, app.cursor_footer, app.cursor_column);
+    let was = (app.cursor, app.cursor_on_footer(), app.cursor_column);
 
     app.record_jump();
     app.set_cursor(items[2]);
     app.handle_key(ctrl_o);
     assert_eq!(
-        (app.cursor, app.cursor_footer, app.cursor_column),
+        (app.cursor, app.cursor_on_footer(), app.cursor_column),
         was,
         "the node, the footer side and the column all come back"
     );
 
     // The same jump, to a row that has lost most of its text since.
-    app.cursor_footer = false;
+    app.cursor_line_in_node = 0;
     app.cursor_column = app.caret_bounds().1;
     let wide = app.cursor_column;
     app.record_jump();

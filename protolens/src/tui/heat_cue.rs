@@ -284,7 +284,7 @@ impl App {
     pub(super) fn heat_scored_range(&self, idx: usize) -> std::ops::Range<usize> {
         let node = &self.tree[idx].span;
         if node.packed_record_start == NO_PACKED_RECORD {
-            return extract::message_payload_range(&self.blob, &node.raw_range, NO_PACKED_RECORD);
+            return extract::message_payload_range(&self.blob, &node.raw_range);
         }
         let record_start = node.packed_record_start as usize;
         // The element's own `raw_range` ends where the element does, so
@@ -453,11 +453,7 @@ impl App {
             }
             let range = {
                 let node = &self.tree[idx].span;
-                extract::message_payload_range(
-                    &self.blob,
-                    &node.raw_range,
-                    node.packed_record_start,
-                )
+                extract::message_payload_range(&self.blob, &node.raw_range)
             };
             let start = range.start;
             let current_key = self.current_type_key(idx);

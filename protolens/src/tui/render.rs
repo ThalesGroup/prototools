@@ -806,13 +806,13 @@ impl App {
     /// and the highlighting pass (spec 0187 S2), and for the same borrow
     /// reason.
     ///
-    /// Consecutive rows resolving to one *record* are resolved once. In
-    /// practice that means a packed run: its N element rows are N
-    /// distinct nodes but one addressable record (spec 0184 S2), so they
-    /// share one positional path and therefore one answer. Rows of one
-    /// node are not otherwise adjacent — a message's header and footer
-    /// rows have its whole subtree between them — so a one-entry memo is
-    /// all the collapsing there is to do here.
+    /// Consecutive rows resolving to one node are resolved once. In
+    /// practice that means a packed run: spec 0216 S22 makes its N
+    /// element rows one node, so they share one positional path and
+    /// therefore one answer. Rows of one node are not otherwise
+    /// adjacent — a message's header and footer rows have its whole
+    /// subtree between them — so a one-entry memo is all the collapsing
+    /// there is to do here.
     ///
     /// The returned count is what makes that claim testable rather than
     /// merely asserted.
@@ -828,10 +828,7 @@ impl App {
                 let Some(idx) = self.node_at_own_line(line_idx) else {
                     return false;
                 };
-                let reusable = last.filter(|&(seen, _)| {
-                    seen == idx
-                        || decode::same_packed_record(&self.tree[seen].span, &self.tree[idx].span)
-                });
+                let reusable = last.filter(|&(seen, _)| seen == idx);
                 match reusable {
                     Some((_, answer)) => answer,
                     None => {

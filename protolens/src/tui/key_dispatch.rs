@@ -220,8 +220,9 @@ impl App {
 
     /// Spec 0194 S10: push the position being left, not just the node
     /// being left — `Ctrl-o` returns to a *place*. This also fixes a
-    /// pre-existing loss: `cursor_footer` was never recorded, so a jump
-    /// back from a node's `}` landed on its `{`.
+    /// pre-existing loss: which of the node's lines the cursor was on
+    /// was never recorded, so a jump back from a node's `}` landed on
+    /// its `{`.
     pub(super) fn record_jump(&mut self) {
         self.back_stack.push(self.cursor_pos());
         self.fwd_stack.clear();
@@ -231,7 +232,7 @@ impl App {
     pub(super) fn cursor_pos(&self) -> CursorPos {
         CursorPos {
             node: self.cursor,
-            footer: self.cursor_footer,
+            line_in_node: self.cursor_line_in_node,
             column: self.cursor_column,
         }
     }
@@ -249,7 +250,7 @@ impl App {
     fn restore_cursor_pos(&mut self, pos: CursorPos) {
         self.set_cursor(pos.node);
         self.unfold_ancestors(pos.node);
-        self.cursor_footer = pos.footer;
+        self.cursor_line_in_node = pos.line_in_node;
         self.cursor_column = pos.column;
         self.clamp_caret_column();
         self.desired_column = self.cursor_column;

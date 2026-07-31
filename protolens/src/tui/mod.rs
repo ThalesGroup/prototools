@@ -36,8 +36,9 @@ use prototext_core::serialize::render_text::{
     decode_and_render, decode_and_render_indexed, DecodeRenderOpts, FqdnId, FqdnTable,
     NO_PACKED_RECORD,
 };
-// As with `NO_NODE` below: every `NO_FQDN` outside `decode.rs` is in a test
-// module building a literal `NodeSpan`.
+use prototext_core::Arena;
+// Every `NO_FQDN` outside `decode.rs` is in a test module building a
+// literal `NodeSpan`.
 #[cfg(test)]
 use prototext_core::serialize::render_text::NO_FQDN;
 
@@ -46,10 +47,6 @@ use crate::blob::wrapped;
 use crate::blob::Blob;
 use crate::colorize::{self, LineStyles, SyntaxRole};
 use crate::decode::{self, widen, Decoded, DescriptorContext, TreeNode};
-// Every `NO_NODE` outside `decode.rs` is in a test module building a
-// literal `TreeNode`; those modules reach it through `use super::*`.
-#[cfg(test)]
-use crate::decode::NO_NODE;
 pub(crate) use lines::LinePos;
 
 use crate::export_descriptor;
@@ -796,17 +793,18 @@ pub(super) enum CaretAnchor {
     End,
 }
 
-/// Spec 0194 S10: a whole cursor position — the node, which of its two
-/// lines the cursor rests on (spec 0142's half-coordinate), and the
-/// caret's column within that line. What the jumplist stores, so that
-/// `Ctrl-o` returns to a *place* rather than to a node.
+/// Spec 0194 S10: a whole cursor position — the node, which of its own
+/// lines the cursor rests on (spec 0142's half-coordinate, widened by
+/// spec 0216 S7), and the caret's column within that line. What the
+/// jumplist stores, so that `Ctrl-o` returns to a *place* rather than
+/// to a node.
 ///
 /// Deliberately does **not** carry the caret anchor (spec 0199 S10): it
 /// records where the cursor was, and the anchor is not part of where.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) struct CursorPos {
     node: usize,
-    footer: bool,
+    line_in_node: u32,
     column: usize,
 }
 
@@ -853,6 +851,11 @@ pub struct App {
     /// `ThemeKind::System` (resolved once in `main.rs` before `App::new`).
     theme: ThemeKind,
     tree: Vec<TreeNode>,
+    /// The blob's structural decomposition (spec 0216 S1), built once at
+    /// load and never rebuilt: it is a function of the bytes, and the
+    /// bytes do not change. Every interpretation's `tree` is a pruning of
+    /// it, which is what lets it be immutable while `tree` is not.
+    arena: Arena,
     /// Spec 0212 S4: the type names every `span.type_fqdn` in `tree`
     /// indexes into, moved out of `Decoded` at construction and shared by
     /// every sub-render of this document for the session's whole life.
@@ -936,12 +939,6 @@ pub struct App {
     /// measure the old cost plus the new one.
     #[cfg(test)]
     pub(super) verify_repair: bool,
-    /// Test-only stand-in for `MemAvailable`, so the memory guard's
-    /// refusal path can be exercised without depending on how much
-    /// memory the machine running the suite happens to have free.
-    /// `None` reads `/proc/meminfo` as production does.
-    #[cfg(test)]
-    pub(super) memory_available: Option<u64>,
     /// Spec 0160 G2: running total of line-count deltas accumulated by
     /// `splice_override` calls in the current `render_overrides` batch.
     /// Always `0` outside of an active batch.
@@ -972,15 +969,20 @@ pub struct App {
     /// `finalize_override_batch`.
     pending_patch_min_line: Option<usize>,
     cursor: usize,
-    /// `true` when the cursor is visually resting on `cursor`'s own
-    /// closing `}` line rather than its header line (spec 0142).
-    /// `cursor` itself is unaffected — still the node whose bracket
-    /// pair the cursor belongs to, so every existing node-indexed
-    /// action (fold, override edit, status line, etc.) already treats
-    /// a footer-resting cursor exactly like its header, satisfying the
-    /// "acts as if on the opening bracket" requirement with no extra
-    /// redirection.
-    cursor_footer: bool,
+    /// Which of `cursor`'s own lines the cursor is visually resting on
+    /// — the `line_in_node` half of a [`LinePos`].
+    ///
+    /// `0` is the header row. For a bracketed node the only other
+    /// value is `lines_total - 1`, its closing `}` (spec 0142); for a
+    /// flat node the values run over its rows, which is one per element
+    /// of a packed run (spec 0216 S7).
+    ///
+    /// `cursor` itself is unaffected — still the node the row belongs
+    /// to, so every existing node-indexed action (fold, override edit,
+    /// status line, etc.) already treats a non-header row exactly like
+    /// the header, satisfying the "acts as if on the opening bracket"
+    /// requirement with no extra redirection.
+    cursor_line_in_node: u32,
     /// Spec 0194 S1: where the caret rests along the cursor row's
     /// *caret track* — the row's own text (`row_text`, fold margin
     /// excluded) followed by its heat suffix, counted in `char`s.
@@ -1215,27 +1217,6 @@ pub struct App {
     /// worker-progress wakeup or a real redraw-triggering input event)
     /// resolves it; `Resolved` nodes are read directly, no cache lock.
     heat_states: Vec<heat_cue::HeatState>,
-    /// Which arena slots hold a node no longer reachable from the
-    /// document root, parallel to `tree`. Not derived by a mark pass:
-    /// `splice_override` is the only producer of garbage and it already
-    /// computes exactly what it abandons (`old_descendants`, the packed
-    /// orphans, and the pushed copy of the local root), so liveness is
-    /// recorded at the one site that knows it rather than recovered
-    /// afterwards by walking the whole arena.
-    dead: Vec<bool>,
-    /// How many of `dead` are set. Maintained alongside it because the
-    /// decision to start a pass is taken on every idle iteration of the
-    /// event loop, and counting four and a half million booleans that
-    /// often is precisely the kind of arena-wide work `compact.rs`
-    /// exists to avoid.
-    dead_count: usize,
-    /// Incremental compaction's two cursors (`compact.rs`): everything
-    /// below `compact_dst` is live and packed, `compact_dst
-    /// ..compact_src` is dead, and `compact_src..tree.len()` has not
-    /// been examined by the current pass. Both zero when no pass is in
-    /// flight.
-    compact_dst: usize,
-    compact_src: usize,
     /// Node indices with an outstanding worker request (spec 0152 G6/
     /// G8) — populated by `heat_cue_resolve` whenever it finds a node
     /// still unsettled with a worker present, drained by
@@ -1521,13 +1502,11 @@ impl App {
         let tree_len = decoded.tree.len();
         let root_candidates = std::mem::take(&mut decoded.root_candidates);
         let header = format!("protolens — {blob_label} — {}", decoded.root_type);
-        // Document-order first node (doc_prev == None) — not array index 0,
-        // which is post-order (see decode::TreeNode's doc comment).
-        let cursor = decoded
-            .tree
-            .iter()
-            .position(|n| n.doc_prev().is_none())
-            .unwrap_or(0);
+        // Spec 0216 S1: the arena is in level order and slot 0 is the
+        // wrapper, so the document-order first node is the first slot.
+        // It used to be searched for (the node with no `doc_prev`),
+        // because the render emitted post-order.
+        let cursor = 0;
         // Spec 0117 §1: seed the root `path` override with whatever type
         // was explicitly requested or inferred; if neither is available,
         // seed nothing at all — an untyped root has no override worth
@@ -1555,6 +1534,7 @@ impl App {
             window_styles: Vec::new(),
             theme,
             tree: decoded.tree,
+            arena: decoded.arena,
             fqdns: decoded.fqdns,
             provenance: ProvenanceTable::new(),
             override_batch_depth: 0,
@@ -1563,13 +1543,11 @@ impl App {
             unpruned_walk: false,
             #[cfg(test)]
             verify_repair: true,
-            #[cfg(test)]
-            memory_available: None,
             pending_shift: 0,
             pending_line_patches: Vec::new(),
             pending_patch_min_line: None,
             cursor,
-            cursor_footer: false,
+            cursor_line_in_node: 0,
             cursor_column: 0,
             desired_column: 0,
             // Spec 0199 S1: the first frame's caret sits on the first
@@ -1612,10 +1590,6 @@ impl App {
             ))),
             heat_worker: None,
             heat_states: vec![heat_cue::HeatState::default(); tree_len],
-            dead: vec![false; tree_len],
-            dead_count: 0,
-            compact_dst: 0,
-            compact_src: 0,
             pending_heat_recheck: HashSet::new(),
             prefetch_walk: PrefetchWalk::exhausted(),
             prefetch_trace: PrefetchTrace::default(),
@@ -2057,7 +2031,11 @@ impl App {
             } else {
                 self.prefetch_walk.below_pos = Some(pos);
             }
-            if pos.footer {
+            // Heat is a property of the node, so only its header row
+            // asks for it: a closing brace has none of its own, and the
+            // later rows of a packed run would each re-ask the same
+            // question (spec 0216 S7).
+            if pos.line_in_node != 0 {
                 self.prefetch_trace.skipped += 1;
                 continue;
             }
@@ -2068,11 +2046,7 @@ impl App {
             }
             let range = {
                 let node = &self.tree[idx].span;
-                extract::message_payload_range(
-                    &self.blob,
-                    &node.raw_range,
-                    node.packed_record_start,
-                )
+                extract::message_payload_range(&self.blob, &node.raw_range)
             };
             let current_key = self.current_type_key(idx);
             let (_, outcome) = self.heat_lookup_ex(
@@ -2614,19 +2588,11 @@ where
                 Err(mpsc::TryRecvError::Empty) => match app.prefetch_step() {
                     PrefetchStep::Progressed => continue,
                     PrefetchStep::Idle => {
-                        // Spec 0203: arena compaction takes a slice here,
-                        // strictly behind read-ahead — read-ahead is
-                        // latency the user will feel, compaction is
-                        // housekeeping nobody is waiting on. A slice is
-                        // bounded, and the arena is fully consistent
-                        // between slices, so this yields to a pending
-                        // event exactly like the prefetch arm above.
-                        if !matches!(
-                            app.compact_slice(compact::COMPACT_SLICE_NODES),
-                            compact::CompactStep::Idle
-                        ) {
-                            continue;
-                        }
+                        // Spec 0203 ran incremental arena compaction
+                        // here, strictly behind read-ahead. Spec 0216
+                        // deletes it: the arena is a function of the
+                        // bytes and never grows, so there is nothing
+                        // left to compact.
                         let timeout = deadline.saturating_duration_since(Instant::now());
                         break rx.recv_timeout(timeout).ok(); // timeout elapsed => None
                     }
@@ -2739,7 +2705,6 @@ where
 }
 
 mod command_line;
-mod compact;
 mod event;
 mod heat_cue;
 mod heat_worker;
@@ -2753,6 +2718,7 @@ mod neovim;
 mod override_apply;
 mod override_select;
 mod render;
+mod structure;
 mod tiered;
 mod trace;
 

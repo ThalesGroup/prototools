@@ -190,7 +190,7 @@ fn yaml_round_trips_auto_flag_and_defaults_false_when_absent() {
 /// hover + Shift+wheel/native horizontal scroll.
 #[test]
 fn long_command_buffer_is_pannable_and_keeps_cursor_visible() {
-    let (mut app, _items) = repeated_scalar_fixture();
+    let (mut app, _items) = repeated_message_fixture();
     app.splash = false;
     app.command_buffer = Some("a".repeat(80));
     app.command_cursor = 80;
@@ -455,33 +455,19 @@ fn two_consecutive_scalar_siblings_keep_distinct_ordinals() {
     assert_eq!(app.resolve_path(&b_path), Some(b));
 }
 
-/// Spec 0184 S7: `resolve_path` is no longer an identity inverse of
-/// `positional_path`, because a packed run's N elements share the
-/// record's one path. The invariant it replaces the identity with is
-/// stronger, not weaker — resolving a path always yields **the node
-/// that can be acted upon**, which for a run is its leader, exactly the
-/// node `splice_override` already redirects every element to.
+/// Spec 0184 S7 had to weaken `resolve_path` from an inverse of
+/// `positional_path` to "the node that can be acted upon", because a
+/// packed run's N elements shared the record's one path and only the
+/// leader could be spliced. Spec 0216 S22 makes the run one node, so
+/// there is no longer an element to distinguish from a leader and the
+/// plain identity holds again — including for the run.
 #[test]
-fn resolve_path_yields_the_actionable_node_for_a_packed_run() {
-    let (app, elems, tail, _a, _b) = packed_run_with_tail_fixture();
+fn resolve_path_round_trips_a_packed_run() {
+    let (app, run, tail, _a, _b) = packed_run_with_tail_fixture();
 
-    let run_path = app.positional_path(elems[0]);
+    let run_path = app.positional_path(run);
     assert_eq!(run_path, "/1");
-    for &e in &elems {
-        assert_eq!(
-            app.positional_path(e),
-            run_path,
-            "every element of the run shares the record's path"
-        );
-        assert_eq!(
-            app.resolve_path(&app.positional_path(e)),
-            Some(elems[0]),
-            "resolving it yields the run's leader, not the element"
-        );
-    }
-
-    // Everything that is not a packed element still round-trips as an
-    // identity.
+    assert_eq!(app.resolve_path(&run_path), Some(run));
     assert_eq!(app.resolve_path(&app.positional_path(tail)), Some(tail));
 }
 
@@ -494,11 +480,7 @@ fn resolve_path_yields_the_actionable_node_for_a_packed_run() {
 #[test]
 fn resolve_path_is_the_inverse_of_positional_path() {
     let (app, inner_idx, id_idx) = type_as_fixture();
-    let outer_idx = app
-        .tree
-        .iter()
-        .position(|n| n.parent().is_none())
-        .expect("tree must have a wrapper root");
+    let outer_idx = app.first_node;
     assert_eq!(
         app.resolve_path(&app.positional_path(outer_idx)),
         Some(outer_idx)
@@ -518,9 +500,9 @@ fn resolve_path_is_the_inverse_of_positional_path() {
 /// The way that could stop being true is a splice appending a second
 /// parentless node, so the case worth checking is a splice on the root
 /// itself — retyped to raw and back, which re-decodes the entire
-/// document twice and appends two full copies of it to the arena. If
-/// either copy brought its own detached root, the search and the field
-/// would disagree here.
+/// document twice. Spec 0216 S12 removes the mechanism rather than the
+/// risk: a splice rewrites the slots the arena already has for those
+/// bytes, so there is nothing for a second root to be appended to.
 #[test]
 fn the_root_stays_the_first_node_across_a_root_respice() {
     let mut app = nested_any_fixture();
@@ -536,9 +518,11 @@ fn the_root_stays_the_first_node_across_a_root_respice() {
     app.render_overrides(root);
 
     assert_eq!(
-        Some(app.first_node),
-        app.tree.iter().position(|n| n.parent().is_none()),
-        "the arena must hold exactly one parentless node, and it must \
+        (0..app.tree.len())
+            .filter(|&i| app.parent(i).is_none())
+            .collect::<Vec<_>>(),
+        vec![app.first_node],
+        "the arena must hold exactly one parentless slot, and it must \
          be `first_node`"
     );
     assert_eq!(app.resolve_path("/"), Some(app.first_node));

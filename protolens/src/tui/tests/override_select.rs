@@ -114,14 +114,6 @@ fn t_opens_the_override_pane_on_an_unresolved_message_node() {
             packed_record_start: NO_PACKED_RECORD,
             wire_type: WT_LEN as u8,
         },
-        parent: NO_NODE,
-        first_child: NO_NODE,
-        last_child: NO_NODE,
-        next_sibling: NO_NODE,
-        prev_sibling: NO_NODE,
-        doc_next: NO_NODE,
-        doc_prev: NO_NODE,
-        sibling_ordinal: 1,
         lines_total: 2,
         lines_visible: 2,
         rendered_as: NOT_RENDERED,
@@ -134,6 +126,7 @@ fn t_opens_the_override_pane_on_an_unresolved_message_node() {
         // = 0, zero payload bytes — a real, `raw_range`-consistent
         // blob, needed since spec 0132's live preview now splices
         // this node's contents at pane-open time.
+        arena: crate::decode::arena_of(&[0x0A, 0x00]),
         blob: Arc::new(Blob::unwrapped(vec![0x0A, 0x00])),
         wrapper_offset: 0,
         root_candidates: Vec::new(),
@@ -174,14 +167,6 @@ fn t_opens_the_override_pane_on_a_varint_scalar_field() {
             packed_record_start: NO_PACKED_RECORD,
             wire_type: WT_VARINT as u8,
         },
-        parent: NO_NODE,
-        first_child: NO_NODE,
-        last_child: NO_NODE,
-        next_sibling: NO_NODE,
-        prev_sibling: NO_NODE,
-        doc_next: NO_NODE,
-        doc_prev: NO_NODE,
-        sibling_ordinal: 1,
         lines_total: 1,
         lines_visible: 1,
         rendered_as: NOT_RENDERED,
@@ -194,6 +179,7 @@ fn t_opens_the_override_pane_on_a_varint_scalar_field() {
         // — a real, `raw_range`-consistent blob, needed since spec 0132's
         // live preview now splices this node's contents at pane-open
         // time.
+        arena: crate::decode::arena_of(&[0x08, 0x01]),
         blob: Arc::new(Blob::unwrapped(vec![0x08, 0x01])),
         wrapper_offset: 0,
         root_candidates: Vec::new(),
@@ -335,33 +321,25 @@ fn esc_after_t_on_an_enum_field_restores_its_original_rendering() {
 #[test]
 fn t_opens_the_override_pane_on_a_length_delimited_scalar_field() {
     let lines: Vec<String> = vec!["value: \"hi\"".to_string()];
-    let node = TreeNode {
-        span: NodeSpan {
-            field_number: 1,
-            raw_range: 0..4,
-            text_range: 0..1,
-            level: 0,
-            type_fqdn: NO_FQDN,
-            is_message: false,
-            packed_record_start: NO_PACKED_RECORD,
-            wire_type: WT_LEN as u8,
-        },
-        parent: NO_NODE,
-        first_child: NO_NODE,
-        last_child: NO_NODE,
-        next_sibling: NO_NODE,
-        prev_sibling: NO_NODE,
-        doc_next: NO_NODE,
-        doc_prev: NO_NODE,
-        sibling_ordinal: 1,
-        lines_total: 1,
-        lines_visible: 1,
-        rendered_as: NOT_RENDERED,
+    let span = NodeSpan {
+        field_number: 1,
+        raw_range: 0..4,
+        text_range: 0..1,
+        level: 0,
+        type_fqdn: NO_FQDN,
+        is_message: false,
+        packed_record_start: NO_PACKED_RECORD,
+        wire_type: WT_LEN as u8,
     };
+    // Spec 0216: the overlay has one entry per arena slot, and the walk
+    // decomposes `"hi"` further than this rendering shows, so the tree
+    // has to be derived rather than written out.
+    let arena = crate::decode::arena_of(&[0x0A, 0x02, b'h', b'i']);
     let decoded = Decoded {
         lines,
-        tree: vec![node],
+        tree: crate::decode::build_tree(vec![span], &arena),
         root_type: "test.Scalar".to_string(),
+        arena,
         blob: Arc::new(Blob::unwrapped(vec![0x0A, 0x02, b'h', b'i'])),
         wrapper_offset: 0,
         root_candidates: Vec::new(),
@@ -1248,11 +1226,7 @@ fn recompute_override_candidates_pushes_pending_on_miss_and_applies_pre_populate
     app.override_sort = SortMode::Inferred;
     app.override_list_height = 4;
     let idx = 0;
-    let range = extract::message_payload_range(
-        &app.blob,
-        &app.tree[idx].span.raw_range,
-        app.tree[idx].span.packed_record_start,
-    );
+    let range = extract::message_payload_range(&app.blob, &app.tree[idx].span.raw_range);
     app.heat_caches.lock().unwrap().by_range.upsert(
         range.start,
         RangeHeatEntry {
@@ -1300,11 +1274,7 @@ fn upgrade_active_override_to_complete_pushes_pending_and_respects_the_mismatch_
         .collect();
 
     let idx = 0;
-    let range = extract::message_payload_range(
-        &app.blob,
-        &app.tree[idx].span.raw_range,
-        app.tree[idx].span.packed_record_start,
-    );
+    let range = extract::message_payload_range(&app.blob, &app.tree[idx].span.raw_range);
 
     // Miss: nothing cached at all — sets pending, pushes one request.
     app.upgrade_active_override_to_complete();
@@ -1398,11 +1368,7 @@ fn poll_pending_override_work_does_not_clobber_a_non_inferred_sort_mode() {
     // The background request the first `recompute_override_candidates`
     // call queued now resolves — `by_range` covers the requested page.
     let idx = 0;
-    let range = extract::message_payload_range(
-        &app.blob,
-        &app.tree[idx].span.raw_range,
-        app.tree[idx].span.packed_record_start,
-    );
+    let range = extract::message_payload_range(&app.blob, &app.tree[idx].span.raw_range);
     app.heat_caches.lock().unwrap().by_range.upsert(
         range.start,
         RangeHeatEntry {
@@ -1536,11 +1502,7 @@ fn poll_pending_override_work_previews_the_newly_arrived_top_candidate() {
 
     // The worker's answer lands in the shared cache.
     app.override_candidates_pending = true;
-    let range = extract::message_payload_range(
-        &app.blob,
-        &app.tree[inner_idx].span.raw_range,
-        app.tree[inner_idx].span.packed_record_start,
-    );
+    let range = extract::message_payload_range(&app.blob, &app.tree[inner_idx].span.raw_range);
     app.heat_caches.lock().unwrap().by_range.upsert(
         range.start,
         RangeHeatEntry {
@@ -1746,46 +1708,48 @@ fn display_row_map_holds_at_the_substitution_boundaries() {
     }
 }
 
-/// Spec 0185 S1 × spec 0184: previewing *any* element of a packed run
-/// stands in for the whole run, because the record is the addressable
-/// unit and the whole record is what a commit would splice. Getting
-/// this wrong shows as a preview that replaces one line of a run and
-/// leaves the rest.
+/// Spec 0185 S1 × spec 0184: previewing a packed run stands in for the
+/// whole run, because the record is the addressable unit and the whole
+/// record is what a commit would splice. Getting this wrong shows as a
+/// preview that replaces one line of a run and leaves the rest.
+///
+/// Spec 0216 makes the run a single node drawing one row per element,
+/// so "any element stands in for the run" is now structural rather than
+/// a rule the preview has to honor; what is still worth asserting is
+/// that the overlay anchors at the run's first row and covers all of
+/// them.
 #[test]
-fn previewing_one_packed_element_covers_the_whole_run() {
-    let (mut app, elems, _tail, _a, _b) = packed_run_with_tail_fixture();
-    let run_first_line = app.absolute_start(elems[0]);
-    let run_end_line = app.node_lines(elems[2]).end;
+fn previewing_a_packed_run_covers_all_of_its_rows() {
+    let (mut app, run, _tail, _a, _b) = packed_run_with_tail_fixture();
+    let run_lines = app.node_lines(run);
 
-    for &elem in &elems {
-        app.override_target = Some(elem);
-        app.override_candidates = vec![("uint64".to_string(), None)];
-        app.override_highlight = 0;
-        app.preview_override_highlight();
+    app.override_target = Some(run);
+    app.override_candidates = vec![("uint64".to_string(), None)];
+    app.override_highlight = 0;
+    app.preview_override_highlight();
 
-        let o = app
-            .preview_overlay
-            .as_ref()
-            .unwrap_or_else(|| panic!("element {elem} must preview: {}", app.message));
-        let first_row = o.first_row;
-        let covered = o.covered_rows;
-        // Spec 0210 S2: rows are walked, not indexed out of a vector.
-        assert_eq!(
-            app.visible_row_pos(first_row).map(|(_, line)| line),
-            Some(run_first_line),
-            "the overlay must anchor at the run's leader, not at element {elem}"
-        );
-        let rest = app.visible_row_count() - first_row;
-        assert_eq!(
-            covered,
-            app.visible_window(first_row, rest)
-                .into_iter()
-                .take_while(|(l, _)| *l < run_end_line)
-                .count(),
-            "...and stand in for every row of the run"
-        );
-        assert!(o.covered_rows > 1, "the fixture's run spans several rows");
-    }
+    let o = app
+        .preview_overlay
+        .as_ref()
+        .unwrap_or_else(|| panic!("the run must preview: {}", app.message));
+    let first_row = o.first_row;
+    let covered = o.covered_rows;
+    // Spec 0210 S2: rows are walked, not indexed out of a vector.
+    assert_eq!(
+        app.visible_row_pos(first_row).map(|(_, line)| line),
+        Some(run_lines.start),
+        "the overlay must anchor at the run's first row"
+    );
+    let rest = app.visible_row_count() - first_row;
+    assert_eq!(
+        covered,
+        app.visible_window(first_row, rest)
+            .into_iter()
+            .take_while(|(l, _)| *l < run_lines.end)
+            .count(),
+        "...and stand in for every row of the run"
+    );
+    assert!(covered > 1, "the fixture's run spans several rows");
 }
 
 /// Spec 0185 S4: the overlay has no node, so `folded` is never
@@ -1853,7 +1817,7 @@ fn a_failing_candidate_drops_the_overlay_and_leaves_the_document_intact() {
         ("nonexistent.Type".to_string(), None),
     ];
     let lines = app.lines.clone();
-    let first_child = app.tree[inner_idx].first_child();
+    let first_child = app.first_child(inner_idx);
 
     app.override_highlight = 0;
     app.preview_override_highlight();
@@ -1870,7 +1834,7 @@ fn a_failing_candidate_drops_the_overlay_and_leaves_the_document_intact() {
     );
     assert!(app.preview_overlay.is_none());
     assert_eq!(app.lines, lines);
-    assert_eq!(app.tree[inner_idx].first_child(), first_child);
+    assert_eq!(app.first_child(inner_idx), first_child);
 }
 
 /// Spec 0185 S5/G5: while the override-selection pane is open, focus is

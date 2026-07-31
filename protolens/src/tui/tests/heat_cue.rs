@@ -51,36 +51,36 @@ pub(super) fn seed_range_heat_entry(
 /// Two consequences asserted here: the cue the user sees agrees with
 /// what `t` would act on, and the run's N lines share one
 /// `heat_caches` entry rather than holding N (G3).
+///
+/// Spec 0216 S22 makes the first of those structural — the run is one
+/// node, so there is one cue by construction — and leaves the second
+/// worth asserting: the range scored is the record's payload, and every
+/// row of the run lights up from the single entry keyed on it.
 #[test]
 fn a_packed_run_scores_one_cue_over_the_whole_record() {
-    let (mut app, elems, tail, _a, _b) = packed_run_with_tail_fixture();
+    let (mut app, run, tail, _a, _b) = packed_run_with_tail_fixture();
 
-    let record = app.heat_scored_range(elems[0]);
-    for &e in &elems {
-        assert_eq!(
-            app.heat_scored_range(e),
-            record,
-            "every element of the run must score the same range"
-        );
-        assert_ne!(
-            app.heat_scored_range(e),
-            widen(&app.tree[e].span.raw_range),
-            "and that range must not be the element's own bytes"
-        );
-    }
+    let record = app.heat_scored_range(run);
+    assert_ne!(
+        record,
+        widen(&app.tree[run].span.raw_range),
+        "the scored range must be the record's payload, not its tag \
+         and length too"
+    );
     assert_eq!(record.len(), 3, "the record's payload is its 3 elements");
 
     // A non-packed sibling is unaffected: still its own payload.
     assert_eq!(
         app.heat_scored_range(tail),
-        extract::message_payload_range(&app.blob, &app.tree[tail].span.raw_range, NO_PACKED_RECORD)
+        extract::message_payload_range(&app.blob, &app.tree[tail].span.raw_range)
     );
 
     // One seeded entry, keyed on the record's payload start, is enough
     // to light up every line of the run.
     seed_range_heat_entry(&mut app, record.start, Some(50), 1, "int32", Some(10));
-    for &e in &elems {
-        let line = app.absolute_start(e);
+    let rows = app.node_lines(run);
+    assert_eq!(rows.len(), 3, "the run draws one row per element");
+    for line in rows {
         assert!(
             matches!(app.heat_cue_for(line), HeatDisplay::Cue(_)),
             "element line {line} must show the record's cue"
@@ -376,11 +376,7 @@ fn i_toggles_heat_cues_hidden() {
     let mut app = message_node_app();
     app.splash = false;
     let idx = 0;
-    let range = extract::message_payload_range(
-        &app.blob,
-        &app.tree[idx].span.raw_range,
-        app.tree[idx].span.packed_record_start,
-    );
+    let range = extract::message_payload_range(&app.blob, &app.tree[idx].span.raw_range);
     seed_range_heat_entry(
         &mut app,
         range.start,
@@ -424,11 +420,7 @@ fn render_shows_the_glyph_column_and_suffix_when_a_cue_is_present() {
     let mut app = message_node_app();
     app.splash = false;
     let idx = 0;
-    let range = extract::message_payload_range(
-        &app.blob,
-        &app.tree[idx].span.raw_range,
-        app.tree[idx].span.packed_record_start,
-    );
+    let range = extract::message_payload_range(&app.blob, &app.tree[idx].span.raw_range);
     seed_range_heat_entry(
         &mut app,
         range.start,
@@ -486,11 +478,7 @@ fn render_shows_the_tie_count_suffix_when_tied_for_best() {
     let mut app = message_node_app();
     app.splash = false;
     let idx = 0;
-    let range = extract::message_payload_range(
-        &app.blob,
-        &app.tree[idx].span.raw_range,
-        app.tree[idx].span.packed_record_start,
-    );
+    let range = extract::message_payload_range(&app.blob, &app.tree[idx].span.raw_range);
     seed_range_heat_entry(
         &mut app,
         range.start,
@@ -536,11 +524,7 @@ fn render_shows_the_tie_count_suffix_when_tied_for_best() {
 #[test]
 fn cue_never_appears_in_the_override_pane() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
-    let range = extract::message_payload_range(
-        &app.blob,
-        &app.tree[inner_idx].span.raw_range,
-        app.tree[inner_idx].span.packed_record_start,
-    );
+    let range = extract::message_payload_range(&app.blob, &app.tree[inner_idx].span.raw_range);
     seed_range_heat_entry(&mut app, range.start, Some(50), 1, "test.Inner", Some(10));
     app.cursor = inner_idx;
     app.toggle_override();
@@ -577,11 +561,7 @@ fn second_call_for_the_same_line_is_a_pure_cache_hit() {
     app.splash = false;
     assert!(app.ctx.graph.is_none());
     let idx = 0;
-    let range = extract::message_payload_range(
-        &app.blob,
-        &app.tree[idx].span.raw_range,
-        app.tree[idx].span.packed_record_start,
-    );
+    let range = extract::message_payload_range(&app.blob, &app.tree[idx].span.raw_range);
     seed_range_heat_entry(
         &mut app,
         range.start,
@@ -629,11 +609,7 @@ fn vetoed_range_is_still_cached_as_a_hit() {
 #[test]
 fn g6_cross_population_caps_to_override_list_height() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
-    let range = extract::message_payload_range(
-        &app.blob,
-        &app.tree[inner_idx].span.raw_range,
-        app.tree[inner_idx].span.packed_record_start,
-    );
+    let range = extract::message_payload_range(&app.blob, &app.tree[inner_idx].span.raw_range);
     app.override_list_height = 200; // simulates the eager `run()` init.
     app.heat_caches.lock().unwrap().by_range.upsert(
         range.start,
@@ -840,11 +816,7 @@ fn heat_lookup_ands_window_and_current_score() {
     let mut app = message_node_app();
     app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
     let idx = 0;
-    let range = extract::message_payload_range(
-        &app.blob,
-        &app.tree[idx].span.raw_range,
-        app.tree[idx].span.packed_record_start,
-    );
+    let range = extract::message_payload_range(&app.blob, &app.tree[idx].span.raw_range);
     let key = "google.protobuf.DescriptorProto";
 
     // Window covered, current_score missing.
@@ -928,11 +900,7 @@ fn heat_cue_for_pre_populated_cache_resolves_without_pushing() {
     let mut app = message_node_app();
     app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
     let idx = 0;
-    let range = extract::message_payload_range(
-        &app.blob,
-        &app.tree[idx].span.raw_range,
-        app.tree[idx].span.packed_record_start,
-    );
+    let range = extract::message_payload_range(&app.blob, &app.tree[idx].span.raw_range);
     seed_range_heat_entry(
         &mut app,
         range.start,

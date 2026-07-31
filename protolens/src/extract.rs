@@ -24,8 +24,6 @@ use prototext_core::helpers::{
     parse_varint, parse_wiretag, write_tag, WT_END_GROUP, WT_LEN, WT_START_GROUP,
 };
 
-use prototext_core::serialize::render_text::NO_PACKED_RECORD;
-
 use crate::decode::{widen, TreeNode};
 
 /// Same header line `prototext_core::serialize::render_text` writes for a
@@ -62,7 +60,7 @@ pub fn extract_binary<'a>(blob: &'a [u8], range: &Range<u32>, is_message: bool) 
     if !is_message {
         return &blob[widen(range)];
     }
-    &blob[message_payload_range(blob, range, NO_PACKED_RECORD)]
+    &blob[message_payload_range(blob, range)]
 }
 
 /// For any field's full `tag[+length]+payload` span, return just the
@@ -76,12 +74,12 @@ pub fn extract_binary<'a>(blob: &'a [u8], range: &Range<u32>, is_message: bool) 
 /// range display for every node, message/group or scalar alike (spec
 /// 0114 §1.1, extended).
 ///
-/// `packed_record_start` is `NodeSpan::packed_record_start` (spec 0115
-/// §3): anything but `NO_PACKED_RECORD` means `range` is one element of a
-/// packed-repeated field — it has no wire tag of its own (it's a bare
-/// value inside the record's shared LEN payload), so `range` is already
-/// the payload and is returned unstripped; stripping it would misparse the
-/// element's own first byte as a fake tag.
+/// Spec 0115 gave a packed-repeated field one span per element, each a
+/// bare value with no wire tag of its own, and this function took a
+/// `packed_record_start` argument to know not to strip such a range.
+/// Spec 0216 makes the whole run a single node whose `raw_range` is the
+/// record — an ordinary `WT_LEN` field — so that case is gone and the
+/// generic stripping below is right for it.
 ///
 /// The trailing END_GROUP tag is stripped by re-encoding it from the
 /// leading tag's own field number (`write_tag(field_number, WT_END_GROUP,
@@ -92,15 +90,8 @@ pub fn extract_binary<'a>(blob: &'a [u8], range: &Range<u32>, is_message: bool) 
 /// re-decode of the payload — e.g. `splice_override`'s wrap-and-redecode
 /// trick — since wire type 4 is invalid at top level, producing a
 /// spurious `INVALID_GROUP_END` entry).
-pub(crate) fn message_payload_range(
-    blob: &[u8],
-    range: &Range<u32>,
-    packed_record_start: u32,
-) -> Range<usize> {
+pub(crate) fn message_payload_range(blob: &[u8], range: &Range<u32>) -> Range<usize> {
     let range = widen(range);
-    if packed_record_start != NO_PACKED_RECORD {
-        return range;
-    }
     let tag = parse_wiretag(blob, range.start);
     let Some(wtype) = tag.wtype else {
         return range;
@@ -212,8 +203,8 @@ pub fn extract(
 mod tests {
     use super::*;
     use crate::blob::wrapped;
-    use crate::decode::NO_NODE;
     use crate::provenance::NOT_RENDERED;
+    use prototext_core::serialize::render_text::NO_PACKED_RECORD;
 
     #[test]
     fn extract_binary_field_keeps_tag_and_length() {
@@ -388,14 +379,6 @@ mod tests {
                 packed_record_start: NO_PACKED_RECORD,
                 wire_type: WT_LEN as u8,
             },
-            parent: NO_NODE,
-            first_child: NO_NODE,
-            last_child: NO_NODE,
-            next_sibling: NO_NODE,
-            prev_sibling: NO_NODE,
-            doc_next: NO_NODE,
-            doc_prev: NO_NODE,
-            sibling_ordinal: 1,
             lines_total: 2,
             lines_visible: 2,
             rendered_as: NOT_RENDERED,
@@ -442,14 +425,6 @@ mod tests {
                 packed_record_start: NO_PACKED_RECORD,
                 wire_type: WT_LEN as u8,
             },
-            parent: NO_NODE,
-            first_child: NO_NODE,
-            last_child: NO_NODE,
-            next_sibling: NO_NODE,
-            prev_sibling: NO_NODE,
-            doc_next: NO_NODE,
-            doc_prev: NO_NODE,
-            sibling_ordinal: 1,
             lines_total: 3,
             lines_visible: 3,
             rendered_as: NOT_RENDERED,
@@ -499,14 +474,6 @@ mod tests {
                 packed_record_start: NO_PACKED_RECORD,
                 wire_type: WT_START_GROUP as u8,
             },
-            parent: NO_NODE,
-            first_child: NO_NODE,
-            last_child: NO_NODE,
-            next_sibling: NO_NODE,
-            prev_sibling: NO_NODE,
-            doc_next: NO_NODE,
-            doc_prev: NO_NODE,
-            sibling_ordinal: 1,
             lines_total: 3,
             lines_visible: 3,
             rendered_as: NOT_RENDERED,

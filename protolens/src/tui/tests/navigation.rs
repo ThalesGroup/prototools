@@ -5,68 +5,6 @@
 use super::super::*;
 use super::support::*;
 
-/// Spec 0192 S1: `sibling_position` used to *compute* the ordinal by
-/// walking the `prev_sibling` chain; it now reads a field derived once,
-/// where that chain is built. A derived value that silently drifts from
-/// the structure it describes would mis-address every override entry,
-/// so pin it against the walk it replaced — the walk is the definition.
-///
-/// Checked over every node of a real decode, before and after a splice:
-/// a splice is the one operation that relinks sibling chains after
-/// `build_tree` has run (`splice_override`'s packed-run absorption and
-/// its merge of the two locally numbered child sequences), so it is the
-/// only place the derivation could fall behind.
-#[test]
-fn every_stored_sibling_ordinal_equals_the_walk_it_replaced() {
-    // The walk `sibling_position` had before spec 0192, verbatim.
-    fn by_walking(app: &App, idx: usize) -> usize {
-        let mut pos = 1;
-        let mut cur = idx;
-        while let Some(prev) = app.tree[cur].prev_sibling() {
-            if !crate::decode::same_packed_record(&app.tree[prev].span, &app.tree[cur].span) {
-                pos += 1;
-            }
-            cur = prev;
-        }
-        pos
-    }
-    // Over the *live* tree: a splice abandons the nodes it absorbs in
-    // place rather than compacting the array (`splice_override`'s
-    // "abandon in place" pattern), and an abandoned node keeps stale
-    // links that no longer describe anything. Document order from the
-    // root is exactly the set `positional_path` is ever asked about.
-    let check = |app: &App, when: &str| {
-        let mut cur = app
-            .tree
-            .iter()
-            .position(|n| n.parent().is_none())
-            .or(Some(0))
-            .filter(|_| !app.tree.is_empty());
-        let mut visited = 0;
-        while let Some(idx) = cur {
-            assert_eq!(
-                app.sibling_position(idx),
-                by_walking(app, idx),
-                "node {idx} ordinal disagrees with the walk {when}"
-            );
-            visited += 1;
-            cur = app.tree[idx].doc_next();
-        }
-        assert!(visited > 1, "fixture must have a tree to walk {when}");
-    };
-
-    let (mut app, elems, ..) = packed_run_with_tail_fixture();
-    check(&app, "as decoded");
-
-    // Absorbs the whole packed run into its leader and relinks the
-    // followers, then rebuilds `elems[0]`'s child list out of two
-    // independently numbered local sequences.
-    app.override_target = Some(elems[0]);
-    app.splice_override(elems[0], None, false, None)
-        .expect("raw override on a packed element must succeed");
-    check(&app, "after a splice");
-}
-
 /// Spec 0126 G2: Shift-Down/Shift-Up alias `J`/`K`'s sibling-skip
 /// move, no-op-with-message on a childless-of-siblings node either
 /// way.
@@ -255,33 +193,27 @@ fn display_range_strips_tag_and_length_for_scalars_including_packed() {
     );
 
     let id_idx = app
-        .tree
-        .iter()
-        .position(|n| n.span.field_number == 1)
+        .nth_child(app.first_node, 0)
         .expect("tree must contain the id field");
     assert!(!app.tree[id_idx].span.is_message);
     // Tag (1 byte) stripped: just the varint value byte.
     assert_eq!(app.display_range(id_idx), 1..2);
 
-    let vals_indices: Vec<usize> = app
-        .tree
-        .iter()
-        .enumerate()
-        .filter(|(_, n)| n.span.field_number == 2)
-        .map(|(i, _)| i)
-        .collect();
-    // One NodeSpan per packed element (spec 0115), not one for the
-    // whole record.
-    assert_eq!(vals_indices.len(), 3);
-    for idx in &vals_indices {
-        assert!(!app.tree[*idx].span.is_message);
-        assert_ne!(app.tree[*idx].span.packed_record_start, NO_PACKED_RECORD);
-    }
-    // Each element's own byte, already bare-payload — no further
-    // tag/length stripping applied.
-    assert_eq!(app.display_range(vals_indices[0]), 4..5);
-    assert_eq!(app.display_range(vals_indices[1]), 5..6);
-    assert_eq!(app.display_range(vals_indices[2]), 6..7);
+    // Spec 0216: the whole packed record is one node, drawing one row
+    // per element, so there is one slot to find rather than three.
+    let vals_idx = app
+        .nth_child(app.first_node, 1)
+        .expect("tree must contain the vals record");
+    assert_eq!(app.tree[vals_idx].span.field_number, 2);
+    assert!(!app.tree[vals_idx].span.is_message);
+    assert_ne!(
+        app.tree[vals_idx].span.packed_record_start,
+        NO_PACKED_RECORD
+    );
+    assert_eq!(app.tree[vals_idx].lines_total, 3, "one row per element");
+    // The record's payload, already bare — no further tag/length
+    // stripping applied.
+    assert_eq!(app.display_range(vals_idx), 4..7);
 }
 
 /// Regression test: the always-reserved heat-cue gutter column (spec
@@ -364,14 +296,14 @@ fn down_from_header_reaches_own_footer_line() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
     app.splash = false;
     app.cursor = inner_idx;
-    app.cursor_footer = false;
+    app.cursor_line_in_node = 0;
 
     app.move_down(); // inner header -> id header
     app.move_down(); // id header -> inner footer
 
     assert_eq!(app.cursor, inner_idx);
     assert!(
-        app.cursor_footer,
+        app.cursor_on_footer(),
         "cursor must be resting on inner's own }} line"
     );
 }
@@ -382,15 +314,15 @@ fn down_from_header_reaches_own_footer_line() {
 fn down_from_footer_reaches_the_document_true_last_line() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
     app.splash = false;
-    let outer_idx = app.tree[inner_idx].parent().unwrap();
+    let outer_idx = app.parent(inner_idx).unwrap();
     app.cursor = inner_idx;
-    app.cursor_footer = true;
+    app.cursor_line_in_node = app.tree[inner_idx].lines_total - 1;
 
     app.move_down();
 
     assert_eq!(app.cursor, outer_idx);
     assert!(
-        app.cursor_footer,
+        app.cursor_on_footer(),
         "cursor must be resting on the root's own }} line"
     );
 }
@@ -403,21 +335,21 @@ fn up_from_footer_and_from_next_header_are_symmetric_with_down() {
     app.splash = false;
 
     app.cursor = inner_idx;
-    app.cursor_footer = true;
+    app.cursor_line_in_node = app.tree[inner_idx].lines_total - 1;
     app.move_up();
     assert_eq!(
         app.cursor, id_idx,
         "Up from inner's footer must reach id's header"
     );
-    assert!(!app.cursor_footer);
+    assert!(!app.cursor_on_footer());
 
-    let outer_idx = app.tree[inner_idx].parent().unwrap();
+    let outer_idx = app.parent(inner_idx).unwrap();
     app.cursor = outer_idx;
-    app.cursor_footer = true;
+    app.cursor_line_in_node = app.tree[outer_idx].lines_total - 1;
     app.move_up();
     assert_eq!(app.cursor, inner_idx);
     assert!(
-        app.cursor_footer,
+        app.cursor_on_footer(),
         "Up from the root's footer must reach inner's own footer"
     );
 }
@@ -429,14 +361,14 @@ fn up_from_footer_and_from_next_header_are_symmetric_with_down() {
 fn move_end_reaches_the_document_true_last_line() {
     let (mut app, inner_idx, id_idx) = type_as_fixture();
     app.splash = false;
-    let outer_idx = app.tree[inner_idx].parent().unwrap();
+    let outer_idx = app.parent(inner_idx).unwrap();
     app.cursor = id_idx;
-    app.cursor_footer = false;
+    app.cursor_line_in_node = 0;
 
     app.move_end();
 
     assert_eq!(app.cursor, outer_idx);
-    assert!(app.cursor_footer);
+    assert!(app.cursor_on_footer());
 }
 
 /// `gg`/`Home` must reach the true first line even when the cursor
@@ -448,14 +380,14 @@ fn move_end_reaches_the_document_true_last_line() {
 fn move_home_from_the_root_footer_reaches_the_document_true_first_line() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
     app.splash = false;
-    let outer_idx = app.tree[inner_idx].parent().unwrap();
+    let outer_idx = app.parent(inner_idx).unwrap();
     app.cursor = outer_idx;
-    app.cursor_footer = true;
+    app.cursor_line_in_node = app.tree[outer_idx].lines_total - 1;
 
     app.move_home();
 
     assert_eq!(app.cursor, app.first_node);
-    assert!(!app.cursor_footer);
+    assert!(!app.cursor_on_footer());
 }
 
 /// Spec 0142 G6.2: folding the node the cursor's footer currently
@@ -466,13 +398,13 @@ fn folding_the_node_under_a_footer_cursor_snaps_back_to_header() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
     app.splash = false;
     app.cursor = inner_idx;
-    app.cursor_footer = true;
+    app.cursor_line_in_node = app.tree[inner_idx].lines_total - 1;
 
     app.toggle_fold(inner_idx);
 
     assert_eq!(app.cursor, inner_idx);
     assert!(
-        !app.cursor_footer,
+        !app.cursor_on_footer(),
         "footer is hidden by the fold, cursor must fall back to header"
     );
 }
@@ -488,7 +420,7 @@ fn folding_an_ancestor_of_the_cursor_snaps_the_cursor_up_to_it() {
     let (mut app, inner_idx, id_idx) = type_as_fixture();
     app.splash = false;
     app.cursor = id_idx;
-    app.cursor_footer = false;
+    app.cursor_line_in_node = 0;
 
     app.toggle_fold(inner_idx);
 
@@ -496,11 +428,11 @@ fn folding_an_ancestor_of_the_cursor_snaps_the_cursor_up_to_it() {
         app.cursor, inner_idx,
         "cursor must snap up to the folded ancestor, not stay stuck on a hidden descendant"
     );
-    assert!(!app.cursor_footer);
+    assert!(!app.cursor_on_footer());
 }
 
 /// Spec 0142: a mouse click directly on a node's own closing `}` line
-/// moves the cursor there (`cursor_footer = true`) without toggling
+/// moves the cursor there (the cursor lands on the node's last row) without toggling
 /// the node's fold state (footer lines never carry a fold marker).
 #[test]
 fn clicking_a_closing_brace_line_moves_cursor_there_without_folding() {
@@ -508,13 +440,13 @@ fn clicking_a_closing_brace_line_moves_cursor_there_without_folding() {
     app.splash = false;
     app.main_area = Rect::new(0, 0, 40, 10);
     app.cursor = 0;
-    app.cursor_footer = false;
+    app.cursor_line_in_node = 0;
 
     // Line 3 ("  }") is inner's own footer line — row 3 within the pane.
     app.handle_click(2, 3);
 
     assert_eq!(app.cursor, inner_idx);
-    assert!(app.cursor_footer);
+    assert!(app.cursor_on_footer());
     assert!(
         !app.folded.contains(&inner_idx),
         "clicking the }} line must not toggle the fold"
@@ -528,28 +460,28 @@ fn clicking_a_closing_brace_line_moves_cursor_there_without_folding() {
 fn navigation_passes_through_an_empty_bracketed_message() {
     let (mut app, inner_idx) = empty_message_fixture();
     app.splash = false;
-    let outer_idx = app.tree[inner_idx].parent().unwrap();
+    let outer_idx = app.parent(inner_idx).unwrap();
     app.cursor = outer_idx;
-    app.cursor_footer = false;
+    app.cursor_line_in_node = 0;
 
     app.move_down(); // outer header -> inner header
     assert_eq!(app.cursor, inner_idx);
-    assert!(!app.cursor_footer);
+    assert!(!app.cursor_on_footer());
 
     app.move_down(); // inner header -> inner's own footer
     assert_eq!(app.cursor, inner_idx);
     assert!(
-        app.cursor_footer,
+        app.cursor_on_footer(),
         "empty message must still have a reachable footer stop"
     );
 
     app.move_down(); // inner footer -> outer footer
     assert_eq!(app.cursor, outer_idx);
-    assert!(app.cursor_footer);
+    assert!(app.cursor_on_footer());
 
     app.move_up();
     assert_eq!(app.cursor, inner_idx);
-    assert!(app.cursor_footer);
+    assert!(app.cursor_on_footer());
 }
 
 /// Spec 0142 empty-message fix: an empty-but-bracketed message is
@@ -568,7 +500,7 @@ fn empty_bracketed_message_is_foldable() {
     );
 
     app.cursor = inner_idx;
-    app.cursor_footer = false;
+    app.cursor_line_in_node = 0;
     app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
     assert!(
@@ -715,7 +647,7 @@ fn a_caret_on_the_first_non_blank_sticks_to_it_across_rows() {
 
 /// Spec 0194 test-plan item 14 (S6). `%` crosses between the cursor
 /// node's own braces, which means crossing between its header and
-/// footer rows — so it owns `cursor_footer` as well as the column.
+/// footer rows — so it owns `cursor_line_in_node` as well as the column.
 #[test]
 fn percent_moves_between_the_cursor_nodes_braces() {
     let (mut app, items) = repeated_message_fixture();
@@ -726,11 +658,14 @@ fn percent_moves_between_the_cursor_nodes_braces() {
     app.cursor_column = open.1;
 
     app.jump_matching_brace();
-    assert!(app.cursor_footer, "the closing brace is on the footer row");
+    assert!(
+        app.cursor_on_footer(),
+        "the closing brace is on the footer row"
+    );
     assert_eq!((app.cursor_line(), app.cursor_column), close);
 
     app.jump_matching_brace();
-    assert!(!app.cursor_footer);
+    assert!(!app.cursor_on_footer());
     assert_eq!((app.cursor_line(), app.cursor_column), open);
 }
 
@@ -766,43 +701,43 @@ fn percent_on_an_unbracketed_node_reports_rather_than_moving() {
 /// now, because the line counters leave no room for a gap anywhere else.
 #[test]
 fn move_down_and_up_step_over_display_only_lines() {
-    let mut app = sibling_leaves_app(&["a {", "  ...", "}", "b"]);
+    let (mut app, items) = repeated_message_fixture();
     app.splash = false;
 
-    // Make the first three lines one bracketed node whose body line
-    // belongs to nobody, dropping the two nodes that owned lines 1 and 2
-    // out of both chains.
-    app.tree[0].lines_total = 3;
-    app.tree[0].lines_visible = 3;
-    app.tree[0].set_next_sibling(Some(3));
-    app.tree[0].set_doc_next(Some(3));
-    app.tree[3].set_prev_sibling(Some(0));
-    app.tree[3].set_doc_prev(Some(0));
+    // `items[0]` is `items { v: 1 }` — three lines over one child. Drop
+    // the child without touching the parent's counts, and its body line
+    // is left belonging to nobody, exactly as a truncation marker's
+    // does. Spec 0216: dropping a node is vacating its slot, there being
+    // no chains left to unlink it from, and `first_child` reads the
+    // vacancy straight back.
+    let orphaned = app.first_child(items[0]).expect("items[0] has a child");
+    app.tree[orphaned] = TreeNode::vacant();
+    assert_eq!(app.tree[items[0]].lines_total, 3);
 
-    assert_eq!(app.visible_row_count(), 4);
+    let header = app.absolute_start(items[0]);
     assert!(
-        app.line_pos(1).is_none(),
+        app.line_pos(header + 1).is_none(),
         "the marker line must belong to no node, or the test is vacuous"
     );
 
-    app.cursor = 0;
-    app.cursor_footer = false;
+    app.cursor = items[0];
+    app.cursor_line_in_node = 0;
     app.move_down();
     assert!(
-        app.cursor == 0 && app.cursor_footer,
+        app.cursor == items[0] && app.cursor_on_footer(),
         "move_down must skip the span-less line and land on the footer, \
          not stall on it — got {} footer={}",
         app.cursor,
-        app.cursor_footer
+        app.cursor_on_footer()
     );
     app.move_down();
-    assert_eq!(app.cursor, 3, "and then leave the node normally");
+    assert_eq!(app.cursor, items[1], "and then leave the node normally");
 
     app.move_up();
-    assert!(app.cursor == 0 && app.cursor_footer);
+    assert!(app.cursor == items[0] && app.cursor_on_footer());
     app.move_up();
     assert!(
-        app.cursor == 0 && !app.cursor_footer,
+        app.cursor == items[0] && !app.cursor_on_footer(),
         "move_up must skip the span-less line, not stall on it"
     );
 }
@@ -942,7 +877,7 @@ fn h_at_a_voluntary_home_folds_before_it_moves_to_the_parent() {
     app.caret_left();
     assert_eq!(
         app.cursor,
-        app.tree[inner_idx].parent().unwrap(),
+        app.parent(inner_idx).unwrap(),
         "the third press moves to the parent"
     );
 }
@@ -969,8 +904,8 @@ fn h_on_a_scalar_moves_to_the_parent_immediately() {
 #[test]
 fn h_on_the_root_folds_it_and_then_reports_no_parent() {
     let (mut app, inner_idx, _) = type_as_fixture();
-    let root = app.tree[inner_idx].parent().unwrap();
-    assert!(app.tree[root].parent().is_none());
+    let root = app.parent(inner_idx).unwrap();
+    assert!(app.parent(root).is_none());
     app.set_cursor(root);
 
     app.caret_left();
@@ -1312,7 +1247,7 @@ fn a_page_key_lands_where_a_page_of_single_keys_lands() {
     let state = |app: &App| {
         (
             app.cursor,
-            app.cursor_footer,
+            app.cursor_on_footer(),
             app.cursor_column,
             app.cursor_moves,
         )
@@ -1371,7 +1306,7 @@ fn a_page_key_at_a_document_end_is_a_no_op() {
         app.caret_anchor = CaretAnchor::Free;
         let before = (
             app.cursor,
-            app.cursor_footer,
+            app.cursor_on_footer(),
             app.cursor_column,
             app.cursor_moves,
         );
@@ -1385,7 +1320,7 @@ fn a_page_key_at_a_document_end_is_a_no_op() {
         assert_eq!(
             (
                 app.cursor,
-                app.cursor_footer,
+                app.cursor_on_footer(),
                 app.cursor_column,
                 app.cursor_moves
             ),
@@ -1406,9 +1341,13 @@ fn the_caret_bounds_owner_matches_the_line_lookup() {
     let (mut app, items) = repeated_message_fixture();
     for footer in [false, true] {
         app.cursor = items[1];
-        app.cursor_footer = footer;
+        app.cursor_line_in_node = if footer {
+            app.tree[items[1]].lines_total - 1
+        } else {
+            0
+        };
         assert_eq!(
-            (!app.cursor_footer).then_some(app.cursor),
+            (!app.cursor_on_footer()).then_some(app.cursor),
             app.node_at_header_line(app.cursor_line()),
             "owner disagreement on a {} line",
             if footer { "footer" } else { "header" }

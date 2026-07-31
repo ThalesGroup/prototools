@@ -180,7 +180,7 @@ fn mouse_wheel_routes_by_hover_position_not_keyboard_focus() {
 /// longer moves the cursor.
 #[test]
 fn shift_wheel_pans_the_hovered_main_pane_plain_wheel_still_scrolls() {
-    let (mut app, _items) = repeated_scalar_fixture();
+    let (mut app, _items) = repeated_message_fixture();
     app.main_area = Rect::new(0, 0, 5, 1);
     app.side_area = Rect::new(60, 0, 40, 20);
 
@@ -232,7 +232,7 @@ fn shift_wheel_pans_the_hovered_main_pane_plain_wheel_still_scrolls() {
 /// not `PAN_STEP` (reserved for Ctrl-Left/Ctrl-Right).
 #[test]
 fn native_scroll_left_right_pans_without_shift() {
-    let (mut app, _items) = repeated_scalar_fixture();
+    let (mut app, _items) = repeated_message_fixture();
     app.main_area = Rect::new(0, 0, 5, 20);
 
     app.handle_mouse(MouseEvent {
@@ -259,7 +259,7 @@ fn native_scroll_left_right_pans_without_shift() {
 /// `*_list_height`/candidate setup is needed to leave room to pan.
 #[test]
 fn override_and_manage_panes_pan_independently_of_the_main_pane() {
-    let (mut app, items) = repeated_scalar_fixture();
+    let (mut app, items) = repeated_message_fixture();
     app.main_area = Rect::new(0, 0, 40, 20);
     app.side_area = Rect::new(60, 0, 5, 20);
 

@@ -6,7 +6,9 @@ SPDX-License-Identifier: MIT
 
 # 0206 — the arena reuses its dead slots
 
-Status: draft
+Status: superseded (never implemented; withdrawn 2026-07-31 by spec 0216
+        S13 — a splice no longer allocates slots, so there are no dead
+        ones to reuse)
 App: protolens
 Refs: docs/specs/0111-protolens-v1-decode-navigate-extract.md (the arena
         and its post-order layout),

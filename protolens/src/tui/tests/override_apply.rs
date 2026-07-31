@@ -106,8 +106,8 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
 
     // Fold the "a" child before overriding, to verify the stale-fold
     // scrubbing (`collect_descendants` cleanup).
-    let a_idx_before = app.tree[node_idx]
-        .first_child()
+    let a_idx_before = app
+        .first_child(node_idx)
         .expect("Node has at least one child");
     // Spec 0210 S2: through `refresh_line_counts`, since a fold now moves
     // the line counters the row walk reads.
@@ -116,10 +116,10 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
 
     let assert_children = |app: &App, tag: &str| {
         let mut children = Vec::new();
-        let mut cur = app.tree[node_idx].first_child();
+        let mut cur = app.first_child(node_idx);
         while let Some(c) = cur {
             children.push(c);
-            cur = app.tree[c].next_sibling();
+            cur = app.next_sibling(c);
         }
         assert_eq!(children.len(), 2, "{tag}: expected two children (a, b)");
         for &c in &children {
@@ -185,20 +185,24 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
     while let Some(c) = cur {
         let line = app.absolute_start(c);
         assert_eq!(
-            app.line_pos(line).map(|p| (p.node, p.footer)),
-            Some((c, false)),
+            app.line_pos(line).map(|p| (p.node, p.line_in_node)),
+            Some((c, 0)),
             "line {line} must resolve to node {c}'s header"
         );
         owners[line] = Some(c as u32);
         count += 1;
         assert!(count <= app.tree.len(), "doc chain must not cycle");
-        cur = app.tree[c].doc_next();
+        cur = app.doc_next(c);
     }
     for (line, owner) in owners.iter().enumerate() {
         if owner.is_none() {
+            // Spec 0216 S7: a node's non-header rows are its closing
+            // brace if it is bracketed, and the rest of a packed run's
+            // elements if it is not.
             assert!(
-                app.line_pos(line).is_some_and(|p| p.footer),
-                "line {line} is no node's header, so it must be a footer"
+                app.line_pos(line).is_some_and(|p| p.line_in_node > 0),
+                "line {line} is no node's header, so it must be a later \
+                 row of one"
             );
         }
     }
@@ -280,11 +284,7 @@ fn splice_override_on_an_incompatible_scalar_does_not_panic() {
     app.splash = false;
     app.term_width = 120;
 
-    let s_idx = app
-        .tree
-        .iter()
-        .position(|n| n.span.field_number == 1)
-        .expect("must find field 1");
+    let s_idx = app.nth_child(app.first_node, 0).expect("must find field 1");
     assert!(
         app.can_override(s_idx),
         "a WT_LEN scalar must be overridable"
@@ -303,12 +303,15 @@ fn splice_override_on_an_incompatible_scalar_does_not_panic() {
 
 /// Spec 0184 G1: a packed run's elements must not be separately
 /// numbered children, because committing an override on the run
-/// collapses them into one node (`splice_override`'s `siblings[0]`
-/// merge) — which used to renumber every later sibling and silently
-/// re-point any path recorded before the commit.
+/// collapsed them into one node — which used to renumber every later
+/// sibling and silently re-point any path recorded before the commit.
+///
+/// Spec 0216 S22 removes the collapse by never splitting in the first
+/// place: the run is one slot before the override as well as after, so
+/// there is no count left for a commit to change.
 #[test]
 fn overriding_a_packed_run_does_not_renumber_later_siblings() {
-    let (mut app, elems, tail, _a, _b) = packed_run_with_tail_fixture();
+    let (mut app, run, tail, _a, _b) = packed_run_with_tail_fixture();
 
     // The paths a user's override entries would have recorded, before
     // the packed run is touched at all.
@@ -325,8 +328,8 @@ fn overriding_a_packed_run_does_not_renumber_later_siblings() {
         );
     }
 
-    app.override_target = Some(elems[0]);
-    app.splice_override(elems[0], None, false, None)
+    app.override_target = Some(run);
+    app.splice_override(run, None, false, None)
         .expect("raw override on a packed element must succeed");
 
     for (&idx, path) in [tail, _a, _b].iter().zip(&before) {
@@ -348,19 +351,14 @@ fn overriding_a_packed_run_does_not_renumber_later_siblings() {
 /// used to shift ordinals *back*.
 #[test]
 fn packed_run_ordinals_are_stable_across_the_override_lifecycle() {
-    let (mut app, elems, tail, a, b) = packed_run_with_tail_fixture();
+    let (mut app, run, tail, a, b) = packed_run_with_tail_fixture();
 
     let path_map = |app: &App| -> Vec<(usize, String)> {
-        let root = app
-            .tree
-            .iter()
-            .position(|n| n.parent().is_none())
-            .expect("tree must have a root");
         let mut out = Vec::new();
-        let mut cur = Some(root);
+        let mut cur = Some(app.first_node);
         while let Some(i) = cur {
             out.push((i, app.positional_path(i)));
-            cur = app.tree[i].doc_next();
+            cur = app.doc_next(i);
         }
         out
     };
@@ -372,7 +370,7 @@ fn packed_run_ordinals_are_stable_across_the_override_lifecycle() {
         .collect();
 
     let origin = OverrideOrigin::Path {
-        path: app.positional_path(elems[0]),
+        path: app.positional_path(run),
     };
     app.overrides.activate(origin.clone(), None);
     app.render_overrides(app.first_node);
@@ -419,7 +417,7 @@ fn packed_run_ordinals_are_stable_across_the_override_lifecycle() {
 /// `child_path` plus its own ordinal counter.
 #[test]
 fn the_forward_and_backward_ordinal_walks_agree_across_a_packed_run() {
-    let (mut app, _elems, tail, _a, _b) = packed_run_with_tail_fixture();
+    let (mut app, _run, tail, _a, _b) = packed_run_with_tail_fixture();
 
     let tail_path = app.positional_path(tail);
     assert_eq!(tail_path, "/2");
@@ -778,8 +776,8 @@ fn splice_override_keeps_colors_aligned_after_a_header_length_change() {
     let (mut app, grp_idx) = group_type_fixture();
     app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false, None)
         .unwrap();
-    let value_idx = app.tree[grp_idx]
-        .first_child()
+    let value_idx = app
+        .first_child(grp_idx)
         .expect("NewGroup has at least one child");
     let line_idx = app.absolute_start(value_idx);
     let line = app.lines[line_idx].clone();
@@ -1669,9 +1667,7 @@ fn preview_budget_fixture_bytes(payload: &[u8]) -> (App, usize) {
     );
 
     let blob_idx = app
-        .tree
-        .iter()
-        .position(|n| n.span.field_number == 1)
+        .nth_child(app.first_node, 0)
         .expect("tree must contain the blob field");
     app.override_target = Some(blob_idx);
 
@@ -2000,52 +1996,6 @@ fn preview_of_a_singular_varint_is_never_truncated() {
     );
 }
 
-/// Spec 0174 §S3 (Offsets): rewriting the LEN framing can shrink the
-/// length varint — here a 3-byte original (16 400 bytes) becomes a
-/// 2-byte one (4096) — so every span the renderer reports sits one byte
-/// earlier than in `self.blob`. `splice_override` folds that shift into
-/// `byte_offset`; if it did not, every child's `raw_range` would be off
-/// by one and point at garbage.
-#[test]
-fn preview_child_spans_survive_the_length_prefix_shift() {
-    let field_count = 8_200; // 16 400 interior bytes => 3-byte length varint.
-    let (mut app, blob_idx) = preview_budget_fixture(field_count);
-    // Spec 0210 S1: the one truncation test that still has to splice,
-    // because `span_shift` is folded in by the splice and nowhere else.
-    // The resulting document holds the `...` marker, a line no node claims
-    // (spec 0174 §S4), which is precisely what the line counters cannot
-    // represent — so the counter check is turned off for it. Nothing in
-    // production reaches this state: the budget applies only under
-    // `is_preview`, and `render_overrides` splices with `false`.
-    app.verify_repair = false;
-
-    app.splice_override(blob_idx, Some("test.Empty".to_string()), true, None)
-        .expect("a preview splice must complete");
-
-    // Walked through the sibling chain, not by scanning for `parent ==
-    // blob_idx`: the pushed copy of the local root is deliberately left
-    // orphaned (it carries `blob_idx`'s own parent link) and is never
-    // part of the live tree.
-    let mut child = app.tree[blob_idx].first_child();
-    let mut count = 0usize;
-    while let Some(c) = child {
-        let r = widen(&app.tree[c].span.raw_range);
-        assert_eq!(
-            &app.blob[r.clone()],
-            &[0x08u8, 0x01],
-            "child {c}'s raw_range {r:?} must still point at its own \
-             on-the-wire bytes"
-        );
-        count += 1;
-        child = app.tree[c].next_sibling();
-    }
-    assert_eq!(
-        count,
-        App::OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT / 2,
-        "the whole budget's worth of entries must be rendered"
-    );
-}
-
 /// Seed `app` with `n` synthetic committed lines, so that the patch
 /// tests below have a document to merge against without depending on
 /// whatever the fixture happened to render.
@@ -2145,21 +2095,21 @@ fn a_deeply_nested_splice_moves_its_ancestors_footers_without_leaving_stale_entr
     // fixture, so no ancestor footer would move at all.
     let payload =
         node_with_type(&app, "acme.Payload").expect("the Any's value must resolve to acme.Payload");
-    let target = app.tree[payload]
-        .parent()
+    let target = app
+        .parent(payload)
         .expect("the payload must sit inside the Any");
 
     // Only ancestors that actually have a footer line of their own — a
     // single-line node's `end - 1` is its header, and the full rebuild
     // records no footer entry for it either.
     let mut ancestors: Vec<(usize, usize)> = Vec::new();
-    let mut p = app.tree[target].parent();
+    let mut p = app.parent(target);
     while let Some(pi) = p {
         let r = &app.node_lines(pi);
         if r.end - 1 > r.start {
             ancestors.push((pi, r.end - 1));
         }
-        p = app.tree[pi].parent();
+        p = app.parent(pi);
     }
     assert!(
         ancestors.len() >= 3,
@@ -2237,7 +2187,7 @@ fn a_zero_delta_splice_still_repairs_the_line_maps() {
                 r.end - 1
             );
         }
-        cur = app.tree[c].doc_next();
+        cur = app.doc_next(c);
     }
 }
 
@@ -2481,7 +2431,7 @@ fn randomized_override_sequences_keep_every_span_consistent() {
                         types.push(Some(t));
                     }
                 }
-                cur = app.tree[c].doc_next();
+                cur = app.doc_next(c);
             }
 
             let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
@@ -2526,13 +2476,12 @@ fn randomized_override_sequences_keep_every_span_consistent() {
     }
 }
 
-/// A packed element's `packed_record_start` is a byte offset into
+/// A packed run's `packed_record_start` is a byte offset into
 /// `self.blob`, read back with `parse_wiretag`/`parse_varint` by
 /// `packed_record_extent`, `extract::message_payload_range` and the heat
-/// cue. When a *splice* creates such an element, `prototext-core` hands
-/// it back in the retyped node's own byte frame, and `splice_override`
-/// has to translate it into the document's — exactly as it already does
-/// for `raw_range`.
+/// cue. A *splice* is where it used to go wrong: `prototext-core` hands
+/// the offset back in the retyped node's own byte frame, and
+/// `splice_override` had to translate it into the document's.
 ///
 /// It did not, and the consequence was not a cosmetic one. On
 /// `/tmp/pdb.desc`, retyping a `SourceCodeInfo.Location` and then one of
@@ -2543,8 +2492,15 @@ fn randomized_override_sequences_keep_every_span_consistent() {
 /// `collect_descendants` recursed until the stack ran out. A 256 MB
 /// stack did not help, which is what identified it as unbounded rather
 /// than deep.
+///
+/// Spec 0216 S12 removes the translation rather than fixing it: the
+/// offset is taken from the arena, which is expressed against
+/// `self.blob` by construction and never saw the retyped node's frame.
+/// The property is unchanged and still worth pinning — this is the test
+/// that would have caught the original bug — so it is asserted here of
+/// the end state rather than of the translation step.
 #[test]
-fn a_splice_translates_packed_record_starts_into_the_documents_byte_frame() {
+fn a_splice_keeps_packed_record_starts_in_the_documents_byte_frame() {
     use crate::override_pane::OverrideOrigin;
 
     let mut app = nested_packed_run_fixture();
@@ -2566,210 +2522,22 @@ fn a_splice_translates_packed_record_starts_into_the_documents_byte_frame() {
     );
     app.render_overrides(app.first_node);
 
-    let mut elems = Vec::new();
-    let mut c = app.tree[blob_node].first_child();
-    while let Some(i) = c {
-        elems.push(i);
-        c = app.tree[i].next_sibling();
-    }
-    assert_eq!(elems.len(), 3, "Payload.vals decodes as three packed ints");
-
-    for &e in &elems {
-        assert_eq!(
-            app.tree[e].span.packed_record_start, 6,
-            "the packed record's tag is at byte 6 of the document; a \
-             value of 2 is the retyped node's own frame leaking out"
-        );
-    }
+    // Spec 0216 S22: the run is one node covering all three elements,
+    // where it used to be three sibling nodes sharing one record.
+    assert_eq!(app.child_count(blob_node), 1, "Payload.vals is one record");
+    let run = app.nth_child(blob_node, 0).expect("the run");
+    assert_eq!(
+        app.tree[run].lines_total, 3,
+        "the record draws one row per packed int"
+    );
+    assert_eq!(
+        app.tree[run].span.packed_record_start, 6,
+        "the packed record's tag is at byte 6 of the document; a value \
+         of 2 is the retyped node's own frame leaking out"
+    );
     // The offset is only ever used by way of a re-parse, so assert the
     // thing that re-parse produces: tag 0x0A at 6, length 3 at 7,
     // payload 8..11.
-    let (raw, _text) = app.packed_record_extent(&elems);
+    let (raw, _text) = app.packed_record_extent(run);
     assert_eq!(raw, 6..11);
-}
-
-/// The override arena is append-only: every splice appends a fresh copy
-/// of its target's subtree and never frees the superseded one, so a
-/// document-wide override costs a whole second copy of the document
-/// each time it is applied *or removed*. On googleapis that is +1.4 GiB
-/// per batch with the live set flat, and the third batch is
-/// reproducibly killed by the OOM killer.
-///
-/// The guard trades that kill for a refusal. It checks headroom for one
-/// more batch — the worst case appends about as many nodes as the arena
-/// already holds — against half of what the machine has free.
-#[test]
-fn the_memory_guard_refuses_a_batch_with_no_headroom_left() {
-    let (mut app, _head, _tail, _tail_leaf, _tail_v) = pruned_tail_fixture();
-
-    let per_node = crate::tui::override_apply::arena_bytes_per_node();
-    let arena = app.tree.len() as u64 * per_node;
-    assert!(arena > 0, "the fixture must have decoded some nodes");
-
-    assert_eq!(
-        app.override_batch_refusal(arena * 2),
-        None,
-        "an arena occupying exactly half of what is free still has room \
-         for one more batch"
-    );
-
-    let refusal = app
-        .override_batch_refusal(arena * 2 - 2)
-        .expect("one byte past half of what is free must be refused");
-    assert!(
-        refusal.starts_with("override skipped:"),
-        "the refusal must say so in the status line rather than fail \
-         silently: {refusal}"
-    );
-    assert!(
-        refusal.contains("restart protolens"),
-        "and must say what to do about it: {refusal}"
-    );
-
-    // The guard reads only quantities that are already exact, so it
-    // cannot be fooled by a batch that turns out to splice nothing —
-    // the case that sank an earlier estimate built from the descent
-    // marks (at startup those mark the root alone, charging the batch
-    // the whole document for a pass that splices nothing).
-    app.memory_available = Some(u64::MAX);
-    assert_eq!(app.override_batch_refusal(u64::MAX), None);
-}
-
-/// A refused batch must leave the document exactly as it was. The
-/// refusal happens before `render_overrides` touches anything, so the
-/// text keeps its previous rendering — recoverable, unlike being
-/// killed.
-#[test]
-fn a_refused_batch_leaves_the_document_untouched() {
-    use crate::override_pane::OverrideOrigin;
-
-    let (mut app, _head, _tail, _tail_leaf, _tail_v) = pruned_tail_fixture();
-    let root = app.first_node;
-    let before = app.lines.clone();
-    let tree_before = app.tree.len();
-
-    // Two bytes short of the arena's own size doubled: no headroom.
-    let per_node = crate::tui::override_apply::arena_bytes_per_node();
-    app.memory_available = Some(app.tree.len() as u64 * per_node * 2 - 2);
-
-    app.overrides.activate(
-        OverrideOrigin::Path {
-            path: "/1".to_string(),
-        },
-        Some("test.Blob".to_string()),
-    );
-    app.render_overrides(root);
-
-    assert_eq!(app.lines, before, "a refused batch must not re-render");
-    assert_eq!(
-        app.tree.len(),
-        tree_before,
-        "and must not append to the arena either"
-    );
-    assert!(
-        app.message.starts_with("override skipped:"),
-        "the user must be told why nothing happened: {}",
-        app.message
-    );
-
-    // With headroom restored the very same batch goes through, so the
-    // guard refuses rather than corrupts. The entry has to be activated
-    // again first: the refusal deactivated it (see
-    // `a_refused_override_is_left_deactivated`), which is the whole
-    // point — nothing stays marked as applied that was not applied.
-    app.memory_available = Some(u64::MAX);
-    app.overrides.activate(
-        OverrideOrigin::Path {
-            path: "/1".to_string(),
-        },
-        Some("test.Blob".to_string()),
-    );
-    app.render_overrides(root);
-    assert_ne!(app.lines, before, "the batch runs once there is room");
-}
-
-/// Spec 0202 S4: the entry the user just activated does not stay marked
-/// active through a refusal.
-///
-/// The guard keeps refusing for the rest of the session (S2's
-/// bluntness), so an entry left active would not be a momentary
-/// inconsistency — it would claim, permanently and in the one place the
-/// user goes to check, a rendering the document is never going to get.
-/// The entry itself is kept: it is still listed, editable and savable,
-/// it just no longer says it is in effect.
-///
-/// What is restored is the state the document actually shows, not blanket
-/// deactivation: the root entry that *was* applied stays active, and a
-/// previously-active entry for the same origin is put back rather than
-/// left off by the activation that replaced it.
-#[test]
-fn a_refused_override_is_left_deactivated() {
-    use crate::override_pane::OverrideOrigin;
-
-    let (mut app, _head, _tail, _tail_leaf, _tail_v) = pruned_tail_fixture();
-    let root = app.first_node;
-    let origin = OverrideOrigin::Path {
-        path: "/1".to_string(),
-    };
-
-    // A first, applied override for that origin — the state the
-    // document is left showing.
-    app.overrides.activate(origin.clone(), None);
-    app.render_overrides(root);
-    let applied = app.lines.clone();
-
-    let per_node = crate::tui::override_apply::arena_bytes_per_node();
-    app.memory_available = Some(app.tree.len() as u64 * per_node * 2 - 2);
-
-    // Now retype it, which `activate` does by deactivating the raw entry
-    // and activating a typed one beside it.
-    app.overrides
-        .activate(origin.clone(), Some("test.Blob".to_string()));
-    app.render_overrides(root);
-
-    assert_eq!(app.lines, applied, "the refused batch rendered nothing");
-    assert!(
-        app.message.contains("left deactivated"),
-        "the refusal must say the override was not left claiming to \
-         apply: {}",
-        app.message
-    );
-
-    let active: Vec<(String, Option<String>)> = app
-        .overrides
-        .entries()
-        .iter()
-        .filter(|e| e.active)
-        .map(|e| (e.origin.label(), e.r#type.clone()))
-        .collect();
-    assert!(
-        !active.contains(&("/1".to_string(), Some("test.Blob".to_string()))),
-        "the refused override must not stay active: {active:?}"
-    );
-    assert!(
-        active.contains(&("/1".to_string(), None)),
-        "and the override the document does show must be active again: \
-         {active:?}"
-    );
-    assert!(
-        app.overrides
-            .entries()
-            .iter()
-            .any(|e| e.origin == origin && e.r#type.as_deref() == Some("test.Blob")),
-        "the entry itself is kept, just inactive"
-    );
-
-    // A refusal must not reach back past a batch that did render: the
-    // applied entry stays applied however many overrides are refused
-    // afterwards.
-    app.overrides
-        .activate(origin.clone(), Some("test.Blob".to_string()));
-    app.render_overrides(root);
-    assert!(
-        app.overrides
-            .entries()
-            .iter()
-            .any(|e| e.origin == origin && e.r#type.is_none() && e.active),
-        "the second refusal must restore the same state as the first"
-    );
 }

@@ -286,12 +286,12 @@ impl App {
                     return Vec::new();
                 };
                 let mut result = Vec::new();
-                let mut child = self.tree[parent].first_child();
+                let mut child = self.first_child(parent);
                 while let Some(c) = child {
                     if u64::from(self.tree[c].span.field_number) == *field {
                         result.push(c);
                     }
-                    child = self.tree[c].next_sibling();
+                    child = self.next_sibling(c);
                 }
                 result
             }
@@ -302,13 +302,13 @@ impl App {
                 let mut result = Vec::new();
                 let mut cur = Some(self.first_node);
                 while let Some(c) = cur {
-                    let parent_fqdn = self.tree[c].parent().map(|p| self.tree[p].span.type_fqdn);
+                    let parent_fqdn = self.parent(c).map(|p| self.tree[p].span.type_fqdn);
                     if u64::from(self.tree[c].span.field_number) == *field
                         && parent_fqdn == Some(want)
                     {
                         result.push(c);
                     }
-                    cur = self.tree[c].doc_next();
+                    cur = self.doc_next(c);
                 }
                 result
             }

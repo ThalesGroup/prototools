@@ -19,6 +19,7 @@ fn empty_tree_renders_and_handles_keys_without_panicking() {
         lines: Vec::new(),
         tree: Vec::new(),
         root_type: "google.protobuf.Empty".to_string(),
+        arena: crate::decode::arena_of(&[]),
         blob: Arc::new(Blob::unwrapped(Vec::new())),
         wrapper_offset: 0,
         root_candidates: Vec::new(),
@@ -124,12 +125,12 @@ fn a_frame_costs_the_same_at_the_end_of_a_wide_document_as_at_the_start() {
 }
 
 /// Spec 0192 S2: the active-override check runs once per addressable
-/// record, not once per drawn row — a packed run's N element rows are N
-/// nodes but one record (spec 0184 S2), so they share one positional
-/// path and one answer.
+/// record, not once per drawn row — a packed run draws one row per
+/// element but is one record (spec 0184 S2, one node since spec 0216),
+/// so its rows share one positional path and one answer.
 #[test]
 fn the_override_check_runs_once_per_record_not_once_per_row() {
-    let (app, elems, ..) = packed_run_with_tail_fixture();
+    let (app, run, ..) = packed_run_with_tail_fixture();
     let window: Vec<DisplayRow> = (0..app.composed_row_count())
         .filter_map(|d| app.display_row(d))
         .collect();
@@ -138,7 +139,10 @@ fn the_override_check_runs_once_per_record_not_once_per_row() {
     assert_eq!(flags.len(), window.len());
 
     // Or the count assertion below would pass vacuously.
-    assert!(elems.len() > 1, "fixture must contain a multi-element run");
+    assert!(
+        app.node_lines(run).len() > 1,
+        "fixture must contain a multi-element run"
+    );
 
     // The whole answer, recomputed with no collapsing at all.
     let naive: Vec<bool> = window
@@ -326,14 +330,6 @@ fn a_toggles_the_main_pane_annotation_display() {
             packed_record_start: NO_PACKED_RECORD,
             wire_type: WT_VARINT as u8,
         },
-        parent: NO_NODE,
-        first_child: NO_NODE,
-        last_child: NO_NODE,
-        next_sibling: NO_NODE,
-        prev_sibling: NO_NODE,
-        doc_next: NO_NODE,
-        doc_prev: NO_NODE,
-        sibling_ordinal: 1,
         lines_total: 1,
         lines_visible: 1,
         rendered_as: NOT_RENDERED,
@@ -342,6 +338,7 @@ fn a_toggles_the_main_pane_annotation_display() {
         lines: vec![line.clone()],
         tree: vec![node],
         root_type: "test.Msg".to_string(),
+        arena: crate::decode::arena_of(&[0x08, 0x05]),
         blob: Arc::new(Blob::unwrapped(vec![0x08, 0x05])),
         wrapper_offset: 0,
         root_candidates: Vec::new(),
@@ -426,7 +423,9 @@ fn status_line_reports_the_footer_line_number_for_a_footer_resting_cursor() {
 
     let footer_line = app.node_lines(inner_idx).end - 1;
     app.cursor = inner_idx;
-    app.cursor_footer = true;
+    // Spec 0216 S7: resting on the footer is a coordinate, and the
+    // footer is the node's *last* row, not its second.
+    app.cursor_line_in_node = app.tree[inner_idx].lines_total - 1;
 
     let backend = TestBackend::new(80, 24);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -1006,7 +1005,10 @@ fn put_caret_on_brace(app: &mut App, closing: bool) -> (usize, usize) {
         .cursor_brace_pair()
         .expect("the cursor node must be bracketed");
     let (line, column) = if closing { close } else { open };
-    app.cursor_footer = line != app.absolute_start(app.cursor);
+    // Spec 0216 S7: the caret's row is a coordinate within the node, so
+    // the closing brace sits on `lines_total - 1` — which is row 1 only
+    // for a node with nothing between its braces.
+    app.cursor_line_in_node = (line - app.absolute_start(app.cursor)) as u32;
     app.cursor_column = column;
     (line, column)
 }
@@ -1393,11 +1395,7 @@ fn a_selected_row_and_the_caret_row_stay_distinguishable() {
 fn the_caret_reaches_the_heat_suffix_but_never_the_heat_glyph() {
     let mut app = message_node_app();
     let idx = 0;
-    let range = extract::message_payload_range(
-        &app.blob,
-        &app.tree[idx].span.raw_range,
-        app.tree[idx].span.packed_record_start,
-    );
+    let range = extract::message_payload_range(&app.blob, &app.tree[idx].span.raw_range);
     super::heat_cue::seed_range_heat_entry(
         &mut app,
         range.start,
@@ -1482,11 +1480,7 @@ fn the_caret_holds_its_character_across_a_pan_and_a_fold() {
 #[test]
 fn the_heat_suffix_does_not_slide_under_a_pan() {
     let mut app = message_node_app();
-    let range = extract::message_payload_range(
-        &app.blob,
-        &app.tree[0].span.raw_range,
-        app.tree[0].span.packed_record_start,
-    );
+    let range = extract::message_payload_range(&app.blob, &app.tree[0].span.raw_range);
     super::heat_cue::seed_range_heat_entry(
         &mut app,
         range.start,

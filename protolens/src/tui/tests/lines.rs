@@ -77,17 +77,17 @@ fn live_nodes(app: &App) -> Vec<usize> {
     let mut r = Some(app.first_node);
     while let Some(i) = r {
         roots.push(i);
-        r = app.tree[i].next_sibling();
+        r = app.next_sibling(i);
     }
     let mut stack = roots;
     stack.reverse();
     while let Some(i) = stack.pop() {
         out.push(i);
         let mut kids = Vec::new();
-        let mut c = app.tree[i].first_child();
+        let mut c = app.first_child(i);
         while let Some(ci) = c {
             kids.push(ci);
-            c = app.tree[ci].next_sibling();
+            c = app.next_sibling(ci);
         }
         stack.extend(kids.into_iter().rev());
     }
@@ -109,24 +109,24 @@ fn the_descent_names_the_owner_of_every_line_and_nothing_past_the_end() {
         let mut expect: Vec<Option<LinePos>> = vec![None; app.lines.len()];
         for idx in live_nodes(&app) {
             let r = app.node_lines(idx);
-            assert!(
-                expect[r.start].is_none(),
-                "{name}: line {} claimed by two headers",
-                r.start
-            );
-            expect[r.start] = Some(LinePos {
-                node: idx,
-                footer: false,
-            });
-            if r.len() > 1 {
+            // A bracketed node owns its opening and closing lines and
+            // nothing between them — the body belongs to its subtree. A
+            // flat one owns every row it draws, which for a packed run
+            // is one per element (spec 0216 S7/S22).
+            let rows: Vec<usize> = if app.tree[idx].is_bracketed() {
+                vec![0, r.len() - 1]
+            } else {
+                (0..r.len()).collect()
+            };
+            for k in rows {
                 assert!(
-                    expect[r.end - 1].is_none(),
+                    expect[r.start + k].is_none(),
                     "{name}: line {} claimed twice",
-                    r.end - 1
+                    r.start + k
                 );
-                expect[r.end - 1] = Some(LinePos {
+                expect[r.start + k] = Some(LinePos {
                     node: idx,
-                    footer: true,
+                    line_in_node: k as u32,
                 });
             }
         }
@@ -186,8 +186,7 @@ fn a_fold_changes_only_the_folded_node_and_its_ancestors() {
     let changed: Vec<usize> = (0..app.tree.len())
         .filter(|&i| app.tree[i].lines_visible != before[i])
         .collect();
-    let mut want: Vec<usize> =
-        std::iter::successors(Some(victim), |&i| app.tree[i].parent()).collect();
+    let mut want: Vec<usize> = std::iter::successors(Some(victim), |&i| app.parent(i)).collect();
     want.sort_unstable();
     assert_eq!(
         changed, want,
@@ -261,8 +260,8 @@ fn teleports_land_on_the_named_line_with_a_fold_above_them() {
     app.main_area = Rect::new(0, 0, 40, 20);
     app.toggle_fold(items[0]);
 
-    let target = app.tree[*items.last().expect("three items")]
-        .first_child()
+    let target = app
+        .first_child(*items.last().expect("three items"))
         .expect("each Item has a scalar child");
     let line = app.absolute_start(target);
     let row = app.visible_row_of_line(line).expect("the target is drawn");
@@ -272,7 +271,11 @@ fn teleports_land_on_the_named_line_with_a_fold_above_them() {
     // 1. Search.
     app.set_cursor(app.first_node);
     app.jump_to_match(SearchDir::Forward, &text);
-    assert_eq!((app.cursor, app.cursor_footer), (target, false), "search");
+    assert_eq!(
+        (app.cursor, app.cursor_on_footer()),
+        (target, false),
+        "search"
+    );
     assert_eq!(app.cursor_line(), line, "search line");
     assert_eq!(app.cursor_display_row(), row, "search row");
     assert!(
@@ -285,7 +288,11 @@ fn teleports_land_on_the_named_line_with_a_fold_above_them() {
     app.set_cursor(app.first_node);
     assert_ne!(app.cursor_line(), line);
     app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
-    assert_eq!((app.cursor, app.cursor_footer), (target, false), "Ctrl-o");
+    assert_eq!(
+        (app.cursor, app.cursor_on_footer()),
+        (target, false),
+        "Ctrl-o"
+    );
     assert_eq!(app.cursor_line(), line, "Ctrl-o line");
     assert_eq!(app.cursor_display_row(), row, "Ctrl-o row");
 
@@ -294,7 +301,11 @@ fn teleports_land_on_the_named_line_with_a_fold_above_them() {
     app.set_cursor(app.first_node);
     app.scroll_offset = 0;
     app.handle_click(4, row as u16);
-    assert_eq!((app.cursor, app.cursor_footer), (target, false), "click");
+    assert_eq!(
+        (app.cursor, app.cursor_on_footer()),
+        (target, false),
+        "click"
+    );
     assert_eq!(app.cursor_line(), line, "click line");
     assert_eq!(app.cursor_display_row(), row, "click row");
 }
