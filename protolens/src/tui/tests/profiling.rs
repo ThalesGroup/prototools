@@ -103,6 +103,7 @@ fn profile_override_pane_down_on_db3() {
             std::sync::Arc::clone(&graph_ref),
             blob,
             tx,
+            1,
         ));
     }
 
@@ -291,6 +292,7 @@ fn profile_override_pane_enter_on_pdb() {
             std::sync::Arc::clone(&graph_ref),
             blob,
             tx,
+            1,
         ));
         rx = Some(worker_rx);
     }
@@ -486,6 +488,7 @@ fn profile_main_pane_down_on_db3() {
             std::sync::Arc::clone(&graph_ref),
             blob,
             tx,
+            1,
         ));
         rx = Some(worker_rx);
     }
@@ -578,6 +581,7 @@ fn repro_crash_down_t_enter_on_pdb() {
             std::sync::Arc::clone(&graph_ref),
             blob,
             tx.clone(),
+            1,
         ));
         rx = Some(worker_rx);
     }
@@ -691,6 +695,7 @@ fn repro_crash_down_t_enter_immediate_on_pdb() {
             std::sync::Arc::clone(&graph_ref),
             blob,
             tx,
+            1,
         ));
     }
     eprintln!(
@@ -1185,6 +1190,7 @@ fn repro_crash_natural_highlight_on_pdb() {
             std::sync::Arc::clone(&graph_ref),
             blob,
             tx.clone(),
+            1,
         ));
         rx = Some(worker_rx);
     }
@@ -1314,6 +1320,7 @@ fn diagnose_sim_t_stall() {
             std::sync::Arc::clone(&graph_ref),
             blob_arc,
             tx,
+            1,
         ));
     }
     eprintln!("scoring graph present: {}", app.ctx.graph.is_some());
@@ -1403,6 +1410,7 @@ fn diagnose_sim_node3_t_down_stall() {
             std::sync::Arc::clone(&graph_ref),
             blob_arc,
             tx,
+            1,
         ));
     }
 
@@ -1650,7 +1658,8 @@ fn measure_root_type_gate(desc_path: &Path, decode_too: bool) {
         return;
     };
     let t = Instant::now();
-    let (winner, candidates) = decode::resolve_root_winner_and_candidates(&blob, graph.graph());
+    let candidates = crate::sweep::ranked(&blob, graph.graph(), 1);
+    let winner = decode::pick_winner(&candidates);
     let sweep = t.elapsed();
     eprintln!(
         "root-type sweep              {sweep:?}  -> {winner:?} ({} candidates)",

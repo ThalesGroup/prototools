@@ -7,7 +7,7 @@
 pub mod load;
 pub(crate) mod walk;
 
-pub use walk::{score_all, score_one, EntryScore, ScoringOpts};
+pub use walk::{partition_roots, score_all, score_one, score_subset, EntryScore, ScoringOpts};
 
 #[cfg(test)]
 mod tests;

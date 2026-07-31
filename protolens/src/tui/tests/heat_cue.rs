@@ -948,6 +948,7 @@ fn heat_cue_for_resolves_once_a_real_worker_populates_the_cache() {
         graph,
         blob,
         tx,
+        1,
     ));
     let header_line = app.absolute_start(idx);
 

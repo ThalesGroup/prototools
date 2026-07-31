@@ -1442,6 +1442,7 @@ fn override_pane_auto_completes_from_polling_alone_without_scrolling() {
         graph,
         blob,
         tx,
+        1,
     ));
 
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
@@ -1562,6 +1563,7 @@ fn override_pane_seeks_the_active_overrides_type_once_the_complete_list_arrives(
         graph,
         blob,
         tx,
+        1,
     ));
 
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));

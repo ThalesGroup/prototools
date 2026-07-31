@@ -1962,3 +1962,154 @@ fn packed_enum_element_scores_like_the_expanded_one() {
     );
     assert_eq!(packed.non_canonical, 0);
 }
+
+// ── Root subsets and partitions (spec 0217) ───────────────────────────────────
+
+/// `n` roots, each a single-field message. Roots `i` and `i + n/2` declare
+/// the *same* field, so Hopcroft collapses them onto one state — which is
+/// what gives `partition_roots` groups larger than one to keep together.
+fn build_many_root_graph(n: u32) -> score_load::LoadedGraph {
+    let mut states = std::collections::HashMap::new();
+    for i in 0..n {
+        states.insert(
+            format!("R{i}"),
+            vec![ScoringField {
+                number: (i % (n / 2).max(1)) + 1,
+                kind: ScoringKind::Uint32,
+                child: None,
+                range: None,
+                label: FieldLabel::Optional,
+            }],
+        );
+    }
+    let merged = Merged {
+        states,
+        node_kinds: std::collections::HashMap::new(),
+        roots: (0..n).map(|i| format!("R{i}")).collect(),
+    };
+    let (raw, reg) = graph::build(&merged);
+    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_, _| {});
+    let compiled = graph::compile(&raw, &reg, &partition, &merged.roots);
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("many.bin");
+    serial::write(&compiled, &path).expect("write graph");
+    let _ = std::mem::ManuallyDrop::new(dir);
+    score_load::load_graph(&path).expect("load graph")
+}
+
+/// Spec 0217 G2: sharding is a scheduling change, never a scoring change.
+/// Every partition of the roots, scored subset by subset and reassembled,
+/// must reproduce `score_all` counter for counter.
+///
+/// The reassembly is by FQDN rather than by position, because that is the
+/// claim worth making: a subset's results come back in *subset* order, and
+/// the merge must not depend on them lining up with graph order.
+#[test]
+fn a_sharded_sweep_matches_the_whole_sweep() {
+    let g = build_many_root_graph(12);
+    // Field 1 as a varint (a match for the R0/R6 pair, unknown for the
+    // rest) followed by field 3 as LEN (a wire-type mismatch, so a veto,
+    // for whoever declares field 3). A blob that lands on all three
+    // verdicts is what makes the comparison mean something.
+    let mut pb = field_varint(1, 7);
+    pb.extend(field_len(3, b"hi"));
+
+    let opts = walk::ScoringOpts::default();
+    let whole = walk::score_all(&pb, &g, &opts);
+    let of = |rs: &[walk::EntryScore], fqdn: &str| -> (u64, u64, u64, u64, u64, bool) {
+        let r = rs
+            .iter()
+            .find(|r| r.fqdn == fqdn)
+            .unwrap_or_else(|| panic!("'{fqdn}' missing"));
+        (
+            r.matches,
+            r.unknowns,
+            r.out_of_range,
+            r.non_canonical,
+            r.mismatches,
+            r.vetoed,
+        )
+    };
+
+    for n in 1..=8 {
+        let parts = walk::partition_roots(&g, n);
+        let mut sharded: Vec<walk::EntryScore> = Vec::new();
+        for part in &parts {
+            sharded.extend(walk::score_subset(&pb, &g, &opts, part));
+        }
+        assert_eq!(
+            sharded.len(),
+            whole.len(),
+            "n={n}: every root must be scored exactly once"
+        );
+        for r in &whole {
+            assert_eq!(
+                of(&sharded, r.fqdn),
+                of(&whole, r.fqdn),
+                "n={n}: '{}' scored differently when sharded",
+                r.fqdn
+            );
+        }
+    }
+}
+
+/// Spec 0217 S1: the partition's whole purpose. Two roots sharing a graph
+/// state are indistinguishable to the walk, so splitting them across parts
+/// duplicates the traversal instead of dividing it — the partition must
+/// keep a state group whole. It must also be a partition: disjoint, and
+/// covering every root exactly once.
+#[test]
+fn a_partition_never_splits_a_state_group() {
+    let g = build_many_root_graph(12);
+    let state_of: std::collections::HashMap<u32, u32> = g
+        .roots
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (i as u32, r.state_id.to_native()))
+        .collect();
+
+    for n in 1..=8 {
+        let parts = walk::partition_roots(&g, n);
+        assert!(parts.len() <= n, "n={n}: at most n parts");
+        assert!(parts.iter().all(|p| !p.is_empty()), "n={n}: no empty parts");
+
+        let mut seen: Vec<u32> = parts.iter().flatten().copied().collect();
+        seen.sort_unstable();
+        assert_eq!(
+            seen,
+            (0..g.roots.len() as u32).collect::<Vec<_>>(),
+            "n={n}: every root exactly once"
+        );
+
+        // Each state must appear in exactly one part.
+        let mut home: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+        for (pi, part) in parts.iter().enumerate() {
+            for r in part {
+                let state = state_of[r];
+                let first = *home.entry(state).or_insert(pi);
+                assert_eq!(
+                    first, pi,
+                    "n={n}: state {state} is split across parts {first} and {pi}"
+                );
+            }
+        }
+    }
+}
+
+/// A subset's results come back in *subset* order, not graph order — the
+/// property `a_sharded_sweep_matches_the_whole_sweep` relies on and that a
+/// caller merging by position would silently violate.
+#[test]
+fn a_subset_reports_its_entries_in_subset_order() {
+    let g = build_many_root_graph(6);
+    let pb = field_varint(1, 7);
+    let subset: Vec<u32> = vec![4, 1, 3];
+    let results = walk::score_subset(&pb, &g, &walk::ScoringOpts::default(), &subset);
+    let got: Vec<&str> = results.iter().map(|r| r.fqdn).collect();
+    let want: Vec<&str> = subset
+        .iter()
+        .map(|&i| g.roots[i as usize].fqdn.as_str())
+        .collect();
+    assert_eq!(got, want);
+}

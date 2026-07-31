@@ -11,6 +11,7 @@ mod extract;
 mod override_pane;
 mod provenance;
 mod render_cache;
+mod sweep;
 mod theme;
 mod tui;
 
@@ -94,6 +95,25 @@ struct Cli {
     /// Number of spaces per nesting level in the rendered text.
     #[arg(long = "indent", default_value_t = 2)]
     indent: usize,
+
+    /// CPU budget for root-type inference (spec 0217). Inference is the
+    /// one startup phase whose cost scales with the size of the schema
+    /// database rather than the blob, and it divides cleanly: the
+    /// candidate types are partitioned and swept in parallel.
+    ///
+    /// This is a ceiling for the whole session, not a target. It is
+    /// clamped to the number of CPUs actually available to the process
+    /// (which respects a cgroup quota and an affinity mask), and while
+    /// the TUI is running one thread of it is left to the main loop.
+    /// Defaults to every available CPU; `1` restores the single-threaded
+    /// sweep.
+    #[arg(
+        long = "jobs",
+        short = 'j',
+        default_value_t = sweep::available_cpus() as u64,
+        value_parser = clap::value_parser!(u64).range(1..),
+    )]
+    jobs: u64,
 
     /// Syntax-highlighting color palette (spec 0116 §9). `system` probes
     /// the terminal's actual background once at startup and resolves to
@@ -340,8 +360,9 @@ fn main() -> ExitCode {
     // large blob and they are wildly unequal: on a 24 MB blob the sweep is
     // a few seconds of a half-minute wait. A single message spanning both
     // makes whichever phase is actually running look like a hang in the
-    // other. This is also why `decode` is split into `determine_root_type`
-    // + `render_resolved` here instead of being called whole.
+    // other. This is also why `decode` is split into
+    // `resolve_root_type_and_arena` + `render_resolved` here instead of
+    // being called whole.
     //
     // `--type` is an O(1) pool lookup and `--raw` skips the sweep
     // outright, so neither gets this line (G6).
@@ -352,15 +373,20 @@ fn main() -> ExitCode {
     // the contract every batch subcommand but `exit` should inherit.
     // `exit` opts in because the phase lines *are* its output.
     let announce = matches!(cli.command, None | Some(Command::Exit));
-    let decoded = if announce {
-        if root_type == decode::RootType::Infer && ctx.graph.is_some() {
-            eprintln!(
-                "protolens: inferring root type{}...",
-                size_suffix(&cli.blob)
-            );
-        }
-        decode::determine_root_type(blob.payload(), &mut ctx, root_type).and_then(
-            |(root_desc, root_candidates)| {
+    // Spec 0217 S4: the whole session's budget, clamped once here so that
+    // `--help`'s promise ("up to N") and what actually runs agree, and so
+    // the number stored on `App` is already the honest one.
+    let jobs = sweep::effective_jobs(cli.jobs as usize);
+    if announce && root_type == decode::RootType::Infer && ctx.graph.is_some() {
+        eprintln!(
+            "protolens: inferring root type{} on {jobs} thread{}...",
+            size_suffix(&cli.blob),
+            if jobs == 1 { "" } else { "s" },
+        );
+    }
+    let decoded = decode::resolve_root_type_and_arena(&blob, &mut ctx, root_type, jobs).and_then(
+        |(root_desc, root_candidates, arena)| {
+            if announce {
                 eprintln!(
                     "protolens: rendering root node as {}{}...",
                     root_desc
@@ -369,20 +395,17 @@ fn main() -> ExitCode {
                         .unwrap_or("<raw / no type>"),
                     size_suffix(&cli.blob)
                 );
-                decode::render_resolved(
-                    Arc::clone(&blob),
-                    &mut ctx,
-                    root_desc,
-                    root_candidates,
-                    cli.indent,
-                )
-            },
-        )
-    } else {
-        // Batch mode prints no progress at all, so it has no reason to
-        // hold the two halves apart.
-        decode::decode(Arc::clone(&blob), &mut ctx, root_type, cli.indent)
-    };
+            }
+            decode::render_resolved(
+                Arc::clone(&blob),
+                &mut ctx,
+                root_desc,
+                root_candidates,
+                arena,
+                cli.indent,
+            )
+        },
+    );
     let decoded = match decoded {
         Ok(d) => d,
         Err(e) => {
@@ -446,6 +469,7 @@ fn main() -> ExitCode {
         proto_root,
     );
     app.override_preview_byte_budget = cli.override_preview_byte_budget;
+    app.sweep_jobs = jobs;
 
     match cli.command {
         // Spec 0198 S1: every startup phase has already run above; this

@@ -8,7 +8,7 @@
 
 use prost_reflect::DescriptorPool;
 use prototext_graph::build_scoring_graph::serial::ArchivedCompiledGraph;
-use prototext_graph::score::{score_all, score_one, ScoringOpts};
+use prototext_graph::score::{score_one, ScoringOpts};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -53,23 +53,17 @@ pub fn all_type_fqdns(pool: &DescriptorPool) -> Vec<String> {
 /// excluded entirely: a type the wire data already contradicts is not a
 /// plausible override target, the same "non_vetoed" filtering
 /// `determine_root_type` applies before ranking.
+///
+/// Spec 0217: the sweep and the ranking both live in `crate::sweep` now,
+/// shared with startup's root-type sweep, which used to carry a
+/// hand-copied duplicate of the comparator above. `jobs` is a ceiling on
+/// the threads it may use, not a target — see `sweep::effective_jobs`.
 pub fn inferred_candidates(
     range_bytes: &[u8],
     graph: &ArchivedCompiledGraph,
+    jobs: usize,
 ) -> Vec<(String, i64)> {
-    let opts = ScoringOpts::default();
-    let mut results = score_all(range_bytes, graph, &opts);
-    results.sort_by(|a, b| match (a.vetoed, b.vetoed) {
-        (false, true) => std::cmp::Ordering::Less,
-        (true, false) => std::cmp::Ordering::Greater,
-        (true, true) => a.fqdn.cmp(b.fqdn),
-        (false, false) => b.score().cmp(&a.score()).then(a.fqdn.cmp(b.fqdn)),
-    });
-    results
-        .into_iter()
-        .filter(|r| !r.vetoed)
-        .map(|r| (r.fqdn.to_owned(), r.score()))
-        .collect()
+    crate::sweep::ranked(range_bytes, graph, jobs)
 }
 
 /// A single candidate's inferred score, scored alone (spec 0154 G1) —

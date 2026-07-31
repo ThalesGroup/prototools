@@ -383,7 +383,11 @@ impl App {
                 current: Some(score),
             }
         } else {
-            let candidates = override_pane::inferred_candidates(range_bytes, graph);
+            // The whole budget, not the worker's share: this arm is only
+            // reached when there is no worker, so nothing else in the
+            // session is sweeping (spec 0217 S6).
+            let candidates =
+                override_pane::inferred_candidates(range_bytes, graph, self.sweep_jobs);
             let stats = derive_stats(&candidates);
             let current_entry = current_key
                 .as_deref()

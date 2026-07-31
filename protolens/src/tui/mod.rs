@@ -176,28 +176,6 @@ const HEAT_REPAINT_INTERVAL: Duration = Duration::from_millis(50);
 /// most one `TieredBounded::upsert`.
 const PREFETCH_STEPS_PER_ITERATION: usize = 8;
 
-/// Stack size for every thread protolens spawns that runs the scorer
-/// (spec 0180 S4). Declared *here*, in the parent of both spawn sites,
-/// rather than in `heat_worker.rs` where it started life: it lived next
-/// to one of its two users, so the other one — the detached root-type
-/// sweep in `run` — silently never got it (rendering-flaws C3(b)).
-///
-/// `score_message_multi` (`prototext-graph`) recurses once per nested
-/// message/group level of whatever candidate type it is scoring a range
-/// against; on a schema mismatch (e.g. decoding a range against a
-/// candidate whose shape doesn't actually match the bytes) this can run
-/// noticeably deeper than a well-formed decode of the same bytes would.
-/// `MAX_WIRE_DEPTH`'s doc comment (`prototext-core`) records the
-/// measurement: the scorer consumes ~576 KiB for a full-cap nest in
-/// release, so `std::thread::spawn`'s 2 MiB default leaves a 3.6×
-/// margin — the binding margin in the whole workspace, and negative in
-/// a debug build. 16 MiB restores the ~28× every other (walker, thread)
-/// pair already has, and comfortably exceeds the main thread's own
-/// default (commonly 8 MiB, per the process's `RLIMIT_STACK`) rather
-/// than merely matching it. A stack reservation costs address space,
-/// not resident pages.
-pub(super) const SCORING_THREAD_STACK_SIZE: usize = 16 * 1024 * 1024;
-
 /// Byte budget for `App::render_cache` (spec 0116 §8) — tuned generously
 /// for a short-lived interactive session (spec 0114 §6's original
 /// `candidate_cache` reasoning, since superseded by spec 0152's
@@ -1104,6 +1082,12 @@ pub struct App {
     /// to that constant, overridable at startup via `main.rs`'s
     /// `--override-preview-byte-budget`.
     pub(crate) override_preview_byte_budget: usize,
+    /// Spec 0217 S6: how many threads a sweep started by this session may
+    /// fan out over — the app's whole CPU budget, `--jobs`. The heat
+    /// worker is given one less than this (see `run`), since it sweeps
+    /// while the main thread is still drawing. Defaults to 1, which is
+    /// what every test wants: a sweep that runs where it was called.
+    pub(crate) sweep_jobs: usize,
     /// `true` when the override pane has focus (spec 0114 §3's `Tab`
     /// toggle); meaningless while `override_target` is `None`.
     override_focus: bool,
@@ -1572,6 +1556,7 @@ impl App {
             override_target: None,
             preview_overlay: None,
             override_preview_byte_budget: Self::OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT,
+            sweep_jobs: 1,
             override_focus: false,
             override_opened_from_manage: false,
             override_origin_kind: None,
@@ -2381,11 +2366,17 @@ pub fn run(app: &mut App) -> io::Result<()> {
             // had already started browsing. `decode::decode` now resolves the
             // type before rendering, so by the time `App` exists the document
             // is already what it is.
+            // Spec 0217 S6: the worker sweeps while the main thread is
+            // drawing, so it gets the budget less the one thread the
+            // main loop is already spending — never less than 1, which
+            // is the un-sharded sweep this has always been.
+            let worker_jobs = app.sweep_jobs.saturating_sub(1).max(1);
             app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
                 Arc::clone(&app.heat_caches),
                 graph,
                 blob,
                 tx.clone(),
+                worker_jobs,
             ));
         }
 

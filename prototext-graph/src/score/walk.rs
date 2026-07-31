@@ -253,6 +253,28 @@ pub fn score_all<'g>(
     graph: &'g ArchivedCompiledGraph,
     opts: &ScoringOpts,
 ) -> Vec<EntryScore<'g>> {
+    let all: Vec<u32> = (0..graph.roots.len() as u32).collect();
+    score_subset(pb, graph, opts, &all)
+}
+
+/// `score_all` restricted to `roots` (indices into `graph.roots`).
+/// Returns one `EntryScore` per element of `roots`, in `roots` order.
+///
+/// Spec 0217 S1. This is the real walk; `score_all` is it over every
+/// index. Single-threaded, and deliberately ignorant of the fact that
+/// anyone might be running several of these at once: the walk touches
+/// nothing but `pb` and `graph`, both shared immutably, so N concurrent
+/// calls need no synchronization and the library needs no threading.
+///
+/// The caller partitions with [`partition_roots`], which is not merely a
+/// convenience — see its doc comment for why an arbitrary partition
+/// duplicates work rather than dividing it.
+pub fn score_subset<'g>(
+    pb: &[u8],
+    graph: &'g ArchivedCompiledGraph,
+    opts: &ScoringOpts,
+    roots: &[u32],
+) -> Vec<EntryScore<'g>> {
     // Spec 0172 S5: enforced at load time by `load::check_root_count`,
     // which turns an oversized corpus into an `Err` instead of aborting
     // the process from inside a background scoring thread. This is the
@@ -268,11 +290,10 @@ pub fn score_all<'g>(
         graph.roots.len()
     );
 
-    let mut scores: Vec<EntryScore<'g>> = graph
-        .roots
+    let mut scores: Vec<EntryScore<'g>> = roots
         .iter()
-        .map(|r| EntryScore {
-            fqdn: r.fqdn.as_str(),
+        .map(|&r| EntryScore {
+            fqdn: graph.roots[r as usize].fqdn.as_str(),
             matches: 0,
             unknowns: 0,
             out_of_range: 0,
@@ -282,18 +303,90 @@ pub fn score_all<'g>(
         })
         .collect();
 
+    // The active set indexes `scores`, i.e. positions within `roots`, not
+    // positions within `graph.roots` — which is why the result is in
+    // `roots` order and why the caller's merge needs no remapping.
     let initial_active = group_by_state(
-        graph
-            .roots
+        roots
             .iter()
             .enumerate()
-            .map(|(i, r)| (r.state_id.to_native(), i as u32)),
+            .map(|(local, &r)| (graph.roots[r as usize].state_id.to_native(), local as u32)),
     );
 
     let mut ws = WalkState::new(graph, &mut scores, opts);
     score_message_multi(pb, 0, initial_active, None, &mut ws, 0);
 
     scores
+}
+
+/// Split `graph`'s roots into at most `n` parts, balanced by size and
+/// never splitting a state group.
+///
+/// Spec 0217 S1. The grouping is the point, not the balancing. The walk
+/// carries candidates grouped by graph state (`group_by_state`), and
+/// Hopcroft minimization has already collapsed behaviorally equivalent
+/// candidates, so two roots sharing a state are indistinguishable to the
+/// walk and cost one traversal between them. Split such a pair across
+/// two parts and *both* parts carry that state and both walk it: the
+/// work is duplicated, not divided. Whole groups are disjoint by
+/// construction, so they are the unit that can actually be shared out.
+///
+/// Balancing is largest-group-first onto the currently-smallest part.
+/// That is O(G log G) on a few thousand groups, against seconds of
+/// walking — it does not need to be cleverer.
+///
+/// Returns only non-empty parts, so the result may be shorter than `n`
+/// (and is a single part when `n <= 1`, or when the graph has fewer
+/// distinct states than `n`).
+pub fn partition_roots(graph: &ArchivedCompiledGraph, n: usize) -> Vec<Vec<u32>> {
+    let total = graph.roots.len();
+    if n <= 1 || total == 0 {
+        return if total == 0 {
+            Vec::new()
+        } else {
+            vec![(0..total as u32).collect()]
+        };
+    }
+
+    let mut by_state: Vec<(u32, u32)> = (0..total as u32)
+        .map(|i| (graph.roots[i as usize].state_id.to_native(), i))
+        .collect();
+    by_state.sort_unstable();
+
+    let mut groups: Vec<Vec<u32>> = Vec::new();
+    let mut i = 0;
+    while i < by_state.len() {
+        let state = by_state[i].0;
+        let mut group = Vec::new();
+        while i < by_state.len() && by_state[i].0 == state {
+            group.push(by_state[i].1);
+            i += 1;
+        }
+        groups.push(group);
+    }
+    groups.sort_unstable_by_key(|g| std::cmp::Reverse(g.len()));
+
+    let mut parts: Vec<Vec<u32>> = vec![Vec::new(); n.min(groups.len())];
+    for group in groups {
+        let smallest = parts
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, p)| p.len())
+            .map(|(i, _)| i)
+            .expect("at least one part while groups remain");
+        parts[smallest].extend(group);
+    }
+    // Bin packing on the group sizes cannot leave a part empty here (there
+    // are at least as many groups as parts). Sorting each part is not
+    // required by anything downstream — `group_by_state` sorts what it is
+    // given, and the ranking's order comes from `candidate_order` — it just
+    // makes a part a canonical list of root indices rather than one in
+    // largest-group-first order, which is what makes two runs comparable
+    // when reading a trace.
+    for part in &mut parts {
+        part.sort_unstable();
+    }
+    parts
 }
 
 /// Score a single named root entry in `graph` against `pb`, without walking
@@ -307,34 +400,16 @@ pub fn score_one<'g>(
     opts: &ScoringOpts,
 ) -> Option<EntryScore<'g>> {
     let want = fqdn.trim_start_matches('.');
-    let root = graph
+    let idx = graph
         .roots
         .iter()
-        .find(|r| r.fqdn.trim_start_matches('.') == want)?;
+        .position(|r| r.fqdn.trim_start_matches('.') == want)? as u32;
 
-    let mut scores = vec![EntryScore {
-        fqdn: root.fqdn.as_str(),
-        matches: 0,
-        unknowns: 0,
-        out_of_range: 0,
-        non_canonical: 0,
-        mismatches: 0,
-        vetoed: false,
-    }];
-
-    let mut entries: SmallVec<[u32; 4]> = SmallVec::new();
-    entries.push(0);
-    let initial_active = vec![ActiveEntry {
-        state_id: root.state_id.to_native(),
-        entries,
-        occurrences: SmallVec::new(),
-        verdict: Verdict::Unknown,
-    }];
-
-    let mut ws = WalkState::new(graph, &mut scores, opts);
-    score_message_multi(pb, 0, initial_active, None, &mut ws, 0);
-
-    scores.pop()
+    // Spec 0217 S1: this is `score_subset` over a one-element subset, and
+    // used to be the same setup written out a second time — a single root
+    // is trivially its own state group, so the general path builds exactly
+    // the active set the hand-written one did.
+    score_subset(pb, graph, opts, &[idx]).pop()
 }
 
 // ── Wire primitives ───────────────────────────────────────────────────────────

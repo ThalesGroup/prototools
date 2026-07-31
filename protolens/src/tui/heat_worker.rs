@@ -472,6 +472,7 @@ pub(super) fn heat_worker_loop(
     graph: Arc<LoadedGraph>,
     blob: Arc<Blob>,
     progress: mpsc::Sender<AppEvent>,
+    jobs: usize,
 ) {
     // Spec 0180 S2: the worker owns a handle to the mapping rather than a
     // `&'static` copied out of one, so the borrow below cannot outlive it.
@@ -516,7 +517,7 @@ pub(super) fn heat_worker_loop(
                 let range_bytes = &blob[req.range.clone()];
                 #[cfg(test)]
                 queue.score_all_calls.fetch_add(1, Ordering::SeqCst);
-                let candidates = override_pane::inferred_candidates(range_bytes, graph);
+                let candidates = override_pane::inferred_candidates(range_bytes, graph, jobs);
                 let stats = heat_cue::derive_stats(&candidates);
                 let current_score = req
                     .current_key
@@ -570,13 +571,14 @@ impl HeatWorkerHandle {
         graph: Arc<LoadedGraph>,
         blob: Arc<Blob>,
         progress: mpsc::Sender<AppEvent>,
+        jobs: usize,
     ) -> Self {
         let queue = Arc::new(HeatRequestQueue::new());
         let worker_queue = Arc::clone(&queue);
         let join = thread::Builder::new()
             .name("heat-worker".to_string())
-            .stack_size(super::SCORING_THREAD_STACK_SIZE)
-            .spawn(move || heat_worker_loop(worker_queue, caches, graph, blob, progress))
+            .stack_size(crate::sweep::SCORING_THREAD_STACK_SIZE)
+            .spawn(move || heat_worker_loop(worker_queue, caches, graph, blob, progress, jobs))
             .expect("spawn heat worker thread");
         HeatWorkerHandle {
             queue,
@@ -980,6 +982,7 @@ messages:
             Arc::clone(&graph),
             Arc::clone(&blob),
             tx,
+            1,
         );
 
         worker.push(
@@ -1008,7 +1011,8 @@ messages:
         rx.recv_timeout(Duration::from_secs(2))
             .expect("progress must fire for the first request");
 
-        let expected_candidates = override_pane::inferred_candidates(&range_bytes, graph.graph());
+        let expected_candidates =
+            override_pane::inferred_candidates(&range_bytes, graph.graph(), 1);
         let expected_stats = heat_cue::derive_stats(&expected_candidates);
         assert_eq!(entry.best_score, expected_stats.best_score);
         assert_eq!(entry.best_count, expected_stats.best_count);
@@ -1060,6 +1064,7 @@ messages:
             Arc::clone(&graph),
             Arc::clone(&blob),
             tx,
+            1,
         );
 
         // Prime the window via a full sweep first.
@@ -1234,6 +1239,7 @@ messages:
             Arc::clone(&graph),
             Arc::clone(&blob),
             tx,
+            1,
         );
 
         worker.push(

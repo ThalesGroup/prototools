@@ -28,16 +28,13 @@ use prototext_core::serialize::render_text::{
     decode_and_render_indexed, DecodeRenderOpts, FqdnTable, NodeSpan, NO_PACKED_RECORD,
 };
 use prototext_core::{build_arena, decode_pool, render_as_bytes, Arena, RenderOpts};
-use prototext_graph::build_scoring_graph::serial::ArchivedCompiledGraph;
-use prototext_graph::score::{
-    load::{load_graph, LoadedGraph},
-    score_all, ScoringOpts,
-};
+use prototext_graph::score::load::{load_graph, LoadedGraph};
 use prototext_schema::LazyPool;
 use sha2::{Digest, Sha256};
 
 use crate::blob::Blob;
 use crate::provenance::{ProvenanceId, NOT_RENDERED};
+use crate::sweep;
 
 // ── Errors ──────────────────────────────────────────────────────────────────
 
@@ -341,49 +338,22 @@ pub(crate) fn read_descriptor_file(path: &Path) -> Result<Vec<u8>, DecodeError> 
 /// signatures that thread it through say what they carry.
 pub type RankedCandidates = Vec<(String, i64)>;
 
-/// The `score_all` + veto/tie-break winner-selection rule, plus the full
-/// ranked list of non-vetoed candidates the same sweep already produced.
+/// The veto/tie-break winner-selection rule, applied to an
+/// already-ranked candidate list.
 ///
-/// Spec 0168 G3: startup has to run this sweep anyway to know what type to
-/// decode the blob as, and it scores exactly the root node's payload range
-/// — the single most expensive range in the document, and the one the
-/// cursor starts on. Returning the candidates alongside the winner lets
-/// the caller seed `HeatCaches` with them, so neither `heat_cue_for` nor
-/// the override pane re-scores those same bytes.
+/// `None` when there is no clean winner: no candidates at all (every one
+/// of them vetoed, which `sweep::ranked` has already filtered out), or a
+/// top-score tie.
 ///
-/// The winner is `None` when there's no clean one: no candidates, every
-/// candidate vetoed, or a top-score tie. The candidate list is
-/// score-descending and excludes vetoed entries, matching what
-/// `override_pane::inferred_candidates` computes from the identical sweep.
-pub(crate) fn resolve_root_winner_and_candidates(
-    blob: &[u8],
-    graph: &ArchivedCompiledGraph,
-) -> (Option<String>, RankedCandidates) {
-    let scoring_opts = ScoringOpts::default();
-    let mut results = score_all(blob, graph, &scoring_opts);
-    results.sort_by(|a, b| match (a.vetoed, b.vetoed) {
-        (false, true) => std::cmp::Ordering::Less,
-        (true, false) => std::cmp::Ordering::Greater,
-        (true, true) => a.fqdn.cmp(b.fqdn),
-        (false, false) => b.score().cmp(&a.score()).then(a.fqdn.cmp(b.fqdn)),
-    });
-
-    let candidates: RankedCandidates = results
-        .iter()
-        .filter(|r| !r.vetoed)
-        .map(|r| (r.fqdn.to_owned(), r.score()))
-        .collect();
-
-    if candidates.is_empty() {
-        return (None, candidates);
+/// Only the first two entries are ever read, which is why the ranking is
+/// produced by a merge that can stop early (spec 0217 S3) rather than by
+/// a sort that cannot.
+pub(crate) fn pick_winner(candidates: &RankedCandidates) -> Option<String> {
+    let (fqdn, top) = candidates.first()?;
+    match candidates.get(1) {
+        Some((_, second)) if second == top => None,
+        _ => Some(fqdn.clone()),
     }
-    let top_score = candidates[0].1;
-    let tied = candidates.iter().filter(|c| c.1 == top_score).count();
-    if tied > 1 {
-        return (None, candidates);
-    }
-
-    (Some(candidates[0].0.clone()), candidates)
 }
 
 /// Which type the caller wants the blob decoded as — the three mutually
@@ -428,27 +398,36 @@ pub enum RootType<'a> {
 /// sweep it already had to run: that range is the single most expensive
 /// one in the document, and it is the one the cursor starts on, so
 /// leaving the heat cue and the override pane to re-score it was paying
-/// for the same `score_all` twice.
-pub fn determine_root_type(
+/// for the same sweep twice.
+///
+/// `meanwhile` is run on this thread while the sweep's shards walk (spec
+/// 0217 S6). Only the `Infer` path has anything to overlap with; the
+/// other two resolve in constant time, so `meanwhile` simply runs before
+/// they return. It runs exactly once either way.
+pub fn determine_root_type_meanwhile<T>(
     blob: &[u8],
     ctx: &mut DescriptorContext,
     root_type: RootType<'_>,
-) -> Result<(Option<MessageDescriptor>, RankedCandidates), DecodeError> {
+    jobs: usize,
+    meanwhile: impl FnOnce() -> T,
+) -> Result<(Option<MessageDescriptor>, RankedCandidates, T), DecodeError> {
     match root_type {
-        RootType::Named(fqdn) => ctx
-            .message(fqdn)
-            .map(|desc| (Some(desc), Vec::new()))
-            .ok_or_else(|| {
-                DecodeError::Determination(format!("type '{fqdn}' not found in descriptor set"))
-            }),
-        RootType::Raw => Ok((None, Vec::new())),
+        RootType::Named(fqdn) => {
+            let meanwhile = meanwhile();
+            ctx.message(fqdn)
+                .map(|desc| (Some(desc), Vec::new(), meanwhile))
+                .ok_or_else(|| {
+                    DecodeError::Determination(format!("type '{fqdn}' not found in descriptor set"))
+                })
+        }
+        RootType::Raw => Ok((None, Vec::new(), meanwhile())),
         RootType::Infer => {
             let Some(graph) = ctx.graph.clone() else {
-                return Ok((None, Vec::new()));
+                return Ok((None, Vec::new(), meanwhile()));
             };
-            let (winner, candidates) = resolve_root_winner_and_candidates(blob, &graph);
-            let desc = winner.and_then(|fqdn| ctx.message(&fqdn));
-            Ok((desc, candidates))
+            let (candidates, meanwhile) = sweep::ranked_with(blob, graph.graph(), jobs, meanwhile);
+            let desc = pick_winner(&candidates).and_then(|fqdn| ctx.message(&fqdn));
+            Ok((desc, candidates, meanwhile))
         }
     }
 }
@@ -1307,7 +1286,8 @@ pub(crate) fn register_message_set_item(
         })
 }
 
-/// Resolve the root type, then render the whole document under it.
+/// Resolve the root type, then render the whole document under it, on
+/// one thread.
 ///
 /// Spec 0168 G1: the resolution happens before the render, always. This
 /// used to take a `defer_root_type` flag that skipped the graph sweep,
@@ -1318,14 +1298,52 @@ pub(crate) fn register_message_set_item(
 /// under the reader. The document is now decoded once, as what it is.
 /// Callers who don't want to pay for the sweep at all ask for
 /// `RootType::Raw` and get a raw render that stays raw.
+///
+/// `main` no longer goes through here: since spec 0217 it needs the
+/// resolution and the render apart, to run the arena build between them
+/// and to spend the session's CPU budget on the sweep. What is left is
+/// the shape every test wants — the whole decode, in one call, where it
+/// was called.
+#[cfg(test)]
 pub fn decode(
     blob: Arc<Blob>,
     ctx: &mut DescriptorContext,
     root_type_request: RootType<'_>,
     indent_size: usize,
 ) -> Result<Decoded, DecodeError> {
-    let (root_desc, root_candidates) = determine_root_type(blob.payload(), ctx, root_type_request)?;
-    render_resolved(blob, ctx, root_desc, root_candidates, indent_size)
+    let (root_desc, root_candidates, arena) =
+        resolve_root_type_and_arena(&blob, ctx, root_type_request, 1)?;
+    render_resolved(blob, ctx, root_desc, root_candidates, arena, indent_size)
+}
+
+/// Steps 3 and 4 of spec 0217's startup sequence, run at the same time.
+///
+/// The arena is a function of the wrapped bytes alone (spec 0216) — it
+/// does not depend on the root type, and building it after the sweep was
+/// only ever an accident of where the code sat. So it is handed to the
+/// sweep as its `meanwhile` and runs on this thread while the shards
+/// walk. On googleapis the walk is ~70 ms against a sweep measured in
+/// seconds, so this hides the arena rather than the reverse; it is not
+/// the reason startup gets faster, it is just the work that no longer
+/// has to queue behind it.
+///
+/// Split out from [`decode`] rather than inlined because `main` needs the
+/// two halves apart to announce them separately.
+pub fn resolve_root_type_and_arena(
+    blob: &Arc<Blob>,
+    ctx: &mut DescriptorContext,
+    root_type_request: RootType<'_>,
+    jobs: usize,
+) -> Result<(Option<MessageDescriptor>, RankedCandidates, Arena), DecodeError> {
+    let (root_desc, root_candidates, arena) =
+        determine_root_type_meanwhile(blob.payload(), ctx, root_type_request, jobs, || {
+            // Spec 0216 S1: the maximal tree is a function of the
+            // wrapped bytes, so it is built from the whole blob — slot 0
+            // is the wrapper itself and the top-level occurrences are
+            // its children.
+            build_arena(blob.as_ref()).map_err(|e| DecodeError::Schema(e.to_string()))
+        })?;
+    Ok((root_desc, root_candidates, arena?))
 }
 
 /// `decode`'s second half, with the root type already resolved.
@@ -1340,6 +1358,7 @@ pub fn render_resolved(
     ctx: &mut DescriptorContext,
     root_desc: Option<MessageDescriptor>,
     root_candidates: RankedCandidates,
+    arena: Arena,
     indent_size: usize,
 ) -> Result<Decoded, DecodeError> {
     let (root_type, wrapper_desc) = match &root_desc {
@@ -1399,11 +1418,6 @@ pub fn render_resolved(
             lines[0] = patched;
         }
     }
-    // Spec 0216 S1: the maximal tree is a function of the wrapped bytes,
-    // so it is built from the whole blob — slot 0 is the wrapper itself
-    // and the top-level occurrences are its children. It has to come
-    // first: the overlay is indexed by its slots.
-    let arena = build_arena(&blob).map_err(|e| DecodeError::Schema(e.to_string()))?;
     // The superset property is what the whole design rests on and is not
     // checkable after the fact: `build_tree` consumes the spans, and the
     // overlay it leaves behind is already expressed in the arena's own
@@ -1435,6 +1449,17 @@ mod tests {
 
     use super::*;
     use crate::blob::wrapped;
+
+    /// `determine_root_type_meanwhile` with nothing to overlap and one
+    /// thread — the shape these tests care about, none of which is about
+    /// either.
+    fn determine_root_type(
+        blob: &[u8],
+        ctx: &mut DescriptorContext,
+        root_type: RootType<'_>,
+    ) -> Result<(Option<MessageDescriptor>, RankedCandidates), DecodeError> {
+        determine_root_type_meanwhile(blob, ctx, root_type, 1, || ()).map(|(d, c, ())| (d, c))
+    }
 
     #[test]
     fn determine_root_type_returns_none_without_override_or_graph() {
@@ -2437,8 +2462,9 @@ mod tests {
         // `Stray { s: 9 }`, the payload an override would splice.
         let stray_blob = [0x08u8, 0x09];
         let desc = ctx.message("t.Stray").expect("must load on demand");
-        let decoded =
-            render_resolved(wrapped(&stray_blob), &mut ctx, Some(desc), Vec::new(), 2).unwrap();
+        let stray = wrapped(&stray_blob);
+        let arena = build_arena(stray.as_ref()).expect("stray blob is walkable");
+        let decoded = render_resolved(stray, &mut ctx, Some(desc), Vec::new(), arena, 2).unwrap();
 
         assert_eq!(decoded.root_type, "t.Stray");
         assert!(
