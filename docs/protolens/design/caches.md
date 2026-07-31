@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # Asset: the render and candidate caches
 
-*last verified: 2026-07-16*
+*last verified: 2026-07-31*
 
 ## Executive summary
 
@@ -32,13 +32,22 @@ operations:
   previously-visited range instant instead of re-scoring against every
   known type.
 - The **render cache** (`render_cache::RenderCache`) memoizes the
-  *fully rendered output* (lines, style spans, and syntax-highlight style
-  hints) for a `(range, type, field name)` triple — the expensive output
-  of decoding, colorizing, and formatting a subtree under a specific
-  target type. This is what makes toggling an override's candidate
-  highlight in the select pane (which live-previews every highlighted row
-  by actually splicing it in) cheap even though each preview is, in
-  principle, a full re-decode.
+  *rendered output* — the lines and their `NodeSpan`s — for a
+  `(range, type, is_preview)` triple: the expensive output of decoding
+  and formatting a subtree under a specific target type. This is what
+  makes arrowing through the select pane's candidate list cheap even
+  though each highlighted row is, in principle, a full re-decode.
+
+  Two things are deliberately *not* in that key. The field name is not,
+  because the render always uses the fixed placeholder `_` and the real
+  name is patched in afterwards as a substring replacement, leaving the
+  cached render field-name-invariant. Highlighting is not, because since
+  spec 0187 there is nothing render-scoped left to highlight — styles
+  are recomputed per frame over the on-screen window only. What *is* in
+  the key, and must stay, is `is_preview`: a preview renders at most
+  `override_preview_byte_budget` interior bytes, so it is literally not
+  the same input as the confirmed render, and confirming an override
+  must not silently reuse a truncated one.
 
 A candidate-cache hit and a render-cache hit answer different questions
 ("what types are plausible here" vs. "what does this range look like

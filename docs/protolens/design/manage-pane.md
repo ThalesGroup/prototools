@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # Pane: override management pane
 
-*last verified: 2026-07-19*
+*last verified: 2026-07-31*
 
 ## Executive summary
 
@@ -57,6 +57,18 @@ instead of retrying the same one forever — tracked via a real "did the
 cursor move" counter rather than comparing cursor positions, since a
 round-trip move (e.g. down then back up) would otherwise be
 indistinguishable from "never moved" and falsely count as no movement.
+
+### It can call the selection pane, and gets returned to
+
+Retyping an entry from here opens the
+[selection pane](override-select-pane.md) over the same area, and all
+three of its exits — `Enter`, `Esc`, `t` — come back *here* rather than
+to the main pane, with the just-retyped entry highlighted (spec 0200).
+The two panes are mutually exclusive on screen, but that is a layout
+fact, not a lifecycle one: the manage pane remains the caller
+throughout, which is also what decides the confirmed override's origin
+kind — the kind of the entry being edited, rather than the `path:field`
+default a `t` from the main pane would get.
 
 ### Deleting an in-scope auto entry deactivates instead
 

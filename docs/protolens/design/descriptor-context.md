@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # Asset: the descriptor context
 
-*last verified: 2026-07-16*
+*last verified: 2026-07-31*
 
 ## Executive summary
 
@@ -22,6 +22,25 @@ descriptors for the override mechanism, and a shared shape for
 this — see the [prototext_core boundary](README.md#the-prototext_core-boundary).
 
 ## Technical detail
+
+### Two ways to hold a pool: eager, or on demand
+
+`DescriptorContext` has an eager branch (a fully built
+`prost_reflect::DescriptorPool`) and a lazy one (a `LazyPool` over an
+`index.rkyv` sidecar, in the `prototext-schema` workspace member shared
+with `prototext`). Which branch is taken is an implementation detail —
+`pool()` and `pool_mut()` have the same signatures either way, and every
+call site is written against them. What differs is *what is in* the pool
+at a given moment: the lazy branch resolves a file only when a type from
+it is asked for.
+
+This exists because building the pool eagerly is essentially the whole
+startup wait — 1.70 s of a 2.96 s batch run on the 25.6 MB googleapis
+corpus — and because `drop(pool)` costs a further 0.84 s at process
+exit, which no startup-shaped measurement shows. The lazy branch is
+taken only when a sidecar is present and accepted; a missing, stale or
+unreadable one degrades to the eager path rather than failing, so the
+sidecar is an optimization and never a requirement (spec 0197).
 
 ### Root-type autoinference is advisory, never blocking
 
@@ -41,16 +60,17 @@ treats "we couldn't guess the type" as fatal.
 Two kinds of type exist in the pool that were never written by a human in
 a `.proto` file:
 
-- **Wrapper descriptors**, one per distinct `(field number, field name,
+- **Wrapper descriptors**, one per distinct `(field number, field type,
   target type)` combination actually used during the session. These are
   what let `splice_override` decode an arbitrary byte range under an
   arbitrary target type: the wrapper is a fresh one-field message whose
-  sole field has that number, that name, and that type. The field *name*
-  is part of the cache/registration key, not just the number and target
-  type, because two different nodes can legitimately share a field
-  number and target type while having different real field names (e.g.
-  after a manage-pane rename) — collapsing them onto one wrapper would
-  render the wrong name for one of them.
+  sole field has that number and that type. Its field is always *named*
+  `_`, and the node's real display name is patched into the rendered
+  text afterwards — so the name is deliberately absent from the
+  registration key, and from the render cache's key with it. Two nodes
+  that share a field number and target type but differ in name (say
+  after a manage-pane rename) correctly share one wrapper and one
+  cached render.
 - **`MessageSetItem`**, a single globally-shared synthetic shape (`type_id`
   + `message`) representing one entry of a `MessageSet`'s repeated group.
   Unlike wrapper descriptors, there is exactly one of these per pool,

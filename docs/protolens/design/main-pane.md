@@ -25,6 +25,32 @@ screen and how to draw them.
 
 ## Technical detail
 
+### The cursor is a caret, and the row highlight belongs to selection
+
+The cursor is a vim-style block caret over exactly one character
+(spec 0194), not a highlighted row. That frees the full-row highlight
+to mean **selection** and nothing else, so the two cues can finally be
+told apart on screen instead of sharing one modifier.
+
+The caret's column is real state, not a byproduct of the row: it
+remembers a desired column across vertical movement and clamps to each
+row without forgetting. It is also readable by the rest of the UI —
+which is what lets a heat cue describe the thing under the caret rather
+than the whole line. When the caret sits on a brace whose match is on
+screen, the *match* is the inverted cell and the caret dims to a tint;
+when the match is off screen the caret keeps its inversion and nothing
+else lights up.
+
+That precision creates one problem worth naming, because the fix is not
+obvious. `h`/`Left` at the row's first column means "fold, then go to
+the parent," and `l`/`Right` at the last column means "go to the first
+child" — but a caret can arrive at an end of a row *involuntarily*, by
+being clamped there after a vertical move, and acting on a position the
+user did not choose is exactly the kind of surprise that makes arrow
+keys feel unsafe. So the caret records **how** it got to an end
+(spec 0199): a key that finds it there involuntarily adopts the
+position instead of acting on it, and the second press acts.
+
 ### Two movement granularities
 
 Plain document-order stepping (`j`/`k`) passes through every visible

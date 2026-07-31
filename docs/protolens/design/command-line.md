@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # Pane: command line (global command/message row)
 
-*last verified: 2026-07-19*
+*last verified: 2026-07-31*
 
 ## Executive summary
 
@@ -45,6 +45,13 @@ convention, while `n` always repeats in the same direction the pattern
 was last searched, independent of which direction a fresh `/`/`?` press
 might currently be requesting.
 
+Matching is **smartcase** in all three panes (spec 0195): an
+all-lowercase pattern matches case-insensitively, a pattern with any
+uppercase character matches exactly. It is one shared helper rather
+than three, since the panes differ in *what* they search — document
+text, candidate FQDNs, entry labels — but not in how a pattern should
+be read.
+
 ### Command dispatch: one registry, two consumers
 
 Every ex-command name is declared exactly once, in a single array
@@ -62,8 +69,12 @@ automatically, with no second registration point to remember.
 Completion isn't limited to command names. Once the first token has
 unambiguously resolved to a command that takes a particular kind of
 argument, the *second* token is completed against that argument's own
-domain: `type-as`'s argument completes against the session's full list of
-known type FQDNs; `save-overrides`/`restore-overrides`'s argument
+domain: `type-as`'s argument completes against the session's full list
+of known type FQDNs — which the on-demand descriptor branch
+([descriptor-context.md](descriptor-context.md)) must still answer in
+full, and does, by reading names out of the `index.rkyv` sidecar
+without decoding the files behind them;
+`save-overrides`/`restore-overrides`'s argument
 completes against the filesystem, directory by directory, the same way a
 shell's own path completion works (each Tab descends one more directory
 level rather than trying to complete the whole remaining path at once).

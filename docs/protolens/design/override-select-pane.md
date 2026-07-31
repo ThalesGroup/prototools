@@ -83,7 +83,11 @@ render of the same range.
 
 Closing the pane by any route (`Enter`, `Esc`, or toggling `t` again)
 drops the overlay; `Enter` additionally runs the real
-`render_overrides` pass that commits the choice.
+`render_overrides` pass that commits the choice. All three routes
+return to whichever pane *opened* this one — the main pane for `t`, the
+[management pane](manage-pane.md) when it was opened from there (spec
+0200). `q` is deliberately not bound here at all, so the habit of
+quitting a pane with `q` cannot quit the program by accident.
 
 Live preview intentionally does not extend into nested Any/MessageSet
 auto-expansion within the previewed subtree — a preview shows the
