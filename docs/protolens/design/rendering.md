@@ -219,6 +219,27 @@ thread, so the work is split:
   the `pending_heat_recheck` set only — deliberately *not* over
   `0..heat_states.len()` — and reads the cache without re-pushing.
 
+`heat_states` is one entry per **arena** slot, not per rendered node —
+4.7M of them on the reference corpus — so its per-slot width is a fixed
+cost of the document, and `HeatState` is sized accordingly (spec 0220):
+three private integers, `best_score: i32`, `current: i32`,
+`best_count: u32`, read and written through `new`/`best()`/`current()`
+so that every call site still speaks the two independent `Option`s
+above. Two things about that encoding are load-bearing rather than
+tidy, and both have a test named after them:
+
+- **`Default` is hand-written; never re-derive it.** All-zero would
+  decode as "scored, best 0, current 0", so every node in a fresh
+  document would report `settled()` and draw a stale cue.
+- **Scores clamp to `SCORE_FLOOR` (`i32::MIN + 2`), not to `i32::MIN`,
+  at both ends.** `i32::MIN` and `i32::MIN + 1` are the not-scored and
+  vetoed sentinels; a score saturating onto one would read back as "not
+  scored", leaving `settled()` false forever and re-scoring the node on
+  every worker-progress wakeup. Saturation is otherwise display-only
+  and needs an adversarial blob of hundreds of megabytes to reach — the
+  ordering scores the override pane actually uses live in `heat_caches`
+  and stay `i64`.
+
 The design property that matters is the **key discipline**: the shared
 caches (`HeatCaches::by_range`, `current_score`) are keyed on the
 payload's *byte offset*, while `heat_states` is indexed by node index.

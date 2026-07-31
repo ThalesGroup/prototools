@@ -145,6 +145,17 @@ The original OOM reproduction (`Down`, then three rounds of `t`, `Enter`,
 **flat at 995 MiB across all three cycles**, because a splice allocates
 no slots and a second cycle has nothing to add.
 
+**A per-slot cost is not only the slot.** Anything held one-per-slot is
+multiplied by the same 4.7M. The largest such term after the slot
+itself was `heat_states`, at 40 bytes an entry — 190 MB, of which 14
+bytes per entry were alignment padding. [Spec
+0220](../../specs/0220-the-heat-state-is-three-numbers.md) narrowed it
+to 12, taking **at rest 1 004 036 → 874 676 kB (−12.9 %)**. Note what
+that measurement did *not* move: the peak, which on the startup path is
+set by the decode/render phase, `heat_states` being allocated after its
+temporaries are freed. Per-slot narrowing buys steady-state footprint;
+the peak has to be attacked in the render.
+
 **One term is left, and it is the render, not the tree.**
 `RenderCache::get` clones on every hit and `splice_override` clones again
 on insert. See
