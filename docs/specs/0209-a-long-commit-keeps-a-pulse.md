@@ -6,7 +6,9 @@ SPDX-License-Identifier: MIT
 
 # 0209 — a long commit keeps a pulse
 
-Status: draft
+Status: draft — and contested. Specs 0204, 0205 and 0209 are three
+        proposals against the same stall; none is implemented. Pick one
+        before starting any of them.
 App: protolens
 Refs: docs/specs/0151-protolens-heat-cue-cache-and-startup-progress.md
         (G8, `warm_up_heat_cues` — the existing precedent for a long
@@ -105,9 +107,9 @@ on the assumption 0205 is not imminent; S10 records what survives it.
   spec annotates the stall; it does not shorten it.
 - **N2.** Moving the commit off the main thread. That is spec 0205.
 - **N3.** Reporting progress for anything other than an override
-  commit. Incremental arena compaction (spec 0203) also runs on the
-  main thread, but in 4096-node slices between keystrokes — it never
-  blocks the user and needs no indicator.
+  commit. (As written this also excused incremental arena compaction,
+  spec 0203, as sliced and therefore invisible; spec 0216 has since
+  deleted compaction outright.)
 - **N4.** Retiring `activity_shown` or `ACTIVITY_TICK`. A painter that
   owned the dot *continuously* could subsume both (it would sample
   without frame boundaries, which is exactly what spec 0191 S2 works

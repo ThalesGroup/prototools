@@ -22,7 +22,8 @@ Refs: docs/specs/0116-tree-sitter-textproto-highlight-captures.md §8
       docs/specs/0216-the-arena-is-a-function-of-the-bytes.md (what
         actually closed the defect, and what superseded 0202/0203/0206),
       docs/specs/0204-a-long-batch-says-so-before-it-blocks.md (draft),
-      docs/specs/0205-the-batch-runs-off-the-input-thread.md (draft)
+      docs/specs/0205-the-batch-runs-off-the-input-thread.md (draft),
+      docs/specs/0209-a-long-commit-keeps-a-pulse.md (draft)
 
 ## What this document is
 
@@ -88,10 +89,13 @@ This needs a spec. It is independent of everything else here.
 
 ## Open questions
 
-1. **Is spec 0204 still worth implementing at all?** Spec 0205's own
-   Open question asks this: 0205's measured 150 ms trigger is strictly
-   better than 0204's. Neither is implemented. Settle it before either
-   is started; the likely answer is to fold 0204 into 0205 and close it.
+1. **Which of the three stall drafts survives?** Specs 0204, 0205 and
+   0209 all address the same stall and none is implemented. 0204 is a
+   static banner behind a predicted trigger; 0205's measured 150 ms
+   trigger is strictly better and deletes 0204's key table; 0209 keeps
+   the commit on the input thread and paints a pulse from a second one,
+   and its own S10 concedes 0205 deletes most of it. Settle it before
+   any is started.
 2. **How much of the batch cost is still the render itself?** With the
    arena flat, the remaining per-batch transient is the render and its
    clone. Nobody has measured what is left after 0216.

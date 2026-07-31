@@ -6,19 +6,27 @@ SPDX-License-Identifier: MIT
 
 # 0165 — protolens: CLI-configurable heat-cue pool sizes and exit-time stats
 
-Status: draft
+Status: draft. Its byte-budget half (G2/G3) is open flaw P5 in
+        `docs/protolens/rendering-flaws.md` — the result cache is still
+        bounded by entry count only, and `RangeHeatEntry` is still
+        variable-size.
 App: protolens
 Refs: docs/specs/0164-protolens-heat-cue-tiered-priority-and-prefetch.md
       (introduces `TieredBounded`, the type this spec adds a byte
-      budget and statistics to), `protolens/src/tui/heat_worker.rs`,
+      budget and statistics to),
+      docs/specs/0191-the-read-ahead-walk-is-bounded-and-the-activity-dot-stops-flickering.md
+      (G2, whose `PREFETCH_WALK_MAX_ROWS <= HEAT_CACHE_MAX_ENTRIES`
+      compile-time assertion G1 would have to become a runtime check),
+      `protolens/src/tui/heat_worker.rs`,
       `protolens/src/tui/heat_cue.rs`, `protolens/src/main.rs`,
       `protolens/src/tui/mod.rs`
 
 ## Background
 
 Spec 0164 grounded the request queue's and result caches' current
-capacities: `HEAT_REQUEST_QUEUE_MAX_ENTRIES = 512`
-(`heat_worker.rs`) and `HEAT_CACHE_MAX_ENTRIES = 8192`
+capacities: `HEAT_REQUEST_QUEUE_MAX_ENTRIES` (`heat_worker.rs`, `512`
+when this spec was written, since raised to `2048`) and
+`HEAT_CACHE_MAX_ENTRIES = 8192`
 (`heat_cue.rs`), both hardcoded constants, both sized well before
 main-pane prefetch (0164's other half) existed to generate any real
 background-traffic volume. Discussion during that spec's review
@@ -107,8 +115,8 @@ prefetch mechanism itself, not how its pools are sized or observed.
   set.
 - **G5**: Default values (G1) are deliberately generous, informed by
   spec 0164's discussion, not measured: `100_000`-entry queue cap
-  (up from `512`), `200_000`-entry / `100MB` cache cap (up from
-  `8192`, no prior byte cap at all). The exit-time summary (G4)
+  (up from today's `2048`), `200_000`-entry / `100MB` cache cap (up
+  from `8192`, no prior byte cap at all). The exit-time summary (G4)
   exists specifically so a future spec can revisit these defaults
   against real high-water-mark data instead of another guess.
 
@@ -232,7 +240,11 @@ if app.print_heat_cue_stats {
   `Cli` fields, including default values when omitted.
 - Regression: existing `heat_cue`/`heat_worker` suites pass unchanged
   with the new defaults (100,000/200,000/100MB), same as they did
-  with the old hardcoded 512/8192.
+  with the hardcoded constants. Note that several of those tests fill
+  the queue to `HEAT_REQUEST_QUEUE_MAX_ENTRIES` by iterating over it
+  (`heat_worker.rs`, `tests/prefetch.rs`), so they must be re-pointed
+  at the configured value or given their own small cap — at the G1
+  default they would push 100,000 entries each.
 - Manual (`tests/profiling.rs` against `/tmp/db3.desc`): run with
   `--heat-cue-stats`, confirm the summary prints exactly once, after
   the terminal is restored, with sane numbers (final counts at or

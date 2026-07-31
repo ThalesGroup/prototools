@@ -6,7 +6,11 @@ SPDX-License-Identifier: MIT
 
 # 0205 — the batch runs off the input thread
 
-Status: draft
+Status: draft — and contested. Specs 0204, 0205 and 0209 are three
+        proposals against the same stall; none is implemented. Pick one
+        before starting any of them. Parts of the Background and S7
+        below rest on premises spec 0216 has since removed — the
+        annotations mark which.
 Implemented in: —
 App: protolens
 Refs: docs/specs/0152-protolens-heat-cue-background-scoring-thread.md
@@ -17,11 +21,19 @@ Refs: docs/specs/0152-protolens-heat-cue-background-scoring-thread.md
       docs/specs/0167-protolens-render-overrides-deferred-line-splice.md
         (why `lines` is untouched until the batch ends),
       docs/specs/0202-an-override-is-refused-rather-than-fatal.md (the
-        guard, which must stay on the input thread),
+        guard, which must stay on the input thread — since deleted,
+        see S7),
       docs/specs/0203-the-override-arena-is-compacted.md (the
-        compaction pass, which rides along on the worker),
+        compaction pass, which rides along on the worker — since
+        deleted, see S7),
       docs/specs/0204-a-long-batch-says-so-before-it-blocks.md (the
-        stop-gap this supersedes)
+        stop-gap this supersedes),
+      docs/specs/0209-a-long-commit-keeps-a-pulse.md (the third
+        proposal; its N2 defers to this spec, its S10 records what of
+        it survives this one),
+      docs/specs/0216-the-arena-is-a-function-of-the-bytes.md (which
+        removed the memory pressure this spec's Background argues
+        from)
 
 ## Background
 
@@ -43,15 +55,18 @@ This needs stating up front, because the obvious expectation —
 achievable and is not what this spec delivers.
 
 A batch mutates essentially the entire document model: `tree`,
-`lines`, both line maps, `descend`, `heat_states`, `folded`,
-`visible_rows`, `cursor`, and `overrides` itself (auto-seeding
-Any/MessageSet entries re-sorts the collection). There is no
-meaningful subset the UI could read concurrently, so:
+`lines`, `descend`, `heat_states`, `folded`, `cursor`, and `overrides`
+itself (auto-seeding Any/MessageSet entries re-sorts the collection).
+There is no meaningful subset the UI could read concurrently, so:
 
 - a lock would be held for the batch's entire duration, making the
   reader wait exactly as long as it waits today;
-- a snapshot means copying the model — 2 GiB on the reported document,
-  which is the memory problem spec 0203 exists to fix.
+- a snapshot means copying the model — 2 GiB on the reported document.
+
+(As written this list also named both line-index maps and
+`visible_rows`; spec 0210 has since deleted all three. The argument is
+unaffected — what remains is still the whole model — but do not read
+the list as a current inventory.)
 
 So the document is unavailable while the batch runs, under any design.
 What moving the work off-thread does buy is that the *process* stays
@@ -241,17 +256,15 @@ reported condition, not as a timeout to retry.
 
 ### S7. What stays on the input thread
 
-- **Spec 0202's memory guard.** It is an `O(1)` check and a refusal;
-  running it before the handoff keeps a refused batch instantaneous
-  and keeps the refusal message on the ordinary path.
 - **Read-ahead** (`prefetch_step`) and the heat-cue rechecks. These
   need `App`, so they simply do not run while a batch is in flight —
   a 5 s pause in read-ahead during a batch that is about to
   invalidate the walk anyway costs nothing.
 
-Spec 0203's compaction pass sits at the end of `render_overrides`, so
-it runs on the worker with the rest of the batch and needs no special
-handling.
+This section originally also had to place spec 0202's memory guard
+(before the handoff, to keep a refusal instantaneous) and spec 0203's
+compaction pass (at the end of `render_overrides`, so on the worker).
+Spec 0216 deleted both, so neither needs placing.
 
 ## Test plan
 
@@ -275,11 +288,13 @@ is the main cost of this change beyond the handoff itself.
 
 ## Open question
 
-Whether spec 0204 is worth implementing at all, given that S3 here
-replaces its trigger with a strictly better one and deletes its key
-table. 0204 is much the smaller change and can ship first; the cost of
-doing both is that 0204's predicate is written, tested, and then
-removed. Decide before starting either.
+Which of the three drafts to implement. Spec 0204 is the smallest and
+can ship first, but S3 here replaces its predicted trigger with a
+measured one and deletes its key table, so doing both means writing and
+testing 0204's predicate in order to remove it. Spec 0209 is the middle
+option — it keeps the commit on the input thread and paints a pulse
+from a second one, and its own S10 says most of it is deleted by this
+spec. Decide before starting any of them.
 
 ## Measured outcome
 

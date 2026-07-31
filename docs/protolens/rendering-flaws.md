@@ -26,21 +26,21 @@ Correctness bugs C1-C4 are all fixed, as marked. Of the rest:
 | P2 per-frame path + list scan | **fixed** — `sibling_position` is arithmetic (spec 0216), and the override lookup is a binary search over the sorted collection (spec 0183 G3) | `tui/structure.rs:133`, `override_apply.rs:930` |
 | P3 commit cost, tree quintuples | **fixed** — spec 0210 made the line repair a patch merge, spec 0216 made the arena immutable so there is no growth to compact | `override_apply.rs:1604`, spec 0203 (superseded) |
 | P4 text held twice, blob thrice | **half fixed** — the blob is one `Arc<Blob>` (spec 0168); the rendered text is still materialized as a `String` and then again as `Vec<String>` | `decode.rs:1401` |
-| P5 heat cache bounded in entries | **half fixed** — `top_n` is capped at the preview height (spec 0168), but the cache is still entry-bounded at 8192, not byte-bounded | `tui/heat_cue.rs:129` |
+| P5 heat cache bounded in entries | **half fixed** — `top_n` is capped at the preview height (spec 0168), but the cache is still entry-bounded at 8192, not byte-bounded; the byte bound is spec 0165 G2/G3, a draft | `tui/heat_cue.rs:129` |
 | P6 candidate list cloned twice per row | **open** — `TieredBounded::peek` still clones the whole entry, and `window` then slices a copy out of it | `tui/tiered.rs:175`, `heat_worker.rs:375` |
 | A1 render key omits level/indent | **unreachable** — `indent_size` is fixed for a session and the cache is session-scoped; `initial_level` is a node's arena depth, which spec 0216 froze. The style-hint half of the concern went with spec 0187 S4. Still absent from the key | `render_cache.rs:30` |
 | A2 `heat_states` hand-maintained | **fixed** — both `tree` and `heat_states` are fixed-length after `App::new`; a splice resets an entry, never resizes the `Vec` (spec 0216) | `override_apply.rs:2107` |
 | A3 `override_batch_depth` models impossible nesting | **open** — still a `u32` that only ever holds 0 or 1 | `tui/mod.rs:866` |
 | A4 `complete` slot clobbered by prefetch | **open** — the write is unconditional, prefetch tier included | `heat_worker.rs:545` |
-| A6 cache key justified by a false property | **half fixed** — spec 0214 changed how the probe is keyed, and the code no longer repeats the claim, but spec 0151's "disjoint by construction" wording is still wrong and the real property (payload *start* offsets are unique under length-prefix framing) is written down nowhere | `docs/specs/0151-…:89` |
+| A6 cache key justified by a false property | **fixed** — spec 0214 changed how the probe is keyed, and spec 0151's "disjoint by construction" wording has been replaced with the real property: ranges nest, but every nested field carries a tag and a length prefix, so a child's payload starts strictly after its parent's and a bare `start` is unique | `docs/specs/0151-…` |
 | D4 header highlighted out of context | **fixed** — both sites removed by spec 0187 S5 | `decode.rs:1407`, `override_apply.rs:2473` |
 | D5 spec 0162 is a goals-only draft | **obsolete** — spec 0216 removed the arena growth that reclamation existed to reclaim, as it did for specs 0203 and 0206 | spec 0216 |
 
 Five items survive: **P4** (the second copy of the rendered text), **P5**
-(byte-bound the heat cache), **P6** (borrow the cached entry instead of
-cloning it), **A3** (make the counter a `bool`) and **A4** (do not let a
-prefetch completion overwrite the `complete` slot). **A6** is a
-documentation fix in spec 0151.
+(byte-bound the heat cache — specified as spec 0165 G2/G3, still a
+draft), **P6** (borrow the cached entry instead of cloning it), **A3**
+(make the counter a `bool`) and **A4** (do not let a prefetch completion
+overwrite the `complete` slot).
 
 ---
 

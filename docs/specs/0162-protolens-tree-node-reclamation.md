@@ -6,7 +6,11 @@ SPDX-License-Identifier: MIT
 
 # 0162 — protolens: general reclamation of abandoned tree nodes
 
-Status: draft
+Status: superseded (never implemented; withdrawn 2026-07-31 by spec 0216
+        S13 — a splice abandons no nodes, so there is nothing to
+        reclaim. Same withdrawal, and same reason, as specs 0203 and
+        0206: all three manage a growth the immutable arena does not
+        have)
 App: protolens
 Refs: docs/protolens/rendering-flaws.md (D5, P3),
       docs/protolens/rendering-scaling-roadmap.md (S7),

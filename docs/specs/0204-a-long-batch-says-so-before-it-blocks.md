@@ -6,7 +6,11 @@ SPDX-License-Identifier: MIT
 
 # 0204 — a long batch says so before it blocks
 
-Status: draft
+Status: draft — and contested. Two later drafts each claim to replace
+        it: spec 0205 S3 (a measured 150 ms trigger instead of this
+        spec's predicted one) and spec 0209 S8 (the same banner, plus a
+        pulse). None of the three is implemented. Pick one before
+        starting any of them.
 Implemented in: —
 App: protolens
 Refs: docs/specs/0118-protolens-recursive-override-rendering.md (§6,
@@ -16,7 +20,11 @@ Refs: docs/specs/0118-protolens-recursive-override-rendering.md (§6,
       docs/specs/0190-the-activity-dot-reports-the-highest-live-tier.md
         (the activity dot, and why it cannot cover this),
       docs/specs/0202-an-override-is-refused-rather-than-fatal.md (the
-        status line as a channel)
+        status line as a channel; itself since superseded by spec 0216),
+      docs/specs/0205-the-batch-runs-off-the-input-thread.md (S3, the
+        better trigger),
+      docs/specs/0209-a-long-commit-keeps-a-pulse.md (S8, the banner
+        that subsumes this spec)
 
 ## Background
 

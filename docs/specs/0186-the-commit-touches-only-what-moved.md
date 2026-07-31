@@ -6,14 +6,11 @@ SPDX-License-Identifier: MIT
 
 # 0186 — a commit touches only what moved
 
-Status: draft — implemented, then measured; see `Measured outcome`.
-        The performance claims in G1 and G4 are **withdrawn**: the four
-        passes this spec removes are 1.4% of a commit, and 85% is one
-        whole-document tree-sitter parse in `colorize::colorize` that no
-        part of this spec touches. Read `Measured outcome` before the
-        Goals below, which are left as originally written so the record
-        of what was believed, and on what evidence it was overturned,
-        stays legible.
+Status: implemented — but its performance claims (G1, G4) are
+        **withdrawn** by its own measurement. Read `Measured outcome`
+        before the Goals, which are left as first written so the
+        overturned belief stays legible.
+Implemented in: 2026-07-27
 App: protolens
 Refs: docs/protolens/rendering-flaws.md (P3),
       docs/protolens/rendering-scaling-roadmap.md (S2, S3),
@@ -316,6 +313,11 @@ other caller keeps calling `rebuild_visible_rows()` (N4).
   warnings`, `reuse lint`, `nix-build -A ci`.
 
 ## Measured outcome
+
+> Since written, two of the four passes below have been deleted outright
+> rather than made incremental: spec 0210 removed the line-index maps
+> that S3 repaired and the visible-row list S4 rebuilt. The measurement
+> stands as the record of why chasing them was the wrong target.
 
 **Summary: this spec's premise is wrong, and the measurement says so.**
 The four passes it set out to remove are together **1.4%** of a commit.
