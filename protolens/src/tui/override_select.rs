@@ -257,18 +257,11 @@ impl App {
     /// entries keep only the first N lines" (spec 0152 N8: relocked onto
     /// the shared cache, logic otherwise unchanged).
     ///
-    /// Spec 0185 G2/Q3: closing re-renders **nothing**. It used to open
-    /// with a full recursive `render_overrides(override_target)` pass,
-    /// because the live preview's own `splice_override` rebuilt the
-    /// target's whole subtree from scratch with no overrides applied to
-    /// any of the fresh descendants, so anything less than the full
-    /// recursion would leave every previously-auto-expanded
-    /// `Any`/`MessageSet` descendant un-re-expanded. That damage existed
-    /// *because* the preview mutated the tree. An overlay never does, so
-    /// there is nothing to re-seed and nothing to revert — dropping the
-    /// overlay is the whole revert. A re-render is now triggered only by
-    /// the events that change committed state: confirming a type, or
-    /// (de)activating an entry in the management pane.
+    /// Spec 0185 G2/Q3: closing re-renders **nothing**. The preview is an
+    /// overlay and mutates no tree state, so dropping the overlay is the
+    /// whole revert. A re-render is triggered only by the events that
+    /// change committed state: confirming a type, or (de)activating an
+    /// entry in the management pane.
     pub(super) fn close_override(&mut self) {
         self.preview_overlay = None;
         if let Some(range) = self.active_override_range.take() {

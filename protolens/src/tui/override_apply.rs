@@ -20,7 +20,9 @@ pub(super) mod probe {
     pub(super) static VISITS: AtomicUsize = AtomicUsize::new(0);
     /// Of those, ones where `resettle_node` actually spliced.
     pub(super) static SPLICES: AtomicUsize = AtomicUsize::new(0);
-    /// Arena nodes appended by those splices.
+    /// Arena nodes rewritten by those splices — the descendants of each
+    /// resettled node. Since spec 0216 a splice appends nothing, so this
+    /// measures how much of a fixed arena the batch touched, not growth.
     pub(super) static NODES: AtomicUsize = AtomicUsize::new(0);
     /// Microseconds spent in `compute_descend_marks`.
     pub(super) static MARKS_US: AtomicUsize = AtomicUsize::new(0);
@@ -2231,15 +2233,12 @@ impl App {
         // ancestor counts above are the whole structural consequence of
         // this splice, and `self.pending_shift += delta` records what the
         // rest of the batch needs to place its patches. When called from
-        // within
-        // a `render_overrides` batch (`override_batch_depth > 0`, e.g.
-        // via `resettle_node`), reconciliation is deferred to that outer
-        // call's own `finalize_override_batch`. `splice_override` is
-        // also called directly outside of any `render_overrides` batch
-        // (e.g. `override_select.rs`'s live preview splice,
-        // `override_batch_depth == 0` there) — such a call must finalize
-        // immediately itself, exactly matching today's eager-splice
-        // behavior for a single standalone splice.
+        // within a `render_overrides` batch (`override_batch_depth > 0`),
+        // reconciliation is deferred to that outer call's own
+        // `finalize_override_batch` — which is every production call
+        // since spec 0185 made the preview an overlay. A standalone
+        // splice (`override_batch_depth == 0`, tests only) must finalize
+        // immediately itself.
         if self.override_batch_depth == 0 {
             self.finalize_override_batch();
         }

@@ -855,9 +855,12 @@ pub struct App {
     /// Spec 0160 G1: whether a `render_overrides` batch is currently
     /// active — `0` outside of one, `1` while the outer (caller-
     /// initiated) call is running. `splice_override` uses this to decide
-    /// whether it must self-finalize immediately (a standalone call,
-    /// e.g. `override_select.rs`'s live-preview splice) or defer to the
-    /// active batch's own finalize. Self-recursion inside
+    /// whether it must self-finalize immediately (a standalone call) or
+    /// defer to the active batch's own finalize. Since spec 0185 made
+    /// the preview an overlay, production has exactly one
+    /// `splice_override` caller and it is always inside a batch; only
+    /// tests reach the standalone self-finalizing path. Self-recursion
+    /// inside
     /// `render_overrides_inner` never goes through the counted
     /// `render_overrides` wrapper, so this only ever toggles `0`/`1`,
     /// never nesting deeper.
@@ -871,10 +874,9 @@ pub struct App {
     /// Extended by `compute_descend_marks` at the start of each batch
     /// (when `override_batch_depth` goes `0` -> `1`) and by
     /// `mark_fresh_subtree` after each splice within one. Indices are
-    /// arena indices, which is sound because the arena is append-only:
-    /// `splice_override` translates fresh nodes by `base = tree.len()`
-    /// and abandons superseded ones in place, so no existing index
-    /// ever moves.
+    /// arena indices, which is sound because the arena is built once
+    /// from the bytes and never mutated (spec 0216) — a splice rewrites
+    /// only per-slot overlay state, so no index ever moves.
     ///
     /// Spec 0188 S4: **monotone — never cleared**, and its length
     /// doubles as the watermark for how much of the arena has already

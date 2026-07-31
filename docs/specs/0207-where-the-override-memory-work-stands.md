@@ -102,10 +102,7 @@ This needs a spec. It is independent of everything else here.
 
 ## Housekeeping carried over
 
-- **The `probe` module** (`override_apply.rs:17-37`, `VISITS` /
-  `SPLICES` / `NODES` counters) is temporary instrumentation, committed
+- **The `probe` module** (`override_apply.rs`, `VISITS` / `SPLICES` /
+  `NODES` counters) is temporary instrumentation, committed
   deliberately. Strip it when this work concludes.
 - **No fuzz target** anywhere in the workspace.
-- **`override_select.rs:262`** still describes a preview that "rebuilt
-  the tree". Spec 0185 replaced that with a non-mutating overlay; the
-  comment reads as current and has cost time twice.
