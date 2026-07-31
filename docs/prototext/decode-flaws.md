@@ -24,7 +24,7 @@ case.
 
 Ranked in three bands: **correctness bug** (wrong output, panic, hang,
 or crash), **perf cliff** (correct but degrades superlinearly or blocks
-the UI), and **minor / doc drift**.
+the UI), and **minor and doc drift**.
 
 Numbering follows the audit that produced these findings, so gaps are
 intentional — items not re-derived against source in this pass are listed
@@ -46,7 +46,7 @@ renumbered away.
 
 Auditing them turned up one new, minor finding — **M1**, the depth cap
 degrading LEN and `START_GROUP` inconsistently — which is written up under
-[Minor / doc drift](#minor--doc-drift).
+[Minor and doc drift](#minor-and-doc-drift).
 
 The ranking below is preserved as written for the record. Worth noting how
 they closed: **three of the four were retired by one spec** (0171), and the
@@ -511,7 +511,7 @@ stops allocating and the doc comments at `:75` and `:95` become true.
 
 ---
 
-## Minor / doc drift
+## Minor and doc drift
 
 ### M1. The depth cap degrades LEN and `START_GROUP` differently, and the group form mislabels valid bytes **[new, 2026-07-26]**
 
