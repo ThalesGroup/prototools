@@ -13,7 +13,7 @@ All examples use:
 
 ```bash
 GOOGLEAPIS_DB=/nix/store/qmnwx5798np062iydkky60g0jfq0dam9-googleapis-db/googleapis.desc
-GOOGLEAPIS_DESCS=$(dirname $GOOGLEAPIS_DB)/reproto-out
+GOOGLEAPIS_DESCS=$(dirname $GOOGLEAPIS_DB)/googleapis/proto
 ```
 
 ---

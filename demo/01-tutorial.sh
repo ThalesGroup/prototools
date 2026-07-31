@@ -24,7 +24,7 @@ export GOOGLEAPIS_DB=$(nix-build -A googleapis-db --no-out-link)/googleapis.desc
 \
 export GOOGLEAPIS_PBS=$(dirname $GOOGLEAPIS_DB)/instances
 \
-export GOOGLEAPIS_DESCS=$(dirname $GOOGLEAPIS_DB)/reproto-out
+export GOOGLEAPIS_DESCS=$(dirname $GOOGLEAPIS_DB)/googleapis/proto
 
 # \
 # Pre-clean stash output dirs to avoid stale files from previous runs.
