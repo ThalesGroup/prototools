@@ -6,7 +6,43 @@ SPDX-License-Identifier: MIT
 
 # protolens rendering pipeline — flaws report
 
-*last verified: 2026-07-25*
+*frozen 2026-07-26; re-audited against the code 2026-07-31*
+
+> **This document is a closed review, kept only because 28 specs cite its
+> flaw IDs.** Its body is the register as it stood on 2026-07-26 and is
+> **not** a description of the current code — specs 0180 through 0218
+> have landed since, and the per-item ✔ marks below were never updated.
+> For how the code works today read
+> [design/](design/README.md). The only part of this file still worth
+> acting on is the audit immediately below.
+
+## Where each item stands (audited against the code, 2026-07-31)
+
+Correctness bugs C1-C4 are all fixed, as marked. Of the rest:
+
+| Item | Verdict | Evidence |
+|---|---|---|
+| P1 startup render pass | **fixed** — spec 0183 prunes the descent (5.22 s → 63 ms on the 1.1 MB fixture); the pass itself still runs, at `tui/mod.rs:1674` | `override_apply.rs:1241` `compute_descend_marks` |
+| P2 per-frame path + list scan | **fixed** — `sibling_position` is arithmetic (spec 0216), and the override lookup is a binary search over the sorted collection (spec 0183 G3) | `tui/structure.rs:133`, `override_apply.rs:930` |
+| P3 commit cost, tree quintuples | **fixed** — spec 0210 made the line repair a patch merge, spec 0216 made the arena immutable so there is no growth to compact | `override_apply.rs:1604`, spec 0203 (superseded) |
+| P4 text held twice, blob thrice | **half fixed** — the blob is one `Arc<Blob>` (spec 0168); the rendered text is still materialized as a `String` and then again as `Vec<String>` | `decode.rs:1401` |
+| P5 heat cache bounded in entries | **half fixed** — `top_n` is capped at the preview height (spec 0168), but the cache is still entry-bounded at 8192, not byte-bounded | `tui/heat_cue.rs:129` |
+| P6 candidate list cloned twice per row | **open** — `TieredBounded::peek` still clones the whole entry, and `window` then slices a copy out of it | `tui/tiered.rs:175`, `heat_worker.rs:375` |
+| A1 render key omits level/indent | **unreachable** — `indent_size` is fixed for a session and the cache is session-scoped; `initial_level` is a node's arena depth, which spec 0216 froze. The style-hint half of the concern went with spec 0187 S4. Still absent from the key | `render_cache.rs:30` |
+| A2 `heat_states` hand-maintained | **fixed** — both `tree` and `heat_states` are fixed-length after `App::new`; a splice resets an entry, never resizes the `Vec` (spec 0216) | `override_apply.rs:2107` |
+| A3 `override_batch_depth` models impossible nesting | **open** — still a `u32` that only ever holds 0 or 1 | `tui/mod.rs:866` |
+| A4 `complete` slot clobbered by prefetch | **open** — the write is unconditional, prefetch tier included | `heat_worker.rs:545` |
+| A6 cache key justified by a false property | **half fixed** — spec 0214 changed how the probe is keyed, and the code no longer repeats the claim, but spec 0151's "disjoint by construction" wording is still wrong and the real property (payload *start* offsets are unique under length-prefix framing) is written down nowhere | `docs/specs/0151-…:89` |
+| D4 header highlighted out of context | **fixed** — both sites removed by spec 0187 S5 | `decode.rs:1407`, `override_apply.rs:2473` |
+| D5 spec 0162 is a goals-only draft | **obsolete** — spec 0216 removed the arena growth that reclamation existed to reclaim, as it did for specs 0203 and 0206 | spec 0216 |
+
+Five items survive: **P4** (the second copy of the rendered text), **P5**
+(byte-bound the heat cache), **P6** (borrow the cached entry instead of
+cloning it), **A3** (make the counter a `bool`) and **A4** (do not let a
+prefetch completion overwrite the `complete` slot). **A6** is a
+documentation fix in spec 0151.
+
+---
 
 Findings from a fresh-eyes review of the rendering pipeline
 ([design/rendering.md](design/rendering.md)). Ranked by severity within

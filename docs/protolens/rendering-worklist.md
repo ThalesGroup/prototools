@@ -6,7 +6,16 @@ SPDX-License-Identifier: MIT
 
 # protolens rendering — implementation worklist
 
-*last verified: 2026-07-26*
+*frozen 2026-07-26*
+
+> **This document is a closed handoff, kept only because later specs
+> cite its `W*` item numbers.** Phases 2 through 8 below were never
+> updated, and most of their items were overtaken by specs 0180 through
+> 0218 rather than worked through in order — W15's
+> `rebuild_visible_rows` and W25's `TreeNode` shrink, for instance, both
+> describe machinery specs 0210 and 0216 deleted. Do not start an item
+> from this file. For what is still open read the audit table at the top
+> of [rendering-flaws.md](rendering-flaws.md).
 
 **Phase 1 is closed as of 2026-07-26.** W1 obsoleted by spec 0185, W2 and
 W3 done, W4 done via spec 0180, W26 half 1 done via spec 0171 with half 2

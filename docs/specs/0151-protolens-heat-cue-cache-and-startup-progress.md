@@ -88,15 +88,16 @@ stalled").
   (co-located with their only consumer, distinct from
   `override_pane.rs`'s `CandidateCache`, which is untouched — see N1).
   Both are keyed by a bare `start: usize` offset rather than a
-  `Range<usize>`: within one fixed, immutable blob, a node's byte
-  range occupies a region disjoint from every other node's, so its
-  `start` offset alone already uniquely identifies it — no collision
-  is possible, and comparing/hashing/cloning a `usize` is cheaper than
-  a `Range<usize>`. This holds equally for the "interior" (tag/length-
-  stripped payload) range `message_payload_range` returns and for the
-  "outer"/raw range (`node.raw_range`, tag included) — both are
-  disjoint-by-construction across nodes, so either start would work as
-  a key. `heat_cue_for` already computes the interior range's start to
+  `Range<usize>`, because comparing/hashing/cloning a `usize` is
+  cheaper. What makes that sound is that within one fixed, immutable
+  blob no two nodes share a payload *start*: every nested field is
+  preceded by its own tag and length prefix, so a child's payload
+  begins strictly after its parent's does. Node ranges are **nested,
+  not disjoint** — an earlier draft of this spec justified the key by
+  claiming disjointness, which is false and would not have implied
+  uniqueness of the start anyway. The same argument covers the "outer"
+  /raw range (`node.raw_range`, tag included), so either start would
+  work as a key. `heat_cue_for` already computes the interior range's start to
   slice `self.blob` for scoring, so that's the value both caches key
   on, avoiding a second offset computation.
   - `heat_range_cache: usize -> RangeHeatStats`, where

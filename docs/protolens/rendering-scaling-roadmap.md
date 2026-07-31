@@ -6,7 +6,18 @@ SPDX-License-Identifier: MIT
 
 # protolens rendering — large-blob scaling roadmap
 
-*last verified: 2026-07-25*
+*frozen 2026-07-26*
+
+> **This document is a closed review, kept only because later specs cite
+> its `S*` item numbers.** Every timing below is a 2026-07-25
+> measurement of code that no longer exists: `App::new`'s 5.22 s became
+> 63 ms (spec 0183), the 10.6 s commit was dismantled by specs 0186,
+> 0187 and 0210, and the 622k → 2.7M node growth was removed outright by
+> spec 0216, which made the arena a function of the bytes. Do not quote
+> a number from this file. For how the code works today read
+> [design/rendering.md](design/rendering.md); for what is still open
+> read the audit table at the top of
+> [rendering-flaws.md](rendering-flaws.md).
 
 ## Executive summary
 
