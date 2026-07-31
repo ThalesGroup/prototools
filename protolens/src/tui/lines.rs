@@ -31,11 +31,10 @@ use super::*;
 /// One rendered line, named by the node that owns it and by which of
 /// that node's own lines it is.
 ///
-/// Spec 0210 S1's invariant is unchanged: every line belongs to exactly
-/// one node, because a line belonging to nobody is an absorbing barrier
-/// for the cursor. What spec 0216 S7 changes is that the map became
-/// *many*-to-one rather than two-to-one, so the half-coordinate had to
-/// widen from a `bool` to a count.
+/// Spec 0210 S1's invariant: every line belongs to exactly one node,
+/// because a line belonging to nobody is an absorbing barrier for the
+/// cursor. The map is *many*-to-one (spec 0216 S7), which is why the
+/// second coordinate is a count rather than a flag.
 ///
 /// For a bracketed node (`TreeNode::is_bracketed`) only two values
 /// occur: `0` is the header and `lines_total - 1` is the closing brace.
@@ -64,13 +63,13 @@ impl App {
     /// Whether `idx` is drawn with a closing brace of its own — so it is
     /// foldable and carries a fold marker.
     ///
-    /// The name is older than the test. It was `first_child.is_some()`
-    /// until spec 0142, when an empty-but-bracketed message (zero
-    /// populated fields, still rendered as `Name {` then `}`) turned out
-    /// to be foldable and marker-worthy despite having no children; it
-    /// then became `lines_total > 1`, which spec 0216 S7 in turn
-    /// falsifies, because a collapsed packed run is one node of N lines
-    /// with no brace anywhere. Ask the shape directly.
+    /// The name is older than the test, and neither obvious spelling of
+    /// it is right. `first_child.is_some()` misses an empty-but-
+    /// bracketed message (zero populated fields, still rendered as
+    /// `Name {` then `}`), which is foldable and marker-worthy with no
+    /// children; `lines_total > 1` wrongly accepts a collapsed packed
+    /// run, which is one node of N lines with no brace anywhere (spec
+    /// 0216 S7). Ask the shape directly.
     pub(super) fn has_children(&self, idx: usize) -> bool {
         self.tree[idx].is_bracketed()
     }
@@ -88,9 +87,9 @@ impl App {
     /// Walks the root path, summing the sizes of the siblings that
     /// precede each step. Spec 0216 S23: those siblings are the slots
     /// immediately below `idx` in the arena, so this is a sequential
-    /// scan of a contiguous run rather than the linked-list chase it
-    /// was — on the reference corpus, 31 KB read forwards instead of
-    /// 7 771 pointer hops scattered across a 4.7 M-slot arena.
+    /// scan of a contiguous run rather than a linked-list chase — on the
+    /// reference corpus, 31 KB read forwards instead of 7 771 pointer
+    /// hops scattered across a 4.7 M-slot arena.
     pub(super) fn absolute_start(&self, idx: usize) -> usize {
         let first_child = self.arena.first_child();
         let mut line = 0usize;
@@ -116,10 +115,9 @@ impl App {
 
     /// `idx`'s absolute line range, `start .. start + lines_total`.
     ///
-    /// The replacement for the `span.text_range` reads that preceded
-    /// spec 0210, and unlike that field it cannot go stale — but it is a
-    /// walk, not a field read, so a loop over many nodes wants
-    /// `next_visible` or an explicit running offset instead.
+    /// Unlike a stored range this cannot go stale — but it is a walk,
+    /// not a field read, so a loop over many nodes wants `next_visible`
+    /// or an explicit running offset instead.
     pub(super) fn node_lines(&self, idx: usize) -> Range<usize> {
         let start = self.absolute_start(idx);
         start..start + self.tree[idx].lines_total as usize
@@ -175,9 +173,9 @@ impl App {
     /// own lines it is. `None` past the end of the document.
     ///
     /// Descends from the root, at each level handing off to the child
-    /// whose extent contains `line`. Replaces the `line_to_node` /
-    /// `footer_line_to_node` vectors, which cost 85 MB and had to be
-    /// repaired over the whole tail of the document on every commit.
+    /// whose extent contains `line`. A materialized line-to-node vector
+    /// is the rejected alternative: it cost 85 MB and had to be repaired
+    /// over the whole tail of the document on every commit.
     pub(super) fn line_pos(&self, line: usize) -> Option<LinePos> {
         match self.cached_line_pos(line) {
             Some(pos) => Some(pos),
@@ -282,9 +280,10 @@ impl App {
     /// The line drawn at visible row `row`: which node owns it, and its
     /// absolute index into `lines`.
     ///
-    /// The same descent as `line_pos`, run on `lines_visible` instead —
-    /// which is what deletes `visible_rows` and `hidden_mask`, and with
-    /// them the full rebuild every fold toggle used to trigger.
+    /// The same descent as `line_pos`, run on `lines_visible` instead.
+    /// Deriving visibility here is what spares a materialized
+    /// visible-row list, and with it a full rebuild on every fold
+    /// toggle.
     pub(super) fn visible_row_pos(&self, row: usize) -> Option<(LinePos, usize)> {
         let mut cur = self.first_root()?;
         let mut start = 0usize;

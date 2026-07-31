@@ -473,10 +473,9 @@ fn resolve_path_round_trips_a_packed_run() {
 
 /// Spec 0117 §4: `resolve_path` is the inverse of `positional_path`
 /// for every node reachable from the root, and `None` for a path that
-/// doesn't resolve against the current tree. Spec 0184 S7 restates
-/// this for packed elements (see
-/// `resolve_path_yields_the_actionable_node_for_a_packed_run`); this
-/// fixture has none, so the plain identity still holds here.
+/// doesn't resolve against the current tree. Spec 0184 S7 restates this
+/// for packed elements (see `resolve_path_round_trips_a_packed_run`);
+/// this fixture has none, so the plain identity holds here.
 #[test]
 fn resolve_path_is_the_inverse_of_positional_path() {
     let (app, inner_idx, id_idx) = type_as_fixture();

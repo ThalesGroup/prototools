@@ -192,8 +192,9 @@ pub fn complete_dir_path(incomplete: &OsStr) -> Vec<CompletionCandidate> {
 mod tests {
     use super::*;
 
-    /// Spec 0197 test 15 (§S4). Completion runs once per TAB and used to
-    /// decode the whole descriptor set each time — 25 MB on googleapis.
+    /// Spec 0197 test 15 (§S4). Completion runs once per TAB, so
+    /// decoding the whole descriptor set — 25 MB on googleapis — each
+    /// time is not affordable.
     ///
     /// That the pool is never touched is proved by making it undecodable:
     /// the descriptor here is not a `FileDescriptorSet` at all, so any

@@ -973,8 +973,8 @@ fn main_pane_search_matches_the_current_not_original_rendering() {
 /// all-lowercase pattern folds; a pattern carrying any uppercase
 /// character matches exactly. "Any uppercase character" is the rule, not
 /// "mixed case" — an all-uppercase pattern is case-sensitive too, which
-/// is the case a `pattern != pattern.to_lowercase()` test would get
-/// right by luck and a `is_mixed_case` test would get wrong.
+/// is the case a `pattern != pattern.to_lowercase()` test gets right by
+/// luck and a mixed-case test would get wrong.
 #[test]
 fn smartcase_folds_only_an_all_lowercase_pattern() {
     let lower = SearchPattern::new("beta");
@@ -1681,8 +1681,9 @@ fn overlay_lines_match_the_committed_splice() {
 fn display_row_map_holds_at_the_substitution_boundaries() {
     // Ten root-level one-line leaves, so visible row `r` is line `r` and
     // the arithmetic under test is the only thing the assertions can be
-    // reading. Spec 0210 S2: this used to be `app.visible_rows = (0..10)
-    // .collect()`, which the counters no longer let a test fake.
+    // reading. The identity has to come from a real fixture: line
+    // positions are derived from the tree's counters (spec 0210 S2), so
+    // a test cannot simply assign itself one.
     let texts: Vec<String> = (0..10).map(|i| format!("l{i}: {i}")).collect();
     let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
     let mut app = sibling_leaves_app(&refs);
@@ -1699,9 +1700,9 @@ fn display_row_map_holds_at_the_substitution_boundaries() {
         assert!(
             matches!(app.display_row(4 + overlay_len - 1), Some(DisplayRow::Overlay(i)) if i == overlay_len - 1)
         );
-        // The first committed row after the substituted block is
-        // `visible_rows[4 + 3]`, wherever the overlay's own length put
-        // it in composed space.
+        // The first committed row after the substituted block is line
+        // `4 + 3`, wherever the overlay's own length put it in composed
+        // space.
         assert!(matches!(
             app.display_row(4 + overlay_len),
             Some(DisplayRow::Committed(7))
@@ -1842,7 +1843,7 @@ fn a_failing_candidate_drops_the_overlay_and_leaves_the_document_intact() {
 /// Spec 0185 S5/G5: while the override-selection pane is open, focus is
 /// locked to it — not by `Tab`, not by a main-pane click. The lock is
 /// load-bearing rather than cosmetic: it is what keeps the overlay's
-/// `visible_rows` anchor valid. Panning (G4) is deliberately exempt.
+/// row anchor valid. Panning (G4) is deliberately exempt.
 #[test]
 fn the_selection_pane_holds_focus_but_still_lets_the_main_pane_pan() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();

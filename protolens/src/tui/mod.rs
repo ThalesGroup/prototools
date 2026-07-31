@@ -2,10 +2,18 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Minimal v1 navigate + extract slice: single scrollable pane, cursor/fold
-//! state, document-order / sibling-skip / parent / child movement, a
-//! jumplist, mouse wheel/click, and a vim-style `:export`/`x` command line
-//! — spec 0111 §2/§4, Annex B, Annex C. No override picker yet.
+//! The interactive TUI: `App`, its state, and the main loop.
+//!
+//! A main pane showing the decoded document, plus one side pane that is
+//! either the override *selection* pane (pick a type for a range) or the
+//! override *management* pane (review and toggle the collection), and a
+//! global command/message row (spec 0147). Navigation is a caret over
+//! `LinePos { node, line_in_node }` (spec 0194) with folding, a
+//! jumplist, search, and mouse support.
+//!
+//! The node arena is built once from the bytes and never mutated (spec
+//! 0216); applying an override rewrites per-slot overlay state and
+//! re-renders, but no index ever moves.
 
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -62,35 +70,32 @@ use crate::theme::{self, ThemeKind};
 /// Ctrl-Down vertical panning (`pan_vertical_by_step`).
 const PAN_STEP: usize = 8;
 
-/// Vertical-pan step for the plain mouse wheel (2026-07-19 feedback item
-/// 2) — one row per notch, matching the granularity of the cursor/
-/// highlight movement the wheel used to perform before this change,
-/// unlike `PAN_STEP`'s larger Ctrl-Up/Ctrl-Down/Shift+wheel jump.
+/// Vertical-pan step for the plain mouse wheel — one row per notch,
+/// the granularity a wheel notch is expected to have, unlike
+/// `PAN_STEP`'s larger Ctrl-Up/Ctrl-Down/Shift+wheel jump.
 const WHEEL_PAN_STEP: usize = 1;
 
 /// Minimum terminal width (columns) below which `t` refuses to open the
-/// override pane (spec 0114 §2) — lowered from the original 100 (spec
-/// 0111 Annex C's own Phase-5 threshold) to 60 (2026-07-19 feedback),
-/// since the borderless-pane layout (spec 0147) needs less horizontal
-/// room than the bordered one this threshold was originally set for.
+/// override pane (spec 0114 §2). 60 rather than a rounder 100 because
+/// the borderless-pane layout (spec 0147) needs less horizontal room
+/// than a bordered one.
 const MIN_OVERRIDE_WIDTH: u16 = 60;
 
-/// Maximum gap between two same-line `Down(MouseButton::Left)` events for
-/// the second to count as a double-click (feedback, 2026-07-15) —
-/// crossterm reports `Down` identically for single and double clicks, so
-/// the app disambiguates them itself by comparing consecutive `Down`
-/// timestamps/positions (`App::last_click`).
+/// Maximum gap between two same-line `Down(MouseButton::Left)` events
+/// for the second to count as a double-click. Crossterm reports `Down`
+/// identically for single and double clicks, so the app disambiguates
+/// them itself by comparing consecutive timestamps/positions
+/// (`App::last_click`).
 const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(500);
 
 /// Whether a click identified by `key` (a main-pane line index, or a
 /// manage-pane entry index), arriving now, is the second half of a
 /// double-click against `last`'s previously recorded click — same `key`,
-/// within `DOUBLE_CLICK_THRESHOLD` — updating `last` to this click either
-/// way. Generic form of the main pane's own same-line-within-threshold
-/// check (`last_click`/`pending_double_click`, spec-0129-era), reused by
-/// the manage pane's radio-marker double-click (2026-07-17 feedback): an
-/// alternative to Shift-click, which most terminal emulators intercept
-/// for native text selection before it ever reaches the app.
+/// within `DOUBLE_CLICK_THRESHOLD` — updating `last` to this click
+/// either way. Shared by the main pane and by the manage pane's
+/// radio-marker, which offers double-click as an alternative to
+/// Shift-click: most terminal emulators intercept Shift-click for
+/// native text selection before it ever reaches the app.
 fn is_double_click<T: PartialEq>(last: &mut Option<(Instant, T)>, key: T) -> bool {
     let now = Instant::now();
     let is_double = matches!(
@@ -116,9 +121,9 @@ const MESSAGE_TIMEOUT: Duration = Duration::from_secs(3);
 const OVERRIDE_FOCUS_LOCK_MESSAGE: &str =
     "main pane locked while the type pane is open - Esc closes it, Alt-arrows pan it";
 
-/// Auto-dismiss delay for the startup splash screen (2026-07-17
-/// feedback, item 13), in addition to its existing keypress/mouse
-/// dismissal — mirrors `MESSAGE_TIMEOUT`'s deadline-based approach.
+/// Auto-dismiss delay for the startup splash screen, in addition to its
+/// keypress/mouse dismissal — mirrors `MESSAGE_TIMEOUT`'s
+/// deadline-based approach.
 const SPLASH_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// How long `warm_up_heat_cues` (spec 0151 G8) waits, from its own
@@ -165,21 +170,19 @@ const HEAT_REPAINT_INTERVAL: Duration = Duration::from_millis(50);
 /// Spec 0192 S4: read-ahead steps guaranteed per main-loop iteration,
 /// regardless of how busy the event channel is. Read-ahead is still
 /// opportunistic — the `TryRecvError::Empty` arm in `run_loop` spends
-/// as many steps as the user's idleness allows — but it is no longer
-/// possible for a steady event stream to reduce it to zero, which is
-/// what a burst of `HeatWorkerProgress` events did: read-ahead ran
-/// exactly twice across a forty-keystroke session, both times before
-/// the first keystroke.
+/// as many steps as the user's idleness allows — but the guarantee is
+/// what stops a steady event stream from starving it entirely. A burst
+/// of `HeatWorkerProgress` events does exactly that: without the floor,
+/// read-ahead ran twice across a forty-keystroke session, both times
+/// before the first keystroke.
 ///
 /// Small enough that the guaranteed work cannot itself add perceptible
 /// latency to a keystroke: one step is a walk of a few rows plus at
 /// most one `TieredBounded::upsert`.
 const PREFETCH_STEPS_PER_ITERATION: usize = 8;
 
-/// Byte budget for `App::render_cache` (spec 0116 §8) — tuned generously
-/// for a short-lived interactive session (spec 0114 §6's original
-/// `candidate_cache` reasoning, since superseded by spec 0152's
-/// entry-count-bounded `HeatCaches`, still applies to this one).
+/// Byte budget for `App::render_cache` (spec 0116 §8) — tuned
+/// generously, since an interactive session is short-lived.
 const RENDER_CACHE_MAX_BYTES: usize = 1 << 20;
 
 /// Single source-of-truth command-name registry (spec 0113 D26) — backs
@@ -339,10 +342,10 @@ fn clamp_scroll_to_visible(scroll: &mut usize, target: usize, height: usize) {
 /// Shared pan-by-`step` arithmetic behind the command bar's Shift+wheel/
 /// native ScrollLeft/ScrollRight handling in `handle_mouse` — moves
 /// `*offset` by `step`, saturating at `0`. `step` is `WHEEL_PAN_STEP`
-/// (2026-07-19 feedback: the wheel always pans by `1`, unlike Ctrl-
-/// Left/Ctrl-Right's `PAN_STEP`) for every caller today, since the
-/// command bar has no Ctrl-Left/Ctrl-Right binding of its own (it
-/// already auto-pans to keep the text cursor in view).
+/// — the wheel always pans by `1`, unlike Ctrl-Left/Ctrl-Right's
+/// `PAN_STEP` — for every caller today, since the command bar has no
+/// Ctrl-Left/Ctrl-Right binding of its own (it already auto-pans to
+/// keep the text cursor in view).
 fn pan_by_step(offset: &mut usize, step: usize, left: bool) {
     *offset = if left {
         offset.saturating_sub(step)
@@ -353,13 +356,11 @@ fn pan_by_step(offset: &mut usize, step: usize, left: bool) {
 
 /// Shared pan-by-`step` arithmetic behind the override and manage
 /// panes' own Ctrl-Left/Ctrl-Right (`step == PAN_STEP`) and Shift+wheel/
-/// native horizontal scroll (`step == WHEEL_PAN_STEP`, 2026-07-19
-/// feedback) — like `pan_by_step`, but bounded on the right by
-/// `max_offset` (each pane's own `..._max_visible_line_
-/// len().saturating_sub(width)`), so it stops once the rightmost
-/// character of the widest currently-visible row would be shown, never
-/// further — mirroring the main pane's own `pan_right`, which already
-/// had this bound.
+/// native horizontal scroll (`step == WHEEL_PAN_STEP`) — like
+/// `pan_by_step`, but bounded on the right by `max_offset` (each pane's
+/// own `..._max_visible_line_len().saturating_sub(width)`), so it stops
+/// once the rightmost character of the widest currently-visible row
+/// would be shown, never further, as the main pane's `pan_right` does.
 fn pan_by_step_clamped(offset: &mut usize, max_offset: usize, step: usize, left: bool) {
     *offset = if left {
         offset.saturating_sub(step)
@@ -369,16 +370,14 @@ fn pan_by_step_clamped(offset: &mut usize, max_offset: usize, step: usize, left:
 }
 
 /// Shared vertical pan-by-`step` arithmetic behind Ctrl-Up/Ctrl-Down and
-/// the plain mouse wheel in the main, override, and manage panes
-/// (2026-07-19 feedback item 1) — mirrors `pan_by_step`'s horizontal pan:
-/// bounded only by the content itself (`0` at the top, `max_scroll` — the
-/// highest offset that still shows a full page — at the bottom), no
-/// longer tied to keeping the cursor/highlight row in view. Supersedes
-/// the previous 2026-07-18 "cursor must never leave view" bound —
-/// bringing the cursor/highlight back into view on its own movement is
-/// now `clamp_scroll_to_visible`'s job alone (see `last_cursor_row` and
-/// friends). `step` is `PAN_STEP` for Ctrl-Up/Ctrl-Down, `WHEEL_PAN_STEP`
-/// for the wheel (item 2).
+/// the plain mouse wheel in the main, override, and manage panes —
+/// mirrors `pan_by_step`'s horizontal pan: bounded only by the content
+/// itself (`0` at the top, `max_scroll` — the highest offset that still
+/// shows a full page — at the bottom), deliberately not by keeping the
+/// cursor/highlight row in view. Bringing it back into view on its own
+/// movement is `clamp_scroll_to_visible`'s job alone (see
+/// `last_cursor_row` and friends). `step` is `PAN_STEP` for
+/// Ctrl-Up/Ctrl-Down, `WHEEL_PAN_STEP` for the wheel.
 fn pan_vertical_by_step(scroll: &mut usize, max_scroll: usize, step: usize, up: bool) {
     *scroll = if up {
         scroll.saturating_sub(step)
@@ -394,8 +393,8 @@ fn pan_vertical_by_step(scroll: &mut usize, max_scroll: usize, step: usize, up: 
 /// holds keyboard focus," applied to the full width of each pane's own
 /// `Length(1)` statusline row (`render`'s main-pane statusline,
 /// `render_override_pane`, `render_manage_pane`) — mirroring vim's own
-/// active/inactive statusline highlight groups, rather than a border
-/// color as this crate used before spec 0147.
+/// active/inactive statusline highlight groups rather than tinting a
+/// border.
 fn pane_focus_style(focused: bool, theme: ThemeKind) -> Style {
     if focused {
         theme::focus_style(theme)
@@ -853,23 +852,20 @@ pub struct App {
     /// reason `fqdns` gives.
     provenance: ProvenanceTable,
     /// Spec 0160 G1: whether a `render_overrides` batch is currently
-    /// active — `0` outside of one, `1` while the outer (caller-
-    /// initiated) call is running. `splice_override` uses this to decide
-    /// whether it must self-finalize immediately (a standalone call) or
-    /// defer to the active batch's own finalize. Since spec 0185 made
-    /// the preview an overlay, production has exactly one
-    /// `splice_override` caller and it is always inside a batch; only
-    /// tests reach the standalone self-finalizing path. Self-recursion
-    /// inside
-    /// `render_overrides_inner` never goes through the counted
-    /// `render_overrides` wrapper, so this only ever toggles `0`/`1`,
-    /// never nesting deeper.
+    /// active — `0` outside of one, `1` while the outer call runs.
+    /// `splice_override` reads it to decide whether to self-finalize
+    /// immediately (a standalone call) or defer to the batch's finalize.
+    /// Production has exactly one `splice_override` caller and it is
+    /// always inside a batch, so only tests reach the standalone path.
+    ///
+    /// `render_overrides_inner`'s self-recursion bypasses the counted
+    /// `render_overrides` wrapper, so this only toggles `0`/`1` and
+    /// never nests deeper.
     override_batch_depth: u32,
     /// Spec 0183 S2: the descent mark. `descend[i]` is `true` when node
     /// `i` either needs resettling itself or has a descendant that
-    /// does, so `render_overrides_inner`'s child gate is a single
-    /// `Vec` read instead of the old `is_message` blanket that
-    /// descended into every interior node of the document.
+    /// does, making `render_overrides_inner`'s child gate a single `Vec`
+    /// read rather than a blanket descent into every interior node.
     ///
     /// Extended by `compute_descend_marks` at the start of each batch
     /// (when `override_batch_depth` goes `0` -> `1`) and by
@@ -895,28 +891,28 @@ pub struct App {
     /// the node it names was spliced and so carries `rendered_as`,
     /// which would have marked it permanently regardless.
     descend: Vec<bool>,
-    /// Test-only escape hatch restoring the pre-spec-0183 recursion
-    /// gate (`is_message || is_auto_expand_candidate || <has an active
-    /// override> || rendered_as.is_some()`), so that a pruned render
-    /// can be compared against an unpruned one.
+    /// Test-only escape hatch that widens the recursion gate to
+    /// `is_message || is_auto_expand_candidate || <has an active
+    /// override> || rendered_as.is_some()`, so a pruned render can be
+    /// compared against an unpruned one.
     ///
     /// It exists because pruning fails silently: a subtree the walk
     /// wrongly skipped keeps whatever text it was last rendered with,
     /// with no panic and no bad index, so nothing weaker than byte
-    /// equality against the unpruned walk is worth asserting. Not
-    /// reachable from a release build.
+    /// equality against the unpruned walk is worth asserting.
     #[cfg(test)]
     pub(super) unpruned_walk: bool,
-    /// Spec 0186 G3: whether `finalize_override_batch` re-runs the full
-    /// map/`visible_rows` rebuild and asserts the incremental repair
-    /// produced the same thing. Defaults to `true` so that every splice
-    /// in the suite is a case without opting in — the opposite of
-    /// `unpruned_walk` above, because here the checked path is the
-    /// production one and the check is what must be universal.
+    /// Spec 0186 G3: whether `finalize_override_batch` walks the whole
+    /// document afterwards (`assert_line_counts_are_exact`) to confirm
+    /// every node's stored line count still matches the text. Defaults
+    /// to `true` so that every splice in the suite is a case without
+    /// opting in — the opposite of `unpruned_walk` above, because here
+    /// the checked path is the production one and the check is what must
+    /// be universal.
     ///
-    /// The profiling harness turns it off: it does the very O(document)
-    /// work this spec removes, so leaving it on would make the harness
-    /// measure the old cost plus the new one.
+    /// The profiling harness turns it off: the check is the very
+    /// O(document) walk the incremental repair exists to avoid, so
+    /// leaving it on would have the harness measure both.
     #[cfg(test)]
     pub(super) verify_repair: bool,
     /// Spec 0160 G2: running total of line-count deltas accumulated by
@@ -938,10 +934,10 @@ pub struct App {
     /// this batch can possibly have changed. `None` when the batch queued
     /// no patches at all.
     ///
-    /// This is the boundary that makes `finalize_override_batch`'s line-
-    /// map repair and `visible_rows` rebuild incremental: everything
-    /// strictly below it keeps both its content and its index, so it
-    /// needs no work. Always `None` outside of an active batch.
+    /// This is the boundary that makes `finalize_override_batch`'s
+    /// repair incremental: everything strictly below it keeps both its
+    /// content and its index, so it needs no work. Always `None` outside
+    /// of an active batch.
     ///
     /// Note that it is *not* interchangeable with `pending_shift != 0`:
     /// a batch can shift without patching, and can patch with a net
@@ -957,11 +953,10 @@ pub struct App {
     /// flat node the values run over its rows, which is one per element
     /// of a packed run (spec 0216 S7).
     ///
-    /// `cursor` itself is unaffected — still the node the row belongs
-    /// to, so every existing node-indexed action (fold, override edit,
-    /// status line, etc.) already treats a non-header row exactly like
-    /// the header, satisfying the "acts as if on the opening bracket"
-    /// requirement with no extra redirection.
+    /// `cursor` is still the node the row belongs to, so every
+    /// node-indexed action (fold, override edit, status line) treats a
+    /// non-header row exactly like the header — "acts as if on the
+    /// opening bracket" needs no extra redirection.
     cursor_line_in_node: u32,
     /// Spec 0194 S1: where the caret rests along the cursor row's
     /// *caret track* — the row's own text (`row_text`, fold margin
@@ -998,8 +993,7 @@ pub struct App {
     caret_suffix_len: usize,
     /// Incremented every time `self.cursor` changes (via `set_cursor`),
     /// regardless of whether the new value differs from any prior one —
-    /// a real "did the cursor move since X" signal (spec-0117-adjacent
-    /// `z`/`Z` rework, 2026-07-16 feedback), since comparing `self.
+    /// a real "did the cursor move since X" signal: comparing `self.
     /// cursor`'s current value against a stashed old value alone misses
     /// a round trip (e.g. Down then Up) that leaves the position
     /// numerically unchanged but is still a real move.
@@ -1014,9 +1008,9 @@ pub struct App {
     /// Equal to `select_anchor` for a plain click with no drag.
     select_end: Option<usize>,
     /// Timestamp + `line_idx` of the most recent main-pane left-click
-    /// `Down` event (feedback, 2026-07-15) — compared against on the next
-    /// `Down` to recognize a double-click (same line, within
-    /// `DOUBLE_CLICK_THRESHOLD`). `None` before the first click.
+    /// `Down` event — compared against on the next `Down` to recognize a
+    /// double-click (same line, within `DOUBLE_CLICK_THRESHOLD`). `None`
+    /// before the first click.
     last_click: Option<(Instant, usize)>,
     /// Whether the click currently in progress (`Down` already handled,
     /// matching `Up` not yet seen) was recognized as the second click of
@@ -1037,13 +1031,12 @@ pub struct App {
     window_nodes_version: u64,
     scroll_offset: usize,
     /// `cursor_display_row()`'s value as of the last render pass that
-    /// applied `clamp_scroll_to_visible` to `scroll_offset` (2026-07-19
-    /// feedback item 3) — compared against the *current* row at the top
-    /// of every render, so the auto-pan-into-view only fires on genuine
-    /// cursor movement, not on every frame regardless of cause (which
-    /// would otherwise fight a manual vertical pan back into following
-    /// the cursor). `None` before the first render, guaranteeing an
-    /// initial clamp.
+    /// applied `clamp_scroll_to_visible` to `scroll_offset` — compared
+    /// against the *current* row at the top of every render, so the
+    /// auto-pan-into-view only fires on genuine cursor movement, not on
+    /// every frame regardless of cause (which would otherwise fight a
+    /// manual vertical pan back into following the cursor). `None`
+    /// before the first render, guaranteeing an initial clamp.
     last_cursor_row: Option<usize>,
     /// Horizontal scroll offset (in characters) for the main pane (spec
     /// 0113 D24) — the whole rendered line (fold-marker gutter included)
@@ -1094,14 +1087,13 @@ pub struct App {
     /// toggle); meaningless while `override_target` is `None`.
     override_focus: bool,
     /// `true` when the override pane was opened via `Enter`/double-click
-    /// on an entry in the management pane (item 11, 2026-07-17
-    /// feedback), rather than via `t`/item 3's smart open on a main-pane
-    /// node. Every exit from the selection pane consults it —
-    /// `close_override` reopens the management pane instead of leaving
-    /// focus on the main pane — and it is cleared as soon as it's acted
-    /// on. That used to be true of the cancelling exits (`Esc`/`t`)
-    /// only, `Enter` landing in the management pane unconditionally
-    /// (spec 0119 G3); spec 0200 S2 made all of them agree.
+    /// on an entry in the management pane, rather than via `t`'s smart
+    /// open on a main-pane node. Every exit from the selection pane
+    /// consults it — `close_override` reopens the management pane
+    /// instead of leaving focus on the main pane — and it is cleared as
+    /// soon as it's acted on. Spec 0200 S2: `Enter` obeys it too, not
+    /// just the cancelling exits (`Esc`/`t`), so that the pane always
+    /// returns to whoever called it.
     override_opened_from_manage: bool,
     /// The origin kind to confirm a new type under, when the selection
     /// pane was opened on an *existing* entry (spec 0200 S3). `None` —
@@ -1120,28 +1112,19 @@ pub struct App {
     /// fork that checks `heat_worker.is_some()` falls through to the
     /// existing synchronous logic when it's `None`.
     ///
-    /// **This field's position is no longer load-bearing** (spec 0180
-    /// S2), but it is left where it is, with the history, because the
-    /// history is the argument for the fix.
+    /// This field's declaration position is not load-bearing (spec 0180
+    /// S2): the worker holds an `Arc<LoadedGraph>`, so it cannot outlive
+    /// the mmap in any drop order. Do not re-derive an ordering
+    /// requirement from its neighbors.
     ///
-    /// It used to matter. `heat_worker` held a `&'static
-    /// ArchivedCompiledGraph` borrowed from `ctx`'s mmap-backed
-    /// `LoadedGraph`, `HeatWorkerHandle`'s `Drop` is what stops and joins
-    /// the background thread using that reference, and Rust drops struct
-    /// fields in declaration order — so `ctx` declared before
-    /// `heat_worker` would unmap the graph out from under a still-running
-    /// worker. That was a real use-after-unmap race, hit intermittently
-    /// at process exit (2026-07-25 bug report), and reordering these two
-    /// fields is what fixed it.
-    ///
+    /// Ordering *was* once the fix for a use-after-unmap race at exit —
+    /// `heat_worker` borrowed the graph from `ctx`, `Drop` joins the
+    /// thread using that borrow, and fields drop in declaration order.
     /// It was the wrong kind of fix: a safety invariant expressed as a
     /// source-line ordering, which the compiler does not check and which
-    /// covered only the thread that happened to have a handle to drop —
-    /// the detached root-type sweep in `run()` had the identical bug and
-    /// this fix did nothing for it. The worker now holds an
-    /// `Arc<LoadedGraph>`, so it cannot outlive the mapping in any drop
-    /// order at all. Do not re-derive an ordering requirement from this
-    /// comment.
+    /// reaches only the thread that happens to have a handle to drop —
+    /// the detached root-type sweep in `run()` has the identical
+    /// lifetime, and no field order can help it.
     heat_worker: Option<heat_worker::HeatWorkerHandle>,
     /// Type-lookup/scoring context (spec 0114 §3) — owned by `App` after
     /// `decode()` returns it, so the override pane can resolve/score
@@ -1171,12 +1154,11 @@ pub struct App {
     /// override pane's candidate list.
     override_scroll: usize,
     /// `override_highlight`'s value as of the last render pass that
-    /// applied `clamp_scroll_to_visible` to `override_scroll`
-    /// (2026-07-19 feedback item 3, mirrors `last_cursor_row`) — reset to
-    /// `None` everywhere `override_scroll` is itself reset to `0`
-    /// (opening the pane, recomputing candidates), guaranteeing a clamp
-    /// on the next render even if the new highlight happens to coincide
-    /// with the old one.
+    /// applied `clamp_scroll_to_visible` to `override_scroll` (mirrors
+    /// `last_cursor_row`) — reset to `None` everywhere `override_scroll`
+    /// is itself reset to `0` (opening the pane, recomputing
+    /// candidates), guaranteeing a clamp on the next render even if the
+    /// new highlight happens to coincide with the old one.
     last_override_highlight: Option<usize>,
     /// Last confirmed in-pane search (direction, pattern) — `n` repeats it
     /// in the same direction.
@@ -1207,11 +1189,11 @@ pub struct App {
     /// G8) — populated by `heat_cue_resolve` whenever it finds a node
     /// still unsettled with a worker present, drained by
     /// `recheck_pending_heat_states`. Bounds that recheck to the
-    /// handful of nodes actually awaiting an answer instead of the
-    /// whole document (2026-07-24 bugfix: a full `0..heat_states.len()`
-    /// scan on every `HeatWorkerProgress` event took over a second per
-    /// event on a 635k-node document, compounding into tens of seconds
-    /// whenever a burst of requests completed at once).
+    /// handful of nodes actually awaiting an answer instead of the whole
+    /// document: a full `0..heat_states.len()` scan on every
+    /// `HeatWorkerProgress` event costs over a second per event on a
+    /// 635k-node document, compounding into tens of seconds whenever a
+    /// burst of requests completes at once.
     pending_heat_recheck: HashSet<usize>,
     /// Spec 0164 G7: main-pane zigzag read-ahead prefetch walk state,
     /// persisted across `run_loop` iterations.
@@ -1241,8 +1223,7 @@ pub struct App {
     /// a worker request for a wider window (spec 0152 G7).
     override_complete_pending: bool,
     /// `true` while the main-pane heat cue (spec 0138) is toggled off by
-    /// `i` (item 12, 2026-07-17 feedback) — hides the cue without
-    /// discarding `heat_caches`.
+    /// `i` — hides the cue without discarding `heat_caches`.
     heat_cues_hidden: bool,
     /// Byte-bounded MRU cache of `(range, type) -> (lines, spans, style
     /// hints)` renders (spec 0116 §8) — consulted/populated by
@@ -1268,7 +1249,7 @@ pub struct App {
     /// 0152 G7) the moment the user tries to scroll past it (spec
     /// 0114 §6).
     override_candidates_complete: bool,
-    /// 2026-07-20 feedback: the FQDN (or the `None` sentinel string) an
+    /// The FQDN (or the `None` sentinel string) that an
     /// `open_override_on_type` call is still trying to highlight once
     /// fetched, when a cold cache left it unresolved at open time
     /// (`override_candidates_pending`/`override_complete_pending`).
@@ -1288,7 +1269,7 @@ pub struct App {
     /// `true` when the management pane has focus (mirroring
     /// `override_focus`); meaningless while `manage_open` is `false`.
     /// A main-pane mouse click while the pane stays open shifts this
-    /// back to `false` without closing it (2026-07-14 feedback).
+    /// back to `false` without closing it.
     manage_focus: bool,
     /// Highlighted row (index into `overrides.entries()`) in the
     /// management pane.
@@ -1296,26 +1277,24 @@ pub struct App {
     /// Scroll offset (in rows) for the management pane's listing.
     manage_scroll: usize,
     /// `manage_highlighted_row()`'s value as of the last render pass that
-    /// applied `clamp_scroll_to_visible` to `manage_scroll` (2026-07-19
-    /// feedback item 3, mirrors `last_cursor_row`) — reset to `None`
-    /// everywhere `manage_scroll` is itself reset to `0`.
+    /// applied `clamp_scroll_to_visible` to `manage_scroll` (mirrors
+    /// `last_cursor_row`) — reset to `None` everywhere `manage_scroll`
+    /// is itself reset to `0`.
     last_manage_highlight: Option<usize>,
     /// Timestamp + entry index of the most recent left-click `Down` that
-    /// landed on an entry's radio marker (2026-07-17 feedback) — compared
-    /// against on the next such click to recognize a double-click (same
-    /// entry, within `DOUBLE_CLICK_THRESHOLD`), the mouse-only
-    /// alternative to Shift-click for `toggle_active_cascading` (most
-    /// terminal emulators intercept Shift-click for native text
-    /// selection before it ever reaches the app). `None` before the
-    /// first marker click.
+    /// landed on an entry's radio marker — compared against on the next
+    /// such click to recognize a double-click (same entry, within
+    /// `DOUBLE_CLICK_THRESHOLD`), the mouse-only alternative to
+    /// Shift-click for `toggle_active_cascading` (most terminal
+    /// emulators intercept Shift-click for native text selection before
+    /// it ever reaches the app). `None` before the first marker click.
     last_manage_click: Option<(Instant, usize)>,
     /// Timestamp + entry index of the most recent left-click `Down` that
-    /// landed on an entry row *outside* its radio marker (item 11,
-    /// 2026-07-17 feedback) — compared against on the next such click to
-    /// recognize a double-click (same entry, within
-    /// `DOUBLE_CLICK_THRESHOLD`), which opens the override selection
-    /// pane on that entry (`open_override_from_manage`), same as
-    /// `Enter`. Tracked separately from `last_manage_click`, which is
+    /// landed on an entry row *outside* its radio marker — compared
+    /// against on the next such click to recognize a double-click (same
+    /// entry, within `DOUBLE_CLICK_THRESHOLD`), which opens the override
+    /// selection pane on that entry (`open_override_from_manage`), same
+    /// as `Enter`. Tracked separately from `last_manage_click`, which is
     /// marker-column-only and drives an unrelated toggle behavior.
     last_manage_row_click: Option<(Instant, usize)>,
     /// Last confirmed management-pane in-pane search — `n` repeats it.
@@ -1383,20 +1362,20 @@ pub struct App {
     /// `true` on startup until the first keypress dismisses it — a splash
     /// screen telling the user how to reach help (spec 0113 D22).
     splash: bool,
-    /// Wall-clock time at which `splash` auto-dismisses (2026-07-17
-    /// feedback, item 13), in addition to its existing keypress/mouse
-    /// dismissal — checked only while `splash` is still `true`, mirroring
-    /// `message_deadline`'s deadline-based approach.
+    /// Wall-clock time at which `splash` auto-dismisses, in addition to
+    /// its keypress/mouse dismissal — checked only while `splash` is
+    /// still `true`, mirroring `message_deadline`'s deadline-based
+    /// approach.
     splash_deadline: Instant,
     /// `true` while the `F1` help overlay is open.
     help_open: bool,
     /// Scroll offset (in `HELP_TEXT` lines) while the help overlay is open.
     help_scroll: usize,
     /// Help overlay's inner (bordered-away) `Rect` as of the last
-    /// `render_help()` call (feedback, 2026-07-15) — used to hit-test
-    /// mouse wheel/Shift-wheel events against the overlay instead of
-    /// letting them fall through to whichever pane it happens to be
-    /// drawn on top of. Only meaningful while `help_open`.
+    /// `render_help()` call — used to hit-test mouse wheel/Shift-wheel
+    /// events against the overlay instead of letting them fall through
+    /// to whichever pane it happens to be drawn on top of. Only
+    /// meaningful while `help_open`.
     help_area: Rect,
     header: String,
     /// Main pane's content `Rect` (the `Min(0)` split above its own
@@ -1489,9 +1468,8 @@ impl App {
         let root_candidates = std::mem::take(&mut decoded.root_candidates);
         let header = format!("protolens — {blob_label} — {}", decoded.root_type);
         // Spec 0216 S1: the arena is in level order and slot 0 is the
-        // wrapper, so the document-order first node is the first slot.
-        // It used to be searched for (the node with no `doc_prev`),
-        // because the render emitted post-order.
+        // wrapper, so the document-order first node is the first slot —
+        // no search for the node with no `doc_prev` is needed.
         let cursor = 0;
         // Spec 0117 §1: seed the root `path` override with whatever type
         // was explicitly requested or inferred; if neither is available,
@@ -1661,16 +1639,15 @@ impl App {
         // Spec 0120: Any/MessageSet auto-expansion is computed by
         // `render_overrides` itself (`auto_expand_type`), not by
         // `decode()`'s own initial paint — run one pass now so the
-        // initial view already shows any/MessageSet content expanded,
-        // matching the pre-spec-0120 behavior where `decode()` expanded
-        // it directly via prototext-core. Guarded like the block above:
-        // an empty tree has no node at `cursor` to render.
+        // initial view already shows any/MessageSet content expanded.
+        // Guarded like the block above: an empty tree has no node at
+        // `cursor` to render.
         //
-        // Spec 0210 S2 removed the `rebuild_visible_rows()` that used to
-        // stand here: `build_tree` sets every node's `lines_total` and
-        // `lines_visible` as it builds it, so the row numbering is
-        // already consistent with `lines` and `folded` the moment the
-        // tree exists, with nothing to precompute.
+        // Nothing precomputes the row numbering (spec 0210 S2):
+        // `build_tree` sets every node's `lines_total` and
+        // `lines_visible` as it builds it, so the numbering is already
+        // consistent with `lines` and `folded` the moment the tree
+        // exists.
         if !app.tree.is_empty() {
             app.render_overrides(cursor);
         }
@@ -1951,7 +1928,7 @@ impl App {
             // it stays servable. A queue entry is *pending work* — an
             // unpaid sweep on a range ranked from an origin the cursor
             // has left — so the worker discards it rather than scoring
-            // it (`pop_highest` no longer reaches `prefetch_previous`).
+            // it (`pop_highest` never reaches `prefetch_previous`).
             self.prefetch_trace.report("superseded");
             self.prefetch_trace.restart();
             if let Some(worker) = &self.heat_worker {
@@ -2157,7 +2134,7 @@ fn emit_osc52_copy(text: &str) {
 }
 
 /// Drain any input events already queued in the terminal's input buffer
-/// before disabling raw mode (feedback, 2026-07-16).
+/// before disabling raw mode.
 ///
 /// `EnableMouseCapture` always turns on any-motion reporting (crossterm
 /// gives no way to opt out short of hand-rolling the escape sequences — see
@@ -2192,17 +2169,17 @@ fn drain_pending_input() {
 static KITTY_KEYBOARD_ENHANCED: AtomicBool = AtomicBool::new(false);
 
 /// Push `DISAMBIGUATE_ESCAPE_CODES` (Kitty keyboard protocol) if the
-/// terminal supports it (2026-07-17 feedback) — without it, legacy
-/// terminal escape sequences carry no modifier parameter for printable
-/// keys, so Shift-Space is reported identically to plain Space (unlike
-/// arrow/function keys, which already carry one, e.g. `ESC [1;2A` for
-/// Shift-Up). `supports_keyboard_enhancement` queries the terminal and
+/// terminal supports it — without it, legacy terminal escape sequences
+/// carry no modifier parameter for printable keys, so Shift-Space is
+/// reported identically to plain Space (unlike arrow/function keys,
+/// which already carry one, e.g. `ESC [1;2A` for Shift-Up).
+/// `supports_keyboard_enhancement` queries the terminal and
 /// blocks briefly waiting for its response — fine here since it only
 /// ever runs before the main event loop starts (`run`) or during a
 /// suspend/resume cycle (`suspend`), never concurrently with
-/// `event::read`/`poll`. Terminals that don't support it are left
-/// exactly as before (no-op): `handle_manage_key`'s guarded
-/// `Char(' ') if SHIFT` arm simply never fires there, same as today.
+/// `event::read`/`poll`. On terminals that don't support it this is a
+/// no-op: `handle_manage_key`'s guarded `Char(' ') if SHIFT` arm simply
+/// never fires there.
 fn push_keyboard_enhancement() -> io::Result<()> {
     if supports_keyboard_enhancement().unwrap_or(false) {
         execute!(
@@ -2245,15 +2222,13 @@ where
 {
     restore_terminal();
     // `Terminal::draw()` hides the hardware cursor unless the render
-    // callback calls `Frame::set_cursor_position()`. Spec 0194 S11: this
-    // used to claim protolens never does, which has been false since
-    // spec 0147 G4 gave the one hardware cursor to the command/search/
-    // rename row. The call below is still needed — that row is usually
-    // closed, so the last `draw()` before a suspend typically did leave
-    // the cursor hidden, and without it the shell prompt gets no visible
-    // cursor after `fg` (feedback, 2026-07-16). The main pane's own
-    // caret is drawn rather than delegated (spec 0194 N3), so it never
-    // enters into this.
+    // callback calls `Frame::set_cursor_position()`. Only the command/
+    // search/rename row does (spec 0147 G4), and that row is usually
+    // closed, so the last `draw()` before a suspend typically leaves the
+    // cursor hidden — without the call below the shell prompt gets no
+    // visible cursor after `fg`. The main pane's own caret is drawn
+    // rather than delegated (spec 0194 N3), so it never enters into
+    // this.
     terminal.show_cursor()?;
     // SAFETY: raising a signal on our own process is always sound.
     unsafe {
@@ -2287,9 +2262,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
     // leaving the terminal stuck in raw/alt-screen/mouse-capture mode.
     // Restore it first, then hand off to the default panic printer.
     //
-    // Flaw C4 (worklist W3): installed *before* the first fallible call,
-    // not after terminal setup — a panic during setup used to unwind
-    // with raw mode already on and no hook installed to undo it.
+    // Flaw C4: installed *before* the first fallible call, not after
+    // terminal setup — otherwise a panic during setup unwinds with raw
+    // mode already on and no hook installed to undo it.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         restore_terminal();
@@ -2318,20 +2293,19 @@ pub fn run(app: &mut App) -> io::Result<()> {
     };
 
     let (tx, rx) = mpsc::channel();
-    // `Option`-wrapped (2026-07-20 feedback) so `run_loop` can `take()`
-    // it and shut it down around the Neovim handoff below — see
-    // `run_loop`'s own doc comment on that block for why.
+    // `Option`-wrapped so `run_loop` can `take()` it and shut it down
+    // around the Neovim handoff below — see `run_loop`'s own doc comment
+    // on that block for why.
     let mut input_reader = Some(event::InputReaderHandle::spawn(tx.clone()));
 
-    // Flaw C4 (worklist W3): everything fallible from here to `run_loop`
-    // lives inside this closure, whose `Result` is *captured* rather than
-    // propagated. A `?` in here returns from the closure, so the cleanup
-    // block below is reached on every path by construction rather than by
-    // review — `terminal.size()?` and `warm_up_heat_cues(..)?` both used
-    // to return straight out of `run`, leaving the terminal in raw/
-    // alternate-screen/mouse-capture mode for whatever ran next. Any
-    // future `?` added to this region is covered for free, which is the
-    // point: spec 0168 adds two more.
+    // Flaw C4: everything fallible from here to `run_loop` lives inside
+    // this closure, whose `Result` is *captured* rather than propagated.
+    // A `?` in here returns from the closure, so the cleanup block below
+    // is reached on every path by construction rather than by review —
+    // a bare `terminal.size()?` or `warm_up_heat_cues(..)?` would return
+    // straight out of `run`, leaving the terminal in raw/alternate-
+    // screen/mouse-capture mode for whatever ran next. Any future `?`
+    // added to this region is covered for free, which is the point.
     let result = (|| -> io::Result<()> {
         // Safe upper bound (spec 0151 G6/G8): the real, render-computed
         // `override_list_height` (set by the override pane's own first
@@ -2346,28 +2320,26 @@ pub fn run(app: &mut App) -> io::Result<()> {
         // no graph, `app.heat_worker` stays `None` for the whole session,
         // and every fork that checks `heat_worker.is_some()` falls through
         // to the existing synchronous logic. Spawned *before* `warm_up_
-        // heat_cues` below (2026-07-19 feedback) so its initial-viewport
-        // pass can push requests onto the worker's queue and return
-        // immediately instead of scoring synchronously on this thread —
-        // fixes the multi-second "black screen" startup freeze against a
-        // large scoring graph, which the warm-up pass used to cause by
-        // always running before any worker existed to hand work off to.
+        // heat_cues` below so that its initial-viewport pass can push
+        // requests onto the worker's queue and return immediately
+        // instead of scoring synchronously on this thread — warming up
+        // with no worker to hand work off to costs a multi-second black
+        // screen at startup against a large scoring graph.
         if let Some(graph) = &app.ctx.graph {
             // Spec 0180 S2: an owning handle, not a `&'static` copied out of the
             // mapping. Each `Arc::clone` below is a refcount bump, and it is what
             // makes both spawns below independent of when `App` drops.
             let graph = Arc::clone(graph);
-            // Spec 0216 S28: a refcount bump. This used to copy the whole
-            // blob, once, to give the worker something it could own.
+            // Spec 0216 S28: a refcount bump, not a copy of the whole
+            // blob, since the worker can share ownership of it.
             let blob = Arc::clone(&app.blob);
 
-            // Spec 0168 removed a second, detached "root-type" thread that
-            // used to run here: it re-scored the whole blob to infer the root
-            // type, and its answer then re-decoded and re-rendered the entire
-            // document through the splice machinery, underneath a reader who
-            // had already started browsing. `decode::decode` now resolves the
-            // type before rendering, so by the time `App` exists the document
-            // is already what it is.
+            // Spec 0168: no second, detached "root-type" thread here.
+            // `decode::decode` resolves the type before rendering, so by
+            // the time `App` exists the document is already what it is —
+            // nothing re-scores the blob and re-renders the whole
+            // document through the splice machinery underneath a reader
+            // who has already started browsing.
             // Spec 0217 S6: the worker sweeps while the main thread is
             // drawing, so it gets the budget less the one thread the
             // main loop is already spending — never less than 1, which
@@ -2388,12 +2360,12 @@ pub fn run(app: &mut App) -> io::Result<()> {
     })();
 
     // Spec 0152 G9: both threads joined, unconditionally (see "Shutdown
-    // and safety"). No longer load-bearing for *memory* safety — spec
-    // 0180 S2 gave the worker an owning `Arc<LoadedGraph>`, so it cannot
-    // observe an unmapped page whether or not this runs. It is still
-    // wanted: joining is what stops the worker writing to the terminal
-    // after `restore_terminal` below, and what keeps the process from
-    // lingering on a background sweep the user has already quit.
+    // and safety"). Not load-bearing for *memory* safety — the worker
+    // owns an `Arc<LoadedGraph>` (spec 0180 S2), so it cannot observe an
+    // unmapped page whether or not this runs. Joining is what stops the
+    // worker writing to the terminal after `restore_terminal` below, and
+    // what keeps the process from lingering on a background sweep the
+    // user has already quit.
     if let Some(worker) = app.heat_worker.take() {
         worker.shutdown();
     }
@@ -2411,13 +2383,13 @@ pub fn run(app: &mut App) -> io::Result<()> {
 /// initial viewport before the first `run_loop` iteration. With the
 /// spec-0152 worker already spawned by the time this runs, each
 /// `heat_cue_for` call below either hits the cache or pushes a request
-/// onto the worker's queue and returns immediately — this loop no
-/// longer scores anything itself (that was the original, now-fixed,
-/// multi-second "black screen" startup freeze against a large scoring
-/// graph). Still runs while heat cues are hidden (`i`, 2026-07-19
-/// feedback): the background fetch/cache is worth priming regardless
-/// of whether a cue is currently shown — only `heat_cue_for`'s return
-/// value is suppressed while hidden, not the underlying work.
+/// onto the worker's queue and returns immediately — this loop scores
+/// nothing itself, which is what keeps startup against a large scoring
+/// graph from being a multi-second black screen. Still runs while heat
+/// cues are hidden (`i`): the background fetch/cache is worth priming
+/// regardless of whether a cue is currently shown — only
+/// `heat_cue_for`'s return value is suppressed while hidden, not the
+/// underlying work.
 fn warm_up_heat_cues<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()>
 where
     io::Error: From<B::Error>,
@@ -2514,18 +2486,14 @@ where
         }
         // While a status message is pending auto-dismissal
         // (`message_deadline`, `track_message_timeout`) or the splash
-        // screen hasn't yet auto-dismissed (`splash_deadline`, item 13
-        // of 2026-07-17 feedback), receive with a timeout instead of
-        // blocking indefinitely, so the next `render()` (which actually
-        // clears an expired message/splash) runs even with no further
-        // event. No behavior change — same indefinite block as before —
-        // once both have elapsed, which is most of the time in ordinary
-        // navigation. Spec 0152 G8: this replaces a direct `event::
-        // poll`/`event::read()` pair — the input-reader thread now owns
-        // those calls, forwarding through `rx` alongside the worker
-        // thread's own progress notifications, so this loop genuinely
-        // sleeps until there's a reason to wake instead of polling on a
-        // fixed schedule.
+        // screen hasn't yet auto-dismissed (`splash_deadline`), the
+        // receive below must wake by that deadline, so that the next
+        // `render()` — which is what actually clears an expired message
+        // or splash — runs even with no further event. Spec 0152 G8:
+        // the input-reader thread owns the `event::poll`/`event::read()`
+        // pair and forwards through `rx` alongside the worker thread's
+        // own progress notifications, so this loop sleeps until there's
+        // a reason to wake instead of polling on a fixed schedule.
         let splash_deadline = app.splash.then_some(app.splash_deadline);
         let ui_deadline = match (app.message_deadline, splash_deadline) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -2534,11 +2502,10 @@ where
         };
         // Spec 0190 S7: the activity tick is a third candidate deadline
         // alongside those two. Because it is always present the receive
-        // below is always `recv_timeout` — the old `None => rx.recv()`
-        // arm is gone, and protolens no longer blocks indefinitely. It
-        // wakes four times a second forever, which is a real change
-        // from "genuinely idle" to "polling slowly"; each such wake
-        // costs two relaxed loads and a comparison, and no frame.
+        // below is always a `recv_timeout` and never a bare `rx.recv()`:
+        // the loop wakes four times a second forever rather than ever
+        // being genuinely idle. Each such wake costs two relaxed loads
+        // and a comparison, and no frame.
         let activity_deadline = Instant::now() + ACTIVITY_TICK;
         let mut deadline = ui_deadline.map_or(activity_deadline, |d| d.min(activity_deadline));
         // Spec 0192 S3: a deferred heat repaint is a fourth candidate
@@ -2598,11 +2565,12 @@ where
         // because nothing in it can change the activity byte without
         // also having produced the event that already forces a redraw.
         //
-        // Spec 0191 S4: the third reason now compares the debounced
-        // value, not a fresh probe. Every trough between two requests
-        // used to force a frame; folding them into the sliding maximum
-        // means high-frequency toggling stops costing main-thread frames
-        // during exactly the period when the worker wants the CPU.
+        // Spec 0191 S4: the third reason compares the debounced value,
+        // not a fresh probe. A fresh probe forces a frame on every
+        // trough between two requests; folding them into the sliding
+        // maximum keeps high-frequency toggling from costing main-thread
+        // frames during exactly the period when the worker wants the
+        // CPU.
         activity_window = activity_window.max(app.heat_activity());
         // Spec 0192 S3: a completed heat request is the one event that
         // does not force its own frame. Its *state* is still applied
@@ -2672,22 +2640,18 @@ where
         }
         #[cfg(unix)]
         if let Some(req) = app.pending_editor_open.take() {
-            // 2026-07-20 feedback ("`v` is broken"): `open_editor`
-            // backgrounds this process's own process group relative to
-            // the terminal (`tcsetpgrp(io::stdin(), nvim_pgid)`) for as
-            // long as Neovim owns the foreground. The input-reader
-            // thread (spec 0152 G8) is otherwise permanently blocked in
-            // `event::read()` on that same stdin — a background
-            // process's read from its controlling terminal draws
-            // SIGTTIN, whose default disposition stops the *whole
-            // process* (every thread, not just this one), with nothing
-            // left to `SIGCONT` it back. Shutting it down before the
-            // handoff and respawning a fresh one right after
-            // `open_editor` reclaims the terminal avoids that entirely
-            // — exactly what the single-threaded code (before spec
-            // 0152's input-reader thread existed) did implicitly, since
-            // back then nothing else ever touched stdin during the
-            // handoff.
+            // `open_editor` backgrounds this process's own process group
+            // relative to the terminal (`tcsetpgrp(io::stdin(),
+            // nvim_pgid)`) for as long as Neovim owns the foreground.
+            // The input-reader thread (spec 0152 G8) is otherwise
+            // permanently blocked in `event::read()` on that same stdin
+            // — a background process's read from its controlling
+            // terminal draws SIGTTIN, whose default disposition stops
+            // the *whole process* (every thread, not just this one),
+            // with nothing left to `SIGCONT` it back. Shutting it down
+            // before the handoff and respawning a fresh one right after
+            // `open_editor` reclaims the terminal is what keeps anything
+            // else from touching stdin while Neovim has it.
             if let Some(reader) = input_reader.take() {
                 reader.shutdown();
             }

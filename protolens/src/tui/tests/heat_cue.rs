@@ -518,9 +518,9 @@ fn render_shows_the_tie_count_suffix_when_tied_for_best() {
 }
 
 /// The cue is main-pane-only (spec 0138 N2/Test-plan): `heat_cue_for`
-/// gates on `line_to_node`, which the override pane never populates its
-/// own rows into, so a cached cue for a node never leaks into the
-/// override pane's own rendering.
+/// gates on `node_at_header_line`, which resolves only lines of the
+/// main pane's own document, so a cached cue for a node never leaks
+/// into the override pane's rendering.
 #[test]
 fn cue_never_appears_in_the_override_pane() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
@@ -726,7 +726,8 @@ fn g3_no_sweep_seeds_nothing() {
 // cache key are the same bytes: `heat_scored_range` strips the root
 // node's tag/length prefix, and in a real `Decoded` that prefix *is*
 // the virtual wrapper, so the result is `wrapper_offset..blob.len()`
-// — exactly the slice handed to `resolve_root_winner_and_candidates`.
+// — exactly the slice (`blob.payload()`) that the startup sweep is
+// handed by `determine_root_type_meanwhile`.
 //
 // That last equality is not asserted here, because the fixtures in
 // this file carry a stub `wrapper_offset: 0` alongside a blob that

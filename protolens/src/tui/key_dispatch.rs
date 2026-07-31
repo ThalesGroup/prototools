@@ -25,22 +25,21 @@ impl App {
         self.pending_g = false;
 
         match key.code {
-            // Spec 0185 S5: `Tab` no longer hands focus to the main
-            // pane. While the selection pane is open, focus is locked to
-            // it — that lock is what makes the preview overlay's anchor
-            // (`first_row`/`covered_rows`, positions in `visible_rows`)
-            // immutable for the overlay's whole lifetime. Say so rather
-            // than doing nothing, which reads as a broken key.
+            // Spec 0185 S5: while the selection pane is open, focus is
+            // locked to it — that lock is what keeps the preview
+            // overlay's anchor immutable for the overlay's whole
+            // lifetime. Say so rather than doing nothing, which reads
+            // as a broken key.
             KeyCode::Tab => self.message = OVERRIDE_FOCUS_LOCK_MESSAGE.to_string(),
-            // Spec 0200 S1: `q` is *not* bound here. In the main pane it
-            // is `request_quit`, with a confirmation behind it; this
-            // pane locks focus (spec 0185 S5), so a `q` typed out of
-            // habit to leave protolens used to silently discard the
-            // highlighted candidate instead, with no prompt. `Esc` and
-            // `t` are two ways out already. It falls to `_ => {}` below
-            // and does nothing, with no message: `Tab` gets one because
-            // a user has a specific expectation of it that the focus
-            // lock defeats, whereas `q` has no meaning here to explain.
+            // Spec 0200 S1: `q` is deliberately *not* bound here. In the
+            // main pane it is `request_quit`, with a confirmation behind
+            // it; this pane locks focus (spec 0185 S5), so binding `q`
+            // to an exit would silently discard the highlighted
+            // candidate with no prompt. `Esc` and `t` are the ways out.
+            // It falls to `_ => {}` below with no message: `Tab` gets
+            // one because a user has a specific expectation of it that
+            // the focus lock defeats, whereas `q` has no meaning here to
+            // explain.
             KeyCode::Esc | KeyCode::Char('t') => self.close_override(),
             // Spec 0185 S5/G4: the main pane can still be panned while
             // the preview is up. Ctrl-arrows already pan this pane's own
@@ -49,12 +48,11 @@ impl App {
             KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => self.pan_vertical_down(),
             KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => self.pan_left(),
             KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => self.pan_right(),
-            // Horizontal pan (item 14 of 2026-07-17 feedback), mirroring
-            // the main pane's own Ctrl-Left/Ctrl-Right (spec 0113 D24)
-            // and the mouse's Shift-wheel/native horizontal-scroll pan
-            // over this pane (`handle_mouse`) — clamped on the right so
-            // the rightmost character of the widest visible row is the
-            // limit (2026-07-19 feedback item 4, see
+            // Horizontal pan, mirroring the main pane's own Ctrl-Left/
+            // Ctrl-Right (spec 0113 D24) and the mouse's Shift-wheel/
+            // native horizontal-scroll pan over this pane
+            // (`handle_mouse`) — clamped on the right so the rightmost
+            // character of the widest visible row is the limit (see
             // `App::override_pan_horizontal`).
             KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.override_pan_horizontal(PAN_STEP, true)
@@ -62,12 +60,12 @@ impl App {
             KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.override_pan_horizontal(PAN_STEP, false)
             }
-            // Vertical pan (2026-07-19 feedback item 1): scrolls the
-            // candidate list without moving the highlight, bounded only
-            // by the content itself, no longer by the highlighted row
-            // (see `App::override_pan_vertical`). Must precede the
-            // plain `Up`/`Down` arms below, same "modifier-guard first"
-            // convention as the horizontal pan above.
+            // Vertical pan: scrolls the candidate list without moving
+            // the highlight, bounded only by the content itself and not
+            // by the highlighted row (see `App::override_pan_vertical`).
+            // Must precede the plain `Up`/`Down` arms below, same
+            // "modifier-guard first" convention as the horizontal pan
+            // above.
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.override_pan_vertical(PAN_STEP, true)
             }
@@ -100,11 +98,11 @@ impl App {
                 };
                 self.recompute_override_candidates();
             }
-            // In-pane search (spec 0114 §4, spec-0133-adjacent rework):
-            // reuses the shared bottom command/message bar as the search
-            // prompt, same mechanism as the main pane's own `/`/`?`
-            // (`handle_command_key`'s `Enter` arm dispatches to
-            // `jump_to_override_match` while `override_focus` is set).
+            // In-pane search (spec 0114 §4): reuses the shared bottom
+            // command/message bar as the search prompt, same mechanism
+            // as the main pane's own `/`/`?` (`handle_command_key`'s
+            // `Enter` arm dispatches to `jump_to_override_match` while
+            // `override_focus` is set).
             KeyCode::Char('/') => {
                 self.command_kind = CommandLineKind::Search(SearchDir::Forward);
                 self.command_buffer = Some(String::new());
@@ -130,10 +128,9 @@ impl App {
                     return;
                 };
                 // Spec 0137 §G4: `override_candidates` is indexed
-                // directly — no more pinned row 0. In alphabetic mode,
-                // index `0` is always the `None` sentinel, resolving to
-                // raw exactly as the old row 0 did (splice_override's
-                // sentinel arm).
+                // directly. In alphabetic mode index `0` is always the
+                // `None` sentinel, which resolves to raw
+                // (`splice_override`'s sentinel arm).
                 let new_fqdn = match self
                     .override_candidates
                     .get(self.override_highlight)
@@ -151,13 +148,12 @@ impl App {
                 //
                 // Spec 0200 S3: when the pane was opened on an existing
                 // entry, that entry's kind wins over the default (plain
-                // `path` since spec 0208 S2). An entry's kind is
-                // deliberate — the manage pane's `z`/`Z` set it (spec
-                // 0124 G2) — and deriving the default kind instead would
-                // not retype the entry at all: `activate` deactivates
-                // only entries with the *same* origin, so the old one
-                // would stay active and a second one would appear beside
-                // it.
+                // `path`, spec 0208 S2). An entry's kind is deliberate —
+                // the manage pane's `z`/`Z` set it (spec 0124 G2) — and
+                // deriving the default kind instead would not retype the
+                // entry at all: `activate` deactivates only entries with
+                // the *same* origin, so the old one would stay active
+                // and a second would appear beside it.
                 //
                 // The error path is deliberately not softened into a
                 // fallback. If the kind no longer resolves, the parent's
@@ -176,25 +172,23 @@ impl App {
                     }
                 };
                 // Spec 0118 §6: any kind's activation triggers the
-                // recursive render pass — `path`/`path-field`/`fqdn-field`
-                // alike, not just `path` (unlike the old one-shot
-                // `apply_override`, which only ever fired for `path`).
+                // recursive render pass — `path`/`path-field`/
+                // `fqdn-field` alike.
                 self.overrides.activate(origin.clone(), new_fqdn.clone());
                 // Spec 0185 S6: the overlay must not be alive while a
-                // splice runs — its anchor is a position in
-                // `visible_rows`, which the splice is about to rebuild.
+                // splice runs — its anchor is a row position the splice
+                // is about to invalidate.
                 self.preview_overlay = None;
                 self.render_overrides(self.first_node);
-                // Spec 0119 G3, narrowed by spec 0200 S2: land in the
-                // management pane and highlight the entry just created/
-                // reactivated — but only when the management pane is
-                // where this pane was opened from. `Esc`/`t` have always
-                // returned to the caller; `Enter` was the one exit that
-                // ignored it, so a `t` from the main pane ended in a
-                // pane the user had not asked for, covering the document
-                // they had just changed. `activate` guarantees at most
-                // one entry per origin is active, so this origin/type
-                // pair unambiguously identifies it.
+                // Spec 0200 S2: land in the management pane and
+                // highlight the entry just created/reactivated (spec
+                // 0119 G3), but only when the management pane is where
+                // this pane was opened from. Every exit returns to the
+                // caller, so a `t` from the main pane must not end in a
+                // pane the user never asked for, covering the document
+                // they just changed. `activate` guarantees at most one
+                // entry per origin is active, so this origin/type pair
+                // unambiguously identifies it.
                 //
                 // `manage_open`/`manage_focus` are not set here at all:
                 // `close_override` sets them from
@@ -218,11 +212,10 @@ impl App {
         }
     }
 
-    /// Spec 0194 S10: push the position being left, not just the node
-    /// being left — `Ctrl-o` returns to a *place*. This also fixes a
-    /// pre-existing loss: which of the node's lines the cursor was on
-    /// was never recorded, so a jump back from a node's `}` landed on
-    /// its `{`.
+    /// Spec 0194 S10: push the position being left, not just the node —
+    /// `Ctrl-o` returns to a *place*. The line within the node is part
+    /// of that, so a jump back from a node's `}` returns to the `}` and
+    /// not to its `{`.
     pub(super) fn record_jump(&mut self) {
         self.back_stack.push(self.cursor_pos());
         self.fwd_stack.clear();
@@ -411,12 +404,11 @@ impl App {
             self.handle_command_key(key);
             return;
         }
-        // Item 9 (2026-07-17 feedback): `:` opens the command line
-        // regardless of which pane currently has focus — checked
-        // centrally here, ahead of every focus-specific dispatch below,
-        // same tier as `F1`/`Ctrl-Z` above, so `:quit` (and every other
-        // command) is reachable from the override/manage panes too, not
-        // just the main pane.
+        // `:` opens the command line regardless of which pane has focus
+        // — checked centrally here, ahead of every focus-specific
+        // dispatch below, same tier as `F1`/`Ctrl-Z` above, so `:quit`
+        // (and every other command) is reachable from the override/
+        // manage panes too, not just the main pane.
         if key.code == KeyCode::Char(':') {
             self.command_kind = CommandLineKind::Command;
             self.command_buffer = Some(String::new());
@@ -468,9 +460,7 @@ impl App {
         self.pending_g = false;
 
         // Spec 0194 S6: `z` is vim's fold prefix. `za`/`zc`/`zo` act on
-        // the cursor node, and their capitals on the whole sibling
-        // level — which is where `H`, `Shift-Left` and `Shift-Right`'s
-        // old fold-all duties went when tree motion reclaimed them.
+        // the cursor node, their capitals on the whole sibling level.
         // Same shape as the `gg` chord above; any other key cancels.
         if self.pending_z {
             self.pending_z = false;
@@ -556,9 +546,8 @@ impl App {
             KeyCode::Char('J') => self.next_sibling_move(),
             KeyCode::Char('K') => self.prev_sibling_move(),
 
-            // Vertical pan (2026-07-18 feedback item 2): scrolls the
-            // viewport without moving the cursor, bounded so the
-            // cursor's own row never leaves view. Checked before the
+            // Vertical pan: scrolls the viewport without moving the
+            // cursor (see `App::pan_vertical`). Checked before the
             // plain Up/Down arms below, same "modifier-guard first"
             // convention as the horizontal pan below.
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => self.pan_vertical_up(),
@@ -627,8 +616,8 @@ impl App {
             // guarded arms rather than `|`-alternatives, because the
             // unmodified spellings are accepted under any modifier state
             // and there is no reason to tighten that. `Ctrl-a` is free
-            // only because spec 0199 S9 guarded the annotation toggle
-            // below to a bare `a`; `Ctrl-e` was never bound.
+            // because the annotation toggle below is guarded to a bare
+            // `a` (spec 0199 S9); `Ctrl-e` is not bound at all.
             KeyCode::Char('0') | KeyCode::Char('^') => self.caret_to_line_start(),
             KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.caret_to_line_start()
@@ -639,9 +628,8 @@ impl App {
             }
             KeyCode::Char('%') => self.jump_matching_brace(),
 
-            // Fold/unfold toggle. `Space` is kept precisely because bare
-            // `z` is now vim's fold prefix (below), so the common case
-            // still costs one key.
+            // Fold/unfold toggle. `Space` exists alongside the `z` fold
+            // prefix so the common case still costs one key.
             KeyCode::Char(' ') => self.toggle_cursor_fold(),
 
             // Toggle main-pane annotation display (spec 0133 G3) — a
@@ -649,16 +637,15 @@ impl App {
             // own `a` (candidate sort toggle) and the manage pane's own
             // `a` (entry active toggle), both gated behind their own
             // focus checks and unreachable here. Guarded to plain `a`
-            // (spec 0199 S9) so `Ctrl-a` no longer toggles it.
+            // (spec 0199 S9), leaving `Ctrl-a` to the caret.
             KeyCode::Char('a') if key.modifiers.is_empty() => self.annotations = !self.annotations,
 
             // Toggle the main-pane inference-mismatch heat cue (spec
-            // 0138, item 12 of 2026-07-17 feedback) — hides/shows the
-            // cue without discarding the heat-cue caches, distinct from the
-            // override pane's own `i` (candidate sort toggle), gated
-            // behind its own focus check and unreachable here. Guarded
-            // to plain `i` so `Ctrl-i` (jumplist "forward", below) is
-            // unaffected.
+            // 0138) — hides/shows the cue without discarding the
+            // heat-cue caches, distinct from the override pane's own `i`
+            // (candidate sort toggle), gated behind its own focus check
+            // and unreachable here. Guarded to plain `i` so `Ctrl-i`
+            // (jumplist "forward", below) is unaffected.
             KeyCode::Char('i') if key.modifiers.is_empty() => {
                 self.heat_cues_hidden = !self.heat_cues_hidden
             }
@@ -707,16 +694,14 @@ impl App {
                 }
             }
 
-            // Override pane (spec 0114 §1/§2): `t` opens/closes it; `Tab`
-            // moves focus into it while it's open; `Esc` closes it
-            // (focus is main pane here, since `override_focus` is
-            // checked earlier in `handle_key`) — same "works regardless
-            // of focus" treatment as `t`.
+            // Override pane (spec 0114 §1/§2): `t` opens/closes it;
+            // `Esc` closes it (focus is the main pane here, since
+            // `override_focus` is checked earlier in `handle_key`).
             KeyCode::Char('t') => self.toggle_override(),
 
-            // `Enter` on a main-pane node (item 3, spec 0139 follow-up):
-            // a smart proxy for `t`/`o`, mirroring double-click's own
-            // behavior below in `handle_mouse`.
+            // `Enter` on a main-pane node (spec 0139): a smart proxy for
+            // `t`/`o`, mirroring double-click's own behavior below in
+            // `handle_mouse`.
             KeyCode::Enter => self.open_smart_override_or_manage(),
             KeyCode::Esc if self.override_target.is_some() => self.close_override(),
             // `Esc` also closes the override management pane when it's
@@ -732,15 +717,16 @@ impl App {
 
             // Spec 0131 §G1: `Ctrl-C` is the single, explicit copy key —
             // copies the active drag-selection if one exists, else the
-            // cursor's own current line. Mouse release no longer copies
-            // by itself (see the no-op `Up(MouseButton::Left)` arm in
+            // cursor's own current line. Mouse release does not copy by
+            // itself (see the no-op `Up(MouseButton::Left)` arm in
             // `handle_mouse`).
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.copy_current_selection_or_line()
             }
-            // Spec 0185 S5: there is no `Tab`-into-the-override-pane arm
-            // any more — it was unreachable once the pane's focus lock
-            // meant the main pane never holds focus while it is open.
+            // Spec 0185 S5: there is deliberately no `Tab`-into-the-
+            // override-pane arm — the pane's focus lock means the main
+            // pane never holds focus while it is open, so such an arm
+            // would be unreachable.
 
             // Override management pane (spec 0117 §3): `o` opens/closes
             // it, mirroring `t`. `Tab` moves focus back into it while
@@ -760,17 +746,17 @@ impl App {
     /// pane, whichever currently holds focus. `None` when the focused row
     /// has nothing to jump to: an empty candidate list/tree, the `None`
     /// sentinel or a primitive keyword row (spec 0137), or the internal,
-    /// non-real `decode::MESSAGE_SET_ITEM_FQDN` placeholder (spec 0120/
-    /// 0135) — never registered as a real message in the pool, so it has
-    /// no declaration of its own to jump to.
+    /// non-real `decode::MESSAGE_SET_ITEM_FQDN` placeholder (spec
+    /// 0120/0135) — never registered as a real message in the pool, so
+    /// it has no declaration of its own to jump to.
     ///
     /// The main-pane branch mirrors `status_type_label`'s own fallback
-    /// chain (2026-07-18 feedback): `span.type_fqdn` is `None` for every
-    /// scalar node, including enum-typed ones, so an enum field under
-    /// the cursor falls back to its currently effective type (an active
-    /// override if one applies, else `natural_type`) — the same FQDN the
-    /// status line already shows as "type: ...". A primitive-keyword
-    /// result has no declaration to jump to either.
+    /// chain: `span.type_fqdn` is `None` for every scalar node,
+    /// including enum-typed ones, so an enum field under the cursor
+    /// falls back to its currently effective type (an active override if
+    /// one applies, else `natural_type`) — the same FQDN the status line
+    /// already shows as "type: ...". A primitive-keyword result has no
+    /// declaration to jump to either.
     #[cfg(unix)]
     fn fqdn_under_focus(&self) -> Option<String> {
         if self.override_focus {

@@ -82,11 +82,10 @@ pub(super) fn live_shapes(app: &App) -> Vec<Shape> {
 /// Every line's owner, projected through `Shape`, and whether the line
 /// is that owner's footer.
 ///
-/// Spec 0210 S2: the replacement for the `shaped_map(app,
-/// &app.line_to_node)` / `shaped_map(app, &app.footer_line_to_node)`
-/// pair. Both maps are gone, so the question "does every line still
-/// resolve to the same node it did" is asked of `line_pos` — which is
-/// the thing every reader now goes through anyway.
+/// Derived through `line_pos` (spec 0210 S2), which is the one path
+/// every reader goes through. There is no line-keyed map to read the
+/// answer off instead, so "does every line still resolve to the same
+/// node" has to be asked of the derivation itself.
 pub(super) fn line_owners(app: &App) -> Vec<LineOwner> {
     (0..app.lines.len())
         .filter_map(|l| {

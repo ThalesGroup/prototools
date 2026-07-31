@@ -52,10 +52,8 @@ use crate::decode::RankedCandidates;
 /// workspace has, and comfortably exceeds the main thread's own default
 /// (commonly 8 MiB, per `RLIMIT_STACK`) rather than merely matching it.
 ///
-/// Declared here, in the module every walking thread is now spawned from,
-/// rather than in `tui/mod.rs` where it started life: it has outlived two
-/// homes already, each time next to one of its users, and each time the
-/// other user silently missed it.
+/// Declared here, in the module every walking thread is spawned from, so
+/// that no walker can silently miss it.
 pub(crate) const SCORING_THREAD_STACK_SIZE: usize = 16 * 1024 * 1024;
 
 /// How many parts the roots are cut into, independently of how many
@@ -92,12 +90,9 @@ pub(crate) const SWEEP_PARTS: usize = 24;
 /// The one ranking order (spec 0217 S2): highest score first, ties broken
 /// by FQDN ascending.
 ///
-/// This used to be written twice — once in `decode::resolve_root_winner_
-/// and_candidates`, once in `override_pane::inferred_candidates` — as two
-/// closures that happened to agree. Sharding makes the agreement
-/// load-bearing rather than merely tidy: [`Merged`] assumes each shard
-/// sorted under exactly the relation the merge compares with, and two
-/// hand-copied closures are not a guarantee.
+/// Sharding makes this the single definition rather than merely the tidy
+/// one: [`Merged`] assumes each shard sorted under exactly the relation
+/// the merge compares with, which hand-copied closures cannot guarantee.
 ///
 /// Root FQDNs are unique, so this is a *total* order on the candidates.
 /// That is what makes a sharded result identical to a whole-sweep one
@@ -252,10 +247,9 @@ pub(crate) fn ranked_with<T>(
 /// One shard's scores, filtered to the non-vetoed and sorted into
 /// [`candidate_order`].
 ///
-/// Vetoed entries are dropped before the sort rather than after it, which
-/// the two call sites this replaces did the other way around. The result
-/// is the same list — a type the wire data already contradicts is not a
-/// plausible candidate at any rank — and the sort is over fewer elements.
+/// Vetoed entries are dropped before the sort rather than after it: the
+/// result is the same list — a type the wire data already contradicts is
+/// not a plausible candidate at any rank — over fewer elements.
 fn rank(scores: Vec<EntryScore<'_>>) -> RankedCandidates {
     let mut out: RankedCandidates = scores
         .into_iter()
@@ -409,8 +403,8 @@ mod tests {
     }
 
     /// Spec 0218 S1/S5: the part count comes from the constant, not from
-    /// the thread count — except at one thread, which keeps the
-    /// un-sharded path it has always had.
+    /// the thread count — except at one thread, which takes the
+    /// un-sharded path.
     #[test]
     fn the_part_count_is_a_constant_not_the_thread_count() {
         assert_eq!(target_parts(0), 1, "no workers still means one part");

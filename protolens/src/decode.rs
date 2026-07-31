@@ -74,7 +74,7 @@ pub struct EagerFallback {
 /// `index.rkyv` sidecar beside the descriptor, `lazy` holds a `LazyPool`
 /// that decodes a file's dependency closure only when a type from it is
 /// first asked for; otherwise `pool` holds the whole descriptor set,
-/// decoded eagerly as before.
+/// decoded eagerly.
 ///
 /// **`App` must not hold a `MessageDescriptor` or `EnumDescriptor` across
 /// an event-loop iteration.** prost-reflect's `add_file_descriptor_proto`
@@ -359,10 +359,10 @@ pub(crate) fn pick_winner(candidates: &RankedCandidates) -> Option<String> {
 /// Which type the caller wants the blob decoded as — the three mutually
 /// exclusive startup modes, one per command-line shape.
 ///
-/// This used to be an `Option<&str>` plus a separate `defer_root_type`
-/// boolean, which made "a named type, but also deferred" expressible and
-/// meaningless. As one enum the three modes are exhaustive and the
-/// impossible combination cannot be written.
+/// One enum rather than an `Option<&str>` plus a separate deferral
+/// boolean: that pair makes "a named type, but also deferred"
+/// expressible and meaningless, where here the three modes are
+/// exhaustive and the impossible combination cannot be written.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RootType<'a> {
     /// Infer it from the scoring graph (`protolens` with no type flag).
@@ -641,8 +641,8 @@ impl TreeNode {
     /// bracketed node's own lines are its first and its last, whatever
     /// its subtree does in between; a flat node's lines are simply its
     /// own, which is one row for an ordinary scalar and N for a packed
-    /// record. This replaces the old `lines_total > 1` test, which a
-    /// collapsed packed run would have answered wrongly.
+    /// record. Not `lines_total > 1`, which a collapsed packed run
+    /// answers wrongly.
     #[inline]
     pub fn is_bracketed(&self) -> bool {
         self.span.is_message
@@ -872,8 +872,8 @@ pub(crate) fn build_tree(spans: Vec<NodeSpan>, arena: &Arena) -> Vec<TreeNode> {
 /// [`build_tree`] is this over a fresh all-vacant overlay and the whole
 /// document; `splice_override` is this over the live overlay and one
 /// node's re-render. That there is one function rather than two is the
-/// point of spec 0216: a splice no longer builds a tree and stitches it
-/// in, because the structure it would have built is already there.
+/// point of spec 0216: a splice does not build a tree and stitch it in,
+/// because the structure it would build is already there.
 ///
 /// The caller is responsible for vacating whatever the previous
 /// interpretation of `root`'s subtree occupied — this only writes.
@@ -1035,10 +1035,10 @@ impl WrapperTarget {
 /// `Arc` non-unique right when `add_file_descriptor_proto` needs to
 /// mutate it, forcing prost-reflect's internal `Arc::make_mut` to deep-
 /// clone the *entire* pool (every file/message/enum) on every
-/// previously-unseen wrapper — the "cursor move to a new override
-/// candidate is slow" bug diagnosed 2026-07-20. Already-registered
-/// wrappers are unaffected (the early `get_message_by_name` return
-/// above never reaches the mutating call at all).
+/// not-yet-seen wrapper, which is enough to make a cursor move to a new
+/// override candidate visibly slow. Already-registered wrappers are
+/// unaffected (the early `get_message_by_name` return above never
+/// reaches the mutating call at all).
 pub(crate) fn register_wrapper(
     pool: &mut DescriptorPool,
     field_number: u64,
@@ -1101,11 +1101,10 @@ pub(crate) fn register_wrapper(
 /// prefix shapes both writers document — `"_: "` (scalar/value line)
 /// or `"_ {"` (nested-message header line) — immediately after the
 /// line's leading indentation, rather than searching the line for a
-/// bare `_` character: the naive `.replacen('_', ..)` approach
-/// previously matched the `_` inside an unrelated `TYPE_MISMATCH`
-/// annotation on a mismatched line, corrupting it (2026-07-18
-/// feedback, spec 0143). Returns `None` (caller keeps the original
-/// line untouched) when no placeholder was actually written.
+/// bare `_` character: a naive `.replacen('_', ..)` also matches the
+/// `_` inside an unrelated `TYPE_MISMATCH` annotation on a mismatched
+/// line, corrupting it (spec 0143). Returns `None` (caller keeps the
+/// original line untouched) when no placeholder was actually written.
 pub(crate) fn patch_synthetic_field_name(line: &str, field_name: &str) -> Option<String> {
     let indent_len = line.len() - line.trim_start().len();
     let (indent, rest) = line.split_at(indent_len);
@@ -1208,13 +1207,12 @@ pub(crate) const ALL_PRIMITIVE_KEYWORDS: &[&str] = &[
 /// `message` (field 3, raw bytes) — before the specific extension type
 /// is known (spec 0120 §G2 tier 1). A single descriptor, globally
 /// shared and registered once per pool, reused across every MessageSet
-/// occurrence in the document — genuinely nesting it under each
-/// distinct MessageSet's own FQDN (e.g. `google.protobuf.MessageSet.
-/// Item`) turned out to be structurally impossible: the descriptor pool
-/// (matching real `protoc`) rejects a package literally equal to an
-/// already-registered message's own full name, and there is no API to
-/// reopen an already-loaded foreign message to append a real nested
-/// type (2026-07-18 feedback item 4, reverting an earlier attempt).
+/// occurrence in the document. Genuinely nesting it under each distinct
+/// MessageSet's own FQDN (e.g. `google.protobuf.MessageSet.Item`) is
+/// structurally impossible: the descriptor pool (matching real
+/// `protoc`) rejects a package literally equal to an already-registered
+/// message's own full name, and there is no API to reopen an
+/// already-loaded foreign message to append a real nested type.
 /// Never shown to the user directly — `message_set_item_display_fqdn`
 /// computes a friendly, MessageSet-specific label for the two places
 /// this FQDN would otherwise leak into the UI (the status line, the
@@ -1224,13 +1222,13 @@ pub(crate) const ALL_PRIMITIVE_KEYWORDS: &[&str] = &[
 /// own name) — already reads `Item {`, matching `prototext-core`'s own
 /// native MessageSet rendering convention (`message_set_field.rs`'s
 /// hardcoded `"Item"` virtual-node label) with no post-render header
-/// patch needed (spec 0135, 2026-07-17 review).
+/// patch needed (spec 0135).
 pub(crate) const MESSAGE_SET_ITEM_FQDN: &str = "protolens_internal.Item";
 
 /// The friendly, MessageSet-specific FQDN to display in place of the
 /// internal, globally-shared `MESSAGE_SET_ITEM_FQDN` wherever a tier-1
-/// Item node's type is shown to the user (2026-07-18 feedback item 4)
-/// — e.g. `google.protobuf.MessageSet.Item` for a MessageSet whose own
+/// Item node's type is shown to the user — e.g.
+/// `google.protobuf.MessageSet.Item` for a MessageSet whose own
 /// FQDN is `google.protobuf.MessageSet`. Display-only: never stored on
 /// a tree node or an override entry, and never registered in the
 /// descriptor pool (see `MESSAGE_SET_ITEM_FQDN`'s doc comment for why
@@ -1289,21 +1287,19 @@ pub(crate) fn register_message_set_item(
 /// Resolve the root type, then render the whole document under it, on
 /// one thread.
 ///
-/// Spec 0168 G1: the resolution happens before the render, always. This
-/// used to take a `defer_root_type` flag that skipped the graph sweep,
-/// leaving `root_desc` `None` so the TUI could render the document raw
-/// and resolve the type on a background thread — which then re-decoded
-/// and re-rendered the whole document through the splice machinery, at
-/// several times the cost of the decode it was refining, and swapped it
-/// under the reader. The document is now decoded once, as what it is.
-/// Callers who don't want to pay for the sweep at all ask for
-/// `RootType::Raw` and get a raw render that stays raw.
+/// Spec 0168 G1: the resolution happens before the render, always. The
+/// rejected alternative is to skip the sweep, render raw, and resolve
+/// the type on a background thread: that re-decodes and re-renders the
+/// whole document through the splice machinery at several times the
+/// cost of the decode it is refining, and swaps it under the reader.
+/// The document is decoded once, as what it is. Callers who don't want
+/// to pay for the sweep at all ask for `RootType::Raw` and get a raw
+/// render that stays raw.
 ///
-/// `main` no longer goes through here: since spec 0217 it needs the
+/// `main` does not go through here: since spec 0217 it needs the
 /// resolution and the render apart, to run the arena build between them
 /// and to spend the session's CPU budget on the sweep. What is left is
-/// the shape every test wants — the whole decode, in one call, where it
-/// was called.
+/// the shape every test wants — the whole decode, in one call.
 #[cfg(test)]
 pub fn decode(
     blob: Arc<Blob>,
@@ -1319,13 +1315,11 @@ pub fn decode(
 /// Steps 3 and 4 of spec 0217's startup sequence, run at the same time.
 ///
 /// The arena is a function of the wrapped bytes alone (spec 0216) — it
-/// does not depend on the root type, and building it after the sweep was
-/// only ever an accident of where the code sat. So it is handed to the
-/// sweep as its `meanwhile` and runs on this thread while the shards
-/// walk. On googleapis the walk is ~70 ms against a sweep measured in
-/// seconds, so this hides the arena rather than the reverse; it is not
-/// the reason startup gets faster, it is just the work that no longer
-/// has to queue behind it.
+/// does not depend on the root type, so it is handed to the sweep as its
+/// `meanwhile` and runs on this thread while the shards walk. On
+/// googleapis the walk is ~70 ms against a sweep measured in seconds, so
+/// this hides the arena rather than the reverse: it does not make
+/// startup faster, it takes the arena off startup's critical path.
 ///
 /// Split out from [`decode`] rather than inlined because `main` needs the
 /// two halves apart to announce them separately.
@@ -1407,12 +1401,11 @@ pub fn render_resolved(
     // was wrapped in, and has no schema field name of its own to show
     // instead).
     //
-    // Spec 0187 S5: the text patch is all there is. There is no longer a
-    // parallel `style_hints` to repair, so the single-line re-`colorize`
-    // that used to follow — one of flaw D4's two "highlight a line in
-    // isolation" sites, which is exactly the unsound primitive S3 exists
-    // to avoid — is simply gone. The patched line gets highlighted in
-    // its real context when it is next drawn.
+    // Spec 0187 S5: the text patch is all there is. No parallel
+    // `style_hints` needs repairing, so nothing re-`colorize`s the line
+    // on its own here — highlighting a line in isolation is exactly the
+    // unsound primitive S3 exists to avoid. The patched line gets
+    // highlighted in its real context when it is next drawn.
     if wrapper_desc.is_some() {
         if let Some(patched) = patch_synthetic_field_name(&lines[0], "1") {
             lines[0] = patched;
@@ -1421,9 +1414,10 @@ pub fn render_resolved(
     // The superset property is what the whole design rests on and is not
     // checkable after the fact: `build_tree` consumes the spans, and the
     // overlay it leaves behind is already expressed in the arena's own
-    // terms, so it can no longer disagree with it. Checking here, while
-    // both halves are still in hand, is the only place it means anything
-    // — and being `cfg(test)` it costs the shipped binary nothing.
+    // terms, so past that point it cannot disagree with it. Checking
+    // here, while both halves are still in hand, is the only place it
+    // means anything — and being `cfg(test)` it costs the shipped
+    // binary nothing.
     #[cfg(test)]
     if let Some(gap) = arena_gap(&rendered.spans, &arena) {
         panic!("spec 0216: the arena is not a superset of the render — {gap}");
@@ -1588,10 +1582,9 @@ mod tests {
         );
     }
 
-    /// 2026-07-18 feedback: the exact regression case — a wire-type
-    /// mismatch line never writes the placeholder, so the line must
-    /// come back untouched instead of having a field name spliced
-    /// into the middle of `TYPE_MISMATCH`.
+    /// A wire-type mismatch line never writes the placeholder, so the
+    /// line must come back untouched rather than have a field name
+    /// spliced into the middle of `TYPE_MISMATCH`.
     #[test]
     fn patch_synthetic_field_name_leaves_a_type_mismatch_line_untouched() {
         assert_eq!(
@@ -2410,10 +2403,11 @@ mod tests {
         assert!(ctx.message("t.Root").is_some());
     }
 
-    /// Spec 0197 test 11 (§S6). The bytes are no longer retained, so the
-    /// hash is recomputed from `source` — and must not have changed
-    /// value, since spec 0117's `descriptor_set_sha256` is written into
-    /// override files that already exist.
+    /// Spec 0197 test 11 (§S6). The lazy branch does not retain the
+    /// bytes, so it recomputes the hash from `source` — and must reach
+    /// the same value as the eager branch, since spec 0117's
+    /// `descriptor_set_sha256` is written into override files that
+    /// already exist.
     #[test]
     fn the_descriptor_hash_is_identical_across_branches() {
         let lazy = Fixture::new("hash-lazy").with_index();

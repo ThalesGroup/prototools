@@ -2,12 +2,11 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Background scoring worker thread (spec 0152) — moves every
-//! remaining synchronous `inferred_candidates` call (the heat-cue
-//! miss path and the override pane's `t`-key freeze) off the render/
-//! input thread onto one dedicated worker thread, sharing a small
-//! piece of state with it under a single mutex. See spec 0152's
-//! "The approach, in plain terms" for the overall design.
+//! Background scoring worker thread (spec 0152) — keeps every
+//! `inferred_candidates` call (the heat-cue miss path and the override
+//! pane's `t` key) off the render/input thread, on one dedicated
+//! worker thread sharing a small piece of state under a single mutex.
+//! See spec 0152's "The approach, in plain terms" for the design.
 
 use std::ops::Range;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -26,14 +25,13 @@ use super::App;
 use crate::blob::Blob;
 use crate::override_pane;
 
-/// Backpressure limit for `HeatRequestQueue` (spec 0152 G3, revised by
-/// spec 0189 G6) — not a defensive bound that is never reached. When
-/// `upsert` answers `Rejected`, `App::prefetch_step` returns
-/// `PrefetchStep::Idle`, which parks the read-ahead walk until the
-/// worker frees a slot; under a fast walk that is the designed steady
-/// state, not an anomaly. Because the walk radiates outward from the
-/// cursor's row, the cap truncates its *far* end and never the near
-/// end.
+/// Backpressure limit for `HeatRequestQueue` (spec 0189 G6) — not a
+/// defensive bound that is never reached. When `upsert` answers
+/// `Rejected`, `App::prefetch_step` returns `PrefetchStep::Idle`, which
+/// parks the read-ahead walk until the worker frees a slot; under a
+/// fast walk that is the designed steady state, not an anomaly. Because
+/// the walk radiates outward from the cursor's row, the cap truncates
+/// its *far* end and never the near end.
 ///
 /// The useful depth is bounded by what the worker can drain before the
 /// next cursor move — not by document size, since a restart re-ranks
@@ -99,12 +97,11 @@ pub(super) struct HeatRequestQueue {
     ///
     /// It lives here, rather than in a `static`, precisely because this
     /// queue is the one structure both `HeatWorkerHandle` and its own
-    /// `heat_worker_loop` already share: a process-global counter was
-    /// read as a before/after delta while *other* tests in the same
-    /// binary concurrently spawned real workers of their own, so an
-    /// unrelated test's sweep landed inside the window and the
-    /// assertion failed at random (2026-07-25: `left: 3, right: 2`,
-    /// green in isolation, flaky under the full suite).
+    /// `heat_worker_loop` already share. A process-global counter would
+    /// be read as a before/after delta while other tests in the same
+    /// binary spawn real workers of their own, letting an unrelated
+    /// test's sweep land inside the window — green in isolation, flaky
+    /// under the full suite.
     #[cfg(test)]
     score_all_calls: AtomicUsize,
 }
@@ -178,8 +175,8 @@ impl HeatRequestQueue {
     /// G5) and, tagged onto the merged request itself, what the
     /// eventual worker completion should be tagged with (G4).
     /// Merging by `range.start` (union window, newest `current_key`
-    /// wins) happens regardless of tier — the promoting `peek` used to
-    /// look up the existing entry already applies `tier`'s own
+    /// wins) happens regardless of tier — the promoting `peek` that
+    /// looks up the existing entry already applies `tier`'s own
     /// promotion, so `upsert`'s subsequent `max` is a no-op on top of
     /// it.
     fn push(&self, req: HeatRequest, tier: Tier) -> UpsertOutcome<usize> {
@@ -212,12 +209,12 @@ impl HeatRequestQueue {
     /// normally — unavoidable, and bounded to one item).
     ///
     /// Spec 0189 S3: with nothing live to do, the worker reclaims
-    /// superseded requests instead of scoring them — `pop_highest` no
-    /// longer serves `prefetch_previous` at all. The mutex is released
-    /// and retaken around each reclaimed entry, so a whole superseded
-    /// wave can never block a UI-thread `push` (G4); the alternative,
-    /// draining the band under one lock hold, would reintroduce on the
-    /// worker exactly the batch this spec moved off the UI thread.
+    /// superseded requests instead of scoring them — `pop_highest`
+    /// never serves `prefetch_previous`. The mutex is released and
+    /// retaken around each reclaimed entry, so a whole superseded wave
+    /// can never block a UI-thread `push` (G4); draining the band under
+    /// one lock hold would put that whole batch back on the critical
+    /// path, on the worker instead of the UI thread.
     fn pop_blocking(&self) -> Option<(usize, HeatRequest)> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         loop {
@@ -249,9 +246,9 @@ impl HeatRequestQueue {
     /// Unlike the `HeatCaches` maps, where a superseded entry is a
     /// computed result worth serving later, a superseded entry here is
     /// an unpaid `score_all` on a range ranked from an origin the
-    /// cursor has already left. Spec 0189 keeps the splice — it is on
-    /// the UI thread's critical path — and makes the *worker* discard
-    /// the demoted entries rather than score them.
+    /// cursor has already left. The splice stays O(1) because it is on
+    /// the UI thread's critical path; the *worker* discards the demoted
+    /// entries rather than scoring them (spec 0189).
     fn start_new_wave(&self) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.mru.start_new_wave();
@@ -266,11 +263,10 @@ impl HeatRequestQueue {
     }
 }
 
-/// One range's cached scoring results (spec 0152 G4) — the merge
-/// target for spec 0151's separate `range_stats`/`candidates` caches:
-/// both were always derived from the same `inferred_candidates` call,
-/// so keeping them as one entry avoids a second lookup/insert for
-/// what is, underneath, one piece of data.
+/// One range's cached scoring results (spec 0152 G4) — stats and
+/// candidates in one entry, since both derive from the same
+/// `inferred_candidates` call and splitting them would cost a second
+/// lookup/insert for what is, underneath, one piece of data.
 #[derive(Clone)]
 pub(super) struct RangeHeatEntry {
     pub(super) best_score: Option<i64>,
@@ -314,10 +310,10 @@ pub(super) struct HeatCaches {
     /// — which `(usize, String)` has none of: the borrowed counterpart
     /// would be `(usize, &str)`, and `Borrow` can only hand back a
     /// reference to something the key already holds, not a rebuilt
-    /// tuple. So every lookup had to present a fully owned key,
-    /// allocating and copying the type name on both threads at each of
-    /// `peek_current`'s call sites, only to drop it again after
-    /// hashing.
+    /// tuple. Without the probe, every lookup must present a fully
+    /// owned key, allocating and copying the type name on both threads
+    /// at each of `peek_current`'s call sites only to drop it again
+    /// after hashing.
     ///
     /// Its contents are meaningless between calls — `peek_current`
     /// overwrites both halves before every read, and `peek` never
@@ -704,11 +700,9 @@ mod tests {
     }
 
     /// Pushing distinct ranges pops the most-recently-pushed one first
-    /// (LIFO order across distinct keys, head-insert/head-pop); and,
-    /// since spec 0208 S4c, a later *same-tier* merging push for an
-    /// already-queued key counts as a fresh query and moves it back to
-    /// the head. It used to update the window in place without
-    /// reordering (spec 0164 G5) — asking again carried no information.
+    /// (LIFO across distinct keys, head-insert/head-pop); and a later
+    /// *same-tier* merging push for an already-queued key counts as a
+    /// fresh query, moving it back to the head (spec 0208 S4c).
     #[test]
     fn pop_returns_most_recently_pushed_first_and_a_reask_moves_to_the_head() {
         let queue = HeatRequestQueue::new();
@@ -944,7 +938,7 @@ mod tests {
     /// A minimal, real, in-memory scoring graph — one message with a
     /// single `uint64` field — built with zero file I/O via
     /// `build_from_strings` + `Box::leak` + `LoadedGraph::
-    /// from_static_bytes` (as spec 0151's own notes anticipated).
+    /// from_static_bytes`.
     fn test_scoring_graph() -> LoadedGraph {
         let yaml = "\
 entries:

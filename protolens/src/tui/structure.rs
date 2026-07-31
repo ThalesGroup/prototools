@@ -4,12 +4,12 @@
 
 //! Spec 0216: the tree's shape, read off the arena rather than stored.
 //!
-//! Every link a node used to carry — parent, first and last child, both
-//! siblings, both document-order neighbors, and the sibling ordinal — is
-//! arithmetic on the arena's `first_child` and `parent` arrays. That is
-//! what level order buys: children occupy one contiguous block, blocks
-//! run in parent order, so a sibling step is `+1` and a child step is an
-//! add (S16, S17).
+//! Every link — parent, first and last child, both siblings, both
+//! document-order neighbors, and the sibling ordinal — is arithmetic on
+//! the arena's `first_child` and `parent` arrays. That is what level
+//! order buys: children occupy one contiguous block, blocks run in
+//! parent order, so a sibling step is `+1` and a child step is an add
+//! (S16, S17).
 //!
 //! The arena describes *all* the structure the bytes admit, and an
 //! interpretation shows only part of it — a payload the greedy walk
@@ -124,11 +124,9 @@ impl App {
 
     /// `idx`'s 1-based position among its siblings.
     ///
-    /// Spec 0192 stored this in the node and had `splice_override`
-    /// repair it. It is `idx - first_child[parent]`, and the reason it
-    /// needs no packed-run special case any more is that a run *is* one
-    /// slot now: the rule spec 0184 S2 had to state — a run's N spans
-    /// share one ordinal — is no longer a rule, it is arithmetic.
+    /// Just `idx - first_child[parent]`, with no packed-run special
+    /// case: a run is one slot, so spec 0184 S2's rule that a run's N
+    /// spans share one ordinal is arithmetic rather than a rule.
     #[inline]
     pub(super) fn sibling_position(&self, idx: usize) -> usize {
         idx - self.sibling_block(idx).start + 1
@@ -137,10 +135,8 @@ impl App {
     /// The node after `idx` in document order (spec 0216 S27).
     ///
     /// Pre-order: descend if there is anywhere to descend to, else step
-    /// sideways, else climb until something has a next sibling. Stored
-    /// as two arrays until now, because the render emits post-order and
-    /// document order could not be read off it; in level order it is
-    /// three lines and no memory.
+    /// sideways, else climb until something has a next sibling. Level
+    /// order makes this derivable, so nothing is stored.
     pub(super) fn doc_next(&self, idx: usize) -> Option<usize> {
         if let Some(child) = self.first_child(idx) {
             return Some(child);

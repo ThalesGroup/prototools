@@ -169,13 +169,11 @@ pub(super) enum TruncShape {
 ///
 /// Returns the truncated bytes, or `None` when nothing was cut.
 ///
-/// It used to return a `span_shift` alongside them — how far the
-/// interior moved left because the rewritten length varint came out
-/// narrower than the original — which the caller added back when
-/// translating child spans into document coordinates. Spec 0216 S12
-/// does no such translation: the spans a splice keeps take their byte
-/// ranges from the arena, which is expressed against the real blob and
-/// never saw this rewritten copy.
+/// No `span_shift` accompanies them — the interior does move left when
+/// the rewritten length varint comes out narrower than the original, but
+/// nothing needs to add that back. Spec 0216 S12: the spans a splice
+/// keeps take their byte ranges from the arena, which is expressed
+/// against the real blob and never saw this rewritten copy.
 ///
 /// Preview-only. A confirmed override must render completely, so its
 /// bytes never come through here (G5).
@@ -262,11 +260,10 @@ pub(super) fn trunc_shape_for(field_type: Option<Type>, wire_type: u32) -> Trunc
 /// a `string`/`bytes`/packed target, which has no brace. Insertion shifts
 /// every later line, so span text ranges are corrected accordingly.
 ///
-/// Spec 0187 S2: the marker carries no highlighting because `window_text`
-/// blanks it before the parser ever sees it — `...` is not in the
-/// prototext grammar, and now that highlighting happens at draw time
-/// there is no longer a "colorize first, splice the marker after"
-/// ordering to hide behind.
+/// Spec 0187 S2: the marker carries no highlighting because
+/// `window_text` blanks it before the parser ever sees it — `...` is not
+/// in the prototext grammar, and highlighting happens at draw time, with
+/// no "colorize first, splice the marker after" ordering to hide behind.
 fn insert_truncation_marker(
     lines: &mut Vec<String>,
     spans: &mut Vec<NodeSpan>,
@@ -376,25 +373,24 @@ impl App {
     /// `None` only when genuinely no type information is available at all
     /// (no parent schema, or field not declared).
     ///
-    /// Every primitive `Kind` (spec 0135 follow-up, 2026-07-17: found
-    /// post-implementation) resolves to its own `:type-as` keyword, not
-    /// `None`: since G3 widened `can_override` to plain scalar leaves, a
-    /// primitive field with no active override is a real, reachable case
-    /// here (e.g. pressing `t` then `Esc` on a plain `int32` field) —
-    /// `None` would make `resettle_node` fall back to raw, wrongly
-    /// discarding the field's own natural decoding, not just "no override
-    /// applies." Message fields already relied on this same "natural
-    /// type, not raw" fallback since spec 0119; primitives now get the
-    /// same treatment via `primitive_type_for_keyword`'s reverse mapping.
+    /// Every primitive `Kind` resolves to its own `:type-as` keyword,
+    /// not `None`: since spec 0135 G3 widened `can_override` to plain
+    /// scalar leaves, a primitive field with no active override is a
+    /// real, reachable case here (e.g. pressing `t` then `Esc` on a
+    /// plain `int32` field) — `None` would make `resettle_node` fall
+    /// back to raw, wrongly discarding the field's own natural decoding
+    /// rather than merely reporting "no override applies."
+    /// `primitive_type_for_keyword`'s reverse mapping is what gives
+    /// primitives the same "natural type, not raw" fallback message
+    /// fields have had since spec 0119.
     ///
-    /// `Kind::Enum` resolves to its own FQDN (2026-07-18 fix): previously
-    /// excluded here (`None`, spec 0135's original Non-goals, predating
-    /// spec 0137's enum splicing support in `splice_override`), which made
-    /// `resettle_node` demote every enum-typed field to a raw record dump
-    /// the moment it was directly resettled (e.g. opening the override
-    /// pane with `t` then cancelling with `Esc`) — permanently, since no
-    /// other pass ever revisits a plain scalar leaf once `rendered_as` is
-    /// set (see `render_overrides`'s recursion-gating comment below).
+    /// `Kind::Enum` resolves to its own FQDN for the same reason.
+    /// Excluding it would make `resettle_node` demote every enum-typed
+    /// field to a raw record dump the moment it is directly resettled
+    /// (e.g. opening the override pane with `t` then cancelling with
+    /// `Esc`) — permanently, since no other pass ever revisits a plain
+    /// scalar leaf once `rendered_as` is set (see `render_overrides`'s
+    /// recursion-gating comment below).
     pub(super) fn natural_type(&self, idx: usize) -> Option<String> {
         use prost_reflect::Kind;
         match self.parent_field(idx)?.kind() {
@@ -605,8 +601,8 @@ impl App {
     /// all, or when the pinned `<raw / no type>` override entry is
     /// explicitly active — either case means the status line shows no
     /// fragment. The second tuple element is the `message`/`group`/
-    /// `enum` tag (2026-07-19 feedback: shown only in full-width mode,
-    /// via `render.rs`), `None` for a bare primitive keyword.
+    /// `enum` tag (shown only in full-width mode, via `render.rs`),
+    /// `None` for a bare primitive keyword.
     pub(super) fn status_type_label(&self, idx: usize) -> Option<(String, Option<&'static str>)> {
         let span = &self.tree[idx].span;
         if span.is_message {
@@ -622,7 +618,7 @@ impl App {
             // The internal, globally-shared MessageSet Item FQDN
             // (`decode::MESSAGE_SET_ITEM_FQDN`) is never shown to the
             // user directly — show the friendly, MessageSet-specific
-            // FQDN instead (2026-07-18 feedback item 4).
+            // FQDN instead.
             if fqdn == decode::MESSAGE_SET_ITEM_FQDN {
                 if let Some(display) = self.message_set_item_display_fqdn(idx) {
                     return Some((format_fqdn_label(&display), Some(tag)));
@@ -683,7 +679,7 @@ impl App {
     /// user — `None` if `idx`'s parent isn't actually a MessageSet
     /// container (shouldn't happen for a real Item node, but keeps this
     /// a safe fallback rather than a panic). Display-only: never stored
-    /// on a tree node or an override entry (2026-07-18 feedback item 4).
+    /// on a tree node or an override entry.
     pub(super) fn message_set_item_display_fqdn(&self, idx: usize) -> Option<String> {
         let parent = self.parent(idx)?;
         let message_set_fqdn = self.fqdns.get(self.tree[parent].span.type_fqdn)?;
@@ -740,14 +736,13 @@ impl App {
         if field_number == 2 && self.is_any_typed(parent) {
             return true;
         }
-        // MessageSet tier 1 (the "Item" group wrapper itself). This
-        // used to be omitted deliberately, on the grounds that a real
-        // decoded group is `is_message == true` anyway, so
-        // `render_overrides`'s own `is_message` recursion disjunct
-        // reached it for free. Spec 0183 deletes that disjunct and
-        // makes this predicate the seed source for the descent marks,
-        // so the omission would have silently stopped MessageSet
-        // auto-expansion — no panic, just an unexpanded document.
+        // MessageSet tier 1 (the "Item" group wrapper itself). It is
+        // tempting to omit, since a real decoded group is
+        // `is_message == true` anyway — but spec 0183 makes this
+        // predicate the seed source for the descent marks, with no
+        // `is_message` recursion disjunct to reach it for free, so
+        // omitting it would silently stop MessageSet auto-expansion:
+        // no panic, just an unexpanded document.
         //
         // The two O(1) discriminators come first so that the
         // `pool()` lookup inside `is_message_set_typed` is reached
@@ -934,9 +929,9 @@ impl App {
     /// `OverrideCollection` keeps `entries` sorted by
     /// `OverrideOrigin::label()` (then type), and has a test pinning
     /// that, so every entry sharing a label is contiguous and a
-    /// `partition_point` lands on the first of them. That replaces the
-    /// linear scan of the whole collection this used to do — three
-    /// times over, once per origin kind, once per node.
+    /// `partition_point` lands on the first of them. The alternative is
+    /// a linear scan of the whole collection — three times over, once
+    /// per origin kind, once per node.
     ///
     /// `kind` is checked as well as the label. In practice the label
     /// alone would do (a `PathField` label always starts with `/`, an
@@ -994,16 +989,16 @@ impl App {
     /// fallback a plain `resolve_active_override_entry`-only revert
     /// would get wrong.
     ///
-    /// 2026-07-17: no longer demotes a stale `auto` entry whose
-    /// ancestor context has since changed (spec 0120's original
-    /// design) — `auto`/`manual` is provenance only (how an entry was
-    /// created, shown via `manage_entry_style`), and must have no
-    /// effect on whether an *active* entry actually applies. An
-    /// active entry, auto-derived or not, applies exactly as long as
-    /// its path still resolves to a live node — the same fallback
-    /// `splice_override` already relies on for a manual override that
-    /// no longer cleanly matches its target (a `TYPE_MISMATCH`-style
-    /// annotation, not a silent revert to raw).
+    /// A stale `auto` entry whose ancestor context has since changed is
+    /// *not* demoted: `auto`/`manual` is provenance only (how an entry
+    /// was created, shown via `manage_entry_style`), and must have no
+    /// effect on whether an *active* entry applies. An active entry,
+    /// auto-derived or not, applies exactly as long as its path still
+    /// resolves to a live node — the same fallback `splice_override`
+    /// relies on for a manual override that stops cleanly matching its
+    /// target (a `TYPE_MISMATCH`-style annotation, not a silent revert
+    /// to raw).
+    ///
     /// `path` is `idx`'s own already-known positional path, passed down
     /// by the sole caller (`render_overrides_inner`'s hot full-document
     /// walk) rather than recomputed here — see `resolve_active_override_
@@ -1060,12 +1055,11 @@ impl App {
     /// Whether `entry` (assumed `auto == true`) would still be re-derived
     /// with the same `r#type` if `render_overrides` visited its node
     /// again right now — i.e. it is still "in scope" (spec 0125 §G2).
-    /// Sole remaining use (2026-07-17, since `resettle_node` dropped its
-    /// own demotion check): `handle_manage_key`'s `Delete`/`Backspace`
-    /// handling, which still needs to distinguish "deleting this would
-    /// just make the next `render_overrides` pass re-seed an identical
-    /// entry" (still in scope) from "deleting this is final" (out of
-    /// scope). Lives on `App` (not `OverrideCollection`) because it
+    /// Sole use: `handle_manage_key`'s `Delete`/`Backspace` handling,
+    /// which needs to distinguish "deleting this would just make the
+    /// next `render_overrides` pass re-seed an identical entry" (still
+    /// in scope) from "deleting this is final" (out of scope). Lives on
+    /// `App` (not `OverrideCollection`) because it
     /// needs `auto_expand_type`, which resolves against the live tree/
     /// descriptor pool, not just the override collection itself.
     /// Auto-seeded entries only ever have a `Path` origin
@@ -1084,11 +1078,10 @@ impl App {
 
     /// Recursive override-driven rendering pass (spec 0118 §3): resolves
     /// `idx`'s applicable override and splices a fresh render whenever the
-    /// resolved target no longer matches what's currently displayed
+    /// resolved target stops matching what's currently displayed
     /// (`TreeNode::rendered_as`, spec 0118 §2.1) — comparing against
     /// provenance, not just "is there an override right now?", is what
-    /// correctly detects a demotion (an override that used to apply no
-    /// longer does), not just fresh promotions/retypes.
+    /// detects a *demotion* as well as a fresh promotion or retype.
     ///
     /// Any/MessageSet auto-expansion (spec 0120) is seeded as a real,
     /// persisted `OverrideEntry` (`OverrideOrigin::Path`) the first time
@@ -1207,12 +1200,10 @@ impl App {
     /// Marking ancestors — not just targets — is the point, and it is
     /// the part that is easy to get wrong (spec 0183 L3). A node-level
     /// predicate like `rendered_as != NOT_RENDERED` is only ever
-    /// consulted if the walk *reaches* the node, and under the old gate it always
-    /// did, because `is_message` let it through every plain ancestor on
-    /// the way down. Without the upward walk below, a marked node under
-    /// unmarked ancestors would simply never be visited, and would keep
-    /// the text it was last rendered with forever — no panic, no
-    /// assertion, just stale content.
+    /// consulted if the walk *reaches* the node. Without the upward walk
+    /// below, a marked node under unmarked ancestors would simply never
+    /// be visited, and would keep the text it was last rendered with
+    /// forever — no panic, no assertion, just stale content.
     ///
     /// Over-marking is safe (it costs a wasted descent); under-marking
     /// is the silent failure. The arena also holds slots this
@@ -1220,26 +1211,25 @@ impl App {
     /// walk; they are skipped here, since a vacant slot carries no span
     /// to test.
     ///
-    /// Spec 0188 S4/S5: this used to reallocate `descend` and walk the
-    /// whole arena every batch, at a measured 35-44 ns/node — 17 ms on
-    /// a 382 k-node arena. Two of the three per-node target sources
-    /// do not need re-examining: a node's auto-expand eligibility is a
-    /// structural property that can only change by re-decoding the
-    /// node (which produces a *different* node, scanned as fresh), and
-    /// `rendered_as` only ever goes from `None` to `Some` in
-    /// production. So the marks are kept and only the arena's
-    /// unexamined suffix is scanned. Spec 0216 makes the arena a fixed
-    /// size, so after the first batch that suffix is empty: the whole
-    /// scan happens once, and a splice's re-decoded slots are picked up
-    /// by `mark_fresh_subtree` instead.
+    /// Spec 0188 S4/S5: the marks are kept between batches and only the
+    /// arena's unexamined suffix is scanned. Rescanning the whole arena
+    /// every batch costs a measured 35-44 ns/node — 17 ms on a 382 k-node
+    /// arena — and two of the three per-node target sources cannot have
+    /// changed: a node's auto-expand eligibility is a structural property
+    /// that can only change by re-decoding the node (which produces a
+    /// *different* node, scanned as fresh), and `rendered_as` only ever
+    /// goes from `None` to `Some` in production. Spec 0216 makes the
+    /// arena a fixed size, so after the first batch that suffix is empty:
+    /// the whole scan happens once, and a splice's re-decoded slots are
+    /// picked up by `mark_fresh_subtree` instead.
     ///
     /// The exception, and the reason `start` is not simply the
     /// watermark, is an `FqdnField` origin: "field N of every message
     /// of type T, anywhere" is a genuine search with no path to
     /// follow, and a newly activated one has to find its matches among
-    /// nodes that were examined long ago. That case pays the old
-    /// full-arena scan; it is also the rare one (it has no keyboard
-    /// shortcut and is never auto-seeded).
+    /// nodes that were examined long ago. That case pays the full-arena
+    /// scan; it is also the rare one (it has no keyboard shortcut and is
+    /// never auto-seeded).
     fn compute_descend_marks(&mut self) {
         // The already-examined prefix — see `descend`'s own comment for
         // why the mark array's length is exactly that watermark.
@@ -1265,21 +1255,20 @@ impl App {
     /// catastrophic. "Bounded by the size of the spliced content" is only
     /// reassuring while the spliced content is small; for a *root*
     /// retype it is the whole document. The flag then re-enables exactly
-    /// the blanket descent this spec exists to delete, and does strictly
-    /// worse than the old gate: it visits plain scalar leaves too, and
-    /// every fresh node has `rendered_as == None`, so `resettle_node`
-    /// re-splices every single one of them. It presents as a hang at
-    /// 100% CPU right after the background root-type resolution lands,
-    /// which is how it was found.
+    /// the blanket descent this spec exists to delete, and worse: it
+    /// visits plain scalar leaves too, and every fresh node has
+    /// `rendered_as == None`, so `resettle_node` re-splices every single
+    /// one of them. It presents as a hang at 100% CPU right after a root
+    /// retype lands.
     ///
     /// Marking instead keeps the bound honest: the cost is one pass over
     /// the fresh nodes, and only the ones that are genuinely targets get
     /// descended into.
     ///
-    /// Spec 0216 S12: "the fresh nodes" used to be the arena's new tail,
-    /// so a range said it. A splice no longer appends — it rewrites the
-    /// overlay on the slots those bytes already had — so the fresh set
-    /// has to be named as what it is, `idx`'s subtree.
+    /// Spec 0216 S12: the fresh set is `idx`'s subtree, not a range. A
+    /// splice does not append to the arena — it rewrites the overlay on
+    /// the slots those bytes already had — so there is no new tail a
+    /// range could name.
     fn mark_fresh_subtree(&mut self, idx: usize, path: &str) {
         let mut fresh = Vec::new();
         self.collect_descendants(idx, &mut fresh);
@@ -1439,22 +1428,15 @@ impl App {
 
     /// The actual (self-recursive) body of `render_overrides`.
     ///
-    /// Spec 0210 S11: this used to carry a line-count correction down
-    /// the tree — `inherited` into each call, accumulated across
-    /// siblings as `child_owed`, applied to every node's stored
-    /// `span.text_range` and, for a child the walk had pruned, to that
-    /// child's whole subtree by a `doc_next` run. On the reference
-    /// corpus an override on the document's *first* top-level record
-    /// shifted 4 500 963 spans that way, 402 ms of a 500 ms commit,
-    /// while the same override on the last record shifted none.
-    ///
-    /// All of it maintained one field that nothing reads. `text_range`
-    /// is exact when the renderer emits it and is used then, to derive
-    /// `lines_total`; afterwards every caller that wants a line range
-    /// asks `node_lines`, which derives it from the counters and cannot
-    /// go stale. So the correction is gone, and with it the last walk in
-    /// a commit that was proportional to the document rather than to the
-    /// splice.
+    /// Spec 0210 S11: no line-count correction is carried down the tree.
+    /// `span.text_range` is exact when the renderer emits it and is used
+    /// then, to derive `lines_total`; afterwards every caller that wants
+    /// a line range asks `node_lines`, which derives it from the
+    /// counters and cannot go stale. Correcting it instead would be a
+    /// walk proportional to the document rather than to the splice: on
+    /// the reference corpus an override on the document's *first*
+    /// top-level record shifts 4 500 963 spans, 402 ms of a 500 ms
+    /// commit, while the same override on the last record shifts none.
     ///
     /// `path` is `idx`'s own already-known positional path (spec 0163
     /// follow-up), passed down from the caller rather than recomputed
@@ -1531,9 +1513,9 @@ impl App {
             use std::sync::atomic::Ordering::Relaxed;
             probe::VISITS.fetch_add(1, Relaxed);
             if spliced {
-                // Spec 0216 S12: the splice no longer appends, so the
-                // size of what it produced is the size of `idx`'s
-                // subtree rather than the arena's growth.
+                // Spec 0216 S12: the splice does not append, so the size
+                // of what it produced is the size of `idx`'s subtree
+                // rather than the arena's growth.
                 let mut sub = Vec::new();
                 self.collect_descendants(idx, &mut sub);
                 let n = sub.len();
@@ -1549,31 +1531,29 @@ impl App {
         // remain wherever `idx` itself was already found (the same
         // ancestor patch, if any, or `self.lines` directly).
         let child_scope = spliced_patch.or(patch_scope);
-        // Spec 0183 S3: the nodes the splice just appended did not
-        // exist when the batch's marks were computed, so mark them now.
+        // Spec 0183 S3: the nodes the splice just re-decoded were not
+        // marked when the batch's marks were computed, so mark them now.
         if spliced {
             self.mark_fresh_subtree(idx, path);
         }
         // Spec 0216 S22: a packed run is one slot, so a child's ordinal
-        // is just its position in the block. The `same_packed_record`
-        // merge this used to carry — the forward counterpart of spec
-        // 0184 S4's backward walk — had nothing left to merge.
+        // is just its position in the block — no `same_packed_record`
+        // merge is needed here (nor in spec 0184 S4's backward walk).
         for k in 0..self.child_count(idx) {
             let c = self.nth_child(idx, k).expect("k is below the child count");
             let ordinal = k + 1;
             // Spec 0183 G1: descend only where something can actually
-            // change. This used to be four disjuncts, the first of
-            // which was `span.is_message` — true of essentially every
-            // interior node in a real document, and so the reason a
-            // single pass cost seconds on a 600k-node one. It was
-            // never really a claim that a message node needs work; it
-            // was a stand-in for "something under here might", the
-            // walk having no cheaper way to find out. `descend` is
-            // that cheaper way, computed once per batch by
-            // `compute_descend_marks` from the same three real
-            // sources (override entries, `rendered_as`, auto-expand
-            // seeds) but lifted to cover ancestors, which is what
-            // makes it safe to stop at an unmarked node.
+            // change. The obvious gate — `span.is_message`, plus the
+            // three real target sources — is true of essentially every
+            // interior node in a real document, which is what makes a
+            // single pass cost seconds on a 600k-node one. It is not
+            // really a claim that a message node needs work; it is a
+            // stand-in for "something under here might", the walk having
+            // no cheaper way to find out. `descend` is that cheaper way,
+            // computed once per batch by `compute_descend_marks` from
+            // the same three sources (override entries, `rendered_as`,
+            // auto-expand seeds) but lifted to cover ancestors, which is
+            // what makes it safe to stop at an unmarked node.
             let c_path = Self::child_path(path, ordinal);
             #[cfg(not(test))]
             let descend_here = self.descend.get(c).copied().unwrap_or(false);
@@ -1618,9 +1598,8 @@ impl App {
         // This is the common case, not an exotic one: opening or
         // closing the override pane, toggling a management-pane entry
         // that resolves to what is already rendered, and the second of
-        // two identical passes all land here. It used to clear both
-        // line maps in full and re-map every node in `idx`'s subtree —
-        // 20 ms on a 382 k-node arena, to fix nothing.
+        // two identical passes all land here. Repairing unconditionally
+        // costs 20 ms on a 382 k-node arena, to fix nothing.
         //
         // The G3 equivalence check still runs, so every no-patch batch
         // in the suite asserts that skipping was in fact a no-op.
@@ -1641,24 +1620,17 @@ impl App {
             );
         }
 
-        // Spec 0210 S3: this is now the entire repair.
+        // Spec 0210 S3: patching the text is the entire repair.
         //
-        // What used to stand here was three walks — the spliced
-        // subtree, *every node after it* in document order, and the
-        // ancestors — each rewriting a stored absolute line number and
-        // re-filing two line-map entries, followed by a `visible_rows`
-        // rebuild from `from`. The second of those walks is the one
-        // that made overriding the document's first field cost a
-        // second: a node's stored position is wrong as soon as anything
-        // above it changes size, so all four and a half million of them
-        // had to be visited.
-        //
-        // A node stores its subtree's *size* instead, and a size does
-        // not care what happens above it. So a splice is owed exactly
-        // one thing: its ancestors' sizes — and it pays that itself, as
-        // it goes, in `splice_override`, because the rest of the batch
-        // derives its patch positions from them. By the time the batch
-        // ends there is nothing left to repair but the text.
+        // A node stores its subtree's line *count*, not its absolute
+        // position, and a count does not care what happens above it.
+        // Were positions stored, a splice would owe a walk of every
+        // node after it in document order — all four and a half million
+        // of them, which is what made overriding the document's first
+        // field cost a second. As it is, a splice owes only its
+        // ancestors' counts, and pays that itself as it goes, in
+        // `splice_override`, because the rest of the batch derives its
+        // patch positions from them.
         self.pending_shift = 0;
         self.pending_patch_min_line = None;
         // Line numbers moved, so the read-ahead walk must restart and
@@ -1683,14 +1655,13 @@ impl App {
     /// node's two counts are exactly what its children's are, and the
     /// positions they imply are exactly where the text has its braces.
     ///
-    /// This replaces spec 0186 G3's "the incremental repair matches a
-    /// full rebuild", which is no longer a meaningful question — there
-    /// is nothing to repair and nothing to rebuild. What is left is
-    /// whether the counters still describe the document, and that is a
-    /// stronger property than the comparison it replaces: the old check
-    /// *derived* its reference from the same `text_range` fields it was
-    /// checking, so a range corrupted consistently corrupted both sides
-    /// and the comparison succeeded.
+    /// The question is not spec 0186 G3's "does the incremental repair
+    /// match a full rebuild" — there is nothing to repair and nothing to
+    /// rebuild — but whether the counters still describe the document.
+    /// That is the stronger property: a comparison against a rebuild
+    /// *derives* its reference from the same `text_range` fields it is
+    /// checking, so a range corrupted consistently corrupts both sides
+    /// and the comparison succeeds.
     ///
     /// The failure it exists to catch is silent. A count that is wrong
     /// by one puts every position after it out by one, and nothing
@@ -1847,8 +1818,8 @@ impl App {
         // Group each patch under its parent (`Nested`) or as a root
         // (`Original`). `render_overrides_inner`'s strict pre-order,
         // left-to-right walk (spec 0160 G2) is *expected* to hand these
-        // over already in ascending order; the sort below no longer
-        // relies on that being true.
+        // over already in ascending order; the sort below does not rely
+        // on that being true.
         let mut children_of: HashMap<usize, Vec<usize>> = HashMap::new();
         let mut top_level: Vec<usize> = Vec::new();
         for (i, p) in raw_patches.iter().enumerate() {
@@ -1861,16 +1832,16 @@ impl App {
         }
 
         // Flaw C2: the forward merge below is only correct for ascending,
-        // non-overlapping ranges, and that used to rest on callers
-        // queueing in order — a requirement enforced by `debug_assert!`,
-        // which a `--release`-only project never compiles, and which the
-        // 2026-07-25 `doc_next` cycle bug did in fact violate at a
-        // distance. Sorting here makes ordering the merge's own business
-        // instead of a caller's obligation. It is O(k log k) in the
-        // batch's patch count (one per splice), not in document length,
-        // and it is a no-op whenever the walk did behave. Overlap stays
-        // an `assert!` below: it is a real contradiction, not something
-        // a reordering can repair.
+        // non-overlapping ranges. Resting that on callers queueing in
+        // order means enforcing it with a `debug_assert!`, which a
+        // `--release`-only project never compiles, against a walk that
+        // can violate it at a distance (a `doc_next` cycle did).
+        // Sorting here makes ordering the merge's own business instead
+        // of a caller's obligation. It is O(k log k) in the batch's
+        // patch count (one per splice), not in document length, and a
+        // no-op whenever the walk behaved. Overlap stays an `assert!`
+        // below: it is a real contradiction, not something a reordering
+        // can repair.
         let range_start = |i: usize| match &raw_patches[i].target {
             LinePatchTarget::Original(r) | LinePatchTarget::Nested(_, r) => r.start,
         };
@@ -1881,11 +1852,9 @@ impl App {
 
         let mut patches: Vec<Option<LinePatch>> = raw_patches.into_iter().map(Some).collect();
         let old_lines = std::mem::take(&mut self.lines);
-        // Spec 0210 S2: the two line maps used to ride along with `lines`
-        // through this same merge, the replaced range becoming a run of
-        // `None` for `finalize_override_batch`'s three walks to fill.
-        // Both are gone: a line's owner is derived from the tree's own
-        // counters now, so the text is the only array a splice moves.
+        // Spec 0210 S2: the text is the only array a splice moves. A
+        // line's owner is derived from the tree's own counters, so no
+        // line map has to ride along with `lines` through this merge.
         let old_len = old_lines.len();
         let mut new_lines = Vec::with_capacity(old_len);
 
@@ -1895,8 +1864,7 @@ impl App {
         // whole document, to apply a patch that replaces a handful of
         // them. Moving 24-byte `String` headers instead leaves this pass
         // touching the heap only for the lines the batch actually
-        // replaces. It is the only one of the batch's passes that was
-        // doing per-line heap work.
+        // replaces — it is the batch's only per-line heap work.
         //
         // Soundness rests on the sort above. `by_ref().take(range.start -
         // cursor)` would *underflow* on a patch sitting behind the
@@ -2043,15 +2011,14 @@ impl App {
     /// the new interpretation still shows — spec 0216 S12: the structure
     /// belongs to the arena, which is a function of the bytes and does
     /// not move when the type assignment changes. All that happens here
-    /// is that the overlay under `idx` is vacated and rewritten. There is
-    /// no local tree to translate, no pointer to repair, no slot to
-    /// abandon and nothing to compact — which is most of what this
-    /// function used to be.
+    /// is that the overlay under `idx` is vacated and rewritten: no
+    /// local tree to translate, no pointer to repair, no slot to abandon
+    /// and nothing to compact.
     ///
-    /// A packed run is one slot (S22), so the "sibling merge" spec 0135
-    /// G1 needed is likewise gone: `render_node_as` still resolves `idx`
-    /// to the run and widens `old_span` to its whole extent, but there
-    /// are no sibling nodes left to absorb.
+    /// A packed run is one slot (S22), so no "sibling merge" is needed
+    /// either: `render_node_as` resolves `idx` to the run and widens
+    /// `old_span` to its whole extent, and there are no sibling nodes to
+    /// absorb.
     ///
     /// `is_preview`: `true` from `preview_override_highlight`'s sole live-
     /// preview call site — caps the *interior bytes* handed to the
@@ -2160,9 +2127,9 @@ impl App {
         // Spec 0186 S2: remember the earliest line this batch can have
         // disturbed. `global_start` is `old_span.text_range.start`, i.e.
         // already batch-corrected (spec 0160 G2), so it is this patch's
-        // position in the *final* buffer — the frame the line-map repair
-        // and `visible_rows` rebuild both work in. A `Nested` patch lies
-        // inside its parent's content and so can only raise this, but it
+        // position in the *final* buffer — the frame the repair works
+        // in. A `Nested` patch lies inside its parent's content and so
+        // can only raise this, but it
         // costs nothing to fold it in at the one site where every patch
         // passes.
         self.pending_patch_min_line = Some(match self.pending_patch_min_line {
@@ -2183,26 +2150,25 @@ impl App {
         // descendant span lands on the slot the wire structure gives it —
         // no append, no coordinate translation, no pointer repair.
         //
-        // The byte ranges need no translation either, which is what
-        // spec 0174's `span_shift` used to be for: `overlay_spans` takes
+        // The byte ranges need no translation either, so no `span_shift`
+        // (spec 0174) accompanies them: `overlay_spans` takes
         // `raw_range` and `packed_record_start` from the arena, and the
         // arena is expressed against `self.blob` by construction. A
         // truncated preview's narrower length varint therefore cannot
-        // put a span in the wrong place any more; at worst it produces a
-        // span the maximal walk never saw, which `slots_for_spans`
-        // rejects.
+        // put a span in the wrong place; at worst it produces a span the
+        // maximal walk never saw, which `slots_for_spans` rejects.
         //
         // `idx`'s own slot has to be vacated first, alongside the
         // descendants above: `overlay_spans` treats a second span landing
         // on an already-rendered slot as one more row of a packed run and
-        // *adds* its lines, so leaving the old interpretation in place
-        // would count `idx`'s lines twice over.
+        // *adds* its lines, so leaving the previous interpretation in
+        // place would count `idx`'s lines twice over.
         self.tree[idx] = decode::TreeNode::vacant();
         decode::overlay_spans(&mut self.tree, new_spans, &self.arena, idx);
-        // `idx` itself was just retyped, so any previously resolved cue
-        // for it answers a question about the old interpretation and is
-        // now stale (spec 0152 G6). Its descendants were reset above,
-        // when their slots were vacated.
+        // `idx` itself was just retyped, so a cue resolved for it before
+        // now answers a question about the superseded interpretation
+        // (spec 0152 G6). Its descendants were reset above, when their
+        // slots were vacated.
         self.heat_states[idx] = heat_cue::HeatState::default();
 
         // The subtree under `idx` comes over unfolded, but `idx`'s own
@@ -2214,12 +2180,11 @@ impl App {
             self.tree[idx].lines_visible = 1;
         }
 
-        // Spec 0210 S3: the ancestors' sizes, and nothing else. This is
-        // the whole of what used to be `finalize_override_batch`'s three
-        // walks, and it belongs *here*, per splice, not there, once per
-        // batch: a batch splices many nodes, and the position every one of
-        // them is patched at is derived from these counts. Deferring the
-        // refresh to the end of the batch would leave the second splice
+        // Spec 0210 S3: the ancestors' sizes, and nothing else. It
+        // belongs *here*, per splice, rather than once per batch in
+        // `finalize_override_batch`: a batch splices many nodes, and the
+        // position every one of them is patched at is derived from these
+        // counts, so deferring the refresh would leave the second splice
         // reading the first splice's stale ancestors.
         //
         // O(depth), and it stops as soon as a node's counts come out
@@ -2389,12 +2354,11 @@ impl App {
             }
         }
 
-        // Render-cache key: `(interior_range, target)` — no longer
-        // `field_name` (G2 makes the cached render field-name-invariant).
-        // `interior_range` is the same "interior" quantity the cache
-        // already keyed on before this spec, just computed from the
-        // resolved `raw_range`, with `packed_record_start` always absent
-        // (the packed case has already been normalized above).
+        // Render-cache key: `(interior_range, target)`. The field name is
+        // deliberately not part of it — G2 patches the name into the
+        // rendered header below, so the cached render itself is
+        // field-name-invariant. `packed_record_start` is always absent
+        // here, the packed case having been normalized above.
         let interior_range = extract::message_payload_range(&self.blob, &old_span.raw_range);
         // Spec 0163: `is_preview` is part of the key -- a budget-
         // truncated preview render and a full confirmed render of the
@@ -2471,14 +2435,13 @@ impl App {
         // in place of that bare field number even though the node stays
         // raw.
         //
-        // Spec 0187 S5: the text patch is all there is. There used to be
-        // a parallel `new_line_styles` to repair here, re-`colorize`-ing
-        // the patched header *in isolation* — the second of flaw D4's
-        // two unsound "highlight one line out of context" sites. Since
-        // highlighting is now computed per frame over the on-screen
-        // window (`render::window_styles_for`), which frames that window
-        // in synthetic braces before parsing it, that repair has no
-        // counterpart and is simply gone.
+        // Spec 0187 S5: the text patch is all there is — there is no
+        // parallel style array to repair alongside it. Highlighting is
+        // computed per frame over the on-screen window
+        // (`render::window_styles_for`), which frames that window in
+        // synthetic braces before parsing it; re-`colorize`-ing the
+        // patched header on its own would be flaw D4's "highlight one
+        // line out of context".
         let patched_header = match field_type {
             Some(ft) if ft != Type::Group => {
                 decode::patch_synthetic_field_name(&new_lines[0], &header_field_name)
@@ -2543,16 +2506,14 @@ impl App {
     }
 
     /// Origin for a brand-new override, targeting node `idx` — created
-    /// as kind `Path` (spec 0208 S2). This used to derive `PathField`
-    /// by default (feedback, 2026-07-21), on the grounds that a
-    /// path:field origin survives sibling reordering/insertion better
-    /// than a plain positional `Path`; the robustness holds, but it is
-    /// the wrong thing for a *default* to optimize. The user points at
-    /// one node, and a `PathField` entry is expressed in terms of that
-    /// node's **parent** plus a field number, so it reads as being
+    /// as kind `Path` (spec 0208 S2). A `PathField` default would
+    /// survive sibling reordering and insertion better, but robustness
+    /// is the wrong thing for a *default* to optimize: the user points
+    /// at one node, and a `PathField` entry is expressed in terms of
+    /// that node's **parent** plus a field number, so it reads as being
     /// about somewhere else and silently covers every same-numbered
-    /// sibling. `z`/`Z` in the management pane (spec 0124 G2) still
-    /// promote an entry to `path:field` for whoever wants it.
+    /// sibling. `z`/`Z` in the management pane (spec 0124 G2) promote an
+    /// entry to `path:field` for whoever wants that.
     ///
     /// Keeps returning `Result` although `OverrideKind::Path` cannot
     /// fail: the sole call site sits opposite `origin_for_kind(idx,

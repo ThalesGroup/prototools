@@ -48,8 +48,8 @@ impl App {
                     // search actually runs is determined by whichever
                     // pane has focus right now — `override_focus`/
                     // `manage_focus` are untouched by typing into
-                    // `command_buffer` (spec 0114 §4/0117 §3, extended by
-                    // this rework to share the main pane's own bar).
+                    // `command_buffer`. All three panes share the main
+                    // pane's bar (spec 0114 §4/0117 §3).
                     CommandLineKind::Search(dir) if self.override_focus => {
                         let pattern = if buf.is_empty() {
                             self.last_override_search
@@ -380,10 +380,9 @@ impl App {
         // A directory-path `replacement` always ends in `/` (G4). If the
         // cursor sat right before an already-present `/` when completion
         // was triggered (e.g. after Left-arrow-ing back into an earlier
-        // path segment to edit it), `suffix` starts with that same `/` —
-        // splicing them back-to-back would double it up (glitch reported
-        // 2026-07-18). Drop the redundant leading separator from `suffix`
-        // in that case.
+        // path segment to edit it), `suffix` starts with that same `/`
+        // and splicing them back-to-back would double it up. Drop the
+        // redundant leading separator from `suffix` in that case.
         let suffix = if replacement.ends_with('/') && suffix.starts_with('/') {
             &suffix[1..]
         } else {
@@ -456,11 +455,11 @@ impl App {
         };
         match resolve_command(name) {
             Ok("export") => self.run_export(tokens.collect()),
-            // Item 9 (2026-07-17 feedback): `:quit` (or any unambiguous
-            // prefix, e.g. `:q` — no other command starts with `q`)
-            // quits directly, same effect as confirming `q` twice —
-            // typing the full command out is itself the deliberate
-            // action `qq`'s second press otherwise confirms.
+            // `:quit` (or any unambiguous prefix, e.g. `:q` — no other
+            // command starts with `q`) quits directly, same effect as
+            // confirming `q` twice: typing the full command out is
+            // itself the deliberate action `qq`'s second press
+            // otherwise confirms.
             Ok("quit") => self.should_quit = true,
             Ok("type-as") => self.run_type_as(tokens.collect()),
             Ok("type-as-raw") => self.run_type_as_raw(),
@@ -501,18 +500,17 @@ impl App {
     /// (`can_override`, §1) — same refusal `t` gives — then activates a
     /// `Path`-kind override for the cursor node's positional path and
     /// runs the recursive `render_overrides` pass (§4/§6), without ever
-    /// opening the override pane. Unlike the old `apply_override`-based
-    /// one-shot splice, this persists the override in the collection.
+    /// opening the override pane. The override is persisted in the
+    /// collection, not spliced one-shot.
     ///
     /// A primitive type keyword (spec 0135 §G3/§G4) is rejected upfront,
     /// before `render_overrides` runs, when it isn't wire-compatible with
     /// the cursor node's current wire type (a packed element's own
     /// effective wire type is always `WT_LEN`, per its reconstructed
-    /// record — spec 0135 §G1) — mirroring today's "type not found"
-    /// failure shape, but caught early so it surfaces as a clear
-    /// message-line error rather than being masked by `run_type_as`'s
-    /// own success message. A message-FQDN target falls back to today's
-    /// (unchanged) deferred resolution inside `splice_override`.
+    /// record — spec 0135 §G1). Catching it early is what makes it a
+    /// clear message-line error instead of being masked by
+    /// `run_type_as`'s own success message. A message-FQDN target falls
+    /// back to deferred resolution inside `splice_override`.
     pub(super) fn type_as(&mut self, new_fqdn: Option<&str>) -> Result<(), String> {
         if !self.can_override(self.cursor) {
             return Err(
@@ -617,7 +615,7 @@ impl App {
         if as_prototext {
             // The meta-schema is one specific message, not a namespace
             // scan (spec 0197 §S4): JIT-load it by name first, then let
-            // `locate_file_descriptor_set_type` search the pool as before.
+            // `locate_file_descriptor_set_type` search the pool.
             self.ctx.message("google.protobuf.FileDescriptorSet");
             let fds_type = export_descriptor::locate_file_descriptor_set_type(self.ctx.pool())
                 .ok_or_else(|| {
@@ -700,12 +698,9 @@ impl App {
     /// subcommand (spec 0123) to resolve its `path` argument.
     pub(crate) fn resolve_path(&self, path: &str) -> Option<usize> {
         // Spec 0188 G1: `self.first_node`, not a search for the arena's
-        // parentless node. That search was a linear scan of the whole
-        // arena — 382 k nodes of 256 bytes each on a 25 MB descriptor —
-        // and it ran once per `Path` override entry per batch, which is
-        // how it stayed invisible for so long: it was smaller than the
-        // full-arena mark scan next to it until spec 0188 S4 deleted
-        // that, and then it *was* the batch.
+        // parentless node. That search is a linear scan of the whole
+        // arena — 382 k nodes on a 25 MB descriptor — and it would run
+        // once per `Path` override entry per batch.
         let root = self.first_node;
         if path == "/" {
             return Some(root);

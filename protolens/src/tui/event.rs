@@ -3,10 +3,10 @@
 // SPDX-License-Identifier: MIT
 
 //! Event-driven main loop plumbing (spec 0152 G8) — a dedicated
-//! input-reader thread and a small `AppEvent` enum, letting
-//! `run_loop` sleep on one channel until there's a real reason to
-//! wake (a keypress, a mouse event, an existing deadline, or a worker
-//! progress notification) instead of polling on a fixed schedule.
+//! input-reader thread and a small `AppEvent` enum, so `run_loop` waits
+//! on one channel (a keypress, a mouse event, a worker progress
+//! notification, or its own next deadline) rather than polling crossterm
+//! for input on a schedule of its own.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};

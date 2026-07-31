@@ -176,9 +176,8 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
 
     // Spec 0210 S2: line ownership must stay fully consistent with the
     // doc chain. Every node reachable via `doc_next` from `first_node`
-    // owns its own header line, and nothing else does — which is what
-    // the `line_to_node` vector used to be asserted to be, now asked of
-    // the counters instead.
+    // owns its own header line, and nothing else does — asked of the
+    // counters, since no line-keyed map holds the answer.
     let mut owners: Vec<Option<u32>> = vec![None; app.lines.len()];
     let mut count = 0;
     let mut cur = Some(app.first_node);
@@ -440,15 +439,14 @@ fn the_forward_and_backward_ordinal_walks_agree_across_a_packed_run() {
     );
 }
 
-/// Spec 0143 regression (2026-07-18 feedback): overriding a
+/// Spec 0143 regression: overriding a
 /// varint-wire-framed field to an incompatible primitive type (any
 /// `Kind::Double`/`Float`/`Fixed32`/`Fixed64`/`String`/`Bytes`/
 /// `Message` target hits `prototext-core`'s `VarintKind::Mismatch`
 /// catch-all, which writes the numeric field key and a `TYPE_MISMATCH`
 /// flag, never the synthetic field-name placeholder) must not corrupt
-/// the `TYPE_MISMATCH` annotation by splicing the field name into it —
-/// the naive `.replacen('_', ..)` this spec replaced used to produce
-/// `TYPEtype_idMISMATCH`.
+/// the `TYPE_MISMATCH` annotation by splicing the field name into it: a
+/// naive `.replacen('_', ..)` produces `TYPEtype_idMISMATCH`.
 #[test]
 fn splice_override_on_a_varint_mismatch_does_not_corrupt_type_mismatch_annotation() {
     use crate::decode::{decode, DescriptorContext, RootType};
@@ -535,8 +533,8 @@ fn splice_override_on_a_varint_mismatch_does_not_corrupt_type_mismatch_annotatio
 /// deactivating the override (reverting to the real, narrower
 /// multi-line message), left every visible row shorter than
 /// `pan_offset`, so the main pane rendered blank — recoverable only by
-/// panning right again (2026-07-24 bug report). `rebuild_visible_rows`
-/// (the chokepoint `splice_override` always calls) must re-clamp.
+/// panning right again. The re-clamp belongs on `finalize_override_
+/// batch`, the chokepoint every splice passes through.
 #[test]
 fn deactivating_override_reclamps_pan_offset_to_the_shrunk_content() {
     let (mut app, inner_idx, _) = type_as_fixture();
@@ -2222,13 +2220,11 @@ fn a_batch_that_patches_nothing_leaves_the_document_intact() {
     assert_eq!(line_owners(&app), owners_before);
 }
 
-/// Spec 0186 S4 retained the prefix of `visible_rows` with a
-/// `partition_point`, which was only sound while the vector was sorted
-/// ascending. Spec 0210 S2 deletes the vector: the visible rows are
-/// walked from the counters, so ascending order is a property of the
-/// walk rather than of a stored array. What is left worth pinning is
-/// that the walk stays within the spliced document and enumerates every
-/// row exactly once, in order.
+/// The visible rows are walked from the tree's counters rather than
+/// held in an array (spec 0210 S2), so ascending order is a property of
+/// the walk and cannot be asserted of a stored vector. What is worth
+/// pinning is that the walk stays within the spliced document and
+/// enumerates every row exactly once, in order.
 #[test]
 fn the_visible_row_walk_stays_ordered_across_a_splice() {
     fn walked(app: &App) -> Vec<usize> {

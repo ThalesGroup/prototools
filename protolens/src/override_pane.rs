@@ -54,10 +54,10 @@ pub fn all_type_fqdns(pool: &DescriptorPool) -> Vec<String> {
 /// plausible override target, the same "non_vetoed" filtering
 /// `determine_root_type` applies before ranking.
 ///
-/// Spec 0217: the sweep and the ranking both live in `crate::sweep` now,
-/// shared with startup's root-type sweep, which used to carry a
-/// hand-copied duplicate of the comparator above. `jobs` is a ceiling on
-/// the threads it may use, not a target — see `sweep::effective_jobs`.
+/// Spec 0217: the sweep and the ranking both live in `crate::sweep`,
+/// shared with startup's root-type sweep so the comparator above exists
+/// in exactly one place. `jobs` is a ceiling on the threads it may use,
+/// not a target — see `sweep::effective_jobs`.
 pub fn inferred_candidates(
     range_bytes: &[u8],
     graph: &ArchivedCompiledGraph,
@@ -89,8 +89,8 @@ pub fn inferred_score(
 
 /// One of the three override scopes (spec 0117 §1), in increasing-priority
 /// order. Not used for the collection's sort order (which sorts by origin
-/// label as a plain string — see `OverrideCollection::sort`; feedback,
-/// 2026-07-16), only for `next`/`prev` rotation (`z`/`Z`).
+/// label as a plain string — see `OverrideCollection::sort`), only for
+/// `next`/`prev` rotation (`z`/`Z`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OverrideKind {
     Path,
@@ -109,7 +109,7 @@ impl OverrideKind {
         }
     }
 
-    /// Rotates `Z` — the reverse of `next()` (feedback, 2026-07-16).
+    /// Rotates `Z` — the reverse of `next()`.
     pub fn prev(self) -> Self {
         match self {
             OverrideKind::Path => OverrideKind::FqdnField,
@@ -162,14 +162,14 @@ impl OverrideOrigin {
 
 /// True when `candidate`'s origin `label()` is `origin`'s own `label()`,
 /// or has it as a genuine prefix (`toggle_active_cascading`'s notion of
-/// "under", interactive feedback 2026-07-17) — comparing plain label
-/// strings (`path`, `path:field`, or `fqdn:field`) works uniformly
-/// across all three origin kinds without needing to special-case them:
-/// a `path:field` origin's label naturally extends its `path` origin's
-/// label with a `:field` suffix (so `/3` matches `/3:5`, the same node
-/// via a different override kind), and a deeper `path` origin's label
-/// extends it with a `/segment` suffix (so `/3` matches `/3/2` but not
-/// `/30`, a genuine path-segment boundary, not a raw string prefix).
+/// "under"). Comparing plain label strings (`path`, `path:field`, or
+/// `fqdn:field`) works uniformly across all three origin kinds without
+/// special-casing them: a `path:field` origin's label extends its
+/// `path` origin's label with a `:field` suffix (so `/3` matches
+/// `/3:5`, the same node via a different override kind), and a deeper
+/// `path` origin's label extends it with a `/segment` suffix (so `/3`
+/// matches `/3/2` but not `/30` — a genuine path-segment boundary, not
+/// a raw string prefix).
 /// The root path `/` is a special case: every path-rooted label starts
 /// with `/`, but `format!("{origin}/")` would double up its own
 /// trailing slash, so it's checked directly instead. An `fqdn:field`
@@ -204,15 +204,13 @@ pub struct OverrideEntry {
     /// `true` when this entry was created by `render_overrides`'s
     /// internal Any/MessageSet auto-expansion seeding (`activate_auto`),
     /// as opposed to an explicit user action (`activate`, via the
-    /// override pane or `type-as`) — spec 0120 follow-up. Provenance
-    /// only, purely for display (`manage_entry_style` colors auto
-    /// entries differently from manual ones): it has no effect
-    /// whatsoever on how an active entry is resolved or rendered
-    /// (2026-07-17 design correction — an override is an override,
-    /// active or not, regardless of how it came to exist). Round-trips
-    /// faithfully through the YAML save/restore format (spec 0125 §G3),
-    /// same as every other field — a file with no `auto` key at all
-    /// (predating spec 0125) defaults to `false`.
+    /// override pane or `type-as`) — spec 0120. Provenance only, purely
+    /// for display (`manage_entry_style` colors auto entries differently
+    /// from manual ones): it has no effect whatsoever on how an active
+    /// entry is resolved or rendered — an override is an override,
+    /// regardless of how it came to exist. Round-trips through the YAML
+    /// save/restore format (spec 0125 §G3) like every other field; a
+    /// file with no `auto` key defaults to `false`.
     pub auto: bool,
 }
 
@@ -220,8 +218,8 @@ pub struct OverrideEntry {
 /// sorted lexicographically by origin label (`OverrideOrigin::label`:
 /// `path`, `path:field`, or `fqdn:field`), then type (`None` first) — the
 /// same order used for the management pane's listing and the YAML file's
-/// entry order (feedback, 2026-07-16: sort by origin path as a plain
-/// string, not by kind first).
+/// entry order. Deliberately by origin path as a plain string, not by
+/// kind first.
 #[derive(Debug, Default)]
 pub struct OverrideCollection {
     entries: Vec<OverrideEntry>,
@@ -342,7 +340,7 @@ impl OverrideCollection {
     /// Like `toggle_active`, but also cascades the same new active/
     /// inactive state to every entry whose origin sits at-or-under
     /// `idx`'s origin (`origin_is_at_or_under`) — the manage pane's `A`/
-    /// Shift-Space/Shift-click (interactive feedback, 2026-07-17).
+    /// Shift-Space/Shift-click.
     ///
     /// Deactivating is unambiguous: every affected entry (regardless of
     /// how many share a given origin) is simply set inactive, same as
@@ -394,9 +392,8 @@ impl OverrideCollection {
     /// Unconditionally activates the entry at `idx` — unlike
     /// `toggle_active`, never flips it off — deactivating every other
     /// entry sharing its origin (same per-origin invariant). The manage
-    /// pane's Shift-Up/Shift-Down (interactive feedback, 2026-07-17):
-    /// moving the highlight and selecting the destination in one
-    /// gesture.
+    /// pane's Shift-Up/Shift-Down: moving the highlight and selecting
+    /// the destination in one gesture.
     pub fn set_active(&mut self, idx: usize) {
         let Some(entry) = self.entries.get(idx) else {
             return;
@@ -457,15 +454,15 @@ impl OverrideCollection {
     /// raw clone with `active` forced to `false` — bypassing
     /// `activate_impl`'s `(origin, type)` look-up, which would otherwise
     /// just reactivate the existing entry instead of adding a new one —
-    /// while keeping `name`/`r#type` as-is. `auto` is forced to `false`
-    /// (feedback, 2026-07-17): a duplicate is always a deliberate manual
-    /// entry, whatever the original's own auto/manual status — same
-    /// rule `activate`/`rotate_origin` already apply to explicit user
-    /// actions. Returns the new entry's post-`sort()` index: `sort()`
-    /// (via `Vec::sort_by`) is stable and `active`/`name`/`auto` aren't
-    /// part of the sort key, so the pushed clone — originally last in
-    /// the vec — is guaranteed to land as the *last* entry among those
-    /// sharing its `origin`/`type` after sorting.
+    /// while keeping `name`/`r#type` as-is. `auto` is forced to `false`:
+    /// a duplicate is always a deliberate manual entry, whatever the
+    /// original's own auto/manual status — the same rule `activate`/
+    /// `rotate_origin` apply to explicit user actions. Returns the new
+    /// entry's post-`sort()` index: `sort()` (via `Vec::sort_by`) is
+    /// stable and `active`/`name`/`auto` aren't part of the sort key, so
+    /// the pushed clone — originally last in the vec — is guaranteed to
+    /// land as the *last* entry among those sharing its `origin`/`type`
+    /// after sorting.
     pub fn duplicate(&mut self, idx: usize) -> usize {
         let mut clone = self.entries[idx].clone();
         let origin = clone.origin.clone();
@@ -625,10 +622,10 @@ impl OverrideCollection {
         serde_norway::to_string(&file).expect("OverrideCollection YAML serialization cannot fail")
     }
 
-    /// Parses the spec 0117 §4 YAML format, returning the (unsorted-check
-    /// not required — re-sorted here) collection plus the recorded target
-    /// hashes for the caller to compare against the currently-loaded blob/
-    /// descriptor set.
+    /// Parses the spec 0117 §4 YAML format. The entries are re-sorted
+    /// here, so the file's own order need not be trusted. Also returns
+    /// the recorded target hashes, for the caller to compare against the
+    /// currently-loaded blob/descriptor set.
     pub fn from_yaml(text: &str) -> Result<(Self, YamlTarget), String> {
         let file: YamlFile = serde_norway::from_str(text).map_err(|e| {
             format!(
@@ -784,9 +781,9 @@ mod tests {
         );
     }
 
-    /// Interactive feedback, 2026-07-17: activating an entry via `A`/
-    /// Shift-Space/Shift-click also activates every entry whose origin
-    /// sits at-or-under it — a descendant `Path` origin, a `PathField`
+    /// Activating an entry via `A`/Shift-Space/Shift-click also
+    /// activates every entry whose origin sits at-or-under it — a
+    /// descendant `Path` origin, a `PathField`
     /// origin at the same path, but not an unrelated sibling path, and
     /// not an `FqdnField` origin (no tree-path relationship to cascade
     /// through). Where a descendant origin has more than one entry
@@ -866,9 +863,9 @@ mod tests {
         );
     }
 
-    /// Interactive feedback, 2026-07-17: deactivating via the cascading
-    /// toggle deactivates every entry at-or-under the origin, with no
-    /// per-origin ambiguity to resolve (unlike activating).
+    /// Deactivating via the cascading toggle deactivates every entry
+    /// at-or-under the origin, with no per-origin ambiguity to resolve
+    /// (unlike activating).
     #[test]
     fn toggle_active_cascading_deactivates_every_descendant() {
         let mut collection = OverrideCollection::new();
@@ -974,8 +971,7 @@ mod tests {
     fn entries_are_sorted_lexicographically_by_origin_path_not_by_kind_first() {
         // A `PathField` origin ("/1") sorts before a `Path` origin ("/2")
         // that is lexicographically later, even though `Path < PathField`
-        // by kind — proving kind is no longer the primary sort key
-        // (feedback, 2026-07-16).
+        // by kind — proving kind is not the primary sort key.
         let mut collection = OverrideCollection::new();
         collection.activate(
             OverrideOrigin::Path {

@@ -4,32 +4,27 @@
 
 //! Interned render provenance for `TreeNode::rendered_as` (spec 0213).
 //!
-//! A node used to carry its provenance inline as an
-//! `Option<(Option<Option<String>>, String)>`: 48 bytes, plus up to two
-//! heap allocations, for the largest field left in the slot and the one
+//! Held inline, a provenance is an
+//! `Option<(Option<Option<String>>, String)>`: 48 bytes plus up to two
+//! heap allocations, for the largest field in the node slot and the one
 //! least likely to be occupied. On `googleapis.desc` it is empty on
 //! 4 499 336 of 4 501 014 nodes — 48 bytes paid 4.5 million times to say
-//! "nothing here yet", and paid again for each further copy of the arena a
-//! commit holds at its peak.
+//! "nothing here yet", and paid again for each further copy of the arena
+//! a commit holds at its peak. So the value is stored once here and the
+//! node holds a 4-byte [`ProvenanceId`] into this table.
 //!
-//! Here the whole value is stored once and the node holds a 4-byte
-//! [`ProvenanceId`] into this table. The *pair* is interned rather than its
-//! two halves separately (which is what the design brief's annex row 10
-//! proposed) for three reasons, in the order they matter: the type half
-//! needs three values that are not a type name — no override, explicit
-//! raw, and never rendered — and `FqdnId` has no third sentinel to spare;
-//! the set of distinct pairs is bounded by the overrides in play rather
-//! than by nodes; and the tuple keeps its exact former shape inside the
-//! table, so nothing reasons differently about a provenance than it did
-//! before, only about how to reach it.
+//! The *pair* is interned rather than its two halves separately: the type
+//! half needs three values that are not a type name — no override,
+//! explicit raw, and never rendered — and `FqdnId` has no third sentinel
+//! to spare, while the set of distinct pairs is bounded by the overrides
+//! in play rather than by nodes.
 
 use std::collections::HashMap;
 
 /// What one node's rendering came from: which override produced the text
 /// currently on screen, and under what field name it was rendered.
 ///
-/// The nesting is the one `TreeNode::rendered_as` held inline before spec
-/// 0213, unchanged, and none of it is redundant — see
+/// None of the nesting is redundant — see
 /// `docs/protolens/design/document-tree.md`:
 ///
 /// - `(None, name)` — rendered with no active override at all; the type
@@ -47,7 +42,7 @@ pub type Provenance = (Option<Option<String>>, String);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ProvenanceId(u32);
 
-/// The never-rendered sentinel — what the outer `None` used to be.
+/// The never-rendered sentinel.
 ///
 /// `u32::MAX` rather than `0`, so that ids are plain indices and the table
 /// needs no reserved first entry.

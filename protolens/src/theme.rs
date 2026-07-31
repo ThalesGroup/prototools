@@ -2,23 +2,20 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Theme: maps a `SyntaxRole` (spec 0116 §7) to a `ratatui::style::Style`
-//! (spec 0116 §9) — two fixed, built-in palette pairs (dark, light), each
-//! in two color depths (RGB, borrowed from VSCode Dark+/Light+; ANSI-16,
-//! a portable fallback — picked via `supports_rgb`, which checks
-//! `COLORTERM` first, then a live XTGETTCAP query to the terminal, then
-//! falls back to a static terminfo capability probe — mirroring Vim's own
-//! layered true-color auto-detection), plus a `System` selector resolved
-//! once at startup.
+//! Theme: maps a `SyntaxRole` to a `ratatui::style::Style` (spec 0116
+//! §7, §9). Two built-in palette pairs (dark, light), each in two color
+//! depths: RGB, borrowed from VSCode Dark+/Light+, and ANSI-16, a
+//! portable fallback — picked by `supports_rgb`. The `System` selector
+//! is resolved once at startup.
 
 use ratatui::style::{Color, Modifier, Style};
 
 use crate::colorize::SyntaxRole;
 
-/// The `--theme` CLI flag's three fixed choices (spec 0116 §9). `System`
-/// exists only at the CLI-selection layer — it is resolved to `Dark` or
-/// `Light` once at startup, before any rendering happens; `style_for`
-/// itself only ever takes the resolved `Dark`/`Light` variant.
+/// The `--theme` CLI flag's three fixed choices (spec 0116 §9).
+/// `System` exists only at the CLI-selection layer: it is resolved to
+/// `Dark` or `Light` once at startup, before any rendering, so
+/// `style_for` only ever sees a resolved variant.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, clap::ValueEnum)]
 pub enum ThemeKind {
     Dark,
@@ -31,7 +28,7 @@ pub enum ThemeKind {
 /// programming error.
 ///
 /// Picks between an RGB palette (borrowed from VSCode's Dark+/Light+
-/// themes) and a portable ANSI-16 fallback, based on `supports_rgb`
+/// themes) and a portable ANSI-16 fallback via `supports_rgb`
 /// (spec 0116 §9).
 pub fn style_for(role: SyntaxRole, theme: ThemeKind) -> Style {
     match theme {
@@ -47,12 +44,11 @@ pub fn style_for(role: SyntaxRole, theme: ThemeKind) -> Style {
 
 /// Whether the terminal advertises 24-bit color support, checked in the
 /// same order Vim does (patch 9.1.1060, vim/vim#16490): `COLORTERM=
-/// truecolor`/`24bit` (the signal `bat`, `delta`, and most other Rust
-/// terminal tools key off — a plain env lookup, re-checked on every
-/// call, no caching) first; then a live XTGETTCAP query to the terminal
-/// (`xtgettcap_reports_rgb`, cached); then a static terminfo capability
-/// probe (`terminfo_reports_rgb`, cached) for terminals that don't
-/// answer the live query.
+/// truecolor`/`24bit` (the signal `bat`, `delta` and most other Rust
+/// terminal tools key off — an uncached env lookup) first; then a live
+/// XTGETTCAP query (`xtgettcap_reports_rgb`, cached); then a static
+/// terminfo capability probe (`terminfo_reports_rgb`, cached) for
+/// terminals that don't answer the live query.
 fn supports_rgb() -> bool {
     colorterm_reports_truecolor() || xtgettcap_reports_rgb() || terminfo_reports_rgb()
 }
@@ -71,24 +67,21 @@ fn colorterm_reports_truecolor() -> bool {
 /// Vim's own `term.c` (`t_xtgettcap`).
 const XTGETTCAP_RGB_QUERY: &str = "\x1bP+q524742\x1b\\";
 
-/// Live XTGETTCAP fallback for when `COLORTERM` isn't set — this is
-/// Vim's *primary* true-color signal (patch 9.1.1060, vim/vim#16490):
-/// actively query the live terminal (not just its static terminfo
-/// entry) for the `RGB` termcap capability. Some terminals answer this
-/// correctly even though their terminfo database entry doesn't
-/// advertise `RGB`/`Tc`/`max_colors=16777216` — `terminfo_reports_rgb`
-/// remains as the fallback for terminals that don't answer this live
-/// query at all (e.g. some xterm builds).
+/// Live XTGETTCAP fallback for when `COLORTERM` isn't set — Vim's
+/// *primary* true-color signal (patch 9.1.1060, vim/vim#16490): query
+/// the live terminal, not just its static terminfo entry, for the `RGB`
+/// termcap capability. Some terminals answer correctly even though
+/// their terminfo entry advertises none of `RGB`/`Tc`/
+/// `max_colors=16777216`; `terminfo_reports_rgb` covers the terminals
+/// that don't answer this live query at all (e.g. some xterm builds).
 ///
 /// Only attempted when both stdin and stdout are real terminals — under
-/// `cargo test` (and other non-interactive contexts) this is false, so
-/// no terminal I/O is attempted and the function returns `false`
-/// immediately.
+/// `cargo test` and other non-interactive contexts this is false, so no
+/// terminal I/O happens and the answer is `false`.
 ///
-/// Cached in a `OnceLock`: like `terminfo_reports_rgb`, the answer
-/// cannot change during a single process's lifetime, and — unlike a
-/// static terminfo lookup — repeating this query would mean repeated,
-/// real terminal round-trips.
+/// Cached in a `OnceLock`: the answer cannot change during a single
+/// process's lifetime, and — unlike a static terminfo lookup —
+/// repeating this query would mean repeated terminal round-trips.
 fn xtgettcap_reports_rgb() -> bool {
     static CACHE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *CACHE.get_or_init(|| {
@@ -100,14 +93,14 @@ fn xtgettcap_reports_rgb() -> bool {
     })
 }
 
-/// Performs the actual XTGETTCAP round-trip. Mirrors `terminal-light`'s
-/// own `xterm.rs::query` raw-mode-wrapping pattern: temporarily enables
-/// raw mode (if not already enabled) so the response isn't held back
+/// Performs the XTGETTCAP round-trip. Mirrors `terminal-light`'s own
+/// `xterm.rs::query` raw-mode-wrapping pattern: temporarily enables raw
+/// mode (if not already enabled) so the response isn't held back
 /// waiting for a newline, then restores the prior mode.
 ///
-/// Must run before the TUI's own crossterm event loop starts polling
-/// the terminal (see `main.rs`'s `theme::prime_supports_rgb` call) —
-/// two concurrent readers of the tty would race.
+/// Must run before the TUI's crossterm event loop starts polling the
+/// terminal (see `main.rs`'s `theme::prime_supports_rgb` call) — two
+/// concurrent readers of the tty would race.
 fn query_xtgettcap_rgb() -> Result<bool, xterm_query::XQError> {
     use crossterm::terminal::{disable_raw_mode, enable_raw_mode, is_raw_mode_enabled};
     let switch_to_raw = !is_raw_mode_enabled()?;
@@ -130,12 +123,11 @@ fn parse_xtgettcap_response(response: &str) -> bool {
 }
 
 /// Terminfo-based fallback for when neither `COLORTERM` nor a live
-/// XTGETTCAP query confirm true-color support — mirrors Vim's own
-/// true-color auto-detection (patch 9.1.1060, vim/vim#16490): query the
-/// terminal's *static* terminfo entry for the non-standard `RGB`/`Tc`
-/// boolean capabilities, or a `max_colors` value of `0x1000000`
-/// (16,777,216) — the sentinel some terminfo entries (e.g. `xterm-direct`)
-/// use for true-color support.
+/// XTGETTCAP query confirm true-color support — mirrors Vim (patch
+/// 9.1.1060, vim/vim#16490): query the terminal's *static* terminfo
+/// entry for the non-standard `RGB`/`Tc` boolean capabilities, or a
+/// `max_colors` value of `0x1000000` (16,777,216), the sentinel some
+/// terminfo entries (e.g. `xterm-direct`) use for true color.
 ///
 /// Cached in a `OnceLock`: parsing the terminfo database from disk is
 /// comparatively expensive, and — unlike `COLORTERM` — the answer cannot
@@ -160,12 +152,11 @@ fn database_reports_rgb(db: &terminfo::Database) -> bool {
     )
 }
 
-/// Forces early, one-time evaluation of the cached `xtgettcap_reports_rgb`
-/// result. Must be called before `tui::run` takes over the terminal with
-/// raw mode + the alternate screen and starts its own crossterm event-
-/// polling loop — otherwise the probe's read and the TUI's own input
-/// handling could race over the same tty. Mirrors `resolve_system`'s own
-/// early-startup OSC query in `main.rs`.
+/// Forces early, one-time evaluation of the cached
+/// `xtgettcap_reports_rgb` result. Must be called before `tui::run`
+/// takes over the terminal with raw mode + the alternate screen and
+/// starts its own crossterm event-polling loop — otherwise the probe's
+/// read and the TUI's input handling race over the same tty.
 pub fn prime_supports_rgb() {
     xtgettcap_reports_rgb();
 }
@@ -176,10 +167,9 @@ pub fn prime_supports_rgb() {
 /// match from <https://www.color-name.com>, purely for human
 /// readability when scanning this file — VSCode itself has no
 /// equivalent naming, only semantic scope names (mirrored here by
-/// which `SyntaxRole` each constant is named after). Centralized here,
-/// and referenced (not re-typed) wherever the same VSCode color
-/// applies to more than one role/function, so a color only ever needs
-/// updating in one place.
+/// which `SyntaxRole` each constant is named after). A color shared by
+/// more than one role/function is referenced, not re-typed, so it only
+/// ever needs updating in one place.
 mod dark_rgb {
     use ratatui::style::Color;
 
@@ -292,7 +282,7 @@ fn style_for_light_rgb(role: SyntaxRole) -> Style {
 }
 
 /// ANSI-16 fallback palette, dark (spec 0116 §9's "ANSI-16 palette"
-/// table) — unchanged from this spec's original implementation.
+/// table).
 fn style_for_dark_ansi16(role: SyntaxRole) -> Style {
     match role {
         SyntaxRole::Attribute => Style::default(),
@@ -322,7 +312,7 @@ fn style_for_dark_ansi16(role: SyntaxRole) -> Style {
 }
 
 /// ANSI-16 fallback palette, light (spec 0116 §9's "ANSI-16 palette"
-/// table) — unchanged from this spec's original implementation.
+/// table).
 fn style_for_light_ansi16(role: SyntaxRole) -> Style {
     match role {
         SyntaxRole::Attribute => Style::default(),
@@ -351,11 +341,10 @@ fn style_for_light_ansi16(role: SyntaxRole) -> Style {
     }
 }
 
-/// Manage-pane auto-override type-label color (spec 0130, restyled
-/// 2026-07-18): a small, standalone style function independent of
-/// `SyntaxRole`/`RECOGNIZED_NAMES` (those are strictly one variant per
-/// `queries/highlights.scm` capture name; this has no corresponding
-/// syntax capture). Only `auto` entries get a dedicated color, mirroring
+/// Manage-pane auto-override type-label color (spec 0130): a standalone
+/// style function independent of `SyntaxRole`/`RECOGNIZED_NAMES` (those
+/// are strictly one variant per `queries/highlights.scm` capture name;
+/// this has no corresponding syntax capture). Only `auto` entries get a dedicated color, mirroring
 /// `Comment`'s values (minus `ITALIC`) — manual entries render in the
 /// terminal's plain default style, so only auto-derived entries stand
 /// out. (The manage-pane origin-path header row has its own, separate
@@ -378,7 +367,6 @@ pub fn manage_entry_style(auto: bool, theme: ThemeKind) -> Style {
 
 /// Purpose-designed backgrounds for spec 0194's caret cues — not
 /// borrowed from `dark_rgb`/`light_rgb`, which are foreground palettes.
-/// Follows `heat_rgb`'s precedent of a small purpose-built palette.
 ///
 /// The two shades of each pair must differ from each other and not only
 /// from the terminal's own background: the caret sits *on* the caret's
@@ -408,8 +396,8 @@ mod caret_rgb {
 /// color pair: reversing is what a terminal block cursor does, so it
 /// lands correctly on any palette the user has configured, including
 /// ones this crate knows nothing about. Spec 0194 S4 hands the same
-/// style to the *matching* brace when there is one, which is the point
-/// of it being the strong cue rather than the caret's own.
+/// style to the *matching* brace when there is one — it is the strong
+/// cue, not the caret's own.
 pub fn caret_style() -> Style {
     Style::default().add_modifier(Modifier::REVERSED)
 }
@@ -435,8 +423,7 @@ pub fn caret_paired_style(theme: ThemeKind) -> Style {
 /// full screen is never something the user has to hunt for.
 ///
 /// Visibly weaker than the drag selection's full reversal, which is what
-/// keeps spec 0194 G4's two cues apart now that they no longer share a
-/// modifier.
+/// keeps spec 0194 G4's two cues apart.
 pub fn cursor_row_style(theme: ThemeKind) -> Style {
     Style::default().bg(match theme {
         ThemeKind::Dark if supports_rgb() => caret_rgb::DARK_ROW,
@@ -456,8 +443,7 @@ pub fn cursor_row_style(theme: ThemeKind) -> Style {
 /// pane's statusline reads as a distinctly brighter bar than
 /// `unfocused_pane_style`'s dimmer `Gray` (ANSI 7) once both are
 /// reversed — deliberately theme-independent (same accent in both
-/// `Dark`/`Light`), unlike `style_for`'s own RGB-vs-theme dispatch
-/// (2026-07-17, reversed-video styling added 2026-07-19).
+/// `Dark`/`Light`), unlike `style_for`'s own RGB-vs-theme dispatch.
 pub fn focus_style(theme: ThemeKind) -> Style {
     match theme {
         ThemeKind::System => {
@@ -557,27 +543,26 @@ mod heat_rgb {
     ];
 }
 
-/// Hue selector for the main-pane heat cue (spec 0138 G9-G12): `Red` is
-/// the original `Mismatch` cue ("current type scores below best");
-/// `Blue` is the newer `Tie` cue ("current type ties for best") — both
-/// share the same brightness-level model (`heat_style`'s `level`
-/// parameter), differing only in which 12-stop gradient/ANSI-16 pair is
-/// used.
+/// Hue selector for the main-pane heat cue (spec 0138 G9-G12): `Red`
+/// for the `Mismatch` cue ("current type scores below best"), `Blue`
+/// for the `Tie` cue ("current type ties for best"). Both share
+/// `heat_style`'s brightness-level model, differing only in which
+/// 12-stop gradient/ANSI-16 pair is used.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum HeatHue {
     Red,
     Blue,
 }
 
-/// Main-pane heat cue color for the leading glyph column (spec 0138,
-/// item 12 of 2026-07-17 feedback; `hue` added for the `Tie` cue, G9-
-/// G12). `level` is 1..=12 (see `tui::heat_cue::heat_level`), already
-/// gated present by the caller (G4 for `Red`/`Mismatch`, G9 for `Blue`/
-/// `Tie`). Returns `None` when the cue must not be shown at all on this
-/// terminal — only possible on the ANSI-16 fallback, for `level <= 3`
-/// (`best_score <= 3`, G7/G12's low-confidence narrowing of the gate);
-/// the truecolor gradient always shows *some* color once the gate has
-/// passed, however dim.
+/// Main-pane heat cue color for the leading glyph column (spec 0138;
+/// `hue` selects the `Mismatch` or `Tie` cue, G9-G12). `level` is
+/// 1..=12 (see `tui::heat_cue::heat_level`), already gated present by
+/// the caller (G4 for `Red`/`Mismatch`, G9 for `Blue`/`Tie`). Returns
+/// `None` when the cue must not be shown at all on this terminal — only
+/// possible on the ANSI-16 fallback, for `level <= 3` (`best_score <=
+/// 3`, G7/G12's low-confidence narrowing of the gate); the truecolor
+/// gradient always shows *some* color once the gate has passed, however
+/// dim.
 pub fn heat_style(level: u8, hue: HeatHue, theme: ThemeKind) -> Option<Style> {
     match theme {
         ThemeKind::Dark if supports_rgb() => {
@@ -615,11 +600,10 @@ fn heat_rgb_color(level: u8, light: bool, hue: HeatHue) -> Color {
 /// brightest available red (truecolor level 12, or `Color::LightRed` on
 /// the ANSI-16 fallback) whenever the cue is present at all, regardless
 /// of `level` (spec 0138 N1) — unlike `heat_style`, which grades the
-/// leading glyph by `level`. The `Tie` cue's own ` [tie_count@score]`
-/// suffix uses no dedicated function of its own — it's styled with
-/// `style_for(SyntaxRole::Boolean, theme)` directly, i.e. literally the
-/// same styling already used for a `true`/`false` value (spec 0138 G9's
-/// own wording), not a new color.
+/// leading glyph by `level`. The `Tie` cue's ` [tie_count@score]` suffix
+/// has no dedicated function: it is styled with
+/// `style_for(SyntaxRole::Boolean, theme)` directly, the same styling as
+/// a `true`/`false` value (spec 0138 G9), not a new color.
 pub fn heat_suffix_style(theme: ThemeKind) -> Style {
     match theme {
         ThemeKind::Dark if supports_rgb() => Style::default().fg(heat_rgb::DARK[11]),
@@ -746,11 +730,9 @@ mod tests {
             std::env::remove_var("COLORTERM");
         }
         // `terminfo_reports_rgb` is cached process-wide and reflects the
-        // *actual* environment `cargo test` runs in — if it's genuinely
-        // true-color-capable via terminfo (e.g. a dev's real terminal,
-        // as opposed to a headless CI sandbox), `supports_rgb` legitimately
-        // returns true even with `COLORTERM` unset, so there's nothing to
-        // assert here.
+        // *actual* environment `cargo test` runs in — a genuinely
+        // true-color-capable terminal makes `supports_rgb` true even
+        // with `COLORTERM` unset, so there is nothing to assert here.
         if terminfo_reports_rgb() {
             return;
         }

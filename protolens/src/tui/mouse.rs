@@ -6,20 +6,19 @@ use super::*;
 
 impl App {
     /// Handle one mouse event: wheel scroll pans the hovered pane's
-    /// viewport (2026-07-19 feedback item 2); a left click on a foldable
-    /// node's marker column toggles its fold, a click elsewhere on a
-    /// node's line moves the cursor there.
+    /// viewport; a left click on a foldable node's marker column toggles
+    /// its fold, a click elsewhere on a node's line moves the cursor
+    /// there.
     pub fn handle_mouse(&mut self, event: MouseEvent) {
         // A bare `Moved` event (no button held, no wheel) is pointer-
         // tracking noise, not user input — `EnableMouseCapture` turns on
         // any-motion reporting, so the terminal sends one of these on
         // essentially every pixel the mouse crosses, with no click at
-        // all. Nothing in this function does anything with `Moved`
-        // itself; without this guard, the side effects below (splash
-        // dismissal in particular) fired on the very first stray cursor
-        // twitch after startup, well before the user ever saw the splash
-        // screen, or read as an unintended cause behind status messages
-        // vanishing while the mouse merely hovered over the terminal.
+        // all. Nothing below acts on `Moved` itself; without this guard
+        // the side effects further down (splash dismissal in particular)
+        // fire on the first stray cursor twitch after startup, before
+        // the user has even seen the splash screen, and status messages
+        // vanish while the mouse merely hovers over the terminal.
         if event.kind == MouseEventKind::Moved {
             return;
         }
@@ -31,11 +30,11 @@ impl App {
 
         self.message.clear();
 
-        // Feedback (2026-07-15): while the `F1` help overlay is open,
-        // mouse wheel/Shift-wheel hovering over it scrolls its own text
-        // instead of leaking through to whichever pane happens to be
-        // drawn underneath — `over_main`/`over_side` below have no idea
-        // the overlay exists, so this must be checked first. Shift-wheel
+        // While the `F1` help overlay is open, mouse wheel/Shift-wheel
+        // hovering over it scrolls its own text instead of leaking
+        // through to whichever pane happens to be drawn underneath —
+        // `over_main`/`over_side` below have no idea the overlay
+        // exists, so this must be checked first. Shift-wheel
         // is reported as a plain `ScrollUp`/`ScrollDown` with the `SHIFT`
         // modifier set (matched here regardless), not as a distinct
         // event kind — help has no horizontal content to pan, so there's
@@ -73,17 +72,17 @@ impl App {
         };
         if pan_left || pan_right {
             if over_side {
-                // 2026-07-19 feedback item 4: clamped on the right, same
-                // as the main pane's own `pan_right` below. The wheel
-                // always pans at `WHEEL_PAN_STEP`, unlike Ctrl-Left/
-                // Ctrl-Right's `PAN_STEP` (2026-07-19 feedback).
+                // Clamped on the right, same as the main pane's own
+                // `pan_right` below. The wheel always pans at
+                // `WHEEL_PAN_STEP`, unlike Ctrl-Left/Ctrl-Right's
+                // `PAN_STEP`.
                 if self.manage_open {
                     self.manage_pan_horizontal(WHEEL_PAN_STEP, pan_left);
                 } else {
                     self.override_pan_horizontal(WHEEL_PAN_STEP, pan_left);
                 }
             } else if over_main {
-                // Wheel step, not `PAN_STEP` (2026-07-19 feedback).
+                // Wheel step, not `PAN_STEP`.
                 if pan_left {
                     self.wheel_pan_left();
                 } else {
@@ -96,12 +95,11 @@ impl App {
         }
 
         // Wheel scroll routes to whichever pane the mouse is currently
-        // hovering, independent of keyboard focus (2026-07-14 feedback,
-        // item 4) — unlike `handle_key`, which always follows focus,
-        // since a mouse event already carries its own screen position
-        // (`event.column`/`event.row`), making hover-based routing both
-        // natural and unambiguous. Pans the hovered pane's viewport
-        // (2026-07-19 feedback item 2) rather than moving the cursor/
+        // hovering, independent of keyboard focus — unlike `handle_key`,
+        // which always follows focus, since a mouse event already
+        // carries its own screen position (`event.column`/`event.row`),
+        // making hover-based routing both natural and unambiguous. Pans
+        // the hovered pane's viewport rather than moving the cursor/
         // highlight, same distinction Shift+wheel already makes for
         // horizontal scrolling above.
         if matches!(
@@ -135,23 +133,22 @@ impl App {
         if let MouseEventKind::Down(MouseButton::Left) = event.kind {
             if main_interactive {
                 // A click in the main pane always shifts keyboard focus
-                // back to it without closing the side pane (2026-07-14
-                // feedback, item 3) — `handle_key` follows `override_focus`/
-                // `manage_focus`, so clearing them here is what makes the
-                // shift stick for subsequent keystrokes too.
+                // back to it without closing the side pane —
+                // `handle_key` follows `override_focus`/`manage_focus`,
+                // so clearing them here is what makes the shift stick
+                // for subsequent keystrokes too.
                 self.override_focus = false;
                 self.manage_focus = false;
                 self.handle_click(event.column, event.row);
                 let line_idx = self.main_pane_line_idx(event.column, event.row);
 
-                // Double-click detection (feedback, 2026-07-15): crossterm
-                // reports `Down` identically for single and double
-                // clicks, so recognizing the second click of a pair means
-                // comparing this `Down` against the previous one's own
-                // timestamp/line ourselves (`is_double_click`, generalized
-                // 2026-07-17 to also serve the manage pane's radio-marker
-                // double-click). The `Up` handler below is what actually
-                // acts on `pending_double_click`.
+                // Double-click detection: crossterm reports `Down`
+                // identically for single and double clicks, so
+                // recognizing the second click of a pair means comparing
+                // this `Down` against the previous one's own timestamp/
+                // line ourselves (`is_double_click`, shared with the
+                // manage pane's radio-marker double-click). The `Up`
+                // handler below is what acts on `pending_double_click`.
                 self.pending_double_click = match line_idx {
                     Some(l) => is_double_click(&mut self.last_click, l),
                     None => {
@@ -164,9 +161,8 @@ impl App {
                 // selection's anchor/end, replacing any previous one, so
                 // a following `Drag` still works. Whether a *non-dragged*
                 // click keeps or discards this single-line selection is
-                // decided by the `Up` handler below (feedback, 2026-07-15:
-                // a plain click now deselects; only a double-click keeps
-                // it selected).
+                // decided by the `Up` handler below: a plain click
+                // deselects, only a double-click keeps it selected.
                 self.select_anchor = line_idx;
                 self.select_end = line_idx;
             } else if over_main {
@@ -200,21 +196,20 @@ impl App {
                         self.select_end = Some(line_idx);
                     }
                 }
-                // Spec 0131 §G1: mouse release intentionally no longer
-                // copies by itself — selection state was already
-                // finalized by the preceding `Down`/`Drag` handling
-                // (§G1/§G3 of spec 0129, unchanged); `Ctrl-C` is now the
-                // sole trigger for the actual clipboard write.
+                // Spec 0131 §G1: mouse release deliberately does not copy
+                // by itself — selection state is already finalized by
+                // the preceding `Down`/`Drag` handling (spec 0129 §G1/
+                // §G3), and `Ctrl-C` is the sole trigger for the actual
+                // clipboard write.
                 //
-                // Feedback (2026-07-15): single vs. double click vs. drag
-                // disambiguation. A drag (`select_anchor != select_end`)
-                // always keeps its selection, unchanged. Otherwise: a
-                // plain single click deselects everything; a double-click
-                // (recognized by the `Down` handler above, same line,
-                // within `DOUBLE_CLICK_THRESHOLD`) instead keeps the
-                // single-line selection `Down` just set, and additionally
-                // acts as the same `t`/`o` smart proxy as `Enter` (item 3,
-                // spec 0139 follow-up).
+                // Single vs. double click vs. drag: a drag
+                // (`select_anchor != select_end`) always keeps its
+                // selection; a plain single click deselects everything;
+                // a double-click (recognized by the `Down` handler
+                // above, same line, within `DOUBLE_CLICK_THRESHOLD`)
+                // keeps the single-line selection `Down` just set and
+                // additionally acts as the same `t`/`o` smart proxy as
+                // `Enter` (spec 0139).
                 MouseEventKind::Up(MouseButton::Left) => {
                     if self.pending_double_click {
                         self.open_smart_override_or_manage();
@@ -269,10 +264,9 @@ impl App {
     }
 
     /// Spec 0131 §G1: `Ctrl-C` — copies the active drag-selection if one
-    /// exists (unchanged `selected_text`/`copy_selection_to_clipboard`
-    /// logic), else falls back to the cursor's own current line, treated
-    /// as a length-1 selection so the existing range-based copy logic
-    /// applies unchanged.
+    /// exists, else falls back to the cursor's own current line, treated
+    /// as a length-1 selection so the range-based copy logic applies
+    /// unchanged.
     pub(super) fn copy_current_selection_or_line(&mut self) {
         if self.select_anchor.is_none() {
             let line_idx = self.cursor_line();
@@ -289,9 +283,9 @@ impl App {
     }
 
     /// Mouse handling for the override selection pane (spec 0113 D30):
-    /// wheel scroll pans the candidate list by one row (2026-07-19
-    /// feedback item 2 — it no longer moves the highlight, unlike `j`/
-    /// `k`), click moves the highlight to the row under the cursor.
+    /// wheel scroll pans the candidate list by one row without moving
+    /// the highlight (unlike `j`/`k`); click moves the highlight to the
+    /// row under the cursor.
     pub(super) fn handle_override_mouse(&mut self, event: MouseEvent) {
         match event.kind {
             MouseEventKind::ScrollDown => self.override_pan_vertical(WHEEL_PAN_STEP, false),
@@ -313,14 +307,14 @@ impl App {
             return;
         }
         let absolute_row = self.override_scroll + rel_row;
-        // Spec 0137's row-0 retirement removed the pinned "raw" row —
-        // `override_candidates` is indexed directly now, no `+ 1`.
+        // Spec 0137: `override_candidates` is indexed directly, with no
+        // pinned "raw" row to offset past.
         if absolute_row < self.override_candidates.len() {
             self.override_highlight = absolute_row;
-            // 2026-07-20 feedback: clicking a row must live-preview it in
-            // the main pane too, same as `move_override_highlight`'s
-            // arrow-key path — this call was missing, so clicking a type
-            // moved the highlight but left the old preview on screen.
+            // Clicking a row must live-preview it in the main pane too,
+            // same as `move_override_highlight`'s arrow-key path;
+            // without this the highlight moves but the old preview stays
+            // on screen.
             self.preview_override_highlight();
         }
     }
@@ -349,12 +343,12 @@ impl App {
         };
 
         // A click on a foldable node's own fold marker toggles it
-        // without moving the cursor there (2026-07-18 feedback) — the
-        // marker is a pure fold control, not a row-selection target,
-        // mirroring the common tree-view idiom (e.g. VS Code's
-        // file-explorer disclosure triangle). Keyboard focus still
-        // shifts to the main pane regardless (`handle_mouse` already
-        // clears `override_focus`/`manage_focus` before calling here).
+        // without moving the cursor there — the marker is a pure fold
+        // control, not a row-selection target, mirroring the common
+        // tree-view idiom (e.g. VS Code's file-explorer disclosure
+        // triangle). Keyboard focus still shifts to the main pane
+        // regardless (`handle_mouse` already clears `override_focus`/
+        // `manage_focus` before calling here).
         //
         // Spec 0142: a footer line carries no fold glyph, so the check
         // is confined to the rows a node draws its own content on.
@@ -376,8 +370,9 @@ impl App {
             self.cursor_moves += 1;
         }
         // Overwrites the column, the desired column and the anchor
-        // outright, so the caret reset a `set_cursor` would have done
-        // above would be invisible.
+        // outright, which is why the cursor is moved by hand above
+        // rather than through `set_cursor`: its caret reset would be
+        // invisible.
         self.set_caret_from_click(col, line_idx);
     }
 

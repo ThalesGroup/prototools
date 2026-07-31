@@ -143,12 +143,11 @@ fn f1_opens_help_regardless_of_focus() {
     assert!(app.help_open);
 }
 
-/// Spec 0185 S5/Q2 (superseding spec 0114 §3's `Tab` toggle): `Tab` no
-/// longer leaves the override *selection* pane — focus is locked to it,
-/// which is what keeps the preview overlay's `visible_rows` anchor
-/// valid. The management pane keeps `Tab`: it splices for real, so its
-/// main-pane content is committed content and nothing there depends on
-/// an immutable anchor.
+/// Spec 0185 S5/Q2: `Tab` does not leave the override *selection* pane
+/// — focus is locked to it, which is what keeps the preview overlay's
+/// row anchor valid. The management pane keeps `Tab`: it splices for
+/// real, so its main-pane content is committed content and nothing
+/// there depends on an immutable anchor.
 #[test]
 fn tab_is_locked_out_of_the_override_pane_but_not_the_manage_pane() {
     let mut app = message_node_app();

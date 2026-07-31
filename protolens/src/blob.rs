@@ -8,18 +8,14 @@
 //! Everything protolens shows is a byte range of *this* buffer. Spec 0114
 //! §1.1 makes the document as a whole the sole field of a virtual
 //! encompassing message, so the bytes actually decoded are a real
-//! tag+length prefix followed by the file's own. Building that used to
-//! mean a fresh allocation with the prefix written first and the payload
-//! copied in behind it — on top of the copy `fs::read` had already made
-//! and the one `render_as_bytes` made in the branch where it had nothing
-//! to do.
+//! tag+length prefix followed by the file's own.
 //!
 //! Nothing forces the prefix to be written first. Reserve headroom ahead
 //! of the payload, fill the payload, then write the prefix into the tail
-//! of that headroom and start the buffer wherever it landed. The width of
-//! the prefix never has to be predicted — which matters, because on the
-//! text branch the payload's length is not known until it has been
-//! encoded.
+//! of that headroom and start the buffer wherever it landed. That spares
+//! a second allocation and copy, and the width of the prefix never has to
+//! be predicted — which matters, because on the text branch the payload's
+//! length is not known until it has been encoded.
 //!
 //! That leaves two producers with one shape: a **binary** file's bytes go
 //! into the payload region directly (mapped, or read), and a
@@ -282,8 +278,8 @@ mod map {
 
     // The mapping is written only here, during construction, and is
     // read-only afterwards; the file pages are mapped `PROT_READ`. So a
-    // `Blob` is as shareable as the `Vec` it replaces, which matters
-    // because the heat worker holds one across threads.
+    // `Blob` is as shareable as a plain `Vec`, which matters because the
+    // heat worker holds one across threads.
     unsafe impl Send for Mapping {}
     unsafe impl Sync for Mapping {}
 

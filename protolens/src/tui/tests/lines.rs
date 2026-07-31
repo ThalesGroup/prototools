@@ -170,10 +170,10 @@ fn an_unfolded_document_numbers_rows_and_lines_alike() {
 ///
 /// The claim is not "folding is fast" but the narrower, checkable one
 /// it rests on: the only numbers a fold may change are the folded
-/// node's own and its ancestors'. Before spec 0210 a fold rewrote every
-/// stored line number after it — `rebuild_visible_rows` was
-/// deliberately called with `from = 0` (spec 0186 N4) — so the siblings
-/// below are the interesting half of the assertion.
+/// node's own and its ancestors'. Any scheme that stores a line
+/// *position* per node has to rewrite every number after the fold
+/// instead, so the untouched siblings below are the interesting half of
+/// the assertion.
 #[test]
 fn a_fold_changes_only_the_folded_node_and_its_ancestors() {
     let (mut app, items) = repeated_message_fixture();

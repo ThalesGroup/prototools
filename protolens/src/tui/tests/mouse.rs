@@ -364,12 +364,11 @@ fn drag_select_spans_multiple_main_pane_rows() {
     );
 }
 
-/// Feedback (2026-07-15): a plain click (`Down`+`Up`, no drag, not
-/// the second half of a double-click) must deselect any active
-/// selection rather than leave a length-1 selection behind — this
-/// replaces spec 0129 §G3's original "plain click always selects"
-/// behavior (superseded; see `double_click_selects_the_clicked_line`
-/// for the new, explicit way to select a single line by mouse).
+/// A plain click (`Down`+`Up`, no drag, not the second half of a
+/// double-click) must deselect any active selection rather than leave a
+/// length-1 selection behind. Selecting a single line by mouse is the
+/// double-click's job instead — see
+/// `double_click_selects_the_clicked_line_for_copy`.
 #[test]
 fn plain_click_with_no_drag_deselects() {
     let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "gamma: 3"]);

@@ -6,9 +6,8 @@ use super::command_line::{next_word_boundary, prev_word_boundary};
 use super::*;
 
 impl App {
-    /// What every fold toggle does once the counts agree again — the
-    /// pan re-clamp and the prefetch invalidation `rebuild_visible_rows`
-    /// used to carry.
+    /// What every fold toggle does once the line counts agree again:
+    /// the pan re-clamp and the prefetch invalidation.
     pub(super) fn folds_changed(&mut self) {
         self.clamp_pan_offset();
         // Spec 0164 G7: any fold/unfold or content-shape change can
@@ -19,26 +18,23 @@ impl App {
     }
 
     /// Clamps `pan_offset` to the current content's valid range — the
-    /// same `max_pan_offset` bound `pan_horizontal`'s right-branch
+    /// same `max_pan_offset` bound `pan_horizontal`'s right branch
     /// enforces, but applied proactively rather than only when the user
     /// happens to pan right again.
     ///
-    /// 2026-07-24 bug report: a fold/unfold or an override splice — e.g.
-    /// deactivating an override that turns a collapsed scalar back into
-    /// a wide expanded message — can shrink the currently-visible
+    /// A fold/unfold or an override splice can shrink the visible
     /// content out from under a `pan_offset` that was valid for the
     /// *previous* shape. Left unclamped, every visible row then renders
     /// shorter than `pan_offset`, so `pan_spans` yields nothing for any
     /// of them and the main pane goes blank.
     ///
     /// First re-syncs `scroll_offset` to the cursor's row, mirroring
-    /// `render()`'s own auto-pan-into-view guard (2026-07-24 follow-up):
-    /// this runs mid-`splice_override`, well before the next `render()`
-    /// pass would normally refresh `scroll_offset` for the new content
-    /// shape. Computing `max_pan_offset` against that stale, pre-splice
-    /// `scroll_offset` window — rather than the window the next render
-    /// will actually show around the (possibly moved) cursor — clamps
-    /// against the wrong rows, panning further left than the true
+    /// `render()`'s own auto-pan-into-view guard: this runs
+    /// mid-`splice_override`, well before the next `render()` pass would
+    /// refresh `scroll_offset` for the new content shape. Computing
+    /// `max_pan_offset` against that stale window — rather than the one
+    /// the next render will show around the (possibly moved) cursor —
+    /// clamps against the wrong rows, panning further left than the true
     /// content width allows.
     pub(super) fn clamp_pan_offset(&mut self) {
         if !self.tree.is_empty() {
@@ -77,8 +73,8 @@ impl App {
     /// round trip that lands back on the same node, e.g. Down then Up)
     /// is observable via `cursor_moves`, unlike comparing `self.
     /// cursor`'s value alone against a stashed old value. Always resets
-    /// `cursor_line_in_node` to `0` (spec 0142) — every caller of this
-    /// method targets a node's own header row.
+    /// `cursor_line_in_node` to `0` (spec 0142) — every caller targets a
+    /// node's own header row.
     ///
     /// Spec 0194 S1: also resets the caret to the new row's first
     /// reachable column, so a node-level jump lands at the start of the
@@ -105,12 +101,12 @@ impl App {
     /// drawn on a synthetic trailing space (S2).
     ///
     /// Spec 0215 S7: the owner is handed to `row_text_of` rather than
-    /// rediscovered. This reproduces `node_at_header_line`'s answer
-    /// exactly rather than approximating it — that function yields
-    /// `None` for a footer line and the owning node for any other line,
-    /// and `cursor_line()` is by definition one of the cursor's own
-    /// lines, so `(!cursor_on_footer()).then_some(cursor)` *is* the
-    /// value the lookup would have walked the document to produce.
+    /// looked up. This is exact, not an approximation:
+    /// `node_at_header_line` yields `None` for a footer line and the
+    /// owning node for any other, and `cursor_line()` is by definition
+    /// one of the cursor's own lines, so
+    /// `(!cursor_on_footer()).then_some(cursor)` *is* the value that
+    /// lookup would have walked the document to produce.
     pub(super) fn caret_bounds(&self) -> (usize, usize) {
         if self.tree.is_empty() {
             return (0, 0);
@@ -383,29 +379,21 @@ impl App {
         self.is_footer(pos).then_some(pos.node)
     }
 
-    /// Moves the cursor to the next/previous visible *line* (spec
-    /// 0142) — a node's own closing `}` line is a distinct stop, right
-    /// after its last visible descendant and right before its next
-    /// sibling (or ancestor's own footer).
+    /// Moves the cursor to the next visible *line* (spec 0142) — a
+    /// node's own closing `}` line is a distinct stop, right after its
+    /// last visible descendant and right before its next sibling (or
+    /// ancestor's own footer). Every visible line is a cursor stop
+    /// (spec 0210 S1), so this is a single O(1) step along the
+    /// visible-line sequence.
     ///
-    /// Spec 0210 S3: a single O(1) step along the visible-line
-    /// sequence. This used to binary-search `visible_rows` and then
-    /// scan forward past lines that resolved to no node — a malformed
-    /// record's line, which `IndexingTextSink::malformed` rendered
-    /// without pushing a span, and which was therefore an absorbing
-    /// barrier the cursor could not cross until that scan was added
-    /// (2026-07-25 bug). Spec 0210 S1 gave those lines spans of their
-    /// own, so every visible line is now a cursor stop and there is
-    /// nothing left to scan past.
     /// Spec 0215 S1: the stepping half of `move_down` — everything
     /// except the caret fix-up. Returns whether the cursor moved.
     ///
-    /// Split out so a page key can take its `page` steps and pay for
-    /// `carry_caret` once (S2) instead of once per row. Nothing between
-    /// the steps may read `cursor_column`: `carry_caret` overwrites it
-    /// from `desired_column` and `caret_anchor`, neither of which
-    /// stepping touches, which is precisely why the intermediate values
-    /// it used to compute were unobservable and can be skipped (S3).
+    /// Split out so a page key pays for `carry_caret` once (S2) instead
+    /// of once per row. Nothing between the steps may read
+    /// `cursor_column`: `carry_caret` overwrites it from
+    /// `desired_column` and `caret_anchor`, neither of which stepping
+    /// touches, so the intermediate values are unobservable (S3).
     fn step_down(&mut self) -> bool {
         let Some((next, _)) = self.next_visible(self.cursor_line_pos()) else {
             return false;
@@ -463,18 +451,16 @@ impl App {
         }
     }
 
-    /// Spec 0215 S2: `page` steps, then **one** `carry_caret`.
-    ///
-    /// This used to be `page` calls to `move_down`, i.e. `page`
-    /// independent caret fix-ups, each of which walks the document from
-    /// its start to find the row it lands on. Near the end of a blob
-    /// with a wide root that was the whole cost of the key — 13-23 ms
-    /// against 47 µs at the top of the same document.
+    /// Spec 0215 S2: `page` steps, then **one** `carry_caret`. One
+    /// fix-up per row would walk the document from its start each time:
+    /// near the end of a blob with a wide root that is the whole cost
+    /// of the key, 13-23 ms against 47 µs at the top of the same
+    /// document.
     ///
     /// `carry_caret` runs only if at least one step succeeded, so a page
-    /// key already at a document end stays the exact no-op it was:
-    /// `carry_caret` is not idempotent on `cursor_column` when the
-    /// caret is `Free` and the row is narrower than `desired_column`.
+    /// key already at a document end is an exact no-op: `carry_caret` is
+    /// not idempotent on `cursor_column` when the caret is `Free` and
+    /// the row is narrower than `desired_column`.
     pub(super) fn move_page_down(&mut self) {
         let page = (self.main_area.height as usize).max(1);
         let mut moved = false;
@@ -501,19 +487,19 @@ impl App {
     /// currently visible window — the basis for `pan_right`'s clamping
     /// bound (spec 0113 D24: "recomputed as the cursor/scroll position
     /// changes").
-    /// Spec 0185 G4: measured over the *composed* window, so a preview
-    /// overlay whose lines are wider than the committed rows they stand
-    /// in for can still be panned all the way to its own right edge —
-    /// which is exactly the case a preview exists for, since a
-    /// structurally wrong candidate is what renders wide.
     ///
-    /// Spec 0210 S3: resolved through `build_window`, exactly as a
-    /// frame is, rather than one `display_row` per row.
-    /// `clamp_pan_offset` calls this on every fold and every commit —
+    /// Spec 0185 G4: measured over the *composed* window, so a preview
+    /// overlay wider than the committed rows it stands in for can still
+    /// be panned to its own right edge — the case a preview exists for,
+    /// since a structurally wrong candidate is what renders wide.
+    ///
+    /// Resolved through `build_window`, exactly as a frame is, rather
+    /// than one `display_row` per row (spec 0210 S3).
+    /// `clamp_pan_offset` calls this on every fold and every commit,
     /// right after the `structural_version` bump that empties the window
-    /// cache — and each row's content is then asked for its owner
-    /// several times over, so resolving per row would be a handful of
-    /// full descents per row of the pane.
+    /// cache, and each row's content is then asked for its owner several
+    /// times over, so resolving per row would cost a handful of full
+    /// descents per row of the pane.
     pub(super) fn max_visible_line_len(&mut self) -> usize {
         let pane_height = self.main_area.height as usize;
         let total = self.composed_row_count();
@@ -541,9 +527,9 @@ impl App {
     /// Shared horizontal-pan arithmetic behind the main pane's Ctrl-Left/
     /// Ctrl-Right (`pan_left`/`pan_right`, `PAN_STEP`) and Shift+wheel/
     /// native horizontal scroll (`wheel_pan_left`/`wheel_pan_right`,
-    /// `WHEEL_PAN_STEP`, 2026-07-19 feedback) — bounded on the right by
-    /// `max_pan_offset` so it stops once the rightmost character of
-    /// the widest currently-visible row would be shown, never further.
+    /// `WHEEL_PAN_STEP`) — bounded on the right by `max_pan_offset` so
+    /// it stops once the rightmost character of the widest
+    /// currently-visible row would be shown, never further.
     fn pan_horizontal(&mut self, step: usize, left: bool) {
         if left {
             self.pan_offset = self.pan_offset.saturating_sub(step);
@@ -560,9 +546,9 @@ impl App {
         self.pan_horizontal(PAN_STEP, false);
     }
 
-    /// Shift+wheel/native horizontal-scroll pan over the main pane
-    /// (2026-07-19 feedback): same as `pan_left`/`pan_right` but at
-    /// `WHEEL_PAN_STEP`'s finer granularity.
+    /// Shift+wheel/native horizontal-scroll pan over the main pane: same
+    /// as `pan_left`/`pan_right` but at `WHEEL_PAN_STEP`'s finer
+    /// granularity.
     pub(super) fn wheel_pan_left(&mut self) {
         self.pan_horizontal(WHEEL_PAN_STEP, true);
     }
@@ -575,9 +561,8 @@ impl App {
     /// Ctrl-Down (`pan_vertical_up`/`pan_vertical_down`, `PAN_STEP`) and
     /// plain mouse wheel (`wheel_pan_up`/`wheel_pan_down`,
     /// `WHEEL_PAN_STEP`) — scrolls the viewport without moving the
-    /// cursor, bounded only by the content itself, no longer by the
-    /// cursor's own row (2026-07-19 feedback item 1, supersedes the
-    /// 2026-07-18 "cursor must never leave view" bound).
+    /// cursor, bounded only by the content itself and deliberately not
+    /// by the cursor's own row: the cursor may leave the view.
     ///
     /// Spec 0185 S2: bounded by the *composed* row count, so a preview
     /// overlay taller than the block it stands in for can be scrolled
@@ -596,10 +581,9 @@ impl App {
         self.pan_vertical(PAN_STEP, false);
     }
 
-    /// Plain mouse-wheel vertical pan (2026-07-19 feedback item 2): the
-    /// wheel now pans the viewport, same as Ctrl-Up/Ctrl-Down but at
-    /// `WHEEL_PAN_STEP`'s finer granularity — it no longer moves the
-    /// cursor (that was the pre-item-2 behavior, `move_up`/`move_down`).
+    /// Plain mouse-wheel vertical pan: pans the viewport, same as
+    /// Ctrl-Up/Ctrl-Down but at `WHEEL_PAN_STEP`'s finer granularity.
+    /// It does not move the cursor.
     pub(super) fn wheel_pan_up(&mut self) {
         self.pan_vertical(WHEEL_PAN_STEP, true);
     }
@@ -622,9 +606,8 @@ impl App {
     }
 
     /// Jump to the document's true last visible line (`End`/`G`, spec
-    /// 0142) — which may be a node's footer line (e.g. the virtual
-    /// encompassing wrapper's own final `}`), not just the last content
-    /// node's header as before.
+    /// 0142) — which may be a node's footer line, e.g. the virtual
+    /// encompassing wrapper's own final `}`.
     pub(super) fn move_end(&mut self) {
         let last_row = self.visible_row_count().checked_sub(1);
         let Some((pos, _)) = last_row.and_then(|row| self.visible_row_pos(row)) else {
@@ -678,18 +661,17 @@ impl App {
     }
 
     /// Spec 0199 S7: what `caret_left` delegates to at a voluntary
-    /// `Home`. Since spec 0199 S9 gave `H`/`Shift-Left` to sibling
-    /// folding, this has no key of its own — it is reachable only
-    /// through `h`/`Left`/`Backspace`, which is why the fold-first
-    /// branch lives here rather than in the caller.
+    /// `Home`. `H`/`Shift-Left` belongs to sibling folding (S9), so this
+    /// has no key of its own and is reachable only through
+    /// `h`/`Left`/`Backspace` — which is why the fold-first branch lives
+    /// here rather than in the caller.
     ///
     /// Folds an expanded node first, and only moves to the parent once
-    /// it is closed — the nvim-tree pattern spec 0194 S6 had removed.
+    /// it is closed — the nvim-tree pattern.
     ///
     /// At the root with the fold already closed there is nothing left to
     /// do; it reports `no parent` rather than folding the root's
-    /// siblings, which is what the pre-caret code did and is `H`/`zC`
-    /// now (N2).
+    /// siblings, which is `H`/`zC`'s job (N2).
     pub(super) fn parent_move(&mut self) {
         if self.cursor_expanded() {
             self.toggle_fold(self.cursor);
@@ -704,17 +686,14 @@ impl App {
     }
 
     /// Spec 0199 S7: what `caret_right` delegates to at a voluntary
-    /// `End`. Like `parent_move` it has no key of its own since S9 gave
-    /// `L`/`Shift-Right` to sibling unfolding.
+    /// `End`. Like `parent_move` it has no key of its own, since
+    /// `L`/`Shift-Right` belongs to sibling unfolding (S9).
     ///
     /// Unfolds a closed node and *stops*, so a second press descends.
-    /// This used to unfold and move in the same press, on the reasoning
-    /// that a folded node's children are not on screen and there would
-    /// otherwise be nothing to move to — which is answered by the fact
-    /// that after the first press there is. What the split buys is that
-    /// `l` at `End` and `h` at `Home` become inverses: closing a node
-    /// and reopening it returns the tree *and* the cursor to where they
-    /// were, which the one-press form made impossible.
+    /// Unfolding and descending in one press is deliberately rejected:
+    /// the split is what makes `l` at `End` and `h` at `Home` inverses,
+    /// so closing a node and reopening it returns the tree *and* the
+    /// cursor to where they were.
     ///
     /// The descent goes through `set_cursor`, so the caret lands on the
     /// child row's first non-blank with the anchor `Home` — the child's
@@ -733,15 +712,12 @@ impl App {
     }
 
     /// Folds/unfolds `idx`. Folding hides `idx`'s whole body, including
-    /// its own footer line — if the cursor was resting there at the
-    /// moment `idx` itself gets folded, snap it back to `idx`'s
-    /// header (spec 0142 G6.2), since that line is
-    /// no longer visible. More generally, if the cursor was resting on
-    /// any strict descendant of `idx` (reachable via a fold-marker
-    /// click, not just the cursor's own node), that row also just
-    /// stopped being drawn — snap the cursor up to `idx`
-    /// itself, the nearest still-visible ancestor, rather than leaving
-    /// it stuck on a now-hidden node until the fold is reopened.
+    /// its own footer line, so a cursor resting there snaps back to
+    /// `idx`'s header (spec 0142 G6.2). More generally a cursor on any
+    /// strict descendant of `idx` — reachable via a fold-marker click,
+    /// not just the cursor's own node — snaps up to `idx`, the nearest
+    /// still-visible ancestor, rather than being stranded on a hidden
+    /// node until the fold is reopened.
     pub(super) fn toggle_fold(&mut self, idx: usize) {
         if !self.folded.remove(&idx) {
             self.folded.insert(idx);
@@ -868,10 +844,9 @@ impl App {
     /// The underlying tree's actual root is the virtual encompassing
     /// wrapper (spec 0114 §1.1); every real node's true internal path
     /// therefore has a leading `/1` leg (descent into the wrapper's sole
-    /// field) that isn't part of the caller-visible protobuf. Drop it here
-    /// so displayed paths match exactly what they were before the wrapper
-    /// existed; the wrapper's own node (internal path `/1`) displays as
-    /// bare `/`.
+    /// field) that isn't part of the caller-visible protobuf. Drop it
+    /// here, so the wrapper stays invisible in displayed paths; the
+    /// wrapper's own node (internal path `/1`) displays as bare `/`.
     pub(super) fn positional_path(&self, idx: usize) -> String {
         let mut segments = Vec::new();
         let mut cur = Some(idx);

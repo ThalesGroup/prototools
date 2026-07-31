@@ -413,8 +413,8 @@ fn folding_the_node_under_a_footer_cursor_snaps_back_to_header() {
 /// (reachable via a fold-marker click on an ancestor, not just the
 /// cursor's own node) must snap the cursor up to the folded node
 /// itself — its row is the nearest still-visible ancestor once the
-/// descendant's own row disappears from `visible_rows`. Generalizes
-/// spec 0142 G6.2 beyond the footer-only case.
+/// descendant's own row stops being drawn. Generalizes spec 0142 G6.2
+/// beyond the footer-only case.
 #[test]
 fn folding_an_ancestor_of_the_cursor_snaps_the_cursor_up_to_it() {
     let (mut app, inner_idx, id_idx) = type_as_fixture();

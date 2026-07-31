@@ -10,23 +10,18 @@ use super::tiered::Tier;
 
 impl App {
     /// Whether `idx` is eligible as an override target (`t`, `type-as`,
-    /// `type-as-raw`): a message/group node already (`NodeSpan::
-    /// is_message`, spec 0114 §1.2 — *not* `type_fqdn != NO_FQDN`, which is
-    /// ambiguous between a scalar and a schema-unresolved message/group),
-    /// or any scalar with a decodable tag — `wire_type` one of `WT_LEN`
-    /// (string, bytes, or an unresolved LEN-wire field, reinterpretable
-    /// as an embedded message), `WT_VARINT`, `WT_I32`, `WT_I64` (spec
-    /// 0135 §G3: primitive-type overrides, no longer categorically
-    /// excluded). For a packed-repeated element (`packed_record_start !=
-    /// NO_PACKED_RECORD`), eligibility is evaluated against the whole record's
-    /// own reconstructed wire type, always `WT_LEN` (spec 0135 §G1) — not
-    /// the individual element's own `wire_type`. Any/MessageSet
-    /// auto-expansion (spec 0120) already reinterprets exactly this kind
-    /// of scalar unconditionally; a manual override that turns out to
-    /// target genuinely incompatible bytes simply fails to parse and
-    /// `splice_override` reports it — the user is trusted to judge
-    /// whether the result is meaningful (2026-07-14 feedback: `t` used
-    /// to unconditionally refuse every string/bytes field).
+    /// `type-as-raw`): a message/group node (`NodeSpan::is_message` —
+    /// *not* `type_fqdn != NO_FQDN`, which cannot tell a scalar from a
+    /// schema-unresolved message/group), or any scalar with a decodable
+    /// tag: `WT_LEN`, `WT_VARINT`, `WT_I32`, `WT_I64` (spec 0135 §G3).
+    /// A packed-repeated element is judged by the whole record's
+    /// reconstructed wire type, always `WT_LEN` (spec 0135 §G1), not by
+    /// the element's own.
+    ///
+    /// The test is deliberately permissive: an override aimed at
+    /// genuinely incompatible bytes just fails to parse and
+    /// `splice_override` reports it, so the user is trusted to judge
+    /// whether a reinterpretation is meaningful.
     pub(super) fn can_override(&self, idx: usize) -> bool {
         use prototext_core::helpers::{WT_I32, WT_I64, WT_LEN, WT_VARINT};
         let span = &self.tree[idx].span;
@@ -73,38 +68,28 @@ impl App {
         self.last_override_highlight = None;
         self.override_pan_offset = 0;
 
-        // Spec 0139: smart initial sort-mode/highlight. Step A: an
-        // active override on the cursor node; else Step B: the first
-        // inactive-but-applicable entry from the management list
-        // (`first_entry_matching_origin_candidates` — by construction,
-        // since Step A found no active match, any entry it returns here
-        // is necessarily inactive); else Step B.5: with no override at
-        // all, the field's own *currently effective* type — for a
-        // message/group node, `span.type_fqdn` itself (2026-07-20 fix:
-        // previously routed through `natural_type`/`parent_field`,
-        // i.e. the *parent's* schema-declared field type; but a node's
-        // own `span.type_fqdn` can legitimately differ from that —
-        // e.g. a field decoded via best-effort inference rather than a
-        // strict schema declaration — in which case `parent_field`
-        // fails and `natural_type` returns `None` even though the main
-        // pane is already showing a perfectly good resolved type for
-        // this exact node. `span.type_fqdn` is the same value `status_
-        // type_label` shows in the status line, so it's always exactly
-        // "the type already shown in the main pane" the override pane
-        // should seed its highlight on); for any other kind (enum,
-        // primitive), `natural_type` as before — those have no
-        // standalone `span.type_fqdn` of their own to fall back on.
-        // Without this step such a field fell through to
-        // `open_override_on_default`'s `Inferred`-mode scoring, which is
-        // meaningless for a scalar (it scores the bytes as a prospective
-        // *message*) and so landed on the unrelated `None` sentinel row
-        // (or the top-scored message FQDN) instead of the field's own
-        // current type (2026-07-18 feedback, extended from enum-only to
-        // every primitive keyword 2026-07-19, then to message/group
-        // nodes 2026-07-20: `open_override_on_type` below naturally
-        // lands in `Lexicographic` mode for scalar keywords, since no
-        // primitive keyword is ever a member of the `Inferred`
-        // candidate list).
+        // Spec 0139: smart initial sort-mode/highlight, in order —
+        // A: an active override on the cursor node; else
+        // B: the first inactive-but-applicable entry from the
+        //    management list (necessarily inactive, since A found no
+        //    active match); else
+        // C: the field's own currently effective type.
+        //
+        // C reads a message/group's `span.type_fqdn` directly rather
+        // than `natural_type`, which resolves the *parent's*
+        // schema-declared field type. The two legitimately differ when
+        // a field was decoded by inference rather than declaration:
+        // `natural_type` then returns `None` while the main pane is
+        // already showing a good resolved type. `span.type_fqdn` is
+        // what the status line displays, so it is always "the type the
+        // user can already see". Enums and primitives have no
+        // `span.type_fqdn` of their own and so still use
+        // `natural_type`.
+        //
+        // Without C, a scalar fell through to `open_override_on_default`'s
+        // `Inferred` scoring, which is meaningless for one — it scores
+        // the bytes as a prospective *message* — and landed on the
+        // unrelated `None` sentinel.
         let candidate_type = self
             .resolve_active_override_entry(self.cursor)
             .map(|e| e.r#type.clone())
@@ -150,25 +135,20 @@ impl App {
         if self.seek_override_highlight(&key) {
             return;
         }
-        // 2026-07-20 fix: a cold cache means the two calls above merely
-        // queued background requests rather than answering — the
-        // *complete* list isn't known yet, so "not found" would be a
-        // false negative (exactly what `upgrade_active_override_to_
-        // complete` above is meant to avoid). Stay in `Inferred` mode
-        // and remember `key` so `poll_pending_override_work` can keep
-        // trying to seek it as more of the list arrives in the
-        // background, instead of discarding it for `Lexicographic`
-        // outright.
+        // A cold cache means the two calls above only queued background
+        // requests, so the complete list is not known yet and "not
+        // found" would be a false negative. Stay in `Inferred` mode and
+        // remember `key` for `poll_pending_override_work` to retry as
+        // the list arrives, rather than discarding it for
+        // `Lexicographic`.
         if self.override_candidates_pending || self.override_complete_pending {
             self.override_seek_target = Some(key);
             return;
         }
-        // 2026-07-20 fix: the `recompute_override_candidates` call above
-        // may have set the "no scoring graph available" message (no
-        // `ctx.graph` at all, so `Inferred` mode is unreachable) — this
-        // silent fallback already does what that message would have
-        // suggested, so it must not leak through (mirrors `open_
-        // override_on_default`'s own suppression of the same message).
+        // `recompute_override_candidates` may have set the "no scoring
+        // graph available" message. This fallback already does what
+        // that message would suggest, so it must not leak through —
+        // `open_override_on_default` suppresses it for the same reason.
         self.message.clear();
         self.override_sort = SortMode::Lexicographic;
         self.recompute_override_candidates();
@@ -200,34 +180,26 @@ impl App {
     fn open_override_on_default(&mut self) {
         self.override_sort = SortMode::Inferred;
         self.recompute_override_candidates();
-        // 2026-07-20 fix: an empty list while `override_candidates_
-        // pending` is set means the cache was merely cold at open time
-        // (a background request was just queued) — not that `Inferred`
-        // mode has nothing to offer. Falling back to `Lexicographic`
-        // here discarded that in-flight fetch's eventual result outright
-        // (and, before the pending-flag fix above, could later resurface
-        // it as a permanently-capped, un-growable list once it resolved
-        // — spec 0152 G7 follow-up). Wait for it instead; the "no
-        // scoring graph available" case (no request ever queued, so
-        // `pending` stays false) still falls back immediately, as before.
+        // An empty list while `override_candidates_pending` is set means
+        // the cache was merely cold at open time, not that `Inferred`
+        // has nothing to offer; falling back would discard the in-flight
+        // fetch. Wait for it. With no scoring graph at all no request is
+        // ever queued, `pending` stays false, and the fallback runs
+        // immediately.
         if self.override_candidates.is_empty() && !self.override_candidates_pending {
-            // Not superseded by spec 0147 G5's top-of-`handle_key` clear
-            // (which only dismisses a message left over from a *previous*
-            // keypress) — this clears the "no scoring graph available"
-            // message the `recompute_override_candidates` call just above
-            // set during *this* keypress, ahead of the silent fallback
-            // below.
+            // Spec 0147 G5's top-of-`handle_key` clear does not cover
+            // this: it dismisses messages left over from a *previous*
+            // keypress, whereas `recompute_override_candidates` set this
+            // one during this keypress.
             self.message.clear();
             self.override_sort = SortMode::Lexicographic;
             self.recompute_override_candidates();
             return;
         }
-        // 2026-07-20 feedback: "too lazy" — eagerly begin fetching the
-        // rest of the list right away instead of waiting for the user
-        // to scroll to the loaded boundary. `poll_pending_override_
-        // work`'s background-driven follow-up (spec 0152 G7 update)
-        // takes it the rest of the way to `override_candidates_
-        // complete` on its own from here.
+        // Start fetching the rest of the list now rather than waiting
+        // for the user to scroll to the loaded boundary;
+        // `poll_pending_override_work` carries it to
+        // `override_candidates_complete` from here.
         self.upgrade_active_override_to_complete();
     }
 
@@ -251,17 +223,14 @@ impl App {
     }
 
     /// Close the override pane (cancelling — spec 0114 §2), regardless of
-    /// which pane currently has focus. Demotes `override_inferred_raw` (if
-    /// any) into `heat_caches`' shared `by_range` cache, capped to however
-    /// many rows the pane was actually showing — spec 0114 §6's "other
-    /// entries keep only the first N lines" (spec 0152 N8: relocked onto
-    /// the shared cache, logic otherwise unchanged).
+    /// which pane currently has focus. Demotes `override_inferred_raw`
+    /// into the shared `by_range` cache, capped to however many rows the
+    /// pane was actually showing (spec 0114 §6).
     ///
-    /// Spec 0185 G2/Q3: closing re-renders **nothing**. The preview is an
-    /// overlay and mutates no tree state, so dropping the overlay is the
-    /// whole revert. A re-render is triggered only by the events that
-    /// change committed state: confirming a type, or (de)activating an
-    /// entry in the management pane.
+    /// Closing re-renders **nothing**: the preview is an overlay and
+    /// mutates no tree state, so dropping it is the whole revert (spec
+    /// 0185 G2). Only a change to committed state — confirming a type,
+    /// or (de)activating an entry — triggers a re-render.
     pub(super) fn close_override(&mut self) {
         self.preview_overlay = None;
         if let Some(range) = self.active_override_range.take() {
@@ -307,13 +276,11 @@ impl App {
         // read inside an `if`, whereas a leaked origin kind would apply
         // to the *next* pane opening, where it would be wrong.
         self.override_origin_kind = None;
-        // Item 11 (2026-07-17 feedback), extended by spec 0200 S2: a
-        // pane opened from the management pane always returns there on
-        // close, and this is now the only place that decides so. The
-        // `Enter`-confirm call site used to set these same fields itself
-        // unconditionally (spec 0119 G3); it now only adds the entry
-        // highlight, and reads `override_opened_from_manage` *before*
-        // calling here, since this clears it.
+        // Spec 0200 S2: a pane opened from the management pane always
+        // returns there on close, and this is the only place that
+        // decides so. The `Enter`-confirm call site must therefore read
+        // `override_opened_from_manage` *before* calling here, since
+        // this clears it.
         if self.override_opened_from_manage {
             self.override_opened_from_manage = false;
             self.manage_open = true;
@@ -321,16 +288,13 @@ impl App {
         }
     }
 
-    /// `Enter`/double-click on an entry in the override management pane
-    /// (item 11, 2026-07-17 feedback): opens the selection pane on that
-    /// entry's own origin, initially highlighted on its own current type
-    /// (Step A/B's mode-selection rule, reused via `open_override_on_
-    /// type`), to let the user pick an alternate type. Every exit —
-    /// `Enter`, `Esc` and `t` — returns to the management pane via
-    /// `override_opened_from_manage` (`close_override`); only `Enter`
-    /// mutates the entry.
+    /// `Enter`/double-click on an entry in the override management pane:
+    /// opens the selection pane on that entry's own origin, highlighted
+    /// on its current type, to let the user pick an alternate. Every
+    /// exit — `Enter`, `Esc` and `t` — returns to the management pane
+    /// via `override_opened_from_manage`; only `Enter` mutates the entry.
     ///
-    /// Spec 0200 S3: the entry's own origin kind is recorded too, so
+    /// The entry's origin kind is recorded too (spec 0200 S3), so
     /// confirming retypes *this* entry rather than creating a
     /// `path:field` one beside it.
     pub(super) fn open_override_from_manage(&mut self) {
@@ -360,23 +324,18 @@ impl App {
     }
 
     /// Recompute `override_candidates` for the current `override_target`
-    /// under the currently active `override_sort` (spec 0114 §3.2), and
-    /// reset the highlight to the first candidate (index `0`) — in
-    /// alphabetic mode this is always the `None` sentinel (spec 0137
-    /// §G1/§G4), not necessarily what was previously highlighted;
-    /// there is no separate pinned row to preserve any more. Called
-    /// both when the pane first opens and whenever `i` toggles the sort
-    /// mode.
+    /// under the active `override_sort` (spec 0114 §3.2), resetting the
+    /// highlight to row 0 — in alphabetic mode always the `None`
+    /// sentinel (spec 0137 §G1). Called when the pane opens and whenever
+    /// `i` toggles the sort mode.
     ///
-    /// `SortMode::Inferred` consults `active_override_range` (spec 0114
-    /// §6) before calling `self.heat_lookup` (spec 0152 G7): toggling
-    /// back to `Inferred` within the same open-pane session reuses
-    /// `override_inferred_raw` as-is (no recomputation at all); a
-    /// genuinely new range asks the shared cache — a hit applies
-    /// immediately, a miss sets `override_candidates_pending` (the
-    /// request itself already pushed inside `heat_lookup`) and leaves
-    /// the pane showing its "Scoring candidates…" placeholder until a
-    /// worker-progress wakeup resolves it (`poll_pending_override_work`).
+    /// `SortMode::Inferred` consults `active_override_range` before
+    /// calling `heat_lookup`: toggling back to `Inferred` within one
+    /// open-pane session reuses `override_inferred_raw` as-is. A
+    /// genuinely new range asks the shared cache — a hit applies at
+    /// once, a miss sets `override_candidates_pending` and leaves the
+    /// "Scoring candidates…" placeholder up until a worker wakeup
+    /// resolves it (`poll_pending_override_work`).
     pub(super) fn recompute_override_candidates(&mut self) {
         let Some(idx) = self.override_target else {
             return;
@@ -396,8 +355,8 @@ impl App {
                     let node = &self.tree[idx].span;
                     let range = extract::message_payload_range(&self.blob, &node.raw_range);
                     if self.active_override_range.as_ref() != Some(&range) {
-                        // 2026-07-20 feedback: this directly follows the
-                        // user pressing `t`/`i` — it must jump the queue
+                        // `Tier::User`: this directly follows the user
+                        // pressing `t`/`i`, so it must jump the queue
                         // ahead of unrelated background polling.
                         match self.heat_lookup(
                             &range,
@@ -412,12 +371,10 @@ impl App {
                                 self.override_candidates_pending = false;
                             }
                             None => {
-                                // Request already pushed inside
-                                // `heat_lookup`; leave `override_
-                                // inferred_raw` as whatever it already
-                                // was (typically empty) — the pane
-                                // shows a "Scoring candidates…"
-                                // placeholder instead (spec 0152 G7/N3).
+                                // `heat_lookup` already pushed the
+                                // request; leave `override_inferred_raw`
+                                // as it stands (typically empty) and let
+                                // the pane show its placeholder.
                                 self.override_candidates_pending = true;
                                 self.message = "Scoring candidates…".to_string();
                             }
@@ -443,29 +400,23 @@ impl App {
         self.override_pan_offset = 0;
     }
 
-    /// Fetches the *complete*, full, unbounded candidate list for the
-    /// current override target in one shot (2026-07-20 feedback:
-    /// replaces growing `override_inferred_raw` one bounded page at a
-    /// time, which required the user to keep scrolling/paging all the
-    /// way to the end before the pane's real candidate count was ever
-    /// known). Requests `[0, usize::MAX)`: `HeatCaches::window`'s
-    /// `complete`-slot fallback always clamps `end` to the actual
-    /// candidate count (spec 0152 G5) rather than requiring `top_n` to
-    /// literally hold `usize::MAX` entries, so this resolves to the
-    /// true, full list — whatever that list's real length turns out to
-    /// be — as soon as the worker's one full sweep for this range
-    /// lands, instead of growing in bounded increments. A hit replaces
-    /// `override_inferred_raw` wholesale and marks the pane complete;
-    /// a miss (the request is already pushed inside `heat_lookup`)
-    /// sets `self.override_complete_pending = true` for `poll_pending_
-    /// override_work` to retry on the next worker-progress wakeup —
-    /// the pane's list stays at whatever it already had (typically the
-    /// fast bounded first page from `recompute_override_candidates`)
-    /// until then. No-op if already complete, or if `override_target`/
-    /// `ctx.graph` is absent. Called both when the pane first opens
-    /// (spec 0139, so the full fetch begins immediately rather than
-    /// waiting for the user to scroll) and, defensively, when the user
-    /// scrolls past the loaded window (spec 0114 §6).
+    /// Fetches the complete, unbounded candidate list for the current
+    /// override target in one shot, so the pane's real candidate count
+    /// is known without the user paging to the end.
+    ///
+    /// Requests `[0, usize::MAX)`: `HeatCaches::window`'s `complete`-slot
+    /// fallback clamps `end` to the actual candidate count (spec 0152
+    /// G5) rather than requiring `top_n` to hold `usize::MAX` entries,
+    /// so this resolves to the true full list as soon as the worker's
+    /// one sweep for this range lands. A hit replaces
+    /// `override_inferred_raw` wholesale and marks the pane complete; a
+    /// miss sets `override_complete_pending` for
+    /// `poll_pending_override_work` to retry, leaving the pane on the
+    /// bounded first page until then.
+    ///
+    /// No-op if already complete or if `override_target`/`ctx.graph` is
+    /// absent. Called when the pane opens and, defensively, when the
+    /// user scrolls past the loaded window (spec 0114 §6).
     pub(super) fn upgrade_active_override_to_complete(&mut self) {
         if self.override_candidates_complete {
             return;
@@ -475,9 +426,8 @@ impl App {
         };
         let node = &self.tree[idx].span;
         let range = extract::message_payload_range(&self.blob, &node.raw_range);
-        // 2026-07-20 feedback: directly follows the user opening the
-        // pane or scrolling past the loaded window — a user event,
-        // jumps the queue.
+        // `Tier::User`: directly follows the user opening the pane or
+        // scrolling past the loaded window, so it jumps the queue.
         match self.heat_lookup(&range, None, 0, usize::MAX, Tier::User) {
             Some(candidates) => {
                 self.override_inferred_raw = candidates;
@@ -489,15 +439,12 @@ impl App {
             }
         }
         self.active_override_range = Some(range);
-        // 2026-07-20 fix: only sync the on-screen list when `Inferred` is
-        // still the active sort mode. `poll_pending_override_work`'s
-        // `override_complete_pending` branch calls this unguarded on a
-        // background wakeup — if the pane has since fallen back to
-        // `Lexicographic` (a cold-cache miss at open time, spec 0139's
-        // `open_override_on_type`/`open_override_on_default`), the
-        // now-resolved `Inferred` data must stay parked in `override_
-        // inferred_raw` for a later `i` toggle rather than clobbering the
-        // Lexicographic list actually on screen.
+        // Only sync the on-screen list while `Inferred` is still the
+        // active sort mode. `poll_pending_override_work` calls this
+        // unguarded on a background wakeup, and the pane may since have
+        // fallen back to `Lexicographic`; the resolved `Inferred` data
+        // must then stay parked in `override_inferred_raw` for a later
+        // `i` toggle rather than clobbering what is on screen.
         if self.override_sort == SortMode::Inferred {
             self.override_candidates = self
                 .override_inferred_raw
@@ -509,24 +456,22 @@ impl App {
 
     /// Re-checks the shared cache for the override pane's outstanding
     /// requests (spec 0152 G7) — called whenever the main thread wakes
-    /// for a worker-progress event and either pending flag is set. A
-    /// hit applies the result and clears the flag; a miss (`heat_
-    /// lookup` just re-pushed the same request, merged by range and so
-    /// harmless per G3) leaves both alone. Also retries `override_
-    /// seek_target`, if any, once more data has arrived (2026-07-20
-    /// feedback).
+    /// for a worker-progress event and either pending flag is set. A hit
+    /// applies the result and clears the flag; a miss leaves both alone,
+    /// the re-pushed request being merged by range and so harmless. Also
+    /// retries `override_seek_target` once more data has arrived.
     pub(super) fn poll_pending_override_work(&mut self) {
         let Some(idx) = self.override_target else {
             return;
         };
-        // Spec 0132 §G2's live preview is driven off the highlighted row,
-        // and every arrival below can change which type that row names —
-        // most visibly on a cold-cache open, where `toggle_override`'s
-        // preview ran against a still-empty list and so spliced *raw*.
-        // Snapshot the highlighted type now and re-preview at the end iff
-        // it moved: that covers the seek retry and the plain top-scored
-        // row alike, and skips the (expensive) re-splice when the arrival
-        // left the highlighted type unchanged.
+        // The live preview is driven off the highlighted row, and every
+        // arrival below can change which type that row names — most
+        // visibly on a cold-cache open, where `toggle_override`'s
+        // preview ran against a still-empty list and so showed raw.
+        // Snapshot the highlighted type now and re-preview at the end
+        // only if it moved: that covers the seek retry and the plain
+        // top-scored row alike, and skips the expensive re-render when
+        // the arrival left the highlighted type unchanged.
         let previewed = self
             .override_candidates
             .get(self.override_highlight)
@@ -534,25 +479,21 @@ impl App {
         if self.override_candidates_pending {
             let node = &self.tree[idx].span;
             let range = extract::message_payload_range(&self.blob, &node.raw_range);
-            // 2026-07-20 feedback: a passive re-check after a worker-
-            // progress wakeup, not a fresh user action — must not
-            // preempt whatever the user has since asked for.
+            // `Tier::Visible`: a passive re-check after a worker
+            // wakeup, not a fresh user action, so it must not preempt
+            // whatever the user has since asked for.
             let lookup =
                 self.heat_lookup(&range, None, 0, self.override_list_height, Tier::Visible);
             if let Some(top_n) = lookup {
                 self.override_inferred_raw = top_n;
                 self.override_candidates_complete = false;
                 self.override_candidates_pending = false;
-                // 2026-07-20 fix: `open_override_on_default`'s Lexicographic
-                // fallback (an Inferred-mode cache miss with nothing to
-                // show) leaves this pending flag set even though the pane
-                // has since moved on to a different sort mode — resolving
-                // it here must only refresh what's actually on screen when
-                // that mode is still `Inferred`. Otherwise the freshly-
-                // cached raw list stays parked in `override_inferred_raw`
-                // for a later `i` toggle to pick up, without clobbering the
-                // currently-displayed (and already complete) Lexicographic
-                // list.
+                // Same guard as `upgrade_active_override_to_complete`:
+                // the pending flag outlives a fallback to
+                // `Lexicographic`, so only refresh the on-screen list
+                // while `Inferred` is still active. Otherwise the
+                // freshly-cached list waits in `override_inferred_raw`
+                // for a later `i` toggle.
                 if self.override_sort == SortMode::Inferred {
                     self.override_candidates = self
                         .override_inferred_raw
@@ -569,14 +510,11 @@ impl App {
         if self.override_complete_pending {
             self.upgrade_active_override_to_complete();
         }
-        // 2026-07-20 feedback: once more of the list has arrived, retry
-        // seeking whatever `open_override_on_type` was still trying to
-        // highlight when the cache was cold at open time
-        // (`override_seek_target`). Falls back to `Lexicographic` mode
-        // — mirroring `open_override_on_type`'s own synchronous
-        // fallback — once `override_candidates_complete` is reached
-        // without finding it; the fixed Lexicographic universe is
-        // guaranteed to contain it.
+        // Retry the highlight `open_override_on_type` could not seek
+        // against a cold cache. Once the list is complete without
+        // finding it, fall back to `Lexicographic` — as
+        // `open_override_on_type` does synchronously — whose fixed
+        // universe is guaranteed to contain it.
         if let Some(key) = self.override_seek_target.clone() {
             if !self.seek_override_highlight(&key) && self.override_candidates_complete {
                 self.override_sort = SortMode::Lexicographic;
@@ -595,11 +533,9 @@ impl App {
     }
 
     /// Move the override pane's highlighted row by `delta` (spec 0114
-    /// §3.2's `j`/`k`), clamped to `0..=override_candidates.len() - 1`
-    /// (spec 0137 §G4: `override_candidates` is indexed directly — no
-    /// more pinned row 0). Upgrades a capped preview to the complete
-    /// list first (spec 0114 §6) if the requested move would go past
-    /// what's currently loaded.
+    /// §3.2's `j`/`k`), clamped to `0..=override_candidates.len() - 1`.
+    /// Upgrades a capped preview to the complete list first (spec 0114
+    /// §6) if the move would go past what is currently loaded.
     pub(super) fn move_override_highlight(&mut self, delta: isize) {
         let max_index = self.override_candidates.len().saturating_sub(1);
         if delta > 0
@@ -611,14 +547,13 @@ impl App {
         }
         let max_index = self.override_candidates.len().saturating_sub(1);
         self.override_highlight = clamp_highlight(self.override_highlight, delta, max_index);
-        // Spec 0132 §G2: live-preview the newly-highlighted candidate.
         self.preview_override_highlight();
     }
 
     /// Vertical pan for the override pane (Ctrl-Up/Ctrl-Down at `step ==
-    /// PAN_STEP`, plain mouse wheel at `step == WHEEL_PAN_STEP`,
-    /// 2026-07-19 feedback items 1/2): scrolls the candidate list
-    /// without moving the highlight, bounded only by the content itself.
+    /// PAN_STEP`, plain mouse wheel at `step == WHEEL_PAN_STEP`):
+    /// scrolls the candidate list without moving the highlight, bounded
+    /// only by the content itself.
     pub(super) fn override_pan_vertical(&mut self, step: usize, up: bool) {
         let max_scroll = self
             .override_candidates
@@ -628,8 +563,8 @@ impl App {
     }
 
     /// Horizontal pan for the override pane (Ctrl-Left/Ctrl-Right,
-    /// Shift+wheel/native horizontal scroll, 2026-07-19 feedback item 4):
-    /// mirrors the main pane's own `pan_right`, stopping once the
+    /// Shift+wheel/native horizontal scroll): mirrors the main pane's
+    /// own `pan_right`, stopping once the
     /// rightmost character of the widest currently-visible row would be
     /// shown — never further.
     pub(super) fn override_pan_horizontal(&mut self, step: usize, left: bool) {
@@ -639,35 +574,23 @@ impl App {
     }
 
     /// Pre-registers the synthetic wrapper descriptor
-    /// (`decode::register_wrapper`) for every candidate FQDN currently
-    /// visible in the override pane's `[start, end)` row window
-    /// (2026-07-20 feedback: moving the cursor to a not-yet-visited
-    /// candidate used to stall for as long as `splice_override`'s own
-    /// `register_wrapper` call took to run). Called once per frame
-    /// from `render_override_pane`, right after `start`/`end` are
-    /// computed, so every row the user can currently see is already
-    /// registered in `self.ctx.pool` by the time `j`/`k` actually
-    /// lands on it. A no-op, cheap hashmap lookup for a candidate
-    /// that's already registered — the same fast path
-    /// `register_wrapper` itself uses — so calling this every frame
-    /// costs nothing once a row's been warmed once; a genuinely new
-    /// registration only happens the first frame a given candidate
-    /// scrolls into view, not once per keystroke that later visits it.
+    /// (`decode::register_wrapper`) for every candidate FQDN visible in
+    /// the override pane's `[start, end)` row window, so that arrowing
+    /// onto a not-yet-visited candidate does not stall on registration.
+    /// Called once per frame from `render_override_pane`. For an
+    /// already-registered candidate this is a cheap hashmap lookup, so
+    /// running it every frame costs nothing; a real registration happens
+    /// only on the first frame a candidate scrolls into view.
     ///
-    /// Doesn't (and can't, without a `Mutex`-guarded pool shared
-    /// across threads — a much larger change) run on a real
-    /// background thread: registration mutates `self.ctx.pool` in
-    /// place, which is only ever safely mutable from this one thread.
-    /// Running it here, ahead of any specific row being highlighted,
-    /// still decouples the cost from individual keystrokes — the
-    /// whole visible batch is warmed in one pass instead of one row
-    /// at a time as the user arrows through it.
+    /// Cannot run on a background thread: registration mutates
+    /// `self.ctx.pool` in place, which is only safely mutable from this
+    /// thread. Sharing the pool behind a `Mutex` would be a much larger
+    /// change. Warming the whole visible batch in one pass still
+    /// decouples the cost from individual keystrokes.
     ///
-    /// Silently skips a candidate that fails to resolve (unknown
-    /// name, or a schema link error) — best-effort only; the real
-    /// error, if any, still surfaces the ordinary way once the user
-    /// actually highlights that row and `splice_override` runs for
-    /// real.
+    /// Silently skips a candidate that fails to resolve — best-effort
+    /// only. The real error still surfaces the ordinary way when the
+    /// user highlights that row and `splice_override` runs.
     pub(super) fn warm_visible_override_wrappers(&mut self, start: usize, end: usize) {
         let Some(idx) = self.override_target else {
             return;
@@ -700,11 +623,10 @@ impl App {
         }
     }
 
-    /// One override-pane candidate row's display text + base style —
-    /// factored out of `render_override_pane`'s per-row loop (2026-07-19
-    /// feedback item 4) so `override_max_visible_line_len` can compute
-    /// exactly what will be rendered without duplicating the FQDN-
-    /// formatting logic.
+    /// One override-pane candidate row's display text + base style.
+    /// Shared with `override_max_visible_line_len`, so that the pan
+    /// clamp measures exactly what will be rendered rather than
+    /// duplicating the FQDN-formatting logic.
     ///
     /// The ` [enum]` suffix needs the name resolved in the pool, which on
     /// the lazy branch (spec 0197) means its file must already be loaded.
@@ -741,8 +663,8 @@ impl App {
     }
 
     /// Longest rendered row (in characters) among the override pane's
-    /// currently-visible window — the basis for `override_pan_horizontal`'s
-    /// clamp (2026-07-19 feedback item 4), mirroring the main pane's own
+    /// currently-visible window — the basis for
+    /// `override_pan_horizontal`'s clamp, mirroring the main pane's own
     /// `max_visible_line_len`.
     pub(super) fn override_max_visible_line_len(&self) -> usize {
         let total = self.override_candidates.len();
@@ -754,39 +676,25 @@ impl App {
             .unwrap_or(0)
     }
 
-    /// Spec 0132 §G2, reworked by spec 0185: live-previews the
-    /// currently-highlighted override candidate as a **render-time
-    /// overlay** — a block of rendered lines held beside the committed
-    /// document and substituted for the target's rows while drawing.
-    /// No-op if the override pane isn't open. `override_highlight`
-    /// indexes `override_candidates` directly (spec 0137 §G4) — no more
-    /// pinned row 0; raw (`Option::None`) is reached only via the
-    /// `None` sentinel entry in alphabetic mode.
+    /// Live-previews the currently-highlighted override candidate as a
+    /// **render-time overlay** (spec 0185) — a block of rendered lines
+    /// held beside the committed document and substituted for the
+    /// target's rows while drawing. No-op if the override pane is not
+    /// open. Raw (`Option::None`) is reached only via the `None`
+    /// sentinel entry in alphabetic mode.
     ///
-    /// It used to *apply* the override instead, calling the same
-    /// `splice_override` a confirmed `Enter` calls with one flag
-    /// flipped. A splice is a document-wide operation, so every `j`/`k`
-    /// in the candidate list rebuilt `lines`/`line_styles`, walked
-    /// `doc_next` to shift every following node, refilled
-    /// `line_to_node`/`footer_line_to_node`, and re-scanned
-    /// `visible_rows`. Backing that out then needed six further pieces
-    /// of state (spec 0161's tree watermark, three `retain`s, hand-nulled
-    /// child pointers, a force-`None`d `rendered_as`) plus a full
-    /// `render_overrides` pass in `close_override` — all of it existing
-    /// only to undo something that should never have been done.
-    ///
-    /// A preview needs to change what the user *sees*, not what the
-    /// document *is*: nothing downstream reads the spliced state (the
-    /// candidate list is already computed, scoring runs against raw byte
-    /// ranges, and confirming re-derives everything from the entry).
-    /// So this now renders and stops. Rebuilding is a plain overwrite
-    /// and discarding is a plain assignment.
+    /// A preview must change what the user *sees*, not what the document
+    /// *is*. Nothing downstream reads a spliced preview: the candidate
+    /// list is already computed, scoring runs against raw byte ranges,
+    /// and confirming re-derives everything from the entry. So this
+    /// renders and stops — rebuilding is a plain overwrite, discarding a
+    /// plain assignment, and there is no mutation to back out.
     ///
     /// `render_node_as` is shared verbatim with the committed path,
     /// which is what makes the preview byte-identical to the splice it
-    /// stands in for (G3), and it resolves a packed-run element to the
-    /// run's leader, so previewing one element of a run covers the whole
-    /// record — what a commit would actually replace (S1, spec 0184).
+    /// stands in for, and it resolves a packed-run element to the run's
+    /// leader, so previewing one element of a run covers the whole
+    /// record — what a commit would actually replace (spec 0184 S1).
     pub(super) fn preview_override_highlight(&mut self) {
         let Some(idx) = self.override_target else {
             return;
@@ -819,9 +727,7 @@ impl App {
                 });
             }
             // Spec 0185 S6: a candidate that fails to render leaves the
-            // main pane showing committed content — the same outcome as
-            // a failed preview before this spec, reached without a
-            // partial mutation to back out.
+            // main pane showing committed content.
             Err(e) => {
                 self.preview_overlay = None;
                 self.message = format!("cannot preview override: {e}");
@@ -829,12 +735,11 @@ impl App {
         }
     }
 
-    /// Find the next `override_candidates` entry (0-based, direct index
-    /// — spec 0137 §G4: no more pinned raw row excluded from matching)
-    /// whose FQDN contains `pattern` (smartcase — spec 0195 S2),
-    /// searching in `dir` from just past the currently highlighted row,
-    /// wrapping around. Moves the highlight there on success; otherwise
-    /// leaves it unchanged and sets a status-line message.
+    /// Find the next `override_candidates` entry whose FQDN contains
+    /// `pattern` (smartcase — spec 0195 S2), searching in `dir` from
+    /// just past the highlighted row and wrapping around. Moves the
+    /// highlight there on success; otherwise leaves it unchanged and
+    /// sets a status-line message.
     pub(super) fn jump_to_override_match(&mut self, dir: SearchDir, pattern: &str) {
         if pattern.is_empty() || self.override_candidates.is_empty() {
             return;
@@ -850,10 +755,7 @@ impl App {
         }) {
             Some(i) => {
                 self.override_highlight = i;
-                // Spec 0132 §G2: live-preview the newly-highlighted
-                // candidate, same as arrow-key movement (2026-07-17
-                // feedback: search-jump landed silently, without a
-                // main-pane preview).
+                // Preview the landing row, as arrow-key movement does.
                 self.preview_override_highlight();
             }
             None => self.message = format!("pattern not found: {pattern}"),
@@ -864,25 +766,19 @@ impl App {
     /// (smartcase — spec 0195 S2), searching in `dir` from just past the
     /// cursor and wrapping around at the ends of the document (spec 0114
     /// §4, extended to the main pane). Folded-away matches are found and
-    /// then revealed, since the scan is over the whole document rather
-    /// than over the visible rows. Always matches against `self.lines`'
-    /// *current* rendered text, so a range whose type has been
-    /// overridden (spec 0114 §5) searches the post-override rendering,
-    /// not the original one — no special-casing needed, since overrides
-    /// mutate `self.lines` in place rather than being tracked
-    /// separately. On a match, moves the cursor there (recording a
-    /// jumplist entry) and unfolds its ancestors so it's visible;
-    /// otherwise leaves the cursor unchanged and sets a status-line
-    /// message.
+    /// then revealed, since the scan covers the whole document rather
+    /// than the visible rows. Matching is against `self.lines`' current
+    /// rendered text, so an overridden range searches its post-override
+    /// rendering with no special-casing. On a match, moves the cursor
+    /// there (recording a jumplist entry) and unfolds its ancestors;
+    /// otherwise leaves the cursor put and sets a status-line message.
     ///
-    /// Spec 0210 S1: a scan over `lines`, not over the `doc_next`/
-    /// `doc_prev` chain. It used to step node by node and read each
-    /// node's stored opening line off `span.text_range`, which no longer
-    /// exists as a stored number — and deriving it per step would have
-    /// been a full root-to-node descent per candidate. Scanning the text
-    /// instead resolves an owner only for the lines that actually match,
-    /// which also retires spec 0195 S1's `last_node()` hazard: neither
-    /// direction walks the chain at all now.
+    /// Scans `lines` rather than the `doc_next`/`doc_prev` chain (spec
+    /// 0210 S1). A node's opening line is not a stored number, so
+    /// walking the chain would cost a root-to-node descent per
+    /// candidate; scanning the text resolves an owner only for the lines
+    /// that actually match. Walking no chain also means neither
+    /// direction can hit spec 0195 S1's `last_node()` hazard.
     pub(super) fn jump_to_match(&mut self, dir: SearchDir, pattern: &str) {
         if pattern.is_empty() || self.tree.is_empty() || self.lines.is_empty() {
             return;

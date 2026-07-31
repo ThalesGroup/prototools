@@ -15,25 +15,23 @@ use prototext_core::serialize::render_text::NodeSpan;
 /// (`None` = raw/schema-less override) — the exact two inputs that
 /// determine `decode_and_render_indexed`'s output. The synthetic
 /// wrapper's field name is deliberately *not* part of this key (spec
-/// 0135 §G1/§G2): the wrapper's field name is now always the fixed
+/// 0135 §G1/§G2): the wrapper's field name is always the fixed
 /// placeholder `"_"`, and the real display name is patched in as a
 /// post-render substring replacement, so the cached render itself is
 /// field-name-invariant.
 ///
 /// The trailing `bool` is `splice_override`'s own `is_preview` (spec
-/// 0163, still required by spec 0174, now for a stronger reason) — a
-/// live preview is rendered from at most `override_preview_byte_budget`
-/// interior bytes, i.e. literally not the same input as the confirmed
-/// render, which always renders completely; these must be cached
-/// separately, or confirming an override could silently reuse a
-/// truncated preview render of the same `(range, type)`.
+/// 0174) — a live preview is rendered from at most
+/// `override_preview_byte_budget` interior bytes, i.e. literally not the
+/// same input as the confirmed render, which always renders completely;
+/// these must be cached separately, or confirming an override could
+/// silently reuse a truncated preview render of the same `(range, type)`.
 type RenderKey = (Range<usize>, Option<String>, bool);
 
 /// Value: everything `apply_override` derives from a fresh
-/// `decode_and_render_indexed` call. Spec 0187 S4: no longer a third
-/// `Vec<StyleHint>` element — highlighting is recomputed per frame over
-/// the on-screen window only, so there is nothing render-scoped left to
-/// cache.
+/// `decode_and_render_indexed` call. Spec 0187 S4: highlighting is
+/// recomputed per frame over the on-screen window only, so there is
+/// nothing render-scoped left to cache.
 type RenderValue = (Vec<String>, Vec<NodeSpan>);
 
 /// Approximate heap footprint of a cached render, for `RenderCache`'s

@@ -369,9 +369,9 @@ impl App {
 
     /// Spec 0185 S2: `cursor_display_row()` carried into composed row
     /// space, which is what the render loop's `REVERSED` comparison
-    /// needs — it compares against rows it is drawing, not against
-    /// `visible_rows`. A cursor inside the block the overlay stands in
-    /// for (the usual case: the preview's target *is* the node the
+    /// needs — it compares against the rows it is drawing, not against
+    /// the committed ones. A cursor inside the block the overlay stands
+    /// in for (the usual case: the preview's target *is* the node the
     /// cursor is on) resolves to the overlay's own first row.
     pub(super) fn cursor_composed_row(&self) -> usize {
         let row = self.cursor_display_row();
@@ -430,14 +430,12 @@ impl App {
     /// Rows that are not prototext at all are emitted as `""`. `lines`
     /// is not purely prototext: spec 0174 §S4's `...` truncation marker
     /// is a literal row in a truncated preview's lines, and `...` is not
-    /// in the grammar. That used to be harmless because the marker was
-    /// spliced in after `colorize()` had already run; highlighting at
-    /// draw time removes that protection, and a syntax error here would
-    /// silently strip the color off every row *beneath* the marker via
-    /// tree-sitter's error recovery. Substituting a blank line rather
-    /// than dropping the row keeps the result index-parallel with
-    /// `window`, so the row's own bucket comes out empty by construction
-    /// and no index surgery is needed.
+    /// in the grammar. Highlighting happens at draw time, so a syntax
+    /// error here would silently strip the color off every row *beneath*
+    /// the marker via tree-sitter's error recovery. Substituting a blank
+    /// line rather than dropping the row keeps the result
+    /// index-parallel with `window`, so the row's own bucket comes out
+    /// empty by construction and no index surgery is needed.
     fn window_text(&self, window: &[DisplayRow]) -> Vec<String> {
         window
             .iter()
@@ -559,8 +557,7 @@ impl App {
     /// `None` for a node with no *distinct* footer line, which is
     /// exactly the `has_children` test for a node being bracketed at
     /// all: an unbracketed scalar's `{` would otherwise be a brace
-    /// inside a string literal. The rule is inherited unchanged from
-    /// spec 0193's `cursor_brace`, which this replaces.
+    /// inside a string literal.
     ///
     /// A *folded* node draws its whole body as the one-row `{ ... }`
     /// collapse summary (spec 0193 S1), so both members are on the
@@ -658,11 +655,10 @@ impl App {
             spans.push(Span::raw(margin));
         }
 
-        // Spec 0194 S2: one insertion, not spec 0193 S2's two. The
-        // synthetic closing brace used to be split off so it could carry
-        // `brace_match_style`; the caret now restyles it by character
-        // index over the finished span list instead, so the summary is
-        // one piece of text again.
+        // Spec 0194 S2: one insertion. The synthetic closing brace needs
+        // no span of its own to carry `brace_match_style` — the caret
+        // restyles it by character index over the finished span list —
+        // so the summary stays one piece of text.
         let mut insertions: Vec<(usize, String, Option<Style>)> = Vec::new();
         if node.is_some_and(|idx| self.folded.contains(&idx) && self.has_children(idx)) {
             let insert_at = match content.rfind('{') {
@@ -729,8 +725,8 @@ impl App {
     ///
     /// Spec 0194 S1 makes the suffix's *length* the second zone of the
     /// caret track, which is why this is a function `render` can call
-    /// twice — once to draw, once to measure — rather than the inline
-    /// `match` it used to be.
+    /// twice — once to draw, once to measure — rather than an inline
+    /// `match`.
     fn heat_chrome(
         &self,
         display: &heat_cue::HeatDisplay,
@@ -781,17 +777,14 @@ impl App {
         }
     }
 
-    /// Spec 0113 D33: the node `line_idx` is one of the *own*
-    /// header/footer lines of (`line_to_node`'s opening-line mapping, or
-    /// `footer_line_to_node`'s closing-line mapping) — never a node one
-    /// of whose descendants owns the line, which is what keeps the
-    /// active-override weight from cascading down a whole overridden
-    /// subtree.
+    /// Spec 0113 D33: the node `line_idx` is one of the *own* header or
+    /// footer lines of — never a node one of whose descendants owns the
+    /// line, which is what keeps the active-override weight from
+    /// cascading down a whole overridden subtree.
     ///
-    /// Spec 0192 S2: this used to be `line_has_active_override`, which
-    /// folded the `resolve_active_override` call in. `render`'s hoisted
-    /// override pass needs the node itself, so it can skip re-resolving
-    /// when consecutive rows belong to one node.
+    /// Answers with the node rather than with a bare "has an override"
+    /// verdict (spec 0192 S2), so `render`'s hoisted override pass can
+    /// skip re-resolving when consecutive rows belong to one node.
     pub(super) fn node_at_own_line(&self, line_idx: usize) -> Option<usize> {
         self.node_at_header_line(line_idx)
             .or_else(|| self.node_at_footer_line(line_idx))
@@ -878,10 +871,10 @@ impl App {
         }
     }
 
-    /// Auto-dismiss the startup splash after `SPLASH_TIMEOUT` (item 13 of
-    /// 2026-07-17 feedback), in addition to its existing keypress/mouse
-    /// dismissal. Called once per `render()`, mirroring
-    /// `track_message_timeout`'s deadline-based approach.
+    /// Auto-dismiss the startup splash after `SPLASH_TIMEOUT`, in
+    /// addition to its keypress/mouse dismissal. Called once per
+    /// `render()`, mirroring `track_message_timeout`'s deadline-based
+    /// approach.
     fn track_splash_timeout(&mut self) {
         if self.splash && Instant::now() >= self.splash_deadline {
             self.splash = false;
@@ -937,8 +930,8 @@ impl App {
         // `pane_focus_style` marks whichever pane currently holds keyboard
         // focus, shared with the override/management panes' own
         // `render_override_pane`/`render_manage_pane` — the main pane has
-        // focus exactly when neither side pane does (2026-07-14 feedback:
-        // no prior visible sign of which pane focus was in).
+        // focus exactly when neither side pane does. Without it there is
+        // no visible sign of which pane focus is in.
         let main_focused = !self.override_focus && !self.manage_focus;
         let main_style = pane_focus_style(main_focused, self.theme);
 
@@ -958,18 +951,18 @@ impl App {
         } else {
             self.cursor_display_row()
         };
-        // 2026-07-19 feedback item 3: auto-pan into view only on genuine
-        // cursor movement (`cursor_row` differs from the last render that
-        // clamped), not on every render regardless of cause — otherwise
-        // a manual vertical pan (item 1's now-unclamped `pan_vertical_*`)
-        // would immediately get fought back into following the cursor.
+        // Auto-pan into view only on genuine cursor movement
+        // (`cursor_row` differs from the last render that clamped), not
+        // on every render regardless of cause — otherwise a manual
+        // vertical pan (`pan_vertical_*`, deliberately unclamped) would
+        // immediately get fought back into following the cursor.
         if !self.tree.is_empty() && self.last_cursor_row != Some(cursor_row) {
             clamp_scroll_to_visible(&mut self.scroll_offset, cursor_row, pane_height);
             self.last_cursor_row = Some(cursor_row);
         }
         // Spec 0185 S2: the row the cursor is *drawn* on, in composed
         // coordinates — distinct from `cursor_row` above, which stays in
-        // `visible_rows` coordinates because that is what
+        // committed visible-row coordinates because that is what
         // `last_cursor_row` (and `clamp_pan_offset`'s matching guard) is
         // compared against. With no overlay the two are equal.
         let cursor_draw_row = if self.tree.is_empty() {
@@ -1005,8 +998,7 @@ impl App {
             _ => None,
         };
 
-        // Spec 0138 (item 12, 2026-07-17 feedback), restructured by
-        // spec 0154 G6: computed in its own pass, ahead of the
+        // Spec 0154 G6: computed in its own pass, ahead of the
         // (immutable-`self`) `text_lines` closure below, since
         // populating the heat-cue caches needs `&mut self`.
         //
@@ -1116,12 +1108,13 @@ impl App {
                 }
                 spans.insert(0, glyph);
 
-                // Spec 0194 S2: the row-wide `REVERSED` this used to be
-                // splits in three. The selection keeps the full reverse;
-                // the caret's *row* gets the weaker `cursor_row_style`
-                // (G7), patched so it colors the background and leaves
-                // every syntax foreground alone; and the caret itself is
-                // a single cell, applied last so it wins.
+                // Spec 0194 S2: three distinct highlights, not one
+                // row-wide `REVERSED`. The selection keeps the full
+                // reverse; the caret's *row* gets the weaker
+                // `cursor_row_style` (G7), patched so it colors the
+                // background and leaves every syntax foreground alone;
+                // and the caret itself is a single cell, applied last so
+                // it wins.
                 let selected = line_idx
                     .is_some_and(|l| selection_range.as_ref().is_some_and(|r| r.contains(&l)));
                 if on_cursor_row {
@@ -1187,9 +1180,9 @@ impl App {
             let node_path = self.positional_path(self.cursor);
             // `status_type_label` returns a bare keyword for a primitive
             // scalar type, or an fqdn for a message/group/enum type — both
-            // get a colon separator (2026-07-19/2026-07-20 feedback); the
-            // `[tag]` suffix is shown only for the latter, and only in
-            // full-width mode, since half-width rarely has room for it.
+            // get a colon separator; the `[tag]` suffix is shown only
+            // for the latter, and only in full-width mode, since
+            // half-width rarely has room for it.
             let type_label = self.status_type_label(self.cursor);
             let left = match type_label {
                 Some((t, Some(tag))) if right_outer.is_none() => {
@@ -1253,11 +1246,9 @@ impl App {
         // never duplicated per-pane, per the spec's "locality" principle.
         // The management pane's rename buffer (spec 0119 §G4's `f` key)
         // shares this same row rather than being appended inside the side
-        // pane's own line list (2026-07-14 interactive feedback): unlike
-        // `:command`/`/`-search, that side-pane-local spot never got a
-        // real terminal cursor, making it unclear where typing lands —
-        // this row already solves that for the main pane's own command/
-        // search input, so reusing it fixes both at once.
+        // pane's own line list: a side-pane-local spot gets no real
+        // terminal cursor, leaving it unclear where typing lands, and
+        // this row already carries one for `:command`/`/`-search.
         const RENAME_PREFIX: &str = "field name: ";
         let cmd_text = match &self.command_buffer {
             Some(buf) => {
@@ -1413,9 +1404,8 @@ impl App {
         self.override_list_height = list_height;
 
         let total_rows = self.override_candidates.len();
-        // 2026-07-19 feedback item 3: auto-pan into view only on genuine
-        // highlight movement, mirroring the main pane's own
-        // `last_cursor_row` gate above.
+        // Auto-pan into view only on genuine highlight movement,
+        // mirroring the main pane's own `last_cursor_row` gate above.
         if self.last_override_highlight != Some(self.override_highlight) {
             clamp_scroll_to_visible(
                 &mut self.override_scroll,
@@ -1438,22 +1428,21 @@ impl App {
         let text = statusline_text(&left, Some(&right), split[1].width as usize);
         frame.render_widget(Paragraph::new(Line::styled(text, style)), split[1]);
 
-        // 2026-07-20 feedback: warm the wrapper-descriptor registration
-        // for the whole currently-visible window ahead of time, so
-        // arrowing through already-visible rows never re-pays the
-        // registration cost per keystroke.
+        // Warm the wrapper-descriptor registration for the whole
+        // currently-visible window ahead of time, so arrowing through
+        // already-visible rows never re-pays the registration cost per
+        // keystroke.
         self.warm_visible_override_wrappers(start, end);
 
         let mut lines: Vec<Line> = Vec::new();
         for row in start..end {
-            // Spec 0114/0137 amendment (2026-07-17 feedback): simplify
-            // the lexicographic-mode color scheme — primitive types
-            // (including the `None` sentinel) get the default style,
-            // no longer a distinct comment/punctuation color; enums keep
-            // their blue `Attribute` color but gain an explicit
-            // ` [enum]` suffix instead. Factored into `override_row_
-            // display` (2026-07-19 feedback item 4) so `override_max_
-            // visible_line_len` computes the same text.
+            // Spec 0114/0137: the lexicographic-mode color scheme is
+            // deliberately plain — primitive types (including the `None`
+            // sentinel) get the default style rather than a distinct
+            // color; enums keep their blue `Attribute` color and carry
+            // an explicit ` [enum]` suffix. Factored into
+            // `override_row_display` so `override_max_visible_line_len`
+            // computes the same text.
             let (text, base_style) = self.override_row_display(row);
             let style = if row == self.override_highlight {
                 base_style.add_modifier(Modifier::REVERSED)
@@ -1493,9 +1482,8 @@ impl App {
     }
 
     /// Startup splash — dismissed by any key/mouse event or after
-    /// `SPLASH_TIMEOUT` elapses (item 13 of 2026-07-17 feedback) —
-    /// telling the user how to reach the `F1` help overlay (spec 0113
-    /// D22).
+    /// `SPLASH_TIMEOUT` elapses — telling the user how to reach the `F1`
+    /// help overlay (spec 0113 D22).
     pub(super) fn render_splash(&self, frame: &mut Frame, area: Rect) {
         let popup = centered_rect(60, 30, area);
         frame.render_widget(Clear, popup);

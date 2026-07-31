@@ -49,7 +49,7 @@ pub enum ExtractFormat {
 /// Extracting a *message*, not a *field*: without this, a fresh decode of
 /// the full `tag+length+payload` span would misinterpret the original
 /// field's own tag as some unrelated field of the extracted message's own
-/// type (reported crash — spec 0113 bug report).
+/// type (spec 0113).
 ///
 /// For a scalar leaf field (`is_message: false`), `range` is returned
 /// unchanged (tag, length prefix if any, and value all included) — that's
@@ -68,28 +68,24 @@ pub fn extract_binary<'a>(blob: &'a [u8], range: &Range<u32>, is_message: bool) 
 /// length-delimited field (`WT_LEN` — messages, groups, strings, bytes,
 /// packed-repeated scalars) has both tag and length stripped; a group
 /// (`WT_START_GROUP`) has both its leading START_GROUP tag and its
-/// trailing END_GROUP tag stripped (the latter fixed post-spec-0120: see
-/// below); any other wire type (varint, fixed32, fixed64) has only its
-/// tag stripped. `pub(crate)`: also reused by `tui.rs`'s payload-only
-/// range display for every node, message/group or scalar alike (spec
-/// 0114 §1.1, extended).
+/// trailing END_GROUP tag stripped; any other wire type (varint,
+/// fixed32, fixed64) has only its tag stripped. `pub(crate)`: also
+/// reused by `tui.rs`'s payload-only range display for every node,
+/// message/group or scalar alike (spec 0114 §1.1, extended).
 ///
-/// Spec 0115 gave a packed-repeated field one span per element, each a
-/// bare value with no wire tag of its own, and this function took a
-/// `packed_record_start` argument to know not to strip such a range.
-/// Spec 0216 makes the whole run a single node whose `raw_range` is the
-/// record — an ordinary `WT_LEN` field — so that case is gone and the
-/// generic stripping below is right for it.
+/// A packed-repeated run is a single node whose `raw_range` is the whole
+/// record — an ordinary `WT_LEN` field (spec 0216) — so the generic
+/// stripping below is right for it too.
 ///
 /// The trailing END_GROUP tag is stripped by re-encoding it from the
 /// leading tag's own field number (`write_tag(field_number, WT_END_GROUP,
 /// ..)`) rather than parsing backward from `range.end` (varints can't be
 /// parsed right-to-left) — correct because a group's END_GROUP tag always
-/// shares the *same* field number as its own START_GROUP tag (spec 0120
-/// bugfix: previously left in place, corrupting a fresh top-level
-/// re-decode of the payload — e.g. `splice_override`'s wrap-and-redecode
-/// trick — since wire type 4 is invalid at top level, producing a
-/// spurious `INVALID_GROUP_END` entry).
+/// shares the *same* field number as its own START_GROUP tag. Leaving it
+/// in place corrupts a fresh top-level re-decode of the payload — e.g.
+/// `splice_override`'s wrap-and-redecode trick — since wire type 4 is
+/// invalid at top level, producing a spurious `INVALID_GROUP_END` entry
+/// (spec 0120).
 pub(crate) fn message_payload_range(blob: &[u8], range: &Range<u32>) -> Range<usize> {
     let range = widen(range);
     let tag = parse_wiretag(blob, range.start);
@@ -117,10 +113,10 @@ pub(crate) fn message_payload_range(blob: &[u8], range: &Range<u32>) -> Range<us
 /// For a message/group node's full `text_range` (its opening `field {`
 /// line through its closing `}` line), return just the inner lines —
 /// same "extract the message's own contents, not the field wrapping it"
-/// rule as `extract_binary`'s tag/length stripping (spec 0113 bug
-/// report): otherwise the extracted text still starts with the
-/// original field's own `field {` line, which isn't valid standalone
-/// prototext for that message's own type.
+/// rule as `extract_binary`'s tag/length stripping (spec 0113):
+/// otherwise the extracted text still starts with the original field's
+/// own `field {` line, which isn't valid standalone prototext for that
+/// message's own type.
 fn message_text_range(range: &Range<usize>) -> Range<usize> {
     if range.end.saturating_sub(range.start) < 2 {
         return range.clone();
@@ -235,8 +231,8 @@ mod tests {
         // field 1 = 7 (tag 0x08, value 0x07), END_GROUP tag (5<<3)|4 =
         // 0x2C. Groups have no length prefix; both the leading
         // START_GROUP tag and the trailing END_GROUP tag are stripped
-        // (spec 0120 bugfix — leaving the trailing tag in place corrupts
-        // a fresh top-level re-decode of the extracted payload).
+        // (spec 0120 — leaving the trailing tag in place corrupts a
+        // fresh top-level re-decode of the extracted payload).
         let blob = [0x2Bu8, 0x08, 0x07, 0x2C];
         assert_eq!(extract_binary(&blob, &(0..4), true), &blob[1..3]);
     }
@@ -265,16 +261,13 @@ mod tests {
 
     #[test]
     fn extract_binary_message_round_trips_through_a_fresh_decode() {
-        // Regression test for the reported bug: extracting a nested
-        // message's raw binary without stripping its tag+length header
-        // corrupted a fresh top-level decode of that message (the leading
-        // tag byte was misread as an unrelated field of the extracted
-        // type). Builds a minimal synthetic `FileDescriptorSet` in-memory
-        // (rather than reading a sibling crate's fixture file by relative
-        // path, which isn't available in a sandboxed Nix build), decodes a
-        // hand-crafted `Outer { inner: Inner { id: 5 } }` blob, extracts
-        // the `Inner` submessage, and re-decodes it as a standalone
-        // `test.Inner`.
+        // Extracting a nested message's raw binary without stripping its
+        // tag+length header corrupts a fresh top-level decode of that
+        // message: the leading tag byte is misread as an unrelated field
+        // of the extracted type. The `FileDescriptorSet` is built
+        // synthetically in memory rather than read from a sibling
+        // crate's fixture by relative path, which isn't available in a
+        // sandboxed Nix build.
         use prost::Message as _;
         use prost_types::field_descriptor_proto::{Label, Type};
         use prost_types::{
@@ -372,9 +365,8 @@ mod tests {
                 text_range: 0..2,
                 level: 1,
                 type_fqdn: NO_FQDN,
-                // Not exercising message-line stripping here — just header
-                // prepending — so left scalar-shaped, same as before this
-                // field existed.
+                // Not exercising message-line stripping here — just
+                // header prepending — so left scalar-shaped.
                 is_message: false,
                 packed_record_start: NO_PACKED_RECORD,
                 wire_type: WT_LEN as u8,
@@ -400,11 +392,10 @@ mod tests {
 
     #[test]
     fn extract_text_message_strips_the_wrapping_field_and_brace_lines() {
-        // Regression test for the reported bug: a message node's
-        // `text_range` includes its own `options {` opening line and `}`
-        // closing line — extracting it verbatim produced text still
-        // wrapped in the original field, not standalone prototext for the
-        // extracted message's own type.
+        // A message node's `text_range` includes its own `options {`
+        // opening line and `}` closing line, so extracting it verbatim
+        // yields text still wrapped in the original field, not
+        // standalone prototext for the extracted message's own type.
         use prototext_core::helpers::WT_LEN;
         use prototext_core::serialize::render_text::{FqdnTable, NodeSpan};
 

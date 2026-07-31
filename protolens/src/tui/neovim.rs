@@ -24,20 +24,20 @@ pub(crate) struct EditorRequest {
     pub(crate) col: u32,
 }
 
-/// Resolve `fqdn` (a message or enum) to the `.proto` file it's
-/// declared in (relative to the descriptor set's own compile root,
-/// e.g. `path/to/my_package.proto` — `FileDescriptor::name()`'s own
-/// documented format) and its 1-indexed declaration line/column,
-/// via `prost_reflect`'s own `path()` (see doc comment above) matched
-/// against a linear scan of `source_code_info.location`. Returns
-/// `None` only when `fqdn` doesn't resolve to any message or enum in
-/// `pool` at all (G3's "unknown type" case — G2 already screens out
-/// primitives/sentinels/the internal MessageSet-item FQDN before this
-/// is ever called). Falls back to line 1, column 1 — never `None` —
-/// when the type resolves but the file's `SourceCodeInfo` has no
-/// matching `Location` (e.g. the descriptor set was compiled without
-/// `--include_source_info`); `SourceCodeInfo.Location.span` is
-/// 0-indexed `[start_line, start_col, end_line]`/`[start_line,
+/// Resolve `fqdn` (a message or enum) to the `.proto` file it's declared
+/// in — relative to the descriptor set's compile root, e.g.
+/// `path/to/my_package.proto`, which is `FileDescriptor::name()`'s
+/// documented format — and its 1-indexed declaration line/column, by
+/// matching `prost_reflect`'s `path()` against a linear scan of
+/// `source_code_info.location`.
+///
+/// `None` only when `fqdn` resolves to no message or enum in `pool` at
+/// all (G3's "unknown type" case; G2 already screens out primitives,
+/// sentinels and the internal MessageSet-item FQDN). Falls back to line
+/// 1, column 1 — never `None` — when the type resolves but the file's
+/// `SourceCodeInfo` has no matching `Location`, e.g. a descriptor set
+/// compiled without `--include_source_info`. `Location.span` is
+/// 0-indexed `[start_line, start_col, end_line]` or `[start_line,
 /// start_col, end_line, end_col]` (standard protoc convention).
 pub(crate) fn locate_declaration(pool: &DescriptorPool, fqdn: &str) -> Option<(PathBuf, u32, u32)> {
     let (file, path) = if let Some(m) = pool.get_message_by_name(fqdn) {
@@ -80,9 +80,10 @@ fn socket_path() -> PathBuf {
 /// called directly on the leader `pgid` (see `open_editor` below, not
 /// the negated group-wide form), so the caller already knows it, and a
 /// `Stopped(pid, _)` result's `pid` is always that same `pgid` by
-/// construction — no reconciliation needed. Directly unit-testable
-/// with real, publicly-constructible `WaitStatus`/`Pid`/`Signal`
-/// values; no mocking required.
+/// construction — no reconciliation needed.
+///
+/// Kept pure so it is unit-testable against real, publicly
+/// constructible `WaitStatus`/`Pid`/`Signal` values, with no mocking.
 fn next_state(pgid: Pid, socket_path: PathBuf, status: WaitStatus) -> EditorState {
     match status {
         WaitStatus::Stopped(..) => EditorState::Suspended { pgid, socket_path },
@@ -101,11 +102,10 @@ fn next_state(pgid: Pid, socket_path: PathBuf, status: WaitStatus) -> EditorStat
 /// instead of spawning a second instance, then `SIGCONT` it) — G5's
 /// "single instance" decision.
 ///
-/// `--remote-tab`/`--remote-send` flags and the `<C-\><C-N>` mode-
-/// escape prefix live-verified against a real Neovim 0.11.5 (2026-07-
-/// 18 research): a combined single-call `--remote-tab +cmd` does *not*
-/// apply `+cmd` to the newly opened tab — two separate calls are
-/// required, as below.
+/// The `--remote-tab`/`--remote-send` flags and the `<C-\><C-N>`
+/// mode-escape prefix are verified against Neovim 0.11.5: a combined
+/// single-call `--remote-tab +cmd` does *not* apply `+cmd` to the newly
+/// opened tab, so two separate calls are required, as below.
 pub(crate) fn open_editor<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
@@ -123,10 +123,9 @@ where
     // is still the foreground one at that point. The default SIGTTOU
     // disposition would stop protolens right there, same as any other
     // background process attempting a terminal-control operation,
-    // leaving the user stuck in the invoking shell until a manual `fg`
-    // (glitch reported 2026-07-18). Ignoring SIGTTOU for the process's
-    // lifetime — the same policy an interactive shell applies to itself —
-    // lets the reclaim go through directly instead.
+    // leaving the user stuck in the invoking shell until a manual `fg`.
+    // Ignoring SIGTTOU for the process's lifetime — the same policy an
+    // interactive shell applies to itself — lets the reclaim go through.
     // SAFETY: installing a signal handler for our own process is always
     // sound; `SigHandler::SigIgn` takes no captured state.
     unsafe {

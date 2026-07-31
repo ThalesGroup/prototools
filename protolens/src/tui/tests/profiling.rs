@@ -2,17 +2,17 @@
 //
 // SPDX-License-Identifier: MIT
 
-// Throwaway diagnostic for the 2026-07-24 override-pane `Down` slowdown
-// report — not meant to stay in the tree. Run with:
+// Throwaway diagnostics for override-pane latency — not meant to stay
+// in the tree. Run with:
 //   cargo test --release --bin protolens tui::tests::profiling -- --ignored --nocapture
 //
 // Every harness below sets `app.verify_repair = false` (spec 0186 G3):
-// that check re-runs the full O(document) line-map and `visible_rows`
-// rebuild after each splice — precisely the work spec 0186 removed — so
-// leaving it on would have these tests report the old cost on top of
-// the new one. The `App::new` figure each test prints does still
-// include one such pass, since the flag cannot be cleared before the
-// constructor's own startup render.
+// that check walks the whole document after each splice to confirm the
+// line counters still describe it, which is O(document) work no shipped
+// build does, so leaving it on would fold it into every measurement.
+// The `App::new` figure each test prints does still include one such
+// pass, since the flag cannot be cleared before the constructor's own
+// startup render.
 
 use std::path::Path;
 use std::time::Instant;

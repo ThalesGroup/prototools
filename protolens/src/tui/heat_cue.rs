@@ -2,10 +2,9 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Main-pane inference-mismatch heat cue (spec 0138, item 12 of
-//! 2026-07-17 feedback) — a per-node cue, shown only when auto-inference
-//! finds a strictly better-scoring type for a node's byte range than the
-//! node's current effective type.
+//! Main-pane inference-mismatch heat cue (spec 0138) — a per-node cue,
+//! shown only when auto-inference finds a strictly better-scoring type
+//! for a node's byte range than the node's current effective type.
 
 use super::heat_worker::RangeHeatEntry;
 use super::tiered::Tier;
@@ -22,17 +21,16 @@ pub(super) const HEAT_CUE_PREVIEW: usize = 8;
 /// distinct from the fold marker (`▸`/`▾`) and every other glyph this
 /// crate already uses.
 ///
-/// A `&'static str` rather than a `char` (spec 0190 S9): every render
-/// of every visible cue built a `String` from it, one heap allocation
-/// per cue per frame, and the activity dot (S5) is a third consumer
-/// that would have copied the same mistake.
+/// A `&'static str` rather than a `char` (spec 0190 S9): a `char`
+/// forces a `String` build at every render of every visible cue — one
+/// heap allocation per cue per frame.
 pub(super) const HEAT_GLYPH: &str = "●";
 
 /// A node's computed heat cue (spec 0138 G2-G4, G9-G12): either a
-/// `Mismatch` (red — the original gate, `best` strictly exceeds
-/// `current`) or a `Tie` (blue — `current` already equals `best`, but at
-/// least one other candidate shares that same top score, so the current
-/// typing, while optimal, isn't the *unique* optimum).
+/// `Mismatch` (red — `best` strictly exceeds `current`) or a `Tie`
+/// (blue — `current` already equals `best`, but at least one other
+/// candidate shares that same top score, so the current typing, while
+/// optimal, isn't the *unique* optimum).
 #[derive(Clone, Copy)]
 pub(super) struct HeatCue {
     /// Brightness level, 1..=12 (spec 0138 G5), bucketed from `best`
@@ -49,18 +47,16 @@ pub(super) enum HeatCueKind {
     Mismatch { current: Option<i64>, best: i64 },
     Tie {
         tie_count: usize,
-        /// The shared top score itself (feedback, 2026-07-20: shown
-        /// alongside `tie_count` as `[{tie_count}@{score}]` — knowing
-        /// *how many* candidates tie isn't as useful without knowing
-        /// *at what score* they tie).
+        /// The shared top score itself, shown alongside `tie_count` as
+        /// `[{tie_count}@{score}]`: *how many* candidates tie isn't
+        /// much use without knowing *at what score* they tie.
         score: i64,
     },
 }
 
-/// What a node's line should actually show (spec 0154 G6) — the
-/// progressive counterpart to the old two-state `Pending`/`Resolved`
-/// split: `best` and `current` each arrive independently, so the
-/// display has more than two shapes.
+/// What a node's line should actually show (spec 0154 G6) — `best`
+/// and `current` each arrive independently, so the display has more
+/// than two shapes.
 #[derive(Clone, Copy)]
 pub(super) enum HeatDisplay {
     /// `best` itself isn't known yet — `[?]`. Whether `current` is known
@@ -76,11 +72,11 @@ pub(super) enum HeatDisplay {
     Cue(HeatCue),
 }
 
-/// Per-node heat-cue resolution state (spec 0152 G6, restructured by
-/// spec 0154 G4), parallel to `App::tree` (`App::heat_states`) — `best`
-/// (from the range's window sweep) and `current` (the current type's
-/// exact score) each arrive independently, so each is its own
-/// pending-vs-available union rather than one all-or-nothing flag.
+/// Per-node heat-cue resolution state (spec 0154 G4), parallel to
+/// `App::tree` (`App::heat_states`) — `best` (from the range's window
+/// sweep) and `current` (the current type's exact score) each arrive
+/// independently, so each is its own pending-vs-available union rather
+/// than one all-or-nothing flag.
 #[derive(Clone, Copy, Default)]
 pub(super) struct HeatState {
     /// `None` — the range hasn't been scored at all yet. `Some(stats)`
@@ -184,14 +180,12 @@ impl App {
     ///
     /// `pub(super)`: also used by `App::prefetch_step` (spec 0164 G7).
     ///
-    /// Spec 0212 N3: this still hands back an owned `String`, resolved out
-    /// of the `FqdnTable`, rather than a `FqdnId`. The heat cache cannot
-    /// take an id, for two reasons that have nothing to do with the arena:
-    /// two of the three sources below are not FQDNs at all (an override
-    /// entry's own name, and `natural_type`'s primitive keywords like
-    /// `int32`), and the cache itself is `Mutex`-shared with the background
-    /// worker across a scoring boundary that takes `&str`. It costs the
-    /// same as the `type_fqdn.clone()` it replaced.
+    /// Hands back an owned `String` resolved out of the `FqdnTable`,
+    /// not a `FqdnId` (spec 0212 N3): the heat cache cannot take an id,
+    /// because two of the three sources below are not FQDNs at all (an
+    /// override entry's own name, and `natural_type`'s primitive
+    /// keywords like `int32`), and the cache is `Mutex`-shared with the
+    /// background worker across a scoring boundary that takes `&str`.
     pub(super) fn current_type_key(&self, idx: usize) -> Option<String> {
         let span = &self.tree[idx].span;
         if span.is_message {
@@ -203,13 +197,12 @@ impl App {
         }
     }
 
-    /// This line's heat cue display, if any (spec 0138, restructured by
-    /// spec 0154 G6) — `HeatDisplay::None` both when the cue is hidden
-    /// (`i`) or gated absent, and when `line_idx` isn't a node's own
-    /// header line (`line_to_node`, mirroring `line_has_active_
-    /// override`'s restriction to header/footer lines — only the header
-    /// side applies here, since a cue is about the node's own type, not
-    /// its closing brace).
+    /// This line's heat cue display, if any (spec 0154 G6) —
+    /// `HeatDisplay::None` both when the cue is hidden (`i`) or gated
+    /// absent, and when `line_idx` isn't a node's own header line
+    /// (`node_at_header_line`, the header half of `node_at_own_line`'s
+    /// restriction — a cue is about the node's own type, not about its
+    /// closing brace).
     ///
     /// Spec 0154 G4: a settled node is read directly, no cache lock at
     /// all. An unsettled node goes through `self.heat_lookup` (pushing
@@ -218,15 +211,14 @@ impl App {
     /// may already be known even when `heat_lookup`'s own all-or-
     /// nothing check reports a miss, which is what makes the
     /// progressive `[?]`/`[?/{best}]` states possible. With no worker
-    /// (no scoring graph, or a test fixture), falls back to spec
-    /// 0151/0154's synchronous logic, filling only whichever half is
-    /// still missing.
+    /// (no scoring graph, or a test fixture), falls back to the
+    /// synchronous logic, filling only whichever half is still missing.
     ///
-    /// `heat_cues_hidden` (`i`) is checked *last*, after resolving —
+    /// `heat_cues_hidden` (`i`) is checked *last*, after resolving, so
     /// the background worker keeps fetching and caching cues for every
-    /// visited line even while hidden (2026-07-19 feedback), so cues
-    /// are already warm the moment the user un-hides them; only the
-    /// returned value (what's actually shown) is suppressed here.
+    /// visited line even while hidden and they are already warm the
+    /// moment the user un-hides them; only the returned value is
+    /// suppressed here.
     pub(super) fn heat_cue_for(&mut self, line_idx: usize) -> HeatDisplay {
         let Some(idx) = self.node_at_header_line(line_idx) else {
             return HeatDisplay::None;
@@ -245,13 +237,13 @@ impl App {
     /// (spec 0208 S3): `User` for the node under the cursor, `Visible`
     /// for every other node on screen.
     ///
-    /// The distinction is the whole of S3. `Tier::Visible` is right for
-    /// the other forty-odd lines — that request runs every frame just
-    /// to re-check its own pending status, and must not repeatedly jump
-    /// ahead of a request a genuine user action queued. It is wrong for
-    /// exactly one line: the node under the cursor is the one whose
-    /// type the status line reports, whose cue the user is waiting on,
-    /// and the one `t` will open the selection pane on.
+    /// `Tier::Visible` is right for the other forty-odd lines — that
+    /// request runs every frame just to re-check its own pending
+    /// status, and must not repeatedly jump ahead of a request a
+    /// genuine user action queued. It is wrong for exactly one line:
+    /// the node under the cursor is the one whose type the status line
+    /// reports, whose cue the user is waiting on, and the one `t` will
+    /// open the selection pane on.
     ///
     /// `self.cursor` is a node index, not a line index, and it names
     /// the node whose bracket pair the caret belongs to whether the
@@ -300,9 +292,8 @@ impl App {
     }
 
     /// The shared core of `heat_cue_for` and `recheck_pending_heat_
-    /// states` (spec 0152 G6/G8, spec 0154 G4) — everything past the
-    /// line-index-to-node/eligibility gating, keyed directly on node
-    /// index.
+    /// states` (spec 0154 G4) — everything past the line-index-to-node/
+    /// eligibility gating, keyed directly on node index.
     fn heat_cue_resolve(&mut self, idx: usize) -> HeatDisplay {
         if self.heat_states[idx].settled() {
             return heat_display(self.heat_states[idx]);
@@ -316,8 +307,7 @@ impl App {
         // value itself is discarded — `best`/`current` are re-read
         // independently just below, since either may already be known
         // even when this reports a miss. See `heat_tier_for` (spec 0208
-        // S3) for why the tier is per-node rather than a flat
-        // `Tier::Visible` (spec 0164 G1).
+        // S3) for why the tier is per-node.
         let tier = self.heat_tier_for(idx);
         self.heat_lookup(&range, current_key.as_deref(), 0, HEAT_CUE_PREVIEW, tier);
 
@@ -350,18 +340,14 @@ impl App {
         }
 
         // No worker and still unsettled after an independent cache read
-        // — either scoring is genuinely needed (spec 0151/0154's
-        // synchronous logic, below) or there's no scoring graph at all,
-        // in which case nothing is ever going to resolve this node
-        // further: show nothing rather than a permanent `[?]` (mirrors
-        // the old `Pending`-forever behavior, which never showed
-        // `[pending]` in that case either). `heat_states[idx]` is left
-        // untouched (still unsettled) so a cache write from elsewhere
-        // is still picked up on a later call.
-        // Cloned rather than borrowed (spec 0180 S2): this used to be a
-        // `&'static` copy, which detached from `self` for free; an `Arc`
-        // clone is the honest equivalent and keeps `self` free to be
-        // borrowed mutably below.
+        // — either scoring is genuinely needed (the synchronous logic
+        // below) or there's no scoring graph at all, in which case
+        // nothing is ever going to resolve this node further: show
+        // nothing rather than a permanent `[?]`. `heat_states[idx]` is
+        // left untouched (still unsettled) so a cache write from
+        // elsewhere is still picked up on a later call.
+        // Cloned rather than borrowed (spec 0180 S2): the `Arc` clone
+        // keeps `self` free to be borrowed mutably below.
         let Some(graph) = self.ctx.graph.clone() else {
             return HeatDisplay::None;
         };
@@ -396,7 +382,7 @@ impl App {
             let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
             // At least `HEAT_CUE_PREVIEW` (what `heat_lookup` just
             // checked coverage against), and at least
-            // `override_list_height` too (spec 0151 G6's original
+            // `override_list_height` too (spec 0151 G6's
             // cross-population cap) — never narrower than either.
             let cap = self.override_list_height.max(1).max(HEAT_CUE_PREVIEW);
             let top_n: Vec<_> = candidates.iter().take(cap).cloned().collect();
@@ -427,10 +413,10 @@ impl App {
     }
 
     /// Re-checks the shared cache for every node not yet `settled`
-    /// (spec 0152 G6/G8, spec 0154 G4) — called whenever the worker
-    /// thread reports progress. Reads `HeatCaches` directly rather than
-    /// going through `self.heat_lookup` (unlike `heat_cue_resolve`) so
-    /// a still-missing entry is never re-pushed onto the request queue
+    /// (spec 0154 G4) — called whenever the worker thread reports
+    /// progress. Reads `HeatCaches` directly rather than going through
+    /// `self.heat_lookup` (unlike `heat_cue_resolve`) so a
+    /// still-missing entry is never re-pushed onto the request queue
     /// — pointless here: the queue already merges by range (G3), so any
     /// earlier in-flight request for this node is either already
     /// covering it or will itself report progress again once popped.
@@ -487,10 +473,9 @@ impl App {
     }
 }
 
-/// Pure gate/level computation over a `HeatState` (spec 0151 G5, spec
-/// 0138 G2-G4/G9, restructured by spec 0154 G6) — split out from
-/// `heat_cue_resolve` so it's directly unit-testable without a real
-/// scoring graph. Implements the full progressive display table: `[?]`
+/// Pure gate/level computation over a `HeatState` (spec 0154 G6) —
+/// split out from `heat_cue_resolve` so it's directly unit-testable
+/// without a real scoring graph. The full display table: `[?]`
 /// whenever `best` isn't known yet (no separate `[?/?]` state —
 /// Mismatch vs. Tie can't be determined without `best` either way);
 /// nothing shown when every candidate is vetoed or `current` is the

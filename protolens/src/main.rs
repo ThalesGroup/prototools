@@ -293,15 +293,15 @@ fn main() -> ExitCode {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| descriptor_set.display().to_string());
-                // The sibling `hopcroft.rkyv` scoring graph, if present, is
-                // loaded in the same phase but is not named here: it runs
-                // about a fifth of the descriptor set's size (4.6 MB against
-                // 24.5 MB for googleapis; 209 KB against 1.0 MB for a
-                // protoc descriptor pool), so the descriptor size alone
-                // already tells the reader what this wait is proportional
-                // to. Whether a graph was found shows up in the next two
-                // messages anyway — no graph means no inference phase and a
-                // raw root.
+                // The sibling `hopcroft.rkyv` scoring graph, if present,
+                // is loaded in the same phase but is not named here: it
+                // runs about a fifth of the descriptor set's size (4.6 MB
+                // against 24.5 MB for googleapis; 209 KB against 1.0 MB
+                // for a protoc descriptor pool), so the descriptor size
+                // alone already tells the reader what this wait is
+                // proportional to. Whether a graph was found shows up in
+                // the next two messages anyway — no graph means no
+                // inference phase and a raw root.
                 eprintln!(
                     "protolens: loading descriptor set '{name}'{}...",
                     size_suffix(descriptor_set)
@@ -326,7 +326,7 @@ fn main() -> ExitCode {
     };
 
     // Spec 0197 §S3: the on-demand path was declined, so the user is about
-    // to wait seconds that a `reproto` re-run would remove. Printed here,
+    // to wait seconds that a `reproto` re-run would remove. Printed
     // between the "loading descriptor set" line and the wait it explains,
     // so it is on screen *while* they wait rather than after. The splash
     // pane and the status line carry the same text for a launch nobody was
@@ -348,12 +348,10 @@ fn main() -> ExitCode {
     };
 
     // Spec 0168 G1/G4: root-type inference runs here, synchronously, for
-    // the TUI exactly as it always has for the batch paths — it used to be
-    // handed to a background thread whose answer then re-decoded the whole
-    // document under the reader. Announced on stderr, alongside the
-    // messages the phases before it already print — the alternate screen
-    // is not entered until `tui::run`, so there is no frame to draw into
-    // and none is needed.
+    // the TUI as well as the batch paths, and is announced on stderr
+    // alongside the messages the phases before it print — the alternate
+    // screen is not entered until `tui::run`, so there is no frame to
+    // draw into and none is needed.
     //
     // Announced separately from the render below, rather than as one
     // "inferring and decoding" line, because both are multi-second on a

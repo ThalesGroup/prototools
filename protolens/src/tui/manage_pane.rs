@@ -41,8 +41,8 @@ impl App {
         self.last_manage_click = None;
     }
 
-    /// The manage pane's initial highlight, in priority order (feedback,
-    /// 2026-07-17): (1) an entry already active for the cursor node
+    /// The manage pane's initial highlight, in priority order: (1) an
+    /// entry already active for the cursor node
     /// (`resolve_active_override_entry_index`); else (2)
     /// `first_entry_matching_origin_candidates`'s result; else (3)
     /// simply the first entry in the pane. `0` (a no-op, since there's
@@ -99,9 +99,9 @@ impl App {
     }
 
     /// Vertical pan for the management pane (Ctrl-Up/Ctrl-Down at `step
-    /// == PAN_STEP`, plain mouse wheel at `step == WHEEL_PAN_STEP`,
-    /// 2026-07-19 feedback items 1/2): scrolls the listing without
-    /// moving the highlight, bounded only by the content itself.
+    /// == PAN_STEP`, plain mouse wheel at `step == WHEEL_PAN_STEP`):
+    /// scrolls the listing without moving the highlight, bounded only by
+    /// the content itself.
     pub(super) fn manage_pan_vertical(&mut self, step: usize, up: bool) {
         let max_scroll = self
             .manage_display_rows()
@@ -111,10 +111,9 @@ impl App {
     }
 
     /// Horizontal pan for the management pane (Ctrl-Left/Ctrl-Right,
-    /// Shift+wheel/native horizontal scroll, 2026-07-19 feedback item 4):
-    /// mirrors the main pane's own `pan_right`, stopping once the
-    /// rightmost character of the widest currently-visible row would be
-    /// shown — never further.
+    /// Shift+wheel/native horizontal scroll): mirrors the main pane's
+    /// own `pan_right`, stopping once the rightmost character of the
+    /// widest currently-visible row would be shown — never further.
     pub(super) fn manage_pan_horizontal(&mut self, step: usize, left: bool) {
         let width = self.side_area.width as usize;
         let max_offset = self.manage_max_visible_line_len().saturating_sub(width);
@@ -122,9 +121,9 @@ impl App {
     }
 
     /// One management-pane display row's rendered text — a `Header`'s own
-    /// label, or an `Entry`'s `manage_type_line` (2026-07-19 feedback
-    /// item 4, factored out so `manage_max_visible_line_len` matches
-    /// exactly what `render_manage_pane` shows).
+    /// label, or an `Entry`'s `manage_type_line`. Shared so that
+    /// `manage_max_visible_line_len` measures exactly what
+    /// `render_manage_pane` shows.
     pub(super) fn manage_row_text(&self, row: &ManageRow) -> String {
         match row {
             ManageRow::Header(label) => label.clone(),
@@ -134,8 +133,7 @@ impl App {
 
     /// Longest rendered row (in characters) among the management pane's
     /// currently-visible window — the basis for `manage_pan_horizontal`'s
-    /// clamp (2026-07-19 feedback item 4), mirroring the main pane's own
-    /// `max_visible_line_len`.
+    /// clamp, mirroring the main pane's own `max_visible_line_len`.
     pub(super) fn manage_max_visible_line_len(&self) -> usize {
         let rows = self.manage_display_rows();
         let total = rows.len();
@@ -169,7 +167,7 @@ impl App {
     /// The manage pane's currently-highlighted display row, resolved
     /// from `manage_highlight`'s entry index — the target row for
     /// `clamp_scroll_to_visible` and for Ctrl-Up/Ctrl-Down vertical
-    /// panning (2026-07-18 feedback item 2).
+    /// panning.
     pub(super) fn manage_highlighted_row(&self) -> usize {
         self.manage_display_rows()
             .iter()
@@ -181,7 +179,7 @@ impl App {
     /// `r#type`, or `"<raw / no type>"` if unset — except the internal,
     /// globally-shared `decode::MESSAGE_SET_ITEM_FQDN` is never shown
     /// to the user directly, replaced by the friendly, MessageSet-
-    /// specific FQDN instead (2026-07-18 feedback item 4).
+    /// specific FQDN instead.
     pub(super) fn manage_entry_type_label(&self, idx: usize) -> String {
         let e = &self.overrides.entries()[idx];
         let Some(fqdn) = e.r#type.as_deref() else {
@@ -228,8 +226,8 @@ impl App {
     /// whose search text (`manage_search_text`) contains `pattern`
     /// (smartcase — spec 0195 S2), searching in `dir` from just past the
     /// current highlight, wrapping around. Moves the highlight there on
-    /// success;
-    /// otherwise leaves it unchanged and sets a status-line message.
+    /// success; otherwise leaves it unchanged and sets a status-line
+    /// message.
     pub(super) fn jump_to_manage_match(&mut self, dir: SearchDir, pattern: &str) {
         let n = self.overrides.entries().len();
         if pattern.is_empty() || n == 0 {
@@ -362,10 +360,9 @@ impl App {
         match key.code {
             KeyCode::Tab => self.manage_focus = false,
             KeyCode::Esc | KeyCode::Char('o') | KeyCode::Char('q') => self.close_manage_pane(),
-            // Item 11 (2026-07-17 feedback): opens the selection pane on
-            // the highlighted entry to change its type, instead of
-            // closing the pane — falls back to the old close behavior
-            // when there's nothing to select.
+            // Opens the selection pane on the highlighted entry to
+            // change its type; with nothing to select there is no pane
+            // to open, so it closes this one instead.
             KeyCode::Enter => {
                 if self.overrides.entries().is_empty() {
                     self.close_manage_pane();
@@ -373,17 +370,16 @@ impl App {
                     self.open_override_from_manage();
                 }
             }
-            // Interactive feedback, 2026-07-17: Shift-Up/Shift-Down move
-            // the highlight like Up/Down, but also activate the
-            // destination entry — deactivating any other entry sharing
-            // its origin, per the usual per-origin invariant
-            // (`OverrideCollection::set_active`) — a combined "move and
-            // select" gesture. Unlike Shift-Space, terminals report
-            // Shift-arrow reliably via the modifier bit even without the
-            // Kitty keyboard protocol, so no `KITTY_KEYBOARD_ENHANCED`
-            // gate is needed here. Must precede the plain `Down`/`Up`
-            // arms below, since an unguarded arm there would otherwise
-            // shadow it.
+            // Shift-Up/Shift-Down move the highlight like Up/Down, but
+            // also activate the destination entry — deactivating any
+            // other entry sharing its origin, per the per-origin
+            // invariant (`OverrideCollection::set_active`) — a combined
+            // "move and select" gesture. Unlike Shift-Space, terminals
+            // report Shift-arrow reliably via the modifier bit even
+            // without the Kitty keyboard protocol, so no
+            // `KITTY_KEYBOARD_ENHANCED` gate is needed here. Must
+            // precede the plain `Down`/`Up` arms below, since an
+            // unguarded arm there would otherwise shadow it.
             KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 self.move_manage_highlight(1);
                 if let Some(entry) = self.overrides.entries().get(self.manage_highlight) {
@@ -402,12 +398,12 @@ impl App {
                     }
                 }
             }
-            // Vertical pan (2026-07-19 feedback item 1): scrolls the
-            // list without moving the highlight, bounded only by the
-            // content itself, no longer by the highlighted row (see
-            // `App::manage_pan_vertical`). Must precede the plain
-            // `Up`/`Down` arms below, same "modifier-guard first"
-            // convention as the horizontal pan below.
+            // Vertical pan: scrolls the list without moving the
+            // highlight, bounded only by the content itself and not by
+            // the highlighted row (see `App::manage_pan_vertical`).
+            // Must precede the plain `Up`/`Down` arms below, same
+            // "modifier-guard first" convention as the horizontal pan
+            // below.
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.manage_pan_vertical(PAN_STEP, true)
             }
@@ -430,12 +426,11 @@ impl App {
                 self.manage_highlight = self.overrides.entries().len().saturating_sub(1);
                 self.manage_pending_kind = None;
             }
-            // Horizontal pan (item 14 of 2026-07-17 feedback), mirroring
-            // the main pane's own Ctrl-Left/Ctrl-Right (spec 0113 D24)
-            // and the mouse's Shift-wheel/native horizontal-scroll pan
-            // over this pane (`handle_mouse`) — clamped on the right so
-            // the rightmost character of the widest visible row is the
-            // limit (2026-07-19 feedback item 4, see
+            // Horizontal pan, mirroring the main pane's own Ctrl-Left/
+            // Ctrl-Right (spec 0113 D24) and the mouse's Shift-wheel/
+            // native horizontal-scroll pan over this pane
+            // (`handle_mouse`) — clamped on the right so the rightmost
+            // character of the widest visible row is the limit (see
             // `App::manage_pan_horizontal`). Must precede the plain
             // `Left`/`Right` arms below, since an unguarded arm there
             // would otherwise shadow it.
@@ -452,11 +447,11 @@ impl App {
             // first (Right) or last (Left) match.
             KeyCode::Left => self.manage_circulate_cursor(false),
             KeyCode::Right => self.manage_circulate_cursor(true),
-            // In-pane search (spec 0117 §3, spec-0133-adjacent rework):
-            // reuses the shared bottom command/message bar as the search
-            // prompt, mirroring the override pane's own `/`/`?`
-            // (`handle_command_key`'s `Enter` arm dispatches to
-            // `jump_to_manage_match` while `manage_open && manage_focus`).
+            // In-pane search (spec 0117 §3): reuses the shared bottom
+            // command/message bar as the search prompt, mirroring the
+            // override pane's own `/`/`?` (`handle_command_key`'s
+            // `Enter` arm dispatches to `jump_to_manage_match` while
+            // `manage_open && manage_focus`).
             KeyCode::Char('/') => {
                 self.command_kind = CommandLineKind::Search(SearchDir::Forward);
                 self.command_buffer = Some(String::new());
@@ -489,24 +484,23 @@ impl App {
                     self.manage_rename = Some(current);
                 }
             }
-            // Interactive feedback, 2026-07-17: `A`/Shift-Space is
-            // `toggle_active`'s cascading sibling — same toggle, but also
-            // applied to every entry whose origin sits at-or-under the
-            // highlighted entry's own origin (`toggle_active_cascading`).
-            // Terminals report Shift-`a` as the uppercase char directly
-            // (no modifier check needed, same convention as `J`/`K`
-            // elsewhere), but Space has no uppercase form, so Shift-Space
-            // is only distinguishable via its modifier bit — which
-            // legacy terminal escape sequences don't carry for printable
-            // keys at all (unlike arrows/function keys), so this arm only
-            // fires on terminals `push_keyboard_enhancement` (`mod.rs`)
-            // successfully negotiated Kitty-protocol enhancement with; on
-            // every other terminal, Shift-Space is indistinguishable from
-            // plain Space and falls through to the arm below instead —
-            // `A` remains the universally reliable keyboard trigger. The
-            // guarded `Char(' ')` arm here must precede the plain `a`/
-            // Space arm below, since an unguarded `Char(' ')` there would
-            // otherwise shadow it.
+            // `A`/Shift-Space is `toggle_active`'s cascading sibling —
+            // same toggle, but also applied to every entry whose origin
+            // sits at-or-under the highlighted entry's own origin
+            // (`toggle_active_cascading`). Terminals report Shift-`a` as
+            // the uppercase char directly (no modifier check needed,
+            // same convention as `J`/`K` elsewhere), but Space has no
+            // uppercase form, so Shift-Space is only distinguishable via
+            // its modifier bit — which legacy terminal escape sequences
+            // don't carry for printable keys at all (unlike arrows/
+            // function keys). This arm therefore only fires on terminals
+            // `push_keyboard_enhancement` (`mod.rs`) negotiated
+            // Kitty-protocol enhancement with; elsewhere Shift-Space is
+            // indistinguishable from plain Space and falls through to
+            // the arm below, so `A` is the universally reliable keyboard
+            // trigger. The guarded `Char(' ')` arm here must precede the
+            // plain `a`/Space arm below, since an unguarded `Char(' ')`
+            // there would otherwise shadow it.
             KeyCode::Char('A') => {
                 if !self.overrides.entries().is_empty() {
                     self.overrides
@@ -605,14 +599,14 @@ impl App {
                                     self.render_overrides(self.first_node);
                                     // `render_overrides` can auto-seed
                                     // brand-new entries elsewhere in the
-                                    // tree (Any/MessageSet auto-expansion),
-                                    // which re-sorts the whole collection
-                                    // and can invalidate the index
-                                    // `rotate_origin` just returned above
-                                    // — relocate the rotated entry by
-                                    // identity instead of trusting the
-                                    // pre-render index (feedback,
-                                    // 2026-07-16).
+                                    // tree (Any/MessageSet auto-
+                                    // expansion), which re-sorts the
+                                    // whole collection and can
+                                    // invalidate the index
+                                    // `rotate_origin` just returned
+                                    // above — relocate the rotated entry
+                                    // by identity rather than trusting
+                                    // the pre-render index.
                                     if let Some(idx) =
                                         self.overrides.entries().iter().rposition(|e| {
                                             e.origin == new_origin && e.r#type == r#type
@@ -633,9 +627,8 @@ impl App {
                 }
             }
             // Spec 0124 G3: duplicate the highlighted entry as a new,
-            // always-inactive copy. Bound to `D` (interactive feedback,
-            // 2026-07-17) — `d` now deletes, matching most other
-            // list-oriented tools' convention.
+            // always-inactive copy. Bound to `D`, leaving `d` to delete
+            // as in most other list-oriented tools.
             KeyCode::Char('D') => {
                 if !self.overrides.entries().is_empty() {
                     self.manage_highlight = self.overrides.duplicate(self.manage_highlight);
@@ -646,9 +639,7 @@ impl App {
             // Spec 0125 §G2: an in-scope `auto` entry is deactivated
             // instead of removed — deleting it would just make
             // `render_overrides`'s next pass re-seed an identical entry.
-            // `d` (interactive feedback, 2026-07-17) is an alias for
-            // Delete/Backspace, swapped with the former `d`-as-duplicate
-            // (now `D`).
+            // `d` is an alias for Delete/Backspace.
             KeyCode::Char('d') | KeyCode::Delete | KeyCode::Backspace => {
                 if let Some(entry) = self.overrides.entries().get(self.manage_highlight).cloned() {
                     if entry.auto && self.auto_entry_in_scope(&entry) {
@@ -694,18 +685,17 @@ impl App {
     }
 
     /// Mouse handling for the override management pane (spec 0113 D30):
-    /// wheel scroll pans the listing by one row (2026-07-19 feedback item
-    /// 2 — it no longer moves the highlight), click moves the
-    /// highlight to the entry under the cursor (header rows under the
-    /// click are ignored, same as clicking whitespace) and, when the
-    /// click lands on that entry's own radio marker, also toggles it
-    /// active/inactive — the mouse equivalent of `a`/Space, or of `A`/
-    /// Shift-Space (cascading) when Shift is held, or when the marker is
-    /// double-clicked (interactive feedback, 2026-07-17 — most terminal
-    /// emulators intercept Shift-click for native text selection before
-    /// it ever reaches the app, so double-click is the reliable mouse
-    /// trigger for the cascading toggle; Shift-click is kept too, for
-    /// terminals that do pass it through).
+    /// wheel scroll pans the listing by one row without moving the
+    /// highlight; click moves the highlight to the entry under the
+    /// cursor (header rows under the click are ignored, same as clicking
+    /// whitespace) and, when the click lands on that entry's own radio
+    /// marker, also toggles it active/inactive — the mouse equivalent of
+    /// `a`/Space, or of `A`/Shift-Space (cascading) when Shift is held
+    /// or the marker is double-clicked. Most terminal emulators
+    /// intercept Shift-click for native text selection before it ever
+    /// reaches the app, so double-click is the reliable mouse trigger
+    /// for the cascading toggle; Shift-click is kept too, for terminals
+    /// that do pass it through.
     pub(super) fn handle_manage_mouse(&mut self, event: MouseEvent) {
         match event.kind {
             MouseEventKind::ScrollDown => self.manage_pan_vertical(WHEEL_PAN_STEP, false),
@@ -719,10 +709,9 @@ impl App {
         }
     }
 
-    /// Spec 0124 G1's `Left`/`Right` logic, factored out so the
-    /// management pane's own click handler (item 10, 2026-07-17
-    /// feedback) can trigger the same "next/previous impacted node"
-    /// jump that the arrow keys already do.
+    /// Spec 0124 G1's `Left`/`Right` logic, shared so the management
+    /// pane's own click handler triggers the same "next/previous
+    /// impacted node" jump as the arrow keys.
     pub(super) fn manage_circulate_cursor(&mut self, forward: bool) {
         if let Some(entry) = self.overrides.entries().get(self.manage_highlight) {
             let origin = entry.origin.clone();
@@ -765,13 +754,13 @@ impl App {
             // is double-clicked).
             let content_col = (col - area.x) as usize + self.manage_pan_offset;
             if content_col == MANAGE_MARKER_COL {
-                // Double-click detection (2026-07-17 feedback), same
-                // technique as the main pane's own `last_click`/
-                // `pending_double_click` (generalized as `is_double_click`)
-                // — only tracked for marker clicks specifically, since
-                // that's the only click this handler ever turns into a
-                // state change; a marker click on one entry followed by
-                // one on a different entry's marker never counts.
+                // Double-click detection, same technique as the main
+                // pane's own `last_click`/`pending_double_click`
+                // (generalized as `is_double_click`) — only tracked for
+                // marker clicks specifically, since that's the only
+                // click this handler ever turns into a state change; a
+                // marker click on one entry followed by one on a
+                // different entry's marker never counts.
                 //
                 // There is no timer to defer to in this synchronous event
                 // loop, so by the time a second click is recognized as
@@ -791,18 +780,16 @@ impl App {
                 }
                 self.render_overrides(self.first_node);
             } else if is_double_click(&mut self.last_manage_row_click, idx) {
-                // Item 11 (2026-07-17 feedback): double-clicking an
-                // entry outside its marker column opens the selection
-                // pane on it, same as `Enter` — tracked via its own
-                // `last_manage_row_click`, separate from the marker
-                // column's `last_manage_click` above.
+                // Double-clicking an entry outside its marker column
+                // opens the selection pane on it, same as `Enter` —
+                // tracked via its own `last_manage_row_click`, separate
+                // from the marker column's `last_manage_click` above.
                 self.open_override_from_manage();
             } else if was_current {
-                // Item 10 (2026-07-17 feedback): a single click on the
-                // entry that was already highlighted (anywhere outside
-                // the marker column) does the same as pressing `Right`
-                // — jump the main-pane cursor to the next node this
-                // override impacts.
+                // A single click on the entry that was already
+                // highlighted (anywhere outside the marker column) does
+                // the same as pressing `Right` — jump the main-pane
+                // cursor to the next node this override impacts.
                 self.manage_circulate_cursor(true);
             }
         }
@@ -833,9 +820,9 @@ impl App {
         let rows = self.manage_display_rows();
         let total_rows = rows.len();
         let highlighted_row = self.manage_highlighted_row();
-        // 2026-07-19 feedback item 3: auto-pan into view only on genuine
-        // highlight movement, mirroring the main pane's own
-        // `last_cursor_row` gate (`render.rs`).
+        // Auto-pan into view only on genuine highlight movement,
+        // mirroring the main pane's own `last_cursor_row` gate
+        // (`render.rs`).
         if self.last_manage_highlight != Some(highlighted_row) {
             clamp_scroll_to_visible(&mut self.manage_scroll, highlighted_row, list_height);
             self.last_manage_highlight = Some(highlighted_row);
@@ -868,8 +855,7 @@ impl App {
                 // Origin-path header rows render in the same dark-blue
                 // style as a `true`/`false` value in the main pane
                 // (`SyntaxRole::Boolean`), distinguishing them at a
-                // glance from the type rows grouped underneath
-                // (restyled 2026-07-18).
+                // glance from the type rows grouped underneath.
                 ManageRow::Header(label) => lines.push(Line::from(pan_spans(
                     vec![Span::styled(
                         label.clone(),
@@ -879,24 +865,21 @@ impl App {
                 ))),
                 ManageRow::Entry(idx) => {
                     let text = self.manage_type_line(*idx);
-                    // Spec 0130 §G1 (restyled 2026-07-18): auto-derived
-                    // entries render in `Comment`'s muted-green color;
-                    // manual entries render in the plain terminal
-                    // default, so only auto-derived entries stand out.
+                    // Spec 0130 §G1: auto-derived entries render in
+                    // `Comment`'s muted-green color; manual entries
+                    // render in the plain terminal default, so only
+                    // auto-derived entries stand out.
                     let auto = self.overrides.entries()[*idx].auto;
                     let base_style = theme::manage_entry_style(auto, self.theme);
-                    // Feedback (2026-07-16): the highlighted row's
-                    // `REVERSED` modifier applies only starting at the
-                    // type label's own first character, not the radio
-                    // marker or the single space separating it from the
-                    // label — reverse video on the marker's own cell would
-                    // wash out the filled-vs-hollow shape that's the whole
-                    // point of showing active/inactive state there,
-                    // defeating it on exactly the row (the cursor's own)
-                    // where a user is most likely to be checking it, and
-                    // starting the reversed block right at the label reads
-                    // cleaner than leaving one un-reversed space in the
-                    // middle of it.
+                    // The highlighted row's `REVERSED` modifier starts at
+                    // the type label's first character, not at the radio
+                    // marker or the space separating it from the label:
+                    // reverse video on the marker's cell would wash out
+                    // the filled-vs-hollow shape that is the whole point
+                    // of showing active/inactive state, and on exactly
+                    // the row a user is most likely checking. Starting
+                    // the reversed block at the label also reads cleaner
+                    // than leaving one un-reversed space inside it.
                     let split = text
                         .char_indices()
                         .nth(MANAGE_MARKER_COL + 2)

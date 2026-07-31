@@ -4,15 +4,14 @@
 
 //! Spec 0164 G2: bounded, tier-prioritized map backing the heat-cue
 //! request queue (`heat_worker::HeatRequestQueue`) and both result
-//! caches (`heat_worker::HeatCaches`), replacing spec 0151's
-//! `BoundedMru`. See the module's own doc comments below and spec
-//! 0164's Specification section for the full design rationale.
+//! caches (`heat_worker::HeatCaches`). See the doc comments below and
+//! spec 0164's Specification section for the full design rationale.
 
 use std::collections::HashMap;
 use std::hash::Hash;
 
-/// Spec 0164: replaces `Priority` (`UserEvent`/`Background`). A key's
-/// tier only ever moves up — see `TieredBounded::upsert`.
+/// Spec 0164: a key's tier only ever moves up — see
+/// `TieredBounded::upsert`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub(super) enum Tier {
     Prefetch,
@@ -78,12 +77,12 @@ fn link_at_tail<K, V>(slots: &mut [Option<Slot<K, V>>], band: &mut Band, idx: us
 /// so a walk restart (G7) can demote a whole superseded wave in one
 /// O(1) splice instead of tracking per-entry wave numbers (G2).
 ///
-/// **One recency rule governs the whole structure** (spec 0208 G4,
-/// superseding spec 0164 G2/G3/G5's per-band variations): *the most
-/// recently asked query is served first.* Insert at the head, pop at
-/// the head (`pop_highest`), evict at the tail (`evict_one`), and
-/// asking again — `upsert` *or* `peek`, at the entry's own tier or
-/// higher — moves the entry back to that tier's head.
+/// **One recency rule governs the whole structure** (spec 0208 G4):
+/// *the most recently asked query is served first.* Insert at the
+/// head, pop at the head (`pop_highest`), evict at the tail
+/// (`evict_one`), and asking again — `upsert` *or* `peek`, at the
+/// entry's own tier or higher — moves the entry back to that tier's
+/// head.
 ///
 /// `prefetch_current` is the one deliberate exception: it inserts at
 /// its **tail**, because position in that band encodes distance from
@@ -107,7 +106,7 @@ fn link_at_tail<K, V>(slots: &mut [Option<Slot<K, V>>], band: &mut Band, idx: us
 /// `fix_tail_if_matches`, which exist solely because one tier maps to
 /// two bands.
 ///
-/// Spec 0189: a superseded entry is never *served*. `pop_highest`
+/// A superseded entry is never *served* (spec 0189). `pop_highest`
 /// stops at `prefetch_current`; `prefetch_previous` is drained only by
 /// `discard_one_superseded` or by `evict_one`. Owners whose entries are
 /// computed results (both `HeatCaches` maps) are unaffected, because
@@ -156,18 +155,18 @@ impl<K: Eq + Hash + Clone, V: Clone> TieredBounded<K, V> {
     /// eviction order is the only thing a cached result's band position
     /// decides.
     ///
-    /// The same condition subsumes spec 0189 G3/S4's "**re-reading
+    /// The same condition gives spec 0189 G3/S4's "**re-reading
     /// revives**": a same-tier `Prefetch` read relinks to `prefetch_
     /// current`'s tail, so a cached result sitting in `prefetch_
     /// previous` leaves it rather than staying permanently first in the
     /// eviction line — `start_new_wave` *concatenates* onto that band
-    /// and `evict_one` drains its tail first, so without this the
-    /// results a wave is actively re-reading would be spent first.
-    /// Relinking to the tail (not the head) is right there for the
-    /// cache as much as for the queue: `prefetch_step` walks outward
-    /// from the cursor, so appending re-reads in wave order keeps the
-    /// band sorted near-to-far, which is what makes evicting its tail
-    /// evict the farthest result.
+    /// and `evict_one` drains its tail first, so otherwise the results
+    /// a wave is actively re-reading would be spent first. Relinking to
+    /// the tail (not the head) is right there for the cache as much as
+    /// for the queue: `prefetch_step` walks outward from the cursor, so
+    /// appending re-reads in wave order keeps the band sorted
+    /// near-to-far, which is what makes evicting its tail evict the
+    /// farthest result.
     ///
     /// A read at a tier *below* the entry's own is a pure read: a tier
     /// never moves down, and a background re-check must not re-rank an
@@ -197,22 +196,20 @@ impl<K: Eq + Hash + Clone, V: Clone> TieredBounded<K, V> {
 
     /// `tier >= cur_tier` — the caller asked at least as urgently as
     /// the entry is already ranked — decides whether this counts as a
-    /// fresh query (spec 0208 S4c, superseding spec 0164 G5's
-    /// per-tier rules). When it does, the entry is retagged to `tier`
-    /// and relinked to that tier's insertion end; otherwise only the
-    /// payload is refreshed and the entry does not move.
+    /// fresh query (spec 0208 S4c). When it does, the entry is retagged
+    /// to `tier` and relinked to that tier's insertion end; otherwise
+    /// only the payload is refreshed and the entry does not move.
     ///
     /// Five cases, three of which the condition merges into one rule:
     /// - Promotion (`tier > cur_tier`): relinks at the new tier.
     /// - Re-ask at the entry's own tier: relinks at its band's
-    ///   insertion end. This is spec 0208's change — asking again is
-    ///   the most direct evidence available that somebody still wants
-    ///   the answer, so it must not be discarded.
+    ///   insertion end — asking again is the most direct evidence
+    ///   available that somebody still wants the answer, so it must
+    ///   not be discarded.
     /// - A `Prefetch` re-ask is the same case, and is exactly spec 0189
     ///   G3/S4's "re-asking revives": it relinks to `prefetch_current`'s
     ///   tail *including* when the key lives in `prefetch_previous`,
-    ///   which since 0189 the worker discards rather than serves. It
-    ///   needs no clause of its own any more.
+    ///   which the worker discards rather than serves.
     /// - A push *below* the entry's tier: payload updates in place, no
     ///   retag and no reorder. Load-bearing — a background `Visible`
     ///   re-check merging into a request the user asked for must not
@@ -303,10 +300,10 @@ impl<K: Eq + Hash + Clone, V: Clone> TieredBounded<K, V> {
     /// `prefetch_current`. O(1): three head-pointer tests, no
     /// traversal and no counting.
     ///
-    /// `prefetch_previous` is deliberately excluded (spec 0189 S6).
-    /// Since 0189 those entries are destined to be discarded, not
-    /// scored, so counting them would light the activity dot for a
-    /// subsystem that has nothing left to do for the user.
+    /// `prefetch_previous` is deliberately excluded (spec 0189 S6):
+    /// those entries are destined to be discarded, not scored, so
+    /// counting them would light the activity dot for a subsystem that
+    /// has nothing left to do for the user.
     pub(super) fn band_occupancy(&self) -> u8 {
         u8::from(self.user.head.is_some())
             | (u8::from(self.visible.head.is_some()) << 1)
@@ -350,14 +347,11 @@ impl<K: Eq + Hash + Clone, V: Clone> TieredBounded<K, V> {
     /// non-empty band's **tail**, checked in this order:
     /// `prefetch_previous`, `prefetch_current`, `visible`, `user`.
     ///
-    /// Uniform since spec 0208 S4b. `Visible` used to be evicted from
-    /// its *head* instead, because it inserted at its tail and
-    /// tail-eviction would then have discarded the entry just pushed
-    /// (spec 0164 G2). S4a flipped `Visible` to head-insertion, which
-    /// makes its tail the oldest entry again — so evicting there now
-    /// means what evicting its head meant before, and the exception is
-    /// gone. The two edits are one change: either alone reintroduces
-    /// the evict-on-arrival thrash 0164 was avoiding.
+    /// Uniform across bands (spec 0208 S4b). `Visible`'s tail-eviction
+    /// is paired with its head-insertion (S4a), which makes its tail
+    /// the oldest entry: the two are one change, and either alone
+    /// discards the entry just pushed — spec 0164 G2's evict-on-arrival
+    /// thrash.
     fn evict_one(&mut self) -> Option<(K, V)> {
         let idx = self
             .prefetch_previous
@@ -373,8 +367,8 @@ impl<K: Eq + Hash + Clone, V: Clone> TieredBounded<K, V> {
         self.index.len()
     }
 
-    /// Links `idx` at `tier`'s insertion end — `user`'s head and (since
-    /// spec 0208 S4a) `visible`'s head, both LIFO; or `prefetch_
+    /// Links `idx` at `tier`'s insertion end — `user`'s head or
+    /// `visible`'s head, both LIFO (spec 0208 S4a); or `prefetch_
     /// current`'s tail, the one band whose order is distance-from-
     /// cursor rather than age (`prefetch_previous` is never inserted
     /// into directly, per G2).
@@ -531,7 +525,7 @@ mod tests {
     }
 
     /// Spec 0208 S4a/G4: both `User` and `Visible` are LIFO — the most
-    /// recently asked query is served first. `Visible` used to be FIFO.
+    /// recently asked query is served first.
     #[test]
     fn user_and_visible_both_pop_lifo() {
         for tier in [Tier::User, Tier::Visible] {
@@ -573,11 +567,9 @@ mod tests {
     }
 
     /// Spec 0208 S4b: `Visible` evicts from its **tail**, like every
-    /// other band. Under head-insertion the tail is the oldest entry, so
-    /// this is what evicting its head meant before S4a — what must not
-    /// happen is evicting the entry just inserted (spec 0164 G2's
-    /// evict-on-arrival thrash, which S4a would have reintroduced had
-    /// eviction stayed at the head).
+    /// other band — under head-insertion that is its oldest entry. What
+    /// must not happen is evicting the entry just inserted (spec 0164
+    /// G2's evict-on-arrival thrash).
     #[test]
     fn visible_evicts_its_oldest_not_the_newest() {
         let mut m = new_map(2);
@@ -632,10 +624,10 @@ mod tests {
         assert_eq!(m.pop_highest().map(|(k, _)| k), Some(2));
     }
 
-    /// Spec 0189 S4, amending spec 0164 G5: a `Prefetch` re-push
-    /// relinks to `prefetch_current`'s tail rather than updating in
-    /// place. Pinned rather than merely deleted, because the amendment
-    /// is deliberate — the acknowledged price of "re-asking revives".
+    /// Spec 0189 S4: a `Prefetch` re-push relinks to
+    /// `prefetch_current`'s tail rather than updating in place — the
+    /// deliberate price of "re-asking revives", pinned here so it is
+    /// not mistaken for a bug.
     #[test]
     fn prefetch_repush_relinks_to_the_current_tail() {
         let mut m = new_map(10);
@@ -687,8 +679,8 @@ mod tests {
 
     /// Spec 0164 G7: successive restarts layer onto
     /// `prefetch_previous`'s head, so the *oldest* wave stays at its
-    /// tail and is spent first. Observed through `evict_one` now that
-    /// `pop_highest` no longer reaches the band (spec 0189 S1).
+    /// tail and is spent first. Observed through `evict_one`, since
+    /// `pop_highest` does not reach the band (spec 0189 S1).
     #[test]
     fn start_new_wave_two_resets_layer_without_disturbing_older_order() {
         let mut m = new_map(10);
