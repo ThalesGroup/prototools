@@ -975,14 +975,45 @@ pub struct Decoded {
 /// the `.proto` identifier grammar requires the first character to be a
 /// letter. Generic over any `Type`/`type_name` pair — including
 /// `Type::Enum`, though this spec never constructs that case (Non-goals).
-fn synthetic_wrapper_name(field_number: u64, field_type: Type, type_name: &str) -> String {
-    let key = format!("{field_number}:{}:{type_name}", field_type.as_str_name());
+fn synthetic_wrapper_name(
+    field_number: u64,
+    field_type: Type,
+    type_name: &str,
+    packed: bool,
+) -> String {
+    let mut key = format!("{field_number}:{}:{type_name}", field_type.as_str_name());
+    if packed {
+        key.push_str(":packed");
+    }
     let digest = Sha256::digest(key.as_bytes());
     let mut hex = String::with_capacity(32);
     for byte in &digest[..16] {
         hex.push_str(&format!("{byte:02x}"));
     }
     format!("protolens_internal.x{hex}")
+}
+
+/// Whether protobuf allows `[packed=true]` on a field of this type —
+/// every numeric scalar and `bool`/`enum`. `string`/`bytes`/`message`/
+/// `group` are length-delimited already and can never be packed.
+pub(crate) fn is_packable(field_type: Type) -> bool {
+    matches!(
+        field_type,
+        Type::Double
+            | Type::Float
+            | Type::Int64
+            | Type::Uint64
+            | Type::Int32
+            | Type::Fixed64
+            | Type::Fixed32
+            | Type::Bool
+            | Type::Uint32
+            | Type::Enum
+            | Type::Sfixed32
+            | Type::Sfixed64
+            | Type::Sint32
+            | Type::Sint64
+    )
 }
 
 /// A wrapper-target descriptor: either a message/group FQDN target, or
@@ -1044,10 +1075,16 @@ pub(crate) fn register_wrapper(
     field_number: u64,
     field_type: Type,
     target: Option<WrapperTarget>,
+    packed: bool,
 ) -> Result<MessageDescriptor, DecodeError> {
+    let packed = packed && is_packable(field_type);
     let type_name = target.as_ref().map(|t| format!(".{}", t.full_name()));
-    let full_name =
-        synthetic_wrapper_name(field_number, field_type, type_name.as_deref().unwrap_or(""));
+    let full_name = synthetic_wrapper_name(
+        field_number,
+        field_type,
+        type_name.as_deref().unwrap_or(""),
+        packed,
+    );
     if let Some(existing) = pool.get_message_by_name(&full_name) {
         return Ok(existing);
     }
@@ -1058,9 +1095,17 @@ pub(crate) fn register_wrapper(
     let field = FieldDescriptorProto {
         name: Some("_".to_string()),
         number: Some(field_number as i32),
-        label: Some(Label::Optional as i32),
+        label: Some(if packed {
+            Label::Repeated
+        } else {
+            Label::Optional
+        } as i32),
         r#type: Some(field_type as i32),
         type_name,
+        options: packed.then(|| prost_reflect::prost_types::FieldOptions {
+            packed: Some(true),
+            ..Default::default()
+        }),
         ..Default::default()
     };
     let message = DescriptorProto {
@@ -1363,6 +1408,7 @@ pub fn render_resolved(
                 1,
                 Type::Message,
                 Some(WrapperTarget::Message(desc.clone())),
+                false,
             )?),
         ),
         None => ("<raw / no type>".to_string(), None),

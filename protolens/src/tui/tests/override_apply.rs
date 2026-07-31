@@ -342,6 +342,99 @@ fn overriding_a_packed_run_does_not_renumber_later_siblings() {
     }
 }
 
+/// A packed run overridden as `None` and then deleted must render as
+/// the packed run again — regression for a bug where it stuck at
+/// `1: "\004\000\002\000"  #@ bytes; TYPE_MISMATCH`. `register_wrapper`
+/// declared its synthetic field `optional`, which cannot carry a
+/// LEN-framed record, and the `None` render had already cleared the
+/// node's `packed_record_start`, so nothing was left to say the record
+/// was a packed run. Retyping a live run to a packable primitive was
+/// broken the same way, and is checked here too so the fix cannot
+/// regress to reading only `packed_record_start`.
+#[test]
+fn a_deleted_override_restores_a_packed_run_rather_than_a_type_mismatch() {
+    let (mut app, run, _tail, _a, _b) = packed_run_with_tail_fixture();
+    let before = app.lines.clone();
+    assert!(
+        before[1].contains("repeated int32 [packed=true]"),
+        "fixture must start as a packed run: {before:?}"
+    );
+
+    let origin = OverrideOrigin::Path {
+        path: app.positional_path(run),
+    };
+    app.overrides
+        .activate(origin.clone(), Some("protolens_internal.None".to_string()));
+    app.render_overrides(app.first_node);
+
+    let entry_idx = app
+        .overrides
+        .entries()
+        .iter()
+        .position(|e| e.origin == origin)
+        .expect("the entry just activated must be there to delete");
+    app.overrides.remove(entry_idx);
+    app.render_overrides(app.first_node);
+    assert_eq!(
+        app.lines, before,
+        "deleting the override must restore the packed run verbatim"
+    );
+
+    let (mut retyped, run, _, _, _) = packed_run_with_tail_fixture();
+    retyped
+        .splice_override(run, Some("int32".to_string()), false, None)
+        .expect("retyping a packed run to its own element type must succeed");
+    assert_eq!(
+        retyped.lines, before,
+        "an explicit retype to a packable primitive must render the run, not a mismatch"
+    );
+}
+
+/// Spec 0219 G2: reading a length-delimited record as a packed run is
+/// not limited to records the schema already calls packed — it is the
+/// reading *any* `WT_LEN` node gets when retyped to a packable
+/// primitive, which is the whole point on a blob no schema describes.
+///
+/// The node here is doubly unknown: it sits inside a message with no
+/// declared fields, so there is neither a `[packed=true]` declaration
+/// nor a parent field of any kind to derive packedness from, and it was
+/// never rendered as a run so it carries no `packed_record_start`
+/// either. Both of spec 0219's rejected alternatives fail it.
+#[test]
+fn an_unknown_length_delimited_blob_can_be_read_as_a_packed_run() {
+    use prototext_core::helpers::{write_tag, write_varint, WT_LEN};
+
+    // `2: { 5, 6, 7, 8 }` as raw wire bytes.
+    let mut payload = Vec::new();
+    write_tag(2, WT_LEN, &mut payload);
+    write_varint(4, &mut payload);
+    payload.extend_from_slice(&[0x05, 0x06, 0x07, 0x08]);
+
+    let (mut app, blob_idx) = preview_budget_fixture_bytes(&payload);
+
+    // Step one: make the interior unknown. `test.Empty` declares no
+    // fields, so field 2 lands as a bare LEN record with no schema
+    // behind it at all.
+    app.splice_override(blob_idx, Some("test.Empty".to_string()), false, None)
+        .expect("retyping the blob to an empty message must succeed");
+    let unknown = app
+        .nth_child(blob_idx, 0)
+        .expect("the empty message must hold the unknown LEN record");
+
+    // Step two: ask for it as a run of varints.
+    app.splice_override(unknown, Some("int32".to_string()), false, None)
+        .expect("retyping an unknown LEN record to int32 must succeed");
+
+    let bare = bare_lines(&app.lines);
+    let elems: Vec<&String> = bare.iter().filter(|l| l.starts_with("2: ")).collect();
+    assert_eq!(
+        elems,
+        vec!["2: 5", "2: 6", "2: 7", "2: 8"],
+        "the blob must read as one line per packed element: {:?}",
+        app.lines
+    );
+}
+
 /// Spec 0184 test plan, "ordinal stability across override state": the
 /// whole path map is identical before an override on a packed run,
 /// while it is active, and after deactivating it. This is the property
@@ -525,26 +618,31 @@ fn splice_override_on_a_varint_mismatch_does_not_corrupt_type_mismatch_annotatio
     );
 }
 
-/// Deactivating an override that turns a narrow overridden line back
-/// into a wide multi-line message must re-clamp `pan_offset` to the
-/// new content — regression for a bug where panning all the way right
-/// while a submessage field is mis-overridden as `int32` (a genuine
-/// `TYPE_MISMATCH`, whose annotation renders a wide single line), then
-/// deactivating the override (reverting to the real, narrower
-/// multi-line message), left every visible row shorter than
+/// Deactivating an override that turns a wide single overridden line
+/// back into a narrower multi-line message must re-clamp `pan_offset`
+/// to the new content — regression for a bug where panning all the way
+/// right while a submessage field is overridden to a wide one-line
+/// rendering, then deactivating the override (reverting to the real,
+/// narrower multi-line message), left every visible row shorter than
 /// `pan_offset`, so the main pane rendered blank — recoverable only by
 /// panning right again. The re-clamp belongs on `finalize_override_
 /// batch`, the chokepoint every splice passes through.
+///
+/// The wide line comes from `string`, whose escaped-bytes rendering of
+/// the submessage's payload is longer than any line of the message
+/// itself. It used to come from `int32` and its `TYPE_MISMATCH`
+/// annotation, which spec 0219 replaced with a multi-line packed run.
 #[test]
 fn deactivating_override_reclamps_pan_offset_to_the_shrunk_content() {
     let (mut app, inner_idx, _) = type_as_fixture();
     app.main_area = Rect::new(0, 0, 10, 5);
 
-    app.splice_override(inner_idx, Some("int32".to_string()), false, None)
-        .expect("overriding a submessage field as int32 must still succeed (as a type mismatch)");
+    let widest_before = app.max_visible_line_len();
+    app.splice_override(inner_idx, Some("string".to_string()), false, None)
+        .expect("overriding a submessage field as string must succeed");
     assert!(
-        app.lines.iter().any(|l| l.contains("TYPE_MISMATCH")),
-        "fixture must trigger a TYPE_MISMATCH annotation to get a wide line: {:?}",
+        app.max_visible_line_len() > widest_before,
+        "fixture must actually widen the document: {:?}",
         app.lines
     );
 
@@ -1926,6 +2024,63 @@ fn truncated_preview_ends_with_an_ellipsis_line() {
     );
 }
 
+/// Spec 0219 G3/S6: the byte budget applies to a packed target too, and
+/// its cut lands on an element boundary.
+///
+/// Alignment is the whole test. `decode_packed_elems` is all-or-nothing:
+/// a cut inside a varint, or one leaving a fixed-width payload that is
+/// not a whole multiple of the element size, collapses the entire record
+/// into a single `INVALID_PACKED_RECORDS` line — so the preview would
+/// claim the bytes are junk where the confirmed override renders a clean
+/// run, the preview/commit divergence spec 0185 G3 forbids.
+#[test]
+fn a_packed_preview_is_cut_at_an_element_boundary() {
+    // 20 elements of two bytes each: 300 encodes as `AC 02`, so no cut
+    // at an odd offset can be a boundary.
+    let payload: Vec<u8> = std::iter::repeat([0xACu8, 0x02])
+        .take(20)
+        .flatten()
+        .collect();
+
+    // A varint run, budget deliberately odd: 15 walks back to 14, i.e.
+    // seven whole elements.
+    let (mut app, blob_idx) = preview_budget_fixture_bytes(&payload);
+    app.override_preview_byte_budget = 15;
+    let lines = preview_lines(&mut app, blob_idx, "int32");
+    assert!(
+        !lines.iter().any(|l| l.contains("INVALID_PACKED_RECORDS")),
+        "an element-aligned cut must still decode: lines={lines:?}"
+    );
+    assert_eq!(
+        bare_lines(&lines)
+            .iter()
+            .filter(|l| *l == "blob: 300")
+            .count(),
+        7,
+        "the cut must keep a whole number of varint elements: lines={lines:?}"
+    );
+    assert_eq!(ellipsis_line_count(&lines), 1);
+
+    // The same bytes as a fixed-width run: 15 rounds down to 12, i.e.
+    // three whole four-byte elements.
+    let (mut app, blob_idx) = preview_budget_fixture_bytes(&payload);
+    app.override_preview_byte_budget = 15;
+    let lines = preview_lines(&mut app, blob_idx, "fixed32");
+    assert!(
+        !lines.iter().any(|l| l.contains("INVALID_PACKED_RECORDS")),
+        "a fixed-width cut must land on a whole element: lines={lines:?}"
+    );
+    assert_eq!(
+        bare_lines(&lines)
+            .iter()
+            .filter(|l| l.starts_with("blob: "))
+            .count(),
+        3,
+        "the cut must keep a whole number of fixed32 elements: lines={lines:?}"
+    );
+    assert_eq!(ellipsis_line_count(&lines), 1);
+}
+
 /// Spec 0174 G4's converse: a preview that fits within the budget is
 /// byte-for-byte the confirmed rendering — no marker, nothing to
 /// mistake for missing content.
@@ -2116,11 +2271,14 @@ fn a_deeply_nested_splice_moves_its_ancestors_footers_without_leaving_stale_entr
         ancestors.len()
     );
 
-    // Collapse the whole `Any` subtree into a single mismatched scalar
-    // line, so every one of those ancestor footers moves up.
+    // Collapse the whole `Any` subtree into a single scalar line, so
+    // every one of those ancestor footers moves up. `string`, not a
+    // numeric type: since spec 0219 a LEN record retyped to a packable
+    // primitive renders as a packed run, one line per element, which
+    // would grow the document instead of shrinking it.
     let lines_before = app.lines.len();
-    app.splice_override(target, Some("int32".to_string()), false, None)
-        .expect("re-typing the Any as a scalar must succeed (as a mismatch)");
+    app.splice_override(target, Some("string".to_string()), false, None)
+        .expect("re-typing the Any as a scalar must succeed");
     assert!(
         app.lines.len() < lines_before,
         "the fixture must actually shrink the document: {:#?}",

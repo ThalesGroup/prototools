@@ -598,6 +598,12 @@ impl App {
         let span = &self.tree[idx].span;
         let field_number = u64::from(span.field_number);
         let is_group = u32::from(span.wire_type) == prototext_core::helpers::WT_START_GROUP;
+        // Spec 0219 S4: must agree with `render_node_as`'s own `packed`
+        // — see the comment there — or warming registers a wrapper the
+        // splice then never looks up, restoring the per-keystroke
+        // registration stall this function exists to remove.
+        let packed = span.packed_record_start != NO_PACKED_RECORD
+            || u32::from(span.wire_type) == prototext_core::helpers::WT_LEN;
         let end = end.min(self.override_candidates.len());
         for row in start..end {
             let name = self.override_candidates[row].0.clone();
@@ -619,6 +625,7 @@ impl App {
                 field_number,
                 field_type,
                 target_desc,
+                packed,
             );
         }
     }

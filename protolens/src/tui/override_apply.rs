@@ -144,20 +144,23 @@ pub(super) enum TruncShape {
     /// `budget`, so the shortened payload stays valid UTF-8 and renders
     /// as an ordinary string rather than `INVALID_STRING`.
     CharBoundary,
+    /// A packed run of varint elements (spec 0219 S6). Cut at the last
+    /// element boundary at or before `budget`.
+    ///
+    /// Alignment is not cosmetic here: `decode_packed_elems` is
+    /// all-or-nothing, so a cut landing inside a varint turns the whole
+    /// record into one `INVALID_PACKED_RECORDS` line. The preview would
+    /// then say the bytes are invalid where the commit renders a clean
+    /// run — the preview/commit divergence spec 0185 G3 forbids.
+    PackedVarint,
+    /// A packed run of fixed-width elements, `usize` being that width
+    /// (4 or 8). Cut at the last whole element. Same reasoning as
+    /// `PackedVarint`: a payload whose length is not a multiple of the
+    /// element size is rejected outright.
+    PackedFixed(usize),
     /// Every other target: bounded by construction (varint, I32 and I64
     /// are at most ten bytes), or not truncatable without lying. Never
     /// cut.
-    ///
-    /// There is deliberately no packed-record rule. A preview renders
-    /// against `decode::register_wrapper`'s synthetic field, which is
-    /// always `Label::Optional`, and `render_packed` only fires for a
-    /// *repeated* packable schema field — so the previewed node itself
-    /// can never render as a packed record. A packed record nested
-    /// *inside* the interior keeps its own untouched length prefix, so
-    /// it either fits whole or overruns and degrades to the ordinary
-    /// `TRUNCATED_BYTES` straddler; it can never end up length-satisfied
-    /// but misaligned, which is the only case `decode_packed_elems`
-    /// rejects outright.
     Never,
 }
 
@@ -222,9 +225,14 @@ pub(super) fn truncate_interior(
 ///
 /// `field_type` is the synthetic wrapper field's declared type (`None`
 /// for a raw, un-retyped node); `wire_type` is the node's real framing
-/// on the wire, which is what decides whether a numeric target renders
-/// as a packed record or as a single scalar.
-pub(super) fn trunc_shape_for(field_type: Option<Type>, wire_type: u32) -> TruncShape {
+/// on the wire; `packed` is `render_node_as`'s own decision (spec 0219
+/// S3), threaded in rather than re-derived so preview and commit cannot
+/// disagree about what is being rendered.
+pub(super) fn trunc_shape_for(
+    field_type: Option<Type>,
+    wire_type: u32,
+    packed: bool,
+) -> TruncShape {
     let Some(ft) = field_type else {
         // Raw: `render_message` probes a LEN payload and renders it as a
         // nested message or as bytes. Either way an exact cut is safe —
@@ -239,9 +247,15 @@ pub(super) fn trunc_shape_for(field_type: Option<Type>, wire_type: u32) -> Trunc
     match ft {
         Type::Message | Type::Group | Type::Bytes => TruncShape::Exact,
         Type::String => TruncShape::CharBoundary,
-        // Every remaining type is numeric/bool/enum: a single value,
-        // bounded by construction.
-        _ => TruncShape::Never,
+        // Everything below is numeric/bool/enum — exactly the set
+        // protobuf lets a field pack, so `packed` needs no further
+        // filtering here. Unpacked, each is a single value bounded by
+        // construction; packed, it is a run and needs an
+        // element-aligned cut.
+        _ if !packed => TruncShape::Never,
+        Type::Double | Type::Fixed64 | Type::Sfixed64 => TruncShape::PackedFixed(8),
+        Type::Float | Type::Fixed32 | Type::Sfixed32 => TruncShape::PackedFixed(4),
+        _ => TruncShape::PackedVarint,
     }
 }
 
@@ -320,6 +334,17 @@ fn cut_at(payload: &[u8], budget: usize, shape: TruncShape) -> Option<usize> {
             }
             k
         }
+        // A varint's last byte is the one with the continuation bit
+        // clear, so any position right after such a byte ends a whole
+        // number of elements. At most ten steps.
+        TruncShape::PackedVarint => {
+            let mut k = budget;
+            while k > 0 && (payload[k - 1] & 0x80) != 0 {
+                k -= 1;
+            }
+            k
+        }
+        TruncShape::PackedFixed(width) => budget - budget % width,
     };
     Some(kept)
 }
@@ -2272,11 +2297,32 @@ impl App {
         // Packed-record reconstruction (spec 0135 G1): the whole run is
         // one addressable record, so widen `old_span` to the record's
         // own extent before proceeding.
-        if old_span.packed_record_start != NO_PACKED_RECORD {
+        let in_packed_run = old_span.packed_record_start != NO_PACKED_RECORD;
+        if in_packed_run {
             let (raw_range, text_range) = self.packed_record_extent(idx);
             old_span.raw_range = decode::narrow(raw_range);
             old_span.text_range = decode::narrow(text_range);
         }
+
+        // Spec 0219 S3: whether the synthetic field below is declared
+        // `repeated [packed=true]` rather than `optional`. On a LEN
+        // record that is the only reading of a packable primitive that
+        // is not a wire-type mismatch, so it is also what lets the user
+        // ask for a packed run at all — the override pane offers the
+        // element type, never `[packed=true]` itself.
+        //
+        // Neither disjunct works alone. `packed_record_start` holds
+        // only while the run is still *rendered* as a run: override it
+        // to `None` and the node's span comes back from `extract.rs`
+        // with `NO_PACKED_RECORD`, so by deletion time nothing recalls
+        // it was packed and `resettle_node`'s fallback to
+        // `natural_type` renders `bytes; TYPE_MISMATCH` for good. And
+        // `wire_type` on a live run *member* is the element's, not the
+        // record's LEN. `register_wrapper` ignores this for a type
+        // protobuf cannot pack, so `string`/`bytes`/message targets
+        // read the record whole as before.
+        let packed =
+            in_packed_run || u32::from(old_span.wire_type) == prototext_core::helpers::WT_LEN;
 
         let field_number = u64::from(old_span.field_number);
         let field_name = self.field_name_for(idx);
@@ -2345,7 +2391,7 @@ impl App {
         // `prototext-core` itself carries no budget.
         let mut truncated = false;
         if is_preview {
-            let shape = trunc_shape_for(field_type, u32::from(old_span.wire_type));
+            let shape = trunc_shape_for(field_type, u32::from(old_span.wire_type), packed);
             if let Some(cut) =
                 truncate_interior(&field_bytes, self.override_preview_byte_budget, shape)
             {
@@ -2375,6 +2421,7 @@ impl App {
                             field_number,
                             ft,
                             target_desc,
+                            packed,
                         )
                         .map_err(|e| e.to_string())?,
                     ),
@@ -2442,17 +2489,28 @@ impl App {
         // synthetic braces before parsing it; re-`colorize`-ing the
         // patched header on its own would be flaw D4's "highlight one
         // line out of context".
-        let patched_header = match field_type {
-            Some(ft) if ft != Type::Group => {
-                decode::patch_synthetic_field_name(&new_lines[0], &header_field_name)
-            }
-            None if renamed => {
-                decode::patch_raw_field_name(&new_lines[0], field_number, &field_name)
-            }
-            _ => None,
+        // A packed run renders one line per element, each carrying its
+        // own placeholder, so the patch is per line rather than to the
+        // header alone. Only in that case: elsewhere the wrapper's sole
+        // field draws exactly one placeholder, and a blanket pass could
+        // reach a nested field genuinely named `_`.
+        let patch_rows = match field_type {
+            Some(ft) if ft != Type::Group && packed && decode::is_packable(ft) => new_lines.len(),
+            _ => 1,
         };
-        if let Some(patched) = patched_header {
-            new_lines[0] = patched;
+        for row in 0..patch_rows {
+            let patched = match field_type {
+                Some(ft) if ft != Type::Group => {
+                    decode::patch_synthetic_field_name(&new_lines[row], &header_field_name)
+                }
+                None if renamed => {
+                    decode::patch_raw_field_name(&new_lines[row], field_number, &field_name)
+                }
+                _ => None,
+            };
+            if let Some(patched) = patched {
+                new_lines[row] = patched;
+            }
         }
 
         // Spec 0174 §S4: a truncated preview ends with a literal `...`,
