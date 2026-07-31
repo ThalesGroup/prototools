@@ -2,19 +2,19 @@
 #
 # SPDX-License-Identifier: MIT
 
-# nix/crates-io.nix — Package the three publishable .crate tarballs.
+# nix/crates-io.nix — Package the publishable .crate tarballs.
 #
-# Produces $out/ with:
-#   prototext-graph-0.2.0.crate
-#   prototext-core-0.2.0.crate
-#   prototext-0.2.0.crate
+# Produces $out/ with one tarball per publishable workspace crate:
+#   prototext-core, prototext-graph, prototext-schema, prototext
+# (that is also their dependency order, which publish.sh must follow —
+# see .github/workflows/nix.yml).
 #
 # cargo package --no-verify assembles source tarballs without compiling.
 # External dependencies are vendored via crane.vendorCargoDeps so that
 # Cargo can resolve them without network access inside the Nix sandbox.
 #
-# Workspace-internal path dependencies (prototext-core, prototext-graph)
-# also need to be resolvable when cargo validates the packaged manifest.
+# Workspace-internal path dependencies also need to be resolvable when
+# cargo validates the packaged manifest.
 # We inject a [patch.crates-io] section into CARGO_HOME/config.toml
 # pointing at the local workspace paths so that cargo can satisfy version
 # requirements for these not-yet-published crates.
@@ -64,23 +64,27 @@ in pkgs.stdenv.mkDerivation (commonArgs // {
     cat >> "$CARGO_HOME/config.toml" <<EOF
 
 [patch.crates-io]
-prototext-core  = { path = "$PWD/prototext-core" }
-prototext-graph = { path = "$PWD/prototext-graph" }
-workspace-hack  = { path = "$PWD/workspace-hack" }
+prototext-core   = { path = "$PWD/prototext-core" }
+prototext-graph  = { path = "$PWD/prototext-graph" }
+prototext-schema = { path = "$PWD/prototext-schema" }
+workspace-hack   = { path = "$PWD/workspace-hack" }
 EOF
   '';
 
+  # In dependency order, so this list doubles as the publish order.
   buildPhase = ''
-    cargo package -p prototext-graph --no-verify
-    cargo package -p prototext-core  --no-verify
-    cargo package -p prototext       --no-verify
+    cargo package -p prototext-core   --no-verify
+    cargo package -p prototext-graph  --no-verify
+    cargo package -p prototext-schema --no-verify
+    cargo package -p prototext        --no-verify
   '';
 
   installPhase = ''
     mkdir -p $out
-    cp target/package/prototext-graph-*.crate $out/
-    cp target/package/prototext-core-*.crate  $out/
-    cp target/package/prototext-*.crate       $out/
+    cp target/package/prototext-core-*.crate   $out/
+    cp target/package/prototext-graph-*.crate  $out/
+    cp target/package/prototext-schema-*.crate $out/
+    cp target/package/prototext-*.crate        $out/
   '';
 
   # No tests to run — cargo package --no-verify handles validation.

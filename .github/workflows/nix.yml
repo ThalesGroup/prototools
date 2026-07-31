@@ -117,13 +117,16 @@ jobs:
           DIR="$(cd "$(dirname "$0")" && pwd)"
 
           echo "=== Publishing to crates.io ==="
-          # Publish in dependency order: core first, then graph, then the CLI.
+          # Publish in dependency order: core, graph, schema, then the CLI.
+          # Must match nix/crates-io.nix's buildPhase.
           # --allow-dirty: prototext/fixtures/prebuilt/*.pb are gitignored build
           # artifacts placed there by the Nix patchPhase; cargo publish requires
           # them (listed in [package].include) but they are not tracked by git.
           cargo publish -p prototext-core
           sleep 30
           cargo publish -p prototext-graph
+          sleep 30
+          cargo publish -p prototext-schema
           sleep 30
           cargo publish -p prototext --allow-dirty
 
