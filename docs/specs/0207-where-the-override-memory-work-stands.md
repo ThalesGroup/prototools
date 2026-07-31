@@ -96,9 +96,19 @@ This needs a spec. It is independent of everything else here.
    the commit on the input thread and paints a pulse from a second one,
    and its own S10 concedes 0205 deletes most of it. Settle it before
    any is started.
+
+   **The premise all three argue from has collapsed.** Each was
+   written against a document-wide commit measured at 4.8 s to tens of
+   seconds. Reported 2026-07-31: overriding at the root of
+   `googleapis.desc` is now **about 1 second**. A 1 s stall is a
+   different problem — it is roughly the threshold at which a user
+   notices at all, and it is below spec 0205's own 150 ms-plus-a-real
+   -wait trigger doing much work. Re-read all three against 1 s, not
+   against 4.8 s, before choosing. Deferred by the user, 2026-07-31.
 2. **How much of the batch cost is still the render itself?** With the
    arena flat, the remaining per-batch transient is the render and its
-   clone. Nobody has measured what is left after 0216.
+   clone. The 1 s figure above is a whole-commit number; nobody has
+   broken it down by phase since 0216.
 
 ## Housekeeping carried over
 

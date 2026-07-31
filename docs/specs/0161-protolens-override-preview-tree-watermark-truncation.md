@@ -6,7 +6,13 @@ SPDX-License-Identifier: MIT
 
 # 0161 — protolens: bound live-preview tree/heat-state growth via a preview watermark
 
-Status: implemented
+Status: superseded (implemented 2026-07-24, superseded 2026-07-31).
+        Both premises below are gone: spec 0185 made the live preview a
+        non-mutating overlay, so it no longer splices anything, and
+        spec 0216 made the arena immutable, so a splice appends no
+        nodes at all. `preview_tree_watermark` and the fix-ups it drove
+        are deleted; the identifier survives only in a comment at
+        `tui/mod.rs`. Nothing here describes current behavior.
 Implemented in: 2026-07-24
 App: protolens
 

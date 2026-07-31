@@ -6,13 +6,13 @@ SPDX-License-Identifier: MIT
 
 # 0114 — `protolens`: single-range type override
 
-**Status:** implemented
-**Implemented in:** 2026-07-13
-**Refs:** `docs/specs/0109-protolens-interactive-schema-inference.md`,
+Status: implemented
+Implemented in: 2026-07-13
+Refs: `docs/specs/0109-protolens-interactive-schema-inference.md`,
 `docs/specs/0110-render-sink-unification.md`,
 `docs/specs/0111-protolens-v1-decode-navigate-extract.md`,
 `docs/specs/0113-protolens-tui-refinements.md`
-**App:** protolens
+App: protolens
 
 ---
 

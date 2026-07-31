@@ -10,7 +10,10 @@ Status: draft — and contested. Two later drafts each claim to replace
         it: spec 0205 S3 (a measured 150 ms trigger instead of this
         spec's predicted one) and spec 0209 S8 (the same banner, plus a
         pulse). None of the three is implemented. Pick one before
-        starting any of them.
+        starting any of them — and note that all three argue from a
+        commit of 4.8 s or worse, while a root override on
+        `googleapis.desc` was measured at about 1 s on 2026-07-31. See
+        spec 0207's open question 1.
 Implemented in: —
 App: protolens
 Refs: docs/specs/0118-protolens-recursive-override-rendering.md (§6,

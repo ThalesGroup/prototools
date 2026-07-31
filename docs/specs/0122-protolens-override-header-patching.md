@@ -6,9 +6,14 @@ SPDX-License-Identifier: MIT
 
 # 0122 — protolens: patch a node's own `#@` annotation on override, don't resynthesize it
 
-Status: implemented
+Status: superseded (implemented 2026-07-15, superseded 2026-07-31 by
+        spec 0181, which deleted `NodeSpan::natural_annotation` — the
+        field G1 added and this spec's whole patching scheme reads
+        from. It no longer exists anywhere in `prototext-core`.)
 Implemented in: 2026-07-15
-Refs: docs/specs/0110-protolens-sink-based-render-unification.md (`Sink`/
+Refs: docs/specs/0181-delete-natural-annotation.md (deletes this
+        spec's mechanism),
+      docs/specs/0110-protolens-sink-based-render-unification.md (`Sink`/
       `TextSink`/`IndexingTextSink`, `NodeSpan`),
       docs/specs/0114-protolens-single-range-type-override.md (§1.1's
       `wrap_blob`/`register_wrapper` root-render trick, generalized by

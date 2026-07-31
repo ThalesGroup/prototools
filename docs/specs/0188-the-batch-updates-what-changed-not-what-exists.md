@@ -6,10 +6,17 @@ SPDX-License-Identifier: MIT
 
 # 0188 — the batch updates what changed, not what exists
 
-Status: implemented
+Status: implemented — but S1 and S2 are gone. The dense line maps they
+        introduced (`line_to_node`, `footer_line_to_node`) were deleted
+        outright by spec 0210, which made a node store its line *count*
+        rather than its position, so there is no map to keep parallel
+        to `lines` and nothing to splice. S3, S4, S5, S7 and S8 stand —
+        the monotone `descend` watermark is still what
+        `compute_descend_marks` and `mark_fresh_subtree` maintain.
 Implemented in: 2026-07-27
 App: protolens
-Refs: docs/protolens/rendering-flaws.md (P3, P1),
+Refs: docs/specs/0210-a-node-counts-its-own-lines.md (deletes S1/S2),
+      docs/protolens/rendering-flaws.md (P3, P1),
       docs/protolens/rendering-scaling-roadmap.md (S2, S3, S5),
       docs/specs/0160-protolens-render-overrides-batch-scaling.md,
       docs/specs/0162-protolens-tree-node-reclamation.md,

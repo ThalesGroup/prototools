@@ -6,12 +6,20 @@ SPDX-License-Identifier: MIT
 
 # 0109 — `protolens`: interactive schema-inference decoder for unknown protobufs
 
-**Status:** draft
-**Refs:** `docs/specs/0042-schema-score.md`, `docs/specs/0045-reproto-emit-graph.md`,
+Status: informational — the founding vision, never implemented *as this
+        spec*. It was deliberately superseded a slice at a time: spec
+        0111 took decode/navigate/extract, 0114 the single-range type
+        override, 0117 the override collection and its YAML
+        persistence, 0118 the recursive override render, 0120 the
+        Any/MessageSet auto-expansion. Read it for why protolens
+        exists, not for what it does; every mechanism here is described
+        more accurately elsewhere. Kept because nothing else states the
+        original problem.
+Refs: `docs/specs/0042-schema-score.md`, `docs/specs/0045-reproto-emit-graph.md`,
 `docs/specs/0048-multi-entry-score.md`, `docs/specs/0089-any-expansion.md`,
 `docs/specs/0100-message-set-expansion.md`, `docs/specs/0108-message-set-scoring-tier0.md`,
 `docs/prototext/PROST-ISSUES.md`
-**App:** protolens (new)
+App: protolens (new)
 
 ---
 

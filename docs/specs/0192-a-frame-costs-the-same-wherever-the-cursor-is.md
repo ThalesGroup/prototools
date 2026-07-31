@@ -6,10 +6,19 @@ SPDX-License-Identifier: MIT
 
 # 0192 — a frame costs the same wherever the cursor is
 
-Status: implemented
+Status: implemented — but S1's stored field is gone, and for a better
+        reason than it had. S1 added `sibling_ordinal: u32` to every
+        node, maintained incrementally, to stop the ordinal being
+        walked. Spec 0216 put the arena in level order, so a sibling's
+        position is `idx - sibling_block(idx).start + 1`
+        (`tui/structure.rs:133`) — arithmetic, no field, nothing to
+        maintain. The goal S1 states holds; the mechanism it specifies
+        does not exist. S2 to S5 stand.
 Implemented in: 2026-07-27
 App: protolens
-Refs: docs/protolens/rendering-flaws.md (P2),
+Refs: docs/specs/0216-the-arena-is-a-function-of-the-bytes.md (replaces
+        S1's stored ordinal with arithmetic),
+      docs/protolens/rendering-flaws.md (P2),
       docs/protolens/rendering-scaling-roadmap.md (S5),
       docs/protolens/rendering-worklist.md (W11, W12, W14),
       docs/specs/0113-protolens-tui-refinements.md (D25, positional paths),

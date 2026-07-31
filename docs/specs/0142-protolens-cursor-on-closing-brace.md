@@ -6,9 +6,26 @@ SPDX-License-Identifier: MIT
 
 # 0142 — protolens: let the cursor rest on a node's own closing `}` line
 
-Status: implemented
+Status: implemented — but nothing below describes the mechanism any
+        more. The cursor does still rest on a closing `}`, which is
+        this spec's whole point. Two things changed underneath.
+        (1) The cursor is no longer a node index plus a footer flag:
+        it is a `LinePos { node, line_in_node }` (spec 0194's caret),
+        so a node has as many stops as it has lines and the footer is
+        merely the last of them — `cursor_on_footer()` survives only
+        as the derived predicate `line_in_node > 0 && is_bracketed()`
+        (`navigation.rs:360`). (2) Spec 0210 deleted `line_to_node`,
+        `footer_line_to_node` and `visible_rows` outright, because a
+        node now stores its own line *counts* and a position is
+        derived. Read every "look the line up in the map" passage
+        below as "walk to the line", and every "the footer is a second
+        stop on the node" passage as "every line is a stop".
 Implemented in: 2026-07-18
-Refs: docs/specs/0111-protolens-v1-decode-navigate-extract.md (`doc_next`/
+Refs: docs/specs/0194-the-cursor-is-a-caret.md (replaces the node-index
+      + footer-flag cursor with a per-line caret),
+      docs/specs/0210-a-node-counts-its-own-lines.md (deletes the two
+      line maps and `visible_rows` this spec extends),
+      docs/specs/0111-protolens-v1-decode-navigate-extract.md (`doc_next`/
       `doc_prev`, `visible_rows`, cursor-as-node-index), docs/specs/
       0113-protolens-tui-refinements.md (D33: `footer_line_to_node`'s
       original introduction, for the override bold-hint only),

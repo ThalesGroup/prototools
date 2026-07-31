@@ -10,7 +10,9 @@ Status: draft — and contested. Specs 0204, 0205 and 0209 are three
         proposals against the same stall; none is implemented. Pick one
         before starting any of them. Parts of the Background and S7
         below rest on premises spec 0216 has since removed — the
-        annotations mark which.
+        annotations mark which. The Background's ~4.8 s batch is one of
+        them: a root override on `googleapis.desc` was measured at about
+        1 s on 2026-07-31. See spec 0207's open question 1.
 Implemented in: —
 App: protolens
 Refs: docs/specs/0152-protolens-heat-cue-background-scoring-thread.md

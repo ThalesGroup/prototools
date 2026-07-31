@@ -8,7 +8,10 @@ SPDX-License-Identifier: MIT
 
 Status: draft — and contested. Specs 0204, 0205 and 0209 are three
         proposals against the same stall; none is implemented. Pick one
-        before starting any of them.
+        before starting any of them. This spec's Background says "tens
+        of seconds" on `googleapis.desc`; a root override there was
+        measured at about 1 s on 2026-07-31. See spec 0207's open
+        question 1.
 App: protolens
 Refs: docs/specs/0151-protolens-heat-cue-cache-and-startup-progress.md
         (G8, `warm_up_heat_cues` — the existing precedent for a long

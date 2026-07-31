@@ -6,10 +6,10 @@ SPDX-License-Identifier: MIT
 
 # 0113 — `protolens` TUI refinements (living record)
 
-**Status:** living / in progress
-**Refs:** `docs/specs/0111-protolens-v1-decode-navigate-extract.md`,
+Status: living / in progress
+Refs: `docs/specs/0111-protolens-v1-decode-navigate-extract.md`,
 `docs/specs/0114-protolens-range-type-override.md`
-**App:** protolens
+App: protolens
 
 ---
 

@@ -6,9 +6,20 @@ SPDX-License-Identifier: MIT
 
 # 0132 — protolens: override-pane live preview + smarter default target
 
-Status: implemented
+Status: implemented — but the preview no longer works this way. G1's
+        default-highlight ranking stands as written
+        (`recompute_override_candidates`,
+        `resolve_active_override_entry`). G2's live preview does not:
+        it spliced the candidate into the tree and backed the splice
+        out on `Esc`, via a helper `effective_render_target` that no
+        longer exists. Spec 0185 made the preview a `PreviewOverlay` —
+        rendered lines drawn over the viewport, mutating nothing, so
+        there is nothing to back out. Read `override_select.rs`'s
+        `preview_override_highlight` for what happens today.
 Implemented in: 2026-07-15
-Refs: docs/specs/0114-protolens-override-selection-pane.md (§2 `Esc`-
+Refs: docs/specs/0185-the-preview-is-an-overlay.md (replaces G2's
+      splice-and-revert mechanic with an overlay),
+      docs/specs/0114-protolens-override-selection-pane.md (§2 `Esc`-
       cancel semantics, §3.1/§3.2 default-highlight/candidate-ranking
       this spec's G1 refines),
       docs/specs/0117-protolens-override-collection.md (§2 per-kind

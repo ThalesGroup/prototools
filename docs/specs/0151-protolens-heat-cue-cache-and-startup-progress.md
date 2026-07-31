@@ -6,7 +6,14 @@ SPDX-License-Identifier: MIT
 
 # 0151 — protolens: heat-cue cache redesign and startup progress messaging
 
-Status: implemented
+Status: implemented — but its cache *structures* are gone. The three
+        separate fields (`heat_range_cache`, `heat_current_score_cache`,
+        `candidate_cache`) were bundled into one mutex-protected
+        `HeatCaches` by spec 0152 G4, and `BoundedMru` was replaced by
+        `TieredBounded` in spec 0164. What survives is the startup
+        progress messaging (G8, `warm_up_heat_cues`, `tui/mod.rs`) and
+        the caching *policy* the later specs carried forward. Read spec
+        0164 for the structure that exists today.
 App: protolens
 Implemented in: 2026-07-19
 Refs: docs/specs/0138-protolens-main-pane-inference-heat-cue.md (introduces

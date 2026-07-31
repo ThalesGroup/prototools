@@ -6,9 +6,15 @@ SPDX-License-Identifier: MIT
 
 # 0123 — protolens: non-interactive batch mode (`extract` subcommand)
 
-Status: implemented
+Status: implemented — but read `extract` as `export` throughout. Spec
+        0156 renamed the subcommand, the TUI command and the format
+        flags; the variant is `Command::Export` (`main.rs:167`) and its
+        options are `--load-overrides`, `--format` and `-o/--output`.
+        The design below is unaffected — only every name in it changed.
 Implemented in: 2026-07-15
-Refs: docs/specs/0111-protolens-extract.md (`extract`/`ExtractFormat`,
+Refs: docs/specs/0156-protolens-export-rename-and-export-format-chord.md
+        (renames everything this spec calls `extract`),
+      docs/specs/0111-protolens-extract.md (`extract`/`ExtractFormat`,
       `:extract` TUI command),
       docs/specs/0113-protolens-tui-refinements.md (D25's positional-path
       notation, `positional_path`/`sibling_position`),
