@@ -2037,10 +2037,7 @@ fn truncated_preview_ends_with_an_ellipsis_line() {
 fn a_packed_preview_is_cut_at_an_element_boundary() {
     // 20 elements of two bytes each: 300 encodes as `AC 02`, so no cut
     // at an odd offset can be a boundary.
-    let payload: Vec<u8> = std::iter::repeat([0xACu8, 0x02])
-        .take(20)
-        .flatten()
-        .collect();
+    let payload: Vec<u8> = std::iter::repeat_n([0xACu8, 0x02], 20).flatten().collect();
 
     // A varint run, budget deliberately odd: 15 walks back to 14, i.e.
     // seven whole elements.
@@ -2694,4 +2691,69 @@ fn a_splice_keeps_packed_record_starts_in_the_documents_byte_frame() {
     // payload 8..11.
     let (raw, _text) = app.packed_record_extent(run);
     assert_eq!(raw, 6..11);
+}
+
+/// Spec 0221 S5/N5: a refusal raised from inside a running session
+/// keeps reporting through the status line. Only the *startup* pass
+/// changed channel, because only it had nowhere to be seen; a refusal
+/// the user just caused by typing a command is exactly what
+/// `self.message` is for (spec 0147 G5), and the TUI owns the terminal
+/// by then, so stderr is not available to it anyway.
+#[test]
+fn a_session_refusal_still_uses_the_status_line() {
+    use crate::override_pane::OverrideOrigin;
+
+    let (mut app, inner, _) = type_as_fixture();
+    let path = app.positional_path(inner);
+    app.overrides.activate(
+        OverrideOrigin::Path { path },
+        Some("test.NoSuchType".to_string()),
+    );
+    app.message.clear();
+    app.render_overrides(app.first_node);
+
+    assert_eq!(
+        app.refusals.len(),
+        1,
+        "the node must be recorded as refused"
+    );
+    assert!(
+        app.message.starts_with("cannot apply override: "),
+        "a single refusal keeps the wording spec 0202 introduced: {}",
+        app.message
+    );
+    assert!(
+        app.message.contains("test.NoSuchType"),
+        "the status line names the type that was asked for: {}",
+        app.message
+    );
+}
+
+/// Spec 0221 G3/S1: the second refusal of a pass no longer destroys the
+/// first. The status line can only carry one, so it says how many there
+/// were and shows the first; `refusals` carries both for the caller
+/// that can print them.
+#[test]
+fn a_pass_with_two_refusals_reports_both() {
+    use crate::override_pane::OverrideOrigin;
+
+    let (mut app, inner, _) = type_as_fixture();
+    let inner_path = app.positional_path(inner);
+    let root_path = app.positional_path(app.first_node);
+    app.overrides.activate(
+        OverrideOrigin::Path { path: inner_path },
+        Some("test.NoSuchType".to_string()),
+    );
+    app.overrides.activate(
+        OverrideOrigin::Path { path: root_path },
+        Some("test.AlsoMissing".to_string()),
+    );
+    app.render_overrides(app.first_node);
+
+    assert_eq!(app.refusals.len(), 2, "both refusals survive the pass");
+    assert!(
+        app.message.starts_with("2 overrides refused"),
+        "the status line reports the count it cannot show in full: {}",
+        app.message
+    );
 }

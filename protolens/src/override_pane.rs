@@ -478,10 +478,20 @@ impl OverrideCollection {
     }
 
     /// Drops every entry whose origin `resolves` rejects (spec 0117 §4:
-    /// silent per-entry drop on restore for origins that no longer match
-    /// the current tree/descriptor pool).
-    pub fn retain_resolvable(&mut self, mut resolves: impl FnMut(&OverrideOrigin) -> bool) {
+    /// per-entry drop on restore for origins that no longer match the
+    /// current tree/descriptor pool), and returns how many it dropped.
+    ///
+    /// The count exists because the drop used to be *silent* (spec 0221
+    /// S6): a file written against another blob could lose most of its
+    /// entries and say nothing. `load_overrides` turns a non-zero count
+    /// into one more of the warnings it already returns.
+    pub fn retain_resolvable(
+        &mut self,
+        mut resolves: impl FnMut(&OverrideOrigin) -> bool,
+    ) -> usize {
+        let before = self.entries.len();
         self.entries.retain(|e| resolves(&e.origin));
+        before - self.entries.len()
     }
 }
 

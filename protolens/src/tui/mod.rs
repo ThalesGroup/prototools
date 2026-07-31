@@ -1397,6 +1397,28 @@ pub struct App {
     /// `side_area` do.
     cmd_area: Option<Rect>,
     pub message: String,
+    /// Every override still refused when `render_overrides`' most recent
+    /// pass ended, as `(node, description)` in visit order (spec 0221
+    /// S1). Emptied at the start of each outermost pass, so it always
+    /// describes the last one rather than accumulating across a session.
+    ///
+    /// The node index is carried because a failed splice is not
+    /// necessarily final. A pass can visit a node before the thing that
+    /// makes its override applicable exists — spec 0120's MessageSet
+    /// auto-expansion registers a synthetic type partway through the
+    /// same pass that then uses it — and re-settle it successfully
+    /// afterwards. `resettle_node` therefore withdraws a node's entry
+    /// when a later attempt succeeds; without that, a batch export that
+    /// produces exactly the right bytes would report an error and fail.
+    ///
+    /// Collected rather than printed because `render_overrides` also
+    /// runs mid-session, with the terminal in raw mode and the alternate
+    /// screen up, where a write to stderr would corrupt the display. The
+    /// caller decides: `main.rs` prints these to stderr for a batch
+    /// export and for TUI startup (both happen before `tui::run` takes
+    /// the terminal), while a pass triggered from inside the session
+    /// reports through `self.message` as it always has.
+    pub refusals: Vec<(usize, String)>,
     /// Mirrors `self.message` as of the last `track_message_timeout()`
     /// call — used to detect a freshly-set message (`self.message` has
     /// no dedicated setter; it's assigned directly all over this file),
@@ -1601,6 +1623,7 @@ impl App {
             side_area: Rect::default(),
             cmd_area: None,
             message: fallback_warning,
+            refusals: Vec::new(),
             last_message_seen: String::new(),
             message_deadline: None,
             should_quit: false,

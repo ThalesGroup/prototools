@@ -1065,10 +1065,39 @@ impl App {
             match spliced {
                 Ok(patch_idx) => {
                     self.tree[idx].rendered_as = current;
+                    // Spec 0221 S1: this node is settled after all, so
+                    // an earlier refusal of it in this same pass was not
+                    // final and must not be reported. The guard keeps
+                    // the common case — nothing refused — free, and the
+                    // scan is over the refusals alone, not the tree.
+                    if !self.refusals.is_empty() {
+                        self.refusals.retain(|(node, _)| *node != idx);
+                    }
                     Some(patch_idx)
                 }
                 Err(e) => {
-                    self.message = format!("cannot apply override: {e}");
+                    // Spec 0221 S1/S2: collected, not printed, and not
+                    // assigned over — a pass that refuses N nodes has to
+                    // be able to report N. The three parts recorded here
+                    // are the ones only this frame knows: which node,
+                    // what it was asked to be, and why that failed. The
+                    // caller prefixes where the request came from (the
+                    // `--load-overrides` file, or the typed command).
+                    //
+                    // `effective` was moved into the splice, so the
+                    // requested type is re-derived here rather than
+                    // cloned above: `resettle_node` runs once per node
+                    // of a pass and this arm runs only for the few that
+                    // fail. `None` is the raw rendering, spelled the way
+                    // `main.rs`'s "rendering root node as ..." spells
+                    // it.
+                    let requested = match &target {
+                        Some(explicit) => explicit.clone(),
+                        None => self.natural_type(idx),
+                    }
+                    .unwrap_or_else(|| "<raw / no type>".to_string());
+                    self.refusals
+                        .push((idx, format!("{path}: cannot render as '{requested}': {e}")));
                     None
                 }
             }
@@ -1147,6 +1176,11 @@ impl App {
     /// method below.
     pub(super) fn render_overrides(&mut self, idx: usize) {
         if self.override_batch_depth == 0 {
+            // Spec 0221 S1: emptied at the start of the *outermost*
+            // pass, so nested `render_overrides` calls contribute to one
+            // list and a caller reading it afterwards sees that pass and
+            // nothing carried over from an earlier one.
+            self.refusals.clear();
             let t_marks = std::time::Instant::now();
             self.compute_descend_marks();
             let d_marks = t_marks.elapsed();
@@ -1211,6 +1245,23 @@ impl App {
                     probe::FINALIZE_US.load(Relaxed),
                     probe::TEXT_US.load(Relaxed),
                 );
+            }
+            // Spec 0221 S5: the status line keeps reporting a refusal,
+            // as it has since spec 0202 — but summarizing the whole pass
+            // rather than being assigned once per refused node, so N
+            // refusals no longer collapse into whichever happened last.
+            // Set here instead of at the fifteen `render_overrides` call
+            // sites, which would otherwise each have to remember to.
+            //
+            // The startup pass sets it too, harmlessly: `main.rs`
+            // replaces it with the "see stderr" wording once it has
+            // printed the detail there (S4).
+            match self.refusals.len() {
+                0 => {}
+                1 => self.message = format!("cannot apply override: {}", self.refusals[0].1),
+                n => {
+                    self.message = format!("{n} overrides refused, first: {}", self.refusals[0].1);
+                }
             }
         }
     }

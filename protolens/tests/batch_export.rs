@@ -240,8 +240,9 @@ fn export_with_load_overrides_still_shows_message_set_auto_expansion() {
     // including spec 0120's auto-detected entries seeded at `App::new`
     // time — so the loaded collection must itself carry the two
     // MessageSet auto-override tiers (tier 1: the `Item` group retyped to
-    // the synthetic `protolens_internal.MessageSetItem`, cosmetically
-    // named "Item"; tier 2: its `message` field retyped to the resolved
+    // the synthetic `protolens_internal.Item` — `decode.rs`'s
+    // `MESSAGE_SET_ITEM_FQDN`, which is deliberately *not* spelled
+    // `MessageSetItem`; tier 2: its `message` field retyped to the resolved
     // extension type), at their positional paths (`/1/1` = the sole
     // `Item`, `/1/1/2` = `Item`'s 2nd child, `message`) — exactly what a
     // real `:save-overrides` from an already-auto-expanded session would
@@ -256,7 +257,7 @@ target:
   descriptor_set_sha256: "{}"
 overrides:
   - path: "/1/1"
-    type: protolens_internal.MessageSetItem
+    type: protolens_internal.Item
     active: true
     name: Item
   - path: "/1/1/2"
@@ -414,6 +415,194 @@ fn export_load_overrides_hash_mismatch_warns_but_still_succeeds() {
     assert!(
         stderr.contains("warning") && stderr.contains("hash mismatch"),
         "expected a hash-mismatch warning, got: {stderr}"
+    );
+}
+
+// ── Spec 0221: a refused override is reported, not swallowed ────────────
+
+/// An overrides file naming a type that is not in the descriptor set.
+/// Hashes match, so nothing *else* has anything to complain about and
+/// the refusal is the only thing that can put a word on stderr.
+fn unappliable_overrides_yaml(blob: &[u8], descriptor: &[u8], entries: &str) -> TempFile {
+    let yaml = format!(
+        "version: 1\ntarget:\n  blob_sha256: \"{}\"\n  descriptor_set_sha256: \"{}\"\noverrides:\n{entries}",
+        sha256_hex(blob),
+        sha256_hex(descriptor),
+    );
+    write_temp("unappliable-overrides", yaml.as_bytes())
+}
+
+/// Spec 0221 G1/S3: an override that could not be applied makes the
+/// export fail, loudly, and produce no output file. Before 0221 this
+/// wrote a rendering with the override missing and exited 0 — and for
+/// `--format=descriptor-binary`, which *requires* `--load-overrides`,
+/// that is a wrong schema handed to whatever consumes it.
+#[test]
+fn export_with_an_unappliable_override_fails_loudly() {
+    let (descriptor, blob) = outer_inner_fixture();
+    let overrides = unappliable_overrides_yaml(
+        &std::fs::read(blob.path()).unwrap(),
+        &std::fs::read(descriptor.path()).unwrap(),
+        "  - path: \"/1\"\n    type: test.NoSuchType\n    active: true\n",
+    );
+    let out_path = temp_path("unappliable-output");
+    let out = run(&[
+        "--descriptor-set",
+        descriptor.path(),
+        "--type",
+        "test.Outer",
+        blob.path(),
+        "export",
+        "/",
+        "--load-overrides",
+        overrides.path(),
+        "--output",
+        out_path.to_str().unwrap(),
+    ]);
+    assert!(
+        !out.status.success(),
+        "an override that could not be applied must not report success"
+    );
+    assert!(
+        !out_path.exists(),
+        "no output file may be written when an override was refused"
+    );
+}
+
+/// Spec 0221 G4/S2: the diagnostic is written for someone who has never
+/// read this spec, so each of its four parts is asserted on its own —
+/// dropping one has to be a test failure, not a cosmetic diff.
+#[test]
+fn a_refusal_line_names_file_node_type_and_reason() {
+    let (descriptor, blob) = outer_inner_fixture();
+    let overrides = unappliable_overrides_yaml(
+        &std::fs::read(blob.path()).unwrap(),
+        &std::fs::read(descriptor.path()).unwrap(),
+        "  - path: \"/1\"\n    type: test.NoSuchType\n    active: true\n",
+    );
+    let out = run(&[
+        "--descriptor-set",
+        descriptor.path(),
+        "--type",
+        "test.Outer",
+        blob.path(),
+        "export",
+        "/",
+        "--load-overrides",
+        overrides.path(),
+    ]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--load-overrides") && stderr.contains(overrides.path()),
+        "the line must name the flag and the file it came from: {stderr}"
+    );
+    assert!(
+        stderr.contains("/1"),
+        "the line must name the node, which is how the file names it: {stderr}"
+    );
+    assert!(
+        stderr.contains("test.NoSuchType"),
+        "the line must name the type that was asked for: {stderr}"
+    );
+    assert!(
+        stderr.contains("not found in descriptor set"),
+        "the line must carry the underlying reason: {stderr}"
+    );
+}
+
+/// Spec 0221 G3/S1: two unappliable overrides produce two lines. Before
+/// 0221 the refusal was assigned to `self.message`, not pushed, so the
+/// second destroyed the first and the user could not learn there had
+/// been more than one.
+#[test]
+fn refusals_are_collected_not_overwritten() {
+    let (descriptor, blob) = outer_inner_fixture();
+    let overrides = unappliable_overrides_yaml(
+        &std::fs::read(blob.path()).unwrap(),
+        &std::fs::read(descriptor.path()).unwrap(),
+        concat!(
+            "  - path: \"/1\"\n    type: test.NoSuchType\n    active: true\n",
+            "  - path: \"/1/1\"\n    type: test.AlsoMissing\n    active: true\n",
+        ),
+    );
+    let out = run(&[
+        "--descriptor-set",
+        descriptor.path(),
+        "--type",
+        "test.Outer",
+        blob.path(),
+        "export",
+        "/",
+        "--load-overrides",
+        overrides.path(),
+    ]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("test.NoSuchType") && stderr.contains("test.AlsoMissing"),
+        "both refusals must be reported, not just the last: {stderr}"
+    );
+}
+
+/// Spec 0221's bound: 0198 S2 says a *successful* batch subcommand
+/// writes nothing to stderr, and 0221 must not have widened that. The
+/// success path stays silent.
+#[test]
+fn export_with_every_override_applied_still_says_nothing() {
+    let (descriptor, blob) = outer_inner_fixture();
+    let overrides = hash_matching_overrides_yaml(
+        &std::fs::read(blob.path()).unwrap(),
+        &std::fs::read(descriptor.path()).unwrap(),
+    );
+    let out = run(&[
+        "--descriptor-set",
+        descriptor.path(),
+        "--type",
+        "test.Outer",
+        blob.path(),
+        "export",
+        "/",
+        "--load-overrides",
+        overrides.path(),
+    ]);
+    assert!(out.status.success());
+    assert!(
+        out.stderr.is_empty(),
+        "a successful export must stay silent: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Spec 0221 S6: a file whose origins no longer resolve against this
+/// blob used to lose those entries without a word, which reads exactly
+/// like a file that applied cleanly. It now warns — and still succeeds,
+/// since a dropped entry is not a refused one.
+#[test]
+fn load_overrides_warns_about_dropped_entries() {
+    let (descriptor, blob) = outer_inner_fixture();
+    let overrides = unappliable_overrides_yaml(
+        &std::fs::read(blob.path()).unwrap(),
+        &std::fs::read(descriptor.path()).unwrap(),
+        "  - path: \"/99\"\n    type: test.Inner\n    active: true\n",
+    );
+    let out = run(&[
+        "--descriptor-set",
+        descriptor.path(),
+        "--type",
+        "test.Outer",
+        blob.path(),
+        "export",
+        "/",
+        "--load-overrides",
+        overrides.path(),
+    ]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "a dropped entry is a warning, not a failure: {stderr}"
+    );
+    assert!(
+        stderr.contains("1 override(s) dropped"),
+        "expected the dropped count on stderr: {stderr}"
     );
 }
 

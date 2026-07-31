@@ -494,6 +494,28 @@ fn main() -> ExitCode {
                         return ExitCode::FAILURE;
                     }
                 }
+                // Spec 0221 S3. Reported here, before anything is
+                // written: an override that could not be applied means
+                // the export would not be what was asked for, and for
+                // `--format=descriptor-binary` — which *requires*
+                // `--load-overrides` — that is a wrong schema handed to
+                // whatever consumes it. The exit code is the only signal
+                // a script piping this into a build receives, so it is
+                // a failure and no output file is produced. That is a
+                // change from the best-effort export this used to be.
+                //
+                // Spec 0198 S2 is not violated: it binds a *successful*
+                // batch subcommand to a silent stderr, and this one is
+                // not successful.
+                if !app.refusals.is_empty() {
+                    for (_, refusal) in &app.refusals {
+                        eprintln!(
+                            "error: --load-overrides '{}': {refusal}",
+                            overrides_path.display()
+                        );
+                    }
+                    return ExitCode::FAILURE;
+                }
             }
 
             let is_descriptor = matches!(
@@ -565,6 +587,27 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         None => {
+            // Spec 0221 S4: `App::new`'s own override pass may have
+            // refused, and the status line it set for them is about to
+            // be unreadable — `warm_up_heat_cues` overwrites it with a
+            // progress string before the first frame, and every keypress
+            // clears it thereafter (spec 0147 G5). stderr is still ours
+            // here (`tui::run` below is what enters the alternate
+            // screen) and, unlike the status line, it appends: the
+            // phase lines above cannot overwrite these, and the user can
+            // scroll back to them after quitting. Same placement as spec
+            // 0197 §S3's fallback warning.
+            for (_, refusal) in &app.refusals {
+                eprintln!("protolens: error: {refusal}");
+            }
+            if !app.refusals.is_empty() {
+                // Replaces the plain count `render_overrides` set, now
+                // that there is somewhere to point at for the detail.
+                app.message = format!(
+                    "{} override(s) refused at startup — see stderr",
+                    app.refusals.len()
+                );
+            }
             if let Err(e) = tui::run(&mut app) {
                 eprintln!("error: {e}");
                 return ExitCode::FAILURE;

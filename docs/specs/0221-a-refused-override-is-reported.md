@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0221 — a refused override is reported, not swallowed
 
-Status: draft
+Status: implemented
+Implemented in: 2026-07-31
 App: protolens
 Refs: docs/specs/0202-an-override-is-refused-rather-than-fatal.md (made
         a bad override a refusal instead of a panic; this spec is about
@@ -149,14 +150,25 @@ lifecycle is correct for it. Only the startup pass is broken.
 
 ## Specification
 
-- **S1.** `App` gains `refusals: Vec<String>`, cleared at the start of
-  each `render_overrides` pass and pushed to by `resettle_node`'s `Err`
-  arm in place of the `self.message` assignment. One entry per refused
-  node.
+- **S1.** `App` gains `refusals: Vec<(usize, String)>`, cleared at the
+  start of each outermost `render_overrides` pass and pushed to by
+  `resettle_node`'s `Err` arm in place of the `self.message`
+  assignment. One entry per node still refused when the pass ends.
 
   `render_overrides` must not print: it also runs mid-session with the
   terminal in raw mode. Collecting lets the caller decide, which is
   what S3 and S4 exercise.
+
+  **"Still refused when the pass ends" is the load-bearing part, and
+  it is not the same as "a splice failed".** A pass can visit a node
+  before the thing that makes its override applicable exists — spec
+  0120's MessageSet auto-expansion registers a synthetic type partway
+  through the same pass that then uses it — and re-settle that node
+  successfully afterwards. `resettle_node`'s `Ok` arm therefore
+  withdraws the node's entry, which is why the node index is carried
+  alongside the text. Record every failed *attempt* instead and a
+  batch export producing exactly the right bytes reports an error and
+  fails.
 
 - **S2.** A refusal line is written for a reader who does not know
   protolens's internals (G4). Its shape:
@@ -200,7 +212,10 @@ lifecycle is correct for it. Only the startup pass is broken.
 
 - **S5.** A refusal raised mid-session keeps today's behavior: the
   status line, now carrying the count when a pass refuses more than
-  one. No stderr write (N5).
+  one. No stderr write (N5). Set once at the end of the outermost pass
+  in `render_overrides`, not at its fifteen call sites — a single
+  refusal keeps spec 0202's exact wording, `cannot apply override:
+  ...`, and N become `N overrides refused, first: ...`.
 
 - **S6.** `retain_resolvable` returns the number of entries it dropped;
   `load_overrides` turns a non-zero count into one more entry in the
@@ -278,4 +293,39 @@ fix a case that is not a notice.
 
 ## Measured outcome
 
-Filled in at implementation.
+**The spec found a live instance of its own defect on the first run.**
+`batch_export.rs`'s MessageSet fixture asked for
+`protolens_internal.MessageSetItem`, and no such type exists — the
+synthetic one is `protolens_internal.Item` (`decode.rs`'s
+`MESSAGE_SET_ITEM_FQDN`, whose comment says it is deliberately *not*
+spelled that way). That override had always been refused. The test
+passed regardless, because spec 0120's auto-expansion had already done
+the same job by another route, so the file's own entry was dead weight
+nobody could see. Under S3 the export failed and named it. Fixture
+corrected.
+
+**One correction to S1, forced by the same test.** A failed splice is
+not necessarily final: a pass can visit a node before the thing that
+makes its override applicable exists — MessageSet auto-expansion
+registers its synthetic type partway through the pass that then uses it
+— and re-settle it successfully afterwards. Recording every failed
+*attempt* therefore made a correct export report an error. `refusals`
+holds `(node, description)` and `resettle_node` withdraws a node's
+entry when a later attempt on it succeeds, so a refusal means "still
+refused when the pass ended". Without this, G1 would fail closed on
+documents that are perfectly fine.
+
+**S4's placement was cheaper than expected, and S5 nearly free.** The
+status-line summary is set once at the end of the outermost pass in
+`render_overrides` rather than at the fifteen call sites, which is also
+what keeps the pre-0221 wording (`cannot apply override: ...`) for the
+single-refusal case that spec 0202 introduced.
+
+The `Err` arm re-derives the requested type name instead of cloning it
+before the splice: `resettle_node` runs once per node of a pass — 4.7M
+on the reference corpus — and the arm runs only for the few that fail.
+The success path's withdrawal scan is guarded by
+`refusals.is_empty()`, so the common case pays one comparison.
+
+564 tests pass (541 unit + 23 `batch_export`), clippy clean
+workspace-wide.

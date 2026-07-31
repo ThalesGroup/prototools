@@ -575,9 +575,10 @@ fn default_save_overrides_path_uses_blob_stem_with_yaml_extension() {
     assert_eq!(app.default_save_overrides_path(), "/tmp/some/target.yaml");
 }
 
-/// Spec 0117 §4: `:save`/`:restore` round-trip the
-/// collection through YAML, and restore silently drops an entry whose
-/// origin no longer resolves against the current tree.
+/// Spec 0117 §4: `:save`/`:restore` round-trip the collection through
+/// YAML, and restore drops an entry whose origin no longer resolves
+/// against the current tree — reporting how many it dropped, which is
+/// spec 0221 S6's change to what was previously a silent drop.
 #[test]
 fn save_and_restore_overrides_round_trips_and_drops_unresolvable_entries() {
     let (mut app, inner_idx, _) = type_as_fixture();
@@ -620,12 +621,14 @@ fn save_and_restore_overrides_round_trips_and_drops_unresolvable_entries() {
         "unexpected message: {}",
         app.message
     );
+    // Spec 0221 S6: the drop used to be silent, which reads exactly
+    // like a file that restored cleanly. It now names the count.
     assert!(
-        !app.message.contains("warning"),
-        "unexpected warning: {}",
+        app.message.contains("1 override(s) dropped"),
+        "expected the dropped entry to be reported: {}",
         app.message
     );
-    assert_eq!(app.overrides.entries().len(), 2); // "/99" silently dropped
+    assert_eq!(app.overrides.entries().len(), 2); // "/99" dropped
     assert!(!app
         .overrides
         .entries()

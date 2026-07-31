@@ -794,17 +794,27 @@ impl App {
     /// callers (`run_restore_overrides`, batch mode) treat differently:
     /// the TUI just displays it and keeps running; batch mode (spec 0123
     /// G4) treats it as a hard error.
-    pub(crate) fn load_overrides(&mut self, path: &str) -> Result<Vec<&'static str>, String> {
+    pub(crate) fn load_overrides(&mut self, path: &str) -> Result<Vec<String>, String> {
         let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let (mut collection, target) = override_pane::OverrideCollection::from_yaml(&text)?;
-        collection.retain_resolvable(|origin| self.origin_resolves(origin));
+        let dropped = collection.retain_resolvable(|origin| self.origin_resolves(origin));
         let (blob_sha256, descriptor_set_sha256) = self.target_hashes();
         let mut warnings = Vec::new();
         if target.blob_sha256 != blob_sha256 {
-            warnings.push("blob hash mismatch");
+            warnings.push("blob hash mismatch".to_string());
         }
         if target.descriptor_set_sha256 != descriptor_set_sha256 {
-            warnings.push("descriptor-set hash mismatch");
+            warnings.push("descriptor-set hash mismatch".to_string());
+        }
+        // Spec 0221 S6: dropped entries used to vanish without a word,
+        // which reads exactly like a file that was applied. Reported
+        // through the warnings both callers already print or show,
+        // rather than a channel of its own — this is the same class of
+        // notice as the two hash mismatches above.
+        if dropped > 0 {
+            warnings.push(format!(
+                "{dropped} override(s) dropped: their origin does not resolve against this blob"
+            ));
         }
         // The document root's own type is external input (CLI `--type`,
         // auto-inference, or an interactive retype) — unlike every other
