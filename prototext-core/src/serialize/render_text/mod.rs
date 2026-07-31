@@ -3,6 +3,7 @@
 //
 // SPDX-License-Identifier: MIT
 
+mod arena;
 mod fqdn;
 mod helpers;
 mod packed;
@@ -23,6 +24,7 @@ use crate::CodecError;
 use helpers::{render_group_field, render_len_field, scan_group_extent, FieldCtx};
 use sink::{IndexingTextSink, MalformedKind, ScalarValue, Sink, TagFacts, TextSink};
 
+pub use arena::{build_arena, Arena};
 pub use fqdn::{FqdnId, FqdnTable, NO_FQDN, UNINTERNED};
 pub use sink::{NodeSpan, NO_PACKED_RECORD};
 
@@ -468,14 +470,14 @@ pub fn decode_and_render_indexed(
 /// - `next_pos`: byte position after this message (for the caller to
 ///   continue its own parse loop, or for GROUP end detection).
 /// - `group_end_tag`: `Some(tag)` when parsing terminated on a `WT_END_GROUP`.
-fn render_message<S: Sink>(
-    buf: &[u8],
+fn render_message<'a, S: Sink>(
+    buf: &'a [u8],
     start: usize,
     my_group: Option<u64>,
     schema: Option<&MessageDescriptor>,
     schema_present: bool,
     sink: &mut S,
-) -> (usize, Option<WiretagResult>) {
+) -> (usize, Option<WiretagResult<'a>>) {
     let buflen = buf.len();
     let mut pos = start;
 
@@ -507,7 +509,7 @@ fn render_message<S: Sink>(
         let field_start = pos;
         let tag = parse_wiretag(buf, pos);
 
-        if let Some(ref wtag_gar) = tag.wtag_gar {
+        if let Some(wtag_gar) = tag.wtag_gar {
             // Invalid wire tag: consume rest of buffer as INVALID_TAG_TYPE
             sink.malformed(
                 0,
@@ -541,7 +543,7 @@ fn render_message<S: Sink>(
             // ── VARINT ───────────────────────────────────────────────────────
             WT_VARINT => {
                 let vr = parse_varint(buf, pos);
-                if let Some(ref varint_gar) = vr.varint_gar {
+                if let Some(varint_gar) = vr.varint_gar {
                     sink.malformed(
                         field_number,
                         TagFacts {
@@ -614,7 +616,7 @@ fn render_message<S: Sink>(
             // ── LENGTH-DELIMITED ─────────────────────────────────────────────
             WT_LEN => {
                 let lr = parse_varint(buf, pos);
-                if let Some(ref varint_gar) = lr.varint_gar {
+                if let Some(varint_gar) = lr.varint_gar {
                     sink.malformed(
                         field_number,
                         TagFacts {
@@ -781,6 +783,8 @@ fn render_message<S: Sink>(
 
 #[cfg(test)]
 mod tests {
+    use std::ops::Range;
+
     use super::*;
 
     // field 1 (varint) = 42: tag 0x08, value 0x2A.
@@ -810,6 +814,109 @@ mod tests {
         // The message names the actual size, so a user can tell how far
         // over they are rather than only that they are over.
         assert!(err_text(MAX_INDEXED_BUFFER + 1).contains(&(MAX_INDEXED_BUFFER + 1).to_string()));
+    }
+
+    /// Counts nested openings, and nothing else. `greedy` is what
+    /// `Sink::unknown_len_is_message` reports, so one type covers both sides
+    /// of the comparison.
+    #[derive(Default)]
+    struct NestCounter {
+        greedy: bool,
+        nested: usize,
+    }
+
+    impl Sink for NestCounter {
+        type Mark = ();
+
+        fn scalar_field(
+            &mut self,
+            _field_number: u64,
+            _field_schema: Option<&FieldOrExt>,
+            _tag: TagFacts,
+            _value: sink::ScalarValue<'_>,
+            _raw_range: Range<usize>,
+            _schema_present: bool,
+        ) {
+        }
+
+        fn begin_nested(
+            &mut self,
+            _field_number: u64,
+            _field_schema: Option<&FieldOrExt>,
+            _tag: TagFacts,
+            _kind: sink::NestedKind,
+            _raw_start: usize,
+            _payload_start: usize,
+        ) {
+            self.nested += 1;
+        }
+
+        fn end_nested(
+            &mut self,
+            _mark: (),
+            _raw_range: Range<usize>,
+            _close_facts: Option<sink::GroupCloseFacts>,
+        ) {
+        }
+
+        fn virtual_scalar(
+            &mut self,
+            _name: &str,
+            _annotation: Option<&str>,
+            _value_str: &str,
+            _raw_range: Range<usize>,
+        ) {
+        }
+
+        fn begin_virtual_nested(
+            &mut self,
+            _name: &str,
+            _annotation: Option<&str>,
+            _type_fqdn: Option<&str>,
+            _raw_start: usize,
+            _payload_start: usize,
+        ) {
+        }
+
+        fn malformed(
+            &mut self,
+            _field_number: u64,
+            _tag: TagFacts,
+            _kind: sink::MalformedKind,
+            _raw: &[u8],
+            _raw_range: Range<usize>,
+        ) {
+        }
+
+        fn unknown_len_is_message(&self) -> bool {
+            self.greedy
+        }
+    }
+
+    /// Spec 0216 S14. Field 1, LEN, payload `"hello"` — five bytes that are
+    /// a string, not a message: read as wire format they give field 13 as a
+    /// varint and then an unmatched `END_GROUP`, so spec 0097's probe
+    /// declines them and the default cascade renders the field as a scalar
+    /// with no children.
+    ///
+    /// That verdict is exactly what the maximal-tree walk cannot accept: a
+    /// later type override could declare this field a message, and the
+    /// render would then descend into a payload the arena never gave slots
+    /// to. Asking for `unknown_len_is_message` recurses instead.
+    #[test]
+    fn greedy_recurses_where_the_probe_declines() {
+        let buf: &[u8] = &[0x0A, 0x05, b'h', b'e', b'l', b'l', b'o'];
+
+        let mut probing = NestCounter::default();
+        render_message(buf, 0, None, None, false, &mut probing);
+        assert_eq!(probing.nested, 0, "the probe declines `hello`");
+
+        let mut greedy = NestCounter {
+            greedy: true,
+            nested: 0,
+        };
+        render_message(buf, 0, None, None, false, &mut greedy);
+        assert_eq!(greedy.nested, 1, "greedy opens it regardless");
     }
 
     fn err_text(len: usize) -> String {

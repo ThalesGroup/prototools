@@ -3,6 +3,7 @@
 //
 // SPDX-License-Identifier: MIT
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -137,9 +138,11 @@ fn read_descriptor_file(path: &Path) -> Result<Vec<u8>, String> {
             expand_any: false,
             ..RenderOpts::default()
         };
-        render_as_bytes(&bytes, opts).map_err(|e: CodecError| {
-            format!("decoding prototext descriptor '{}': {}", path.display(), e)
-        })
+        render_as_bytes(&bytes, opts)
+            .map(|b| b.into_owned())
+            .map_err(|e: CodecError| {
+                format!("decoding prototext descriptor '{}': {}", path.display(), e)
+            })
     } else {
         Ok(bytes)
     }
@@ -191,7 +194,7 @@ pub fn infer_type(
         };
         binary_buf = render_as_bytes(pb_bytes, opts)
             .map_err(|e: CodecError| format!("encoding prototext to binary: {}", e))?;
-        binary_buf.as_slice()
+        binary_buf.as_ref()
     };
 
     let mut results = score_all(pb_bytes, graph, scoring_opts);
@@ -296,7 +299,9 @@ pub fn process(
         if !is_prototext_text(data) {
             return Err(CodecError::NotPrototext.to_string());
         }
-        render_as_bytes(data, opts).map_err(|e: CodecError| e.to_string())
+        render_as_bytes(data, opts)
+            .map(|b| b.into_owned())
+            .map_err(|e: CodecError| e.to_string())
     }
 }
 
@@ -989,7 +994,10 @@ fn run_list_schemas(
 
     let mut out = io::stdout();
 
-    let read_data = |raw: &[u8]| -> Result<Vec<u8>, String> {
+    // Called rather than closed over: the result borrows its argument in the
+    // pass-through case, and a closure's return type cannot name the lifetime
+    // of its own parameter.
+    fn read_data(raw: &[u8], assume_binary: bool) -> Result<Cow<'_, [u8]>, String> {
         let opts = RenderOpts {
             assume_binary,
             include_annotations: false,
@@ -999,14 +1007,14 @@ fn run_list_schemas(
         };
         render_as_bytes(raw, opts)
             .map_err(|e: CodecError| format!("encoding prototext to binary: {}", e))
-    };
+    }
 
     if paths.is_empty() {
         let mut data = Vec::new();
         io::stdin()
             .read_to_end(&mut data)
             .map_err(|e| format!("reading stdin: {}", e))?;
-        let binary = read_data(&data)?;
+        let binary = read_data(&data, assume_binary)?;
         return list_schemas_one(
             &binary,
             graph,
@@ -1022,7 +1030,7 @@ fn run_list_schemas(
     for f in &all_files {
         let data =
             std::fs::read(&f.abs).map_err(|e| format!("reading '{}': {}", f.abs.display(), e))?;
-        let binary = read_data(&data)?;
+        let binary = read_data(&data, assume_binary)?;
         let label = f.abs.display().to_string();
         list_schemas_one(
             &binary,

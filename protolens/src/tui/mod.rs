@@ -41,6 +41,9 @@ use prototext_core::serialize::render_text::{
 #[cfg(test)]
 use prototext_core::serialize::render_text::NO_FQDN;
 
+#[cfg(test)]
+use crate::blob::wrapped;
+use crate::blob::Blob;
 use crate::colorize::{self, LineStyles, SyntaxRole};
 use crate::decode::{self, widen, Decoded, DescriptorContext, TreeNode};
 // Every `NO_NODE` outside `decode.rs` is in a test module building a
@@ -814,7 +817,11 @@ pub struct App {
     /// extraction (`ExtractFormat::Binary` slices `NodeSpan::raw_range`
     /// from this, since every `raw_range` is relative to *this* blob, not
     /// the caller's original one).
-    blob: Vec<u8>,
+    ///
+    /// Shared with the heat worker rather than cloned into it (spec 0216
+    /// S28) — and shareable at all, which a mapped blob would not be if
+    /// this owned its bytes.
+    blob: Arc<Blob>,
     /// Width in bytes of the wrapper's own tag+length prefix (spec 0114
     /// §1.1) — subtracted from any displayed `raw_range` coordinate to
     /// recover the caller's original (pre-wrap) numbering.
@@ -2389,7 +2396,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
             // mapping. Each `Arc::clone` below is a refcount bump, and it is what
             // makes both spawns below independent of when `App` drops.
             let graph = Arc::clone(graph);
-            let blob = Arc::new(app.blob.clone()); // one-time clone, G2
+            // Spec 0216 S28: a refcount bump. This used to copy the whole
+            // blob, once, to give the worker something it could own.
+            let blob = Arc::clone(&app.blob);
 
             // Spec 0168 removed a second, detached "root-type" thread that
             // used to run here: it re-scored the whole blob to infer the root

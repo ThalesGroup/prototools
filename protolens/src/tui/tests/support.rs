@@ -103,7 +103,7 @@ pub(super) fn empty_app() -> App {
         lines: Vec::new(),
         tree: Vec::new(),
         root_type: "google.protobuf.Empty".to_string(),
-        blob: Vec::new(),
+        blob: Arc::new(Blob::unwrapped(Vec::new())),
         wrapper_offset: 0,
         root_candidates: Vec::new(),
         fqdns: FqdnTable::new(),
@@ -165,7 +165,7 @@ pub(super) fn message_node_app_with_root_candidates(
         // = 8, then 8 zero payload bytes — a real, `raw_range`-
         // consistent blob, needed since spec 0132's live preview now
         // splices this node's contents at pane-open time.
-        blob: vec![0x22, 0x08, 0, 0, 0, 0, 0, 0, 0, 0],
+        blob: Arc::new(Blob::unwrapped(vec![0x22, 0x08, 0, 0, 0, 0, 0, 0, 0, 0])),
         wrapper_offset: 0,
         root_candidates,
         fqdns,
@@ -253,7 +253,7 @@ pub(super) fn sibling_leaves_app(texts: &[&str]) -> App {
         lines,
         tree,
         root_type: "google.protobuf.FileDescriptorProto".to_string(),
-        blob: Vec::new(),
+        blob: Arc::new(Blob::unwrapped(Vec::new())),
         wrapper_offset: 0,
         root_candidates: Vec::new(),
         fqdns: FqdnTable::new(),
@@ -320,7 +320,7 @@ pub(super) fn repeated_scalar_fixture() -> (App, Vec<usize>) {
     // vals: field 1 (tag 0x0A, LEN/packed), length 3, payload
     // [0x05, 0x06, 0x07] (three one-byte varint elements).
     let blob = [0x0Au8, 0x03, 0x05, 0x06, 0x07];
-    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -411,7 +411,7 @@ pub(super) fn repeated_message_fixture() -> (App, Vec<usize>) {
         0x0A, 0x02, 0x08, 0x06, //
         0x0A, 0x02, 0x08, 0x07,
     ];
-    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -495,7 +495,7 @@ pub(super) fn wide_sibling_scalars_app(n: usize) -> App {
         lines,
         tree,
         root_type: "google.protobuf.FileDescriptorProto".to_string(),
-        blob,
+        blob: Arc::new(Blob::unwrapped(blob)),
         wrapper_offset: 0,
         root_candidates: Vec::new(),
         fqdns: FqdnTable::new(),
@@ -590,7 +590,7 @@ pub(super) fn packed_run_with_tail_fixture() -> (App, Vec<usize>, usize, usize, 
         0x18, 0x2A, //
         0x20, 0x2B,
     ];
-    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -713,7 +713,7 @@ pub(super) fn nested_packed_run_fixture() -> App {
         0x12, 0x05, //
         0x0A, 0x03, 0x05, 0x06, 0x07,
     ];
-    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Holder"), 2).unwrap();
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Holder"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -770,7 +770,7 @@ pub(super) fn eager_fallback_app() -> App {
     std::fs::remove_file(&descriptor_path).unwrap();
 
     let blob = [0x08u8, 0x05];
-    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Inner"), 2).unwrap();
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Inner"), 2).unwrap();
     App::new(
         decoded,
         "test.pb",
@@ -839,7 +839,7 @@ pub(super) fn type_as_fixture() -> (App, usize, usize) {
 
     // Outer { inner: Inner { id: 5 } }.
     let blob = [0x0Au8, 0x02, 0x08, 0x05];
-    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -923,7 +923,7 @@ pub(super) fn empty_message_fixture() -> (App, usize) {
 
     // Outer { inner: Inner {} } — field 1 (LEN), length 0, no payload.
     let blob = [0x0Au8, 0x00];
-    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -1009,7 +1009,7 @@ pub(super) fn enum_field_fixture() -> (App, usize) {
     // Outer3 { durability: EPHEMERAL (0) } — field 1 (tag 0x08),
     // varint value 0.
     let blob = [0x08u8, 0x00];
-    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Outer3"), 2).unwrap();
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Outer3"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -1112,7 +1112,7 @@ pub(super) fn group_type_fixture_with_blob(blob: &[u8]) -> (App, usize) {
     let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
     std::fs::remove_file(&descriptor_path).unwrap();
 
-    let decoded = decode(blob, &mut ctx, RootType::Named("test.Outer2"), 2).unwrap();
+    let decoded = decode(wrapped(blob), &mut ctx, RootType::Named("test.Outer2"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -1224,7 +1224,13 @@ pub(super) fn message_set_fixture() -> App {
     let mut blob = vec![0x12u8, item_bytes.len() as u8];
     blob.extend_from_slice(&item_bytes);
 
-    let decoded = decode(&blob, &mut ctx, RootType::Named("ms_test.Container"), 2).unwrap();
+    let decoded = decode(
+        wrapped(&blob),
+        &mut ctx,
+        RootType::Named("ms_test.Container"),
+        2,
+    )
+    .unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -1356,7 +1362,7 @@ pub(super) fn nested_any_fixture() -> App {
         blob = next;
     }
 
-    let decoded = decode(&blob, &mut ctx, RootType::Named("acme.Level1"), 2).unwrap();
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("acme.Level1"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -1491,7 +1497,7 @@ pub(super) fn nested_message_set_fixture() -> App {
     let mut blob = vec![0x0au8, mid_bytes.len() as u8];
     blob.append(&mut mid_bytes);
 
-    let decoded = decode(&blob, &mut ctx, RootType::Named("ms_test.Top"), 2).unwrap();
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("ms_test.Top"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -1618,7 +1624,7 @@ pub(super) fn export_fields_fixture() -> App {
         0x40, 0x01, // 8: 1
         0x40, 0x02, // 8: 2
     ];
-    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -1665,7 +1671,13 @@ pub(super) fn export_fields_group_error_fixture() -> App {
 
     // field 9 (undeclared): START_GROUP then END_GROUP.
     let blob = vec![0x4B, 0x4C];
-    let decoded = decode(&blob, &mut ctx, RootType::Named("test.GroupHolder"), 2).unwrap();
+    let decoded = decode(
+        wrapped(&blob),
+        &mut ctx,
+        RootType::Named("test.GroupHolder"),
+        2,
+    )
+    .unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -1777,7 +1789,7 @@ pub(super) fn pruned_tail_fixture() -> (App, usize, usize, usize, usize) {
         0x0Au8, 0x04, 0x0A, 0x02, 0x08, 0x05, //
         0x12, 0x04, 0x0A, 0x02, 0x08, 0x05,
     ];
-    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",

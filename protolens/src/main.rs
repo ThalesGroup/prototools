@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
+mod blob;
 mod colorize;
 mod complete;
 mod decode;
@@ -15,11 +16,13 @@ mod tui;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::{CommandFactory, Parser};
 use clap_complete::engine::ArgValueCompleter;
 use clap_complete::CompleteEnv;
-use prototext_core::{render_as_bytes, RenderOpts};
+
+use crate::blob::Blob;
 
 /// Interactive TUI to decode, navigate, and extract raw bytes from a binary
 /// protobuf.
@@ -111,6 +114,29 @@ struct Cli {
         default_value_t = tui::App::OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT,
     )]
     override_preview_byte_budget: usize,
+
+    /// Take the blob for wire bytes without looking (spec 0216 S29).
+    ///
+    /// A file whose first 13 bytes are `#@ prototext:` is normally
+    /// decoded from the textual form instead. This says not to, for the
+    /// rare binary blob that happens to begin with those bytes.
+    #[arg(long = "assume-binary")]
+    assume_binary: bool,
+
+    /// Read the blob into memory instead of mapping it (spec 0216 S29).
+    ///
+    /// A large binary blob is mapped, which keeps its pages evictable
+    /// rather than making them the process's own. The cost is that the
+    /// file must not change underneath the session: truncating it, or
+    /// losing the network filesystem it lives on, turns a read into a
+    /// `SIGBUS` rather than an error at startup. Use this for a blob
+    /// that cannot be trusted to hold still.
+    ///
+    /// Mapping is declined by itself for a small blob and for anything
+    /// that is not a regular file, so this is only needed for the case
+    /// the size test cannot see.
+    #[arg(long = "eager-read")]
+    eager_read: bool,
 
     /// Binary protobuf to decode.
     #[arg(add = ArgValueCompleter::new(complete::complete_any_path))]
@@ -227,22 +253,15 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let blob = match std::fs::read(&cli.blob) {
-        Ok(b) => b,
+    // Spec 0216 S28/S29: the blob is read (or mapped) and wrapped in the
+    // virtual encompassing message here, once, and every byte range the
+    // session ever shows is a view of it. A `#@ prototext` text blob is
+    // accepted transparently, by encoding it into that same buffer rather
+    // than converting it and copying the result in.
+    let blob = match Blob::load(&cli.blob, cli.assume_binary, cli.eager_read) {
+        Ok(b) => Arc::new(b),
         Err(e) => {
             eprintln!("error: cannot read '{}': {e}", cli.blob.display());
-            return ExitCode::FAILURE;
-        }
-    };
-
-    // Accept a `#@ prototext` text blob transparently: convert it to raw
-    // binary wire bytes first, same as `prototext`'s own
-    // `read_descriptor_file` (prototext/src/run.rs). Binary input is
-    // returned unchanged (pass-through).
-    let blob = match render_as_bytes(&blob, RenderOpts::default()) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("error: '{}': {e}", cli.blob.display());
             return ExitCode::FAILURE;
         }
     };
@@ -340,7 +359,7 @@ fn main() -> ExitCode {
                 size_suffix(&cli.blob)
             );
         }
-        decode::determine_root_type(&blob, &mut ctx, root_type).and_then(
+        decode::determine_root_type(blob.payload(), &mut ctx, root_type).and_then(
             |(root_desc, root_candidates)| {
                 eprintln!(
                     "protolens: rendering root node as {}{}...",
@@ -350,13 +369,19 @@ fn main() -> ExitCode {
                         .unwrap_or("<raw / no type>"),
                     size_suffix(&cli.blob)
                 );
-                decode::render_resolved(&blob, &mut ctx, root_desc, root_candidates, cli.indent)
+                decode::render_resolved(
+                    Arc::clone(&blob),
+                    &mut ctx,
+                    root_desc,
+                    root_candidates,
+                    cli.indent,
+                )
             },
         )
     } else {
         // Batch mode prints no progress at all, so it has no reason to
         // hold the two halves apart.
-        decode::decode(&blob, &mut ctx, root_type, cli.indent)
+        decode::decode(Arc::clone(&blob), &mut ctx, root_type, cli.indent)
     };
     let decoded = match decoded {
         Ok(d) => d,

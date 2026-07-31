@@ -3,6 +3,8 @@
 //
 // SPDX-License-Identifier: MIT
 
+use std::borrow::Cow;
+
 pub mod helpers;
 pub mod instantiate;
 pub mod schema;
@@ -10,7 +12,9 @@ pub mod serialize;
 
 pub use prost_reflect::MessageDescriptor;
 pub use schema::{decode_pool, schema_from_pool, ParsedSchema, SchemaError};
-pub use serialize::render_text::{clear_any_loader, is_prototext_text, set_any_loader, AnyLoader};
+pub use serialize::render_text::{
+    build_arena, clear_any_loader, is_prototext_text, set_any_loader, AnyLoader, Arena,
+};
 
 // ── Public API types ──────────────────────────────────────────────────────────
 
@@ -65,6 +69,14 @@ pub enum CodecError {
     /// own output reservation is eight times the input, so a buffer this
     /// size was already fatal before it was refused.
     InputTooLarge { len: usize, max: usize },
+    /// The input's maximal wire tree nests as deep as the walk's recursion
+    /// cap (spec 0216 S9). At that depth the renderer stops descending and
+    /// hands the payload back opaquely, so a structural decomposition built
+    /// there would be missing nodes the renderer could later be asked to
+    /// draw. Refusing the whole blob is the only safe answer; truncating
+    /// the tree is the missing-slot failure the decomposition exists to
+    /// rule out.
+    InputTooDeep { max: usize },
 }
 
 impl std::fmt::Display for CodecError {
@@ -82,6 +94,10 @@ impl std::fmt::Display for CodecError {
                 "input is too large to index: {len} bytes, limit {max} \
                  ({} MiB)",
                 max / (1024 * 1024)
+            ),
+            CodecError::InputTooDeep { max } => write!(
+                f,
+                "input nests too deeply to decompose: the wire depth limit is {max} levels"
             ),
         }
     }
@@ -134,11 +150,21 @@ pub fn render_as_text(
 /// When `opts.assume_binary` is `true`, or the input does not carry the
 /// `#@ prototext:` header, the bytes are returned unchanged (pass-through).
 /// When the input carries the header, it is decoded from text to binary.
-pub fn render_as_bytes(data: &[u8], opts: RenderOpts) -> Result<Vec<u8>, CodecError> {
+///
+/// The pass-through branch **borrows**. It is by far the common one — every
+/// already-binary blob takes it — and it has, by definition, nothing to do;
+/// returning an owned `Vec` there meant copying the whole input to hand back
+/// what the caller already had. On protolens's startup path that was a
+/// blob-sized `memcpy` before a single byte had been read (spec 0216 S28).
+/// A caller that genuinely needs ownership can still ask for it with
+/// `into_owned`, and pays the copy only then.
+pub fn render_as_bytes(data: &[u8], opts: RenderOpts) -> Result<Cow<'_, [u8]>, CodecError> {
     if opts.assume_binary || !serialize::render_text::is_prototext_text(data) {
-        Ok(data.to_vec())
+        Ok(Cow::Borrowed(data))
     } else {
-        Ok(serialize::encode_text::encode_text_to_binary(data))
+        Ok(Cow::Owned(serialize::encode_text::encode_text_to_binary(
+            data,
+        )))
     }
 }
 

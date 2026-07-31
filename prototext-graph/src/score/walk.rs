@@ -337,11 +337,24 @@ pub fn score_one<'g>(
     scores.pop()
 }
 
-// ── Varint parser (mirrors parse_varint in prototext-core) ────────────────────
+// ── Wire primitives ───────────────────────────────────────────────────────────
+//
+// The parsing itself is prototext-core's. Scoring and rendering must agree
+// byte-for-byte on where every field begins and ends, so there is exactly one
+// implementation and this file adapts its result shape.
+//
+// The adaptation is not cosmetic. Core's result is built for a lossless
+// round-trip: on garbage it hands back the offending bytes so the renderer can
+// reproduce them, and it makes the success fields `Option` to prove they are
+// only read on the good path. Scoring never reproduces anything — it only
+// needs to know *that* the bytes were garbage — so the borrow is dropped here
+// and the options are flattened, which is what keeps the ~30 call sites below
+// free of `unwrap`.
 
 struct VarintResult {
     next_pos: usize,
-    /// Some(raw) when truncated or overflowed.
+    /// `Some` when truncated or overflowed. The bytes themselves are of no use
+    /// to a score, so they are not carried.
     garbage: Option<()>,
     value: u64,
     /// Number of non-canonical overhang bytes.
@@ -349,98 +362,18 @@ struct VarintResult {
 }
 
 fn parse_varint(buf: &[u8], start: usize) -> VarintResult {
-    let buflen = buf.len();
-    if start == buflen {
-        return VarintResult {
-            next_pos: start,
-            garbage: Some(()),
-            value: 0,
-            overhang: 0,
-        };
-    }
-
-    let mut v: u64 = 0;
-    let mut shift: u32 = 0;
-    let mut pos = start;
-    let mut too_big = false;
-
-    loop {
-        if pos >= buflen {
-            return VarintResult {
-                next_pos: buflen,
-                garbage: Some(()),
-                value: 0,
-                overhang: 0,
-            };
-        }
-        let b = buf[pos];
-        pos += 1;
-        let bits = (b & 0x7f) as u64;
-        if shift < 64 {
-            if shift == 63 && bits > 1 {
-                too_big = true;
-            } else {
-                v |= bits << shift;
-            }
-        } else if bits != 0 {
-            too_big = true;
-        }
-        shift += 7;
-        if b & 0x80 == 0 {
-            break;
-        }
-        if shift > 70 {
-            // Absurdly long varint — consume continuation bytes.
-            while pos < buflen {
-                let b2 = buf[pos];
-                pos += 1;
-                if (b2 & 0x7f) != 0 {
-                    too_big = true;
-                }
-                if b2 & 0x80 == 0 {
-                    break;
-                }
-            }
-            break;
-        }
-    }
-
-    if too_big {
-        return VarintResult {
-            next_pos: buflen,
-            garbage: Some(()),
-            value: 0,
-            overhang: 0,
-        };
-    }
-
-    // Count overhang bytes: terminator 0x00 preceded by 0x80 bytes.
-    let last_b = buf[pos - 1];
-    let ohb = if last_b == 0x00 && pos > start + 1 {
-        let mut count: u64 = 1;
-        let mut p = pos - 2;
-        while p > start && buf[p] == 0x80 {
-            count += 1;
-            p -= 1;
-        }
-        count
-    } else {
-        0
-    };
-
+    let vr = prototext_core::helpers::parse_varint(buf, start);
     VarintResult {
-        next_pos: pos,
-        garbage: None,
-        value: v,
-        overhang: ohb,
+        next_pos: vr.next_pos,
+        garbage: vr.varint_gar.map(|_| ()),
+        value: vr.varint.unwrap_or(0),
+        overhang: vr.varint_ohb.unwrap_or(0),
     }
 }
 
-// ── Wire-tag parser (mirrors parse_wiretag in prototext-core) ─────────────────
-
 struct TagResult {
     next_pos: usize,
-    /// Some when wire type > 5 or varint truncated/overflowed.
+    /// `Some` when wire type > 5 or the varint is truncated / overflowed.
     garbage: Option<()>,
     wire_type: u32,
     field_number: u64,
@@ -450,46 +383,14 @@ struct TagResult {
 }
 
 fn parse_wiretag(buf: &[u8], start: usize) -> TagResult {
-    let buflen = buf.len();
-    debug_assert!(start < buflen);
-
-    let first = buf[start];
-    let wtype = (first & 0x07) as u32;
-    if wtype > 5 {
-        // Invalid wire type — consume rest of buffer as garbage.
-        return TagResult {
-            next_pos: buflen,
-            garbage: Some(()),
-            wire_type: 0,
-            field_number: 0,
-            overhang: 0,
-            out_of_range: false,
-        };
-    }
-
-    let vr = parse_varint(buf, start);
-    if vr.garbage.is_some() {
-        return TagResult {
-            next_pos: vr.next_pos,
-            garbage: Some(()),
-            wire_type: 0,
-            field_number: 0,
-            overhang: 0,
-            out_of_range: false,
-        };
-    }
-
-    let raw = vr.value;
-    let field_number = raw >> 3;
-    let oor = field_number == 0 || field_number >= (1 << 29);
-
+    let tag = prototext_core::helpers::parse_wiretag(buf, start);
     TagResult {
-        next_pos: vr.next_pos,
-        garbage: None,
-        wire_type: wtype,
-        field_number,
-        overhang: vr.overhang,
-        out_of_range: oor,
+        next_pos: tag.next_pos,
+        garbage: tag.wtag_gar.map(|_| ()),
+        wire_type: tag.wtype.unwrap_or(0),
+        field_number: tag.wfield.unwrap_or(0),
+        overhang: tag.wfield_ohb.unwrap_or(0),
+        out_of_range: tag.wfield_oor.unwrap_or(false),
     }
 }
 

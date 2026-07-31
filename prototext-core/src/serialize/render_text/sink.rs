@@ -204,6 +204,25 @@ pub(super) trait Sink {
         false
     }
 
+    /// Whether `render_len_field` should take an *unknown* LEN field to be a
+    /// nested message unconditionally, instead of letting spec 0097's
+    /// plausibility probe decide (spec 0216 S14).
+    ///
+    /// The probe decides *whether to recurse*. A sink building the maximal
+    /// tree must always recurse: a payload the probe declines is one that a
+    /// later type override could still declare a message, and the render
+    /// would then need child nodes that were never created. The asymmetry
+    /// this closes already exists — the *schema-driven* message branch of
+    /// this same function never probes, and an override is precisely a way
+    /// to supply a schema.
+    ///
+    /// Orthogonal to `treat_len_as_opaque`, which stops the descent
+    /// altogether rather than forcing it. Default `false`, so the cascade is
+    /// unchanged for every sink that does not ask.
+    fn unknown_len_is_message(&self) -> bool {
+        false
+    }
+
     /// Whether this sink's own rendering depends on `LEVEL`, the shared
     /// thread-local recursion-depth counter used for indentation. `enter_level`
     /// consults this before touching `LEVEL` at all. `ProbeSink` overrides
@@ -1100,7 +1119,7 @@ const _: () = assert!(std::mem::size_of::<NodeSpan>() == 32);
 /// and reporting success — which is far worse than a panic, and the check
 /// is a compare against a render's per-line formatting work.
 #[inline]
-fn narrow(v: usize) -> u32 {
+pub(super) fn narrow(v: usize) -> u32 {
     u32::try_from(v).expect("offset within MAX_INDEXED_BUFFER fits a u32")
 }
 
@@ -1441,6 +1460,10 @@ impl Sink for IndexingTextSink<'_> {
 
     fn treat_len_as_opaque(&self) -> bool {
         self.inner.treat_len_as_opaque()
+    }
+
+    fn unknown_len_is_message(&self) -> bool {
+        self.inner.unknown_len_is_message()
     }
 
     fn tracks_level(&self) -> bool {

@@ -16,11 +16,18 @@
 /// * `varint_ohb` counts trailing non-canonical (overhung) bytes: set when
 ///   the terminating byte is `0x00` preceded by one or more `0x80` bytes.
 #[derive(Debug)]
-pub struct VarintResult {
+pub struct VarintResult<'a> {
     /// Byte position immediately after the parsed varint.
     pub next_pos: usize,
-    /// `Some(raw_bytes)` when the varint is garbage (truncated / too large).
-    pub varint_gar: Option<Vec<u8>>,
+    /// The raw bytes when the varint is garbage (truncated / too large).
+    ///
+    /// **Borrowed, not owned.** The input buffer is read-only and outlives
+    /// every parse, so there is never a reason to copy out of it: the bytes
+    /// go straight to `Sink::malformed`, which takes `&[u8]` and renders
+    /// them immediately. Owning them cost a copy of the entire remainder of
+    /// the buffer per malformed field — unbounded, and paid on today's
+    /// spec-0097 probe path as well as on the arena walk (spec 0216 S21).
+    pub varint_gar: Option<&'a [u8]>,
     /// The decoded varint value (valid only when `varint_gar` is `None`).
     pub varint: Option<u64>,
     /// Number of non-canonical overhang bytes (valid only when `varint_gar` is `None`).
@@ -36,7 +43,7 @@ pub struct VarintResult {
 /// (constant-fold the shift sequence, avoid call overhead).  perf showed
 /// parse_varint at 4.33% and parse_wiretag at 10.49% of Path A samples.
 #[inline]
-pub fn parse_varint(buf: &[u8], start: usize) -> VarintResult {
+pub fn parse_varint(buf: &[u8], start: usize) -> VarintResult<'_> {
     let buflen = buf.len();
     assert!(start <= buflen);
 
@@ -44,7 +51,7 @@ pub fn parse_varint(buf: &[u8], start: usize) -> VarintResult {
         // Empty buffer at this position → garbage (empty)
         return VarintResult {
             next_pos: start,
-            varint_gar: Some(vec![]),
+            varint_gar: Some(&buf[start..]),
             varint: None,
             varint_ohb: None,
         };
@@ -60,7 +67,7 @@ pub fn parse_varint(buf: &[u8], start: usize) -> VarintResult {
             // Truncated varint — return rest of buffer as garbage (matches Python)
             return VarintResult {
                 next_pos: buflen,
-                varint_gar: Some(buf[start..].to_vec()),
+                varint_gar: Some(&buf[start..]),
                 varint: None,
                 varint_ohb: None,
             };
@@ -112,7 +119,7 @@ pub fn parse_varint(buf: &[u8], start: usize) -> VarintResult {
         // that behaviour ensures identical INVALID_VARINT content.
         return VarintResult {
             next_pos: buflen,
-            varint_gar: Some(buf[start..].to_vec()),
+            varint_gar: Some(&buf[start..]),
             varint: None,
             varint_ohb: None,
         };
@@ -196,10 +203,11 @@ pub fn write_varint_ohb(value: u64, ohb: Option<u64>, out: &mut Vec<u8>) {
 ///   field-number varint is truncated / too large.
 /// * Otherwise `wtype` holds the wire type (0–5) and `wfield` the field number.
 #[derive(Debug, Clone)]
-pub struct WiretagResult {
+pub struct WiretagResult<'a> {
     pub next_pos: usize,
-    /// Raw bytes when the tag is garbage.
-    pub wtag_gar: Option<Vec<u8>>,
+    /// Raw bytes when the tag is garbage — borrowed from the input buffer,
+    /// for the reason given on `VarintResult::varint_gar`.
+    pub wtag_gar: Option<&'a [u8]>,
     /// Wire type (0–5); valid only when `wtag_gar` is `None`.
     pub wtype: Option<u32>,
     /// Field number; valid only when `wtag_gar` is `None`.
@@ -217,7 +225,7 @@ pub struct WiretagResult {
 /// OPT-3: #[inline] pairs with #[inline] on parse_varint so the compiler can
 /// fold both into the decoder.rs hot loop without separate call frames.
 #[inline]
-pub fn parse_wiretag(buf: &[u8], start: usize) -> WiretagResult {
+pub fn parse_wiretag(buf: &[u8], start: usize) -> WiretagResult<'_> {
     let buflen = buf.len();
     assert!(start < buflen, "parse_wiretag called at end of buffer");
 
@@ -228,7 +236,7 @@ pub fn parse_wiretag(buf: &[u8], start: usize) -> WiretagResult {
         // Invalid wire type: consume rest of buffer as garbage
         return WiretagResult {
             next_pos: buflen,
-            wtag_gar: Some(buf[start..].to_vec()),
+            wtag_gar: Some(&buf[start..]),
             wtype: None,
             wfield: None,
             wfield_ohb: None,

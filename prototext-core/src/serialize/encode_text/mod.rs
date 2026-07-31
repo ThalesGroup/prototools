@@ -16,7 +16,7 @@ use encode_annotation::parse_field_decl_into;
 use encode_annotation::{parse_annotation, Ann};
 use fields::{encode_packed_elem, encode_scalar_line, write_tag_ohb_local};
 use frame::Frame;
-use placeholder::{compact, fill_placeholder, write_placeholder};
+use placeholder::{compact, fill_placeholder, write_placeholder, BASE_OVERHEAD};
 
 // ── Helpers: field number and line classification ─────────────────────────────
 
@@ -118,8 +118,56 @@ pub fn annotation_start(line: &str) -> Option<usize> {
 ///
 /// Implements Proposal F — Strategy C2 for MESSAGE frames.
 pub fn encode_text_to_binary(text: &[u8]) -> Vec<u8> {
-    let capacity = (text.len() / 6).max(64);
-    let mut out = Vec::with_capacity(capacity);
+    let mut out = Vec::with_capacity(encoded_capacity(text));
+    encode_text_to_binary_into(text, &mut out);
+    out
+}
+
+/// An upper bound on the buffer `text` needs, for one reservation.
+///
+/// Two terms, because the buffer is transiently larger than the output.
+///
+/// The output itself never exceeds `text.len()`: every wire byte costs at
+/// least one character of the annotated form, and most cost several — a
+/// scalar spends a name, a value and a `#@` annotation to produce one or
+/// two bytes, and even a raw byte inside a string literal is a character
+/// of its own. Six is the ratio a realistic document shows.
+///
+/// On top of that each `{` opens a MESSAGE placeholder of [`BASE_OVERHEAD`]
+/// bytes that lives in the buffer until [`compact`] removes it, and a
+/// minimal `a {  #@ 1` line is about that long — so the placeholders are
+/// the one term the output bound does not already cover. Counting every
+/// `{`, including those inside string literals, over-counts, which is what
+/// an upper bound wants.
+///
+/// The bound holds unless a line explicitly asks for over-long varints
+/// (`len_ohb=`), which buys arbitrarily many placeholder bytes for a few
+/// characters. That is a deliberate pathology, and being wrong there costs
+/// only the [`Vec`] growth it would otherwise have taken anyway.
+///
+/// Over-reserving is close to free: an allocation this size is served by
+/// `mmap`, and the pages past the encode's own high-water mark are never
+/// touched, so they never become resident.
+fn encoded_capacity(text: &[u8]) -> usize {
+    let messages = text.iter().filter(|&&b| b == b'{').count();
+    (text.len() + BASE_OVERHEAD * messages).max(64)
+}
+
+/// `encode_text_to_binary`, appending to `out` instead of returning a fresh
+/// `Vec` (spec 0216 S28).
+///
+/// The caller that wants this is one building a larger buffer around the
+/// wire bytes — protolens reserves a wrapper-prefix headroom and encodes
+/// straight into the tail — for which the owned-`Vec` form costs a copy of
+/// the whole payload for nothing.
+///
+/// Such a caller need not reserve: whatever `out` already holds is kept,
+/// and the reservation made here is [`encoded_capacity`], which is a bound
+/// rather than a guess precisely so that the append cannot turn into a
+/// reallocation and undo the copy it was meant to save.
+pub fn encode_text_to_binary_into(text: &[u8], out: &mut Vec<u8>) {
+    let base = out.len();
+    out.reserve(encoded_capacity(text));
 
     let mut stack: Vec<Frame> = Vec::new();
     let mut first_placeholder: Option<usize> = None;
@@ -141,7 +189,7 @@ pub fn encode_text_to_binary(text: &[u8]) -> Vec<u8> {
     // The text is always valid ASCII (a subset of UTF-8).
     let text_str = match std::str::from_utf8(text) {
         Ok(s) => s,
-        Err(_) => return out,
+        Err(_) => return,
     };
 
     let mut lines = text_str.lines();
@@ -175,13 +223,8 @@ pub fn encode_text_to_binary(text: &[u8]) -> Vec<u8> {
                             content_start,
                             acw,
                         }) => {
-                            let total_waste = fill_placeholder(
-                                &mut out,
-                                placeholder_start,
-                                ohb,
-                                content_start,
-                                acw,
-                            );
+                            let total_waste =
+                                fill_placeholder(out, placeholder_start, ohb, content_start, acw);
                             // Propagate waste to parent frame.
                             if let Some(parent) = stack.last_mut() {
                                 *parent.acw_mut() += total_waste;
@@ -196,7 +239,7 @@ pub fn encode_text_to_binary(text: &[u8]) -> Vec<u8> {
                         }) => {
                             if !open_ended {
                                 let end_fn = mismatched_end.unwrap_or(field_number);
-                                write_tag_ohb_local(end_fn, WT_END_GROUP, end_tag_ohb, &mut out);
+                                write_tag_ohb_local(end_fn, WT_END_GROUP, end_tag_ohb, out);
                             }
                             // Propagate accumulated waste from inner MESSAGE placeholders.
                             if acw > 0 {
@@ -237,7 +280,7 @@ pub fn encode_text_to_binary(text: &[u8]) -> Vec<u8> {
             let tag_ohb = ann.tag_overhang_count;
 
             if ann.wire_type == "group" {
-                write_tag_ohb_local(field_number, WT_START_GROUP, tag_ohb, &mut out);
+                write_tag_ohb_local(field_number, WT_START_GROUP, tag_ohb, out);
                 stack.push(Frame::Group {
                     field_number,
                     open_ended: ann.open_ended_group,
@@ -247,10 +290,10 @@ pub fn encode_text_to_binary(text: &[u8]) -> Vec<u8> {
                 });
             } else {
                 // MESSAGE (wire type BYTES or unspecified).
-                write_tag_ohb_local(field_number, WT_LEN, tag_ohb, &mut out);
+                write_tag_ohb_local(field_number, WT_LEN, tag_ohb, out);
                 let ohb = ann.length_overhang_count.unwrap_or(0) as usize;
                 let (ph_start, content_start) =
-                    write_placeholder(&mut out, ohb, &mut first_placeholder, &mut last_placeholder);
+                    write_placeholder(out, ohb, &mut first_placeholder, &mut last_placeholder);
                 stack.push(Frame::Message {
                     placeholder_start: ph_start,
                     ohb,
@@ -275,9 +318,9 @@ pub fn encode_text_to_binary(text: &[u8]) -> Vec<u8> {
                     ann.field_number.unwrap_or(0),
                     WT_LEN,
                     ann.tag_overhang_count,
-                    &mut out,
+                    out,
                 );
-                write_varint_ohb(0, ann.length_overhang_count, &mut out);
+                write_varint_ohb(0, ann.length_overhang_count, out);
             }
             continue;
         }
@@ -298,8 +341,8 @@ pub fn encode_text_to_binary(text: &[u8]) -> Vec<u8> {
             packed_remaining -= 1;
             if packed_remaining == 0 {
                 // Flush the completed wire record.
-                write_tag_ohb_local(packed_field_number, WT_LEN, packed_tag_ohb, &mut out);
-                write_varint_ohb(packed_payload.len() as u64, packed_len_ohb, &mut out);
+                write_tag_ohb_local(packed_field_number, WT_LEN, packed_tag_ohb, out);
+                write_varint_ohb(packed_payload.len() as u64, packed_len_ohb, out);
                 out.extend_from_slice(&packed_payload);
                 packed_payload.clear();
             }
@@ -311,8 +354,8 @@ pub fn encode_text_to_binary(text: &[u8]) -> Vec<u8> {
             if let Some(n) = ann.pack_size {
                 if n == 0 {
                     // Empty record — emit immediately.
-                    write_tag_ohb_local(field_number, WT_LEN, ann.tag_overhang_count, &mut out);
-                    write_varint_ohb(0, ann.length_overhang_count, &mut out);
+                    write_tag_ohb_local(field_number, WT_LEN, ann.tag_overhang_count, out);
+                    write_varint_ohb(0, ann.length_overhang_count, out);
                 } else {
                     // Start buffering.
                     packed_field_number = field_number;
@@ -323,8 +366,8 @@ pub fn encode_text_to_binary(text: &[u8]) -> Vec<u8> {
                     encode_packed_elem(value_str, &ann, &mut packed_payload);
                     if packed_remaining == 0 {
                         // Single-element record — flush immediately.
-                        write_tag_ohb_local(packed_field_number, WT_LEN, packed_tag_ohb, &mut out);
-                        write_varint_ohb(packed_payload.len() as u64, packed_len_ohb, &mut out);
+                        write_tag_ohb_local(packed_field_number, WT_LEN, packed_tag_ohb, out);
+                        write_varint_ohb(packed_payload.len() as u64, packed_len_ohb, out);
                         out.extend_from_slice(&packed_payload);
                         packed_payload.clear();
                     }
@@ -333,28 +376,27 @@ pub fn encode_text_to_binary(text: &[u8]) -> Vec<u8> {
             }
         }
 
-        encode_scalar_line(field_number, value_str, &ann, &mut out);
+        encode_scalar_line(field_number, value_str, &ann, out);
     }
 
     // ── Forward compaction pass ───────────────────────────────────────────────
 
     if let Some(first_ph) = first_placeholder {
-        compact(&mut out, first_ph);
+        compact(out, first_ph, base);
     }
 
     // Development instrumentation — size ratio
     #[cfg(debug_assertions)]
     {
-        let ratio = out.len() as f64 / text.len().max(1) as f64;
+        let written = out.len() - base;
+        let ratio = written as f64 / text.len().max(1) as f64;
         eprintln!(
             "[encode_text] input_len={} output_len={} ratio={:.2}",
             text.len(),
-            out.len(),
+            written,
             ratio
         );
     }
-
-    out
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -529,6 +571,66 @@ mod tests {
             "enum named 'float' must set field_type='enum', not 'float'"
         );
         assert_eq!(ann.enum_scalar_value, Some(1));
+    }
+
+    // ── Appending into a caller's buffer (spec 0216 S28) ──────────────────────
+
+    /// The appending flavor must not care what is already in the buffer.
+    /// The one thing that could go wrong is the placeholder machinery, whose
+    /// offsets are absolute: a nested message forces `write_placeholder`,
+    /// `fill_placeholder` and the `compact` sweep all to run, and compaction
+    /// is where an assumption that the encode owns the whole buffer would
+    /// eat the caller's prefix.
+    #[test]
+    fn encoding_into_a_buffer_that_is_not_empty_appends() {
+        let input = b"#@ prototext: protoc\nouter {  #@ 1\n  inner {  #@ 2\n    n: 7  #@ int32 = 3\n  }\n}\n";
+        let standalone = encode_text_to_binary(input);
+        assert!(
+            standalone.len() > 4,
+            "the fixture must nest, or this proves nothing"
+        );
+
+        let prefix: Vec<u8> = (0..11u8).collect();
+        let mut out = prefix.clone();
+        encode_text_to_binary_into(input, &mut out);
+
+        assert_eq!(&out[..prefix.len()], &prefix[..], "the prefix must survive");
+        assert_eq!(&out[prefix.len()..], &standalone[..]);
+    }
+
+    /// `encoded_capacity` claims to be a bound, not a guess, and the whole
+    /// point of appending into a caller's buffer is to save a copy — which
+    /// a reallocation mid-encode would hand straight back. So: reserve
+    /// exactly the claim, and require the capacity to be untouched
+    /// afterwards.
+    ///
+    /// The interesting input is not the biggest but the most
+    /// message-dense, because the term the output bound does not cover is
+    /// the placeholder each `{` transiently costs. `a{` is about as short
+    /// as a message-open line can be made, so this is close to the worst
+    /// ratio the format admits.
+    #[test]
+    fn the_reservation_is_never_outgrown() {
+        let mut dense = b"#@ prototext: protoc\n".to_vec();
+        for i in 0..500 {
+            dense.extend_from_slice(format!("a {{  #@ {}\n}}\n", i % 100 + 1).as_bytes());
+        }
+        let fixture = include_bytes!("../../../fixtures/descriptor_protoc.txt");
+
+        for (name, text) in [("message-dense", &dense[..]), ("descriptor", &fixture[..])] {
+            let claimed = encoded_capacity(text);
+            let mut out = Vec::with_capacity(claimed);
+            let before = out.capacity();
+            encode_text_to_binary_into(text, &mut out);
+            assert_eq!(
+                out.capacity(),
+                before,
+                "{name}: the encode outgrew a reservation of {claimed} bytes, \
+                 reaching {} for an output of {}",
+                out.capacity(),
+                out.len(),
+            );
+        }
     }
 
     // ── ENUM_UNKNOWN silencing ────────────────────────────────────────────────

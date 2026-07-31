@@ -37,7 +37,7 @@ fn diagnose_pdb_max_children_per_parent() {
     }
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(desc_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, RootType::Raw, 2).expect("decode");
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Raw, 2).expect("decode");
     eprintln!("total tree nodes: {}", decoded.tree.len());
 
     let mut children_count = vec![0usize; decoded.tree.len()];
@@ -73,7 +73,7 @@ fn profile_override_pane_down_on_db3() {
 
     let blob = std::fs::read(desc_path).expect("read blob");
     let t1 = Instant::now();
-    let decoded = decode(&blob, &mut ctx, RootType::Raw, 2).expect("decode");
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Raw, 2).expect("decode");
     eprintln!("decode: {:?}", t1.elapsed());
 
     let t2 = Instant::now();
@@ -99,7 +99,7 @@ fn profile_override_pane_down_on_db3() {
     // interactive session.
     if let Some(graph) = &app.ctx.graph {
         let graph_ref = std::sync::Arc::clone(graph);
-        let blob = std::sync::Arc::new(app.blob.clone());
+        let blob = std::sync::Arc::clone(&app.blob);
         let (tx, _rx) = std::sync::mpsc::channel();
         app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
             std::sync::Arc::clone(&app.heat_caches),
@@ -191,7 +191,7 @@ fn profile_preview_root_versus_first_child_on_db3() {
 
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(desc_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, RootType::Raw, 2).expect("decode");
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Raw, 2).expect("decode");
     let mut app = App::new(
         decoded,
         "db3.desc",
@@ -266,7 +266,7 @@ fn profile_override_pane_enter_on_pdb() {
 
     let blob = std::fs::read(desc_path).expect("read blob");
     let t1 = Instant::now();
-    let decoded = decode(&blob, &mut ctx, RootType::Raw, 2).expect("decode");
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Raw, 2).expect("decode");
     eprintln!("decode: {:?}", t1.elapsed());
 
     let t2 = Instant::now();
@@ -289,7 +289,7 @@ fn profile_override_pane_enter_on_pdb() {
     let mut rx = None;
     if let Some(graph) = &app.ctx.graph {
         let graph_ref = std::sync::Arc::clone(graph);
-        let blob = std::sync::Arc::new(app.blob.clone());
+        let blob = std::sync::Arc::clone(&app.blob);
         let (tx, worker_rx) = std::sync::mpsc::channel();
         app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
             std::sync::Arc::clone(&app.heat_caches),
@@ -392,7 +392,7 @@ fn profile_override_pane_first_candidate_enter_on_pdb() {
 
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(desc_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, RootType::Raw, 2).expect("decode");
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Raw, 2).expect("decode");
     let mut app = App::new(
         decoded,
         "pdb.desc",
@@ -451,7 +451,7 @@ fn profile_main_pane_down_on_db3() {
 
     let blob = std::fs::read(desc_path).expect("read blob");
     let t1 = Instant::now();
-    let decoded = decode(&blob, &mut ctx, RootType::Raw, 2).expect("decode");
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Raw, 2).expect("decode");
     eprintln!("decode: {:?}", t1.elapsed());
 
     let t2 = Instant::now();
@@ -484,7 +484,7 @@ fn profile_main_pane_down_on_db3() {
     let mut rx = None;
     if let Some(graph) = &app.ctx.graph {
         let graph_ref = std::sync::Arc::clone(graph);
-        let blob = std::sync::Arc::new(app.blob.clone());
+        let blob = std::sync::Arc::clone(&app.blob);
         let (tx, worker_rx) = std::sync::mpsc::channel();
         app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
             std::sync::Arc::clone(&app.heat_caches),
@@ -554,7 +554,7 @@ fn repro_crash_down_t_enter_on_pdb() {
 
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(desc_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, RootType::Infer, 2).expect("decode");
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Infer, 2).expect("decode");
     let mut app = App::new(
         decoded,
         "pdb.desc",
@@ -576,7 +576,7 @@ fn repro_crash_down_t_enter_on_pdb() {
     let mut rx = None;
     if let Some(graph) = &app.ctx.graph {
         let graph_ref = std::sync::Arc::clone(graph);
-        let blob = std::sync::Arc::new(app.blob.clone());
+        let blob = std::sync::Arc::clone(&app.blob);
         let (tx, worker_rx) = std::sync::mpsc::channel();
         app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
             std::sync::Arc::clone(&app.heat_caches),
@@ -665,7 +665,7 @@ fn repro_crash_down_t_enter_immediate_on_pdb() {
 
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(desc_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, RootType::Infer, 2).expect("decode");
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Infer, 2).expect("decode");
     let mut app = App::new(
         decoded,
         "pdb.desc",
@@ -689,7 +689,7 @@ fn repro_crash_down_t_enter_immediate_on_pdb() {
 
     if let Some(graph) = &app.ctx.graph {
         let graph_ref = std::sync::Arc::clone(graph);
-        let blob = std::sync::Arc::new(app.blob.clone());
+        let blob = std::sync::Arc::clone(&app.blob);
         let (tx, _worker_rx) = std::sync::mpsc::channel();
         app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
             std::sync::Arc::clone(&app.heat_caches),
@@ -755,7 +755,7 @@ fn repro_crash_forced_resplice_on_pdb() {
 
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(desc_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, RootType::Infer, 2).expect("decode");
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Infer, 2).expect("decode");
     let mut app = App::new(
         decoded,
         "pdb.desc",
@@ -819,7 +819,7 @@ fn repro_crash_activate_then_close_on_pdb() {
 
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(desc_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, RootType::Infer, 2).expect("decode");
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Infer, 2).expect("decode");
     let mut app = App::new(
         decoded,
         "pdb.desc",
@@ -899,7 +899,7 @@ fn repro_crash_real_t_then_manual_confirm_on_pdb() {
 
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(desc_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, RootType::Infer, 2).expect("decode");
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Infer, 2).expect("decode");
     let mut app = App::new(
         decoded,
         "pdb.desc",
@@ -978,7 +978,7 @@ fn repro_crash_two_previews_then_manual_confirm_on_pdb() {
 
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(desc_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, RootType::Infer, 2).expect("decode");
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Infer, 2).expect("decode");
     let mut app = App::new(
         decoded,
         "pdb.desc",
@@ -1069,7 +1069,7 @@ fn repro_crash_raw_then_typed_preview_then_manual_confirm_on_pdb() {
 
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(desc_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, RootType::Infer, 2).expect("decode");
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Infer, 2).expect("decode");
     let mut app = App::new(
         decoded,
         "pdb.desc",
@@ -1162,7 +1162,7 @@ fn repro_crash_natural_highlight_on_pdb() {
 
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(desc_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, RootType::Infer, 2).expect("decode");
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Infer, 2).expect("decode");
     let mut app = App::new(
         decoded,
         "pdb.desc",
@@ -1183,7 +1183,7 @@ fn repro_crash_natural_highlight_on_pdb() {
     let mut rx = None;
     if let Some(graph) = &app.ctx.graph {
         let graph_ref = std::sync::Arc::clone(graph);
-        let blob = std::sync::Arc::new(app.blob.clone());
+        let blob = std::sync::Arc::clone(&app.blob);
         let (tx, worker_rx) = std::sync::mpsc::channel();
         app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
             std::sync::Arc::clone(&app.heat_caches),
@@ -1294,7 +1294,7 @@ fn diagnose_sim_t_stall() {
 
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(blob_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, RootType::Raw, 2).expect("decode");
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Raw, 2).expect("decode");
     eprintln!("total tree nodes: {}", decoded.tree.len());
 
     let mut app = App::new(
@@ -1312,7 +1312,7 @@ fn diagnose_sim_t_stall() {
 
     if let Some(graph) = &app.ctx.graph {
         let graph_ref = std::sync::Arc::clone(graph);
-        let blob_arc = std::sync::Arc::new(app.blob.clone());
+        let blob_arc = std::sync::Arc::clone(&app.blob);
         let (tx, _rx) = std::sync::mpsc::channel();
         app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
             std::sync::Arc::clone(&app.heat_caches),
@@ -1384,7 +1384,7 @@ fn diagnose_sim_node3_t_down_stall() {
 
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(blob_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, RootType::Raw, 2).expect("decode");
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Raw, 2).expect("decode");
 
     let mut app = App::new(
         decoded,
@@ -1401,7 +1401,7 @@ fn diagnose_sim_node3_t_down_stall() {
 
     if let Some(graph) = &app.ctx.graph {
         let graph_ref = std::sync::Arc::clone(graph);
-        let blob_arc = std::sync::Arc::new(app.blob.clone());
+        let blob_arc = std::sync::Arc::clone(&app.blob);
         let (tx, _rx) = std::sync::mpsc::channel();
         app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
             std::sync::Arc::clone(&app.heat_caches),
@@ -1511,7 +1511,7 @@ fn profile_nested_commit_on_pdb() {
 
     let mut ctx = DescriptorContext::load(desc_path).expect("load descriptor set");
     let blob = std::fs::read(desc_path).expect("read blob");
-    let decoded = decode(&blob, &mut ctx, RootType::Infer, 2).expect("decode");
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Infer, 2).expect("decode");
     let mut app = App::new(
         decoded,
         "pdb.desc",
@@ -1668,7 +1668,7 @@ fn measure_root_type_gate(desc_path: &Path, decode_too: bool) {
     }
 
     let t = Instant::now();
-    let raw = decode(&blob, &mut ctx, RootType::Raw, 2).expect("decode raw");
+    let raw = decode(wrapped(&blob), &mut ctx, RootType::Raw, 2).expect("decode raw");
     eprintln!(
         "decode(raw, deferred)        {:?}  lines={} nodes={}",
         t.elapsed(),
@@ -1678,7 +1678,7 @@ fn measure_root_type_gate(desc_path: &Path, decode_too: bool) {
     drop(raw);
 
     let t = Instant::now();
-    let typed = decode(&blob, &mut ctx, RootType::Infer, 2).expect("decode typed");
+    let typed = decode(wrapped(&blob), &mut ctx, RootType::Infer, 2).expect("decode typed");
     eprintln!(
         "decode(typed, up front)      {:?}  lines={} nodes={}",
         t.elapsed(),

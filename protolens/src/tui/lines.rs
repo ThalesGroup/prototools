@@ -59,9 +59,9 @@ impl App {
     }
 
     /// The document-order first node, which for a real document is its
-    /// single parentless root: `render_resolved` wraps the whole blob as
-    /// field 1 of a virtual encompassing message (`wrap_blob`), so there
-    /// is exactly one level-0 span and everything else descends from it.
+    /// single parentless root: the whole blob is wrapped as field 1 of a
+    /// virtual encompassing message (`Blob::load`), so there is exactly
+    /// one level-0 span and everything else descends from it.
     ///
     /// `None` only for an empty tree. The hand-built test fixtures are
     /// the reason the descents below still walk `next_sibling` at the

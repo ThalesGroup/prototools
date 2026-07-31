@@ -211,6 +211,7 @@ pub fn extract(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::blob::wrapped;
     use crate::decode::NO_NODE;
     use crate::provenance::NOT_RENDERED;
 
@@ -334,7 +335,7 @@ mod tests {
         // Outer wraps it as field 1 (LEN): tag (1<<3)|2 = 0x0A, len 2.
         let blob = [0x0Au8, 0x02, inner_bytes[0], inner_bytes[1]];
 
-        let decoded = decode(&blob, &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
+        let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
         let inner = decoded.fqdns.id_of("test.Inner");
         let inner_node = decoded
             .tree
@@ -353,7 +354,13 @@ mod tests {
         // `extracted == inner_bytes` above already proves byte-for-byte
         // fidelity; this only additionally checks for the specific garbling
         // symptom reported (a field misread as an unrelated one).
-        let reopened = decode(extracted, &mut ctx, RootType::Named("test.Inner"), 2).unwrap();
+        let reopened = decode(
+            wrapped(extracted),
+            &mut ctx,
+            RootType::Named("test.Inner"),
+            2,
+        )
+        .unwrap();
         assert!(
             !reopened.lines.join("\n").contains("INVALID_STRING"),
             "re-decoded Inner extract must not contain garbled fields: {:?}",

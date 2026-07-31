@@ -95,10 +95,16 @@ pub(super) fn fill_placeholder(
 ///
 /// Traverses the forward linked list of placeholders and uses `copy_within`
 /// to compact the buffer in-place.  Each byte is moved at most once → O(n).
-pub(super) fn compact(out: &mut Vec<u8>, first_placeholder: usize) {
+///
+/// `base` is where this encode's own output starts.  Every other index here
+/// — the placeholder links, `first_placeholder` — is already absolute in
+/// `out`, because they are all recorded as `out.len()` at the time of
+/// writing; this is the one place that would otherwise assume the encode
+/// owns the whole buffer (spec 0216 S28).
+pub(super) fn compact(out: &mut Vec<u8>, first_placeholder: usize, base: usize) {
     let total_len = out.len();
-    let mut read_pos = 0usize;
-    let mut write_pos = 0usize;
+    let mut read_pos = base;
+    let mut write_pos = base;
     let mut cursor = first_placeholder;
 
     #[cfg(debug_assertions)]

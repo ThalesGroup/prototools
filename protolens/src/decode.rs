@@ -17,6 +17,9 @@ use std::sync::Arc;
 use prost_reflect::prost_types::field_descriptor_proto::{Label, Type};
 use prost_reflect::prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto};
 use prost_reflect::{DescriptorPool, EnumDescriptor, MessageDescriptor};
+// The wrapper prefix is written by `Blob` now (spec 0216 S28); what is
+// left here builds fixtures.
+#[cfg(test)]
 use prototext_core::helpers::{write_tag, write_varint, WT_LEN};
 // Every `NO_FQDN` here is in a test building a literal `NodeSpan`.
 #[cfg(test)]
@@ -33,6 +36,7 @@ use prototext_graph::score::{
 use prototext_schema::LazyPool;
 use sha2::{Digest, Sha256};
 
+use crate::blob::Blob;
 use crate::provenance::{ProvenanceId, NOT_RENDERED};
 
 // ── Errors ──────────────────────────────────────────────────────────────────
@@ -316,12 +320,14 @@ pub(crate) fn read_descriptor_file(path: &Path) -> Result<Vec<u8>, DecodeError> 
             expand_any: false,
             ..RenderOpts::default()
         };
-        render_as_bytes(&bytes, opts).map_err(|e| {
-            DecodeError::Schema(format!(
-                "decoding prototext descriptor '{}': {e}",
-                path.display()
-            ))
-        })
+        render_as_bytes(&bytes, opts)
+            .map(|b| b.into_owned())
+            .map_err(|e| {
+                DecodeError::Schema(format!(
+                    "decoding prototext descriptor '{}': {e}",
+                    path.display()
+                ))
+            })
     } else {
         Ok(bytes)
     }
@@ -788,10 +794,13 @@ pub struct Decoded {
     pub tree: Vec<TreeNode>,
     pub root_type: String,
     /// The wrapped blob actually decoded (spec 0114 §1.1): a real tag+length
-    /// prefix (field 1, `WT_LEN`) prepended to the caller's original blob,
-    /// so every `NodeSpan::raw_range` in `tree` is relative to *this* blob,
-    /// not the caller's original one.
-    pub blob: Vec<u8>,
+    /// prefix (field 1, `WT_LEN`) ahead of the file's own bytes, so every
+    /// `NodeSpan::raw_range` in `tree` is relative to *this* blob, not to
+    /// the file's own numbering.
+    ///
+    /// Shared rather than owned (spec 0216 S28): it is wrapped once, at
+    /// load, and the heat worker reads the same bytes from another thread.
+    pub blob: Arc<Blob>,
     /// Width in bytes of the wrapper's own tag+length prefix — subtract this
     /// from any `raw_range` coordinate to recover the caller's original
     /// (pre-wrap) numbering.
@@ -1136,19 +1145,6 @@ pub(crate) fn register_message_set_item(
         })
 }
 
-/// Prepend a real tag(`field_number`, `WT_LEN`)+length-varint prefix to
-/// `blob`, making it a genuinely valid encoding of a wrapper message's
-/// sole field (spec 0114 §1.1, generalized spec 0118 §4 to an arbitrary
-/// field number). `pub(crate)`: also called from `tui.rs`'s
-/// `splice_override`.
-pub(crate) fn wrap_blob(field_number: u64, blob: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(blob.len() + 10);
-    write_tag(field_number as u32, WT_LEN, &mut out);
-    write_varint(blob.len() as u64, &mut out);
-    out.extend_from_slice(blob);
-    out
-}
-
 /// Resolve the root type, then render the whole document under it.
 ///
 /// Spec 0168 G1: the resolution happens before the render, always. This
@@ -1161,12 +1157,12 @@ pub(crate) fn wrap_blob(field_number: u64, blob: &[u8]) -> Vec<u8> {
 /// Callers who don't want to pay for the sweep at all ask for
 /// `RootType::Raw` and get a raw render that stays raw.
 pub fn decode(
-    blob: &[u8],
+    blob: Arc<Blob>,
     ctx: &mut DescriptorContext,
     root_type_request: RootType<'_>,
     indent_size: usize,
 ) -> Result<Decoded, DecodeError> {
-    let (root_desc, root_candidates) = determine_root_type(blob, ctx, root_type_request)?;
+    let (root_desc, root_candidates) = determine_root_type(blob.payload(), ctx, root_type_request)?;
     render_resolved(blob, ctx, root_desc, root_candidates, indent_size)
 }
 
@@ -1178,7 +1174,7 @@ pub fn decode(
 /// running look like a hang in the other. Every other caller wants
 /// `decode`.
 pub fn render_resolved(
-    blob: &[u8],
+    blob: Arc<Blob>,
     ctx: &mut DescriptorContext,
     root_desc: Option<MessageDescriptor>,
     root_candidates: RankedCandidates,
@@ -1196,9 +1192,6 @@ pub fn render_resolved(
         ),
         None => ("<raw / no type>".to_string(), None),
     };
-
-    let wrapped_blob = wrap_blob(1, blob);
-    let wrapper_offset = wrapped_blob.len() - blob.len();
 
     let opts = DecodeRenderOpts {
         // Always on (spec 0133): annotations are now a pure main-pane
@@ -1221,18 +1214,17 @@ pub fn render_resolved(
     // Spec 0212 S4: the table is created here, at the document's own
     // birth, and handed to every later sub-render of it.
     let mut fqdns = FqdnTable::new();
-    let rendered =
-        decode_and_render_indexed(&wrapped_blob, wrapper_desc.as_ref(), &mut fqdns, opts)
-            .map_err(|e| DecodeError::Schema(e.to_string()))?;
+    let rendered = decode_and_render_indexed(&blob, wrapper_desc.as_ref(), &mut fqdns, opts)
+        .map_err(|e| DecodeError::Schema(e.to_string()))?;
 
     let text = String::from_utf8(rendered.text)
         .map_err(|e| DecodeError::Schema(format!("rendered text is not valid UTF-8: {e}")))?;
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
     // Spec 0135 §G2: `register_wrapper`'s sole field is always named the
     // fixed placeholder `"_"` — patch in the real display name (the root
-    // is always field `1` of the virtual encompassing message, wrapped
-    // via `wrap_blob(1, ..)` above, and has no schema field name of its
-    // own to show instead).
+    // is always field `1` of the virtual encompassing message the `Blob`
+    // was wrapped in, and has no schema field name of its own to show
+    // instead).
     //
     // Spec 0187 S5: the text patch is all there is. There is no longer a
     // parallel `style_hints` to repair, so the single-line re-`colorize`
@@ -1251,8 +1243,8 @@ pub fn render_resolved(
         lines,
         tree,
         root_type,
-        blob: wrapped_blob,
-        wrapper_offset,
+        wrapper_offset: blob.wrapper_offset(),
+        blob,
         root_candidates,
         fqdns,
     })
@@ -1265,6 +1257,7 @@ mod tests {
     use prototext_graph::build_scoring_graph::build_from_strings;
 
     use super::*;
+    use crate::blob::wrapped;
 
     /// Spec 0211 test item 4. A link is stored as a `NodeIdx` with
     /// `NO_NODE` standing for absence, so the one thing the encoding
@@ -1410,11 +1403,11 @@ mod tests {
 
         let blob = [0x08u8, 0x05];
 
-        let named = decode(&blob, &mut ctx, RootType::Named("test.Inner"), 2).unwrap();
+        let named = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Inner"), 2).unwrap();
         assert_eq!(named.root_type, "test.Inner");
         assert!(named.root_candidates.is_empty(), "no sweep for --type");
 
-        let raw = decode(&blob, &mut ctx, RootType::Raw, 2).unwrap();
+        let raw = decode(wrapped(&blob), &mut ctx, RootType::Raw, 2).unwrap();
         assert_eq!(raw.root_type, "<raw / no type>");
         assert!(raw.root_candidates.is_empty(), "no sweep for --raw");
     }
@@ -1503,7 +1496,7 @@ mod tests {
         // context has no hopcroft.rkyv, so autoinference is unavailable.
         let blob = [0x08u8, 0x05];
 
-        let decoded = decode(&blob, &mut ctx, RootType::Infer, 2).unwrap();
+        let decoded = decode(wrapped(&blob), &mut ctx, RootType::Infer, 2).unwrap();
         assert_eq!(decoded.root_type, "<raw / no type>");
         // The wrapper's own top-level field (the "virtual encompassing
         // message", spec 0114 §1.1) — level 0, no type resolved.
@@ -1547,7 +1540,7 @@ mod tests {
         std::fs::remove_file(&descriptor_path).unwrap();
 
         let blob = [0x08u8, 0x05];
-        let decoded = decode(&blob, &mut ctx, RootType::Named("test.Msg"), 2).unwrap();
+        let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Msg"), 2).unwrap();
         assert!(
             decoded.lines[0].starts_with("1 "),
             "root header line must show the root field number: {:?}",
@@ -1650,7 +1643,13 @@ mod tests {
         let mut blob = vec![0x0au8, any_bytes.len() as u8];
         blob.extend_from_slice(&any_bytes);
 
-        let decoded = decode(&blob, &mut ctx, RootType::Named("acme.Container"), 2).unwrap();
+        let decoded = decode(
+            wrapped(&blob),
+            &mut ctx,
+            RootType::Named("acme.Container"),
+            2,
+        )
+        .unwrap();
         let any = decoded.fqdns.id_of("google.protobuf.Any");
         let any_idx = decoded
             .tree
@@ -1999,8 +1998,20 @@ mod tests {
         assert!(lazy_ctx.lazy.is_some(), "sidecar present: on-demand branch");
         assert!(eager_ctx.lazy.is_none(), "no sidecar: eager branch");
 
-        let from_lazy = decode(ROOT_BLOB, &mut lazy_ctx, RootType::Named("t.Root"), 2).unwrap();
-        let from_eager = decode(ROOT_BLOB, &mut eager_ctx, RootType::Named("t.Root"), 2).unwrap();
+        let from_lazy = decode(
+            wrapped(ROOT_BLOB),
+            &mut lazy_ctx,
+            RootType::Named("t.Root"),
+            2,
+        )
+        .unwrap();
+        let from_eager = decode(
+            wrapped(ROOT_BLOB),
+            &mut eager_ctx,
+            RootType::Named("t.Root"),
+            2,
+        )
+        .unwrap();
 
         assert_eq!(from_lazy.lines, from_eager.lines);
         assert_eq!(from_lazy.root_type, from_eager.root_type);
@@ -2169,12 +2180,13 @@ mod tests {
         let fixture = Fixture::new("override-fresh-type").with_index();
         let mut ctx = fixture.load();
 
-        decode(ROOT_BLOB, &mut ctx, RootType::Named("t.Root"), 2).unwrap();
+        decode(wrapped(ROOT_BLOB), &mut ctx, RootType::Named("t.Root"), 2).unwrap();
 
         // `Stray { s: 9 }`, the payload an override would splice.
         let stray_blob = [0x08u8, 0x09];
         let desc = ctx.message("t.Stray").expect("must load on demand");
-        let decoded = render_resolved(&stray_blob, &mut ctx, Some(desc), Vec::new(), 2).unwrap();
+        let decoded =
+            render_resolved(wrapped(&stray_blob), &mut ctx, Some(desc), Vec::new(), 2).unwrap();
 
         assert_eq!(decoded.root_type, "t.Stray");
         assert!(

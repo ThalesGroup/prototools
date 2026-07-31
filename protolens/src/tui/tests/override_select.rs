@@ -134,7 +134,7 @@ fn t_opens_the_override_pane_on_an_unresolved_message_node() {
         // = 0, zero payload bytes — a real, `raw_range`-consistent
         // blob, needed since spec 0132's live preview now splices
         // this node's contents at pane-open time.
-        blob: vec![0x0A, 0x00],
+        blob: Arc::new(Blob::unwrapped(vec![0x0A, 0x00])),
         wrapper_offset: 0,
         root_candidates: Vec::new(),
         fqdns: FqdnTable::new(),
@@ -194,7 +194,7 @@ fn t_opens_the_override_pane_on_a_varint_scalar_field() {
         // — a real, `raw_range`-consistent blob, needed since spec 0132's
         // live preview now splices this node's contents at pane-open
         // time.
-        blob: vec![0x08, 0x01],
+        blob: Arc::new(Blob::unwrapped(vec![0x08, 0x01])),
         wrapper_offset: 0,
         root_candidates: Vec::new(),
         fqdns: FqdnTable::new(),
@@ -362,7 +362,7 @@ fn t_opens_the_override_pane_on_a_length_delimited_scalar_field() {
         lines,
         tree: vec![node],
         root_type: "test.Scalar".to_string(),
-        blob: vec![0x0A, 0x02, b'h', b'i'],
+        blob: Arc::new(Blob::unwrapped(vec![0x0A, 0x02, b'h', b'i'])),
         wrapper_offset: 0,
         root_candidates: Vec::new(),
         fqdns: FqdnTable::new(),
@@ -1153,7 +1153,7 @@ fn enter_key_applies_override_and_closes_pane() {
 
     // Outer { inner: Inner { id: 5 } }.
     let blob = [0x0Au8, 0x02, 0x08, 0x05];
-    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -1457,7 +1457,9 @@ fn override_pane_auto_completes_from_polling_alone_without_scrolling() {
     // Four repeated, structurally valid field-1 varint encodings — an
     // all-zero payload's leading tag byte (field number 0) is
     // structurally invalid and would veto every candidate.
-    app.blob = vec![0x22, 0x08, 0x08, 0x01, 0x08, 0x02, 0x08, 0x03, 0x08, 0x04];
+    app.blob = Arc::new(Blob::unwrapped(vec![
+        0x22, 0x08, 0x08, 0x01, 0x08, 0x02, 0x08, 0x03, 0x08, 0x04,
+    ]));
     app.splash = false;
     app.term_width = 120;
     // Smaller than the graph's 8 real candidates, so the fast bounded
@@ -1467,7 +1469,7 @@ fn override_pane_auto_completes_from_polling_alone_without_scrolling() {
     app.override_list_height = 2;
 
     let graph = Arc::clone(app.ctx.graph.as_ref().unwrap());
-    let blob = Arc::new(app.blob.clone());
+    let blob = Arc::clone(&app.blob);
     let (tx, _rx) = mpsc::channel();
     app.heat_worker = Some(HeatWorkerHandle::spawn(
         Arc::clone(&app.heat_caches),
@@ -1576,7 +1578,9 @@ fn poll_pending_override_work_previews_the_newly_arrived_top_candidate() {
 #[test]
 fn override_pane_seeks_the_active_overrides_type_once_the_complete_list_arrives() {
     let mut app = message_node_app_with_graph();
-    app.blob = vec![0x22, 0x08, 0x08, 0x01, 0x08, 0x02, 0x08, 0x03, 0x08, 0x04];
+    app.blob = Arc::new(Blob::unwrapped(vec![
+        0x22, 0x08, 0x08, 0x01, 0x08, 0x02, 0x08, 0x03, 0x08, 0x04,
+    ]));
     app.splash = false;
     app.term_width = 120;
     app.override_list_height = 2;
@@ -1589,7 +1593,7 @@ fn override_pane_seeks_the_active_overrides_type_once_the_complete_list_arrives(
     );
 
     let graph = Arc::clone(app.ctx.graph.as_ref().unwrap());
-    let blob = Arc::new(app.blob.clone());
+    let blob = Arc::clone(&app.blob);
     let (tx, _rx) = mpsc::channel();
     app.heat_worker = Some(HeatWorkerHandle::spawn(
         Arc::clone(&app.heat_caches),

@@ -87,9 +87,20 @@ pub(in super::super) fn render_len_field<S: Sink>(
 
         // Step 1: probe as nested message via `ProbeSink` (spec 0110 §2/Step 4).
         // Rendering failures inside the nested message do not affect this probe.
-        let mut probe = ProbeSink::default();
-        let (next_pos, _) = render_message(data, 0, None, None, false, &mut probe);
-        if probe.malformity_count() == 0 && next_pos == data.len() {
+        //
+        // A sink building the maximal tree asks to skip the probe entirely
+        // (spec 0216 S14): the probe's verdict is *whether to recurse*, and
+        // such a sink must recurse unconditionally or an override that later
+        // declares this payload a message will find no nodes for its
+        // contents. The predicate is a constant per monomorphization, so the
+        // probe — and this whole branch — folds away for the sinks that keep
+        // the default.
+        let is_message = sink.unknown_len_is_message() || {
+            let mut probe = ProbeSink::default();
+            let (next_pos, _) = render_message(data, 0, None, None, false, &mut probe);
+            probe.malformity_count() == 0 && next_pos == data.len()
+        };
+        if is_message {
             let mark = sink.begin_nested(
                 field_number,
                 None,
