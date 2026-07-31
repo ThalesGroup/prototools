@@ -968,10 +968,12 @@ fn heat_cue_for_resolves_once_a_real_worker_populates_the_cache() {
     // all-zero payload's leading tag byte (field number 0) is
     // structurally invalid and would veto every candidate, so
     // `by_range`'s window could never fill.
-    app.blob = vec![0x22, 0x08, 0x08, 0x01, 0x08, 0x02, 0x08, 0x03, 0x08, 0x04];
+    app.blob = Arc::new(Blob::unwrapped(vec![
+        0x22, 0x08, 0x08, 0x01, 0x08, 0x02, 0x08, 0x03, 0x08, 0x04,
+    ]));
     let idx = 0;
     let graph = Arc::clone(app.ctx.graph.as_ref().unwrap());
-    let blob = Arc::new(app.blob.clone());
+    let blob = Arc::clone(&app.blob);
     let (tx, _rx) = mpsc::channel();
     app.heat_worker = Some(HeatWorkerHandle::spawn(
         Arc::clone(&app.heat_caches),

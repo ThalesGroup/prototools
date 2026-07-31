@@ -334,7 +334,7 @@ impl App {
             });
             let current = match current_key.as_deref() {
                 None => Some(None),
-                Some(key) => caches.current_score.peek(&(start, key.to_string()), tier),
+                Some(key) => caches.peek_current(start, key, tier),
             };
             HeatState { best, current }
         };
@@ -474,7 +474,7 @@ impl App {
             });
             let current = match current_key.as_deref() {
                 None => Some(None),
-                Some(key) => caches.current_score.peek(&(start, key.to_string()), tier),
+                Some(key) => caches.peek_current(start, key, tier),
             };
             drop(caches);
 

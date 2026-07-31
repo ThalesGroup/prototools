@@ -393,17 +393,30 @@ impl App {
     /// overlay row has no node (S4): no heat cue, no active-override
     /// hint, no fold marker, no selection.
     fn display_row_source(&self, row: DisplayRow) -> (&str, Option<usize>) {
+        let owner = match row {
+            DisplayRow::Committed(l) => self.node_at_header_line(l),
+            DisplayRow::Overlay(_) => None,
+        };
+        (self.display_row_text(row), owner)
+    }
+
+    /// Spec 0215 S4: the text half of `display_row_source`, on its own.
+    ///
+    /// For a committed row this is a plain index into `self.lines` and
+    /// never a document walk, whereas resolving the *owner* goes through
+    /// `line_pos` — a binary search of the last drawn window, then a
+    /// descent from the root when that misses, which during a page jump
+    /// it always does by construction. Callers that only want the text
+    /// must not pay for the owner they discard.
+    fn display_row_text(&self, row: DisplayRow) -> &str {
         match row {
-            DisplayRow::Committed(l) => (
-                self.lines.get(l).map(String::as_str).unwrap_or(""),
-                self.node_at_header_line(l),
-            ),
+            DisplayRow::Committed(l) => self.lines.get(l).map(String::as_str).unwrap_or(""),
             DisplayRow::Overlay(i) => {
                 let o = self
                     .preview_overlay
                     .as_ref()
                     .expect("an Overlay row is only ever produced while an overlay is held");
-                (&o.lines[i], None)
+                &o.lines[i]
             }
         }
     }
@@ -429,7 +442,7 @@ impl App {
         window
             .iter()
             .map(|&row| {
-                let line = self.display_row_source(row).0;
+                let line = self.display_row_text(row);
                 if line.trim() == TRUNCATION_MARKER {
                     String::new()
                 } else {
@@ -470,14 +483,26 @@ impl App {
     /// and its `▾`/`▸` are gutter furniture, and pasting them back into
     /// a `.textproto` would not parse.
     pub(super) fn row_text(&self, row: DisplayRow) -> String {
-        let (full_content, _) = self.display_row_source(row);
+        self.row_text_of(row, self.display_row_source(row).1)
+    }
+
+    /// Spec 0215 S6: `row_text` for a caller that already knows which
+    /// node owns the row, saving the `line_pos` descent that finding out
+    /// would cost.
+    ///
+    /// `owner` must be what `display_row_source` would have returned —
+    /// `None` for an overlay row or a footer line, the owning node for a
+    /// header line. Passing a wrong node changes only the fold glyph and
+    /// hence the `{ ... }` collapse summary, never the underlying text.
+    pub(super) fn row_text_of(&self, row: DisplayRow, owner: Option<usize>) -> String {
+        let full_content = self.display_row_text(row);
         let content = if !self.annotations {
             code_part(full_content)
         } else {
             full_content
         };
         let mut text = content.to_string();
-        if self.fold_marker(row) == Some(FOLD_GLYPH_CLOSED) {
+        if self.fold_marker_of(owner) == Some(FOLD_GLYPH_CLOSED) {
             match text.rfind('{') {
                 Some(pos) => text.insert_str(pos + 1, " ... }"),
                 None => text.push_str(" ... }"),
@@ -508,8 +533,15 @@ impl App {
     /// the row has no node of its own (footer and overlay rows) or its
     /// node has nothing to fold.
     fn fold_marker(&self, row: DisplayRow) -> Option<char> {
-        let (_, node) = self.display_row_source(row);
-        let idx = node?;
+        self.fold_marker_of(self.display_row_source(row).1)
+    }
+
+    /// Spec 0215 S6: `fold_marker` for a caller that already holds the
+    /// row's owner. Takes the owner alone — once it is known the row
+    /// itself is not consulted, so passing it would be an unused
+    /// argument rather than documentation.
+    fn fold_marker_of(&self, owner: Option<usize>) -> Option<char> {
+        let idx = owner?;
         if !self.has_children(idx) {
             return None;
         }

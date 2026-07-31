@@ -23,6 +23,7 @@ use super::event::AppEvent;
 use super::heat_cue;
 use super::tiered::{Tier, TieredBounded, UpsertOutcome};
 use super::App;
+use crate::blob::Blob;
 use crate::override_pane;
 
 /// Backpressure limit for `HeatRequestQueue` (spec 0152 G3, revised by
@@ -305,6 +306,23 @@ pub(super) struct HeatCaches {
     /// be open at a time. Refreshed unconditionally by the worker
     /// every time it fully scores *any* range (G5).
     pub(super) complete: Option<CompleteSlot>,
+    /// Reusable probe key for `current_score`, owned by the cache so
+    /// that a lookup allocates nothing.
+    ///
+    /// `TieredBounded::peek` takes `&K`, and a `std` `HashMap` can only
+    /// be probed by a *borrowed form of the whole key* (`K: Borrow<Q>`)
+    /// — which `(usize, String)` has none of: the borrowed counterpart
+    /// would be `(usize, &str)`, and `Borrow` can only hand back a
+    /// reference to something the key already holds, not a rebuilt
+    /// tuple. So every lookup had to present a fully owned key,
+    /// allocating and copying the type name on both threads at each of
+    /// `peek_current`'s call sites, only to drop it again after
+    /// hashing.
+    ///
+    /// Its contents are meaningless between calls — `peek_current`
+    /// overwrites both halves before every read, and `peek` never
+    /// retains the reference. Private for exactly that reason.
+    probe: (usize, String),
 }
 
 impl HeatCaches {
@@ -313,7 +331,28 @@ impl HeatCaches {
             by_range: TieredBounded::new(max_entries),
             current_score: TieredBounded::new(max_entries),
             complete: None,
+            probe: (0, String::new()),
         }
+    }
+
+    /// The cached score of type `key` over the payload starting at
+    /// `start`, promoting the entry to `tier` exactly as a direct
+    /// `current_score.peek` would (spec 0164 G9).
+    ///
+    /// This is the only way `current_score` should be *read*: it is
+    /// what keeps the probe key off the heap. Writes still go through
+    /// `current_score.upsert` directly, because an insert genuinely has
+    /// to own its key.
+    pub(super) fn peek_current(
+        &mut self,
+        start: usize,
+        key: &str,
+        tier: Tier,
+    ) -> Option<Option<i64>> {
+        self.probe.0 = start;
+        self.probe.1.clear();
+        self.probe.1.push_str(key);
+        self.current_score.peek(&self.probe, tier)
     }
 
     /// Read-only-in-spirit lookup, no access to the queue (spec 0152
@@ -395,11 +434,8 @@ impl App {
         let ready = {
             let mut c = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
             let window = c.window(range.start, start, end, tier);
-            let current_ready = current_key.is_none_or(|k| {
-                c.current_score
-                    .peek(&(range.start, k.to_string()), tier)
-                    .is_some()
-            });
+            let current_ready =
+                current_key.is_none_or(|k| c.peek_current(range.start, k, tier).is_some());
             window.filter(|_| current_ready)
         };
         if ready.is_some() {
@@ -434,7 +470,7 @@ pub(super) fn heat_worker_loop(
     queue: Arc<HeatRequestQueue>,
     caches: Arc<Mutex<HeatCaches>>,
     graph: Arc<LoadedGraph>,
-    blob: Arc<Vec<u8>>,
+    blob: Arc<Blob>,
     progress: mpsc::Sender<AppEvent>,
 ) {
     // Spec 0180 S2: the worker owns a handle to the mapping rather than a
@@ -453,11 +489,10 @@ pub(super) fn heat_worker_loop(
                 .by_range
                 .peek(&start, req.tier)
                 .is_some_and(|e| e.top_n.len() >= req.end);
-            let covers_current = req.current_key.as_deref().is_none_or(|k| {
-                c.current_score
-                    .peek(&(start, k.to_string()), req.tier)
-                    .is_some()
-            });
+            let covers_current = req
+                .current_key
+                .as_deref()
+                .is_none_or(|k| c.peek_current(start, k, req.tier).is_some());
             (covers_window, covers_current)
         };
         match (covers_window, covers_current) {
@@ -533,7 +568,7 @@ impl HeatWorkerHandle {
     pub(super) fn spawn(
         caches: Arc<Mutex<HeatCaches>>,
         graph: Arc<LoadedGraph>,
-        blob: Arc<Vec<u8>>,
+        blob: Arc<Blob>,
         progress: mpsc::Sender<AppEvent>,
     ) -> Self {
         let queue = Arc::new(HeatRequestQueue::new());
@@ -937,7 +972,7 @@ messages:
         let graph = Arc::new(test_scoring_graph());
         // A valid encoding of field 1 (varint) = 5: tag 0x08, value 0x05.
         let range_bytes = vec![0x08, 0x05];
-        let blob = Arc::new(range_bytes.clone());
+        let blob = Arc::new(Blob::unwrapped(range_bytes.clone()));
         let caches = Arc::new(Mutex::new(HeatCaches::new(8)));
         let (tx, rx) = mpsc::channel::<AppEvent>();
         let worker = HeatWorkerHandle::spawn(
@@ -1017,7 +1052,7 @@ messages:
     fn worker_uses_cheap_fast_path_when_only_current_is_missing() {
         let graph = Arc::new(test_scoring_graph());
         let range_bytes = vec![0x08, 0x05];
-        let blob = Arc::new(range_bytes.clone());
+        let blob = Arc::new(Blob::unwrapped(range_bytes.clone()));
         let caches = Arc::new(Mutex::new(HeatCaches::new(8)));
         let (tx, rx) = mpsc::channel::<AppEvent>();
         let worker = HeatWorkerHandle::spawn(
@@ -1075,9 +1110,7 @@ messages:
         );
         let mut c = caches.lock().unwrap();
         assert!(
-            c.current_score
-                .peek(&(0, "Msg".to_string()), Tier::User)
-                .is_some(),
+            c.peek_current(0, "Msg", Tier::User).is_some(),
             "current_score must be filled by the fast path"
         );
         let entry = c.by_range.peek(&0, Tier::User).unwrap();
@@ -1119,6 +1152,46 @@ messages:
         );
     }
 
+    /// The reused probe key must carry nothing from the previous
+    /// lookup. A shorter name after a longer one is the case that
+    /// catches a missing `clear()`, and a name that is a *prefix* of
+    /// the previous one is the case that catches a truncating reset
+    /// (`Msg` after `MsgLonger` would still hash as `MsgLonger`, and a
+    /// hit would be reported for a type that was never cached).
+    #[test]
+    fn peek_current_does_not_carry_the_previous_probe_key() {
+        let mut caches = HeatCaches::new(8);
+        caches
+            .current_score
+            .upsert((0, "MsgLonger".to_string()), Some(7), Tier::Visible);
+        assert_eq!(
+            caches.peek_current(0, "MsgLonger", Tier::Visible),
+            Some(Some(7))
+        );
+        assert_eq!(
+            caches.peek_current(0, "Msg", Tier::Visible),
+            None,
+            "a prefix of the previous key must miss"
+        );
+        assert_eq!(
+            caches.peek_current(0, "MsgLonger", Tier::Visible),
+            Some(Some(7)),
+            "and the probe must still be usable afterwards"
+        );
+    }
+
+    /// The probe's `start` half must be overwritten too — a stale
+    /// offset would answer for the wrong node's payload.
+    #[test]
+    fn peek_current_does_not_carry_the_previous_probe_offset() {
+        let mut caches = HeatCaches::new(8);
+        caches
+            .current_score
+            .upsert((10, "Msg".to_string()), Some(3), Tier::Visible);
+        assert_eq!(caches.peek_current(10, "Msg", Tier::Visible), Some(Some(3)));
+        assert_eq!(caches.peek_current(11, "Msg", Tier::Visible), None);
+    }
+
     /// G9: a `by_range` entry cached at `Prefetch` tier, once `peek`'d
     /// at `Visible` tier, is retagged and survives eviction pressure
     /// that would otherwise have removed it as a `Prefetch` entry.
@@ -1153,7 +1226,7 @@ messages:
     fn worker_does_not_notify_on_prefetch_tier_completion() {
         let graph = Arc::new(test_scoring_graph());
         let range_bytes = vec![0x08, 0x05, 0x08, 0x05];
-        let blob = Arc::new(range_bytes.clone());
+        let blob = Arc::new(Blob::unwrapped(range_bytes.clone()));
         let caches = Arc::new(Mutex::new(HeatCaches::new(8)));
         let (tx, rx) = mpsc::channel::<AppEvent>();
         let worker = HeatWorkerHandle::spawn(

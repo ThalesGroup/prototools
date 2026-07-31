@@ -150,7 +150,7 @@ fn wrapper_offset_and_display_range_restore_pre_wrap_coordinates() {
     // Outer wraps it as field 1 (LEN): tag (1<<3)|2 = 0x0A, len 2.
     let blob = [0x0Au8, 0x02, inner_bytes[0], inner_bytes[1]];
 
-    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
     // tag(1 byte) + length-varint(1 byte, blob.len() == 4 fits in 1 byte).
     assert_eq!(decoded.wrapper_offset, 2);
     assert_eq!(decoded.blob.len(), blob.len() + 2);
@@ -243,7 +243,7 @@ fn display_range_strips_tag_and_length_for_scalars_including_packed() {
     // [0x01, 0x02, 0x03] (three varint elements 1, 2, 3).
     let blob = [0x08u8, 0x05, 0x12, 0x03, 0x01, 0x02, 0x03];
 
-    let decoded = decode(&blob, &mut ctx, RootType::Named("test.Msg"), 2).unwrap();
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Msg"), 2).unwrap();
     let app = App::new(
         decoded,
         "test.pb",
@@ -1270,4 +1270,177 @@ fn backspace_moves_the_caret_left_rather_than_to_the_parent() {
     assert_eq!(app.cursor_column, column - 1);
     assert_eq!(app.cursor, inner_idx, "and stays on the node");
     assert!(app.folded.is_empty());
+}
+
+/// Spec 0215 test-plan item 1 (S1/S2). The hoist's whole obligation:
+/// a page key must land exactly where a page of single-line moves
+/// lands, in every one of the four values a move writes.
+///
+/// The claim it is really testing is S3's — that the caret fix-ups the
+/// old loop performed at the 47 intermediate rows were unobservable.
+/// That holds because `carry_caret` reads only `desired_column` and
+/// `caret_anchor`, which stepping never touches, and writes only
+/// `cursor_column`, which nothing between the steps reads. Run from
+/// every start position and under all three anchors, since a `Free`
+/// caret is the one whose column depends on the row it passes over and
+/// so the one a per-row clamp could have left somewhere else.
+#[test]
+fn a_page_key_lands_where_a_page_of_single_keys_lands() {
+    // Deliberately ragged: a `Free` caret crossing a short row is
+    // clamped, and the old code clamped it once per row.
+    let rows = [
+        "    alpha: 1",
+        "  b: 2",
+        "        gamma_gamma: 33",
+        "   d: 4",
+        "  epsilon: 5",
+        "f: 6",
+        "      eta: 77",
+        "  theta: 8",
+    ];
+    const PAGE: u16 = 3;
+
+    let fresh = |start: usize, column: usize, anchor: CaretAnchor| {
+        let mut app = sibling_leaves_app(&rows);
+        app.main_area = Rect::new(0, 0, 40, PAGE);
+        app.cursor = start;
+        app.cursor_column = column;
+        app.desired_column = column;
+        app.caret_anchor = anchor;
+        app
+    };
+    let state = |app: &App| {
+        (
+            app.cursor,
+            app.cursor_footer,
+            app.cursor_column,
+            app.cursor_moves,
+        )
+    };
+
+    for start in 0..rows.len() {
+        for (column, anchor) in [
+            (0usize, CaretAnchor::Home),
+            (6, CaretAnchor::Free),
+            (0, CaretAnchor::End),
+        ] {
+            let mut paged = fresh(start, column, anchor);
+            paged.move_page_down();
+            let mut singles = fresh(start, column, anchor);
+            for _ in 0..PAGE {
+                singles.move_down();
+            }
+            assert_eq!(
+                state(&paged),
+                state(&singles),
+                "PageDown from {start} at column {column} ({anchor:?})"
+            );
+
+            let mut paged = fresh(start, column, anchor);
+            paged.move_page_up();
+            let mut singles = fresh(start, column, anchor);
+            for _ in 0..PAGE {
+                singles.move_up();
+            }
+            assert_eq!(
+                state(&paged),
+                state(&singles),
+                "PageUp from {start} at column {column} ({anchor:?})"
+            );
+        }
+    }
+}
+
+/// Spec 0215 test-plan item 2 (S2). Guards the "only if a step
+/// succeeded" clause, which is not decoration: `carry_caret` is not
+/// idempotent on a caret that is currently somewhere else, so calling
+/// it unconditionally would make a page key at a document end *move the
+/// caret* — a keystroke that did nothing before now does something.
+#[test]
+fn a_page_key_at_a_document_end_is_a_no_op() {
+    let rows = ["abcdef", "gh", "ijklmn"];
+    for (cursor, key) in [(0usize, true), (rows.len() - 1, false)] {
+        let mut app = sibling_leaves_app(&rows);
+        app.main_area = Rect::new(0, 0, 40, 3);
+        app.cursor = cursor;
+        // A caret that `carry_caret` *would* relocate if it ran: the
+        // desired column is off the end of the row, so a stray call
+        // clamps it down to the row's last column.
+        app.cursor_column = 1;
+        app.desired_column = 99;
+        app.caret_anchor = CaretAnchor::Free;
+        let before = (
+            app.cursor,
+            app.cursor_footer,
+            app.cursor_column,
+            app.cursor_moves,
+        );
+
+        if key {
+            app.move_page_up();
+        } else {
+            app.move_page_down();
+        }
+
+        assert_eq!(
+            (
+                app.cursor,
+                app.cursor_footer,
+                app.cursor_column,
+                app.cursor_moves
+            ),
+            before,
+            "a page key at a document end must change nothing at all"
+        );
+    }
+}
+
+/// Spec 0215 test-plan item 3 (S7). `caret_bounds` now hands
+/// `row_text_of` the owner instead of letting it walk the document to
+/// rediscover one. The substitution is only sound if the two agree, so
+/// state that as an executable claim rather than as a comment — on both
+/// kinds of cursor line, since the footer case is the one where the
+/// answer is `None` rather than a node.
+#[test]
+fn the_caret_bounds_owner_matches_the_line_lookup() {
+    let (mut app, items) = repeated_message_fixture();
+    for footer in [false, true] {
+        app.cursor = items[1];
+        app.cursor_footer = footer;
+        assert_eq!(
+            (!app.cursor_footer).then_some(app.cursor),
+            app.node_at_header_line(app.cursor_line()),
+            "owner disagreement on a {} line",
+            if footer { "footer" } else { "header" }
+        );
+    }
+}
+
+/// Spec 0215 test-plan item 4 (S4-S6). Splitting the text half out of
+/// `display_row_source` must not lose the fold expansion: a folded
+/// node's row is drawn as a one-line `{ ... }` collapse summary, and
+/// the caret can sit on it, so `caret_bounds` measures it. Losing it
+/// would shorten the row the caret is clamped into.
+#[test]
+fn a_fold_marker_row_still_reports_its_expanded_text() {
+    let (mut app, items) = repeated_message_fixture();
+    let idx = items[0];
+    let line = app.absolute_start(idx);
+    assert!(
+        !app.row_text(DisplayRow::Committed(line)).contains("..."),
+        "the fixture's node must start expanded"
+    );
+
+    app.folded.insert(idx);
+    let text = app.row_text(DisplayRow::Committed(line));
+    assert!(
+        text.contains("... }"),
+        "a folded row must still expand to its collapse summary, got {text:?}"
+    );
+    // And the owner-carrying form agrees, since that is the one
+    // `caret_bounds` calls.
+    assert_eq!(
+        text,
+        app.row_text_of(DisplayRow::Committed(line), Some(idx))
+    );
 }

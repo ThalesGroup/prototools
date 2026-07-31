@@ -109,11 +109,22 @@ impl App {
     ///
     /// An all-blank row has no track at all and gets a single column,
     /// drawn on a synthetic trailing space (S2).
+    ///
+    /// Spec 0215 S7: the owner is handed to `row_text_of` rather than
+    /// rediscovered. This reproduces `node_at_header_line`'s answer
+    /// exactly rather than approximating it — that function yields
+    /// `None` for a footer line and the owning node for a header line,
+    /// and `cursor_line()` is by definition the cursor's own header or
+    /// footer line, so `(!cursor_footer).then_some(cursor)` *is* the
+    /// value the lookup would have walked the document to produce.
     pub(super) fn caret_bounds(&self) -> (usize, usize) {
         if self.tree.is_empty() {
             return (0, 0);
         }
-        let text = self.row_text(DisplayRow::Committed(self.cursor_line()));
+        let text = self.row_text_of(
+            DisplayRow::Committed(self.cursor_line()),
+            (!self.cursor_footer).then_some(self.cursor),
+        );
         let trimmed = text.trim_start();
         if trimmed.is_empty() {
             return (0, 0);
@@ -381,20 +392,44 @@ impl App {
     /// (2026-07-25 bug). Spec 0210 S1 gave those lines spans of their
     /// own, so every visible line is now a cursor stop and there is
     /// nothing left to scan past.
+    /// Spec 0215 S1: the stepping half of `move_down` — everything
+    /// except the caret fix-up. Returns whether the cursor moved.
+    ///
+    /// Split out so a page key can take its `page` steps and pay for
+    /// `carry_caret` once (S2) instead of once per row. Nothing between
+    /// the steps may read `cursor_column`: `carry_caret` overwrites it
+    /// from `desired_column` and `caret_anchor`, neither of which
+    /// stepping touches, which is precisely why the intermediate values
+    /// it used to compute were unobservable and can be skipped (S3).
+    fn step_down(&mut self) -> bool {
+        let Some((next, _)) = self.next_visible(self.cursor_line_pos()) else {
+            return false;
+        };
+        self.cursor = next.node;
+        self.cursor_footer = next.footer;
+        self.cursor_moves += 1;
+        true
+    }
+
+    /// Spec 0215 S1: the stepping half of `move_up`. See `step_down`.
+    fn step_up(&mut self) -> bool {
+        let Some((prev, _)) = self.prev_visible(self.cursor_line_pos()) else {
+            return false;
+        };
+        self.cursor = prev.node;
+        self.cursor_footer = prev.footer;
+        self.cursor_moves += 1;
+        true
+    }
+
     pub(super) fn move_down(&mut self) {
-        if let Some((next, _)) = self.next_visible(self.cursor_line_pos()) {
-            self.cursor = next.node;
-            self.cursor_footer = next.footer;
-            self.cursor_moves += 1;
+        if self.step_down() {
             self.carry_caret();
         }
     }
 
     pub(super) fn move_up(&mut self) {
-        if let Some((prev, _)) = self.prev_visible(self.cursor_line_pos()) {
-            self.cursor = prev.node;
-            self.cursor_footer = prev.footer;
-            self.cursor_moves += 1;
+        if self.step_up() {
             self.carry_caret();
         }
     }
@@ -423,17 +458,37 @@ impl App {
         }
     }
 
+    /// Spec 0215 S2: `page` steps, then **one** `carry_caret`.
+    ///
+    /// This used to be `page` calls to `move_down`, i.e. `page`
+    /// independent caret fix-ups, each of which walks the document from
+    /// its start to find the row it lands on. Near the end of a blob
+    /// with a wide root that was the whole cost of the key — 13-23 ms
+    /// against 47 µs at the top of the same document.
+    ///
+    /// `carry_caret` runs only if at least one step succeeded, so a page
+    /// key already at a document end stays the exact no-op it was:
+    /// `carry_caret` is not idempotent on `cursor_column` when the
+    /// caret is `Free` and the row is narrower than `desired_column`.
     pub(super) fn move_page_down(&mut self) {
         let page = (self.main_area.height as usize).max(1);
+        let mut moved = false;
         for _ in 0..page {
-            self.move_down();
+            moved |= self.step_down();
+        }
+        if moved {
+            self.carry_caret();
         }
     }
 
     pub(super) fn move_page_up(&mut self) {
         let page = (self.main_area.height as usize).max(1);
+        let mut moved = false;
         for _ in 0..page {
-            self.move_up();
+            moved |= self.step_up();
+        }
+        if moved {
+            self.carry_caret();
         }
     }
 
