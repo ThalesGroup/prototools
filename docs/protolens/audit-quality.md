@@ -403,7 +403,7 @@ merit:
 
 | lines | function |
 |---:|---|
-| 467 | `render` |
+| 446 | `render` |
 | 416 | `handle_key` |
 | 380 | `handle_manage_key` |
 | 365 | `main` |
