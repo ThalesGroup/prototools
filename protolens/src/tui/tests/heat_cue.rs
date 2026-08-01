@@ -9,6 +9,7 @@ use super::super::heat_cue::{
 use std::thread;
 
 use super::super::heat_worker::{HeatWorkerHandle, RangeHeatEntry};
+use super::super::terminal::warm_up_heat_cues;
 use super::super::tiered::{Tier, TieredBounded};
 use super::super::*;
 use super::support::*;

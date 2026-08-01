@@ -927,6 +927,40 @@ impl App {
             frame.render_widget(Paragraph::new(separator_lines), separator_area);
         }
 
+        self.render_main_pane(frame, main_outer, right_outer.is_some());
+
+        self.render_command_row(frame, chunks[1]);
+
+        if let Some(right_area) = right_outer {
+            if self.override_target.is_some() {
+                self.render_override_pane(frame, right_area);
+            } else if self.manage_open {
+                self.render_manage_pane(frame, right_area);
+            }
+        }
+
+        if self.splash {
+            self.render_splash(frame, area);
+        } else if self.help_open {
+            self.render_help(frame, area);
+        }
+    }
+
+    /// The text area and its local statusline — everything `render`
+    /// delegates once it has decided how wide the main pane is.
+    ///
+    /// `half_width` says a side pane is open. It is the only thing this
+    /// needs to know about the rest of the frame, and it does not mean
+    /// "narrow": it selects what the statusline *drops*, since the
+    /// byte-range ruler and the `[tag]` suffix rarely fit beside a side
+    /// pane and are dropped rather than truncated.
+    ///
+    /// Kept as one function rather than split further because the order
+    /// here is load-bearing: the window is built from `scroll_offset`
+    /// after `clamp_scroll_to_visible` has moved it, the caret is clamped
+    /// against the suffix length only this frame's heat pass knows, and
+    /// the statusline reports all of it.
+    fn render_main_pane(&mut self, frame: &mut Frame, main_outer: Rect, half_width: bool) {
         // `pane_focus_style` marks whichever pane currently holds keyboard
         // focus, shared with the override/management panes' own
         // `render_override_pane`/`render_manage_pane` — the main pane has
@@ -1185,7 +1219,7 @@ impl App {
             // half-width rarely has room for it.
             let type_label = self.status_type_label(self.cursor);
             let left = match type_label {
-                Some((t, Some(tag))) if right_outer.is_none() => {
+                Some((t, Some(tag))) if !half_width => {
                     format!("{path_label} {node_path}: {t} [{tag}]")
                 }
                 Some((t, _)) => format!("{path_label} {node_path}: {t}"),
@@ -1222,7 +1256,7 @@ impl App {
                 self.lines.len(),
                 viewport_label(self.scroll_offset, window.len(), total_rows),
             );
-            let right = if right_outer.is_some() {
+            let right = if half_width {
                 line_ruler
             } else {
                 let range = self.display_range(self.cursor);
@@ -1240,15 +1274,22 @@ impl App {
             Paragraph::new(Line::styled(main_text, main_style)),
             main_statusline,
         );
+    }
 
-        // Global command/message row (spec 0147 G4): a single borderless
-        // `Length(1)` row, always reserved, shared across every pane —
-        // never duplicated per-pane, per the spec's "locality" principle.
-        // The management pane's rename buffer (spec 0119 §G4's `f` key)
-        // shares this same row rather than being appended inside the side
-        // pane's own line list: a side-pane-local spot gets no real
-        // terminal cursor, leaving it unclear where typing lands, and
-        // this row already carries one for `:command`/`/`-search.
+    /// The global command/message row (spec 0147 G4): a single borderless
+    /// `Length(1)` row, always reserved, shared across every pane — never
+    /// duplicated per-pane, per the spec's "locality" principle.
+    ///
+    /// The management pane's rename buffer (spec 0119 §G4's `f` key)
+    /// shares this same row rather than being appended inside the side
+    /// pane's own line list: a side-pane-local spot gets no real terminal
+    /// cursor, leaving it unclear where typing lands, and this row already
+    /// carries one for `:command`/`/`-search.
+    ///
+    /// Split out of `render` because it is the one part of it that reads
+    /// none of `render`'s locals: it takes its area and is otherwise a
+    /// function of the command/rename/message state alone.
+    fn render_command_row(&mut self, frame: &mut Frame, area: Rect) {
         const RENAME_PREFIX: &str = "field name: ";
         let cmd_text = match &self.command_buffer {
             Some(buf) => {
@@ -1273,7 +1314,7 @@ impl App {
         let global_row = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(1), Constraint::Min(0)])
-            .split(chunks[1]);
+            .split(area);
         self.render_activity_dot(frame, global_row[0]);
         let cmd_row = global_row[1];
         if cmd_text.is_empty() {
@@ -1311,20 +1352,6 @@ impl App {
                 let x = cmd_row.x + (pos - self.command_pan_offset) as u16;
                 frame.set_cursor_position((x, cmd_row.y));
             }
-        }
-
-        if let Some(right_area) = right_outer {
-            if self.override_target.is_some() {
-                self.render_override_pane(frame, right_area);
-            } else if self.manage_open {
-                self.render_manage_pane(frame, right_area);
-            }
-        }
-
-        if self.splash {
-            self.render_splash(frame, area);
-        } else if self.help_open {
-            self.render_help(frame, area);
         }
     }
 

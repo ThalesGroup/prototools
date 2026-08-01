@@ -713,15 +713,50 @@ enough that a split would cut across a single subject.
 Each step is independently landable and independently revertible.
 
 1. **`decode.rs` test move** — mechanical, zero risk, −1065 lines, no
-   visibility change anywhere.
+   visibility change anywhere. **Done 2026-08-01**: 2647 → 1501, tests in
+   `src/decode/tests.rs` (1146). `decode.rs` stays a file, not a
+   `decode/mod.rs` — the 2018 layout puts a submodule of `foo.rs` in
+   `foo/`. Only one import moved; the six `#[cfg(test)]` items outside
+   `mod tests` all stayed, `arena_gap` included.
 2. **`render_command_row`** — the free half of the `render()`
-   decomposition. Then `render_main_pane`.
+   decomposition. Then `render_main_pane`. **Done 2026-08-01**: `render`
+   446 → 78 lines. `render_main_pane` takes `half_width: bool` rather
+   than `right_outer`, which is all it read of it.
 3. **`mod.rs` → `help_text.rs`, then `prefetch.rs`, then `terminal.rs`**
-   — in that order; `run_loop` names `PrefetchStep`.
+   — in that order; `run_loop` names `PrefetchStep`. **Done 2026-08-01**:
+   2826 → 1637. The visibility cost was as predicted and modest —
+   `PrefetchWalk` and its eight fields plus `next_row` and
+   `PREFETCH_WALK_MAX_ROWS` went `pub(super)` for the tests;
+   `enable_raw_mode_and_reenter` went from `pub(crate)` to `pub(super)`
+   and `neovim.rs` now names it through `super::terminal`; `run` stays
+   `pub` and is re-exported from `mod.rs` so `main.rs` is untouched.
 4. **`override_apply.rs` → `preview_truncate.rs`, then `line_patch.rs`,
    then `override_resolve.rs`** — cheapest first, and the third one's
    scope is a decision, not a mechanic (four concerns, not one).
+   **4a and 4b done 2026-08-01**: 2714 → 2286. `preview_truncate.rs`
+   turned out to need no `use super::*` at all, which is the strongest
+   evidence there was that it belonged outside. `line_patch.rs` owns the
+   two types and the two methods that consume them; `override_apply.rs`
+   still produces the patches and imports both types back.
+   **4c not done** — still the open decision the section describes.
 5. **`tests/support.rs`**, then `tests/override_select.rs`, then
    `tests/override_apply.rs`. All independent of the production splits
    except `tests/override_apply.rs:5`, which must land with step 4's
-   `line_patch.rs`.
+   `line_patch.rs` — it did: the import now reads
+   `super::super::line_patch::{LinePatch, LinePatchTarget}`.
+   **Done 2026-08-01.** `support.rs` is now a 21-line facade over six
+   siblings (`support_inspect`, `_basic`, `_repeated`, `_typed`, `_any`,
+   `_export`), so all fourteen consumers keep their unchanged
+   `use super::support::*;`. The section's E0364/E0365 warning does not
+   apply to flat siblings — under `tests/`, `pub(super)` means "visible
+   in `tests`" for the facade and for the re-exported items alike, so
+   the globs are legal as written. Two helpers were demoted to private
+   by the split, as predicted (`shape_of`, `group_type_fixture_with_blob`);
+   `eager_fallback_app` moved into `tests/render.rs` outright.
+   `override_select.rs` went 2235 → 1492, giving up `search.rs` (301)
+   and `override_preview.rs` (443). The two spec-0194 caret tests split
+   rather than travelling together: the search-hit one is in `search.rs`,
+   the node-level-jump one in `navigation.rs`, which is where a test
+   about a jump belongs. `tests/override_apply.rs` was done as part of
+   step 4's aftermath — 2828 → 1434, giving up `export_fields.rs` (200),
+   `preview_truncate.rs` (541) and `line_patch.rs` (692).

@@ -1,0 +1,698 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
+//! The terminal as a device, and the loop that owns it.
+//!
+//! Everything between `main` handing over a built `App` and getting the
+//! cooked terminal back: raw mode, mouse capture, the Kitty keyboard
+//! protocol, `SIGTSTP` suspend/resume, the panic hook that has to undo
+//! all of it, and `run_loop` itself.
+//!
+//! It is one file because those are one concern — every entry point here
+//! either puts the terminal into a state or is responsible for taking it
+//! back out — and because `run_loop` is a single state machine over
+//! seven interdependent locals that reads the tuning constants at the
+//! top.
+
+use super::*;
+
+/// How long `warm_up_heat_cues` (spec 0151 G8) waits, from its own
+/// start, before drawing its first progress frame — avoids any flicker
+/// for small/fast descriptor sets, where the whole pass is already
+/// near-instant.
+const WARMUP_FIRST_DRAW_DELAY: Duration = Duration::from_millis(300);
+
+/// Minimum elapsed time between successive `warm_up_heat_cues` progress
+/// redraws (spec 0151 G8) — time-based, not a fixed line-count interval,
+/// so it stays responsive regardless of how expensive each individual
+/// line turns out to be.
+const WARMUP_REDRAW_INTERVAL: Duration = Duration::from_millis(300);
+
+/// How long protolens may sit unattended before re-examining the
+/// heat-cue activity byte (spec 0190 S7/G3). Bounds the activity dot's
+/// staleness without requiring every path that drains the request queue
+/// to emit an `AppEvent` — an event-maintained dot would freeze in
+/// whatever state it was last drawn in, showing "busy" over an idle
+/// worker.
+///
+/// Deliberately a flat interval rather than a timer armed per queue
+/// event: queue events are far too frequent, and each one would
+/// reschedule. The cost of a tick that changes nothing is two relaxed
+/// atomic loads and a comparison — `run_loop` skips the frame entirely
+/// (S8).
+const ACTIVITY_TICK: Duration = Duration::from_millis(250);
+
+/// Spec 0192 S3: the shortest interval between two frames drawn
+/// *solely* because background scoring completed. Keystrokes, mouse
+/// events, resizes and message/splash deadlines are never delayed by it
+/// — only the repaint that shows a newly arrived cue is, and that
+/// repaint is a visual refinement of a frame the user is already
+/// looking at.
+///
+/// The worker notifies once per completed non-`Prefetch` request
+/// (`heat_worker.rs`), and a fresh page queues one per unsettled
+/// visible row, so without this a single keystroke costs a screenful of
+/// full frames. At 50 ms a progressive fill costs at most 20 frames per
+/// second, which is a refresh rate the user cannot distinguish from
+/// immediate.
+const HEAT_REPAINT_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Spec 0192 S4: read-ahead steps guaranteed per main-loop iteration,
+/// regardless of how busy the event channel is. Read-ahead is still
+/// opportunistic — the `TryRecvError::Empty` arm in `run_loop` spends
+/// as many steps as the user's idleness allows — but the guarantee is
+/// what stops a steady event stream from starving it entirely. A burst
+/// of `HeatWorkerProgress` events does exactly that: without the floor,
+/// read-ahead ran twice across a forty-keystroke session, both times
+/// before the first keystroke.
+///
+/// Small enough that the guaranteed work cannot itself add perceptible
+/// latency to a keystroke: one step is a walk of a few rows plus at
+/// most one `TieredBounded::upsert`.
+const PREFETCH_STEPS_PER_ITERATION: usize = 8;
+
+/// Drain any input events already queued in the terminal's input buffer
+/// before disabling raw mode.
+///
+/// `EnableMouseCapture` always turns on any-motion reporting (crossterm
+/// gives no way to opt out short of hand-rolling the escape sequences — see
+/// the comment on `handle_mouse`'s `Moved` guard), so a mouse move happening
+/// in the split second between the app's last `event::read()` and raw mode
+/// being disabled here would otherwise sit unread in the pty's input queue.
+/// Once cooked-mode echo comes back on, the tty driver echoes those queued
+/// bytes straight to the screen as raw escape-sequence garbage (e.g.
+/// `^[[<35;60;17M`) that the shell then needs an Enter/Ctrl-C to clear.
+/// Reading them here, while raw mode (no echo) is still active, discards
+/// them silently instead.
+fn drain_pending_input() {
+    let deadline = Instant::now() + Duration::from_millis(60);
+    while Instant::now() < deadline {
+        match term_event::poll(Duration::from_millis(15)) {
+            Ok(true) => {
+                let _ = term_event::read();
+            }
+            _ => break,
+        }
+    }
+}
+
+/// Set by `push_keyboard_enhancement` once it has actually pushed Kitty
+/// keyboard-protocol enhancement flags, so `pop_keyboard_enhancement`
+/// knows whether the matching pop is needed — `restore_terminal`/
+/// `suspend` are free functions with no `App` to carry this as ordinary
+/// state, and popping when nothing was pushed would either do nothing
+/// (unsupported terminals just ignore the unknown escape sequence) or,
+/// worse, pop a flag set some other way. Single-threaded (one terminal,
+/// one event loop), so `Ordering::Relaxed` is enough.
+static KITTY_KEYBOARD_ENHANCED: AtomicBool = AtomicBool::new(false);
+
+/// Push `DISAMBIGUATE_ESCAPE_CODES` (Kitty keyboard protocol) if the
+/// terminal supports it — without it, legacy terminal escape sequences
+/// carry no modifier parameter for printable keys, so Shift-Space is
+/// reported identically to plain Space (unlike arrow/function keys,
+/// which already carry one, e.g. `ESC [1;2A` for Shift-Up).
+/// `supports_keyboard_enhancement` queries the terminal and
+/// blocks briefly waiting for its response — fine here since it only
+/// ever runs before the main event loop starts (`run`) or during a
+/// suspend/resume cycle (`suspend`), never concurrently with
+/// `event::read`/`poll`. On terminals that don't support it this is a
+/// no-op: `handle_manage_key`'s guarded `Char(' ') if SHIFT` arm simply
+/// never fires there.
+fn push_keyboard_enhancement() -> io::Result<()> {
+    if supports_keyboard_enhancement().unwrap_or(false) {
+        execute!(
+            io::stdout(),
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
+        KITTY_KEYBOARD_ENHANCED.store(true, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+/// Undo `push_keyboard_enhancement`, if it actually pushed anything.
+fn pop_keyboard_enhancement() {
+    if KITTY_KEYBOARD_ENHANCED.swap(false, Ordering::Relaxed) {
+        let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
+    }
+}
+
+/// Restore the terminal to its normal (cooked, main-screen, no mouse
+/// capture, visible cursor) state — shared by `run`'s own cleanup and the
+/// panic hook below, so a panic mid-session doesn't leave the user's
+/// terminal unusable.
+///
+/// The body is the exact inverse of the setup sequence in `run` and in
+/// `enable_raw_mode_and_reenter` — mouse capture and the alternate screen
+/// undone first, then the keyboard enhancement, then raw mode — so that
+/// each undo runs in the state its counterpart was issued in.
+/// `drain_pending_input` is the exception, and comes first: it has to read
+/// while raw mode is still on.
+///
+/// `Show` is here rather than at the call sites because `Terminal::draw`
+/// leaves the hardware cursor hidden unless the frame set a position, so
+/// *any* path out of the TUI owes the shell a visible cursor — including
+/// the panic hook, which has no `Terminal` to ask.
+pub(super) fn restore_terminal() {
+    drain_pending_input();
+    let _ = execute!(
+        io::stdout(),
+        DisableMouseCapture,
+        LeaveAlternateScreen,
+        Show
+    );
+    pop_keyboard_enhancement();
+    let _ = disable_raw_mode();
+}
+
+/// `Ctrl-Z` suspend (spec 0113 D31): leave the terminal in the same clean
+/// state a normal exit would (mirroring `restore_terminal`/the panic
+/// hook), raise `SIGTSTP` on this process, and — once `fg` sends
+/// `SIGCONT` and execution resumes right here — re-enter the alternate
+/// screen/mouse-capture/raw-mode trio and force a full redraw, since the
+/// terminal's actual contents are unknown after a suspend/resume cycle
+/// (another program may have used the same terminal in between).
+#[cfg(unix)]
+fn suspend<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()>
+where
+    io::Error: From<B::Error>,
+{
+    restore_terminal();
+    // SAFETY: raising a signal on our own process is always sound.
+    unsafe {
+        libc::raise(libc::SIGTSTP);
+    }
+    enable_raw_mode_and_reenter(terminal)
+}
+
+/// Re-enter raw mode/keyboard-enhancement/alternate-screen/mouse-capture
+/// and force a full redraw — the shared tail of `suspend()`'s own
+/// resume path (spec 0113 D31) and `neovim::open_editor`'s Neovim-
+/// handoff resume path (spec 0144 G5): both leave the terminal via
+/// `restore_terminal()`, hand control to something else, then need this
+/// exact same re-entry sequence once control returns.
+#[cfg(unix)]
+pub(super) fn enable_raw_mode_and_reenter<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()>
+where
+    io::Error: From<B::Error>,
+{
+    enable_raw_mode()?;
+    push_keyboard_enhancement()?;
+    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+    terminal.clear()?;
+    Ok(())
+}
+
+/// Where a panic on a thread other than the UI thread is left for
+/// `run_loop` to find. Holds the *first* one; a later panic on another
+/// background thread is usually the first one's consequence.
+static BACKGROUND_PANIC: Mutex<Option<String>> = Mutex::new(None);
+
+/// The one line of a panic worth putting in a message row: what was said
+/// and where. The default hook's backtrace has nowhere to go here — the
+/// alternate screen is still up and belongs to the document.
+fn describe_panic(info: &std::panic::PanicHookInfo<'_>) -> String {
+    let what = info
+        .payload()
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("(no message)");
+    let thread = std::thread::current().name().unwrap_or("?").to_string();
+    match info.location() {
+        Some(loc) => format!("thread '{thread}' panicked at {loc}: {what}"),
+        None => format!("thread '{thread}' panicked: {what}"),
+    }
+}
+
+/// Take whatever the panic hook recorded, if anything.
+fn take_background_panic() -> Option<String> {
+    BACKGROUND_PANIC
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+}
+
+/// Run the interactive TUI loop against a real terminal.
+pub fn run(app: &mut App) -> io::Result<()> {
+    // A panic mid-session (e.g. an indexing bug) would otherwise unwind
+    // straight out of this function, skipping the cleanup below and
+    // leaving the terminal stuck in raw/alt-screen/mouse-capture mode.
+    // Restore it first, then hand off to the default panic printer.
+    //
+    // Flaw C4: installed *before* the first fallible call, not after
+    // terminal setup — otherwise a panic during setup unwinds with raw
+    // mode already on and no hook installed to undo it.
+    //
+    // A panic hook is process-global, so this one runs on whichever
+    // thread panicked — including the heat worker and the sweep shards it
+    // spawns. Only the UI thread owns the terminal, and only its panic is
+    // actually unwinding towards the cleanup below; restoring the
+    // terminal for anyone else would drop a live session out of the
+    // alternate screen and then print over what replaced it. So the two
+    // cases are separated by thread id.
+    let ui_thread = std::thread::current().id();
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if std::thread::current().id() == ui_thread {
+            restore_terminal();
+            default_hook(info);
+            return;
+        }
+        let mut slot = BACKGROUND_PANIC.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.is_none() {
+            *slot = Some(describe_panic(info));
+        }
+    }));
+
+    // Terminal setup, up to and including the `Terminal` itself. Every
+    // line after the first is fallible *with raw mode already on*, and
+    // `terminal` does not exist yet, so this window cannot be covered by
+    // the cleanup block at the end of this function — it gets its own
+    // captured `Result` instead.
+    let setup = (|| -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
+        enable_raw_mode()?;
+        push_keyboard_enhancement()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        Terminal::new(CrosstermBackend::new(stdout))
+    })();
+    let mut terminal = match setup {
+        Ok(terminal) => terminal,
+        Err(e) => {
+            restore_terminal();
+            let _ = std::panic::take_hook();
+            return Err(e);
+        }
+    };
+
+    let (tx, rx) = mpsc::channel();
+    // `Option`-wrapped so `run_loop` can `take()` it and shut it down
+    // around the Neovim handoff below — see `run_loop`'s own doc comment
+    // on that block for why.
+    let mut input_reader = Some(event::InputReaderHandle::spawn(tx.clone()));
+
+    // Flaw C4: everything fallible from here to `run_loop` lives inside
+    // this closure, whose `Result` is *captured* rather than propagated.
+    // A `?` in here returns from the closure, so the cleanup block below
+    // is reached on every path by construction rather than by review —
+    // a bare `terminal.size()?` or `warm_up_heat_cues(..)?` would return
+    // straight out of `run`, leaving the terminal in raw/alternate-
+    // screen/mouse-capture mode for whatever ran next. Any future `?`
+    // added to this region is covered for free, which is the point.
+    let result = (|| -> io::Result<()> {
+        // Safe upper bound (spec 0151 G6/G8): the real, render-computed
+        // `override_list_height` (set by the override pane's own first
+        // render, `render.rs`) is always <= the raw terminal height, since
+        // it's an inner-area height net of borders/header rows. Setting it
+        // eagerly here means G6's cross-population cap isn't stuck at `1`
+        // (its `App::new` default) for the warm-up pass or any ordinary
+        // browsing before the user's first `t` press.
+        app.override_list_height = terminal.size()?.height.max(1) as usize;
+
+        // Spec 0152 G1: spawned only when a scoring graph is loaded — with
+        // no graph, `app.heat_worker` stays `None` for the whole session,
+        // and every fork that checks `heat_worker.is_some()` falls through
+        // to the existing synchronous logic. Spawned *before* `warm_up_
+        // heat_cues` below so that its initial-viewport pass can push
+        // requests onto the worker's queue and return immediately
+        // instead of scoring synchronously on this thread — warming up
+        // with no worker to hand work off to costs a multi-second black
+        // screen at startup against a large scoring graph.
+        if let Some(graph) = &app.ctx.graph {
+            // Spec 0180 S2: an owning handle, not a `&'static` copied out of the
+            // mapping. Each `Arc::clone` below is a refcount bump, and it is what
+            // makes both spawns below independent of when `App` drops.
+            let graph = Arc::clone(graph);
+            // Spec 0216 S28: a refcount bump, not a copy of the whole
+            // blob, since the worker can share ownership of it.
+            let blob = Arc::clone(&app.blob);
+
+            // Spec 0168: no second, detached "root-type" thread here.
+            // `decode::decode` resolves the type before rendering, so by
+            // the time `App` exists the document is already what it is —
+            // nothing re-scores the blob and re-renders the whole
+            // document through the splice machinery underneath a reader
+            // who has already started browsing.
+            // Spec 0217 S6: the worker sweeps while the main thread is
+            // drawing, so it gets the budget less the one thread the
+            // main loop is already spending — never less than 1, which
+            // is the un-sharded sweep this has always been.
+            let worker_jobs = app.sweep_jobs.saturating_sub(1).max(1);
+            app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
+                Arc::clone(&app.heat_caches),
+                graph,
+                blob,
+                tx.clone(),
+                worker_jobs,
+            ));
+        }
+
+        warm_up_heat_cues(&mut terminal, app)?;
+
+        run_loop(&mut terminal, app, &rx, &mut input_reader, &tx)
+    })();
+
+    // Spec 0152 G9: both threads joined, unconditionally (see "Shutdown
+    // and safety"). Not load-bearing for *memory* safety — the worker
+    // owns an `Arc<LoadedGraph>` (spec 0180 S2), so it cannot observe an
+    // unmapped page whether or not this runs. Joining is what stops the
+    // worker writing to the terminal after `restore_terminal` below, and
+    // what keeps the process from lingering on a background sweep the
+    // user has already quit.
+    if let Some(worker) = app.heat_worker.take() {
+        worker.shutdown();
+    }
+    if let Some(reader) = input_reader.take() {
+        reader.shutdown();
+    }
+    let _ = std::panic::take_hook();
+    restore_terminal();
+
+    result
+}
+
+/// One-time warm-up pass (spec 0151 G8) priming heat cues for the
+/// initial viewport before the first `run_loop` iteration. With the
+/// spec-0152 worker already spawned by the time this runs, each
+/// `heat_cue_for` call below either hits the cache or pushes a request
+/// onto the worker's queue and returns immediately — this loop scores
+/// nothing itself, which is what keeps startup against a large scoring
+/// graph from being a multi-second black screen. Still runs while heat
+/// cues are hidden (`i`): the background fetch/cache is worth priming
+/// regardless of whether a cue is currently shown — only
+/// `heat_cue_for`'s return value is suppressed while hidden, not the
+/// underlying work.
+pub(super) fn warm_up_heat_cues<B: Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+) -> io::Result<()>
+where
+    io::Error: From<B::Error>,
+{
+    if app.ctx.graph.is_none() {
+        return Ok(());
+    }
+    let rows = terminal.size()?.height as usize;
+    let lines: Vec<usize> = app
+        .visible_window(0, rows)
+        .into_iter()
+        .map(|(line, _)| line)
+        .collect();
+    let start = Instant::now();
+    let mut last_draw = start;
+    for (i, &line_idx) in lines.iter().enumerate() {
+        app.heat_cue_for(line_idx); // populates the caches; return value unused here
+        let now = Instant::now();
+        if now.duration_since(start) > WARMUP_FIRST_DRAW_DELAY
+            && now.duration_since(last_draw) > WARMUP_REDRAW_INTERVAL
+        {
+            app.message = format!(
+                "Computing inference cues for the initial view: {}/{} lines scored...",
+                i + 1,
+                lines.len()
+            );
+            terminal.draw(|frame| app.render(frame))?;
+            last_draw = now;
+        }
+    }
+    if Instant::now().duration_since(start) > WARMUP_FIRST_DRAW_DELAY {
+        app.message.clear();
+    }
+    Ok(())
+}
+
+fn run_loop<B: Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+    rx: &mpsc::Receiver<event::AppEvent>,
+    input_reader: &mut Option<event::InputReaderHandle>,
+    tx: &mpsc::Sender<event::AppEvent>,
+) -> io::Result<()>
+where
+    io::Error: From<B::Error>,
+{
+    // Spec 0190 S8: an activity tick that changes nothing must not cost
+    // a frame. The gate has to sit *above* `terminal.draw` — skipping
+    // work inside `render` would not work, because ratatui resets the
+    // back buffer every frame, so a span that is not re-emitted is
+    // erased rather than preserved.
+    let mut redraw = true;
+    // `PROTOLENS_TRACE` only: which of the three gate clauses below
+    // forced this frame. Without it a trace full of back-to-back draws
+    // says how much they cost but not who asked for them.
+    let mut redraw_why = "initial";
+    // Spec 0191 S3: a two-window sliding maximum of the activity level.
+    // `Tier` is `Ord` (`Prefetch < Visible < User`) and `Option<T>`
+    // orders `None < Some(_)`, so "highest seen" is just `max`. One
+    // window is one iteration of this loop; the dot shows
+    // `max(previous, current)`, so a rise lands on the very next frame
+    // while a fall has to be confirmed by two consecutive quiet windows.
+    //
+    // Both windows are *reset*, never merely accumulated. An earlier
+    // draft kept a single high-water mark reset only at a draw, which
+    // deadlocked: with the mark stuck high and the dot already showing
+    // that level, the gate below saw no difference, so no draw
+    // happened, so the mark was never reset — the dot stayed lit
+    // forever after a read-ahead wave finished.
+    let mut activity_window: Option<tiered::Tier> = None;
+    let mut activity_prev_window: Option<tiered::Tier> = None;
+    // Spec 0192 S3: a completed heat request marks the frame dirty
+    // instead of forcing one. `last_heat_frame` is stamped by *any*
+    // draw, not only a heat-driven one — a frame the user just caused
+    // has already shown whatever cues had arrived, so the interval
+    // should run from it.
+    let mut heat_dirty = false;
+    let mut last_heat_frame = Instant::now();
+    loop {
+        // A background thread died (see the hook in `run`). Say so, and
+        // let go of the worker: its thread is gone, so every request
+        // still queued and every one pushed from here on would go
+        // unanswered and leave the cue at `[?]` forever. Dropped, the
+        // cue path falls back to computing on this thread — slower, but
+        // it answers.
+        if let Some(panic) = take_background_panic() {
+            app.message = format!("background thread failed, cues are now inline: {panic}");
+            if let Some(worker) = app.heat_worker.take() {
+                worker.shutdown();
+            }
+            redraw = true;
+        }
+        if redraw {
+            app.activity_shown = activity_prev_window.max(activity_window);
+            let drawn_at = Instant::now();
+            terminal.draw(|frame| app.render(frame))?;
+            heat_dirty = false;
+            last_heat_frame = drawn_at;
+            trace::trace!("draw {redraw_why} us={}", drawn_at.elapsed().as_micros());
+            // Sample again immediately after the draw. `render` is
+            // itself a producer — `heat_cue_for` pushes a `Visible`
+            // request per unsettled visible row — so the requests this
+            // draw just queued belong to the current window. Sampling
+            // only before the draw is what made the dot emit one dark
+            // frame per completed request (G4).
+            activity_window = activity_window.max(app.heat_activity());
+        }
+        // While a status message is pending auto-dismissal
+        // (`message_deadline`, `track_message_timeout`) or the splash
+        // screen hasn't yet auto-dismissed (`splash_deadline`), the
+        // receive below must wake by that deadline, so that the next
+        // `render()` — which is what actually clears an expired message
+        // or splash — runs even with no further event. Spec 0152 G8:
+        // the input-reader thread owns the `event::poll`/`event::read()`
+        // pair and forwards through `rx` alongside the worker thread's
+        // own progress notifications, so this loop sleeps until there's
+        // a reason to wake instead of polling on a fixed schedule.
+        let splash_deadline = app.splash.then_some(app.splash_deadline);
+        let ui_deadline = match (app.message_deadline, splash_deadline) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(d), None) | (None, Some(d)) => Some(d),
+            (None, None) => None,
+        };
+        // Spec 0190 S7: the activity tick is a third candidate deadline
+        // alongside those two. Because it is always present the receive
+        // below is always a `recv_timeout` and never a bare `rx.recv()`:
+        // the loop wakes four times a second forever rather than ever
+        // being genuinely idle. Each such wake costs two relaxed loads
+        // and a comparison, and no frame.
+        let activity_deadline = Instant::now() + ACTIVITY_TICK;
+        let mut deadline = ui_deadline.map_or(activity_deadline, |d| d.min(activity_deadline));
+        // Spec 0192 S3: a deferred heat repaint is a fourth candidate
+        // deadline. Without it, a completion arriving inside the
+        // interval would be shown only when some unrelated event next
+        // woke the loop — the same class of self-deadlock spec 0191 S3
+        // hit, and the activity tick would merely bound it at 250 ms
+        // rather than remove it.
+        if heat_dirty {
+            deadline = deadline.min(last_heat_frame + HEAT_REPAINT_INTERVAL);
+        }
+        // Spec 0192 S4: read-ahead's guaranteed slice, taken before the
+        // receive loop below rather than only in its `Empty` arm.
+        for _ in 0..PREFETCH_STEPS_PER_ITERATION {
+            if matches!(app.prefetch_step(), PrefetchStep::Idle) {
+                break;
+            }
+        }
+        // Spec 0164 G7: interleave one unit of inline prefetch work
+        // with a non-blocking channel check on every idle-wait
+        // iteration, so read-ahead never holds the thread for more
+        // than a single `TieredBounded::upsert` push before yielding
+        // to a pending event. Falls back to the deadline-aware receive
+        // above only once `prefetch_step` reports `Idle` (walk
+        // exhausted or capacity-rejected).
+        let received = loop {
+            match rx.try_recv() {
+                // A bare mouse-move carries no user intent (`handle_
+                // mouse` already discards it after dequeuing), but
+                // `EnableMouseCapture` makes the terminal send one on
+                // essentially every pixel the pointer crosses. Treating
+                // it as "a real event" here would starve prefetching
+                // any time the mouse merely hovers over the window, so
+                // it's discarded transparently at this level too,
+                // without breaking out of the loop.
+                Ok(event::AppEvent::Term(Event::Mouse(m))) if m.kind == MouseEventKind::Moved => {
+                    continue
+                }
+                Ok(ev) => break Some(ev),
+                Err(mpsc::TryRecvError::Empty) => match app.prefetch_step() {
+                    PrefetchStep::Progressed => {
+                        // Yielding to a pending event is not enough:
+                        // every deadline computed above — an expiring
+                        // message, the splash's auto-dismiss, a due
+                        // heat repaint, the activity tick — comes due
+                        // with no event to announce it, and this loop
+                        // is the only thing between them and the frame
+                        // that honors them. Without the check,
+                        // read-ahead holds the thread until it runs dry
+                        // and all four are simply late. Breaking with
+                        // no event is exactly the timeout case the
+                        // `Idle` arm below produces, and the
+                        // `*_forces` tests just past the loop already
+                        // know what to do with it.
+                        if Instant::now() >= deadline {
+                            break None;
+                        }
+                        continue;
+                    }
+                    PrefetchStep::Idle => {
+                        // Read-ahead has nothing left to do, so this is
+                        // the one place the loop genuinely sleeps.
+                        let timeout = deadline.saturating_duration_since(Instant::now());
+                        break rx.recv_timeout(timeout).ok(); // timeout elapsed => None
+                    }
+                },
+                // Cannot fire as the code stands: this loop holds `tx`
+                // for the Neovim handoff's reader respawn below, so a
+                // sender outlives every receive here. Reported as an
+                // error rather than as `Ok(())` all the same — if that
+                // invariant is ever broken the session has lost its
+                // input, and exiting 0 in silence is the one answer that
+                // is certainly wrong.
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "the input channel disconnected",
+                    ));
+                }
+            }
+        };
+        // Spec 0190 S8. Three reasons to draw, checked here rather than
+        // after the dispatch below because that block can `return`, and
+        // because nothing in it can change the activity byte without
+        // also having produced the event that already forces a redraw.
+        //
+        // Spec 0191 S4: the third reason compares the debounced value,
+        // not a fresh probe. A fresh probe forces a frame on every
+        // trough between two requests; folding them into the sliding
+        // maximum keeps high-frequency toggling from costing main-thread
+        // frames during exactly the period when the worker wants the
+        // CPU.
+        activity_window = activity_window.max(app.heat_activity());
+        // Spec 0192 S3: a completed heat request is the one event that
+        // does not force its own frame. Its *state* is still applied
+        // immediately by the dispatch below — only the repaint waits.
+        if matches!(received, Some(event::AppEvent::HeatWorkerProgress)) {
+            heat_dirty = true;
+        }
+        let event_forces =
+            received.is_some() && !matches!(received, Some(event::AppEvent::HeatWorkerProgress));
+        let heat_forces = heat_dirty && Instant::now() >= last_heat_frame + HEAT_REPAINT_INTERVAL;
+        let deadline_forces = ui_deadline.is_some_and(|d| Instant::now() >= d);
+        let activity_forces = activity_prev_window.max(activity_window) != app.activity_shown;
+        redraw = event_forces || heat_forces || deadline_forces || activity_forces;
+        redraw_why = if event_forces {
+            match &received {
+                Some(event::AppEvent::Term(Event::Key(_))) => "key",
+                Some(event::AppEvent::Term(Event::Mouse(_))) => "mouse",
+                _ => "term",
+            }
+        } else if heat_forces {
+            "heat"
+        } else if deadline_forces {
+            "deadline"
+        } else {
+            "activity"
+        };
+        // Close the window. Everything above sampled into
+        // `activity_window`; from here it is history, and the next
+        // iteration starts clean. This is the reset the earlier
+        // single-high-water-mark draft lacked.
+        activity_prev_window = activity_window;
+        activity_window = None;
+        match received {
+            // Some Kitty-protocol-aware terminals report a `Release`
+            // event for a keystroke in addition to `Press`, even though
+            // this app only requests `DISAMBIGUATE_ESCAPE_CODES` (not
+            // `REPORT_EVENT_TYPES`). A `Release` event dispatched through
+            // `handle_key` after its matching `Press` already changed
+            // focus (e.g. `t`/`q`/`Esc`/`Tab` closing the override pane)
+            // would land in the *new* focus's handler instead of being a
+            // no-op — surfacing as a keypress "leaking" into both panes.
+            // Ignore anything but `Press`/`Repeat`.
+            Some(event::AppEvent::Term(Event::Key(key))) if key.kind != KeyEventKind::Release => {
+                let dispatched_at = Instant::now();
+                app.handle_key(key);
+                trace::trace!(
+                    "key {:?} us={}",
+                    key.code,
+                    dispatched_at.elapsed().as_micros()
+                );
+            }
+            Some(event::AppEvent::Term(Event::Mouse(mouse))) => app.handle_mouse(mouse),
+            Some(event::AppEvent::Term(_)) => {}
+            Some(event::AppEvent::HeatWorkerProgress) => {
+                app.recheck_pending_heat_states();
+                app.poll_pending_override_work();
+            }
+            None => {} // deadline elapsed with nothing received
+        }
+        if app.should_quit {
+            return Ok(());
+        }
+        #[cfg(unix)]
+        if app.should_suspend {
+            app.should_suspend = false;
+            suspend(terminal)?;
+        }
+        #[cfg(unix)]
+        if let Some(req) = app.pending_editor_open.take() {
+            // `open_editor` backgrounds this process's own process group
+            // relative to the terminal (`tcsetpgrp(io::stdin(),
+            // nvim_pgid)`) for as long as Neovim owns the foreground.
+            // The input-reader thread (spec 0152 G8) is otherwise
+            // permanently blocked in `event::read()` on that same stdin
+            // — a background process's read from its controlling
+            // terminal draws SIGTTIN, whose default disposition stops
+            // the *whole process* (every thread, not just this one),
+            // with nothing left to `SIGCONT` it back. Shutting it down
+            // before the handoff and respawning a fresh one right after
+            // `open_editor` reclaims the terminal is what keeps anything
+            // else from touching stdin while Neovim has it.
+            if let Some(reader) = input_reader.take() {
+                reader.shutdown();
+            }
+            neovim::open_editor(terminal, app, req)?;
+            *input_reader = Some(event::InputReaderHandle::spawn(tx.clone()));
+        }
+    }
+}

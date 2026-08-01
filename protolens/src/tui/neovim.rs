@@ -14,7 +14,8 @@ use prost_reflect::DescriptorPool;
 use ratatui::backend::Backend;
 use ratatui::Terminal;
 
-use super::{restore_terminal, App};
+use super::terminal::{enable_raw_mode_and_reenter, restore_terminal};
+use super::App;
 
 /// A fully-resolved `v` target: an absolute `.proto` path plus a
 /// 1-indexed line/column, ready to hand to Neovim's `cursor()`.
@@ -221,7 +222,7 @@ where
                 Ok(child) => child,
                 Err(e) => {
                     app.message = format!("cannot launch nvim: {e}");
-                    crate::tui::enable_raw_mode_and_reenter(terminal)?;
+                    enable_raw_mode_and_reenter(terminal)?;
                     return Ok(());
                 }
             };
@@ -267,7 +268,7 @@ where
             let _ = std::fs::remove_file(&socket_path);
             app.editor_state = EditorState::NotRunning;
             app.message = format!("cannot resume nvim: {e}");
-            crate::tui::enable_raw_mode_and_reenter(terminal)?;
+            enable_raw_mode_and_reenter(terminal)?;
             return Ok(());
         }
     }
@@ -281,7 +282,7 @@ where
         Ok(status) => status,
         Err(e) => {
             app.message = format!("cannot wait for nvim: {e}");
-            crate::tui::enable_raw_mode_and_reenter(terminal)?;
+            enable_raw_mode_and_reenter(terminal)?;
             return Ok(());
         }
     };
@@ -299,7 +300,7 @@ where
     }
     app.editor_state = next;
 
-    crate::tui::enable_raw_mode_and_reenter(terminal)?;
+    enable_raw_mode_and_reenter(terminal)?;
     Ok(())
 }
 

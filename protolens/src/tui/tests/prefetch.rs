@@ -5,6 +5,7 @@
 //! `PrefetchWalk`/`App::prefetch_step` (spec 0164 G7).
 
 use super::super::heat_worker::{HeatRequest, HeatWorkerHandle, HEAT_REQUEST_QUEUE_MAX_ENTRIES};
+use super::super::prefetch::PREFETCH_WALK_MAX_ROWS;
 use super::super::tiered::Tier;
 use super::super::*;
 use super::support::*;

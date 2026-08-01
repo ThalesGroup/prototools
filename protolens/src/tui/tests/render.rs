@@ -1804,3 +1804,57 @@ fn panning_changes_the_viewport_label_and_not_the_cursor_ruler() {
         "the cursor ruler stands still and the viewport indicator moves: {after:?}"
     );
 }
+
+/// An `App` opened over a descriptor set with no `index.rkyv` sidecar,
+/// so `DescriptorContext::load` took the eager path and recorded spec
+/// 0197 §S3's warning.
+///
+/// Returned untouched — splash still up, status line still carrying the
+/// warning — because those two are exactly what the §S3 tests inspect.
+fn eager_fallback_app() -> App {
+    use prost::Message as _;
+    use prost_types::field_descriptor_proto::{Label, Type};
+    use prost_types::{
+        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+    };
+
+    use crate::decode::{decode, DescriptorContext, RootType};
+
+    let file = FileDescriptorProto {
+        name: Some("test_eager_fallback.proto".to_string()),
+        package: Some("test".to_string()),
+        message_type: vec![DescriptorProto {
+            name: Some("Inner".to_string()),
+            field: vec![FieldDescriptorProto {
+                name: Some("id".to_string()),
+                number: Some(1),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Int32 as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        syntax: Some("proto3".to_string()),
+        ..Default::default()
+    };
+    let fds = FileDescriptorSet { file: vec![file] };
+
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let descriptor_path = std::env::temp_dir().join(format!("protolens-tui-eager-fallback-{n}.pb"));
+    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
+    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
+    std::fs::remove_file(&descriptor_path).unwrap();
+
+    let blob = [0x08u8, 0x05];
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Inner"), 2).unwrap();
+    App::new(
+        decoded,
+        "test.pb",
+        PathBuf::from("test.pb"),
+        2,
+        ctx,
+        ThemeKind::Dark,
+        None,
+    )
+}

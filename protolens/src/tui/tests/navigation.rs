@@ -1383,3 +1383,25 @@ fn a_fold_marker_row_still_reports_its_expanded_text() {
         app.row_text_of(DisplayRow::Committed(line), Some(idx))
     );
 }
+
+/// Spec 0194 test-plan item 9 (S8). Every node-level jump goes through
+/// `set_cursor`, whose job is now to put the caret on the row's first
+/// non-blank — landing on a new row with the caret still at the old
+/// row's column would be arbitrary.
+#[test]
+fn a_node_level_jump_puts_the_caret_on_the_first_non_blank() {
+    let (mut app, items) = repeated_message_fixture();
+    app.set_cursor(items[0]);
+    app.caret_to_line_end();
+    assert!(app.cursor_column > 0, "the caret starts away from the edge");
+
+    app.first_child_move();
+    assert_ne!(app.cursor, items[0]);
+    assert_eq!(app.cursor_column, app.caret_bounds().0);
+    assert_eq!(app.desired_column, app.cursor_column);
+
+    app.caret_to_line_end();
+    app.parent_move();
+    assert_eq!(app.cursor, items[0]);
+    assert_eq!(app.cursor_column, app.caret_bounds().0);
+}
