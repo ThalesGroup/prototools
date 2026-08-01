@@ -1019,8 +1019,19 @@ impl App {
         // and nothing else. Its own `&mut self` pass, ahead of the
         // immutable-`self` `text_lines` closure below — the same shape
         // and the same reason as the heat-cue pass that follows.
+        //
+        // Spec 0223 S3: skipped entirely while terminal events are still
+        // queued. `window_styles` is *cleared* rather than merely left
+        // alone — `row_spans` falls back to `NO_STYLES` for a missing
+        // entry, so an empty vector is precisely the monochrome path,
+        // whereas keeping the previous window's hints would paint one
+        // viewport's colors onto another viewport's rows.
         let t_styles = std::time::Instant::now();
-        self.refresh_window_styles(&window);
+        if self.input_pending {
+            self.window_styles.clear();
+        } else {
+            self.refresh_window_styles(&window);
+        }
         let d_styles = t_styles.elapsed();
 
         // Spec 0129 §G1: the drag-selected `line_idx` range (if any) gets

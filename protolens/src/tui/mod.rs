@@ -994,6 +994,16 @@ pub struct App {
     /// that frame's own `heat_cue_for` calls queued, which a probe taken
     /// before `terminal.draw` can never see.
     activity_shown: Option<tiered::Tier>,
+    /// Spec 0223 S1/S3: whether terminal events were still queued when
+    /// `run_loop` decided to draw this frame. Set by the loop just
+    /// before `terminal.draw`; read by `render_main_pane` to decide
+    /// whether to run tree-sitter at all.
+    ///
+    /// A plain `bool` sampled once per frame rather than the shared
+    /// counter itself: highlighting has to be decided once for the whole
+    /// frame, and a counter read from inside `render` could answer
+    /// differently for two panes of the same one.
+    pub(super) input_pending: bool,
     /// Incremented on every fold/unfold and every commit — i.e. every
     /// time a rendered line number may have shifted. `App::
     /// prefetch_step`'s staleness signal (spec 0164 G7) for restarting
@@ -1365,6 +1375,7 @@ impl App {
             prefetch_walk: PrefetchWalk::exhausted(),
             prefetch_trace: PrefetchTrace::default(),
             activity_shown: None,
+            input_pending: false,
             structural_version: 0,
             override_candidates_pending: false,
             override_complete_pending: false,

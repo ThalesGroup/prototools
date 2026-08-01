@@ -7,6 +7,7 @@ use super::super::render::{window_styles_for, ACTIVITY_GLYPH};
 use super::super::*;
 use super::support::*;
 use prototext_core::serialize::encode_text::annotation_start;
+use ratatui::buffer::Buffer;
 
 /// Regression test: a legitimately-empty decode (e.g. reopening an
 /// extracted `google.protobuf.Empty`, or any all-default submessage —
@@ -507,6 +508,76 @@ fn a_toggles_the_main_pane_annotation_display() {
         app.row_content(DisplayRow::Committed(0)),
         format!("  {line}")
     );
+}
+
+/// Spec 0223 test 3, guarding G3. A frame drawn while terminal events
+/// are still queued drops *syntax highlighting only*: it must be the
+/// same screen, character for character, with the cursor row still
+/// picked out — mid-scroll the cursor is how the user knows where they
+/// are, and a frame that loses it is worse than a slow one.
+#[test]
+fn a_pending_frame_has_no_syntax_styles_but_keeps_its_chrome() {
+    let (mut app, _inner_idx, _id_idx) = type_as_fixture();
+    app.splash = false;
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+
+    app.input_pending = true;
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert!(
+        app.window_styles.is_empty(),
+        "a pending frame must not run tree-sitter"
+    );
+    let pending = terminal.backend().buffer().clone();
+
+    app.input_pending = false;
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert!(
+        app.window_styles.iter().any(|hints| !hints.is_empty()),
+        "a settled frame over the same window must be highlighted"
+    );
+    let settled = terminal.backend().buffer().clone();
+
+    // Same text, same glyphs, same positions — only the colors differ.
+    let symbols = |buf: &Buffer| -> Vec<String> {
+        buf.content.iter().map(|c| c.symbol().to_string()).collect()
+    };
+    assert_eq!(symbols(&pending), symbols(&settled));
+
+    // And the cursor row survives. Its tint is a background, which
+    // `window_styles` never sets, so it must be identical in both.
+    let cursor_bg = theme::cursor_row_style(app.theme).bg;
+    assert!(cursor_bg.is_some(), "the fixture's theme must tint the row");
+    let tinted = |buf: &Buffer| -> usize {
+        buf.content
+            .iter()
+            .filter(|c| c.bg == cursor_bg.unwrap())
+            .count()
+    };
+    assert!(tinted(&pending) > 0, "the cursor row must still be marked");
+    assert_eq!(tinted(&pending), tinted(&settled));
+}
+
+/// Spec 0223 test 4, the specific defect §S3 warns about. `row_spans`
+/// indexes `window_styles` *by position in the window*, so hints left
+/// over from a previous viewport are not merely stale — they color a
+/// different set of rows. Clearing is what makes "no styles" mean
+/// "monochrome" rather than "wrong".
+#[test]
+fn stale_styles_are_cleared_not_left() {
+    let (mut app, _inner_idx, _id_idx) = type_as_fixture();
+    app.splash = false;
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert!(
+        !app.window_styles.is_empty(),
+        "the settled frame must have populated the hints being cleared"
+    );
+
+    app.input_pending = true;
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert!(app.window_styles.is_empty());
 }
 
 /// Spec 0113 D33: the bold override hint applies to a node's own

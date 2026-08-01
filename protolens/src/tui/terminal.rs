@@ -58,6 +58,20 @@ const ACTIVITY_TICK: Duration = Duration::from_millis(250);
 /// immediate.
 const HEAT_REPAINT_INTERVAL: Duration = Duration::from_millis(50);
 
+/// Spec 0223 S4: how long after a monochrome frame the loop waits before
+/// redrawing it in color. It is a settle interval, not a rate limit —
+/// the recolor also requires the event queue to be empty, so a held-down
+/// PageDown never reaches it, and the very first quiet moment does.
+///
+/// Sized against the input repeat rate rather than against the eye. A
+/// terminal's key auto-repeat is on the order of 30 ms, so anything much
+/// shorter would let a gap *between* two repeats trigger a recolor that
+/// the next repeat immediately discards, paying the highlighting cost
+/// for a frame the user never sees — the exact waste this avoids. Held
+/// down, it means the color returns 50 ms after the key is released,
+/// which reads as immediate.
+const STYLES_SETTLE_INTERVAL: Duration = Duration::from_millis(50);
+
 /// Spec 0192 S4: read-ahead steps guaranteed per main-loop iteration,
 /// regardless of how busy the event channel is. Read-ahead is still
 /// opportunistic — the `TryRecvError::Empty` arm in `run_loop` spends
@@ -290,7 +304,13 @@ pub fn run(app: &mut App) -> io::Result<()> {
     // `Option`-wrapped so `run_loop` can `take()` it and shut it down
     // around the Neovim handoff below — see `run_loop`'s own doc comment
     // on that block for why.
-    let mut input_reader = Some(event::InputReaderHandle::spawn(tx.clone()));
+    // Spec 0223 S1: owned here, beside the channel it describes, so that
+    // the reader respawn inside `run_loop` inherits the same counter.
+    let input_pending = event::InputPending::default();
+    let mut input_reader = Some(event::InputReaderHandle::spawn(
+        tx.clone(),
+        input_pending.clone(),
+    ));
 
     // Flaw C4: everything fallible from here to `run_loop` lives inside
     // this closure, whose `Result` is *captured* rather than propagated.
@@ -350,7 +370,14 @@ pub fn run(app: &mut App) -> io::Result<()> {
 
         warm_up_heat_cues(&mut terminal, app)?;
 
-        run_loop(&mut terminal, app, &rx, &mut input_reader, &tx)
+        run_loop(
+            &mut terminal,
+            app,
+            &rx,
+            &mut input_reader,
+            &tx,
+            &input_pending,
+        )
     })();
 
     // Spec 0152 G9: both threads joined, unconditionally (see "Shutdown
@@ -428,6 +455,7 @@ fn run_loop<B: Backend>(
     rx: &mpsc::Receiver<event::AppEvent>,
     input_reader: &mut Option<event::InputReaderHandle>,
     tx: &mpsc::Sender<event::AppEvent>,
+    input_pending: &event::InputPending,
 ) -> io::Result<()>
 where
     io::Error: From<B::Error>,
@@ -464,6 +492,19 @@ where
     // should run from it.
     let mut heat_dirty = false;
     let mut last_heat_frame = Instant::now();
+    // Spec 0223 S4: set whenever the frame just drawn was the
+    // monochrome one, and cleared by the colored frame that replaces
+    // it. This is what *guarantees* G2 — that the frame the user reads
+    // is in color — rather than leaving it to emerge from the gate
+    // below. As the gate stands every terminal event forces its own
+    // frame, so the last queued event is followed by a draw that
+    // samples an empty counter and colors itself; but that argument is
+    // a property of four `*_forces` clauses that will keep changing,
+    // and its failure mode is a screen that stays gray until the user
+    // touches something. The flag makes the recolor owed rather than
+    // incidental.
+    let mut styles_stale = false;
+    let mut last_mono_frame = Instant::now();
     loop {
         // A background thread died (see the hook in `run`). Say so, and
         // let go of the worker: its thread is gone, so every request
@@ -480,8 +521,16 @@ where
         }
         if redraw {
             app.activity_shown = activity_prev_window.max(activity_window);
+            // Spec 0223 S1/S3: sampled here rather than read from inside
+            // `render`, which keeps the counter out of `App` and lets the
+            // render tests set the flag directly.
+            app.input_pending = input_pending.is_pending();
             let drawn_at = Instant::now();
             terminal.draw(|frame| app.render(frame))?;
+            styles_stale = app.input_pending;
+            if styles_stale {
+                last_mono_frame = drawn_at;
+            }
             heat_dirty = false;
             last_heat_frame = drawn_at;
             trace::trace!("draw {redraw_why} us={}", drawn_at.elapsed().as_micros());
@@ -526,6 +575,12 @@ where
         if heat_dirty {
             deadline = deadline.min(last_heat_frame + HEAT_REPAINT_INTERVAL);
         }
+        // Spec 0223 S4: and a deferred recolor is a fifth, for the same
+        // reason — the frame that puts the color back is owed to the
+        // user with no event of its own to ask for it.
+        if styles_stale {
+            deadline = deadline.min(last_mono_frame + STYLES_SETTLE_INTERVAL);
+        }
         // Spec 0192 S4: read-ahead's guaranteed slice, taken before the
         // receive loop below rather than only in its `Empty` arm.
         for _ in 0..PREFETCH_STEPS_PER_ITERATION {
@@ -542,17 +597,11 @@ where
         // exhausted or capacity-rejected).
         let received = loop {
             match rx.try_recv() {
-                // A bare mouse-move carries no user intent (`handle_
-                // mouse` already discards it after dequeuing), but
-                // `EnableMouseCapture` makes the terminal send one on
-                // essentially every pixel the pointer crosses. Treating
-                // it as "a real event" here would starve prefetching
-                // any time the mouse merely hovers over the window, so
-                // it's discarded transparently at this level too,
-                // without breaking out of the loop.
-                Ok(event::AppEvent::Term(Event::Mouse(m))) if m.kind == MouseEventKind::Moved => {
-                    continue
-                }
+                // Spec 0223 S2: no arm here for a bare mouse-move. The
+                // reader thread now drops one before it reaches the
+                // channel, which both keeps it from starving read-ahead
+                // (its reason for being discarded here) and keeps a
+                // hovering pointer from looking like pending input.
                 Ok(ev) => break Some(ev),
                 Err(mpsc::TryRecvError::Empty) => match app.prefetch_step() {
                     PrefetchStep::Progressed => {
@@ -596,6 +645,15 @@ where
                 }
             }
         };
+        // Spec 0223 S1: the one decrement site. The loop above has two
+        // receiving arms — the `try_recv` at its head and the
+        // `recv_timeout` in the `Idle` case — and both funnel into this
+        // binding, so counting here cannot miss one or count one twice.
+        // `note_received` ignores a `HeatWorkerProgress`, which was
+        // never counted up.
+        if let Some(ev) = &received {
+            input_pending.note_received(ev);
+        }
         // Spec 0190 S8. Three reasons to draw, checked here rather than
         // after the dispatch below because that block can `return`, and
         // because nothing in it can change the activity byte without
@@ -617,9 +675,16 @@ where
         let event_forces =
             received.is_some() && !matches!(received, Some(event::AppEvent::HeatWorkerProgress));
         let heat_forces = heat_dirty && Instant::now() >= last_heat_frame + HEAT_REPAINT_INTERVAL;
+        // Spec 0223 S4/G2. Gated on the queue being *empty*: recoloring
+        // a viewport the user is still scrolling past would pay the
+        // highlighting cost for a frame nobody stops on, which is the
+        // whole thing this spec exists to avoid.
+        let styles_force = styles_stale
+            && !input_pending.is_pending()
+            && Instant::now() >= last_mono_frame + STYLES_SETTLE_INTERVAL;
         let deadline_forces = ui_deadline.is_some_and(|d| Instant::now() >= d);
         let activity_forces = activity_prev_window.max(activity_window) != app.activity_shown;
-        redraw = event_forces || heat_forces || deadline_forces || activity_forces;
+        redraw = event_forces || heat_forces || styles_force || deadline_forces || activity_forces;
         redraw_why = if event_forces {
             match &received {
                 Some(event::AppEvent::Term(Event::Key(_))) => "key",
@@ -628,6 +693,8 @@ where
             }
         } else if heat_forces {
             "heat"
+        } else if styles_force {
+            "styles"
         } else if deadline_forces {
             "deadline"
         } else {
@@ -692,7 +759,10 @@ where
                 reader.shutdown();
             }
             neovim::open_editor(terminal, app, req)?;
-            *input_reader = Some(event::InputReaderHandle::spawn(tx.clone()));
+            *input_reader = Some(event::InputReaderHandle::spawn(
+                tx.clone(),
+                input_pending.clone(),
+            ));
         }
     }
 }
