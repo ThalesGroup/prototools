@@ -336,7 +336,24 @@ impl App {
                 tiered::Tier::Prefetch,
             );
             match outcome {
-                None => self.prefetch_trace.hits += 1,
+                None => {
+                    // Spec 0224 S3: a hit means the window *and* the
+                    // current type's score are both cached (with
+                    // `current_key: None`, the window alone is the whole
+                    // question) — which is exactly what `settled()`
+                    // asks. Record it, or the skip above never fires for
+                    // this node and every later wave spends one of its
+                    // guaranteed steps re-proving the same hit instead
+                    // of stepping past it: the walk would slow down the
+                    // more the worker has answered.
+                    let state = self.read_heat_state(
+                        range.start,
+                        current_key.as_deref(),
+                        tiered::Tier::Prefetch,
+                    );
+                    self.heat_states[idx] = state;
+                    self.prefetch_trace.hits += 1;
+                }
                 Some(_) => self.prefetch_trace.pushes += 1,
             }
             return match outcome {

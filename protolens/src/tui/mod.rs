@@ -991,20 +991,11 @@ pub struct App {
     /// directly — see `heat_worker::HeatCaches`.
     heat_caches: Arc<Mutex<heat_worker::HeatCaches>>,
     /// Per-node heat-cue resolution state (spec 0152 G6), parallel to
-    /// `tree` — `Pending` until a cache check (only ever attempted on a
-    /// worker-progress wakeup or a real redraw-triggering input event)
-    /// resolves it; `Resolved` nodes are read directly, no cache lock.
+    /// `tree` — `Pending` until a cache check, only ever attempted when
+    /// the node's row is drawn (spec 0224 S1) or when the read-ahead
+    /// walk steps over it; `Resolved` nodes are read directly, no cache
+    /// lock.
     heat_states: Vec<heat_cue::HeatState>,
-    /// Node indices with an outstanding worker request (spec 0152 G6/
-    /// G8) — populated by `heat_cue_resolve` whenever it finds a node
-    /// still unsettled with a worker present, drained by
-    /// `recheck_pending_heat_states`. Bounds that recheck to the
-    /// handful of nodes actually awaiting an answer instead of the whole
-    /// document: a full `0..heat_states.len()` scan on every
-    /// `HeatWorkerProgress` event costs over a second per event on a
-    /// 635k-node document, compounding into tens of seconds whenever a
-    /// burst of requests completes at once.
-    pending_heat_recheck: HashSet<usize>,
     /// Spec 0164 G7: main-pane zigzag read-ahead prefetch walk state,
     /// persisted across `run_loop` iterations.
     prefetch_walk: PrefetchWalk,
@@ -1393,7 +1384,6 @@ impl App {
             ))),
             heat_worker: None,
             heat_states: vec![heat_cue::HeatState::default(); tree_len],
-            pending_heat_recheck: HashSet::new(),
             prefetch_walk: PrefetchWalk::exhausted(),
             prefetch_trace: PrefetchTrace::default(),
             activity_shown: None,

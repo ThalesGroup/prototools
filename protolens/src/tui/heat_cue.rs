@@ -382,11 +382,11 @@ impl App {
     ///
     /// **Every heat cache key goes through here**, and that is not
     /// tidiness. `heat_cue_resolve` *writes* the cache under this range
-    /// and `recheck_pending_heat_states` *reads it back* for the same
-    /// node; five call sites used to open-code the body instead, so the
+    /// and `prefetch_step_inner` pushes requests for the same node under
+    /// it; five call sites used to open-code the body instead, so the
     /// two agreed only for as long as nobody edited one copy. A
-    /// divergence has no failure signal — the recheck would read a key
-    /// the push never wrote, and the node would simply never settle.
+    /// divergence has no failure signal — one would read a key the other
+    /// never wrote, and the node would simply never settle.
     pub(super) fn heat_scored_range(&self, idx: usize) -> std::ops::Range<usize> {
         extract::message_payload_range(&self.blob, &self.tree[idx].span.raw_range)
     }
@@ -394,8 +394,7 @@ impl App {
     /// What the caches currently know about the range starting at
     /// `start` under `current_key` — the whole of what reading one
     /// node's heat is, in one place, so `heat_cue_resolve` and
-    /// `recheck_pending_heat_states` cannot come to read it two
-    /// different ways.
+    /// `prefetch_step_inner` cannot come to read it two different ways.
     ///
     /// `tier` is the node's own (`heat_tier_for`, spec 0208 S3), never a
     /// flat `Tier::Visible`: `peek` is a *promoting* read (spec 0164
@@ -407,7 +406,12 @@ impl App {
     /// and the two fields wanted sit alongside a whole ranked candidate
     /// list that `peek` would copy to reach them — with the cache's
     /// `Mutex` held against the worker.
-    fn read_heat_state(&self, start: usize, current_key: Option<&str>, tier: Tier) -> HeatState {
+    pub(super) fn read_heat_state(
+        &self,
+        start: usize,
+        current_key: Option<&str>,
+        tier: Tier,
+    ) -> HeatState {
         let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
         let best = caches
             .by_range
@@ -419,9 +423,17 @@ impl App {
         HeatState::new(best, current)
     }
 
-    /// The shared core of `heat_cue_for` and `recheck_pending_heat_
-    /// states` (spec 0154 G4) — everything past the line-index-to-node/
-    /// eligibility gating, keyed directly on node index.
+    /// The core of `heat_cue_for`/`heat_cue_at` (spec 0154 G4) —
+    /// everything past the line-index-to-node/eligibility gating, keyed
+    /// directly on node index.
+    ///
+    /// This is also what notices a scoring answer (spec 0224 S2): an
+    /// unsettled node re-reads the shared cache and rewrites its own
+    /// `heat_states` entry on every frame in which its row is drawn, and
+    /// spec 0192's `heat_dirty` owes such a frame within
+    /// `HEAT_REPAINT_INTERVAL` of any worker completion. That is what
+    /// makes the progressive `[?]` -> `[?/{best}]` -> cue sequence
+    /// visible with no user action in between.
     fn heat_cue_resolve(&mut self, idx: usize) -> HeatDisplay {
         if self.heat_states[idx].settled() {
             return heat_display(self.heat_states[idx]);
@@ -445,11 +457,6 @@ impl App {
 
         if state.settled() || self.heat_worker.is_some() {
             self.heat_states[idx] = state;
-            if state.settled() {
-                self.pending_heat_recheck.remove(&idx);
-            } else {
-                self.pending_heat_recheck.insert(idx);
-            }
             return heat_display(state);
         }
 
@@ -512,54 +519,7 @@ impl App {
         };
 
         self.heat_states[idx] = state;
-        self.pending_heat_recheck.remove(&idx);
         heat_display(state)
-    }
-
-    /// Re-checks the shared cache for every node not yet `settled`
-    /// (spec 0154 G4) — called whenever the worker thread reports
-    /// progress. Reads `HeatCaches` directly rather than going through
-    /// `self.heat_lookup` (unlike `heat_cue_resolve`) so a
-    /// still-missing entry is never re-pushed onto the request queue
-    /// — pointless here: the queue already merges by range (G3), so any
-    /// earlier in-flight request for this node is either already
-    /// covering it or will itself report progress again once popped.
-    /// Updates every node's state to whatever is now known, even if
-    /// still only partially settled — that's what makes the
-    /// progressive `[?]` -> `[?/{best}]` -> cue sequence visible across
-    /// successive worker-progress wakeups.
-    pub(super) fn recheck_pending_heat_states(&mut self) {
-        let candidates: Vec<usize> = self.pending_heat_recheck.iter().copied().collect();
-        for idx in candidates {
-            // Out of range after a live-preview truncation (spec 0161)
-            // shrank `tree`/`heat_states` since this index was queued.
-            if idx >= self.heat_states.len() {
-                self.pending_heat_recheck.remove(&idx);
-                continue;
-            }
-            if self.heat_states[idx].settled() {
-                self.pending_heat_recheck.remove(&idx);
-                continue;
-            }
-            if !self.can_override(idx) {
-                self.pending_heat_recheck.remove(&idx);
-                continue;
-            }
-            let range = self.heat_scored_range(idx);
-            let start = range.start;
-            let current_key = self.current_type_key(idx);
-
-            // Spec 0208 S3: same per-node tier as `heat_cue_resolve`.
-            // This function pushes nothing by design, so the tier only
-            // ever reaches `peek` — it changes eviction ranking and
-            // nothing else.
-            let tier = self.heat_tier_for(idx);
-            let state = self.read_heat_state(start, current_key.as_deref(), tier);
-            self.heat_states[idx] = state;
-            if state.settled() {
-                self.pending_heat_recheck.remove(&idx);
-            }
-        }
     }
 }
 

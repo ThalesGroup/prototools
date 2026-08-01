@@ -983,13 +983,53 @@ fn heat_cue_for_pre_populated_cache_resolves_without_pushing() {
     assert_eq!(app.heat_worker.as_ref().unwrap().queue_len(), 0);
 }
 
+/// Spec 0224 S2, and the one assertion the whole spec rests on: the
+/// frame *is* the recheck. An answer that appears in `heat_caches`
+/// between two draws is picked up by the second draw alone, with
+/// nothing standing between the worker and the screen but the repaint
+/// spec 0192's `heat_dirty` already owes.
+///
+/// `stub_for_test` rather than a real worker, so the cache cannot
+/// change except where this test changes it — the transition asserted
+/// is the one the test performed, not a race it happened to win.
+#[test]
+fn a_drawn_row_picks_up_a_cache_answer_with_no_recheck() {
+    let mut app = message_node_app();
+    app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
+    let idx = 0;
+    let range = extract::message_payload_range(&app.blob, &app.tree[idx].span.raw_range);
+    let header_line = app.absolute_start(idx);
+
+    // First draw: nothing is known, so the row shows `[?]`.
+    assert!(matches!(
+        app.heat_cue_for(header_line),
+        HeatDisplay::Unknown
+    ));
+    assert!(!app.heat_states[idx].settled());
+
+    // The worker's answer arrives, out of band — no event, no recheck.
+    seed_range_heat_entry(
+        &mut app,
+        range.start,
+        Some(50),
+        1,
+        "google.protobuf.DescriptorProto",
+        Some(10),
+    );
+
+    // Second draw: the same call that drew `[?]` now draws the cue.
+    assert!(matches!(app.heat_cue_for(header_line), HeatDisplay::Cue(_)));
+    assert!(app.heat_states[idx].settled());
+}
+
 /// Real worker thread, real tiny in-memory graph, through the `App`
 /// layer end-to-end (spec 0152 test plan): a `heat_cue_for` miss with
 /// a `HeatWorkerHandle` installed (via `DescriptorContext::
 /// for_test_with_graph`) leaves the node `Pending`; the worker's own
-/// cache write is later picked up by `recheck_pending_heat_states`
-/// (the same re-check `AppEvent::HeatWorkerProgress` triggers in
-/// `run_loop`), resolving it. Complements `heat_worker.rs`'s own
+/// cache write is later picked up by the next `heat_cue_for` (spec
+/// 0224 S2 — the repaint `AppEvent::HeatWorkerProgress` owes within
+/// `HEAT_REPAINT_INTERVAL` is what performs this in `run_loop`),
+/// resolving it. Complements `heat_worker.rs`'s own
 /// lower-level round-trip test (which pins the exact cache contents
 /// and the no-re-score call-count guarantee); this one pins the
 /// `App`-level wiring instead.
@@ -1003,11 +1043,11 @@ fn heat_cue_for_pre_populated_cache_resolves_without_pushing() {
 ///   separate lock acquisitions. A worker running during that window
 ///   can legally finish first — an 8-byte payload against an 8-message
 ///   graph is microseconds — and then `heat_cue_for` returns a settled
-///   cue, not `Unknown`.
-/// - Worse, that same schedule *removes* the node from
-///   `pending_heat_recheck` instead of inserting it, so the poll below
-///   would have nothing to recheck and would report success on its
-///   first pass without exercising the path this test is named for.
+///   cue, not `Unknown`, so the first phase would assert nothing.
+/// - The poll below would then report success on its very first call,
+///   without the worker's answer ever having had to travel from the
+///   cache into `heat_states` — which is the path this test is named
+///   for.
 ///
 /// Dropping the worker entirely (the fix `override_pane_auto_completes_
 /// from_polling_alone_without_scrolling` uses) is not available here:
@@ -1034,12 +1074,8 @@ fn heat_cue_for_resolves_once_a_real_worker_populates_the_cache() {
         HeatDisplay::Unknown
     ));
     assert!(!app.heat_states[idx].settled());
-    // The two facts phase two rests on: the work is queued, and the
-    // node is on the recheck list that `recheck_pending_heat_states`
-    // iterates — it pushes nothing of its own, so a node missing from
-    // this set can never settle.
+    // The fact phase two rests on: the work is queued.
     assert_eq!(app.heat_worker.as_ref().unwrap().queue_len(), 1);
-    assert!(app.pending_heat_recheck.contains(&idx));
 
     // Now let a real worker loose on the request already queued above.
     let graph = Arc::clone(app.ctx.graph.as_ref().unwrap());
@@ -1054,10 +1090,10 @@ fn heat_cue_for_resolves_once_a_real_worker_populates_the_cache() {
     );
 
     // Bounded poll, not `recv` — this isn't exercising the
-    // event-driven wiring, just the worker/cache-recheck contract.
+    // event-driven wiring, just the worker/cache/redraw contract.
     let mut resolved = false;
     for _ in 0..200 {
-        app.recheck_pending_heat_states();
+        app.heat_cue_for(header_line);
         if app.heat_states[idx].settled() {
             resolved = true;
             break;

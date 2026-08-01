@@ -667,8 +667,11 @@ where
         // CPU.
         activity_window = activity_window.max(app.heat_activity());
         // Spec 0192 S3: a completed heat request is the one event that
-        // does not force its own frame. Its *state* is still applied
-        // immediately by the dispatch below — only the repaint waits.
+        // does not force its own frame — it only owes one within
+        // `HEAT_REPAINT_INTERVAL`. Since spec 0224 that deadline is the
+        // *whole* of how the answer reaches the screen: the dispatch
+        // below no longer touches `heat_states`, and the frame this flag
+        // buys re-reads the cache for every unsettled row it draws.
         if matches!(received, Some(event::AppEvent::HeatWorkerProgress)) {
             heat_dirty = true;
         }
@@ -727,10 +730,10 @@ where
             }
             Some(event::AppEvent::Term(Event::Mouse(mouse))) => app.handle_mouse(mouse),
             Some(event::AppEvent::Term(_)) => {}
-            Some(event::AppEvent::HeatWorkerProgress) => {
-                app.recheck_pending_heat_states();
-                app.poll_pending_override_work();
-            }
+            // Spec 0224 S1: O(1). Terminal events share this channel in
+            // FIFO order, so anything done here is paid by the next
+            // keystroke behind it.
+            Some(event::AppEvent::HeatWorkerProgress) => app.poll_pending_override_work(),
             None => {} // deadline elapsed with nothing received
         }
         if app.should_quit {

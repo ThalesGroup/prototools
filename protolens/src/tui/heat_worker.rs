@@ -698,10 +698,10 @@ impl HeatWorkerHandle {
     /// asserting on the scheduler. `heat_cue_resolve` pushes a request
     /// and reads the cache back as two separate lock acquisitions, so a
     /// worker running at the time can legally settle the node inside
-    /// that window — and if it does, the node never enters
-    /// `pending_heat_recheck` and the recheck path under test is never
-    /// reached. Queueing against a stub and only then starting the
-    /// thread removes the window instead of racing it.
+    /// that window — and if it does, the very first call returns a
+    /// settled cue and the path under test is never reached. Queueing
+    /// against a stub and only then starting the thread removes the
+    /// window instead of racing it.
     #[cfg(test)]
     pub(super) fn start_for_test(
         mut self,

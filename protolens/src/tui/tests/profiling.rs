@@ -314,7 +314,6 @@ fn profile_override_pane_enter_on_pdb() {
         app.poll_pending_override_work();
         if let Some(rx) = &rx {
             while rx.try_recv().is_ok() {
-                app.recheck_pending_heat_states();
                 app.poll_pending_override_work();
             }
         }
@@ -474,7 +473,7 @@ fn profile_main_pane_down_on_db3() {
     // worker is spawned *before* any navigation, exactly like a real
     // session. Unlike the first attempt, the receiver is kept (not
     // discarded) so `HeatWorkerProgress` events can be pumped into
-    // `recheck_pending_heat_states`/`poll_pending_override_work` below,
+    // `poll_pending_override_work` below,
     // exactly like `mod.rs`'s `run_loop` does — the first attempt's
     // `let (tx, _rx) = ...` silently skipped that call path entirely,
     // which is why it never reproduced the reported slowdown.
@@ -515,13 +514,11 @@ fn profile_main_pane_down_on_db3() {
         std::thread::sleep(std::time::Duration::from_millis(30));
 
         // Drain every `HeatWorkerProgress` the worker has posted so
-        // far, same as `run_loop`'s `rx.recv()` match arm — each one
-        // triggers `recheck_pending_heat_states`.
+        // far, same as `run_loop`'s `rx.recv()` match arm.
         let mut progress_events = 0;
         let t_progress = Instant::now();
         if let Some(rx) = &rx {
             while rx.try_recv().is_ok() {
-                app.recheck_pending_heat_states();
                 app.poll_pending_override_work();
                 progress_events += 1;
             }
@@ -605,7 +602,6 @@ fn repro_crash_down_t_enter_on_pdb() {
         app.poll_pending_override_work();
         if let Some(rx) = &rx {
             while rx.try_recv().is_ok() {
-                app.recheck_pending_heat_states();
                 app.poll_pending_override_work();
             }
         }
@@ -1234,7 +1230,6 @@ fn repro_crash_natural_highlight_on_pdb() {
         }
         if let Some(rx) = &rx {
             while rx.try_recv().is_ok() {
-                app.recheck_pending_heat_states();
                 app.poll_pending_override_work();
                 if app.tree.len() != last_len {
                     splice_events += 1;

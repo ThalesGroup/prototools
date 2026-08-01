@@ -8,6 +8,7 @@ use super::super::heat_worker::{HeatRequest, HeatWorkerHandle, HEAT_REQUEST_QUEU
 use super::super::prefetch::PREFETCH_WALK_MAX_ROWS;
 use super::super::tiered::Tier;
 use super::super::*;
+use super::heat_cue::seed_range_heat_entry;
 use super::support::*;
 
 // ---------------------------------------------------------------------
@@ -263,6 +264,51 @@ fn prefetch_step_stops_after_the_row_budget_even_with_rows_to_spare() {
         "the walk itself must be what ended the wave, not a full queue"
     );
     assert!(matches!(app.prefetch_step(), PrefetchStep::Idle));
+}
+
+/// Spec 0224 S3: the walk maintains its own skip. A node whose answer
+/// is already in `heat_caches` costs the wave one step to discover —
+/// and exactly one, ever, because that step records the `HeatState` it
+/// just proved exists. Without the write-back the node would be
+/// re-proved on every subsequent wave, so the read-ahead would advance
+/// more slowly the more the worker had answered.
+///
+/// The queue must stay empty throughout: a hit is the whole point, and
+/// a push would mean the seeded entry did not cover the ask.
+#[test]
+fn a_prefetch_cache_hit_settles_the_node_for_the_next_wave() {
+    let mut app = wide_sibling_scalars_app(5);
+    app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
+    app.set_cursor(2);
+
+    // The zigzag's first target is `cursor - 1`. Seed the answer for
+    // that node only, so the hit and the miss are distinguishable.
+    let (first, _) = app
+        .prev_visible(LinePos::header(app.cursor))
+        .expect("the cursor is not the first row");
+    let idx = first.node;
+    let range = app.heat_scored_range(idx);
+    let key = app
+        .current_type_key(idx)
+        .expect("a scalar sibling has a current type");
+    seed_range_heat_entry(&mut app, range.start, Some(50), 1, &key, Some(10));
+    assert!(!app.heat_states[idx].settled());
+
+    assert!(matches!(app.prefetch_step(), PrefetchStep::Progressed));
+    assert!(
+        app.heat_states[idx].settled(),
+        "a cache hit must record the state it just proved exists"
+    );
+    assert_eq!(
+        app.heat_worker.as_ref().unwrap().queue_len(),
+        0,
+        "a covered node must not be pushed"
+    );
+
+    // The following step is spent on a different node, not on
+    // re-proving this one.
+    assert!(matches!(app.prefetch_step(), PrefetchStep::Progressed));
+    assert_eq!(app.heat_worker.as_ref().unwrap().queue_len(), 1);
 }
 
 /// No worker running at all: `prefetch_step` is `Idle` immediately —
