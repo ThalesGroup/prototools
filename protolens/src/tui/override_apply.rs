@@ -490,14 +490,14 @@ impl App {
         // Group direct children by field_number, keyed off the first
         // child seen for each number (G6c).
         struct Group {
-            field_number: u64,
+            field_number: u32,
             first_child: usize,
             count: usize,
         }
         let mut groups: Vec<Group> = Vec::new();
         let mut child = self.first_child(idx);
         while let Some(c) = child {
-            let field_number = u64::from(self.tree[c].span.field_number);
+            let field_number = self.tree[c].span.field_number;
             match groups.iter_mut().find(|g| g.field_number == field_number) {
                 Some(g) => g.count += 1,
                 None => groups.push(Group {
@@ -526,7 +526,7 @@ impl App {
             };
 
             let (r#type, type_name, referenced_file) =
-                match self.own_field_override(idx, g.field_number) {
+                match self.own_field_override(idx, g.field_number.into()) {
                     // Tiers 1-2: an active PathField/FqdnField override.
                     Some(None) => (Type::Bytes, None, None),
                     Some(Some(fqdn)) => {
@@ -840,7 +840,11 @@ impl App {
             let grandparent = self.parent(parent)?;
             if self.is_message_set_typed(grandparent) {
                 let type_id_idx = self.find_sibling(idx, 2)?;
-                let type_id = self.read_varint_field(type_id_idx)?;
+                // Checked, not `as`: the varint comes off the wire, and a
+                // truncating narrowing would name a *valid but different*
+                // extension, which renders as the wrong type with nothing
+                // to show for it. Refusing leaves the node untyped.
+                let type_id = u32::try_from(self.read_varint_field(type_id_idx)?).ok()?;
                 let grandparent_fqdn = self
                     .fqdns
                     .get(self.tree[grandparent].span.type_fqdn)?
@@ -848,9 +852,9 @@ impl App {
                 // The extension is declared in whatever file extends the
                 // MessageSet, which need not be in the root closure; the
                 // index's `ext_to_file` names it (spec 0100 §5.1, 0197 §S5).
-                self.ctx.load_extension(&grandparent_fqdn, type_id as u32);
+                self.ctx.load_extension(&grandparent_fqdn, type_id);
                 let extendee = self.ctx.pool().get_message_by_name(&grandparent_fqdn)?;
-                let ext = extendee.get_extension(type_id as u32)?;
+                let ext = extendee.get_extension(type_id)?;
                 if let prost_reflect::Kind::Message(inner) = ext.kind() {
                     return Some(inner.full_name().to_string());
                 }
@@ -2375,7 +2379,7 @@ impl App {
         let packed =
             in_packed_run || u32::from(old_span.wire_type) == prototext_core::helpers::WT_LEN;
 
-        let field_number = u64::from(old_span.field_number);
+        let field_number = old_span.field_number;
         let field_name = self.field_name_for(idx);
         let renamed = self
             .resolve_active_override_entry(idx)
@@ -2554,7 +2558,9 @@ impl App {
                 Some(ft) if ft != Type::Group => {
                     decode::patch_synthetic_field_name(line, &header_field_name)
                 }
-                None if renamed => decode::patch_raw_field_name(line, field_number, &field_name),
+                None if renamed => {
+                    decode::patch_raw_field_name(line, u64::from(field_number), &field_name)
+                }
                 _ => None,
             };
             if let Some(patched) = patched {

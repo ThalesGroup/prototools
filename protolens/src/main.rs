@@ -257,6 +257,20 @@ fn size_suffix(p: &Path) -> String {
     }
 }
 
+/// Write a batch export to stdout, flushed.
+///
+/// The flush is the point: Rust's runtime flushes stdout at exit but
+/// discards the error, so without this an export into a full disk writes
+/// a truncated stream and still exits `0` — and the exit code is the only
+/// signal a script piping protolens into a build receives.
+fn write_stdout(bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    out.write_all(bytes)?;
+    out.flush()
+}
+
 fn main() -> ExitCode {
     // Dynamic shell completion — same model as Cargo/prototext. When
     // PROTOLENS_COMPLETE=<shell> is set, print the completion script and
@@ -494,28 +508,35 @@ fn main() -> ExitCode {
                         return ExitCode::FAILURE;
                     }
                 }
-                // Spec 0221 S3. Reported here, before anything is
-                // written: an override that could not be applied means
-                // the export would not be what was asked for, and for
-                // `--format=descriptor-binary` — which *requires*
-                // `--load-overrides` — that is a wrong schema handed to
-                // whatever consumes it. The exit code is the only signal
-                // a script piping this into a build receives, so it is
-                // a failure and no output file is produced. That is a
-                // change from the best-effort export this used to be.
-                //
-                // Spec 0198 S2 is not violated: it binds a *successful*
-                // batch subcommand to a silent stderr, and this one is
-                // not successful.
-                if !app.refusals.is_empty() {
-                    for (_, refusal) in &app.refusals {
-                        eprintln!(
-                            "error: --load-overrides '{}': {refusal}",
-                            overrides_path.display()
-                        );
-                    }
-                    return ExitCode::FAILURE;
+            }
+
+            // Spec 0221 S3. Reported here, before anything is written: an
+            // override that could not be applied means the export would
+            // not be what was asked for, and for
+            // `--format=descriptor-binary` — which *requires*
+            // `--load-overrides` — that is a wrong schema handed to
+            // whatever consumes it. The exit code is the only signal a
+            // script piping this into a build receives, so it is a
+            // failure and no output file is produced. That is a change
+            // from the best-effort export this used to be.
+            //
+            // Outside the block above because `--load-overrides` is not
+            // the only source: `App::new`'s own pass over the overrides
+            // the document carries can refuse too, and that refusal makes
+            // the export just as wrong.
+            //
+            // Spec 0198 S2 is not violated: it binds a *successful* batch
+            // subcommand to a silent stderr, and this one is not
+            // successful.
+            if !app.refusals.is_empty() {
+                let origin = match &load_overrides {
+                    Some(p) => format!("--load-overrides '{}'", p.display()),
+                    None => "override".to_string(),
+                };
+                for (_, refusal) in &app.refusals {
+                    eprintln!("error: {origin}: {refusal}");
                 }
+                return ExitCode::FAILURE;
             }
 
             let is_descriptor = matches!(
@@ -554,8 +575,7 @@ fn main() -> ExitCode {
                         }
                     }
                     None => {
-                        use std::io::Write as _;
-                        if let Err(e) = std::io::stdout().write_all(&bytes) {
+                        if let Err(e) = write_stdout(&bytes) {
                             eprintln!("error: writing to stdout: {e}");
                             return ExitCode::FAILURE;
                         }
@@ -577,8 +597,7 @@ fn main() -> ExitCode {
                     }
                 }
                 None => {
-                    use std::io::Write as _;
-                    if let Err(e) = std::io::stdout().write_all(&bytes) {
+                    if let Err(e) = write_stdout(&bytes) {
                         eprintln!("error: writing to stdout: {e}");
                         return ExitCode::FAILURE;
                     }

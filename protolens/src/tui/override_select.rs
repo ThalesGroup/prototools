@@ -596,7 +596,7 @@ impl App {
             return;
         };
         let span = &self.tree[idx].span;
-        let field_number = u64::from(span.field_number);
+        let field_number = span.field_number;
         let is_group = u32::from(span.wire_type) == prototext_core::helpers::WT_START_GROUP;
         // Spec 0219 S4: must agree with `render_node_as`'s own `packed`
         // — see the comment there — or warming registers a wrapper the

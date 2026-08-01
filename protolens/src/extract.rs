@@ -99,7 +99,14 @@ pub(crate) fn message_payload_range(blob: &[u8], range: &Range<u32>) -> Range<us
         }
     }
     if wtype == WT_START_GROUP {
-        if let Some(field_number) = tag.wfield {
+        // `wfield_oor` is the parser's own report that the field number is
+        // 0 or at least 2^29 — not valid protobuf. It matters here and not
+        // merely as hygiene: `write_tag` takes a `u32`, so a truncating
+        // narrowing would encode a *different* tag, and it is that tag's
+        // length that gets subtracted from `range.end`. The extracted
+        // group would be cut at the wrong byte. Fall through to the
+        // tag-only strip instead.
+        if let (Some(field_number), None) = (tag.wfield, tag.wfield_oor) {
             let mut end_tag = Vec::new();
             write_tag(field_number as u32, WT_END_GROUP, &mut end_tag);
             let end = range.end.saturating_sub(end_tag.len()).max(tag.next_pos);

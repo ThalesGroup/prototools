@@ -1478,7 +1478,7 @@ fn no_resolved_root_type_seeds_no_override_and_still_renders_raw() {
 
 fn field_by_number(
     fields: &[export_descriptor::ResolvedField],
-    number: u64,
+    number: u32,
 ) -> &export_descriptor::ResolvedField {
     fields
         .iter()

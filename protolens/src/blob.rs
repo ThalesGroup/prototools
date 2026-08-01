@@ -84,6 +84,19 @@ impl Blob {
         if is_text {
             let mut text = Vec::new();
             file.read_to_end(&mut text)?;
+            // `encode_text_to_binary_into` has no return type: on invalid
+            // UTF-8 it leaves the buffer exactly as it found it, and the
+            // result would be indistinguishable from an empty file. This
+            // is the boundary where the failure can still be named.
+            if let Err(e) = std::str::from_utf8(&text) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "prototext text is not valid UTF-8 at byte {}",
+                        e.valid_up_to()
+                    ),
+                ));
+            }
             // No reservation here beyond the headroom: sizing the payload
             // needs to know how much the encode transiently wastes on
             // placeholders, which is prototext-core's business, and
@@ -458,6 +471,29 @@ mod tests {
             TEXT,
             "--assume-binary still went down the text branch",
         );
+    }
+
+    /// A text blob that is not valid UTF-8 is an error, not an empty
+    /// document. `encode_text_to_binary_into` has no return type and
+    /// leaves the buffer untouched, so without the check here one bad
+    /// byte opened as a zero-length blob indistinguishable from an empty
+    /// file.
+    #[test]
+    fn a_text_blob_with_one_bad_byte_is_an_error_not_an_empty_document() {
+        let mut bytes = TEXT.to_vec();
+        bytes.extend_from_slice(&[0xffu8, 0xfe]);
+        let file = TempFile::new("bad-utf8", &bytes);
+
+        let err = Blob::load(&file.0, false, false).expect_err("a bad byte was accepted");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("UTF-8"),
+            "the error does not name the cause: {err}",
+        );
+
+        // `--assume-binary` takes the other producer and is unaffected.
+        let verbatim = Blob::load(&file.0, true, false).expect("load");
+        assert_eq!(verbatim.payload(), &bytes[..]);
     }
 
     /// Spec 0216 test item 13. Mapping is an optimization with two silent

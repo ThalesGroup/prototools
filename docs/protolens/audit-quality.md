@@ -26,11 +26,15 @@ terminal lifecycle, the batch/CLI path, and test coverage. It found
 enough that the document is now ordered by **what the user sees when it
 goes wrong** rather than by subsystem.
 
-## A. Silently wrong output
+## A. Silently wrong output — ALL FIXED 2026-08-01
 
 The worst class in this codebase, because protolens' entire job is to
 tell you what some bytes mean. A crash is recoverable; a plausible-
 looking wrong answer is not.
+
+Every item below is fixed; each carries a short note on what was done.
+The descriptions are kept because they say what the failure *looked
+like*, which is what a future reader needs to recognize a relapse.
 
 ### A1. One bad byte turns a text file into an empty document — HIGH
 
@@ -44,9 +48,13 @@ zero-length blob — no error, no warning, just an empty document. The
 comment at that site (`// The text is always valid ASCII`) states an
 assumption the caller does not enforce.
 
-The fix is a return type on the encoder, or a UTF-8 check in `Blob::load`
-that reports. Either way the empty result must stop being indis-
-tinguishable from an empty file.
+**Fixed** by a UTF-8 check in `Blob::load`, ahead of the encode, that
+returns `io::ErrorKind::InvalidData` naming the offending byte offset.
+That is the system boundary and it keeps the change inside one crate;
+changing the encoder's public signature would have reached
+prototext-core for no extra benefit. Guarded by
+`a_text_blob_with_one_bad_byte_is_an_error_not_an_empty_document`, which
+also pins that `--assume-binary` still takes the other producer.
 
 ### A2. Batch export to stdout never flushes — HIGH
 
@@ -58,8 +66,9 @@ Rust's runtime does flush stdout at exit, but it discards the error. So
 `protolens export ... > /full/disk` writes a truncated stream and exits
 `0`. A script piping protolens into a build cannot tell.
 
-Explicit `flush()` on both paths, with the error mapped to
-`ExitCode::FAILURE`, is a four-line fix.
+**Fixed**: both paths now go through one `write_stdout` helper that locks
+stdout, writes and flushes, with either error mapped to
+`ExitCode::FAILURE`.
 
 ### A3. `App::new`'s own refusals are invisible in batch
 
@@ -70,12 +79,19 @@ document's own inference, and a refusal on that path in batch mode still
 produces a clean exit and a file. This is 0221's defect on the other
 branch.
 
+**Fixed**: the check moved out of that block and now runs on every
+export. The message names `--load-overrides <path>` when there was one
+and says plain `override` otherwise.
+
 ### A4. An extension can render as the wrong type
 
 `override_apply.rs:851` and `:853` narrow with `type_id as u32`. On
 truncation the result is a *valid but different* type id, so the node
 renders as the wrong extension silently — no error, no refusal, just
-wrong output. Use a checked conversion and refuse.
+wrong output.
+
+**Fixed**: `u32::try_from(...).ok()?`. The enclosing function returns
+`Option<String>`, so refusing simply leaves the node untyped.
 
 ### A5. Wire-derived field numbers are narrowed unchecked
 
@@ -91,15 +107,48 @@ narrow it:
   into `FieldDescriptorProto.number` as `i32`, **with no validation**,
   and that descriptor goes to disk for another tool to consume.
 
-Field numbers above 2^29 are already invalid protobuf. Refusing them
-once, at decode, would retire all three.
+**Fixed, and the premise turned out to be half wrong.** Field numbers
+above 2^29 are already refused *once*, and it has been that way since
+spec 0212: `NodeSpan::field_number` is a `u32`, and a tag whose field
+number does not fit never reaches a span — the sink reports it through
+`Sink::malformed` instead (`render_text/sink.rs`, on the field itself).
+
+So two of the three sites were reading a value already bounded, and only
+their `u64` types hid it. Those are now `u32` end to end
+(`register_wrapper`, `synthetic_wrapper_name`, `ResolvedField::number`,
+`resolve_export_fields`'s grouping), which makes the narrowing to
+`FieldDescriptorProto`'s `i32` exact by construction rather than by
+luck, with the invariant cited at each cast.
+
+`extract.rs` was the real one: `message_payload_range` takes raw bytes
+and a range and re-parses the tag itself, so it has no span to lean on.
+It now requires `wfield_oor` to be `None` — the parser's own report that
+the field number is neither 0 nor at least 2^29 — before rebuilding the
+END_GROUP tag, and falls through to the tag-only strip otherwise.
 
 ### A6. An unreadable descriptor becomes an empty one
 
 `decode.rs:240`: `read_descriptor_file(path).unwrap_or_default()`. A
 permissions error, a truncated file and a genuinely empty descriptor set
-are indistinguishable downstream; the user gets a document with no types
-and no explanation.
+are indistinguishable downstream.
+
+The consequence is narrower than first written — this is
+`descriptor_sha256`, not the pool load (which already uses `?`). But it
+is still silently wrong output: a `:save` whose descriptor set has been
+removed or chmod'ed since startup writes the hash of *nothing* into the
+overrides file, and the `:restore` that reads it back then warns about a
+mismatch that never happened.
+
+**Fixed**: `descriptor_sha256` and `target_hashes` are fallible;
+`run_save_overrides` reports through the status line and writes nothing,
+`load_overrides` propagates.
+
+Worth knowing before touching this again: 17 test fixtures write a
+descriptor set to a temp path, load it, and `remove_file` it
+immediately. Two of them (`type_as` and the MessageSet-expansion one)
+back tests that hash the descriptor set, so they now keep the file. The
+forgiving `unwrap_or_default` was the only reason that idiom worked for
+them.
 
 ### A7. A dead reader is reported as a clean exit
 
@@ -109,6 +158,16 @@ reader thread dies, protolens exits with status 0 and says nothing.
 Compounding it: that arm is currently **unreachable**, because
 `run_loop` holds its own clone of the sender for the whole loop. The
 disconnect it is meant to catch cannot fire.
+
+**Fixed as far as it goes**: the arm returns an `io::Error` instead of
+`Ok(())`, so the exit is no longer silent and no longer 0.
+
+The unreachability is *not* fixed, and should not be: `run_loop` needs
+`tx` to respawn the input reader after the Neovim handoff, so a sender
+provably outlives every receive in the loop. Detecting a reader thread
+that has died is a different feature — the channel cannot tell you.
+(`rx.recv_timeout(...).ok()` on the idle path folds `Disconnected` into
+the timeout for the same reason, and was left alone.)
 
 ## B. The terminal or the session is left broken
 

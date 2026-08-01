@@ -813,7 +813,10 @@ pub(super) fn type_as_fixture() -> (App, usize, usize) {
         std::env::temp_dir().join(format!("protolens-tui-type-as-descriptor-{n}.pb"));
     std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
     let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
+    // Deliberately not removed, unlike every other fixture here: the
+    // `:save`/`:restore` tests built on this one hash the descriptor set,
+    // which `descriptor_sha256` re-reads from disk on demand (spec 0197
+    // §S6), and that read is now an error rather than an empty hash.
 
     // Outer { inner: Inner { id: 5 } }.
     let blob = [0x0Au8, 0x02, 0x08, 0x05];
@@ -1188,7 +1191,9 @@ pub(super) fn message_set_fixture() -> App {
     ));
     std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
     let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
+    // Deliberately not removed — see `type_as_fixture`'s note: a test
+    // built on this fixture hashes the descriptor set, and that hash is a
+    // fresh read from disk.
 
     // Container { extensions: TestMessageSet {
     //   Item { type_id: 100, message: ExtPayload { label: "hi" } }

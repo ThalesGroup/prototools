@@ -247,7 +247,7 @@ fn long_command_buffer_is_pannable_and_keeps_cursor_visible() {
 #[test]
 fn load_overrides_without_a_root_entry_preserves_the_current_root_type() {
     let mut app = message_set_fixture();
-    let (blob_sha256, descriptor_set_sha256) = app.target_hashes();
+    let (blob_sha256, descriptor_set_sha256) = app.target_hashes().unwrap();
 
     // Deliberately omits any `path: "/"` entry — exactly the shape a
     // real `:save` produces is *not* what's being tested

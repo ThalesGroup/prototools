@@ -235,12 +235,18 @@ impl DescriptorContext {
     /// Re-read from disk on demand rather than retained: `:save` is a
     /// deliberate once-per-session action, and the bytes are large
     /// (spec 0197 §S6). A schemaless context hashes the empty string.
-    pub(crate) fn descriptor_sha256(&self) -> String {
+    ///
+    /// The re-read can fail — the file may have been removed or its
+    /// permissions changed since startup — and that failure is an error,
+    /// not an empty descriptor set. Hashing the empty string on failure
+    /// would make a `:save` write a digest that matches nothing and a
+    /// `:restore` warn about a mismatch that never happened.
+    pub(crate) fn descriptor_sha256(&self) -> Result<String, DecodeError> {
         let bytes = match &self.source {
-            Some(path) => read_descriptor_file(path).unwrap_or_default(),
+            Some(path) => read_descriptor_file(path)?,
             None => Vec::new(),
         };
-        crate::override_pane::sha256_hex(&bytes)
+        Ok(crate::override_pane::sha256_hex(&bytes))
     }
 
     /// A trivially empty pool/no-graph context — `tui.rs`'s unit tests
@@ -976,7 +982,7 @@ pub struct Decoded {
 /// letter. Generic over any `Type`/`type_name` pair — including
 /// `Type::Enum`, though this spec never constructs that case (Non-goals).
 fn synthetic_wrapper_name(
-    field_number: u64,
+    field_number: u32,
     field_type: Type,
     type_name: &str,
     packed: bool,
@@ -1072,7 +1078,7 @@ impl WrapperTarget {
 /// reaches the mutating call at all).
 pub(crate) fn register_wrapper(
     pool: &mut DescriptorPool,
-    field_number: u64,
+    field_number: u32,
     field_type: Type,
     target: Option<WrapperTarget>,
     packed: bool,
@@ -1094,6 +1100,10 @@ pub(crate) fn register_wrapper(
 
     let field = FieldDescriptorProto {
         name: Some("_".to_string()),
+        // Exact: every caller's field number comes from a `NodeSpan`, and
+        // a tag whose field number does not fit protobuf's own 2^29 bound
+        // never reaches a span — the sink reports it as malformed instead
+        // (spec 0212; `render_text::sink::NodeSpan::field_number`).
         number: Some(field_number as i32),
         label: Some(if packed {
             Label::Repeated
@@ -2459,8 +2469,8 @@ mod tests {
         let lazy = Fixture::new("hash-lazy").with_index();
         let eager = Fixture::new("hash-eager");
 
-        let from_lazy = lazy.load().descriptor_sha256();
-        let from_eager = eager.load().descriptor_sha256();
+        let from_lazy = lazy.load().descriptor_sha256().unwrap();
+        let from_eager = eager.load().descriptor_sha256().unwrap();
 
         assert_eq!(from_lazy, from_eager);
         assert_eq!(
@@ -2481,7 +2491,7 @@ mod tests {
         assert!(ctx.fallback.is_none());
         assert!(ctx.pool().all_messages().next().is_none());
         assert_eq!(
-            ctx.descriptor_sha256(),
+            ctx.descriptor_sha256().unwrap(),
             crate::override_pane::sha256_hex(&[])
         );
     }

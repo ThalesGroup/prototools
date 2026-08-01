@@ -21,7 +21,10 @@ use std::collections::HashSet;
 /// `referenced_file` is `Some` only for `Message`/`Enum` fields, and
 /// feeds `build`'s declared-dependency list (G6d).
 pub struct ResolvedField {
-    pub number: u64,
+    /// A `u32`, matching `NodeSpan::field_number`, which is where every
+    /// one of these comes from — so `build`'s narrowing to
+    /// `FieldDescriptorProto`'s `i32` is exact (spec 0212).
+    pub number: u32,
     pub name: String,
     pub label: Label,
     pub r#type: Type,

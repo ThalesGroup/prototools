@@ -684,10 +684,11 @@ impl App {
     /// canonicalized-binary bytes (spec 0117 §4's `blob_sha256`/
     /// `descriptor_set_sha256`) — the caller's original (pre-wrap) blob,
     /// and the descriptor set's own canonicalized bytes (re-read from disk
-    /// on demand, spec 0197 §S6).
-    pub(super) fn target_hashes(&self) -> (String, String) {
+    /// on demand, spec 0197 §S6). `Err` when that re-read fails.
+    pub(super) fn target_hashes(&self) -> Result<(String, String), String> {
         let blob_sha256 = override_pane::sha256_hex(&self.blob[self.wrapper_offset..]);
-        (blob_sha256, self.ctx.descriptor_sha256())
+        let descriptor_sha256 = self.ctx.descriptor_sha256().map_err(|e| e.to_string())?;
+        Ok((blob_sha256, descriptor_sha256))
     }
 
     /// Inverse of `positional_path`: resolves a canonical `/1/2/3`-style
@@ -756,7 +757,13 @@ impl App {
             return;
         }
         let path = args.join(" ");
-        let (blob_sha256, descriptor_set_sha256) = self.target_hashes();
+        let (blob_sha256, descriptor_set_sha256) = match self.target_hashes() {
+            Ok(hashes) => hashes,
+            Err(e) => {
+                self.message = format!("save error: {e}");
+                return;
+            }
+        };
         let yaml = self.overrides.to_yaml(blob_sha256, descriptor_set_sha256);
         match std::fs::write(&path, yaml) {
             Ok(()) => self.message = format!("saved overrides to {path}"),
@@ -798,7 +805,7 @@ impl App {
         let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let (mut collection, target) = override_pane::OverrideCollection::from_yaml(&text)?;
         let dropped = collection.retain_resolvable(|origin| self.origin_resolves(origin));
-        let (blob_sha256, descriptor_set_sha256) = self.target_hashes();
+        let (blob_sha256, descriptor_set_sha256) = self.target_hashes()?;
         let mut warnings = Vec::new();
         if target.blob_sha256 != blob_sha256 {
             warnings.push("blob hash mismatch".to_string());

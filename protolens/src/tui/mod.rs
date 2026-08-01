@@ -2580,7 +2580,19 @@ where
                         break rx.recv_timeout(timeout).ok(); // timeout elapsed => None
                     }
                 },
-                Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
+                // Cannot fire as the code stands: this loop holds `tx`
+                // for the Neovim handoff's reader respawn below, so a
+                // sender outlives every receive here. Reported as an
+                // error rather than as `Ok(())` all the same — if that
+                // invariant is ever broken the session has lost its
+                // input, and exiting 0 in silence is the one answer that
+                // is certainly wrong.
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "the input channel disconnected",
+                    ));
+                }
             }
         };
         // Spec 0190 S8. Three reasons to draw, checked here rather than
