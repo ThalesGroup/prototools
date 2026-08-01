@@ -389,15 +389,18 @@ impl HeatCaches {
         end: usize,
         tier: Tier,
     ) -> Option<Vec<(String, i64)>> {
-        if let Some(entry) = self.by_range.peek(&range_start, tier) {
-            if entry.top_n.len() >= end {
-                // `start` clamped exactly as in the `complete` arm
-                // below. Both arms slice on the same caller-supplied
-                // pair, and `len() >= end` constrains only where the
-                // window ends, never that it starts at or before there.
-                let start = start.min(end);
-                return Some(entry.top_n[start..end].to_vec());
-            }
+        // `peek_with`, not `peek`: what is wanted is `end - start`
+        // candidates — a screenful — and `peek` would copy the whole
+        // `top_n` to get at them, with this cache's `Mutex` held.
+        let window = self.by_range.peek_with(&range_start, tier, |entry| {
+            // `start` clamped exactly as in the `complete` arm below.
+            // Both arms slice on the same caller-supplied pair, and
+            // `len() >= end` constrains only where the window ends,
+            // never that it starts at or before there.
+            (entry.top_n.len() >= end).then(|| entry.top_n[start.min(end)..end].to_vec())
+        });
+        if let Some(window) = window.flatten() {
+            return Some(window);
         }
         if let Some((range, candidates)) = &self.complete {
             if range.start == range_start {
@@ -501,10 +504,15 @@ pub(super) fn heat_worker_loop(
         queue.set_in_flight(Some(req.tier));
         let (covers_window, covers_current) = {
             let mut c = caches.lock().unwrap_or_else(|e| e.into_inner());
-            let covers_window = c
-                .by_range
-                .peek(&start, req.tier)
-                .is_some_and(|e| e.top_n.len() >= req.end);
+            // The same predicate the readers use, rather than a
+            // restatement of half of it. This check used to probe only
+            // `by_range`'s `top_n` and ignore the `complete` slot, so a
+            // second request for the same range with a larger `end` —
+            // exactly what `upgrade_active_override_to_complete` issues
+            // after `recompute_override_candidates` — reported "not
+            // covered" and paid a whole second `score_all` for an
+            // answer `complete` already held in full.
+            let covers_window = c.window(start, req.start, req.end, req.tier).is_some();
             let covers_current = req
                 .current_key
                 .as_deref()
@@ -995,7 +1003,9 @@ messages:
     /// produces, and refreshes `complete` unconditionally (G5). A
     /// second, cache-covered request for the same range is answered
     /// without a second `score_all` call (proven via the test-only
-    /// call counter).
+    /// call counter) — and so is a third whose window is *wider* than
+    /// anything `top_n` holds but which the `complete` slot answers in
+    /// full (item D1 of the quality audit).
     #[test]
     fn heat_caches_worker_round_trip() {
         let graph = Arc::new(test_scoring_graph());
@@ -1066,6 +1076,31 @@ messages:
         assert_eq!(
             calls_after, calls_before,
             "a cache-covered request must not re-score"
+        );
+
+        // D1: a third request for the same range with a *larger* `end`
+        // than the first — what `upgrade_active_override_to_complete`
+        // issues right after `recompute_override_candidates`. `top_n`
+        // holds one candidate and so does not cover `end: 2`, but
+        // `complete` holds the whole list and does. The worker's
+        // pre-flight check used to test only the `top_n` half and pay
+        // for a second full sweep here.
+        worker.push(
+            HeatRequest {
+                range: 0..2,
+                current_key: None,
+                start: 0,
+                end: 2,
+                tier: Tier::User,
+            },
+            Tier::User,
+        );
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("progress must fire for the widened request");
+        assert_eq!(
+            worker.score_all_calls(),
+            calls_before,
+            "a request the complete slot already answers must not re-score"
         );
 
         worker.shutdown();

@@ -398,7 +398,11 @@ impl App {
         // eviction ahead of a result the user has stopped looking at.
         let state = {
             let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
-            let best = caches.by_range.peek(&start, tier).map(|e| RangeHeatStats {
+            // `peek_with`, not `peek`: this runs per unsettled node per
+            // frame, and the two fields wanted sit alongside a whole
+            // ranked candidate list that `peek` would copy to reach
+            // them — with the cache's `Mutex` held against the worker.
+            let best = caches.by_range.peek_with(&start, tier, |e| RangeHeatStats {
                 best_score: e.best_score,
                 best_count: e.best_count,
             });
@@ -530,7 +534,11 @@ impl App {
             // nothing else.
             let tier = self.heat_tier_for(idx);
             let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
-            let best = caches.by_range.peek(&start, tier).map(|e| RangeHeatStats {
+            // `peek_with`, not `peek`: this runs per unsettled node per
+            // frame, and the two fields wanted sit alongside a whole
+            // ranked candidate list that `peek` would copy to reach
+            // them — with the cache's `Mutex` held against the worker.
+            let best = caches.by_range.peek_with(&start, tier, |e| RangeHeatStats {
                 best_score: e.best_score,
                 best_count: e.best_count,
             });

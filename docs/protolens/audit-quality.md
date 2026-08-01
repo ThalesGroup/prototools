@@ -496,6 +496,8 @@ wrap on a real slot index, so they stand.
 
 ## D. Scheduling and per-frame cost
 
+D1–D4 are fixed (2026-08-01); each item carries a note below.
+
 ### D1. A probably-missed early-out costs a whole extra scoring pass
 
 `HeatCaches::window` (`heat_worker.rs:371-391`) answers "does the cache
@@ -513,6 +515,13 @@ Reasoned from the code, not reproduced. Fix the behavior before
 unifying the two predicates; see item 2.1 of
 [audit-duplication.md](audit-duplication.md).
 
+**Fixed, and reproduced on the way.** The worker's re-check is now
+`c.window(start, req.start, req.end, req.tier).is_some()` — the
+readers' own predicate rather than a restatement of half of it, which
+resolves item 2.1 for this pair as well. `heat_caches_worker_round_trip`
+gained a third push with a wider `end` than `top_n` holds; against the
+old check it fails with `left: 2, right: 1`, one whole extra sweep.
+
 ### D2. A clone of the whole result inside the shared mutex
 
 `tiered.rs:188-194`. `peek` clones the entry's value — for the heat
@@ -521,15 +530,34 @@ the `HeatCaches` mutex, on the per-frame render path. The clone is
 needed because the guard cannot outlive the call; returning a small
 projection, or the length the callers actually test, would not be.
 
+**Fixed.** `TieredBounded::peek_with(key, tier, f)` does the same
+promoting read and hands `f` a borrow; `peek` is now `peek_with(.., V::
+clone)`, so no caller loses anything. The two per-frame readers in
+`heat_cue.rs` take two `Copy` fields instead of the candidate list, and
+`HeatCaches::window` copies the window rather than all of `top_n`.
+
 ### D3. The prefetch inner loop is unbounded
 
 It ignores `ui_deadline` once entered, so a slow step can overrun the
 frame budget it exists to respect.
 
+**Fixed.** The `Progressed` arm breaks out with no event once
+`Instant::now() >= deadline` — the same "timeout elapsed" outcome the
+`Idle` arm's `recv_timeout` produces, which the `*_forces` tests just
+past the loop already handle. `deadline` is the minimum of all four
+candidates, so the bound is the activity tick (250 ms) even when
+nothing else is pending, and the outer loop re-enters read-ahead
+immediately when no reason to draw was found.
+
 ### D4. A poll error becomes a hot spin
 
 `event.rs:44` treats a `poll` error as "try again" with no backoff. A
 persistent error (a closed tty) spins a core.
+
+**Fixed.** `unwrap_or(false)` became a three-arm `match`; the `Err` arm
+sleeps `INPUT_POLL_INTERVAL` — the interval `poll` returned without
+spending — so the `stop` re-check keeps its cadence at one wakeup per
+interval instead of pegging a core.
 
 ## E. The overrides file
 

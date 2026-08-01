@@ -172,6 +172,24 @@ impl<K: Eq + Hash + Clone, V: Clone> TieredBounded<K, V> {
     /// never moves down, and a background re-check must not re-rank an
     /// entry the user asked for.
     pub(super) fn peek(&mut self, key: &K, tier: Tier) -> Option<V> {
+        self.peek_with(key, tier, V::clone)
+    }
+
+    /// `peek` without the clone: the same promoting read, but the entry
+    /// is handed to `f` as a borrow.
+    ///
+    /// This is the form to reach for on the render path. Both
+    /// `HeatCaches` maps are read under one shared `Mutex` held by
+    /// whichever thread is asking, and a `RangeHeatEntry` carries the
+    /// whole `top_n` vector — so a caller that wants one field, or a
+    /// window of one, would otherwise copy the entire candidate list
+    /// with the worker locked out, per node, per frame.
+    pub(super) fn peek_with<R>(
+        &mut self,
+        key: &K,
+        tier: Tier,
+        f: impl FnOnce(&V) -> R,
+    ) -> Option<R> {
         let idx = *self.index.get(key)?;
         let cur_tier = self.slots[idx]
             .as_ref()
@@ -185,13 +203,10 @@ impl<K: Eq + Hash + Clone, V: Clone> TieredBounded<K, V> {
                 .tier = tier;
             self.link_at_insertion_end(tier, idx);
         }
-        Some(
-            self.slots[idx]
-                .as_ref()
-                .expect("indexed slot must be occupied")
-                .value
-                .clone(),
-        )
+        Some(f(&self.slots[idx]
+            .as_ref()
+            .expect("indexed slot must be occupied")
+            .value))
     }
 
     /// `tier >= cur_tier` — the caller asked at least as urgently as

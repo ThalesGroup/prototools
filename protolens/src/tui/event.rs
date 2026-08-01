@@ -41,11 +41,25 @@ impl InputReaderHandle {
         let thread_stop = Arc::clone(&stop);
         let join = thread::spawn(move || {
             while !thread_stop.load(Ordering::Relaxed) {
-                if event::poll(INPUT_POLL_INTERVAL).unwrap_or(false) {
-                    if let Ok(ev) = event::read() {
-                        if tx.send(AppEvent::Term(ev)).is_err() {
-                            break; // receiver gone — run_loop already exited
+                match event::poll(INPUT_POLL_INTERVAL) {
+                    Ok(false) => {} // the interval elapsed with no input
+                    Ok(true) => {
+                        if let Ok(ev) = event::read() {
+                            if tx.send(AppEvent::Term(ev)).is_err() {
+                                break; // receiver gone — run_loop already exited
+                            }
                         }
+                    }
+                    Err(_) => {
+                        // An error, not a timeout: `poll` returned at
+                        // once and consumed none of the interval.
+                        // Treated as a bare "try again" this pegs a
+                        // core for as long as the condition lasts, and
+                        // the one that matters — a closed tty — never
+                        // clears. Sleeping the interval it did not
+                        // spend keeps the `stop` re-check on its usual
+                        // cadence at one wakeup per interval.
+                        thread::sleep(INPUT_POLL_INTERVAL);
                     }
                 }
             }

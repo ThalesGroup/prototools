@@ -2639,7 +2639,25 @@ where
                 }
                 Ok(ev) => break Some(ev),
                 Err(mpsc::TryRecvError::Empty) => match app.prefetch_step() {
-                    PrefetchStep::Progressed => continue,
+                    PrefetchStep::Progressed => {
+                        // Yielding to a pending event is not enough:
+                        // every deadline computed above — an expiring
+                        // message, the splash's auto-dismiss, a due
+                        // heat repaint, the activity tick — comes due
+                        // with no event to announce it, and this loop
+                        // is the only thing between them and the frame
+                        // that honors them. Without the check,
+                        // read-ahead holds the thread until it runs dry
+                        // and all four are simply late. Breaking with
+                        // no event is exactly the timeout case the
+                        // `Idle` arm below produces, and the
+                        // `*_forces` tests just past the loop already
+                        // know what to do with it.
+                        if Instant::now() >= deadline {
+                            break None;
+                        }
+                        continue;
+                    }
                     PrefetchStep::Idle => {
                         // Spec 0203 ran incremental arena compaction
                         // here, strictly behind read-ahead. Spec 0216
