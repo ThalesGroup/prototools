@@ -23,6 +23,8 @@
 //! unknown per the field presence rule, with `non_canonical` incremented so
 //! callers can apply a quality penalty.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use prototext_core::helpers::{payload_end, MAX_WIRE_DEPTH};
 use smallvec::SmallVec;
 
@@ -165,6 +167,8 @@ struct WalkState<'a, 'g> {
     /// If set, print a message to stderr whenever this FQDN is vetoed.
     debug_fqdn: Option<String>,
     expand_any: bool,
+    /// See [`score_subset`]'s `cancel` parameter.
+    cancel: Option<&'a AtomicBool>,
 }
 
 impl<'a, 'g> WalkState<'a, 'g> {
@@ -172,6 +176,7 @@ impl<'a, 'g> WalkState<'a, 'g> {
         graph: &'a ArchivedCompiledGraph,
         scores: &'a mut Vec<EntryScore<'g>>,
         opts: &ScoringOpts,
+        cancel: Option<&'a AtomicBool>,
     ) -> Self {
         let n = scores.len();
         let words = n.div_ceil(64);
@@ -181,7 +186,16 @@ impl<'a, 'g> WalkState<'a, 'g> {
             vetoed: vec![0u64; words],
             debug_fqdn: std::env::var("PROTOTEXT_DEBUG_FQDN").ok(),
             expand_any: opts.expand_any,
+            cancel,
         }
+    }
+
+    /// `Relaxed` because the flag carries no data: the walk reads it to
+    /// decide whether to keep going, and everything it would need to
+    /// observe alongside it is either immutable or already discarded by
+    /// the setter.
+    fn cancelled(&self) -> bool {
+        self.cancel.is_some_and(|c| c.load(Ordering::Relaxed))
     }
 
     fn is_vetoed(&self, e: u32) -> bool {
@@ -254,7 +268,7 @@ pub fn score_all<'g>(
     opts: &ScoringOpts,
 ) -> Vec<EntryScore<'g>> {
     let all: Vec<u32> = (0..graph.roots.len() as u32).collect();
-    score_subset(pb, graph, opts, &all)
+    score_subset(pb, graph, opts, &all, None)
 }
 
 /// `score_all` restricted to `roots` (indices into `graph.roots`).
@@ -269,11 +283,25 @@ pub fn score_all<'g>(
 /// The caller partitions with [`partition_roots`], which is not merely a
 /// convenience — see its doc comment for why an arbitrary partition
 /// duplicates work rather than dividing it.
+///
+/// `cancel`, when supplied, is polled once per wire field at every
+/// recursion level. Once it reads `true` the walk stops where it is and
+/// unwinds, and **the scores returned are partial and meaningless** — a
+/// candidate abandoned halfway through the blob has counted only the
+/// matches it happened to reach. The caller sets the flag and so already
+/// knows to discard the result; nothing is reported back here, because a
+/// second return channel would only restate what the caller just did.
+///
+/// This exists because the walk is the one place in the workspace that
+/// can run for seconds with no interruption point, which is long enough
+/// for a UI shutting down to look hung while it waits for the walking
+/// thread to join.
 pub fn score_subset<'g>(
     pb: &[u8],
     graph: &'g ArchivedCompiledGraph,
     opts: &ScoringOpts,
     roots: &[u32],
+    cancel: Option<&AtomicBool>,
 ) -> Vec<EntryScore<'g>> {
     // Spec 0172 S5: enforced at load time by `load::check_root_count`,
     // which turns an oversized corpus into an `Err` instead of aborting
@@ -313,7 +341,7 @@ pub fn score_subset<'g>(
             .map(|(local, &r)| (graph.roots[r as usize].state_id.to_native(), local as u32)),
     );
 
-    let mut ws = WalkState::new(graph, &mut scores, opts);
+    let mut ws = WalkState::new(graph, &mut scores, opts, cancel);
     score_message_multi(pb, 0, initial_active, None, &mut ws, 0);
 
     scores
@@ -409,7 +437,7 @@ pub fn score_one<'g>(
     // used to be the same setup written out a second time — a single root
     // is trivially its own state group, so the general path builds exactly
     // the active set the hand-written one did.
-    score_subset(pb, graph, opts, &[idx]).pop()
+    score_subset(pb, graph, opts, &[idx], None).pop()
 }
 
 // ── Wire primitives ───────────────────────────────────────────────────────────
@@ -971,6 +999,16 @@ fn score_message_multi(
             return pos;
         }
 
+        // The walk's only interruption point (see `score_subset`'s
+        // `cancel`). Reporting the buffer as fully consumed is what makes
+        // the unwind immediate: a group's caller takes this as the
+        // group's end position and so stops on its very next check, and a
+        // submessage's caller — which walks a different buffer and
+        // ignores the return — stops on that same check one field later.
+        if ws.cancelled() {
+            return buflen;
+        }
+
         // ── Parse wire tag ────────────────────────────────────────────────────
 
         let tag = parse_wiretag(buf, pos);
@@ -1506,6 +1544,7 @@ mod set_vetoed_tests {
             vetoed: vec![0u64; words],
             debug_fqdn,
             expand_any: true,
+            cancel: None,
         }
     }
 

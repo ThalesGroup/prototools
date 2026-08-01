@@ -115,7 +115,6 @@ where
     io::Error: From<B::Error>,
 {
     restore_terminal();
-    terminal.show_cursor()?;
 
     // Reclaiming the terminal below (`tcsetpgrp(io::stdin(), getpgrp())`,
     // after `waitpid` returns) happens while protolens is itself a
@@ -132,7 +131,7 @@ where
         let _ = signal(Signal::SIGTTOU, SigHandler::SigIgn);
     }
 
-    let (pgid, socket_path) = match &app.editor_state {
+    let (pgid, socket_path, resuming) = match &app.editor_state {
         EditorState::NotRunning => {
             let socket_path = socket_path();
             let goto = format!("+call cursor({},{})", req.line, req.col);
@@ -142,24 +141,27 @@ where
             // non-Nix dev build (no error).
             //
             // A non-Nix dev build (`cargo run`/`cargo build`) has no
-            // wrapper to set PROTOLENS_NVIM_CONFIG, so default it here to
+            // wrapper to set PROTOLENS_NVIM_CONFIG, so fall back here to
             // the repo-relative config baked in at compile time via
             // CARGO_MANIFEST_DIR — only when unset (never overrides the
             // Nix wrapper's own value) and only when that path actually
             // exists (preserves the graceful degraded fallback if the
             // binary is copied away from its source checkout).
-            if std::env::var_os("PROTOLENS_NVIM_CONFIG").is_none() {
+            //
+            // A local, not `std::env::set_var`: the heat worker is alive
+            // at this point (the Neovim handoff shuts down the *input
+            // reader*, nothing else), and mutating the process
+            // environment while another thread may be reading it is
+            // undefined behavior. Nothing downstream reads the variable
+            // anyway — it only ever fed the `-u` flag below.
+            let config = std::env::var_os("PROTOLENS_NVIM_CONFIG").or_else(|| {
                 let default_config = concat!(env!("CARGO_MANIFEST_DIR"), "/nvim/init.lua");
-                if std::path::Path::new(default_config).exists() {
-                    // SAFETY: single-threaded event loop, called before any
-                    // other thread could read/write the environment.
-                    unsafe {
-                        std::env::set_var("PROTOLENS_NVIM_CONFIG", default_config);
-                    }
-                }
-            }
+                std::path::Path::new(default_config)
+                    .exists()
+                    .then(|| default_config.into())
+            });
             let mut cmd = Command::new("nvim");
-            if let Some(config) = std::env::var_os("PROTOLENS_NVIM_CONFIG") {
+            if let Some(config) = config {
                 cmd.arg("-u").arg(config);
             }
             if let Some(proto_root) = &app.proto_root {
@@ -181,8 +183,7 @@ where
                 }
             };
             let pgid = Pid::from_raw(child.id() as i32);
-            tcsetpgrp(io::stdin(), pgid).ok();
-            (pgid, socket_path)
+            (pgid, socket_path, false)
         }
         EditorState::Suspended { pgid, socket_path } => {
             let goto = format!("cursor({},{})", req.line, req.col);
@@ -204,15 +205,43 @@ where
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status();
-            let pgid = *pgid;
-            tcsetpgrp(io::stdin(), pgid).ok();
-            killpg(pgid, Signal::SIGCONT)?;
-            (pgid, socket_path.clone())
+            (*pgid, socket_path.clone(), true)
         }
     };
 
-    let status = waitpid(pgid, Some(WaitPidFlag::WUNTRACED))?;
+    tcsetpgrp(io::stdin(), pgid).ok();
+    if resuming {
+        if let Err(e) = killpg(pgid, Signal::SIGCONT) {
+            // The suspended instance is gone, or out of reach. Take the
+            // terminal back — it was handed to that process group one
+            // line ago — and forget the instance, so the next `v`
+            // spawns a fresh one instead of signalling the same corpse
+            // again. Propagating with `?` would unwind out of the event
+            // loop with the terminal cooked, off the alternate screen,
+            // and someone else's process group in the foreground: from
+            // the user's side, a shell that no longer responds.
+            tcsetpgrp(io::stdin(), getpgrp()).ok();
+            let _ = std::fs::remove_file(&socket_path);
+            app.editor_state = EditorState::NotRunning;
+            app.message = format!("cannot resume nvim: {e}");
+            crate::tui::enable_raw_mode_and_reenter(terminal)?;
+            return Ok(());
+        }
+    }
+
+    let status = waitpid(pgid, Some(WaitPidFlag::WUNTRACED));
+    // Unconditional, and before the result is examined: a failed
+    // `waitpid` hands the terminal back no more than a successful one
+    // does, and the same unwind-with-a-stolen-terminal applies.
     tcsetpgrp(io::stdin(), getpgrp()).ok();
+    let status = match status {
+        Ok(status) => status,
+        Err(e) => {
+            app.message = format!("cannot wait for nvim: {e}");
+            crate::tui::enable_raw_mode_and_reenter(terminal)?;
+            return Ok(());
+        }
+    };
     let next = next_state(pgid, socket_path.clone(), status);
     if matches!(next, EditorState::NotRunning) {
         let _ = std::fs::remove_file(&socket_path);

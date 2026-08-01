@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crossterm::cursor::Show;
 use crossterm::event::{
     self as term_event, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent,
     KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
@@ -2222,13 +2223,31 @@ fn pop_keyboard_enhancement() {
 }
 
 /// Restore the terminal to its normal (cooked, main-screen, no mouse
-/// capture) state — shared by `run`'s own cleanup and the panic hook below,
-/// so a panic mid-session doesn't leave the user's terminal unusable.
+/// capture, visible cursor) state — shared by `run`'s own cleanup and the
+/// panic hook below, so a panic mid-session doesn't leave the user's
+/// terminal unusable.
+///
+/// The body is the exact inverse of the setup sequence in `run` and in
+/// `enable_raw_mode_and_reenter` — mouse capture and the alternate screen
+/// undone first, then the keyboard enhancement, then raw mode — so that
+/// each undo runs in the state its counterpart was issued in.
+/// `drain_pending_input` is the exception, and comes first: it has to read
+/// while raw mode is still on.
+///
+/// `Show` is here rather than at the call sites because `Terminal::draw`
+/// leaves the hardware cursor hidden unless the frame set a position, so
+/// *any* path out of the TUI owes the shell a visible cursor — including
+/// the panic hook, which has no `Terminal` to ask.
 fn restore_terminal() {
     drain_pending_input();
+    let _ = execute!(
+        io::stdout(),
+        DisableMouseCapture,
+        LeaveAlternateScreen,
+        Show
+    );
     pop_keyboard_enhancement();
     let _ = disable_raw_mode();
-    let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
 }
 
 /// `Ctrl-Z` suspend (spec 0113 D31): leave the terminal in the same clean
@@ -2244,15 +2263,6 @@ where
     io::Error: From<B::Error>,
 {
     restore_terminal();
-    // `Terminal::draw()` hides the hardware cursor unless the render
-    // callback calls `Frame::set_cursor_position()`. Only the command/
-    // search/rename row does (spec 0147 G4), and that row is usually
-    // closed, so the last `draw()` before a suspend typically leaves the
-    // cursor hidden — without the call below the shell prompt gets no
-    // visible cursor after `fg`. The main pane's own caret is drawn
-    // rather than delegated (spec 0194 N3), so it never enters into
-    // this.
-    terminal.show_cursor()?;
     // SAFETY: raising a signal on our own process is always sound.
     unsafe {
         libc::raise(libc::SIGTSTP);
@@ -2278,6 +2288,36 @@ where
     Ok(())
 }
 
+/// Where a panic on a thread other than the UI thread is left for
+/// `run_loop` to find. Holds the *first* one; a later panic on another
+/// background thread is usually the first one's consequence.
+static BACKGROUND_PANIC: Mutex<Option<String>> = Mutex::new(None);
+
+/// The one line of a panic worth putting in a message row: what was said
+/// and where. The default hook's backtrace has nowhere to go here — the
+/// alternate screen is still up and belongs to the document.
+fn describe_panic(info: &std::panic::PanicHookInfo<'_>) -> String {
+    let what = info
+        .payload()
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("(no message)");
+    let thread = std::thread::current().name().unwrap_or("?").to_string();
+    match info.location() {
+        Some(loc) => format!("thread '{thread}' panicked at {loc}: {what}"),
+        None => format!("thread '{thread}' panicked: {what}"),
+    }
+}
+
+/// Take whatever the panic hook recorded, if anything.
+fn take_background_panic() -> Option<String> {
+    BACKGROUND_PANIC
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+}
+
 /// Run the interactive TUI loop against a real terminal.
 pub fn run(app: &mut App) -> io::Result<()> {
     // A panic mid-session (e.g. an indexing bug) would otherwise unwind
@@ -2288,10 +2328,26 @@ pub fn run(app: &mut App) -> io::Result<()> {
     // Flaw C4: installed *before* the first fallible call, not after
     // terminal setup — otherwise a panic during setup unwinds with raw
     // mode already on and no hook installed to undo it.
+    //
+    // A panic hook is process-global, so this one runs on whichever
+    // thread panicked — including the heat worker and the sweep shards it
+    // spawns. Only the UI thread owns the terminal, and only its panic is
+    // actually unwinding towards the cleanup below; restoring the
+    // terminal for anyone else would drop a live session out of the
+    // alternate screen and then print over what replaced it. So the two
+    // cases are separated by thread id.
+    let ui_thread = std::thread::current().id();
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        restore_terminal();
-        default_hook(info);
+        if std::thread::current().id() == ui_thread {
+            restore_terminal();
+            default_hook(info);
+            return;
+        }
+        let mut slot = BACKGROUND_PANIC.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.is_none() {
+            *slot = Some(describe_panic(info));
+        }
     }));
 
     // Terminal setup, up to and including the `Terminal` itself. Every
@@ -2397,7 +2453,6 @@ pub fn run(app: &mut App) -> io::Result<()> {
     }
     let _ = std::panic::take_hook();
     restore_terminal();
-    terminal.show_cursor()?;
 
     result
 }
@@ -2492,6 +2547,19 @@ where
     let mut heat_dirty = false;
     let mut last_heat_frame = Instant::now();
     loop {
+        // A background thread died (see the hook in `run`). Say so, and
+        // let go of the worker: its thread is gone, so every request
+        // still queued and every one pushed from here on would go
+        // unanswered and leave the cue at `[?]` forever. Dropped, the
+        // cue path falls back to computing on this thread — slower, but
+        // it answers.
+        if let Some(panic) = take_background_panic() {
+            app.message = format!("background thread failed, cues are now inline: {panic}");
+            if let Some(worker) = app.heat_worker.take() {
+                worker.shutdown();
+            }
+            redraw = true;
+        }
         if redraw {
             app.activity_shown = activity_prev_window.max(activity_window);
             let drawn_at = Instant::now();

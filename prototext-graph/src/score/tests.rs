@@ -2036,7 +2036,7 @@ fn a_sharded_sweep_matches_the_whole_sweep() {
         let parts = walk::partition_roots(&g, n);
         let mut sharded: Vec<walk::EntryScore> = Vec::new();
         for part in &parts {
-            sharded.extend(walk::score_subset(&pb, &g, &opts, part));
+            sharded.extend(walk::score_subset(&pb, &g, &opts, part, None));
         }
         assert_eq!(
             sharded.len(),
@@ -2108,11 +2108,38 @@ fn a_subset_reports_its_entries_in_subset_order() {
     let g = build_many_root_graph(6);
     let pb = field_varint(1, 7);
     let subset: Vec<u32> = vec![4, 1, 3];
-    let results = walk::score_subset(&pb, &g, &walk::ScoringOpts::default(), &subset);
+    let results = walk::score_subset(&pb, &g, &walk::ScoringOpts::default(), &subset, None);
     let got: Vec<&str> = results.iter().map(|r| r.fqdn).collect();
     let want: Vec<&str> = subset
         .iter()
         .map(|&i| g.roots[i as usize].fqdn.as_str())
         .collect();
     assert_eq!(got, want);
+}
+
+/// A raised `cancel` flag stops the walk. Checked by the absence of the
+/// matches an uncancelled walk over the same input does record, so the
+/// test fails if the poll is ever dropped from the loop rather than
+/// merely passing vacuously.
+#[test]
+fn a_raised_cancel_flag_stops_the_walk() {
+    use std::sync::atomic::AtomicBool;
+
+    let g = build_many_root_graph(6);
+    let pb = field_varint(1, 7);
+    let subset: Vec<u32> = vec![0, 1, 2];
+    let opts = walk::ScoringOpts::default();
+
+    let full = walk::score_subset(&pb, &g, &opts, &subset, None);
+    assert!(
+        full.iter().any(|r| r.matches > 0),
+        "the uncancelled walk scored nothing, so the check below proves nothing",
+    );
+
+    let cancel = AtomicBool::new(true);
+    let stopped = walk::score_subset(&pb, &g, &opts, &subset, Some(&cancel));
+    assert!(
+        stopped.iter().all(|r| r.matches == 0 && !r.vetoed),
+        "the walk kept going past a raised cancel flag",
+    );
 }

@@ -133,6 +133,13 @@ layering/opt-out mechanism is provided.
     from its source checkout). This gives non-Nix dev builds (`cargo
     run`/`cargo build`) the bundled config too, without requiring the
     developer to set the env var by hand.
+    Correction (2026-08-01): the same defaulting, but as a plain local
+    rather than `std::env::set_var`. The `unsafe` block's claim that no
+    other thread was running was false — the handoff shuts down the input
+    reader, never the heat worker — and no process-global mutation was
+    needed for it in the first place, since nothing reads
+    `PROTOLENS_NVIM_CONFIG` except the `-u` flag five lines below.
+    Behavior is unchanged; only the mechanism is.
   - Always set `.env("PROTOTEXT_PROTO_ROOT", proto_root)` on the spawned
     `Command` from `app.proto_root`'s current value (G4's own env-var
     name, reused rather than inventing a second one) — `open_definition`

@@ -1658,7 +1658,7 @@ fn measure_root_type_gate(desc_path: &Path, decode_too: bool) {
         return;
     };
     let t = Instant::now();
-    let candidates = crate::sweep::ranked(&blob, graph.graph(), 1);
+    let candidates = crate::sweep::ranked(&blob, graph.graph(), 1, None);
     let winner = decode::pick_winner(&candidates);
     let sweep = t.elapsed();
     eprintln!(

@@ -19,7 +19,7 @@
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
-use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::thread;
 
 use prototext_graph::build_scoring_graph::serial::ArchivedCompiledGraph;
@@ -155,8 +155,18 @@ fn target_parts(workers: usize) -> usize {
 
 /// Score `pb` against every root in `graph`, ranked, using up to `jobs`
 /// threads (see [`effective_jobs`] — `jobs` is a ceiling).
-pub(crate) fn ranked(pb: &[u8], graph: &ArchivedCompiledGraph, jobs: usize) -> RankedCandidates {
-    ranked_with(pb, graph, jobs, || ()).0
+///
+/// `cancel` reaches every shard's `score_subset` unchanged: raising it
+/// stops each of them at its next wire field, and the ranking returned is
+/// then **partial and meaningless**. It is for a caller that has already
+/// decided not to use the answer and only wants its thread back.
+pub(crate) fn ranked(
+    pb: &[u8],
+    graph: &ArchivedCompiledGraph,
+    jobs: usize,
+    cancel: Option<&AtomicBool>,
+) -> RankedCandidates {
+    ranked_with(pb, graph, jobs, cancel, || ()).0
 }
 
 /// [`ranked`], with `meanwhile` run on the calling thread while the shards
@@ -175,6 +185,7 @@ pub(crate) fn ranked_with<T>(
     pb: &[u8],
     graph: &ArchivedCompiledGraph,
     jobs: usize,
+    cancel: Option<&AtomicBool>,
     meanwhile: impl FnOnce() -> T,
 ) -> (RankedCandidates, T) {
     let opts = ScoringOpts::default();
@@ -189,7 +200,7 @@ pub(crate) fn ranked_with<T>(
     // path, on this thread, with nothing spawned (spec 0217 G5).
     if parts.len() <= 1 {
         let run = match parts.first() {
-            Some(part) => rank(score_subset(pb, graph, &opts, part)),
+            Some(part) => rank(score_subset(pb, graph, &opts, part, cancel)),
             None => Vec::new(),
         };
         return (run, meanwhile());
@@ -222,7 +233,7 @@ pub(crate) fn ranked_with<T>(
                         loop {
                             let i = cursor.fetch_add(1, AtomicOrdering::Relaxed);
                             let Some(part) = parts.get(i) else { break };
-                            runs.push(rank(score_subset(pb, graph, opts, part)));
+                            runs.push(rank(score_subset(pb, graph, opts, part, cancel)));
                         }
                         runs
                     })

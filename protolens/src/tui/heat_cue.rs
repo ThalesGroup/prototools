@@ -454,9 +454,11 @@ impl App {
         } else {
             // The whole budget, not the worker's share: this arm is only
             // reached when there is no worker, so nothing else in the
-            // session is sweeping (spec 0217 S6).
+            // session is sweeping (spec 0217 S6). `None` for the same
+            // reason it is synchronous: this runs on the thread that
+            // would have to raise the flag.
             let candidates =
-                override_pane::inferred_candidates(range_bytes, graph, self.sweep_jobs);
+                override_pane::inferred_candidates(range_bytes, graph, self.sweep_jobs, None);
             let stats = derive_stats(&candidates);
             let current_entry = current_key
                 .as_deref()

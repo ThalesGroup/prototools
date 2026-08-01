@@ -431,7 +431,8 @@ pub fn determine_root_type_meanwhile<T>(
             let Some(graph) = ctx.graph.clone() else {
                 return Ok((None, Vec::new(), meanwhile()));
             };
-            let (candidates, meanwhile) = sweep::ranked_with(blob, graph.graph(), jobs, meanwhile);
+            let (candidates, meanwhile) =
+                sweep::ranked_with(blob, graph.graph(), jobs, None, meanwhile);
             let desc = pick_winner(&candidates).and_then(|fqdn| ctx.message(&fqdn));
             Ok((desc, candidates, meanwhile))
         }

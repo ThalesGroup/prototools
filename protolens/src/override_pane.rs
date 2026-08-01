@@ -6,6 +6,8 @@
 //! `override` itself is a reserved Rust keyword, unusable as a module name
 //! (spec 0114 Background) — hence `override_pane`.
 
+use std::sync::atomic::AtomicBool;
+
 use prost_reflect::DescriptorPool;
 use prototext_graph::build_scoring_graph::serial::ArchivedCompiledGraph;
 use prototext_graph::score::{score_one, ScoringOpts};
@@ -58,12 +60,16 @@ pub fn all_type_fqdns(pool: &DescriptorPool) -> Vec<String> {
 /// shared with startup's root-type sweep so the comparator above exists
 /// in exactly one place. `jobs` is a ceiling on the threads it may use,
 /// not a target — see `sweep::effective_jobs`.
+/// `cancel` is passed straight through to `sweep::ranked`: raising it
+/// abandons the sweep, and the list returned is then partial and must not
+/// be used. `None` for a caller with no way to change its mind.
 pub fn inferred_candidates(
     range_bytes: &[u8],
     graph: &ArchivedCompiledGraph,
     jobs: usize,
+    cancel: Option<&AtomicBool>,
 ) -> Vec<(String, i64)> {
-    crate::sweep::ranked(range_bytes, graph, jobs)
+    crate::sweep::ranked(range_bytes, graph, jobs, cancel)
 }
 
 /// A single candidate's inferred score, scored alone (spec 0154 G1) —

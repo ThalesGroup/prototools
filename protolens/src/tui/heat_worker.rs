@@ -9,7 +9,7 @@
 //! See spec 0152's "The approach, in plain terms" for the design.
 
 use std::ops::Range;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 
@@ -91,6 +91,15 @@ pub(super) struct HeatRequestQueue {
     /// in which one writer's update is half-applied from the other's
     /// point of view.
     in_flight: AtomicU8,
+    /// `HeatRequestQueueState::stop`, republished outside the `Mutex` so
+    /// the walk can poll it (spec 0217's `score_subset` `cancel`).
+    ///
+    /// A duplicate rather than a replacement: `stop` is read under the
+    /// same lock as the condvar wait in `pop_blocking`, and moving it out
+    /// would open the classic lost-wakeup window between the test and
+    /// the wait. The walk, in contrast, holds no lock and must not take
+    /// one per wire field.
+    stop_flag: AtomicBool,
     /// Test-only full-sweep call counter (spec 0152/0154 test plans) —
     /// proves the "no second `score_all` call" claim for a request the
     /// cache already covers by the time the worker re-checks it.
@@ -116,6 +125,7 @@ impl HeatRequestQueue {
             condvar: Condvar::new(),
             queued: AtomicU8::new(0),
             in_flight: AtomicU8::new(0),
+            stop_flag: AtomicBool::new(false),
             #[cfg(test)]
             score_all_calls: AtomicUsize::new(0),
         }
@@ -235,6 +245,10 @@ impl HeatRequestQueue {
     }
 
     fn signal_stop(&self) {
+        // Before the lock: a worker mid-sweep does not hold it and is not
+        // waiting on the condvar, so raising the flag first is what lets
+        // the walk start unwinding while this thread is still acquiring.
+        self.stop_flag.store(true, Ordering::Relaxed);
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.stop = true;
         self.condvar.notify_all();
@@ -513,7 +527,21 @@ pub(super) fn heat_worker_loop(
                 let range_bytes = &blob[req.range.clone()];
                 #[cfg(test)]
                 queue.score_all_calls.fetch_add(1, Ordering::SeqCst);
-                let candidates = override_pane::inferred_candidates(range_bytes, graph, jobs);
+                let candidates = override_pane::inferred_candidates(
+                    range_bytes,
+                    graph,
+                    jobs,
+                    Some(&queue.stop_flag),
+                );
+                // A cancelled sweep returns a partial ranking, which would
+                // be indistinguishable from a real one once written into
+                // the cache — and the cache outlives this thread. Nothing
+                // is waiting for it either: the only thing that raises the
+                // flag is a shutdown.
+                if queue.stop_flag.load(Ordering::Relaxed) {
+                    queue.set_in_flight(None);
+                    break;
+                }
                 let stats = heat_cue::derive_stats(&candidates);
                 let current_score = req
                     .current_key
@@ -1006,7 +1034,7 @@ messages:
             .expect("progress must fire for the first request");
 
         let expected_candidates =
-            override_pane::inferred_candidates(&range_bytes, graph.graph(), 1);
+            override_pane::inferred_candidates(&range_bytes, graph.graph(), 1, None);
         let expected_stats = heat_cue::derive_stats(&expected_candidates);
         assert_eq!(entry.best_score, expected_stats.best_score);
         assert_eq!(entry.best_count, expected_stats.best_count);

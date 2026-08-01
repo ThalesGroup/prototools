@@ -171,6 +171,11 @@ the timeout for the same reason, and was left alone.)
 
 ## B. The terminal or the session is left broken
 
+B1–B6 are fixed (2026-08-01); **B7 is not**, and is a design question
+rather than a defect to patch — see its own note. The descriptions are
+kept because they say what the failure *looked like*, which is what makes
+a regression recognizable.
+
 ### B1. Quitting the TUI freezes on a large blob — HIGH
 
 `heat_worker.rs:603-608`. `shutdown_inner` joins the worker thread, but
@@ -181,6 +186,27 @@ hang for several seconds with the terminal already handed back.
 The fix is a cancellation flag polled inside `score_all`'s walk, not a
 detached thread — the worker owns state the shutdown path needs to see
 settled.
+
+**Fixed.** `score_subset` gained a `cancel: Option<&AtomicBool>`, polled
+once per wire field at every recursion level in `score_message_multi`.
+The poll returns the buffer length, which is what makes the unwind
+immediate: every enclosing loop already stops at `pos == buflen`.
+`HeatRequestQueue` republishes its mutex-guarded `stop` as an
+`AtomicBool` — a duplicate, not a replacement, because moving `stop` out
+of the lock would open a lost-wakeup window against the condvar in
+`pop_blocking`. `signal_stop` raises the atomic *before* taking the lock,
+so a worker mid-sweep starts unwinding while the quitting thread is still
+acquiring.
+
+A cancelled sweep returns a partial ranking, and the worker discards it
+rather than writing it to the cache — the cache outlives the thread, and
+a partial ranking there is indistinguishable from a real one. Nothing is
+reported back through the library: the caller raised the flag, so it
+already knows.
+
+Granularity is one wire field, not one part, so `--jobs 1` — the
+un-sharded path, and the slowest sweep — is cancelled just as promptly as
+a 24-part one.
 
 ### B2. After any panic the shell has no visible cursor — HIGH
 
@@ -194,6 +220,15 @@ The codebase already knows this: `suspend` (`mod.rs:2246-2255`) calls
 `restore_terminal()` and then `terminal.show_cursor()`, under a comment
 explaining exactly this failure. The `Show` belongs inside
 `restore_terminal`, where all three callers get it.
+
+**Fixed**, and the three `terminal.show_cursor()` calls that were working
+around it are gone with it — `suspend`, `run`'s cleanup and
+`neovim::open_editor` each called it on the line after
+`restore_terminal()`. Checked against ratatui 0.30 before removing them:
+`Terminal::draw` calls `hide_cursor` unconditionally when the frame set
+no position, and the `hidden_cursor` flag it maintains is read nowhere
+outside its own tests — so nothing was depending on ratatui's
+bookkeeping being updated, only on the escape sequence being written.
 
 ### B3. A worker panic tears the terminal out from under a live UI — HIGH
 
@@ -212,12 +247,39 @@ A hook that checks `thread::current().id()` against the UI thread, and
 otherwise records the failure for the main loop to report, is the
 minimum.
 
+**Fixed**, as described: `run` captures its own thread id when it
+installs the hook, and a panic from anywhere else goes into a
+`BACKGROUND_PANIC` slot instead of touching the terminal. The first
+panic wins; a second background panic is usually the first one's
+consequence (a sweep shard's panic is re-raised on the worker thread by
+`resume_unwind`, so one failure records twice).
+
+`run_loop` drains the slot at the top of each iteration, puts the message
+in the message row, and — this is the part that fixes the *aftermath* —
+drops `app.heat_worker`. The handle's thread is dead, so every queued
+request and every future one would go unanswered and leave the cue at
+`[?]` forever; without the handle, `heat_cue_for` falls back to its
+synchronous path, which is slower but answers.
+
 ### B4. `?` in the neovim handoff leaves the terminal broken
 
 `neovim.rs:209` and `:214` propagate with `?` on paths where the
 terminal is already out of raw mode and a foreground process group has
 been set. An early return there leaves cooked mode and a dangling pgid.
 These need cleanup on the error path, not `?`.
+
+**Fixed.** Both now reclaim the terminal (`tcsetpgrp` back to our own
+pgid), report through `app.message`, re-enter raw mode and return
+`Ok(())` — the shape the "cannot launch nvim" arm three lines up already
+used. The `waitpid` reclaim is unconditional and runs *before* the result
+is examined, since a failed wait hands the terminal back no more than a
+successful one does. A failed `SIGCONT` also forgets the instance
+(`EditorState::NotRunning`, socket removed), so the next `v` spawns a
+fresh Neovim instead of signalling the same corpse.
+
+Moving the `killpg` out of the `match` arm is what made this possible at
+all: the arm borrows `app.editor_state`, so nothing inside it can write
+to `app`.
 
 ### B5. `std::env::set_var` in a multi-threaded process
 
@@ -230,6 +292,12 @@ readers, and Rust 2024 makes it `unsafe` for exactly this reason.
 The fix is three lines away and already in the file: pass the variable
 through `Command::env` on the child, which is what `PROTOTEXT_PROTO_ROOT`
 does at `:166`. No process-global mutation is needed at all.
+
+**Fixed**, and more cheaply than that: not even `Command::env` is needed.
+Nothing downstream reads `PROTOLENS_NVIM_CONFIG` — grep the workspace and
+the only reader is the `-u` flag two lines below, five words from where
+the variable was set. It is now a local, and the whole `unsafe` block is
+gone.
 
 ### B6. Setup and teardown are not inverses
 
@@ -244,10 +312,42 @@ Related: the cleanup at the end of `run` is a straight-line block, not a
 guard, and `InputReaderHandle` has no `Drop`. The closure trick at
 `:2332` covers the fallible region — but only that region.
 
-### B7. No signal handling at all
+**Fixed** for the ordering: `restore_terminal` is now the exact reverse
+of setup — `DisableMouseCapture`, `LeaveAlternateScreen`, `Show`, then
+the keyboard-enhancement pop, then `disable_raw_mode`. `drain_pending_
+input` stays first, and is the one deliberate exception: it has to read
+while raw mode is still on.
+
+**Not done**: the "related" half. The cleanup block is still
+straight-line and `InputReaderHandle` still has no `Drop`. Both are only
+reachable by a panic, which the hook already covers for the terminal
+itself; making them guards is a separate change with its own drop-order
+questions.
+
+### B7. No signal handling at all — NOT FIXED
 
 SIGTERM, SIGHUP and SIGINT are unhandled. A `kill` or a closed terminal
 emulator leaves raw mode and the alternate screen behind.
+
+Left open deliberately, and all three matter. Crossterm's raw mode clears
+`ISIG`, so the *terminal driver* no longer turns the INTR character into
+a signal and Ctrl-C inside protolens arrives as a key event — but that
+governs only how the signal would be generated, not whether it can be
+delivered. `kill -INT`, a `kill(2)` from any process and a shell's
+`kill %1` all still deliver SIGINT with its default terminating
+disposition, leaving raw mode and the alternate screen behind exactly as
+SIGTERM would. Raw mode changes the *likelihood*, not the exposure.
+
+Handling them is not a patch: a handler runs in a context where almost
+nothing it would want to call is legal, so the honest shapes are a
+self-pipe woken by the event loop, or `signal_hook`'s flag plus a poll,
+and either is a new dependency or a new thread plus a decision about what
+a half-finished `:save` should do. That is a design, and it belongs in a
+spec rather than in a fix pass.
+
+The file already contains the proof that dispositions are load-bearing
+here: `neovim.rs` installs `SIGTTOU` → `SIG_IGN` for the process's
+lifetime, because the default would have stopped protolens mid-handoff.
 
 ## C. Panics on hostile or unusual input
 
