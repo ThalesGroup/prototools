@@ -499,6 +499,49 @@ impl OverrideCollection {
         self.entries.retain(|e| resolves(&e.origin));
         before - self.entries.len()
     }
+
+    /// Re-establishes "at most one active entry per origin" — the
+    /// invariant every mutator in this module already maintains
+    /// (`activate_impl`, `toggle_active`, `set_active`, `rotate_origin`)
+    /// — by deactivating all but the first active entry of each origin,
+    /// and returns how many it deactivated.
+    ///
+    /// Every path into a collection *except one* preserves the invariant
+    /// by construction. The exception is a file: `from_yaml` builds
+    /// entries straight from the YAML, and a hand-written or hand-merged
+    /// one can perfectly well mark two entries for the same origin
+    /// active. Nothing downstream is written to cope with that, so the
+    /// node resolves to no override at all — a state whose cause is
+    /// invisible from the pane, which shows both entries checked.
+    ///
+    /// Keeping the *first* active entry matches what
+    /// `toggle_active_cascading` already does for the runs it does not
+    /// own: the collection is sorted by origin, so entries sharing one
+    /// are a contiguous run, and the first of that run is the one the
+    /// manage pane displays first. Only actives are considered, so an
+    /// entry the file marked inactive is never promoted.
+    pub fn enforce_single_active(&mut self) -> usize {
+        let mut deactivated = 0;
+        let mut i = 0;
+        while i < self.entries.len() {
+            let mut j = i + 1;
+            while j < self.entries.len() && self.entries[j].origin == self.entries[i].origin {
+                j += 1;
+            }
+            let mut seen_active = false;
+            for e in &mut self.entries[i..j] {
+                if e.active {
+                    if seen_active {
+                        e.active = false;
+                        deactivated += 1;
+                    }
+                    seen_active = true;
+                }
+            }
+            i = j;
+        }
+        deactivated
+    }
 }
 
 // ── YAML save/restore (spec 0117 §4) ────────────────────────────────────────
@@ -507,11 +550,26 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+/// The `version:` value `to_yaml` writes and the only one `from_yaml`
+/// accepts. It is checked rather than merely written: a file from a
+/// future build is far more likely to be *structurally* readable than
+/// semantically compatible — new optional keys deserialize into
+/// nothing, a changed meaning for an existing key deserializes into
+/// the wrong thing — so without the check the failure mode is a
+/// silently misapplied collection rather than a diagnostic.
+const YAML_FORMAT_VERSION: u32 = 1;
+
+/// Generic in the entry type so that `from_yaml` can read the envelope
+/// (`version`, `target`) with the entries still uninterpreted, as
+/// `serde_norway::Value`. That is what lets a version mismatch be
+/// reported *as one*: entries in an unknown format would otherwise fail
+/// the untagged match first, and the resulting error would describe a
+/// malformed entry rather than a file this build cannot read.
 #[derive(Serialize, Deserialize)]
-struct YamlFile {
+struct YamlFile<E> {
     version: u32,
     target: YamlTarget,
-    overrides: Vec<YamlEntry>,
+    overrides: Vec<E>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -548,6 +606,14 @@ enum YamlEntry {
 #[serde(deny_unknown_fields)]
 struct YamlPathEntry {
     path: String,
+    // `default` like every other optional key below: an `Option` field
+    // is still a *required* key to serde without it, so a hand-written
+    // entry that simply omits `type` — the "no type, just a name"
+    // entry the pane can hold — failed to match this variant at all,
+    // and untagged reported it as an unrecognized entry shape. It is
+    // not `skip_serializing_if`, though: `type: null` written out
+    // explicitly is what makes such an entry legible in the file.
+    #[serde(default)]
     r#type: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     active: bool,
@@ -562,6 +628,7 @@ struct YamlPathEntry {
 struct YamlPathFieldEntry {
     path: String,
     field: u64,
+    #[serde(default)] // as in `YamlPathEntry`
     r#type: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     active: bool,
@@ -576,6 +643,7 @@ struct YamlPathFieldEntry {
 struct YamlFqdnFieldEntry {
     fqdn: String,
     field: u64,
+    #[serde(default)] // as in `YamlPathEntry`
     r#type: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     active: bool,
@@ -628,7 +696,7 @@ impl OverrideCollection {
             })
             .collect();
         let file = YamlFile {
-            version: 1,
+            version: YAML_FORMAT_VERSION,
             target: YamlTarget {
                 blob_sha256,
                 descriptor_set_sha256,
@@ -642,17 +710,38 @@ impl OverrideCollection {
     /// here, so the file's own order need not be trusted. Also returns
     /// the recorded target hashes, for the caller to compare against the
     /// currently-loaded blob/descriptor set.
+    ///
+    /// The parse is in two stages — the envelope, then each entry on its
+    /// own — for the sake of the diagnostic. `YamlEntry` is `untagged`,
+    /// so serde buffers each candidate mapping and reports only that
+    /// *none* of the three variants matched, with no line, no column and
+    /// no clue which of the entries was at fault; in a file of a hundred
+    /// entries that is not something a user can act on. Converting one
+    /// `Value` at a time costs the position information back.
     pub fn from_yaml(text: &str) -> Result<(Self, YamlTarget), String> {
-        let file: YamlFile = serde_norway::from_str(text).map_err(|e| {
+        let file: YamlFile<serde_norway::Value> = serde_norway::from_str(text).map_err(|e| {
             format!(
-                "malformed overrides file (expected a list of path/field/fqdn \
-                 override entries): {e}"
+                "malformed overrides file (expected `version`, `target` and a \
+                 list of `overrides`): {e}"
             )
         })?;
-        let entries = file
-            .overrides
-            .into_iter()
-            .map(|y| match y {
+        if file.version != YAML_FORMAT_VERSION {
+            return Err(format!(
+                "overrides file version {} is not supported (this build reads \
+                 version {YAML_FORMAT_VERSION})",
+                file.version
+            ));
+        }
+        let mut entries = Vec::with_capacity(file.overrides.len());
+        for (i, value) in file.overrides.into_iter().enumerate() {
+            let entry: YamlEntry = serde_norway::from_value(value).map_err(|e| {
+                format!(
+                    "overrides file entry {} is malformed (expected a path/field/\
+                     fqdn override entry): {e}",
+                    i + 1
+                )
+            })?;
+            entries.push(match entry {
                 YamlEntry::Path(YamlPathEntry {
                     path,
                     r#type,
@@ -694,8 +783,8 @@ impl OverrideCollection {
                     name,
                     auto,
                 },
-            })
-            .collect();
+            });
+        }
         let mut collection = OverrideCollection { entries };
         collection.sort();
         Ok((collection, file.target))
@@ -1099,6 +1188,130 @@ mod tests {
         collection.toggle_active(0); // deactivate it
         let yaml = collection.to_yaml("b".to_string(), "d".to_string());
         assert!(!yaml.contains("active"));
+    }
+
+    /// A file from a future build must say so. Without the `version`
+    /// check the entries would be tried against the three variants this
+    /// build knows, and whatever went wrong would be reported as a
+    /// malformed entry — which points the user at their file rather
+    /// than at their protolens.
+    #[test]
+    fn from_yaml_rejects_a_version_it_does_not_know() {
+        let yaml = "\
+version: 2
+target:
+  blob_sha256: b
+  descriptor_set_sha256: d
+overrides:
+  - path: /1
+    type: pkg.Sub
+    active: true
+";
+        let Err(err) = OverrideCollection::from_yaml(yaml) else {
+            panic!("version 2 must be refused");
+        };
+        assert!(
+            err.contains("version 2") && err.contains("not supported"),
+            "the diagnostic must name the version it read: {err}"
+        );
+    }
+
+    /// `type` is optional in an entry — an entry can carry only a
+    /// display name — so a hand-written file may leave the key out.
+    #[test]
+    fn from_yaml_accepts_an_entry_with_no_type_key() {
+        let yaml = "\
+version: 1
+target:
+  blob_sha256: b
+  descriptor_set_sha256: d
+overrides:
+  - path: /1
+    name: label
+    active: true
+";
+        let (collection, _) = OverrideCollection::from_yaml(yaml).expect("must parse");
+        assert_eq!(collection.entries().len(), 1);
+        assert_eq!(collection.entries()[0].r#type, None);
+        assert_eq!(collection.entries()[0].name.as_deref(), Some("label"));
+    }
+
+    /// The whole point of converting entries one at a time: `untagged`
+    /// reports only that no variant matched, so without the index the
+    /// user is told a file of a hundred entries is malformed somewhere.
+    #[test]
+    fn from_yaml_names_the_entry_that_is_malformed() {
+        let yaml = "\
+version: 1
+target:
+  blob_sha256: b
+  descriptor_set_sha256: d
+overrides:
+  - path: /1
+    type: pkg.A
+  - path: /2
+    nonsense: true
+";
+        let Err(err) = OverrideCollection::from_yaml(yaml) else {
+            panic!("entry 2 must be refused");
+        };
+        assert!(
+            err.contains("entry 2"),
+            "the diagnostic must say which entry: {err}"
+        );
+    }
+
+    /// A hand-merged file can mark two entries for one origin active;
+    /// nothing downstream is written for that state.
+    #[test]
+    fn enforce_single_active_keeps_only_the_first_active_of_each_origin() {
+        let yaml = "\
+version: 1
+target:
+  blob_sha256: b
+  descriptor_set_sha256: d
+overrides:
+  - path: /1
+    type: pkg.A
+    active: true
+  - path: /1
+    type: pkg.B
+    active: true
+  - path: /2
+    type: pkg.C
+    active: true
+";
+        let (mut collection, _) = OverrideCollection::from_yaml(yaml).expect("must parse");
+        assert_eq!(collection.enforce_single_active(), 1);
+        let active: Vec<_> = collection
+            .entries()
+            .iter()
+            .filter(|e| e.active)
+            .map(|e| e.r#type.clone().unwrap())
+            .collect();
+        assert_eq!(active, vec!["pkg.A".to_string(), "pkg.C".to_string()]);
+    }
+
+    /// An entry the file marked inactive must not be promoted just
+    /// because it sorts first in its run.
+    #[test]
+    fn enforce_single_active_never_activates_an_inactive_entry() {
+        let yaml = "\
+version: 1
+target:
+  blob_sha256: b
+  descriptor_set_sha256: d
+overrides:
+  - path: /1
+    type: pkg.A
+  - path: /1
+    type: pkg.B
+    active: true
+";
+        let (mut collection, _) = OverrideCollection::from_yaml(yaml).expect("must parse");
+        assert_eq!(collection.enforce_single_active(), 0);
+        assert!(!collection.entries()[0].active);
+        assert!(collection.entries()[1].active);
     }
 
     #[test]

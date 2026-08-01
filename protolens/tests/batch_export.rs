@@ -418,6 +418,69 @@ fn export_load_overrides_hash_mismatch_warns_but_still_succeeds() {
     );
 }
 
+/// ...but not for the descriptor formats (quality audit E6). Those
+/// export a *schema* assembled from the overrides themselves, so a
+/// collection written against a different blob or descriptor set makes
+/// the output wrong rather than merely stale — and the consumer of a
+/// descriptor set has no way to notice. Fails, and writes nothing.
+#[test]
+fn export_descriptor_binary_with_a_hash_mismatch_is_a_hard_error() {
+    let (descriptor, blob) = outer_inner_fixture();
+    let yaml = format!(
+        "version: 1\ntarget:\n  blob_sha256: \"{}\"\n  descriptor_set_sha256: \"{}\"\noverrides: []\n",
+        "0".repeat(64),
+        "0".repeat(64),
+    );
+    let overrides = write_temp("descriptor-hash-mismatch-overrides", yaml.as_bytes());
+    let out = run(&[
+        "--descriptor-set",
+        descriptor.path(),
+        "--type",
+        "test.Outer",
+        blob.path(),
+        "export",
+        "/",
+        "--format",
+        "descriptor-binary",
+        "--load-overrides",
+        overrides.path(),
+    ]);
+    assert!(
+        !out.status.success(),
+        "a hash mismatch must be fatal for a schema export"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("error") && stderr.contains("different blob or descriptor set"),
+        "expected a fatal hash-mismatch diagnostic, got: {stderr}"
+    );
+}
+
+/// Quality audit E7: `--format=descriptor-*` without `--load-overrides`
+/// is refused before the descriptor set is even opened — the check used
+/// to run after the whole startup, which is seconds on a large set.
+/// A nonexistent `--descriptor-set` is the probe: reaching the load at
+/// all would produce *its* diagnostic instead of this one.
+#[test]
+fn descriptor_format_without_load_overrides_fails_before_startup() {
+    let (_descriptor, blob) = outer_inner_fixture();
+    let out = run(&[
+        "--descriptor-set",
+        "/nonexistent/descriptor.desc",
+        blob.path(),
+        "export",
+        "/",
+        "--format",
+        "descriptor-prototext",
+    ]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("requires --load-overrides"),
+        "the flag pairing must be refused before the descriptor set is read, got: {stderr}"
+    );
+}
+
 // ── Spec 0221: a refused override is reported, not swallowed ────────────
 
 /// An overrides file naming a type that is not in the descriptor set.

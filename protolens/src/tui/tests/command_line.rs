@@ -184,6 +184,45 @@ fn yaml_round_trips_auto_flag_and_defaults_false_when_absent() {
     );
 }
 
+/// Quality audit E1: `:save` replaces the target in one step and leaves
+/// nothing behind. The old contents surviving intact is the property
+/// that matters — `std::fs::write` truncates first, so an interrupted
+/// save destroyed a collection that only existed in memory — and the
+/// temp file being gone afterward is what makes that affordable.
+#[test]
+fn write_atomically_replaces_the_target_and_leaves_no_temp_behind() {
+    let dir = std::env::temp_dir().join(format!(
+        "protolens-atomic-write-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("overrides.yaml");
+
+    command_line::write_atomically(&path, b"first").unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"first");
+    command_line::write_atomically(&path, b"second").unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"second");
+
+    let leftovers: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .filter(|n| n != "overrides.yaml")
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "temp files left behind: {leftovers:?}"
+    );
+
+    // A failing write must not litter either — and must not have
+    // touched the target it could not replace.
+    let denied = dir.join("no-such-subdir").join("overrides.yaml");
+    assert!(command_line::write_atomically(&denied, b"third").is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), b"second");
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// Spec 0127 §G1: a long `:command` buffer becomes pannable — typing
 /// past the visible width auto-follows the cursor instead of clipping
 /// it off-screen, and the same offset can also be panned manually via
@@ -276,7 +315,7 @@ fn load_overrides_without_a_root_entry_preserves_the_current_root_type() {
         .to_string_lossy()
         .into_owned();
     std::fs::write(&path, &yaml).unwrap();
-    let warnings = app.load_overrides(&path).unwrap();
+    let warnings = app.load_overrides(&path).unwrap().warnings;
     std::fs::remove_file(&path).unwrap();
 
     assert!(warnings.is_empty(), "{warnings:?}");

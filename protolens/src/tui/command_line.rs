@@ -14,6 +14,69 @@ enum ExportFormat {
     DescriptorPrototext,
 }
 
+/// What `App::load_overrides` applied, and what it could not.
+///
+/// `hash_mismatch` is called out separately rather than left to the
+/// caller to pick back out of `warnings`, because the two callers do
+/// not agree on how serious it is. Interactively it is exactly what it
+/// says — a note that the collection was written against a different
+/// target, with the user right there to judge. In batch mode it is
+/// worse, and for `--format=descriptor-*` it is fatal: that output is a
+/// *schema*, consumed by another tool with nobody watching, and a
+/// schema derived from overrides written for some other blob is wrong
+/// in a way its consumer cannot detect.
+pub(crate) struct OverrideLoad {
+    pub(crate) warnings: Vec<String>,
+    pub(crate) hash_mismatch: bool,
+}
+
+/// Write `contents` to `path` so that `path` is only ever the whole old
+/// file or the whole new one, never a truncated mixture of the two.
+///
+/// `std::fs::write` truncates in place: it destroys the old contents
+/// before it has written the new, so a crash, a full disk or a killed
+/// process in that window leaves a half-written file where a saved
+/// override collection used to be — and the collection it was saving
+/// is only in memory. Writing a sibling temp file and renaming over
+/// the target instead makes the replacement a single atomic step, and
+/// `sync_all` before the rename is what stops the rename from being
+/// durable while the bytes it points at are not.
+///
+/// The temp file is a *sibling*, not a file in the system temp
+/// directory: `rename` is only atomic within one filesystem, and
+/// nothing says the target shares one with `/tmp`. It carries the
+/// process id so that two protolens instances saving the same path do
+/// not write over each other's temp file.
+pub(super) fn write_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
+    use std::io::Write as _;
+
+    let name = path.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} is not a file name", path.display()),
+        )
+    })?;
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let mut tmp_name = std::ffi::OsString::from(".");
+    tmp_name.push(name);
+    tmp_name.push(format!(".{}.tmp", std::process::id()));
+    let tmp = dir.join(tmp_name);
+
+    // Every failure past this point leaves the temp file behind, so
+    // each one removes it before returning: the target is untouched,
+    // and a save that reported an error should not also litter the
+    // directory it failed to write into.
+    let written = std::fs::File::create(&tmp).and_then(|mut f| {
+        f.write_all(contents)?;
+        f.sync_all()
+    });
+    if let Err(e) = written.and_then(|()| std::fs::rename(&tmp, path)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
 impl App {
     /// Edit the in-progress command-line buffer at `command_cursor`
     /// (a proper single-line text-input model — `Left`/`Right`/`Home`/`End`
@@ -755,7 +818,9 @@ impl App {
     }
 
     /// `save <path>` (spec 0117 §4): writes the entire collection, plus
-    /// the current target's hashes, to `<path>` as YAML.
+    /// the current target's hashes, to `<path>` as YAML — atomically
+    /// (`write_atomically`), since the collection being saved has no
+    /// other copy.
     pub(super) fn run_save_overrides(&mut self, args: Vec<&str>) {
         if args.is_empty() {
             self.message = "save: missing path".to_string();
@@ -770,7 +835,7 @@ impl App {
             }
         };
         let yaml = self.overrides.to_yaml(blob_sha256, descriptor_set_sha256);
-        match std::fs::write(&path, yaml) {
+        match write_atomically(Path::new(&path), yaml.as_bytes()) {
             Ok(()) => self.message = format!("saved overrides to {path}"),
             Err(e) => self.message = format!("save error: {e}"),
         }
@@ -799,24 +864,26 @@ impl App {
     /// resolve against the current tree/descriptor pool, then replaces
     /// `self.overrides` wholesale and re-renders (spec 0118 §6:
     /// replacing the whole collection can change the resolved override
-    /// for any node). Returns the list of non-blocking hash-mismatch
-    /// warnings (empty if none) on success — a hash mismatch alone is
-    /// never a failure — or `Err(diagnostic)` if the file couldn't be
-    /// read or parsed as valid YAML in the first place, which the two
-    /// callers (`run_restore_overrides`, batch mode) treat differently:
-    /// the TUI just displays it and keeps running; batch mode (spec 0123
-    /// G4) treats it as a hard error.
-    pub(crate) fn load_overrides(&mut self, path: &str) -> Result<Vec<String>, String> {
+    /// for any node). Returns an `OverrideLoad` describing what was and
+    /// was not applied on success, or `Err(diagnostic)` if the file
+    /// couldn't be read or parsed as valid YAML in the first place,
+    /// which the two callers (`run_restore_overrides`, batch mode) treat
+    /// differently: the TUI just displays it and keeps running; batch
+    /// mode (spec 0123 G4) treats it as a hard error.
+    pub(crate) fn load_overrides(&mut self, path: &str) -> Result<OverrideLoad, String> {
         let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let (mut collection, target) = override_pane::OverrideCollection::from_yaml(&text)?;
         let dropped = collection.retain_resolvable(|origin| self.origin_resolves(origin));
         let (blob_sha256, descriptor_set_sha256) = self.target_hashes()?;
         let mut warnings = Vec::new();
+        let mut hash_mismatch = false;
         if target.blob_sha256 != blob_sha256 {
             warnings.push("blob hash mismatch".to_string());
+            hash_mismatch = true;
         }
         if target.descriptor_set_sha256 != descriptor_set_sha256 {
             warnings.push("descriptor-set hash mismatch".to_string());
+            hash_mismatch = true;
         }
         // Spec 0221 S6: dropped entries used to vanish without a word,
         // which reads exactly like a file that was applied. Reported
@@ -826,6 +893,21 @@ impl App {
         if dropped > 0 {
             warnings.push(format!(
                 "{dropped} override(s) dropped: their origin does not resolve against this blob"
+            ));
+        }
+        // The file is external input, and nothing in it enforces the
+        // per-origin invariant that every in-process mutator maintains
+        // (see `enforce_single_active`). A hand-merged file with two
+        // active entries for one origin otherwise loads into a state no
+        // downstream code is written for, and the node resolves to no
+        // override at all while the pane shows both entries checked.
+        // Reported for the same reason the drop above is: a repair the
+        // user did not ask for is one they should hear about.
+        let deactivated = collection.enforce_single_active();
+        if deactivated > 0 {
+            warnings.push(format!(
+                "{deactivated} override(s) deactivated: an origin cannot have more than one \
+                 active entry"
             ));
         }
         // The document root's own type is external input (CLI `--type`,
@@ -858,7 +940,10 @@ impl App {
         self.last_manage_highlight = None;
         self.manage_pan_offset = 0;
         self.manage_pending_kind = None;
-        Ok(warnings)
+        Ok(OverrideLoad {
+            warnings,
+            hash_mismatch,
+        })
     }
 
     /// `restore <path>` (spec 0117 §4): replaces the collection wholesale
@@ -870,10 +955,10 @@ impl App {
         }
         let path = args.join(" ");
         self.message = match self.load_overrides(&path) {
-            Ok(warnings) if warnings.is_empty() => format!("restored overrides from {path}"),
-            Ok(warnings) => format!(
+            Ok(load) if load.warnings.is_empty() => format!("restored overrides from {path}"),
+            Ok(load) => format!(
                 "restored overrides from {path} (warning: {})",
-                warnings.join(", ")
+                load.warnings.join(", ")
             ),
             Err(e) => format!("restore error: {e}"),
         };

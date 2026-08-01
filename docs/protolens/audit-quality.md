@@ -564,16 +564,32 @@ interval instead of pegging a core.
 Everything here is about `:save`/`:restore` and `--load-overrides`, and
 all of it is data the user expects to survive.
 
+E1 and E3–E7 are fixed (2026-08-01); E2 was already fixed, by spec 0221
+S6, before this audit was written.
+
 ### E1. Every write is truncate-in-place
 
 There is no write-to-temp-and-rename anywhere. An interrupted `:save`
 destroys the collection it was saving.
+
+**Fixed.** `run_save_overrides` now goes through a `write_atomically`
+helper: a sibling temp file (a *sibling*, because `rename` is only
+atomic within one filesystem and nothing says the target shares one
+with `/tmp`), `sync_all` before the rename so the rename cannot become
+durable ahead of the bytes it points at, and `remove_file` on every
+error path. Scoped to the overrides file, which is the one write whose
+contents exist nowhere else — an export can simply be re-run.
 
 ### E2. `:save` persists what `:restore` just dropped
 
 `retain_resolvable` (`override_pane.rs:483-495`) silently drops entries
 that no longer resolve, returning only a count nobody surfaces. Save
 after restore and the dropped entries are gone from the file too.
+
+**Already fixed** — this item was stale when it was written. Spec 0221
+S6 gave the count a channel: `load_overrides` turns a non-zero drop into
+one more of the warnings both callers already print. The drop itself is
+still a drop, but it is no longer silent.
 
 ### E3. `from_yaml` does not re-establish the collection's invariants
 
@@ -582,6 +598,22 @@ YAML. Nothing re-establishes "at most one active entry per origin", so a
 hand-merged file loads into a state the rest of the code assumes cannot
 exist — and the node quietly resolves to raw.
 
+**Fixed.** New `OverrideCollection::enforce_single_active`, called from
+`load_overrides` and reported through the same warnings list as the drop
+above — a repair the user did not ask for is one they should hear about.
+It keeps the *first active* entry of each origin, matching what
+`toggle_active_cascading` already does for runs it does not own, and
+never promotes an entry the file marked inactive. It is O(n) rather than
+O(n²) because the collection is sorted by origin, so entries sharing one
+are a contiguous run.
+
+The repair lives at `load_overrides` rather than in `from_yaml` as the
+item suggested: `from_yaml` is a parser, and the invariant matters at
+the point the collection becomes `self.overrides`. Ordering against
+`retain_resolvable` is immaterial — resolvability is a function of the
+origin alone, so entries sharing an origin are always kept or dropped
+together.
+
 ### E4. `version` is written and ignored
 
 `YamlFile.version` (`:506`) is serialized as `1` at `:625` and never
@@ -589,21 +621,53 @@ read. The forward-compatibility hook exists but is not wired up, which
 is worse than not having it: a future format change has no way to
 report itself.
 
+**Fixed.** `YAML_FORMAT_VERSION`, written by `to_yaml` and checked by
+`from_yaml`. The check needed E5's restructuring to be worth anything:
+`YamlFile` is now generic in its entry type, so `from_yaml` reads the
+envelope with the entries still uninterpreted (`serde_norway::Value`)
+and a version mismatch is reported *as one* rather than as whatever the
+untagged match made of a format this build does not know.
+
 ### E5. `#[serde(untagged)]` destroys position information
 
 A malformed entry produces an error that names neither the entry nor
 the line. `r#type` also has no `#[serde(default)]`.
+
+**Fixed.** `from_yaml` deserializes `overrides` as `Vec<Value>` and
+converts one entry at a time, so the diagnostic names the entry index —
+"overrides file entry 2 is malformed". The line number is still lost
+(that is `untagged`'s buffering, and unavoidable without abandoning it),
+but the index is the actionable part in a file of a hundred entries.
+`#[serde(default)]` added to all three `r#type` fields: an `Option`
+field is still a *required key* to serde without it, so an entry
+carrying only a display name failed to match any variant at all.
 
 ### E6. A hash mismatch is only a warning
 
 Even for `--format=descriptor-binary`, where the output is a schema
 another tool will consume.
 
+**Fixed.** `load_overrides` now returns an `OverrideLoad` — the warnings
+plus a `hash_mismatch` flag — instead of a bare warning list, because
+the two callers do not agree on how serious a mismatch is. It stays a
+warning interactively and for the two document formats, which export the
+document's own bytes whatever the overrides were written against. For
+`--format=descriptor-*` it is fatal and no output is produced: that
+output is a schema assembled from exactly those overrides, so a
+collection written for a different blob describes neither, and its
+consumer has no way to notice.
+
 ### E7. Late validation
 
 `--format=descriptor-*` requires `--load-overrides`, and that check
 (`main.rs:526-532`) runs *after* the full startup — about 3.5 s on
 googleapis — rather than at argument parse.
+
+**Fixed.** Moved to just after `Cli::parse()`, beside the existing
+`--type requires --descriptor-set` check. Nothing about the pairing
+depends on the blob, the descriptor set or the tree. The regression test
+probes it with a nonexistent `--descriptor-set`: reaching the load at
+all would produce *that* diagnostic instead.
 
 ## F. Test coverage
 

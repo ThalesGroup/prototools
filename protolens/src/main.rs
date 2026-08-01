@@ -235,6 +235,12 @@ impl ExtractFormatArg {
             Self::DescriptorBinary | Self::DescriptorPrototext => None,
         }
     }
+
+    /// Whether this format exports a *schema* (`export_descriptor`)
+    /// rather than a view of the document's own bytes.
+    fn is_descriptor(self) -> bool {
+        matches!(self, Self::DescriptorBinary | Self::DescriptorPrototext)
+    }
 }
 
 /// Default `proto_root` from `<descriptor_set-stub>/proto/` when the
@@ -291,6 +297,26 @@ fn main() -> ExitCode {
     if descriptor_set.is_none() && cli.r#type.is_some() {
         eprintln!("error: --type requires --descriptor-set");
         return ExitCode::FAILURE;
+    }
+    // Here rather than in the `Export` arm below, which is where this
+    // check used to live: nothing about it depends on the blob, the
+    // descriptor set or the tree, and everything between here and there
+    // — the descriptor load, the wrap, the inference sweep — takes
+    // seconds on a large set. A flag combination that was never going to
+    // be accepted should be refused before the user waits for it.
+    if let Some(Command::Export {
+        format,
+        load_overrides,
+        ..
+    }) = &cli.command
+    {
+        if format.is_some_and(ExtractFormatArg::is_descriptor) && load_overrides.is_none() {
+            eprintln!(
+                "error: --format=descriptor-binary/descriptor-prototext requires \
+                 --load-overrides (batch mode has no interactive type-inference loop)"
+            );
+            return ExitCode::FAILURE;
+        }
     }
 
     // Spec 0216 S28/S29: the blob is read (or mapped) and wrapped in the
@@ -499,12 +525,14 @@ fn main() -> ExitCode {
             format,
             output,
         }) => {
+            let mut hash_mismatch = false;
             if let Some(overrides_path) = &load_overrides {
                 match app.load_overrides(&overrides_path.to_string_lossy()) {
-                    Ok(warnings) => {
-                        for w in warnings {
+                    Ok(load) => {
+                        for w in &load.warnings {
                             eprintln!("warning: --load-overrides: {w}");
                         }
+                        hash_mismatch = load.hash_mismatch;
                     }
                     Err(e) => {
                         eprintln!(
@@ -545,15 +573,25 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
 
-            let is_descriptor = matches!(
-                format,
-                Some(ExtractFormatArg::DescriptorBinary)
-                    | Some(ExtractFormatArg::DescriptorPrototext)
-            );
-            if is_descriptor && load_overrides.is_none() {
+            // `--load-overrides` is already known to be present when
+            // this is true — that pairing is checked before startup.
+            let is_descriptor = format.is_some_and(ExtractFormatArg::is_descriptor);
+
+            // A hash mismatch is a warning everywhere else, and stays
+            // one for the two document formats: those export the
+            // document's own bytes, which are what they are whatever the
+            // overrides file was written against. The descriptor formats
+            // export a *schema* instead, assembled from exactly those
+            // overrides — so a collection written against a different
+            // blob or a different descriptor set produces a schema that
+            // describes neither, and hands it to a tool with no way to
+            // notice. Same reasoning, and same exit code, as the refusal
+            // check above: no output file is produced.
+            if is_descriptor && hash_mismatch {
                 eprintln!(
-                    "error: --format=descriptor-binary/descriptor-prototext requires \
-                     --load-overrides (batch mode has no interactive type-inference loop)"
+                    "error: --load-overrides: the overrides file was written against a \
+                     different blob or descriptor set, and --format=descriptor-binary/\
+                     descriptor-prototext exports a schema built from it"
                 );
                 return ExitCode::FAILURE;
             }
