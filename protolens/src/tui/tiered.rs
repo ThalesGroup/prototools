@@ -102,9 +102,9 @@ fn link_at_tail<K, V>(slots: &mut [Option<Slot<K, V>>], band: &mut Band, idx: us
 /// from an O(1) pointer splice into a rewrite of every slot in the
 /// wave — on the UI thread, in `App::prefetch_step`. The O(1) restart
 /// is the entire justification for the subtlety, and it is what pays
-/// for the `else if` fallbacks in `fix_head_if_matches` /
-/// `fix_tail_if_matches`, which exist solely because one tier maps to
-/// two bands.
+/// for `bands_for`'s second band, and for the fallback in
+/// `fix_boundary_if_matches` that consults it — both of which exist
+/// solely because one tier maps to two bands.
 ///
 /// A superseded entry is never *served* (spec 0189). `pop_highest`
 /// stops at `prefetch_current`; `prefetch_previous` is drained only by
@@ -415,7 +415,7 @@ impl<K: Eq + Hash + Clone, V: Clone> TieredBounded<K, V> {
                     .expect("prev slot must be occupied")
                     .next = next
             }
-            None => self.fix_head_if_matches(tier, idx, next),
+            None => self.fix_boundary_if_matches(tier, idx, next, |b| &mut b.head),
         }
         match next {
             Some(n) => {
@@ -424,55 +424,50 @@ impl<K: Eq + Hash + Clone, V: Clone> TieredBounded<K, V> {
                     .expect("next slot must be occupied")
                     .prev = prev
             }
-            None => self.fix_tail_if_matches(tier, idx, prev),
+            None => self.fix_boundary_if_matches(tier, idx, prev, |b| &mut b.tail),
         }
     }
 
-    /// `unlink`'s head-boundary fixup: `idx` had `prev == None`, so it
-    /// was *some* band's head — check each plausible band for `tier`
-    /// (at most two, for `Prefetch`) and repoint whichever one matches
-    /// to `new_head`.
-    fn fix_head_if_matches(&mut self, tier: Tier, idx: usize, new_head: Option<usize>) {
+    /// The bands a slot of `tier` can be linked into, in the order a
+    /// boundary fixup must check them. Only `Prefetch` has a second —
+    /// its previous generation, which nothing inserts into directly but
+    /// which `age_prefetch` moves whole waves onto.
+    fn bands_for(&mut self, tier: Tier) -> (&mut Band, Option<&mut Band>) {
         match tier {
-            Tier::User => {
-                if self.user.head == Some(idx) {
-                    self.user.head = new_head;
-                }
-            }
-            Tier::Visible => {
-                if self.visible.head == Some(idx) {
-                    self.visible.head = new_head;
-                }
-            }
-            Tier::Prefetch => {
-                if self.prefetch_current.head == Some(idx) {
-                    self.prefetch_current.head = new_head;
-                } else if self.prefetch_previous.head == Some(idx) {
-                    self.prefetch_previous.head = new_head;
-                }
-            }
+            Tier::User => (&mut self.user, None),
+            Tier::Visible => (&mut self.visible, None),
+            Tier::Prefetch => (
+                &mut self.prefetch_current,
+                Some(&mut self.prefetch_previous),
+            ),
         }
     }
 
-    /// Symmetric with `fix_head_if_matches`, for the tail boundary.
-    fn fix_tail_if_matches(&mut self, tier: Tier, idx: usize, new_tail: Option<usize>) {
-        match tier {
-            Tier::User => {
-                if self.user.tail == Some(idx) {
-                    self.user.tail = new_tail;
-                }
-            }
-            Tier::Visible => {
-                if self.visible.tail == Some(idx) {
-                    self.visible.tail = new_tail;
-                }
-            }
-            Tier::Prefetch => {
-                if self.prefetch_current.tail == Some(idx) {
-                    self.prefetch_current.tail = new_tail;
-                } else if self.prefetch_previous.tail == Some(idx) {
-                    self.prefetch_previous.tail = new_tail;
-                }
+    /// `unlink`'s boundary fixup: `idx` had no neighbor on one side, so
+    /// it was at that end of *some* band — check each band `tier` can
+    /// occupy and repoint whichever one names it to `replacement`.
+    ///
+    /// `end` picks the end: `|b| &mut b.head` or `|b| &mut b.tail`. The
+    /// two used to be separate 21-line functions, the second's whole doc
+    /// comment reading "symmetric with the first" — which is the shape
+    /// of a claim nothing checks.
+    fn fix_boundary_if_matches(
+        &mut self,
+        tier: Tier,
+        idx: usize,
+        replacement: Option<usize>,
+        end: fn(&mut Band) -> &mut Option<usize>,
+    ) {
+        let (first, second) = self.bands_for(tier);
+        let slot = end(first);
+        if *slot == Some(idx) {
+            *slot = replacement;
+            return;
+        }
+        if let Some(second) = second {
+            let slot = end(second);
+            if *slot == Some(idx) {
+                *slot = replacement;
             }
         }
     }

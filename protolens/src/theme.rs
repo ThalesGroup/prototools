@@ -23,6 +23,46 @@ pub enum ThemeKind {
     System,
 }
 
+/// The promise `resolve_system` makes, stated once: by the time any
+/// style function runs, `--theme system` has already become `Dark` or
+/// `Light`. Reaching this is a programming error in the startup path,
+/// not a condition a render can encounter.
+///
+/// A function rather than the seven copies of the same `unreachable!`
+/// this file used to carry — the message names `main.rs` as the place
+/// the resolution happens, so it is a message worth having exactly one
+/// of.
+fn system_must_be_resolved() -> ! {
+    unreachable!("ThemeKind::System must be resolved before rendering — see main.rs")
+}
+
+/// Chooses one of the four members of a palette pair — `Dark`/`Light`
+/// times truecolor/ANSI-16 — for the style functions whose entire body
+/// is that choice. Each pair argument is `(truecolor, ansi16)`, in the
+/// order the destructuring below reads them.
+///
+/// This also takes `ThemeKind::System` off those callers entirely: they
+/// state neither the resolution promise nor the color-depth branch, so
+/// there is no fifth copy of either to keep in step, and a new style
+/// function of this shape cannot forget one.
+///
+/// `rgb` is a parameter rather than a `supports_rgb()` call because some
+/// callers must be able to ask for either palette from a test — see
+/// `style_for_in` for why probing it here would make the ANSI-16 one
+/// unreachable.
+fn pick<T>(theme: ThemeKind, rgb: bool, dark: (T, T), light: (T, T)) -> T {
+    let (truecolor, ansi16) = match theme {
+        ThemeKind::Dark => dark,
+        ThemeKind::Light => light,
+        ThemeKind::System => system_must_be_resolved(),
+    };
+    if rgb {
+        truecolor
+    } else {
+        ansi16
+    }
+}
+
 /// Maps `role` to a `Style`. `theme` must already be resolved to
 /// `Dark`/`Light` (see `resolve_system`); passing `System` here is a
 /// programming error.
@@ -46,13 +86,11 @@ pub fn style_for(role: SyntaxRole, theme: ThemeKind) -> Style {
 /// environment mutation and no skipping.
 fn style_for_in(role: SyntaxRole, theme: ThemeKind, rgb: bool) -> Style {
     match (theme, rgb) {
-        (ThemeKind::Dark, true) => style_for_dark_rgb(role),
+        (ThemeKind::Dark, true) => style_for_rgb(role, &DARK_RGB),
         (ThemeKind::Dark, false) => style_for_dark_ansi16(role),
-        (ThemeKind::Light, true) => style_for_light_rgb(role),
+        (ThemeKind::Light, true) => style_for_rgb(role, &LIGHT_RGB),
         (ThemeKind::Light, false) => style_for_light_ansi16(role),
-        (ThemeKind::System, _) => {
-            unreachable!("ThemeKind::System must be resolved before rendering — see main.rs")
-        }
+        (ThemeKind::System, _) => system_must_be_resolved(),
     }
 }
 
@@ -175,122 +213,89 @@ pub fn prime_supports_rgb() {
     xtgettcap_reports_rgb();
 }
 
-/// Named RGB constants for the dark palette (spec 0116 §9's "RGB
-/// palette" table), borrowed from VSCode's `dark_plus.json`/
-/// `dark_vs.json`. Doc comments cite each color's closest named-color
-/// match from <https://www.color-name.com>, purely for human
-/// readability when scanning this file — VSCode itself has no
-/// equivalent naming, only semantic scope names (mirrored here by
-/// which `SyntaxRole` each constant is named after). A color shared by
-/// more than one role/function is referenced, not re-typed, so it only
-/// ever needs updating in one place.
-mod dark_rgb {
-    use ratatui::style::Color;
-
-    /// "Clear Blue".
-    pub const ATTRIBUTE: Color = Color::Rgb(0x9C, 0xDC, 0xFE);
-    /// "Subtle Blue Green" — also VSCode's link-color (`StringSpecialUrl`)
-    /// and `Constant`, and this crate's own focused-pane accent
-    /// (`focus_style`).
-    pub const TYPE: Color = Color::Rgb(0x4E, 0xC9, 0xB0);
-    /// "Beauty Copper".
-    pub const STRING_LITERAL: Color = Color::Rgb(0xCE, 0x91, 0x78);
-    /// "Mushroom Melt".
-    pub const STRING_ESCAPE: Color = Color::Rgb(0xD7, 0xBA, 0x7D);
-    /// "Brussels Sprout" — also this crate's manage-pane "auto" entry
-    /// color (`manage_entry_style`).
-    pub const COMMENT: Color = Color::Rgb(0x6A, 0x99, 0x55);
-    /// "Rainee".
-    pub const NUMBER: Color = Color::Rgb(0xB5, 0xCE, 0xA8);
-    /// "Azul Mystic" — also this crate's manage-pane origin-path
-    /// header color (`render_manage_pane`, via `style_for`).
-    pub const BOOLEAN: Color = Color::Rgb(0x56, 0x9C, 0xD6);
-    /// "Pale Hazel".
-    pub const PUNCTUATION_BRACKET_LIST: Color = Color::Rgb(0xDC, 0xDC, 0xAA);
-    /// "Alexa".
-    pub const PUNCTUATION_BRACKET_EXTENSION: Color = Color::Rgb(0xD1, 0x69, 0x69);
+/// The nine colors an RGB palette names (spec 0116 §9's "RGB palette"
+/// table), as one struct rather than as a module of constants per
+/// palette — so the `SyntaxRole` mapping below is written once instead
+/// of once per palette. The two used to be verbatim copies differing
+/// only in a module path.
+///
+/// Field names mirror the `SyntaxRole` each color serves; VSCode, which
+/// these are borrowed from, has no equivalent naming, only semantic
+/// scope names. A color serving more than one role is one field
+/// referenced twice, never a value repeated.
+struct RgbPalette {
+    attribute: Color,
+    /// Also VSCode's link color (`StringSpecialUrl`) and `Constant`, and
+    /// this crate's own focused-pane accent (`focus_style`).
+    r#type: Color,
+    string_literal: Color,
+    string_escape: Color,
+    /// Also this crate's manage-pane "auto" entry color
+    /// (`manage_entry_style`).
+    comment: Color,
+    number: Color,
+    /// Also this crate's manage-pane origin-path header color
+    /// (`render_manage_pane`, via `style_for`).
+    boolean: Color,
+    punctuation_bracket_list: Color,
+    punctuation_bracket_extension: Color,
 }
 
-/// Named RGB constants for the light palette (spec 0116 §9's "RGB
-/// palette" table), borrowed from VSCode's `light_plus.json`/
-/// `light_vs.json`. See `dark_rgb` for the naming/reuse convention.
-mod light_rgb {
-    use ratatui::style::Color;
+/// The dark RGB palette, borrowed from VSCode's `dark_plus.json`/
+/// `dark_vs.json`. Each trailing comment is that color's closest
+/// named-color match from <https://www.color-name.com>, purely for human
+/// readability when scanning this file.
+const DARK_RGB: RgbPalette = RgbPalette {
+    attribute: Color::Rgb(0x9C, 0xDC, 0xFE),      // Clear Blue
+    r#type: Color::Rgb(0x4E, 0xC9, 0xB0),         // Subtle Blue Green
+    string_literal: Color::Rgb(0xCE, 0x91, 0x78), // Beauty Copper
+    string_escape: Color::Rgb(0xD7, 0xBA, 0x7D),  // Mushroom Melt
+    comment: Color::Rgb(0x6A, 0x99, 0x55),        // Brussels Sprout
+    number: Color::Rgb(0xB5, 0xCE, 0xA8),         // Rainee
+    boolean: Color::Rgb(0x56, 0x9C, 0xD6),        // Azul Mystic
+    punctuation_bracket_list: Color::Rgb(0xDC, 0xDC, 0xAA), // Pale Hazel
+    punctuation_bracket_extension: Color::Rgb(0xD1, 0x69, 0x69), // Alexa
+};
 
-    /// "Electric Red".
-    pub const ATTRIBUTE: Color = Color::Rgb(0xE5, 0x00, 0x00);
-    /// "Jelly Bean Blue" — also VSCode's link-color (`StringSpecialUrl`)
-    /// and `Constant`, and this crate's own focused-pane accent
-    /// (`focus_style`).
-    pub const TYPE: Color = Color::Rgb(0x26, 0x7F, 0x99);
-    /// "San Diego".
-    pub const STRING_LITERAL: Color = Color::Rgb(0xA3, 0x15, 0x15);
-    /// "Strong Red".
-    pub const STRING_ESCAPE: Color = Color::Rgb(0xEE, 0x00, 0x00);
-    /// "Digital Green" — also this crate's manage-pane "auto" entry
-    /// color (`manage_entry_style`).
-    pub const COMMENT: Color = Color::Rgb(0x00, 0x80, 0x00);
-    /// "Funky Green".
-    pub const NUMBER: Color = Color::Rgb(0x09, 0x86, 0x58);
-    /// "Blue" — also this crate's manage-pane origin-path header
-    /// color (`render_manage_pane`, via `style_for`).
-    pub const BOOLEAN: Color = Color::Rgb(0x00, 0x00, 0xFF);
-    /// "French Blue".
-    pub const PUNCTUATION_BRACKET_LIST: Color = Color::Rgb(0x04, 0x51, 0xA5);
-    /// "Dried Burgundy".
-    pub const PUNCTUATION_BRACKET_EXTENSION: Color = Color::Rgb(0x81, 0x1F, 0x3F);
-}
+/// The light RGB palette, borrowed from VSCode's `light_plus.json`/
+/// `light_vs.json`. See `DARK_RGB` for the trailing-comment convention.
+const LIGHT_RGB: RgbPalette = RgbPalette {
+    attribute: Color::Rgb(0xE5, 0x00, 0x00),      // Electric Red
+    r#type: Color::Rgb(0x26, 0x7F, 0x99),         // Jelly Bean Blue
+    string_literal: Color::Rgb(0xA3, 0x15, 0x15), // San Diego
+    string_escape: Color::Rgb(0xEE, 0x00, 0x00),  // Strong Red
+    comment: Color::Rgb(0x00, 0x80, 0x00),        // Digital Green
+    number: Color::Rgb(0x09, 0x86, 0x58),         // Funky Green
+    boolean: Color::Rgb(0x00, 0x00, 0xFF),        // Blue
+    punctuation_bracket_list: Color::Rgb(0x04, 0x51, 0xA5), // French Blue
+    punctuation_bracket_extension: Color::Rgb(0x81, 0x1F, 0x3F), // Dried Burgundy
+};
 
-/// RGB palette, dark — borrowed from VSCode's `dark_plus.json`/
-/// `dark_vs.json` (spec 0116 §9's "RGB palette" table; scope names
-/// cited there).
-fn style_for_dark_rgb(role: SyntaxRole) -> Style {
+/// Which color of `p` each role takes, and the one modifier the RGB
+/// palettes carry (spec 0116 §9's "RGB palette" table; scope names cited
+/// there).
+///
+/// One function for both palettes: the dark and light tables never
+/// differed in which role got which named color, only in what the names
+/// resolve to.
+fn style_for_rgb(role: SyntaxRole, p: &RgbPalette) -> Style {
     match role {
-        SyntaxRole::Attribute => Style::default().fg(dark_rgb::ATTRIBUTE),
-        SyntaxRole::Type => Style::default().fg(dark_rgb::TYPE),
-        SyntaxRole::StringLiteral => Style::default().fg(dark_rgb::STRING_LITERAL),
-        SyntaxRole::StringEscape => Style::default().fg(dark_rgb::STRING_ESCAPE),
+        SyntaxRole::Attribute => Style::default().fg(p.attribute),
+        SyntaxRole::Type => Style::default().fg(p.r#type),
+        SyntaxRole::StringLiteral => Style::default().fg(p.string_literal),
+        SyntaxRole::StringEscape => Style::default().fg(p.string_escape),
         SyntaxRole::StringSpecialUrl => Style::default()
-            .fg(dark_rgb::TYPE)
+            .fg(p.r#type)
             .add_modifier(Modifier::UNDERLINED),
-        SyntaxRole::Comment => Style::default().fg(dark_rgb::COMMENT),
-        SyntaxRole::Number => Style::default().fg(dark_rgb::NUMBER),
-        SyntaxRole::Boolean => Style::default().fg(dark_rgb::BOOLEAN),
-        SyntaxRole::Constant => Style::default().fg(dark_rgb::TYPE),
+        SyntaxRole::Comment => Style::default().fg(p.comment),
+        SyntaxRole::Number => Style::default().fg(p.number),
+        SyntaxRole::Boolean => Style::default().fg(p.boolean),
+        SyntaxRole::Constant => Style::default().fg(p.r#type),
         SyntaxRole::PunctuationDelimiter => Style::default(),
         SyntaxRole::PunctuationBracket => Style::default(),
-        SyntaxRole::PunctuationBracketList => {
-            Style::default().fg(dark_rgb::PUNCTUATION_BRACKET_LIST)
-        }
+        SyntaxRole::PunctuationBracketList => Style::default().fg(p.punctuation_bracket_list),
         SyntaxRole::PunctuationBracketExtension => {
-            Style::default().fg(dark_rgb::PUNCTUATION_BRACKET_EXTENSION)
-        }
-    }
-}
-
-/// RGB palette, light — borrowed from VSCode's `light_plus.json`/
-/// `light_vs.json` (spec 0116 §9's "RGB palette" table; scope names
-/// cited there).
-fn style_for_light_rgb(role: SyntaxRole) -> Style {
-    match role {
-        SyntaxRole::Attribute => Style::default().fg(light_rgb::ATTRIBUTE),
-        SyntaxRole::Type => Style::default().fg(light_rgb::TYPE),
-        SyntaxRole::StringLiteral => Style::default().fg(light_rgb::STRING_LITERAL),
-        SyntaxRole::StringEscape => Style::default().fg(light_rgb::STRING_ESCAPE),
-        SyntaxRole::StringSpecialUrl => Style::default()
-            .fg(light_rgb::TYPE)
-            .add_modifier(Modifier::UNDERLINED),
-        SyntaxRole::Comment => Style::default().fg(light_rgb::COMMENT),
-        SyntaxRole::Number => Style::default().fg(light_rgb::NUMBER),
-        SyntaxRole::Boolean => Style::default().fg(light_rgb::BOOLEAN),
-        SyntaxRole::Constant => Style::default().fg(light_rgb::TYPE),
-        SyntaxRole::PunctuationDelimiter => Style::default(),
-        SyntaxRole::PunctuationBracket => Style::default(),
-        SyntaxRole::PunctuationBracketList => {
-            Style::default().fg(light_rgb::PUNCTUATION_BRACKET_LIST)
-        }
-        SyntaxRole::PunctuationBracketExtension => {
-            Style::default().fg(light_rgb::PUNCTUATION_BRACKET_EXTENSION)
+            Style::default().fg(p.punctuation_bracket_extension)
         }
     }
 }
@@ -368,15 +373,12 @@ pub fn manage_entry_style(auto: bool, theme: ThemeKind) -> Style {
     if !auto {
         return Style::default();
     }
-    match theme {
-        ThemeKind::Dark if supports_rgb() => Style::default().fg(dark_rgb::COMMENT),
-        ThemeKind::Dark => Style::default().fg(Color::DarkGray),
-        ThemeKind::Light if supports_rgb() => Style::default().fg(light_rgb::COMMENT),
-        ThemeKind::Light => Style::default().fg(Color::DarkGray),
-        ThemeKind::System => {
-            unreachable!("ThemeKind::System must be resolved before rendering — see main.rs")
-        }
-    }
+    Style::default().fg(pick(
+        theme,
+        supports_rgb(),
+        (DARK_RGB.comment, Color::DarkGray),
+        (LIGHT_RGB.comment, Color::DarkGray),
+    ))
 }
 
 /// Purpose-designed backgrounds for spec 0194's caret cues — not
@@ -421,15 +423,12 @@ pub fn caret_style() -> Style {
 /// reversal — the strong cue belongs to the member the user is looking
 /// *for*, not to the one they just moved to.
 pub fn caret_paired_style(theme: ThemeKind) -> Style {
-    Style::default().bg(match theme {
-        ThemeKind::Dark if supports_rgb() => caret_rgb::DARK_PAIRED,
-        ThemeKind::Dark => Color::Blue,
-        ThemeKind::Light if supports_rgb() => caret_rgb::LIGHT_PAIRED,
-        ThemeKind::Light => Color::Cyan,
-        ThemeKind::System => {
-            unreachable!("ThemeKind::System must be resolved before rendering — see main.rs")
-        }
-    })
+    Style::default().bg(pick(
+        theme,
+        supports_rgb(),
+        (caret_rgb::DARK_PAIRED, Color::Blue),
+        (caret_rgb::LIGHT_PAIRED, Color::Cyan),
+    ))
 }
 
 /// Spec 0194 S2/G7: vim's `cursorline` — a dim background across the
@@ -439,15 +438,12 @@ pub fn caret_paired_style(theme: ThemeKind) -> Style {
 /// Visibly weaker than the drag selection's full reversal, which is what
 /// keeps spec 0194 G4's two cues apart.
 pub fn cursor_row_style(theme: ThemeKind) -> Style {
-    Style::default().bg(match theme {
-        ThemeKind::Dark if supports_rgb() => caret_rgb::DARK_ROW,
-        ThemeKind::Dark => Color::DarkGray,
-        ThemeKind::Light if supports_rgb() => caret_rgb::LIGHT_ROW,
-        ThemeKind::Light => Color::Gray,
-        ThemeKind::System => {
-            unreachable!("ThemeKind::System must be resolved before rendering — see main.rs")
-        }
-    })
+    Style::default().bg(pick(
+        theme,
+        supports_rgb(),
+        (caret_rgb::DARK_ROW, Color::DarkGray),
+        (caret_rgb::LIGHT_ROW, Color::Gray),
+    ))
 }
 
 /// Focused-pane local-statusline style, shared by every focus-tracked
@@ -460,9 +456,7 @@ pub fn cursor_row_style(theme: ThemeKind) -> Style {
 /// `Dark`/`Light`), unlike `style_for`'s own RGB-vs-theme dispatch.
 pub fn focus_style(theme: ThemeKind) -> Style {
     match theme {
-        ThemeKind::System => {
-            unreachable!("ThemeKind::System must be resolved before rendering — see main.rs")
-        }
+        ThemeKind::System => system_must_be_resolved(),
         ThemeKind::Dark | ThemeKind::Light => Style::default()
             .fg(Color::White)
             .add_modifier(Modifier::REVERSED)
@@ -598,9 +592,7 @@ fn heat_style_in(level: u8, hue: HeatHue, theme: ThemeKind, rgb: bool) -> Option
             HeatHue::Red => Color::LightRed,
             HeatHue::Blue => Color::LightBlue,
         })),
-        (ThemeKind::System, _) => {
-            unreachable!("ThemeKind::System must be resolved before rendering — see main.rs")
-        }
+        (ThemeKind::System, _) => system_must_be_resolved(),
     }
 }
 
@@ -629,14 +621,12 @@ pub fn heat_suffix_style(theme: ThemeKind) -> Style {
 /// `heat_suffix_style` with the color depth passed in rather than
 /// probed — see `style_for_in` for why the flag is an argument.
 fn heat_suffix_style_in(theme: ThemeKind, rgb: bool) -> Style {
-    match (theme, rgb) {
-        (ThemeKind::Dark, true) => Style::default().fg(heat_rgb::DARK[11]),
-        (ThemeKind::Light, true) => Style::default().fg(heat_rgb::LIGHT[11]),
-        (ThemeKind::Dark | ThemeKind::Light, false) => Style::default().fg(Color::LightRed),
-        (ThemeKind::System, _) => {
-            unreachable!("ThemeKind::System must be resolved before rendering — see main.rs")
-        }
-    }
+    Style::default().fg(pick(
+        theme,
+        rgb,
+        (heat_rgb::DARK[11], Color::LightRed),
+        (heat_rgb::LIGHT[11], Color::LightRed),
+    ))
 }
 
 /// Resolves `ThemeKind::System` to `Dark` or `Light`, once, at startup

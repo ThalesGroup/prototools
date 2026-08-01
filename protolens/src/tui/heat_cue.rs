@@ -379,6 +379,35 @@ impl App {
         extract::message_payload_range(&self.blob, &self.tree[idx].span.raw_range)
     }
 
+    /// What the caches currently know about the range starting at
+    /// `start` under `current_key` — the whole of what reading one
+    /// node's heat is, in one place, so `heat_cue_resolve` and
+    /// `recheck_pending_heat_states` cannot come to read it two
+    /// different ways.
+    ///
+    /// `tier` is the node's own (`heat_tier_for`, spec 0208 S3), never a
+    /// flat `Tier::Visible`: `peek` is a *promoting* read (spec 0164
+    /// G9), so reading the cursor node's own result at `Visible` would
+    /// undo the promotion its request earned and hand it back to
+    /// eviction ahead of a result the user has stopped looking at.
+    ///
+    /// `peek_with`, not `peek`: this runs per unsettled node per frame,
+    /// and the two fields wanted sit alongside a whole ranked candidate
+    /// list that `peek` would copy to reach them — with the cache's
+    /// `Mutex` held against the worker.
+    fn read_heat_state(&self, start: usize, current_key: Option<&str>, tier: Tier) -> HeatState {
+        let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
+        let best = caches.by_range.peek_with(&start, tier, |e| RangeHeatStats {
+            best_score: e.best_score,
+            best_count: e.best_count,
+        });
+        let current = match current_key {
+            None => Some(None),
+            Some(key) => caches.peek_current(start, key, tier),
+        };
+        HeatState::new(best, current)
+    }
+
     /// The shared core of `heat_cue_for` and `recheck_pending_heat_
     /// states` (spec 0154 G4) — everything past the line-index-to-node/
     /// eligibility gating, keyed directly on node index.
@@ -399,27 +428,9 @@ impl App {
         let tier = self.heat_tier_for(idx);
         self.heat_lookup(&range, current_key.as_deref(), 0, HEAT_CUE_PREVIEW, tier);
 
-        // The cache reads take the same tier as the push, not a flat
-        // `Tier::Visible`: `peek` is a *promoting* read (spec 0164 G9),
-        // so reading the cursor node's own result at `Visible` would
-        // undo the promotion its request earned and hand it back to
-        // eviction ahead of a result the user has stopped looking at.
-        let state = {
-            let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
-            // `peek_with`, not `peek`: this runs per unsettled node per
-            // frame, and the two fields wanted sit alongside a whole
-            // ranked candidate list that `peek` would copy to reach
-            // them — with the cache's `Mutex` held against the worker.
-            let best = caches.by_range.peek_with(&start, tier, |e| RangeHeatStats {
-                best_score: e.best_score,
-                best_count: e.best_count,
-            });
-            let current = match current_key.as_deref() {
-                None => Some(None),
-                Some(key) => caches.peek_current(start, key, tier),
-            };
-            HeatState::new(best, current)
-        };
+        // The read takes the same tier as the push above, not a flat
+        // `Tier::Visible` — see `read_heat_state`.
+        let state = self.read_heat_state(start, current_key.as_deref(), tier);
 
         if state.settled() || self.heat_worker.is_some() {
             self.heat_states[idx] = state;
@@ -538,22 +549,7 @@ impl App {
             // ever reaches `peek` — it changes eviction ranking and
             // nothing else.
             let tier = self.heat_tier_for(idx);
-            let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
-            // `peek_with`, not `peek`: this runs per unsettled node per
-            // frame, and the two fields wanted sit alongside a whole
-            // ranked candidate list that `peek` would copy to reach
-            // them — with the cache's `Mutex` held against the worker.
-            let best = caches.by_range.peek_with(&start, tier, |e| RangeHeatStats {
-                best_score: e.best_score,
-                best_count: e.best_count,
-            });
-            let current = match current_key.as_deref() {
-                None => Some(None),
-                Some(key) => caches.peek_current(start, key, tier),
-            };
-            drop(caches);
-
-            let state = HeatState::new(best, current);
+            let state = self.read_heat_state(start, current_key.as_deref(), tier);
             self.heat_states[idx] = state;
             if state.settled() {
                 self.pending_heat_recheck.remove(&idx);

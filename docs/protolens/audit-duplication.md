@@ -303,6 +303,35 @@ Do this first. It touches only tests, and it shrinks the files that
 
 ### 3.2 The rest, in one table
 
+**3.2.1, 3.2.2, 3.2.3 and 3.2.7 done 2026-08-01**, each as described.
+Four notes on how they landed:
+
+- **3.2.1 became two functions, not one.** `pick(theme, rgb, dark,
+  light)` covers the four callers whose whole body is the 2×2 choice,
+  and takes `ThemeKind::System` off them entirely — so it removes four
+  of the seven `unreachable!` arms rather than unifying them. The other
+  three (`style_for_in`, `focus_style`, `heat_style_in`) have real
+  per-arm logic and keep an explicit arm, now calling
+  `system_must_be_resolved()`. Each palette pair is passed as
+  `(truecolor, ansi16)` rather than as four flat arguments, so a
+  mis-ordered call has to get a pair wrong rather than an argument.
+- **3.2.2 replaced the two `mod`s, it did not add a struct beside
+  them.** Keeping `mod dark_rgb`/`mod light_rgb` and adding an
+  `RgbPalette` referring to their constants would have cost as many
+  lines as it saved. The per-constant doc comments' color names
+  ("Brussels Sprout") survive as trailing comments on the two `const`
+  initializers; the cross-references ("also the manage pane's auto
+  color") moved to the struct's field docs, where they belong once
+  rather than once per palette.
+- **3.2.3's shared function takes the end as a `fn(&mut Band) -> &mut
+  Option<usize>`.** `bands_for` alone would not have merged the two —
+  what differs between them is not the band but which of its two
+  pointers is read.
+- **3.2.7's extracted `read_heat_state` absorbed the lock, the
+  `drop(caches)` and both copies of the promoting-`peek` comment.** The
+  tier rationale is now stated where the read happens rather than at
+  each call site.
+
 | # | finding | sites | ~lines |
 |---|---|---|---:|
 | 3.2.1 | `theme.rs`: seven byte-identical `ThemeKind::System => unreachable!(...)` arms, and four copies of the same 4-way `Dark/Light × rgb/16` dispatch. One `fn pick<T>(theme, dark_rgb, dark_16, light_rgb, light_16) -> T` | `theme.rs:39,362,415,433,449,583,612`; `:410-418`, `:428-436` byte-identical | 30 |
