@@ -512,6 +512,20 @@ and leave 3 and 4 where they are** — or split 4 into a small
 share only "reads schema, writes nothing" is not obviously better than
 what it replaces.
 
+**Done 2026-08-01, one file per group rather than one file for four.**
+The objection above is to the *merge*, not to the split, and once
+groups 1 and 2 leave, 3 and 4 are the only non-splice tenants left —
+strays rather than residents. So: `override_resolve.rs` (508, groups
+1+2 with `ParentFieldOrExt`), `override_export.rs` (161, group 3 —
+which already had its own test file, `tests/export_fields.rs`),
+`override_display.rs` (83, group 4), and `override_apply.rs` down to
+1586 and purely the splice. `collect_descendants` stayed put as
+advised. Every cost below was paid exactly as written; nothing
+unforeseen turned up. The one item that had gone stale in the other
+direction is `fqdn_needs_dot_prefix`'s doc comment, which already named
+`override_select.rs`'s `override_row_display` correctly — the
+`render.rs` claim had been fixed since.
+
 Cost:
 
 - `field_name_for_by_path` (`:880`) and
@@ -738,7 +752,10 @@ Each step is independently landable and independently revertible.
    evidence there was that it belonged outside. `line_patch.rs` owns the
    two types and the two methods that consume them; `override_apply.rs`
    still produces the patches and imports both types back.
-   **4c not done** — still the open decision the section describes.
+   **4c done 2026-08-01**: 2286 → 1586, as `override_resolve.rs` (508),
+   `override_export.rs` (161) and `override_display.rs` (83) — one file
+   per concern, since the section's objection is to merging the four,
+   not to separating them. See 4c for the reasoning.
 5. **`tests/support.rs`**, then `tests/override_select.rs`, then
    `tests/override_apply.rs`. All independent of the production splits
    except `tests/override_apply.rs:5`, which must land with step 4's

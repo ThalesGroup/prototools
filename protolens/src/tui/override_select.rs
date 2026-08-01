@@ -648,14 +648,14 @@ impl App {
         } else if decode::primitive_type_for_keyword(fqdn).is_some() {
             (fqdn.clone(), Style::default())
         } else if self.ctx.pool().get_enum_by_name(fqdn).is_some() {
-            let display = if override_apply::fqdn_needs_dot_prefix(fqdn) {
+            let display = if override_display::fqdn_needs_dot_prefix(fqdn) {
                 format!(".{fqdn} [enum]")
             } else {
                 format!("{fqdn} [enum]")
             };
             (display, theme::style_for(SyntaxRole::Attribute, self.theme))
         } else {
-            let display = if override_apply::fqdn_needs_dot_prefix(fqdn) {
+            let display = if override_display::fqdn_needs_dot_prefix(fqdn) {
                 format!(".{fqdn}")
             } else {
                 fqdn.clone()

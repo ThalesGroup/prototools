@@ -1624,6 +1624,9 @@ mod navigation;
 #[cfg(unix)]
 mod neovim;
 mod override_apply;
+mod override_display;
+mod override_export;
+mod override_resolve;
 mod override_select;
 mod prefetch;
 mod preview_truncate;
