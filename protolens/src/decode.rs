@@ -1463,8 +1463,16 @@ pub fn render_resolved(
     // on its own here — highlighting a line in isolation is exactly the
     // unsound primitive S3 exists to avoid. The patched line gets
     // highlighted in its real context when it is next drawn.
+    //
+    // `first()` rather than `[0]`: every current caller renders at least
+    // one line, but that is a property of the callers, not of anything
+    // stated or checked here, and a render that produced no text at all
+    // simply has no synthetic field name to patch.
     if wrapper_desc.is_some() {
-        if let Some(patched) = patch_synthetic_field_name(&lines[0], "1") {
+        if let Some(patched) = lines
+            .first()
+            .and_then(|first| patch_synthetic_field_name(first, "1"))
+        {
             lines[0] = patched;
         }
     }

@@ -351,6 +351,14 @@ lifetime, because the default would have stopped protolens mid-handoff.
 
 ## C. Panics on hostile or unusual input
 
+All of C1–C9 are fixed (2026-08-01); each item carries a note below.
+C9 turned up a live wrap nothing else had: `structure.rs`'s
+`last_child`/`prev_sibling` used `bool::then_some`, whose argument is
+evaluated *whether or not the condition holds*, so `0 - 1` ran on the
+root slot and on every childless node. Harmless in a wrapping build —
+the value is discarded — but it is the exact reason to turn the checks
+on.
+
 ### C1. A dead special case that hides an overflow — MEDIUM
 
 `heat_cue.rs:346-377`. The doc comment describes the pre-spec-0216
@@ -370,6 +378,12 @@ same range. See item 1.1 of
 [audit-duplication.md](audit-duplication.md), which folds this into a
 larger seven-site consolidation — do the two together.
 
+**Fixed.** The branch is deleted; `heat_scored_range` is now the single
+call to `extract::message_payload_range`. The end comes from the
+arena's `raw_end`, a real offset into the blob, rather than from
+`start + length`, so there is nothing left to overflow. The seven-site
+consolidation is still open and now has one fewer site.
+
 ### C2. Half a range is clamped
 
 `extract.rs:179-180`:
@@ -383,11 +397,18 @@ format!("{PROTOTEXT_HEADER}{}", dedent(&lines[r.start..end]))
 the clamped `end`, panics in the slice. If the clamp is needed at all it
 is needed on both ends.
 
+**Fixed.** `start` is clamped to the already-clamped `end`, so an
+overrunning range yields an empty extract rather than a panic.
+
 ### C3. `lines[0]` with no guard
 
 `decode.rs:1455-1458` indexes `lines[0]` on the wrapper path. Every
 current caller produces a non-empty `lines`, but nothing states or
 checks it.
+
+**Fixed.** `lines.first()`, threaded through the existing
+`and_then`: a render that produced no text has no synthetic field name
+to patch.
 
 ### C4. A non-protoc descriptor panics the jump-to-source
 
@@ -395,12 +416,22 @@ checks it.
 guaranteed non-empty for descriptors protoc produced; any other producer
 panics.
 
+**Fixed.** A `[line, col, ..]` slice pattern, falling through to the
+same `(1, 1)` a missing `Location` already gives. The function's doc
+comment now says so.
+
 ### C5. `.expect()` on a per-frame path
 
 `colorize.rs:138` and `:143`. A per-frame `.expect()` turns any
 unexpected input into a panic with the terminal in raw mode, which is
 the worst possible failure mode for a TUI — and now also means no
 cursor afterward (B2).
+
+**Fixed.** A refused start returns no hints at all; a mid-stream
+failure keeps the hints collected so far and stops. Either way the
+document renders, monochrome from that point on. `config()`'s
+`.expect()` on the compiled query is untouched — that one is a build-
+time constant, not input.
 
 ### C6. `unreachable!` that is reachable
 
@@ -410,6 +441,14 @@ cursor afterward (B2).
   domain. [audit-duplication.md](audit-duplication.md) proposes unifying
   the two format enums, which deletes this entirely.
 
+**Fixed, both.** `run_command`'s fallthrough sets `message` to "command
+not implemented"; `COMMANDS`'s doc comment, which claimed registering a
+name was the only step, now says an arm is still needed. The `From`
+impl became `ExtractFormatArg::extract_format`, returning `Option` — a
+total function over the whole enum. Unifying the two enums is still
+[audit-duplication.md](audit-duplication.md)'s to do; this just removes
+the trap in the meantime.
+
 ### C7. Two policies for the same line lookup
 
 `mouse.rs:360` indexes `self.lines[line_idx]` directly; `render.rs:411`
@@ -417,11 +456,17 @@ does the same lookup with `.get().unwrap_or("")`. One of the two is
 wrong. Given that mouse coordinates come from the terminal, the mouse
 path is the one that should be tolerant.
 
+**Fixed.** The mouse path adopts the draw path's `.get().unwrap_or("")`;
+a row `lines` does not hold misses the fold-marker test.
+
 ### C8. An unguarded slice next to a guarded twin
 
 `heat_worker.rs:378-381` slices without the bounds check its neighboring
 near-identical block performs. Either the check is unnecessary in both
 or it is necessary in both.
+
+**Fixed.** The `top_n` arm clamps `start` to `end` as the `complete`
+arm already did — `len() >= end` constrains only where the window ends.
 
 ### C9. The release profile has no overflow checks
 
@@ -430,6 +475,24 @@ or it is necessary in both.
 wrap-arounds in release builds. Given that this tool parses untrusted
 binary input, `overflow-checks = true` in release is worth its cost —
 and it converts a class of silent-wrong-output bugs into loud ones.
+
+**Fixed**, workspace-wide, and measured before being kept.
+
+Cost: `protolens --descriptor-set googleapis.desc -j 4 googleapis.desc
+exit` — spec 0198's startup target, on the whole 25.6 MB descriptor set
+so the scoring walk dominates — goes **4.01 s → 4.45 s, about +11%**,
+pinned to the four-E-core cluster under `bin/bench`'s lock. That is the
+worst case the tool has; it buys a trap on every arithmetic wrap in the
+walk, the decoder and the tui.
+
+Turning it on immediately found one: `structure.rs`'s `last_child` and
+`prev_sibling` computed `block.end - 1` / `idx - 1` through
+`bool::then_some`, **whose argument is evaluated eagerly**, so both ran
+on the empty block and on slot 0 — 335 of protolens's tests panicked.
+The value was discarded in both cases, so the behavior was never wrong;
+that is precisely why nothing had noticed. Both are now `then(|| ..)`.
+The two neighboring `then_some`s add rather than subtract and cannot
+wrap on a real slot index, so they stand.
 
 ## D. Scheduling and per-frame cost
 

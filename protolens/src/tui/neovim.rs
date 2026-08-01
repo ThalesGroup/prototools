@@ -36,9 +36,11 @@ pub(crate) struct EditorRequest {
 /// sentinels and the internal MessageSet-item FQDN). Falls back to line
 /// 1, column 1 — never `None` — when the type resolves but the file's
 /// `SourceCodeInfo` has no matching `Location`, e.g. a descriptor set
-/// compiled without `--include_source_info`. `Location.span` is
-/// 0-indexed `[start_line, start_col, end_line]` or `[start_line,
-/// start_col, end_line, end_col]` (standard protoc convention).
+/// compiled without `--include_source_info`, or when the matching
+/// `Location`'s `span` is too short to read a line and column from.
+/// `Location.span` is 0-indexed `[start_line, start_col, end_line]` or
+/// `[start_line, start_col, end_line, end_col]` (standard protoc
+/// convention).
 pub(crate) fn locate_declaration(pool: &DescriptorPool, fqdn: &str) -> Option<(PathBuf, u32, u32)> {
     let (file, path) = if let Some(m) = pool.get_message_by_name(fqdn) {
         (m.parent_file(), m.path().to_vec())
@@ -52,7 +54,16 @@ pub(crate) fn locate_declaration(pool: &DescriptorPool, fqdn: &str) -> Option<(P
         .source_code_info
         .as_ref()
         .and_then(|sci| sci.location.iter().find(|loc| loc.path == path))
-        .map(|loc| (loc.span[0] as u32 + 1, loc.span[1] as u32 + 1))
+        // The three- or four-element shape documented above is protoc's
+        // convention, not a guarantee of the wire format: `span` is a
+        // plain repeated field, and a descriptor set from any other
+        // producer may carry a shorter one. Falling back to the head of
+        // the file, exactly as a missing `Location` already does, beats
+        // panicking with the terminal in raw mode.
+        .and_then(|loc| match loc.span[..] {
+            [line, col, ..] => Some((line as u32 + 1, col as u32 + 1)),
+            _ => None,
+        })
         .unwrap_or((1, 1));
     Some((PathBuf::from(file.name()), line, col))
 }

@@ -104,7 +104,12 @@ impl App {
     #[inline]
     pub(super) fn last_child(&self, idx: usize) -> Option<usize> {
         let block = self.child_slots(idx);
-        (!block.is_empty()).then_some(block.end - 1)
+        // `then`, not `then_some`: the latter evaluates its argument
+        // whether or not the condition held, so an empty block — which
+        // `child_slots` reports as `0..0` — would compute `0 - 1` before
+        // discarding it. The result is unused either way, but it is an
+        // overflow, and the release profile now traps those.
+        (!block.is_empty()).then(|| block.end - 1)
     }
 
     /// The sibling after `idx`, which — level order being what it is —
@@ -119,7 +124,9 @@ impl App {
     #[inline]
     pub(super) fn prev_sibling(&self, idx: usize) -> Option<usize> {
         let block = self.sibling_block(idx);
-        (idx > block.start).then_some(idx - 1)
+        // `then` for the same reason as `last_child`: slot 0 is the root
+        // (spec 0216), and `then_some` would evaluate `0 - 1` on it.
+        (idx > block.start).then(|| idx - 1)
     }
 
     /// `idx`'s 1-based position among its siblings.

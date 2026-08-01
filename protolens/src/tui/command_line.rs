@@ -466,7 +466,12 @@ impl App {
             Ok("save") => self.run_save_overrides(tokens.collect()),
             Ok("restore") => self.run_restore_overrides(tokens.collect()),
             Ok("proto-root") => self.run_proto_root(tokens.collect()),
-            Ok(other) => unreachable!("resolve_command returned unregistered command: {other}"),
+            // Reachable, notwithstanding that `COMMANDS` and the arms
+            // above currently agree: a name added to the registry gets
+            // resolution and Tab-completion for free but not an arm
+            // here, and that omission is a missing feature, not grounds
+            // for taking the session down mid-edit.
+            Ok(other) => self.message = format!("command not implemented: {other}"),
             Err(e) => self.message = e,
         }
     }

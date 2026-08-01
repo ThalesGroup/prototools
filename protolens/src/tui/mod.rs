@@ -189,7 +189,9 @@ const RENDER_CACHE_MAX_BYTES: usize = 1 << 20;
 /// Single source-of-truth command-name registry (spec 0113 D26) — backs
 /// both `resolve_command`'s exact-match-wins prefix dispatch and the
 /// command line's Tab-completion (`App::start_tab_completion`). Adding a
-/// command here is the only step needed for it to get both, automatically.
+/// command here is the only step needed for it to get both, automatically
+/// — but *only* those two: it still needs an arm in `run_command`, which
+/// otherwise reports it as unimplemented.
 const COMMANDS: &[&str] = &[
     "export",
     "quit",

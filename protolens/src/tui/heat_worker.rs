@@ -391,6 +391,11 @@ impl HeatCaches {
     ) -> Option<Vec<(String, i64)>> {
         if let Some(entry) = self.by_range.peek(&range_start, tier) {
             if entry.top_n.len() >= end {
+                // `start` clamped exactly as in the `complete` arm
+                // below. Both arms slice on the same caller-supplied
+                // pair, and `len() >= end` constrains only where the
+                // window ends, never that it starts at or before there.
+                let start = start.min(end);
                 return Some(entry.top_n[start..end].to_vec());
             }
         }

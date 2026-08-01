@@ -219,14 +219,20 @@ enum ExtractFormatArg {
     DescriptorPrototext,
 }
 
-impl From<ExtractFormatArg> for extract::ExtractFormat {
-    fn from(f: ExtractFormatArg) -> Self {
-        match f {
-            ExtractFormatArg::Prototext => extract::ExtractFormat::Text,
-            ExtractFormatArg::Binary => extract::ExtractFormat::Binary,
-            ExtractFormatArg::DescriptorBinary | ExtractFormatArg::DescriptorPrototext => {
-                unreachable!("descriptor formats are routed to export_descriptor, not extract")
-            }
+impl ExtractFormatArg {
+    /// The `extract::ExtractFormat` this argument names, or `None` for
+    /// the two descriptor formats, which that enum has no variants for.
+    ///
+    /// A total function rather than a `From` impl: the conversion is
+    /// only defined on half the domain, and a `From` that panics on the
+    /// other half is a trap for whoever writes the next `.into()` — the
+    /// two descriptor formats route to `export_descriptor`, which the
+    /// sole caller has already branched away to before asking.
+    fn extract_format(self) -> Option<extract::ExtractFormat> {
+        match self {
+            Self::Prototext => Some(extract::ExtractFormat::Text),
+            Self::Binary => Some(extract::ExtractFormat::Binary),
+            Self::DescriptorBinary | Self::DescriptorPrototext => None,
         }
     }
 }
@@ -585,7 +591,7 @@ fn main() -> ExitCode {
             }
 
             let format = format
-                .map(Into::into)
+                .and_then(ExtractFormatArg::extract_format)
                 .unwrap_or(extract::ExtractFormat::Text);
 
             let bytes = app.extract_bytes(idx, format);

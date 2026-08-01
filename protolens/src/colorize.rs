@@ -133,14 +133,24 @@ fn config() -> &'static HighlightConfiguration {
 /// capture precedence.
 pub fn colorize(text: &str) -> Vec<StyleHint> {
     let mut highlighter = Highlighter::new();
-    let events = highlighter
-        .highlight(config(), text.as_bytes(), None, |_| None)
-        .expect("tree-sitter-textproto highlighting failed to start");
+    // Every hint this function returns is a color, and the text
+    // underneath is already correct without one. So a highlighter that
+    // refuses this input costs a monochrome viewport, while panicking —
+    // on the per-frame render path, with the terminal in raw mode —
+    // costs the whole session.
+    let Ok(events) = highlighter.highlight(config(), text.as_bytes(), None, |_| None) else {
+        return Vec::new();
+    };
 
     let mut hints = Vec::new();
     let mut stack: Vec<usize> = Vec::new();
     for event in events {
-        match event.expect("tree-sitter-textproto highlighting failed") {
+        // A mid-stream failure leaves the hints already collected
+        // untouched, and each is still correctly placed against its own
+        // span, so they are worth keeping: the document colors as far as
+        // the highlighter got and plainly after that.
+        let Ok(event) = event else { break };
+        match event {
             HighlightEvent::HighlightStart(h) => stack.push(h.0),
             HighlightEvent::HighlightEnd => {
                 stack.pop();

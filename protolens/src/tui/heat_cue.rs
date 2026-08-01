@@ -343,38 +343,32 @@ impl App {
         }
     }
 
-    /// The byte range a node's heat cue is scored over.
+    /// The byte range a node's heat cue is scored over: the node's
+    /// payload, tag and length prefix stripped.
     ///
-    /// For an ordinary node that is its payload, tag and length prefix
-    /// stripped. For an element of a packed run it is the **whole
-    /// record's** payload (spec 0184 S6), not the element's own few
-    /// bytes: a packed run is one wire record and one unit of action —
-    /// `t` on any element overrides the record (`splice_override`'s
-    /// `siblings[0]` merge) and `current_type_key` resolves the
-    /// record's override, since every element shares the record's
-    /// positional path (S2). Scoring the element's own bytes would
-    /// compare a record-level type key against element-level content.
+    /// An element of a packed run scores the **whole record's** payload
+    /// (spec 0184 S6), not the element's own few bytes: a packed run is
+    /// one wire record and one unit of action — `t` on any element
+    /// overrides the record (`splice_override`'s `siblings[0]` merge)
+    /// and `current_type_key` resolves the record's override, since
+    /// every element shares the record's positional path (S2). Scoring
+    /// the element's own bytes would compare a record-level type key
+    /// against element-level content.
     ///
-    /// Computed in O(1) from `packed_record_start` — the record's tag
-    /// offset — rather than by walking the run, so this stays cheap on
-    /// a run with many elements. It also means all N element lines
-    /// share a single `heat_caches` entry, keyed on the payload start.
+    /// That needs no special case here. Since spec 0216 a packed run is
+    /// a single slot whose `raw_range` spans the whole record, taken
+    /// from the arena rather than from the render's spans
+    /// (`overlay_spans`), so the ordinary stripping already yields the
+    /// record's payload — and all N element lines already share the one
+    /// `heat_caches` entry keyed on its start.
+    ///
+    /// Deriving the end from `raw_range` rather than from the record's
+    /// own length varint is also what keeps this in bounds: the arena's
+    /// end is a real offset into the blob, whereas `start + length` on a
+    /// crafted length overflows and yields a reversed range that panics
+    /// where it is sliced.
     pub(super) fn heat_scored_range(&self, idx: usize) -> std::ops::Range<usize> {
-        let node = &self.tree[idx].span;
-        if node.packed_record_start == NO_PACKED_RECORD {
-            return extract::message_payload_range(&self.blob, &node.raw_range);
-        }
-        let record_start = node.packed_record_start as usize;
-        // The element's own `raw_range` ends where the element does, so
-        // the record's end has to come from the record's own length
-        // varint (same reconstruction as `packed_record_extent`).
-        // Clamped, because a malformed length must not produce a range
-        // that later slices out of bounds.
-        let tag = prototext_core::helpers::parse_wiretag(&self.blob, record_start);
-        let len = prototext_core::helpers::parse_varint(&self.blob, tag.next_pos);
-        let start = len.next_pos.min(self.blob.len());
-        let end = (start + len.varint.unwrap_or(0) as usize).min(self.blob.len());
-        start..end
+        extract::message_payload_range(&self.blob, &self.tree[idx].span.raw_range)
     }
 
     /// The shared core of `heat_cue_for` and `recheck_pending_heat_

@@ -357,7 +357,14 @@ impl App {
             // Column 0 is always the heat-cue gutter (spec 0138 N1: a
             // glyph or a reserved blank, never part of the line's own
             // text) — the marker sits one column further right.
-            if rel_col >= 1 && rel_col - 1 == render::marker_column(&self.lines[line_idx]) {
+            // `get`, matching the same lookup on the draw path
+            // (`render.rs`'s `DisplayRow::Committed` arm): `line_idx`
+            // ultimately comes from terminal coordinates, and the one
+            // row a click can land on that `lines` does not hold — a
+            // pending row mid-splice — must miss the marker test rather
+            // than end the session.
+            let line = self.lines.get(line_idx).map(String::as_str).unwrap_or("");
+            if rel_col >= 1 && rel_col - 1 == render::marker_column(line) {
                 self.toggle_fold(pos.node);
                 return;
             }

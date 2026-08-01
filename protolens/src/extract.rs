@@ -183,8 +183,15 @@ pub fn extract_bytes(
             } else {
                 text_range
             };
+            // Both ends, not just `end`: a `text_range` that outruns
+            // `lines` is already a wrong extract, but an unclamped
+            // `start` past the end of the document — or past the clamped
+            // `end`, which the same overrun produces — is a panic in the
+            // slice instead. Clamping the pair yields an empty extract,
+            // which the user can see and act on.
             let end = r.end.min(lines.len());
-            format!("{PROTOTEXT_HEADER}{}", dedent(&lines[r.start..end])).into_bytes()
+            let start = r.start.min(end);
+            format!("{PROTOTEXT_HEADER}{}", dedent(&lines[start..end])).into_bytes()
         }
     }
 }
