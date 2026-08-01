@@ -2227,6 +2227,75 @@ fn overlapping_line_patches_panic_with_a_directed_message() {
     app.materialize_line_patches();
 }
 
+/// The 2026-07-25 crash report as it was actually reported — `Down`,
+/// then `t`, then `Enter` — driven through `handle_key`, on a fixture
+/// that is in this repository.
+///
+/// The three tests above cover the merge that panicked, and
+/// `a_splice_keeps_packed_record_starts_in_the_documents_byte_frame`
+/// covers the offset that fed it the bad patch. Neither covers the
+/// *sequence*: everything between the keypress and the merge — the
+/// preview splice `t` fires, the reset it leaves behind, and the two
+/// separate batches `Enter` then runs, one from the root and one from
+/// the cursor — was reachable only through the `#[ignore]`d repro tests,
+/// which need a 1 MB descriptor set at `/tmp/pdb.desc` that nobody has.
+/// A regression test nobody can run is a note, not a test.
+///
+/// What is asserted afterwards is that the document still holds
+/// together: every line has an owner, and the owners account for every
+/// line exactly once. That is the invariant the crash violated — the
+/// panic was a symptom of line ranges that no longer described the text
+/// — and it is checkable on a four-line fixture.
+#[test]
+fn the_reported_down_t_enter_sequence_leaves_the_document_coherent() {
+    let mut app = nested_packed_run_fixture();
+    app.splash = false;
+    app.term_width = 120;
+
+    // Down to the `blob` field, which is the one with something inside
+    // it to re-splice.
+    let blob_node = app.resolve_path("/2").expect("blob is /2");
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.cursor, blob_node, "two Downs must reach `blob`");
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert!(
+        app.override_target.is_some(),
+        "`t` must have opened the pane, or the rest of this proves nothing",
+    );
+    // Aimed rather than left on whatever the pane happens to highlight:
+    // confirming the type the node already has is a no-op, and a no-op
+    // never reaches the merge.
+    app.override_highlight = app
+        .override_candidates
+        .iter()
+        .position(|(fqdn, _)| fqdn == "test.Payload")
+        .expect("Payload must be offered");
+    let before = app.lines.len();
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(
+        app.overrides.entries().iter().any(|e| e.active),
+        "`Enter` must have confirmed a candidate — an inert sequence \
+         cannot reach the splice this is about",
+    );
+    assert_ne!(
+        app.lines.len(),
+        before,
+        "the confirm must have re-spliced the document, or nothing was \
+         merged and the coherence check below is vacuous",
+    );
+
+    let owners = line_owners(&app);
+    assert_eq!(
+        owners.len(),
+        app.lines.len(),
+        "every line must resolve to an owner after the confirm",
+    );
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+}
+
 /// Spec 0186 S3, the crux. A splice grows every ancestor's
 /// `lines_total`, so an ancestor's *footer* line moves while its
 /// *header* line does not — the asymmetry the old line maps had to be

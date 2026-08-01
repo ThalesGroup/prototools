@@ -524,131 +524,13 @@ fn main() -> ExitCode {
             load_overrides,
             format,
             output,
-        }) => {
-            let mut hash_mismatch = false;
-            if let Some(overrides_path) = &load_overrides {
-                match app.load_overrides(&overrides_path.to_string_lossy()) {
-                    Ok(load) => {
-                        for w in &load.warnings {
-                            eprintln!("warning: --load-overrides: {w}");
-                        }
-                        hash_mismatch = load.hash_mismatch;
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "error: --load-overrides '{}': {e}",
-                            overrides_path.display()
-                        );
-                        return ExitCode::FAILURE;
-                    }
-                }
-            }
-
-            // Spec 0221 S3. Reported here, before anything is written: an
-            // override that could not be applied means the export would
-            // not be what was asked for, and for
-            // `--format=descriptor-binary` — which *requires*
-            // `--load-overrides` — that is a wrong schema handed to
-            // whatever consumes it. The exit code is the only signal a
-            // script piping this into a build receives, so it is a
-            // failure and no output file is produced. That is a change
-            // from the best-effort export this used to be.
-            //
-            // Outside the block above because `--load-overrides` is not
-            // the only source: `App::new`'s own pass over the overrides
-            // the document carries can refuse too, and that refusal makes
-            // the export just as wrong.
-            //
-            // Spec 0198 S2 is not violated: it binds a *successful* batch
-            // subcommand to a silent stderr, and this one is not
-            // successful.
-            if !app.refusals.is_empty() {
-                let origin = match &load_overrides {
-                    Some(p) => format!("--load-overrides '{}'", p.display()),
-                    None => "override".to_string(),
-                };
-                for (_, refusal) in &app.refusals {
-                    eprintln!("error: {origin}: {refusal}");
-                }
-                return ExitCode::FAILURE;
-            }
-
-            // `--load-overrides` is already known to be present when
-            // this is true — that pairing is checked before startup.
-            let is_descriptor = format.is_some_and(ExtractFormatArg::is_descriptor);
-
-            // A hash mismatch is a warning everywhere else, and stays
-            // one for the two document formats: those export the
-            // document's own bytes, which are what they are whatever the
-            // overrides file was written against. The descriptor formats
-            // export a *schema* instead, assembled from exactly those
-            // overrides — so a collection written against a different
-            // blob or a different descriptor set produces a schema that
-            // describes neither, and hands it to a tool with no way to
-            // notice. Same reasoning, and same exit code, as the refusal
-            // check above: no output file is produced.
-            if is_descriptor && hash_mismatch {
-                eprintln!(
-                    "error: --load-overrides: the overrides file was written against a \
-                     different blob or descriptor set, and --format=descriptor-binary/\
-                     descriptor-prototext exports a schema built from it"
-                );
-                return ExitCode::FAILURE;
-            }
-
-            let Some(idx) = app.resolve_path(&path) else {
-                eprintln!("error: export path '{path}' does not resolve");
-                return ExitCode::FAILURE;
-            };
-
-            if is_descriptor {
-                app.set_cursor(idx);
-                let as_prototext = format == Some(ExtractFormatArg::DescriptorPrototext);
-                let bytes = match app.export_descriptor_bytes(as_prototext) {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        eprintln!("error: {e}");
-                        return ExitCode::FAILURE;
-                    }
-                };
-                match output {
-                    Some(out_path) => {
-                        if let Err(e) = std::fs::write(&out_path, &bytes) {
-                            eprintln!("error: cannot write '{}': {e}", out_path.display());
-                            return ExitCode::FAILURE;
-                        }
-                    }
-                    None => {
-                        if let Err(e) = write_stdout(&bytes) {
-                            eprintln!("error: writing to stdout: {e}");
-                            return ExitCode::FAILURE;
-                        }
-                    }
-                }
-                return ExitCode::SUCCESS;
-            }
-
-            let format = format
-                .and_then(ExtractFormatArg::extract_format)
-                .unwrap_or(extract::ExtractFormat::Text);
-
-            let bytes = app.extract_bytes(idx, format);
-            match output {
-                Some(out_path) => {
-                    if let Err(e) = std::fs::write(&out_path, &bytes) {
-                        eprintln!("error: cannot write '{}': {e}", out_path.display());
-                        return ExitCode::FAILURE;
-                    }
-                }
-                None => {
-                    if let Err(e) = write_stdout(&bytes) {
-                        eprintln!("error: writing to stdout: {e}");
-                        return ExitCode::FAILURE;
-                    }
-                }
-            }
-            ExitCode::SUCCESS
-        }
+        }) => run_export(
+            &mut app,
+            &path,
+            load_overrides.as_deref(),
+            format,
+            output.as_deref(),
+        ),
         None => {
             // Spec 0221 S4: `App::new`'s own override pass may have
             // refused, and the status line it set for them is about to
@@ -676,6 +558,130 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
             ExitCode::SUCCESS
+        }
+    }
+}
+
+/// The `export` subcommand, from a fully built `App`.
+///
+/// Split out of `main` because it is the one part of it that is not
+/// startup: everything above the `match` runs for every invocation and
+/// has to run in that order, whereas this reads `app` and writes a file.
+/// It is also where every one of `main`'s failure exits but two live, so
+/// keeping it here is what lets them stay `return`s of an `ExitCode`
+/// rather than a flag threaded through the startup sequence.
+fn run_export(
+    app: &mut tui::App,
+    path: &str,
+    load_overrides: Option<&Path>,
+    format: Option<ExtractFormatArg>,
+    output: Option<&Path>,
+) -> ExitCode {
+    let mut hash_mismatch = false;
+    if let Some(overrides_path) = load_overrides {
+        match app.load_overrides(&overrides_path.to_string_lossy()) {
+            Ok(load) => {
+                for w in &load.warnings {
+                    eprintln!("warning: --load-overrides: {w}");
+                }
+                hash_mismatch = load.hash_mismatch;
+            }
+            Err(e) => {
+                eprintln!(
+                    "error: --load-overrides '{}': {e}",
+                    overrides_path.display()
+                );
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    // Spec 0221 S3. Reported here, before anything is written: an
+    // override that could not be applied means the export would not be
+    // what was asked for, and for `--format=descriptor-binary` — which
+    // *requires* `--load-overrides` — that is a wrong schema handed to
+    // whatever consumes it. The exit code is the only signal a script
+    // piping this into a build receives, so it is a failure and no output
+    // file is produced. That is a change from the best-effort export this
+    // used to be.
+    //
+    // Outside the block above because `--load-overrides` is not the only
+    // source: `App::new`'s own pass over the overrides the document
+    // carries can refuse too, and that refusal makes the export just as
+    // wrong.
+    //
+    // Spec 0198 S2 is not violated: it binds a *successful* batch
+    // subcommand to a silent stderr, and this one is not successful.
+    if !app.refusals.is_empty() {
+        let origin = match load_overrides {
+            Some(p) => format!("--load-overrides '{}'", p.display()),
+            None => "override".to_string(),
+        };
+        for (_, refusal) in &app.refusals {
+            eprintln!("error: {origin}: {refusal}");
+        }
+        return ExitCode::FAILURE;
+    }
+
+    // `--load-overrides` is already known to be present when this is
+    // true — that pairing is checked before startup.
+    let is_descriptor = format.is_some_and(ExtractFormatArg::is_descriptor);
+
+    // A hash mismatch is a warning everywhere else, and stays one for the
+    // two document formats: those export the document's own bytes, which
+    // are what they are whatever the overrides file was written against.
+    // The descriptor formats export a *schema* instead, assembled from
+    // exactly those overrides — so a collection written against a
+    // different blob or a different descriptor set produces a schema that
+    // describes neither, and hands it to a tool with no way to notice.
+    // Same reasoning, and same exit code, as the refusal check above: no
+    // output file is produced.
+    if is_descriptor && hash_mismatch {
+        eprintln!(
+            "error: --load-overrides: the overrides file was written against a \
+             different blob or descriptor set, and --format=descriptor-binary/\
+             descriptor-prototext exports a schema built from it"
+        );
+        return ExitCode::FAILURE;
+    }
+
+    let Some(idx) = app.resolve_path(path) else {
+        eprintln!("error: export path '{path}' does not resolve");
+        return ExitCode::FAILURE;
+    };
+
+    let bytes = if is_descriptor {
+        app.set_cursor(idx);
+        let as_prototext = format == Some(ExtractFormatArg::DescriptorPrototext);
+        match app.export_descriptor_bytes(as_prototext) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        let format = format
+            .and_then(ExtractFormatArg::extract_format)
+            .unwrap_or(extract::ExtractFormat::Text);
+        app.extract_bytes(idx, format)
+    };
+
+    write_output(&bytes, output)
+}
+
+/// `--output <path>` if given, stdout otherwise.
+fn write_output(bytes: &[u8], output: Option<&Path>) -> ExitCode {
+    let written = match output {
+        Some(out_path) => std::fs::write(out_path, bytes)
+            .map_err(|e| format!("cannot write '{}': {e}", out_path.display())),
+        None => write_stdout(bytes).map_err(|e| format!("writing to stdout: {e}")),
+    };
+    match written {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
         }
     }
 }

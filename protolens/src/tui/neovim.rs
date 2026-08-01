@@ -83,6 +83,38 @@ fn socket_path() -> PathBuf {
     std::env::temp_dir().join(format!("protolens-nvim-{}.sock", std::process::id()))
 }
 
+// A `thread_local`, not a `static`: `cargo test` runs tests in parallel
+// threads of one process, and the spawn happens on the same thread as
+// the test that set this, so a thread-local override cannot be observed
+// by any other test and needs no lock.
+#[cfg(test)]
+thread_local! {
+    pub(super) static EDITOR_PROGRAM: std::cell::Cell<&'static str> =
+        const { std::cell::Cell::new("nvim") };
+}
+
+/// The editor binary `open_editor` spawns — `"nvim"`, except that a
+/// test may point it elsewhere via `EDITOR_PROGRAM`.
+///
+/// The override exists because the branch worth a regression test is
+/// the one where the spawn *fails*: that is where the 2026-07-18 crash
+/// lived. Reaching it means naming a binary that is not on `PATH`, and
+/// the test used to arrange that by probing for a real `nvim` and
+/// returning early if it found one — so on any machine with Neovim
+/// installed, which is most of them, the test skipped itself and
+/// reported a pass. Overriding the name instead exercises the branch
+/// everywhere.
+fn editor_program() -> &'static str {
+    #[cfg(test)]
+    {
+        EDITOR_PROGRAM.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        "nvim"
+    }
+}
+
 /// Pure `WaitStatus -> EditorState` transition (G7): a `Stopped` result
 /// re-arms `Suspended` with the same `pgid`/`socket_path` (nothing else
 /// distinguishes one stop from the next); any other result — `Exited`,
@@ -171,7 +203,7 @@ where
                     .exists()
                     .then(|| default_config.into())
             });
-            let mut cmd = Command::new("nvim");
+            let mut cmd = Command::new(editor_program());
             if let Some(config) = config {
                 cmd.arg("-u").arg(config);
             }

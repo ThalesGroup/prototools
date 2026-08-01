@@ -529,4 +529,40 @@ mod tests {
         assert!(!blob.is_mapped(), "a two-byte blob was mapped");
         assert_eq!(blob.payload(), &[0x08, 0x05]);
     }
+
+    /// A path that is not there comes back as the operating system's own
+    /// `NotFound`, on both producers.
+    ///
+    /// The kind is asserted, not just the failure: it is what tells the
+    /// mistyped path apart from the unreadable one, and the caller in
+    /// `main.rs` prints it verbatim as the only thing the user gets.
+    #[test]
+    fn a_path_that_is_not_there_is_not_found() {
+        let missing = std::env::temp_dir().join(format!(
+            "protolens-blob-does-not-exist-{}",
+            std::process::id()
+        ));
+        for assume_binary in [false, true] {
+            let err = Blob::load(&missing, assume_binary, false)
+                .expect_err("a missing file was loaded anyway");
+            assert_eq!(err.kind(), io::ErrorKind::NotFound, "{assume_binary}");
+        }
+    }
+
+    /// An empty file is a legitimate document — a message with no fields
+    /// — and must load as one rather than fail.
+    ///
+    /// It is also the one input that reaches the magic peek with nothing
+    /// to peek at, and the one that makes the wrapper's length varint
+    /// zero, so the payload begins exactly where the prefix ends with no
+    /// bytes on either side of the boundary to absorb an off-by-one.
+    #[test]
+    fn an_empty_file_is_an_empty_document_not_an_error() {
+        let file = TempFile::new("empty", b"");
+        for eager_read in [false, true] {
+            let blob = Blob::load(&file.0, false, eager_read).expect("load");
+            assert!(blob.payload().is_empty(), "{eager_read}");
+            assert_eq!(blob.len(), blob.wrapper_offset(), "{eager_read}");
+        }
+    }
 }

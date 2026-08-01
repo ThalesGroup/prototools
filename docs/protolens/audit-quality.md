@@ -682,11 +682,32 @@ first-child, sibling, raw-range — and every method indexes the arena
 and least visible, and it is the one module of its size in the codebase
 with no coverage at all.
 
+**Fixed.** `src/tui/tests/structure.rs` runs five property tests over
+five real fixtures. Parent and child agree in both directions and the
+ordinal is the position the child was fetched by; `first_child`/
+`last_child` are `nth_child` at the two ends; the sibling steps are
+inverses and stop at the edges of the child block rather than walking
+into the neighboring parent's, which in level order sits in the very
+next slots; `nth_child` past the end is `None`; `doc_next` enumerates
+the same nodes in the same order as the recursive walk, and stops
+rather than cycling. The root terminates every climb by being its own
+arena parent (spec 0216 S8).
+
 ### F2. The sharded sweep's thread path is untested
 
 `sweep.rs:174-243` — `ranked_with`'s cursor pull, the per-part
 partition, the join — has no test. This is spec 0218's core and the
 place a work-stealing bug would hide.
+
+**Fixed.** The un-sharded single-thread path is the reference, and every
+thread count must reproduce its ranking *exactly*. That is the real
+statement: which thread draws which part is nondeterministic, so a part
+drawn twice or never drawn changes the ranking rather than crashing, and
+no timing assertion would see it. A second test pins the fixture to more
+parts than a thread can hold at once, so a future `partition_roots`
+change cannot quietly reduce the first test to comparing the un-sharded
+path with itself; a third shows a raised `cancel` reaching every shard
+rather than hanging.
 
 ### F3. Three tests report green while skipping
 
@@ -695,10 +716,25 @@ test self-skips when nvim is *installed*. The ANSI-16 palette is
 therefore untested on any modern development machine, and the reported
 result says otherwise. A skip must be visible as a skip.
 
+**Fixed.** The skipping was a consequence of reading the answer from the
+environment. `style_for`/`heat_style`/`heat_suffix_style` each split
+into a `*_in(…, rgb: bool)` helper, so both palettes are reachable from
+a test with no environment mutation and nothing to skip; one env test
+remains, covering `COLORTERM` into `supports_rgb`, which cannot skip.
+The nvim test names a binary that is not on `PATH`, through a
+`#[cfg(test)]` thread-local, instead of hoping the machine has no
+Neovim.
+
 ### F4. Exit codes are asserted only as success/failure
 
 `tests/batch_export.rs` checks `success()` / `!success()`. A panic
 (status 101) passes every negative test. Assert the code.
+
+**Fixed.** One `assert_refused` helper, and all nine negative sites
+converted. Every deliberate diagnostic path in `main.rs` returns
+`ExitCode::FAILURE`, so the assertion is `status.code() == Some(1)` — a
+panic (101) or a signal (no code at all) now fails the test that is
+supposed to be watching for exactly that.
 
 ### F5. Uncovered edges
 
@@ -709,6 +745,48 @@ three primitive-keyword lists in `colorize.rs`; a zero-size terminal;
 deeply-nested documents; `Blob::load`'s error arms. One real fixed crash
 has its regression test only in an `#[ignore]`d test that depends on
 `/tmp/pdb.desc`.
+
+**Fixed**, item by item.
+
+- **`window_nodes`.** Two tests. The first pins the cache's answers to
+  the descent's for the same lines and asserts the stored vector is
+  ascending — out of order the binary search does not lie, it stops
+  hitting, and the cache silently becomes the whole-document descent it
+  exists to avoid. The second records a deliberately *wrong* entry and
+  bumps `structural_version` by hand, because the guard turns out to be
+  unreachable through any public mutator: every path that bumps the
+  version ends in `clamp_pan_offset`, which re-records the cache at the
+  new version. A test routed through a real fold or splice tests the
+  redraw, not the guard.
+- **`ThemeKind::System`.** `resolve_system`'s own output is pushed
+  through all seven guarded functions, at both color depths.
+- **The primitive-keyword lists.** They are in `decode.rs`, not
+  `colorize.rs` — this entry named the wrong file. The three
+  (`primitive_type_for_keyword`'s arms,
+  `primitive_keywords_for_wire_type`'s slices,
+  `ALL_PRIMITIVE_KEYWORDS`) are now held against each other, and each
+  keyword's wire type is checked against protobuf's rule rather than
+  against a copy of the table. `colorize.rs` had its own version of the
+  same problem — `SyntaxRole`, `RECOGNIZED_NAMES` and the highlight
+  index have to agree, and `RECOGNIZED_NAMES` has to agree with the
+  grammar's `highlights.scm` in another directory — so that is covered
+  too, along with the two roles (`punctuation.delimiter` and the plain
+  `punctuation.bracket`) that had no test at all.
+- **A zero-size terminal.** Drawn at `0x0`, `1x1`, `2x1`, `1x2`, `3x3`,
+  `0x24` and `80x0`, in all three pane layouts, with the keys that
+  measure the page they are scrolling pressed at each.
+- **Deeply-nested documents.** A self-recursive schema, nested to the
+  deepest depth `build_arena` accepts (`MAX_WIRE_DEPTH - 3`), opened,
+  drawn, descended and folded. Real documents run to about a dozen
+  levels; everything between there and the cap was untried.
+- **`Blob::load`'s error arms.** A missing path is `NotFound` on both
+  producers — the kind is what tells a typo from an unreadable file —
+  and an empty file is an empty document rather than an error.
+- **The `/tmp/pdb.desc` crash.** The merge that panicked and the offset
+  that fed it a bad patch were already covered; the *sequence* was not.
+  `Down`, `t`, `Enter` now runs through `handle_key` on an in-repo
+  fixture, and the document is checked to still account for every line
+  afterwards.
 
 ### F6. Long functions
 
@@ -732,6 +810,48 @@ merit:
 [audit-module-sizes.md](audit-module-sizes.md); the dispatchers are long
 because they are flat matches, which is defensible — decompose them only
 if a natural grouping exists.
+
+**Assessed; one split made, the rest declined.** Two things this table
+does not show, both of which change the verdict.
+
+The first is that these counts are of *lines*, not of statements, and
+these functions are unusually heavily commented — 24% to 50% of each:
+
+| function | lines | comment | code |
+|---|---:|---:|---:|
+| `render` | 446 | 137 | 291 |
+| `handle_key` | 398 | 143 | 226 |
+| `main` | 396 | 124 | 252 |
+| `run_loop` | 254 | 129 | 125 |
+| `App::new` | 213 | 52 | 161 |
+| `handle_mouse` | 213 | 89 | 113 |
+
+`run_loop` is half prose. Splitting it would not remove those lines, it
+would distribute them, and each fragment would have to re-establish the
+context its comments assume.
+
+The second is that length is a proxy for the thing actually worth
+avoiding, which is a function doing several separable jobs. On that test
+the dispatchers pass: each arm binds one key and calls one method, the
+arms share no state, and there is no grouping in them that is not
+already the grouping the four separate dispatchers provide
+(`handle_key`, `handle_override_key`, `handle_manage_key`,
+`handle_mouse` are the modes). `run_loop` passes for the opposite
+reason — it is one state machine over seven interdependent locals
+(`redraw`, `redraw_why`, two activity windows, `heat_dirty`,
+`last_heat_frame`, `deadline`), and any extraction would take most of
+them as arguments and hand most of them back.
+
+`main` was the exception and is split. It was startup (a fixed sequence
+that runs for every invocation) followed by a `match` on the subcommand
+whose `Export` arm was 130 self-contained lines — a different job, on an
+`App` that is already built. That arm is now `run_export`, and the
+`--output`-or-stdout block it contained twice, verbatim, is
+`write_output`. `main` goes from 396 lines (252 of code) to 278 (171).
+
+`render`, `render_node_as`, `App::new` and `splice_override` are left
+alone: they are long the way a render pass is long, and
+[audit-module-sizes.md](audit-module-sizes.md) already owns the first.
 
 ## G. Documentation drift
 

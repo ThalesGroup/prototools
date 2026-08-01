@@ -15,4 +15,5 @@ mod prefetch;
 mod profiling;
 mod prune;
 mod render;
+mod structure;
 mod support;

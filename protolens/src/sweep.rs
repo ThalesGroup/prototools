@@ -377,10 +377,119 @@ impl ExactSizeIterator for Merged {}
 
 #[cfg(test)]
 mod tests {
+    use prototext_graph::build_scoring_graph::build_from_strings;
+    use prototext_graph::score::load::LoadedGraph;
+
     use super::*;
 
     fn c(fqdn: &str, score: i64) -> (String, i64) {
         (fqdn.to_string(), score)
+    }
+
+    /// A graph with enough *structurally distinct* roots to cut into
+    /// more than one part. Distinct is the operative word:
+    /// `partition_roots` returns at most one part per state group, and
+    /// messages with the same field shape share one — so the field
+    /// numbers have to differ, not just the names.
+    fn many_root_graph() -> LoadedGraph {
+        let n = 60;
+        let mut yaml = String::from("entries:\n");
+        for i in 0..n {
+            yaml.push_str(&format!("- Msg{i}\n"));
+        }
+        yaml.push_str("messages:\n");
+        for i in 0..n {
+            yaml.push_str(&format!(
+                "  Msg{i}:\n    fields:\n    - number: {}\n      type: uint64\n\
+                 \x20   - number: {}\n      type: string\n",
+                i + 1,
+                i + 100,
+            ));
+        }
+        let (bytes, _, _) =
+            build_from_strings(&[yaml], false, false, |_, _| {}).expect("test graph must build");
+        let bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+        LoadedGraph::from_static_bytes(bytes).expect("test graph must load")
+    }
+
+    /// A blob every root in `many_root_graph` can be scored against:
+    /// field 1 as a varint, field 100 as a length-delimited string.
+    fn scorable_blob() -> Vec<u8> {
+        vec![
+            0x08, 0x05, // field 1, varint 5
+            0xA2, 0x06, 0x02, b'h', b'i', // field 100, LEN "hi"
+        ]
+    }
+
+    /// Spec 0218's core, and the reason it needs a test at all: the
+    /// cursor hands out parts, so *which* thread walked *which* part is
+    /// nondeterministic, and a bug there — a part drawn twice, a part
+    /// never drawn, runs concatenated before the merge — changes the
+    /// ranking rather than crashing. The un-sharded single-thread path
+    /// is the reference, and every thread count must reproduce it
+    /// exactly, not merely approximately.
+    #[test]
+    fn every_thread_count_produces_the_ranking_one_thread_produces() {
+        assert!(
+            available_cpus() > 1,
+            "this machine reports one CPU, so `effective_jobs` clamps every \
+             request to 1 and the sharded path cannot be exercised at all — \
+             the test is not passing, it is unable to run"
+        );
+        let graph = many_root_graph();
+        let blob = scorable_blob();
+
+        // `jobs: 1` takes the un-sharded path (`target_parts(1) == 1`),
+        // on this thread, with nothing spawned. That is the reference.
+        let reference = ranked(&blob, graph.graph(), 1, None);
+        assert!(
+            !reference.is_empty(),
+            "the fixture must actually score something"
+        );
+
+        // More parts than threads (so threads pull repeatedly), as many
+        // threads as parts, and more threads than the machine has (so
+        // the clamp is exercised too).
+        for jobs in [2, 3, 4, 8, SWEEP_PARTS, SWEEP_PARTS + 8, 512] {
+            assert_eq!(
+                ranked(&blob, graph.graph(), jobs, None),
+                reference,
+                "the ranking must not depend on how many threads produced it \
+                 (jobs = {jobs})"
+            );
+        }
+    }
+
+    /// The partition the threads pull from must be finer than the
+    /// thread count for the cursor to mean anything — stated here so
+    /// that a future `partition_roots` change that collapses the
+    /// fixture into one part turns this into a failure rather than
+    /// silently reducing the test above to comparing the un-sharded
+    /// path with itself.
+    #[test]
+    fn the_fixture_is_cut_into_more_parts_than_a_thread_can_take_at_once() {
+        let graph = many_root_graph();
+        let parts = partition_roots(graph.graph(), target_parts(effective_jobs(4)));
+        assert!(
+            parts.len() > 4,
+            "expected the roots to cut into more than 4 parts, got {}",
+            parts.len()
+        );
+    }
+
+    /// A raised `cancel` reaches every shard. The ranking is then
+    /// meaningless by contract — the point is that the threads come
+    /// back rather than that the answer is right.
+    #[test]
+    fn a_raised_cancel_stops_the_shards_rather_than_hanging() {
+        let graph = many_root_graph();
+        let blob = scorable_blob();
+        let cancel = AtomicBool::new(true);
+        let out = ranked(&blob, graph.graph(), 8, Some(&cancel));
+        assert!(
+            out.len() <= ranked(&blob, graph.graph(), 8, None).len(),
+            "a cancelled sweep cannot produce more than a complete one"
+        );
     }
 
     /// The merge reproduces what sorting the concatenation would give —

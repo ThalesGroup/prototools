@@ -101,35 +101,42 @@ fn live_nodes(app: &App) -> Vec<usize> {
 /// there fell through to whichever node happened to straddle it — so a
 /// hole in this table is not a missing feature, it is a wrong answer
 /// for a line the user is looking at.
+/// Who owns each line, built from the nodes outward — the opposite
+/// direction from the descents that answer the same question, and so
+/// the reference they are checked against. Panics if two nodes claim
+/// one line, which is a corrupt tree rather than a wrong answer.
+fn owners_from_the_nodes(name: &str, app: &App) -> Vec<Option<LinePos>> {
+    let mut expect: Vec<Option<LinePos>> = vec![None; app.lines.len()];
+    for idx in live_nodes(app) {
+        let r = app.node_lines(idx);
+        // A bracketed node owns its opening and closing lines and
+        // nothing between them — the body belongs to its subtree. A
+        // flat one owns every row it draws, which for a packed run
+        // is one per element (spec 0216 S7/S22).
+        let rows: Vec<usize> = if app.tree[idx].is_bracketed() {
+            vec![0, r.len() - 1]
+        } else {
+            (0..r.len()).collect()
+        };
+        for k in rows {
+            assert!(
+                expect[r.start + k].is_none(),
+                "{name}: line {} claimed twice",
+                r.start + k
+            );
+            expect[r.start + k] = Some(LinePos {
+                node: idx,
+                line_in_node: k as u32,
+            });
+        }
+    }
+    expect
+}
+
 #[test]
 fn the_descent_names_the_owner_of_every_line_and_nothing_past_the_end() {
     for (name, app) in real_decodes() {
-        // Built from the nodes outward, the opposite direction from the
-        // descent under test.
-        let mut expect: Vec<Option<LinePos>> = vec![None; app.lines.len()];
-        for idx in live_nodes(&app) {
-            let r = app.node_lines(idx);
-            // A bracketed node owns its opening and closing lines and
-            // nothing between them — the body belongs to its subtree. A
-            // flat one owns every row it draws, which for a packed run
-            // is one per element (spec 0216 S7/S22).
-            let rows: Vec<usize> = if app.tree[idx].is_bracketed() {
-                vec![0, r.len() - 1]
-            } else {
-                (0..r.len()).collect()
-            };
-            for k in rows {
-                assert!(
-                    expect[r.start + k].is_none(),
-                    "{name}: line {} claimed twice",
-                    r.start + k
-                );
-                expect[r.start + k] = Some(LinePos {
-                    node: idx,
-                    line_in_node: k as u32,
-                });
-            }
-        }
+        let expect = owners_from_the_nodes(name, &app);
         for (line, want) in expect.iter().enumerate() {
             assert!(
                 want.is_some(),
@@ -144,6 +151,97 @@ fn the_descent_names_the_owner_of_every_line_and_nothing_past_the_end() {
             "{name}: past the end must be past the end"
         );
     }
+}
+
+/// Spec 0210 S3's per-frame cache, in both of the things it promises.
+///
+/// `cached_line_pos` answers by *binary search* over whatever
+/// `set_window_nodes` was last handed, on the strength of one comment
+/// in `visible_window` — "ascending by construction". If that ever
+/// stopped being true the search would not fail loudly; it would return
+/// some other row's owner, for a line that is on screen, and every
+/// consumer of the frame (the fold marker, the spans, the override
+/// hint) would follow it. So the ordering is asserted, and then the
+/// cache's answers are pinned to the answers the descent gives for the
+/// very same lines.
+#[test]
+fn the_window_cache_answers_what_the_descent_would_and_is_ordered() {
+    for (name, mut app) in real_decodes() {
+        // Taken with the window still empty, so every one of these is a
+        // descent rather than a lookup.
+        let want: Vec<Option<LinePos>> = (0..app.lines.len()).map(|l| app.line_pos(l)).collect();
+
+        let window = app.visible_window(0, app.lines.len());
+        assert!(!window.is_empty(), "{name}: the fixture must draw rows");
+        app.set_window_nodes(&window);
+        // Asserted on the stored vector rather than on `visible_window`'s
+        // return, since that is the one the binary search runs over. Out
+        // of order it does not answer wrongly — each entry is a
+        // self-consistent pair — it simply stops answering, and the cache
+        // silently becomes a whole-document descent per row again, which
+        // is the cost spec 0210 S3 exists to avoid.
+        assert!(
+            app.window_nodes.windows(2).all(|w| w[0].0 < w[1].0),
+            "{name}: the window must be strictly ascending by line, or the \
+             binary search in `cached_line_pos` can never hit: {:?}",
+            app.window_nodes.iter().map(|&(l, _)| l).collect::<Vec<_>>()
+        );
+        for (line, want) in want.iter().enumerate() {
+            assert_eq!(
+                app.line_pos(line),
+                *want,
+                "{name}: line {line} must resolve the same through the cache \
+                 as through the descent"
+            );
+        }
+    }
+}
+
+/// The version guard, which is the whole reason the cache is allowed to
+/// be a plain snapshot of the last frame rather than something anyone
+/// has to keep repaired.
+///
+/// The entry recorded here is deliberately *wrong*, which nothing in
+/// production ever records. It has to be: a correct entry is
+/// indistinguishable from a miss, so a test built on a real window
+/// cannot tell whether the guard fired or the answer merely happened to
+/// still be right.
+///
+/// The version is bumped by hand for the same reason. Every mutator
+/// that bumps it — `folds_changed`, `finalize_override_batch` — ends in
+/// `clamp_pan_offset`, which measures the widest visible row, which
+/// builds a window, which re-records the cache at the new version. So
+/// driving a real fold or splice would leave the cache *fresh* and test
+/// the redraw instead of the guard. A wrong entry plus a bare bump
+/// isolates the one thing standing between a stale window and a wrong
+/// answer for a line on screen.
+#[test]
+fn the_window_cache_is_believed_only_at_the_version_it_was_recorded_at() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    let truth: Vec<Option<LinePos>> = (0..app.lines.len()).map(|l| app.line_pos(l)).collect();
+
+    let wrong = LinePos {
+        node: inner_idx,
+        line_in_node: 0,
+    };
+    assert_ne!(
+        truth[0],
+        Some(wrong),
+        "line 0 must not really be owned by `inner`, or this proves nothing"
+    );
+    app.set_window_nodes(&[(0, wrong)]);
+    assert_eq!(
+        app.line_pos(0),
+        Some(wrong),
+        "a window recorded at the current version is consulted"
+    );
+
+    app.structural_version += 1;
+    assert_eq!(
+        app.line_pos(0),
+        truth[0],
+        "a window from an older version must be ignored, not believed"
+    );
 }
 
 /// With no folds, the visible-row descent must agree with the line

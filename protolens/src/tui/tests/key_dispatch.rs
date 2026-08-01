@@ -557,19 +557,17 @@ fn v_arms_pending_editor_open_when_the_proto_source_is_found() {
 
 /// Glitch reported 2026-07-18: a missing `nvim` binary must not crash
 /// protolens — the failure is reported via `app.message` and the TUI
-/// keeps running. Runtime-probes for a real `nvim` first and skips
-/// gracefully instead of assuming this sandbox's `PATH` lacks it — a
-/// real `nvim` would otherwise be spawned and block on `waitpid`.
+/// keeps running.
+///
+/// The absent binary is arranged by naming one, through
+/// `neovim::EDITOR_PROGRAM`, rather than by hoping this machine has no
+/// Neovim: the earlier version of this test probed `PATH` and returned
+/// early when it found one, which meant it never ran anywhere Neovim
+/// was installed — and spawning the real thing here would block on
+/// `waitpid` forever.
 #[test]
 fn open_editor_reports_a_missing_nvim_instead_of_crashing() {
-    if std::process::Command::new("nvim")
-        .arg("--version")
-        .output()
-        .is_ok()
-    {
-        eprintln!("skipping: a real nvim is present on PATH");
-        return;
-    }
+    neovim::EDITOR_PROGRAM.set("protolens-test-no-such-editor");
     let mut app = empty_app();
     // `open_editor` requires `io::Error: From<B::Error>` (it propagates
     // real I/O errors via `?`) — `TestBackend`'s `Error` is `Infallible`,

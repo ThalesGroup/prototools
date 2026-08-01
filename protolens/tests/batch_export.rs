@@ -37,6 +37,24 @@ fn run(args: &[&str]) -> Output {
         .expect("failed to spawn protolens")
 }
 
+/// Asserts that `out` is a *deliberate refusal*: every diagnostic path
+/// in `main.rs` returns `ExitCode::FAILURE`, which is exit status 1.
+///
+/// `!out.status.success()` is not the same statement and is not enough.
+/// A panic exits 101 and a signal exits with no code at all, and both
+/// are "not success" — so a negative test written that way keeps
+/// passing after the behavior it guards has stopped being a refusal and
+/// started being a crash, which is exactly when it is most wanted.
+#[track_caller]
+fn assert_refused(out: &Output, what: &str) {
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{what}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 /// A unique path under the system temp dir — never created, just named
 /// (tests run in parallel and must not collide with each other, nor with
 /// leftovers from prior runs).
@@ -317,10 +335,7 @@ fn export_unresolvable_path_fails_without_entering_the_tui() {
         "export",
         "/99",
     ]);
-    assert!(
-        !out.status.success(),
-        "export with an unresolvable path must fail"
-    );
+    assert_refused(&out, "export with an unresolvable path must fail");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("does not resolve"),
@@ -345,9 +360,9 @@ fn export_load_overrides_missing_file_is_a_hard_error() {
         "--load-overrides",
         missing.to_str().unwrap(),
     ]);
-    assert!(
-        !out.status.success(),
-        "--load-overrides pointing at a missing file must fail"
+    assert_refused(
+        &out,
+        "--load-overrides pointing at a missing file must fail",
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -371,9 +386,9 @@ fn export_load_overrides_malformed_yaml_is_a_hard_error() {
         "--load-overrides",
         overrides.path(),
     ]);
-    assert!(
-        !out.status.success(),
-        "--load-overrides pointing at malformed YAML must fail"
+    assert_refused(
+        &out,
+        "--load-overrides pointing at malformed YAML must fail",
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -445,10 +460,7 @@ fn export_descriptor_binary_with_a_hash_mismatch_is_a_hard_error() {
         "--load-overrides",
         overrides.path(),
     ]);
-    assert!(
-        !out.status.success(),
-        "a hash mismatch must be fatal for a schema export"
-    );
+    assert_refused(&out, "a hash mismatch must be fatal for a schema export");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("error") && stderr.contains("different blob or descriptor set"),
@@ -473,7 +485,7 @@ fn descriptor_format_without_load_overrides_fails_before_startup() {
         "--format",
         "descriptor-prototext",
     ]);
-    assert!(!out.status.success());
+    assert_refused(&out, "the flag pairing must be refused");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("requires --load-overrides"),
@@ -522,9 +534,9 @@ fn export_with_an_unappliable_override_fails_loudly() {
         "--output",
         out_path.to_str().unwrap(),
     ]);
-    assert!(
-        !out.status.success(),
-        "an override that could not be applied must not report success"
+    assert_refused(
+        &out,
+        "an override that could not be applied must not report success",
     );
     assert!(
         !out_path.exists(),
@@ -751,9 +763,9 @@ fn export_descriptor_binary_without_load_overrides_is_a_hard_error() {
         "--format",
         "descriptor-binary",
     ]);
-    assert!(
-        !out.status.success(),
-        "export --format=descriptor-binary without --load-overrides must fail"
+    assert_refused(
+        &out,
+        "export --format=descriptor-binary without --load-overrides must fail",
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -1043,9 +1055,9 @@ fn export_descriptor_prototext_with_no_descriptor_set_fails_with_meta_schema_not
         "--load-overrides",
         overrides.path(),
     ]);
-    assert!(
-        !out.status.success(),
-        "export --format=descriptor-prototext with no --descriptor-set must fail"
+    assert_refused(
+        &out,
+        "export --format=descriptor-prototext with no --descriptor-set must fail",
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -1058,10 +1070,7 @@ fn export_descriptor_prototext_with_no_descriptor_set_fails_with_meta_schema_not
 fn type_with_no_descriptor_set_fails_before_reading_the_blob() {
     let (_descriptor, blob) = outer_inner_fixture();
     let out = run(&["--type", "test.Outer", blob.path(), "export", "/"]);
-    assert!(
-        !out.status.success(),
-        "--type without --descriptor-set must fail"
-    );
+    assert_refused(&out, "--type without --descriptor-set must fail");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("--type requires --descriptor-set"),

@@ -31,12 +31,26 @@ pub enum ThemeKind {
 /// themes) and a portable ANSI-16 fallback via `supports_rgb`
 /// (spec 0116 §9).
 pub fn style_for(role: SyntaxRole, theme: ThemeKind) -> Style {
-    match theme {
-        ThemeKind::Dark if supports_rgb() => style_for_dark_rgb(role),
-        ThemeKind::Dark => style_for_dark_ansi16(role),
-        ThemeKind::Light if supports_rgb() => style_for_light_rgb(role),
-        ThemeKind::Light => style_for_light_ansi16(role),
-        ThemeKind::System => {
+    style_for_in(role, theme, supports_rgb())
+}
+
+/// `style_for` with the color depth passed in rather than probed.
+///
+/// The split exists for the tests: `supports_rgb` reads the ambient
+/// terminal through two process-wide caches, so a test that wanted the
+/// ANSI-16 palette could only ask for it by unsetting `COLORTERM` and
+/// hoping the terminal `cargo test` runs under is not itself
+/// true-color-capable — which on a modern development machine it is, so
+/// the test skipped itself and reported a pass. Taking the flag as an
+/// argument makes both palettes reachable from a test with no
+/// environment mutation and no skipping.
+fn style_for_in(role: SyntaxRole, theme: ThemeKind, rgb: bool) -> Style {
+    match (theme, rgb) {
+        (ThemeKind::Dark, true) => style_for_dark_rgb(role),
+        (ThemeKind::Dark, false) => style_for_dark_ansi16(role),
+        (ThemeKind::Light, true) => style_for_light_rgb(role),
+        (ThemeKind::Light, false) => style_for_light_ansi16(role),
+        (ThemeKind::System, _) => {
             unreachable!("ThemeKind::System must be resolved before rendering — see main.rs")
         }
     }
@@ -564,23 +578,27 @@ pub enum HeatHue {
 /// gradient always shows *some* color once the gate has passed, however
 /// dim.
 pub fn heat_style(level: u8, hue: HeatHue, theme: ThemeKind) -> Option<Style> {
-    match theme {
-        ThemeKind::Dark if supports_rgb() => {
-            Some(Style::default().fg(heat_rgb_color(level, false, hue)))
+    heat_style_in(level, hue, theme, supports_rgb())
+}
+
+/// `heat_style` with the color depth passed in rather than probed — see
+/// `style_for_in` for why the flag is an argument.
+fn heat_style_in(level: u8, hue: HeatHue, theme: ThemeKind, rgb: bool) -> Option<Style> {
+    match (theme, rgb) {
+        (ThemeKind::Dark, true) => Some(Style::default().fg(heat_rgb_color(level, false, hue))),
+        (ThemeKind::Light, true) => Some(Style::default().fg(heat_rgb_color(level, true, hue))),
+        (ThemeKind::Dark | ThemeKind::Light, false) if level <= 3 => None,
+        (ThemeKind::Dark | ThemeKind::Light, false) if level <= 7 => {
+            Some(Style::default().fg(match hue {
+                HeatHue::Red => Color::Red,
+                HeatHue::Blue => Color::Blue,
+            }))
         }
-        ThemeKind::Light if supports_rgb() => {
-            Some(Style::default().fg(heat_rgb_color(level, true, hue)))
-        }
-        ThemeKind::Dark | ThemeKind::Light if level <= 3 => None,
-        ThemeKind::Dark | ThemeKind::Light if level <= 7 => Some(Style::default().fg(match hue {
-            HeatHue::Red => Color::Red,
-            HeatHue::Blue => Color::Blue,
-        })),
-        ThemeKind::Dark | ThemeKind::Light => Some(Style::default().fg(match hue {
+        (ThemeKind::Dark | ThemeKind::Light, false) => Some(Style::default().fg(match hue {
             HeatHue::Red => Color::LightRed,
             HeatHue::Blue => Color::LightBlue,
         })),
-        ThemeKind::System => {
+        (ThemeKind::System, _) => {
             unreachable!("ThemeKind::System must be resolved before rendering — see main.rs")
         }
     }
@@ -605,11 +623,17 @@ fn heat_rgb_color(level: u8, light: bool, hue: HeatHue) -> Color {
 /// `style_for(SyntaxRole::Boolean, theme)` directly, the same styling as
 /// a `true`/`false` value (spec 0138 G9), not a new color.
 pub fn heat_suffix_style(theme: ThemeKind) -> Style {
-    match theme {
-        ThemeKind::Dark if supports_rgb() => Style::default().fg(heat_rgb::DARK[11]),
-        ThemeKind::Light if supports_rgb() => Style::default().fg(heat_rgb::LIGHT[11]),
-        ThemeKind::Dark | ThemeKind::Light => Style::default().fg(Color::LightRed),
-        ThemeKind::System => {
+    heat_suffix_style_in(theme, supports_rgb())
+}
+
+/// `heat_suffix_style` with the color depth passed in rather than
+/// probed — see `style_for_in` for why the flag is an argument.
+fn heat_suffix_style_in(theme: ThemeKind, rgb: bool) -> Style {
+    match (theme, rgb) {
+        (ThemeKind::Dark, true) => Style::default().fg(heat_rgb::DARK[11]),
+        (ThemeKind::Light, true) => Style::default().fg(heat_rgb::LIGHT[11]),
+        (ThemeKind::Dark | ThemeKind::Light, false) => Style::default().fg(Color::LightRed),
+        (ThemeKind::System, _) => {
             unreachable!("ThemeKind::System must be resolved before rendering — see main.rs")
         }
     }
@@ -689,6 +713,60 @@ mod tests {
         }
     }
 
+    /// `ThemeKind::System` is a *request*, not a palette, and nothing in
+    /// the type system says so: seven styling functions below panic
+    /// outright if they are ever handed it, and the only thing standing
+    /// between them and a `--theme system` command line is one
+    /// hand-written match arm in `main.rs`. So the resolver's own output
+    /// is pushed through all seven here.
+    ///
+    /// The panic that would otherwise be waiting is the worst kind this
+    /// program has — mid-frame, with the terminal in raw mode — and it
+    /// needs no code change to arrive: a new detection path that gives
+    /// up by returning its input, or a `_ =>` passthrough added to
+    /// `main.rs`'s match, is enough.
+    ///
+    /// `COLORFGBG` is set so the resolution stays in memory. Left unset,
+    /// `resolve_system` falls through to an OSC 11 query, which under
+    /// `cargo test` has no terminal to answer it and pays the timeout.
+    #[test]
+    fn every_styling_function_accepts_what_resolve_system_returns() {
+        let _guard = lock_env();
+        for fg_bg in ["15;0", "0;15"] {
+            // SAFETY: single-threaded (guarded by ENV_MUTEX above).
+            unsafe {
+                std::env::set_var("COLORFGBG", fg_bg);
+            }
+            let theme = resolve_system();
+            assert_ne!(
+                theme,
+                ThemeKind::System,
+                "resolution returned the request itself for COLORFGBG={fg_bg}",
+            );
+            // These four probe the terminal for their color depth, which
+            // is left alone: what is under test is that the *theme* is
+            // renderable, not which palette comes back.
+            manage_entry_style(true, theme);
+            caret_paired_style(theme);
+            cursor_row_style(theme);
+            focus_style(theme);
+            for rgb in [false, true] {
+                for role in ALL_ROLES {
+                    style_for_in(role, theme, rgb);
+                }
+                for level in 0..=12 {
+                    for hue in [HeatHue::Red, HeatHue::Blue] {
+                        heat_style_in(level, hue, theme, rgb);
+                    }
+                }
+                heat_suffix_style_in(theme, rgb);
+            }
+        }
+        unsafe {
+            std::env::remove_var("COLORFGBG");
+        }
+    }
+
     const ALL_ROLES: [SyntaxRole; 13] = [
         SyntaxRole::Attribute,
         SyntaxRole::Type,
@@ -722,108 +800,107 @@ mod tests {
         SyntaxRole::PunctuationBracketExtension,
     ];
 
+    /// `COLORTERM` is the first and cheapest of the three true-color
+    /// signals, and the only one a test can move: the other two are
+    /// process-wide `OnceLock` caches over the ambient terminal. So this
+    /// covers the plumbing from the environment into `supports_rgb`, and
+    /// the palette tests below cover the palettes — separately, through
+    /// the `*_in` functions, which is what lets them cover *both*
+    /// palettes on a machine whose terminal is true-color-capable.
     #[test]
-    fn style_for_uses_ansi16_when_colorterm_absent() {
+    fn supports_rgb_follows_colorterm() {
         let _guard = lock_env();
         // SAFETY: single-threaded (guarded by ENV_MUTEX above).
         unsafe {
+            std::env::set_var("COLORTERM", "truecolor");
+        }
+        assert!(supports_rgb());
+        unsafe {
+            std::env::set_var("COLORTERM", "24bit");
+        }
+        assert!(supports_rgb());
+        unsafe {
+            std::env::set_var("COLORTERM", "256color");
+        }
+        assert!(!colorterm_reports_truecolor());
+        unsafe {
             std::env::remove_var("COLORTERM");
         }
-        // `terminfo_reports_rgb` is cached process-wide and reflects the
-        // *actual* environment `cargo test` runs in — a genuinely
-        // true-color-capable terminal makes `supports_rgb` true even
-        // with `COLORTERM` unset, so there is nothing to assert here.
-        if terminfo_reports_rgb() {
-            return;
-        }
+    }
+
+    #[test]
+    fn the_ansi16_palette_uses_only_named_colors() {
         for role in ALL_ROLES {
             for theme in [ThemeKind::Dark, ThemeKind::Light] {
-                let style = style_for(role, theme);
-                assert!(!matches!(
-                    style.fg,
-                    Some(Color::Rgb(..)) | Some(Color::Indexed(_))
-                ));
+                let style = style_for_in(role, theme, false);
+                assert!(
+                    !matches!(style.fg, Some(Color::Rgb(..)) | Some(Color::Indexed(_))),
+                    "{role:?} must be a named ANSI-16 color, got {:?}",
+                    style.fg
+                );
             }
         }
     }
 
     #[test]
-    fn style_for_uses_rgb_when_colorterm_truecolor() {
-        let _guard = lock_env();
-        // SAFETY: single-threaded (guarded by ENV_MUTEX above).
-        unsafe {
-            std::env::set_var("COLORTERM", "truecolor");
-        }
+    fn the_rgb_palette_colors_every_role_that_is_meant_to_be_colored() {
         for role in COLORED_ROLES {
             for theme in [ThemeKind::Dark, ThemeKind::Light] {
-                let style = style_for(role, theme);
-                assert!(matches!(style.fg, Some(Color::Rgb(..))));
+                let style = style_for_in(role, theme, true);
+                assert!(matches!(style.fg, Some(Color::Rgb(..))), "{role:?}");
             }
-        }
-        unsafe {
-            std::env::remove_var("COLORTERM");
         }
     }
 
     #[test]
-    fn heat_style_uses_rgb_gradient_when_colorterm_truecolor() {
-        let _guard = lock_env();
-        // SAFETY: single-threaded (guarded by ENV_MUTEX above).
-        unsafe {
-            std::env::set_var("COLORTERM", "truecolor");
-        }
+    fn heat_style_grades_the_rgb_gradient_by_level() {
         for theme in [ThemeKind::Dark, ThemeKind::Light] {
             for hue in [HeatHue::Red, HeatHue::Blue] {
-                let level1 = heat_style(1, hue, theme).unwrap();
-                let level12 = heat_style(12, hue, theme).unwrap();
+                let level1 = heat_style_in(1, hue, theme, true).unwrap();
+                let level12 = heat_style_in(12, hue, theme, true).unwrap();
                 assert!(matches!(level1.fg, Some(Color::Rgb(..))));
                 assert!(matches!(level12.fg, Some(Color::Rgb(..))));
                 assert_ne!(level1.fg, level12.fg, "brightness must vary by level");
                 // Out-of-range levels clamp rather than panic.
-                assert_eq!(heat_style(0, hue, theme), heat_style(1, hue, theme));
-                assert_eq!(heat_style(200, hue, theme), heat_style(12, hue, theme));
+                assert_eq!(
+                    heat_style_in(0, hue, theme, true),
+                    heat_style_in(1, hue, theme, true)
+                );
+                assert_eq!(
+                    heat_style_in(200, hue, theme, true),
+                    heat_style_in(12, hue, theme, true)
+                );
             }
             // Same level, different hue: distinct colors (G11).
             assert_ne!(
-                heat_style(6, HeatHue::Red, theme),
-                heat_style(6, HeatHue::Blue, theme)
+                heat_style_in(6, HeatHue::Red, theme, true),
+                heat_style_in(6, HeatHue::Blue, theme, true)
             );
-        }
-        unsafe {
-            std::env::remove_var("COLORTERM");
         }
     }
 
     #[test]
     fn heat_style_ansi16_fallback_thresholds() {
-        let _guard = lock_env();
-        // SAFETY: single-threaded (guarded by ENV_MUTEX above).
-        unsafe {
-            std::env::remove_var("COLORTERM");
-        }
-        if terminfo_reports_rgb() {
-            return;
-        }
         for theme in [ThemeKind::Dark, ThemeKind::Light] {
             // Level 3 == `best_score <= 3` (G7/G12's low-confidence absence).
-            assert_eq!(heat_style(3, HeatHue::Red, theme), None);
-            assert_eq!(heat_style(3, HeatHue::Blue, theme), None);
+            assert_eq!(heat_style_in(3, HeatHue::Red, theme, false), None);
+            assert_eq!(heat_style_in(3, HeatHue::Blue, theme, false), None);
             // Level 7 == `best_score <= 21`: dark red / dark blue.
             assert_eq!(
-                heat_style(7, HeatHue::Red, theme),
+                heat_style_in(7, HeatHue::Red, theme, false),
                 Some(Style::default().fg(Color::Red))
             );
             assert_eq!(
-                heat_style(7, HeatHue::Blue, theme),
+                heat_style_in(7, HeatHue::Blue, theme, false),
                 Some(Style::default().fg(Color::Blue))
             );
             // Level 8 == `best_score > 21`: bright red / bright blue.
             assert_eq!(
-                heat_style(8, HeatHue::Red, theme),
+                heat_style_in(8, HeatHue::Red, theme, false),
                 Some(Style::default().fg(Color::LightRed))
             );
             assert_eq!(
-                heat_style(8, HeatHue::Blue, theme),
+                heat_style_in(8, HeatHue::Blue, theme, false),
                 Some(Style::default().fg(Color::LightBlue))
             );
         }
@@ -831,24 +908,17 @@ mod tests {
 
     #[test]
     fn heat_suffix_style_is_always_the_brightest_red() {
-        let _guard = lock_env();
-        // SAFETY: single-threaded (guarded by ENV_MUTEX above).
-        unsafe {
-            std::env::set_var("COLORTERM", "truecolor");
-        }
         for theme in [ThemeKind::Dark, ThemeKind::Light] {
-            assert!(matches!(heat_suffix_style(theme).fg, Some(Color::Rgb(..))));
-        }
-        unsafe {
-            std::env::remove_var("COLORTERM");
-        }
-        if !terminfo_reports_rgb() {
-            for theme in [ThemeKind::Dark, ThemeKind::Light] {
-                assert_eq!(
-                    heat_suffix_style(theme),
-                    Style::default().fg(Color::LightRed)
-                );
-            }
+            // Truecolor: the top stop of the gradient, whatever the level.
+            assert_eq!(
+                heat_suffix_style_in(theme, true).fg,
+                heat_style_in(12, HeatHue::Red, theme, true).unwrap().fg
+            );
+            // ANSI-16: the brightest red the palette has.
+            assert_eq!(
+                heat_suffix_style_in(theme, false),
+                Style::default().fg(Color::LightRed)
+            );
         }
     }
 

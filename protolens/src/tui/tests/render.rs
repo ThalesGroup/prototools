@@ -69,6 +69,194 @@ fn empty_tree_renders_and_handles_keys_without_panicking() {
     assert!(app.should_quit);
 }
 
+/// A document nested as deeply as the wire walk will accept.
+///
+/// `MAX_WIRE_DEPTH` is 1000 and real documents run to about a dozen
+/// (measured on googleapis: 13), so every level between the two is
+/// reachable and untried. What is down there is recursion — the render
+/// walk, the override walk that `App::new` runs over the whole document,
+/// and `render_node_as`, which recurses per nested override — and a
+/// stack that runs out does not report anything, it takes the process
+/// with it.
+///
+/// The document is built at the cap rather than at some comfortable
+/// depth: a limit is only a limit if something has stood at it.
+fn deeply_nested_app(depth: usize) -> App {
+    use prost::Message as _;
+    use prost_types::field_descriptor_proto::{Label, Type};
+    use prost_types::{
+        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+    };
+
+    use crate::blob::wrapped;
+    use crate::decode::{decode, DescriptorContext, RootType};
+
+    // `Nest { Nest inner = 1; int32 leaf = 2; }` — self-recursive, so
+    // one message type describes a document of any depth.
+    let nest = DescriptorProto {
+        name: Some("Nest".to_string()),
+        field: vec![
+            FieldDescriptorProto {
+                name: Some("inner".to_string()),
+                number: Some(1),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Message as i32),
+                type_name: Some(".test.Nest".to_string()),
+                ..Default::default()
+            },
+            FieldDescriptorProto {
+                name: Some("leaf".to_string()),
+                number: Some(2),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Int32 as i32),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let fds = FileDescriptorSet {
+        file: vec![FileDescriptorProto {
+            name: Some("test_deep.proto".to_string()),
+            package: Some("test".to_string()),
+            syntax: Some("proto2".to_string()),
+            message_type: vec![nest],
+            ..Default::default()
+        }],
+    };
+
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let descriptor_path = std::env::temp_dir().join(format!("protolens-tui-deep-{n}.pb"));
+    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
+    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
+    std::fs::remove_file(&descriptor_path).unwrap();
+
+    // Built from the innermost outward, since each level's length prefix
+    // covers everything already encoded.
+    let mut blob: Vec<u8> = vec![0x10, 0x01]; // leaf: 1
+    for _ in 0..depth {
+        let mut level = vec![0x0A]; // tag: field 1, WT_LEN
+        let mut len = blob.len();
+        while len >= 0x80 {
+            level.push((len as u8) | 0x80);
+            len >>= 7;
+        }
+        level.push(len as u8);
+        level.append(&mut blob);
+        blob = level;
+    }
+
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Nest"), 2).unwrap();
+    let mut app = App::new(
+        decoded,
+        "deep.pb",
+        PathBuf::from("deep.pb"),
+        2,
+        ctx,
+        ThemeKind::Dark,
+        None,
+    );
+    app.splash = false;
+    app.term_width = 120;
+    app
+}
+
+#[test]
+fn a_document_nested_to_the_wire_depth_limit_opens_and_draws() {
+    // The deepest document the walk accepts, found by trying: the
+    // wrapper record the blob is opened inside and the innermost `leaf`
+    // field each take a level off the top, and the walk keeps the last.
+    // One more and `build_arena` refuses the input, which is a different
+    // test than this one.
+    let depth = prototext_core::helpers::MAX_WIRE_DEPTH - 3;
+    let mut app = deeply_nested_app(depth);
+
+    // Each level renders an opening line and a closing one, so the
+    // document is deep in rows as well as in structure — a fixture that
+    // decoded to a handful of lines would prove nothing about either.
+    assert!(
+        app.lines.len() > depth,
+        "{} lines for {depth} levels",
+        app.lines.len()
+    );
+
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    // The line-owner descent walks one level per iteration, so the
+    // deepest line is the longest walk in the program. Asked for at the
+    // very bottom, where the nesting is.
+    let last = app.lines.len() - 1;
+    assert!(app.line_pos(last).is_some(), "no owner for the last line");
+    assert!(app.line_pos(app.lines.len() / 2).is_some());
+
+    // To the bottom and back, folding on the way — the recursive walks
+    // are over the *visible* structure, so a fold is what makes them
+    // re-run at every depth rather than once.
+    for code in [
+        KeyCode::End,
+        KeyCode::Char(' '),
+        KeyCode::Home,
+        KeyCode::Char(' '),
+        KeyCode::Char(' '),
+        KeyCode::End,
+    ] {
+        app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+        terminal.draw(|frame| app.render(frame)).unwrap();
+    }
+}
+
+/// A terminal with no room in it, in every layout the program can be
+/// asked to draw.
+///
+/// `render` lays out by subtraction — a `Length(1)` global row taken off
+/// the bottom, another off each pane for its own statusline, a
+/// `Length(1)` separator column between two halves — and every one of
+/// those subtractions has nothing to take from at zero. The arithmetic
+/// downstream is on `usize`, where coming up short is not a small number
+/// but a panic, and it is reached again on every key that measures the
+/// page it is scrolling.
+///
+/// A zero-size terminal is not hypothetical: it is what a window manager
+/// reports mid-resize, and what a pty is between its creation and its
+/// first `TIOCSWINSZ`. `1x1` and `2x1` are here for the same reason — a
+/// single subtraction is survivable, two in a row are not, and the sizes
+/// that expose the difference are exactly the ones nobody draws at.
+#[test]
+fn a_terminal_with_no_room_in_it_still_draws() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.splash = false;
+
+    for (width, height) in [(0, 0), (1, 1), (2, 1), (1, 2), (3, 3), (0, 24), (80, 0)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+
+        // The three layouts: the main pane alone, the 50/50 split with
+        // the override selection pane, and the same split with the
+        // management pane.
+        for open in 0..3 {
+            app.override_target = if open == 1 { Some(inner_idx) } else { None };
+            app.manage_open = open == 2;
+            terminal.draw(|frame| app.render(frame)).unwrap();
+
+            // Keys that measure the pane they are moving through — a
+            // page is `main_area.height` rows, which is what is zero
+            // here — with a draw after each, since the clamping that
+            // reconciles a movement with the pane happens in `render`.
+            for code in [
+                KeyCode::PageDown,
+                KeyCode::PageUp,
+                KeyCode::End,
+                KeyCode::Home,
+                KeyCode::Down,
+                KeyCode::Right,
+            ] {
+                app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+                terminal.draw(|frame| app.render(frame)).unwrap();
+            }
+        }
+    }
+}
+
 /// Spec 0192 G1: a frame costs the same wherever the cursor is. The
 /// regression this guards is `positional_path` becoming O(ordinal)
 /// again — which it was, via `sibling_position`'s `prev_sibling` walk,

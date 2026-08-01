@@ -562,6 +562,97 @@ mod tests {
         );
     }
 
+    /// The two roles the tests above never reached: the `:`/`,`/`;`
+    /// delimiters, and the plain (non-list, non-extension) brackets that
+    /// open and close a message body.
+    ///
+    /// They matter to the tests around them as much as to the screen.
+    /// `RECOGNIZED_NAMES`'s *position* is the highlight index
+    /// `configure` hands back, and `from_highlight_index` maps that
+    /// index by literal integer — so a name inserted in the middle
+    /// shifts every role after it with no compiler complaint anywhere.
+    /// Only a test that names the text and the role it should produce
+    /// can see that, and until every role has one the shift can hide in
+    /// whichever role does not.
+    #[test]
+    fn delimiters_and_message_brackets_are_punctuation() {
+        let text = "outer {\n  vals: [1, 2];\n  inner <\n  >\n}\n";
+        for delimiter in [":", ",", ";"] {
+            assert_eq!(
+                roles_at(text, delimiter),
+                vec![SyntaxRole::PunctuationDelimiter],
+                "{delimiter} is not a delimiter",
+            );
+        }
+        for bracket in ["{", "}", "<", ">"] {
+            assert_eq!(
+                roles_at(text, bracket),
+                vec![SyntaxRole::PunctuationBracket],
+                "{bracket} is not a plain bracket",
+            );
+        }
+        // The square brackets of the same document are the *list* kind,
+        // not this one — the split that spec 0116 §6 exists for.
+        assert_eq!(
+            roles_at(text, "["),
+            vec![SyntaxRole::PunctuationBracketList]
+        );
+    }
+
+    /// `RECOGNIZED_NAMES` and the grammar's `highlights.scm` are one
+    /// list kept in two places, in two directories, edited by different
+    /// changes — so they are checked against each other here.
+    ///
+    /// Drift is silent in both directions. A capture the query emits and
+    /// this list omits is resolved by `configure` to a dotted-prefix
+    /// ancestor, or to nothing, and the text quietly loses its color; a
+    /// name left here after the query stopped emitting it is a role no
+    /// document can ever produce, and every test of it would have to be
+    /// deleted before anyone noticed.
+    #[test]
+    fn the_recognized_names_are_exactly_the_grammars_captures() {
+        let emitted: std::collections::BTreeSet<&str> = config().names().iter().copied().collect();
+        let recognized: std::collections::BTreeSet<&str> =
+            RECOGNIZED_NAMES.iter().copied().collect();
+        assert_eq!(
+            emitted, recognized,
+            "highlights.scm and RECOGNIZED_NAMES disagree",
+        );
+        assert_eq!(
+            recognized.len(),
+            RECOGNIZED_NAMES.len(),
+            "RECOGNIZED_NAMES lists a name twice, which would give two \
+             roles one index",
+        );
+    }
+
+    /// `from_highlight_index` covers `RECOGNIZED_NAMES` and stops there.
+    ///
+    /// A name appended to the list without a matching arm resolves to
+    /// `None`, which `colorize` reads as "no role" — the capture fires,
+    /// the hint is dropped, and the text renders plain with nothing said
+    /// anywhere.
+    #[test]
+    fn every_recognized_name_has_a_role_and_no_two_share_one() {
+        let mut seen = Vec::new();
+        for (index, name) in RECOGNIZED_NAMES.iter().enumerate() {
+            let role = SyntaxRole::from_highlight_index(index)
+                .unwrap_or_else(|| panic!("{name} has no role"));
+            assert!(
+                !seen.contains(&role),
+                "{role:?} is claimed by two names, so one of them can never \
+                 be told apart from the other",
+            );
+            seen.push(role);
+        }
+        assert_eq!(
+            SyntaxRole::from_highlight_index(RECOGNIZED_NAMES.len()),
+            None,
+            "a role exists past the end of RECOGNIZED_NAMES, so no capture \
+             can ever reach it",
+        );
+    }
+
     #[test]
     fn hints_by_line_buckets_by_row() {
         let lines = vec!["flag: true".to_string(), "n: 1".to_string()];

@@ -1544,6 +1544,85 @@ mod tests {
             .expect("test graph must load")
     }
 
+    /// The three primitive-keyword lists — `primitive_type_for_keyword`'s
+    /// match arms, `primitive_keywords_for_wire_type`'s per-wire-type
+    /// slices, and `ALL_PRIMITIVE_KEYWORDS` — held against each other.
+    ///
+    /// They are one list written out three times, and their own doc
+    /// comments say so ("Must stay in sync"), which until now was the
+    /// only thing enforcing it. Each drifts differently and none of them
+    /// noisily: a keyword missing from `ALL_PRIMITIVE_KEYWORDS` cannot
+    /// be picked from the override pane's alphabetic list but still
+    /// works when typed; one missing from
+    /// `primitive_keywords_for_wire_type` is refused as
+    /// wire-incompatible on a field it fits perfectly; one missing from
+    /// `primitive_type_for_keyword` is offered by both of the others and
+    /// then falls through to an FQDN lookup that cannot resolve it.
+    #[test]
+    fn the_three_primitive_keyword_lists_agree() {
+        use prototext_core::helpers::{WT_I32, WT_I64, WT_LEN, WT_START_GROUP, WT_VARINT};
+
+        // Spec 0135 G4's count, pinned: a sixteenth keyword has to be
+        // added in three places, and this is what says so.
+        assert_eq!(ALL_PRIMITIVE_KEYWORDS.len(), 15);
+        assert!(
+            ALL_PRIMITIVE_KEYWORDS.windows(2).all(|w| w[0] < w[1]),
+            "spec 0137 G1: the override pane presents this list as it \
+             stands, so it must be sorted and free of duplicates",
+        );
+        for keyword in ALL_PRIMITIVE_KEYWORDS {
+            assert!(
+                primitive_type_for_keyword(keyword).is_some(),
+                "{keyword} is offered but does not resolve",
+            );
+        }
+
+        // Every keyword belongs to exactly one wire type — a keyword
+        // under two of them would be accepted on a field it cannot
+        // decode.
+        let mut filed: Vec<&str> = Vec::new();
+        for wire_type in [WT_VARINT, WT_I32, WT_I64, WT_LEN, WT_START_GROUP] {
+            for keyword in primitive_keywords_for_wire_type(wire_type) {
+                assert!(
+                    !filed.contains(keyword),
+                    "{keyword} is filed under two wire types",
+                );
+                filed.push(keyword);
+
+                // The wire type each keyword *must* have, stated as
+                // protobuf's own rule rather than as a copy of the table
+                // above: the fixed-width types carry their width in
+                // their name, `float`/`double` are the two that spell it
+                // out in words, `string`/`bytes` are length-delimited,
+                // and everything else is a varint.
+                let want = match *keyword {
+                    "float" => WT_I32,
+                    "double" => WT_I64,
+                    "string" | "bytes" => WT_LEN,
+                    k if k.ends_with("32") && k.starts_with("fixed") => WT_I32,
+                    k if k.ends_with("32") && k.starts_with("sfixed") => WT_I32,
+                    k if k.ends_with("64") && k.starts_with("fixed") => WT_I64,
+                    k if k.ends_with("64") && k.starts_with("sfixed") => WT_I64,
+                    _ => WT_VARINT,
+                };
+                assert_eq!(want, wire_type, "{keyword} is under the wrong wire type");
+            }
+        }
+        filed.sort_unstable();
+        assert_eq!(
+            filed, ALL_PRIMITIVE_KEYWORDS,
+            "the wire-type table and the alphabetic list name different \
+             keywords",
+        );
+
+        // Spec 0135 Background: group framing is never a primitive.
+        assert!(primitive_keywords_for_wire_type(WT_START_GROUP).is_empty());
+        // And `enum` is deliberately not a keyword anywhere yet (spec
+        // 0135 Non-goals) — offering it would promise a target path that
+        // does not exist.
+        assert!(primitive_type_for_keyword("enum").is_none());
+    }
+
     /// Spec 0168 (`--raw`): the sweep is skipped outright, not merely
     /// ignored. Asserted via the empty candidate list — a sweep that
     /// ran would have produced entries for the graph's one message —
