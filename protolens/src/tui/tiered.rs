@@ -19,6 +19,34 @@ pub(super) enum Tier {
     User,
 }
 
+impl Tier {
+    /// This tier's bit in the activity bitmask of spec 0190 S1 — the
+    /// encoding `band_occupancy`, `HeatRequestQueue::set_in_flight` and
+    /// `HeatRequestQueue::activity` all share, so that `activity` can
+    /// `|` a queued mask with an in-flight one and read the result with
+    /// the same rule.
+    ///
+    /// One definition rather than three (a `match` to `u8`, a `match`
+    /// back, and a set of shifts): a fourth tier added to only two of
+    /// them would compile, and would then report the wrong subsystem as
+    /// busy with nothing to say it had.
+    pub(super) fn bit(self) -> u8 {
+        match self {
+            Tier::User => 0b001,
+            Tier::Visible => 0b010,
+            Tier::Prefetch => 0b100,
+        }
+    }
+
+    /// The highest-priority tier `mask` has a bit for, or `None` when it
+    /// is empty — [`bit`](Self::bit)'s inverse over a set.
+    pub(super) fn highest_in(mask: u8) -> Option<Tier> {
+        [Tier::User, Tier::Visible, Tier::Prefetch]
+            .into_iter()
+            .find(|t| mask & t.bit() != 0)
+    }
+}
+
 struct Slot<K, V> {
     key: K,
     value: V,
@@ -320,9 +348,17 @@ impl<K: Eq + Hash + Clone, V: Clone> TieredBounded<K, V> {
     /// counting them would light the activity dot for a subsystem that
     /// has nothing left to do for the user.
     pub(super) fn band_occupancy(&self) -> u8 {
-        u8::from(self.user.head.is_some())
-            | (u8::from(self.visible.head.is_some()) << 1)
-            | (u8::from(self.prefetch_current.head.is_some()) << 2)
+        let mut mask = 0;
+        for (tier, band) in [
+            (Tier::User, &self.user),
+            (Tier::Visible, &self.visible),
+            (Tier::Prefetch, &self.prefetch_current),
+        ] {
+            if band.head.is_some() {
+                mask |= tier.bit();
+            }
+        }
+        mask
     }
 
     /// Reclaims one superseded entry — `prefetch_previous`'s head —

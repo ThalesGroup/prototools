@@ -135,6 +135,23 @@ Extract `wrapper_target_for(name, is_group)` and a free
 `packed_framing(span)`. Each caller keeps only its own fall-through
 (`continue` vs `Err`). **~14 lines**, and an invariant becomes a call.
 
+**Done 2026-08-01, both halves.** `DescriptorContext::wrapper_target_for`
+takes `&mut self` — `message`/`enumeration` load a file's dependency
+closure on the lazy branch — and returns
+`Option<(Option<WrapperTarget>, Type)>`, so the ladder's order lives in
+one place along with the reason it is that order: message first, which
+is what makes a message named `bool` resolve as a message.
+
+The `packed` half turned out to be a one-line composition rather than a
+fourth copy of anything. `packed_framing(span)` **is**
+`effective_wire_type(span) == WT_LEN`, item 1.7's function; both say
+"these bytes are framed as a LEN record". That is the payoff of 1.7's
+free form — a method would not have composed here, and spec 0135 §G1's
+packed-element rule would have entered the crate a third time.
+
+The line numbers above predate the module split; the `render_node_as`
+site is around `override_apply.rs:1307` now.
+
 ### 1.4 `OverrideOrigin::label()`'s format, open-coded in the lookup
 
 `override_apply.rs:942-948` builds `format!("{parent_path}:{field}")`
@@ -170,6 +187,13 @@ together" — a cross-module invariant with prose as its only enforcement.
 `Tier::bit()` and `Tier::highest_in(mask)` next to `Tier` itself.
 **~10 lines**, and a fourth tier can no longer be half-added.
 
+**Done 2026-08-01, exactly as written.** `band_occupancy` iterates
+`(tier, band)` pairs and `|=`s `tier.bit()`; `set_in_flight` is
+`tier.map_or(0, Tier::bit)`; `activity` is `Tier::highest_in(queued |
+in_flight)`. `highest_in` iterates the tiers in priority order rather
+than testing bits by hand, so the priority and the encoding are the same
+list read two ways.
+
 ### 1.6 `colorize.rs` — three parallel 13-element lists
 
 `SyntaxRole` (`:45-59`), `RECOGNIZED_NAMES` (`:69-83`) and
@@ -184,6 +208,21 @@ point.
 
 One `const ROLES: [(SyntaxRole, &str); 13]` that both derive from.
 **~20 lines**, and the ordering becomes structural.
+
+**Done 2026-08-01, exactly as written.** `RECOGNIZED_NAMES` is now
+`ROLES`'s name column, built by a `const` block so `configure` still gets
+its `[&str; 13]`; `from_highlight_index` is `ROLES.get(index).map(...)`.
+The enum's discriminant order stopped mattering altogether, so the
+invariant it used to carry is gone rather than merely enforced.
+
+One test had to change with it.
+`every_recognized_name_has_a_role_and_no_two_share_one` asserted two
+things, and pairing killed one of them: there is no longer an index past
+the end of the names for a role to hide at.
+What pairing does *not* prevent is naming the same role twice — the
+second capture would then be styled as the first, and two pieces of
+syntax become permanently indistinguishable. That half survives, as
+`no_two_recognized_names_share_a_role`.
 
 ### 1.7 The effective wire type, twice
 

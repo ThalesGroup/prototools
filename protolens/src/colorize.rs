@@ -58,48 +58,59 @@ pub enum SyntaxRole {
     PunctuationBracketExtension,
 }
 
-/// `queries/highlights.scm`'s capture names, in the exact order of
-/// `SyntaxRole`'s discriminants — `HighlightConfiguration::configure`'s
-/// `recognized_names` list. Every capture name `highlights.scm` emits is
-/// present here *exactly* (not just a dotted-prefix ancestor), so
-/// `configure`'s longest-match resolution never collapses a capture we
-/// care about into some unrelated ancestor the way `tree-sitter
-/// highlight`'s CLI default theme does (see spec 0116 §7's
-/// investigation notes).
-const RECOGNIZED_NAMES: [&str; 13] = [
-    "attribute",
-    "type",
-    "string",
-    "string.escape",
-    "string.special.url",
-    "comment",
-    "number",
-    "boolean",
-    "constant",
-    "punctuation.delimiter",
-    "punctuation.bracket",
-    "punctuation.bracket.list",
-    "punctuation.bracket.extension",
+/// Each role paired with the `queries/highlights.scm` capture name that
+/// produces it. This array's own indexing *is* the highlight index:
+/// `RECOGNIZED_NAMES` is the second column of it, and
+/// `from_highlight_index` is a lookup into it, so a role and its name
+/// cannot come apart. Written as pairs, rather than as a name list
+/// ordered to agree with `SyntaxRole`'s discriminants, because that
+/// agreement was unenforceable — a variant inserted mid-enum with its
+/// name appended at the end compiled cleanly and miscolored every role
+/// after the insertion point.
+///
+/// Every capture name `highlights.scm` emits is present here *exactly*
+/// (not just a dotted-prefix ancestor), so
+/// `HighlightConfiguration::configure`'s longest-match resolution never
+/// collapses a capture we care about into some unrelated ancestor the
+/// way `tree-sitter highlight`'s CLI default theme does (see spec 0116
+/// §7's investigation notes).
+const ROLES: [(SyntaxRole, &str); 13] = [
+    (SyntaxRole::Attribute, "attribute"),
+    (SyntaxRole::Type, "type"),
+    (SyntaxRole::StringLiteral, "string"),
+    (SyntaxRole::StringEscape, "string.escape"),
+    (SyntaxRole::StringSpecialUrl, "string.special.url"),
+    (SyntaxRole::Comment, "comment"),
+    (SyntaxRole::Number, "number"),
+    (SyntaxRole::Boolean, "boolean"),
+    (SyntaxRole::Constant, "constant"),
+    (SyntaxRole::PunctuationDelimiter, "punctuation.delimiter"),
+    (SyntaxRole::PunctuationBracket, "punctuation.bracket"),
+    (
+        SyntaxRole::PunctuationBracketList,
+        "punctuation.bracket.list",
+    ),
+    (
+        SyntaxRole::PunctuationBracketExtension,
+        "punctuation.bracket.extension",
+    ),
 ];
+
+/// [`ROLES`]'s name column, in order — `configure`'s `recognized_names`
+/// argument, which wants the names alone.
+const RECOGNIZED_NAMES: [&str; ROLES.len()] = {
+    let mut names = [""; ROLES.len()];
+    let mut i = 0;
+    while i < ROLES.len() {
+        names[i] = ROLES[i].1;
+        i += 1;
+    }
+    names
+};
 
 impl SyntaxRole {
     fn from_highlight_index(index: usize) -> Option<Self> {
-        Some(match index {
-            0 => Self::Attribute,
-            1 => Self::Type,
-            2 => Self::StringLiteral,
-            3 => Self::StringEscape,
-            4 => Self::StringSpecialUrl,
-            5 => Self::Comment,
-            6 => Self::Number,
-            7 => Self::Boolean,
-            8 => Self::Constant,
-            9 => Self::PunctuationDelimiter,
-            10 => Self::PunctuationBracket,
-            11 => Self::PunctuationBracketList,
-            12 => Self::PunctuationBracketExtension,
-            _ => return None,
-        })
+        ROLES.get(index).map(|&(role, _)| role)
     }
 }
 
@@ -567,13 +578,11 @@ mod tests {
     /// open and close a message body.
     ///
     /// They matter to the tests around them as much as to the screen.
-    /// `RECOGNIZED_NAMES`'s *position* is the highlight index
-    /// `configure` hands back, and `from_highlight_index` maps that
-    /// index by literal integer — so a name inserted in the middle
-    /// shifts every role after it with no compiler complaint anywhere.
-    /// Only a test that names the text and the role it should produce
-    /// can see that, and until every role has one the shift can hide in
-    /// whichever role does not.
+    /// `ROLES`'s *position* is the highlight index `configure` hands
+    /// back, so what the grammar captures and what this crate believes
+    /// it captured are two lists that only a test naming the text and
+    /// the role it should produce can compare — and until every role has
+    /// one, a disagreement can hide in whichever role does not.
     #[test]
     fn delimiters_and_message_brackets_are_punctuation() {
         let text = "outer {\n  vals: [1, 2];\n  inner <\n  >\n}\n";
@@ -626,14 +635,15 @@ mod tests {
         );
     }
 
-    /// `from_highlight_index` covers `RECOGNIZED_NAMES` and stops there.
+    /// No two entries of `ROLES` name the same role.
     ///
-    /// A name appended to the list without a matching arm resolves to
-    /// `None`, which `colorize` reads as "no role" — the capture fires,
-    /// the hint is dropped, and the text renders plain with nothing said
+    /// Pairing each role with its capture name makes an *index* mismatch
+    /// unrepresentable, but not a duplicated role: write one twice and
+    /// the second capture is styled as the first, so two distinct pieces
+    /// of syntax become permanently indistinguishable with nothing said
     /// anywhere.
     #[test]
-    fn every_recognized_name_has_a_role_and_no_two_share_one() {
+    fn no_two_recognized_names_share_a_role() {
         let mut seen = Vec::new();
         for (index, name) in RECOGNIZED_NAMES.iter().enumerate() {
             let role = SyntaxRole::from_highlight_index(index)
@@ -645,12 +655,6 @@ mod tests {
             );
             seen.push(role);
         }
-        assert_eq!(
-            SyntaxRole::from_highlight_index(RECOGNIZED_NAMES.len()),
-            None,
-            "a role exists past the end of RECOGNIZED_NAMES, so no capture \
-             can ever reach it",
-        );
     }
 
     #[test]

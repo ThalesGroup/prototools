@@ -1046,6 +1046,39 @@ impl WrapperTarget {
     }
 }
 
+impl DescriptorContext {
+    /// What `register_wrapper` needs in order to build a synthetic field
+    /// over `name`: the target descriptor (absent for a primitive) and
+    /// the field's own type. `None` means `name` resolved as nothing at
+    /// all.
+    ///
+    /// The ladder is ordered message → primitive keyword → enum, and
+    /// that order is a rule, not a convenience: it is what makes a
+    /// message named `bool` resolve as a message. It used to be written
+    /// twice — once where the splice resolves the highlighted candidate,
+    /// once where the pane warms the visible ones ahead of it — so a
+    /// reordering would have made warming register a wrapper the splice
+    /// then never looks up.
+    ///
+    /// `is_group` distinguishes the two message framings; the caller
+    /// reads it off the node being overridden, which this does not see.
+    pub(crate) fn wrapper_target_for(
+        &mut self,
+        name: &str,
+        is_group: bool,
+    ) -> Option<(Option<WrapperTarget>, Type)> {
+        if let Some(desc) = self.message(name) {
+            let ft = if is_group { Type::Group } else { Type::Message };
+            Some((Some(WrapperTarget::Message(desc)), ft))
+        } else if let Some(prim) = primitive_type_for_keyword(name) {
+            Some((None, prim))
+        } else {
+            let enum_desc = self.enumeration(name)?;
+            Some((Some(WrapperTarget::Enum(enum_desc)), Type::Enum))
+        }
+    }
+}
+
 /// Build (or reuse, if already registered) a synthetic one-field message
 /// descriptor whose sole field `field_number` has type `field_type`
 /// (message/group/primitive/enum, spec 0135 §G3, spec 0137 §G3) and,
@@ -1262,6 +1295,31 @@ pub(crate) fn effective_wire_type(span: &NodeSpan) -> u32 {
     } else {
         u32::from(span.wire_type)
     }
+}
+
+/// Whether a synthetic field built over `span` must be declared
+/// `repeated [packed=true]` rather than `optional` (spec 0219 S3): its
+/// framing is a length-delimited record, which on a packable primitive
+/// is the only reading that is not a wire-type mismatch. It is also what
+/// lets the user ask for a packed run at all — the override pane offers
+/// the element type, never `[packed=true]` itself.
+///
+/// Written as `effective_wire_type(span) == WT_LEN` because that is what
+/// it is, not merely what it happens to equal: both say "these bytes are
+/// framed as a LEN record". Spelling it out again as its own two-way
+/// disjunction would put the packed-element rule in the crate a third
+/// time.
+///
+/// Neither half of that disjunction works alone, which is why it is not
+/// simply `wire_type == WT_LEN`. `packed_record_start` holds only while
+/// the run is still *rendered* as a run: override it to `None` and the
+/// node's span comes back from `extract.rs` with `NO_PACKED_RECORD`, so
+/// by deletion time nothing recalls it was packed. And `wire_type` on a
+/// live run *member* is the element's, not the record's LEN.
+/// `register_wrapper` ignores this for a type protobuf cannot pack, so
+/// `string`/`bytes`/message targets read the record whole as before.
+pub(crate) fn packed_framing(span: &NodeSpan) -> bool {
+    effective_wire_type(span) == prototext_core::helpers::WT_LEN
 }
 
 /// Every primitive keyword `primitive_type_for_keyword` recognizes,

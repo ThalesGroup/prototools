@@ -1255,24 +1255,12 @@ impl App {
         }
 
         // Spec 0219 S3: whether the synthetic field below is declared
-        // `repeated [packed=true]` rather than `optional`. On a LEN
-        // record that is the only reading of a packable primitive that
-        // is not a wire-type mismatch, so it is also what lets the user
-        // ask for a packed run at all — the override pane offers the
-        // element type, never `[packed=true]` itself.
-        //
-        // Neither disjunct works alone. `packed_record_start` holds
-        // only while the run is still *rendered* as a run: override it
-        // to `None` and the node's span comes back from `extract.rs`
-        // with `NO_PACKED_RECORD`, so by deletion time nothing recalls
-        // it was packed and `resettle_node`'s fallback to
-        // `natural_type` renders `bytes; TYPE_MISMATCH` for good. And
-        // `wire_type` on a live run *member* is the element's, not the
-        // record's LEN. `register_wrapper` ignores this for a type
-        // protobuf cannot pack, so `string`/`bytes`/message targets
-        // read the record whole as before.
-        let packed =
-            in_packed_run || u32::from(old_span.wire_type) == prototext_core::helpers::WT_LEN;
+        // `repeated [packed=true]` rather than `optional`. The rule, and
+        // why neither of its two halves works alone, is at
+        // `decode::packed_framing`; `warm_visible_override_wrappers`
+        // asks the same function, which is what keeps warming and the
+        // splice looking up the same wrapper.
+        let packed = decode::packed_framing(&old_span);
 
         let field_number = old_span.field_number;
         let field_name = self.field_name_for(idx);
@@ -1308,25 +1296,12 @@ impl App {
             None => (None, None),
             Some("protolens_internal.None") => (None, None),
             Some(name) => {
-                if let Some(desc) = self.ctx.message(name) {
-                    let ft = if u32::from(old_span.wire_type)
-                        == prototext_core::helpers::WT_START_GROUP
-                    {
-                        Type::Group
-                    } else {
-                        Type::Message
-                    };
-                    (Some(decode::WrapperTarget::Message(desc)), Some(ft))
-                } else if let Some(prim) = decode::primitive_type_for_keyword(name) {
-                    (None, Some(prim))
-                } else if let Some(enum_desc) = self.ctx.enumeration(name) {
-                    (
-                        Some(decode::WrapperTarget::Enum(enum_desc)),
-                        Some(Type::Enum),
-                    )
-                } else {
+                let is_group =
+                    u32::from(old_span.wire_type) == prototext_core::helpers::WT_START_GROUP;
+                let Some((desc, ft)) = self.ctx.wrapper_target_for(name, is_group) else {
                     return Err(format!("type '{name}' not found in descriptor set"));
-                }
+                };
+                (desc, Some(ft))
             }
         };
 

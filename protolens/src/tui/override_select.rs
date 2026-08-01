@@ -4,8 +4,6 @@
 
 use super::*;
 
-use prost_reflect::prost_types::field_descriptor_proto::Type;
-
 use super::tiered::Tier;
 
 impl App {
@@ -595,26 +593,19 @@ impl App {
         let span = &self.tree[idx].span;
         let field_number = span.field_number;
         let is_group = u32::from(span.wire_type) == prototext_core::helpers::WT_START_GROUP;
-        // Spec 0219 S4: must agree with `render_node_as`'s own `packed`
-        // — see the comment there — or warming registers a wrapper the
-        // splice then never looks up, restoring the per-keystroke
-        // registration stall this function exists to remove.
-        let packed = span.packed_record_start != NO_PACKED_RECORD
-            || u32::from(span.wire_type) == prototext_core::helpers::WT_LEN;
+        // Spec 0219 S4: the same predicate `render_node_as` uses, so
+        // warming cannot register a wrapper the splice then never looks
+        // up — which would restore the per-keystroke registration stall
+        // this function exists to remove.
+        let packed = decode::packed_framing(span);
         let end = end.min(self.override_candidates.len());
         for row in start..end {
             let name = self.override_candidates[row].0.clone();
             if name == "protolens_internal.None" {
                 continue;
             }
-            let (target_desc, field_type) = if let Some(desc) = self.ctx.message(&name) {
-                let ft = if is_group { Type::Group } else { Type::Message };
-                (Some(decode::WrapperTarget::Message(desc)), ft)
-            } else if let Some(prim) = decode::primitive_type_for_keyword(&name) {
-                (None, prim)
-            } else if let Some(enum_desc) = self.ctx.enumeration(&name) {
-                (Some(decode::WrapperTarget::Enum(enum_desc)), Type::Enum)
-            } else {
+            let Some((target_desc, field_type)) = self.ctx.wrapper_target_for(&name, is_group)
+            else {
                 continue;
             };
             let _ = decode::register_wrapper(

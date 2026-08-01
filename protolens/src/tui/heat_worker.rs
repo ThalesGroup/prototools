@@ -147,12 +147,7 @@ impl HeatRequestQueue {
     /// Encoded as the same bitmask `band_occupancy` uses, so
     /// `activity` can simply `|` the two together; 0 means idle.
     fn set_in_flight(&self, tier: Option<Tier>) {
-        let encoded = match tier {
-            None => 0,
-            Some(Tier::User) => 0b001,
-            Some(Tier::Visible) => 0b010,
-            Some(Tier::Prefetch) => 0b100,
-        };
+        let encoded = tier.map_or(0, Tier::bit);
         self.in_flight.store(encoded, Ordering::Relaxed);
     }
 
@@ -169,15 +164,7 @@ impl HeatRequestQueue {
     /// exactly the one the user is waiting on.
     pub(super) fn activity(&self) -> Option<Tier> {
         let live = self.queued.load(Ordering::Relaxed) | self.in_flight.load(Ordering::Relaxed);
-        if live & 0b001 != 0 {
-            Some(Tier::User)
-        } else if live & 0b010 != 0 {
-            Some(Tier::Visible)
-        } else if live & 0b100 != 0 {
-            Some(Tier::Prefetch)
-        } else {
-            None
-        }
+        Tier::highest_in(live)
     }
 
     /// `tier` (spec 0164 G3) governs both where a push lands (via
