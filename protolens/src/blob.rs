@@ -42,6 +42,19 @@ const HEADROOM: usize = 11;
 /// The wrapper's field number (spec 0114 §1.1).
 const WRAPPER_FIELD: u32 = 1;
 
+/// The wrapper's own tag+length prefix for a `payload_len`-byte
+/// payload — the framing every span coordinate in the document is
+/// stated relative to, and so written in exactly one place: the owned
+/// and the mapped constructor lay it down through different means
+/// (`copy_from_slice` into a `Vec`, `copy_nonoverlapping` into a
+/// reservation) but must produce byte-for-byte the same prefix.
+fn wrapper_prefix(payload_len: usize) -> Vec<u8> {
+    let mut prefix = Vec::with_capacity(HEADROOM);
+    write_tag(WRAPPER_FIELD, WT_LEN, &mut prefix);
+    write_varint(payload_len as u64, &mut prefix);
+    prefix
+}
+
 /// Below this, mapping is not worth its setup: the pages it would save
 /// are few, and the per-type instance blobs a reader opens by the hundred
 /// are all a fraction of it. Nothing depends on the exact value.
@@ -161,9 +174,7 @@ impl Blob {
     /// `buf` is `HEADROOM` bytes of scratch followed by the payload.
     fn from_headroom(mut buf: Vec<u8>) -> Blob {
         let payload_len = buf.len() - HEADROOM;
-        let mut prefix = Vec::with_capacity(HEADROOM);
-        write_tag(WRAPPER_FIELD, WT_LEN, &mut prefix);
-        write_varint(payload_len as u64, &mut prefix);
+        let prefix = wrapper_prefix(payload_len);
         let start = HEADROOM - prefix.len();
         buf[start..HEADROOM].copy_from_slice(&prefix);
         let end = buf.len();
@@ -281,8 +292,7 @@ mod map {
     use std::io;
     use std::os::unix::io::AsRawFd as _;
 
-    use super::{Blob, Store, WRAPPER_FIELD};
-    use prototext_core::helpers::{write_tag, write_varint, WT_LEN};
+    use super::{Blob, Store};
 
     pub(super) struct Mapping {
         base: *mut libc::c_void,
@@ -355,9 +365,7 @@ mod map {
             return Err(io::Error::last_os_error());
         }
 
-        let mut prefix = Vec::with_capacity(super::HEADROOM);
-        write_tag(WRAPPER_FIELD, WT_LEN, &mut prefix);
-        write_varint(len as u64, &mut prefix);
+        let prefix = super::wrapper_prefix(len);
         let start = page - prefix.len();
         // SAFETY: the leading page is the anonymous, writable part of the
         // reservation, and `prefix` ends flush against the file's first

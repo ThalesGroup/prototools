@@ -26,7 +26,6 @@ use prototext_core::serialize::render_text::{
 use prototext_core::{build_arena, decode_pool, render_as_bytes, Arena, RenderOpts};
 use prototext_graph::score::load::{load_graph, LoadedGraph};
 use prototext_schema::LazyPool;
-use sha2::{Digest, Sha256};
 
 use crate::blob::Blob;
 use crate::provenance::{ProvenanceId, NOT_RENDERED};
@@ -989,12 +988,11 @@ fn synthetic_wrapper_name(
     if packed {
         key.push_str(":packed");
     }
-    let digest = Sha256::digest(key.as_bytes());
-    let mut hex = String::with_capacity(32);
-    for byte in &digest[..16] {
-        hex.push_str(&format!("{byte:02x}"));
-    }
-    format!("protolens_internal.x{hex}")
+    // Truncated to the first 16 bytes: this is a name-collision guard,
+    // not a signature, and 32 hex characters already sit inside every
+    // synthetic FQDN the user reads.
+    let hex = crate::override_pane::sha256_hex(key.as_bytes());
+    format!("protolens_internal.x{}", &hex[..32])
 }
 
 /// Whether protobuf allows `[packed=true]` on a field of this type —
@@ -1149,11 +1147,6 @@ pub(crate) fn register_wrapper(
         }),
         ..Default::default()
     };
-    let message = DescriptorProto {
-        name: Some(short_name.to_string()),
-        field: vec![field],
-        ..Default::default()
-    };
     let dependency = target
         .as_ref()
         .map(|t| vec![t.parent_file_name()])
@@ -1162,18 +1155,54 @@ pub(crate) fn register_wrapper(
     // with it, its private clone of `pool`'s `Arc`) before mutating
     // `pool`, so the mutation below never has to deep-clone it.
     drop(target);
+    register_synthetic(
+        pool,
+        &full_name,
+        short_name,
+        &format!("protolens_internal/{short_name}.proto"),
+        dependency,
+        vec![field],
+        "wrapper",
+    )
+}
+
+/// Registers a one-message file under `protolens_internal` holding
+/// `fields` as `full_name`, and hands the new descriptor back.
+///
+/// `file_name` is a parameter rather than derived from `short_name`:
+/// the MessageSet item's message is `Item` but its file is
+/// `message_set_item.proto`, and renaming either would change a pool
+/// key.
+///
+/// The "already registered?" early return stays with each caller. It is
+/// what keeps a repeat wrapper off the mutating path entirely — see
+/// `register_wrapper`'s doc comment for why that matters — and asking
+/// here would mean building the field list before finding out.
+fn register_synthetic(
+    pool: &mut DescriptorPool,
+    full_name: &str,
+    short_name: &str,
+    file_name: &str,
+    dependency: Vec<String>,
+    fields: Vec<FieldDescriptorProto>,
+    what: &str,
+) -> Result<MessageDescriptor, DecodeError> {
     let file = FileDescriptorProto {
-        name: Some(format!("protolens_internal/{short_name}.proto")),
+        name: Some(file_name.to_string()),
         package: Some("protolens_internal".to_string()),
         dependency,
         syntax: Some("proto2".to_string()),
-        message_type: vec![message],
+        message_type: vec![DescriptorProto {
+            name: Some(short_name.to_string()),
+            field: fields,
+            ..Default::default()
+        }],
         ..Default::default()
     };
     pool.add_file_descriptor_proto(file)
-        .map_err(|e| DecodeError::Schema(format!("registering wrapper descriptor: {e}")))?;
-    pool.get_message_by_name(&full_name)
-        .ok_or_else(|| DecodeError::Schema("wrapper descriptor registered but not found".into()))
+        .map_err(|e| DecodeError::Schema(format!("registering {what} descriptor: {e}")))?;
+    pool.get_message_by_name(full_name)
+        .ok_or_else(|| DecodeError::Schema(format!("{what} descriptor registered but not found")))
 }
 
 /// Patch `register_wrapper`'s synthetic placeholder field name (the
@@ -1192,14 +1221,7 @@ pub(crate) fn register_wrapper(
 /// line, corrupting it (spec 0143). Returns `None` (caller keeps the
 /// original line untouched) when no placeholder was actually written.
 pub(crate) fn patch_synthetic_field_name(line: &str, field_name: &str) -> Option<String> {
-    let indent_len = line.len() - line.trim_start().len();
-    let (indent, rest) = line.split_at(indent_len);
-    let after = rest.strip_prefix('_')?;
-    if after.starts_with(": ") || after.starts_with(" {") {
-        Some(format!("{indent}{field_name}{after}"))
-    } else {
-        None
-    }
+    patch_field_key(line, "_", field_name)
 }
 
 /// Same substring patch as `patch_synthetic_field_name`, but for a raw
@@ -1217,9 +1239,21 @@ pub(crate) fn patch_raw_field_name(
     field_number: u64,
     field_name: &str,
 ) -> Option<String> {
+    patch_field_key(line, &field_number.to_string(), field_name)
+}
+
+/// `line` with its leading field key rewritten to `field_name`, or
+/// `None` when the key there is not exactly `key`.
+///
+/// The `": "` / `" {"` anchor pair is the load-bearing part, and lives
+/// here so it is stated once: those are the only two shapes
+/// `wfl_prefix_n`/`wob_prefix_n` write a field key in, and matching
+/// `key` without them would also fire on a `key` occurring anywhere
+/// else the line happens to start with it (spec 0143).
+fn patch_field_key(line: &str, key: &str, field_name: &str) -> Option<String> {
     let indent_len = line.len() - line.trim_start().len();
     let (indent, rest) = line.split_at(indent_len);
-    let after = rest.strip_prefix(field_number.to_string().as_str())?;
+    let after = rest.strip_prefix(key)?;
     if after.starts_with(": ") || after.starts_with(" {") {
         Some(format!("{indent}{field_name}{after}"))
     } else {
@@ -1394,24 +1428,15 @@ pub(crate) fn register_message_set_item(
         r#type: Some(Type::Bytes as i32),
         ..Default::default()
     };
-    let message = DescriptorProto {
-        name: Some("Item".to_string()),
-        field: vec![type_id_field, message_field],
-        ..Default::default()
-    };
-    let file = FileDescriptorProto {
-        name: Some("protolens_internal/message_set_item.proto".to_string()),
-        package: Some("protolens_internal".to_string()),
-        syntax: Some("proto2".to_string()),
-        message_type: vec![message],
-        ..Default::default()
-    };
-    pool.add_file_descriptor_proto(file)
-        .map_err(|e| DecodeError::Schema(format!("registering MessageSetItem descriptor: {e}")))?;
-    pool.get_message_by_name(MESSAGE_SET_ITEM_FQDN)
-        .ok_or_else(|| {
-            DecodeError::Schema("MessageSetItem descriptor registered but not found".into())
-        })
+    register_synthetic(
+        pool,
+        MESSAGE_SET_ITEM_FQDN,
+        "Item",
+        "protolens_internal/message_set_item.proto",
+        Vec::new(),
+        vec![type_id_field, message_field],
+        "MessageSetItem",
+    )
 }
 
 /// Resolve the root type, then render the whole document under it, on

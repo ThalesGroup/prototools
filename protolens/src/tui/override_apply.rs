@@ -535,13 +535,7 @@ impl App {
                     // rendering it governs are that parent's children
                     // bearing `field`.
                     if let Some(parent) = self.resolve_path(path) {
-                        let mut c = self.first_child(parent);
-                        while let Some(ci) = c {
-                            if u64::from(self.tree[ci].span.field_number) == *field {
-                                targets.push(ci);
-                            }
-                            c = self.next_sibling(ci);
-                        }
+                        targets.extend(self.children_with_field(parent, *field));
                     }
                 }
                 OverrideOrigin::FqdnField { .. } => {}

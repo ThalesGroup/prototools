@@ -4,25 +4,48 @@
 
 use super::*;
 
+/// What a keypress did to the `gg` chord.
+pub(super) enum GChord {
+    /// Both `g`s seen: jump to the first row.
+    Fired,
+    /// The first `g`: the key is consumed, and the caller should return
+    /// and wait for the next one.
+    Armed,
+    /// Not a `g`. Any pending arm is now cleared and the key is the
+    /// caller's to dispatch.
+    Other,
+}
+
 impl App {
+    /// The vim-style `gg` jump-to-first chord, shared by all three
+    /// panes: each arms on the first `g`, fires on the second, and
+    /// clears on anything else. Only what it jumps *to* differs, which
+    /// is why the caller keeps that and this keeps the state machine.
+    pub(super) fn take_g_chord(&mut self, code: KeyCode) -> GChord {
+        if code != KeyCode::Char('g') {
+            self.pending_g = false;
+            return GChord::Other;
+        }
+        if std::mem::take(&mut self.pending_g) {
+            GChord::Fired
+        } else {
+            self.pending_g = true;
+            GChord::Armed
+        }
+    }
+
     /// Handle a keypress while the override pane has focus (spec 0114
     /// §2/§3/§4).
     pub(super) fn handle_override_key(&mut self, key: KeyEvent) {
-        // `gg` chord (vim-style jump-to-first), mirroring the main
-        // pane's own `handle_key` chord: a first `g` press arms
-        // `pending_g`; a second `g` press immediately after jumps to
-        // the first candidate. Any other key clears the pending state.
-        if key.code == KeyCode::Char('g') {
-            if self.pending_g {
-                self.pending_g = false;
+        match self.take_g_chord(key.code) {
+            GChord::Fired => {
                 self.override_highlight = 0;
                 self.preview_override_highlight();
-            } else {
-                self.pending_g = true;
+                return;
             }
-            return;
+            GChord::Armed => return,
+            GChord::Other => {}
         }
-        self.pending_g = false;
 
         match key.code {
             // Spec 0185 S5: while the selection pane is open, focus is
@@ -104,14 +127,10 @@ impl App {
             // `Enter` arm dispatches to `jump_to_override_match` while
             // `override_focus` is set).
             KeyCode::Char('/') => {
-                self.command_kind = CommandLineKind::Search(SearchDir::Forward);
-                self.command_buffer = Some(String::new());
-                self.command_cursor = 0;
+                self.open_command_line(CommandLineKind::Search(SearchDir::Forward), String::new())
             }
             KeyCode::Char('?') => {
-                self.command_kind = CommandLineKind::Search(SearchDir::Backward);
-                self.command_buffer = Some(String::new());
-                self.command_cursor = 0;
+                self.open_command_line(CommandLineKind::Search(SearchDir::Backward), String::new())
             }
             KeyCode::Char('n') => {
                 if let Some((dir, pattern)) = self.last_override_search.clone() {
@@ -282,10 +301,7 @@ impl App {
     /// Pre-fills the command line with `export <flag> <path>` and opens
     /// it (spec 0156 G3) — shared by all four chord resolutions.
     fn prefill_export(&mut self, flag: &str, path: String) {
-        let buf = format!("export {flag} {path}");
-        self.command_kind = CommandLineKind::Command;
-        self.command_cursor = buf.chars().count();
-        self.command_buffer = Some(buf);
+        self.open_command_line(CommandLineKind::Command, format!("export {flag} {path}"));
     }
 
     /// Propose a default `xdb`/`xdp`/`:export --descriptor-*` path (spec
@@ -410,9 +426,7 @@ impl App {
         // (and every other command) is reachable from the override/
         // manage panes too, not just the main pane.
         if key.code == KeyCode::Char(':') {
-            self.command_kind = CommandLineKind::Command;
-            self.command_buffer = Some(String::new());
-            self.command_cursor = 0;
+            self.open_command_line(CommandLineKind::Command, String::new());
             return;
         }
         // `v` jumps to the FQDN under focus's declaration in a handed-off
@@ -445,19 +459,14 @@ impl App {
             return;
         }
 
-        // `gg` chord (vim-style jump-to-first): a first `g` press arms
-        // `pending_g`; a second `g` press immediately after fires
-        // `move_home()`. Any other key clears the pending state.
-        if key.code == KeyCode::Char('g') {
-            if self.pending_g {
-                self.pending_g = false;
+        match self.take_g_chord(key.code) {
+            GChord::Fired => {
                 self.move_home();
-            } else {
-                self.pending_g = true;
+                return;
             }
-            return;
+            GChord::Armed => return,
+            GChord::Other => {}
         }
-        self.pending_g = false;
 
         // Spec 0194 S6: `z` is vim's fold prefix. `za`/`zc`/`zo` act on
         // the cursor node, their capitals on the whole sibling level.
@@ -674,14 +683,10 @@ impl App {
             // earlier in `handle_key`, and the override pane has its own
             // `/`/`?`/`n` in `handle_override_key`.
             KeyCode::Char('/') => {
-                self.command_kind = CommandLineKind::Search(SearchDir::Forward);
-                self.command_buffer = Some(String::new());
-                self.command_cursor = 0;
+                self.open_command_line(CommandLineKind::Search(SearchDir::Forward), String::new())
             }
             KeyCode::Char('?') => {
-                self.command_kind = CommandLineKind::Search(SearchDir::Backward);
-                self.command_buffer = Some(String::new());
-                self.command_cursor = 0;
+                self.open_command_line(CommandLineKind::Search(SearchDir::Backward), String::new())
             }
             KeyCode::Char('n') => {
                 if let Some((dir, pattern)) = self.last_search.clone() {

@@ -397,10 +397,9 @@ impl App {
     /// `Mutex` held against the worker.
     fn read_heat_state(&self, start: usize, current_key: Option<&str>, tier: Tier) -> HeatState {
         let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
-        let best = caches.by_range.peek_with(&start, tier, |e| RangeHeatStats {
-            best_score: e.best_score,
-            best_count: e.best_count,
-        });
+        let best = caches
+            .by_range
+            .peek_with(&start, tier, RangeHeatEntry::stats);
         let current = match current_key {
             None => Some(None),
             Some(key) => caches.peek_current(start, key, tier),
@@ -488,15 +487,9 @@ impl App {
             // cross-population cap) — never narrower than either.
             let cap = self.override_list_height.max(1).max(HEAT_CUE_PREVIEW);
             let top_n: Vec<_> = candidates.iter().take(cap).cloned().collect();
-            caches.by_range.upsert(
-                start,
-                RangeHeatEntry {
-                    best_score: stats.best_score,
-                    best_count: stats.best_count,
-                    top_n,
-                },
-                Tier::Visible,
-            );
+            caches
+                .by_range
+                .upsert(start, RangeHeatEntry::new(stats, top_n), Tier::Visible);
             if let Some(key) = current_key.as_ref() {
                 caches
                     .current_score

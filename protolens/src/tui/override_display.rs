@@ -64,7 +64,7 @@ impl App {
 /// `fqdn` collide with a primitive keyword or the reserved `None`
 /// keyword (a future fake primitive type, per review — not yet wired up
 /// anywhere in this codebase).
-fn format_fqdn_label(fqdn: &str) -> String {
+pub(super) fn format_fqdn_label(fqdn: &str) -> String {
     if fqdn_needs_dot_prefix(fqdn) {
         format!(".{fqdn}")
     } else {
@@ -74,10 +74,7 @@ fn format_fqdn_label(fqdn: &str) -> String {
 
 /// Spec 0136/0137 §G6: whether a bare message/group/enum FQDN would
 /// collide with a primitive keyword or the reserved `None` keyword if
-/// displayed undecorated — shared between the status-line label
-/// (`format_fqdn_label`) and both branches of `override_select.rs`'s
-/// `override_row_display`, which is what the override pane renders each
-/// of its rows from.
+/// displayed undecorated.
 pub(super) fn fqdn_needs_dot_prefix(fqdn: &str) -> bool {
     decode::primitive_type_for_keyword(fqdn).is_some() || fqdn == "None"
 }

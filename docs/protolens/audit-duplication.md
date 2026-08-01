@@ -454,6 +454,116 @@ Four notes on how they landed:
 | 3.2.27 | `render.rs`: `popup_frame(...)` — the six-line `centered_rect` / `Clear` / bordered block prologue in `render_help` and `render_splash`. The only repeated area/border computation in the entire render path | `:1464-1470`, `:1488-1494` | 7 |
 | 3.2.28 | `HeatCaches::commit_sweep(...)` — the "write a scored candidate list into the caches" sequence at four sites. **Do this last:** the four use *two different* cap rules (the worker widens against `req.end`, the two UI paths use `max(override_list_height, HEAT_CUE_PREVIEW)`) and nothing says which is authoritative. That is a design decision, not a refactor | `heat_worker.rs:512-541`; `heat_cue.rs:456-487`; `mod.rs:1698-1721`; `override_select.rs:236-263` | 45 |
 
+**Done 2026-08-01: 3.2.11 through 3.2.27. 3.2.28 was examined and
+declined** — see below.
+
+Two of the findings were already resolved before this pass:
+
+- **3.2.12** — `main.rs`'s `write_output` is the `emit` the finding
+  asks for, and it now has a single call site, so the second block is
+  gone.
+- **3.2.13's second half** — only one of the two `RangeHeatStats`
+  inverses survived; 3.2.7's `read_heat_state` had already absorbed the
+  other.
+
+What the rest became:
+
+- **3.2.11** — `own_field_override`'s two linear `find_map` scans are
+  now two `active_entry_with_label` lookups, the same `partition_point`
+  `resolve_active_override_entry_index_by_path`'s three tiers use.
+- **3.2.13** — `RangeHeatEntry::new(stats, top_n)` and its inverse
+  `stats()`. Four `upsert` sites were four chances to pair a
+  `best_score` with the wrong `best_count`.
+- **3.2.14** — `applicable_override_entry_index`. The three callers
+  each wanted a different projection of the one answer (an index to
+  highlight, a boolean to branch on, a type to pre-select), which is
+  how spec 0139's Step A/Step B pair came to be written out three
+  times.
+- **3.2.15** — `require_arg(args, missing)`, four commands.
+- **3.2.16** — `deactivate_origin`, four loops. The fifth copy was left
+  alone as the finding directs.
+- **3.2.17** — `complete_path(..., dirs_only)`. `dirs_only` turned out
+  to subsume the trailing-`/` conditional too: with non-directories
+  dropped, everything left gets one.
+- **3.2.18** — `set_all_siblings_folded(fold)`. The asymmetric
+  `has_children` guard is not an oversight and now says so: a leaf must
+  not enter `folded`, but a node already in it has children by
+  construction.
+- **3.2.19** — `patch_field_key(line, key, field_name)`, which is where
+  the `": "` / `" {"` anchor pair now lives.
+- **3.2.20** — `toggle_active_at_highlight(cascading)`. It serves the
+  click path too: `handle_manage_click` sets `manage_highlight` to the
+  clicked row before toggling, so "at highlight" is exactly what that
+  path meant as well.
+- **3.2.21** — `move_manage_highlight_and_select(delta)`.
+- **3.2.22** — one `pan_by_step_clamped`, its last parameter renamed
+  `backward` since it is now both "left" and "up". `pan_by_step` was
+  left alone as the finding directs.
+- **3.2.23** — `sha256_hex` plus a `[..32]` slice, and `decode.rs`'s
+  `sha2` import went with it.
+- **3.2.24** — `format_fqdn_label` widened to `pub(super)`.
+- **3.2.25** — `wrapper_prefix(payload_len)`. The owned and mapped
+  constructors lay the prefix down by different means
+  (`copy_from_slice` into a `Vec`, `copy_nonoverlapping` into a
+  reservation) but must produce the same bytes.
+- **3.2.26** — `set_manage_highlight(i)`, ten sites. The
+  order-dependent one is the `z` rotation, which assigned the highlight
+  twice and cleared `manage_pending_kind` once, after both; going
+  through the setter makes the order stop mattering.
+- **3.2.27** — `popup_frame(frame, area, percent_x, percent_y, title)`.
+
+Two things the findings did not anticipate:
+
+- **One site was deliberately not folded in.** `key_dispatch.rs`'s
+  return-to-manage path (spec 0200 S2) assigns `manage_highlight`
+  *without* clearing `manage_pending_kind`. Routing it through
+  `set_manage_highlight` would have been a behavior change, not a
+  refactor, so it was left as an explicit assignment.
+- **3.2.26's count is ten, not eight**, once `move_manage_highlight`'s
+  own two arms are included.
+
+### 3.2.28 — declined, and the premise was wrong
+
+The finding says the four sites use two competing cap rules and that
+picking one is a design decision. Read side by side, they are not
+competing at all; they vary along two axes, and both axes are principled.
+
+The **floor** is always "the window my own consumer will ask for next",
+which is a different number at each site:
+
+- `heat_worker.rs` — `req.end`, which is not a constant either. It is
+  `HEAT_CUE_PREVIEW` from `heat_cue_resolve` and the prefetcher,
+  `override_list_height` from the override pane opening, and
+  `usize::MAX` from the pane's upgrade-to-complete. The worker holds no
+  opinion; it honors whatever the requester asked for.
+- `heat_cue.rs`'s synchronous fallback — `HEAT_CUE_PREVIEW` is exactly
+  what `heat_lookup` checked coverage against a moment earlier, so a
+  narrower write would make the next lookup miss and recompute forever.
+  The `override_list_height` term is spec 0151 G6's separate
+  cross-population wish.
+- `seed_root_heat` — the same expression, but `override_list_height` is
+  still 0 at startup, so it *is* `HEAT_CUE_PREVIEW`. Here the cap exists
+  for the opposite reason to the others': the full ranking goes to
+  `caches.complete`, and `by_range` gets a short prefix on purpose,
+  because a full-width `by_range` entry is the oversized entry
+  [rendering-flaws.md](rendering-flaws.md) P5 describes.
+- `close_override` — `override_list_height`, what the pane was actually
+  showing the user.
+
+The **widen-not-shrink clause** tracks whether a prior entry can exist.
+It is present in the worker and in `close_override` (where one is likely
+— the pane was populated from it) and absent in the other two, where the
+cache is provably empty: `heat_cue.rs`'s branch is reached only when
+`state.best()` is `None`, and `seed_root_heat` runs once at startup.
+
+So there is nothing to arbitrate, and the only extractable part is
+`peek`-then-`max` plus a `cap` argument every caller still computes for
+itself — six lines, at the cost of hiding four different intents behind
+one name. Unlike the rest of Part 3, the duplication here carries no
+duplicated *decision*: the one shared fact, "widen, never shrink," is
+already named and cross-referenced in the two comments that need it.
+Left as is.
+
 ---
 
 ## Part 4 — marginal
@@ -627,8 +737,8 @@ need factoring; recorded so the check is not repeated.
   `"pattern not found: {pattern}"` (3 sites) — house style.
 - 38 `saturating_*` sites — no recurring composite.
 - `self.heat_caches.lock().unwrap_or_else(|e| e.into_inner())` (8 sites)
-  — replaces one line with one line, and items 1.1/3.2.7/3.2.28 remove
-  five of them anyway.
+  — replaces one line with one line, and items 1.1/3.2.7 remove several
+  of them anyway.
 - Two-line `map_err` at `decode.rs:291`/`:308`; the `#@` magic tested
   two ways at `decode.rs:292`/`:312` (the third, in `blob.rs:77-82`, is
   a genuinely stricter test on a different input class — do not fold it
@@ -654,6 +764,7 @@ need factoring; recorded so the check is not repeated.
    thought about where the new function lives.
 7. Everything else in Part 3, opportunistically.
 8. **3.2.28** last — it forces a decision about the two cap rules.
+   (Done: there was no decision to force. Declined; see above.)
 
 Part 4 only while already in the file. Part 5 never, unless a premise
 changes.

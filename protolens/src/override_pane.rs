@@ -305,12 +305,24 @@ impl OverrideCollection {
         self.activate_impl(origin, r#type, true);
     }
 
-    fn activate_impl(&mut self, origin: OverrideOrigin, r#type: Option<String>, auto: bool) {
+    /// Clears `active` on every entry with exactly `origin` — spec 0117
+    /// §1's per-origin invariant, which every path that turns an entry
+    /// *on* has to re-establish first.
+    ///
+    /// Exact equality, not `origin_is_at_or_under`: this is the
+    /// invariant, and `toggle_active_cascading`'s wider sweep is a
+    /// separate, deliberate rule of its own (spec 0139) rather than a
+    /// generalization of this one.
+    fn deactivate_origin(&mut self, origin: &OverrideOrigin) {
         for e in self.entries.iter_mut() {
-            if e.origin == origin {
+            if &e.origin == origin {
                 e.active = false;
             }
         }
+    }
+
+    fn activate_impl(&mut self, origin: OverrideOrigin, r#type: Option<String>, auto: bool) {
+        self.deactivate_origin(&origin);
         if let Some(e) = self
             .entries
             .iter_mut()
@@ -351,11 +363,7 @@ impl OverrideCollection {
         let target_active = !entry.active;
         let origin = entry.origin.clone();
         if target_active {
-            for e in self.entries.iter_mut() {
-                if e.origin == origin {
-                    e.active = false;
-                }
-            }
+            self.deactivate_origin(&origin);
         }
         self.entries[idx].active = target_active;
     }
@@ -422,11 +430,7 @@ impl OverrideCollection {
             return;
         };
         let origin = entry.origin.clone();
-        for e in self.entries.iter_mut() {
-            if e.origin == origin {
-                e.active = false;
-            }
-        }
+        self.deactivate_origin(&origin);
         self.entries[idx].active = true;
     }
 
@@ -459,11 +463,7 @@ impl OverrideCollection {
         entry.auto = false;
         let r#type = entry.r#type.clone();
         if active {
-            for e in self.entries.iter_mut() {
-                if e.origin == new_origin {
-                    e.active = false;
-                }
-            }
+            self.deactivate_origin(&new_origin);
         }
         self.entries.push(entry);
         self.sort();

@@ -46,6 +46,59 @@ pub(super) struct LinePatch {
     pub(super) lines: Vec<String>,
 }
 
+/// `base` rebuilt with each of `pieces`' ranges replaced by its own
+/// lines, both consumed.
+///
+/// Spec 0186 S1/G2: consuming rather than slicing. `extend_from_slice`
+/// on a `Vec<String>` *clones* every element — one `malloc` plus one
+/// `memcpy` per line, across the whole document, to apply a patch that
+/// replaces a handful of them. Moving 24-byte `String` headers instead
+/// leaves this pass touching the heap only for the lines the batch
+/// actually replaces — it is the batch's only per-line heap work.
+///
+/// `pieces` must be in ascending, non-overlapping order; both callers
+/// sort. `by_ref().take(range.start - cursor)` would *underflow* on a
+/// piece sitting behind the cursor, where the slicing version would at
+/// least have panicked, so the two asserts keep both failure modes
+/// loud. `describe` names the offending piece for them, and is called
+/// only when one fires.
+fn merge_replacements(
+    base: Vec<String>,
+    pieces: Vec<(Range<usize>, Vec<String>)>,
+    describe: impl Fn(usize) -> String,
+) -> Vec<String> {
+    let base_len = base.len();
+    let mut out = Vec::with_capacity(base_len);
+    let mut base = base.into_iter();
+    let mut cursor = 0usize;
+    for (k, (range, lines)) in pieces.into_iter().enumerate() {
+        assert!(
+            range.start >= cursor,
+            "spec 0167 (flaw C2): overlapping line patches — the previous \
+             one ends at line {cursor}, {} starts at line {}",
+            describe(k),
+            range.start
+        );
+        assert!(
+            range.end <= base_len,
+            "spec 0186 (S1): {} covers lines {}..{}, past the {base_len} \
+             lines it is being merged into",
+            describe(k),
+            range.start,
+            range.end
+        );
+        out.extend(base.by_ref().take(range.start - cursor));
+        out.extend(lines);
+        // Discard the lines this piece replaces.
+        for _ in range.start..range.end {
+            base.next();
+        }
+        cursor = range.end;
+    }
+    out.extend(base);
+    out
+}
+
 impl App {
     /// Spec 0167: applies every patch collected during the current batch
     /// to `self.lines` in one pass, instead of one `Vec::splice` per
@@ -103,59 +156,36 @@ impl App {
         }
 
         let mut patches: Vec<Option<LinePatch>> = raw_patches.into_iter().map(Some).collect();
-        let old_lines = std::mem::take(&mut self.lines);
         // Spec 0210 S2: the text is the only array a splice moves. A
         // line's owner is derived from the tree's own counters, so no
         // line map has to ride along with `lines` through this merge.
-        let old_len = old_lines.len();
-        let mut new_lines = Vec::with_capacity(old_len);
+        let old_lines = std::mem::take(&mut self.lines);
 
-        // Spec 0186 S1/G2: consume the old buffers instead of slicing
-        // them. `extend_from_slice` on a `Vec<String>` *clones* every
-        // element — one `malloc` plus one `memcpy` per line, across the
-        // whole document, to apply a patch that replaces a handful of
-        // them. Moving 24-byte `String` headers instead leaves this pass
-        // touching the heap only for the lines the batch actually
-        // replaces — it is the batch's only per-line heap work.
-        //
-        // Soundness rests on the sort above. `by_ref().take(range.start -
-        // cursor)` would *underflow* on a patch sitting behind the
-        // cursor, where the slicing version would at least have panicked;
-        // the two asserts below keep both failure modes loud.
-        let mut old_lines = old_lines.into_iter();
-        let mut cursor = 0usize;
-        for idx in top_level {
-            let range = match &patches[idx].as_ref().unwrap().target {
-                LinePatchTarget::Original(r) => r.clone(),
-                LinePatchTarget::Nested(..) => unreachable!("filtered to Original above"),
-            };
-            assert!(
-                range.start >= cursor,
-                "spec 0167 (flaw C2): overlapping top-level line patches — \
-                 the previous patch ends at line {cursor}, patch {idx} \
-                 (global_start {}) starts at line {}",
-                patches[idx].as_ref().unwrap().global_start,
-                range.start
-            );
-            assert!(
-                range.end <= old_len,
-                "spec 0186 (S1): top-level line patch {idx} (global_start \
-                 {}) covers lines {}..{}, past the {old_len}-line document \
-                 it is being merged into",
-                patches[idx].as_ref().unwrap().global_start,
-                range.start,
-                range.end
-            );
-            new_lines.extend(old_lines.by_ref().take(range.start - cursor));
-            new_lines.extend(Self::resolve_line_patch(&mut patches, &children_of, idx));
-            // Discard the lines this patch replaces.
-            for _ in range.start..range.end {
-                old_lines.next();
-            }
-            cursor = range.end;
-        }
-        new_lines.extend(old_lines);
-        self.lines = new_lines;
+        // Read out while the patches are still whole: resolving one takes
+        // it, and `global_start` is wanted afterwards, by the assert.
+        let starts: Vec<usize> = top_level
+            .iter()
+            .map(|&i| patches[i].as_ref().unwrap().global_start)
+            .collect();
+        let pieces: Vec<(Range<usize>, Vec<String>)> = top_level
+            .iter()
+            .map(|&idx| {
+                let range = match &patches[idx].as_ref().unwrap().target {
+                    LinePatchTarget::Original(r) => r.clone(),
+                    LinePatchTarget::Nested(..) => unreachable!("filtered to Original above"),
+                };
+                (
+                    range,
+                    Self::resolve_line_patch(&mut patches, &children_of, idx),
+                )
+            })
+            .collect();
+        self.lines = merge_replacements(old_lines, pieces, |k| {
+            format!(
+                "top-level patch {} (global_start {})",
+                top_level[k], starts[k]
+            )
+        });
     }
 
     /// Spec 0167: recursively resolves patch `idx` — splicing in every
@@ -175,43 +205,25 @@ impl App {
         let Some(children) = children_of.get(&idx) else {
             return lines;
         };
-        let local_len = lines.len();
-        let mut new_lines = Vec::with_capacity(local_len);
-        // Spec 0186 S1: the same consuming merge as `materialize_line_
-        // patches`, for consistency of shape rather than for speed — this
-        // one is bounded by the patch's own content, not by the document.
-        let mut lines = lines.into_iter();
-        let mut cursor = 0usize;
-        for &child_idx in children {
-            let local_range = match &patches[child_idx].as_ref().unwrap().target {
-                LinePatchTarget::Nested(_, r) => r.clone(),
-                LinePatchTarget::Original(_) => {
-                    unreachable!("children_of only ever contains Nested-targeted patches")
-                }
-            };
-            assert!(
-                local_range.start >= cursor,
-                "spec 0167 (flaw C2): overlapping nested line patches under \
-                 patch {idx} — the previous child ends at local line \
-                 {cursor}, child {child_idx} starts at local line {}",
-                local_range.start
-            );
-            assert!(
-                local_range.end <= local_len,
-                "spec 0186 (S1): nested line patch {child_idx} covers local \
-                 lines {}..{}, past patch {idx}'s own {local_len} lines",
-                local_range.start,
-                local_range.end
-            );
-            new_lines.extend(lines.by_ref().take(local_range.start - cursor));
-            new_lines.extend(Self::resolve_line_patch(patches, children_of, child_idx));
-            // Discard the lines this child replaces.
-            for _ in local_range.start..local_range.end {
-                lines.next();
-            }
-            cursor = local_range.end;
-        }
-        new_lines.extend(lines);
-        new_lines
+        // The same merge as `materialize_line_patches`, bounded here by
+        // the patch's own content rather than by the document.
+        let pieces: Vec<(Range<usize>, Vec<String>)> = children
+            .iter()
+            .map(|&child_idx| {
+                let local_range = match &patches[child_idx].as_ref().unwrap().target {
+                    LinePatchTarget::Nested(_, r) => r.clone(),
+                    LinePatchTarget::Original(_) => {
+                        unreachable!("children_of only ever contains Nested-targeted patches")
+                    }
+                };
+                (
+                    local_range,
+                    Self::resolve_line_patch(patches, children_of, child_idx),
+                )
+            })
+            .collect();
+        merge_replacements(lines, pieces, |k| {
+            format!("nested patch {} under patch {idx}", children[k])
+        })
     }
 }

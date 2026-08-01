@@ -81,7 +81,7 @@ fn nested_line_patches_merge_correctly_when_queued_out_of_order() {
 /// offending pair instead of surfacing as `slice index starts at 3 but
 /// ends at 2` inside the merge loop.
 #[test]
-#[should_panic(expected = "overlapping top-level line patches")]
+#[should_panic(expected = "overlapping line patches — the previous one ends at line 3")]
 fn overlapping_line_patches_panic_with_a_directed_message() {
     let (mut app, _inner_idx, _id_idx) = type_as_fixture();
     seed_committed_lines(&mut app, 6);

@@ -89,12 +89,8 @@ impl App {
         // the bytes as a prospective *message* — and landed on the
         // unrelated `None` sentinel.
         let candidate_type = self
-            .resolve_active_override_entry(self.cursor)
-            .map(|e| e.r#type.clone())
-            .or_else(|| {
-                self.first_entry_matching_origin_candidates(self.cursor)
-                    .map(|i| self.overrides.entries()[i].r#type.clone())
-            })
+            .applicable_override_entry_index(self.cursor)
+            .map(|i| self.overrides.entries()[i].r#type.clone())
             .or_else(|| {
                 let span = &self.tree[self.cursor].span;
                 if span.is_message {
@@ -209,10 +205,7 @@ impl App {
     /// selection pane (`t`), which handles eligibility/width refusals
     /// on its own exactly as a direct keypress would.
     pub(super) fn open_smart_override_or_manage(&mut self) {
-        let has_override = self.resolve_active_override_entry(self.cursor).is_some()
-            || self
-                .first_entry_matching_origin_candidates(self.cursor)
-                .is_some();
+        let has_override = self.applicable_override_entry_index(self.cursor).is_some();
         if has_override {
             self.toggle_manage_pane();
         } else {
@@ -244,16 +237,14 @@ impl App {
                 .max(n);
             caches.by_range.upsert(
                 range.start,
-                heat_worker::RangeHeatEntry {
-                    best_score: stats.best_score,
-                    best_count: stats.best_count,
-                    top_n: self
-                        .override_inferred_raw
+                heat_worker::RangeHeatEntry::new(
+                    stats,
+                    self.override_inferred_raw
                         .iter()
                         .take(top_n_len.max(1))
                         .cloned()
                         .collect(),
-                },
+                ),
                 Tier::Visible,
             );
             if self.override_candidates_complete {
@@ -554,7 +545,7 @@ impl App {
             .override_candidates
             .len()
             .saturating_sub(self.override_list_height);
-        pan_vertical_by_step(&mut self.override_scroll, max_scroll, step, up);
+        pan_by_step_clamped(&mut self.override_scroll, max_scroll, step, up);
     }
 
     /// Horizontal pan for the override pane (Ctrl-Left/Ctrl-Right,
@@ -636,19 +627,10 @@ impl App {
         } else if decode::primitive_type_for_keyword(fqdn).is_some() {
             (fqdn.clone(), Style::default())
         } else if self.ctx.pool().get_enum_by_name(fqdn).is_some() {
-            let display = if override_display::fqdn_needs_dot_prefix(fqdn) {
-                format!(".{fqdn} [enum]")
-            } else {
-                format!("{fqdn} [enum]")
-            };
+            let display = format!("{} [enum]", override_display::format_fqdn_label(fqdn));
             (display, theme::style_for(SyntaxRole::Attribute, self.theme))
         } else {
-            let display = if override_display::fqdn_needs_dot_prefix(fqdn) {
-                format!(".{fqdn}")
-            } else {
-                fqdn.clone()
-            };
-            (display, Style::default())
+            (override_display::format_fqdn_label(fqdn), Style::default())
         };
         let text = match score {
             Some(s) => format!("{display_fqdn}  (score: {s})"),

@@ -276,6 +276,33 @@ pub(super) struct RangeHeatEntry {
     pub(super) top_n: Vec<(String, i64)>,
 }
 
+impl RangeHeatEntry {
+    /// The entry for a range that has just been scored: `stats` is
+    /// `derive_stats` of the full ranking, `top_n` an already-capped
+    /// prefix of it.
+    ///
+    /// Every writer into `by_range` arrives with exactly that pair —
+    /// the entry stores the stats flattened only because it is one
+    /// cache value, and flattening them at four `upsert` sites is four
+    /// chances to pair `best_score` with the wrong `best_count`.
+    pub(super) fn new(stats: heat_cue::RangeHeatStats, top_n: Vec<(String, i64)>) -> Self {
+        Self {
+            best_score: stats.best_score,
+            best_count: stats.best_count,
+            top_n,
+        }
+    }
+
+    /// The stats back out, for a reader that wants them without the
+    /// candidate list — the exact inverse of `new`'s flattening.
+    pub(super) fn stats(&self) -> heat_cue::RangeHeatStats {
+        heat_cue::RangeHeatStats {
+            best_score: self.best_score,
+            best_count: self.best_count,
+        }
+    }
+}
+
 /// The most recently fully-scored range and its complete candidate
 /// list — factored into a named type to keep clippy's
 /// `type_complexity` lint happy.
@@ -555,11 +582,10 @@ pub(super) fn heat_worker_loop(
                     .max(req.end);
                 c.by_range.upsert(
                     start,
-                    RangeHeatEntry {
-                        best_score: stats.best_score,
-                        best_count: stats.best_count,
-                        top_n: candidates.iter().take(top_n_len.max(1)).cloned().collect(),
-                    },
+                    RangeHeatEntry::new(
+                        stats,
+                        candidates.iter().take(top_n_len.max(1)).cloned().collect(),
+                    ),
                     req.tier,
                 );
                 if let Some(key) = &req.current_key {

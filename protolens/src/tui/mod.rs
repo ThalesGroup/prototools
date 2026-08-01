@@ -71,7 +71,7 @@ pub use terminal::run;
 /// Fixed horizontal-pan step, in columns (spec 0113 D24) — a generous but
 /// simple constant rather than a fraction of the pane's width, so panning
 /// speed doesn't change as the pane is resized. Also used for Ctrl-Up/
-/// Ctrl-Down vertical panning (`pan_vertical_by_step`).
+/// Ctrl-Down vertical panning (`pan_by_step_clamped`).
 const PAN_STEP: usize = 8;
 
 /// Vertical-pan step for the plain mouse wheel — one row per notch,
@@ -311,35 +311,28 @@ fn pan_by_step(offset: &mut usize, step: usize, left: bool) {
     };
 }
 
-/// Shared pan-by-`step` arithmetic behind the override and manage
-/// panes' own Ctrl-Left/Ctrl-Right (`step == PAN_STEP`) and Shift+wheel/
-/// native horizontal scroll (`step == WHEEL_PAN_STEP`) — like
-/// `pan_by_step`, but bounded on the right by `max_offset` (each pane's
-/// own `..._max_visible_line_len().saturating_sub(width)`), so it stops
-/// once the rightmost character of the widest currently-visible row
-/// would be shown, never further, as the main pane's `pan_right` does.
-fn pan_by_step_clamped(offset: &mut usize, max_offset: usize, step: usize, left: bool) {
-    *offset = if left {
+/// Shared pan-by-`step` arithmetic for every pan bounded at both ends:
+/// the override and manage panes' Ctrl-Left/Ctrl-Right, and
+/// Ctrl-Up/Ctrl-Down plus the plain wheel in the main, override and
+/// manage panes. `step` is `PAN_STEP` for the keys, `WHEEL_PAN_STEP`
+/// for the wheel; `backward` is left or up depending on the axis.
+///
+/// Like `pan_by_step`, but bounded on the far side by `max_offset` —
+/// horizontally each pane's own `..._max_visible_line_len().
+/// saturating_sub(width)`, so it stops once the rightmost character of
+/// the widest currently-visible row would be shown and never further,
+/// as the main pane's `pan_right` does; vertically the highest scroll
+/// offset that still shows a full page.
+///
+/// Bounded by the content and nothing else — deliberately *not* by
+/// keeping the cursor/highlight row in view. Bringing it back into
+/// view on its own movement is `clamp_scroll_to_visible`'s job alone
+/// (see `last_cursor_row` and friends).
+fn pan_by_step_clamped(offset: &mut usize, max_offset: usize, step: usize, backward: bool) {
+    *offset = if backward {
         offset.saturating_sub(step)
     } else {
         (*offset + step).min(max_offset)
-    };
-}
-
-/// Shared vertical pan-by-`step` arithmetic behind Ctrl-Up/Ctrl-Down and
-/// the plain mouse wheel in the main, override, and manage panes —
-/// mirrors `pan_by_step`'s horizontal pan: bounded only by the content
-/// itself (`0` at the top, `max_scroll` — the highest offset that still
-/// shows a full page — at the bottom), deliberately not by keeping the
-/// cursor/highlight row in view. Bringing it back into view on its own
-/// movement is `clamp_scroll_to_visible`'s job alone (see
-/// `last_cursor_row` and friends). `step` is `PAN_STEP` for
-/// Ctrl-Up/Ctrl-Down, `WHEEL_PAN_STEP` for the wheel.
-fn pan_vertical_by_step(scroll: &mut usize, max_scroll: usize, step: usize, up: bool) {
-    *scroll = if up {
-        scroll.saturating_sub(step)
-    } else {
-        (*scroll + step).min(max_scroll)
     };
 }
 
@@ -1501,11 +1494,7 @@ impl App {
         let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
         caches.by_range.upsert(
             range.start,
-            heat_worker::RangeHeatEntry {
-                best_score: stats.best_score,
-                best_count: stats.best_count,
-                top_n,
-            },
+            heat_worker::RangeHeatEntry::new(stats, top_n),
             tiered::Tier::User,
         );
         caches.complete = Some((range, candidates));

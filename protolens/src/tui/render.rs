@@ -1488,13 +1488,7 @@ impl App {
 
     /// Centered modal listing `HELP_TEXT`, scrollable via `help_scroll`.
     pub(super) fn render_help(&mut self, frame: &mut Frame, area: Rect) {
-        let popup = centered_rect(70, 70, area);
-        frame.render_widget(Clear, popup);
-        let block = Block::bordered()
-            .title(" Help (j/k scroll, q/Esc/F1 close) ")
-            .border_type(BorderType::Rounded);
-        let inner = block.inner(popup);
-        frame.render_widget(block, popup);
+        let inner = popup_frame(frame, area, 70, 70, " Help (j/k scroll, q/Esc/F1 close) ");
         self.help_area = inner;
 
         let visible_height = (inner.height as usize).max(1);
@@ -1512,13 +1506,7 @@ impl App {
     /// `SPLASH_TIMEOUT` elapses — telling the user how to reach the `F1`
     /// help overlay (spec 0113 D22).
     pub(super) fn render_splash(&self, frame: &mut Frame, area: Rect) {
-        let popup = centered_rect(60, 30, area);
-        frame.render_widget(Clear, popup);
-        let block = Block::bordered()
-            .title(" protolens ")
-            .border_type(BorderType::Rounded);
-        let inner = block.inner(popup);
-        frame.render_widget(block, popup);
+        let inner = popup_frame(frame, area, 60, 30, " protolens ");
         let mut text = vec![
             Line::from(self.header.as_str()),
             Line::from(""),
@@ -1541,4 +1529,22 @@ impl App {
             inner,
         );
     }
+}
+
+/// Draws a centered, `Clear`-ed, rounded-bordered modal `percent_x`%
+/// wide and `percent_y`% tall over `area`, and hands back the area
+/// inside its border for the caller to fill.
+///
+/// The `Clear` is what makes it a modal rather than an overlay: the
+/// popup stands over whatever the pane below already drew, and without
+/// it the border encloses stale cells.
+fn popup_frame(frame: &mut Frame, area: Rect, percent_x: u16, percent_y: u16, title: &str) -> Rect {
+    let popup = centered_rect(percent_x, percent_y, area);
+    frame.render_widget(Clear, popup);
+    let block = Block::bordered()
+        .title(title.to_string())
+        .border_type(BorderType::Rounded);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    inner
 }

@@ -133,33 +133,26 @@ impl App {
     /// an active `FqdnField` override whose `fqdn` matches `idx`'s own
     /// resolved `type_fqdn` (only tried when that resolves). `Path`-kind
     /// overrides are never consulted here — see spec 0156 N4.
+    ///
+    /// The two tiers go through `active_entry_with_label`, like
+    /// `resolve_active_override_entry_index_by_path`'s three, so each is
+    /// a `partition_point` into the sorted collection rather than a
+    /// linear scan of all of it.
     pub(super) fn own_field_override(&self, idx: usize, field: u64) -> Option<Option<String>> {
+        let entries = self.overrides.entries();
         let path = self.positional_path(idx);
-        let path_field = self
-            .overrides
-            .entries()
-            .iter()
-            .find_map(|e| match &e.origin {
-                OverrideOrigin::PathField { path: p, field: f }
-                    if e.active && *p == path && *f == field =>
-                {
-                    Some(e.r#type.clone())
-                }
-                _ => None,
-            });
-        path_field.or_else(|| {
-            let fqdn = self.fqdns.get(self.tree[idx].span.type_fqdn)?;
-            self.overrides
-                .entries()
-                .iter()
-                .find_map(|e| match &e.origin {
-                    OverrideOrigin::FqdnField {
-                        fqdn: f,
-                        field: fld,
-                    } if e.active && f == fqdn && *fld == field => Some(e.r#type.clone()),
-                    _ => None,
-                })
-        })
+        if let Some(pos) = self.active_entry_with_label(
+            &OverrideOrigin::field_label(&path, field),
+            OverrideKind::PathField,
+        ) {
+            return Some(entries[pos].r#type.clone());
+        }
+        let fqdn = self.fqdns.get(self.tree[idx].span.type_fqdn)?;
+        let pos = self.active_entry_with_label(
+            &OverrideOrigin::field_label(fqdn, field),
+            OverrideKind::FqdnField,
+        )?;
+        Some(entries[pos].r#type.clone())
     }
 
     /// `true` when `idx`'s resolved type is `google.protobuf.Any` — spec
@@ -213,15 +206,8 @@ impl App {
     /// `auto_expand_type` to locate Any's `type_url` next to `value`, and
     /// MessageSet's `type_id` next to `message`.
     pub(super) fn find_sibling(&self, idx: usize, field_number: u64) -> Option<usize> {
-        let parent = self.parent(idx)?;
-        let mut c = self.first_child(parent);
-        while let Some(ci) = c {
-            if u64::from(self.tree[ci].span.field_number) == field_number {
-                return Some(ci);
-            }
-            c = self.next_sibling(ci);
-        }
-        None
+        self.children_with_field(self.parent(idx)?, field_number)
+            .next()
     }
 
     /// Reads `idx`'s own raw payload (tag/length stripped, per
@@ -416,6 +402,21 @@ impl App {
     pub(super) fn resolve_active_override_entry_index(&self, idx: usize) -> Option<usize> {
         let path = self.positional_path(idx);
         self.resolve_active_override_entry_index_by_path(idx, &path)
+    }
+
+    /// The entry `idx` is governed by, whether or not it is currently
+    /// in effect: spec 0139's Step A (an *active* entry resolving
+    /// against `idx`) then Step B (any entry whose origin merely
+    /// *could* resolve against `idx`, active or not).
+    ///
+    /// The three callers each wanted a different projection of this
+    /// one answer — an index to highlight (`o`), a boolean to branch on
+    /// (`Enter`), a type to pre-select (`t`) — which is how the pair
+    /// came to be written out three times, with three doc comments
+    /// pointing at each other in place of a name.
+    pub(super) fn applicable_override_entry_index(&self, idx: usize) -> Option<usize> {
+        self.resolve_active_override_entry_index(idx)
+            .or_else(|| self.first_entry_matching_origin_candidates(idx))
     }
 
     /// Same resolution as `resolve_active_override_entry_index`, but

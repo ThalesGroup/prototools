@@ -68,6 +68,21 @@ struct Band {
     tail: Option<usize>, // evict/insert end (see TieredBounded doc)
 }
 
+/// Slot `idx`, which every caller here already knows is occupied — it
+/// was reached through the index, through a band pointer, or through
+/// another slot's link, and all three only ever name live slots.
+///
+/// Free function rather than a method for the same reason
+/// `link_at_head` is: it borrows the slot array alone, so a caller can
+/// hold a `Band` at the same time.
+fn slot<K, V>(slots: &[Option<Slot<K, V>>], idx: usize) -> &Slot<K, V> {
+    slots[idx].as_ref().expect("slot must be occupied")
+}
+
+fn slot_mut<K, V>(slots: &mut [Option<Slot<K, V>>], idx: usize) -> &mut Slot<K, V> {
+    slots[idx].as_mut().expect("slot must be occupied")
+}
+
 /// Links `idx` at `band`'s head, pushing whatever was previously
 /// there behind it. Free function (not a method) so callers can name
 /// `self.slots` and a specific `Band` field as two disjoint borrows
@@ -76,10 +91,10 @@ struct Band {
 fn link_at_head<K, V>(slots: &mut [Option<Slot<K, V>>], band: &mut Band, idx: usize) {
     let old_head = band.head;
     match old_head {
-        Some(h) => slots[h].as_mut().expect("head slot must be occupied").prev = Some(idx),
+        Some(h) => slot_mut(slots, h).prev = Some(idx),
         None => band.tail = Some(idx),
     }
-    let s = slots[idx].as_mut().expect("linked slot must be occupied");
+    let s = slot_mut(slots, idx);
     s.prev = None;
     s.next = old_head;
     band.head = Some(idx);
@@ -89,10 +104,10 @@ fn link_at_head<K, V>(slots: &mut [Option<Slot<K, V>>], band: &mut Band, idx: us
 fn link_at_tail<K, V>(slots: &mut [Option<Slot<K, V>>], band: &mut Band, idx: usize) {
     let old_tail = band.tail;
     match old_tail {
-        Some(t) => slots[t].as_mut().expect("tail slot must be occupied").next = Some(idx),
+        Some(t) => slot_mut(slots, t).next = Some(idx),
         None => band.head = Some(idx),
     }
-    let s = slots[idx].as_mut().expect("linked slot must be occupied");
+    let s = slot_mut(slots, idx);
     s.next = None;
     s.prev = old_tail;
     band.tail = Some(idx);
@@ -219,22 +234,13 @@ impl<K: Eq + Hash + Clone, V: Clone> TieredBounded<K, V> {
         f: impl FnOnce(&V) -> R,
     ) -> Option<R> {
         let idx = *self.index.get(key)?;
-        let cur_tier = self.slots[idx]
-            .as_ref()
-            .expect("indexed slot must be occupied")
-            .tier;
+        let cur_tier = slot(&self.slots, idx).tier;
         if tier >= cur_tier {
             self.unlink(idx);
-            self.slots[idx]
-                .as_mut()
-                .expect("indexed slot must be occupied")
-                .tier = tier;
+            slot_mut(&mut self.slots, idx).tier = tier;
             self.link_at_insertion_end(tier, idx);
         }
-        Some(f(&self.slots[idx]
-            .as_ref()
-            .expect("indexed slot must be occupied")
-            .value))
+        Some(f(&slot(&self.slots, idx).value))
     }
 
     /// `tier >= cur_tier` — the caller asked at least as urgently as
@@ -267,25 +273,17 @@ impl<K: Eq + Hash + Clone, V: Clone> TieredBounded<K, V> {
     /// to evict instead), returns `Rejected` and links nothing.
     pub(super) fn upsert(&mut self, key: K, value: V, tier: Tier) -> UpsertOutcome<K> {
         if let Some(&idx) = self.index.get(&key) {
-            let cur_tier = self.slots[idx]
-                .as_ref()
-                .expect("indexed slot must be occupied")
-                .tier;
+            let cur_tier = slot(&self.slots, idx).tier;
             if tier >= cur_tier {
                 self.unlink(idx);
                 {
-                    let s = self.slots[idx]
-                        .as_mut()
-                        .expect("indexed slot must be occupied");
+                    let s = slot_mut(&mut self.slots, idx);
                     s.tier = tier;
                     s.value = value;
                 }
                 self.link_at_insertion_end(tier, idx);
             } else {
-                self.slots[idx]
-                    .as_mut()
-                    .expect("indexed slot must be occupied")
-                    .value = value;
+                slot_mut(&mut self.slots, idx).value = value;
             }
             // An update never grows the structure — no eviction needed.
             return UpsertOutcome::Applied { evicted: None };
@@ -320,14 +318,8 @@ impl<K: Eq + Hash + Clone, V: Clone> TieredBounded<K, V> {
         };
         match self.prefetch_previous.head {
             Some(prev_head) => {
-                self.slots[cur_tail]
-                    .as_mut()
-                    .expect("prefetch_current tail slot must be occupied")
-                    .next = Some(prev_head);
-                self.slots[prev_head]
-                    .as_mut()
-                    .expect("prefetch_previous head slot must be occupied")
-                    .prev = Some(cur_tail);
+                slot_mut(&mut self.slots, cur_tail).next = Some(prev_head);
+                slot_mut(&mut self.slots, prev_head).prev = Some(cur_tail);
             }
             None => {
                 self.prefetch_previous.tail = Some(cur_tail);
@@ -439,27 +431,15 @@ impl<K: Eq + Hash + Clone, V: Clone> TieredBounded<K, V> {
     /// lookup at all — only its two neighbors' links change.
     fn unlink(&mut self, idx: usize) {
         let (prev, next, tier) = {
-            let s = self.slots[idx]
-                .as_ref()
-                .expect("unlink: slot must be occupied");
+            let s = slot(&self.slots, idx);
             (s.prev, s.next, s.tier)
         };
         match prev {
-            Some(p) => {
-                self.slots[p]
-                    .as_mut()
-                    .expect("prev slot must be occupied")
-                    .next = next
-            }
+            Some(p) => slot_mut(&mut self.slots, p).next = next,
             None => self.fix_boundary_if_matches(tier, idx, next, |b| &mut b.head),
         }
         match next {
-            Some(n) => {
-                self.slots[n]
-                    .as_mut()
-                    .expect("next slot must be occupied")
-                    .prev = prev
-            }
+            Some(n) => slot_mut(&mut self.slots, n).prev = prev,
             None => self.fix_boundary_if_matches(tier, idx, prev, |b| &mut b.tail),
         }
     }

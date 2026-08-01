@@ -570,7 +570,7 @@ impl App {
     fn pan_vertical(&mut self, step: usize, up: bool) {
         let height = self.main_area.height as usize;
         let max_scroll = self.composed_row_count().saturating_sub(height);
-        pan_vertical_by_step(&mut self.scroll_offset, max_scroll, step, up);
+        pan_by_step_clamped(&mut self.scroll_offset, max_scroll, step, up);
     }
 
     pub(super) fn pan_vertical_up(&mut self) {
@@ -810,24 +810,30 @@ impl App {
     }
 
     pub(super) fn fold_all_siblings(&mut self) {
-        let siblings = self.sibling_range(self.cursor);
-        let mut changed = false;
-        for i in siblings {
-            if self.has_children(i) && self.folded.insert(i) {
-                changed = true;
-                self.refresh_line_counts(i);
-            }
-        }
-        if changed {
-            self.folds_changed();
-        }
+        self.set_all_siblings_folded(true);
     }
 
     pub(super) fn unfold_all_siblings(&mut self) {
-        let siblings = self.sibling_range(self.cursor);
+        self.set_all_siblings_folded(false);
+    }
+
+    /// Folds or unfolds every sibling of the cursor node, re-deriving
+    /// line counts for each one that actually moved and re-rendering
+    /// once at the end if any did.
+    ///
+    /// The `has_children` guard is on the folding side only, and not by
+    /// oversight: a leaf must not enter `folded` (nothing would ever
+    /// take it back out), while a node already *in* `folded` has
+    /// children by construction, so unfolding needs no such test.
+    fn set_all_siblings_folded(&mut self, fold: bool) {
         let mut changed = false;
-        for i in siblings {
-            if self.folded.remove(&i) {
+        for i in self.sibling_range(self.cursor) {
+            let moved = if fold {
+                self.has_children(i) && self.folded.insert(i)
+            } else {
+                self.folded.remove(&i)
+            };
+            if moved {
                 changed = true;
                 self.refresh_line_counts(i);
             }

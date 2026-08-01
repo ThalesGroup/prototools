@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
+use super::key_dispatch::GChord;
 use super::*;
 
 /// Character column (within `manage_type_line`'s own "  <marker> ..."
@@ -33,28 +34,22 @@ impl App {
         }
         self.manage_open = true;
         self.manage_focus = true;
-        self.manage_highlight = self.initial_manage_highlight();
+        self.set_manage_highlight(self.initial_manage_highlight());
         self.manage_scroll = 0;
         self.last_manage_highlight = None;
         self.manage_pan_offset = 0;
-        self.manage_pending_kind = None;
         self.last_manage_click = None;
     }
 
-    /// The manage pane's initial highlight, in priority order: (1) an
-    /// entry already active for the cursor node
-    /// (`resolve_active_override_entry_index`); else (2)
-    /// `first_entry_matching_origin_candidates`'s result; else (3)
-    /// simply the first entry in the pane. `0` (a no-op, since there's
-    /// nothing to highlight) when the collection is empty.
+    /// The manage pane's initial highlight: the entry governing the
+    /// cursor node (`applicable_override_entry_index`), else simply the
+    /// first entry in the pane. `0` (a no-op, since there's nothing to
+    /// highlight) when the collection is empty.
     fn initial_manage_highlight(&self) -> usize {
         if self.overrides.entries().is_empty() {
             return 0;
         }
-        if let Some(i) = self.resolve_active_override_entry_index(self.cursor) {
-            return i;
-        }
-        self.first_entry_matching_origin_candidates(self.cursor)
+        self.applicable_override_entry_index(self.cursor)
             .unwrap_or(0)
     }
 
@@ -85,17 +80,42 @@ impl App {
         self.manage_focus = false;
     }
 
+    /// Puts the management pane's highlight on row `i`.
+    ///
+    /// Moving the highlight cancels any pending `z` rotation: spec 0134
+    /// G3's barrel only advances on a *repeated* `z` at an unchanged
+    /// position, so once the highlight moves, the next `z` must start
+    /// the barrel over. Every mover goes through here so that rule is
+    /// stated once instead of once per keybinding.
+    pub(super) fn set_manage_highlight(&mut self, i: usize) {
+        self.manage_highlight = i;
+        self.manage_pending_kind = None;
+    }
+
     /// Move the management pane's highlighted row by `delta`, clamped to
     /// `0..overrides.entries().len()` (spec 0117 §3's `j`/`k`).
     pub(super) fn move_manage_highlight(&mut self, delta: isize) {
         let len = self.overrides.entries().len();
-        if len == 0 {
-            self.manage_highlight = 0;
-            self.manage_pending_kind = None;
+        let to = match len {
+            0 => 0,
+            _ => clamp_highlight(self.manage_highlight, delta, len - 1),
+        };
+        self.set_manage_highlight(to);
+    }
+
+    /// Shift-Down/Shift-Up: move the highlight by `delta` and activate
+    /// wherever it lands, in one gesture. Already-active is left alone
+    /// rather than re-set, so the move costs no render pass when there
+    /// is nothing to change.
+    fn move_manage_highlight_and_select(&mut self, delta: isize) {
+        self.move_manage_highlight(delta);
+        let Some(entry) = self.overrides.entries().get(self.manage_highlight) else {
             return;
+        };
+        if !entry.active {
+            self.overrides.set_active(self.manage_highlight);
+            self.render_overrides(self.first_node);
         }
-        self.manage_highlight = clamp_highlight(self.manage_highlight, delta, len - 1);
-        self.manage_pending_kind = None;
     }
 
     /// Vertical pan for the management pane (Ctrl-Up/Ctrl-Down at `step
@@ -107,7 +127,7 @@ impl App {
             .manage_display_rows()
             .len()
             .saturating_sub(self.manage_list_height);
-        pan_vertical_by_step(&mut self.manage_scroll, max_scroll, step, up);
+        pan_by_step_clamped(&mut self.manage_scroll, max_scroll, step, up);
     }
 
     /// Horizontal pan for the management pane (Ctrl-Left/Ctrl-Right,
@@ -243,10 +263,7 @@ impl App {
         match search_wrap(n, start, dir, |i| {
             needle.is_match(&self.manage_search_text(i))
         }) {
-            Some(i) => {
-                self.manage_highlight = i;
-                self.manage_pending_kind = None;
-            }
+            Some(i) => self.set_manage_highlight(i),
             None => self.message = format!("pattern not found: {pattern}"),
         }
     }
@@ -283,15 +300,7 @@ impl App {
                 let Some(parent) = self.resolve_path(path) else {
                     return Vec::new();
                 };
-                let mut result = Vec::new();
-                let mut child = self.first_child(parent);
-                while let Some(c) = child {
-                    if u64::from(self.tree[c].span.field_number) == *field {
-                        result.push(c);
-                    }
-                    child = self.next_sibling(c);
-                }
-                result
+                self.children_with_field(parent, *field).collect()
             }
             OverrideOrigin::FqdnField { fqdn, field } => {
                 // Spec 0212 S6: intern the needle once rather than resolve
@@ -341,21 +350,14 @@ impl App {
             }
             return;
         }
-        // `gg` chord (vim-style jump-to-first), mirroring the main
-        // pane's own `handle_key` chord: a first `g` press arms
-        // `pending_g`; a second `g` press immediately after jumps to
-        // the first entry. Any other key clears the pending state.
-        if key.code == KeyCode::Char('g') {
-            if self.pending_g {
-                self.pending_g = false;
-                self.manage_highlight = 0;
-                self.manage_pending_kind = None;
-            } else {
-                self.pending_g = true;
+        match self.take_g_chord(key.code) {
+            GChord::Fired => {
+                self.set_manage_highlight(0);
+                return;
             }
-            return;
+            GChord::Armed => return,
+            GChord::Other => {}
         }
-        self.pending_g = false;
 
         match key.code {
             KeyCode::Tab => self.manage_focus = false,
@@ -381,22 +383,10 @@ impl App {
             // precede the plain `Down`/`Up` arms below, since an
             // unguarded arm there would otherwise shadow it.
             KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.move_manage_highlight(1);
-                if let Some(entry) = self.overrides.entries().get(self.manage_highlight) {
-                    if !entry.active {
-                        self.overrides.set_active(self.manage_highlight);
-                        self.render_overrides(self.first_node);
-                    }
-                }
+                self.move_manage_highlight_and_select(1)
             }
             KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.move_manage_highlight(-1);
-                if let Some(entry) = self.overrides.entries().get(self.manage_highlight) {
-                    if !entry.active {
-                        self.overrides.set_active(self.manage_highlight);
-                        self.render_overrides(self.first_node);
-                    }
-                }
+                self.move_manage_highlight_and_select(-1)
             }
             // Vertical pan: scrolls the list without moving the
             // highlight, bounded only by the content itself and not by
@@ -418,13 +408,9 @@ impl App {
             KeyCode::PageUp => {
                 self.move_manage_highlight(-(self.manage_list_height.max(1) as isize))
             }
-            KeyCode::Home => {
-                self.manage_highlight = 0;
-                self.manage_pending_kind = None;
-            }
+            KeyCode::Home => self.set_manage_highlight(0),
             KeyCode::End | KeyCode::Char('G') => {
-                self.manage_highlight = self.overrides.entries().len().saturating_sub(1);
-                self.manage_pending_kind = None;
+                self.set_manage_highlight(self.overrides.entries().len().saturating_sub(1))
             }
             // Horizontal pan, mirroring the main pane's own Ctrl-Left/
             // Ctrl-Right (spec 0113 D24) and the mouse's Shift-wheel/
@@ -453,14 +439,10 @@ impl App {
             // `Enter` arm dispatches to `jump_to_manage_match` while
             // `manage_open && manage_focus`).
             KeyCode::Char('/') => {
-                self.command_kind = CommandLineKind::Search(SearchDir::Forward);
-                self.command_buffer = Some(String::new());
-                self.command_cursor = 0;
+                self.open_command_line(CommandLineKind::Search(SearchDir::Forward), String::new())
             }
             KeyCode::Char('?') => {
-                self.command_kind = CommandLineKind::Search(SearchDir::Backward);
-                self.command_buffer = Some(String::new());
-                self.command_cursor = 0;
+                self.open_command_line(CommandLineKind::Search(SearchDir::Backward), String::new())
             }
             KeyCode::Char('n') => {
                 if let Some((dir, pattern)) = self.last_manage_search.clone() {
@@ -501,29 +483,11 @@ impl App {
             // trigger. The guarded `Char(' ')` arm here must precede the
             // plain `a`/Space arm below, since an unguarded `Char(' ')`
             // there would otherwise shadow it.
-            KeyCode::Char('A') => {
-                if !self.overrides.entries().is_empty() {
-                    self.overrides
-                        .toggle_active_cascading(self.manage_highlight);
-                    self.render_overrides(self.first_node);
-                }
-            }
+            KeyCode::Char('A') => self.toggle_active_at_highlight(true),
             KeyCode::Char(' ') if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                if !self.overrides.entries().is_empty() {
-                    self.overrides
-                        .toggle_active_cascading(self.manage_highlight);
-                    self.render_overrides(self.first_node);
-                }
+                self.toggle_active_at_highlight(true)
             }
-            // Spec 0118 §6: toggling active status changes the active set
-            // (possibly for a sibling too), so it always triggers a
-            // recursive render pass.
-            KeyCode::Char('a') | KeyCode::Char(' ') => {
-                if !self.overrides.entries().is_empty() {
-                    self.overrides.toggle_active(self.manage_highlight);
-                    self.render_overrides(self.first_node);
-                }
-            }
+            KeyCode::Char('a') | KeyCode::Char(' ') => self.toggle_active_at_highlight(false),
             // Spec 0134 G2/G3: forgiving multi-candidate resolution —
             // works out the mutated origin from every node the entry
             // currently affects, only falling back to the main-pane
@@ -592,9 +556,10 @@ impl App {
 
                         match resolved {
                             Some(new_origin) => {
-                                self.manage_highlight = self
+                                let to = self
                                     .overrides
                                     .rotate_origin(self.manage_highlight, new_origin.clone());
+                                self.set_manage_highlight(to);
                                 if was_active {
                                     self.render_overrides(self.first_node);
                                     // `render_overrides` can auto-seed
@@ -612,10 +577,9 @@ impl App {
                                             e.origin == new_origin && e.r#type == r#type
                                         })
                                     {
-                                        self.manage_highlight = idx;
+                                        self.set_manage_highlight(idx);
                                     }
                                 }
-                                self.manage_pending_kind = None;
                             }
                             None => {
                                 self.message = "z: pick an override target (<-/->)".to_string();
@@ -631,8 +595,8 @@ impl App {
             // as in most other list-oriented tools.
             KeyCode::Char('D') => {
                 if !self.overrides.entries().is_empty() {
-                    self.manage_highlight = self.overrides.duplicate(self.manage_highlight);
-                    self.manage_pending_kind = None;
+                    let to = self.overrides.duplicate(self.manage_highlight);
+                    self.set_manage_highlight(to);
                     self.render_overrides(self.first_node);
                 }
             }
@@ -658,10 +622,8 @@ impl App {
                         let was_active = entry.active;
                         self.overrides.remove(self.manage_highlight);
                         let len = self.overrides.entries().len();
-                        if self.manage_highlight >= len {
-                            self.manage_highlight = len.saturating_sub(1);
-                        }
-                        self.manage_pending_kind = None;
+                        let to = self.manage_highlight.min(len.saturating_sub(1));
+                        self.set_manage_highlight(to);
                         if was_active {
                             self.render_overrides(self.first_node);
                         }
@@ -670,15 +632,10 @@ impl App {
             }
             KeyCode::Char('s') => {
                 let buf = format!("save {}", self.default_save_overrides_path());
-                self.command_kind = CommandLineKind::Command;
-                self.command_cursor = buf.chars().count();
-                self.command_buffer = Some(buf);
+                self.open_command_line(CommandLineKind::Command, buf);
             }
             KeyCode::Char('r') => {
-                let buf = "restore ".to_string();
-                self.command_kind = CommandLineKind::Command;
-                self.command_cursor = buf.chars().count();
-                self.command_buffer = Some(buf);
+                self.open_command_line(CommandLineKind::Command, "restore ".to_string());
             }
             _ => {}
         }
@@ -729,6 +686,27 @@ impl App {
         }
     }
 
+    /// Toggles the highlighted entry's active flag, `cascading` picking
+    /// `toggle_active_cascading` over `toggle_active` — the whole of
+    /// the difference between the four gestures that reach here (`a`/
+    /// Space, `A`/Shift-Space, and a marker click with or without
+    /// Shift).
+    ///
+    /// Spec 0118 §6: toggling changes the active set, possibly for a
+    /// sibling too, so it always triggers a recursive render pass.
+    fn toggle_active_at_highlight(&mut self, cascading: bool) {
+        if self.overrides.entries().is_empty() {
+            return;
+        }
+        if cascading {
+            self.overrides
+                .toggle_active_cascading(self.manage_highlight);
+        } else {
+            self.overrides.toggle_active(self.manage_highlight);
+        }
+        self.render_overrides(self.first_node);
+    }
+
     pub(super) fn handle_manage_click(&mut self, col: u16, row: u16, shift: bool) {
         let area = self.side_area;
         if !Self::rect_contains(area, col, row) {
@@ -742,8 +720,7 @@ impl App {
         let rows = self.manage_display_rows();
         if let Some(&ManageRow::Entry(idx)) = rows.get(absolute_row) {
             let was_current = idx == self.manage_highlight;
-            self.manage_highlight = idx;
-            self.manage_pending_kind = None;
+            self.set_manage_highlight(idx);
             // Content-space column the click landed on, undoing the
             // pane's own horizontal pan (`pan_spans` strips the first
             // `manage_pan_offset` chars before display, so screen column
@@ -772,13 +749,10 @@ impl App {
                 // on top of each other.
                 if is_double_click(&mut self.last_manage_click, idx) {
                     self.overrides.toggle_active(idx);
-                    self.overrides.toggle_active_cascading(idx);
-                } else if shift {
-                    self.overrides.toggle_active_cascading(idx);
+                    self.toggle_active_at_highlight(true);
                 } else {
-                    self.overrides.toggle_active(idx);
+                    self.toggle_active_at_highlight(shift);
                 }
-                self.render_overrides(self.first_node);
             } else if is_double_click(&mut self.last_manage_row_click, idx) {
                 // Double-clicking an entry outside its marker column
                 // opens the selection pane on it, same as `Enter` —

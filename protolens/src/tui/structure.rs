@@ -129,6 +129,22 @@ impl App {
         (idx > block.start).then(|| idx - 1)
     }
 
+    /// `parent`'s children bearing `field`, in document order.
+    ///
+    /// A filter over the child block rather than a `next_sibling` walk:
+    /// level order makes the block contiguous, so the siblings are just
+    /// a range. The four callers all want this — three collect it, one
+    /// takes the first — and all four ask about `field` as a `u64`,
+    /// which is how an `OverrideOrigin` carries a field number.
+    pub(super) fn children_with_field(
+        &self,
+        parent: usize,
+        field: u64,
+    ) -> impl Iterator<Item = usize> + '_ {
+        self.child_slots(parent)
+            .filter(move |&c| u64::from(self.tree[c].span.field_number) == field)
+    }
+
     /// `idx`'s 1-based position among its siblings.
     ///
     /// Just `idx - first_child[parent]`, with no packed-run special

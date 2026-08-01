@@ -78,6 +78,19 @@ pub(super) fn write_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
 }
 
 impl App {
+    /// Opens the command-line row as `kind`, holding `prefill` with the
+    /// cursor at its end.
+    ///
+    /// All three fields together, so that a new prompt site cannot open
+    /// one and forget `command_cursor` — which would leave the caret at
+    /// column 0 of a pre-filled buffer, and `Backspace` cancelling
+    /// instead of deleting.
+    pub(super) fn open_command_line(&mut self, kind: CommandLineKind, prefill: String) {
+        self.command_kind = kind;
+        self.command_cursor = prefill.chars().count();
+        self.command_buffer = Some(prefill);
+    }
+
     /// Edit the in-progress command-line buffer at `command_cursor`
     /// (a proper single-line text-input model — `Left`/`Right`/`Home`/`End`
     /// move it, `Backspace`/`Delete`/typing act relative to it), or
@@ -324,6 +337,21 @@ impl App {
     /// a path argument is everything after the command name's single
     /// space, embedded spaces included.
     pub(super) fn complete_fs_path(&mut self, cmd: &str, arg_prefix: &str) {
+        self.complete_path(cmd, arg_prefix, false);
+    }
+
+    /// `:proto-root <dir>`'s argument completion (spec 0144 G4) — same
+    /// shape as `complete_fs_path`, but directory entries only: a file is
+    /// never a valid `:proto-root` argument.
+    pub(super) fn complete_dir_path(&mut self, cmd: &str, arg_prefix: &str) {
+        self.complete_path(cmd, arg_prefix, true);
+    }
+
+    /// The body of both path completions. `dirs_only` is the whole of
+    /// the difference between them: it drops non-directory entries, and
+    /// with them the trailing-`/` conditional (everything left is a
+    /// directory) and the wording of the no-match message.
+    fn complete_path(&mut self, cmd: &str, arg_prefix: &str, dirs_only: bool) {
         let (dir_part, file_prefix) = match arg_prefix.rfind('/') {
             Some(i) => (&arg_prefix[..=i], &arg_prefix[i + 1..]),
             None => ("", arg_prefix),
@@ -342,11 +370,14 @@ impl App {
         };
         let mut matches: Vec<String> = Vec::new();
         for entry in entries.flatten() {
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if dirs_only && !is_dir {
+                continue;
+            }
             let name = entry.file_name().to_string_lossy().into_owned();
             if !name.starts_with(file_prefix) {
                 continue;
             }
-            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
             let mut candidate = format!("{dir_part}{name}");
             if is_dir {
                 candidate.push('/');
@@ -354,47 +385,8 @@ impl App {
             matches.push(candidate);
         }
         if matches.is_empty() {
-            self.message = format!("no path matches '{arg_prefix}'");
-            return;
-        }
-        matches.sort_unstable();
-        let token_start = cmd.chars().count() + 1;
-        self.apply_completion(token_start, arg_prefix.chars().count(), matches);
-    }
-
-    /// `:proto-root <dir>`'s argument completion (spec 0144 G4) — same
-    /// shape as `complete_fs_path`, but directory entries only: a file is
-    /// never a valid `:proto-root` argument.
-    pub(super) fn complete_dir_path(&mut self, cmd: &str, arg_prefix: &str) {
-        let (dir_part, file_prefix) = match arg_prefix.rfind('/') {
-            Some(i) => (&arg_prefix[..=i], &arg_prefix[i + 1..]),
-            None => ("", arg_prefix),
-        };
-        let read_dir_path = if dir_part.is_empty() {
-            Path::new(".")
-        } else {
-            Path::new(dir_part)
-        };
-        let entries = match std::fs::read_dir(read_dir_path) {
-            Ok(rd) => rd,
-            Err(e) => {
-                self.message = format!("cannot list '{}': {e}", read_dir_path.display());
-                return;
-            }
-        };
-        let mut matches: Vec<String> = Vec::new();
-        for entry in entries.flatten() {
-            if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                continue;
-            }
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if !name.starts_with(file_prefix) {
-                continue;
-            }
-            matches.push(format!("{dir_part}{name}/"));
-        }
-        if matches.is_empty() {
-            self.message = format!("no directory matches '{arg_prefix}'");
+            let what = if dirs_only { "directory" } else { "path" };
+            self.message = format!("no {what} matches '{arg_prefix}'");
             return;
         }
         matches.sort_unstable();
@@ -534,15 +526,28 @@ impl App {
         }
     }
 
+    /// The single free-form argument these commands take, rejoined, or
+    /// `None` — having already set `message` to `missing` — when the
+    /// command was given none.
+    ///
+    /// The rejoin is half the point: a path or an FQDN containing a
+    /// space arrives here already split on whitespace, and every one of
+    /// these commands wants it back whole.
+    fn require_arg(&mut self, args: &[&str], missing: &str) -> Option<String> {
+        if args.is_empty() {
+            self.message = missing.to_string();
+            return None;
+        }
+        Some(args.join(" "))
+    }
+
     /// `type-as <FQDN>` — apply `FQDN` as the cursor node's type override,
     /// bypassing the override pane entirely (spec 0114 Goal 4/§5/§7). Same
     /// validation/application as picking a ranked candidate from the pane.
     pub(super) fn run_type_as(&mut self, args: Vec<&str>) {
-        if args.is_empty() {
-            self.message = "type-as: missing type FQDN".to_string();
+        let Some(fqdn) = self.require_arg(&args, "type-as: missing type FQDN") else {
             return;
-        }
-        let fqdn = args.join(" ");
+        };
         self.message = match self.type_as(Some(&fqdn)) {
             Ok(()) => format!("overridden as {fqdn}"),
             Err(e) => e,
@@ -784,19 +789,9 @@ impl App {
     pub(super) fn origin_resolves(&mut self, origin: &OverrideOrigin) -> bool {
         match origin {
             OverrideOrigin::Path { path } => self.resolve_path(path).is_some(),
-            OverrideOrigin::PathField { path, field } => match self.resolve_path(path) {
-                Some(idx) => {
-                    let mut child = self.first_child(idx);
-                    while let Some(c) = child {
-                        if u64::from(self.tree[c].span.field_number) == *field {
-                            return true;
-                        }
-                        child = self.next_sibling(c);
-                    }
-                    false
-                }
-                None => false,
-            },
+            OverrideOrigin::PathField { path, field } => self
+                .resolve_path(path)
+                .is_some_and(|idx| self.children_with_field(idx, *field).next().is_some()),
             // A restored collection names types the current render may
             // never have touched, so this JIT-loads (spec 0197 §S5).
             OverrideOrigin::FqdnField { fqdn, field } => self
@@ -812,11 +807,9 @@ impl App {
     /// (`write_atomically`), since the collection being saved has no
     /// other copy.
     pub(super) fn run_save_overrides(&mut self, args: Vec<&str>) {
-        if args.is_empty() {
-            self.message = "save: missing path".to_string();
+        let Some(path) = self.require_arg(&args, "save: missing path") else {
             return;
-        }
-        let path = args.join(" ");
+        };
         let (blob_sha256, descriptor_set_sha256) = match self.target_hashes() {
             Ok(hashes) => hashes,
             Err(e) => {
@@ -835,11 +828,10 @@ impl App {
     /// dynamically, overriding `-I`/`--proto-root` for the rest of the
     /// session. Invalid input leaves the previous value untouched.
     pub(super) fn run_proto_root(&mut self, args: Vec<&str>) {
-        if args.is_empty() {
-            self.message = "proto-root: missing directory".to_string();
+        let Some(arg) = self.require_arg(&args, "proto-root: missing directory") else {
             return;
-        }
-        let dir = PathBuf::from(args.join(" "));
+        };
+        let dir = PathBuf::from(arg);
         if !dir.is_dir() {
             self.message = format!("not a directory: {}", dir.display());
             return;
@@ -925,11 +917,10 @@ impl App {
             self.overrides.seed_root(current_root_type);
         }
         self.render_overrides(self.first_node);
-        self.manage_highlight = 0;
+        self.set_manage_highlight(0);
         self.manage_scroll = 0;
         self.last_manage_highlight = None;
         self.manage_pan_offset = 0;
-        self.manage_pending_kind = None;
         Ok(OverrideLoad {
             warnings,
             hash_mismatch,
@@ -939,11 +930,9 @@ impl App {
     /// `restore <path>` (spec 0117 §4): replaces the collection wholesale
     /// with `<path>`'s contents — see `load_overrides`.
     pub(super) fn run_restore_overrides(&mut self, args: Vec<&str>) {
-        if args.is_empty() {
-            self.message = "restore: missing path".to_string();
+        let Some(path) = self.require_arg(&args, "restore: missing path") else {
             return;
-        }
-        let path = args.join(" ");
+        };
         self.message = match self.load_overrides(&path) {
             Ok(load) if load.warnings.is_empty() => format!("restored overrides from {path}"),
             Ok(load) => format!(
