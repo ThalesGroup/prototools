@@ -2,41 +2,12 @@
 //
 // SPDX-License-Identifier: MIT
 
-use super::line_patch::{LinePatch, LinePatchTarget};
 use super::override_resolve::ParentFieldOrExt;
 use super::preview_truncate::{insert_truncation_marker, trunc_shape_for, truncate_interior};
 use super::*;
 
 use prost_reflect::prost_types::field_descriptor_proto::Type;
 use prototext_core::serialize::render_text::NodeSpan;
-
-/// TEMPORARY debug instrumentation for the arena-growth investigation.
-/// Counters are reset at the start of each `render_overrides` batch and
-/// reported at its end, under `PROTOLENS_TRACE`.
-pub(super) mod probe {
-    use std::sync::atomic::AtomicUsize;
-    /// `render_overrides_inner` calls.
-    pub(super) static VISITS: AtomicUsize = AtomicUsize::new(0);
-    /// Of those, ones where `resettle_node` actually spliced.
-    pub(super) static SPLICES: AtomicUsize = AtomicUsize::new(0);
-    /// Arena nodes rewritten by those splices — the descendants of each
-    /// resettled node. Since spec 0216 a splice appends nothing, so this
-    /// measures how much of a fixed arena the batch touched, not growth.
-    pub(super) static NODES: AtomicUsize = AtomicUsize::new(0);
-    /// Microseconds spent in `compute_descend_marks`.
-    pub(super) static MARKS_US: AtomicUsize = AtomicUsize::new(0);
-    /// Microseconds spent in `splice_override`, summed over the batch.
-    pub(super) static SPLICE_US: AtomicUsize = AtomicUsize::new(0);
-    /// Microseconds spent in `materialize_line_patches` — spec 0210's
-    /// residual whole-document pass over `lines`, and the entire
-    /// justification for its step 2.
-    pub(super) static TEXT_US: AtomicUsize = AtomicUsize::new(0);
-    /// Microseconds in the batch's top-level `render_overrides_inner`
-    /// (splices included), against `FINALIZE_US` for what follows it.
-    pub(super) static INNER_US: AtomicUsize = AtomicUsize::new(0);
-    /// Microseconds in `finalize_override_batch` (`TEXT_US` included).
-    pub(super) static FINALIZE_US: AtomicUsize = AtomicUsize::new(0);
-}
 
 /// Spec 0185 S3: one node's complete rendering under a candidate type,
 /// with no tree mutation whatsoever — everything `splice_override` used
@@ -95,18 +66,9 @@ impl App {
     /// by the sole caller (`render_overrides_inner`'s hot full-document
     /// walk) rather than recomputed here — see `resolve_active_override_
     /// entry_index_by_path`'s doc comment for why that matters.
-    /// Returns the index of the freshly recorded line-buffer patch (spec
-    /// 0167) if `idx` was actually re-spliced, `None` otherwise (already
-    /// matched `rendered_as`, or `splice_override` returned `Err`).
-    /// `patch_scope` is `idx`'s own patch-nesting context — see
-    /// `render_overrides_inner`'s doc comment — threaded straight through
-    /// to `splice_override`.
-    pub(super) fn resettle_node(
-        &mut self,
-        idx: usize,
-        path: &str,
-        patch_scope: Option<usize>,
-    ) -> Option<usize> {
+    /// Returns whether `idx` was actually re-spliced — `false` when it
+    /// already matched `rendered_as`, or when `splice_override` refused.
+    pub(super) fn resettle_node(&mut self, idx: usize, path: &str) -> bool {
         let target = self
             .resolve_active_override_entry_index_by_path(idx, path)
             .map(|i| self.overrides.entries()[i].r#type.clone());
@@ -121,16 +83,8 @@ impl App {
                 Some(explicit) => explicit.clone(),
                 None => self.natural_type(idx),
             };
-            let t_splice = std::time::Instant::now();
-            let spliced = self.splice_override(idx, effective, false, patch_scope);
-            if crate::tui::trace::enabled() {
-                probe::SPLICE_US.fetch_add(
-                    t_splice.elapsed().as_micros() as usize,
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-            }
-            match spliced {
-                Ok(patch_idx) => {
+            match self.splice_override(idx, effective, false) {
+                Ok(()) => {
                     self.tree[idx].rendered_as = current;
                     // Spec 0221 S1: this node is settled after all, so
                     // an earlier refusal of it in this same pass was not
@@ -140,7 +94,7 @@ impl App {
                     if !self.refusals.is_empty() {
                         self.refusals.retain(|(node, _)| *node != idx);
                     }
-                    Some(patch_idx)
+                    true
                 }
                 Err(e) => {
                     // Spec 0221 S1/S2: collected, not printed, and not
@@ -165,11 +119,11 @@ impl App {
                     .unwrap_or_else(|| "<raw / no type>".to_string());
                     self.refusals
                         .push((idx, format!("{path}: cannot render as '{requested}': {e}")));
-                    None
+                    false
                 }
             }
         } else {
-            None
+            false
         }
     }
 
@@ -242,6 +196,7 @@ impl App {
     /// unrelated `render(&mut self, frame: &mut Frame)` ratatui draw
     /// method below.
     pub(super) fn render_overrides(&mut self, idx: usize) {
+        let mut d_marks = std::time::Duration::ZERO;
         if self.override_batch_depth == 0 {
             // Spec 0221 S1: emptied at the start of the *outermost*
             // pass, so nested `render_overrides` calls contribute to one
@@ -250,21 +205,7 @@ impl App {
             self.refusals.clear();
             let t_marks = std::time::Instant::now();
             self.compute_descend_marks();
-            let d_marks = t_marks.elapsed();
-            if crate::tui::trace::enabled() {
-                use std::sync::atomic::Ordering::Relaxed;
-                probe::VISITS.store(0, Relaxed);
-                probe::SPLICES.store(0, Relaxed);
-                probe::NODES.store(0, Relaxed);
-                probe::SPLICE_US.store(0, Relaxed);
-                probe::TEXT_US.store(0, Relaxed);
-                probe::MARKS_US.store(d_marks.as_micros() as usize, Relaxed);
-                crate::tui::trace::trace!(
-                    "PROBE batch start tree={} marks={}",
-                    self.tree.len(),
-                    self.descend.iter().filter(|m| **m).count(),
-                );
-            }
+            d_marks = t_marks.elapsed();
         }
         self.override_batch_depth += 1;
         let path = self.positional_path(idx);
@@ -272,47 +213,19 @@ impl App {
         // patch (spec 0167): it's an already-existing node, never one
         // freshly created within this very call.
         let t_inner = std::time::Instant::now();
-        self.render_overrides_inner(idx, &path, None);
+        self.render_overrides_inner(idx, &path);
         let d_inner = t_inner.elapsed();
         self.override_batch_depth -= 1;
         if self.override_batch_depth == 0 {
             let t_finalize = std::time::Instant::now();
             self.finalize_override_batch();
-            if crate::tui::trace::enabled() {
-                use std::sync::atomic::Ordering::Relaxed;
-                probe::INNER_US.store(d_inner.as_micros() as usize, Relaxed);
-                probe::FINALIZE_US.store(t_finalize.elapsed().as_micros() as usize, Relaxed);
-            }
-            if crate::tui::trace::enabled() {
-                let rss = std::fs::read_to_string("/proc/self/statm")
-                    .ok()
-                    .and_then(|s| {
-                        s.split_whitespace()
-                            .nth(1)
-                            .and_then(|v| v.parse::<u64>().ok())
-                    })
-                    .unwrap_or(0)
-                    * 4096
-                    / (1 << 20);
-                use std::sync::atomic::Ordering::Relaxed;
-                crate::tui::trace::trace!(
-                    "PROBE render_overrides tree={} tree_cap={} lines={} lines_cap={} overrides={} rss_mib={} visits={} splices={} nodes={} marks_us={} inner_us={} splice_us={} finalize_us={} text_us={}",
-                    self.tree.len(),
-                    self.tree.capacity(),
-                    self.lines.len(),
-                    self.lines.capacity(),
-                    self.overrides.entries().len(),
-                    rss,
-                    probe::VISITS.load(Relaxed),
-                    probe::SPLICES.load(Relaxed),
-                    probe::NODES.load(Relaxed),
-                    probe::MARKS_US.load(Relaxed),
-                    probe::INNER_US.load(Relaxed),
-                    probe::SPLICE_US.load(Relaxed),
-                    probe::FINALIZE_US.load(Relaxed),
-                    probe::TEXT_US.load(Relaxed),
-                );
-            }
+            crate::tui::trace::trace!(
+                "render_overrides marks_us={} inner_us={} finalize_us={} overrides={}",
+                d_marks.as_micros(),
+                d_inner.as_micros(),
+                t_finalize.elapsed().as_micros(),
+                self.overrides.entries().len(),
+            );
             // Spec 0221 S5: the status line keeps reporting a refusal,
             // as it has since spec 0202 — but summarizing the whole pass
             // rather than being assigned once per refused node, so N
@@ -588,19 +501,13 @@ impl App {
     /// child's own path is available in O(1) from `path` plus a running
     /// ordinal counter (`child_path`).
     ///
-    /// `patch_scope` (spec 0167, N1 follow-up to spec 0160): the index
-    /// into `self.pending_line_patches` of the nearest still-open
-    /// ancestor patch whose freshly decoded content `idx`'s own position
-    /// currently lies within, or `None` if `idx`'s position is still
-    /// within `self.lines`/`self.line_styles` as they stood before this
-    /// batch began. A node freshly created by an ancestor's own splice,
-    /// within this very same batch, can itself need its own re-splice
-    /// (e.g. a nested message getting its own override applied on top of
-    /// its parent's just-decoded natural rendering) — such a re-splice's
-    /// content must be recorded as *nested inside* that ancestor's own
-    /// not-yet-materialized patch, not as a patch against `self.lines`
-    /// directly (which, for the whole duration of the batch, still holds
-    /// only pre-batch content — see `splice_override`).
+    /// Spec 0222 S5: there is no patch scope any more. A splice writes
+    /// its own nodes' text into `node_text` as it goes, so a node
+    /// re-spliced later in the same batch — a nested message getting its
+    /// own override on top of its parent's just-decoded rendering —
+    /// simply overwrites what the ancestor's splice wrote. Nothing is
+    /// queued, so nothing needs a coordinate system to be queued
+    /// against.
     ///
     /// `fresh` (spec 0183 S3) is `true` when `idx` lies inside content
     /// re-decoded earlier in this very batch. Such nodes did not exist
@@ -612,7 +519,7 @@ impl App {
     /// batch (MessageSet tier 2, whose eligibility depends on its
     /// parent having just been retyped by tier 1): they are always
     /// inside fresh content by construction.
-    fn render_overrides_inner(&mut self, idx: usize, path: &str, patch_scope: Option<usize>) {
+    fn render_overrides_inner(&mut self, idx: usize, path: &str) {
         let origin = OverrideOrigin::Path {
             path: path.to_string(),
         };
@@ -644,30 +551,7 @@ impl App {
                 }
             }
         }
-        let spliced_patch = self.resettle_node(idx, path, patch_scope);
-        let spliced = spliced_patch.is_some();
-        if crate::tui::trace::enabled() {
-            use std::sync::atomic::Ordering::Relaxed;
-            probe::VISITS.fetch_add(1, Relaxed);
-            if spliced {
-                // Spec 0216 S12: the splice does not append, so the size
-                // of what it produced is the size of `idx`'s subtree
-                // rather than the arena's growth.
-                let mut sub = Vec::new();
-                self.collect_descendants(idx, &mut sub);
-                let n = sub.len();
-                probe::SPLICES.fetch_add(1, Relaxed);
-                probe::NODES.fetch_add(n, Relaxed);
-                if n >= 10_000 {
-                    crate::tui::trace::trace!("PROBE big splice n={n} path={path}");
-                }
-            }
-        }
-        // Spec 0167: if `idx` was just spliced, its fresh children's
-        // content lives inside `idx`'s own new patch; otherwise, they
-        // remain wherever `idx` itself was already found (the same
-        // ancestor patch, if any, or `self.lines` directly).
-        let child_scope = spliced_patch.or(patch_scope);
+        let spliced = self.resettle_node(idx, path);
         // Spec 0183 S3: the nodes the splice just re-decoded were not
         // marked when the batch's marks were computed, so mark them now.
         if spliced {
@@ -706,7 +590,7 @@ impl App {
                 self.descend.get(c).copied().unwrap_or(false)
             };
             if descend_here {
-                self.render_overrides_inner(c, &c_path, child_scope);
+                self.render_overrides_inner(c, &c_path);
             }
         }
     }
@@ -715,63 +599,34 @@ impl App {
     /// `render_overrides` call for a batch of splices returns (or a
     /// standalone `splice_override` call finishes) — not once per
     /// splice. Every node's line *counts* are already correct by this
-    /// point: `splice_override` fixes its own target's and carries the
-    /// change up the ancestors as it goes, because the rest of the batch
-    /// derives its patch positions from them. So all that is left here
-    /// is the document *text* — the batch's queued line patches, merged
-    /// into `self.lines` in a single pass.
+    /// point, and so is its text: `splice_override` writes both as it
+    /// goes, fixing its own target's counts and carrying the change up
+    /// the ancestors. So all that is left here is the state that is
+    /// about the *batch* rather than about any one node.
+    ///
+    /// Spec 0222 S5: there is no text merge left to do. Spec 0210's
+    /// residual whole-document pass over `lines` — 87 ms of a 102 ms
+    /// keystroke at the document's first record — went away with the
+    /// buffer it merged into.
     fn finalize_override_batch(&mut self) {
-        // Spec 0186 S2: the first line this batch can have disturbed, in
-        // the final buffer's frame.
+        // Spec 0188 G1: a batch that spliced nothing has nothing to
+        // repair, and that is the common case rather than an exotic
+        // one: opening or closing the override pane, toggling a
+        // management-pane entry that resolves to what is already
+        // rendered, and the second of two identical passes all land
+        // here.
         //
-        // Spec 0188 G1: `None` means the batch queued no patches at all,
-        // and that is not a "no safe lower bound, rebuild everything"
-        // case — it is a batch that spliced nothing. `pending_patch_min_
-        // line` and `pending_line_patches` are written at one site, so
-        // no patch means no text was replaced; `pending_shift` is
-        // accumulated at that same site, so it is zero and no span was
-        // shifted either. Nothing below has anything to repair.
-        //
-        // This is the common case, not an exotic one: opening or
-        // closing the override pane, toggling a management-pane entry
-        // that resolves to what is already rendered, and the second of
-        // two identical passes all land here. Repairing unconditionally
-        // costs 20 ms on a 382 k-node arena, to fix nothing.
-        //
-        // The G3 equivalence check still runs, so every no-patch batch
-        // in the suite asserts that skipping was in fact a no-op.
-        if self.pending_patch_min_line.is_none() {
+        // The G3 equivalence check still runs, so every such batch in
+        // the suite asserts that skipping was in fact a no-op.
+        if !self.batch_spliced {
             #[cfg(test)]
             if self.verify_repair {
                 self.assert_line_counts_are_exact();
             }
             return;
         }
-        // The batch's line-buffer patches, applied in one pass.
-        let t_text = std::time::Instant::now();
-        self.materialize_line_patches();
-        if crate::tui::trace::enabled() {
-            probe::TEXT_US.fetch_add(
-                t_text.elapsed().as_micros() as usize,
-                std::sync::atomic::Ordering::Relaxed,
-            );
-        }
-
-        // Spec 0210 S3: patching the text is the entire repair.
-        //
-        // A node stores its subtree's line *count*, not its absolute
-        // position, and a count does not care what happens above it.
-        // Were positions stored, a splice would owe a walk of every
-        // node after it in document order — all four and a half million
-        // of them, which is what made overriding the document's first
-        // field cost a second. As it is, a splice owes only its
-        // ancestors' counts, and pays that itself as it goes, in
-        // `splice_override`, because the rest of the batch derives its
-        // patch positions from them.
-        self.pending_shift = 0;
-        self.pending_patch_min_line = None;
-        // Line numbers moved, so the read-ahead walk must restart and
-        // `window_nodes` must be ignored.
+        self.batch_spliced = false;
+        // Line numbers moved, so the read-ahead walk must restart.
         self.structural_version += 1;
         self.clamp_pan_offset();
 
@@ -811,8 +666,7 @@ impl App {
     /// node. Not reachable from a release build.
     #[cfg(test)]
     fn assert_line_counts_are_exact(&self) {
-        let n_lines = self.lines.len();
-        let indent_of = |l: usize| self.lines[l].len() - self.lines[l].trim_start().len();
+        let n_lines = self.total_lines();
 
         // The top level is a forest in the fixtures and a single root in
         // a real document, so start from the head of whatever sibling
@@ -904,27 +758,30 @@ impl App {
             // The one check tied to the text rather than to the tree,
             // and the only thing that can catch a set of counts that is
             // self-consistent and still wrong.
+            //
+            // Spec 0222 S2: the closing brace is *derived* from this
+            // very line, so asserting it here would only restate the
+            // derivation. What it used to catch — a footer that does not
+            // match its header — is checked where the two are both real,
+            // in `decode::overlay_spans`, against the renderer's output.
+            let own = self.node_text[n].as_deref();
+            assert!(
+                own.is_some(),
+                "node {n} is rendered over {total} lines but holds no text"
+            );
             if bracketed {
-                let open = &self.lines[start];
+                let open = own.expect("just asserted");
                 let code = open.split("  #@").next().unwrap_or(open).trim_end();
                 assert!(
                     code.ends_with('{'),
                     "node {n} starts at line {start} and spans {total} lines, \
                      so that is its opening line, but it reads {open:?}"
                 );
-                let close_at = start + total - 1;
-                let close = &self.lines[close_at];
-                assert!(
-                    close.trim_start().starts_with('}'),
-                    "node {n} closes at line {close_at}, but that line \
-                     reads {close:?}"
-                );
+            } else {
+                let held = own.expect("just asserted").split('\n').count();
                 assert_eq!(
-                    indent_of(close_at),
-                    indent_of(start),
-                    "node {n}'s closing line {close_at} is indented \
-                     differently from its opening line {start}: {close:?} vs {:?}",
-                    self.lines[start]
+                    held, total,
+                    "flat node {n} draws {total} rows but holds {held} lines"
                 );
             }
 
@@ -1001,36 +858,19 @@ impl App {
         idx: usize,
         target: Option<String>,
         is_preview: bool,
-        patch_scope: Option<usize>,
-    ) -> Result<usize, String> {
+    ) -> Result<(), String> {
         // Spec 0185 S3: the "what does this node look like as `target`"
         // half lives in `render_node_as`, shared verbatim with the live
         // preview — including the packed-record normalization, which is
         // what resolves `idx` to the run and widens `old_span` to the
         // run's whole extent (spec 0135 G1).
-        let (idx, old_span, rendered) = self.render_node_as(idx, target.as_deref(), is_preview)?;
+        let (idx, _old_span, rendered) = self.render_node_as(idx, target.as_deref(), is_preview)?;
         let RenderedAs {
             lines: new_lines,
             spans: new_spans,
             ..
         } = rendered;
-
-        let delta = new_lines.len() as isize
-            - (old_span.text_range.end - old_span.text_range.start) as isize;
-        // Spec 0160 G2 / spec 0210 S11: `pending_shift` is the batch's
-        // running line offset, and its only remaining consumer is patch
-        // placement. No node's position is stored, so nothing downstream
-        // has to be walked and corrected; a node's line range is derived
-        // from the counters whenever it is asked for.
-        //
-        // Spec 0167: capture `pending_shift`'s value *before* this call's
-        // own delta is folded in — `old_span.text_range` above is
-        // `node_lines(idx)`, so it already reflects every earlier splice
-        // in this batch, and subtracting this pre-increment value
-        // recovers the position `self.lines` still has it at, that buffer
-        // being patched only at the end of the batch (see below).
-        let pending_shift_before = self.pending_shift;
-        self.pending_shift += delta;
+        self.batch_spliced = true;
 
         // Everything the *previous* interpretation showed under `idx`,
         // collected before any of it is vacated. Scrub the whole set from
@@ -1044,74 +884,11 @@ impl App {
         for &d in &old_descendants {
             self.folded.remove(&d);
             self.tree[d] = decode::TreeNode::vacant();
+            self.node_text[d] = None;
             // The cue answered a question about a node this rendering no
             // longer has; if the slot comes back it must be asked again.
             self.heat_states[d] = heat_cue::HeatState::default();
         }
-
-        // Replace `idx`'s *whole* line range (header, interior, and
-        // footer alike) — not just its interior, unlike the old
-        // `apply_override`. Spec 0167: rather than eagerly
-        // `Vec::splice`-ing `self.lines` here (an
-        // O(document length) memmove *per splice*, dominating a batch
-        // with many qualifying splices — spec 0160 N1), record a patch
-        // and defer the actual buffer write to a single materialization
-        // pass in `finalize_override_batch`. `patch_scope` is `None` when
-        // `idx` itself lives in `self.lines` as it stood before this
-        // batch began (`old_span.text_range` is already batch-corrected
-        // — spec 0160 G2 — so recovering the position `self.lines` still
-        // has it at just means subtracting `pending_shift_before`); it's
-        // `Some(parent_idx)` when `idx` is a node freshly created by an
-        // ancestor's own not-yet-materialized splice earlier in this same
-        // batch (`render_overrides_inner`'s doc comment), in which case
-        // the recorded range is local to that parent patch's own content
-        // instead, recovered via the parent's stored `global_start`.
-        let old_lines = widen(&old_span.text_range);
-        let global_start = old_lines.start;
-        let target_range = match patch_scope {
-            None => {
-                let original_start = (old_lines.start as isize - pending_shift_before) as usize;
-                let original_end = (old_lines.end as isize - pending_shift_before) as usize;
-                LinePatchTarget::Original(original_start..original_end)
-            }
-            Some(parent_idx) => {
-                // `old_span.text_range` is `node_lines(idx)` (see the top
-                // of this function), i.e. this node's true *current*
-                // document position, which grows every time a sibling
-                // processed earlier within the same parent gets its own
-                // splice — but the parent's own `lines` is a frozen
-                // snapshot, never touched again after creation.
-                // Undo exactly that extra growth (everything accumulated
-                // since the parent's `children_base_shift`) to recover
-                // the offset that's actually valid in the parent's frozen
-                // `lines`.
-                let parent = &self.pending_line_patches[parent_idx];
-                let parent_start = parent.global_start as isize;
-                let extra_growth = pending_shift_before - parent.children_base_shift;
-                let local_start = (old_lines.start as isize - parent_start - extra_growth) as usize;
-                let local_end = (old_lines.end as isize - parent_start - extra_growth) as usize;
-                LinePatchTarget::Nested(parent_idx, local_start..local_end)
-            }
-        };
-        // Spec 0186 S2: remember the earliest line this batch can have
-        // disturbed. `global_start` is `old_span.text_range.start`, i.e.
-        // already batch-corrected (spec 0160 G2), so it is this patch's
-        // position in the *final* buffer — the frame the repair works
-        // in. A `Nested` patch lies inside its parent's content and so
-        // can only raise this, but it
-        // costs nothing to fold it in at the one site where every patch
-        // passes.
-        self.pending_patch_min_line = Some(match self.pending_patch_min_line {
-            Some(existing) => existing.min(global_start),
-            None => global_start,
-        });
-        let patch_idx = self.pending_line_patches.len();
-        self.pending_line_patches.push(LinePatch {
-            target: target_range,
-            global_start,
-            children_base_shift: self.pending_shift,
-            lines: new_lines,
-        });
 
         // Spec 0216 S12: write the new rendering into the slots the arena
         // already has for these bytes. `idx` is the local render's root,
@@ -1132,8 +909,24 @@ impl App {
         // on an already-rendered slot as one more row of a packed run and
         // *adds* its lines, so leaving the previous interpretation in
         // place would count `idx`'s lines twice over.
+        //
+        // Spec 0222 S5: the text goes in with the structure, in the same
+        // pass, each node taking its own lines out of `new_lines`. That
+        // is the whole of the text update — there is no document-sized
+        // buffer left to patch, and so no batch-wide coordinate system
+        // to place a patch in. `new_spans`' `text_range` is 0-based
+        // against `new_lines`, which is exactly what `overlay_spans`
+        // expects.
         self.tree[idx] = decode::TreeNode::vacant();
-        decode::overlay_spans(&mut self.tree, new_spans, &self.arena, idx);
+        self.node_text[idx] = None;
+        decode::overlay_spans(
+            &mut self.tree,
+            &mut self.node_text,
+            new_spans,
+            &new_lines,
+            &self.arena,
+            idx,
+        );
         // `idx` itself was just retyped, so a cue resolved for it before
         // now answers a question about the superseded interpretation
         // (spec 0152 G6). Its descendants were reset above, when their
@@ -1165,8 +958,7 @@ impl App {
 
         // Spec 0160 G2: no eager walk of the document happens here — the
         // ancestor counts above are the whole structural consequence of
-        // this splice, and `self.pending_shift += delta` records what the
-        // rest of the batch needs to place its patches. When called from
+        // this splice. When called from
         // within a `render_overrides` batch (`override_batch_depth > 0`),
         // reconciliation is deferred to that outer call's own
         // `finalize_override_batch` — which is every production call
@@ -1193,7 +985,7 @@ impl App {
             };
         }
 
-        Ok(patch_idx)
+        Ok(())
     }
 
     /// Spec 0185 S3: render `idx` as if it were `target`, without

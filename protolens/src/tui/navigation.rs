@@ -112,7 +112,7 @@ impl App {
             return (0, 0);
         }
         let text = self.row_text_of(
-            DisplayRow::Committed(self.cursor_line()),
+            self.cursor_row(),
             (!self.cursor_on_footer()).then_some(self.cursor),
         );
         let trimmed = text.trim_start();
@@ -328,9 +328,14 @@ impl App {
     /// it belong to the heat suffix (spec 0194 S3) and are reached by
     /// clamping, not by scanning.
     fn caret_row_chars(&self) -> Vec<char> {
-        self.row_text(DisplayRow::Committed(self.cursor_line()))
-            .chars()
-            .collect()
+        self.row_text(self.cursor_row()).chars().collect()
+    }
+
+    /// The cursor's own line as a display row. Free of any lookup: the
+    /// cursor already names its node and which of that node's lines it
+    /// rests on, which is exactly what spec 0222 S3 has a row carry.
+    fn cursor_row(&self) -> DisplayRow {
+        self.committed_row_at(self.cursor_line(), self.cursor_line_pos())
     }
 
     /// `self.cursor`'s own currently-displayed line — spec 0142.
@@ -368,12 +373,18 @@ impl App {
 
     /// The node whose text is drawn on `line`, if any — everything but
     /// a closing brace, which draws no content of its own.
+    ///
+    /// Spec 0222 S3: a drawn row already names its own line's owner, so
+    /// nothing in the draw path asks a *line number* who owns it any
+    /// more. What is left is the tests' own convenience.
+    #[cfg(test)]
     pub(super) fn node_at_header_line(&self, line: usize) -> Option<usize> {
         let pos = self.line_pos(line)?;
         (!self.is_footer(pos)).then_some(pos.node)
     }
 
     /// The node whose own closing `}` sits on `line`, if any.
+    #[cfg(test)]
     pub(super) fn node_at_footer_line(&self, line: usize) -> Option<usize> {
         let pos = self.line_pos(line)?;
         self.is_footer(pos).then_some(pos.node)

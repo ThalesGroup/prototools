@@ -24,7 +24,7 @@ fn preview_override_highlight_touches_no_committed_state() {
     ];
 
     let tree_len = app.tree.len();
-    let lines = app.lines.clone();
+    let lines = app.document_lines().clone();
     let owners = line_owners(&app);
     let rows = app.visible_row_count();
     let folded = app.folded.clone();
@@ -36,7 +36,7 @@ fn preview_override_highlight_touches_no_committed_state() {
         app.preview_override_highlight();
         assert!(app.preview_overlay.is_some(), "candidate {i} must preview");
         assert_eq!(app.tree.len(), tree_len);
-        assert_eq!(app.lines, lines);
+        assert_eq!(app.document_lines(), lines);
         assert_eq!(line_owners(&app), owners);
         assert_eq!(app.visible_row_count(), rows);
         assert_eq!(app.folded, folded);
@@ -45,7 +45,7 @@ fn preview_override_highlight_touches_no_committed_state() {
     app.close_override();
     assert!(app.preview_overlay.is_none());
     assert_eq!(app.tree.len(), tree_len);
-    assert_eq!(app.lines, lines);
+    assert_eq!(app.document_lines(), lines);
     assert_eq!(line_owners(&app), owners);
     assert_eq!(app.visible_row_count(), rows);
     assert_eq!(app.folded, folded);
@@ -76,13 +76,13 @@ fn overlay_lines_match_the_committed_splice() {
 
         let (mut app_b, inner_idx_b, _) = type_as_fixture();
         app_b
-            .splice_override(inner_idx_b, Some(candidate.to_string()), false, None)
+            .splice_override(inner_idx_b, Some(candidate.to_string()), false)
             .expect("the committed splice must succeed");
         let committed = app_b.node_lines(inner_idx_b);
 
         assert_eq!(
             overlay.lines,
-            app_b.lines[committed.clone()],
+            app_b.document_lines()[committed.clone()],
             "{candidate}: the overlay must render the committed splice's own lines"
         );
     }
@@ -111,7 +111,7 @@ fn display_row_map_holds_at_the_substitution_boundaries() {
             lines: vec!["x".to_string(); overlay_len],
         });
         assert_eq!(app.composed_row_count(), 10 - 3 + overlay_len);
-        assert!(matches!(app.display_row(3), Some(DisplayRow::Committed(3))));
+        assert_eq!(app.display_row(3).and_then(|r| r.committed_line()), Some(3));
         assert!(matches!(app.display_row(4), Some(DisplayRow::Overlay(0))));
         assert!(
             matches!(app.display_row(4 + overlay_len - 1), Some(DisplayRow::Overlay(i)) if i == overlay_len - 1)
@@ -119,10 +119,11 @@ fn display_row_map_holds_at_the_substitution_boundaries() {
         // The first committed row after the substituted block is line
         // `4 + 3`, wherever the overlay's own length put it in composed
         // space.
-        assert!(matches!(
-            app.display_row(4 + overlay_len),
-            Some(DisplayRow::Committed(7))
-        ));
+        assert_eq!(
+            app.display_row(4 + overlay_len)
+                .and_then(|r| r.committed_line()),
+            Some(7)
+        );
         assert!(app.display_row(app.composed_row_count()).is_none());
     }
 }
@@ -235,7 +236,7 @@ fn a_failing_candidate_drops_the_overlay_and_leaves_the_document_intact() {
         ("test.Inner".to_string(), None),
         ("nonexistent.Type".to_string(), None),
     ];
-    let lines = app.lines.clone();
+    let lines = app.document_lines().clone();
     let first_child = app.first_child(inner_idx);
 
     app.override_highlight = 0;
@@ -252,7 +253,7 @@ fn a_failing_candidate_drops_the_overlay_and_leaves_the_document_intact() {
         app.message
     );
     assert!(app.preview_overlay.is_none());
-    assert_eq!(app.lines, lines);
+    assert_eq!(app.document_lines(), lines);
     assert_eq!(app.first_child(inner_idx), first_child);
 }
 
@@ -410,7 +411,7 @@ fn confirming_after_several_previews_matches_confirming_directly() {
     app_b.override_highlight = row_b;
     app_b.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    assert_eq!(app_a.lines, app_b.lines);
+    assert_eq!(app_a.document_lines(), app_b.document_lines());
     assert_eq!(
         app_a.tree[inner_idx_a].span.type_fqdn,
         app_b.tree[inner_idx_b].span.type_fqdn
@@ -424,7 +425,7 @@ fn confirming_after_several_previews_matches_confirming_directly() {
 #[test]
 fn esc_after_several_previews_reverts_to_original_content() {
     let (mut app, inner_idx, _) = type_as_fixture();
-    let original_lines = app.lines.clone();
+    let original_lines = app.document_lines().clone();
     let original_type_fqdn = app.tree[inner_idx].span.type_fqdn;
 
     app.cursor = inner_idx;
@@ -438,6 +439,6 @@ fn esc_after_several_previews_reverts_to_original_content() {
 
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.override_target, None);
-    assert_eq!(app.lines, original_lines);
+    assert_eq!(app.document_lines(), original_lines);
     assert_eq!(app.tree[inner_idx].span.type_fqdn, original_type_fqdn);
 }

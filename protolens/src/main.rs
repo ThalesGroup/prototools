@@ -512,7 +512,7 @@ fn main() -> ExitCode {
     // document — 5.2 s on a 1.1 MB descriptor set, longer than the render
     // that precedes it.
     if announce {
-        eprintln!("protolens: indexing {} lines...", decoded.lines.len());
+        eprintln!("protolens: indexing {} lines...", decoded.total_lines);
     }
 
     let proto_root = resolve_proto_root(cli.proto_root.clone(), descriptor_set);

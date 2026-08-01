@@ -14,9 +14,16 @@ use prototext_core::serialize::render_text::NodeSpan;
 use prototext_graph::build_scoring_graph::build_from_strings;
 use prototext_graph::score::load::LoadedGraph;
 
+/// Spec 0222 S1's `node_text` for a fixture whose nodes are one flat
+/// line each, in slot order.
+fn own_line_each(lines: &[String]) -> Vec<Option<Box<str>>> {
+    lines.iter().map(|l| Some(Box::from(l.as_str()))).collect()
+}
+
 pub(super) fn empty_app() -> App {
     let decoded = Decoded {
-        lines: Vec::new(),
+        total_lines: 0,
+        node_text: Vec::new(),
         tree: Vec::new(),
         root_type: "google.protobuf.Empty".to_string(),
         arena: crate::decode::arena_of(&[]),
@@ -63,9 +70,10 @@ pub(super) fn message_node_app_with_root_candidates(
     // malformed child slots the arena keeps and this interpretation
     // does not show, which is exactly the vacant case.
     let arena = crate::decode::arena_of(&blob);
-    let tree = crate::decode::build_tree(vec![span], &arena);
+    let (tree, node_text) = crate::decode::build_tree(vec![span], &lines, &arena);
     let decoded = Decoded {
-        lines,
+        total_lines: lines.len(),
+        node_text,
         tree,
         root_type: "google.protobuf.FileDescriptorProto".to_string(),
         arena,
@@ -158,7 +166,8 @@ pub(super) fn sibling_leaves_app(texts: &[&str]) -> App {
         })
         .collect();
     let decoded = Decoded {
-        lines,
+        total_lines: lines.len(),
+        node_text: own_line_each(&lines),
         tree,
         root_type: "google.protobuf.FileDescriptorProto".to_string(),
         arena,
@@ -206,7 +215,8 @@ pub(super) fn wide_sibling_scalars_app(n: usize) -> App {
         })
         .collect();
     let decoded = Decoded {
-        lines,
+        total_lines: lines.len(),
+        node_text: own_line_each(&lines),
         tree,
         root_type: "google.protobuf.FileDescriptorProto".to_string(),
         arena: crate::decode::arena_of(&blob),

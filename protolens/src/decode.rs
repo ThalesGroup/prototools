@@ -863,10 +863,100 @@ fn arena_gap(spans: &[NodeSpan], arena: &Arena) -> Option<String> {
 /// substituted in. That range substitution is the reason a caller
 /// wanting element k's bytes has to re-parse the payload: the elements'
 /// individual ranges are exactly what collapsing throws away.
-pub(crate) fn build_tree(spans: Vec<NodeSpan>, arena: &Arena) -> Vec<TreeNode> {
+pub(crate) fn build_tree(
+    spans: Vec<NodeSpan>,
+    lines: &[String],
+    arena: &Arena,
+) -> (Vec<TreeNode>, Vec<Option<Box<str>>>) {
     let mut nodes: Vec<TreeNode> = (0..arena.len()).map(|_| TreeNode::vacant()).collect();
-    overlay_spans(&mut nodes, spans, arena, 0);
-    nodes
+    let mut text: Vec<Option<Box<str>>> = vec![None; arena.len()];
+    overlay_spans(&mut nodes, &mut text, spans, lines, arena, 0);
+    (nodes, text)
+}
+
+/// Spec 0222 S2: the closing line of a bracketed node, derived from its
+/// header.
+///
+/// `write_close_brace` emits an indent, one `}` and a newline — no
+/// annotation and no suffix — so the whole of a footer line is a
+/// function of how far its header is indented. The indent is taken from
+/// the header rather than from `span.level` because the header's
+/// indentation is the render's own output, while the level is the wire
+/// walk's depth, and under a synthetic wrapper the two need not agree.
+///
+/// The single definition on purpose: `overlay_spans` asserts the
+/// renderer's real footer equals this, and the TUI draws this in place
+/// of a footer it no longer stores. Two copies would let the assertion
+/// pass while the drawing was wrong.
+pub(crate) fn derived_close(header: &str) -> String {
+    let indent = header.len() - header.trim_start_matches(' ').len();
+    let mut out = String::with_capacity(indent + 1);
+    for _ in 0..indent {
+        out.push(' ');
+    }
+    out.push('}');
+    out
+}
+
+/// The lines `idx`'s subtree draws, in document order — spec 0222 S1's
+/// per-node text put back together.
+///
+/// Structural, so it lives beside the overlay it reads: the TUI's
+/// export and clipboard paths want one subtree, and the tests want the
+/// whole document ([`document_lines`]), but it is the same walk.
+pub(crate) fn subtree_lines(
+    tree: &[TreeNode],
+    text: &[Option<Box<str>>],
+    arena: &Arena,
+    idx: usize,
+) -> Vec<String> {
+    let mut out = Vec::with_capacity(tree[idx].lines_total as usize);
+    push_subtree_lines(tree, text, arena, idx, &mut out);
+    out
+}
+
+/// [`subtree_lines`] over every root — the whole document, as the
+/// `Vec<String>` spec 0222 deleted would have held it.
+///
+/// Test-only: production never wants the whole text at once, which is
+/// the point of the spec.
+#[cfg(test)]
+pub(crate) fn document_lines(
+    tree: &[TreeNode],
+    text: &[Option<Box<str>>],
+    arena: &Arena,
+) -> Vec<String> {
+    let parent = arena.parent();
+    let roots = (0..parent.len())
+        .position(|i| parent[i] != i as u32)
+        .unwrap_or(parent.len());
+    let mut out = Vec::new();
+    for root in 0..roots.min(tree.len()) {
+        push_subtree_lines(tree, text, arena, root, &mut out);
+    }
+    out
+}
+
+fn push_subtree_lines(
+    tree: &[TreeNode],
+    text: &[Option<Box<str>>],
+    arena: &Arena,
+    idx: usize,
+    out: &mut Vec<String>,
+) {
+    let Some(own) = text[idx].as_deref() else {
+        return;
+    };
+    if !tree[idx].is_bracketed() {
+        out.extend(own.split('\n').map(str::to_owned));
+        return;
+    }
+    out.push(own.to_owned());
+    let first_child = arena.first_child();
+    for child in first_child[idx] as usize..first_child[idx + 1] as usize {
+        push_subtree_lines(tree, text, arena, child, out);
+    }
+    out.push(derived_close(own));
 }
 
 /// Write one render's spans into the slot-indexed overlay, rooted at
@@ -880,9 +970,18 @@ pub(crate) fn build_tree(spans: Vec<NodeSpan>, arena: &Arena) -> Vec<TreeNode> {
 ///
 /// The caller is responsible for vacating whatever the previous
 /// interpretation of `root`'s subtree occupied — this only writes.
+///
+/// Spec 0222 S1: `text` is the slot-indexed store of the lines each node
+/// draws *itself*, and `lines` is the render output the spans were
+/// numbered against — the whole document for [`build_tree`], one
+/// subtree's own render for a splice. A bracketed node keeps only its
+/// header line (its footer is derived, S2); a flat one keeps all of its
+/// rows joined by `\n` in a single allocation.
 pub(crate) fn overlay_spans(
     nodes: &mut [TreeNode],
+    text: &mut [Option<Box<str>>],
     spans: Vec<NodeSpan>,
+    lines: &[String],
     arena: &Arena,
     root: usize,
 ) {
@@ -899,14 +998,40 @@ pub(crate) fn overlay_spans(
         // invalidate it. Taking the count directly is equivalent to
         // summing the children (every line belongs to exactly one node)
         // and is O(1) rather than a second pass.
-        let lines = span.text_range.end - span.text_range.start;
+        let own_lines = &lines[widen(&span.text_range)];
+        let line_count = span.text_range.end - span.text_range.start;
         if nodes[slot].is_rendered() {
             // The second and later elements of a packed run: one more
-            // row of a slot that already exists.
-            nodes[slot].lines_total += lines;
-            nodes[slot].lines_visible += lines;
+            // row of a slot that already exists. Its rows are contiguous
+            // in the render output, so they extend the one string rather
+            // than starting a second (spec 0222 S1).
+            nodes[slot].lines_total += line_count;
+            nodes[slot].lines_visible += line_count;
+            let held = text[slot]
+                .take()
+                .expect("a rendered slot always holds its own text");
+            let mut joined = String::from(held);
+            for line in own_lines {
+                joined.push('\n');
+                joined.push_str(line);
+            }
+            text[slot] = Some(joined.into_boxed_str());
             continue;
         }
+        // Spec 0222 S1/S2: a bracketed node's own lines are its first
+        // and its last, and the last is `indent + "}"` — derivable from
+        // the first, so only the first is kept.
+        text[slot] = Some(if span.is_message {
+            debug_assert_eq!(
+                own_lines[own_lines.len() - 1],
+                derived_close(&own_lines[0]),
+                "spec 0222 S2: a closing line must be its header's \
+                 indentation and a brace, nothing else"
+            );
+            Box::from(own_lines[0].as_str())
+        } else {
+            own_lines.join("\n").into_boxed_str()
+        });
         // Spec 0216 S19: both byte coordinates come from the arena
         // rather than from the span. That is what makes a splice's local
         // render — whose spans are numbered from the re-decoded field's
@@ -919,9 +1044,9 @@ pub(crate) fn overlay_spans(
         }
         nodes[slot] = TreeNode {
             span,
-            lines_total: lines,
+            lines_total: line_count,
             // Nothing is folded at build time.
-            lines_visible: lines,
+            lines_visible: line_count,
             rendered_as: NOT_RENDERED,
         };
     }
@@ -930,7 +1055,15 @@ pub(crate) fn overlay_spans(
 // ── Public entry point ──────────────────────────────────────────────────────
 
 pub struct Decoded {
-    pub lines: Vec<String>,
+    /// How many lines the render emitted, for the startup progress
+    /// message alone. Spec 0222 deleted the `Vec<String>` this used to
+    /// be `len()` of; the live count is `App::total_lines`, derived from
+    /// the roots' own counters so that a splice cannot leave it stale.
+    pub total_lines: usize,
+    /// Spec 0222 S1: the lines each arena slot draws itself, its
+    /// children's excluded — `None` for a slot this interpretation does
+    /// not render. Parallel to `tree`, and indexed the same way.
+    pub node_text: Vec<Option<Box<str>>>,
     pub tree: Vec<TreeNode>,
     /// The blob's structural decomposition, derived from the bytes alone
     /// (spec 0216 S1). Unlike `tree` it does not depend on the type
@@ -967,6 +1100,16 @@ pub struct Decoded {
     /// render cache alongside it: cache entries hold ids from whichever
     /// table produced them.
     pub fqdns: FqdnTable,
+}
+
+#[cfg(test)]
+impl Decoded {
+    /// The whole rendering as lines — the `Vec<String>` this struct
+    /// carried before spec 0222, rebuilt from the nodes for the tests
+    /// that assert on what the document says.
+    pub(crate) fn document_lines(&self) -> Vec<String> {
+        document_lines(&self.tree, &self.node_text, &self.arena)
+    }
 }
 
 /// Deterministic short name for a synthetic one-field wrapper descriptor
@@ -1586,9 +1729,33 @@ pub fn render_resolved(
     if let Some(gap) = arena_gap(&rendered.spans, &arena) {
         panic!("spec 0216: the arena is not a superset of the render — {gap}");
     }
-    let tree = build_tree(rendered.spans, &arena);
+    let (tree, node_text) = build_tree(rendered.spans, &lines, &arena);
+    // Spec 0222, test-plan item 3. Same argument as the check above, and
+    // the same only-place-it-means-anything: `lines` dies at the end of
+    // this function, so a systematic off-by-one in S1's ownership split
+    // — a node keeping one line too many, a footer derived from the
+    // wrong header — is unfalsifiable after it. Being `cfg(test)` this
+    // also reaches the `#[ignore]`d corpus harness, which is where the
+    // shapes nobody wrote a fixture for live.
+    #[cfg(test)]
+    {
+        let rebuilt = document_lines(&tree, &node_text, &arena);
+        assert_eq!(
+            rebuilt.len(),
+            lines.len(),
+            "spec 0222 S1: the nodes must own every rendered line, once"
+        );
+        if let Some(i) = (0..lines.len()).find(|&i| rebuilt[i] != lines[i]) {
+            panic!(
+                "spec 0222 S1: line {i} reassembles as {:?}, but the render \
+                 emitted {:?}",
+                rebuilt[i], lines[i]
+            );
+        }
+    }
     Ok(Decoded {
-        lines,
+        total_lines: lines.len(),
+        node_text,
         tree,
         arena,
         root_type,

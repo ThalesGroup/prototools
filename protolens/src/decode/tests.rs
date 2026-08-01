@@ -296,18 +296,17 @@ fn decode_without_type_override_or_graph_renders_raw_not_error() {
     assert_eq!(wrapper.span.type_fqdn, NO_FQDN);
 }
 
-/// Spec 0216, test-plan item 1: the maximal tree is a superset of
-/// every interpretation's tree.
+/// A blob holding all three of spec 0222 S1's ownership shapes at
+/// once: a bracketed node (`Outer`, and `inner` inside it), a flat
+/// one-line node (`id`), and a packed run (`xs`), whose three
+/// elements share a single slot and so are the only case where a
+/// node owns more than one line.
 ///
-/// The same bytes are decoded twice, once with the schema and once
-/// with none, against a single arena — which is the claim in its
-/// sharpest form, since the arena is built without either. The blob
-/// carries a packed run on purpose: those elements have no tag of
-/// their own, so they are the one kind of rendered node that is a
-/// display row inside a slot rather than a slot (S22), and the raw
-/// pass renders the very same bytes as an opaque string instead.
-#[test]
-fn the_arena_covers_every_interpretation() {
+/// Shared because two specs want the same shapes for two reasons —
+/// 0216 because a packed element is a display row inside a slot
+/// rather than a slot of its own, 0222 because that is exactly what
+/// makes its owner's text multi-line.
+fn packed_and_nested_fixture(ctx_name: &str) -> (DescriptorContext, [u8; 10]) {
     let inner = DescriptorProto {
         name: Some("Inner".to_string()),
         field: vec![FieldDescriptorProto {
@@ -349,10 +348,24 @@ fn the_arena_covers_every_interpretation() {
     };
     let fds = FileDescriptorSet { file: vec![file] };
 
-    let mut ctx = ctx_from_fds("arena-coverage", &fds);
-
     // field 1: packed [1, 2, 300]; field 2: Inner { id: 7 }.
-    let blob = [0x0A, 0x04, 0x01, 0x02, 0xAC, 0x02, 0x12, 0x02, 0x08, 0x07];
+    (
+        ctx_from_fds(ctx_name, &fds),
+        [0x0A, 0x04, 0x01, 0x02, 0xAC, 0x02, 0x12, 0x02, 0x08, 0x07],
+    )
+}
+
+/// Spec 0216, test-plan item 1: the maximal tree is a superset of
+/// every interpretation's tree.
+///
+/// The same bytes are decoded twice, once with the schema and once
+/// with none, against a single arena — which is the claim in its
+/// sharpest form, since the arena is built without either. The raw
+/// pass renders the packed run's very same bytes as an opaque string
+/// instead.
+#[test]
+fn the_arena_covers_every_interpretation() {
+    let (mut ctx, blob) = packed_and_nested_fixture("arena-coverage");
 
     // `decode` runs `arena_gap` itself under `cfg(test)` and panics
     // on a gap, so what is left to assert here is only that the run
@@ -367,13 +380,85 @@ fn the_arena_covers_every_interpretation() {
     }
 }
 
-/// The same claim against a blob nobody wrote for it.
+/// Spec 0222, test-plan items 1-3: every rendered node owns exactly
+/// the lines it draws, a footer is its header's indent and a brace,
+/// and the two together reassemble the document byte for byte.
+///
+/// The claims themselves are asserted inside `decode`, where the
+/// render output is still in hand and where they therefore also cover
+/// the corpus harness. What is left — and it is the part that decides
+/// whether those assertions mean anything — is that this fixture
+/// really presents all three of S1's shapes, since a split that
+/// mishandled packed runs would pass vacuously on a document with
+/// none.
+#[test]
+fn a_node_owns_the_lines_it_renders() {
+    let (mut ctx, blob) = packed_and_nested_fixture("node-owns-its-lines");
+    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
+
+    let mut bracketed = 0;
+    let mut flat_one_line = 0;
+    let mut packed_run = 0;
+    for (slot, node) in decoded.tree.iter().enumerate() {
+        let Some(text) = decoded.node_text[slot].as_deref() else {
+            assert!(
+                !node.is_rendered(),
+                "slot {slot} draws {} lines but owns no text",
+                node.lines_total
+            );
+            continue;
+        };
+        let own = text.split('\n').count() as u32;
+        if node.is_bracketed() {
+            // The header only: the children's lines are the children's,
+            // and the footer is derived rather than stored.
+            assert_eq!(own, 1, "slot {slot}: a bracketed node keeps its header");
+            assert!(
+                node.lines_total >= 2,
+                "slot {slot}: a bracketed node draws at least a header and a footer"
+            );
+            bracketed += 1;
+        } else {
+            assert_eq!(
+                own, node.lines_total,
+                "slot {slot}: a flat node owns every line it draws"
+            );
+            if own == 1 {
+                flat_one_line += 1;
+            } else {
+                packed_run += 1;
+            }
+        }
+    }
+    assert!(
+        bracketed >= 2,
+        "the fixture must nest a message in a message"
+    );
+    assert!(flat_one_line >= 1, "the fixture must draw a lone scalar");
+    assert_eq!(
+        packed_run, 1,
+        "the fixture must draw exactly one packed run"
+    );
+
+    // The reassembly the checks inside `decode` compared against, shown
+    // here so a reader can see what shape it is.
+    assert_eq!(
+        decoded.document_lines().len(),
+        decoded.total_lines,
+        "the reassembled document is the rendered document"
+    );
+}
+
+/// The same claim — and spec 0222's — against a blob nobody wrote for
+/// them.
 ///
 /// A fixture proves the property on shapes chosen to exercise it,
 /// which is the weaker half of the argument: the arena has to hold
-/// for whatever a reader opens. This runs the identical checks over
-/// a real descriptor set, and is `#[ignore]`d because the corpus is
-/// not in the repository. Point it at one and run it explicitly:
+/// for whatever a reader opens, and so does the ownership split that
+/// decides which node draws which line. `decode` checks both itself
+/// under `cfg(test)`, so running it over a real corpus is all this
+/// needs to do. It is `#[ignore]`d because the corpus is not in the
+/// repository. Point it at one and run it explicitly:
 ///
 /// ```text
 /// PROTOLENS_CORPUS_BLOB=/path/to/googleapis.desc \
@@ -412,8 +497,10 @@ fn the_arena_covers_a_real_corpus() {
     let rendered = decoded.tree.iter().filter(|n| n.is_rendered()).count();
     assert!(rendered > 1, "nothing was rendered");
     eprintln!(
-        "the arena covers, and agrees with, all {rendered} rendered nodes, in {} slots",
-        decoded.arena.len()
+        "the arena covers, and agrees with, all {rendered} rendered nodes, in {} slots; \
+         those nodes reassemble the whole {} lines byte for byte",
+        decoded.arena.len(),
+        decoded.total_lines
     );
 }
 
@@ -447,9 +534,9 @@ fn decode_shows_the_root_field_number_in_the_header_line() {
     let blob = [0x08u8, 0x05];
     let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Msg"), 2).unwrap();
     assert!(
-        decoded.lines[0].starts_with("1 "),
+        decoded.document_lines()[0].starts_with("1 "),
         "root header line must show the root field number: {:?}",
-        decoded.lines[0]
+        decoded.document_lines()[0]
     );
 }
 
@@ -579,7 +666,7 @@ fn decode_leaves_any_fields_unexpanded_with_real_type_url_and_value_spans() {
         !decoded.tree.iter().any(|n| n.span.type_fqdn == payload),
         "acme.Payload must not appear — auto-expansion is tui.rs's job, \
          not decode()'s: {:#?}",
-        decoded.lines
+        decoded.document_lines()
     );
     // Real tag/length-backed ranges, in document order: type_url's
     // range must end before value's own range starts.
@@ -913,7 +1000,7 @@ fn both_branches_render_the_same_document() {
     )
     .unwrap();
 
-    assert_eq!(from_lazy.lines, from_eager.lines);
+    assert_eq!(from_lazy.document_lines(), from_eager.document_lines());
     assert_eq!(from_lazy.root_type, from_eager.root_type);
 }
 
@@ -1092,9 +1179,9 @@ fn a_type_loaded_after_the_root_can_still_be_rendered_through() {
 
     assert_eq!(decoded.root_type, "t.Stray");
     assert!(
-        decoded.lines.iter().any(|l| l.contains("s: 9")),
+        decoded.document_lines().iter().any(|l| l.contains("s: 9")),
         "the freshly loaded type must render by name: {:?}",
-        decoded.lines
+        decoded.document_lines()
     );
 }
 

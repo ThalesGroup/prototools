@@ -728,7 +728,8 @@ fn default_export_descriptor_path_falls_back_to_the_numeric_range_when_unresolva
     };
     let tree = vec![make_node(1, 0..2), make_node(2, 2..4)];
     let decoded = Decoded {
-        lines: vec!["a".to_string(), "b".to_string()],
+        total_lines: 2,
+        node_text: vec![Some(Box::from("a")), Some(Box::from("b"))],
         tree,
         root_type: "google.protobuf.FileDescriptorProto".to_string(),
         arena: crate::decode::arena_of(&blob),
@@ -878,8 +879,7 @@ fn ctrl_o_restores_the_whole_caret_position() {
     let wide = app.cursor_column;
     app.record_jump();
     app.set_cursor(items[2]);
-    let shrink = app.absolute_start(items[0]);
-    app.lines[shrink] = "x".to_string();
+    app.node_text[items[0]] = Some(Box::from("x"));
 
     app.handle_key(ctrl_o);
     assert_eq!(app.cursor, items[0]);

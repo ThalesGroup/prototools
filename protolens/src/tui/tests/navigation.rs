@@ -1046,7 +1046,7 @@ fn alt_arrows_move_the_caret_by_the_command_lines_own_words() {
     let (mut app, inner_idx, _) = type_as_fixture();
     app.set_cursor(inner_idx);
     let line_idx = app.absolute_start(inner_idx);
-    let chars: Vec<char> = app.lines[line_idx].chars().collect();
+    let chars: Vec<char> = app.document_lines()[line_idx].chars().collect();
     let home = app.cursor_column;
 
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
@@ -1293,12 +1293,13 @@ fn a_fold_marker_row_still_reports_its_expanded_text() {
     let idx = items[0];
     let line = app.absolute_start(idx);
     assert!(
-        !app.row_text(DisplayRow::Committed(line)).contains("..."),
+        !app.row_text(app.committed_row(line).unwrap())
+            .contains("..."),
         "the fixture's node must start expanded"
     );
 
     app.folded.insert(idx);
-    let text = app.row_text(DisplayRow::Committed(line));
+    let text = app.row_text(app.committed_row(line).unwrap());
     assert!(
         text.contains("... }"),
         "a folded row must still expand to its collapse summary, got {text:?}"
@@ -1307,7 +1308,7 @@ fn a_fold_marker_row_still_reports_its_expanded_text() {
     // `caret_bounds` calls.
     assert_eq!(
         text,
-        app.row_text_of(DisplayRow::Committed(line), Some(idx))
+        app.row_text_of(app.committed_row(line).unwrap(), Some(idx))
     );
 }
 

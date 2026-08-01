@@ -1173,7 +1173,7 @@ fn manage_pane_rename_updates_entry_and_rerenders_active_override() {
     );
 
     let line_idx = app.absolute_start(inner_idx);
-    let header = &app.lines[line_idx];
+    let header = &app.document_lines()[line_idx];
     assert!(
         header.contains("custom_name"),
         "expected the renamed field name in the re-rendered header: {header}"
@@ -1214,7 +1214,7 @@ fn manage_pane_rename_works_on_the_document_root_with_a_real_type() {
         Some("root_name")
     );
     assert_eq!(app.field_name_for(app.first_node), "root_name");
-    let header = &app.lines[0];
+    let header = &app.document_lines()[0];
     assert!(
         header.contains("root_name"),
         "expected the renamed field name in the root's header line: {header}"
@@ -1251,7 +1251,7 @@ fn manage_pane_rename_works_on_a_raw_typed_root() {
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.manage_rename.is_none());
     assert_eq!(app.field_name_for(app.first_node), "exemplar");
-    let header = &app.lines[0];
+    let header = &app.document_lines()[0];
     assert!(
         header.contains("exemplar"),
         "expected the renamed field name in the raw root's header line: {header}"
@@ -1286,7 +1286,7 @@ fn manage_pane_rename_works_on_a_raw_typed_non_root_node() {
     assert!(app.manage_rename.is_none());
     assert_eq!(app.field_name_for(inner_idx), "custom_raw_name");
     let line_idx = app.absolute_start(inner_idx);
-    let header = &app.lines[line_idx];
+    let header = &app.document_lines()[line_idx];
     assert!(
         header.contains("custom_raw_name"),
         "expected the renamed field name in the raw node's header line: {header}"
@@ -1333,7 +1333,7 @@ fn toggling_message_set_auto_override_off_and_on_sticks() {
         None,
         "Item node must render raw/natural once its override is \
          deactivated: {:#?}",
-        app.lines
+        app.document_lines()
     );
 
     // Reactivate: the same entry (same index — `toggle_active` never
@@ -1351,13 +1351,13 @@ fn toggling_message_set_auto_override_off_and_on_sticks() {
         Some(decode::MESSAGE_SET_ITEM_FQDN),
         "Item node must re-expand once its override is reactivated: \
          {:#?}",
-        app.lines
+        app.document_lines()
     );
     assert!(
         has_node_with_type(&app, "ms_test.ExtPayload"),
         "tier-2 auto-expansion must also come back after reactivating \
          tier-1: {:#?}",
-        app.lines
+        app.document_lines()
     );
 }
 
@@ -1407,12 +1407,14 @@ fn deactivating_tier_1_does_not_affect_the_still_active_tier_2_entry() {
         app.overrides.entries()
     );
     assert!(
-        app.lines.iter().any(|l| l.contains("ExtPayload")),
+        app.document_lines()
+            .iter()
+            .any(|l| l.contains("ExtPayload")),
         "tier-2's active override must keep applying even though its \
          governing tier-1 ancestor is now deactivated — provenance \
          (auto vs manual) must have no effect on whether an active \
          override applies: {:?}",
-        app.lines
+        app.document_lines()
     );
 
     // Reactivating tier-1 must not disturb tier-2 either.
@@ -1421,7 +1423,7 @@ fn deactivating_tier_1_does_not_affect_the_still_active_tier_2_entry() {
     assert!(
         has_node_with_type(&app, "ms_test.ExtPayload"),
         "tier-2 must still resolve after reactivating tier-1: {:?}",
-        app.lines
+        app.document_lines()
     );
 }
 

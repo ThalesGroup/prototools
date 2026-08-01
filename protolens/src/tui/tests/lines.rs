@@ -106,7 +106,7 @@ fn live_nodes(app: &App) -> Vec<usize> {
 /// the reference they are checked against. Panics if two nodes claim
 /// one line, which is a corrupt tree rather than a wrong answer.
 fn owners_from_the_nodes(name: &str, app: &App) -> Vec<Option<LinePos>> {
-    let mut expect: Vec<Option<LinePos>> = vec![None; app.lines.len()];
+    let mut expect: Vec<Option<LinePos>> = vec![None; app.document_lines().len()];
     for idx in live_nodes(app) {
         let r = app.node_lines(idx);
         // A bracketed node owns its opening and closing lines and
@@ -141,107 +141,77 @@ fn the_descent_names_the_owner_of_every_line_and_nothing_past_the_end() {
             assert!(
                 want.is_some(),
                 "{name}: line {line} ({:?}) is owned by nobody",
-                app.lines[line]
+                app.document_lines()[line]
             );
             assert_eq!(app.line_pos(line), *want, "{name}: line {line}");
         }
         assert_eq!(
-            app.line_pos(app.lines.len()),
+            app.line_pos(app.document_lines().len()),
             None,
             "{name}: past the end must be past the end"
         );
     }
 }
 
-/// Spec 0210 S3's per-frame cache, in both of the things it promises.
+/// Spec 0222, test-plan item 4: a drawn row carries its own owner.
 ///
-/// `cached_line_pos` answers by *binary search* over whatever
-/// `set_window_nodes` was last handed, on the strength of one comment
-/// in `visible_window` — "ascending by construction". If that ever
-/// stopped being true the search would not fail loudly; it would return
-/// some other row's owner, for a line that is on screen, and every
-/// consumer of the frame (the fold marker, the spans, the override
-/// hint) would follow it. So the ordering is asserted, and then the
-/// cache's answers are pinned to the answers the descent gives for the
-/// very same lines.
+/// `visible_window` must number its rows consecutively from `from`, and
+/// each row's owner must be the one the whole-document descent gives
+/// for that same line.
+///
+/// The window is the only place a line's owner is worked out in bulk —
+/// S3 has a drawn row carry its owner from here to every consumer of
+/// the frame (the fold marker, the spans, the override hint), none of
+/// which resolves a line number again. So a walk that drifted from the
+/// descent would be silent.
+///
+/// Run twice over each fixture, unfolded and then with the first
+/// foldable node folded, because the walk's whole reason to exist is
+/// that it steps *past* a folded body: unfolded it would agree with a
+/// plain counter too.
 #[test]
-fn the_window_cache_answers_what_the_descent_would_and_is_ordered() {
+fn a_display_row_carries_its_own_owner() {
     for (name, mut app) in real_decodes() {
-        // Taken with the window still empty, so every one of these is a
-        // descent rather than a lookup.
-        let want: Vec<Option<LinePos>> = (0..app.lines.len()).map(|l| app.line_pos(l)).collect();
+        check_window_against_the_descent(name, &app);
 
-        let window = app.visible_window(0, app.lines.len());
-        assert!(!window.is_empty(), "{name}: the fixture must draw rows");
-        app.set_window_nodes(&window);
-        // Asserted on the stored vector rather than on `visible_window`'s
-        // return, since that is the one the binary search runs over. Out
-        // of order it does not answer wrongly — each entry is a
-        // self-consistent pair — it simply stops answering, and the cache
-        // silently becomes a whole-document descent per row again, which
-        // is the cost spec 0210 S3 exists to avoid.
-        assert!(
-            app.window_nodes.windows(2).all(|w| w[0].0 < w[1].0),
-            "{name}: the window must be strictly ascending by line, or the \
-             binary search in `cached_line_pos` can never hit: {:?}",
-            app.window_nodes.iter().map(|&(l, _)| l).collect::<Vec<_>>()
-        );
-        for (line, want) in want.iter().enumerate() {
-            assert_eq!(
-                app.line_pos(line),
-                *want,
-                "{name}: line {line} must resolve the same through the cache \
-                 as through the descent"
-            );
-        }
+        let Some(victim) = live_nodes(&app)
+            .into_iter()
+            .find(|&i| app.tree[i].is_bracketed() && app.tree[i].lines_total > 2)
+        else {
+            continue;
+        };
+        app.toggle_fold(victim);
+        check_window_against_the_descent(name, &app);
     }
 }
 
-/// The version guard, which is the whole reason the cache is allowed to
-/// be a plain snapshot of the last frame rather than something anyone
-/// has to keep repaired.
-///
-/// The entry recorded here is deliberately *wrong*, which nothing in
-/// production ever records. It has to be: a correct entry is
-/// indistinguishable from a miss, so a test built on a real window
-/// cannot tell whether the guard fired or the answer merely happened to
-/// still be right.
-///
-/// The version is bumped by hand for the same reason. Every mutator
-/// that bumps it — `folds_changed`, `finalize_override_batch` — ends in
-/// `clamp_pan_offset`, which measures the widest visible row, which
-/// builds a window, which re-records the cache at the new version. So
-/// driving a real fold or splice would leave the cache *fresh* and test
-/// the redraw instead of the guard. A wrong entry plus a bare bump
-/// isolates the one thing standing between a stale window and a wrong
-/// answer for a line on screen.
-#[test]
-fn the_window_cache_is_believed_only_at_the_version_it_was_recorded_at() {
-    let (mut app, inner_idx, _) = type_as_fixture();
-    let truth: Vec<Option<LinePos>> = (0..app.lines.len()).map(|l| app.line_pos(l)).collect();
-
-    let wrong = LinePos {
-        node: inner_idx,
-        line_in_node: 0,
-    };
-    assert_ne!(
-        truth[0],
-        Some(wrong),
-        "line 0 must not really be owned by `inner`, or this proves nothing"
-    );
-    app.set_window_nodes(&[(0, wrong)]);
+fn check_window_against_the_descent(name: &str, app: &App) {
+    let rows = app.visible_row_count();
+    let window = app.visible_window(0, rows);
+    assert!(!window.is_empty(), "{name}: the fixture must draw rows");
     assert_eq!(
-        app.line_pos(0),
-        Some(wrong),
-        "a window recorded at the current version is consulted"
+        window.len(),
+        rows,
+        "{name}: the walk must produce every visible row"
     );
-
-    app.structural_version += 1;
-    assert_eq!(
-        app.line_pos(0),
-        truth[0],
-        "a window from an older version must be ignored, not believed"
+    assert!(
+        window.windows(2).all(|w| w[0].0 < w[1].0),
+        "{name}: the window must number its lines in order: {:?}",
+        window.iter().map(|&(l, _)| l).collect::<Vec<_>>()
     );
+    for (row, &(line, pos)) in window.iter().enumerate() {
+        assert_eq!(
+            app.line_pos(line),
+            Some(pos),
+            "{name}: line {line} must resolve the same through the walk \
+             as through the descent"
+        );
+        assert_eq!(
+            app.visible_row_pos(row),
+            Some((pos, line)),
+            "{name}: row {row} must be the row the descent draws there"
+        );
+    }
 }
 
 /// With no folds, the visible-row descent must agree with the line
@@ -252,8 +222,12 @@ fn the_window_cache_is_believed_only_at_the_version_it_was_recorded_at() {
 fn an_unfolded_document_numbers_rows_and_lines_alike() {
     for (name, app) in real_decodes() {
         assert!(app.folded.is_empty(), "{name}: fixture starts folded");
-        assert_eq!(app.visible_row_count(), app.lines.len(), "{name}");
-        for line in 0..app.lines.len() {
+        assert_eq!(
+            app.visible_row_count(),
+            app.document_lines().len(),
+            "{name}"
+        );
+        for line in 0..app.document_lines().len() {
             assert_eq!(
                 app.visible_row_pos(line),
                 app.line_pos(line).map(|pos| (pos, line)),
@@ -322,7 +296,7 @@ fn a_folded_body_is_represented_by_its_fold_header_row() {
     app.toggle_fold(items[1]);
 
     let rows = app.visible_row_count();
-    assert_eq!(rows, app.lines.len() - (hidden.len() - 1));
+    assert_eq!(rows, app.document_lines().len() - (hidden.len() - 1));
     for row in 0..rows {
         let (pos, line) = app.visible_row_pos(row).expect("row within the count");
         assert_eq!(app.line_pos(line), Some(pos), "row {row}");
@@ -364,7 +338,7 @@ fn teleports_land_on_the_named_line_with_a_fold_above_them() {
     let line = app.absolute_start(target);
     let row = app.visible_row_of_line(line).expect("the target is drawn");
     assert_ne!(line, row, "the fold must actually displace the target");
-    let text = app.lines[line].trim().to_string();
+    let text = app.document_lines()[line].trim().to_string();
 
     // 1. Search.
     app.set_cursor(app.first_node);

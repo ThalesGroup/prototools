@@ -89,7 +89,7 @@ pub(super) fn live_shapes(app: &App) -> Vec<Shape> {
 /// answer off instead, so "does every line still resolve to the same
 /// node" has to be asked of the derivation itself.
 pub(super) fn line_owners(app: &App) -> Vec<LineOwner> {
-    (0..app.lines.len())
+    (0..app.document_lines().len())
         .filter_map(|l| {
             app.line_pos(l)
                 .map(|pos| (l, shape_of(app, pos.node), app.is_footer(pos)))

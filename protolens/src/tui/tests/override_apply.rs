@@ -11,8 +11,9 @@
 
 use super::super::*;
 use super::support::*;
+use std::collections::HashMap;
 /// Spec 0118 §4: `splice_override` regenerates a whole node (not just
-/// its interior) into `self.lines`/`self.tree`, repeatable on the
+/// its interior) into `self.document_lines()`/`self.tree`, repeatable on the
 /// same node (the design's key risk: post-order array contiguity does
 /// not survive a *second* override of the same node, since the first
 /// override's new nodes are appended at the array's end —
@@ -97,7 +98,7 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
     app.override_target = Some(node_idx);
 
     // 1) Re-typed as itself: idempotent structural round-trip.
-    app.splice_override(node_idx, Some("test.Node".to_string()), false, None)
+    app.splice_override(node_idx, Some("test.Node".to_string()), false)
         .expect("re-typing as the same type must succeed");
     assert_children(&app, "re-typed as itself");
     assert_eq!(type_name_of(&app, node_idx), Some("test.Node"));
@@ -107,13 +108,13 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
     );
 
     // 2) Raw override (no schema).
-    app.splice_override(node_idx, None, false, None)
+    app.splice_override(node_idx, None, false)
         .expect("raw override must succeed");
     assert_eq!(app.tree[node_idx].span.type_fqdn, NO_FQDN);
 
     // 3) Re-typed again, on top of two prior overrides — exercises
     // repeated overrides of the same node.
-    app.splice_override(node_idx, Some("test.Node".to_string()), false, None)
+    app.splice_override(node_idx, Some("test.Node".to_string()), false)
         .expect("third override must still succeed");
     assert_children(&app, "re-typed a third time");
 
@@ -128,7 +129,7 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
         app.tree.len(),
         "heat_states must stay parallel to tree after repeated splices"
     );
-    for line in 0..app.lines.len() {
+    for line in 0..app.document_lines().len() {
         app.heat_cue_for(line);
     }
 
@@ -136,7 +137,7 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
     // doc chain. Every node reachable via `doc_next` from `first_node`
     // owns its own header line, and nothing else does — asked of the
     // counters, since no line-keyed map holds the answer.
-    let mut owners: Vec<Option<u32>> = vec![None; app.lines.len()];
+    let mut owners: Vec<Option<u32>> = vec![None; app.document_lines().len()];
     let mut count = 0;
     let mut cur = Some(app.first_node);
     while let Some(c) = cur {
@@ -201,14 +202,14 @@ fn splice_override_on_an_incompatible_scalar_does_not_panic() {
         "a WT_LEN scalar must be overridable"
     );
 
-    app.splice_override(s_idx, Some("incompat.Target".to_string()), false, None)
+    app.splice_override(s_idx, Some("incompat.Target".to_string()), false)
         .expect("override onto an incompatible type must still succeed");
     assert!(
-        app.lines
+        app.document_lines()
             .iter()
             .any(|l| l.contains("INVALID") || l.contains("TYPE_MISMATCH")),
         "mismatch must surface as an inline annotation, not a panic: {:?}",
-        app.lines
+        app.document_lines()
     );
 }
 
@@ -240,7 +241,7 @@ fn overriding_a_packed_run_does_not_renumber_later_siblings() {
     }
 
     app.override_target = Some(run);
-    app.splice_override(run, None, false, None)
+    app.splice_override(run, None, false)
         .expect("raw override on a packed element must succeed");
 
     for (&idx, path) in [tail, _a, _b].iter().zip(&before) {
@@ -266,7 +267,7 @@ fn overriding_a_packed_run_does_not_renumber_later_siblings() {
 #[test]
 fn a_deleted_override_restores_a_packed_run_rather_than_a_type_mismatch() {
     let (mut app, run, _tail, _a, _b) = packed_run_with_tail_fixture();
-    let before = app.lines.clone();
+    let before = app.document_lines().clone();
     assert!(
         before[1].contains("repeated int32 [packed=true]"),
         "fixture must start as a packed run: {before:?}"
@@ -288,16 +289,18 @@ fn a_deleted_override_restores_a_packed_run_rather_than_a_type_mismatch() {
     app.overrides.remove(entry_idx);
     app.render_overrides(app.first_node);
     assert_eq!(
-        app.lines, before,
+        app.document_lines(),
+        before,
         "deleting the override must restore the packed run verbatim"
     );
 
     let (mut retyped, run, _, _, _) = packed_run_with_tail_fixture();
     retyped
-        .splice_override(run, Some("int32".to_string()), false, None)
+        .splice_override(run, Some("int32".to_string()), false)
         .expect("retyping a packed run to its own element type must succeed");
     assert_eq!(
-        retyped.lines, before,
+        retyped.document_lines(),
+        before,
         "an explicit retype to a packable primitive must render the run, not a mismatch"
     );
 }
@@ -434,19 +437,85 @@ fn splice_override_on_a_varint_mismatch_does_not_corrupt_type_mismatch_annotatio
         .position(|n| n.span.field_number == 2)
         .expect("must find field 2");
 
-    app.splice_override(idx, Some("double".to_string()), false, None)
+    app.splice_override(idx, Some("double".to_string()), false)
         .expect("override onto an incompatible primitive type must still succeed");
 
     assert!(
-        app.lines.iter().any(|l| l.contains("TYPE_MISMATCH")),
+        app.document_lines()
+            .iter()
+            .any(|l| l.contains("TYPE_MISMATCH")),
         "mismatch must surface as an intact inline annotation: {:?}",
-        app.lines
+        app.document_lines()
     );
     assert!(
-        !app.lines.iter().any(|l| l.contains("type_id")),
+        !app.document_lines().iter().any(|l| l.contains("type_id")),
         "the field name must never be spliced into a mismatched line: {:?}",
-        app.lines
+        app.document_lines()
     );
+}
+
+/// Spec 0222, test-plan item 6 — the direct statement of G2: a commit
+/// writes text only inside the subtree it re-rendered.
+///
+/// This is what deleting the whole-document `lines` was for. While the
+/// text was one `Vec<String>`, a splice that changed a subtree's height
+/// had to move every line after it, so the cost of a keystroke was set
+/// by how much document followed the cursor rather than by what
+/// changed. With the text in the nodes there is nothing after the
+/// subtree to move, and the way to say so is that nothing outside it
+/// was written.
+///
+/// The subtree is taken from the *arena*, not from the rendered tree:
+/// a splice vacates the slots the superseded interpretation occupied,
+/// and those stop being rendered children of anything while remaining
+/// squarely inside the region that was re-rendered.
+#[test]
+fn a_commit_touches_only_the_spliced_subtree() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+
+    let inside: Vec<bool> = {
+        let parent = app.arena.parent();
+        (0..app.node_text.len())
+            .map(|s| {
+                let mut cur = s;
+                loop {
+                    if cur == inner_idx {
+                        return true;
+                    }
+                    let p = parent[cur] as usize;
+                    if p == cur {
+                        return false;
+                    }
+                    cur = p;
+                }
+            })
+            .collect()
+    };
+
+    let before = app.node_text.clone();
+    app.splice_override(inner_idx, Some("string".to_string()), false)
+        .expect("overriding a submessage field as string must succeed");
+
+    let touched: Vec<usize> = (0..before.len())
+        .filter(|&s| before[s] != app.node_text[s])
+        .collect();
+    assert!(
+        !touched.is_empty(),
+        "the splice must actually change the rendering, or this proves nothing"
+    );
+    assert!(
+        touched.len() < before.len(),
+        "the fixture must have slots outside the spliced subtree, or this \
+         proves nothing"
+    );
+    for &s in &touched {
+        assert!(
+            inside[s],
+            "slot {s} was rewritten by a splice of slot {inner_idx}, which \
+             does not contain it: {:?} -> {:?}",
+            before[s], app.node_text[s]
+        );
+    }
 }
 
 /// Deactivating an override that turns a wide single overridden line
@@ -469,12 +538,12 @@ fn deactivating_override_reclamps_pan_offset_to_the_shrunk_content() {
     app.main_area = Rect::new(0, 0, 10, 5);
 
     let widest_before = app.max_visible_line_len();
-    app.splice_override(inner_idx, Some("string".to_string()), false, None)
+    app.splice_override(inner_idx, Some("string".to_string()), false)
         .expect("overriding a submessage field as string must succeed");
     assert!(
         app.max_visible_line_len() > widest_before,
         "fixture must actually widen the document: {:?}",
-        app.lines
+        app.document_lines()
     );
 
     for _ in 0..50 {
@@ -490,7 +559,7 @@ fn deactivating_override_reclamps_pan_offset_to_the_shrunk_content() {
     // retype (spec 0135 G1) — `None` is a distinct, explicit "show
     // raw" choice a user can select in the override pane, not what
     // happens when an override is simply removed.
-    app.splice_override(inner_idx, Some("test.Inner".to_string()), false, None)
+    app.splice_override(inner_idx, Some("test.Inner".to_string()), false)
         .unwrap();
 
     let usable_width = app.main_area.width as usize - 1;
@@ -570,14 +639,17 @@ fn deactivating_override_recomputes_the_pan_bound_against_the_post_splice_scroll
     // before the user deactivates the override.
     app.cursor = pad_a_idx;
 
-    app.splice_override(inner_idx, Some("int32".to_string()), false, None)
+    app.splice_override(inner_idx, Some("int32".to_string()), false)
         .expect("overriding a submessage field as int32 must still succeed (as a type mismatch)");
 
-    let wide_field_row = app.lines.iter().position(|l| l.contains(WIDE_FIELD_NAME));
+    let wide_field_row = app
+        .document_lines()
+        .iter()
+        .position(|l| l.contains(WIDE_FIELD_NAME));
     assert!(
         wide_field_row.is_none(),
         "wide field must be hidden while inner is overridden as int32: {:?}",
-        app.lines
+        app.document_lines()
     );
 
     // Reverting an active override falls back to the field's *natural*
@@ -586,16 +658,16 @@ fn deactivating_override_recomputes_the_pan_bound_against_the_post_splice_scroll
     // collapse back to its real 4-line shape, pushing `pad_a` (the
     // cursor's node) several rows further down — `scroll_offset` must
     // advance to keep it in view.
-    app.splice_override(inner_idx, Some("test.Inner".to_string()), false, None)
+    app.splice_override(inner_idx, Some("test.Inner".to_string()), false)
         .unwrap();
 
     let wide_field_row = app
-        .lines
+        .document_lines()
         .iter()
         .position(|l| l.contains(WIDE_FIELD_NAME))
         .expect("revert must restore the wide field");
     let wide_field_len = app
-        .row_content(DisplayRow::Committed(wide_field_row))
+        .row_content(app.committed_row(wide_field_row).unwrap())
         .chars()
         .count();
 
@@ -614,9 +686,9 @@ fn deactivating_override_recomputes_the_pan_bound_against_the_post_splice_scroll
 #[test]
 fn splice_override_on_a_group_field_keeps_the_group_prefix() {
     let (mut app, grp_idx) = group_type_fixture();
-    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false, None)
+    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false)
         .unwrap();
-    let header = &app.lines[app.absolute_start(grp_idx)];
+    let header = &app.document_lines()[app.absolute_start(grp_idx)];
     assert!(
         header.contains("#@ group; NewGroup = 5"),
         "expected group; NewGroup = 5 in header, got: {header:?}"
@@ -626,7 +698,7 @@ fn splice_override_on_a_group_field_keeps_the_group_prefix() {
 /// The header-line patch (spec 0122 §2) usually changes the header's
 /// byte length (e.g. bare `#@ group` growing into `#@ group; NewGroup
 /// = 5`) — the per-line color buckets must stay aligned with
-/// `self.lines`' actual text for every line *after* the header, not
+/// `self.document_lines()`' actual text for every line *after* the header, not
 /// just the header itself (2026-07-15 regression: colors drifted
 /// starting right after the first patched `#@ group;` header,
 /// because `hints_by_line` was bucketing hints computed against the
@@ -640,13 +712,13 @@ fn splice_override_on_a_group_field_keeps_the_group_prefix() {
 #[test]
 fn splice_override_keeps_colors_aligned_after_a_header_length_change() {
     let (mut app, grp_idx) = group_type_fixture();
-    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false, None)
+    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false)
         .unwrap();
     let value_idx = app
         .first_child(grp_idx)
         .expect("NewGroup has at least one child");
     let line_idx = app.absolute_start(value_idx);
-    let line = app.lines[line_idx].clone();
+    let line = app.document_lines()[line_idx].clone();
     let value_pos = line
         .find('5')
         .expect("value line must contain the scalar 5");
@@ -655,7 +727,7 @@ fn splice_override_keeps_colors_aligned_after_a_header_length_change() {
     let window: Vec<DisplayRow> = app
         .visible_window(0, rows)
         .into_iter()
-        .map(|(l, _)| DisplayRow::Committed(l))
+        .map(|(l, pos)| app.committed_row_at(l, pos))
         .collect();
     let window_index = app
         .visible_row_of_line(line_idx)
@@ -676,14 +748,14 @@ fn splice_override_keeps_colors_aligned_after_a_header_length_change() {
 #[test]
 fn splice_override_on_a_group_field_keeps_the_tag_ohb_modifier() {
     let (mut app, grp_idx) = group_type_fixture_with_tag_ohb();
-    let header_before = app.lines[app.absolute_start(grp_idx)].clone();
+    let header_before = app.document_lines()[app.absolute_start(grp_idx)].clone();
     assert!(
         header_before.contains("tag_ohb: 1"),
         "fixture must exercise the anomaly modifier, got: {header_before:?}"
     );
-    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false, None)
+    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false)
         .unwrap();
-    let header = &app.lines[app.absolute_start(grp_idx)];
+    let header = &app.document_lines()[app.absolute_start(grp_idx)];
     assert!(
         header.contains("#@ group; NewGroup = 5; tag_ohb: 1"),
         "expected group; NewGroup = 5; tag_ohb: 1 in header, got: {header:?}"
@@ -696,9 +768,9 @@ fn splice_override_on_a_group_field_keeps_the_tag_ohb_modifier() {
 #[test]
 fn splice_override_on_a_wt_len_field_has_no_group_prefix() {
     let (mut app, inner_idx, _) = type_as_fixture();
-    app.splice_override(inner_idx, Some("test.Outer".to_string()), false, None)
+    app.splice_override(inner_idx, Some("test.Outer".to_string()), false)
         .unwrap();
-    let header = &app.lines[app.absolute_start(inner_idx)];
+    let header = &app.document_lines()[app.absolute_start(inner_idx)];
     assert!(
         header.contains("#@ Outer = 1"),
         "expected Outer = 1 in header, got: {header:?}"
@@ -720,10 +792,11 @@ fn splice_override_on_a_wt_len_field_has_no_group_prefix() {
 fn splice_override_preserves_the_header_line_indentation() {
     let (mut app, inner_idx, _) = type_as_fixture();
     let start = app.absolute_start(inner_idx);
-    let indent_before = app.lines[start].len() - app.lines[start].trim_start().len();
-    app.splice_override(inner_idx, Some("test.Outer".to_string()), false, None)
+    let indent_before =
+        app.document_lines()[start].len() - app.document_lines()[start].trim_start().len();
+    app.splice_override(inner_idx, Some("test.Outer".to_string()), false)
         .unwrap();
-    let header = &app.lines[app.absolute_start(inner_idx)];
+    let header = &app.document_lines()[app.absolute_start(inner_idx)];
     let indent_after = header.len() - header.trim_start().len();
     assert!(
         indent_after > 0,
@@ -742,10 +815,10 @@ fn splice_override_preserves_the_header_line_indentation() {
 #[test]
 fn splice_override_reverting_a_group_field_restores_bare_group() {
     let (mut app, grp_idx) = group_type_fixture();
-    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false, None)
+    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false)
         .unwrap();
-    app.splice_override(grp_idx, None, false, None).unwrap();
-    let header = &app.lines[app.absolute_start(grp_idx)];
+    app.splice_override(grp_idx, None, false).unwrap();
+    let header = &app.document_lines()[app.absolute_start(grp_idx)];
     assert!(
         header.contains("#@ group"),
         "expected bare group in header, got: {header:?}"
@@ -765,12 +838,12 @@ fn splice_override_reverting_a_group_field_restores_bare_group() {
 #[test]
 fn splice_override_shows_the_root_field_number_in_the_header_line() {
     let (mut app, _, _) = type_as_fixture();
-    app.splice_override(app.first_node, Some("test.Outer".to_string()), false, None)
+    app.splice_override(app.first_node, Some("test.Outer".to_string()), false)
         .unwrap();
     assert!(
-        app.lines[0].starts_with("1 "),
+        app.document_lines()[0].starts_with("1 "),
         "root header line must show the root field number: {:?}",
-        app.lines[0]
+        app.document_lines()[0]
     );
 }
 
@@ -780,12 +853,11 @@ fn splice_override_shows_the_root_field_number_in_the_header_line() {
 #[test]
 fn splice_override_raw_root_shows_the_field_number_in_the_header_line() {
     let (mut app, _, _) = type_as_fixture();
-    app.splice_override(app.first_node, None, false, None)
-        .unwrap();
+    app.splice_override(app.first_node, None, false).unwrap();
     assert!(
-        app.lines[0].starts_with("1 "),
+        app.document_lines()[0].starts_with("1 "),
         "raw root header line must show the field number: {:?}",
-        app.lines[0]
+        app.document_lines()[0]
     );
 }
 
@@ -848,15 +920,15 @@ fn splice_override_reactivating_root_type_still_expands_any_fields() {
         has_node_with_type(&app, "acme.Payload"),
         "Any field must still expand after retyping the root away and \
          back: {:#?}",
-        app.lines
+        app.document_lines()
     );
     assert!(
-        app.lines
+        app.document_lines()
             .iter()
             .any(|l| l.contains("label") && l.contains("hello")),
         "expanded Any payload's own field must appear in the \
          re-spliced text: {:?}",
-        app.lines
+        app.document_lines()
     );
 }
 
@@ -881,15 +953,15 @@ fn message_set_group_items_auto_expand_through_render_overrides() {
         has_node_with_type(&app, "ms_test.ExtPayload"),
         "MessageSet Item's message must auto-expand to the resolved \
          extension type: {:#?}",
-        app.lines
+        app.document_lines()
     );
     assert!(
-        app.lines
+        app.document_lines()
             .iter()
             .any(|l| l.contains("label") && l.contains("hi")),
         "expanded MessageSet extension payload's own field must appear \
          in the spliced text: {:?}",
-        app.lines
+        app.document_lines()
     );
 
     let item_idx = node_with_type(&app, decode::MESSAGE_SET_ITEM_FQDN)
@@ -916,12 +988,12 @@ fn message_set_group_items_auto_expand_through_render_overrides() {
         app.overrides.entries()
     );
     assert!(
-        app.lines
+        app.document_lines()
             .iter()
             .any(|l| l.trim_start().starts_with("Item {")),
         "the Item wrapper must render under the name \"Item\", not \
          its field number: {:?}",
-        app.lines
+        app.document_lines()
     );
 
     let message_idx = node_with_type(&app, "ms_test.ExtPayload")
@@ -952,15 +1024,15 @@ fn a_deeply_nested_any_is_auto_expanded() {
     assert!(
         has_node_with_type(&app, "acme.Payload"),
         "an Any three message levels down must still auto-expand: {:#?}",
-        app.lines
+        app.document_lines()
     );
     assert!(
-        app.lines
+        app.document_lines()
             .iter()
             .any(|l| l.contains("label") && l.contains("hello")),
         "the expanded Any payload's own field must appear in the \
          rendered text: {:?}",
-        app.lines
+        app.document_lines()
     );
 
     // The expansion must come from the auto-override mechanism
@@ -999,21 +1071,21 @@ fn a_deeply_nested_message_set_is_auto_expanded_at_both_tiers() {
         has_node_with_type(&app, crate::decode::MESSAGE_SET_ITEM_FQDN),
         "tier 1: the Item group wrapper must be retyped to the \
          synthetic Item shape: {:#?}",
-        app.lines
+        app.document_lines()
     );
     assert!(
         has_node_with_type(&app, "ms_test.ExtPayload"),
         "tier 2: the Item's message must resolve to the extension \
          type: {:#?}",
-        app.lines
+        app.document_lines()
     );
     assert!(
-        app.lines
+        app.document_lines()
             .iter()
             .any(|l| l.contains("label") && l.contains("hi")),
         "the expanded extension payload's own field must appear in the \
          rendered text: {:?}",
-        app.lines
+        app.document_lines()
     );
 
     // Both tiers must be real auto-override entries, for the same
@@ -1100,31 +1172,36 @@ fn the_override_preview_leaves_nested_message_set_auto_expansion_alone() {
     let extensions_idx = node_with_type(&app, "ms_test.TestMessageSet")
         .expect("extensions field must resolve to TestMessageSet");
     app.cursor = extensions_idx;
-    let lines = app.lines.clone();
+    let lines = app.document_lines().clone();
 
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
     assert_eq!(app.override_target, Some(extensions_idx));
     assert!(app.preview_overlay.is_some(), "the pane must live-preview");
     assert_eq!(
-        app.lines, lines,
+        app.document_lines(),
+        lines,
         "the preview must leave the committed document alone"
     );
 
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.override_target, None);
-    assert_eq!(app.lines, lines, "...and cancelling must re-render nothing");
+    assert_eq!(
+        app.document_lines(),
+        lines,
+        "...and cancelling must re-render nothing"
+    );
     assert!(
         has_node_with_type(&app, "ms_test.ExtPayload"),
         "the nested MessageSet auto-expansion must have survived: {:#?}",
-        app.lines
+        app.document_lines()
     );
     assert!(
-        app.lines
+        app.document_lines()
             .iter()
             .any(|l| l.contains("label") && l.contains("hi")),
         "expanded MessageSet extension payload's own field must still be \
          in the rendered text: {:?}",
-        app.lines
+        app.document_lines()
     );
 }
 

@@ -171,7 +171,7 @@ fn confirmed_override_is_not_truncated() {
     let field_count = App::OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT * 2;
     let (mut app, blob_idx) = preview_budget_fixture(field_count);
 
-    app.splice_override(blob_idx, Some("test.Empty".to_string()), false, None)
+    app.splice_override(blob_idx, Some("test.Empty".to_string()), false)
         .expect("a confirmed override splice must complete");
 
     assert!(
@@ -181,7 +181,7 @@ fn confirmed_override_is_not_truncated() {
         app.tree.len()
     );
     assert_eq!(
-        ellipsis_line_count(&app.lines),
+        ellipsis_line_count(&app.document_lines()),
         0,
         "a confirmed override must show no truncation marker"
     );
@@ -470,22 +470,22 @@ fn an_unknown_length_delimited_blob_can_be_read_as_a_packed_run() {
     // Step one: make the interior unknown. `test.Empty` declares no
     // fields, so field 2 lands as a bare LEN record with no schema
     // behind it at all.
-    app.splice_override(blob_idx, Some("test.Empty".to_string()), false, None)
+    app.splice_override(blob_idx, Some("test.Empty".to_string()), false)
         .expect("retyping the blob to an empty message must succeed");
     let unknown = app
         .nth_child(blob_idx, 0)
         .expect("the empty message must hold the unknown LEN record");
 
     // Step two: ask for it as a run of varints.
-    app.splice_override(unknown, Some("int32".to_string()), false, None)
+    app.splice_override(unknown, Some("int32".to_string()), false)
         .expect("retyping an unknown LEN record to int32 must succeed");
 
-    let bare = bare_lines(&app.lines);
+    let bare = bare_lines(&app.document_lines());
     let elems: Vec<&String> = bare.iter().filter(|l| l.starts_with("2: ")).collect();
     assert_eq!(
         elems,
         vec!["2: 5", "2: 6", "2: 7", "2: 8"],
         "the blob must read as one line per packed element: {:?}",
-        app.lines
+        app.document_lines()
     );
 }

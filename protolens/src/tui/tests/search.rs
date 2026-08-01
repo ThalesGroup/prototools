@@ -159,7 +159,7 @@ fn main_pane_search_keys_are_inert_while_override_pane_has_focus() {
 }
 
 /// Spec 0114 §4's main-pane search directive: search matches against
-/// the *current* rendered text (`self.lines`), so a range whose type
+/// the *current* rendered text the nodes hold, so a range whose type
 /// has been overridden is matched post-override, not against the
 /// original rendering — there is no separate "original text" cache to
 /// special-case.
@@ -171,7 +171,7 @@ fn main_pane_search_matches_the_current_not_original_rendering() {
 
     // Simulate an already-applied override splice (spec 0114 §5):
     // node 1's rendered line no longer contains "beta" at all.
-    app.lines[1] = "pkg.Overridden { x: 1 }".to_string();
+    app.node_text[1] = Some(Box::from("pkg.Overridden { x: 1 }"));
 
     app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
     for c in "beta".chars() {
@@ -275,6 +275,92 @@ fn override_pane_search_is_smartcase() {
     app.override_highlight = 0;
     app.jump_to_override_match(SearchDir::Forward, "Beta");
     assert_eq!(app.override_highlight, 2);
+}
+
+/// Where a linear scan of the whole rendered text would land, starting
+/// one line off `from` and moving in `dir` — the `App::lines` scan spec
+/// 0222 S6 replaced, written out so the walk can be held against it.
+///
+/// Deliberately the crudest possible implementation: a `Vec<String>`,
+/// modular arithmetic, and no structure at all. It shares nothing with
+/// the walk but the matcher, which has its own tests above and is not
+/// what is on trial here.
+///
+/// A closing brace is skipped because it draws no content of its own —
+/// it is the one line whose characters the nodes do not store, and the
+/// search has never matched one.
+fn scan_the_whole_text(app: &App, from: usize, dir: SearchDir, pattern: &str) -> Option<usize> {
+    let lines = app.document_lines();
+    let n = lines.len();
+    let needle = SearchPattern::new(pattern);
+    (1..=n)
+        .map(|k| match dir {
+            SearchDir::Forward => (from + k) % n,
+            SearchDir::Backward => (from + n - k) % n,
+        })
+        .find(|&line| {
+            app.node_at_footer_line(line).is_none() && needle.find(&lines[line]).is_some()
+        })
+}
+
+/// Spec 0222, test-plan item 7: the walk-based search visits the
+/// document in the order a scan of its text does.
+///
+/// S6 gave up the one thing the old search had for free — a flat array
+/// of every line, in order — and replaced it with a step from node to
+/// node. Every way that can go wrong produces a *plausible* answer: a
+/// step that descends into a node's own children from its closing
+/// brace, or one that skips a packed run's later elements, still lands
+/// the cursor on a line containing the pattern. Only the order gives it
+/// away.
+///
+/// Repeating the search rather than doing it once is what covers the
+/// wrap: the sequence is longer than the number of matches, so both
+/// directions run off the end of the document and back.
+///
+/// Backward is the half that can break, since it is the direction with
+/// no natural "descend first" reading, so it gets a first-node match
+/// explicitly: from the top, one step back is the wrap, and the wrap is
+/// where an endpoint resolved eagerly or off by one shows up.
+#[test]
+fn search_finds_the_same_hits_in_the_same_order() {
+    let (packed, ..) = packed_run_with_tail_fixture();
+    let (mut folded, items) = repeated_message_fixture();
+    folded.toggle_fold(items[1]);
+
+    for (name, mut app) in [("packed_run", packed), ("folded", folded)] {
+        // `:` is on every scalar row, `{` on every message header, and
+        // `1` lands inside a packed run's elements — between them the
+        // patterns reach all three of the shapes a step has to handle.
+        for pattern in [":", "{", "1"] {
+            for dir in [SearchDir::Forward, SearchDir::Backward] {
+                app.set_cursor(app.first_node);
+                let mut want = Vec::new();
+                let mut at = app.cursor_line();
+                for _ in 0..12 {
+                    let Some(next) = scan_the_whole_text(&app, at, dir, pattern) else {
+                        break;
+                    };
+                    want.push(next);
+                    at = next;
+                }
+                assert!(
+                    want.len() > 3,
+                    "{name}/{pattern:?}: the fixture must offer several \
+                     matches, or the order proves nothing"
+                );
+
+                app.set_cursor(app.first_node);
+                let got: Vec<usize> = (0..want.len())
+                    .map(|_| {
+                        app.jump_to_match(dir, pattern);
+                        app.cursor_line()
+                    })
+                    .collect();
+                assert_eq!(got, want, "{name}/{pattern:?}/{dir:?}");
+            }
+        }
+    }
 }
 
 /// Spec 0194 test-plan item 10 (S8). A search hit is the one jump that

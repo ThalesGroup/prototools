@@ -5,6 +5,7 @@
 use super::*;
 
 use prototext_core::serialize::encode_text::annotation_start;
+use std::borrow::Cow;
 
 /// Stand-in for a row that has no styles at all.
 static NO_STYLES: LineStyles = Vec::new();
@@ -308,7 +309,7 @@ impl App {
         match self.committed_row_of(d) {
             Some(row) => self
                 .visible_row_pos(row)
-                .map(|(_, line)| DisplayRow::Committed(line)),
+                .map(|(pos, line)| self.committed_row_at(line, pos)),
             None => Some(DisplayRow::Overlay(
                 d - self
                     .preview_overlay
@@ -319,9 +320,8 @@ impl App {
         }
     }
 
-    /// Spec 0210 S3: the `count` display rows starting at `from`, and
-    /// the owner of each committed one recorded in `window_nodes` for
-    /// the passes that follow.
+    /// Spec 0210 S3: the `count` display rows starting at `from`, each
+    /// committed one carrying its own owner for the passes that follow.
     ///
     /// The whole reason absolute line numbers can stop being stored:
     /// a viewport is one descent plus a walk, so nothing per-frame
@@ -329,12 +329,16 @@ impl App {
     /// loop would instead be one descent per row, and each of those
     /// crosses the root's 7 771 children on the reference corpus.
     ///
+    /// Spec 0222 S3: the walk's own answer is kept rather than thrown
+    /// away and recovered later — every downstream pass wanted it, and
+    /// the window-sized cache that used to serve them is gone.
+    ///
     /// The overlay splits the committed rows into at most two runs
     /// (before it and after it), each of which is resolved and walked
     /// on its own.
-    pub(super) fn build_window(&mut self, from: usize, count: usize) -> Vec<DisplayRow> {
+    pub(super) fn build_window(&self, from: usize, count: usize) -> Vec<DisplayRow> {
         let mut rows = Vec::with_capacity(count);
-        let mut owners: Vec<(usize, LinePos)> = Vec::with_capacity(count);
+        let mut cursor: Option<(LinePos, usize)> = None;
         let mut d = from;
         while rows.len() < count {
             let Some(first) = self.committed_row_of(d) else {
@@ -359,12 +363,69 @@ impl App {
             }
             d += walked.len();
             for (line, pos) in walked {
-                rows.push(DisplayRow::Committed(line));
-                owners.push((line, pos));
+                let offset = self.advance_offset(&mut cursor, pos);
+                rows.push(DisplayRow::Committed(CommittedRow { line, pos, offset }));
             }
         }
-        self.set_window_nodes(&owners);
         rows
+    }
+
+    /// Spec 0222 S4's byte cursor: where `pos` starts inside its owner's
+    /// text, stepped on from the previous row when the two are
+    /// consecutive lines of one node and resolved from scratch
+    /// otherwise.
+    ///
+    /// Without this a frame drawn inside a long packed run would be
+    /// quadratic — the run's N lines are one string, so its k-th line
+    /// is k newlines in. The walk is already in document order, so the
+    /// whole frame becomes one scan of the run.
+    pub(super) fn advance_offset(
+        &self,
+        cursor: &mut Option<(LinePos, usize)>,
+        pos: LinePos,
+    ) -> usize {
+        // A bracketed node stores only its header, and its footer is
+        // derived rather than sliced, so neither has an offset to step.
+        if self.tree[pos.node].is_bracketed() {
+            *cursor = Some((pos, 0));
+            return 0;
+        }
+        let offset = match *cursor {
+            Some((prev, at))
+                if prev.node == pos.node && prev.line_in_node + 1 == pos.line_in_node =>
+            {
+                let text = self.node_text[pos.node].as_deref().unwrap_or("");
+                match text[at..].find('\n') {
+                    Some(nl) => at + nl + 1,
+                    None => text.len(),
+                }
+            }
+            _ => self.line_offset(pos),
+        };
+        *cursor = Some((pos, offset));
+        offset
+    }
+
+    /// A committed display row for a line whose owner is already known.
+    ///
+    /// Spec 0222 S3: a row carries its owner, so the handful of rows
+    /// built outside `build_window` — the cursor's own line, a click
+    /// target, a brace pair — have to supply one. All of them are per
+    /// keystroke, not per row.
+    pub(super) fn committed_row_at(&self, line: usize, pos: LinePos) -> DisplayRow {
+        DisplayRow::Committed(CommittedRow {
+            line,
+            pos,
+            offset: self.line_offset(pos),
+        })
+    }
+
+    /// `committed_row_at` for a caller holding only the line number,
+    /// which costs the `line_pos` descent. `None` past the end of the
+    /// document.
+    #[cfg(test)]
+    pub(super) fn committed_row(&self, line: usize) -> Option<DisplayRow> {
+        Some(self.committed_row_at(line, self.line_pos(line)?))
     }
 
     /// Spec 0185 S2: `cursor_display_row()` carried into composed row
@@ -392,9 +453,9 @@ impl App {
     /// converge, so that everything downstream of it is shared. An
     /// overlay row has no node (S4): no heat cue, no active-override
     /// hint, no fold marker, no selection.
-    fn display_row_source(&self, row: DisplayRow) -> (&str, Option<usize>) {
+    fn display_row_source(&self, row: DisplayRow) -> (Cow<'_, str>, Option<usize>) {
         let owner = match row {
-            DisplayRow::Committed(l) => self.node_at_header_line(l),
+            DisplayRow::Committed(c) => (!self.is_footer(c.pos)).then_some(c.pos.node),
             DisplayRow::Overlay(_) => None,
         };
         (self.display_row_text(row), owner)
@@ -402,21 +463,19 @@ impl App {
 
     /// Spec 0215 S4: the text half of `display_row_source`, on its own.
     ///
-    /// For a committed row this is a plain index into `self.lines` and
-    /// never a document walk, whereas resolving the *owner* goes through
-    /// `line_pos` — a binary search of the last drawn window, then a
-    /// descent from the root when that misses, which during a page jump
-    /// it always does by construction. Callers that only want the text
-    /// must not pay for the owner they discard.
-    fn display_row_text(&self, row: DisplayRow) -> &str {
+    /// Spec 0222 S1/S2: a committed row's text is a slice of its owner's
+    /// own text, borrowed — except a bracketed node's closing brace,
+    /// which is derived from the header's indentation rather than
+    /// stored, and so is the one row that owns its string.
+    fn display_row_text(&self, row: DisplayRow) -> Cow<'_, str> {
         match row {
-            DisplayRow::Committed(l) => self.lines.get(l).map(String::as_str).unwrap_or(""),
+            DisplayRow::Committed(c) => self.line_text_at(c.pos, c.offset),
             DisplayRow::Overlay(i) => {
                 let o = self
                     .preview_overlay
                     .as_ref()
                     .expect("an Overlay row is only ever produced while an overlay is held");
-                &o.lines[i]
+                Cow::Borrowed(&o.lines[i])
             }
         }
     }
@@ -427,8 +486,8 @@ impl App {
     /// transform are display insertions applied downstream, and must not
     /// reach the parser).
     ///
-    /// Rows that are not prototext at all are emitted as `""`. `lines`
-    /// is not purely prototext: spec 0174 §S4's `...` truncation marker
+    /// Rows that are not prototext at all are emitted as `""`. The
+    /// document is not purely prototext: spec 0174 §S4's `...` marker
     /// is a literal row in a truncated preview's lines, and `...` is not
     /// in the grammar. Highlighting happens at draw time, so a syntax
     /// error here would silently strip the color off every row *beneath*
@@ -444,7 +503,7 @@ impl App {
                 if line.trim() == TRUNCATION_MARKER {
                     String::new()
                 } else {
-                    line.to_string()
+                    line.into_owned()
                 }
             })
             .collect()
@@ -493,11 +552,11 @@ impl App {
     /// header line. Passing a wrong node changes only the fold glyph and
     /// hence the `{ ... }` collapse summary, never the underlying text.
     pub(super) fn row_text_of(&self, row: DisplayRow, owner: Option<usize>) -> String {
-        let full_content = self.display_row_text(row);
+        let source = self.display_row_text(row);
         let content = if !self.annotations {
-            code_part(full_content)
+            code_part(&source)
         } else {
-            full_content
+            &source
         };
         let mut text = content.to_string();
         if self.fold_marker_of(owner) == Some(FOLD_GLYPH_CLOSED) {
@@ -568,7 +627,8 @@ impl App {
         }
         let header = self.absolute_start(self.cursor);
         let footer = header + self.tree[self.cursor].lines_total as usize - 1;
-        let header_text = self.row_text(DisplayRow::Committed(header));
+        let header_row = self.committed_row_at(header, LinePos::header(self.cursor));
+        let header_text = self.row_text(header_row);
         let open = header_text.rfind('{')?;
         let open_pos = (header, char_column(&header_text, open));
         if self.folded.contains(&self.cursor) && self.has_children(self.cursor) {
@@ -578,7 +638,14 @@ impl App {
             let close = char_column(&header_text, open + 6);
             return Some((open_pos, (header, close)));
         }
-        let footer_text = self.row_text(DisplayRow::Committed(footer));
+        let footer_row = self.committed_row_at(
+            footer,
+            LinePos {
+                node: self.cursor,
+                line_in_node: self.tree[self.cursor].lines_total - 1,
+            },
+        );
+        let footer_text = self.row_text(footer_row);
         let close = char_column(&footer_text, footer_text.rfind('}')?);
         Some((open_pos, (footer, close)))
     }
@@ -628,7 +695,8 @@ impl App {
     /// `refresh_window_styles` was last called with, which is the
     /// coordinate system `self.window_styles` lives in.
     pub(super) fn row_spans(&self, row: DisplayRow, window_index: usize) -> Vec<Span<'static>> {
-        let (full_content, node) = self.display_row_source(row);
+        let (source, node) = self.display_row_source(row);
+        let full_content: &str = &source;
         let full_hints = self.window_styles.get(window_index).unwrap_or(&NO_STYLES);
         let (content, hints): (&str, LineStyles) =
             match (!self.annotations, annotation_start(full_content)) {
@@ -782,9 +850,11 @@ impl App {
     /// line, which is what keeps the active-override weight from
     /// cascading down a whole overridden subtree.
     ///
-    /// Answers with the node rather than with a bare "has an override"
-    /// verdict (spec 0192 S2), so `render`'s hoisted override pass can
-    /// skip re-resolving when consecutive rows belong to one node.
+    /// Spec 0222 S3: nothing on the draw path calls this any more — a
+    /// row carries its owner, and the union of "header or footer" is
+    /// just that owner. Kept because it is the direct statement of what
+    /// D33's restriction means, and the tests assert against it.
+    #[cfg(test)]
     pub(super) fn node_at_own_line(&self, line_idx: usize) -> Option<usize> {
         self.node_at_header_line(line_idx)
             .or_else(|| self.node_at_footer_line(line_idx))
@@ -815,12 +885,10 @@ impl App {
         let flags = window
             .iter()
             .map(|&row| {
-                let DisplayRow::Committed(line_idx) = row else {
+                let DisplayRow::Committed(c) = row else {
                     return false;
                 };
-                let Some(idx) = self.node_at_own_line(line_idx) else {
-                    return false;
-                };
+                let idx = c.pos.node;
                 let reusable = last.filter(|&(seen, _)| seen == idx);
                 match reusable {
                     Some((_, answer)) => answer,
@@ -1055,7 +1123,7 @@ impl App {
         let heat_displays: Vec<heat_cue::HeatDisplay> = window
             .iter()
             .map(|&row| match row {
-                DisplayRow::Committed(line_idx) => self.heat_cue_for(line_idx),
+                DisplayRow::Committed(c) => self.heat_cue_at(c.pos),
                 DisplayRow::Overlay(_) => heat_cue::HeatDisplay::None,
             })
             .collect();
@@ -1074,11 +1142,11 @@ impl App {
         let suffix_len = if self.tree.is_empty() {
             0
         } else {
-            let cursor_row_display = DisplayRow::Committed(self.cursor_line());
+            let cursor_row_line = self.cursor_line();
             window
                 .iter()
                 .zip(heat_displays.iter())
-                .find(|&(&r, _)| r == cursor_row_display)
+                .find(|&(&r, _)| r.committed_line() == Some(cursor_row_line))
                 .and_then(|(_, display)| self.heat_chrome(display).1)
                 .map_or(0, |s| s.content.chars().count())
         };
@@ -1110,7 +1178,7 @@ impl App {
         let partner_cell = partner.and_then(|(line, column)| {
             let row = window
                 .iter()
-                .position(|&r| r == DisplayRow::Committed(line))?;
+                .position(|&r| r.committed_line() == Some(line))?;
             let index = (FOLD_FIELD_WIDTH + column).checked_sub(self.pan_offset)? + 1;
             (index < inner.width as usize).then_some((row, index))
         });
@@ -1126,10 +1194,7 @@ impl App {
                 // the active-override hint and the drag selection below
                 // exactly as it already gates fold markers inside
                 // `row_spans`.
-                let line_idx = match display_row {
-                    DisplayRow::Committed(l) => Some(l),
-                    DisplayRow::Overlay(_) => None,
-                };
+                let line_idx = display_row.committed_line();
                 let mut spans = pan_spans(self.row_spans(display_row, row), self.pan_offset);
                 if row_overridden[row] {
                     for span in &mut spans {
@@ -1264,7 +1329,7 @@ impl App {
             let line_ruler = format!(
                 "L{}/{}  {}",
                 self.cursor_line() + 1,
-                self.lines.len(),
+                self.total_lines(),
                 viewport_label(self.scroll_offset, window.len(), total_rows),
             );
             let right = if half_width {

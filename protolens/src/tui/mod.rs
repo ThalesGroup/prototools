@@ -15,7 +15,7 @@
 //! 0216); applying an override rewrites per-slot overlay state and
 //! re-renders, but no index ever moves.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::io;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -531,8 +531,47 @@ pub(super) struct PreviewOverlay {
 /// override hint, no fold marker and no selection (S4).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum DisplayRow {
-    Committed(usize),
+    Committed(CommittedRow),
     Overlay(usize),
+}
+
+impl DisplayRow {
+    /// The absolute line a committed row draws, `None` for an overlay
+    /// row.
+    ///
+    /// Spec 0222 S3: `CommittedRow` carries two derived fields beside
+    /// the line, so callers that mean "is this the row for line n"
+    /// compare through this rather than building a whole row to compare
+    /// against — building one costs a `line_pos` descent they do not
+    /// otherwise need.
+    pub(super) fn committed_line(self) -> Option<usize> {
+        match self {
+            DisplayRow::Committed(c) => Some(c.line),
+            DisplayRow::Overlay(_) => None,
+        }
+    }
+}
+
+/// Spec 0222 S3: one committed row, as the window walk already knows it.
+///
+/// `build_window` descends once and then walks, and every row it visits
+/// arrives with its owning node in hand. Carrying that here is what lets
+/// the passes downstream — the text, the fold marker, the spans, the
+/// override hint — stop searching for an owner the walk had already
+/// found.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) struct CommittedRow {
+    /// The absolute line number, still needed by the drag selection,
+    /// mouse hit-testing and the heat cue, all of which are keyed on it.
+    pub(super) line: usize,
+    /// Which node owns the line, and which of that node's own lines it
+    /// is.
+    pub(super) pos: LinePos,
+    /// Spec 0222 S4: the byte offset of this row's text within
+    /// `node_text[pos.node]`. Zero for every row but the second and
+    /// later elements of a packed run, where it is what keeps a frame
+    /// from re-scanning the run once per drawn row.
+    pub(super) offset: usize,
 }
 
 /// Spec 0199 S1: whether the caret's position at an end of its row was
@@ -597,7 +636,23 @@ pub struct App {
     /// with — reused by `apply_override` (spec 0114 §5) so a splice
     /// re-render matches the rest of the document's own indentation.
     indent_size: usize,
-    lines: Vec<String>,
+    /// Spec 0222 S1: the text of the lines each arena slot draws
+    /// *itself*, its children's excluded, newline-separated and with no
+    /// trailing newline. `None` for a slot this interpretation does not
+    /// render.
+    ///
+    /// One entry per slot, parallel to `tree` and `heat_states`. A
+    /// bracketed node holds its header line alone — its footer is
+    /// `indent + "}"` and is derived from that header (S2) rather than
+    /// stored. A flat node holds all of its own rows, which is one for
+    /// an ordinary scalar and one per element for a packed run.
+    ///
+    /// It replaces a `Vec<String>` of the whole document, whose real
+    /// cost was not its 126.7 MB of headers but the O(document) memmove
+    /// every commit paid to keep absolute line numbers meaning
+    /// something. Nothing here is positional, so a splice writes the
+    /// slots it re-rendered and stops.
+    node_text: Vec<Option<Box<str>>>,
     /// Spec 0187 S3: syntax hints for the rows drawn by the *current*
     /// frame's `window`, in window order — recomputed each `render()`,
     /// never retained across frames, never document-sized. Index `i` is
@@ -699,35 +754,16 @@ pub struct App {
     /// leaving it on would have the harness measure both.
     #[cfg(test)]
     pub(super) verify_repair: bool,
-    /// Spec 0160 G2: running total of line-count deltas accumulated by
-    /// `splice_override` calls in the current `render_overrides` batch.
-    /// Always `0` outside of an active batch.
-    pending_shift: isize,
-    /// Spec 0167 (N1 follow-up to spec 0160): line-buffer patches
-    /// collected by `splice_override` calls during the currently-active
-    /// `render_overrides` batch — see `override_apply::LinePatch`'s own
-    /// doc comment, and `render_overrides_inner`'s `patch_scope`
-    /// parameter, for why a patch can be nested inside another,
-    /// not-yet-materialized one. Always empty outside of an active
-    /// batch; drained and applied to `self.lines` in one pass by
-    /// `finalize_override_batch`.
-    pending_line_patches: Vec<line_patch::LinePatch>,
-    /// Spec 0186 S2: the lowest line index any patch in the current batch
-    /// touches, in the batch-corrected frame `materialize_line_patches`
-    /// resolves against — i.e. the first line whose *content* or *owner*
-    /// this batch can possibly have changed. `None` when the batch queued
-    /// no patches at all.
+    /// Whether any `splice_override` in the current `render_overrides`
+    /// batch actually re-rendered something. Always `false` outside of
+    /// an active batch.
     ///
-    /// This is the boundary that makes `finalize_override_batch`'s
-    /// repair incremental: everything strictly below it keeps both its
-    /// content and its index, so it needs no work. Always `None` outside
-    /// of an active batch.
-    ///
-    /// Note that it is *not* interchangeable with `pending_shift != 0`:
-    /// a batch can shift without patching, and can patch with a net
-    /// shift of zero while still changing which node owns a line. See
-    /// `finalize_override_batch`.
-    pending_patch_min_line: Option<usize>,
+    /// Spec 0222 S5: a splice writes its own slots' text and nothing
+    /// else, so there is no deferred buffer work left for
+    /// `finalize_override_batch` to do — only the bookkeeping that a
+    /// batch which changed nothing must still skip, chiefly bumping
+    /// `structural_version` and so restarting the read-ahead walk.
+    batch_spliced: bool,
     cursor: usize,
     /// Which of `cursor`'s own lines the cursor is visually resting on
     /// — the `line_in_node` half of a [`LinePos`].
@@ -803,16 +839,6 @@ pub struct App {
     /// or keep the single-line selection `Down` just set (`true`).
     pending_double_click: bool,
     folded: HashSet<usize>,
-    /// Spec 0210 S3: the `(absolute line, owner)` pairs of the rows the
-    /// last frame drew, ascending. A viewport-sized snapshot, not a
-    /// document-sized index — it replaces nothing and is authoritative
-    /// for nothing; `line_pos` consults it and falls back to its
-    /// descent on a miss. See `App::set_window_nodes`.
-    window_nodes: Vec<(usize, LinePos)>,
-    /// The `structural_version` `window_nodes` was filled at. Anything
-    /// older is ignored, since a fold or a commit moves lines out from
-    /// under it.
-    window_nodes_version: u64,
     scroll_offset: usize,
     /// `cursor_display_row()`'s value as of the last render pass that
     /// applied `clamp_scroll_to_visible` to `scroll_offset` — compared
@@ -1007,7 +1033,7 @@ pub struct App {
     /// Incremented on every fold/unfold and every commit — i.e. every
     /// time a rendered line number may have shifted. `App::
     /// prefetch_step`'s staleness signal (spec 0164 G7) for restarting
-    /// its walk, and (spec 0210 S3) the guard on `window_nodes`.
+    /// its walk.
     structural_version: u64,
     /// `true` while `recompute_override_candidates`'s `SortMode::
     /// Inferred` branch is waiting on a worker request for the
@@ -1310,7 +1336,7 @@ impl App {
             // from here on, toggled at runtime by the `a` key.
             annotations: true,
             indent_size,
-            lines: decoded.lines,
+            node_text: decoded.node_text,
             window_styles: Vec::new(),
             theme,
             tree: decoded.tree,
@@ -1323,9 +1349,7 @@ impl App {
             unpruned_walk: false,
             #[cfg(test)]
             verify_repair: true,
-            pending_shift: 0,
-            pending_line_patches: Vec::new(),
-            pending_patch_min_line: None,
+            batch_spliced: false,
             cursor,
             cursor_line_in_node: 0,
             cursor_column: 0,
@@ -1341,8 +1365,6 @@ impl App {
             last_click: None,
             pending_double_click: false,
             folded: HashSet::new(),
-            window_nodes: Vec::new(),
-            window_nodes_version: 0,
             scroll_offset: 0,
             last_cursor_row: None,
             pan_offset: 0,
@@ -1616,7 +1638,6 @@ mod heat_cue;
 mod heat_worker;
 mod help_text;
 mod key_dispatch;
-mod line_patch;
 mod lines;
 mod manage_pane;
 mod mouse;

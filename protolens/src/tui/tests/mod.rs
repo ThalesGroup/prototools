@@ -7,7 +7,6 @@ mod export_fields;
 mod heat_cue;
 mod help_text;
 mod key_dispatch;
-mod line_patch;
 mod lines;
 mod manage_pane;
 mod mouse;

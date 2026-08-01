@@ -744,44 +744,54 @@ impl App {
     /// cursor and wrapping around at the ends of the document (spec 0114
     /// §4, extended to the main pane). Folded-away matches are found and
     /// then revealed, since the scan covers the whole document rather
-    /// than the visible rows. Matching is against `self.lines`' current
+    /// than the visible rows. Matching is against the nodes' current
     /// rendered text, so an overridden range searches its post-override
     /// rendering with no special-casing. On a match, moves the cursor
     /// there (recording a jumplist entry) and unfolds its ancestors;
     /// otherwise leaves the cursor put and sets a status-line message.
     ///
-    /// Scans `lines` rather than the `doc_next`/`doc_prev` chain (spec
-    /// 0210 S1). A node's opening line is not a stored number, so
-    /// walking the chain would cost a root-to-node descent per
-    /// candidate; scanning the text resolves an owner only for the lines
-    /// that actually match. Walking no chain also means neither
-    /// direction can hit spec 0195 S1's `last_node()` hazard.
+    /// Steps line by line with `next_line`/`prev_line` (spec 0222 S6)
+    /// rather than node by node. The cursor can rest on a closing `}`,
+    /// and a node-level step from there would descend back into the
+    /// node's own children — so only a line-level walk visits the
+    /// document in the order the old text scan did. The wrap endpoints
+    /// are resolved on demand, and only if the walk actually wraps, so
+    /// neither direction pays spec 0195 S1's eager `last_node()`.
     pub(super) fn jump_to_match(&mut self, dir: SearchDir, pattern: &str) {
-        if pattern.is_empty() || self.tree.is_empty() || self.lines.is_empty() {
+        if pattern.is_empty() || self.tree.is_empty() {
             return;
         }
         let needle = SearchPattern::new(pattern);
-        let n = self.lines.len();
-        let from = self.cursor_line();
+        let n = self.total_lines();
+        let mut pos = LinePos {
+            node: self.cursor,
+            line_in_node: self.cursor_line_in_node,
+        };
         // The cursor's own line comes last in both directions, which is
         // what makes a wrapped search land back where it started rather
         // than report "not found".
-        for step in 1..=n {
-            let line_idx = match dir {
-                SearchDir::Forward => (from + step) % n,
-                SearchDir::Backward => (from + n - step) % n,
-            };
-            let Some(byte) = needle.find(&self.lines[line_idx]) else {
-                continue;
+        for _ in 1..=n {
+            pos = match match dir {
+                SearchDir::Forward => self.next_line(pos).or_else(|| self.first_line()),
+                SearchDir::Backward => self.prev_line(pos).or_else(|| self.last_line()),
+            } {
+                Some(next) => next,
+                None => break,
             };
             // A closing `}` draws no content of its own, and a search has
             // never matched one.
-            let Some(pos) = self.line_pos(line_idx) else {
-                continue;
-            };
             if self.is_footer(pos) {
                 continue;
             }
+            let text = self.line_text(pos);
+            let Some(byte) = needle.find(&text) else {
+                continue;
+            };
+            // Resolved before the cursor moves, both to land on the
+            // match rather than merely on its row (spec 0194 S8) and to
+            // end the borrow of the node's own text.
+            let column = text[..byte].chars().count();
+            drop(text);
             if pos.node != self.cursor {
                 self.record_jump();
                 self.set_cursor(pos.node);
@@ -791,12 +801,11 @@ impl App {
             // run's elements — so landing on the node is not yet landing
             // on the match. `set_cursor` has just reset this to 0.
             self.cursor_line_in_node = pos.line_in_node;
-            // Spec 0194 S8: land on the match, not merely on its row.
             // Clamped, since a match inside the row's own indentation is
             // left of the leftmost reachable column (S3) — and since
             // `set_cursor` above has already put the caret at the first
             // non-blank, that clamp is the whole correction.
-            self.cursor_column = self.lines[line_idx][..byte].chars().count();
+            self.cursor_column = column;
             self.clamp_caret_column();
             self.desired_column = self.cursor_column;
             // Spec 0199 S10: a search landing is a position, and a match

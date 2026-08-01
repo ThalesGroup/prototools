@@ -119,7 +119,10 @@ fn t_opens_the_override_pane_on_an_unresolved_message_node() {
         rendered_as: NOT_RENDERED,
     };
     let decoded = Decoded {
-        lines,
+        total_lines: lines.len(),
+        // Spec 0222 S1/S2: a bracketed node keeps its header alone, and
+        // the `}` is derived from it.
+        node_text: vec![Some(Box::from(lines[0].as_str()))],
         tree: vec![node],
         root_type: "google.protobuf.Empty".to_string(),
         // Tag `0x0A` = field 1 << 3 | WT_LEN(2), length varint `0x00`
@@ -162,7 +165,8 @@ fn t_opens_the_override_pane_on_a_varint_scalar_field() {
         rendered_as: NOT_RENDERED,
     };
     let decoded = Decoded {
-        lines,
+        total_lines: lines.len(),
+        node_text: vec![Some(Box::from(lines[0].as_str()))],
         tree: vec![node],
         root_type: "test.Scalar".to_string(),
         // Tag `0x08` = field 1 << 3 | WT_VARINT(0), value varint `0x01`
@@ -196,7 +200,7 @@ fn esc_after_t_on_a_primitive_field_restores_its_original_rendering() {
     let (mut app, _, id_idx) = type_as_fixture();
     app.cursor = id_idx;
     let line_idx = app.absolute_start(id_idx);
-    let original_line = app.lines[line_idx].clone();
+    let original_line = app.document_lines()[line_idx].clone();
 
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
     assert_eq!(app.override_target, Some(id_idx));
@@ -204,7 +208,8 @@ fn esc_after_t_on_a_primitive_field_restores_its_original_rendering() {
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.override_target, None);
     assert_eq!(
-        app.lines[line_idx], original_line,
+        app.document_lines()[line_idx],
+        original_line,
         "the field's rendering must be restored exactly, not left raw"
     );
 }
@@ -280,7 +285,7 @@ fn esc_after_t_on_an_enum_field_restores_its_original_rendering() {
     let (mut app, durability_idx) = enum_field_fixture();
     app.cursor = durability_idx;
     let line_idx = app.absolute_start(durability_idx);
-    let original_line = app.lines[line_idx].clone();
+    let original_line = app.document_lines()[line_idx].clone();
 
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
     assert_eq!(app.override_target, Some(durability_idx));
@@ -288,7 +293,8 @@ fn esc_after_t_on_an_enum_field_restores_its_original_rendering() {
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.override_target, None);
     assert_eq!(
-        app.lines[line_idx], original_line,
+        app.document_lines()[line_idx],
+        original_line,
         "the enum field's rendering must be restored exactly, not left raw"
     );
 }
@@ -315,9 +321,11 @@ fn t_opens_the_override_pane_on_a_length_delimited_scalar_field() {
     // decomposes `"hi"` further than this rendering shows, so the tree
     // has to be derived rather than written out.
     let arena = crate::decode::arena_of(&[0x0A, 0x02, b'h', b'i']);
+    let (tree, node_text) = crate::decode::build_tree(vec![span], &lines, &arena);
     let decoded = Decoded {
-        lines,
-        tree: crate::decode::build_tree(vec![span], &arena),
+        total_lines: lines.len(),
+        node_text,
+        tree,
         root_type: "test.Scalar".to_string(),
         arena,
         blob: Arc::new(Blob::unwrapped(vec![0x0A, 0x02, b'h', b'i'])),

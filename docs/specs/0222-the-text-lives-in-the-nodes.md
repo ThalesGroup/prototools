@@ -6,8 +6,9 @@ SPDX-License-Identifier: MIT
 
 # 0222 — the text lives in the nodes
 
-Status: draft
+Status: implemented
 App: protolens
+Implemented in: 2026-08-01
 Refs:
 - `docs/specs/0210-a-node-counts-its-own-lines.md` — this spec **replaces
   its S7, S8 and S9**, which it labels "a direction with estimated
@@ -566,4 +567,92 @@ The `lines` merge is 42.9–87.4 ms of a 61–102 ms keystroke after spec
 
 ## Measured outcome
 
-Filled in at implementation.
+Implemented 2026-08-01. All eight code items of the test plan are in
+tree and green; the three measurements follow.
+
+### Item 9 — the commit
+
+`:type-as-raw` on a top-level record of `googleapis.desc` rendered
+typed, three runs each, `PROTOLENS_TRACE` reading `key Enter us=` and
+the `finalize_us` phase where the `lines` merge used to live:
+
+| | first top-level record | last top-level record |
+| --- | --- | --- |
+| whole keystroke, before | 102 ms | 61 ms |
+| whole keystroke, after | 658, 1058, 793 µs | 1809, 1990, 1182 µs |
+| `finalize_us`, before (the merge) | 87.4 ms | 42.9 ms |
+| `finalize_us`, after | 19, 24, 25 µs | 68, 96, 30 µs |
+
+(a) The merge is gone: a phase that was 42.9–87.4 ms is now tens of
+microseconds. (b) The 2× first-vs-last spread spec 0210 left unexplained
+**inverted**, which explains it. It used to be *first*-slower because a
+memmove near the front of a 5 281 124-element `Vec` moves more elements
+than one near the back. With no vector to shift, last is now the slower
+column by about a millisecond, and that residue is `inner_us` plus the
+positional path at the end of the document — not storage.
+
+### Item 10 — search, and a correction to §S6's baseline
+
+`/` with a pattern that matches nothing, over the whole document. The
+"before" column is the pre-implementation binary built from HEAD in a
+throwaway worktree, not an inherited figure:
+
+| | before | after |
+| --- | --- | --- |
+| lowercase pattern (smartcase folds) | 1.80, 1.87, 1.80, 1.80 s | 1.69, 1.63, 2.02, 2.05, 1.99, 1.64 s |
+| case-sensitive pattern (`memchr`) | 158, 164, 258, 275 ms | 269, 279, 438, 499 ms |
+
+**§S6's "~36 ms today" was never a measured number, and the 400 ms stop
+rule was calibrated against it.** A full-document miss already cost
+~1.8 s before this spec. The reason is `SearchPattern`'s
+case-insensitive path (`tui/mod.rs:217`): under smartcase an all-lowercase
+pattern folds `char::to_lowercase` at *every byte position* across
+238 MB, and that dominates everything else by an order of magnitude.
+
+Against that, what this spec actually did to search: the node walk costs
+~1.7× on the `memchr` path — about 110–225 ms in absolute terms, at the
+top of §S6's own 150–250 ms prediction — and is lost in the noise on the
+path a user hits. The contiguous-buffer alternative would have bought
+back only the 1.7×; the fold is the cost, and it is a separate spec.
+
+### Item 11 — the per-frame path, G3's acceptance test
+
+The Background table's pty script re-run exactly: 50×200, 48 drawn rows,
+1.5 s inter-key gap, 20 `PageDown` + 20 `PageUp` from the top, then `G`
+and 15 of each. Medians in µs, with min–max:
+
+| µs per frame | top of document | after `G` (end) |
+| --- | --- | --- |
+| `key` | **10** (8–20) | **24** (4–78) |
+| `window` | **5** (3–20) | **57** (34–117) |
+| `styles` | **276** (228–651) | **431** (360–791) |
+| `heat` | **7** (4–142) | **10** (5–143) |
+| `ovr` | **11** (4–26) | **14** (9–30) |
+| `lines` | **75** (63–149) | **93** (81–135) |
+| whole `draw` | **821** (690–1500) | **1359** (954–2083) |
+
+G3 asked that `window` + `lines` not exceed the Background table's range
+at either end. It is **80 µs at the top** against a range of 57–142, and
+**150 µs at the end** against 49–192. Inside at both ends, so G3 passes.
+Paging stayed O(page): `key` is 10 µs at the top and 24 at the end,
+the same shape as before.
+
+### Deviation from §S6: no `doc_prev`
+
+§S6's second bullet made writing `doc_prev` part of this spec.
+`jump_to_match` instead walks the **line-level** `next_line`/`prev_line`
+pair, and `doc_prev` was not written.
+
+The reason is that the cursor can rest on a **footer**. A node-level
+pre-order `doc_next` from a node whose footer the cursor is on would
+descend back into that node's own children, re-visiting every line the
+cursor has already passed. The line-level pair takes the footer as a
+position in its own right, which is the coordinate `jump_to_match`
+actually holds. Spec 0195's lazy-endpoint requirement is met the same
+way it is today — neither direction materializes `last_node()` eagerly.
+
+One consequence to record: search does **not** use §S4's byte cursor. It
+resolves each line independently, so a match inside a long packed run
+still pays `line_offset`'s O(k) rescan. That is off the per-frame path
+(G4 permits it) and is invisible next to the fold cost measured above,
+but it is a real difference from the per-frame reader.

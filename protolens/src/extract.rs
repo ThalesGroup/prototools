@@ -163,8 +163,9 @@ pub fn dedent(lines: &[String]) -> String {
 ///
 /// Spec 0210 S1: `text_range` is passed in rather than read off
 /// `node.span`, which holds the range the node had when the tree was
-/// built and is not repaired by a splice. The tui derives it from the
-/// line counters (`App::node_lines`).
+/// built and is not repaired by a splice. Spec 0222 S7: the tui hands
+/// over just the subtree's own lines (`App::subtree_lines`), reassembled
+/// from the nodes, so the range it passes is the whole of them.
 pub fn extract_bytes(
     format: ExtractFormat,
     blob: &[u8],
@@ -379,9 +380,12 @@ mod tests {
         )
         .unwrap();
         assert!(
-            !reopened.lines.join("\n").contains("INVALID_STRING"),
+            !reopened
+                .document_lines()
+                .join("\n")
+                .contains("INVALID_STRING"),
             "re-decoded Inner extract must not contain garbled fields: {:?}",
-            reopened.lines
+            reopened.document_lines()
         );
     }
 

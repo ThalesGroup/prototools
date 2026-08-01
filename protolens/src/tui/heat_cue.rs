@@ -306,9 +306,21 @@ impl App {
     /// moment the user un-hides them; only the returned value is
     /// suppressed here.
     pub(super) fn heat_cue_for(&mut self, line_idx: usize) -> HeatDisplay {
-        let Some(idx) = self.node_at_header_line(line_idx) else {
+        match self.line_pos(line_idx) {
+            Some(pos) => self.heat_cue_at(pos),
+            None => HeatDisplay::None,
+        }
+    }
+
+    /// `heat_cue_for` for a caller that already holds the line's owner —
+    /// spec 0222 S3, which is what a drawn row carries. The draw path
+    /// goes through here, so a frame costs no line-to-node lookups at
+    /// all.
+    pub(super) fn heat_cue_at(&mut self, pos: LinePos) -> HeatDisplay {
+        if self.is_footer(pos) {
             return HeatDisplay::None;
-        };
+        }
+        let idx = pos.node;
         if !self.can_override(idx) {
             return HeatDisplay::None;
         }

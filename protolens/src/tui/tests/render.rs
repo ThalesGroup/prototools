@@ -118,9 +118,9 @@ fn a_document_nested_to_the_wire_depth_limit_opens_and_draws() {
     // document is deep in rows as well as in structure — a fixture that
     // decoded to a handful of lines would prove nothing about either.
     assert!(
-        app.lines.len() > depth,
+        app.document_lines().len() > depth,
         "{} lines for {depth} levels",
-        app.lines.len()
+        app.document_lines().len()
     );
 
     let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
@@ -129,9 +129,9 @@ fn a_document_nested_to_the_wire_depth_limit_opens_and_draws() {
     // The line-owner descent walks one level per iteration, so the
     // deepest line is the longest walk in the program. Asked for at the
     // very bottom, where the nesting is.
-    let last = app.lines.len() - 1;
+    let last = app.document_lines().len() - 1;
     assert!(app.line_pos(last).is_some(), "no owner for the last line");
-    assert!(app.line_pos(app.lines.len() / 2).is_some());
+    assert!(app.line_pos(app.document_lines().len() / 2).is_some());
 
     // To the bottom and back, folding on the way — the recursive walks
     // are over the *visible* structure, so a fold is what makes them
@@ -255,6 +255,86 @@ fn a_frame_costs_the_same_at_the_end_of_a_wide_document_as_at_the_start() {
     );
 }
 
+/// One node drawing `n` rows, its text held as spec 0222 S1 holds a
+/// packed run's: all `n` lines joined by `\n` in a single allocation.
+///
+/// Synthetic — a real run of this length would need a 100 000-element
+/// blob to decode — but it is the exact shape S4 is about, since what
+/// makes the k-th row cost k is that the run is one string.
+fn long_packed_run_app(n: usize) -> App {
+    let mut app = wide_sibling_scalars_app(1);
+    let text: Vec<String> = (0..n).map(|i| format!("  {i}")).collect();
+    app.node_text[0] = Some(text.join("\n").into_boxed_str());
+    app.tree[0].lines_total = n as u32;
+    app.tree[0].lines_visible = n as u32;
+    app
+}
+
+/// Spec 0222, test-plan item 5: a frame drawn deep inside a long
+/// packed run scans the run once, not once per row.
+///
+/// The run's rows share one string, so the k-th of them starts k
+/// newlines in. Resolving each drawn row's offset on its own would
+/// make a 48-row frame at row 90 000 scan 4.3 M bytes instead of the
+/// 1.7 M the entry costs once — S4's byte cursor is what collapses
+/// the 48 into 1.
+///
+/// So the comparison is a full frame against a single row *at the
+/// same place*: both pay the one entry scan, and only the broken
+/// version pays it again per row. Comparing against a frame at the
+/// top would not work — the entry scan is legitimately absent there.
+///
+/// A timing assertion for the same reason as the test above, and with
+/// the same deliberately loose bound: the regression is a 48x one.
+#[test]
+fn a_frame_inside_a_long_packed_run_scans_once() {
+    const N: usize = 100_000;
+    const AT: usize = 90_000;
+    const HEIGHT: usize = 48;
+    let app = long_packed_run_app(N);
+
+    // The offsets must be the real line starts, or the frame is fast
+    // and wrong.
+    let window = app.build_window(AT, HEIGHT);
+    assert_eq!(window.len(), HEIGHT);
+    for (k, row) in window.iter().enumerate() {
+        let DisplayRow::Committed(c) = *row else {
+            panic!("row {k} is not committed");
+        };
+        assert_eq!(c.line, AT + k);
+        assert_eq!(app.line_text(c.pos), format!("  {}", AT + k));
+        assert_eq!(
+            app.line_text_at(c.pos, c.offset),
+            app.line_text(c.pos),
+            "row {k}: the walked offset must name the same line the \
+             from-scratch resolution does"
+        );
+    }
+
+    // Best of several, as above: the minimum is the run least
+    // disturbed by the scheduler, and it is the ratio that carries the
+    // signal.
+    let time = |count: usize| {
+        (0..5)
+            .map(|_| {
+                let t = Instant::now();
+                std::hint::black_box(app.build_window(AT, count));
+                t.elapsed()
+            })
+            .min()
+            .expect("at least one sample")
+    };
+    let one_row = time(1);
+    let whole_frame = time(HEIGHT);
+
+    assert!(
+        whole_frame.as_nanos() <= one_row.as_nanos().saturating_mul(10),
+        "a {HEIGHT}-row frame at row {AT} of a {N}-line run took \
+         {whole_frame:?} against {one_row:?} for a single row there — the \
+         entry scan is being paid per row again"
+    );
+}
+
 /// Spec 0192 S2: the active-override check runs once per addressable
 /// record, not once per drawn row — a packed run draws one row per
 /// element but is one record (spec 0184 S2, one node since spec 0216),
@@ -279,8 +359,8 @@ fn the_override_check_runs_once_per_record_not_once_per_row() {
     let naive: Vec<bool> = window
         .iter()
         .map(|&row| match row {
-            DisplayRow::Committed(l) => app
-                .node_at_own_line(l)
+            DisplayRow::Committed(c) => app
+                .node_at_own_line(c.line)
                 .is_some_and(|idx| app.resolve_active_override(idx).is_some()),
             DisplayRow::Overlay(_) => false,
         })
@@ -290,7 +370,7 @@ fn the_override_check_runs_once_per_record_not_once_per_row() {
     let rows_with_a_node = window
         .iter()
         .filter(|&&row| match row {
-            DisplayRow::Committed(l) => app.node_at_own_line(l).is_some(),
+            DisplayRow::Committed(c) => app.node_at_own_line(c.line).is_some(),
             DisplayRow::Overlay(_) => false,
         })
         .count();
@@ -441,7 +521,7 @@ fn message_is_not_dismissed_while_a_prompt_or_quit_confirm_is_active() {
 
 /// Spec 0133 G3/G4: the main-pane `a` key toggles display of each
 /// line's trailing `#@ ...` annotation, purely at render time — the
-/// underlying `self.lines`/`self.line_styles` are untouched, so
+/// underlying `self.document_lines()`/`self.line_styles` are untouched, so
 /// toggling `a` twice restores byte-for-byte identical rendering.
 /// Distinct from the override pane's own `i` (candidate sort,
 /// exercised above) and the manage pane's own `a` (entry active
@@ -466,7 +546,8 @@ fn a_toggles_the_main_pane_annotation_display() {
         rendered_as: NOT_RENDERED,
     };
     let decoded = Decoded {
-        lines: vec![line.clone()],
+        total_lines: 1,
+        node_text: vec![Some(Box::from(line.as_str()))],
         tree: vec![node],
         root_type: "test.Msg".to_string(),
         arena: crate::decode::arena_of(&[0x08, 0x05]),
@@ -482,18 +563,18 @@ fn a_toggles_the_main_pane_annotation_display() {
     // here since this node has nothing to fold.
     assert!(app.annotations);
     assert_eq!(
-        app.row_content(DisplayRow::Committed(0)),
+        app.row_content(app.committed_row(0).unwrap()),
         format!("  {line}")
     );
 
     app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
     assert!(!app.annotations);
-    assert_eq!(app.row_content(DisplayRow::Committed(0)), "    id: 5");
+    assert_eq!(app.row_content(app.committed_row(0).unwrap()), "    id: 5");
     // Spec 0187 S3: `row_spans` reads `window_styles`, which is a
     // per-frame product of the rows being drawn, so the window has to be
     // established before the row's spans can be asked for. Index 0 is
     // this one-row window's only position.
-    let window = [DisplayRow::Committed(0)];
+    let window = [app.committed_row(0).unwrap()];
     app.refresh_window_styles(&window);
     let spanned: String = app
         .row_spans(window[0], 0)
@@ -505,7 +586,7 @@ fn a_toggles_the_main_pane_annotation_display() {
     app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
     assert!(app.annotations);
     assert_eq!(
-        app.row_content(DisplayRow::Committed(0)),
+        app.row_content(app.committed_row(0).unwrap()),
         format!("  {line}")
     );
 }
@@ -941,7 +1022,7 @@ fn reserving_the_dot_column_shifts_the_command_row_and_its_cursor() {
 #[test]
 fn window_highlighting_matches_whole_document_highlighting() {
     let app = nested_message_set_fixture();
-    let lines = &app.lines;
+    let lines = &app.document_lines();
     let document = colorize::hints_by_line(lines, &colorize::colorize(&lines.join("\n")));
 
     for height in 1..=lines.len() {
@@ -968,15 +1049,15 @@ fn window_highlighting_matches_whole_document_highlighting() {
 fn the_synthetic_context_is_dropped_not_drawn() {
     let app = nested_message_set_fixture();
     let deepest = app
-        .lines
+        .document_lines()
         .iter()
         .enumerate()
         .max_by_key(|(_, l)| l.len() - l.trim_start().len())
         .map(|(i, _)| i)
         .expect("the fixture has lines");
 
-    for height in 1..=(app.lines.len() - deepest) {
-        let window = app.lines[deepest..deepest + height].to_vec();
+    for height in 1..=(app.document_lines().len() - deepest) {
+        let window = app.document_lines()[deepest..deepest + height].to_vec();
         let styles = window_styles_for(&window, app.indent_size);
         assert_eq!(
             styles.len(),
@@ -1011,7 +1092,7 @@ fn a_truncation_marker_does_not_decolor_the_rows_beneath_it() {
     // Cut the fixture just after a value line, so the marker lands in
     // the middle of the window with several colorable rows below it.
     let cut = 8;
-    let without = app.lines.clone();
+    let without = app.document_lines().clone();
     let expected = window_styles_for(&without, app.indent_size);
 
     let mut with: Vec<String> = without[..cut].to_vec();
@@ -1057,16 +1138,16 @@ fn a_truncation_marker_does_not_decolor_the_rows_beneath_it() {
 fn hiding_annotations_respects_a_hash_at_inside_a_string_value() {
     let line = "  name: \"a  #@ b\"  #@ string = 2".to_string();
     let mut app = sibling_leaves_app(&["x"]);
-    app.lines = vec![line.clone()];
+    app.node_text[0] = Some(Box::from(line.as_str()));
     app.annotations = false;
     // Spec 0193 S1's blank fold field accounts for the two extra columns.
     assert_eq!(
-        app.row_content(DisplayRow::Committed(0)),
+        app.row_content(app.committed_row(0).unwrap()),
         "    name: \"a  #@ b\""
     );
     app.annotations = true;
     assert_eq!(
-        app.row_content(DisplayRow::Committed(0)),
+        app.row_content(app.committed_row(0).unwrap()),
         format!("  {line}")
     );
 }
@@ -1085,9 +1166,9 @@ fn hiding_annotations_respects_a_hash_at_inside_a_string_value() {
 #[test]
 fn an_empty_packed_record_row_hides_to_nothing() {
     let mut app = sibling_leaves_app(&["x"]);
-    app.lines = vec!["  #@ = 7 pack_size: 0".to_string()];
+    app.node_text[0] = Some(Box::from("  #@ = 7 pack_size: 0"));
     app.annotations = false;
-    assert_eq!(app.row_content(DisplayRow::Committed(0)), "");
+    assert_eq!(app.row_content(app.committed_row(0).unwrap()), "");
 }
 
 /// Test plan item 3c. The rule moved across a crate boundary, from the
@@ -1098,9 +1179,11 @@ fn an_empty_packed_record_row_hides_to_nothing() {
 #[test]
 fn the_format_rule_and_the_parser_rule_agree_on_rendered_lines() {
     for app in [nested_message_set_fixture(), nested_any_fixture()] {
-        let per_line =
-            colorize::hints_by_line(&app.lines, &colorize::colorize(&app.lines.join("\n")));
-        for (line, hints) in app.lines.iter().zip(&per_line) {
+        let per_line = colorize::hints_by_line(
+            &app.document_lines(),
+            &colorize::colorize(&app.document_lines().join("\n")),
+        );
+        for (line, hints) in app.document_lines().iter().zip(&per_line) {
             let old = hints
                 .iter()
                 .find(|(_, role)| *role == SyntaxRole::Comment)
@@ -1126,9 +1209,10 @@ fn clipboard_copy_strips_annotations_outside_the_viewport() {
     app.annotations = false;
     // A window covering only the first two rows; everything selected
     // below is outside it.
-    app.refresh_window_styles(&[DisplayRow::Committed(0), DisplayRow::Committed(1)]);
+    let window = [app.committed_row(0).unwrap(), app.committed_row(1).unwrap()];
+    app.refresh_window_styles(&window);
 
-    let last = app.lines.len() - 1;
+    let last = app.document_lines().len() - 1;
     app.select_anchor = Some(last - 3);
     app.select_end = Some(last);
     let (count, copied) = app.selected_text().expect("the selection must yield text");
@@ -1224,13 +1308,13 @@ fn column_of(content: &str, needle: &str) -> usize {
 fn the_fold_marker_does_not_displace_the_row_it_marks() {
     let app = nested_any_fixture();
     let line_of = |needle: &str| {
-        app.lines
+        app.document_lines()
             .iter()
             .position(|l| l.trim_start().starts_with(needle))
             .unwrap_or_else(|| panic!("fixture must render a {needle:?} line"))
     };
-    let plain = app.row_content(DisplayRow::Committed(line_of("type_url:")));
-    let foldable = app.row_content(DisplayRow::Committed(line_of("value {")));
+    let plain = app.row_content(app.committed_row(line_of("type_url:")).unwrap());
+    let foldable = app.row_content(app.committed_row(line_of("value {")).unwrap());
     assert_eq!(
         column_of(&plain, "type_url"),
         column_of(&foldable, "value"),
@@ -1242,7 +1326,7 @@ fn the_fold_marker_does_not_displace_the_row_it_marks() {
     // enough for the marker to take the last two columns of its own
     // indentation, while the root row has no indentation at all and
     // falls back to the reserved field.
-    let root = app.row_content(DisplayRow::Committed(0));
+    let root = app.row_content(app.committed_row(0).unwrap());
     for (content, token) in [(&foldable, "value"), (&root, "1 {")] {
         assert_eq!(
             column_of(content, "\u{25be}") + render::FOLD_FIELD_WIDTH,
@@ -1265,21 +1349,26 @@ fn marker_column_agrees_with_what_is_drawn_at_every_indent_width() {
         // Re-indent the document as `--indent width` would have. Only
         // the leading whitespace changes, so every node's line range —
         // and therefore every fold marker — stays where it was.
-        app.lines = app
-            .lines
-            .iter()
-            .map(|l| {
-                let depth = (l.len() - l.trim_start().len()) / 2;
-                format!("{}{}", " ".repeat(depth * width), l.trim_start())
-            })
-            .collect();
+        // Spec 0222 S1: the text is the nodes', so the re-indent is
+        // per node. A closing `}` needs no touching — it is derived
+        // from its header, so it follows the header's new indent.
+        for text in app.node_text.iter_mut().flatten() {
+            let reindented: Vec<String> = text
+                .split('\n')
+                .map(|l| {
+                    let depth = (l.len() - l.trim_start().len()) / 2;
+                    format!("{}{}", " ".repeat(depth * width), l.trim_start())
+                })
+                .collect();
+            *text = reindented.join("\n").into_boxed_str();
+        }
 
         let window: Vec<DisplayRow> = (0..app.composed_row_count())
             .filter_map(|d| app.display_row(d))
             .collect();
         app.refresh_window_styles(&window);
         for (i, &row) in window.iter().enumerate() {
-            let DisplayRow::Committed(line) = row else {
+            let DisplayRow::Committed(committed) = row else {
                 continue;
             };
             let drawn: String = app
@@ -1290,9 +1379,10 @@ fn marker_column_agrees_with_what_is_drawn_at_every_indent_width() {
             let Some(marker) = drawn.chars().position(|c| c == '\u{25be}') else {
                 continue;
             };
+            let line = committed.line;
             assert_eq!(
                 marker,
-                render::marker_column(&app.lines[line]) as usize,
+                render::marker_column(&app.line_text(committed.pos)) as usize,
                 "--indent {width}, line {line}: the hit test and the drawn \
                  glyph must agree on the column: {drawn:?}"
             );
@@ -1338,7 +1428,7 @@ fn a_brace_pairs_with_its_match_only_when_the_caret_is_on_it() {
     let (mut app, items) = repeated_message_fixture();
     app.set_cursor(items[1]);
     let header = app.absolute_start(items[1]);
-    let first_non_blank = app.lines[header]
+    let first_non_blank = app.document_lines()[header]
         .trim_start()
         .chars()
         .next()
@@ -1471,7 +1561,9 @@ fn a_folded_node_pairs_its_synthetic_closing_brace_on_the_same_row() {
 /// the text leaves every node's line count valid.
 fn text_rows_app(texts: &[&str]) -> App {
     let mut app = wide_sibling_scalars_app(texts.len());
-    app.lines = texts.iter().map(|s| s.to_string()).collect();
+    for (slot, text) in texts.iter().enumerate() {
+        app.node_text[slot] = Some(Box::from(*text));
+    }
     app
 }
 

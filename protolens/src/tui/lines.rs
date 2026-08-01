@@ -24,9 +24,14 @@
 //!   the visible-line sequence, carrying the absolute line with them.
 //!   This is what keeps the descents off the per-frame path: a viewport
 //!   is one descent followed by `height` steps.
-//! - **Counts** (`visible_row_count`, `has_children`).
+//! - **Counts** (`visible_row_count`, `total_lines`, `has_children`).
+//! - **Text** (`line_text`, `line_text_at`, `line_offset`,
+//!   `next_line`, `prev_line`) — spec 0222: the document's text lives in
+//!   the nodes, so a line's characters are reached the same way as its
+//!   number, by naming the node that owns it.
 
 use super::*;
+use std::borrow::Cow;
 
 /// One rendered line, named by the node that owns it and by which of
 /// that node's own lines it is.
@@ -176,43 +181,14 @@ impl App {
     /// whose extent contains `line`. A materialized line-to-node vector
     /// is the rejected alternative: it cost 85 MB and had to be repaired
     /// over the whole tail of the document on every commit.
+    ///
+    /// Spec 0222 S3 removed the window-sized cache that used to sit in
+    /// front of this. It existed because a drawn row was asked for its
+    /// owner four or five times over, having thrown the walk's own
+    /// answer away; now the row carries that answer, so the per-frame
+    /// path does not come here at all.
     pub(super) fn line_pos(&self, line: usize) -> Option<LinePos> {
-        match self.cached_line_pos(line) {
-            Some(pos) => Some(pos),
-            None => self.descend_line_pos(line),
-        }
-    }
-
-    /// Record the `(line, owner)` pairs the frame about to be drawn
-    /// resolved to, so that the passes which follow answer by lookup
-    /// rather than by descent.
-    ///
-    /// Spec 0210 S3: a drawn row is asked for its node four or five
-    /// times over (its text, its fold marker, its content, its spans,
-    /// its override hint), and each of those would otherwise be a fresh
-    /// descent across the root's 7 771 children. `render` resolves the
-    /// window once, hands it here, and every later ask is a binary
-    /// search.
-    pub(super) fn set_window_nodes(&mut self, rows: &[(usize, LinePos)]) {
-        self.window_nodes.clear();
-        self.window_nodes.extend_from_slice(rows);
-        self.window_nodes_version = self.structural_version;
-    }
-
-    /// `line`'s owner, if the last drawn window happens to hold it.
-    ///
-    /// Stale entries are discarded rather than repaired: the version
-    /// guard makes a post-mutation lookup miss, and a miss simply costs
-    /// the descent it was avoiding. Correctness never rests on this
-    /// cache, only speed — which is why it can be a plain snapshot of
-    /// whatever the last frame drew.
-    fn cached_line_pos(&self, line: usize) -> Option<LinePos> {
-        if self.window_nodes_version != self.structural_version {
-            return None;
-        }
-        // Ascending by construction: `visible_window` walks forward.
-        let i = self.window_nodes.binary_search_by_key(&line, |&(l, _)| l);
-        i.ok().map(|i| self.window_nodes[i].1)
+        self.descend_line_pos(line)
     }
 
     fn descend_line_pos(&self, line: usize) -> Option<LinePos> {
@@ -538,4 +514,183 @@ impl App {
             1,
         )
     }
+
+    /// How many lines the committed document has, folds ignored.
+    ///
+    /// Derived from the roots' own counters, the same way
+    /// `visible_row_count` is, so a splice cannot leave it stale.
+    pub(super) fn total_lines(&self) -> usize {
+        let mut total = 0usize;
+        let mut cur = self.first_root();
+        while let Some(n) = cur {
+            total += self.tree[n].lines_total as usize;
+            cur = self.next_sibling(n);
+        }
+        total
+    }
+
+    /// The characters of the line `pos` names.
+    ///
+    /// Owned only for a bracketed node's closing brace, which spec 0222
+    /// S2 derives rather than stores; every other line is borrowed
+    /// straight out of its owner's text.
+    pub(super) fn line_text(&self, pos: LinePos) -> Cow<'_, str> {
+        self.line_text_at(pos, self.line_offset(pos))
+    }
+
+    /// `line_text` for a caller that already knows where in its owner's
+    /// text the line starts — spec 0222 S4's byte cursor, which is what
+    /// keeps a frame drawn inside a long packed run linear rather than
+    /// quadratic.
+    pub(super) fn line_text_at(&self, pos: LinePos, offset: usize) -> Cow<'_, str> {
+        let Some(text) = self.node_text[pos.node].as_deref() else {
+            return Cow::Borrowed("");
+        };
+        if self.tree[pos.node].is_bracketed() && pos.line_in_node > 0 {
+            return Cow::Owned(decode::derived_close(text));
+        }
+        Cow::Borrowed(line_at(text, offset))
+    }
+
+    /// Where in `node_text[pos.node]` the line `pos` names begins.
+    ///
+    /// Zero for anything but a later line of a packed run, and O(that
+    /// line's index) for one of those — hence `line_text_at` for the
+    /// callers that walk.
+    pub(super) fn line_offset(&self, pos: LinePos) -> usize {
+        if pos.line_in_node == 0 || self.tree[pos.node].is_bracketed() {
+            return 0;
+        }
+        match self.node_text[pos.node].as_deref() {
+            Some(text) => offset_of_line(text, pos.line_in_node as usize),
+            None => 0,
+        }
+    }
+
+    /// The line after `pos` in document order, folds ignored. `None` at
+    /// the end of the document.
+    ///
+    /// The fold-blind twin of `next_visible`, and O(1) for the same
+    /// reasons. Search wants this rather than a node-level `doc_next`
+    /// step: a match can sit on a closing brace, and pre-order's answer
+    /// to "the node after this one" descends back into the node's own
+    /// children, which would visit lines out of the order the user reads
+    /// them in.
+    pub(super) fn next_line(&self, pos: LinePos) -> Option<LinePos> {
+        let total = self.tree[pos.node].lines_total;
+        if self.tree[pos.node].is_bracketed() {
+            if pos.line_in_node == 0 {
+                if let Some(child) = self.first_child(pos.node) {
+                    return Some(LinePos::header(child));
+                }
+                return Some(LinePos {
+                    node: pos.node,
+                    line_in_node: total - 1,
+                });
+            }
+        } else if pos.line_in_node + 1 < total {
+            return Some(LinePos {
+                node: pos.node,
+                line_in_node: pos.line_in_node + 1,
+            });
+        }
+        if let Some(sibling) = self.next_sibling(pos.node) {
+            return Some(LinePos::header(sibling));
+        }
+        self.parent(pos.node).map(|parent| LinePos {
+            node: parent,
+            line_in_node: self.tree[parent].lines_total - 1,
+        })
+    }
+
+    /// The line before `pos` in document order, folds ignored. `None` at
+    /// the start of the document. The mirror of `next_line`.
+    pub(super) fn prev_line(&self, pos: LinePos) -> Option<LinePos> {
+        if pos.line_in_node > 0 {
+            if !self.tree[pos.node].is_bracketed() {
+                return Some(LinePos {
+                    node: pos.node,
+                    line_in_node: pos.line_in_node - 1,
+                });
+            }
+            return Some(match self.last_child(pos.node) {
+                Some(child) => self.last_line_of(child),
+                None => LinePos::header(pos.node),
+            });
+        }
+        if let Some(sibling) = self.prev_sibling(pos.node) {
+            return Some(self.last_line_of(sibling));
+        }
+        self.parent(pos.node).map(LinePos::header)
+    }
+
+    /// `idx`'s own last line — its closing brace, or the last element of
+    /// a packed run.
+    fn last_line_of(&self, idx: usize) -> LinePos {
+        LinePos {
+            node: idx,
+            line_in_node: self.tree[idx].lines_total - 1,
+        }
+    }
+
+    /// The document's first line, `None` for an empty tree.
+    pub(super) fn first_line(&self) -> Option<LinePos> {
+        self.first_root().map(LinePos::header)
+    }
+
+    /// The document's last line, `None` for an empty tree.
+    ///
+    /// Resolved on demand rather than kept as an endpoint, so that a
+    /// backward search pays for it once and only if it wraps — spec 0195
+    /// S1's hazard.
+    pub(super) fn last_line(&self) -> Option<LinePos> {
+        let mut cur = self.first_root()?;
+        while let Some(next) = self.next_sibling(cur) {
+            cur = next;
+        }
+        Some(self.last_line_of(cur))
+    }
+
+    /// `idx`'s subtree as freshly built lines, in document order.
+    ///
+    /// The one place that materializes text the way `App::lines` used
+    /// to, for the callers that hand a whole subtree to something
+    /// outside the TUI — export and the clipboard. Bounded by the
+    /// subtree, not by the document.
+    pub(super) fn subtree_lines(&self, idx: usize) -> Vec<String> {
+        decode::subtree_lines(&self.tree, &self.node_text, &self.arena, idx)
+    }
+
+    /// The whole document as freshly built lines.
+    ///
+    /// Test-only. Production code reads one line at a time, through the
+    /// node that owns it; a test that is checking *what the document
+    /// says* is far clearer written against the text than against a
+    /// walk, so it gets the old `App::lines` back for the length of one
+    /// assertion.
+    #[cfg(test)]
+    pub(super) fn document_lines(&self) -> Vec<String> {
+        decode::document_lines(&self.tree, &self.node_text, &self.arena)
+    }
+}
+
+/// The line beginning at `offset`, up to but not including its newline.
+fn line_at(text: &str, offset: usize) -> &str {
+    let rest = &text[offset..];
+    match rest.find('\n') {
+        Some(end) => &rest[..end],
+        None => rest,
+    }
+}
+
+/// Where the `k`-th line of `text` begins.
+fn offset_of_line(text: &str, k: usize) -> usize {
+    let mut offset = 0usize;
+    for _ in 0..k {
+        match text[offset..].find('\n') {
+            Some(at) => offset += at + 1,
+            None => return text.len(),
+        }
+    }
+    offset
 }

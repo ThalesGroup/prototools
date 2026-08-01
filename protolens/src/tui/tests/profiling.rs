@@ -87,7 +87,7 @@ fn profile_override_pane_down_on_db3() {
     app.verify_repair = false;
     app.term_width = 120;
     eprintln!("App::new: {:?}", t2.elapsed());
-    eprintln!("total lines: {}", app.lines.len());
+    eprintln!("total lines: {}", app.document_lines().len());
     eprintln!("total tree nodes: {}", app.tree.len());
 
     // Mirror `mod.rs`'s `run` setup: `App::new` alone never spawns the
@@ -205,7 +205,7 @@ fn profile_preview_root_versus_first_child_on_db3() {
     eprintln!(
         "tree.len()={} lines.len()={}",
         app.tree.len(),
-        app.lines.len()
+        app.document_lines().len()
     );
 
     let root = app.first_node;
@@ -238,7 +238,7 @@ fn profile_preview_root_versus_first_child_on_db3() {
             t.elapsed() / N as u32,
             app.preview_overlay.as_ref().map_or(0, |o| o.lines.len()),
             app.tree.len(),
-            app.lines.len(),
+            app.document_lines().len(),
         );
     }
     app.close_override();
@@ -279,7 +279,7 @@ fn profile_override_pane_enter_on_pdb() {
     app.verify_repair = false;
     app.term_width = 120;
     eprintln!("App::new: {:?}", t2.elapsed());
-    eprintln!("total lines: {}", app.lines.len());
+    eprintln!("total lines: {}", app.document_lines().len());
     eprintln!("total tree nodes: {}", app.tree.len());
 
     let mut rx = None;
@@ -465,7 +465,7 @@ fn profile_main_pane_down_on_db3() {
     app.verify_repair = false;
     app.term_width = 120;
     eprintln!("App::new: {:?}", t2.elapsed());
-    eprintln!("total lines: {}", app.lines.len());
+    eprintln!("total lines: {}", app.document_lines().len());
     eprintln!("total tree nodes: {}", app.tree.len());
 
     // Mirror `mod.rs`'s real `run()` setup (2026-07-24 follow-up
@@ -1532,7 +1532,7 @@ fn profile_nested_commit_on_pdb() {
     // and deep nodes actually carry a `type_fqdn` to re-confirm.
     eprintln!(
         "after root resolution: lines={} tree.len()={}",
-        app.lines.len(),
+        app.document_lines().len(),
         app.tree.len()
     );
 
@@ -1547,7 +1547,7 @@ fn profile_nested_commit_on_pdb() {
         eprintln!(
             "no-op batch #{round}: {:?}, lines={} tree.len()={}",
             t.elapsed(),
-            app.lines.len(),
+            app.document_lines().len(),
             app.tree.len()
         );
     }
@@ -1559,7 +1559,7 @@ fn profile_nested_commit_on_pdb() {
     // target as the earlier readings it is compared against (under the
     // old `PathField` default a repeated field, e.g. `file` on the root
     // with 465 elements, retyped the whole document instead).
-    let midpoint = app.lines.len() / 2;
+    let midpoint = app.document_lines().len() / 2;
     let target = (0..app.tree.len())
         .filter(|&i| {
             let s = &app.tree[i].span;
@@ -1597,7 +1597,7 @@ fn profile_nested_commit_on_pdb() {
         "target node {target}: fqdn={own_fqdn:?} lines {}..{} of {}",
         app.absolute_start(target),
         app.node_lines(target).end,
-        app.lines.len(),
+        app.document_lines().len(),
     );
 
     // Force a real re-splice, exactly as `toggle_override` does before
@@ -1618,7 +1618,7 @@ fn profile_nested_commit_on_pdb() {
     eprintln!("nested commit: {:?}", t.elapsed());
     eprintln!(
         "after: lines={} tree.len()={}",
-        app.lines.len(),
+        app.document_lines().len(),
         app.tree.len()
     );
 }
@@ -1676,7 +1676,7 @@ fn measure_root_type_gate(desc_path: &Path, decode_too: bool) {
     eprintln!(
         "decode(raw, deferred)        {:?}  lines={} nodes={}",
         t.elapsed(),
-        raw.lines.len(),
+        raw.document_lines().len(),
         raw.tree.len()
     );
     drop(raw);
@@ -1686,7 +1686,7 @@ fn measure_root_type_gate(desc_path: &Path, decode_too: bool) {
     eprintln!(
         "decode(typed, up front)      {:?}  lines={} nodes={}",
         t.elapsed(),
-        typed.lines.len(),
+        typed.document_lines().len(),
         typed.tree.len()
     );
 }

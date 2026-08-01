@@ -317,15 +317,15 @@ fn load_overrides_without_a_root_entry_preserves_the_current_root_type() {
         "root must keep its resolved type across a wholesale \
          override-collection replace, even though the loaded file \
          defines no root entry of its own: {:#?}",
-        app.lines
+        app.document_lines()
     );
     assert!(
-        app.lines
+        app.document_lines()
             .iter()
             .any(|l| l.contains("label") && l.contains("hi")),
         "tier-2 MessageSet auto-expansion must still take effect \
          after --load-overrides, not just tier-1: {:#?}",
-        app.lines
+        app.document_lines()
     );
 }
 
@@ -395,7 +395,7 @@ fn type_as_command_rejects_a_wire_incompatible_primitive_keyword() {
         "unexpected message: {}",
         app.message
     );
-    let line = &app.lines[app.absolute_start(id_idx)];
+    let line = &app.document_lines()[app.absolute_start(id_idx)];
     assert!(
         line.contains("sint32"),
         "expected zigzag-decoded sint32 rendering, got: {line:?}"
@@ -424,7 +424,7 @@ fn deactivating_a_primitive_type_as_override_reverts_the_main_pane_rendering() {
     app.cursor = id_idx;
 
     app.run_command("type-as sint32");
-    let line = app.lines[app.absolute_start(id_idx)].clone();
+    let line = app.document_lines()[app.absolute_start(id_idx)].clone();
     assert!(
         line.contains("sint32"),
         "expected zigzag-decoded sint32 rendering, got: {line:?}"
@@ -444,7 +444,7 @@ fn deactivating_a_primitive_type_as_override_reverts_the_main_pane_rendering() {
         !app.overrides.entries()[entry_idx].active,
         "deactivating must stick across a render pass"
     );
-    let line = &app.lines[app.absolute_start(id_idx)];
+    let line = &app.document_lines()[app.absolute_start(id_idx)];
     assert!(
         !line.contains("sint32"),
         "expected the field to revert to its natural (int32) \

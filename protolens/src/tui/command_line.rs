@@ -639,14 +639,14 @@ impl App {
                 } else {
                     ExtractFormat::Text
                 };
-                let text_range = self.node_lines(self.cursor);
+                let lines = self.subtree_lines(self.cursor);
                 match extract::extract(
                     Path::new(&path),
                     extract_format,
                     &self.blob,
-                    &self.lines,
+                    &lines,
                     &self.tree[self.cursor],
-                    text_range,
+                    0..lines.len(),
                 ) {
                     Ok(()) => self.message = format!("exported to {path}"),
                     Err(e) => self.message = format!("export error: {e}"),
@@ -716,13 +716,8 @@ impl App {
     /// command, for a caller with no `Path` to write to (spec 0123's
     /// batch mode, writing to stdout or an explicit `-o`/`--output`).
     pub(crate) fn extract_bytes(&self, idx: usize, format: ExtractFormat) -> Vec<u8> {
-        extract::extract_bytes(
-            format,
-            &self.blob,
-            &self.lines,
-            &self.tree[idx],
-            self.node_lines(idx),
-        )
+        let lines = self.subtree_lines(idx);
+        extract::extract_bytes(format, &self.blob, &lines, &self.tree[idx], 0..lines.len())
     }
 
     /// Propose a default `:save` path — same directory/stem as

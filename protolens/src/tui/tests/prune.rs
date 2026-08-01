@@ -48,7 +48,7 @@ fn only_lost_the_repeated_qualifier(pruned: &str, unpruned: &str) -> bool {
 }
 
 fn assert_unpruned_walk_changes_nothing(app: &mut App, what: &str) {
-    let lines = app.lines.clone();
+    let lines = app.document_lines().clone();
     let shapes = live_shapes(app);
     let owners = line_owners(app);
     let entries = format!("{:#?}", app.overrides.entries());
@@ -60,17 +60,17 @@ fn assert_unpruned_walk_changes_nothing(app: &mut App, what: &str) {
 
     let diff: Vec<String> = lines
         .iter()
-        .zip(app.lines.iter())
+        .zip(app.document_lines().iter())
         .enumerate()
         .filter(|(_, (a, b))| !only_lost_the_repeated_qualifier(a, b))
         .map(|(n, (a, b))| format!("line {n}:\n  pruned:   {a:?}\n  unpruned: {b:?}"))
         .collect();
     assert!(
-        diff.is_empty() && app.lines.len() == lines.len(),
+        diff.is_empty() && app.document_lines().len() == lines.len(),
         "{what}: the pruned walk left stale text — the unpruned walk \
          reached a node it did not ({} pruned lines vs {} unpruned):\n{}",
         lines.len(),
-        app.lines.len(),
+        app.document_lines().len(),
         diff.join("\n")
     );
     assert_eq!(
@@ -163,7 +163,7 @@ fn an_fqdn_field_override_marks_every_node_of_that_type() {
                 .unwrap_or(false),
             "item {n}'s field 1 must have been settled under the \
              fqdn:field override: {:#?}",
-            app.lines
+            app.document_lines()
         );
     }
     assert_unpruned_walk_changes_nothing(&mut app, "after an fqdn:field override");
@@ -202,7 +202,7 @@ fn a_deactivated_override_still_falls_back_under_unmarked_ancestors() {
 
     app.overrides.activate(origin.clone(), None);
     app.render_overrides(root);
-    let raw = app.lines.clone();
+    let raw = app.document_lines().clone();
     // The raw render still shows the string bytes — what it loses is the
     // schema, so the field name is the discriminator, not the payload.
     assert!(
@@ -221,12 +221,12 @@ fn a_deactivated_override_still_falls_back_under_unmarked_ancestors() {
     app.render_overrides(root);
 
     assert!(
-        app.lines
+        app.document_lines()
             .iter()
             .any(|l| l.contains("label") && l.contains("hello")),
         "deactivating the override must settle the node back to its \
          natural type, five plain ancestors down: {:?}",
-        app.lines
+        app.document_lines()
     );
     assert_unpruned_walk_changes_nothing(&mut app, "after deactivation");
 }
@@ -257,14 +257,14 @@ fn a_candidate_that_only_appears_mid_batch_is_still_expanded() {
     assert!(
         has_node_with_type(&app, "ms_test.ExtPayload"),
         "tier 2 must be rediscovered inside freshly spliced content: {:#?}",
-        app.lines
+        app.document_lines()
     );
     assert!(
-        app.lines
+        app.document_lines()
             .iter()
             .any(|l| l.contains("label") && l.contains("hi")),
         "the rediscovered extension payload must be rendered: {:?}",
-        app.lines
+        app.document_lines()
     );
     assert_unpruned_walk_changes_nothing(&mut app, "after a root round-trip");
 }
@@ -279,14 +279,14 @@ fn a_candidate_that_only_appears_mid_batch_is_still_expanded() {
 fn an_untouched_scalar_leaf_is_not_descended_into() {
     let app = nested_any_fixture();
     let type_url = app
-        .lines
+        .document_lines()
         .iter()
         .position(|l| l.contains("type.googleapis.com"))
         .expect("the Any's type_url must be rendered");
     assert!(
-        app.lines[type_url].contains("type.googleapis.com/acme.Payload"),
+        app.document_lines()[type_url].contains("type.googleapis.com/acme.Payload"),
         "the type_url must still render as a string, not as a raw \
          record dump: {:?}",
-        app.lines[type_url]
+        app.document_lines()[type_url]
     );
 }

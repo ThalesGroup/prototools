@@ -239,11 +239,23 @@ impl App {
             return None;
         };
         let (start, stop) = (anchor.min(end), anchor.max(end));
-        let text = (start..=stop)
-            .map(|i| self.row_text(DisplayRow::Committed(i)))
-            .collect::<Vec<_>>()
-            .join("\n");
-        Some((stop - start + 1, text))
+        // Spec 0222 S3: one descent to enter the document and then a
+        // fold-blind walk, rather than a descent per selected line. The
+        // walk is fold-blind because the selection is a range of
+        // absolute lines, so a folded-away line inside it is copied
+        // exactly as it was before the text moved into the nodes.
+        let mut rows = Vec::with_capacity(stop - start + 1);
+        let mut at = self.line_pos(start);
+        let mut cursor = None;
+        let mut line = start;
+        while line <= stop {
+            let Some(pos) = at else { break };
+            let offset = self.advance_offset(&mut cursor, pos);
+            rows.push(self.row_text(DisplayRow::Committed(CommittedRow { line, pos, offset })));
+            at = self.next_line(pos);
+            line += 1;
+        }
+        Some((stop - start + 1, rows.join("\n")))
     }
 
     /// Spec 0129 §G2/0131 §G2: copy the currently-selected main-pane
@@ -357,14 +369,8 @@ impl App {
             // Column 0 is always the heat-cue gutter (spec 0138 N1: a
             // glyph or a reserved blank, never part of the line's own
             // text) — the marker sits one column further right.
-            // `get`, matching the same lookup on the draw path
-            // (`render.rs`'s `DisplayRow::Committed` arm): `line_idx`
-            // ultimately comes from terminal coordinates, and the one
-            // row a click can land on that `lines` does not hold — a
-            // pending row mid-splice — must miss the marker test rather
-            // than end the session.
-            let line = self.lines.get(line_idx).map(String::as_str).unwrap_or("");
-            if rel_col >= 1 && rel_col - 1 == render::marker_column(line) {
+            let line = self.line_text(pos);
+            if rel_col >= 1 && rel_col - 1 == render::marker_column(&line) {
                 self.toggle_fold(pos.node);
                 return;
             }
@@ -380,7 +386,7 @@ impl App {
         // outright, which is why the cursor is moved by hand above
         // rather than through `set_cursor`: its caret reset would be
         // invisible.
-        self.set_caret_from_click(col, line_idx);
+        self.set_caret_from_click(col, line_idx, pos);
     }
 
     /// Spec 0194 S7: invert S1's column-to-screen mapping and put the
@@ -400,8 +406,8 @@ impl App {
     /// The caret anchor is always forfeited (spec 0199 S10), even when the
     /// click lands squarely on an end of the row: a click expresses
     /// *where*, never *why*, so it must not arm a fold.
-    fn set_caret_from_click(&mut self, col: u16, line_idx: usize) {
-        let row = DisplayRow::Committed(line_idx);
+    fn set_caret_from_click(&mut self, col: u16, line_idx: usize, pos: LinePos) {
+        let row = self.committed_row_at(line_idx, pos);
         let text_chars = self.row_text(row).chars().count();
         let panned = self
             .row_content(row)
