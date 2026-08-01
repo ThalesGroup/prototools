@@ -1049,6 +1049,18 @@ fn poll_pending_override_work_does_not_clobber_a_non_inferred_sort_mode() {
 /// (`test_scoring_graph`, `HEAT_CUE_PREVIEW` == 8 message types) end-
 /// to-end, mirroring `heat_cue_for_resolves_once_a_real_worker_
 /// populates_the_cache`'s own pattern.
+///
+/// The worker is installed *after* `t`, not before, and that ordering
+/// is load-bearing rather than incidental. `handle_key` makes two
+/// cache lookups in a row — the bounded first page, then
+/// `upgrade_active_override_to_complete`'s `[0, usize::MAX)` — so with
+/// a worker already running, the first one's result can land in the
+/// cache in time to make the second a hit, and the pane opens complete.
+/// That is a real schedule, not a broken one, so asserting against it
+/// would be asserting on the scheduler. With no worker yet,
+/// `heat_lookup_ex` pushes nothing and both lookups miss by
+/// construction, which is what makes the two assertions below
+/// enforceable.
 #[test]
 fn override_pane_auto_completes_from_polling_alone_without_scrolling() {
     let mut app = message_node_app_with_graph();
@@ -1078,6 +1090,14 @@ fn override_pane_auto_completes_from_polling_alone_without_scrolling() {
     // distinct requests.
     app.override_list_height = 2;
 
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert_eq!(app.override_sort, SortMode::Inferred);
+    // The pane opens on the bounded first page, and `t` has asked for
+    // the full list without getting it — the two requests the rest of
+    // this test needs to be distinct.
+    assert!(!app.override_candidates_complete);
+    assert!(app.override_complete_pending);
+
     let graph = Arc::clone(app.ctx.graph.as_ref().unwrap());
     let blob = Arc::clone(&app.blob);
     let (tx, _rx) = mpsc::channel();
@@ -1088,10 +1108,6 @@ fn override_pane_auto_completes_from_polling_alone_without_scrolling() {
         tx,
         1,
     ));
-
-    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
-    assert_eq!(app.override_sort, SortMode::Inferred);
-    assert!(!app.override_candidates_complete);
 
     // Bounded poll, not `recv` — this isn't exercising the
     // event-driven wiring, just the worker/cache-recheck contract.
