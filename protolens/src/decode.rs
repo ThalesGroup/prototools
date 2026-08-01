@@ -590,11 +590,12 @@ pub struct TreeNode {
     pub rendered_as: ProvenanceId,
 }
 
-/// Spec 0211 G1, narrowed by spec 0216 S12. The slot is paid once per
+/// Spec 0211 G1, narrowed by spec 0216 S12. This size is paid once per
 /// *arena* slot — 4.74 M on a large descriptor set, a few percent more
-/// than the 4.5 M nodes an interpretation renders — but only once,
-/// because the arena is immutable and there is no superseded copy, no
-/// `local_tree` and nothing to compact.
+/// than the 4.5 M nodes an interpretation renders — and only once,
+/// because the arena is immutable: a retype rewrites the overlay under a
+/// slot but allocates none, so no superseded copy of a subtree is ever
+/// left behind.
 ///
 /// An equality rather than a bound, because growth is the regression
 /// this is here to catch; a spec that legitimately moves the number

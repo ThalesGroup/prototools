@@ -259,13 +259,26 @@ fn resolve_proto_root(
 
 /// `" (N MB)"` for a startup progress message, or `""`.
 ///
+/// The unit is chosen to fit, because the number is the whole point:
+/// this suffix exists to say what the wait the message announces is
+/// proportional to, and a fixed MB unit truncated everything under a
+/// mebibyte to a flat `0 MB` — which reads as either an empty file or a
+/// bug, and tells the user nothing either way.
+///
 /// Best effort (spec 0151 G7): a metadata read failure simply omits the
 /// size suffix rather than aborting or erroring, since this is pure UX
 /// decoration, not load-bearing for correctness.
 fn size_suffix(p: &Path) -> String {
-    match std::fs::metadata(p) {
-        Ok(m) => format!(" ({} MB)", m.len() / (1024 * 1024)),
-        Err(_) => String::new(),
+    let Ok(meta) = std::fs::metadata(p) else {
+        return String::new();
+    };
+    let bytes = meta.len();
+    if bytes >= 1024 * 1024 {
+        format!(" ({} MB)", bytes / (1024 * 1024))
+    } else if bytes >= 1024 {
+        format!(" ({} KB)", bytes / 1024)
+    } else {
+        format!(" ({bytes} bytes)")
     }
 }
 
@@ -712,6 +725,37 @@ mod tests {
 
         std::fs::remove_dir_all(&base).unwrap();
         assert_eq!(result, Some(proto_dir));
+    }
+
+    /// Every unit boundary, and the reason the function is not one
+    /// division: the sizes below a mebibyte all used to print `0 MB`, and
+    /// a descriptor set of a few hundred kilobytes is an ordinary one.
+    #[test]
+    fn size_suffix_picks_a_unit_the_number_survives() {
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("protolens-size-suffix-{n}"));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        for (len, want) in [
+            (0usize, " (0 bytes)"),
+            (1, " (1 bytes)"),
+            (1023, " (1023 bytes)"),
+            (1024, " (1 KB)"),
+            (1024 * 1024 - 1, " (1023 KB)"),
+            (1024 * 1024, " (1 MB)"),
+            (3 * 1024 * 1024 + 512 * 1024, " (3 MB)"),
+        ] {
+            let path = dir.join(format!("{len}.bin"));
+            std::fs::write(&path, vec![0u8; len]).unwrap();
+            assert_eq!(size_suffix(&path), want, "for {len} bytes");
+        }
+
+        // A path that is not there is decoration that says nothing,
+        // never a `(0 bytes)` claim about a file nobody could read.
+        let absent = size_suffix(&dir.join("absent.bin"));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(absent, "");
     }
 
     #[test]

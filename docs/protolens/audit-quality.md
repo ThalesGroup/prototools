@@ -865,9 +865,56 @@ Related: `mod.rs:190-191` documents adding an entry to `COMMANDS` as
 "the only step needed". That is not true; other sites must be updated
 too. The comment actively misleads.
 
+**Fixed.** The drift was real and had already happened. Four bindings
+and one command were live and undocumented:
+
+- `v` — jump to the FQDN under focus's `.proto` declaration in Neovim,
+  from any pane (spec 0144 G1).
+- `f` in the management pane — edit the highlighted entry's display-name
+  override (spec 0119 G4).
+- `Ctrl-A` / `Ctrl-E` — the caret's line-start/line-end aliases.
+- `Ctrl-B`/`Ctrl-F` and `Alt-B`/`Alt-F` — the command line's character
+  and word motions.
+- `:proto-root <dir>`, and `:quit`. Neither appeared in the help; `:`
+  itself, which is what opens the command line from any pane, did not
+  either.
+
+Generating `HELP_TEXT` from the match arms was declined for the reason
+its own doc comment gives: it is phrased for a reader, in an order the
+dispatchers do not have, and several entries (the `x` chord, the drag
+selection, `Shift+wheel`) describe behavior that is not one arm.
+
+The link is made by a test instead. `tests/help_text.rs` reads the six
+dispatcher sources back with `include_str!`, extracts every
+`KeyCode::Char('x')` literal, and requires each to appear in `HELP_TEXT`
+**as a token in its own right** rather than as a letter inside a word —
+which is the distinction that matters, since `v` occurs in "available"
+and in "move" and a substring search called it documented. Five
+characters are exempt as chord components (`gg`, `zc`, `zC`, `xb`,
+`xp`), each named with its chord in the test. A second test holds
+`COMMANDS` against the help, and a third caps the help's line width,
+since the modal cuts rather than wraps.
+
+The check is weaker than generation — it says a key is *mentioned*, not
+that what is written about it is true — but mention is the half that
+drifts silently. Verified to bite by deleting the `v` entry.
+
+`COMMANDS`' doc comment now says the registry is the source of truth for
+the name and nothing else, and names both other sites.
+
 ### G2. `size_suffix` reports "0 MB"
 
 `main.rs:253-258`. Any file under 1 MiB is announced as "0 MB".
+
+**Fixed.** The unit is now chosen to fit — bytes, KB, or MB — because
+the number is the whole point of the suffix: it exists to say what the
+wait the message announces is proportional to, and a flat "0 MB" reads
+as either an empty file or a bug while telling the user neither. A
+descriptor set of a few hundred kilobytes is entirely ordinary, so this
+was the common case, not an edge one. `size_suffix_picks_a_unit_the_
+number_survives` pins every boundary, and that an unreadable path still
+yields no suffix at all rather than a "(0 bytes)" claim about a file
+nobody could stat.
 
 ### G3. Stale comments
 
@@ -891,6 +938,36 @@ Eight comments describe machinery that no longer exists:
   users are `override_row_display`'s two branches.
 - `encode_text/mod.rs:189` — "The text is always valid ASCII", stated
   as fact next to the branch that silently handles it not being (A1).
+
+**Fixed**, with one already gone and the rest rewritten rather than
+deleted, since each sat where a reader would ask the question it was
+answering.
+
+`heat_cue.rs` was fixed by C1 and needed nothing. The three compaction
+notes (`decode.rs`, `override_apply.rs`, `tests/support.rs`) and
+`mod.rs`'s read-ahead `Idle` arm now state the property that holds — the
+arena is immutable, a retype allocates no slot, nothing is renumbered —
+instead of narrating the machinery that used to make it false. The
+`support.rs` one also had to say why `Shape` survives its own
+justification: a raw index would now be stable, but these assertions are
+about what the reader is shown, which an index does not say.
+
+`render_cache.rs`'s two `CandidateCache` citations are replaced by a
+note that this is the crate's only byte-bounded cache and that
+`tiered::TieredBounded` is not a second one, which is what makes the
+standing "should they share a generic?" question moot at the place
+someone would ask it.
+
+`fqdn_needs_dot_prefix` now names its real second caller,
+`override_select.rs`'s `override_row_display`, one indirection below
+what it claimed.
+
+`encode_text_to_binary_into`'s comment now says what is true and what
+follows from it: rendered prototext is ASCII, so the claim holds for
+this crate's own output; it is not a guarantee about the argument, and
+this signature cannot report a violation, so a non-UTF-8 input appends
+nothing and is indistinguishable from an empty document — which makes
+validation the caller's job, as `Blob::load` now does.
 
 ## Clean results, recorded so the check is not repeated
 

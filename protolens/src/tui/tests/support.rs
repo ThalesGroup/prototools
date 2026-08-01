@@ -12,14 +12,12 @@ pub(super) use ratatui::backend::TestBackend;
 
 /// A node's identity by *content*, not by arena index.
 ///
-/// The arena used to renumber nodes for two independent reasons — a
-/// re-splice pushed a fresh copy of a subtree and abandoned the old one
-/// (spec 0118), and compaction relocated survivors into the holes that
-/// left (spec 0203) — so comparing raw `app.tree` indices across either
-/// operation reported differences that said nothing about what the user
-/// sees. Spec 0216 freezes the numbering, but the projection is still
-/// what these assertions want: it compares what the reader is shown,
-/// and prints something legible when it differs.
+/// Spec 0216 freezes the arena's numbering, so a raw `app.tree` index
+/// would now survive a re-splice — but that is not what these assertions
+/// are about. They are about what the reader is shown, which an index
+/// does not say: a failure would print two integers naming no field, and
+/// a pass would prove only that the arena did not move, which is the
+/// arena's own invariant and is guarded elsewhere.
 pub(super) type Shape = (usize, u64, Option<String>, std::ops::Range<usize>);
 
 /// A rendered line's owner: `(line, the owning node's shape, is_footer)`.

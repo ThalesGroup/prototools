@@ -3,8 +3,13 @@
 // SPDX-License-Identifier: MIT
 
 //! Render cache: `(range, type) -> (text, spans)` (spec 0116 §8) — a
-//! byte-bounded MRU cache, structurally identical to
-//! `override_pane::CandidateCache` (spec 0114 §6).
+//! byte-bounded MRU cache, and the only one in the crate.
+//!
+//! It used to have a twin in `override_pane`, which is why an older note
+//! may ask whether the two should share a generic. They should not,
+//! because there is no second one: `tiered::TieredBounded` is bounded by
+//! entry count rather than by bytes, has four tiers, and does not promote
+//! on a low-tier read.
 
 use std::ops::Range;
 
@@ -36,9 +41,11 @@ type RenderValue = (Vec<String>, Vec<NodeSpan>);
 
 /// Approximate heap footprint of a cached render, for `RenderCache`'s
 /// byte budget — rendered lines' string bytes plus `new_spans.len() *
-/// size_of::<NodeSpan>()`, deliberately approximate (same "not
-/// correctness-sensitive" caveat as `CandidateCache::candidates_bytes`'s
-/// doc comment).
+/// size_of::<NodeSpan>()`.
+///
+/// Deliberately approximate: it ignores each `String`'s and `Vec`'s own
+/// spare capacity and header. The number bounds a cache, so undercounting
+/// costs memory and never correctness.
 fn render_bytes(value: &RenderValue) -> usize {
     let (lines, spans) = value;
     let lines_bytes: usize = lines.iter().map(String::len).sum();

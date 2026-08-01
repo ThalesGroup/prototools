@@ -4,6 +4,7 @@
 
 mod command_line;
 mod heat_cue;
+mod help_text;
 mod key_dispatch;
 mod lines;
 mod manage_pane;

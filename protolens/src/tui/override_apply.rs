@@ -2091,9 +2091,9 @@ impl App {
     /// the new interpretation still shows — spec 0216 S12: the structure
     /// belongs to the arena, which is a function of the bytes and does
     /// not move when the type assignment changes. All that happens here
-    /// is that the overlay under `idx` is vacated and rewritten: no
-    /// local tree to translate, no pointer to repair, no slot to abandon
-    /// and nothing to compact.
+    /// is that the overlay under `idx` is vacated and rewritten — no slot
+    /// is allocated, abandoned or renumbered, so no index held anywhere
+    /// else needs translating.
     ///
     /// A packed run is one slot (S22), so no "sibling merge" is needed
     /// either: `render_node_as` resolves `idx` to the run and widens
@@ -2706,8 +2706,9 @@ fn format_fqdn_label(fqdn: &str) -> String {
 /// Spec 0136/0137 §G6: whether a bare message/group/enum FQDN would
 /// collide with a primitive keyword or the reserved `None` keyword if
 /// displayed undecorated — shared between the status-line label
-/// (`format_fqdn_label`) and the override pane's row rendering
-/// (`render.rs`'s `render_override_pane`).
+/// (`format_fqdn_label`) and both branches of `override_select.rs`'s
+/// `override_row_display`, which is what the override pane renders each
+/// of its rows from.
 pub(super) fn fqdn_needs_dot_prefix(fqdn: &str) -> bool {
     decode::primitive_type_for_keyword(fqdn).is_some() || fqdn == "None"
 }

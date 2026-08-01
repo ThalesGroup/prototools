@@ -188,10 +188,16 @@ const RENDER_CACHE_MAX_BYTES: usize = 1 << 20;
 
 /// Single source-of-truth command-name registry (spec 0113 D26) — backs
 /// both `resolve_command`'s exact-match-wins prefix dispatch and the
-/// command line's Tab-completion (`App::start_tab_completion`). Adding a
-/// command here is the only step needed for it to get both, automatically
-/// — but *only* those two: it still needs an arm in `run_command`, which
-/// otherwise reports it as unimplemented.
+/// command line's Tab-completion (`App::start_tab_completion`).
+///
+/// It is the source of truth for the *name*, and for nothing else. A
+/// command added here alone is dispatchable, completable and useless: it
+/// still needs an arm in `run_command`, which otherwise reports it as
+/// unimplemented, and an entry in `HELP_TEXT`, without which nobody
+/// finds it. The help half is the one that went unnoticed — `proto-root`
+/// shipped undocumented — and
+/// `tests/help_text.rs::every_command_is_named_in_the_help` is what
+/// notices it now.
 const COMMANDS: &[&str] = &[
     "export",
     "quit",
@@ -571,8 +577,8 @@ const HELP_TEXT: &[&str] = &[
     "                   reachable column, move to the first child",
     "  Alt-Left / Alt-h caret one word left",
     "  Alt-Right / Alt-l  caret one word right",
-    "  0 / ^            caret to first non-blank",
-    "  $                caret to last reachable column",
+    "  0 / ^ / Ctrl-A   caret to first non-blank",
+    "  $ / Ctrl-E       caret to last reachable column",
     "  %                jump between the cursor node's { and }",
     "  j / Down         next node (document order)",
     "  k / Up           previous node",
@@ -620,9 +626,21 @@ const HELP_TEXT: &[&str] = &[
     "                   its data",
     "",
     "Command line",
+    "  :                open the command line — works from any pane, so",
+    "                   every command below is reachable without first",
+    "                   returning focus to the main pane",
     "  Tab              complete the command name (longest common prefix,",
     "                   then cycle through matches)",
     "  Shift-Tab        cycle backward through matches",
+    "  Ctrl-B / Ctrl-F  caret one character left / right",
+    "  Alt-B / Alt-F    caret one word left / right",
+    "  Left / Right     caret one character left / right",
+    "  Alt-Left / Alt-Right  caret one word left / right",
+    "  Esc              discard the command line",
+    "  :quit            quit",
+    "  :proto-root <dir>",
+    "                   set the root the v key resolves .proto sources",
+    "                   against, overriding --proto-root for this session",
     "",
     "Search (main pane, requires main-pane focus)",
     "  /                search forward for a pattern (matches against the",
@@ -697,6 +715,8 @@ const HELP_TEXT: &[&str] = &[
     "  D                duplicate the highlighted entry (the copy starts",
     "                   inactive and is always manual, even if the",
     "                   original was auto-derived)",
+    "  f                edit the highlighted entry's display-name",
+    "                   override, pre-filled with its current value",
     "  entry rows: auto-derived entries are plain, manual entries bold",
     "  s                pre-fill \":save <default path>\"",
     "  r                pre-fill \":restore \"",
@@ -714,6 +734,9 @@ const HELP_TEXT: &[&str] = &[
     "  only Enter in the override pane does)",
     "",
     "Other",
+    "  v                open the FQDN under focus's .proto declaration in",
+    "                   Neovim — works from any pane; needs a proto root",
+    "                   (--proto-root or :proto-root) — Unix only",
     "  F1               toggle this help",
     "  q                quit (press again to confirm)",
     "  Ctrl-Z           suspend (fg to resume) — Unix only",
@@ -2659,11 +2682,8 @@ where
                         continue;
                     }
                     PrefetchStep::Idle => {
-                        // Spec 0203 ran incremental arena compaction
-                        // here, strictly behind read-ahead. Spec 0216
-                        // deletes it: the arena is a function of the
-                        // bytes and never grows, so there is nothing
-                        // left to compact.
+                        // Read-ahead has nothing left to do, so this is
+                        // the one place the loop genuinely sleeps.
                         let timeout = deadline.saturating_duration_since(Instant::now());
                         break rx.recv_timeout(timeout).ok(); // timeout elapsed => None
                     }

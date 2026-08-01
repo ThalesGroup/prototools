@@ -186,7 +186,12 @@ pub fn encode_text_to_binary_into(text: &[u8], out: &mut Vec<u8>) {
     let mut packed_remaining: usize = 0;
     let mut packed_payload: Vec<u8> = Vec::new();
 
-    // The text is always valid ASCII (a subset of UTF-8).
+    // Rendered prototext is ASCII, so this holds for anything this crate
+    // produced. It is not a guarantee about the argument, though, and
+    // this signature has nowhere to report a violation: a non-UTF-8
+    // `text` appends nothing and is indistinguishable from an empty
+    // document. Validating is therefore the caller's job — protolens'
+    // `Blob::load` does it and names the offending byte offset.
     let text_str = match std::str::from_utf8(text) {
         Ok(s) => s,
         Err(_) => return,
