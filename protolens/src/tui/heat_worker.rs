@@ -689,6 +689,38 @@ impl HeatWorkerHandle {
             join: None,
         }
     }
+
+    /// Test-only: `spawn`, but over the queue this stub already holds
+    /// rather than a fresh one, so requests pushed *before* any thread
+    /// existed are the ones the worker goes on to serve.
+    ///
+    /// This is what lets a test assert on the pending state without
+    /// asserting on the scheduler. `heat_cue_resolve` pushes a request
+    /// and reads the cache back as two separate lock acquisitions, so a
+    /// worker running at the time can legally settle the node inside
+    /// that window — and if it does, the node never enters
+    /// `pending_heat_recheck` and the recheck path under test is never
+    /// reached. Queueing against a stub and only then starting the
+    /// thread removes the window instead of racing it.
+    #[cfg(test)]
+    pub(super) fn start_for_test(
+        mut self,
+        caches: Arc<Mutex<HeatCaches>>,
+        graph: Arc<LoadedGraph>,
+        blob: Arc<Blob>,
+        progress: mpsc::Sender<AppEvent>,
+        jobs: usize,
+    ) -> Self {
+        let worker_queue = Arc::clone(&self.queue);
+        self.join = Some(
+            thread::Builder::new()
+                .name("heat-worker".to_string())
+                .stack_size(crate::sweep::SCORING_THREAD_STACK_SIZE)
+                .spawn(move || heat_worker_loop(worker_queue, caches, graph, blob, progress, jobs))
+                .expect("spawn heat worker thread"),
+        );
+        self
+    }
 }
 
 impl Drop for HeatWorkerHandle {
