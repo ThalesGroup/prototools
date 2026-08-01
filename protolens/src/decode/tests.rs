@@ -191,10 +191,7 @@ fn named_types_the_root_and_raw_leaves_it_untyped() {
         ..Default::default()
     };
     let fds = FileDescriptorSet { file: vec![file] };
-    let descriptor_path = std::env::temp_dir().join("protolens-root-type-modes-descriptor.pb");
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
+    let mut ctx = ctx_from_fds("root-type-modes", &fds);
 
     let blob = [0x08u8, 0x05];
 
@@ -280,10 +277,7 @@ fn decode_without_type_override_or_graph_renders_raw_not_error() {
     };
     let fds = FileDescriptorSet { file: vec![file] };
 
-    let descriptor_path = std::env::temp_dir().join("protolens-decode-raw-fallback-descriptor.pb");
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
+    let mut ctx = ctx_from_fds("decode-raw-fallback", &fds);
 
     // A single varint field (tag 0x08, value 5) — no --type, and this
     // context has no hopcroft.rkyv, so autoinference is unavailable.
@@ -355,10 +349,7 @@ fn the_arena_covers_every_interpretation() {
     };
     let fds = FileDescriptorSet { file: vec![file] };
 
-    let descriptor_path = std::env::temp_dir().join("protolens-arena-coverage-descriptor.pb");
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
+    let mut ctx = ctx_from_fds("arena-coverage", &fds);
 
     // field 1: packed [1, 2, 300]; field 2: Inner { id: 7 }.
     let blob = [0x0A, 0x04, 0x01, 0x02, 0xAC, 0x02, 0x12, 0x02, 0x08, 0x07];
@@ -451,10 +442,7 @@ fn decode_shows_the_root_field_number_in_the_header_line() {
     };
     let fds = FileDescriptorSet { file: vec![file] };
 
-    let descriptor_path = std::env::temp_dir().join("protolens-decode-root-name-descriptor.pb");
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
+    let mut ctx = ctx_from_fds("decode-root-name", &fds);
 
     let blob = [0x08u8, 0x05];
     let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Msg"), 2).unwrap();
@@ -539,10 +527,7 @@ fn decode_leaves_any_fields_unexpanded_with_real_type_url_and_value_spans() {
         file: vec![any_file, acme_file],
     };
 
-    let descriptor_path = std::env::temp_dir().join("protolens-decode-any-expansion-descriptor.pb");
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
+    let mut ctx = ctx_from_fds("decode-any-expansion", &fds);
 
     // Container { payload: Any { type_url:
     // "type.googleapis.com/acme.Payload", value: Payload { label:

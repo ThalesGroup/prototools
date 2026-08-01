@@ -6,22 +6,26 @@
 //! data rather than by the schema: `google.protobuf.Any` and MessageSet.
 
 use super::super::*;
+use super::support_build::{
+    any_body, any_proto_file, field, field_of, fixture_app, fixture_under, message,
+    wrap_len_field_1, wrapper_message, TempFile,
+};
+use prost_types::descriptor_proto::ExtensionRange;
+use prost_types::field_descriptor_proto::{Label, Type};
+use prost_types::{
+    DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet, MessageOptions,
+};
 
-/// Builds the shared `Container { extensions: TestMessageSet { Item {
-/// type_id: 100, message: ExtPayload { label: "hi" } } } }` fixture
-/// used by both the auto-expansion test and the toggle/reactivate
-/// regression test below.
-pub(super) fn message_set_fixture() -> App {
-    use prost::Message as _;
-    use prost_types::descriptor_proto::ExtensionRange;
-    use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{
-        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
-        MessageOptions,
-    };
+use crate::decode::{decode, RootType};
 
-    use crate::decode::{decode, DescriptorContext, RootType};
-
+/// The MessageSet schema both fixtures below read their bytes under: a
+/// `message_set_wire_format` container `TestMessageSet`, an extension
+/// `ext_payload = 100` carrying `ExtPayload { optional string label = 1
+/// }`, and a `Container` holding the set at field 2.
+///
+/// `buried_under` is appended to the file's message list — empty for the
+/// direct fixture, two burial levels for the nested one.
+fn ms_test_fds(file_name: &str, buried_under: Vec<DescriptorProto>) -> FileDescriptorSet {
     let message_set_msg = DescriptorProto {
         name: Some("TestMessageSet".to_string()),
         options: Some(MessageOptions {
@@ -35,74 +39,76 @@ pub(super) fn message_set_fixture() -> App {
         }],
         ..Default::default()
     };
-    let ext_payload_msg = DescriptorProto {
-        name: Some("ExtPayload".to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some("label".to_string()),
-            number: Some(1),
-            label: Some(Label::Optional as i32),
-            r#type: Some(Type::String as i32),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
     let extension_field = FieldDescriptorProto {
-        name: Some("ext_payload".to_string()),
-        number: Some(100),
-        label: Some(Label::Optional as i32),
-        r#type: Some(Type::Message as i32),
-        type_name: Some(".ms_test.ExtPayload".to_string()),
         extendee: Some(".ms_test.TestMessageSet".to_string()),
-        ..Default::default()
+        ..field_of(
+            "ext_payload",
+            100,
+            Label::Optional,
+            Type::Message,
+            ".ms_test.ExtPayload",
+        )
     };
-    let container_msg = DescriptorProto {
-        name: Some("Container".to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some("extensions".to_string()),
-            number: Some(2),
-            label: Some(Label::Optional as i32),
-            r#type: Some(Type::Message as i32),
-            type_name: Some(".ms_test.TestMessageSet".to_string()),
+    let mut message_type = vec![
+        message_set_msg,
+        message(
+            "ExtPayload",
+            vec![field("label", 1, Label::Optional, Type::String)],
+        ),
+        message(
+            "Container",
+            vec![field_of(
+                "extensions",
+                2,
+                Label::Optional,
+                Type::Message,
+                ".ms_test.TestMessageSet",
+            )],
+        ),
+    ];
+    message_type.extend(buried_under);
+    FileDescriptorSet {
+        file: vec![FileDescriptorProto {
+            name: Some(file_name.to_string()),
+            syntax: Some("proto2".to_string()),
+            package: Some("ms_test".to_string()),
+            message_type,
+            extension: vec![extension_field],
             ..Default::default()
         }],
-        ..Default::default()
-    };
-    let file = FileDescriptorProto {
-        name: Some("ms_test.proto".to_string()),
-        syntax: Some("proto2".to_string()),
-        package: Some("ms_test".to_string()),
-        message_type: vec![message_set_msg, ext_payload_msg, container_msg],
-        extension: vec![extension_field],
-        ..Default::default()
-    };
-    let fds = FileDescriptorSet { file: vec![file] };
+    }
+}
 
-    // Unique per call (this fixture is shared by several tests that
-    // may run concurrently) to avoid one test's cleanup racing
-    // another's read of the same path.
-    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let descriptor_path = std::env::temp_dir().join(format!(
-        "protolens-tui-message-set-expand-descriptor-{n}.pb"
-    ));
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    // Deliberately not removed — see `type_as_fixture`'s note: a test
-    // built on this fixture hashes the descriptor set, and that hash is a
-    // fresh read from disk.
-
-    // Container { extensions: TestMessageSet {
-    //   Item { type_id: 100, message: ExtPayload { label: "hi" } }
-    // } }.
+/// `Container`'s body: `extensions: TestMessageSet { Item { type_id:
+/// 100, message: ExtPayload { label: "hi" } } }`.
+fn ms_test_container_bytes() -> Vec<u8> {
     let ext_payload_bytes = [0x0au8, 0x02, b'h', b'i'];
     let mut item_bytes = vec![0x0bu8, 0x10, 100u8];
     item_bytes.push(0x1a);
     item_bytes.push(ext_payload_bytes.len() as u8);
     item_bytes.extend_from_slice(&ext_payload_bytes);
     item_bytes.push(0x0c); // END_GROUP
-    let mut blob = vec![0x12u8, item_bytes.len() as u8];
-    blob.extend_from_slice(&item_bytes);
+    let mut container_bytes = vec![0x12u8, item_bytes.len() as u8];
+    container_bytes.extend_from_slice(&item_bytes);
+    container_bytes
+}
 
+/// Builds the shared `Container { extensions: TestMessageSet { Item {
+/// type_id: 100, message: ExtPayload { label: "hi" } } } }` fixture
+/// used by both the auto-expansion test and the toggle/reactivate
+/// regression test below.
+pub(super) fn message_set_fixture() -> App {
+    let descriptor = TempFile::descriptor(
+        "message-set-expand",
+        &ms_test_fds("ms_test.proto", Vec::new()),
+    );
+    let mut ctx = descriptor.load();
+    // Deliberately kept — see `type_as_fixture`'s note: a test built on
+    // this fixture hashes the descriptor set, and that hash is a fresh
+    // read from disk.
+    let _kept = descriptor.keep();
+
+    let blob = ms_test_container_bytes();
     let decoded = decode(
         wrapped(&blob),
         &mut ctx,
@@ -110,18 +116,7 @@ pub(super) fn message_set_fixture() -> App {
         2,
     )
     .unwrap();
-    let mut app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        ctx,
-        ThemeKind::Dark,
-        None,
-    );
-    app.splash = false;
-    app.term_width = 120;
-    app
+    fixture_app(decoded, ctx)
 }
 
 /// `acme.Level1 { Level2 l2 { Level3 l3 { google.protobuf.Any payload
@@ -137,123 +132,35 @@ pub(super) fn message_set_fixture() -> App {
 /// with the `Any` directly under the root would still pass with the
 /// upward walk missing entirely, and would prove nothing.
 pub(super) fn nested_any_fixture() -> App {
-    use prost::Message as _;
-    use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{
-        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
-    };
-
-    use crate::decode::{decode, DescriptorContext, RootType};
-
-    let any_msg = DescriptorProto {
-        name: Some("Any".to_string()),
-        field: vec![
-            FieldDescriptorProto {
-                name: Some("type_url".to_string()),
-                number: Some(1),
-                label: Some(Label::Optional as i32),
-                r#type: Some(Type::String as i32),
-                ..Default::default()
-            },
-            FieldDescriptorProto {
-                name: Some("value".to_string()),
-                number: Some(2),
-                label: Some(Label::Optional as i32),
-                r#type: Some(Type::Bytes as i32),
-                ..Default::default()
-            },
-        ],
-        ..Default::default()
-    };
-    let any_file = FileDescriptorProto {
-        name: Some("google/protobuf/any.proto".to_string()),
-        syntax: Some("proto3".to_string()),
-        package: Some("google.protobuf".to_string()),
-        message_type: vec![any_msg],
-        ..Default::default()
-    };
-
-    // A single-field message wrapping `type_name` at field 1.
-    let wrapper = |name: &str, type_name: &str, field_name: &str| DescriptorProto {
-        name: Some(name.to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some(field_name.to_string()),
-            number: Some(1),
-            label: Some(Label::Optional as i32),
-            r#type: Some(Type::Message as i32),
-            type_name: Some(type_name.to_string()),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let payload_msg = DescriptorProto {
-        name: Some("Payload".to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some("label".to_string()),
-            number: Some(1),
-            label: Some(Label::Optional as i32),
-            r#type: Some(Type::String as i32),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
     let acme_file = FileDescriptorProto {
         name: Some("acme_nested_any.proto".to_string()),
         syntax: Some("proto2".to_string()),
         package: Some("acme".to_string()),
         dependency: vec!["google/protobuf/any.proto".to_string()],
         message_type: vec![
-            payload_msg,
-            wrapper("Level3", ".google.protobuf.Any", "payload"),
-            wrapper("Level2", ".acme.Level3", "l3"),
-            wrapper("Level1", ".acme.Level2", "l2"),
+            message(
+                "Payload",
+                vec![field("label", 1, Label::Optional, Type::String)],
+            ),
+            wrapper_message("Level3", "payload", ".google.protobuf.Any"),
+            wrapper_message("Level2", "l3", ".acme.Level3"),
+            wrapper_message("Level1", "l2", ".acme.Level2"),
         ],
         ..Default::default()
     };
     let fds = FileDescriptorSet {
-        file: vec![any_file, acme_file],
+        file: vec![any_proto_file(), acme_file],
     };
 
-    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let descriptor_path =
-        std::env::temp_dir().join(format!("protolens-tui-nested-any-descriptor-{n}.pb"));
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
-
-    let mut blob = vec![0x0au8, b"hello".len() as u8];
-    blob.extend_from_slice(b"hello");
-    let type_url = b"type.googleapis.com/acme.Payload";
-    let mut any_bytes = vec![0x0au8, type_url.len() as u8];
-    any_bytes.extend_from_slice(type_url);
-    any_bytes.push(0x12);
-    any_bytes.push(blob.len() as u8);
-    any_bytes.append(&mut blob);
-    // Three LEN wrappers, all field 1, all short enough for a one-byte
-    // length varint: `Level3.payload`, then `Level2.l3`, then
-    // `Level1.l2` — the last of which *is* `Level1`'s body, which is
-    // what `decode` is handed.
-    let mut blob = any_bytes;
+    let mut blob = any_body("type.googleapis.com/acme.Payload", b"\x0a\x05hello");
+    // Three LEN wrappers, all field 1: `Level3.payload`, then
+    // `Level2.l3`, then `Level1.l2` — the last of which *is* `Level1`'s
+    // body, which is what `decode` is handed.
     for _ in 0..3 {
-        let mut next = vec![0x0au8, blob.len() as u8];
-        next.append(&mut blob);
-        blob = next;
+        blob = wrap_len_field_1(blob);
     }
 
-    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("acme.Level1"), 2).unwrap();
-    let mut app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        ctx,
-        ThemeKind::Dark,
-        None,
-    );
-    app.splash = false;
-    app.term_width = 120;
-    app
+    fixture_under("nested-any", &fds, "acme.Level1", &blob)
 }
 
 /// `ms_test.Top { Mid m { Container c { extensions: TestMessageSet {
@@ -269,124 +176,17 @@ pub(super) fn nested_any_fixture() -> App {
 /// panic. The 1.1 MB `FileDescriptorSet` used for profiling contains no
 /// MessageSet at all, so only a fixture like this one can catch it.
 pub(super) fn nested_message_set_fixture() -> App {
-    use prost::Message as _;
-    use prost_types::descriptor_proto::ExtensionRange;
-    use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{
-        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
-        MessageOptions,
-    };
-
-    use crate::decode::{decode, DescriptorContext, RootType};
-
-    let message_set_msg = DescriptorProto {
-        name: Some("TestMessageSet".to_string()),
-        options: Some(MessageOptions {
-            message_set_wire_format: Some(true),
-            ..Default::default()
-        }),
-        extension_range: vec![ExtensionRange {
-            start: Some(1),
-            end: Some(536870912),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let ext_payload_msg = DescriptorProto {
-        name: Some("ExtPayload".to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some("label".to_string()),
-            number: Some(1),
-            label: Some(Label::Optional as i32),
-            r#type: Some(Type::String as i32),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let extension_field = FieldDescriptorProto {
-        name: Some("ext_payload".to_string()),
-        number: Some(100),
-        label: Some(Label::Optional as i32),
-        r#type: Some(Type::Message as i32),
-        type_name: Some(".ms_test.ExtPayload".to_string()),
-        extendee: Some(".ms_test.TestMessageSet".to_string()),
-        ..Default::default()
-    };
-    let container_msg = DescriptorProto {
-        name: Some("Container".to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some("extensions".to_string()),
-            number: Some(2),
-            label: Some(Label::Optional as i32),
-            r#type: Some(Type::Message as i32),
-            type_name: Some(".ms_test.TestMessageSet".to_string()),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let wrapper = |name: &str, type_name: &str, field_name: &str| DescriptorProto {
-        name: Some(name.to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some(field_name.to_string()),
-            number: Some(1),
-            label: Some(Label::Optional as i32),
-            r#type: Some(Type::Message as i32),
-            type_name: Some(type_name.to_string()),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let file = FileDescriptorProto {
-        name: Some("ms_test_nested.proto".to_string()),
-        syntax: Some("proto2".to_string()),
-        package: Some("ms_test".to_string()),
-        message_type: vec![
-            message_set_msg,
-            ext_payload_msg,
-            container_msg,
-            wrapper("Mid", ".ms_test.Container", "c"),
-            wrapper("Top", ".ms_test.Mid", "m"),
+    let fds = ms_test_fds(
+        "ms_test_nested.proto",
+        vec![
+            wrapper_message("Mid", "c", ".ms_test.Container"),
+            wrapper_message("Top", "m", ".ms_test.Mid"),
         ],
-        extension: vec![extension_field],
-        ..Default::default()
-    };
-    let fds = FileDescriptorSet { file: vec![file] };
+    );
 
-    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let descriptor_path = std::env::temp_dir().join(format!(
-        "protolens-tui-nested-message-set-descriptor-{n}.pb"
-    ));
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
-
-    let ext_payload_bytes = [0x0au8, 0x02, b'h', b'i'];
-    let mut item_bytes = vec![0x0bu8, 0x10, 100u8];
-    item_bytes.push(0x1a);
-    item_bytes.push(ext_payload_bytes.len() as u8);
-    item_bytes.extend_from_slice(&ext_payload_bytes);
-    item_bytes.push(0x0c); // END_GROUP
-    let mut container_bytes = vec![0x12u8, item_bytes.len() as u8];
-    container_bytes.extend_from_slice(&item_bytes);
     // `Mid { c: Container }` — and then `Top`'s own body is just
     // `m: Mid`, which is what `decode` is handed.
-    let mut mid_bytes = vec![0x0au8, container_bytes.len() as u8];
-    mid_bytes.append(&mut container_bytes);
-    let mut blob = vec![0x0au8, mid_bytes.len() as u8];
-    blob.append(&mut mid_bytes);
+    let blob = wrap_len_field_1(wrap_len_field_1(ms_test_container_bytes()));
 
-    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("ms_test.Top"), 2).unwrap();
-    let mut app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        ctx,
-        ThemeKind::Dark,
-        None,
-    );
-    app.splash = false;
-    app.term_width = 120;
-    app
+    fixture_under("nested-message-set", &fds, "ms_test.Top", &blob)
 }

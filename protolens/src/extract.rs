@@ -216,6 +216,30 @@ mod tests {
     use crate::provenance::NOT_RENDERED;
     use prototext_core::serialize::render_text::NO_PACKED_RECORD;
 
+    /// `extract`'s `Text` output for `node`, round-tripped through a
+    /// temporary file — which is not optional, since `extract` writes to
+    /// a path rather than returning bytes.
+    ///
+    /// The removal happens here, before the caller's assertion, rather
+    /// than after it: written out at each call site it sat *between* the
+    /// read and the `assert_eq!`, so a failing assertion skipped it and
+    /// every red run left a file behind.
+    fn extracted_text(name: &str, lines: &[String], node: &TreeNode) -> String {
+        let path = std::env::temp_dir().join(format!("protolens-extract-{name}.pb"));
+        extract(
+            &path,
+            ExtractFormat::Text,
+            b"",
+            lines,
+            node,
+            crate::decode::widen(&node.span.text_range),
+        )
+        .unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        written
+    }
+
     #[test]
     fn extract_binary_field_keeps_tag_and_length() {
         let blob = b"hello world";
@@ -282,13 +306,12 @@ mod tests {
         // synthetically in memory rather than read from a sibling
         // crate's fixture by relative path, which isn't available in a
         // sandboxed Nix build.
-        use prost::Message as _;
         use prost_types::field_descriptor_proto::{Label, Type};
         use prost_types::{
             DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
         };
 
-        use crate::decode::{decode, DescriptorContext, RootType};
+        use crate::decode::{ctx_from_fds, decode, RootType};
 
         let inner_desc = DescriptorProto {
             name: Some("Inner".to_string()),
@@ -322,11 +345,7 @@ mod tests {
         };
         let fds = FileDescriptorSet { file: vec![file] };
 
-        let descriptor_path =
-            std::env::temp_dir().join("protolens-extract-round-trip-descriptor.pb");
-        std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-        let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-        std::fs::remove_file(&descriptor_path).unwrap();
+        let mut ctx = ctx_from_fds("extract-round-trip", &fds);
 
         // Inner: field 1 varint 5 -> tag 0x08, value 0x05.
         let inner_bytes = [0x08u8, 0x05];
@@ -389,18 +408,7 @@ mod tests {
             lines_visible: 2,
             rendered_as: NOT_RENDERED,
         };
-        let path = std::env::temp_dir().join("protolens-extract-header-test.pb");
-        extract(
-            &path,
-            ExtractFormat::Text,
-            b"",
-            &lines,
-            &node,
-            crate::decode::widen(&node.span.text_range),
-        )
-        .unwrap();
-        let written = std::fs::read_to_string(&path).unwrap();
-        std::fs::remove_file(&path).unwrap();
+        let written = extracted_text("header-test", &lines, &node);
         assert_eq!(written, "#@ prototext: protoc\noptions {\n}");
     }
 
@@ -434,18 +442,7 @@ mod tests {
             lines_visible: 3,
             rendered_as: NOT_RENDERED,
         };
-        let path = std::env::temp_dir().join("protolens-extract-message-text-test.pb");
-        extract(
-            &path,
-            ExtractFormat::Text,
-            b"",
-            &lines,
-            &node,
-            crate::decode::widen(&node.span.text_range),
-        )
-        .unwrap();
-        let written = std::fs::read_to_string(&path).unwrap();
-        std::fs::remove_file(&path).unwrap();
+        let written = extracted_text("message-text-test", &lines, &node);
         assert_eq!(
             written,
             "#@ prototext: protoc\njava_package: \"x\"  #@ string = 1"
@@ -483,18 +480,7 @@ mod tests {
             lines_visible: 3,
             rendered_as: NOT_RENDERED,
         };
-        let path = std::env::temp_dir().join("protolens-extract-group-text-test.pb");
-        extract(
-            &path,
-            ExtractFormat::Text,
-            b"",
-            &lines,
-            &node,
-            crate::decode::widen(&node.span.text_range),
-        )
-        .unwrap();
-        let written = std::fs::read_to_string(&path).unwrap();
-        std::fs::remove_file(&path).unwrap();
+        let written = extracted_text("group-text-test", &lines, &node);
         assert_eq!(written, "#@ prototext: protoc\nid: 7  #@ int32 = 1");
     }
 }

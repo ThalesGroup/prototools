@@ -1574,5 +1574,39 @@ pub fn render_resolved(
     })
 }
 
+/// A `DescriptorContext` over `fds`, with nothing left on disk.
+///
+/// `DescriptorContext::load` takes a path, not bytes, so a test with a
+/// schema has to put one there. The guard is what makes the removal
+/// safe: the hand-written form this replaced ended in
+/// `remove_file(..).unwrap()`, which an assertion failing above it
+/// skips, so every red run leaked a file into the temp directory. The
+/// counter keeps concurrent tests off each other's path.
+///
+/// Sits here rather than in `tests.rs` because `extract`'s tests want it
+/// too, and a sibling module cannot reach into `decode`'s private test
+/// module.
+#[cfg(test)]
+pub(crate) fn ctx_from_fds(
+    tag: &str,
+    fds: &prost_reflect::prost_types::FileDescriptorSet,
+) -> DescriptorContext {
+    use prost::Message as _;
+
+    struct Remove(PathBuf);
+    impl Drop for Remove {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("protolens-decode-{n}-{tag}.pb"));
+    std::fs::write(&path, fds.encode_to_vec()).unwrap();
+    let guard = Remove(path);
+    DescriptorContext::load(&guard.0).unwrap()
+}
+
 #[cfg(test)]
 mod tests;

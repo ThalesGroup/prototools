@@ -15,25 +15,7 @@ use prototext_core::serialize::encode_text::annotation_start;
 /// `main.rs` no longer refuses to open such a blob.
 #[test]
 fn empty_tree_renders_and_handles_keys_without_panicking() {
-    let decoded = Decoded {
-        lines: Vec::new(),
-        tree: Vec::new(),
-        root_type: "google.protobuf.Empty".to_string(),
-        arena: crate::decode::arena_of(&[]),
-        blob: Arc::new(Blob::unwrapped(Vec::new())),
-        wrapper_offset: 0,
-        root_candidates: Vec::new(),
-        fqdns: FqdnTable::new(),
-    };
-    let mut app = App::new(
-        decoded,
-        "empty.pb",
-        PathBuf::from("empty.pb"),
-        2,
-        DescriptorContext::empty_for_test(),
-        ThemeKind::Dark,
-        None,
-    );
+    let mut app = empty_app();
 
     let backend = TestBackend::new(80, 24);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -82,54 +64,26 @@ fn empty_tree_renders_and_handles_keys_without_panicking() {
 /// The document is built at the cap rather than at some comfortable
 /// depth: a limit is only a limit if something has stood at it.
 fn deeply_nested_app(depth: usize) -> App {
-    use prost::Message as _;
     use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{
-        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
-    };
-
-    use crate::blob::wrapped;
-    use crate::decode::{decode, DescriptorContext, RootType};
+    use prost_types::{FileDescriptorProto, FileDescriptorSet};
 
     // `Nest { Nest inner = 1; int32 leaf = 2; }` — self-recursive, so
     // one message type describes a document of any depth.
-    let nest = DescriptorProto {
-        name: Some("Nest".to_string()),
-        field: vec![
-            FieldDescriptorProto {
-                name: Some("inner".to_string()),
-                number: Some(1),
-                label: Some(Label::Optional as i32),
-                r#type: Some(Type::Message as i32),
-                type_name: Some(".test.Nest".to_string()),
-                ..Default::default()
-            },
-            FieldDescriptorProto {
-                name: Some("leaf".to_string()),
-                number: Some(2),
-                label: Some(Label::Optional as i32),
-                r#type: Some(Type::Int32 as i32),
-                ..Default::default()
-            },
-        ],
-        ..Default::default()
-    };
     let fds = FileDescriptorSet {
         file: vec![FileDescriptorProto {
             name: Some("test_deep.proto".to_string()),
             package: Some("test".to_string()),
             syntax: Some("proto2".to_string()),
-            message_type: vec![nest],
+            message_type: vec![message(
+                "Nest",
+                vec![
+                    field_of("inner", 1, Label::Optional, Type::Message, ".test.Nest"),
+                    field("leaf", 2, Label::Optional, Type::Int32),
+                ],
+            )],
             ..Default::default()
         }],
     };
-
-    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let descriptor_path = std::env::temp_dir().join(format!("protolens-tui-deep-{n}.pb"));
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
 
     // Built from the innermost outward, since each level's length prefix
     // covers everything already encoded.
@@ -146,19 +100,7 @@ fn deeply_nested_app(depth: usize) -> App {
         blob = level;
     }
 
-    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Nest"), 2).unwrap();
-    let mut app = App::new(
-        decoded,
-        "deep.pb",
-        PathBuf::from("deep.pb"),
-        2,
-        ctx,
-        ThemeKind::Dark,
-        None,
-    );
-    app.splash = false;
-    app.term_width = 120;
-    app
+    fixture_under("deep", &fds, "test.Nest", &blob)
 }
 
 #[test]
@@ -532,15 +474,7 @@ fn a_toggles_the_main_pane_annotation_display() {
         root_candidates: Vec::new(),
         fqdns: FqdnTable::new(),
     };
-    let mut app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        DescriptorContext::empty_for_test(),
-        ThemeKind::Dark,
-        None,
-    );
+    let mut app = app_named(decoded, DescriptorContext::empty_for_test(), "test.pb");
     app.splash = false;
 
     // Spec 0193 S1: every row carries the two-column fold field, blank
@@ -1812,49 +1746,23 @@ fn panning_changes_the_viewport_label_and_not_the_cursor_ruler() {
 /// Returned untouched — splash still up, status line still carrying the
 /// warning — because those two are exactly what the §S3 tests inspect.
 fn eager_fallback_app() -> App {
-    use prost::Message as _;
     use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{
-        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
-    };
 
-    use crate::decode::{decode, DescriptorContext, RootType};
+    use crate::decode::{decode, RootType};
 
-    let file = FileDescriptorProto {
-        name: Some("test_eager_fallback.proto".to_string()),
-        package: Some("test".to_string()),
-        message_type: vec![DescriptorProto {
-            name: Some("Inner".to_string()),
-            field: vec![FieldDescriptorProto {
-                name: Some("id".to_string()),
-                number: Some(1),
-                label: Some(Label::Optional as i32),
-                r#type: Some(Type::Int32 as i32),
-                ..Default::default()
-            }],
-            ..Default::default()
-        }],
-        syntax: Some("proto3".to_string()),
-        ..Default::default()
-    };
-    let fds = FileDescriptorSet { file: vec![file] };
+    let fds = proto3_fds(
+        "test_eager_fallback.proto",
+        vec![message(
+            "Inner",
+            vec![field("id", 1, Label::Optional, Type::Int32)],
+        )],
+    );
 
-    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let descriptor_path = std::env::temp_dir().join(format!("protolens-tui-eager-fallback-{n}.pb"));
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
-
+    // Not `fixture_under`: that lowers the splash and widens the
+    // terminal, and this fixture's whole point is the state `App::new`
+    // leaves behind.
+    let mut ctx = ctx_from_fds("eager-fallback", &fds);
     let blob = [0x08u8, 0x05];
     let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Inner"), 2).unwrap();
-    App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        ctx,
-        ThemeKind::Dark,
-        None,
-    )
+    app_named(decoded, ctx, "test.pb")
 }

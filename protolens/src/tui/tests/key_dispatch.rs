@@ -7,25 +7,7 @@ use super::support::*;
 
 #[test]
 fn q_confirmation_is_cancelled_by_any_other_key() {
-    let decoded = Decoded {
-        lines: Vec::new(),
-        tree: Vec::new(),
-        root_type: "google.protobuf.Empty".to_string(),
-        arena: crate::decode::arena_of(&[]),
-        blob: Arc::new(Blob::unwrapped(Vec::new())),
-        wrapper_offset: 0,
-        root_candidates: Vec::new(),
-        fqdns: FqdnTable::new(),
-    };
-    let mut app = App::new(
-        decoded,
-        "empty.pb",
-        PathBuf::from("empty.pb"),
-        2,
-        DescriptorContext::empty_for_test(),
-        ThemeKind::Dark,
-        None,
-    );
+    let mut app = empty_app();
     app.splash = false;
 
     app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
@@ -52,25 +34,7 @@ fn q_confirmation_is_cancelled_by_any_other_key() {
 #[test]
 #[cfg(unix)]
 fn ctrl_z_sets_should_suspend_without_disturbing_quit_confirm() {
-    let decoded = Decoded {
-        lines: Vec::new(),
-        tree: Vec::new(),
-        root_type: "google.protobuf.Empty".to_string(),
-        arena: crate::decode::arena_of(&[]),
-        blob: Arc::new(Blob::unwrapped(Vec::new())),
-        wrapper_offset: 0,
-        root_candidates: Vec::new(),
-        fqdns: FqdnTable::new(),
-    };
-    let mut app = App::new(
-        decoded,
-        "empty.pb",
-        PathBuf::from("empty.pb"),
-        2,
-        DescriptorContext::empty_for_test(),
-        ThemeKind::Dark,
-        None,
-    );
+    let mut app = empty_app();
     app.splash = false;
 
     app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
@@ -773,15 +737,7 @@ fn default_export_descriptor_path_falls_back_to_the_numeric_range_when_unresolva
         root_candidates: Vec::new(),
         fqdns: FqdnTable::new(),
     };
-    let mut app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        DescriptorContext::empty_for_test(),
-        ThemeKind::Dark,
-        None,
-    );
+    let mut app = app_named(decoded, DescriptorContext::empty_for_test(), "test.pb");
     app.set_cursor(1);
     assert_ne!(app.cursor, app.first_node);
     let path = app.default_export_descriptor_path();

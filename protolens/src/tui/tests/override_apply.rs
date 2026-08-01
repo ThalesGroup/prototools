@@ -19,89 +19,43 @@ use super::support::*;
 /// `splice_override` must never rely on it).
 #[test]
 fn apply_override_splices_tree_and_lines_repeatedly() {
-    use prost::Message as _;
     use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{
-        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
-    };
 
-    use crate::decode::{decode, DescriptorContext, RootType};
-
-    let leaf_desc = DescriptorProto {
-        name: Some("Leaf".to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some("val".to_string()),
-            number: Some(1),
-            label: Some(Label::Optional as i32),
-            r#type: Some(Type::Int32 as i32),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let node_desc = DescriptorProto {
-        name: Some("Node".to_string()),
-        field: vec![
-            FieldDescriptorProto {
-                name: Some("a".to_string()),
-                number: Some(1),
-                label: Some(Label::Optional as i32),
-                r#type: Some(Type::Message as i32),
-                type_name: Some(".test.Leaf".to_string()),
-                ..Default::default()
-            },
-            FieldDescriptorProto {
-                name: Some("b".to_string()),
-                number: Some(2),
-                label: Some(Label::Optional as i32),
-                r#type: Some(Type::Int32 as i32),
-                ..Default::default()
-            },
+    let fds = proto3_fds(
+        "test_apply_override.proto",
+        vec![
+            message(
+                "Outer",
+                vec![field_of(
+                    "inner",
+                    1,
+                    Label::Optional,
+                    Type::Message,
+                    ".test.Node",
+                )],
+            ),
+            message(
+                "Node",
+                vec![
+                    field_of("a", 1, Label::Optional, Type::Message, ".test.Leaf"),
+                    field("b", 2, Label::Optional, Type::Int32),
+                ],
+            ),
+            message("Leaf", vec![field("val", 1, Label::Optional, Type::Int32)]),
         ],
-        ..Default::default()
-    };
-    let outer_desc = DescriptorProto {
-        name: Some("Outer".to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some("inner".to_string()),
-            number: Some(1),
-            label: Some(Label::Optional as i32),
-            r#type: Some(Type::Message as i32),
-            type_name: Some(".test.Node".to_string()),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let file = FileDescriptorProto {
-        name: Some("test_apply_override.proto".to_string()),
-        package: Some("test".to_string()),
-        message_type: vec![outer_desc, node_desc, leaf_desc],
-        syntax: Some("proto3".to_string()),
-        ..Default::default()
-    };
-    let fds = FileDescriptorSet { file: vec![file] };
+    );
 
-    let descriptor_path = std::env::temp_dir().join("protolens-tui-apply-override-descriptor.pb");
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
-
-    // Node payload: a = Leaf { val: 9 } (message, field 1), b = 42
-    // (varint, field 2).
-    let leaf_bytes = [0x08u8, 0x09];
-    let node_payload = [0x0Au8, 0x02, leaf_bytes[0], leaf_bytes[1], 0x10, 0x2A];
-    // Outer wraps Node as field 1 (LEN).
-    let mut blob = vec![0x0Au8, node_payload.len() as u8];
-    blob.extend_from_slice(&node_payload);
-
-    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
-    let mut app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        ctx,
-        ThemeKind::Dark,
-        None,
+    // Outer wraps Node (field 1, LEN), whose payload is
+    // a = Leaf { val: 9 } (field 1, LEN) then b = 42 (field 2, varint).
+    let mut app = fixture_under(
+        "apply-override",
+        &fds,
+        "test.Outer",
+        &[
+            0x0Au8, 0x06, //
+            0x0A, 0x02, 0x08, 0x09, //
+            0x10, 0x2A,
+        ],
     );
 
     let node_idx =
@@ -219,73 +173,27 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
 /// here, in the header-patching path spec 0135 has since deleted).
 #[test]
 fn splice_override_on_an_incompatible_scalar_does_not_panic() {
-    use crate::decode::{decode, DescriptorContext, RootType};
-    use prost::Message as _;
     use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{
-        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
-    };
 
-    let str_msg = DescriptorProto {
-        name: Some("StrHolder".to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some("s".to_string()),
-            number: Some(1),
-            label: Some(Label::Optional as i32),
-            r#type: Some(Type::String as i32),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let target_msg = DescriptorProto {
-        name: Some("Target".to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some("id".to_string()),
-            number: Some(1),
-            label: Some(Label::Optional as i32),
-            r#type: Some(Type::Int32 as i32),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let file = FileDescriptorProto {
-        name: Some("incompat.proto".to_string()),
-        package: Some("incompat".to_string()),
-        message_type: vec![str_msg, target_msg],
-        syntax: Some("proto3".to_string()),
-        ..Default::default()
-    };
-    let fds = FileDescriptorSet { file: vec![file] };
-    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let descriptor_path =
-        std::env::temp_dir().join(format!("protolens-tui-incompat-override-{n}.pb"));
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
-
-    // StrHolder { s: "hello" }
-    let label = b"hello";
-    let mut blob = vec![0x0Au8, label.len() as u8];
-    blob.extend_from_slice(label);
-    let decoded = decode(
-        wrapped(&blob),
-        &mut ctx,
-        RootType::Named("incompat.StrHolder"),
-        2,
-    )
-    .unwrap();
-    let mut app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        ctx,
-        ThemeKind::Dark,
-        None,
+    let fds = proto3_fds_in(
+        "incompat",
+        "incompat.proto",
+        vec![
+            message(
+                "StrHolder",
+                vec![field("s", 1, Label::Optional, Type::String)],
+            ),
+            message("Target", vec![field("id", 1, Label::Optional, Type::Int32)]),
+        ],
     );
-    app.splash = false;
-    app.term_width = 120;
+
+    // StrHolder { s: "hello" } — field 1 (tag 0x0A, LEN), 5 bytes.
+    let mut app = fixture_under(
+        "incompat-override",
+        &fds,
+        "incompat.StrHolder",
+        b"\x0A\x05hello",
+    );
 
     let s_idx = app.nth_child(app.first_node, 0).expect("must find field 1");
     assert!(
@@ -501,60 +409,24 @@ fn the_forward_and_backward_ordinal_walks_agree_across_a_packed_run() {
 /// naive `.replacen('_', ..)` produces `TYPEtype_idMISMATCH`.
 #[test]
 fn splice_override_on_a_varint_mismatch_does_not_corrupt_type_mismatch_annotation() {
-    use crate::decode::{decode, DescriptorContext, RootType};
-    use prost::Message as _;
     use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{
-        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
-    };
 
-    let msg = DescriptorProto {
-        name: Some("IntHolder".to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some("type_id".to_string()),
-            number: Some(2),
-            label: Some(Label::Optional as i32),
-            r#type: Some(Type::Int32 as i32),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let file = FileDescriptorProto {
-        name: Some("varint_mismatch.proto".to_string()),
-        package: Some("varint_mismatch".to_string()),
-        message_type: vec![msg],
-        syntax: Some("proto3".to_string()),
-        ..Default::default()
-    };
-    let fds = FileDescriptorSet { file: vec![file] };
-    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let descriptor_path =
-        std::env::temp_dir().join(format!("protolens-tui-varint-mismatch-override-{n}.pb"));
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
+    let fds = proto3_fds_in(
+        "varint_mismatch",
+        "varint_mismatch.proto",
+        vec![message(
+            "IntHolder",
+            vec![field("type_id", 2, Label::Optional, Type::Int32)],
+        )],
+    );
 
     // IntHolder { type_id: 5 } — field 2, varint wire type.
-    let blob = vec![0x10u8, 0x05];
-    let decoded = decode(
-        wrapped(&blob),
-        &mut ctx,
-        RootType::Named("varint_mismatch.IntHolder"),
-        2,
-    )
-    .unwrap();
-    let mut app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        ctx,
-        ThemeKind::Dark,
-        None,
+    let mut app = fixture_under(
+        "varint-mismatch-override",
+        &fds,
+        "varint_mismatch.IntHolder",
+        &[0x10u8, 0x05],
     );
-    app.splash = false;
-    app.term_width = 120;
 
     let idx = app
         .tree
@@ -647,13 +519,7 @@ fn deactivating_override_reclamps_pan_offset_to_the_shrunk_content() {
 /// true visible width — over-clamping `pan_offset` too far left.
 #[test]
 fn deactivating_override_recomputes_the_pan_bound_against_the_post_splice_scroll_window() {
-    use prost::Message as _;
     use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{
-        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
-    };
-
-    use crate::decode::{decode, DescriptorContext, RootType};
 
     // The long field name is the fixture's whole point: once `inner`
     // reverts to its natural 4-line shape, this field's row must be
@@ -661,88 +527,33 @@ fn deactivating_override_recomputes_the_pan_bound_against_the_post_splice_scroll
     // scrolling down to follow the cursor's (shifted) footer row.
     const WIDE_FIELD_NAME: &str =
         "a_field_with_a_very_long_name_so_its_own_rendered_line_is_the_widest_visible_row";
-    let inner_desc = DescriptorProto {
-        name: Some("Inner".to_string()),
-        field: vec![
-            FieldDescriptorProto {
-                name: Some("id".to_string()),
-                number: Some(1),
-                label: Some(Label::Optional as i32),
-                r#type: Some(Type::Int32 as i32),
-                ..Default::default()
-            },
-            FieldDescriptorProto {
-                name: Some(WIDE_FIELD_NAME.to_string()),
-                number: Some(2),
-                label: Some(Label::Optional as i32),
-                r#type: Some(Type::Int32 as i32),
-                ..Default::default()
-            },
+    let scalar = |name: &str, number: i32| field(name, number, Label::Optional, Type::Int32);
+    let fds = proto3_fds(
+        "stale_scroll.proto",
+        vec![
+            message(
+                "Outer",
+                vec![
+                    field_of("inner", 1, Label::Optional, Type::Message, ".test.Inner"),
+                    scalar("pad_a", 2),
+                    scalar("pad_b", 3),
+                ],
+            ),
+            message("Inner", vec![scalar("id", 1), scalar(WIDE_FIELD_NAME, 2)]),
         ],
-        ..Default::default()
-    };
-    let outer_desc = DescriptorProto {
-        name: Some("Outer".to_string()),
-        field: vec![
-            FieldDescriptorProto {
-                name: Some("inner".to_string()),
-                number: Some(1),
-                label: Some(Label::Optional as i32),
-                r#type: Some(Type::Message as i32),
-                type_name: Some(".test.Inner".to_string()),
-                ..Default::default()
-            },
-            FieldDescriptorProto {
-                name: Some("pad_a".to_string()),
-                number: Some(2),
-                label: Some(Label::Optional as i32),
-                r#type: Some(Type::Int32 as i32),
-                ..Default::default()
-            },
-            FieldDescriptorProto {
-                name: Some("pad_b".to_string()),
-                number: Some(3),
-                label: Some(Label::Optional as i32),
-                r#type: Some(Type::Int32 as i32),
-                ..Default::default()
-            },
-        ],
-        ..Default::default()
-    };
-    let file = FileDescriptorProto {
-        name: Some("stale_scroll.proto".to_string()),
-        package: Some("test".to_string()),
-        message_type: vec![outer_desc, inner_desc],
-        syntax: Some("proto3".to_string()),
-        ..Default::default()
-    };
-    let fds = FileDescriptorSet { file: vec![file] };
-    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let descriptor_path =
-        std::env::temp_dir().join(format!("protolens-tui-stale-scroll-override-{n}.pb"));
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
+    );
 
     // Outer { inner: Inner { id: 5, <wide_field>: 7 }, pad_a: 1, pad_b: 2 }.
-    let blob = [
-        0x0Au8, 0x04, 0x08, 0x05, 0x10, 0x07, // inner { id: 5, wide_field: 7 }
-        0x10, 0x01, // pad_a: 1
-        0x18, 0x02, // pad_b: 2
-    ];
-    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
-    let mut app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        ctx,
-        ThemeKind::Dark,
-        None,
+    let mut app = fixture_under(
+        "stale-scroll-override",
+        &fds,
+        "test.Outer",
+        &[
+            0x0Au8, 0x04, 0x08, 0x05, 0x10, 0x07, // inner { id: 5, wide_field: 7 }
+            0x10, 0x01, // pad_a: 1
+            0x18, 0x02, // pad_b: 2
+        ],
     );
-    app.splash = false;
-    app.term_width = 120;
     app.main_area = Rect::new(0, 0, 10, 3);
 
     let inner_idx =
@@ -986,116 +797,35 @@ fn splice_override_raw_root_shows_the_field_number_in_the_header_line() {
 /// `decode_leaves_any_fields_unexpanded_with_real_type_url_and_value_spans`.
 #[test]
 fn splice_override_reactivating_root_type_still_expands_any_fields() {
-    use prost::Message as _;
     use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{
-        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
-    };
+    use prost_types::{FileDescriptorProto, FileDescriptorSet};
 
-    use crate::decode::{decode, DescriptorContext, RootType};
-
-    let any_msg = DescriptorProto {
-        name: Some("Any".to_string()),
-        field: vec![
-            FieldDescriptorProto {
-                name: Some("type_url".to_string()),
-                number: Some(1),
-                label: Some(Label::Optional as i32),
-                r#type: Some(Type::String as i32),
-                ..Default::default()
-            },
-            FieldDescriptorProto {
-                name: Some("value".to_string()),
-                number: Some(2),
-                label: Some(Label::Optional as i32),
-                r#type: Some(Type::Bytes as i32),
-                ..Default::default()
-            },
-        ],
-        ..Default::default()
-    };
-    let any_file = FileDescriptorProto {
-        name: Some("google/protobuf/any.proto".to_string()),
-        syntax: Some("proto3".to_string()),
-        package: Some("google.protobuf".to_string()),
-        message_type: vec![any_msg],
-        ..Default::default()
-    };
-
-    let payload_msg = DescriptorProto {
-        name: Some("Payload".to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some("label".to_string()),
-            number: Some(1),
-            label: Some(Label::Optional as i32),
-            r#type: Some(Type::String as i32),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let container_msg = DescriptorProto {
-        name: Some("Container".to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some("payload".to_string()),
-            number: Some(1),
-            label: Some(Label::Optional as i32),
-            r#type: Some(Type::Message as i32),
-            type_name: Some(".google.protobuf.Any".to_string()),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
     let acme_file = FileDescriptorProto {
         name: Some("acme.proto".to_string()),
         syntax: Some("proto2".to_string()),
         package: Some("acme".to_string()),
         dependency: vec!["google/protobuf/any.proto".to_string()],
-        message_type: vec![payload_msg, container_msg],
+        message_type: vec![
+            message(
+                "Payload",
+                vec![field("label", 1, Label::Optional, Type::String)],
+            ),
+            wrapper_message("Container", "payload", ".google.protobuf.Any"),
+        ],
         ..Default::default()
     };
     let fds = FileDescriptorSet {
-        file: vec![any_file, acme_file],
+        file: vec![any_proto_file(), acme_file],
     };
-
-    let descriptor_path =
-        std::env::temp_dir().join("protolens-tui-splice-any-reactivate-descriptor.pb");
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
 
     // Container { payload: Any { type_url:
     // "type.googleapis.com/acme.Payload", value: Payload { label:
     // "hello" } } }.
-    let label = b"hello";
-    let mut payload_bytes = vec![0x0au8, label.len() as u8];
-    payload_bytes.extend_from_slice(label);
-    let type_url = b"type.googleapis.com/acme.Payload";
-    let mut any_bytes = vec![0x0au8, type_url.len() as u8];
-    any_bytes.extend_from_slice(type_url);
-    any_bytes.push(0x12);
-    any_bytes.push(payload_bytes.len() as u8);
-    any_bytes.extend_from_slice(&payload_bytes);
-    let mut blob = vec![0x0au8, any_bytes.len() as u8];
-    blob.extend_from_slice(&any_bytes);
-
-    let decoded = decode(
-        wrapped(&blob),
-        &mut ctx,
-        RootType::Named("acme.Container"),
-        2,
-    )
-    .unwrap();
-    let mut app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        ctx,
-        ThemeKind::Dark,
-        None,
-    );
-    app.splash = false;
-    app.term_width = 120;
+    let blob = wrap_len_field_1(any_body(
+        "type.googleapis.com/acme.Payload",
+        b"\x0a\x05hello",
+    ));
+    let mut app = fixture_under("splice-any-reactivate", &fds, "acme.Container", &blob);
 
     // 1) retype the root raw (no schema) — mirrors the interactive
     //    "override / with raw/no-type" step, driven through the same
@@ -1415,15 +1145,7 @@ fn no_resolved_root_type_seeds_no_override_and_still_renders_raw() {
     let decoded = decode(wrapped(&blob), &mut ctx, RootType::Infer, 2).unwrap();
     assert_eq!(decoded.root_type, "<raw / no type>");
 
-    let app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        ctx,
-        ThemeKind::Dark,
-        None,
-    );
+    let app = app_named(decoded, ctx, "test.pb");
 
     assert!(
         app.overrides.entries().is_empty(),

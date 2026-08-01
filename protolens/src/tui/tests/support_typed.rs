@@ -7,20 +7,23 @@
 //! the override pane something to offer for it.
 
 use super::super::*;
+use super::support_build::{fixture_app, fixture_under, TempFile};
 use super::support_inspect::node_with_type;
+use prost_types::field_descriptor_proto::{Label, Type};
+use prost_types::{DescriptorProto, EnumDescriptorProto, EnumValueDescriptorProto};
+use prost_types::{FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet};
 
-/// Builds the same `Outer { inner: Inner { id: 5 } }` fixture as
-/// `enter_key_applies_override_and_closes_pane`, for the `:type-as`/
-/// `:type-as-raw` command tests (spec 0114 §7).
-pub(super) fn type_as_fixture() -> (App, usize, usize) {
-    use prost::Message as _;
-    use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{
-        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
-    };
+use crate::decode::{decode, RootType};
 
-    use crate::decode::{decode, DescriptorContext, RootType};
-
+/// `Outer { optional Inner inner = 1; }` over `Inner { optional int32
+/// id = 1; }` — the schema shared by `type_as_fixture` and
+/// `empty_message_fixture`, which differ only in `inner`'s payload.
+///
+/// `file_name` is a parameter, and the two callers pass different names,
+/// because a descriptor's own `.proto` file name is *observable*: `v`
+/// resolves it under `proto_root` and reports it by name when it is not
+/// there.
+fn outer_inner_fds(file_name: &str) -> FileDescriptorSet {
     let inner_desc = DescriptorProto {
         name: Some("Inner".to_string()),
         field: vec![FieldDescriptorProto {
@@ -45,42 +48,31 @@ pub(super) fn type_as_fixture() -> (App, usize, usize) {
         ..Default::default()
     };
     let file = FileDescriptorProto {
-        name: Some("test_type_as.proto".to_string()),
+        name: Some(file_name.to_string()),
         package: Some("test".to_string()),
         message_type: vec![outer_desc, inner_desc],
         syntax: Some("proto3".to_string()),
         ..Default::default()
     };
-    let fds = FileDescriptorSet { file: vec![file] };
+    FileDescriptorSet { file: vec![file] }
+}
 
-    // Unique per call (this fixture is shared by several tests that
-    // may run concurrently) to avoid one test's cleanup racing
-    // another's read of the same path.
-    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let descriptor_path =
-        std::env::temp_dir().join(format!("protolens-tui-type-as-descriptor-{n}.pb"));
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    // Deliberately not removed, unlike every other fixture here: the
+/// Builds the same `Outer { inner: Inner { id: 5 } }` fixture as
+/// `enter_key_applies_override_and_closes_pane`, for the `:type-as`/
+/// `:type-as-raw` command tests (spec 0114 §7).
+pub(super) fn type_as_fixture() -> (App, usize, usize) {
+    let descriptor = TempFile::descriptor("type-as", &outer_inner_fds("test_type_as.proto"));
+    let mut ctx = descriptor.load();
+    // Deliberately kept, unlike every other fixture here: the
     // `:save`/`:restore` tests built on this one hash the descriptor set,
     // which `descriptor_sha256` re-reads from disk on demand (spec 0197
     // §S6), and that read is now an error rather than an empty hash.
+    let _kept = descriptor.keep();
 
     // Outer { inner: Inner { id: 5 } }.
     let blob = [0x0Au8, 0x02, 0x08, 0x05];
     let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
-    let mut app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        ctx,
-        ThemeKind::Dark,
-        None,
-    );
-    app.splash = false;
-    app.term_width = 120;
+    let mut app = fixture_app(decoded, ctx);
     // The fixture writes a bare `.pb` with no `index.rkyv` beside it, so
     // `App::new` seeds the status line with spec 0197 §S3's eager-fallback
     // warning. Clear it: tests here assert on messages *they* provoke.
@@ -103,68 +95,13 @@ pub(super) fn type_as_fixture() -> (App, usize, usize) {
 /// footer line must be a reachable cursor stop, same as any other
 /// message.
 pub(super) fn empty_message_fixture() -> (App, usize) {
-    use prost::Message as _;
-    use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{
-        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
-    };
-
-    use crate::decode::{decode, DescriptorContext, RootType};
-
-    let inner_desc = DescriptorProto {
-        name: Some("Inner".to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some("id".to_string()),
-            number: Some(1),
-            label: Some(Label::Optional as i32),
-            r#type: Some(Type::Int32 as i32),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let outer_desc = DescriptorProto {
-        name: Some("Outer".to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some("inner".to_string()),
-            number: Some(1),
-            label: Some(Label::Optional as i32),
-            r#type: Some(Type::Message as i32),
-            type_name: Some(".test.Inner".to_string()),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let file = FileDescriptorProto {
-        name: Some("test_empty_message.proto".to_string()),
-        package: Some("test".to_string()),
-        message_type: vec![outer_desc, inner_desc],
-        syntax: Some("proto3".to_string()),
-        ..Default::default()
-    };
-    let fds = FileDescriptorSet { file: vec![file] };
-
-    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let descriptor_path =
-        std::env::temp_dir().join(format!("protolens-tui-empty-message-descriptor-{n}.pb"));
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
-
     // Outer { inner: Inner {} } — field 1 (LEN), length 0, no payload.
-    let blob = [0x0Au8, 0x00];
-    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
-    let mut app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        ctx,
-        ThemeKind::Dark,
-        None,
+    let app = fixture_under(
+        "empty-message",
+        &outer_inner_fds("test_empty_message.proto"),
+        "test.Outer",
+        &[0x0Au8, 0x00],
     );
-    app.splash = false;
-    app.term_width = 120;
 
     let inner_idx =
         node_with_type(&app, "test.Inner").expect("tree must contain the empty Inner submessage");
@@ -181,15 +118,6 @@ pub(super) fn empty_message_fixture() -> (App, usize) {
 /// `t`'s initial highlight/mode on an enum field with no active
 /// override).
 pub(super) fn enum_field_fixture() -> (App, usize) {
-    use prost::Message as _;
-    use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{
-        DescriptorProto, EnumDescriptorProto, EnumValueDescriptorProto, FieldDescriptorProto,
-        FileDescriptorProto, FileDescriptorSet,
-    };
-
-    use crate::decode::{decode, DescriptorContext, RootType};
-
     let durability_enum = EnumDescriptorProto {
         name: Some("Durability".to_string()),
         value: vec![
@@ -228,29 +156,9 @@ pub(super) fn enum_field_fixture() -> (App, usize) {
     };
     let fds = FileDescriptorSet { file: vec![file] };
 
-    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let descriptor_path =
-        std::env::temp_dir().join(format!("protolens-tui-enum-field-descriptor-{n}.pb"));
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
-
     // Outer3 { durability: EPHEMERAL (0) } — field 1 (tag 0x08),
     // varint value 0.
-    let blob = [0x08u8, 0x00];
-    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Outer3"), 2).unwrap();
-    let mut app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        ctx,
-        ThemeKind::Dark,
-        None,
-    );
-    app.splash = false;
-    app.term_width = 120;
+    let app = fixture_under("enum-field", &fds, "test.Outer3", &[0x08u8, 0x00]);
 
     // Not a scan for field 1: the wrapper occupies slot 0 and is field 1
     // too (spec 0216 S1), so a scan would find it first.
@@ -283,14 +191,6 @@ pub(super) fn group_type_fixture_with_tag_ohb() -> (App, usize) {
 /// Private to this file — the tests want one of the two named blobs, not
 /// a blob of their own.
 fn group_type_fixture_with_blob(blob: &[u8]) -> (App, usize) {
-    use prost::Message as _;
-    use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{
-        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
-    };
-
-    use crate::decode::{decode, DescriptorContext, RootType};
-
     let my_group_desc = DescriptorProto {
         name: Some("MyGroup".to_string()),
         field: vec![FieldDescriptorProto {
@@ -334,29 +234,7 @@ fn group_type_fixture_with_blob(blob: &[u8]) -> (App, usize) {
     };
     let fds = FileDescriptorSet { file: vec![file] };
 
-    // Unique per call (this fixture is shared by several tests that
-    // may run concurrently) to avoid one test's cleanup racing
-    // another's read of the same path.
-    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let descriptor_path =
-        std::env::temp_dir().join(format!("protolens-tui-group-type-descriptor-{n}.pb"));
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
-
-    let decoded = decode(wrapped(blob), &mut ctx, RootType::Named("test.Outer2"), 2).unwrap();
-    let mut app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        ctx,
-        ThemeKind::Dark,
-        None,
-    );
-    app.splash = false;
-    app.term_width = 120;
+    let app = fixture_under("group-type", &fds, "test.Outer2", blob);
 
     let grp_idx =
         node_with_type(&app, "test.MyGroup").expect("tree must contain the MyGroup submessage");

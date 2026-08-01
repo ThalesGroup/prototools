@@ -132,17 +132,7 @@ fn t_opens_the_override_pane_on_an_unresolved_message_node() {
         root_candidates: Vec::new(),
         fqdns: FqdnTable::new(),
     };
-    let mut app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        DescriptorContext::empty_for_test(),
-        ThemeKind::Dark,
-        None,
-    );
-    app.splash = false;
-    app.term_width = 120;
+    let mut app = fixture_app(decoded, DescriptorContext::empty_for_test());
 
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
     assert_eq!(app.override_target, Some(0));
@@ -185,17 +175,7 @@ fn t_opens_the_override_pane_on_a_varint_scalar_field() {
         root_candidates: Vec::new(),
         fqdns: FqdnTable::new(),
     };
-    let mut app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        DescriptorContext::empty_for_test(),
-        ThemeKind::Dark,
-        None,
-    );
-    app.splash = false;
-    app.term_width = 120;
+    let mut app = fixture_app(decoded, DescriptorContext::empty_for_test());
 
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
     assert_eq!(app.override_target, Some(0));
@@ -345,17 +325,7 @@ fn t_opens_the_override_pane_on_a_length_delimited_scalar_field() {
         root_candidates: Vec::new(),
         fqdns: FqdnTable::new(),
     };
-    let mut app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        DescriptorContext::empty_for_test(),
-        ThemeKind::Dark,
-        None,
-    );
-    app.splash = false;
-    app.term_width = 120;
+    let mut app = fixture_app(decoded, DescriptorContext::empty_for_test());
 
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
     assert_eq!(app.override_target, Some(0));
@@ -819,68 +789,7 @@ fn esc_closes_the_override_pane() {
 /// pane on success.
 #[test]
 fn enter_key_applies_override_and_closes_pane() {
-    use prost::Message as _;
-    use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{
-        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
-    };
-
-    use crate::decode::{decode, DescriptorContext, RootType};
-
-    let inner_desc = DescriptorProto {
-        name: Some("Inner".to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some("id".to_string()),
-            number: Some(1),
-            label: Some(Label::Optional as i32),
-            r#type: Some(Type::Int32 as i32),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let outer_desc = DescriptorProto {
-        name: Some("Outer".to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some("inner".to_string()),
-            number: Some(1),
-            label: Some(Label::Optional as i32),
-            r#type: Some(Type::Message as i32),
-            type_name: Some(".test.Inner".to_string()),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let file = FileDescriptorProto {
-        name: Some("test_enter_override.proto".to_string()),
-        package: Some("test".to_string()),
-        message_type: vec![outer_desc, inner_desc],
-        syntax: Some("proto3".to_string()),
-        ..Default::default()
-    };
-    let fds = FileDescriptorSet { file: vec![file] };
-
-    let descriptor_path = std::env::temp_dir().join("protolens-tui-enter-override-descriptor.pb");
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
-
-    // Outer { inner: Inner { id: 5 } }.
-    let blob = [0x0Au8, 0x02, 0x08, 0x05];
-    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
-    let mut app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        ctx,
-        ThemeKind::Dark,
-        None,
-    );
-    app.splash = false;
-    app.term_width = 120;
-
-    let inner_idx =
-        node_with_type(&app, "test.Inner").expect("tree must contain the Inner submessage");
+    let (mut app, inner_idx, _) = type_as_fixture();
     app.cursor = inner_idx;
 
     // Spec 0137 §G4: inferred mode has no raw/`None` row at all, so

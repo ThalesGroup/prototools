@@ -7,6 +7,8 @@
 //! record.
 
 use super::super::*;
+use super::support_build::{field, field_of, fixture_under, message, proto3_fds};
+use prost_types::field_descriptor_proto::{Label, Type};
 
 /// `Outer { repeated int32 vals = 1; }`, packed, 3 elements (`5, 6,
 /// 7`) — the smallest packed run, returned with the node that draws it.
@@ -17,57 +19,22 @@ use super::super::*;
 /// three of anything: a test that needs three siblings wants
 /// `repeated_message_fixture`.
 pub(super) fn repeated_scalar_fixture() -> (App, usize) {
-    use prost::Message as _;
-    use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{
-        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
-    };
-
-    use crate::decode::{decode, DescriptorContext, RootType};
-
-    let outer_desc = DescriptorProto {
-        name: Some("Outer".to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some("vals".to_string()),
-            number: Some(1),
-            label: Some(Label::Repeated as i32),
-            r#type: Some(Type::Int32 as i32),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let file = FileDescriptorProto {
-        name: Some("test_repeated_scalar.proto".to_string()),
-        package: Some("test".to_string()),
-        message_type: vec![outer_desc],
-        syntax: Some("proto3".to_string()),
-        ..Default::default()
-    };
-    let fds = FileDescriptorSet { file: vec![file] };
-
-    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let descriptor_path =
-        std::env::temp_dir().join(format!("protolens-tui-repeated-scalar-descriptor-{n}.pb"));
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
+    let fds = proto3_fds(
+        "test_repeated_scalar.proto",
+        vec![message(
+            "Outer",
+            vec![field("vals", 1, Label::Repeated, Type::Int32)],
+        )],
+    );
 
     // vals: field 1 (tag 0x0A, LEN/packed), length 3, payload
     // [0x05, 0x06, 0x07] (three one-byte varint elements).
-    let blob = [0x0Au8, 0x03, 0x05, 0x06, 0x07];
-    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
-    let mut app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        ctx,
-        ThemeKind::Dark,
-        None,
+    let app = fixture_under(
+        "repeated-scalar",
+        &fds,
+        "test.Outer",
+        &[0x0Au8, 0x03, 0x05, 0x06, 0x07],
     );
-    app.splash = false;
-    app.term_width = 120;
 
     let run = app
         .tree
@@ -92,73 +59,35 @@ pub(super) fn repeated_scalar_fixture() -> (App, usize) {
 /// positional ordinal — an unpacked repeated *message* field is one
 /// wire record per element and so keeps distinct paths by construction.
 pub(super) fn repeated_message_fixture() -> (App, Vec<usize>) {
-    use prost::Message as _;
-    use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{
-        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
-    };
-
-    use crate::decode::{decode, DescriptorContext, RootType};
-
-    let item_desc = DescriptorProto {
-        name: Some("Item".to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some("v".to_string()),
-            number: Some(1),
-            label: Some(Label::Optional as i32),
-            r#type: Some(Type::Int32 as i32),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let outer_desc = DescriptorProto {
-        name: Some("Outer".to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some("items".to_string()),
-            number: Some(1),
-            label: Some(Label::Repeated as i32),
-            r#type: Some(Type::Message as i32),
-            type_name: Some(".test.Item".to_string()),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let file = FileDescriptorProto {
-        name: Some("test_repeated_message.proto".to_string()),
-        package: Some("test".to_string()),
-        message_type: vec![outer_desc, item_desc],
-        syntax: Some("proto3".to_string()),
-        ..Default::default()
-    };
-    let fds = FileDescriptorSet { file: vec![file] };
-
-    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let descriptor_path =
-        std::env::temp_dir().join(format!("protolens-tui-repeated-message-descriptor-{n}.pb"));
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
+    let fds = proto3_fds(
+        "test_repeated_message.proto",
+        vec![
+            message(
+                "Outer",
+                vec![field_of(
+                    "items",
+                    1,
+                    Label::Repeated,
+                    Type::Message,
+                    ".test.Item",
+                )],
+            ),
+            message("Item", vec![field("v", 1, Label::Optional, Type::Int32)]),
+        ],
+    );
 
     // items: field 1 (tag 0x0A, LEN), thrice, each wrapping
     // Item { v: 5 | 6 | 7 } (field 1, tag 0x08, one-byte varint).
-    let blob = [
-        0x0Au8, 0x02, 0x08, 0x05, //
-        0x0A, 0x02, 0x08, 0x06, //
-        0x0A, 0x02, 0x08, 0x07,
-    ];
-    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
-    let mut app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        ctx,
-        ThemeKind::Dark,
-        None,
+    let app = fixture_under(
+        "repeated-message",
+        &fds,
+        "test.Outer",
+        &[
+            0x0Au8, 0x02, 0x08, 0x05, //
+            0x0A, 0x02, 0x08, 0x06, //
+            0x0A, 0x02, 0x08, 0x07,
+        ],
     );
-    app.splash = false;
-    app.term_width = 120;
 
     // Spec 0216: the root is slot 0 — the wrapper — and the `Item`s are
     // its children, wherever the current interpretation puts them.
@@ -185,87 +114,37 @@ pub(super) fn repeated_message_fixture() -> (App, Vec<usize>) {
 /// Spec 0216 S22 turns that rule into arithmetic: the run is one node
 /// drawing three rows, so `run` is a single index rather than three.
 pub(super) fn packed_run_with_tail_fixture() -> (App, usize, usize, usize, usize) {
-    use prost::Message as _;
-    use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{
-        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
-    };
-
-    use crate::decode::{decode, DescriptorContext, RootType};
-
-    let scalar = |name: &str, number: i32| FieldDescriptorProto {
-        name: Some(name.to_string()),
-        number: Some(number),
-        label: Some(Label::Optional as i32),
-        r#type: Some(Type::Int32 as i32),
-        ..Default::default()
-    };
-    let inner_desc = DescriptorProto {
-        name: Some("Inner".to_string()),
-        field: vec![scalar("id", 3)],
-        ..Default::default()
-    };
-    let outer_desc = DescriptorProto {
-        name: Some("Outer".to_string()),
-        field: vec![
-            FieldDescriptorProto {
-                name: Some("vals".to_string()),
-                number: Some(1),
-                label: Some(Label::Repeated as i32),
-                r#type: Some(Type::Int32 as i32),
-                ..Default::default()
-            },
-            FieldDescriptorProto {
-                name: Some("tail".to_string()),
-                number: Some(2),
-                label: Some(Label::Optional as i32),
-                r#type: Some(Type::Message as i32),
-                type_name: Some(".test.Inner".to_string()),
-                ..Default::default()
-            },
-            scalar("a", 3),
-            scalar("b", 4),
+    let scalar = |name: &str, number: i32| field(name, number, Label::Optional, Type::Int32);
+    let fds = proto3_fds(
+        "test_packed_run_with_tail.proto",
+        vec![
+            message(
+                "Outer",
+                vec![
+                    field("vals", 1, Label::Repeated, Type::Int32),
+                    field_of("tail", 2, Label::Optional, Type::Message, ".test.Inner"),
+                    scalar("a", 3),
+                    scalar("b", 4),
+                ],
+            ),
+            message("Inner", vec![scalar("id", 3)]),
         ],
-        ..Default::default()
-    };
-    let file = FileDescriptorProto {
-        name: Some("test_packed_run_with_tail.proto".to_string()),
-        package: Some("test".to_string()),
-        message_type: vec![outer_desc, inner_desc],
-        syntax: Some("proto3".to_string()),
-        ..Default::default()
-    };
-    let fds = FileDescriptorSet { file: vec![file] };
-
-    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let descriptor_path =
-        std::env::temp_dir().join(format!("protolens-tui-packed-run-with-tail-{n}.pb"));
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
+    );
 
     // vals: field 1 (tag 0x0A, LEN/packed), 3 one-byte elements;
     // tail: field 2 (tag 0x12, LEN) wrapping Inner { id: 5 };
     // a: field 3 (tag 0x18, varint) = 42; b: field 4 (tag 0x20) = 43.
-    let blob = [
-        0x0Au8, 0x03, 0x05, 0x06, 0x07, //
-        0x12, 0x02, 0x18, 0x05, //
-        0x18, 0x2A, //
-        0x20, 0x2B,
-    ];
-    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
-    let mut app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        ctx,
-        ThemeKind::Dark,
-        None,
+    let app = fixture_under(
+        "packed-run-with-tail",
+        &fds,
+        "test.Outer",
+        &[
+            0x0Au8, 0x03, 0x05, 0x06, 0x07, //
+            0x12, 0x02, 0x18, 0x05, //
+            0x18, 0x2A, //
+            0x20, 0x2B,
+        ],
     );
-    app.splash = false;
-    app.term_width = 120;
 
     // Spec 0216 S22: the run is one node, so the root has four children
     // — the record, then tail, a, b — where it used to have six.
@@ -307,78 +186,31 @@ pub(super) fn packed_run_with_tail_fixture() -> (App, usize, usize, usize, usize
 ///   8: 05 06 07     the three elements
 /// ```
 pub(super) fn nested_packed_run_fixture() -> App {
-    use prost::Message as _;
-    use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{
-        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
-    };
-
-    use crate::decode::{decode, DescriptorContext, RootType};
-
-    let payload_desc = DescriptorProto {
-        name: Some("Payload".to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some("vals".to_string()),
-            number: Some(1),
-            label: Some(Label::Repeated as i32),
-            r#type: Some(Type::Int32 as i32),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let holder_desc = DescriptorProto {
-        name: Some("Holder".to_string()),
-        field: vec![
-            FieldDescriptorProto {
-                name: Some("pad".to_string()),
-                number: Some(1),
-                label: Some(Label::Optional as i32),
-                r#type: Some(Type::Int32 as i32),
-                ..Default::default()
-            },
-            FieldDescriptorProto {
-                name: Some("blob".to_string()),
-                number: Some(2),
-                label: Some(Label::Optional as i32),
-                r#type: Some(Type::Bytes as i32),
-                ..Default::default()
-            },
+    let fds = proto3_fds(
+        "test_nested_packed_run.proto",
+        vec![
+            message(
+                "Holder",
+                vec![
+                    field("pad", 1, Label::Optional, Type::Int32),
+                    field("blob", 2, Label::Optional, Type::Bytes),
+                ],
+            ),
+            message(
+                "Payload",
+                vec![field("vals", 1, Label::Repeated, Type::Int32)],
+            ),
         ],
-        ..Default::default()
-    };
-    let file = FileDescriptorProto {
-        name: Some("test_nested_packed_run.proto".to_string()),
-        package: Some("test".to_string()),
-        message_type: vec![holder_desc, payload_desc],
-        syntax: Some("proto3".to_string()),
-        ..Default::default()
-    };
-    let fds = FileDescriptorSet { file: vec![file] };
-
-    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let descriptor_path =
-        std::env::temp_dir().join(format!("protolens-tui-nested-packed-run-{n}.pb"));
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
-
-    let blob = [
-        0x08u8, 0x01, //
-        0x12, 0x05, //
-        0x0A, 0x03, 0x05, 0x06, 0x07,
-    ];
-    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Holder"), 2).unwrap();
-    let mut app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        ctx,
-        ThemeKind::Dark,
-        None,
     );
-    app.splash = false;
-    app.term_width = 120;
-    app
+
+    fixture_under(
+        "nested-packed-run",
+        &fds,
+        "test.Holder",
+        &[
+            0x08u8, 0x01, //
+            0x12, 0x05, //
+            0x0A, 0x03, 0x05, 0x06, 0x07,
+        ],
+    )
 }

@@ -308,15 +308,8 @@ fn load_overrides_without_a_root_entry_preserves_the_current_root_type() {
          \x20   type: ms_test.ExtPayload\n\
          \x20   active: true\n"
     );
-    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let path = std::env::temp_dir()
-        .join(format!("protolens-tui-load-overrides-no-root-{n}.yaml"))
-        .to_string_lossy()
-        .into_owned();
-    std::fs::write(&path, &yaml).unwrap();
-    let warnings = app.load_overrides(&path).unwrap().warnings;
-    std::fs::remove_file(&path).unwrap();
+    let file = TempFile::written("load-overrides-no-root.yaml", yaml.as_bytes());
+    let warnings = app.load_overrides(file.as_str()).unwrap().warnings;
 
     assert!(warnings.is_empty(), "{warnings:?}");
     assert!(
@@ -637,14 +630,9 @@ fn save_and_restore_overrides_round_trips_and_drops_unresolvable_entries() {
     );
     assert_eq!(app.overrides.entries().len(), 3); // root + the two above
 
-    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let path = std::env::temp_dir()
-        .join(format!("protolens-tui-save-restore-{n}.yaml"))
-        .to_string_lossy()
-        .into_owned();
+    let file = TempFile::reserved("save-restore.yaml");
 
-    app.run_save_overrides(vec![&path]);
+    app.run_save_overrides(vec![file.as_str()]);
     assert!(
         app.message.starts_with("saved overrides to"),
         "unexpected message: {}",
@@ -652,8 +640,7 @@ fn save_and_restore_overrides_round_trips_and_drops_unresolvable_entries() {
     );
 
     app.overrides = override_pane::OverrideCollection::new();
-    app.run_restore_overrides(vec![&path]);
-    std::fs::remove_file(&path).unwrap();
+    app.run_restore_overrides(vec![file.as_str()]);
 
     assert!(
         app.message.starts_with("restored overrides from"),
@@ -684,16 +671,9 @@ fn restore_overrides_warns_on_hash_mismatch_without_blocking() {
         .overrides
         .to_yaml("deadbeef".to_string(), "deadbeef".to_string());
 
-    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let path = std::env::temp_dir()
-        .join(format!("protolens-tui-restore-hash-mismatch-{n}.yaml"))
-        .to_string_lossy()
-        .into_owned();
-    std::fs::write(&path, &yaml).unwrap();
+    let file = TempFile::written("restore-hash-mismatch.yaml", yaml.as_bytes());
 
-    app.run_restore_overrides(vec![&path]);
-    std::fs::remove_file(&path).unwrap();
+    app.run_restore_overrides(vec![file.as_str()]);
 
     assert!(app.message.contains("warning"), "{}", app.message);
     assert!(app.message.contains("blob hash mismatch"));

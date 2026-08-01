@@ -8,6 +8,7 @@
 
 use super::super::heat_cue::HEAT_CUE_PREVIEW;
 use super::super::*;
+use super::support_build::app_named;
 use prototext_core::helpers::{WT_LEN, WT_VARINT};
 use prototext_core::serialize::render_text::NodeSpan;
 use prototext_graph::build_scoring_graph::build_from_strings;
@@ -24,15 +25,7 @@ pub(super) fn empty_app() -> App {
         root_candidates: Vec::new(),
         fqdns: FqdnTable::new(),
     };
-    App::new(
-        decoded,
-        "empty.pb",
-        PathBuf::from("empty.pb"),
-        2,
-        DescriptorContext::empty_for_test(),
-        ThemeKind::Dark,
-        None,
-    )
+    app_named(decoded, DescriptorContext::empty_for_test(), "empty.pb")
 }
 
 /// A single-node tree whose root is a message/group node — the
@@ -81,15 +74,7 @@ pub(super) fn message_node_app_with_root_candidates(
         root_candidates,
         fqdns,
     };
-    App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        DescriptorContext::empty_for_test(),
-        ThemeKind::Dark,
-        None,
-    )
+    app_named(decoded, DescriptorContext::empty_for_test(), "test.pb")
 }
 
 /// A minimal, real, in-memory scoring graph (spec 0152 test plan) —
@@ -182,15 +167,7 @@ pub(super) fn sibling_leaves_app(texts: &[&str]) -> App {
         root_candidates: Vec::new(),
         fqdns: FqdnTable::new(),
     };
-    App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        DescriptorContext::empty_for_test(),
-        ThemeKind::Dark,
-        None,
-    )
+    app_named(decoded, DescriptorContext::empty_for_test(), "test.pb")
 }
 
 /// `n` document-order sibling scalar (`WT_VARINT`) fields, one line
@@ -238,13 +215,5 @@ pub(super) fn wide_sibling_scalars_app(n: usize) -> App {
         root_candidates: Vec::new(),
         fqdns: FqdnTable::new(),
     };
-    App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        DescriptorContext::empty_for_test(),
-        ThemeKind::Dark,
-        None,
-    )
+    app_named(decoded, DescriptorContext::empty_for_test(), "test.pb")
 }

@@ -501,131 +501,51 @@ fn manage_pane_z_no_target_aborts_when_no_kind_applies() {
 /// (feedback, 2026-07-16).
 #[test]
 fn manage_pane_z_rotation_survives_a_concurrent_auto_seed_reshuffle() {
-    use prost::Message as _;
     use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{
-        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
-    };
+    use prost_types::{FileDescriptorProto, FileDescriptorSet};
 
-    use crate::decode::{decode, DescriptorContext, RootType};
-
-    let any_msg = DescriptorProto {
-        name: Some("Any".to_string()),
-        field: vec![
-            FieldDescriptorProto {
-                name: Some("type_url".to_string()),
-                number: Some(1),
-                label: Some(Label::Optional as i32),
-                r#type: Some(Type::String as i32),
-                ..Default::default()
-            },
-            FieldDescriptorProto {
-                name: Some("value".to_string()),
-                number: Some(2),
-                label: Some(Label::Optional as i32),
-                r#type: Some(Type::Bytes as i32),
-                ..Default::default()
-            },
-        ],
-        ..Default::default()
-    };
-    let any_file = FileDescriptorProto {
-        name: Some("google/protobuf/any.proto".to_string()),
-        syntax: Some("proto3".to_string()),
-        package: Some("google.protobuf".to_string()),
-        message_type: vec![any_msg],
-        ..Default::default()
-    };
-    let payload_msg = DescriptorProto {
-        name: Some("Payload".to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some("label".to_string()),
-            number: Some(1),
-            label: Some(Label::Optional as i32),
-            r#type: Some(Type::String as i32),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let container_msg = DescriptorProto {
-        name: Some("Container".to_string()),
-        field: vec![
-            FieldDescriptorProto {
-                name: Some("val".to_string()),
-                number: Some(1),
-                label: Some(Label::Optional as i32),
-                r#type: Some(Type::Int32 as i32),
-                ..Default::default()
-            },
-            FieldDescriptorProto {
-                name: Some("payload".to_string()),
-                number: Some(2),
-                label: Some(Label::Optional as i32),
-                r#type: Some(Type::Message as i32),
-                type_name: Some(".google.protobuf.Any".to_string()),
-                ..Default::default()
-            },
-        ],
-        ..Default::default()
-    };
     let acme_file = FileDescriptorProto {
         name: Some("acme.proto".to_string()),
         syntax: Some("proto2".to_string()),
         package: Some("acme".to_string()),
         dependency: vec!["google/protobuf/any.proto".to_string()],
-        message_type: vec![payload_msg, container_msg],
+        message_type: vec![
+            message(
+                "Payload",
+                vec![field("label", 1, Label::Optional, Type::String)],
+            ),
+            message(
+                "Container",
+                vec![
+                    field("val", 1, Label::Optional, Type::Int32),
+                    field_of(
+                        "payload",
+                        2,
+                        Label::Optional,
+                        Type::Message,
+                        ".google.protobuf.Any",
+                    ),
+                ],
+            ),
+        ],
         ..Default::default()
     };
     let fds = FileDescriptorSet {
-        file: vec![any_file, acme_file],
+        file: vec![any_proto_file(), acme_file],
     };
-
-    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let descriptor_path = std::env::temp_dir().join(format!(
-        "protolens-tui-manage-z-reshuffle-descriptor-{n}.pb"
-    ));
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
 
     // Container {
     //   val: 42,
     //   payload: Any { type_url: "type.googleapis.com/acme.Payload",
     //                   value: Payload { label: "hi" } },
     // }
-    let label = b"hi";
-    let mut payload_bytes = vec![0x0au8, label.len() as u8];
-    payload_bytes.extend_from_slice(label);
-    let type_url = b"type.googleapis.com/acme.Payload";
-    let mut any_bytes = vec![0x0au8, type_url.len() as u8];
-    any_bytes.extend_from_slice(type_url);
-    any_bytes.push(0x12);
-    any_bytes.push(payload_bytes.len() as u8);
-    any_bytes.extend_from_slice(&payload_bytes);
+    let any = any_body("type.googleapis.com/acme.Payload", b"\x0a\x02hi");
     let mut blob = vec![0x08u8, 0x2A]; // field 1, VARINT, value 42
     blob.push(0x12); // field 2, LEN
-    blob.push(any_bytes.len() as u8);
-    blob.extend_from_slice(&any_bytes);
+    blob.push(any.len() as u8);
+    blob.extend_from_slice(&any);
 
-    let decoded = decode(
-        wrapped(&blob),
-        &mut ctx,
-        RootType::Named("acme.Container"),
-        2,
-    )
-    .unwrap();
-    let mut app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        ctx,
-        ThemeKind::Dark,
-        None,
-    );
-    app.splash = false;
-    app.term_width = 120;
+    let mut app = fixture_under("manage-z-reshuffle", &fds, "acme.Container", &blob);
 
     let val_idx = app
         .nth_child(app.first_node, 0)

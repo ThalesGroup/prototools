@@ -38,70 +38,33 @@ fn shift_down_up_alias_sibling_skip_move() {
 /// `extract::tests::extract_binary_message_round_trips_through_a_fresh_decode`.
 #[test]
 fn wrapper_offset_and_display_range_restore_pre_wrap_coordinates() {
-    use prost::Message as _;
     use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{
-        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
-    };
 
-    use crate::decode::{decode, DescriptorContext, RootType};
-
-    let inner_desc = DescriptorProto {
-        name: Some("Inner".to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some("id".to_string()),
-            number: Some(1),
-            label: Some(Label::Optional as i32),
-            r#type: Some(Type::Int32 as i32),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let outer_desc = DescriptorProto {
-        name: Some("Outer".to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some("inner".to_string()),
-            number: Some(1),
-            label: Some(Label::Optional as i32),
-            r#type: Some(Type::Message as i32),
-            type_name: Some(".test.Inner".to_string()),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let file = FileDescriptorProto {
-        name: Some("test_wrapper_offset.proto".to_string()),
-        package: Some("test".to_string()),
-        message_type: vec![outer_desc, inner_desc],
-        syntax: Some("proto3".to_string()),
-        ..Default::default()
-    };
-    let fds = FileDescriptorSet { file: vec![file] };
-
-    let descriptor_path = std::env::temp_dir().join("protolens-tui-wrapper-offset-descriptor.pb");
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
+    let fds = proto3_fds(
+        "test_wrapper_offset.proto",
+        vec![
+            message(
+                "Outer",
+                vec![field_of(
+                    "inner",
+                    1,
+                    Label::Optional,
+                    Type::Message,
+                    ".test.Inner",
+                )],
+            ),
+            message("Inner", vec![field("id", 1, Label::Optional, Type::Int32)]),
+        ],
+    );
 
     // Inner: field 1 varint 5 -> tag 0x08, value 0x05.
-    let inner_bytes = [0x08u8, 0x05];
     // Outer wraps it as field 1 (LEN): tag (1<<3)|2 = 0x0A, len 2.
-    let blob = [0x0Au8, 0x02, inner_bytes[0], inner_bytes[1]];
+    let blob = [0x0Au8, 0x02, 0x08, 0x05];
 
-    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Outer"), 2).unwrap();
+    let app = fixture_under("wrapper-offset", &fds, "test.Outer", &blob);
     // tag(1 byte) + length-varint(1 byte, blob.len() == 4 fits in 1 byte).
-    assert_eq!(decoded.wrapper_offset, 2);
-    assert_eq!(decoded.blob.len(), blob.len() + 2);
-
-    let app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        ctx,
-        ThemeKind::Dark,
-        None,
-    );
+    assert_eq!(app.wrapper_offset, 2);
+    assert_eq!(app.blob.len(), blob.len() + 2);
 
     // The level-0 node is the wrapper's sole field, standing in for
     // the entire original message (spec 0114 §1.1) — it did not exist
@@ -133,63 +96,27 @@ fn wrapper_offset_and_display_range_restore_pre_wrap_coordinates() {
 /// unstripped, not the whole record's tag+length-stripped payload.
 #[test]
 fn display_range_strips_tag_and_length_for_scalars_including_packed() {
-    use prost::Message as _;
     use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{
-        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
-    };
 
-    use crate::decode::{decode, DescriptorContext, RootType};
-
-    let msg_desc = DescriptorProto {
-        name: Some("Msg".to_string()),
-        field: vec![
-            FieldDescriptorProto {
-                name: Some("id".to_string()),
-                number: Some(1),
-                label: Some(Label::Optional as i32),
-                r#type: Some(Type::Int32 as i32),
-                ..Default::default()
-            },
-            FieldDescriptorProto {
-                name: Some("vals".to_string()),
-                number: Some(2),
-                label: Some(Label::Repeated as i32),
-                r#type: Some(Type::Int32 as i32),
-                ..Default::default()
-            },
-        ],
-        ..Default::default()
-    };
-    let file = FileDescriptorProto {
-        name: Some("test_display_range_scalars.proto".to_string()),
-        package: Some("test".to_string()),
-        message_type: vec![msg_desc],
-        syntax: Some("proto3".to_string()),
-        ..Default::default()
-    };
-    let fds = FileDescriptorSet { file: vec![file] };
-
-    let descriptor_path =
-        std::env::temp_dir().join("protolens-tui-display-range-scalars-descriptor.pb");
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
+    let fds = proto3_fds(
+        "test_display_range_scalars.proto",
+        vec![message(
+            "Msg",
+            vec![
+                field("id", 1, Label::Optional, Type::Int32),
+                field("vals", 2, Label::Repeated, Type::Int32),
+            ],
+        )],
+    );
 
     // id: field 1 varint 5 -> tag 0x08, value 0x05.
     // vals: field 2 (LEN, packed) tag (2<<3)|2 = 0x12, len 3, payload
     // [0x01, 0x02, 0x03] (three varint elements 1, 2, 3).
-    let blob = [0x08u8, 0x05, 0x12, 0x03, 0x01, 0x02, 0x03];
-
-    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Msg"), 2).unwrap();
-    let app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        ctx,
-        ThemeKind::Dark,
-        None,
+    let app = fixture_under(
+        "display-range-scalars",
+        &fds,
+        "test.Msg",
+        &[0x08u8, 0x05, 0x12, 0x03, 0x01, 0x02, 0x03],
     );
 
     let id_idx = app

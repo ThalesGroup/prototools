@@ -19,98 +19,48 @@ use super::support::*;
 /// raw interior. Returns the ready-to-splice `App` and `blob`'s own
 /// tree index, with `override_target` already set to it.
 fn preview_budget_fixture_bytes(payload: &[u8]) -> (App, usize) {
-    use prost::Message as _;
     use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{
-        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
-    };
     use prototext_core::helpers::{write_tag, write_varint, WT_LEN};
 
-    use crate::decode::{decode, DescriptorContext, RootType};
-
-    // `Empty` has no declared fields, so retyping `blob` to it makes
-    // every entry of the reinterpreted payload land as an unknown
-    // numeric field — which is exactly the pathological shape spec 0174
-    // bounds: the byte budget applies to the raw input regardless of
-    // whether anything in it resolves against the schema.
-    let empty_msg = DescriptorProto {
-        name: Some("Empty".to_string()),
-        ..Default::default()
-    };
-    let holder_msg = DescriptorProto {
-        name: Some("Holder".to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some("blob".to_string()),
-            number: Some(1),
-            label: Some(Label::Optional as i32),
-            r#type: Some(Type::Bytes as i32),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    // The other candidate type `blob` gets retyped to: unlike `Empty` it
-    // resolves the interior into real nested *messages*, which is what
-    // spec 0174 G3 is about — the surviving prefix must keep its nesting,
-    // not collapse into one bytes line.
-    let inner_msg = DescriptorProto {
-        name: Some("Inner".to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some("v".to_string()),
-            number: Some(1),
-            label: Some(Label::Optional as i32),
-            r#type: Some(Type::Int64 as i32),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let wrapper_msg = DescriptorProto {
-        name: Some("Wrapper".to_string()),
-        field: vec![FieldDescriptorProto {
-            name: Some("items".to_string()),
-            number: Some(1),
-            label: Some(Label::Repeated as i32),
-            r#type: Some(Type::Message as i32),
-            type_name: Some(".test.Inner".to_string()),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let file = FileDescriptorProto {
-        name: Some("test_preview_budget.proto".to_string()),
-        package: Some("test".to_string()),
-        message_type: vec![holder_msg, empty_msg, wrapper_msg, inner_msg],
-        syntax: Some("proto3".to_string()),
-        ..Default::default()
-    };
-    let fds = FileDescriptorSet { file: vec![file] };
-
-    // Unique per call (`static COUNTER`, matching `support.rs`'s
-    // convention): the preview-budget tests all call this fixture and
-    // run concurrently as separate test-binary threads, so a fixed
-    // filename would race on `write`/`load`/`remove_file`.
-    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let descriptor_path =
-        std::env::temp_dir().join(format!("protolens-tui-preview-budget-descriptor-{n}.pb"));
-    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
-    std::fs::remove_file(&descriptor_path).unwrap();
+    let fds = proto3_fds(
+        "test_preview_budget.proto",
+        vec![
+            message(
+                "Holder",
+                vec![field("blob", 1, Label::Optional, Type::Bytes)],
+            ),
+            // `Empty` has no declared fields, so retyping `blob` to it
+            // makes every entry of the reinterpreted payload land as an
+            // unknown numeric field — which is exactly the pathological
+            // shape spec 0174 bounds: the byte budget applies to the raw
+            // input regardless of whether anything in it resolves
+            // against the schema.
+            message("Empty", Vec::new()),
+            // The other candidate type `blob` gets retyped to: unlike
+            // `Empty` it resolves the interior into real nested
+            // *messages*, which is what spec 0174 G3 is about — the
+            // surviving prefix must keep its nesting, not collapse into
+            // one bytes line.
+            message(
+                "Wrapper",
+                vec![field_of(
+                    "items",
+                    1,
+                    Label::Repeated,
+                    Type::Message,
+                    ".test.Inner",
+                )],
+            ),
+            message("Inner", vec![field("v", 1, Label::Optional, Type::Int64)]),
+        ],
+    );
 
     let mut blob = Vec::new();
     write_tag(1, WT_LEN, &mut blob);
     write_varint(payload.len() as u64, &mut blob);
     blob.extend_from_slice(payload);
 
-    let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Holder"), 2).unwrap();
-    let mut app = App::new(
-        decoded,
-        "test.pb",
-        PathBuf::from("test.pb"),
-        2,
-        ctx,
-        ThemeKind::Dark,
-        None,
-    );
+    let mut app = fixture_under("preview-budget", &fds, "test.Holder", &blob);
 
     let blob_idx = app
         .nth_child(app.first_node, 0)

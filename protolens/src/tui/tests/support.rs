@@ -15,6 +15,7 @@ pub(super) use ratatui::backend::TestBackend;
 
 pub(super) use super::support_any::*;
 pub(super) use super::support_basic::*;
+pub(super) use super::support_build::*;
 pub(super) use super::support_export::*;
 pub(super) use super::support_inspect::*;
 pub(super) use super::support_repeated::*;

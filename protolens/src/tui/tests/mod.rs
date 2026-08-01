@@ -25,6 +25,7 @@ mod structure;
 mod support;
 mod support_any;
 mod support_basic;
+mod support_build;
 mod support_export;
 mod support_inspect;
 mod support_repeated;

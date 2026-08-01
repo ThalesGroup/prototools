@@ -340,6 +340,58 @@ is.
 Do this first. It touches only tests, and it shrinks the files that
 [audit-module-sizes.md](audit-module-sizes.md) also wants to split.
 
+**Done 2026-08-01. Net −1126 lines across 19 files.** A new
+`src/tui/tests/support_build.rs` (254 lines) holds the whole ladder, and
+every fixture in `src/tui/tests/` now climbs it as far as it can:
+`fixture_under(tag, fds, root, blob)` for a fixture that is only a
+schema plus bytes, `fixture_app(decoded, ctx)` when the `Decoded` is
+hand-built, and `app_named(decoded, ctx, file)` when even the splash and
+terminal width matter. Under those sit `proto3_fds` / `proto3_fds_in`,
+`message` / `field` / `field_of` / `wrapper_message`, and
+`any_proto_file` / `any_body` / `wrap_len_field_1`. There is no
+`App::new` call left in `src/tui/tests/` outside `support_build.rs`
+itself and the `#[ignore]`d `profiling.rs`.
+
+Four things the finding did not anticipate:
+
+- **The `Drop` guard had to be able to *not* fire.** Two fixtures leave
+  their descriptor set on disk on purpose, because `descriptor_sha256`
+  re-reads it from the path (spec 0197 §S6) and a missing file is an
+  error rather than an empty hash. So `TempFile` grew `keep()`, which is
+  `std::mem::forget`, and each of the two call sites says why. A guard
+  with no escape hatch would have silently broken those tests.
+- **The unique-path counter is shared, not per-fixture.** One
+  `AtomicUsize` in `TempFile::reserved` covers every caller, so two
+  fixtures accidentally given the same tag do not collide either — which
+  26 separate counters could not have promised.
+- **`proto3_fds` cannot be universal.** `prost-reflect`'s
+  `DescriptorPool` validates, so the proto2 fixtures (`render.rs`'s
+  `deeply_nested_app`, `support_any.rs`'s MessageSet, and the two `acme`
+  files carrying an `Any`) keep a hand-written `FileDescriptorProto` —
+  but still build their messages with `message`/`field`/`field_of`,
+  which is where most of the 245 struct literals went.
+- **The file name and the package are both observable.** `v`
+  (open-in-editor, spec 0144 G4) reports the descriptor's own `.proto`
+  name, and two `key_dispatch.rs` tests assert the literal string
+  `test_type_as.proto`; several fixtures need a package other than
+  `test`. Both are therefore parameters, not constants — the first
+  attempt at unifying `type_as_fixture` with `empty_message_fixture` on
+  a single hard-coded file name turned those two tests red.
+
+`decode.rs` and `extract.rs` got the same treatment separately, since a
+`src/` module cannot reach `src/tui/tests/`: a `#[cfg(test)] pub(crate)
+fn ctx_from_fds` sits in `decode.rs` (not in `decode/tests.rs`, which
+`extract.rs` cannot see into), and `extract.rs`'s three write / read /
+`remove_file` / assert blocks became one `extracted_text` helper that
+removes the file *before* returning, so the assertion can no longer skip
+it.
+
+Deliberately left alone: `tests/batch_export.rs`, which is a separate
+integration-test crate and cannot share code with `src/`, and
+`decode/tests.rs`'s `Fixture`, whose `<dir>/schema.pb` +
+`<dir>/schema/index.rkyv` sidecar layout is a different shape from a
+bare descriptor file.
+
 ### 3.2 The rest, in one table
 
 **3.2.1, 3.2.2, 3.2.3 and 3.2.7 done 2026-08-01**, each as described.
