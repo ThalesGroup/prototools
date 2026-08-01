@@ -240,6 +240,13 @@ Reasoned from the code, not reproduced. Worth investigating before
 unifying the two into one `covers()` predicate — fix the behavior first,
 then remove the second copy.
 
+**Done 2026-08-01, under [audit-quality.md](audit-quality.md)'s item D1,
+which found the same thing from the other direction.** The pre-flight
+check is now `HeatCaches::window(..).is_some()` — the readers' own
+predicate, so there is no second copy left to drift. The bug was real,
+and is reproduced rather than merely reasoned: `heat_caches_worker_
+round_trip` fails `left: 2, right: 1` against the old check.
+
 ### 2.2 `render_cache.rs` cites a type that no longer exists
 
 `render_cache.rs:7` calls `RenderCache` "structurally identical to
@@ -260,6 +267,12 @@ index where `RenderCache` is a `Vec` with a linear `position()` scan
 worker's).
 
 Action: **fix the two comments**. Do not write the generic.
+
+**Done 2026-08-01, under [audit-quality.md](audit-quality.md)'s
+documentation-drift tier.** Both citations are gone; the module doc now
+carries the "there is no second one" argument above, so the standing
+question answers itself for the next reader rather than being merely
+un-asked. The generic was not written.
 
 ---
 
