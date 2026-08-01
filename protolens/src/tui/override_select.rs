@@ -352,8 +352,7 @@ impl App {
                 .collect(),
             SortMode::Inferred => match &self.ctx.graph {
                 Some(_graph) => {
-                    let node = &self.tree[idx].span;
-                    let range = extract::message_payload_range(&self.blob, &node.raw_range);
+                    let range = self.heat_scored_range(idx);
                     if self.active_override_range.as_ref() != Some(&range) {
                         // `Tier::User`: this directly follows the user
                         // pressing `t`/`i`, so it must jump the queue
@@ -424,8 +423,7 @@ impl App {
         let (Some(idx), Some(_graph)) = (self.override_target, &self.ctx.graph) else {
             return;
         };
-        let node = &self.tree[idx].span;
-        let range = extract::message_payload_range(&self.blob, &node.raw_range);
+        let range = self.heat_scored_range(idx);
         // `Tier::User`: directly follows the user opening the pane or
         // scrolling past the loaded window, so it jumps the queue.
         match self.heat_lookup(&range, None, 0, usize::MAX, Tier::User) {
@@ -477,8 +475,7 @@ impl App {
             .get(self.override_highlight)
             .map(|(f, _)| f.clone());
         if self.override_candidates_pending {
-            let node = &self.tree[idx].span;
-            let range = extract::message_payload_range(&self.blob, &node.raw_range);
+            let range = self.heat_scored_range(idx);
             // `Tier::Visible`: a passive re-check after a worker
             // wakeup, not a fresh user action, so it must not preempt
             // whatever the user has since asked for.

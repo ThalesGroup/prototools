@@ -160,9 +160,26 @@ impl OverrideOrigin {
     pub fn label(&self) -> String {
         match self {
             OverrideOrigin::Path { path } => path.clone(),
-            OverrideOrigin::PathField { path, field } => format!("{path}:{field}"),
-            OverrideOrigin::FqdnField { fqdn, field } => format!("{fqdn}:{field}"),
+            OverrideOrigin::PathField { path, field } => Self::field_label(path, *field),
+            OverrideOrigin::FqdnField { fqdn, field } => Self::field_label(fqdn, *field),
         }
+    }
+
+    /// The label of the field-scoped origin (`PathField` or `FqdnField`)
+    /// naming `field` under `container`, without building the origin.
+    ///
+    /// Both kinds share this spelling on purpose — see
+    /// [`origin_is_at_or_under`], which relies on a `path:field` label
+    /// extending its `path` label by exactly a `:field` suffix.
+    ///
+    /// This exists so that a caller looking an origin *up* by label can
+    /// spell the label the same way `label()` does. `resolve_active_
+    /// override_entry_index_by_path` binary-searches a list sorted by
+    /// `label()`, so a formatting difference between the two would not
+    /// raise an error: the search would simply stop finding anything,
+    /// and every field-scoped override would quietly stop resolving.
+    pub fn field_label(container: &str, field: u64) -> String {
+        format!("{container}:{field}")
     }
 }
 

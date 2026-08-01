@@ -272,20 +272,28 @@ fn rank(scores: Vec<EntryScore<'_>>) -> RankedCandidates {
 }
 
 /// The best remaining candidate of one run, and which run it came from.
+///
+/// The candidate is held as the whole `(fqdn, score)` tuple the runs are
+/// made of, rather than split into two fields, so that [`Ord`] below can
+/// be [`candidate_order`] itself rather than a copy of it.
 struct Head {
-    score: i64,
-    fqdn: String,
+    entry: (String, i64),
     run: usize,
 }
 
 impl Ord for Head {
     /// `BinaryHeap` is a max-heap and we want the *best* candidate on top,
-    /// so this is [`candidate_order`] reversed: higher score is greater,
-    /// and among equal scores the lexicographically smaller FQDN is.
+    /// so this is [`candidate_order`] with its arguments swapped: higher
+    /// score is greater, and among equal scores the lexicographically
+    /// smaller FQDN is.
+    ///
+    /// Spelling the inverse out by hand instead would compile, agree, and
+    /// then quietly stop agreeing the first time the tie-break moved —
+    /// which is exactly the failure [`candidate_order`]'s own doc comment
+    /// says sharding cannot tolerate, since [`Merged`] assumes each run
+    /// is sorted under precisely the relation this compares with.
     fn cmp(&self, other: &Self) -> Ordering {
-        self.score
-            .cmp(&other.score)
-            .then_with(|| other.fqdn.cmp(&self.fqdn))
+        candidate_order(&other.entry, &self.entry)
     }
 }
 
@@ -336,12 +344,8 @@ impl Merged {
             runs.into_iter().map(Vec::into_iter).collect();
         let mut heap = BinaryHeap::with_capacity(runs.len());
         for (i, run) in runs.iter_mut().enumerate() {
-            if let Some((fqdn, score)) = run.next() {
-                heap.push(Head {
-                    score,
-                    fqdn,
-                    run: i,
-                });
+            if let Some(entry) = run.next() {
+                heap.push(Head { entry, run: i });
             }
         }
         Merged {
@@ -356,16 +360,12 @@ impl Iterator for Merged {
     type Item = (String, i64);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let Head { score, fqdn, run } = self.heap.pop()?;
-        if let Some((next_fqdn, next_score)) = self.runs[run].next() {
-            self.heap.push(Head {
-                score: next_score,
-                fqdn: next_fqdn,
-                run,
-            });
+        let Head { entry, run } = self.heap.pop()?;
+        if let Some(next) = self.runs[run].next() {
+            self.heap.push(Head { entry: next, run });
         }
         self.remaining -= 1;
-        Some((fqdn, score))
+        Some(entry)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {

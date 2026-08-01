@@ -72,6 +72,18 @@ behavioral difference to make deliberately: on a malformed length varint
 the two clamp differently (both stay in bounds, so neither can panic —
 it is only a question of which garbage range gets scored).
 
+**Done 2026-08-01, and it was already half done.** The packed-run branch
+described above no longer existed: the quality audit's C1 fix had already
+deleted it, leaving `heat_scored_range` as the single line this item
+argues for. So there was no divergence left to reconcile, only five
+inline copies to route through it — in `heat_cue.rs`
+(`recheck_pending_heat_states`), `prefetch.rs` (`prefetch_step`) and
+`override_select.rs` (three). The `mod.rs` sites in the table had moved
+into those two files with the module split. `heat_scored_range`'s doc
+gained the paragraph this item's "why it matters" section is: that every
+heat cache key goes through it, and that a divergence has no failure
+signal because the recheck would read a key the push never wrote.
+
 ### 1.2 `Head::cmp` hand-copies `candidate_order`'s inverse
 
 `sweep.rs:100-102` defines the ranking order, under a doc comment
@@ -97,6 +109,14 @@ Give `Head` an `entry: (String, i64)` field instead of separate
 `score`/`fqdn` (`Merged` already owns those tuples and destructures them
 apart only to reassemble the fields) and `cmp` becomes one line.
 **~5 lines**, and the rule stops existing twice.
+
+**Done 2026-08-01, exactly as written.** `Head` now holds `entry:
+(String, i64)` and `cmp` is `candidate_order(&other.entry, &self.entry)`.
+The equality was checked by expansion before the rewrite, not assumed:
+`candidate_order(&other.entry, &self.entry)` is
+`self.1.cmp(&other.1).then(other.0.cmp(&self.0))`, which is the old body
+verbatim. Both construction sites lost their field-by-field
+reassembly and pass the tuple straight through.
 
 ### 1.3 The wrapper-target ladder, and its `packed` companion
 
@@ -129,6 +149,15 @@ quietly stops resolving, with no error anywhere.
 
 Two label constructors on `OverrideOrigin`, used by `label()` and by the
 lookup. **~2 lines saved, and a silent-failure mode closed.**
+
+**Done 2026-08-01, with one constructor rather than two.** The two
+formats are not merely alike, they are required to be the same:
+`origin_is_at_or_under` relies on a `path:field` label extending its
+`path` label by exactly a `:field` suffix, and would need rewriting if
+they diverged. Two constructors would have made that divergence
+expressible; one, `OverrideOrigin::field_label(container, field)`, does
+not. The lookup lives in `override_resolve.rs` now, not
+`override_apply.rs` — the line numbers above predate the module split.
 
 ### 1.5 The tier bitmask, three spellings across two modules
 
@@ -168,6 +197,14 @@ A free `effective_wire_type(span) -> u32` — the free form is better than
 a method, because `override_select.rs:605-606` (item 1.3) computes a
 closely related predicate over the same two fields, and one named
 function is what makes their agreement checkable.
+
+**Done 2026-08-01. There were three copies, not two.** The third is
+`override_export.rs`'s tier-4 untyped-field guess (`export
+--descriptor`), which reads the same rule off a child span. It was in
+`override_apply.rs` when this audit was written, which is why the
+comparison missed it. `decode::effective_wire_type` now sits beside
+`primitive_keywords_for_wire_type`, its main consumer, and all three call
+it.
 
 ---
 

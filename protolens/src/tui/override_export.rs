@@ -122,12 +122,7 @@ impl App {
                         // packed-record child's effective wire type is its
                         // reconstructed WT_LEN framing).
                         None => {
-                            let span = &self.tree[child].span;
-                            let wire_type = if span.packed_record_start != NO_PACKED_RECORD {
-                                WT_LEN
-                            } else {
-                                u32::from(span.wire_type)
-                            };
+                            let wire_type = decode::effective_wire_type(&self.tree[child].span);
                             match wire_type {
                                 WT_VARINT => (Type::Int64, None, None),
                                 WT_I32 => (Type::Fixed32, None, None),

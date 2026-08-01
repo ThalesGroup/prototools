@@ -1245,6 +1245,25 @@ pub(crate) fn primitive_keywords_for_wire_type(wire_type: u32) -> &'static [&'st
     }
 }
 
+/// The wire type `span` presents to anything that reinterprets it —
+/// spec 0135 §G1's rule that a packed element's own effective wire type
+/// is `WT_LEN`, per its reconstructed record, not the element's decoded
+/// `wire_type` field.
+///
+/// The single definition, because completion and validation both apply
+/// it: `complete_type_as_fqdn` offers the keywords compatible with this,
+/// and `type_as` rejects the keywords incompatible with it. If the two
+/// spelled the rule separately and drifted, the prompt would offer a
+/// candidate the commit then refuses. `export --descriptor`'s untyped-
+/// field guess reads it too, for the same node.
+pub(crate) fn effective_wire_type(span: &NodeSpan) -> u32 {
+    if span.packed_record_start != NO_PACKED_RECORD {
+        prototext_core::helpers::WT_LEN
+    } else {
+        u32::from(span.wire_type)
+    }
+}
+
 /// Every primitive keyword `primitive_type_for_keyword` recognizes,
 /// alphabetically pre-sorted (spec 0137 §G1) — used by the override
 /// pane's alphabetic-mode candidate list. Must stay in sync with that

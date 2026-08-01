@@ -367,6 +367,14 @@ impl App {
     /// end is a real offset into the blob, whereas `start + length` on a
     /// crafted length overflows and yields a reversed range that panics
     /// where it is sliced.
+    ///
+    /// **Every heat cache key goes through here**, and that is not
+    /// tidiness. `heat_cue_resolve` *writes* the cache under this range
+    /// and `recheck_pending_heat_states` *reads it back* for the same
+    /// node; five call sites used to open-code the body instead, so the
+    /// two agreed only for as long as nobody edited one copy. A
+    /// divergence has no failure signal — the recheck would read a key
+    /// the push never wrote, and the node would simply never settle.
     pub(super) fn heat_scored_range(&self, idx: usize) -> std::ops::Range<usize> {
         extract::message_payload_range(&self.blob, &self.tree[idx].span.raw_range)
     }
@@ -521,10 +529,7 @@ impl App {
                 self.pending_heat_recheck.remove(&idx);
                 continue;
             }
-            let range = {
-                let node = &self.tree[idx].span;
-                extract::message_payload_range(&self.blob, &node.raw_range)
-            };
+            let range = self.heat_scored_range(idx);
             let start = range.start;
             let current_key = self.current_type_key(idx);
 

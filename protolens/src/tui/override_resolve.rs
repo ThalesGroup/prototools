@@ -442,15 +442,19 @@ impl App {
             return Some(pos);
         }
         let parent = self.parent(idx)?;
-        let field = self.tree[idx].span.field_number;
+        let field = u64::from(self.tree[idx].span.field_number);
         let parent_path = Self::parent_path_of(path);
-        if let Some(pos) =
-            self.active_entry_with_label(&format!("{parent_path}:{field}"), OverrideKind::PathField)
-        {
+        if let Some(pos) = self.active_entry_with_label(
+            &OverrideOrigin::field_label(parent_path, field),
+            OverrideKind::PathField,
+        ) {
             return Some(pos);
         }
         let fqdn = self.fqdns.get(self.tree[parent].span.type_fqdn)?;
-        self.active_entry_with_label(&format!("{fqdn}:{field}"), OverrideKind::FqdnField)
+        self.active_entry_with_label(
+            &OverrideOrigin::field_label(fqdn, field),
+            OverrideKind::FqdnField,
+        )
     }
 
     /// The index of the active entry whose origin has exactly `label`

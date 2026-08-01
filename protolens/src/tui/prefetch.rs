@@ -326,10 +326,7 @@ impl App {
                 self.prefetch_trace.skipped += 1;
                 continue;
             }
-            let range = {
-                let node = &self.tree[idx].span;
-                extract::message_payload_range(&self.blob, &node.raw_range)
-            };
+            let range = self.heat_scored_range(idx);
             let current_key = self.current_type_key(idx);
             let (_, outcome) = self.heat_lookup_ex(
                 &range,

@@ -292,12 +292,7 @@ impl App {
     /// element's own effective wire type is always `WT_LEN`, per its
     /// reconstructed record — spec 0135 §G1).
     pub(super) fn complete_type_as_fqdn(&mut self, cmd: &str, arg_prefix: &str) {
-        let span = &self.tree[self.cursor].span;
-        let wire_type = if span.packed_record_start != NO_PACKED_RECORD {
-            prototext_core::helpers::WT_LEN
-        } else {
-            u32::from(span.wire_type)
-        };
+        let wire_type = decode::effective_wire_type(&self.tree[self.cursor].span);
         // Collected into owned `String`s upfront (rather than borrowing
         // `self.all_type_fqdns` for `matches`'s lifetime) so the
         // subsequent `self.replace_token`/`self.completion = ...` calls
@@ -587,12 +582,7 @@ impl App {
         }
         if let Some(name) = new_fqdn {
             if decode::primitive_type_for_keyword(name).is_some() {
-                let span = &self.tree[self.cursor].span;
-                let wire_type = if span.packed_record_start != NO_PACKED_RECORD {
-                    prototext_core::helpers::WT_LEN
-                } else {
-                    u32::from(span.wire_type)
-                };
+                let wire_type = decode::effective_wire_type(&self.tree[self.cursor].span);
                 if !decode::primitive_keywords_for_wire_type(wire_type).contains(&name) {
                     return Err(format!(
                         "type '{name}' not wire-compatible with this node's wire type"
