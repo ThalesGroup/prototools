@@ -42,7 +42,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 
 use prototext_core::serialize::render_text::{
-    decode_and_render, decode_and_render_indexed, DecodeRenderOpts, FqdnId, FqdnTable,
+    decode_and_render, decode_and_render_indexed, DecodeRenderOpts, FqdnId, FqdnTable, NodeSpan,
     NO_PACKED_RECORD,
 };
 use prototext_core::Arena;
@@ -523,6 +523,15 @@ pub(super) struct PreviewOverlay {
     /// How many visible rows those lines cover.
     covered_rows: usize,
     lines: Vec<String>,
+    /// Spec 0225 S9: the spans the same render produced, kept so an
+    /// overlay row can draw its own wire row. Display data, exactly like
+    /// `lines` — they never enter `tree`, so the overlay stays
+    /// unselectable, unfoldable and unaddressable (spec 0185 N6).
+    spans: Vec<NodeSpan>,
+    /// The bytes `spans` index into. A preview's interior may have been
+    /// cut to the byte budget (spec 0174), so these are not a sub-slice
+    /// of the blob and cannot be re-derived from one.
+    bytes: Vec<u8>,
 }
 
 /// Spec 0185 S2: one row of the main pane as actually drawn — either a
@@ -632,6 +641,14 @@ pub struct App {
     /// `a` key, decoupled from the underlying `lines`, which always carry
     /// full annotations regardless of this flag.
     annotations: bool,
+    /// Spec 0225 S1: whether each drawn document line is followed by a
+    /// second terminal row showing that line's own bytes in hex.
+    ///
+    /// Toggled by `w`, and — exactly like `annotations` — a pure
+    /// *display* attribute: no line count, no `LinePos`, no fold, search
+    /// or export knows it exists. It does change the pane's geometry,
+    /// which is what `document_pane_height` answers for.
+    wire: bool,
     /// Indentation step (spaces per nesting level) this session was decoded
     /// with — reused by `apply_override` (spec 0114 §5) so a splice
     /// re-render matches the rest of the document's own indentation.
@@ -1326,6 +1343,8 @@ impl App {
             // Always on (spec 0133): a pure main-pane display attribute
             // from here on, toggled at runtime by the `a` key.
             annotations: true,
+            // Spec 0225 S1: off until the `w` key asks for it.
+            wire: false,
             indent_size,
             node_text: decoded.node_text,
             window_styles: Vec::new(),
@@ -1646,6 +1665,7 @@ mod structure;
 mod terminal;
 mod tiered;
 mod trace;
+mod wire;
 
 #[cfg(test)]
 mod tests;

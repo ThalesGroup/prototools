@@ -340,7 +340,13 @@ impl App {
         if !Self::rect_contains(area, col, row) {
             return None;
         }
-        let rel_row = (row - area.y) as usize;
+        // Spec 0225 S8: in wire mode each document line is two terminal
+        // rows thick, so a click anywhere in the pair selects the line —
+        // the rows are simply taller, not separately clickable.
+        let mut rel_row = (row - area.y) as usize;
+        if self.wire {
+            rel_row /= 2;
+        }
         self.visible_row_pos(self.scroll_offset + rel_row)
             .map(|(_, line)| line)
     }

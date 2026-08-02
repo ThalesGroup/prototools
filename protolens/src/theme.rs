@@ -10,6 +10,7 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
+use crate::annotation::Tier;
 use crate::colorize::SyntaxRole;
 
 /// The `--theme` CLI flag's three fixed choices (spec 0116 §9).
@@ -239,6 +240,14 @@ struct RgbPalette {
     boolean: Color,
     punctuation_bracket_list: Color,
     punctuation_bracket_extension: Color,
+    /// The three severity tiers (spec 0225 §S11). Deliberately not
+    /// reusing a color above: a tier must be legible *as* a tier next to
+    /// ordinary syntax on the same line, and next to the hex of a wire
+    /// row, so sharing a hue with a role would make the two readings
+    /// ambiguous exactly where both appear.
+    tier_landmark: Color,
+    tier_non_canonical: Color,
+    tier_invalid: Color,
 }
 
 /// The dark RGB palette, borrowed from VSCode's `dark_plus.json`/
@@ -255,6 +264,9 @@ const DARK_RGB: RgbPalette = RgbPalette {
     boolean: Color::Rgb(0x56, 0x9C, 0xD6),        // Azul Mystic
     punctuation_bracket_list: Color::Rgb(0xDC, 0xDC, 0xAA), // Pale Hazel
     punctuation_bracket_extension: Color::Rgb(0xD1, 0x69, 0x69), // Alexa
+    tier_landmark: Color::Rgb(0xC5, 0x86, 0xC0),  // Light Violet
+    tier_non_canonical: Color::Rgb(0xCC, 0xA7, 0x00), // Buddha Gold
+    tier_invalid: Color::Rgb(0xF1, 0x4C, 0x4C),   // Fire Opal
 };
 
 /// The light RGB palette, borrowed from VSCode's `light_plus.json`/
@@ -269,6 +281,9 @@ const LIGHT_RGB: RgbPalette = RgbPalette {
     boolean: Color::Rgb(0x00, 0x00, 0xFF),        // Blue
     punctuation_bracket_list: Color::Rgb(0x04, 0x51, 0xA5), // French Blue
     punctuation_bracket_extension: Color::Rgb(0x81, 0x1F, 0x3F), // Dried Burgundy
+    tier_landmark: Color::Rgb(0xAF, 0x00, 0xDB),  // Violet
+    tier_non_canonical: Color::Rgb(0xBF, 0x88, 0x03), // Golden Brown
+    tier_invalid: Color::Rgb(0xE5, 0x14, 0x00),   // Scarlet
 };
 
 /// Which color of `p` each role takes, and the one modifier the RGB
@@ -297,7 +312,182 @@ fn style_for_rgb(role: SyntaxRole, p: &RgbPalette) -> Style {
         SyntaxRole::PunctuationBracketExtension => {
             Style::default().fg(p.punctuation_bracket_extension)
         }
+        SyntaxRole::AnnotationLandmark => Style::default().fg(tier_color_rgb(Tier::Landmark, p)),
+        SyntaxRole::AnnotationNonCanonical => {
+            Style::default().fg(tier_color_rgb(Tier::NonCanonical, p))
+        }
+        SyntaxRole::AnnotationInvalid => Style::default().fg(tier_color_rgb(Tier::Invalid, p)),
     }
+}
+
+/// The severity color of `tier` (spec 0225 §S11).
+///
+/// Three one-line tables — this and the two ANSI-16 ones below — rather
+/// than inlining the colors into the `SyntaxRole` arms above and into
+/// `tier_style_in`. The annotation reaches a tier through a capture and
+/// a role; the wire row names the tier outright; both must land on the
+/// same color, and a second copy is how they would stop.
+fn tier_color_rgb(tier: Tier, p: &RgbPalette) -> Color {
+    match tier {
+        Tier::Landmark => p.tier_landmark,
+        Tier::NonCanonical => p.tier_non_canonical,
+        Tier::Invalid => p.tier_invalid,
+    }
+}
+
+fn tier_color_dark_ansi16(tier: Tier) -> Color {
+    match tier {
+        Tier::Landmark => Color::LightMagenta,
+        Tier::NonCanonical => Color::Yellow,
+        Tier::Invalid => Color::LightRed,
+    }
+}
+
+fn tier_color_light_ansi16(tier: Tier) -> Color {
+    match tier {
+        Tier::Landmark => Color::Magenta,
+        Tier::NonCanonical => Color::Yellow,
+        Tier::Invalid => Color::Red,
+    }
+}
+
+/// The style a severity tier wears, named directly rather than reached
+/// through a syntax capture — what a wire row's bytes use (spec 0225
+/// §S11 "one classifier, two rows").
+///
+/// Hue only. The wire row adds `REVERSED` itself, and only for the two
+/// anomaly tiers: reverse is a *locator* for a pair of hex digits lost
+/// among forty, not a severity, and a token in a sentence does not need
+/// one.
+pub fn tier_style(tier: Tier, theme: ThemeKind) -> Style {
+    tier_style_in(tier, theme, supports_rgb())
+}
+
+/// `tier_style` with the color depth passed in — see `style_for_in` for
+/// why the split exists.
+fn tier_style_in(tier: Tier, theme: ThemeKind, rgb: bool) -> Style {
+    Style::default().fg(pick(
+        theme,
+        rgb,
+        (
+            tier_color_rgb(tier, &DARK_RGB),
+            tier_color_dark_ansi16(tier),
+        ),
+        (
+            tier_color_rgb(tier, &LIGHT_RGB),
+            tier_color_light_ansi16(tier),
+        ),
+    ))
+}
+
+/// The four parts of a wire row that carry a hue (spec 0225 S11).
+///
+/// A role of its own rather than the document row's `SyntaxRole`,
+/// alongside `HeatHue` below — the other role in this file with no
+/// grammar capture behind it. Painting a tag with `Attribute`'s style
+/// would make the wire row an undeclared second consumer of a document
+/// color: the field-name color could no longer be retuned without
+/// moving the hex, and a span reporting `Attribute` when it is a tag
+/// misdescribes itself. What is borrowed is the *color*, leveled, and
+/// `wire_style` is the only place the borrowing happens.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WireRole {
+    /// The tag's field-number bits — borrows the field name's color.
+    Tag,
+    /// The tag's wire-type nibble — borrows the color the annotation
+    /// gives the type it names, which is a different fact from the
+    /// field number and reads better as a different hue.
+    Type,
+    /// The length prefix — borrows the comment color.
+    Length,
+    /// The payload bytes — borrows the row's value's color.
+    Payload,
+}
+
+/// The one brightness every borrowed hue is brought to.
+///
+/// Not a fraction of the document color: blending each hue toward the
+/// background by a fixed amount keeps the palette's own brightness
+/// spread, and a row mixing a bright tag with a dim payload is
+/// uncomfortable to read at hex density. Leveling makes the wire row
+/// read as one object, distinguished from the document row by
+/// brightness and from itself by hue.
+///
+/// A legibility choice, not a measurement, with one hard bound each
+/// way. On dark it must sit below the dimmest borrowed document color
+/// or the "dim" becomes a brighten; on light, above the brightest.
+/// Between those, higher is more comfortable and less subordinate.
+const WIRE_LUMA_DARK: f32 = 130.0;
+const WIRE_LUMA_LIGHT: f32 = 150.0;
+
+/// The style a wire byte wears (spec 0225 S11): `borrowed`'s color,
+/// brought to the wire row's brightness.
+///
+/// `borrowed` is the `SyntaxRole` the document row above carries at the
+/// corresponding column, or `None` when it has none — `Length` supplies
+/// its own, since a length prefix's color must not depend on whether
+/// that particular row happens to carry an annotation.
+pub fn wire_style(role: WireRole, borrowed: Option<SyntaxRole>, theme: ThemeKind) -> Style {
+    let source = match role {
+        WireRole::Length => Some(SyntaxRole::Comment),
+        WireRole::Tag | WireRole::Type | WireRole::Payload => borrowed,
+    };
+    match source {
+        Some(role) => dimmed(style_for(role, theme), theme),
+        None => Style::default().add_modifier(Modifier::DIM),
+    }
+}
+
+/// The same hue at the wire row's brightness (spec 0225 S11).
+///
+/// Which branch applies is read off the color itself rather than from a
+/// second `supports_rgb()` call: `style_for` has already resolved which
+/// palette is in play, so the color's shape is the exact discriminator
+/// and cannot disagree with it.
+///
+/// Hue only, like `tier_style` — an inherited `UNDERLINED` or `ITALIC`
+/// would be a locator on a row that has its own.
+pub fn dimmed(style: Style, theme: ThemeKind) -> Style {
+    match style.fg {
+        Some(Color::Rgb(r, g, b)) => Style::default().fg(leveled(r, g, b, theme)),
+        Some(color) => Style::default().fg(color).add_modifier(Modifier::DIM),
+        None => Style::default().add_modifier(Modifier::DIM),
+    }
+}
+
+/// Rec. 709 relative luminance, the standard weighting for how bright a
+/// color looks rather than how large its channels are.
+fn luma(r: f32, g: f32, b: f32) -> f32 {
+    0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+/// Blends a truecolor toward the palette's background — black on dark,
+/// white on light — by exactly as much as it takes to land on
+/// [`WIRE_LUMA_DARK`]/[`WIRE_LUMA_LIGHT`].
+///
+/// Luminance is affine in the blend factor, so the amount needed is a
+/// division rather than a search, and the result's luminance is the
+/// target exactly. A color already past the target is left alone: the
+/// row is meant to recede, never to be pushed forward.
+fn leveled(r: u8, g: u8, b: u8, theme: ThemeKind) -> Color {
+    let (target, background) = match theme {
+        ThemeKind::Dark => (WIRE_LUMA_DARK, 0.0),
+        ThemeKind::Light => (WIRE_LUMA_LIGHT, 255.0),
+        ThemeKind::System => system_must_be_resolved(),
+    };
+    let here = luma(f32::from(r), f32::from(g), f32::from(b));
+    let span = background - here;
+    if span.abs() < 1.0 {
+        // The color is already the background's brightness; there is
+        // nothing to blend toward and nothing worth showing either.
+        return Color::Rgb(r, g, b);
+    }
+    let t = ((target - here) / span).clamp(0.0, 1.0);
+    let mix = |c: u8| {
+        let c = f32::from(c);
+        (c + (background - c) * t) as u8
+    };
+    Color::Rgb(mix(r), mix(g), mix(b))
 }
 
 /// ANSI-16 fallback palette, dark (spec 0116 §9's "ANSI-16 palette"
@@ -327,6 +517,13 @@ fn style_for_dark_ansi16(role: SyntaxRole) -> Style {
         SyntaxRole::PunctuationBracket => Style::default().fg(Color::Gray),
         SyntaxRole::PunctuationBracketList => Style::default().fg(Color::Yellow),
         SyntaxRole::PunctuationBracketExtension => Style::default().fg(Color::LightRed),
+        SyntaxRole::AnnotationLandmark => {
+            Style::default().fg(tier_color_dark_ansi16(Tier::Landmark))
+        }
+        SyntaxRole::AnnotationNonCanonical => {
+            Style::default().fg(tier_color_dark_ansi16(Tier::NonCanonical))
+        }
+        SyntaxRole::AnnotationInvalid => Style::default().fg(tier_color_dark_ansi16(Tier::Invalid)),
     }
 }
 
@@ -357,6 +554,15 @@ fn style_for_light_ansi16(role: SyntaxRole) -> Style {
         SyntaxRole::PunctuationBracket => Style::default().fg(Color::Black),
         SyntaxRole::PunctuationBracketList => Style::default().fg(Color::Yellow),
         SyntaxRole::PunctuationBracketExtension => Style::default().fg(Color::Red),
+        SyntaxRole::AnnotationLandmark => {
+            Style::default().fg(tier_color_light_ansi16(Tier::Landmark))
+        }
+        SyntaxRole::AnnotationNonCanonical => {
+            Style::default().fg(tier_color_light_ansi16(Tier::NonCanonical))
+        }
+        SyntaxRole::AnnotationInvalid => {
+            Style::default().fg(tier_color_light_ansi16(Tier::Invalid))
+        }
     }
 }
 
@@ -757,7 +963,7 @@ mod tests {
         }
     }
 
-    const ALL_ROLES: [SyntaxRole; 13] = [
+    const ALL_ROLES: [SyntaxRole; 16] = [
         SyntaxRole::Attribute,
         SyntaxRole::Type,
         SyntaxRole::StringLiteral,
@@ -771,12 +977,15 @@ mod tests {
         SyntaxRole::PunctuationBracket,
         SyntaxRole::PunctuationBracketList,
         SyntaxRole::PunctuationBracketExtension,
+        SyntaxRole::AnnotationLandmark,
+        SyntaxRole::AnnotationNonCanonical,
+        SyntaxRole::AnnotationInvalid,
     ];
 
     // `PunctuationDelimiter`/`PunctuationBracket` are deliberately
     // unstyled (terminal default) in both the RGB and ANSI-16 palettes
     // — excluded from the "must be Rgb" assertion below.
-    const COLORED_ROLES: [SyntaxRole; 11] = [
+    const COLORED_ROLES: [SyntaxRole; 14] = [
         SyntaxRole::Attribute,
         SyntaxRole::Type,
         SyntaxRole::StringLiteral,
@@ -788,7 +997,58 @@ mod tests {
         SyntaxRole::Constant,
         SyntaxRole::PunctuationBracketList,
         SyntaxRole::PunctuationBracketExtension,
+        SyntaxRole::AnnotationLandmark,
+        SyntaxRole::AnnotationNonCanonical,
+        SyntaxRole::AnnotationInvalid,
     ];
+
+    /// Spec 0225 §S11: the annotation reaches a tier's color through a
+    /// capture and a `SyntaxRole`, the wire row asks for it by name.
+    /// They must be the same color, in all four palettes, or the two
+    /// rows of one document contradict each other about severity.
+    #[test]
+    fn a_tier_looks_the_same_named_as_it_does_captured() {
+        let pairs = [
+            (Tier::Landmark, SyntaxRole::AnnotationLandmark),
+            (Tier::NonCanonical, SyntaxRole::AnnotationNonCanonical),
+            (Tier::Invalid, SyntaxRole::AnnotationInvalid),
+        ];
+        for theme in [ThemeKind::Dark, ThemeKind::Light] {
+            for rgb in [false, true] {
+                for (tier, role) in pairs {
+                    assert_eq!(
+                        tier_style_in(tier, theme, rgb),
+                        style_for_in(role, theme, rgb),
+                        "{tier:?} disagrees with {role:?} ({theme:?}, rgb={rgb})",
+                    );
+                }
+            }
+        }
+    }
+
+    /// The three tiers must be told apart at a glance, so no two of them
+    /// may share a color. Not asserted against the *roles*: ANSI-16 has
+    /// sixteen colors and `PunctuationBracketList` already holds yellow,
+    /// so a collision there is forced, and harmless — a tier and a
+    /// bracket are never candidates for the same span.
+    #[test]
+    fn no_two_tiers_share_a_color() {
+        for theme in [ThemeKind::Dark, ThemeKind::Light] {
+            for rgb in [false, true] {
+                let tiers = [Tier::Landmark, Tier::NonCanonical, Tier::Invalid];
+                let colors: Vec<_> = tiers
+                    .iter()
+                    .map(|&t| tier_style_in(t, theme, rgb).fg.expect("a tier has a color"))
+                    .collect();
+                for (i, c) in colors.iter().enumerate() {
+                    assert!(
+                        !colors[i + 1..].contains(c),
+                        "two tiers share {c:?} ({theme:?}, rgb={rgb})",
+                    );
+                }
+            }
+        }
+    }
 
     /// `COLORTERM` is the first and cheapest of the three true-color
     /// signals, and the only one a test can move: the other two are

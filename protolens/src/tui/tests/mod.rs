@@ -29,3 +29,4 @@ mod support_export;
 mod support_inspect;
 mod support_repeated;
 mod support_typed;
+mod wire;

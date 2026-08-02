@@ -36,9 +36,25 @@ impl App {
     /// the next render will show around the (possibly moved) cursor —
     /// clamps against the wrong rows, panning further left than the true
     /// content width allows.
+    /// How many *document* lines the main pane can show.
+    ///
+    /// Spec 0225 S8: in wire mode each window entry draws two terminal
+    /// rows, so the pane holds half as many lines. Every scroll
+    /// computation is stated in document lines, so they all come here
+    /// rather than reading `main_area.height` themselves. The side
+    /// panes are unaffected and keep reading their own heights.
+    pub(super) fn document_pane_height(&self) -> usize {
+        let height = self.main_area.height as usize;
+        if self.wire {
+            (height / 2).max(1)
+        } else {
+            height
+        }
+    }
+
     pub(super) fn clamp_pan_offset(&mut self) {
         if !self.tree.is_empty() {
-            let pane_height = self.main_area.height as usize;
+            let pane_height = self.document_pane_height();
             let cursor_row = self.cursor_display_row();
             if self.last_cursor_row != Some(cursor_row) {
                 clamp_scroll_to_visible(&mut self.scroll_offset, cursor_row, pane_height);
@@ -473,7 +489,7 @@ impl App {
     /// not idempotent on `cursor_column` when the caret is `Free` and
     /// the row is narrower than `desired_column`.
     pub(super) fn move_page_down(&mut self) {
-        let page = (self.main_area.height as usize).max(1);
+        let page = self.document_pane_height().max(1);
         let mut moved = false;
         for _ in 0..page {
             moved |= self.step_down();
@@ -484,7 +500,7 @@ impl App {
     }
 
     pub(super) fn move_page_up(&mut self) {
-        let page = (self.main_area.height as usize).max(1);
+        let page = self.document_pane_height().max(1);
         let mut moved = false;
         for _ in 0..page {
             moved |= self.step_up();
@@ -512,7 +528,7 @@ impl App {
     /// times over, so resolving per row would cost a handful of full
     /// descents per row of the pane.
     pub(super) fn max_visible_line_len(&mut self) -> usize {
-        let pane_height = self.main_area.height as usize;
+        let pane_height = self.document_pane_height();
         let total = self.composed_row_count();
         let start = self.scroll_offset.min(total);
         let end = (self.scroll_offset + pane_height).min(total);
@@ -579,7 +595,7 @@ impl App {
     /// overlay taller than the block it stands in for can be scrolled
     /// through in full.
     fn pan_vertical(&mut self, step: usize, up: bool) {
-        let height = self.main_area.height as usize;
+        let height = self.document_pane_height();
         let max_scroll = self.composed_row_count().saturating_sub(height);
         pan_by_step_clamped(&mut self.scroll_offset, max_scroll, step, up);
     }

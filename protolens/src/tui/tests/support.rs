@@ -10,7 +10,6 @@
 //! what.
 
 pub(super) use prototext_core::helpers::{WT_LEN, WT_VARINT};
-pub(super) use prototext_core::serialize::render_text::NodeSpan;
 pub(super) use ratatui::backend::TestBackend;
 
 pub(super) use super::support_any::*;

@@ -56,6 +56,14 @@ pub enum SyntaxRole {
     PunctuationBracket,
     PunctuationBracketList,
     PunctuationBracketExtension,
+    /// The three `#@` annotation severity tiers (spec 0225 §S12). Which
+    /// keyword is which tier is decided by `highlights.scm`'s `#any-of?`
+    /// lists, mirroring `crate::annotation`'s; what a tier looks like is
+    /// decided by `theme::tier_style`, which a wire row reaches
+    /// directly.
+    AnnotationLandmark,
+    AnnotationNonCanonical,
+    AnnotationInvalid,
 }
 
 /// Each role paired with the `queries/highlights.scm` capture name that
@@ -74,7 +82,7 @@ pub enum SyntaxRole {
 /// collapses a capture we care about into some unrelated ancestor the
 /// way `tree-sitter highlight`'s CLI default theme does (see spec 0116
 /// §7's investigation notes).
-const ROLES: [(SyntaxRole, &str); 13] = [
+const ROLES: [(SyntaxRole, &str); 16] = [
     (SyntaxRole::Attribute, "attribute"),
     (SyntaxRole::Type, "type"),
     (SyntaxRole::StringLiteral, "string"),
@@ -94,6 +102,12 @@ const ROLES: [(SyntaxRole, &str); 13] = [
         SyntaxRole::PunctuationBracketExtension,
         "punctuation.bracket.extension",
     ),
+    (SyntaxRole::AnnotationLandmark, "annotation.landmark"),
+    (
+        SyntaxRole::AnnotationNonCanonical,
+        "annotation.non_canonical",
+    ),
+    (SyntaxRole::AnnotationInvalid, "annotation.invalid"),
 ];
 
 /// [`ROLES`]'s name column, in order — `configure`'s `recognized_names`
@@ -143,6 +157,21 @@ fn config() -> &'static HighlightConfiguration {
 /// `QueryCursor` run by hand) is required for correct overlapping-
 /// capture precedence.
 pub fn colorize(text: &str) -> Vec<StyleHint> {
+    // The grammar's `annotation` rule (spec 0225 S12) ends on a required
+    // newline token — tree-sitter refuses an `extra` whose ending is
+    // ambiguous, so the line break has to belong to the rule rather than
+    // to the whitespace extra. A rendered window is joined without a
+    // trailing newline and its last line may well carry an annotation,
+    // so supply one here; `hints_by_line` clips every hint to its own
+    // line's length, which drops the added byte again.
+    let owned;
+    let text = if text.ends_with('\n') {
+        text
+    } else {
+        owned = format!("{text}\n");
+        &owned
+    };
+
     let mut highlighter = Highlighter::new();
     // Every hint this function returns is a color, and the text
     // underneath is already correct without one. So a highlighter that
@@ -423,7 +452,14 @@ mod tests {
         // comment colored as string.
         let text = "s: \"\\027\\002\\\\\"  #@ string\n";
         assert_eq!(roles_across(text, "\\\\"), vec![SyntaxRole::StringEscape]);
-        assert_eq!(roles_at(text, "#@ string"), vec![SyntaxRole::Comment]);
+        // `roles_across`, not `roles_at`: since spec 0225 S12 an
+        // annotation is a rule of its own, so `#@ string` is a marker
+        // and a word rather than one comment-shaped span. `string` is
+        // not in the tier vocabulary and not a declaration, so the
+        // blanket `(annotation) @comment` is all that reaches it — and
+        // the point being asserted, that the escape did not run the
+        // string on past its quote, is that no byte here is a string.
+        assert_eq!(roles_across(text, "#@ string"), vec![SyntaxRole::Comment]);
     }
 
     #[test]
@@ -442,7 +478,7 @@ mod tests {
             );
         }
         assert_eq!(roles_across(text, "hello"), vec![SyntaxRole::StringLiteral]);
-        assert_eq!(roles_at(text, "#@ bytes"), vec![SyntaxRole::Comment]);
+        assert_eq!(roles_across(text, "#@ bytes"), vec![SyntaxRole::Comment]);
 
         // Same defect, hex form, and an octal escape whose value is out
         // of range for a byte — still one token (spec 0196 N2: the
@@ -499,7 +535,14 @@ mod tests {
             roles_across(text, "export_x"),
             vec![SyntaxRole::StringLiteral]
         );
-        assert_eq!(roles_at(text, "#@ bytes = 4"), vec![SyntaxRole::Comment]);
+        // `bytes = 4` is a field declaration, so spec 0225 S12's query
+        // reads the word before the `=` as a type and the number after
+        // it as a number. What this test is about is the bytes that are
+        // *not* here: none of the annotation is string-colored.
+        assert_eq!(
+            roles_across(text, "#@ bytes = 4"),
+            vec![SyntaxRole::Comment, SyntaxRole::Type, SyntaxRole::Number],
+        );
         // The string closed, so the following line is still a field.
         assert_eq!(roles_at(text, "next_field"), vec![SyntaxRole::Attribute]);
 
@@ -654,6 +697,158 @@ mod tests {
                  be told apart from the other",
             );
             seen.push(role);
+        }
+    }
+
+    /// The role a keyword of `tier` must end up wearing. `None` — no
+    /// tier — is `Comment`, the blanket every annotation starts from.
+    fn role_for(tier: Option<crate::annotation::Tier>) -> SyntaxRole {
+        use crate::annotation::Tier;
+        match tier {
+            None => SyntaxRole::Comment,
+            Some(Tier::Landmark) => SyntaxRole::AnnotationLandmark,
+            Some(Tier::NonCanonical) => SyntaxRole::AnnotationNonCanonical,
+            Some(Tier::Invalid) => SyntaxRole::AnnotationInvalid,
+        }
+    }
+
+    /// Spec 0225 S12, constraint 1. Three `#` contexts that must stay
+    /// apart: `#@` opens an annotation, a bare `#` still opens a
+    /// comment, and neither happens inside a string (spec 0201).
+    #[test]
+    fn a_hash_annotation_is_not_a_plain_comment() {
+        assert_eq!(
+            roles_across("x: 1  #@ TAG_OOR\n", "TAG_OOR"),
+            vec![SyntaxRole::AnnotationInvalid],
+        );
+        assert_eq!(
+            roles_across("x: 1  # TAG_OOR\n", "TAG_OOR"),
+            vec![SyntaxRole::Comment],
+            "a bare # is still an undifferentiated comment",
+        );
+        assert_eq!(
+            roles_across("s: \"#@ TAG_OOR\"\n", "TAG_OOR"),
+            vec![SyntaxRole::StringLiteral],
+        );
+    }
+
+    /// Spec 0225 S12, constraint 2. The grammar's annotation rule is
+    /// total, so a body that matches nothing in the format still parses
+    /// — which matters because error recovery in this grammar swallows
+    /// *following* siblings, and the failure would show up as the next
+    /// line losing its colors rather than as this one gaining them.
+    #[test]
+    fn a_malformed_annotation_does_not_disturb_the_next_line() {
+        let text = "x: 1  #@ !!! ??? ~~~ ;;; ==\nnext_field: 2\n";
+        assert_eq!(
+            roles_across(text, "next_field"),
+            vec![SyntaxRole::Attribute]
+        );
+        assert_eq!(roles_across(text, "2\n"), vec![SyntaxRole::Number]);
+        // A bare marker with no body at all is the degenerate case of
+        // the same rule.
+        let text = "x: 1  #@\nnext_field: 2\n";
+        assert_eq!(
+            roles_across(text, "next_field"),
+            vec![SyntaxRole::Attribute]
+        );
+    }
+
+    /// Spec 0225 S12. Two modifiers of different severity on one line
+    /// keep their own hues — the tier follows the keyword, not the line.
+    #[test]
+    fn a_modifier_takes_the_hue_of_its_keyword() {
+        let text = "x: 1  #@ varint; len_ohb: 2; TAG_OOR\n";
+        assert_eq!(
+            roles_across(text, "len_ohb"),
+            vec![SyntaxRole::AnnotationNonCanonical],
+        );
+        assert_eq!(
+            roles_across(text, "TAG_OOR"),
+            vec![SyntaxRole::AnnotationInvalid],
+        );
+        assert_eq!(
+            roles_across(text, "varint"),
+            vec![SyntaxRole::Comment],
+            "a wire-type name is the document's own vocabulary quoted, \
+             not an anomaly",
+        );
+    }
+
+    /// Spec 0225 S12, constraint 3's accepted cost. A keyword
+    /// prototext-core adds later is visibly uncolored until someone
+    /// lists it, rather than being classified by a rule that was never
+    /// told about it.
+    #[test]
+    fn an_unlisted_modifier_stays_a_comment() {
+        assert_eq!(
+            roles_across("x: 1  #@ varint; SOMETHING_NEW\n", "SOMETHING_NEW"),
+            vec![SyntaxRole::Comment],
+        );
+        assert_eq!(crate::annotation::tier_of("SOMETHING_NEW"), None);
+    }
+
+    /// Spec 0225 S12. The declaration before the first `;` is the
+    /// document's own vocabulary quoted back, so it wears the
+    /// document's own captures rather than a tier.
+    #[test]
+    fn the_declaration_echo_matches_the_documents_own_styles() {
+        let text = "x: 1  #@ repeated int32 [packed=true] = 85; pack_size: 3\n";
+        assert_eq!(roles_across(text, "int32"), vec![SyntaxRole::Type]);
+        assert_eq!(roles_across(text, "85"), vec![SyntaxRole::Number]);
+        assert_eq!(
+            roles_across(text, "[packed=true]"),
+            vec![SyntaxRole::Attribute],
+        );
+        assert_eq!(
+            roles_across(text, "pack_size"),
+            vec![SyntaxRole::AnnotationLandmark],
+        );
+
+        // The same two captures the decoded text itself produces for a
+        // type name and a number — which is the claim being made.
+        assert_eq!(
+            roles_across("[com.example.ext]: 1\n", "com.example.ext"),
+            vec![SyntaxRole::Type],
+        );
+        assert_eq!(roles_across("n: 85\n", "85"), vec![SyntaxRole::Number]);
+
+        // A fully-qualified name is one word, not a run split on dots.
+        assert_eq!(
+            roles_across(
+                "x: 1  #@ google.protobuf.FileDescriptorProto = 2\n",
+                "google.protobuf.FileDescriptorProto",
+            ),
+            vec![SyntaxRole::Type],
+        );
+    }
+
+    /// Spec 0225 S12. `ENUM_UNKNOWN` is ALL CAPS and non-canonical —
+    /// the counterexample in the direction `pack_size` does not cover,
+    /// and half the reason the vocabulary is keyed on keywords rather
+    /// than on capitalization.
+    #[test]
+    fn enum_unknown_is_yellow_not_red() {
+        assert_eq!(
+            roles_across("x: 1  #@ varint; ENUM_UNKNOWN\n", "ENUM_UNKNOWN"),
+            vec![SyntaxRole::AnnotationNonCanonical],
+        );
+    }
+
+    /// Spec 0225 S12's drift test. `highlights.scm`'s `#any-of?` lists
+    /// are the one copy of `annotation::tier_of`'s table that lives
+    /// outside Rust, because a query file cannot call it. Every keyword
+    /// is colorized here so the copy cannot fall behind quietly.
+    #[test]
+    fn every_keyword_is_colored_by_its_tier() {
+        for (keyword, tier) in crate::annotation::vocabulary() {
+            let text = format!("x: 1  #@ varint; {keyword}\n");
+            assert_eq!(
+                roles_across(&text, keyword),
+                vec![role_for(tier)],
+                "{keyword} ({tier:?}) is not colored by its tier — \
+                 highlights.scm and annotation.rs have drifted",
+            );
         }
     }
 

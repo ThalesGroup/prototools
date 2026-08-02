@@ -193,7 +193,7 @@ fn apply_caret(spans: &mut Vec<Span<'static>>, index: usize, caret: Style) {
 /// Used both for the display-time annotation hiding of spec 0133 G4 and,
 /// in `window_styles_for`, for depth arithmetic that must not be
 /// confused by a brace inside an annotation.
-fn code_part(line: &str) -> &str {
+pub(super) fn code_part(line: &str) -> &str {
     match annotation_start(line) {
         Some(pos) => &line[..pos],
         None => line,
@@ -467,7 +467,7 @@ impl App {
     /// own text, borrowed — except a bracketed node's closing brace,
     /// which is derived from the header's indentation rather than
     /// stored, and so is the one row that owns its string.
-    fn display_row_text(&self, row: DisplayRow) -> Cow<'_, str> {
+    pub(super) fn display_row_text(&self, row: DisplayRow) -> Cow<'_, str> {
         match row {
             DisplayRow::Committed(c) => self.line_text_at(c.pos, c.offset),
             DisplayRow::Overlay(i) => {
@@ -1047,7 +1047,11 @@ impl App {
         let inner = main_split[0];
         self.main_area = inner;
 
-        let pane_height = inner.height as usize;
+        // Spec 0225 S8: document *lines*, which in wire mode is half the
+        // terminal rows — everything from here down (the scroll clamp,
+        // the window, the per-row vectors) is keyed by window index, and
+        // the doubling happens once, in the `flat_map` that draws.
+        let pane_height = self.document_pane_height();
         let cursor_row = if self.tree.is_empty() {
             0
         } else {
@@ -1185,11 +1189,15 @@ impl App {
 
         let t_lines = std::time::Instant::now();
 
+        // Spec 0225 S4: carried across the whole window so a packed run
+        // drawn over many rows is walked once, not once per row.
+        let mut packed_memo = wire::PackedCursor::default();
+
         let text_lines: Vec<Line> = window
             .iter()
             .zip(heat_displays.iter())
             .enumerate()
-            .map(|(row, (&display_row, display))| {
+            .flat_map(|(row, (&display_row, display))| {
                 // `None` for an overlay row (spec 0185 S4), which gates
                 // the active-override hint and the drag selection below
                 // exactly as it already gates fold markers inside
@@ -1258,7 +1266,43 @@ impl App {
                         apply_caret(&mut spans, index, style);
                     }
                 }
-                Line::from(spans)
+
+                // Spec 0225 S8: the wire row is built from the raw
+                // spans, after every one of the highlights above — the
+                // cursor row style, the selection, the caret and the
+                // brace partner all belong to the document row alone.
+                // It carries the heat gutter's blank column so its hex
+                // lines up under the text, and is panned with it.
+                //
+                // Spec 0225 S7: the classification still runs
+                // under `input_pending` — it is a per-byte pass over
+                // at most `WIRE_ROW_MAX_BYTES` bytes with no parser
+                // involved — but its *colors* come from
+                // `window_styles`, which spec 0223 clears then. So the
+                // row goes monochrome with the document row it echoes,
+                // rather than the two disagreeing.
+                let wire_line = self.wire.then(|| {
+                    let source = self.display_row_text(display_row);
+                    let indent = source.len() - source.trim_start().len();
+                    let palette = self.wire_palette(row, &source);
+                    let wire_spans = match display_row {
+                        DisplayRow::Committed(c) => {
+                            self.wire_row(c.pos, indent, &mut packed_memo, palette.as_ref())
+                        }
+                        // S9: an overlay's bytes are drawn from the
+                        // preview's own spans, since a preview is a
+                        // proposal to read the same bytes as a different
+                        // type and the wire row is what shows they are
+                        // indeed the same.
+                        DisplayRow::Overlay(i) => {
+                            self.preview_wire_row(i, indent, palette.as_ref())
+                        }
+                    };
+                    let mut spans = pan_spans(wire_spans.unwrap_or_default(), self.pan_offset);
+                    spans.insert(0, Span::raw(" "));
+                    Line::from(spans)
+                });
+                std::iter::once(Line::from(spans)).chain(wire_line)
             })
             .collect();
         let d_lines = t_lines.elapsed();

@@ -24,6 +24,12 @@
 // every lex state — including the states between a string's own tokens.
 // See the "Local fix (spec 0201 S1)" comment at
 // `single_string_contents`.
+//
+// docs/specs/0225-the-wire-bytes-are-shown-under-each-line.md then added
+// `annotation`, a second composite extra beside `comment`, so that
+// protolens's own `#@` annotations can be colored by severity instead of
+// being one undifferentiated comment span. See the "Local addition (spec
+// 0225 S12)" comment above `annotation`.
 
 // https://protobuf.dev/reference/protobuf/textformat-spec/
 
@@ -205,8 +211,15 @@ module.exports = grammar({
     // valid in no state outside a string body. It also keeps a leading
     // space from being skipped as a whitespace extra: `"p\n q"`'s space
     // now belongs to the string.
-    single_string_contents: $ => token(prec(1, /[^\n'\\]+/)),
-    double_string_contents: $ => token(prec(1, /[^\n"\\]+/)),
+    //
+    // Raised from 1 to 2 by spec 0225 S12: `annotation_marker` is a
+    // second extra that can open inside a string body, and at precedence
+    // 1 it would have *tied* with these — `#@` right after an escape
+    // matches two characters and so does the contents run that follows
+    // it, and a tie is settled by neither rule. Staying strictly above
+    // every extra is what spec 0201's fix actually needs.
+    single_string_contents: $ => token(prec(2, /[^\n'\\]+/)),
+    double_string_contents: $ => token(prec(2, /[^\n"\\]+/)),
 
     // Local fix (spec 0196 S1/S2, and the `prec(1, …)` of spec 0201 S1 —
     // see `double_string_contents` above). Three defects in upstream's own
@@ -299,18 +312,146 @@ module.exports = grammar({
     // 0121's precedence (still needed for `48.8566e2`) while making the
     // token unable to match a bare identifier's first letter.
     exp: $ => token(prec(2, /[Ee][-+]?[0-9]+/)),
-    // Local fix (spec 0196 S5): the suffix used to be a plain `/[Ff]/`,
-    // which ties with `identifier` on length in the same state, so it
-    // never attached — `1.5f` parsed as `float_lit` plus a sibling
-    // ERROR. `token.immediate` matches only with no preceding
-    // whitespace, which is exactly what separates a float suffix from
-    // the next field's name.
+    // Local fix (spec 0196 S5, revised by spec 0225 S12): the suffix
+    // used to be a plain `/[Ff]/`, which ties with `identifier` on
+    // length in the same state, so it never attached — `1.5f` parsed as
+    // `float_lit` plus a sibling ERROR. 0196 fixed that with
+    // `token.immediate(/[Ff]/)`, on the reasoning that the absence of
+    // whitespace is what separates a float suffix from the next field's
+    // name.
+    //
+    // That reasoning stopped holding once `annotation` (below) became an
+    // extra whose terminator *consumes* the newline. `token.immediate`
+    // means "no extras were skipped before this token", not "no
+    // whitespace precedes it", and after an extra has eaten the line
+    // break the next line's first byte is adjacent to that extra's end.
+    // So `x: 5  #@ varint` on one line and `f: 6` on the next lexed the
+    // `f` as this suffix and left a MISSING identifier behind it.
+    //
+    // Folding the suffix into a single token removes the immediacy
+    // instead of trying to condition it: a suffixed float is now lexed
+    // whole, and no `token.immediate` remains in the grammar outside the
+    // annotation rules. Precedence 3 keeps it above `frac_digits`/`exp`
+    // (2) and above `dec_int`, so the longer suffixed match is taken
+    // wherever a number is valid; where no `[Ff]` follows, the token
+    // simply does not match and the unsuffixed arms below apply.
     float: $ => choice(
-      seq($.float_lit, optional(token.immediate(/[Ff]/))),
-      seq($.dec_int, token.immediate(/[Ff]/)),
+      $.float_lit,
+      $.float_suffixed,
+    ),
+    float_suffixed: $ => token(prec(3, seq(
+      choice(
+        /[0-9]+/,
+        seq(/[0-9]+/, '.', optional(/[0-9]+/)),
+        seq('.', /[0-9]+/),
+      ),
+      optional(/[Ee][-+]?[0-9]+/),
+      /[Ff]/,
+    ))),
+
+    comment: $ => seq('#', /.*/),
+
+    // Local addition (spec 0225 S12): protolens renders its own `#@`
+    // annotations into the text it colors, and they carry the severity
+    // of what the decoder found. As one `comment` span they were
+    // uncolorable, so they get a rule of their own here and
+    // `highlights.scm` maps its tokens onto tiers.
+    //
+    // Four properties this rule is built around:
+    //
+    //   1. `#@` must beat `comment`'s `'#'`. tree-sitter compares
+    //      explicit token precedence before match length (spec 0196 S3,
+    //      spec 0201 S1), so precedence 1 against `'#'`'s implicit 0
+    //      settles it — the longer match is not what decides.
+    //   2. It must be total. Every byte after the marker falls into one
+    //      of the five item tokens, the last of which
+    //      (`annotation_junk`) is the catch-all, so no annotation can
+    //      fail to parse. A rule that could fail would drop the parser
+    //      into error recovery, which in this grammar swallows
+    //      *following* siblings and would lose the highlighting of the
+    //      lines after it.
+    //   3. It ends at the newline, and says so. tree-sitter requires an
+    //      `extra` to have an unambiguous ending — a rule whose last
+    //      element is a `repeat` is rejected outright — so the newline
+    //      is a token of the rule rather than the whitespace extra it
+    //      would otherwise be. `annotation_end` is the only place a line
+    //      break can be consumed inside an annotation, which is what
+    //      stops one from swallowing the field on the next line.
+    //   4. Its item tokens are ordinary tokens, matching no leading
+    //      whitespace of their own. The obvious alternative — make each
+    //      one `token.immediate(/[ \t]*…/)` so it absorbs its own
+    //      spacing — leaks out of the annotation: tree-sitter merges the
+    //      lexer's DFA states, and a token that may begin with a run of
+    //      spaces makes the *whole* lex state stop treating a space as
+    //      skippable. `outer {` then lexed `{` as a two-character
+    //      `open_squiggly` starting at the space. Leaving the spacing to
+    //      the `/\s/` extra keeps every other token's span where it was.
+    //
+    // `colorize` guarantees the trailing newline this needs, since a
+    // rendered window is joined without one and its last line may well
+    // carry an annotation.
+    //
+    // The rule stays keyword-blind on purpose: it says which tokens an
+    // annotation is made of, never which words matter. `highlights.scm`
+    // holds the vocabulary, mirroring `protolens/src/annotation.rs`, and
+    // is the cheap file to edit — a query change needs no
+    // `tree-sitter generate`.
+    annotation: $ => seq(
+      $.annotation_marker,
+      optional($.annotation_item),
+      repeat(seq($.annotation_semi, optional($.annotation_item))),
+      $.annotation_end,
     ),
 
-    comment: $ => seq('#', /.*/)
+    // One `;`-separated item: a flat run of typed tokens. Flat rather
+    // than `key [":" value]` because an item is not always a pair — the
+    // leading declaration item is `[label] type [attribute] "=" number`
+    // — and a shape that has to choose between the two needs lookahead
+    // the LR table cannot give it while staying total.
+    annotation_item: $ => repeat1(choice(
+      $.annotation_word,
+      $.annotation_number,
+      $.annotation_eq,
+      $.annotation_attribute,
+      $.annotation_junk,
+    )),
+
+    annotation_marker: $ => token(prec(1, '#@')),
+
+    // Dots are part of a word so a fully-qualified type name is one
+    // token, and the parenthesized suffix so an enum's rendered value
+    // (`Color(99)`, `Color([1,2])`) does not split the name it belongs
+    // to.
+    annotation_word: $ => token(prec(2,
+      /[A-Za-z_][A-Za-z0-9_.]*(\([-0-9,\[\] ]*\))?/)),
+    annotation_number: $ => token(prec(2,
+      /-?(0[xX][0-9A-Fa-f]+|[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?)/)),
+    annotation_eq: $ => token(prec(2, /=/)),
+    annotation_semi: $ => token(prec(2, /;/)),
+    // `[packed=true]` is the only bracketed group the format defines,
+    // but matching any of them keeps rule 2 above true of a malformed
+    // one too.
+    annotation_attribute: $ => token(prec(3, /\[[^\]\n]*\]/)),
+    // The catch-all of rule 2. Its class excludes every character a
+    // word, a number, an `=` or a `;` can start with, so it cannot take
+    // one of those from under them. It does overlap the remaining two:
+    // `[` is settled by `annotation_attribute`'s higher precedence, and
+    // a leading `-` by `annotation_number` matching further — which is
+    // also why an unterminated `[` or a bare `-` still lands here.
+    annotation_junk: $ => token(prec(2, /[^A-Za-z0-9_;=\n \t]+/)),
+    // The one token allowed to reach a line break.
+    //
+    // Ranked above `annotation_marker`, not merely above the item
+    // tokens. Extras are offered inside an extra too, so at the newline
+    // the lexer weighs ending this annotation against opening a fresh
+    // one on the next line, and would otherwise skip the newline to do
+    // it and take the following lines with it. Precedence is compared
+    // before match length, so this is what settles it — and it settles
+    // the contest with the `/\s/` extra the same way, which is why the
+    // token can match the bare newline and leave any spaces before it to
+    // be skipped, rather than spelling a `[ \t]*` prefix and running
+    // into rule 4.
+    annotation_end: $ => token(prec(3, /\r?\n/)),
   },
 
   // Local removal (spec 0196 S6): upstream also declared
@@ -320,6 +461,7 @@ module.exports = grammar({
   // so the block had no effect.
   extras: $ => [
     /\s/,
+    $.annotation,
     $.comment,
   ],
 });

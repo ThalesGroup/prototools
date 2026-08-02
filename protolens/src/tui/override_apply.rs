@@ -16,9 +16,17 @@ use prototext_core::serialize::render_text::NodeSpan;
 /// preview and the commit byte-identical (G3).
 pub(super) struct RenderedAs {
     pub(super) lines: Vec<String>,
-    /// Discarded by the preview (spec 0185 N6: overlay rows have no
-    /// identity); consumed by `splice_override` to build the new subtree.
+    /// Consumed by `splice_override` to build the new subtree; kept by
+    /// the preview purely as display data, to draw its wire rows (spec
+    /// 0225 S9). They stay out of `self.tree` either way, so spec 0185
+    /// N6 still holds — an overlay row has no identity.
     pub(super) spans: Vec<NodeSpan>,
+    /// The bytes those spans index into: the node's own
+    /// `tag[+length]+payload`, cut to the preview budget when there was
+    /// one. Not the blob, and not a sub-slice of it — a truncated
+    /// preview's bytes exist nowhere else, and the spans' `raw_range`s
+    /// are relative to this.
+    pub(super) bytes: Vec<u8>,
 }
 
 impl App {
@@ -1242,6 +1250,7 @@ impl App {
             RenderedAs {
                 lines: new_lines,
                 spans: new_spans,
+                bytes: field_bytes,
             },
         ))
     }

@@ -55,6 +55,8 @@ pub(super) const HELP_TEXT: &[&str] = &[
     "",
     "Display",
     "  a                toggle main-pane #@ annotation display",
+    "  w                toggle wire mode — under every drawn line, a",
+    "                   second row showing that line's own bytes in hex",
     "",
     "Navigation history",
     "  Ctrl-O           jump back",

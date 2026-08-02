@@ -1104,6 +1104,8 @@ fn a_truncation_marker_does_not_decolor_the_rows_beneath_it() {
         first_row: 0,
         covered_rows: 0,
         lines: with.clone(),
+        spans: Vec::new(),
+        bytes: Vec::new(),
     });
     app.refresh_window_styles(&rows);
     let got = &app.window_styles;

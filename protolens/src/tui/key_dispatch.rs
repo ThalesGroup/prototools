@@ -649,6 +649,23 @@ impl App {
             // (spec 0199 S9), leaving `Ctrl-a` to the caret.
             KeyCode::Char('a') if key.modifiers.is_empty() => self.annotations = !self.annotations,
 
+            // Toggle the wire rows (spec 0225 S1) — like `a`, a pure
+            // display attribute that invalidates no cache and bumps no
+            // `structural_version`. It does halve the pane's line
+            // capacity (S8), so the scroll and pan offsets are clamped
+            // against the geometry it just changed.
+            KeyCode::Char('w') if key.modifiers.is_empty() => {
+                self.wire = !self.wire;
+                // `clamp_pan_offset` re-syncs `scroll_offset` only when
+                // the cursor has moved since the last clamp, and it has
+                // not — the pane shrank under it instead. Forgetting
+                // the remembered row is how that guard is told the
+                // clamp is owed for a new geometry rather than a new
+                // cursor.
+                self.last_cursor_row = None;
+                self.clamp_pan_offset();
+            }
+
             // Toggle the main-pane inference-mismatch heat cue (spec
             // 0138) — hides/shows the cue without discarding the
             // heat-cue caches, distinct from the override pane's own `i`

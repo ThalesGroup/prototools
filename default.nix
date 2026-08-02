@@ -94,6 +94,10 @@ let
         # `prototext-core/src/serialize/render_text/mod.rs` include_bytes!
         # descriptor.pb and so cannot even compile without it.
         ./prototext-core/fixtures
+        # grpconf/anomalies.pb is `#@` prototext text under a `.pb` name
+        # (spec 0226), and `prototext-core/tests/anomaly_fixture.rs`
+        # include_str! it, so the test cannot compile without it.
+        (fixtureFilter ./grpconf)
         ./README.md
       ])
       (pkgs.lib.fileset.unions [

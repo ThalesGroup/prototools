@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
+mod annotation;
 mod blob;
 mod colorize;
 mod complete;
