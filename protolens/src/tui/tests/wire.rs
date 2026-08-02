@@ -17,11 +17,15 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use prost_types::field_descriptor_proto::{Label, Type};
 use ratatui::layout::Rect;
 
-/// A row's spans as plain text, with the margin of spec 0225 S5 taken
-/// off — what these tests assert about is the hex.
+/// A row's spans as plain text, with the indent and connector of spec
+/// 0225 S5 taken off — what these tests assert about is the hex.
 fn hex_of(spans: &[ratatui::text::Span<'static>]) -> String {
     let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
-    text.trim().to_string()
+    let hex = text.trim_start();
+    hex.strip_prefix(wire::WIRE_CONNECTOR)
+        .unwrap_or(hex)
+        .trim()
+        .to_string()
 }
 
 /// One line's wire row as plain text, indentation trimmed. Empty when
@@ -365,7 +369,7 @@ fn drawn_palette(app: &mut App, line: usize) -> WirePalette {
 }
 
 /// Spec 0225 test plan 10. The row lines up with the text it describes
-/// — no deeper — and carries nothing ahead of its first byte.
+/// — no deeper — and points at it with `tree`'s elbow.
 #[test]
 fn a_wire_row_is_aligned_with_its_document_row() {
     let app = hue_fixture();
@@ -384,7 +388,10 @@ fn a_wire_row_is_aligned_with_its_document_row() {
         .collect();
 
     let margin = render::FOLD_FIELD_WIDTH + indent;
-    assert_eq!(row, format!("{}0a:02[69 64]", " ".repeat(margin)));
+    assert_eq!(
+        row,
+        format!("{}{}0a:02[69 64]", " ".repeat(margin), wire::WIRE_CONNECTOR)
+    );
 
     // And that margin is the document row's own: the two rows start in
     // the same column, the fold gutter included.

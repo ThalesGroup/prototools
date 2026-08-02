@@ -54,8 +54,9 @@ which is exactly backwards for a reader trying to learn the encoding.
   independently.
 - **G4.** Wire-level anomalies are flagged *on the offending bytes*, not
   merely named, and an accusation reads as one block whatever it spans.
-- **G5.** A wire row is legible as belonging to the row above it:
-  labeled, dimmer than it, and never colored under a different policy.
+- **G5.** A wire row is legible as belonging to the row above it: it
+  points at that row, is dimmer than it, and is never colored under a
+  different policy.
 - **G6.** Nothing about the document model changes: no line counts, no
   `LinePos`, no fold, search, export or cache key learns that wire mode
   exists.
@@ -100,7 +101,7 @@ which is exactly backwards for a reader trying to learn the encoding.
 - **N9.** The horizontal pan bound is still measured over document rows
   only (`max_visible_line_len`, maps `row_content`), so a wire row wider
   than every document row on screen cannot be panned to its end. S5's
-  label makes it worse by three columns and does not fix it.
+  connector makes it worse by four columns and does not fix it.
 
 ## Specification
 
@@ -181,22 +182,24 @@ Column 0 stays the heat-cue gutter and is blank on a wire row: a cue
 reports how a *node* scores, and belongs on the node's own row.
 
 `margin` (`tui/wire.rs`) then writes `FOLD_FIELD_WIDTH + indent` spaces,
-where `indent` is the document row's own, and nothing else. The two rows
-start in the same column and the wire row's first byte is its first
-glyph.
+where `indent` is the document row's own, followed by `WIRE_CONNECTOR`
+= `"└── "` — `tree(1)`'s elbow, drawn subdued.
 
 ```
     1: "id"  #@ string
-    0a:02[69 64]
+    └── 0a:02[69 64]
 ```
 
-No extra indent level for the wire row, and no label. S11's reversed
-hex is what separates the pair, and it does that everywhere on the row
-rather than only at its left edge; a second indent on top of it only
-pushes long rows further past the pan bound (N9). A row of reversed hex
-pairs cannot be mistaken for prototext, so a marker announcing what the
-row is spends columns of a pannable row saying what the row's own shape
-already says.
+No extra indent level for the wire row: a second indent on top of the
+connector only pushes long rows further past the pan bound (N9).
+
+The connector is not a label — it says nothing about what the row *is*,
+which S11's reversed hex already makes unmistakable. It says which
+document row the hex belongs to, and indentation alone cannot: a nested
+message's own first field sits at the same indent one row further down,
+so on a screen of alternating rows the eye has to count to pair them up.
+The elbow points at exactly one row, the one above it, and `tree` has
+already taught every terminal user to read it that way.
 
 The wire row follows its document row rather than preceding it. Placing
 it first would read as evidence-then-conclusion, and would move the
@@ -828,7 +831,15 @@ answered by the reversed blocks, which say it more directly.
 implementation, and once the hex became a row of reversed blocks the
 label had nothing left to disambiguate: no prototext line looks like
 that. It cost two columns of a row that is already the one competing
-with the pan bound (N9).
+with the pan bound (N9). S5's `└── ` is not this: it answers *which
+row*, not *what row*, and that question survives the blocks.
+
+**Indent alone, with no connector.** Rejected, and it was the state
+between the label and `└── `. Alignment says which *column* the row
+belongs to, not which row: a nested message's own first field carries
+the same indent one row further down, so in a screen of alternating
+rows the pairing has to be counted out. The elbow is unambiguous and
+needs no convention taught, `tree` having taught it.
 
 **Reverse only the anomalies, leaving ordinary bytes as colored text.**
 Rejected, and it was the first implementation. Reverse then had to serve
@@ -882,8 +893,8 @@ annotation share `tier_of` rather than agreeing by coincidence.
 
 ### The row's shape and its hues (S5, S7, S11)
 
-10. `a_wire_row_is_aligned_with_its_document_row` — the row's first glyph
-    is its first hex digit, and its margin equals the document row's own.
+10. `a_wire_row_is_aligned_with_its_document_row` — the row is the
+    document row's own margin, then `└── `, then its first hex digit.
 11. `the_punctuation_reads_without_color` — `0a:05[48 45 4c 4c 4f]` for
     a five-byte string, `82 80 80!` for an unterminated tag varint.
 12. `a_region_is_one_unbroken_ribbon` — every hex byte is reversed and
@@ -984,9 +995,11 @@ palette lumas of: dark — attribute 209, number 198, string 156,
 comment 138; light — attribute 49, string 51, comment 92, number 104,
 type 110.
 
-The row carries no label and no prefix: its first column of ink is its
-first hex pair, at the document row's own indent. Every hex pair is a
-reversed block, so what marks an anomaly is the brightness of the block
+The row carries no label. Ahead of its first hex pair it carries only
+`tree`'s `└── `, subdued, at the document row's own indent — four
+columns that answer which row the hex belongs to, which alignment on
+its own does not. Every hex pair is a reversed block, so what marks an
+anomaly is the brightness of the block
 rather than its presence — the tier colors are the palette's most
 saturated and the borrowed hues have been leveled down to
 `WIRE_LUMA_*`, which is the same separation the design already relied
@@ -999,14 +1012,18 @@ so `theme::wire_styles` fills a `OnceLock` table on first use and
 branch is an *uncached* environment read that allocates a `String`) and
 then `leveled`'s blend, four times for every drawn row of every frame.
 
-`cargo test -p protolens` passes 606, plus 25 in `tests/batch_export.rs`;
+`cargo test -p protolens` passes 615, plus 25 in `tests/batch_export.rs`;
 the vendored grammar's
 `nix-build -A tree-sitter-textproto-highlight-test` passes 123
 assertions, 17 of them new. Eight protolens tests fail in a nix-shell
 entered before the grammar was rebuilt — `TREE_SITTER_TEXTPROTO_QUERIES_DIR`
-then points at a `highlights.scm` with no annotation captures, so every
-test asserting an annotation's role sees `Comment`. Re-entering the
-shell clears them.
+then points at a `highlights.scm` with no annotation captures, and
+`colorize.rs` `include_str!`s that file at *build* time, so the binary
+queries for captures its baked-in copy never emits and every annotation
+modifier falls through to plain `Comment`. On screen this shows as S12's
+colors silently missing from the document row. Re-entering the shell
+clears it; there is nothing to fix in the code, and the eight tests are
+what catch the drift.
 
 Three findings from the grammar half (S12) that the design did not
 anticipate, all recorded in `grammar.js` beside the rules they shaped:

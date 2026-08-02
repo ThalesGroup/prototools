@@ -437,21 +437,27 @@ fn value_offset(text: &str) -> Option<usize> {
     (at < code.len()).then_some(at)
 }
 
-/// The row's indentation (spec 0225 S5).
+/// The connector `tree(1)` draws, at the document row's own indent
+/// (spec 0225 S5).
+pub(super) const WIRE_CONNECTOR: &str = "└── ";
+
+/// The row's indentation and connector (spec 0225 S5).
 ///
-/// The document row's own indent — no deeper. The reversed hex of S11 is
-/// what separates the two rows, and it does it everywhere on the row
-/// rather than only at its left edge; a second indent level on top of it
-/// only pushes long rows further past the pan bound (N3).
+/// The document row's own indent — no deeper — and then
+/// [`WIRE_CONNECTOR`], which is what says *which* document row this one
+/// belongs to. Indentation alone cannot: a nested message's own first
+/// field carries the same indent one row further down, so on a screen of
+/// alternating rows the eye has to count to pair them up. The elbow
+/// points at exactly one row, the one above it.
 ///
-/// No label. A row of reversed hex pairs cannot be mistaken for
-/// prototext, so a marker announcing what it is spends two columns of a
-/// pannable row saying what its own shape already says. Column 0 is not
-/// here — the heat-cue gutter is prepended by `render`, blank, for the
-/// same reason it is blank: a cue reports how a *node* scores.
+/// It is drawn in [`subdued`] because it is structure, not content, and
+/// the row's hex is loud. Column 0 is not here — the heat-cue gutter is
+/// prepended by `render`, blank, for the same reason it is blank: a cue
+/// reports how a *node* scores.
 fn margin(indent: usize, row: WireRow) -> Vec<Span<'static>> {
-    let mut spans = Vec::with_capacity(row.spans.len() + 1);
+    let mut spans = Vec::with_capacity(row.spans.len() + 2);
     spans.push(Span::raw(" ".repeat(render::FOLD_FIELD_WIDTH + indent)));
+    spans.push(Span::styled(WIRE_CONNECTOR, subdued()));
     spans.extend(row.spans);
     spans
 }
