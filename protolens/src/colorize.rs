@@ -122,9 +122,38 @@ const RECOGNIZED_NAMES: [&str; ROLES.len()] = {
     names
 };
 
+/// [`ROLES`]'s role column, in order — the counterpart of
+/// `RECOGNIZED_NAMES` for callers that key a table by role rather than
+/// by capture name. Deriving it from `ROLES` rather than writing it out
+/// is what keeps such a table the same length as the enum: a variant
+/// added to `ROLES` lengthens both, and one added *only* to the enum is
+/// caught by `index`.
+pub const ALL_ROLES: [SyntaxRole; ROLES.len()] = {
+    let mut roles = [SyntaxRole::Attribute; ROLES.len()];
+    let mut i = 0;
+    while i < ROLES.len() {
+        roles[i] = ROLES[i].0;
+        i += 1;
+    }
+    roles
+};
+
 impl SyntaxRole {
     fn from_highlight_index(index: usize) -> Option<Self> {
         ROLES.get(index).map(|&(role, _)| role)
+    }
+
+    /// This role's position in [`ALL_ROLES`] — the inverse of
+    /// `from_highlight_index`, for indexing a per-role lookup table.
+    ///
+    /// A scan of sixteen tag comparisons. It replaces, at each call
+    /// site, work that is orders of magnitude larger than itself: see
+    /// `theme::wire_styles`.
+    pub fn index(self) -> usize {
+        ALL_ROLES
+            .iter()
+            .position(|&role| role == self)
+            .expect("ROLES lists every SyntaxRole variant")
     }
 }
 

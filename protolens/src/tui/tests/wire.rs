@@ -17,15 +17,11 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use prost_types::field_descriptor_proto::{Label, Type};
 use ratatui::layout::Rect;
 
-/// A row's spans as plain text, with the margin and the `\x` label of
-/// spec 0225 S5 taken off — what these tests assert about is the hex.
+/// A row's spans as plain text, with the margin of spec 0225 S5 taken
+/// off — what these tests assert about is the hex.
 fn hex_of(spans: &[ratatui::text::Span<'static>]) -> String {
     let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
-    text.trim()
-        .strip_prefix("\\x")
-        .expect("every wire row is labelled")
-        .trim()
-        .to_string()
+    text.trim().to_string()
 }
 
 /// One line's wire row as plain text, indentation trimmed. Empty when
@@ -369,9 +365,9 @@ fn drawn_palette(app: &mut App, line: usize) -> WirePalette {
 }
 
 /// Spec 0225 test plan 10. The row lines up with the text it describes
-/// — no deeper — and says what it is.
+/// — no deeper — and carries nothing ahead of its first byte.
 #[test]
-fn a_wire_row_is_labeled_and_aligned_with_its_document_row() {
+fn a_wire_row_is_aligned_with_its_document_row() {
     let app = hue_fixture();
     let mut memo = PackedCursor::default();
     // Line 1 is `  name: "id"`, itself indented one level under the
@@ -388,7 +384,7 @@ fn a_wire_row_is_labeled_and_aligned_with_its_document_row() {
         .collect();
 
     let margin = render::FOLD_FIELD_WIDTH + indent;
-    assert_eq!(row, format!("{}\\x 0a:02[69 64]", " ".repeat(margin)));
+    assert_eq!(row, format!("{}0a:02[69 64]", " ".repeat(margin)));
 
     // And that margin is the document row's own: the two rows start in
     // the same column, the fold gutter included.
@@ -406,7 +402,7 @@ fn the_tag_takes_the_field_names_hue_dimmed() {
     let mut app = hue_fixture();
     let palette = drawn_palette(&mut app, 1);
     let name = theme::style_for(SyntaxRole::Attribute, app.theme);
-    assert_eq!(palette.tag, theme::dimmed(name, app.theme));
+    assert_eq!(palette.tag, theme::reversed(theme::dimmed(name, app.theme)));
     // Dimmer, however the terminal can express it: a leveled color when
     // there is a color to level, the DIM attribute when there is not.
     assert!(
@@ -427,14 +423,17 @@ fn the_payload_takes_the_values_hue() {
     let number_row = drawn_palette(&mut app, 2);
     assert_eq!(
         string_row.payload,
-        theme::dimmed(
+        theme::reversed(theme::dimmed(
             theme::style_for(SyntaxRole::StringLiteral, app.theme),
             app.theme
-        )
+        ))
     );
     assert_eq!(
         number_row.payload,
-        theme::dimmed(theme::style_for(SyntaxRole::Number, app.theme), app.theme)
+        theme::reversed(theme::dimmed(
+            theme::style_for(SyntaxRole::Number, app.theme),
+            app.theme
+        ))
     );
     assert_ne!(string_row.payload, number_row.payload);
 }
@@ -451,7 +450,10 @@ fn the_length_prefix_takes_the_comment_hue_with_or_without_an_annotation() {
     let with = drawn_palette(&mut app, 1);
     assert_eq!(
         with.len,
-        theme::dimmed(theme::style_for(SyntaxRole::Comment, app.theme), app.theme)
+        theme::reversed(theme::dimmed(
+            theme::style_for(SyntaxRole::Comment, app.theme),
+            app.theme
+        ))
     );
 
     app.annotations = false;

@@ -98,11 +98,19 @@ impl WirePalette {
     /// color, so a test can tell which region a byte was painted from —
     /// and tell a borrowed hue from an accented one.
     pub(super) fn for_test() -> Self {
+        // Reversed, like every hue `theme::wire_style` hands back: the
+        // run-joining in `separate` keys on that, so a plain-fg fixture
+        // would exercise a row shape the app never draws.
+        let hue = |r, g, b| {
+            Style::default()
+                .fg(Color::Rgb(r, g, b))
+                .add_modifier(Modifier::REVERSED)
+        };
         WirePalette {
-            tag: Style::default().fg(Color::Rgb(1, 0, 0)),
-            ty: Style::default().fg(Color::Rgb(1, 1, 0)),
-            len: Style::default().fg(Color::Rgb(0, 1, 0)),
-            payload: Style::default().fg(Color::Rgb(0, 0, 1)),
+            tag: hue(1, 0, 0),
+            ty: hue(1, 1, 0),
+            len: hue(0, 1, 0),
+            payload: hue(0, 0, 1),
         }
     }
 }
@@ -121,16 +129,16 @@ enum Region {
 }
 
 /// What every part of a wire row with no hue of its own wears:
-/// punctuation, the `\x` label, the elision (spec 0225 S11) — and the
-/// whole row when the document row above has no colors either (S7).
+/// punctuation, the elision (spec 0225 S11) — and the whole row when the
+/// document row above has no colors either (S7).
 fn subdued() -> Style {
     Style::default().add_modifier(Modifier::DIM)
 }
 
-/// `style` if it is one of the reversed anomaly accents, `None` if it is
-/// an ordinary borrowed hue — the test `separate` needs to know whether
-/// two neighbours belong to the same accusation.
-fn accent(style: Style) -> Option<Style> {
+/// `style` if it paints a background block, `None` if it is ordinary
+/// text — the test `separate` needs to know whether the gap it is about
+/// to draw falls inside one block or between two.
+fn block(style: Style) -> Option<Style> {
     style
         .add_modifier
         .contains(Modifier::REVERSED)
@@ -429,22 +437,21 @@ fn value_offset(text: &str) -> Option<usize> {
     (at < code.len()).then_some(at)
 }
 
-/// The row's indentation and its label (spec 0225 S5).
+/// The row's indentation (spec 0225 S5).
 ///
-/// The document row's own indent — no deeper. The brightness step of S11
-/// is what separates the two rows, and it does it everywhere on the row
+/// The document row's own indent — no deeper. The reversed hex of S11 is
+/// what separates the two rows, and it does it everywhere on the row
 /// rather than only at its left edge; a second indent level on top of it
 /// only pushes long rows further past the pan bound (N3).
 ///
-/// `\x ` rather than `0x: `: the row already spells `tag:length`, and a
-/// second colon meaning something else is exactly the ambiguity a label
-/// is supposed to remove. Column 0 is not here — the heat-cue gutter is
-/// prepended by `render`, blank, for the same reason it is blank: a cue
-/// reports how a *node* scores.
+/// No label. A row of reversed hex pairs cannot be mistaken for
+/// prototext, so a marker announcing what it is spends two columns of a
+/// pannable row saying what its own shape already says. Column 0 is not
+/// here — the heat-cue gutter is prepended by `render`, blank, for the
+/// same reason it is blank: a cue reports how a *node* scores.
 fn margin(indent: usize, row: WireRow) -> Vec<Span<'static>> {
-    let mut spans = Vec::with_capacity(row.spans.len() + 2);
+    let mut spans = Vec::with_capacity(row.spans.len() + 1);
     spans.push(Span::raw(" ".repeat(render::FOLD_FIELD_WIDTH + indent)));
-    spans.push(Span::styled("\\x ", subdued()));
     spans.extend(row.spans);
     spans
 }
@@ -581,7 +588,7 @@ pub(super) fn wire_spans(
         theme,
         palette,
         region: Region::Unclaimed,
-        last_accent: None,
+        last_block: [None; 2],
         plain: None,
         spans: Vec::new(),
         #[cfg(test)]
@@ -849,10 +856,16 @@ struct Painter<'a> {
     palette: Option<&'a WirePalette>,
     /// Which of the four the pen is currently in.
     region: Region,
-    /// The reversed style the byte just drawn carried, if it carried one
-    /// on either of its nibbles — what tells `separate` whether the gap
-    /// it is about to draw is inside an accented run or beside it.
-    last_accent: Option<Style>,
+    /// The background block(s) the byte just drawn wore — two of them
+    /// when it was a tag's first byte and its nibbles differed. What
+    /// tells `separate` whether the gap it is about to draw is inside
+    /// one block or between two.
+    ///
+    /// Two slots rather than one because *either* nibble opens a run: a
+    /// field number accused across a multi-byte tag must join up past
+    /// its own wire-type nibble, which is perfectly good and wears a
+    /// different block.
+    last_block: [Option<Style>; 2],
     /// The tier an unremarkable byte takes — `None` everywhere except
     /// inside a packed record's tag and length prefix, which are a
     /// landmark rather than an anomaly.
@@ -866,16 +879,21 @@ struct Painter<'a> {
 }
 
 impl Painter<'_> {
-    /// Hue from the tier, reverse video from the wire row: hex is dense
-    /// and uniform, so two yellow pairs among forty are easy to miss.
-    /// Reverse is a locator, never a severity, so the landmark — which
-    /// is not an anomaly — does not get it.
+    /// Every byte's hue is worn as a background (spec 0225 S11): hex is
+    /// dense and uniform, and a color one glyph-pair wide is a much
+    /// weaker signal than the same color as a filled block. What
+    /// separates an anomaly from an ordinary byte is then brightness
+    /// rather than the presence of a block — the tier colors are the
+    /// palette's most saturated, and the borrowed hues have been leveled
+    /// down, so a bad byte still reads at a glance against its
+    /// neighbours.
     ///
     /// An unremarkable byte takes the hue its region borrowed from the
-    /// document row above (spec 0225 S11). With no palette the whole row
-    /// is subdued, tiers included (S7): the `#@` tokens the tiers echo
-    /// have gone gray too, and one row cannot claim a severity the other
-    /// has stopped showing.
+    /// document row above. With no palette the whole row is subdued,
+    /// tiers included (S7): the `#@` tokens the tiers echo have gone
+    /// gray too, and one row cannot claim a severity the other has
+    /// stopped showing. Bytes no framing claimed keep the same subdued
+    /// text, since a block would be a claim about them.
     fn style(&self, tier: Option<Tier>) -> Style {
         self.style_in(self.region, tier)
     }
@@ -892,21 +910,22 @@ impl Painter<'_> {
                 Region::Payload => palette.payload,
                 Region::Unclaimed => subdued(),
             },
-            Some(Tier::Landmark) => theme::tier_style(Tier::Landmark, self.theme),
-            Some(tier) => theme::tier_style(tier, self.theme).add_modifier(Modifier::REVERSED),
+            Some(tier) => theme::reversed(theme::tier_style(tier, self.theme)),
         }
     }
 
     /// A space between two hex pairs.
     ///
-    /// Reversed if it lies *inside* an accented run — the byte before it
-    /// carried the same reversal and so does the byte about to be drawn
-    /// — and plain otherwise. An accusation over several bytes is one
-    /// fact, and a run of blocks broken every third column reads as
-    /// several.
+    /// Filled if it lies *inside* one block — the byte before it wore
+    /// the same background and so does the byte about to be drawn — and
+    /// plain otherwise. Bytes saying one thing are one fact, and a run
+    /// broken every third column reads as several. The same rule draws
+    /// a region as a continuous ribbon and an accusation as a solid
+    /// block, because the two differ only in which style repeats.
     fn separate(&mut self, style: Style) {
         if self.need_space {
-            let inside = accent(style).is_some() && self.last_accent == accent(style);
+            let here = block(style);
+            let inside = here.is_some() && self.last_block.contains(&here);
             self.spans.push(Span::styled(
                 " ",
                 if inside { style } else { Style::default() },
@@ -927,7 +946,7 @@ impl Painter<'_> {
         self.separate(style);
         self.spans
             .push(Span::styled(format!("{:02x}", self.rec[i]), style));
-        self.last_accent = accent(style);
+        self.last_block = [block(style), None];
         self.drawn += 1;
     }
 
@@ -967,10 +986,7 @@ impl Painter<'_> {
             .push(Span::styled(format!("{:x}", byte >> 4), high_style));
         self.spans
             .push(Span::styled(format!("{:x}", byte & 0x0F), low_style));
-        // Either nibble opens a run: a field number accused across a
-        // multi-byte tag starts on the high nibble and continues past a
-        // wire type that is perfectly good.
-        self.last_accent = accent(low_style).or(accent(high_style));
+        self.last_block = [block(high_style), block(low_style)];
         self.drawn += 1;
     }
 
@@ -1112,6 +1128,45 @@ mod tests {
         );
         // field 3, group start — all a header row has.
         assert_eq!(text(&draw(&[0x1B], Framing::Tagged, 3)), "1b");
+    }
+
+    /// Spec 0225 S11: the hex is worn as a background, not as text, and
+    /// a region is one ribbon rather than a row of tiles.
+    ///
+    /// The punctuation is what breaks it: the framing has no hue, so a
+    /// payload reads as one block from `[` to `]` while the tag and the
+    /// length before it read as their own.
+    #[test]
+    fn a_region_is_one_unbroken_ribbon() {
+        // field 1, LEN, five bytes — "HELLO".
+        let row = draw(
+            &[0x0A, 0x05, 0x48, 0x45, 0x4C, 0x4C, 0x4F],
+            Framing::Tagged,
+            1,
+        );
+        assert_eq!(text(&row), "0a:05[48 45 4c 4c 4f]");
+        let filled: String = row
+            .spans
+            .iter()
+            .flat_map(|s| {
+                let mark = if s.style.add_modifier.contains(Modifier::REVERSED) {
+                    '#'
+                } else {
+                    ' '
+                };
+                std::iter::repeat_n(mark, s.content.chars().count())
+            })
+            .collect();
+        //                  0a: 05[48 45 4c 4c 4f]
+        assert_eq!(filled, "## ## ############## ");
+        // Every payload byte and every gap between two of them is the
+        // one hue, so the ribbon is unbroken rather than merely dense.
+        for span in &row.spans {
+            let inside_payload = matches!(span.content.as_ref(), "48" | "45" | "4c" | "4f" | " ");
+            if inside_payload {
+                assert_eq!(span.style.fg, Some(PAYLOAD_HUE), "{:?}", span.content);
+            }
+        }
     }
 
     /// Spec 0225 S11: each of the four parts wears the hue it borrowed,
@@ -1368,20 +1423,23 @@ mod tests {
 
     /// The two cases spec 0225 S11 draws.
     ///
-    /// A separator is reversed exactly when it lies between two bytes of
-    /// the same accusation, so an accusation reads as one block rather
-    /// than as a row of tiles.
+    /// A separator carries the accusation exactly when it lies between
+    /// two bytes of that same accusation, so an accusation reads as one
+    /// block rather than as a row of tiles.
+    ///
+    /// Every byte is a block now, so `REVERSED` alone no longer says
+    /// which: the mask asks whether the block is a *tier* color rather
+    /// than one of the four hues the row borrowed.
     #[test]
     fn an_accusation_is_one_unbroken_block() {
         let block = |row: &WireRow| -> String {
+            let borrowed = [TAG_HUE, TYPE_HUE, LEN_HUE, PAYLOAD_HUE];
             row.spans
                 .iter()
                 .flat_map(|s| {
-                    let mark = if s.style.add_modifier.contains(Modifier::REVERSED) {
-                        '^'
-                    } else {
-                        ' '
-                    };
+                    let accused = s.style.add_modifier.contains(Modifier::REVERSED)
+                        && !s.style.fg.is_some_and(|c| borrowed.contains(&c));
+                    let mark = if accused { '^' } else { ' ' };
                     std::iter::repeat_n(mark, s.content.chars().count())
                 })
                 .collect()

@@ -8,10 +8,12 @@
 //! portable fallback — picked by `supports_rgb`. The `System` selector
 //! is resolved once at startup.
 
+use std::sync::OnceLock;
+
 use ratatui::style::{Color, Modifier, Style};
 
 use crate::annotation::Tier;
-use crate::colorize::SyntaxRole;
+use crate::colorize::{SyntaxRole, ALL_ROLES};
 
 /// The `--theme` CLI flag's three fixed choices (spec 0116 §9).
 /// `System` exists only at the CLI-selection layer: it is resolved to
@@ -421,7 +423,7 @@ const WIRE_LUMA_DARK: f32 = 130.0;
 const WIRE_LUMA_LIGHT: f32 = 150.0;
 
 /// The style a wire byte wears (spec 0225 S11): `borrowed`'s color,
-/// brought to the wire row's brightness.
+/// brought to the wire row's brightness and worn as a *background*.
 ///
 /// `borrowed` is the `SyntaxRole` the document row above carries at the
 /// corresponding column, or `None` when it has none — `Length` supplies
@@ -433,8 +435,52 @@ pub fn wire_style(role: WireRole, borrowed: Option<SyntaxRole>, theme: ThemeKind
         WireRole::Tag | WireRole::Type | WireRole::Payload => borrowed,
     };
     match source {
-        Some(role) => dimmed(style_for(role, theme), theme),
+        Some(role) => wire_styles(theme)[role.index()],
         None => Style::default().add_modifier(Modifier::DIM),
+    }
+}
+
+/// Every wire-row style there is, resolved on first use.
+///
+/// The inputs are a finite set — one `SyntaxRole` per capture, times the
+/// two resolved themes — so a wire byte's style is a lookup rather than
+/// a computation. It was neither: `wire_style` ran `supports_rgb` (whose
+/// first branch is an *uncached* environment read, allocating a `String`)
+/// and then `leveled`'s blend, four times for every drawn row of every
+/// frame.
+///
+/// Resolved lazily rather than written out as constants because
+/// `leveled` is float arithmetic that no `const fn` can run today, and
+/// hand-computing the blended triples into literals would put a second
+/// copy of the answer where retuning `WIRE_LUMA_DARK` could not reach
+/// it.
+fn wire_styles(theme: ThemeKind) -> &'static [Style; ALL_ROLES.len()] {
+    static TABLE: OnceLock<[[Style; ALL_ROLES.len()]; 2]> = OnceLock::new();
+    let build = |theme| {
+        let mut styles = [Style::default(); ALL_ROLES.len()];
+        for (slot, role) in styles.iter_mut().zip(ALL_ROLES) {
+            *slot = reversed(dimmed(style_for(role, theme), theme));
+        }
+        styles
+    };
+    let table = TABLE.get_or_init(|| [build(ThemeKind::Dark), build(ThemeKind::Light)]);
+    match theme {
+        ThemeKind::Dark => &table[0],
+        ThemeKind::Light => &table[1],
+        ThemeKind::System => system_must_be_resolved(),
+    }
+}
+
+/// The hue moved from the foreground to the background (spec 0225 S11).
+///
+/// Only when there is a hue to move. A style carrying no color reversed
+/// is a solid block of the terminal's default foreground — the loudest
+/// thing on the screen, standing for the one case the row has nothing to
+/// say. Those stay `DIM` text on the ordinary background.
+pub fn reversed(style: Style) -> Style {
+    match style.fg {
+        Some(_) => style.add_modifier(Modifier::REVERSED),
+        None => style,
     }
 }
 
