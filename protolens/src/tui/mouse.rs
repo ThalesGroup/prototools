@@ -343,10 +343,16 @@ impl App {
         // Spec 0225 S8: in wire mode each document line is two terminal
         // rows thick, so a click anywhere in the pair selects the line —
         // the rows are simply taller, not separately clickable.
-        let mut rel_row = (row - area.y) as usize;
-        if self.wire {
-            rel_row /= 2;
+        //
+        // Spec 0230: `scroll_skip` shifts the whole pane by a terminal
+        // row, so it is added back before the division. A negative skip
+        // draws blank rows above the document, and a click on one of
+        // those names no line at all.
+        let rel_row = (row - area.y) as isize + self.scroll_skip;
+        if rel_row < 0 {
+            return None;
         }
+        let rel_row = rel_row as usize / self.row_height();
         self.visible_row_pos(self.scroll_offset + rel_row)
             .map(|(_, line)| line)
     }
@@ -360,13 +366,17 @@ impl App {
             return;
         };
 
-        // A click on a foldable node's own fold marker toggles it
-        // without moving the cursor there — the marker is a pure fold
-        // control, not a row-selection target, mirroring the common
-        // tree-view idiom (e.g. VS Code's file-explorer disclosure
-        // triangle). Keyboard focus still shifts to the main pane
-        // regardless (`handle_mouse` already clears `override_focus`/
-        // `manage_focus` before calling here).
+        // A click on a foldable node's own fold marker toggles it, and
+        // `toggle_fold` puts the cursor on the node it toggled — the
+        // click named that node twice over, by pointing at it and by
+        // asking to change it. Keyboard focus still shifts to the main
+        // pane regardless (`handle_mouse` already clears
+        // `override_focus`/`manage_focus` before calling here).
+        //
+        // The caret lands at the row's `Home` rather than under the
+        // pointer, because `set_cursor` is what a node-level jump uses
+        // and the marker is left of every column the caret may rest
+        // on.
         //
         // Spec 0142: a footer line carries no fold glyph, so the check
         // is confined to the rows a node draws its own content on.

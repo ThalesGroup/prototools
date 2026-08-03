@@ -235,6 +235,12 @@ field name.
   (type_name) @type)
 ```
 
+**Superseded by spec 0225 S12**: `(extension_name) @type` is gone, and an
+extension name falls through to the blanket `(field_name) @attribute`.
+`[acme.blade]: 3` names a field, and on the wire it is a tag like any
+other field's, so it belongs in the field-name color. The `any_name`
+pattern stands: an Any key does hold a type name.
+
 The outer `any_name @type` capture (Goal 1's general case) and the
 inner `type_name @type` capture (Goal 2) target the same capture name
 by design — `any_name`'s `type_name` child *is* the "other message
@@ -703,6 +709,16 @@ this spec's own Goal 6 invention, distinguishing bracket *context* —
 list vs. extension/Any — which no external tool's textproto grammar
 does); their colors are repurposed from unrelated-but-visually-fitting
 VSCode scopes, noted as such.
+
+Three rows of the table below are **superseded by spec 0225 S12**, which
+put the annotation echo on the same line as the document text and made
+the borrowed VSCode colors collide there. `Type` is now orange (`#FE8019`
+dark / `#AF3A03` light); `StringSpecialUrl` keeps the blue-green under
+its own palette name; `Constant` takes `Number`'s color, a symbolic enum
+value and the number it stands for being one fact seen twice. In the
+ANSI-16 table below only `Constant` moved, to `Number`'s color for the
+same reason; `Type` stays cyan/blue there, because sixteen colors hold no
+orange and both warm candidates are already a severity tier.
 
 | `SyntaxRole` | Dark RGB (scope) | Light RGB (scope) | Modifier |
 |---|---|---|---|

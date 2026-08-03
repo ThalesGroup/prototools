@@ -603,32 +603,44 @@ where
                 // (its reason for being discarded here) and keeps a
                 // hovering pointer from looking like pending input.
                 Ok(ev) => break Some(ev),
-                Err(mpsc::TryRecvError::Empty) => match app.prefetch_step() {
-                    PrefetchStep::Progressed => {
-                        // Yielding to a pending event is not enough:
-                        // every deadline computed above — an expiring
-                        // message, the splash's auto-dismiss, a due
-                        // heat repaint, the activity tick — comes due
-                        // with no event to announce it, and this loop
-                        // is the only thing between them and the frame
-                        // that honors them. Without the check,
-                        // read-ahead holds the thread until it runs dry
-                        // and all four are simply late. Breaking with
-                        // no event is exactly the timeout case the
-                        // `Idle` arm below produces, and the
-                        // `*_forces` tests just past the loop already
-                        // know what to do with it.
+                // Spec 0235 S3: the incremental search takes this arm
+                // ahead of read-ahead. A sweep exists only while a
+                // pattern is being typed, and the user is waiting on
+                // its answer; read-ahead is speculative and is not.
+                Err(mpsc::TryRecvError::Empty) => match app.search_sweep_step() {
+                    SweepStep::Progressed => {
                         if Instant::now() >= deadline {
                             break None;
                         }
                         continue;
                     }
-                    PrefetchStep::Idle => {
-                        // Read-ahead has nothing left to do, so this is
-                        // the one place the loop genuinely sleeps.
-                        let timeout = deadline.saturating_duration_since(Instant::now());
-                        break rx.recv_timeout(timeout).ok(); // timeout elapsed => None
-                    }
+                    SweepStep::Idle => match app.prefetch_step() {
+                        PrefetchStep::Progressed => {
+                            // Yielding to a pending event is not enough:
+                            // every deadline computed above — an expiring
+                            // message, the splash's auto-dismiss, a due
+                            // heat repaint, the activity tick — comes due
+                            // with no event to announce it, and this loop
+                            // is the only thing between them and the frame
+                            // that honors them. Without the check,
+                            // read-ahead holds the thread until it runs dry
+                            // and all four are simply late. Breaking with
+                            // no event is exactly the timeout case the
+                            // `Idle` arm below produces, and the
+                            // `*_forces` tests just past the loop already
+                            // know what to do with it.
+                            if Instant::now() >= deadline {
+                                break None;
+                            }
+                            continue;
+                        }
+                        PrefetchStep::Idle => {
+                            // Read-ahead has nothing left to do, so this is
+                            // the one place the loop genuinely sleeps.
+                            let timeout = deadline.saturating_duration_since(Instant::now());
+                            break rx.recv_timeout(timeout).ok(); // timeout elapsed => None
+                        }
+                    },
                 },
                 // Cannot fire as the code stands: this loop holds `tx`
                 // for the Neovim handoff's reader respawn below, so a
@@ -687,7 +699,16 @@ where
             && Instant::now() >= last_mono_frame + STYLES_SETTLE_INTERVAL;
         let deadline_forces = ui_deadline.is_some_and(|d| Instant::now() >= d);
         let activity_forces = activity_prev_window.max(activity_window) != app.activity_shown;
-        redraw = event_forces || heat_forces || styles_force || deadline_forces || activity_forces;
+        // Spec 0235 S5: a sweep draws when its *answer* changes, not
+        // when it does work — it steps hundreds of times a second and a
+        // frame each would be the very stall this is meant to avoid.
+        let search_forces = app.take_search_dirty();
+        redraw = event_forces
+            || heat_forces
+            || styles_force
+            || deadline_forces
+            || activity_forces
+            || search_forces;
         redraw_why = if event_forces {
             match &received {
                 Some(event::AppEvent::Term(Event::Key(_))) => "key",
@@ -700,6 +721,8 @@ where
             "styles"
         } else if deadline_forces {
             "deadline"
+        } else if search_forces {
+            "search"
         } else {
             "activity"
         };

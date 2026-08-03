@@ -654,17 +654,7 @@ impl App {
             // `structural_version`. It does halve the pane's line
             // capacity (S8), so the scroll and pan offsets are clamped
             // against the geometry it just changed.
-            KeyCode::Char('w') if key.modifiers.is_empty() => {
-                self.wire = !self.wire;
-                // `clamp_pan_offset` re-syncs `scroll_offset` only when
-                // the cursor has moved since the last clamp, and it has
-                // not — the pane shrank under it instead. Forgetting
-                // the remembered row is how that guard is told the
-                // clamp is owed for a new geometry rather than a new
-                // cursor.
-                self.last_cursor_row = None;
-                self.clamp_pan_offset();
-            }
+            KeyCode::Char('w') if key.modifiers.is_empty() => self.toggle_wire(),
 
             // Toggle the main-pane inference-mismatch heat cue (spec
             // 0138) — hides/shows the cue without discarding the
@@ -735,6 +725,11 @@ impl App {
             KeyCode::Esc => {
                 self.select_anchor = None;
                 self.select_end = None;
+                // Spec 0235 S15/N5: and the search highlight — vim's
+                // `:nohlsearch` without the command. A highlight the
+                // user cannot dismiss leaves a third of a document
+                // tinted after a search for `id`.
+                self.clear_search_highlight();
             }
 
             // Spec 0131 §G1: `Ctrl-C` is the single, explicit copy key —

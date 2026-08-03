@@ -15,13 +15,19 @@
 (open_arrow) @punctuation.bracket
 (close_arrow) @punctuation.bracket
 
-; §1/§2 — extension_name/any_name get a distinct capture, separate from
-; ordinary field_name. Declared after (field_name) @attribute above so
-; last-match-wins precedence lets @type stand for extension_name/
-; any_name's byte range (field_name: $ => choice(extension_name,
-; any_name, identifier) has no other tokens of its own).
-(extension_name) @type
-
+; §1/§2 — extension_name/any_name, both reachable only through
+; field_name (field_name: $ => choice(extension_name, any_name,
+; identifier) has no other tokens of its own), so the blanket
+; (field_name) @attribute above already covers their byte ranges and
+; these patterns only narrow parts of them by last-match-wins.
+;
+; An extension name is left @attribute deliberately: `[acme.blade]: 3`
+; names a field, and on the wire it is a tag like any other field's, so
+; it belongs in the field-name color rather than in the type color it
+; used to borrow.
+;
+; An Any key does hold a type name, and that half takes @type. The
+; domain half is a URL, not a type, and keeps its own capture.
 (any_name
   (domain) @string.special.url
   (type_name) @type)
@@ -94,21 +100,58 @@
 (annotation) @comment
 
 (annotation_number) @number
-(annotation_attribute) @attribute
 
-; The declaration item — `[label] type [attribute] "=" number`, e.g.
-; `repeated int32 [packed=true] = 85`. The type name is the word
-; immediately before the `=`, with the optional attribute between them,
-; so two anchored patterns cover both published shapes without the
-; query having to know a single type name.
+; An enum field's wire value, `Color(99)` or the packed
+; `Color([1, 2])`. A number, wearing the number color, exactly like the
+; symbolic name it stands for on the document half of the line. The
+; parentheses go with it: they are one token, and a third split to make
+; them punctuation would buy nothing the eye needs.
+(annotation_enum_value) @number
+
+; The declaration item — `[label] type [enum_value] [attribute] "="
+; number`, e.g. `repeated int32 [packed=true] = 85` or `Type(5) = 5`.
+;
+; The label and the type both take @type: they are the two halves of
+; one statement about what this field is, and together they are what
+; the wire row's wire type borrows (spec 0225 S11), so splitting
+; their colors would make that half of the tag depend on whether the
+; field happened to be repeated.
+((annotation_word) @type
+ (#any-of? @type "repeated" "required"))
+
+; A wire-type name fills the same slot when there is no schema — an
+; unknown or invalid field has nothing else to say what it is — so it
+; takes the same color, and the wire row's wire type stays typed rather
+; than going gray exactly where the bytes matter most. The INVALID_*
+; names are not here: they are anomalies and the tiers below claim
+; them.
+((annotation_word) @type
+ (#any-of? @type "varint" "fixed64" "fixed32" "bytes" "group"))
+
+; The type name itself, identified by what follows it rather than by a
+; list the query would have to keep: a word immediately before an `=`,
+; an enum value, or a `[packed=true]` is the declared type.
 ((annotation_item (annotation_word) @type . (annotation_eq)))
-((annotation_item (annotation_word) @type . (annotation_attribute) . (annotation_eq)))
+((annotation_item (annotation_word) @type . (annotation_enum_value)))
+((annotation_item (annotation_word) @type . (annotation_attribute)))
+
+; The field number, after the `=`. It is the document's field number,
+; and the field-name color is what says so — the same color the name it
+; belongs to wears at the head of the line, and the same the wire row's
+; tag bytes borrow.
+((annotation_item (annotation_eq) . (annotation_number) @attribute))
+
+; `[packed=true]` joins `pack_size` in the landmark color: both are
+; statements about packing, one in the declaration and one in the
+; modifiers, and a reader who has learned the color on one meets it on
+; the other.
+(annotation_attribute) @annotation.landmark
 
 ; The severity tiers, last so they win over @type for a keyword that
 ; happens to sit before an `=`. Wire-type names (varint, fixed64,
 ; fixed32, bytes, group) are deliberately absent: they are the
-; document's own vocabulary quoted back, not an anomaly, and they keep
-; the blanket @comment above.
+; document's own vocabulary quoted back, not an anomaly, and the @type
+; pattern above is what claims them.
 ((annotation_word) @annotation.landmark
  (#any-of? @annotation.landmark
   "pack_size"))
@@ -124,4 +167,5 @@
   "TAG_OOR" "ETAG_OOR" "TYPE_MISMATCH" "MISSING" "END_MISMATCH"
   "OPEN_GROUP" "INVALID_TAG_TYPE" "INVALID_VARINT" "INVALID_FIXED64"
   "INVALID_FIXED32" "INVALID_LEN" "INVALID_GROUP_END"
+  "INVALID_STRING" "INVALID_PACKED_RECORDS"
   "TRUNCATED_BYTES"))

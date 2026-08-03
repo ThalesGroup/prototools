@@ -132,56 +132,81 @@ fn char_column(text: &str, byte: usize) -> usize {
 ///
 /// An `index` past the row's end pads with spaces and draws on the last
 /// one, which is how a blank row still gets a cell to carry the caret.
-fn restyle_char(
-    spans: &mut Vec<Span<'static>>,
-    index: usize,
-    restyle: impl FnOnce(Style) -> Style,
-) {
-    let mut seen = 0;
-    for i in 0..spans.len() {
-        let count = spans[i].content.chars().count();
-        if index >= seen + count {
-            seen += count;
-            continue;
-        }
-        let style = spans[i].style;
-        let text = spans[i].content.to_string();
-        let (start, ch) = text
-            .char_indices()
-            .nth(index - seen)
-            .expect("index - seen < the span's char count");
-        let end = start + ch.len_utf8();
-        let mut parts = Vec::with_capacity(3);
-        if start > 0 {
-            parts.push(Span::styled(text[..start].to_string(), style));
-        }
-        parts.push(Span::styled(text[start..end].to_string(), restyle(style)));
-        if end < text.len() {
-            parts.push(Span::styled(text[end..].to_string(), style));
-        }
-        spans.splice(i..=i, parts);
+fn restyle_char(spans: &mut Vec<Span<'static>>, index: usize, restyle: impl Fn(Style) -> Style) {
+    let drawn: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    if index < drawn {
+        restyle_range(spans, index..index + 1, restyle);
         return;
     }
     let base = spans.last().map(|s| s.style).unwrap_or_default();
-    if index > seen {
-        spans.push(Span::styled(" ".repeat(index - seen), base));
+    if index > drawn {
+        spans.push(Span::styled(" ".repeat(index - drawn), base));
     }
     spans.push(Span::styled(" ".to_string(), restyle(base)));
 }
 
-/// Spec 0194 S2/S4: put `caret` on the character at `index`.
+/// Spec 0235 S16: `restyle_char` over a character *range* — the same
+/// walk over the same coordinate system, which is characters of the
+/// *drawn* row for the reason `restyle_char` gives above.
 ///
-/// `Style::patch` composes it over whatever syntax color the character
-/// already had, so the caret keeps the color of what it rests on. But
-/// `REVERSED` is a *toggle*, not a color: adding a second one to a span
-/// that a drag selection has already turned inside out cancels it, and
-/// the caret would vanish on exactly the rows where the two cues
+/// Unlike `restyle_char` this does not pad: a search match is text that
+/// exists, so a range past the row's end is a range with nothing in it.
+fn restyle_range(
+    spans: &mut Vec<Span<'static>>,
+    range: Range<usize>,
+    restyle: impl Fn(Style) -> Style,
+) {
+    if range.is_empty() {
+        return;
+    }
+    let mut out: Vec<Span<'static>> = Vec::with_capacity(spans.len() + 2);
+    let mut seen = 0;
+    for span in spans.drain(..) {
+        let count = span.content.chars().count();
+        let (start, end) = (seen, seen + count);
+        seen = end;
+        if end <= range.start || start >= range.end {
+            out.push(span);
+            continue;
+        }
+        let style = span.style;
+        let text = span.content.into_owned();
+        let lo = byte_of_char(&text, range.start.saturating_sub(start));
+        let hi = byte_of_char(&text, range.end - start);
+        if lo > 0 {
+            out.push(Span::styled(text[..lo].to_string(), style));
+        }
+        out.push(Span::styled(text[lo..hi].to_string(), restyle(style)));
+        if hi < text.len() {
+            out.push(Span::styled(text[hi..].to_string(), style));
+        }
+    }
+    *spans = out;
+}
+
+/// The byte offset of `text`'s `n`-th character, or its length when it
+/// has fewer than `n`.
+fn byte_of_char(text: &str, n: usize) -> usize {
+    text.char_indices()
+        .nth(n)
+        .map_or(text.len(), |(byte, _)| byte)
+}
+
+/// Spec 0194 S2: put the caret on the character at `index`.
+///
+/// `Style::patch` composes `caret_style` over whatever syntax color the
+/// character already had, so the caret keeps the color of what it rests
+/// on. But `REVERSED` is a *toggle*, not a color: adding a second one to
+/// a span that a drag selection has already turned inside out cancels
+/// it, and the caret would vanish on exactly the rows where the two cues
 /// coincide. So the reversal is applied by flipping.
-fn apply_caret(spans: &mut Vec<Span<'static>>, index: usize, caret: Style) {
-    let reversing = caret.add_modifier.contains(Modifier::REVERSED);
+///
+/// Takes no style. Spec 0233 S2: the caret is drawn the same wherever it
+/// rests, and a parameter here is the door that rule exists to close.
+fn apply_caret(spans: &mut Vec<Span<'static>>, index: usize) {
     restyle_char(spans, index, move |style| {
-        let mut out = style.patch(caret);
-        if reversing && style.add_modifier.contains(Modifier::REVERSED) {
+        let mut out = style.patch(theme::caret_style());
+        if style.add_modifier.contains(Modifier::REVERSED) {
             out.add_modifier.remove(Modifier::REVERSED);
         }
         out
@@ -822,7 +847,7 @@ impl App {
                     }
                     heat_cue::HeatCueKind::Tie { tie_count, score } => Span::styled(
                         format!(" [{tie_count}@{score}]"),
-                        theme::style_for(SyntaxRole::Boolean, self.theme),
+                        theme::accent_style(self.theme),
                     ),
                 };
                 (Span::styled(heat_cue::HEAT_GLYPH, style), Some(suffix))
@@ -1051,7 +1076,10 @@ impl App {
         // terminal rows — everything from here down (the scroll clamp,
         // the window, the per-row vectors) is keyed by window index, and
         // the doubling happens once, in the `flat_map` that draws.
-        let pane_height = self.document_pane_height();
+        //
+        // Spec 0230: rounded up rather than down, and net of
+        // `scroll_skip`, because a half-line scroll leaves a partial
+        // line at each end and both are drawn.
         let cursor_row = if self.tree.is_empty() {
             0
         } else {
@@ -1063,9 +1091,16 @@ impl App {
         // vertical pan (`pan_vertical_*`, deliberately unclamped) would
         // immediately get fought back into following the cursor.
         if !self.tree.is_empty() && self.last_cursor_row != Some(cursor_row) {
-            clamp_scroll_to_visible(&mut self.scroll_offset, cursor_row, pane_height);
+            self.clamp_scroll_to_cursor(cursor_row);
             self.last_cursor_row = Some(cursor_row);
         }
+        // Spec 0235 S13: after the clamp above rather than before, so
+        // that a search's centering is the last word on the viewport.
+        // The two do not in fact contend — the clamp is gated on the
+        // cursor having moved, and a sweep (S8) never moves it.
+        self.center_search_match(inner);
+        let content_rows = (inner.height as isize + self.scroll_skip).max(0) as usize;
+        let pane_height = content_rows.div_ceil(self.row_height());
         // Spec 0185 S2: the row the cursor is *drawn* on, in composed
         // coordinates — distinct from `cursor_row` above, which stays in
         // committed visible-row coordinates because that is what
@@ -1157,16 +1192,26 @@ impl App {
         self.caret_suffix_len = suffix_len;
         self.clamp_caret_column();
 
-        // Spec 0194 S4: when the caret rests on one of the cursor node's
-        // braces and the *other* one is on screen, the partner carries
-        // the strong cue and the caret dims. Resolved here, once,
-        // because the partner is routinely on a different row from the
-        // caret — and because visibility is a property of this frame: a
-        // pan or a scroll decides it with no key pressed.
+        // Spec 0194 S4, as revised by spec 0233: when the caret rests
+        // *on* one of the cursor node's braces and the other one is on
+        // screen, the other one is tinted. Only it — the caret marks the
+        // member it stands on, and it marks it the same way it marks
+        // anything else. Resolved here, once, because the partner is
+        // routinely on a different row from the caret — and because
+        // visibility is a property of this frame: a pan or a scroll
+        // decides it with no key pressed.
         //
         // A brace counts as visible when its row is inside the window
         // *and* its column survives the pan and the pane's right edge.
+        //
+        // Spec 0234 S1: and a third case, because the caret's cell being
+        // a brace is not where the caret spends its time. A caret
+        // *voluntarily* at the Home anchor of the row that opens the
+        // pair speaks for that row's `{`. Voluntarily, on spec 0199 S1's
+        // rule: a caret a vertical move's clamp pushed to this column
+        // was passing over the row, not reading it.
         let caret_cell = (!self.tree.is_empty()).then(|| (self.cursor_line(), self.cursor_column));
+        let home_column = (self.caret_anchor == CaretAnchor::Home).then(|| self.caret_bounds().0);
         let partner =
             self.cursor_brace_pair()
                 .zip(caret_cell)
@@ -1175,6 +1220,8 @@ impl App {
                         Some(close)
                     } else if caret == close {
                         Some(open)
+                    } else if caret.0 == open.0 && Some(caret.1) == home_column {
+                        Some(close)
                     } else {
                         None
                     }
@@ -1187,13 +1234,27 @@ impl App {
             (index < inner.width as usize).then_some((row, index))
         });
 
+        // Spec 0235 S14: resolved per frame for the window only, the
+        // same rule and the same reason as spec 0187 S3's syntax pass —
+        // a match index kept across frames would need invalidating on
+        // every fold, splice and scroll, and a pane's worth of `find`
+        // costs less than the bookkeeping would.
+        let search_pattern = self.search_highlight_pattern();
+        let search_current = self.search_current_cell();
+        let search_styles = search_pattern.as_ref().map(|_| {
+            (
+                theme::search_current_style(self.theme),
+                theme::search_match_style(self.theme),
+            )
+        });
+
         let t_lines = std::time::Instant::now();
 
         // Spec 0225 S4: carried across the whole window so a packed run
         // drawn over many rows is walked once, not once per row.
         let mut packed_memo = wire::PackedCursor::default();
 
-        let text_lines: Vec<Line> = window
+        let mut text_lines: Vec<Line> = window
             .iter()
             .zip(heat_displays.iter())
             .enumerate()
@@ -1246,9 +1307,70 @@ impl App {
                         span.style = span.style.add_modifier(Modifier::REVERSED);
                     }
                 }
+                // Spec 0233 S3: a background patch, not a second
+                // inversion — and applied before the caret, since on a
+                // folded node's `{ ... }` row the two land three
+                // characters apart.
                 if let Some((partner_row, partner_index)) = partner_cell {
                     if partner_row == row {
-                        apply_caret(&mut spans, partner_index, theme::caret_style());
+                        let match_style = theme::brace_match_style(self.theme);
+                        restyle_char(&mut spans, partner_index, move |style| {
+                            style.patch(match_style)
+                        });
+                    }
+                }
+                // Spec 0235 S14: after the brace partner and before the
+                // caret, which is the order the four cues are listed in
+                // — the caret applied last so it still wins its cell.
+                if let (Some(pattern), Some((current, other))) = (&search_pattern, search_styles) {
+                    let text = self.row_text(display_row);
+                    let width = inner.width as usize;
+                    // Spec 0235 S22: a path match has nothing visible to
+                    // mark, so it gets one cell rather than a range —
+                    // exactly the cell the caret will land on at
+                    // `Enter`.
+                    let path_cell = search_current
+                        .filter(|&(line, _, _, on_path)| on_path && Some(line) == line_idx);
+                    if let Some((_, column, _, _)) = path_cell {
+                        if let Some(index) =
+                            (FOLD_FIELD_WIDTH + column).checked_sub(self.pan_offset)
+                        {
+                            if index + 1 < width {
+                                restyle_range(&mut spans, index + 1..index + 2, |style| {
+                                    style.patch(current)
+                                });
+                            }
+                        }
+                    }
+                    let mut at = 0;
+                    while let Some(found) = pattern.find_range(&text[at..]) {
+                        let start = char_column(&text, at + found.start);
+                        let chars = text[at + found.start..at + found.end].chars().count();
+                        // A zero-width match cannot happen — an empty
+                        // pattern never reaches here — but stepping past
+                        // the match's *start* rather than its end is
+                        // what keeps overlapping occurrences honest.
+                        at += found.start
+                            + text[at + found.start..]
+                                .chars()
+                                .next()
+                                .map_or(1, char::len_utf8);
+                        let style = if search_current.is_some_and(|(line, column, _, on_path)| {
+                            !on_path && Some(line) == line_idx && column == start
+                        }) {
+                            current
+                        } else {
+                            other
+                        };
+                        let Some(index) = (FOLD_FIELD_WIDTH + start).checked_sub(self.pan_offset)
+                        else {
+                            continue;
+                        };
+                        let lo = index + 1;
+                        let hi = (lo + chars).min(width);
+                        if lo < hi {
+                            restyle_range(&mut spans, lo..hi, |s| s.patch(style));
+                        }
                     }
                 }
                 if let (true, Some(panned_chars)) = (on_cursor_row, panned_chars) {
@@ -1256,14 +1378,7 @@ impl App {
                     if let Some(index) =
                         self.caret_draw_index(self.cursor_column, text_chars, panned_chars)
                     {
-                        // Spec 0194 S4: the caret dims to a tint exactly
-                        // when the matching brace is on screen to carry
-                        // the strong cue instead.
-                        let style = match partner_cell {
-                            Some(_) => theme::caret_paired_style(self.theme),
-                            None => theme::caret_style(),
-                        };
-                        apply_caret(&mut spans, index, style);
+                        apply_caret(&mut spans, index);
                     }
                 }
 
@@ -1305,6 +1420,18 @@ impl App {
                 std::iter::once(Line::from(spans)).chain(wire_line)
             })
             .collect();
+        // Spec 0230: the half-line scroll, applied once at the end. The
+        // rows above are all built the same way whether or not the first
+        // of them is fully on screen, so this is where the difference
+        // belongs — a `skip`/`repeat` pair rather than anything the row
+        // builders have to know about.
+        let text_lines = match self.scroll_skip {
+            0 => text_lines,
+            skip if skip > 0 => text_lines.split_off((skip as usize).min(text_lines.len())),
+            skip => std::iter::repeat_n(Line::default(), skip.unsigned_abs())
+                .chain(text_lines)
+                .collect(),
+        };
         let d_lines = t_lines.elapsed();
         frame.render_widget(Paragraph::new(text_lines), inner);
         trace::trace!(
@@ -1466,7 +1593,29 @@ impl App {
                     self.command_pan_offset = pos + 1 - width;
                 }
             }
-            let spans = pan_spans(vec![Span::raw(cmd_text)], self.command_pan_offset);
+            // Spec 0235 S10: while a search prompt is open and its live
+            // sweep has no match, the *pattern* says so — this row and
+            // the `pattern not found` message are the same row, and
+            // writing the message per keystroke would flicker the
+            // prompt away under the user's hands. "Still looking" and
+            // "finished, nothing there" share the tint deliberately:
+            // from the user's seat those are one fact.
+            let unmatched = matches!(self.command_kind, CommandLineKind::Search(_))
+                && self.command_buffer.as_ref().is_some_and(|b| !b.is_empty())
+                && !matches!(&self.search_sweep, Some(s) if s.found.is_some());
+            let raw = if unmatched {
+                let (prefix, pattern) = cmd_text.split_at(1);
+                vec![
+                    Span::raw(prefix.to_string()),
+                    Span::styled(
+                        pattern.to_string(),
+                        theme::search_unmatched_style(self.theme),
+                    ),
+                ]
+            } else {
+                vec![Span::raw(cmd_text)]
+            };
+            let spans = pan_spans(raw, self.command_pan_offset);
             frame.render_widget(Paragraph::new(Line::from(spans)), cmd_row);
             if let Some(pos) = cursor_pos {
                 let x = cmd_row.x + (pos - self.command_pan_offset) as u16;

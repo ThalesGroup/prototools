@@ -66,6 +66,7 @@ use crate::render_cache::RenderCache;
 use crate::theme::{self, ThemeKind};
 use help_text::HELP_TEXT;
 use prefetch::{PrefetchStep, PrefetchTrace, PrefetchWalk};
+use search::{SearchScope, SweepStep};
 pub use terminal::run;
 
 /// Fixed horizontal-pan step, in columns (spec 0113 D24) — a generous but
@@ -182,29 +183,6 @@ fn longest_common_prefix(items: &[&str]) -> String {
     first[..end].to_string()
 }
 
-/// Shared wrap-around search order behind the override- and manage-pane
-/// `/`/`?`/`n` commands (`jump_to_override_match`, `jump_to_manage_match`):
-/// checks each of the `n` 0-based indices, starting at `start` and moving
-/// in `dir`, wrapping around exactly once; returns the first index for
-/// which `matches` returns true, or `None` if none did.
-fn search_wrap(
-    n: usize,
-    start: usize,
-    dir: SearchDir,
-    mut matches: impl FnMut(usize) -> bool,
-) -> Option<usize> {
-    for d in 0..n {
-        let i = match dir {
-            SearchDir::Forward => (start + d) % n,
-            SearchDir::Backward => (start + n - d) % n,
-        };
-        if matches(i) {
-            return Some(i);
-        }
-    }
-    None
-}
-
 /// Spec 0195 S2: the pattern behind every pane's `/`/`?`/`n`, carrying
 /// vim's `smartcase` rule — an all-lowercase pattern matches
 /// case-insensitively, a pattern containing any uppercase character
@@ -242,36 +220,82 @@ impl SearchPattern {
     /// Byte offset of the first match in `haystack`, which spec 0194 S8
     /// needs so a search hit can put the caret on the match rather than
     /// merely on its row.
+    ///
+    /// Spec 0235 S1: the case-insensitive arm runs `starts_with_folded`
+    /// only at positions a `memchr2` over the needle's first character's
+    /// two cases proposes, instead of at every one. Spec 0235's
+    /// Background 4 measured the same walk with a `memchr` in front of
+    /// it — that is what the case-*sensitive* row of its table is — at
+    /// six times the speed.
+    ///
+    /// Both guards are load-bearing, and the second is the subtle one.
+    /// A prefilter is only the same predicate when folding is one byte
+    /// to one byte, which is true of ASCII and not of Unicode in either
+    /// direction: `U+212A` KELVIN SIGN folds to `k` and `U+0130` folds
+    /// to `i` plus a combining dot, so a haystack holding either would
+    /// lose a match that the every-position walk finds. Rendered
+    /// textproto is ASCII on all but a handful of string values, so the
+    /// fallback is rare and exact.
     pub(super) fn find(&self, haystack: &str) -> Option<usize> {
+        self.find_range(haystack).map(|r| r.start)
+    }
+
+    /// The first match's byte range. Spec 0235 S14 tints a match over
+    /// its whole extent, and folding makes that extent the haystack's
+    /// own rather than the needle's — `İ` is two bytes on screen and
+    /// three folded characters in the needle.
+    pub(super) fn find_range(&self, haystack: &str) -> Option<Range<usize>> {
         if self.case_sensitive {
-            return haystack.find(&self.needle);
+            let at = haystack.find(&self.needle)?;
+            return Some(at..at + self.needle.len());
+        }
+        if let Some(first) = self.needle.as_bytes().first().copied() {
+            if first.is_ascii() && haystack.is_ascii() {
+                let upper = first.to_ascii_uppercase();
+                return memchr::memchr2_iter(first, upper, haystack.as_bytes()).find_map(|i| {
+                    folded_prefix_len(&haystack[i..], &self.needle).map(|n| i..i + n)
+                });
+            }
         }
         haystack
             .char_indices()
-            .find(|&(i, _)| starts_with_folded(&haystack[i..], &self.needle))
-            .map(|(i, _)| i)
+            .find_map(|(i, _)| folded_prefix_len(&haystack[i..], &self.needle).map(|n| i..i + n))
     }
 }
 
-/// Whether `haystack`, lowercased one `char` at a time, begins with
-/// `needle` — which the caller has already lowercased.
+/// How many *haystack* bytes `needle` covers when `haystack` is
+/// lowercased one `char` at a time — or `None` when `haystack` does not
+/// begin with it. The caller has already lowercased `needle`.
 ///
 /// Folding as we compare is what keeps `is_match` allocation-free (spec
 /// 0195 G4). It goes through `char::to_lowercase`, which yields an
 /// iterator rather than a `char`, because a few characters lowercase to
 /// more than one (`İ` to `i` plus a combining dot) and a one-to-one fold
 /// would silently misalign the comparison from there on.
-fn starts_with_folded(haystack: &str, needle: &str) -> bool {
-    let mut folded = haystack.chars().flat_map(char::to_lowercase);
-    let mut wanted = needle.chars();
-    loop {
-        let Some(w) = wanted.next() else {
-            return true;
-        };
-        if folded.next() != Some(w) {
-            return false;
+///
+/// The answer is a haystack length rather than the needle's own because
+/// the two differ for exactly those characters — which is also why a
+/// needle running out mid-expansion still consumes the whole character
+/// that produced it: half a `char` is not a length a caller can slice.
+fn folded_prefix_len(haystack: &str, needle: &str) -> Option<usize> {
+    let mut wanted = needle.chars().peekable();
+    let mut consumed = 0;
+    for ch in haystack.chars() {
+        if wanted.peek().is_none() {
+            break;
         }
+        for f in ch.to_lowercase() {
+            match wanted.peek() {
+                None => break,
+                Some(&w) if w == f => {
+                    wanted.next();
+                }
+                Some(_) => return None,
+            }
+        }
+        consumed += ch.len_utf8();
     }
+    wanted.peek().is_none().then_some(consumed)
 }
 
 /// Shared clamp arithmetic behind the override- and manage-pane highlight
@@ -857,6 +881,21 @@ pub struct App {
     pending_double_click: bool,
     folded: HashSet<usize>,
     scroll_offset: usize,
+    /// Spec 0230: the fractional part of the vertical scroll, in terminal
+    /// rows, signed.
+    ///
+    /// `scroll_offset` names a whole document line, which in wire mode is
+    /// two terminal rows thick — too coarse a unit to hold a row still
+    /// across a `w` toggle. This is the remainder: positive means that
+    /// many terminal rows of the line at `scroll_offset` are cut off the
+    /// top of the pane, negative means that many blank rows are drawn
+    /// above the document's first line.
+    ///
+    /// The pair is always normalized so that the two together name the
+    /// same *terminal* row of the document (`scroll_top`), which leaves
+    /// the value in `0..row_height()` except at the very top, where there
+    /// is no whole line left to borrow from and it goes negative.
+    scroll_skip: isize,
     /// `cursor_display_row()`'s value as of the last render pass that
     /// applied `clamp_scroll_to_visible` to `scroll_offset` — compared
     /// against the *current* row at the top of every render, so the
@@ -1184,6 +1223,23 @@ pub struct App {
     /// repeats it in the same direction; an empty `/`/`?` confirmation
     /// reuses the pattern (spec 0114 §4, mirroring `last_override_search`).
     last_search: Option<(SearchDir, String)>,
+    /// Spec 0235 S2: the search in flight, or the finished one whose
+    /// answer the prompt is still showing. `None` outside a search.
+    search_sweep: Option<search::SearchSweep>,
+    /// Spec 0235 S6: where the open `/`/`?` prompt was opened from —
+    /// what each keystroke searches again from, and what `Esc` restores.
+    search_origin: Option<search::SearchOrigin>,
+    /// Spec 0235 S15: whether search matches are drawn. On while a
+    /// `Search` prompt is open, and stays on after a commit and after
+    /// `n`/`N`; `Esc` clears it, inside the prompt and outside it.
+    search_highlight: bool,
+    /// Spec 0235 S5: a sweep's *result* changed and owes a frame.
+    /// Consumed by `run_loop` alongside its other redraw forces.
+    search_dirty: bool,
+    /// Spec 0235 S13: a match needs bringing into view. Set by the
+    /// sweep, cleared by the `render` pass that centers it — the pane's
+    /// height and width are known nowhere else.
+    search_center: bool,
     /// Active Tab-completion cycle state (spec 0113 D26); `None` when not
     /// currently cycling.
     completion: Option<CompletionState>,
@@ -1376,6 +1432,7 @@ impl App {
             pending_double_click: false,
             folded: HashSet::new(),
             scroll_offset: 0,
+            scroll_skip: 0,
             last_cursor_row: None,
             pan_offset: 0,
             override_pan_offset: 0,
@@ -1438,6 +1495,11 @@ impl App {
             command_kind: CommandLineKind::Command,
             command_cursor: 0,
             last_search: None,
+            search_sweep: None,
+            search_origin: None,
+            search_highlight: false,
+            search_dirty: false,
+            search_center: false,
             completion: None,
             splash: true,
             splash_deadline: Instant::now() + SPLASH_TIMEOUT,
@@ -1661,6 +1723,7 @@ mod override_select;
 mod prefetch;
 mod preview_truncate;
 mod render;
+mod search;
 mod structure;
 mod terminal;
 mod tiered;

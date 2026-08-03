@@ -58,9 +58,9 @@ pub enum SyntaxRole {
     PunctuationBracketExtension,
     /// The three `#@` annotation severity tiers (spec 0225 §S12). Which
     /// keyword is which tier is decided by `highlights.scm`'s `#any-of?`
-    /// lists, mirroring `crate::annotation`'s; what a tier looks like is
-    /// decided by `theme::tier_style`, which a wire row reaches
-    /// directly.
+    /// lists, mirroring `crate::annotation`'s; what color a tier is is
+    /// decided by `theme::tier_color`, which a wire row reaches through
+    /// `theme::tier_band`.
     AnnotationLandmark,
     AnnotationNonCanonical,
     AnnotationInvalid,
@@ -325,7 +325,9 @@ mod tests {
     #[test]
     fn extension_field() {
         let text = "[pkg.Ext]: 10\n";
-        assert_eq!(roles_at(text, "pkg.Ext"), vec![SyntaxRole::Type]);
+        // A field name, not a type: `[pkg.Ext]: 10` names a field, and
+        // on the wire it is a tag like any other field's.
+        assert_eq!(roles_at(text, "pkg.Ext"), vec![SyntaxRole::Attribute]);
         assert!(
             colorize(text)
                 .iter()
@@ -507,7 +509,12 @@ mod tests {
             );
         }
         assert_eq!(roles_across(text, "hello"), vec![SyntaxRole::StringLiteral]);
-        assert_eq!(roles_across(text, "#@ bytes"), vec![SyntaxRole::Comment]);
+        // The marker stays comment; `bytes` is a wire-type name and
+        // takes the type color.
+        assert_eq!(
+            roles_across(text, "#@ bytes"),
+            vec![SyntaxRole::Comment, SyntaxRole::Type],
+        );
 
         // Same defect, hex form, and an octal escape whose value is out
         // of range for a byte — still one token (spec 0196 N2: the
@@ -566,11 +573,11 @@ mod tests {
         );
         // `bytes = 4` is a field declaration, so spec 0225 S12's query
         // reads the word before the `=` as a type and the number after
-        // it as a number. What this test is about is the bytes that are
-        // *not* here: none of the annotation is string-colored.
+        // it as the field number. What this test is about is the bytes
+        // that are *not* here: none of the annotation is string-colored.
         assert_eq!(
             roles_across(text, "#@ bytes = 4"),
-            vec![SyntaxRole::Comment, SyntaxRole::Type, SyntaxRole::Number],
+            vec![SyntaxRole::Comment, SyntaxRole::Type, SyntaxRole::Attribute],
         );
         // The string closed, so the following line is still a field.
         assert_eq!(roles_at(text, "next_field"), vec![SyntaxRole::Attribute]);
@@ -729,12 +736,17 @@ mod tests {
         }
     }
 
-    /// The role a keyword of `tier` must end up wearing. `None` — no
-    /// tier — is `Comment`, the blanket every annotation starts from.
+    /// The role a keyword of `tier` must end up wearing.
+    ///
+    /// The untiered names are exactly the wire types, and they take
+    /// `Type`: an unknown or invalid field has nothing but its wire type
+    /// to say what it is, so the name fills the slot a declared type
+    /// would, and the wire row's wire type borrows it instead of going
+    /// gray exactly where the bytes matter most.
     fn role_for(tier: Option<crate::annotation::Tier>) -> SyntaxRole {
         use crate::annotation::Tier;
         match tier {
-            None => SyntaxRole::Comment,
+            None => SyntaxRole::Type,
             Some(Tier::Landmark) => SyntaxRole::AnnotationLandmark,
             Some(Tier::NonCanonical) => SyntaxRole::AnnotationNonCanonical,
             Some(Tier::Invalid) => SyntaxRole::AnnotationInvalid,
@@ -798,9 +810,9 @@ mod tests {
         );
         assert_eq!(
             roles_across(text, "varint"),
-            vec![SyntaxRole::Comment],
+            vec![SyntaxRole::Type],
             "a wire-type name is the document's own vocabulary quoted, \
-             not an anomaly",
+             not an anomaly — it is what the field is",
         );
     }
 
@@ -824,21 +836,31 @@ mod tests {
     fn the_declaration_echo_matches_the_documents_own_styles() {
         let text = "x: 1  #@ repeated int32 [packed=true] = 85; pack_size: 3\n";
         assert_eq!(roles_across(text, "int32"), vec![SyntaxRole::Type]);
-        assert_eq!(roles_across(text, "85"), vec![SyntaxRole::Number]);
+        assert_eq!(
+            roles_across(text, "repeated"),
+            vec![SyntaxRole::Type],
+            "the label and the type are two halves of one statement \
+             about what the field is",
+        );
+        // The field number is the document's own, and wears the color
+        // its name wears at the head of the line — not the value color.
+        assert_eq!(roles_across(text, "85"), vec![SyntaxRole::Attribute]);
+        // Both statements about packing, one in the declaration and one
+        // in the modifiers, wear the landmark accent.
         assert_eq!(
             roles_across(text, "[packed=true]"),
-            vec![SyntaxRole::Attribute],
+            vec![SyntaxRole::AnnotationLandmark],
         );
         assert_eq!(
             roles_across(text, "pack_size"),
             vec![SyntaxRole::AnnotationLandmark],
         );
 
-        // The same two captures the decoded text itself produces for a
-        // type name and a number — which is the claim being made.
+        // An extension name is a field name: `[acme.blade]: 3` names a
+        // field, and on the wire it is a tag like any other field's.
         assert_eq!(
             roles_across("[com.example.ext]: 1\n", "com.example.ext"),
-            vec![SyntaxRole::Type],
+            vec![SyntaxRole::Attribute],
         );
         assert_eq!(roles_across("n: 85\n", "85"), vec![SyntaxRole::Number]);
 
@@ -849,6 +871,26 @@ mod tests {
                 "google.protobuf.FileDescriptorProto",
             ),
             vec![SyntaxRole::Type],
+        );
+    }
+
+    /// Spec 0225 S12. An enum field's declaration is two facts, not
+    /// one: `Type(5)` is a type name and the number it resolved to, and
+    /// the number wears the value color the symbolic name wears on the
+    /// document half of the same line.
+    #[test]
+    fn an_enum_declaration_splits_its_name_from_its_value() {
+        let text = "type: TYPE_INT32  #@ Type(5) = 5\n";
+        assert_eq!(roles_across(text, "Type"), vec![SyntaxRole::Type]);
+        assert_eq!(roles_across(text, "(5)"), vec![SyntaxRole::Number]);
+        // The symbolic name in the document and the number it stands
+        // for in the annotation: one value, one color.
+        assert_eq!(roles_across(text, "TYPE_INT32"), vec![SyntaxRole::Constant]);
+        // A packed enum renders its whole run in the parentheses, and
+        // it is still one number-colored token.
+        assert_eq!(
+            roles_across("x: 1  #@ Color([1, 2]) = 7\n", "([1, 2])"),
+            vec![SyntaxRole::Number],
         );
     }
 

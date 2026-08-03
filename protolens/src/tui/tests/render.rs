@@ -1270,12 +1270,37 @@ fn caret_cells(app: &App, terminal: &Terminal<TestBackend>) -> Vec<(usize, Strin
     })
 }
 
-/// The cells drawn in `theme::caret_paired_style` — the caret dimmed to
-/// a tint because its matching brace is on screen carrying the strong
-/// cue instead (spec 0194 S4).
-fn paired_cells(app: &App, terminal: &Terminal<TestBackend>) -> Vec<(usize, String)> {
-    let want = crate::theme::caret_paired_style(app.theme).bg;
+/// The cells drawn in `theme::brace_match_style` — the brace matching
+/// the one the caret is standing on (spec 0233 S3).
+fn brace_match_cells(app: &App, terminal: &Terminal<TestBackend>) -> Vec<(usize, String)> {
+    let want = crate::theme::brace_match_style(app.theme).bg;
     marked_cells(app, terminal, move |s| s.bg == want)
+}
+
+/// The cells drawn in `theme::search_current_style` — the one match the
+/// sweep is standing on (spec 0235 S14).
+fn search_current_cells(app: &App, terminal: &Terminal<TestBackend>) -> Vec<(usize, String)> {
+    let want = crate::theme::search_current_style(app.theme).bg;
+    marked_cells(app, terminal, move |s| s.bg == want)
+}
+
+/// The cells drawn in `theme::search_match_style` — every *other*
+/// occurrence of the pattern in the window (spec 0235 S14).
+fn search_match_cells(app: &App, terminal: &Terminal<TestBackend>) -> Vec<(usize, String)> {
+    let want = crate::theme::search_match_style(app.theme).bg;
+    marked_cells(app, terminal, move |s| s.bg == want)
+}
+
+/// Search for `pattern` the way the keyboard does — `/`, the pattern,
+/// `Enter` — which is the only path that leaves `last_search` set, and
+/// so the only one spec 0235 S15's highlight outlives.
+fn search_by_key(app: &mut App, pattern: &str) {
+    app.splash = false;
+    app.term_width = 120;
+    for c in std::iter::once('/').chain(pattern.chars()) {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 }
 
 /// Put the caret on one member of the cursor node's brace pair.
@@ -1418,38 +1443,39 @@ fn row_content_and_row_spans_agree_byte_for_byte() {
     }
 }
 
-/// Spec 0194 test-plan item 11 — spec 0193's brace-highlight test
-/// rewritten rather than deleted. Spec 0193 lit both of the cursor
-/// node's braces in a color of their own, all the time; spec 0194 keeps
-/// only the pairing *the caret is standing on*, and splits the cue in
-/// two so the strong half marks the brace the user is looking for.
-/// The three states of S4's table, in order.
+/// Spec 0233 test-plan item 1 — spec 0194's item 11 with the two styles
+/// the other way round. The three states the pair can be in, and in all
+/// three the caret's own cell is `caret_style`: that invariance is what
+/// the spec is for.
 #[test]
 fn a_brace_pairs_with_its_match_only_when_the_caret_is_on_it() {
-    // Off a brace: one inverted cell, and no partner tint anywhere.
+    // Off a brace: one inverted cell, and no match tint anywhere. One
+    // column right of Home, since Home on a bracketed header is a
+    // pairing state of its own (spec 0234).
     let (mut app, items) = repeated_message_fixture();
     app.set_cursor(items[1]);
     let header = app.absolute_start(items[1]);
-    let first_non_blank = app.document_lines()[header]
+    app.cursor_column += 1;
+    app.caret_anchor = CaretAnchor::Free;
+    let second = app.document_lines()[header]
         .trim_start()
         .chars()
-        .next()
-        .expect("the header row is not blank")
+        .nth(1)
+        .expect("the header row is longer than one character")
         .to_string();
     let terminal = drawn_frame(&mut app, 40, 12);
     assert_eq!(
         caret_cells(&app, &terminal),
-        vec![(header, first_non_blank)],
-        "the caret alone, on the row's first non-blank"
+        vec![(header, second)],
+        "the caret alone, one column into the row's text"
     );
     assert!(
-        paired_cells(&app, &terminal).is_empty(),
-        "nothing is paired with a caret that is not on a brace"
+        brace_match_cells(&app, &terminal).is_empty(),
+        "nothing is matched with a caret that is not on a brace"
     );
 
-    // On a brace whose match is scrolled out of the window: the caret
-    // keeps the strong cue, since there is nothing on screen to point
-    // at with it.
+    // On a brace whose match is scrolled out of the window: nothing to
+    // point at, so nothing is tinted.
     let (mut app, items) = repeated_message_fixture();
     app.set_cursor(items[2]);
     let (footer, _) = put_caret_on_brace(&mut app, true);
@@ -1463,10 +1489,10 @@ fn a_brace_pairs_with_its_match_only_when_the_caret_is_on_it() {
         vec![(footer, "}".to_string())],
         "an unmatchable brace is drawn like any other caret"
     );
-    assert!(paired_cells(&app, &terminal).is_empty());
+    assert!(brace_match_cells(&app, &terminal).is_empty());
 
-    // On a brace whose match is in the window: the caret dims to a
-    // tint and the *match* takes the inversion.
+    // On a brace whose match is in the window: the match is tinted and
+    // the caret is drawn exactly as it was in the other two states.
     let (mut app, items) = repeated_message_fixture();
     app.set_cursor(items[1]);
     let (open_line, _) = put_caret_on_brace(&mut app, false);
@@ -1474,33 +1500,86 @@ fn a_brace_pairs_with_its_match_only_when_the_caret_is_on_it() {
     let terminal = drawn_frame(&mut app, 40, 12);
     assert_eq!(
         caret_cells(&app, &terminal),
-        vec![(close_line, "}".to_string())],
-        "the strong cue belongs to the brace the user is looking for"
+        vec![(open_line, "{".to_string())],
+        "the caret keeps its own rendering on a brace"
     );
     assert_eq!(
-        paired_cells(&app, &terminal),
-        vec![(open_line, "{".to_string())],
-        "and the caret itself keeps only the tint"
+        brace_match_cells(&app, &terminal),
+        vec![(close_line, "}".to_string())],
+        "and the brace it names wears the tint"
     );
 }
 
-/// Spec 0194 test-plan item 12. Whether the match is on screen is a
-/// property of the frame, not of the last keypress, so it has to be
-/// re-resolved on every draw: panning the match off the left edge must
-/// hand the strong cue back to the caret, and panning back must undo
-/// that — with nothing that moves the cursor pressed in between.
+/// Spec 0234 test-plan item 1. The caret's cell being a brace is not
+/// where the caret spends its time — `set_cursor`, `^`/`Ctrl-a` and
+/// `j`/`k` all leave it on the row's first non-blank — so a *voluntary*
+/// Home speaks for the `{` its row opens. A Home reached by a vertical
+/// move's clamp does not, on spec 0199 S1's rule.
 #[test]
-fn losing_sight_of_the_match_returns_the_strong_cue_to_the_caret() {
+fn a_home_caret_lights_the_brace_its_row_opens() {
+    let (mut app, items) = repeated_message_fixture();
+    app.set_cursor(items[1]);
+    let header = app.absolute_start(items[1]);
+    let close_line = app.node_lines(items[1]).end - 1;
+    let first_non_blank = app.document_lines()[header]
+        .trim_start()
+        .chars()
+        .next()
+        .expect("the header row is not blank")
+        .to_string();
+    assert_eq!(
+        app.caret_anchor,
+        CaretAnchor::Home,
+        "a node-level jump declares the anchor"
+    );
+
+    let mut terminal = drawn_frame(&mut app, 40, 12);
+    assert_eq!(
+        brace_match_cells(&app, &terminal),
+        vec![(close_line, "}".to_string())],
+        "the row opens a message, so its close is named"
+    );
+    assert_eq!(
+        caret_cells(&app, &terminal),
+        vec![(header, first_non_blank.clone())],
+        "and the caret is drawn where and how it always is"
+    );
+
+    // The same column, arrived at the way a vertical move would leave
+    // it: pinned there by a clamp with a longer column still wanted.
+    app.caret_anchor = CaretAnchor::Free;
+    app.desired_column = app.cursor_column + 5;
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert!(
+        brace_match_cells(&app, &terminal).is_empty(),
+        "an involuntary Home was passing over the row, not reading it"
+    );
+    assert_eq!(
+        caret_cells(&app, &terminal),
+        vec![(header, first_non_blank)]
+    );
+}
+
+/// Spec 0233 test-plan item 2, spec 0194's item 12 renamed. Whether the
+/// match is on screen is a property of the frame, not of the last
+/// keypress, so it has to be re-resolved on every draw: panning the
+/// match off the left edge must drop the tint and panning back must
+/// restore it — with nothing that moves the cursor pressed in between,
+/// and with the caret untouched throughout.
+#[test]
+fn the_match_highlight_is_resolved_every_frame() {
     let (mut app, items) = repeated_message_fixture();
     app.set_cursor(items[1]);
     let (open_line, _) = put_caret_on_brace(&mut app, false);
     let close_line = app.node_lines(items[1]).end - 1;
+    let caret = vec![(open_line, "{".to_string())];
     let mut terminal = drawn_frame(&mut app, 40, 12);
     assert_eq!(
-        paired_cells(&app, &terminal).len(),
-        1,
-        "paired to begin with"
+        brace_match_cells(&app, &terminal),
+        vec![(close_line, "}".to_string())],
+        "matched to begin with"
     );
+    assert_eq!(caret_cells(&app, &terminal), caret);
 
     // Pan just far enough to take the closing brace off the left edge.
     // The caret's own `{` is further right on a more deeply indented
@@ -1508,31 +1587,33 @@ fn losing_sight_of_the_match_returns_the_strong_cue_to_the_caret() {
     let (_, (_, close_column)) = app.cursor_brace_pair().expect("the node is bracketed");
     app.pan_offset = render::FOLD_FIELD_WIDTH + close_column + 1;
     terminal.draw(|frame| app.render(frame)).unwrap();
+    assert!(
+        brace_match_cells(&app, &terminal).is_empty(),
+        "a match panned out of sight is not tinted"
+    );
     assert_eq!(
         caret_cells(&app, &terminal),
-        vec![(open_line, "{".to_string())],
-        "with the match panned out the caret takes the strong cue back"
+        caret,
+        "and the caret does not notice"
     );
-    assert!(paired_cells(&app, &terminal).is_empty());
 
     app.pan_offset = 0;
     terminal.draw(|frame| app.render(frame)).unwrap();
     assert_eq!(
-        caret_cells(&app, &terminal),
+        brace_match_cells(&app, &terminal),
         vec![(close_line, "}".to_string())],
-        "and panning back restores the pair"
+        "panning back restores the pair"
     );
-    assert_eq!(
-        paired_cells(&app, &terminal),
-        vec![(open_line, "{".to_string())]
-    );
+    assert_eq!(caret_cells(&app, &terminal), caret);
 }
 
-/// Spec 0194 test-plan item 13. A folded node carries its whole pair on
-/// one row, and the closing half of it is synthetic — text that exists
-/// only as an insertion, at a byte offset `row_text` and `row_spans`
-/// disagree about. Drawing the caret by character index over the
-/// finished span list is what keeps the two halves apart here.
+/// Spec 0233 test-plan item 3, spec 0194's item 13. A folded node
+/// carries its whole pair on one row, and the closing half of it is
+/// synthetic — text that exists only as an insertion, at a byte offset
+/// `row_text` and `row_spans` disagree about. Drawing the caret by
+/// character index over the finished span list is what keeps the two
+/// halves apart here; and this is the row where the match tint is laid
+/// over `cursor_row_style`, so the two backgrounds have to differ.
 #[test]
 fn a_folded_node_pairs_its_synthetic_closing_brace_on_the_same_row() {
     let (mut app, items) = repeated_message_fixture();
@@ -1544,13 +1625,13 @@ fn a_folded_node_pairs_its_synthetic_closing_brace_on_the_same_row() {
     let terminal = drawn_frame(&mut app, 40, 12);
     assert_eq!(
         caret_cells(&app, &terminal),
-        vec![(header, "}".to_string())],
-        "the collapse summary's closing brace is the match"
+        vec![(header, "{".to_string())],
+        "the caret is on the opening brace"
     );
     assert_eq!(
-        paired_cells(&app, &terminal),
-        vec![(header, "{".to_string())],
-        "both halves are on the caret's row, styled differently"
+        brace_match_cells(&app, &terminal),
+        vec![(header, "}".to_string())],
+        "and the collapse summary's synthetic closing brace is the match"
     );
 }
 
@@ -1930,4 +2011,122 @@ fn eager_fallback_app() -> App {
     let blob = [0x08u8, 0x05];
     let decoded = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Inner"), 2).unwrap();
     app_named(decoded, ctx, "test.pb")
+}
+
+/// Spec 0235 test-plan item 13 (G5, S14). Every occurrence in the window
+/// is tinted, over its whole extent, and the one `Enter` landed on is
+/// tinted differently — which is what makes `n` readable when several
+/// matches share a row.
+#[test]
+fn every_visible_match_is_tinted_and_the_current_one_differently() {
+    let mut app = sibling_leaves_app(&["ab ab ab", "zz"]);
+    // Forward from the first row: past `zz`, wrapping onto the first
+    // occurrence of the row it started on.
+    search_by_key(&mut app, "ab");
+    assert_eq!((app.cursor, app.cursor_column), (0, 0));
+
+    let terminal = drawn_frame(&mut app, 40, 8);
+    assert_eq!(
+        search_current_cells(&app, &terminal),
+        vec![(0, "a".to_string()), (0, "b".to_string())],
+        "the current match, over its whole extent"
+    );
+    assert_eq!(
+        search_match_cells(&app, &terminal),
+        vec![
+            (0, "a".to_string()),
+            (0, "b".to_string()),
+            (0, "a".to_string()),
+            (0, "b".to_string())
+        ],
+        "and the other two occurrences of the row"
+    );
+}
+
+/// Spec 0235 test-plan item 14 (G5, S15). The highlight is not the
+/// prompt's — it outlives the commit, and `n` moves which occurrence
+/// wears the strong tint without turning the rest off.
+#[test]
+fn the_highlight_survives_the_commit_and_n() {
+    let mut app = sibling_leaves_app(&["ab one", "ab two"]);
+    search_by_key(&mut app, "ab");
+    assert_eq!(app.cursor, 1);
+
+    let terminal = drawn_frame(&mut app, 40, 8);
+    assert_eq!(
+        search_current_cells(&app, &terminal),
+        vec![(1, "a".to_string()), (1, "b".to_string())]
+    );
+    assert_eq!(
+        search_match_cells(&app, &terminal),
+        vec![(0, "a".to_string()), (0, "b".to_string())]
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+    let terminal = drawn_frame(&mut app, 40, 8);
+    assert_eq!(
+        search_current_cells(&app, &terminal),
+        vec![(0, "a".to_string()), (0, "b".to_string())],
+        "the strong tint followed `n`"
+    );
+    assert_eq!(
+        search_match_cells(&app, &terminal),
+        vec![(1, "a".to_string()), (1, "b".to_string())],
+        "and the row it left is still context"
+    );
+}
+
+/// Spec 0235 test-plan item 15 (S15). vim's `:nohlsearch`, without the
+/// command — a highlight the user cannot dismiss leaves a third of a
+/// document tinted after a search for `id`.
+#[test]
+fn esc_outside_the_prompt_clears_the_highlight() {
+    let mut app = sibling_leaves_app(&["ab one", "ab two"]);
+    search_by_key(&mut app, "ab");
+    let terminal = drawn_frame(&mut app, 40, 8);
+    assert!(!search_current_cells(&app, &terminal).is_empty());
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    let terminal = drawn_frame(&mut app, 40, 8);
+    assert!(search_current_cells(&app, &terminal).is_empty());
+    assert!(search_match_cells(&app, &terminal).is_empty());
+}
+
+/// Spec 0235 test-plan item 16 (S14's ordering). The caret is applied
+/// last, so the cell it shares with a match keeps its inversion — the
+/// search tint is a background and composes with it rather than
+/// replacing it.
+#[test]
+fn the_search_highlight_yields_its_cell_to_the_caret() {
+    let mut app = sibling_leaves_app(&["zz", "ab cd"]);
+    search_by_key(&mut app, "ab");
+    assert_eq!((app.cursor, app.cursor_column), (1, 0));
+
+    let terminal = drawn_frame(&mut app, 40, 8);
+    assert_eq!(caret_cells(&app, &terminal), vec![(1, "a".to_string())]);
+    assert!(search_current_cells(&app, &terminal).contains(&(1, "a".to_string())));
+}
+
+/// Spec 0235 test-plan item 21 (S22). A path is not on screen, so a
+/// path match marks the one cell `Enter` would put the caret on — and
+/// only for the current match, or a pattern matching most paths would
+/// tint most of the document for nothing.
+#[test]
+fn a_path_match_tints_only_the_current_row() {
+    let (mut app, ..) = packed_run_with_tail_fixture();
+    assert!(
+        app.document_lines().iter().all(|l| !l.contains('/')),
+        "no line's text may match, or the path rule is not what is tested"
+    );
+
+    app.set_cursor(app.first_node);
+    // `//` is `/` typed into a prompt `/` opened — a pattern every
+    // positional path contains.
+    search_by_key(&mut app, "/");
+
+    let terminal = drawn_frame(&mut app, 80, 16);
+    let current = search_current_cells(&app, &terminal);
+    assert_eq!(current.len(), 1, "one cell, not a range: {current:?}");
+    assert_eq!(current[0].0, 1, "the first row after the one it started on");
+    assert!(search_match_cells(&app, &terminal).is_empty());
 }

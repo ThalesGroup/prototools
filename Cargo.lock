@@ -1856,6 +1856,7 @@ dependencies = [
  "clap_complete",
  "crossterm",
  "libc",
+ "memchr",
  "nix 0.29.0",
  "prost",
  "prost-reflect",

@@ -76,15 +76,18 @@ fn a_packed_run_scores_one_cue_over_the_whole_record() {
         extract::message_payload_range(&app.blob, &app.tree[tail].span.raw_range)
     );
 
-    // One seeded entry, keyed on the record's payload start, is enough
-    // to light up every line of the run.
+    // One seeded entry, keyed on the record's payload start, lights the
+    // run's first line — and only it. The finding is about the record,
+    // and a column of the same glyph down every element would read as
+    // one finding per element (spec 0232).
     seed_range_heat_entry(&mut app, record.start, Some(50), 1, "int32", Some(10));
     let rows = app.node_lines(run);
     assert_eq!(rows.len(), 3, "the run draws one row per element");
-    for line in rows {
+    assert!(matches!(app.heat_cue_for(rows.start), HeatDisplay::Cue(_)));
+    for line in rows.start + 1..rows.end {
         assert!(
-            matches!(app.heat_cue_for(line), HeatDisplay::Cue(_)),
-            "element line {line} must show the record's cue"
+            matches!(app.heat_cue_for(line), HeatDisplay::None),
+            "element line {line} must leave the cue to the record's first"
         );
     }
 }

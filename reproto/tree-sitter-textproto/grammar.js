@@ -413,17 +413,27 @@ module.exports = grammar({
       $.annotation_number,
       $.annotation_eq,
       $.annotation_attribute,
+      $.annotation_enum_value,
       $.annotation_junk,
     )),
 
     annotation_marker: $ => token(prec(1, '#@')),
 
     // Dots are part of a word so a fully-qualified type name is one
-    // token, and the parenthesized suffix so an enum's rendered value
-    // (`Color(99)`, `Color([1,2])`) does not split the name it belongs
-    // to.
-    annotation_word: $ => token(prec(2,
-      /[A-Za-z_][A-Za-z0-9_.]*(\([-0-9,\[\] ]*\))?/)),
+    // token.
+    annotation_word: $ => token(prec(2, /[A-Za-z_][A-Za-z0-9_.]*/)),
+    // An enum field's rendered wire value, `Color(99)` or the packed
+    // `Color([1, 2])`. Its own token rather than a suffix of
+    // `annotation_word`, because the name is a type and the value in
+    // the parentheses is a number, and `highlights.scm` colors those
+    // two differently. Splitting costs nothing structurally: the pair
+    // is still adjacent, and nothing but a type name can precede it.
+    //
+    // Above `annotation_junk` (whose class contains `(` and `)`) so the
+    // whole group is taken rather than its first character. An
+    // unterminated `(` matches neither and falls to junk, which is what
+    // keeps rule 2 true of a malformed annotation.
+    annotation_enum_value: $ => token(prec(3, /\([-0-9,\[\] ]*\)/)),
     annotation_number: $ => token(prec(2,
       /-?(0[xX][0-9A-Fa-f]+|[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?)/)),
     annotation_eq: $ => token(prec(2, /=/)),

@@ -5,6 +5,21 @@
 use super::command_line::{next_word_boundary, prev_word_boundary};
 use super::*;
 
+/// Spec 0235 S21: the two buffers `write_positional_path` reuses across
+/// a whole sweep — the formatted path and the leaf-to-root segment list
+/// it is built from.
+#[derive(Default)]
+pub(super) struct PathScratch {
+    text: String,
+    segments: Vec<usize>,
+}
+
+impl PathScratch {
+    pub(super) fn as_str(&self) -> &str {
+        &self.text
+    }
+}
+
 impl App {
     /// What every fold toggle does once the line counts agree again:
     /// the pan re-clamp and the prefetch invalidation.
@@ -52,16 +67,105 @@ impl App {
         }
     }
 
+    /// How many terminal rows one document line costs — two in wire
+    /// mode, one otherwise (spec 0225 S8).
+    pub(super) fn row_height(&self) -> usize {
+        if self.wire {
+            2
+        } else {
+            1
+        }
+    }
+
+    /// The top edge of the viewport, in terminal rows counted from the
+    /// top of document line 0. Negative means blank rows above the
+    /// document's first line. See `App::scroll_skip`.
+    pub(super) fn scroll_top(&self) -> isize {
+        (self.scroll_offset * self.row_height()) as isize + self.scroll_skip
+    }
+
+    /// Puts the viewport's top edge at `top`, splitting it back into the
+    /// whole line and the remainder. The only writer of the pair.
+    pub(super) fn set_scroll_top(&mut self, top: isize) {
+        let height = self.row_height() as isize;
+        if top < 0 {
+            self.scroll_offset = 0;
+            self.scroll_skip = top;
+        } else {
+            self.scroll_offset = (top / height) as usize;
+            self.scroll_skip = top % height;
+        }
+    }
+
+    /// The terminal row `row` is drawn on, relative to the top of the
+    /// main area. Negative or `>= main_area.height` means off screen.
+    pub(super) fn terminal_row_of(&self, row: usize) -> isize {
+        (row * self.row_height()) as isize - self.scroll_top()
+    }
+
+    /// Scrolls just far enough that `row`'s own line is on screen.
+    ///
+    /// Its wire row, if any, is deliberately not required to be: a
+    /// cursor on the pane's last terminal row is where the user put it,
+    /// and insisting on the byte row under it would scroll the document
+    /// out from under them to show something they can already toggle off.
+    pub(super) fn clamp_scroll_to_cursor(&mut self, row: usize) {
+        let pane = self.main_area.height as isize;
+        if pane <= 0 {
+            return;
+        }
+        let pos = (row * self.row_height()) as isize;
+        let top = self.scroll_top();
+        if pos < top {
+            self.set_scroll_top(pos);
+        } else if pos >= top + pane {
+            self.set_scroll_top(pos + 1 - pane);
+        }
+    }
+
     pub(super) fn clamp_pan_offset(&mut self) {
         if !self.tree.is_empty() {
-            let pane_height = self.document_pane_height();
             let cursor_row = self.cursor_display_row();
             if self.last_cursor_row != Some(cursor_row) {
-                clamp_scroll_to_visible(&mut self.scroll_offset, cursor_row, pane_height);
+                self.clamp_scroll_to_cursor(cursor_row);
                 self.last_cursor_row = Some(cursor_row);
             }
         }
         self.pan_offset = self.pan_offset.min(self.max_pan_offset());
+    }
+
+    /// Spec 0225 S8: `w` — show or hide the wire rows.
+    ///
+    /// The document does not change and neither does the cursor; what
+    /// changes is that a document line starts or stops costing two
+    /// terminal rows. Left alone that moves the cursor's row down or up
+    /// the screen by however far it sat from the top, which on a full
+    /// pane is most of it — the user asked to see the bytes, not to be
+    /// scrolled.
+    ///
+    /// So the terminal row the cursor is drawn on is measured before the
+    /// flip and restored after it, by moving the viewport's top edge —
+    /// which spec 0230 made a signed count of terminal rows precisely so
+    /// that it can answer here. The two cases a whole-line offset could
+    /// not serve both work out of it: turning the wire rows on from an
+    /// odd row leaves the pane starting mid-line, and turning them off
+    /// near the top leaves blank rows above the document's first line.
+    ///
+    /// The document does not change and neither does the cursor.
+    pub(super) fn toggle_wire(&mut self) {
+        let cursor_row = self.cursor_display_row();
+        let drawn = self.terminal_row_of(cursor_row);
+        self.wire = !self.wire;
+        let pos = (cursor_row * self.row_height()) as isize;
+        self.set_scroll_top(pos - drawn);
+        // `clamp_pan_offset` re-syncs the scroll only when the cursor has
+        // moved since the last clamp, and it has not — the pane changed
+        // capacity under it instead. Forgetting the remembered row is how
+        // that guard is told the clamp is owed for a new geometry rather
+        // than a new cursor, which matters when the restored row falls
+        // outside a pane that just got shorter in document lines.
+        self.last_cursor_row = None;
+        self.clamp_pan_offset();
     }
 
     /// Unfold every ancestor of `idx`, so it becomes visible.
@@ -546,7 +650,7 @@ impl App {
     /// show line text, so the bound must leave room for that extra
     /// column or panning stops one character short of the line's true
     /// end.
-    fn max_pan_offset(&mut self) -> usize {
+    pub(super) fn max_pan_offset(&mut self) -> usize {
         let width = (self.main_area.width as usize).saturating_sub(1);
         self.max_visible_line_len().saturating_sub(width)
     }
@@ -594,10 +698,18 @@ impl App {
     /// Spec 0185 S2: bounded by the *composed* row count, so a preview
     /// overlay taller than the block it stands in for can be scrolled
     /// through in full.
+    ///
+    /// Spec 0230: stated in terminal rows, so that a pan started from a
+    /// half-line scroll left over from a `w` toggle lands back on whole
+    /// lines rather than carrying the offset forever.
     fn pan_vertical(&mut self, step: usize, up: bool) {
-        let height = self.document_pane_height();
-        let max_scroll = self.composed_row_count().saturating_sub(height);
-        pan_by_step_clamped(&mut self.scroll_offset, max_scroll, step, up);
+        let row_height = self.row_height() as isize;
+        let content = self.composed_row_count() as isize * row_height;
+        let max_top = (content - self.main_area.height as isize).max(0);
+        let step = step as isize * row_height;
+        let top = self.scroll_top();
+        let moved = if up { top - step } else { top + step };
+        self.set_scroll_top(moved.clamp(0, max_top));
     }
 
     pub(super) fn pan_vertical_up(&mut self) {
@@ -738,22 +850,32 @@ impl App {
         self.set_cursor(child);
     }
 
-    /// Folds/unfolds `idx`. Folding hides `idx`'s whole body, including
-    /// its own footer line, so a cursor resting there snaps back to
-    /// `idx`'s header (spec 0142 G6.2). More generally a cursor on any
-    /// strict descendant of `idx` — reachable via a fold-marker click,
-    /// not just the cursor's own node — snaps up to `idx`, the nearest
-    /// still-visible ancestor, rather than being stranded on a hidden
-    /// node until the fold is reopened.
+    /// Folds/unfolds `idx`, and puts the cursor on it.
+    ///
+    /// The cursor follows because a fold is an edit to the shape of the
+    /// document made *at* one node: leaving the cursor where it was
+    /// makes the next keystroke act somewhere the user is not looking,
+    /// and the reachable ways in — a fold-marker click, `h` at a node's
+    /// `Home` — are all gestures aimed at `idx`. It subsumes spec 0142
+    /// G6.2's narrower rule, which moved the cursor only when folding
+    /// would have stranded it on a line about to be hidden: `idx` is
+    /// the nearest still-visible ancestor of every such line, so the
+    /// same move happens, for a reason that also covers the rest.
+    ///
+    /// Nothing pins the view, because nothing needs to. A node's own
+    /// row is a count of the visible rows *before* it, and folding
+    /// `idx` only ever hides lines after `idx`'s header — so `idx` is
+    /// drawn on the row it was already on, and `folds_changed`'s scroll
+    /// clamp finds the new cursor already in view and leaves
+    /// `scroll_offset` alone.
     pub(super) fn toggle_fold(&mut self, idx: usize) {
         if !self.folded.remove(&idx) {
             self.folded.insert(idx);
-            if idx == self.cursor {
-                self.cursor_line_in_node = 0;
-            } else if self.is_strict_descendant(self.cursor, idx) {
-                self.cursor = idx;
-                self.cursor_line_in_node = 0;
-            }
+        }
+        if idx == self.cursor {
+            self.cursor_line_in_node = 0;
+        } else {
+            self.set_cursor(idx);
         }
         self.refresh_line_counts(idx);
         self.folds_changed();
@@ -802,20 +924,6 @@ impl App {
         } else {
             self.fold_all_siblings();
         }
-    }
-
-    /// True if `idx` is a strict ancestor of `descendant` (i.e.
-    /// `descendant` != `idx` but is reachable by following `parent`
-    /// links from `descendant`).
-    fn is_strict_descendant(&self, descendant: usize, idx: usize) -> bool {
-        let mut p = self.parent(descendant);
-        while let Some(pi) = p {
-            if pi == idx {
-                return true;
-            }
-            p = self.parent(pi);
-        }
-        false
     }
 
     /// All siblings of `idx` (including `idx` itself), in document order —
@@ -881,22 +989,37 @@ impl App {
     /// here, so the wrapper stays invisible in displayed paths; the
     /// wrapper's own node (internal path `/1`) displays as bare `/`.
     pub(super) fn positional_path(&self, idx: usize) -> String {
-        let mut segments = Vec::new();
+        let mut scratch = PathScratch::default();
+        self.write_positional_path(&mut scratch, idx);
+        scratch.text
+    }
+
+    /// `positional_path` into a caller-owned buffer (spec 0235 S21).
+    ///
+    /// A sweep tests the path of every candidate line, so at the
+    /// reference corpus's 5.28 M lines a `String` and a `Vec` allocated
+    /// per candidate would cost more than the matching they exist to
+    /// serve. Both are cleared and rewritten instead.
+    pub(super) fn write_positional_path(&self, out: &mut PathScratch, idx: usize) {
+        use std::fmt::Write as _;
+
+        out.segments.clear();
         let mut cur = Some(idx);
         while let Some(i) = cur {
-            segments.push(self.sibling_position(i));
+            out.segments.push(self.sibling_position(i));
             cur = self.parent(i);
         }
-        segments.reverse();
-        segments.remove(0);
-        let mut path = String::from("/");
-        for (i, seg) in segments.iter().enumerate() {
+        // The segments run leaf-to-root, so the *last* of them is the
+        // virtual encompassing wrapper's own leg — the one this drops.
+        out.segments.pop();
+        out.text.clear();
+        out.text.push('/');
+        for (i, seg) in out.segments.iter().rev().enumerate() {
             if i > 0 {
-                path.push('/');
+                out.text.push('/');
             }
-            path.push_str(&seg.to_string());
+            let _ = write!(out.text, "{seg}");
         }
-        path
     }
 
     /// Node `idx`'s displayed byte range, half-open `[start, end)`, in the

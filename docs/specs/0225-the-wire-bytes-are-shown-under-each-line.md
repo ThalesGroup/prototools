@@ -53,7 +53,7 @@ which is exactly backwards for a reader trying to learn the encoding.
   document row's own hue for the same thing* rather than picked
   independently.
 - **G4.** Wire-level anomalies are flagged *on the offending bytes*, not
-  merely named, and an accusation reads as one block whatever it spans.
+  merely named, and an accusation marks every byte it spans.
 - **G5.** A wire row is legible as belonging to the row above it: it
   points at that row, is dimmer than it, and is never colored under a
   different policy.
@@ -193,8 +193,18 @@ where `indent` is the document row's own, followed by `WIRE_CONNECTOR`
 No extra indent level for the wire row: a second indent on top of the
 connector only pushes long rows further past the pan bound (N9).
 
+**A row that drew nothing gets no connector either** — the wire row is
+blank, elbow included. It still occupies its terminal row: S8's 2× is
+uniform, and a conditional row would re-key every per-row vector. A line
+can own a byte range and still have nothing to show for it — a message
+footer whose children ended exactly where the message did is the common
+case (S2), and the wrapper root has two (S3). An elbow pointing at an
+empty row says only that the elbow is there. Suppressing it makes the
+connector mean what it looks like it means: below this line are its
+bytes.
+
 The connector is not a label — it says nothing about what the row *is*,
-which S11's reversed hex already makes unmistakable. It says which
+which S11's banded hex already makes unmistakable. It says which
 document row the hex belongs to, and indentation alone cannot: a nested
 message's own first field sits at the same indent one row further down,
 so on a screen of alternating rows the eye has to count to pair them up.
@@ -271,6 +281,26 @@ rows `2i` (the document line) and `2i + 1` (its wire row).
 - `main_pane_line_idx` uses `rel_row / 2`. A click anywhere in the pair
   selects the document line — the rows are simply twice as thick.
 
+**The toggle holds the cursor's terminal row still.** `w` changes what a
+document line costs, not where the user is looking. Left alone it would
+move the cursor down or up the screen by however far it sat from the
+top, which on a full pane is most of it: the user asked to see the
+bytes, not to be scrolled. So `App::toggle_wire` measures the terminal
+row the cursor is drawn on, flips `wire`, and puts it back.
+
+It can always put it back exactly, because spec 0230 made the vertical
+scroll a signed count of *terminal* rows rather than of whole document
+lines. The two cases a whole-line scroll could not serve — an odd offset,
+which needs the pane to start mid-line, and turning the wire rows off
+near the top, which needs blank rows above the document's first line —
+are that spec's subject.
+
+`clamp_pan_offset` re-syncs `scroll_offset` only when the cursor has
+moved since the last clamp, and here it has not — the pane changed
+capacity under it instead. `toggle_wire` therefore forgets
+`last_cursor_row` first, which is how that guard is told the clamp is
+owed for a new geometry rather than for a new cursor.
+
 ### S9 — overlay rows
 
 A preview overlay row has no *committed* node, but the preview
@@ -312,33 +342,42 @@ anomaly puts a byte in which.
 #### Punctuation — the row reads without color
 
 ```
-FT FF FF:LL LL LL[PP PP PP PP]
- │  └──┴─ rest of the tag varint: the field number
- └─ low nibble of the first tag byte: the wire type
+T|FF FF FF:LL LL LL[PP PP PP PP]
+│  └──┴──┴─ the tag varint, wire-type bits cleared: the field number
+└─ the first tag byte's low three bits: the wire type, in decimal
 ```
 
-- the tag varint comes first, and its last hex digit is the wire type;
+- the tag varint comes first, its first byte drawn in two halves;
 - `:` introduces the length prefix, on the wire types that have one;
 - `[` … `]` enclose the payload.
+
+The wire type is spelled as the one decimal digit it is rather than
+left inside the hex, because it is three bits and hex cannot show three
+bits. A nibble split — what this shipped as first — puts one bit of
+field number on the wire type's side, so a colored or accused wire type
+was accusing a bit it should not. Two extra columns on one byte of the
+row buys an exact answer. Nothing is hidden by it: `2|08` and `0a` say
+the same thing, and the second half is still a full hex pair that reads
+as part of the run beside it.
 
 `:` rather than `-` because it is textproto's own separator: the row
 reads `tag : length [ payload ]` in the same shape as the `field: value`
 line directly above it.
 
 ```
-0a:05[48 45 4c 4c 4f]   field 1, LEN, 5 bytes — the string "HELLO"
-10[2a]                  field 2, varint, 42
-0d[00 00 80 3f]         field 1, fixed32
-1b                      field 3, group start — all a header row has
-1c                      field 3, group end — all a footer row has
+2|08:05[48 45 4c 4c 4f]   field 1, LEN, 5 bytes — the string "HELLO"
+0|10[2a]                  field 2, varint, 42
+5|08[00 00 80 3f]         field 1, fixed32
+3|18                      field 3, group start — all a header row has
+4|18                      field 3, group end — all a footer row has
 ```
 
 One glyph, `!`, says the bytes ran out. It replaces whatever would have
 come next — a closing `]`, or the rest of a varint:
 
 ```
-0a:05[48!               declared 5 payload bytes, one is present
-ff ff ff!               a tag varint that never terminates
+2|08:05[48!             declared 5 payload bytes, one is present
+7|f8 ff ff!             a tag varint that never terminates
 ```
 
 Punctuation carries truncation rather than color because a truncation is
@@ -348,10 +387,13 @@ is already told by *where* the `!` sits, so a second glyph would encode
 what the reader can already see.
 
 `:`, `[`, `]` and the `…×N` elision take no foreground and
-`Modifier::DIM`. Giving them the comment hue would make the length
+`Modifier::DIM`. The `|` between the tag's two halves is the one piece
+of punctuation that can be banded: it takes their band when they wear
+the same one and stays unbanded when they do not — the same rule the
+gap between two hex pairs follows, for the same reason. Giving them the comment hue would make the length
 prefix indistinguishable from the brackets flanking it, which is the one
-thing the palette below is for. Staying plain text while the hex around
-them is reversed is also what makes the punctuation *separate* the
+thing the palette below is for. Staying unbanded while the hex around
+them is banded is also what makes the punctuation *separate* the
 regions rather than join them.
 
 #### Hue — four regions, borrowed from the document row
@@ -372,26 +414,30 @@ misdescribes itself. What is borrowed is the *color* — never the role.
 `wire_style` is the one place the borrowing happens, so the whole
 mapping is retunable in one function.
 
-The row resolves a `WirePalette { tag, ty, len, payload }` of four
-finished `Style`s once, from the document row's syntax hints —
+The row resolves a `WirePalette` of four finished `Style`s once, from
+the document row's syntax hints —
 `App::window_styles[window_index]`, a `Vec<(Range<usize>, SyntaxRole)>`
 over that row's *byte* offsets, already computed before the row loop.
 The offsets are `display_row_text`'s, not `row_content`'s: the fold
 margin the latter prepends would shift every one of them.
 
 - **`Tag`** borrows the role covering byte offset `indent`, the row's
-  first non-space byte. Ordinarily `(field_name) @attribute`; an
-  extension name is `@type`. Reading it off the row rather than naming
-  `Attribute` is what makes an extension's tag tint itself correctly for
-  free.
+  first non-space byte — `(field_name) @attribute`, extension names
+  included. An extension name is a field name: `[acme.blade]: 3` names a
+  field, and on the wire it is a tag like any other field's, so it wears
+  the field-name color rather than the type color it used to borrow.
+  Reading the role off the row rather than naming `Attribute` outright
+  still costs nothing and keeps the rule one sentence long.
 - **`Type`** borrows the role covering the first token after `#@` —
   the declared proto type on a known field (`string`, `int64`), the
   wire type on an unknown one (`varint`, `bytes`). That is the same fact
-  the tag's low nibble carries, and it is a *different* fact from the
+  the tag's low three bits carry, and it is a *different* fact from the
   field number beside it, so it reads better as a different hue. A row
   with no annotation (`--no-annotations`) falls back to the field name's
   role: a tag that is one color throughout is honest, a tag with a grey
-  nibble in the middle of it is not.
+  digit in front of it is not. So does a row whose first annotation token
+  is an accusation rather than a type name — spec 0232 S4, since the wire
+  type on such a row is usually the one part of it that is well formed.
 - **`Length`** borrows `SyntaxRole::Comment`, named by `wire_style`
   itself rather than read off the row. A field line's annotation is
   `(annotation) @comment`, but a row need not carry one, and a length
@@ -401,7 +447,14 @@ margin the latter prepends would shift every one of them.
 - **`Payload`** borrows the role covering the value's first byte: the
   first `:` in `code_part(text)`, past the spaces after it. No `:` on
   the row — a `name {` header, a `}` footer — means no payload bytes to
-  color anyway.
+  color anyway. Since spec 0232 that is one color for every kind of
+  value, so the payload hue no longer varies with the value's type; it
+  is still read off the row rather than named outright, because the row
+  is where the answer is.
+
+The palette carries one thing that is not a color: `flaw`, spec 0232's
+`Option<PayloadFlaw>`, the accusation the document row made about the
+payload when it is one the hex can point at.
 
 The painter tracks which of the four regions the pen is in, so a byte
 with no tier takes that region's style. Bytes no framing claimed
@@ -412,18 +465,34 @@ If the row has no hints, there is no palette, and S7 is what that means.
 
 #### Leveling — one brightness for the whole row, worn as a background
 
-Every borrowed hue is brought to a single brightness, in
-`theme::dimmed(Style, ThemeKind) -> Style`:
+**A wire row spends two channels and each has one job.** The foreground
+is the hex: one muted color, `WIRE_TEXT_DARK`/`WIRE_TEXT_LIGHT`, the
+whole row long, so that the digits read as digits. The background is
+meaning, and says two things in this order of precedence:
+
+1. what the byte is *for* — the region's hue, borrowed from the document
+   row and leveled;
+2. that the byte is **wrong** — the tier's own color, unleveled, which
+   takes the background outright.
+
+Every borrowed hue is brought to a single brightness and moved to the
+background, in `theme::banded(Style, ThemeKind) -> Style`:
 
 - if the foreground is a `Color::Rgb`, blend it toward the palette's
   background — black for `Dark`, white for `Light` — by exactly as much
   as it takes to land its Rec. 709 relative luminance on
-  `WIRE_LUMA_DARK`/`WIRE_LUMA_LIGHT`. Luminance is affine in the blend
-  factor, so the amount is a division, not a search. A color already
-  past the target is left alone: the row recedes, it is never pushed
-  forward.
-- otherwise (an ANSI-16 named color, or no foreground) keep the color
-  and add `Modifier::DIM`. ANSI-16 has no intermediate to blend to.
+  `WIRE_LUMA_DARK`/`WIRE_LUMA_LIGHT`, and set that as the **background**,
+  with `WIRE_TEXT_*` as the foreground. Luminance is affine in the blend
+  factor, so the amount is a division, not a search. A color already past
+  the target is left alone: the row recedes, it is never pushed forward.
+- if it is an ANSI-16 named color, wear it as the background as it is,
+  and set no foreground. ANSI-16 has no intermediate to blend to, and an
+  RGB foreground over a band the terminal alone knows the brightness of
+  is what the fallback exists to avoid.
+- if there is no foreground, there is no band either: keep `Modifier::DIM`
+  on the ordinary background. A band standing for "the row has nothing to
+  say" — the ANSI-16 `Attribute` on dark, an unclaimed byte, the whole row
+  under S7 — would be the loudest thing on the screen.
 
 Blending each hue toward the background by a *fixed* amount instead
 keeps the palette's own brightness spread, and a row mixing a bright tag
@@ -434,34 +503,45 @@ row by brightness and from itself by hue.
 The two constants are legibility choices, not measurements, with one
 hard bound each: on dark the target must sit below the dimmest borrowed
 document color (comment, luma ≈138) or the "dim" becomes a brighten; on
-light it must sit above the brightest (type, luma ≈110). Between those,
-higher is more comfortable and less subordinate.
+light it must sit above the brightest (number, luma ≈104). They settled
+at 58 and 197 — a little under a third of the way from the page to
+`WIRE_TEXT_*`, far enough below the hex to leave it legible, far enough
+above the page for the hue to be nameable. `WIRE_TEXT_DARK` and
+`WIRE_TEXT_LIGHT` are themselves equally far from their pages (176 above
+black, 176 below white), so neither theme's rows are the louder.
 
-The leveled hue is then worn as a **background**, not as text
-(`theme::reversed`). Color one glyph-pair wide is a far weaker signal
-than the same color as a filled block, and the row's whole job is to be
-scanned. This is also why leveling matters more here than it would for
-text: an unleveled palette's brightness spread, tolerable across
-foregrounds, becomes a row of mismatched blocks.
+The hue is worn as a **background**, not as text. Color one glyph-pair
+wide is a far weaker signal than the same color as a filled band, and the
+row's whole job is to be scanned. This is also why leveling matters more
+here than it would for text: an unleveled palette's brightness spread,
+tolerable across foregrounds, becomes a row of mismatched blocks.
 
-Only a style that *has* a foreground is reversed. Reversing one that has
-none — the ANSI-16 `Attribute` on dark, an unclaimed byte, the whole row
-under S7 — yields a solid block of the terminal's default foreground,
-which would make the loudest thing on the screen out of the one case the
-row has nothing to say. Those stay `DIM` text.
+**The glyphs are not reversed, and not the terminal's own text color
+either.** `REVERSED` was the first implementation and was wrong twice
+over. It draws the hex in the terminal's *background* color, so the band
+carries the glyphs' contrast as well as its own quiet — which pinned
+`WIRE_LUMA_DARK` at 80, still loud enough that the wire row read as the
+brighter of the two rows. And it leaves nothing free to distinguish an
+accused byte with, since the band is already carrying the region. An
+explicit foreground decouples the two, and the band is then free to be
+nothing but a tint. That the foreground is *muted* rather than the
+terminal's plain text color is what keeps a wire row visibly the
+subordinate of the document row above it, even where its band is
+quietest.
 
-Because every hex byte is now a block, what distinguishes an anomalous
-byte is **brightness, not the presence of a block**: the tier colors are
-the palette's most saturated and are not leveled, while the borrowed
-hues have been leveled down.
+Leveling has one consequence for the palette itself, which is why the
+wire row is where it surfaced: a color's *hue* survives leveling but its
+identity may not. `Dark`'s `Type` was a vivid orange, and an orange at
+luma 58 is a muted red — sitting next to the bright red an `Invalid`
+tier paints, so a well-formed wire type read as an accused byte.
+It is now a pale yellow (`#F2EA8C`), against the field name's pale blue.
 
 Matching on the *returned* color rather than calling `supports_rgb()` a
 second time is deliberate: `style_for` has already resolved which
 palette is in play, so the color's own shape is the exact discriminator
 and cannot disagree with it. The result is hue only — inherited
 modifiers (`UNDERLINED` on a URL, `ITALIC` on an ANSI-16 comment) are
-dropped, for the reason `tier_style` gives: a modifier on hex is a
-locator, and this is not one.
+dropped: a modifier on hex is a locator, and this is not one.
 
 #### Severity — the tier axis, shared with the text row
 
@@ -472,7 +552,7 @@ convention, with known counterexamples in both directions, which is why
 S12 classifies by keyword rather than by case. The severity axis has
 exactly those two classes, plus a landmark and plain:
 
-| tier | style | wire row | annotation |
+| tier | color | wire row | annotation |
 |---|---|---|---|
 | plain | the region's borrowed hue | ordinary bytes | `varint`, `bytes` |
 | landmark | accent | a packed record's tag and length | `pack_size: N` |
@@ -486,52 +566,63 @@ lets the two rows share one vocabulary (G7). A reader who has learned
 reads both rows with the same rule, and the eye can pair a red token in
 the annotation with the red bytes underneath it.
 
-An anomalous byte drops its borrowed hue for its tier's. The two axes do
-not compose: a byte is either ordinary, in which case what it *is*
-matters, or accused, in which case only that matters.
+The annotation wears the tier as **text** and the wire row wears it as a
+**band**, at full strength and never leveled: `theme::tier_band(Tier,
+ThemeKind)` sets the tier color as the background and the page's own
+background as the foreground — black on `Dark`, white on `Light` RGB,
+and black on both ANSI-16 palettes, where all six tier colors are
+mid-brightness whatever the terminal renders them as and black is the
+safer end against all of them.
 
-The first tag byte is styled per **nibble**: its low nibble is the wire
-type, the rest of the tag is the field number, and they are colored
-separately because they fail separately — and, when neither fails, they
-borrow from two different tokens of the row above. It is the one byte on
-the row that is ever split, and it is always split the same way. The
-nibble is the finest unit a hex dump exposes. Strictly, its top bit is
-the field number's lowest bit, so a colored low nibble accuses one bit
-it should not; that inaccuracy is accepted in exchange for the wire type
-being legible at the position a reader's eye already goes.
+The tier taking the background means it *displaces* the region's hue,
+and that ordering is the point: an anomaly is the one thing that
+outranks what a byte is for. The alternative — the tier in the
+foreground over the region's own band, so that both facts show at once —
+was implemented first and is worse in practice. It reads as a slightly
+different shade of text on a screen already full of colored text; a band
+swap at full strength does not. Nothing is lost by displacing the region
+hue, because the accused byte's neighbours still carry it and the
+annotation above already names the field.
 
-#### One unbroken block
+The first tag byte is drawn in **two halves** — `t|nn`, per the
+punctuation section above. They are colored separately because they fail
+separately, and, when neither fails, they borrow from two different
+tokens of the row above. It is the one byte on the row that is ever
+split, and it is always a tag's first.
 
-The separator space between two hex pairs is filled too, but only when
-it lies *inside* one block: the byte about to be drawn wears a
-background, and the byte just drawn wore the same one on **either of its
-nibbles**.
+#### One unbroken ribbon
+
+The separator space between two hex pairs is filled too, but only when it
+lies *inside* one band: the byte about to be drawn wears a background,
+and the byte just drawn wore the same one.
 
 ```
-ac 86 80 00        84 80 80 80 10
-      ^^ ^^        ^  ^^ ^^ ^^ ^^     tiles
-ac 86 80 00        84 80 80 80 10
-      ^^^^^        ^ ^^^^^^^^^^^^     one block
+4|80 80 80 80 10
+  ^  ^^ ^^ ^^ ^^     tiles
+4|80 80 80 80 10
+  ^^^^^^^^^^^^^^     one ribbon
 ```
 
-"On either of its nibbles" is what makes the second case right: a field
-number accused across a multi-byte tag opens on the high nibble of byte
-0, skips the wire type beside it — which is perfectly good — and must
-still join up with byte 1. The painter therefore remembers *both* of the
-last byte's blocks, not one; folding them to a single slot silently
-drops this case, since the low nibble always has a block to offer.
+One remembered band suffices, because the split byte ends on its
+field-number half and that is the half a multi-byte tag's remaining
+bytes continue. Spelling the wire type ahead of the tag rather than
+inside it is what earns that: while it sat in the middle of byte 0 the
+painter had to remember both of the byte's bands, or the field number's
+ribbon broke where it stepped over the type.
 
-One rule serves two purposes, because they differ only in which style
-repeats: it draws a region as a continuous ribbon, and an accusation as
-a solid block. Bytes saying one thing are one fact, and a run broken
-every third column reads as several.
+The test is on the **background alone**, not the whole style: a space
+has no glyph, so the color the hex is drawn in says nothing about it,
+and two bytes on one band are one run whether or not anything else about
+them differs. Since a tier *is* a band (above), the same rule joins a run
+of accused bytes into one solid block of the tier's color — which is what
+an accusation should look like. Bytes saying one thing are one fact, and
+a ribbon broken every third column reads as several.
 
-A filled block means the row has something to say about those bytes;
-reverse video's *brightness* is what says a defect of the **message**.
-That is the line between `!×N` below and the `…×N` elision of S5: the
-elision is not a block at all, because the row ran out of columns and
-the message did not run out of bytes. A screen full of `…` must never
-read as a screen full of alarms.
+A band means the row has something to say about those bytes; a *tier*
+band is what says a defect of the **message**. That is the line between
+`!×N` below and the `…×N` elision of S5: the elision has neither, because
+the row ran out of columns and the message did not run out of bytes. A
+screen full of `…` must never read as a screen full of alarms.
 
 #### Flags
 
@@ -543,24 +634,43 @@ read as a screen full of alarms.
 | `etag_ohb: N` | the N redundant END-tag bytes yellow, on the footer row |
 | `TAG_OOR` | the field portion of the tag red |
 | `ETAG_OOR` | the same, on the footer row |
-| `INVALID_TAG_TYPE` | the type nibble red |
+| `INVALID_TAG_TYPE` | the wire-type digit red |
 | `INVALID_VARINT` | the varint's present bytes red, closed by `!` |
 | `INVALID_LEN` | the length's present bytes red, closed by `!` |
-| `TRUNCATED_BYTES` | the payload's present bytes, closed by `!×N` |
-| `INVALID_FIXED64` / `INVALID_FIXED32` | the payload's present bytes, closed by `!` |
-| `INVALID_GROUP_END` | the END tag's present bytes red, closed by `!` |
+| `TRUNCATED_BYTES` | the payload's present bytes red, closed by `!×N` |
+| `INVALID_FIXED64` / `INVALID_FIXED32` | the payload's present bytes red, closed by `!` |
+| `INVALID_GROUP_END` | the whole row red, except the wire-type digit |
 | `END_MISMATCH: N` | the END tag's field portion red |
 | `OPEN_GROUP` | the footer row is a bare `!` |
+| `INVALID_STRING` | the payload's ill-formed UTF-8 sequences red |
+| `INVALID_PACKED_RECORDS` | the payload's undecodable tail red |
 
-A truncated payload's bytes stay plain. They are perfectly good bytes;
-what is wrong is the ones that are missing, and `!` says so.
+The last two are spec 0232's, and are the two entries the row is *told*
+rather than finding for itself; the rest of this table it derives. A
+truncated payload's present bytes are red with the `!` that closes them
+(spec 0232 S3): they are the bytes a reader inspects, and leaving them
+plain put the only mark on the one glyph that stands for nothing.
 
 `OPEN_GROUP` and `END_MISMATCH` are shown rather than spelled. `!`
 already means *the byte that should be here is not*, and an unterminated
 group is precisely that one level up: the END tag is the missing byte.
 A mismatched END tag's field number is wrong and is right there in the
-hex, so reddening it says everything the word did — the low nibble, the
-wire type, is `4` and is correct, and keeps its hue.
+hex, so reddening it says everything the word did — the wire type is `4`
+and is correct, and keeps its hue.
+
+`INVALID_GROUP_END` is the same shape and needs saying explicitly,
+because it is the one anomaly whose *row* is the defect. The core
+renders a group end that closes a group nobody opened as a bytes-valued
+pseudo-field whose "value" is however much of the buffer followed the
+tag, so the whole row is accused: those bytes are on it only because the
+stray tag was accepted, and drawing them unclaimed would say the row
+found nothing to complain about after the first two. The wire type is
+spared, as it is under `TAG_OOR` and `END_MISMATCH` — it
+reports a group end and there is one. What is wrong is that the tag is
+here at all, which is a fact about the row and not about those three
+bits. A tag too malformed to parse is left to the ordinary tag path,
+which has a better answer for it; `INVALID_GROUP_END` would be claiming
+to know a wire type that was never read.
 
 Knowingly collapsed: `ETAG_OOR` and `END_MISMATCH` now render
 identically. Both say "this END tag's field number is wrong", the row
@@ -576,9 +686,9 @@ and the reader can count them by position.
 #### The one trailing marker
 
 `TRUNCATED_BYTES` is the only anomaly with anything after its bytes:
-`!×N`, glued to the `!` and reversed with it, so `0a:05[48!×4` is one
-block. `×N` reads as "N of these", the same as it does after S5's
-elision; the reversal is what tells the two apart.
+`!×N`, glued to the `!` and wearing the `Invalid` tier with it, so
+`0a:05[48!×4` is one accusation. `×N` reads as "N of these", the same as
+it does after S5's elision; the tier color is what tells the two apart.
 
 Everything else in the table is fully expressed by the bytes themselves
 — a reader counts the yellow bytes to get `tag_ohb`'s N — and a marker
@@ -597,6 +707,14 @@ fact is computed in two crates; the cross-check test below is what keeps
 them honest, in preference to an abstraction spanning a crate boundary
 that neither side wants.
 
+The two exceptions are `INVALID_STRING` and `INVALID_PACKED_RECORDS`
+(spec 0232 S5), which are schema questions — whether these bytes are a
+`string` or a `bytes`, whether this record's elements are varints or
+eight bytes wide — and so cannot be derived here at all. The verdict is
+read off the annotation; only the byte positions are the row's own,
+which is the division of labor this section describes rather than an
+exception to it.
+
 The row is built as a `Vec<Span<'static>>` in plain Rust — no parser.
 The builder *generates* the text, so it already knows each byte's tier
 at the moment it writes it; running a grammar over hex it has just
@@ -609,10 +727,11 @@ render path as an ordinary row.
 The two rows must not be able to disagree about severity, and there are
 two places they could. Both are closed:
 
-- **The hue.** One function, `theme::tier_style(Tier, ThemeKind)`. The
-  wire row names its `Tier` directly; the annotation reaches the same
-  function through its capture and its `SyntaxRole`. There is one hue
-  table.
+- **The hue.** One table, `theme::tier_color(Tier, ThemeKind, rgb)`. The
+  wire row reaches it through `theme::tier_band`, which puts the color
+  in the background; the annotation reaches it through its capture and
+  its `SyntaxRole`, which puts it in the foreground. Two channels, one
+  hue table.
 - **The classification.** One table, `annotation::tier_of(keyword) ->
   Tier`, listing the annotation vocabulary verbatim (S12). The wire-row
   builder does not invent tiers: having detected an anomaly it names the
@@ -635,10 +754,10 @@ and `highlights.scm` maps that structure onto four tiers.
 
 | tier | members | style |
 |---|---|---|
-| echo | the declaration before the first `;` — `google.protobuf.FileDescriptorProto = 2`, `repeated int32 [packed=true] = 85`, a bare wire-type name | the document's own captures |
-| landmark | `pack_size` | accent |
+| echo | the declaration before the first `;` — `google.protobuf.FileDescriptorProto = 2`, `repeated int32 = 85`, `Color(5) = 3`, a bare wire-type name | the document's own captures |
+| landmark | `pack_size`, `[packed=true]` | accent |
 | non-canonical | `tag_ohb`, `val_ohb`, `len_ohb`, `etag_ohb`, `ohb`, `packed_ohb`, `nan_bits`, `neg`, `truncated_neg`, `packed_truncated_neg`, `ENUM_UNKNOWN` | yellow |
-| invalid | `TAG_OOR`, `ETAG_OOR`, `TYPE_MISMATCH`, `MISSING`, `END_MISMATCH`, `OPEN_GROUP`, `INVALID_TAG_TYPE`, `INVALID_VARINT`, `INVALID_FIXED64`, `INVALID_FIXED32`, `INVALID_LEN`, `INVALID_GROUP_END`, `TRUNCATED_BYTES` | red |
+| invalid | `TAG_OOR`, `ETAG_OOR`, `TYPE_MISMATCH`, `MISSING`, `END_MISMATCH`, `OPEN_GROUP`, `INVALID_TAG_TYPE`, `INVALID_VARINT`, `INVALID_FIXED64`, `INVALID_FIXED32`, `INVALID_LEN`, `INVALID_GROUP_END`, `INVALID_STRING`, `INVALID_PACKED_RECORDS`, `TRUNCATED_BYTES` | red |
 
 The echo's wire-type names are `varint`, `fixed64`, `fixed32`, `bytes`
 and `group`.
@@ -680,15 +799,53 @@ tempting to give them one color. They are split because the echo is on
 and a thing cannot stand out while wearing the color of the thing beside
 it on every line. Standing out is `pack_size`'s entire job: in a run of
 a thousand identical element lines it is the only mark of where one wire
-record ends and the next begins. It shares the accent with the tag and
-length bytes on the same element's wire row (S4's element-0 row), so the
-record boundary appears in both rows at the same place.
+record ends and the next begins. It shares the accent with the wire
+type and the length bytes on the same element's wire row (S4's
+element-0 row), so the record boundary appears in both rows at the same
+place — but not with that row's field number, which is the document's
+own and wears the field-name hue on a packed row as on any other. Only
+what is *about* the packing takes the accent. `[packed=true]` takes it
+too: both it and `pack_size` are statements about packing, one in the
+declaration and one in the modifiers, and a reader who has learned the
+color on one meets it on the other.
 
-The echo needs no new capture at all: its type name is `@type`, its
-`= N` is `@number`, its `[packed=true]` is `@attribute`. Being colored
-like the document is not a resemblance imposed on it — it *is* the
-document's vocabulary, quoted. It is also what the wire row's `Type`
-region borrows from.
+#### The echo is the document's own vocabulary, so it wears its colors
+
+Being colored like the document is not a resemblance imposed on the echo
+— it *is* the document's vocabulary, quoted. Reading
+`type: TYPE_INT32  #@ Type(5) = 5` left to right, five facts and four
+colors:
+
+| in the echo | color | because |
+|---|---|---|
+| `Type`, `repeated`, and a bare wire-type name | type | what the field *is*. The label and the type are two halves of one statement, and together they are what the wire row's wire type borrows, so splitting them would make that half of the tag depend on whether the field happened to be repeated. A wire-type name fills the same slot when there is no schema |
+| `(5)` — an enum's wire value | number | the value the symbolic name on the document half stands for. One value, one color |
+| `= 5` — the field number | field name | the document's own field number: the same color the name it belongs to wears at the head of the line, and the same the wire row's tag bytes borrow |
+| `[packed=true]` | landmark accent | see above |
+
+The type color is **warm**, not the blue-green VSCode gives a type. A
+type name and its wire type sit beside a field name and a value on every
+annotated line, and the borrowed blue-green read as a cousin of the field
+name's blue. Warm is the one direction no other role uses. It shipped as
+an orange and is now a pale yellow — `#F2EA8C` on dark, `#AF3A03` on
+light — because a leveled orange on a wire row read as an anomaly, which
+is the one confusion a warm type color can cause; see the leveling
+section above and spec 0231 for how far apart the two yellows had to be
+pushed. The blue-green stays in the palette under its own name for the
+Any-key domain, which is a URL and not a type.
+
+Two captures had to move for this to hold together. `(scalar_value
+(identifier)) @constant` — `TYPE_INT32`, an enum value name — takes the
+*number* color, because a symbolic value and the number it stands for
+are one fact seen twice, once per half of the line. And an extension
+name loses `@type` for the blanket `@attribute`: `[acme.blade]: 3` names
+a field, and on the wire it is a tag like any other field's.
+
+The ANSI-16 fallback keeps its cyan/blue type. Sixteen colors hold no
+orange, and both candidates for the warm slot are already spoken for by
+a severity tier — red by invalid, yellow by non-canonical — so borrowing
+one would make a declared type look like an anomaly. What that palette
+can deliver is separation between roles, and cyan already delivers it.
 
 The four lists become four `#any-of?` predicates in `highlights.scm`,
 declared after a blanket `@comment` — exactly the shape §4 of that file
@@ -710,10 +867,10 @@ bold and drag selection all keep working with no new code.
 
 The wire row does not go through tree-sitter and never will: it
 classifies *bytes*, the grammar classifies *text*. What the two share is
-named above — `annotation::tier_of` for which tier, `theme::tier_style`
+named above — `annotation::tier_of` for which tier, `theme::tier_color`
 for what that tier looks like, and `window_styles` for the hues the wire
 row borrows. The grammar's half of `tier_of` is the `#any-of?` lists,
-kept in step by test 22.
+kept in step by test 35.
 
 Three constraints the grammar work must respect:
 
@@ -734,6 +891,22 @@ Three constraints the grammar work must respect:
    The grammar splits an annotation into `;`-items and an item into a
    key, an optional `: value`, and the catch-all — nothing more.
    `highlights.scm`'s four `#any-of?` lists decide the tier.
+
+   The one thing the query cannot do on its own is *split a token*, so
+   an enum field's `Color(5)` is two tokens in the grammar
+   (`annotation_word` then `annotation_enum_value`), the name being a
+   type and the value in the parentheses a number. Splitting costs
+   nothing structurally — the pair is still adjacent, and nothing but a
+   type name can precede it — and the token sits above `annotation_junk`
+   in precedence so the whole group is taken rather than its first
+   character. An unterminated `(` matches neither and falls to junk,
+   which is what keeps rule 2 true of a malformed annotation. The
+   parentheses go with the number: they are one token, and a third split
+   to make them punctuation would buy nothing the eye needs.
+
+   The declared type is found by what *follows* it rather than by a list
+   the query would have to keep: a word immediately before an `=`, an
+   enum value, or a `[packed=true]` is the type.
 
    Deliberately not a capitalization test (`/[a-z_]…/` versus
    `/[A-Z]…/`), which was the earlier design. Case is a *convention* the
@@ -797,8 +970,8 @@ what makes the row read as a single object.
 
 **One hue for the whole tag byte.** Rejected: the field number and the
 wire type are two different facts, and the row already splits that byte
-into two nibbles to show a tier on one of them. Splitting the hue too
-costs nothing and says more.
+to show a tier on one of them. Splitting the hue too costs nothing and
+says more.
 
 **Indent the wire row one level past its document row.** Rejected: once
 the row is leveled to a lower brightness, the brightness step already
@@ -825,14 +998,14 @@ survives mainly in RFC 4648 Base16. Lowercase also has ascender variety
 (`b d f`) where uppercase is a uniform block of same-height glyphs,
 which matters once the row is leveled down. The counter-argument — that
 uppercase separates hex from the lowercase textproto above it — is
-answered by the reversed blocks, which say it more directly.
+answered by the bands, which say it more directly.
 
 **Label the row `\x ` (or `0x: `).** Rejected. It was the first
-implementation, and once the hex became a row of reversed blocks the
-label had nothing left to disambiguate: no prototext line looks like
-that. It cost two columns of a row that is already the one competing
-with the pan bound (N9). S5's `└── ` is not this: it answers *which
-row*, not *what row*, and that question survives the blocks.
+implementation, and once the hex became a row of bands the label had
+nothing left to disambiguate: no prototext line looks like that. It cost
+two columns of a row that is already the one competing with the pan
+bound (N9). S5's `└── ` is not this: it answers *which row*, not *what
+row*, and that question survives the bands.
 
 **Indent alone, with no connector.** Rejected, and it was the state
 between the label and `└── `. Alignment says which *column* the row
@@ -895,45 +1068,52 @@ annotation share `tier_of` rather than agreeing by coincidence.
 
 10. `a_wire_row_is_aligned_with_its_document_row` — the row is the
     document row's own margin, then `└── `, then its first hex digit.
-11. `the_punctuation_reads_without_color` — `0a:05[48 45 4c 4c 4f]` for
-    a five-byte string, `82 80 80!` for an unterminated tag varint.
-12. `a_region_is_one_unbroken_ribbon` — every hex byte is reversed and
-    the punctuation is not, so the mask over `0a:05[48 45 4c 4c 4f]` is
-    `## ## ############## `; and every span inside the payload,
-    separators included, carries the one payload hue.
+11. `the_punctuation_reads_without_color` — `2|08:05[48 45 4c 4c 4f]`
+    for a five-byte string, `2|80 80 80!` for an unterminated tag
+    varint.
+12. `a_region_is_one_unbroken_ribbon` — every hex byte is banded and the
+    punctuation is not, so the mask over `2|08:05[48 45 4c 4c 4f]` is
+    `# ## ## ############## `; and every span inside the payload,
+    separators included, carries the one payload band.
 13. `the_tag_the_type_the_length_and_the_payload_wear_four_hues` — four
-    regions, four distinct fixture hues, with the tag's two nibbles in
+    regions, four distinct fixture bands, with the tag's two halves in
     two of them.
 14. `the_tag_takes_the_field_names_hue_dimmed` — the tag's style is
-    `reversed(dimmed(style_for(Attribute)))`, and is dimmer than the
-    document's either by color or by `Modifier::DIM`.
+    `banded(style_for(Attribute))`, and is dimmer than the document's
+    either by color or by `Modifier::DIM`.
 15. `the_payload_takes_the_values_hue` — a string field's payload takes
-    `reversed(dimmed(style_for(StringLiteral)))`, a numeric field's takes
-    `reversed(dimmed(style_for(Number)))`, and the two differ.
+    `banded(style_for(StringLiteral))`, a numeric field's takes
+    `banded(style_for(Number))`, and the two differ.
 16. `the_length_prefix_takes_the_comment_hue_with_or_without_an_annotation`
     — same color with `annotations` on and off.
 17. `a_row_with_nothing_to_borrow_is_gray_throughout` and
     `a_wire_row_goes_monochrome_with_the_document_row` — S7: no span
-    carries a foreground, tiers included.
+    carries a band or a foreground, tiers included.
 
 ### Anomalies (S11)
 
-18. `the_type_nibble_is_styled_apart_from_the_field_number` — on a wire
-    type 7 tag: the low nibble red, the field number keeping its hue.
+18. `the_wire_type_is_styled_apart_from_the_field_number` — on a wire
+    type 7 tag: the wire-type digit takes the `Invalid` band, the field
+    number keeps its own.
 19. `an_open_group_footer_row_is_a_bare_bang` — the row is `!`, and the
     painter's flag list still contains `OPEN_GROUP`.
-20. `a_group_footer_names_the_group_it_closes` — on a mismatch the high
-    nibble of byte 0 is `Tier::Invalid`, the low nibble keeps the type
-    hue, and no marker text follows.
+20. `a_group_footer_names_the_group_it_closes` — on a mismatch the
+    field-number half of byte 0 takes the `Invalid` band, the wire-type
+    digit keeps the type band, and no marker text follows.
 21. `a_truncation_counts_the_bytes_it_cannot_show` — the row ends `!×4`,
-    and both glyphs are reversed.
-22. `an_accusation_is_one_unbroken_block` — the two cases above,
-    asserted as a caret mask over the drawn row.
-23. `an_overlong_varint_shows_its_trailing_padding` — the separator
-    inside the accused run is reversed, the one before it is not.
+    and both glyphs wear the `Invalid` band.
+22. `an_accusation_marks_the_bytes_it_names` — the two cases above,
+    asserted as a caret mask over the drawn row: a run of accused bytes
+    is one solid block, separators included.
+23. `an_overlong_varint_shows_its_trailing_padding` — the two padding
+    bytes take the tier band and `aa` does not, and the separator between
+    them is filled because both sides share it.
 24. `a_long_payload_is_elided_rather_than_wrapped` — the row ends `…×67`
-    and the marker is *not* reversed.
-25. `the_flags_agree_with_the_prototext_annotation` — on a malformed
+    and the marker has neither a band nor a foreground.
+25. `a_group_end_closing_nothing_accuses_its_whole_row` — every byte of
+    `d4 06 08 01` is `Tier::Invalid` except the wire-type digit, which
+    keeps its band, and the row reports `INVALID_GROUP_END`.
+26. `the_flags_agree_with_the_prototext_annotation` — on a malformed
     fixture, each row's flag set equals the wire-level subset of the
     `#@` annotation on the line above it. This is what keeps the two
     independent derivations honest ("where the facts come from").
@@ -945,42 +1125,54 @@ role-level cases go in `colorize.rs` and use `roles_across`, never
 `roles_at` — the latter is structurally blind to a capture whose span
 is split wrongly.
 
-26. `a_hash_annotation_is_not_a_plain_comment` — constraint 1: `#@`
+27. `a_hash_annotation_is_not_a_plain_comment` — constraint 1: `#@`
     opens an `annotation`, a bare `#` still opens a `comment`, and a
     `#@` inside a quoted string is still string content (spec 0201).
-27. `a_malformed_annotation_does_not_disturb_the_next_line` —
+28. `a_malformed_annotation_does_not_disturb_the_next_line` —
     constraint 2: a body matching nothing in the format still parses,
     and the following field keeps its captures.
-28. `a_modifier_takes_the_hue_of_its_keyword` — one line carrying both
+29. `a_modifier_takes_the_hue_of_its_keyword` — one line carrying both
     `len_ohb: 2` and `TAG_OOR`.
-29. `an_unlisted_modifier_stays_a_comment` — constraint 3's accepted
+30. `an_unlisted_modifier_stays_a_comment` — constraint 3's accepted
     cost: an invented modifier gets no tier rather than a guessed one,
     so a keyword prototext-core adds is visibly uncolored until it is
     listed.
-30. `the_declaration_echo_matches_the_documents_own_styles` — the
-    annotation's type name and `= N` carry `@type` and `@number`, the
-    same captures the decoded text gives a type name and a number.
-31. `pack_size_and_its_wire_bytes_share_the_accent` — on the first
-    element line of a packed record.
-32. `enum_unknown_is_yellow_not_red` — ALL CAPS, non-canonical tier.
+31. `the_declaration_echo_matches_the_documents_own_styles` — the type
+    name and the label carry `@type`, the field number after the `=`
+    carries `@attribute` (the same capture the field name at the head of
+    the line carries), and `[packed=true]` carries the landmark accent.
+    An extension name is `@attribute` too, not `@type`.
+32. `an_enum_declaration_splits_its_name_from_its_value` — `Type(5)` is
+    a type and a number, and the document's own `TYPE_INT32` beside it
+    is `@constant`, which is now the number color. A packed enum's
+    `Color([1, 2])` is still one number-colored token.
+33. `pack_size_and_its_wire_bytes_share_the_accent` — on the first
+    element line of a packed record: the wire type and the length
+    prefix wear the accent, and the field number does not.
+34. `enum_unknown_is_yellow_not_red` — ALL CAPS, non-canonical tier.
     The capitalization rule's counterexample in the direction
     `pack_size` does not cover.
-33. `every_keyword_is_colored_by_its_tier` — the drift test: iterate
+35. `every_keyword_is_colored_by_its_tier` — the drift test: iterate
     `annotation::tier_of`'s whole vocabulary, colorize a line carrying
-    each keyword, and assert the role matches the tier. Fails when
-    `highlights.scm`'s copy of the lists falls behind the Rust one.
+    each keyword, and assert the role matches the tier — `@type` for the
+    untiered wire-type names, the tier's own role for the rest. Fails
+    when `highlights.scm`'s copy of the lists falls behind the Rust one.
 
 ### Geometry and the toggle (S1, S8)
 
-34. `the_lines_that_fit_halve_when_wire_mode_is_on`.
-35. `a_click_on_a_wire_row_selects_the_line_above_it`.
-36. `page_down_advances_by_the_halved_height`.
-37. `toggling_wire_mode_invalidates_no_cache` — S1:
+36. `the_lines_that_fit_halve_when_wire_mode_is_on`.
+37. `a_click_on_a_wire_row_selects_the_line_above_it`.
+38. `page_down_advances_by_the_halved_height`.
+39. `toggling_wire_mode_invalidates_no_cache` — S1:
     `structural_version` unchanged, `heat_states` unchanged.
+40. `toggling_wire_mode_keeps_the_cursor_on_its_terminal_row` — in both
+    directions, from an even offset and from an odd one.
+41. `turning_wire_mode_off_near_the_top_pads_above_the_first_line` — the
+    case with no lines above the cursor to give back.
 
 ### Manual
 
-38. On `grpconf/anomalies.pb` with `w`: every one of the six sections of
+42. On `grpconf/anomalies.pb` with `w`: every one of the six sections of
     `grpconf/README.md` reads as intended in both themes and at both
     color depths (`COLORTERM=` unset forces ANSI-16).
 
@@ -988,22 +1180,68 @@ is split wrongly.
 
 `w` toggles the pane between one and two terminal rows per document
 line, with no re-render and no re-score behind it: `structural_version`
-and every `HeatState` are unchanged across the toggle (test 37).
+and every `HeatState` are unchanged across the toggle (test 39). It also
+holds the cursor's terminal row exactly, in every case, once spec 0230
+gave the scroll a unit fine enough to say so (tests 40 and 41).
 
-`WIRE_LUMA_DARK = 130`, `WIRE_LUMA_LIGHT = 150`, against measured
-palette lumas of: dark — attribute 209, number 198, string 156,
-comment 138; light — attribute 49, string 51, comment 92, number 104,
-type 110.
+`WIRE_LUMA_DARK = 58`, `WIRE_LUMA_LIGHT = 197`, against measured palette
+lumas of: dark — attribute 209, number 198, string 156, type 147,
+comment 138; light — attribute 49, string 51, type 79, comment 92,
+number 104. Both started one step inside their bound — 130 and 150 —
+and ended far past it, because a filled band is not a dimmer version of
+colored text: it emits light across the whole cell where glyphs emit it
+across a fraction of one, so a wire row at the document row's own
+brightness still reads as the *louder* of the two. Reported as the
+document rows looking muted; nothing dims them, and the fix is on the
+wire row's side.
+
+They can go that far only because the hex is neither reversed nor left
+in the terminal's own text color. Under `REVERSED` the terminal draws
+the glyphs in its own *background* color, so the band carried their
+contrast as well as its own quiet, which pinned the dark constant at 80.
+With `WIRE_TEXT_DARK = #B0B0B0` / `WIRE_TEXT_LIGHT = #4F4F4F` the two
+channels are independent: the hex has a fixed contrast of its own and
+the band is free to be nothing but a tint, a little under a third of the
+way from the page to the hex. The pair sit 176 from their respective
+pages, so neither theme's rows are the louder. Four rounds of user
+feedback were spent on the band's brightness before the two channels
+were separated, and the two-channel option had been on the table from
+the first report.
+
+The three tier colors moved the other way, since what separates an
+anomaly from an ordinary byte is a wide brightness gap and it should be
+used. `leveled` never touches a tier, so on a row of bands brought down
+to `WIRE_LUMA_*` an anomaly is the one bright thing. On dark, VSCode's
+three are each scaled up until one channel saturates — same hue, same
+relative mix, as much light as the hue can carry: `#C586C0` → `#FFAEF8`
+(luma 152 → 196), `#CCA700` → `#FFD100` (163 → 204), `#F14C4C` →
+`#FF5555` (111 → 121). On light the same word means the opposite,
+prominence against white being depth rather than brightness, and only
+one of the three was weak: `#BF8803` → `#9C6A00` (138 → 109), which had
+been the quietest mark on the light theme while meaning more than the
+landmark it sat beside.
+
+Those colors then went into the **background**, not the foreground. The
+first implementation put the tier in the foreground over the region's
+own band, keeping both facts visible at once; it was reported as not
+reading as an alarm at all, which is right — it is a slightly different
+shade of text on a screen already full of colored text. A band swap at
+full strength is unmistakable, and the region hue it displaces is
+carried by the accused byte's neighbours anyway.
+
+One palette color had to move for the same reason. `Dark`'s `Type` was
+`#FE8019`, a vivid orange, and `leveled` at 58 turns an orange into a
+muted red — beside the bright red of an `Invalid` tier, which made a
+perfectly good wire type read as accused. It became a pale yellow
+against the field number's pale blue, and was pushed further from the
+non-canonical tier's own yellow afterwards; spec 0231 records where both
+ended up and why one move was not enough.
 
 The row carries no label. Ahead of its first hex pair it carries only
 `tree`'s `└── `, subdued, at the document row's own indent — four
-columns that answer which row the hex belongs to, which alignment on
-its own does not. Every hex pair is a reversed block, so what marks an
-anomaly is the brightness of the block
-rather than its presence — the tier colors are the palette's most
-saturated and the borrowed hues have been leveled down to
-`WIRE_LUMA_*`, which is the same separation the design already relied
-on, read the other way round.
+columns that answer which row the hex belongs to, which alignment on its
+own does not; and a row that drew no hex carries nothing at all, elbow
+included.
 
 Wire styles are resolved once rather than per byte. The inputs are
 finite — one `SyntaxRole` per capture, times the two resolved themes —
@@ -1012,10 +1250,10 @@ so `theme::wire_styles` fills a `OnceLock` table on first use and
 branch is an *uncached* environment read that allocates a `String`) and
 then `leveled`'s blend, four times for every drawn row of every frame.
 
-`cargo test -p protolens` passes 615, plus 25 in `tests/batch_export.rs`;
+`cargo test -p protolens` passes 619, plus 25 in `tests/batch_export.rs`;
 the vendored grammar's
-`nix-build -A tree-sitter-textproto-highlight-test` passes 123
-assertions, 17 of them new. Eight protolens tests fail in a nix-shell
+`nix-build -A tree-sitter-textproto-highlight-test` passes 126
+assertions, 20 of them new. Eight protolens tests fail in a nix-shell
 entered before the grammar was rebuilt — `TREE_SITTER_TEXTPROTO_QUERIES_DIR`
 then points at a `highlights.scm` with no annotation captures, and
 `colorize.rs` `include_str!`s that file at *build* time, so the binary

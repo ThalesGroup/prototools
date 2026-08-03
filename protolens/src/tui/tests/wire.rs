@@ -108,21 +108,45 @@ fn each_line_claims_its_own_bytes() {
 
     // S4: the record's tag and length ride on element 0's row, and each
     // later element gets its own row. The run closes on the last one.
-    assert_eq!(rows[1], "0a:03[05");
+    assert_eq!(rows[1], "2|08:03[05");
     assert_eq!(rows[2], "06");
     assert_eq!(rows[3], "07]");
 
     // A message header shows only its tag and length — its payload is
     // its children's, and so is the closing `]` (test plan 1).
-    assert_eq!(rows[4], "12:02[");
-    assert_eq!(rows[5], "18[05]");
+    assert_eq!(rows[4], "2|10:02[");
+    assert_eq!(rows[5], "0|18[05]");
     // Every byte under `tail` is claimed by the line above, so its
     // footer row has nothing left to show (test plan 2).
     assert_eq!(rows[6], "");
 
-    assert_eq!(rows[7], "18[2a]");
-    assert_eq!(rows[8], "20[2b]");
+    assert_eq!(rows[7], "0|18[2a]");
+    assert_eq!(rows[8], "0|20[2b]");
     assert_eq!(rows[9], "", "the wrapper root's footer claims no bytes");
+}
+
+/// A row's hex, with every split tag byte put back together: a tag's
+/// first byte is drawn as `2|08`, which is the byte `0x0a` spelled as
+/// its wire type and the rest of it.
+fn rejoined_hex(row: &str) -> String {
+    let mut out = String::new();
+    let mut chars = row.chars().peekable();
+    while let Some(c) = chars.next() {
+        if !c.is_ascii_hexdigit() {
+            continue;
+        }
+        if chars.peek() != Some(&'|') {
+            out.push(c);
+            continue;
+        }
+        chars.next();
+        let hi = chars.next().expect("a split tag has its second half");
+        let lo = chars.next().expect("a split tag has its second half");
+        let rest = u8::from_str_radix(&format!("{hi}{lo}"), 16).expect("hex");
+        let wtype = c.to_digit(16).expect("hex") as u8;
+        out.push_str(&format!("{:02x}", rest | wtype));
+    }
+    out
 }
 
 /// Test plan 9, and the reason S2 is stated as a partition rather than
@@ -133,8 +157,7 @@ fn every_byte_appears_exactly_once_in_document_order() {
     let (app, _run, _tail, _a, _b) = packed_run_with_tail_fixture();
     let hex: String = wire_rows(&app)
         .iter()
-        .flat_map(|row| row.chars())
-        .filter(|c| c.is_ascii_hexdigit())
+        .map(|row| rejoined_hex(row))
         .collect();
     let expected: String = app.blob[app.wrapper_offset..]
         .iter()
@@ -153,8 +176,8 @@ fn a_group_footer_row_shows_the_end_tag() {
     let footer = header + app.tree[group].lines_total as usize - 1;
     // Field 5, START_GROUP then END_GROUP — a group's tags are the
     // whole of their rows: no length, no payload beside them.
-    assert_eq!(wire_text(&app, header, &mut memo), "2b");
-    assert_eq!(wire_text(&app, footer, &mut memo), "2c");
+    assert_eq!(wire_text(&app, header, &mut memo), "3|28");
+    assert_eq!(wire_text(&app, footer, &mut memo), "4|28");
 }
 
 /// Test plan 8, and the reason S9 exists at all: a preview is a
@@ -168,7 +191,7 @@ fn a_preview_overlay_row_shows_the_preview_nodes_bytes() {
     // preview re-renders `inner` under its own current type, so the
     // rendering is the same one and the bytes had better be too.
     let committed = node_wire_rows(&app, inner);
-    assert_eq!(committed, ["0a:02[", "08[05]", ""]);
+    assert_eq!(committed, ["2|08:02[", "0|08[05]", ""]);
 
     preview(&mut app, inner, "test.Inner");
     assert_eq!(overlay_wire_rows(&app), committed);
@@ -181,7 +204,7 @@ fn a_preview_overlay_row_shows_the_preview_nodes_bytes() {
 fn a_preview_of_a_packed_run_splits_its_elements_the_same_way() {
     let (mut app, run, _tail, _a, _b) = packed_run_with_tail_fixture();
     let committed = node_wire_rows(&app, run);
-    assert_eq!(committed, ["0a:03[05", "06", "07]"]);
+    assert_eq!(committed, ["2|08:03[05", "06", "07]"]);
 
     preview(&mut app, run, "uint64");
     assert_eq!(overlay_wire_rows(&app), committed);
@@ -208,6 +231,90 @@ fn the_lines_that_fit_halve_when_wire_mode_is_on() {
     app.main_area = Rect::new(0, 0, 40, 1);
     press(&mut app, 'w');
     assert_eq!(app.document_pane_height(), 1);
+}
+
+/// Which *terminal* row the cursor is drawn on — the one the user is
+/// looking at, and the thing `toggle_wire` is trying to hold still.
+fn cursor_terminal_row(app: &App) -> isize {
+    app.terminal_row_of(app.cursor_display_row())
+}
+
+/// Test plan 27. `w` changes what a document line costs, not where the
+/// user is looking: the cursor stays on the terminal row it was on.
+#[test]
+fn toggling_wire_mode_keeps_the_cursor_on_its_terminal_row() {
+    let texts: Vec<String> = (0..40).map(|i| format!("f{i}: 0")).collect();
+    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let mut app = sibling_leaves_app(&refs);
+    app.main_area = Rect::new(0, 0, 40, 10);
+    for _ in 0..20 {
+        app.move_down();
+    }
+    app.clamp_pan_offset();
+    assert_eq!(app.cursor_display_row(), 20);
+    assert_eq!(cursor_terminal_row(&app), 9);
+
+    // Nine is odd, so holding it puts the pane's top edge in the middle
+    // of a document line — spec 0230's `scroll_skip` is what lets it.
+    press(&mut app, 'w');
+    assert_eq!(cursor_terminal_row(&app), 9);
+    assert_eq!((app.scroll_offset, app.scroll_skip), (15, 1));
+    // The pane's first row is the second half of line 15, and a click on
+    // it still names line 15.
+    assert_eq!(app.main_pane_line_idx(0, 0), Some(15));
+    assert_eq!(app.main_pane_line_idx(0, 1), Some(16));
+    press(&mut app, 'w');
+    assert_eq!(cursor_terminal_row(&app), 9);
+    assert_eq!((app.scroll_offset, app.scroll_skip), (11, 0));
+
+    // An even offset needs no half line, and is held just the same.
+    app.scroll_offset = 14;
+    app.last_cursor_row = None;
+    app.clamp_pan_offset();
+    assert_eq!(cursor_terminal_row(&app), 6);
+    press(&mut app, 'w');
+    assert_eq!(cursor_terminal_row(&app), 6);
+    assert_eq!((app.scroll_offset, app.scroll_skip), (17, 0));
+    press(&mut app, 'w');
+    assert_eq!(cursor_terminal_row(&app), 6);
+}
+
+/// Turning the wire rows *off* wants twice as many document lines above
+/// the cursor as were on screen, and near the top of the document they
+/// do not exist. Holding the row then means starting the document part
+/// way down the pane, which a negative `scroll_skip` is exactly what
+/// records — and it is spent again, a row at a time, by the first
+/// downward scrolling that reaches it.
+#[test]
+fn turning_wire_mode_off_near_the_top_pads_above_the_first_line() {
+    let texts: Vec<String> = (0..40).map(|i| format!("f{i}: 0")).collect();
+    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let mut app = sibling_leaves_app(&refs);
+    app.main_area = Rect::new(0, 0, 40, 10);
+    press(&mut app, 'w');
+    for _ in 0..3 {
+        app.move_down();
+    }
+    app.clamp_pan_offset();
+    assert_eq!(app.cursor_display_row(), 3);
+    assert_eq!(app.scroll_offset, 0, "all four lines fit in five");
+    assert_eq!(cursor_terminal_row(&app), 6);
+
+    press(&mut app, 'w');
+    assert_eq!(app.scroll_offset, 0, "there is nothing above line 0");
+    assert_eq!(app.scroll_skip, -3, "so three blank rows stand in");
+    assert_eq!(cursor_terminal_row(&app), 6);
+    assert_eq!(app.main_pane_line_idx(0, 0), None, "a blank row is no line");
+    assert_eq!(app.main_pane_line_idx(0, 3), Some(0));
+
+    // The padding is not permanent: it is the first thing a downward
+    // move eats into once the cursor reaches the bottom of the pane.
+    for _ in 0..4 {
+        app.move_down();
+    }
+    app.clamp_pan_offset();
+    assert_eq!((app.scroll_offset, app.scroll_skip), (0, -2));
+    assert_eq!(cursor_terminal_row(&app), 9);
 }
 
 /// Test plan 24. The rows are twice as thick, not separately clickable:
@@ -305,9 +412,11 @@ fn pack_size_and_its_wire_bytes_share_the_accent() {
         .collect();
     assert_eq!(roles, [SyntaxRole::AnnotationLandmark]);
 
-    let accent = theme::tier_style(Tier::Landmark, app.theme)
-        .fg
-        .expect("a tier has a color");
+    // The annotation wears the color as text and the wire row wears it
+    // as a band, which is the one thing about them that differs.
+    let accent = theme::tier_band(Tier::Landmark, app.theme)
+        .bg
+        .expect("a tier is a band");
     assert_eq!(
         theme::style_for(SyntaxRole::AnnotationLandmark, app.theme).fg,
         Some(accent),
@@ -321,10 +430,13 @@ fn pack_size_and_its_wire_bytes_share_the_accent() {
         .expect("it claims bytes");
     let accented: Vec<&str> = spans
         .iter()
-        .filter(|span| span.style.fg == Some(accent))
+        .filter(|span| span.style.bg == Some(accent))
         .map(|span| span.content.as_ref())
         .collect();
-    assert_eq!(accented, ["0", "a", "03"], "row was {}", hex_of(&spans));
+    // The wire type and the length prefix — what the record's packing
+    // is *about*. The field number is not: it is the document's own,
+    // and keeps the field-name hue.
+    assert_eq!(accented, ["2", "03"], "row was {}", hex_of(&spans));
 }
 
 /// `test.Row { string name = 1; int32 num = 2; }` holding
@@ -390,7 +502,11 @@ fn a_wire_row_is_aligned_with_its_document_row() {
     let margin = render::FOLD_FIELD_WIDTH + indent;
     assert_eq!(
         row,
-        format!("{}{}0a:02[69 64]", " ".repeat(margin), wire::WIRE_CONNECTOR)
+        format!(
+            "{}{}2|08:02[69 64]",
+            " ".repeat(margin),
+            wire::WIRE_CONNECTOR
+        )
     );
 
     // And that margin is the document row's own: the two rows start in
@@ -409,17 +525,18 @@ fn the_tag_takes_the_field_names_hue_dimmed() {
     let mut app = hue_fixture();
     let palette = drawn_palette(&mut app, 1);
     let name = theme::style_for(SyntaxRole::Attribute, app.theme);
-    assert_eq!(palette.tag, theme::reversed(theme::dimmed(name, app.theme)));
-    // Dimmer, however the terminal can express it: a leveled color when
+    assert_eq!(palette.tag, theme::banded(name, app.theme));
+    // Dimmer, however the terminal can express it: a leveled band when
     // there is a color to level, the DIM attribute when there is not.
     assert!(
-        palette.tag.fg != name.fg || palette.tag.add_modifier.contains(Modifier::DIM),
+        palette.tag.bg != name.fg || palette.tag.add_modifier.contains(Modifier::DIM),
         "the wire row is the dimmer of two",
     );
 }
 
-/// Spec 0225 test plan 14: the payload follows the *value*'s color, so a
-/// string field and a numeric one do not paint their bytes alike.
+/// Spec 0225 test plan 14: the payload follows the *value*'s color —
+/// one color for every kind of value (spec 0232), so a string field and
+/// a numeric one paint their bytes alike, and both differ from the tag.
 #[test]
 fn the_payload_takes_the_values_hue() {
     use crate::colorize::SyntaxRole;
@@ -428,21 +545,13 @@ fn the_payload_takes_the_values_hue() {
     let mut app = hue_fixture();
     let string_row = drawn_palette(&mut app, 1);
     let number_row = drawn_palette(&mut app, 2);
-    assert_eq!(
-        string_row.payload,
-        theme::reversed(theme::dimmed(
-            theme::style_for(SyntaxRole::StringLiteral, app.theme),
-            app.theme
-        ))
+    let value = theme::banded(
+        theme::style_for(SyntaxRole::StringLiteral, app.theme),
+        app.theme,
     );
-    assert_eq!(
-        number_row.payload,
-        theme::reversed(theme::dimmed(
-            theme::style_for(SyntaxRole::Number, app.theme),
-            app.theme
-        ))
-    );
-    assert_ne!(string_row.payload, number_row.payload);
+    assert_eq!(string_row.payload, value);
+    assert_eq!(number_row.payload, value);
+    assert_ne!(string_row.payload, string_row.tag);
 }
 
 /// Spec 0225 test plan 15. The length prefix borrows the comment
@@ -457,10 +566,7 @@ fn the_length_prefix_takes_the_comment_hue_with_or_without_an_annotation() {
     let with = drawn_palette(&mut app, 1);
     assert_eq!(
         with.len,
-        theme::reversed(theme::dimmed(
-            theme::style_for(SyntaxRole::Comment, app.theme),
-            app.theme
-        ))
+        theme::banded(theme::style_for(SyntaxRole::Comment, app.theme), app.theme)
     );
 
     app.annotations = false;
@@ -489,7 +595,7 @@ fn a_wire_row_goes_monochrome_with_the_document_row() {
         app.wire_row(pos, 0, &mut memo, palette)
             .expect("it claims bytes")
             .iter()
-            .filter(|s| s.style.fg.is_some())
+            .filter(|s| s.style.fg.is_some() || s.style.bg.is_some())
             .count()
     };
 

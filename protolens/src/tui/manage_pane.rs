@@ -249,23 +249,7 @@ impl App {
     /// success; otherwise leaves it unchanged and sets a status-line
     /// message.
     pub(super) fn jump_to_manage_match(&mut self, dir: SearchDir, pattern: &str) {
-        let n = self.overrides.entries().len();
-        if pattern.is_empty() || n == 0 {
-            return;
-        }
-        let needle = SearchPattern::new(pattern);
-        // Convert to the 0-based `start` convention `search_wrap` expects
-        // (index to check first, not "current + 1" or "current - 1").
-        let start = match dir {
-            SearchDir::Forward => (self.manage_highlight + 1) % n,
-            SearchDir::Backward => (self.manage_highlight + n - 1) % n,
-        };
-        match search_wrap(n, start, dir, |i| {
-            needle.is_match(&self.manage_search_text(i))
-        }) {
-            Some(i) => self.set_manage_highlight(i),
-            None => self.message = format!("pattern not found: {pattern}"),
-        }
+        self.run_search(SearchScope::Manage, dir, pattern);
     }
 
     /// Origins derivable under `kind` from every node in `affected`, in
@@ -826,15 +810,11 @@ impl App {
             match row {
                 // Spec 0127 §G1: pan the manage pane's own rows
                 // independently of the main pane's `pan_offset`.
-                // Origin-path header rows render in the same dark-blue
-                // style as a `true`/`false` value in the main pane
-                // (`SyntaxRole::Boolean`), distinguishing them at a
+                // Origin-path header rows render in the chrome accent
+                // (`theme::accent_style`), distinguishing them at a
                 // glance from the type rows grouped underneath.
                 ManageRow::Header(label) => lines.push(Line::from(pan_spans(
-                    vec![Span::styled(
-                        label.clone(),
-                        theme::style_for(SyntaxRole::Boolean, self.theme),
-                    )],
+                    vec![Span::styled(label.clone(), theme::accent_style(self.theme))],
                     self.manage_pan_offset,
                 ))),
                 ManageRow::Entry(idx) => {

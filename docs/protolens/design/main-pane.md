@@ -37,9 +37,14 @@ remembers a desired column across vertical movement and clamps to each
 row without forgetting. It is also readable by the rest of the UI —
 which is what lets a heat cue describe the thing under the caret rather
 than the whole line. When the caret sits on a brace whose match is on
-screen, the *match* is the inverted cell and the caret dims to a tint;
-when the match is off screen the caret keeps its inversion and nothing
-else lights up.
+screen, the match takes a background tint; when the match is off screen
+nothing lights up. The caret itself is drawn identically in both cases
+(spec 0233) — inversion is its idiom and it is not shared with anything
+else, so nothing the document does can change what the user's own
+position looks like. A caret *deliberately* at a row's first non-blank
+counts as being on that row's opening brace (spec 0234), because that
+is where the caret actually spends its time and the alternative is a
+feature nobody sees.
 
 That precision creates one problem worth naming, because the fix is not
 obvious. `h`/`Left` at the row's first column means "fold, then go to

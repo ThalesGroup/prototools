@@ -21,6 +21,7 @@ prototext-schema      = { workspace = true }
 prost-reflect         = "0.16"
 clap                  = { version = "4.5", features = ["derive", "env"] }
 clap_complete         = { version = "4.5", features = ["unstable-dynamic"] }
+memchr                = "2"
 ratatui               = "0.30"
 crossterm             = "0.29"
 serde                 = { version = "1.0", features = ["derive"] }

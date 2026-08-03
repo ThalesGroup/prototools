@@ -89,6 +89,11 @@ impl App {
         self.command_kind = kind;
         self.command_cursor = prefill.chars().count();
         self.command_buffer = Some(prefill);
+        // Spec 0235 S6: a `/`/`?` prompt remembers where it was opened
+        // from before the first keystroke can move the view.
+        if matches!(kind, CommandLineKind::Search(_)) {
+            self.start_search_prompt();
+        }
     }
 
     /// Edit the in-progress command-line buffer at `command_cursor`
@@ -136,7 +141,7 @@ impl App {
                             buf
                         };
                         self.last_override_search = Some((dir, pattern.clone()));
-                        self.jump_to_override_match(dir, &pattern);
+                        self.commit_search(dir, &pattern);
                     }
                     CommandLineKind::Search(dir) if self.manage_open && self.manage_focus => {
                         let pattern = if buf.is_empty() {
@@ -148,7 +153,7 @@ impl App {
                             buf
                         };
                         self.last_manage_search = Some((dir, pattern.clone()));
-                        self.jump_to_manage_match(dir, &pattern);
+                        self.commit_search(dir, &pattern);
                     }
                     CommandLineKind::Search(dir) => {
                         let pattern = if buf.is_empty() {
@@ -160,13 +165,14 @@ impl App {
                             buf
                         };
                         self.last_search = Some((dir, pattern.clone()));
-                        self.jump_to_match(dir, &pattern);
+                        self.commit_search(dir, &pattern);
                     }
                 }
             }
             KeyCode::Esc => {
                 self.command_buffer = None;
                 self.command_cursor = 0;
+                self.cancel_search();
             }
             // Emacs/readline-style char motion (vim's own command-line mode
             // supports these too): Ctrl-f/Ctrl-b as alternatives to the
@@ -198,6 +204,15 @@ impl App {
                 let len = self.command_buffer_char_len();
                 self.command_cursor = (self.command_cursor + 1).min(len);
             }
+            // Spec 0235 S17: the same two keys mean the same thing on
+            // both halves of the screen — spec 0208 S1 already binds
+            // them to `^`/`$` in the main pane.
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.command_cursor = 0
+            }
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.command_cursor = self.command_buffer_char_len()
+            }
             KeyCode::Home => self.command_cursor = 0,
             KeyCode::End => self.command_cursor = self.command_buffer_char_len(),
             KeyCode::Backspace => {
@@ -208,22 +223,34 @@ impl App {
                 if empty {
                     self.command_buffer = None;
                     self.command_cursor = 0;
+                    self.cancel_search();
                 } else if self.command_cursor > 0 {
                     self.command_cursor -= 1;
                     self.remove_char_at(self.command_cursor);
+                    self.restart_search_sweep();
                 }
             }
             KeyCode::Delete => {
                 if self.command_cursor < self.command_buffer_char_len() {
                     self.remove_char_at(self.command_cursor);
+                    self.restart_search_sweep();
                 }
             }
+            // Spec 0235 S18: a `Ctrl-`modified character is ignored, not
+            // inserted. Without this every arm above has to be reached
+            // for the key to do no harm — an unbound `Ctrl-u` typed a
+            // `u` into the pattern — and every future `Ctrl-` binding
+            // would have to be added defensively rather than usefully.
+            KeyCode::Char(_) if key.modifiers.contains(KeyModifiers::CONTROL) => {}
             KeyCode::Char(c) => {
                 let byte_idx = self.char_byte_index(self.command_cursor);
                 if let Some(buf) = self.command_buffer.as_mut() {
                     buf.insert(byte_idx, c);
                 }
                 self.command_cursor += 1;
+                // Spec 0235 S7: every edit of the pattern replaces the
+                // sweep in flight, whatever the edit was.
+                self.restart_search_sweep();
             }
             _ => {}
         }

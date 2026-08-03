@@ -45,7 +45,7 @@ msgs { a: 2 }
 
 [pkg.Ext]: 10
 # <- punctuation.bracket.extension
-# ^ type
+# ^ attribute
 #       ^ punctuation.bracket.extension
 #        ^ punctuation.delimiter
 #          ^ number
@@ -138,7 +138,7 @@ h: "\022#tail"  #@ bytes
 # <- attribute
 #    ^ string.escape
 #       ^ string
-#               ^ comment
+#                  ^ type
 i: 'has # hash'  # real
 # <- attribute
 #       ^ string
@@ -146,7 +146,7 @@ i: 'has # hash'  # real
 
 a: 1  #@ varint; pack_size: 3
 # <- attribute
-#        ^ comment
+#        ^ type
 #                ^ annotation.landmark
 #                           ^ number
 b: 2  #@ varint; len_ohb: 2; TAG_OOR
@@ -154,14 +154,18 @@ b: 2  #@ varint; len_ohb: 2; TAG_OOR
 #                         ^ number
 #                            ^ annotation.invalid
 c: 3  #@ repeated int32 [packed=true] = 85; ENUM_UNKNOWN
-#        ^ comment
+#        ^ type
 #                 ^ type
-#                       ^ attribute
-#                                       ^ number
+#                       ^ annotation.landmark
+#                                       ^ attribute
 #                                           ^ annotation.non_canonical
 d: 4  #@ google.protobuf.FileDescriptorProto = 2
 #        ^ type
-#                                              ^ number
+#                                              ^ attribute
+f: 6  #@ pkg.Color(3) = 9
+#        ^ type
+#                 ^ number
+#                       ^ attribute
 e: 5  #@ !!! ??? ;;; ==
 #        ^ comment
 next_field: 7

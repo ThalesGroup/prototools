@@ -661,13 +661,17 @@ fn clicking_the_fold_marker_toggles_the_node_despite_the_heat_cue_gutter() {
     );
 }
 
-/// Regression test (2026-07-18 feedback): clicking a foldable node's
-/// fold marker must shift keyboard focus to the main pane (as any
-/// main-pane click does) but must NOT move the cursor/highlight —
-/// the marker is a pure fold control, distinct from clicking the row
-/// itself (which does move the cursor, unchanged).
+/// Clicking a foldable node's fold marker shifts keyboard focus to the
+/// main pane, as any main-pane click does, and puts the cursor on the
+/// node it folded.
+///
+/// The cursor part reverses a 2026-07-18 decision that the marker was
+/// a pure fold control and should leave the highlight alone. It was
+/// wrong in the same way for the marker as for the keyboard: whatever
+/// gesture reaches `toggle_fold`, the next keystroke should act on the
+/// node whose shape just changed.
 #[test]
-fn clicking_the_fold_marker_focuses_the_main_pane_without_moving_the_cursor() {
+fn clicking_the_fold_marker_focuses_the_main_pane_and_selects_the_node() {
     let (mut app, grp_idx) = group_type_fixture();
     app.splash = false;
     app.main_area = Rect::new(0, 0, 40, 20);
@@ -694,8 +698,8 @@ fn clicking_the_fold_marker_focuses_the_main_pane_without_moving_the_cursor() {
     );
     assert!(!app.manage_focus, "focus must shift to the main pane");
     assert_eq!(
-        app.cursor, original_cursor,
-        "the cursor/highlight must not move on a marker click"
+        app.cursor, grp_idx,
+        "the cursor follows the fold it just closed"
     );
 }
 

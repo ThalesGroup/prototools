@@ -110,9 +110,9 @@ move with the pan at all.
 - **G1.** The cursor is drawn as a vim-style **block caret** over exactly
   one character of one row, not as a full-row highlight.
 - **G2.** When the caret is on a brace whose match is on screen, the
-  *match* is the inverted cell and the caret dims to a tint; when the
-  match is off screen, the caret keeps its inversion and nothing else
-  lights up. Spec 0193's red brace pair goes away.
+  match lights up; when the match is off screen, nothing else lights up.
+  Spec 0193's red brace pair goes away. (Amended by spec 0233: the caret
+  is drawn the same either way, and the match is a background tint.)
 - **G3.** The caret moves horizontally by one character, and its column
   survives vertical movement: a remembered desired column, clamped to
   each row without being forgotten, with one sticky special case (S5).
@@ -230,26 +230,27 @@ The heat *glyph* in column 0 stays unreachable: it is left of the text
 origin, and the suffix already gives the caret somewhere to stand to ask
 about the cue.
 
-### S4. The brace pair swaps which member is inverted
+### S4. The caret's brace lights its match
 
-`theme::brace_match_style` (spec 0193 S2) goes away, and the pair is
-drawn with two styles that between them answer two different questions:
+*Revised by spec 0233, whose G1 and S2-S4 replace what this section
+originally said — that the two members swapped styles, with the match
+taking the inversion and the caret dimming to a tint. G2 above is
+amended to match.*
+
+Spec 0193 S2's `theme::brace_match_style` — bright red plus bold, on
+both members, all the time — goes away. (Spec 0233 later gives the name
+back to a background tint on the match alone; the pair below is stated
+in its final form.)
 
 | the caret is on | caret's cell | matching brace |
 |-----------------|--------------|----------------|
 | not a brace | `caret_style` (reversed) | — |
 | a brace, match **not** in the window | `caret_style` (reversed) | — |
-| a brace, match **in** the window | `caret_paired_style` (a background tint, *not* reversed) | `caret_style` (reversed) |
+| a brace, match **in** the window | `caret_style` (reversed) | `brace_match_style` (a background tint) |
 
-So the strong cue moves to the member the user is *looking for*. The
-caret's own position is already known — it is where the last keypress
-left it, and the row cue (G7) still marks its row — whereas the
-partner's position is the question being asked. Inverting the answer
-rather than the question is the whole idea.
-
-The three-state shape also makes the middle row carry information for
-free: when the caret is on a brace and nothing else lights up, that
-*means* the match is off-screen. No extra glyph, no message.
+The three-state shape makes the middle row carry information for free:
+when the caret is on a brace and nothing else lights up, that *means*
+the match is off-screen. No extra glyph, no message.
 
 This is vim's behavior, and it is worth being precise about the
 mechanism because protolens has to reproduce the effect deliberately
@@ -278,14 +279,9 @@ Two consequences worth stating:
   co-visible. The row cue cannot disambiguate which cell is the caret in
   that case; the two styles still can, which is why they must be
   distinguishable from each other and not merely from ordinary text.
-- `caret_paired_style` is drawn *over* `cursor_row_style`, since the
-  caret is by definition on the caret's row, so the two backgrounds must
-  differ as well — otherwise the caret disappears into its own row cue
-  in exactly the state where it is weakest.
-- The caret's weakest rendering happens exactly when a second strong cue
-  has appeared within a screen or two of it. G7 is not weakened: the row
-  cue is unchanged, and there is more on screen pointing at the caret's
-  neighborhood, not less.
+- On that row `brace_match_style` is drawn *over* `cursor_row_style`, so
+  those two backgrounds must differ as well — otherwise the match
+  disappears into the caret's row cue.
 
 The rule for *which* brace is matched is inherited unchanged from spec
 0193's `cursor_brace` (`render.rs:384`), including its bracketed-node
@@ -621,13 +617,11 @@ Throughout, "one visible unit" rather than "one `char`" — see A5.
 10. A search hit puts the caret on the first character of the match
     (S8), including when the match is in the row's indentation, where it
     clamps to the first non-blank.
-11. The three states of S4's table, each asserted on the spans: off a
-    brace, and on a brace whose match is scrolled or panned out of the
-    window, the caret's own cell carries `caret_style` and nothing else
-    is styled; on a brace whose match is in the window, the caret's cell
-    carries `caret_paired_style` and the *match* carries `caret_style`.
-    No span anywhere carries a red brace style — spec 0193 S2's test
-    rewritten rather than deleted.
+11. The three states of S4's table, each asserted on the spans: the
+    caret's own cell carries `caret_style` throughout, and the match
+    carries `brace_match_style` in the third state and nothing is styled
+    in the first two. No span anywhere carries a red brace style — spec
+    0193 S2's test rewritten rather than deleted.
 12. Visibility is re-resolved every frame: from the third state, a pan
     or a scroll that takes the match out of the window returns the
     caret's cell to `caret_style` and leaves no partner span, and

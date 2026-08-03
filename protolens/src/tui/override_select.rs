@@ -720,25 +720,7 @@ impl App {
     /// highlight there on success; otherwise leaves it unchanged and
     /// sets a status-line message.
     pub(super) fn jump_to_override_match(&mut self, dir: SearchDir, pattern: &str) {
-        if pattern.is_empty() || self.override_candidates.is_empty() {
-            return;
-        }
-        let needle = SearchPattern::new(pattern);
-        let n = self.override_candidates.len();
-        let start = match dir {
-            SearchDir::Forward => (self.override_highlight + 1) % n,
-            SearchDir::Backward => (self.override_highlight + n - 1) % n,
-        };
-        match search_wrap(n, start, dir, |i| {
-            needle.is_match(&self.override_candidates[i].0)
-        }) {
-            Some(i) => {
-                self.override_highlight = i;
-                // Preview the landing row, as arrow-key movement does.
-                self.preview_override_highlight();
-            }
-            None => self.message = format!("pattern not found: {pattern}"),
-        }
+        self.run_search(SearchScope::Override, dir, pattern);
     }
 
     /// Find the next node whose own opening line contains `pattern`
@@ -760,62 +742,6 @@ impl App {
     /// are resolved on demand, and only if the walk actually wraps, so
     /// neither direction pays spec 0195 S1's eager `last_node()`.
     pub(super) fn jump_to_match(&mut self, dir: SearchDir, pattern: &str) {
-        if pattern.is_empty() || self.tree.is_empty() {
-            return;
-        }
-        let needle = SearchPattern::new(pattern);
-        let n = self.total_lines();
-        let mut pos = LinePos {
-            node: self.cursor,
-            line_in_node: self.cursor_line_in_node,
-        };
-        // The cursor's own line comes last in both directions, which is
-        // what makes a wrapped search land back where it started rather
-        // than report "not found".
-        for _ in 1..=n {
-            pos = match match dir {
-                SearchDir::Forward => self.next_line(pos).or_else(|| self.first_line()),
-                SearchDir::Backward => self.prev_line(pos).or_else(|| self.last_line()),
-            } {
-                Some(next) => next,
-                None => break,
-            };
-            // A closing `}` draws no content of its own, and a search has
-            // never matched one.
-            if self.is_footer(pos) {
-                continue;
-            }
-            let text = self.line_text(pos);
-            let Some(byte) = needle.find(&text) else {
-                continue;
-            };
-            // Resolved before the cursor moves, both to land on the
-            // match rather than merely on its row (spec 0194 S8) and to
-            // end the borrow of the node's own text.
-            let column = text[..byte].chars().count();
-            drop(text);
-            if pos.node != self.cursor {
-                self.record_jump();
-                self.set_cursor(pos.node);
-                self.unfold_ancestors(pos.node);
-            }
-            // Spec 0216 S7: a flat node can own several rows — a packed
-            // run's elements — so landing on the node is not yet landing
-            // on the match. `set_cursor` has just reset this to 0.
-            self.cursor_line_in_node = pos.line_in_node;
-            // Clamped, since a match inside the row's own indentation is
-            // left of the leftmost reachable column (S3) — and since
-            // `set_cursor` above has already put the caret at the first
-            // non-blank, that clamp is the whole correction.
-            self.cursor_column = column;
-            self.clamp_caret_column();
-            self.desired_column = self.cursor_column;
-            // Spec 0199 S10: a search landing is a position, and a match
-            // at an end of the row is a coincidence — so it must not arm
-            // `h`'s fold or `l`'s descent.
-            self.caret_anchor = CaretAnchor::Free;
-            return;
-        }
-        self.message = format!("pattern not found: {pattern}");
+        self.run_search(SearchScope::Main, dir, pattern);
     }
 }

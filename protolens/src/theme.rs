@@ -227,19 +227,41 @@ pub fn prime_supports_rgb() {
 /// scope names. A color serving more than one role is one field
 /// referenced twice, never a value repeated.
 struct RgbPalette {
+    /// Also the annotation's echo of the field *number*, which is the
+    /// same fact as the name at the head of the line, and the tag bytes
+    /// of the wire row below it (spec 0225 §S12).
     attribute: Color,
-    /// Also VSCode's link color (`StringSpecialUrl`) and `Constant`, and
-    /// this crate's own focused-pane accent (`focus_style`).
+    /// Deliberately not VSCode's type color: a type name and its wire
+    /// type sit next to a field name and a value on every annotated
+    /// line, and the borrowed blue-green read as a cousin of the field
+    /// name's blue. The two constants below say what replaced it and
+    /// what each is chosen for.
     r#type: Color,
-    string_literal: Color,
+    /// VSCode's link color, now serving only `StringSpecialUrl` — the
+    /// domain half of an Any key, which is a URL and not a type. Kept as
+    /// its own field rather than folded into `r#type`, which is where it
+    /// used to live: the two stopped being the same color when the type
+    /// color turned orange, and a URL is not warm.
+    link: Color,
+    /// Every scalar value a document row can hold — a string, a number,
+    /// a bool, an enum value name — wears this one color. What the value
+    /// *is* is already said by the type in its annotation and by the
+    /// bytes on the wire row under it; a second, quieter spelling of the
+    /// same fact in the value's own color only competes with the field
+    /// name it sits beside.
+    value: Color,
+    /// A string's `\n`, `\377` and friends, deliberately still its own
+    /// color: an escape is not a value, it is a span *inside* one, and
+    /// telling the two apart is what the color is for.
     string_escape: Color,
     /// Also this crate's manage-pane "auto" entry color
     /// (`manage_entry_style`).
     comment: Color,
-    number: Color,
-    /// Also this crate's manage-pane origin-path header color
-    /// (`render_manage_pane`, via `style_for`).
-    boolean: Color,
+    /// Not a document color at all: the two pieces of pane chrome that
+    /// have to sit apart from every syntax role around them — the
+    /// manage-pane origin-path header and the heat cue's tie suffix.
+    /// See [`accent_style`].
+    accent: Color,
     punctuation_bracket_list: Color,
     punctuation_bracket_extension: Color,
     /// The three severity tiers (spec 0225 §S11). Deliberately not
@@ -247,9 +269,44 @@ struct RgbPalette {
     /// ordinary syntax on the same line, and next to the hex of a wire
     /// row, so sharing a hue with a role would make the two readings
     /// ambiguous exactly where both appear.
+    ///
+    /// The loudest colors in the palette, and the only ones a wire row
+    /// wears at full strength — `leveled` never touches them, so on a
+    /// row of blocks brought down to `WIRE_LUMA_*` an anomaly is the one
+    /// bright thing. On `Dark` that means fully saturated; on `Light` it
+    /// means the opposite, since prominence against white is depth
+    /// rather than brightness.
     tier_landmark: Color,
     tier_non_canonical: Color,
     tier_invalid: Color,
+    /// The one luminance every color above *except the three tiers* is
+    /// brought to, by [`doc_leveled`], before it is ever drawn.
+    ///
+    /// The palette is borrowed from VSCode, where brightness is part of
+    /// how each scope is distinguished. On a document that is almost
+    /// entirely colored tokens that reads as noise: ten hues at ten
+    /// brightnesses give the eye a second axis to track that carries no
+    /// information, because the hue already said which scope it is. One
+    /// brightness leaves hue as the only variable, and leaves *loudness*
+    /// free to mean one thing.
+    ///
+    /// That one thing is the two *anomaly* tier colors, which are
+    /// deliberately not leveled: after this, an anomaly is the only text
+    /// on a document row that is brighter (dark) or deeper (light) than
+    /// everything around it, without the reader having to know the
+    /// palette. `Tier::Landmark` is leveled with everything else — it is
+    /// structural, not an anomaly.
+    ///
+    /// Heat cues are outside this too — they are their own gradient in
+    /// their own reserved column, and the whole point of a gradient is
+    /// that its brightness varies.
+    ///
+    /// The values are legibility choices. Dark's 170 sits under the
+    /// palette's brightest three (attribute 209, punctuation-list 216,
+    /// type 229) and over its dimmest two (bracket-extension 127,
+    /// comment 138), so the effect is mostly a dimming; light's 85 is
+    /// the mirror, above its own mean of 68 and under `number`'s 104.
+    doc_luma: f32,
 }
 
 /// The dark RGB palette, borrowed from VSCode's `dark_plus.json`/
@@ -257,35 +314,69 @@ struct RgbPalette {
 /// named-color match from <https://www.color-name.com>, purely for human
 /// readability when scanning this file.
 const DARK_RGB: RgbPalette = RgbPalette {
-    attribute: Color::Rgb(0x9C, 0xDC, 0xFE),      // Clear Blue
-    r#type: Color::Rgb(0x4E, 0xC9, 0xB0),         // Subtle Blue Green
-    string_literal: Color::Rgb(0xCE, 0x91, 0x78), // Beauty Copper
-    string_escape: Color::Rgb(0xD7, 0xBA, 0x7D),  // Mushroom Melt
-    comment: Color::Rgb(0x6A, 0x99, 0x55),        // Brussels Sprout
-    number: Color::Rgb(0xB5, 0xCE, 0xA8),         // Rainee
-    boolean: Color::Rgb(0x56, 0x9C, 0xD6),        // Azul Mystic
+    attribute: Color::Rgb(0x9C, 0xDC, 0xFE), // Clear Blue
+    // A pale yellow against the field name's pale blue, the pairing of
+    // the Ukrainian flag. It replaced a vivid orange, which the wire
+    // row is what exposed: leveled down to a band, an orange is a
+    // muted red, and a muted red beside the bright red an `Invalid`
+    // tier paints is the one confusion the whole tier scheme exists to
+    // prevent — a well-formed wire type looked accused.
+    //
+    // Only its hue and its saturation survive `doc_luma`, so those are
+    // what this constant is chosen for: hue 55°, seven degrees off pure
+    // yellow, against `tier_non_canonical`'s 36° — and desaturated to
+    // 0.42, against that tier's 0.75. A first attempt at 48°/0.55 was
+    // reported as too close to the anomaly color, and both axes were
+    // moved rather than one, since after leveling saturation is the
+    // more legible of the two.
+    r#type: Color::Rgb(0xF2, 0xEA, 0x8C),        // Sweet Corn
+    link: Color::Rgb(0x4E, 0xC9, 0xB0),          // Subtle Blue Green
+    value: Color::Rgb(0xCE, 0x91, 0x78),         // Beauty Copper
+    string_escape: Color::Rgb(0xD7, 0xBA, 0x7D), // Mushroom Melt
+    comment: Color::Rgb(0x6A, 0x99, 0x55),       // Brussels Sprout
+    accent: Color::Rgb(0x56, 0x9C, 0xD6),        // Azul Mystic
     punctuation_bracket_list: Color::Rgb(0xDC, 0xDC, 0xAA), // Pale Hazel
     punctuation_bracket_extension: Color::Rgb(0xD1, 0x69, 0x69), // Alexa
-    tier_landmark: Color::Rgb(0xC5, 0x86, 0xC0),  // Light Violet
-    tier_non_canonical: Color::Rgb(0xCC, 0xA7, 0x00), // Buddha Gold
-    tier_invalid: Color::Rgb(0xF1, 0x4C, 0x4C),   // Fire Opal
+    // VSCode's landmark and invalid, each scaled up until one channel
+    // saturates: same hue, same relative mix, as much light as the hue
+    // can carry.
+    tier_landmark: Color::Rgb(0xFF, 0xAE, 0xF8), // Lavender Rose
+    // Pulled from VSCode's gold (hue 49°) down to amber at 36°, away
+    // from `r#type`'s 55°: the two were reported as reading alike, and
+    // the tier is the one that has to be unmistakable. It goes toward
+    // red rather than green because that is the direction that means
+    // *worse* in this palette — `tier_invalid` is at 0° — so the three
+    // tiers now run gold-free from 36° to 0° in severity order.
+    //
+    // 36° is as red as a full-value hue can be while staying brighter
+    // than `doc_luma`: at 0.75 saturation it lands on luma 187 against
+    // the document's 170. Any redder and an anomaly would be *dimmer*
+    // than the ordinary text it has to stand out from.
+    tier_non_canonical: Color::Rgb(0xFF, 0xB4, 0x40), // Yellow Orange
+    tier_invalid: Color::Rgb(0xFF, 0x55, 0x55),       // Sunset Orange
+    doc_luma: 170.0,
 };
 
 /// The light RGB palette, borrowed from VSCode's `light_plus.json`/
 /// `light_vs.json`. See `DARK_RGB` for the trailing-comment convention.
 const LIGHT_RGB: RgbPalette = RgbPalette {
-    attribute: Color::Rgb(0xE5, 0x00, 0x00),      // Electric Red
-    r#type: Color::Rgb(0x26, 0x7F, 0x99),         // Jelly Bean Blue
-    string_literal: Color::Rgb(0xA3, 0x15, 0x15), // San Diego
-    string_escape: Color::Rgb(0xEE, 0x00, 0x00),  // Strong Red
-    comment: Color::Rgb(0x00, 0x80, 0x00),        // Digital Green
-    number: Color::Rgb(0x09, 0x86, 0x58),         // Funky Green
-    boolean: Color::Rgb(0x00, 0x00, 0xFF),        // Blue
+    attribute: Color::Rgb(0xE5, 0x00, 0x00),     // Electric Red
+    r#type: Color::Rgb(0xAF, 0x3A, 0x03),        // Burnt Orange
+    link: Color::Rgb(0x26, 0x7F, 0x99),          // Jelly Bean Blue
+    value: Color::Rgb(0xA3, 0x15, 0x15),         // San Diego
+    string_escape: Color::Rgb(0xEE, 0x00, 0x00), // Strong Red
+    comment: Color::Rgb(0x00, 0x80, 0x00),       // Digital Green
+    accent: Color::Rgb(0x00, 0x00, 0xFF),        // Blue
     punctuation_bracket_list: Color::Rgb(0x04, 0x51, 0xA5), // French Blue
     punctuation_bracket_extension: Color::Rgb(0x81, 0x1F, 0x3F), // Dried Burgundy
-    tier_landmark: Color::Rgb(0xAF, 0x00, 0xDB),  // Violet
-    tier_non_canonical: Color::Rgb(0xBF, 0x88, 0x03), // Golden Brown
-    tier_invalid: Color::Rgb(0xE5, 0x14, 0x00),   // Scarlet
+    tier_landmark: Color::Rgb(0xAF, 0x00, 0xDB), // Violet
+    // Deepened from VSCode's `#BF8803`, which was the one weak anomaly
+    // mark on white: luma 138 against the violet's 53 and the red's 63,
+    // so it read as the quietest of the three while meaning more than
+    // the landmark does. The other two are already deep and stand.
+    tier_non_canonical: Color::Rgb(0x9C, 0x6A, 0x00), // Golden Brown
+    tier_invalid: Color::Rgb(0xE5, 0x14, 0x00),       // Scarlet
+    doc_luma: 85.0,
 };
 
 /// Which color of `p` each role takes, and the one modifier the RGB
@@ -296,25 +387,32 @@ const LIGHT_RGB: RgbPalette = RgbPalette {
 /// differed in which role got which named color, only in what the names
 /// resolve to.
 fn style_for_rgb(role: SyntaxRole, p: &RgbPalette) -> Style {
+    // Every role but the two anomaly tiers goes through `doc_leveled`.
+    // See `RgbPalette::doc_luma`.
+    let hue = |color| Style::default().fg(doc_leveled(color, p.doc_luma));
     match role {
-        SyntaxRole::Attribute => Style::default().fg(p.attribute),
-        SyntaxRole::Type => Style::default().fg(p.r#type),
-        SyntaxRole::StringLiteral => Style::default().fg(p.string_literal),
-        SyntaxRole::StringEscape => Style::default().fg(p.string_escape),
-        SyntaxRole::StringSpecialUrl => Style::default()
-            .fg(p.r#type)
-            .add_modifier(Modifier::UNDERLINED),
-        SyntaxRole::Comment => Style::default().fg(p.comment),
-        SyntaxRole::Number => Style::default().fg(p.number),
-        SyntaxRole::Boolean => Style::default().fg(p.boolean),
-        SyntaxRole::Constant => Style::default().fg(p.r#type),
+        SyntaxRole::Attribute => hue(p.attribute),
+        SyntaxRole::Type => hue(p.r#type),
+        // The four value roles — a string, a number, a bool, an enum
+        // value name — take one color. See `RgbPalette::value`.
+        SyntaxRole::StringLiteral => hue(p.value),
+        SyntaxRole::Number => hue(p.value),
+        SyntaxRole::Boolean => hue(p.value),
+        SyntaxRole::Constant => hue(p.value),
+        SyntaxRole::StringEscape => hue(p.string_escape),
+        SyntaxRole::StringSpecialUrl => hue(p.link).add_modifier(Modifier::UNDERLINED),
+        SyntaxRole::Comment => hue(p.comment),
         SyntaxRole::PunctuationDelimiter => Style::default(),
         SyntaxRole::PunctuationBracket => Style::default(),
-        SyntaxRole::PunctuationBracketList => Style::default().fg(p.punctuation_bracket_list),
-        SyntaxRole::PunctuationBracketExtension => {
-            Style::default().fg(p.punctuation_bracket_extension)
-        }
-        SyntaxRole::AnnotationLandmark => Style::default().fg(tier_color_rgb(Tier::Landmark, p)),
+        SyntaxRole::PunctuationBracketList => hue(p.punctuation_bracket_list),
+        SyntaxRole::PunctuationBracketExtension => hue(p.punctuation_bracket_extension),
+        // Leveled with the ordinary roles, unlike the two tiers below:
+        // `pack_size` and `[packed=true]` say where a packed record
+        // begins, which is structure, not an anomaly. Loudness on a
+        // document row means "something is wrong with these bytes", and
+        // a landmark that shouted it would spend the one signal the
+        // leveling exists to reserve.
+        SyntaxRole::AnnotationLandmark => hue(tier_color_rgb(Tier::Landmark, p)),
         SyntaxRole::AnnotationNonCanonical => {
             Style::default().fg(tier_color_rgb(Tier::NonCanonical, p))
         }
@@ -326,8 +424,8 @@ fn style_for_rgb(role: SyntaxRole, p: &RgbPalette) -> Style {
 ///
 /// Three one-line tables — this and the two ANSI-16 ones below — rather
 /// than inlining the colors into the `SyntaxRole` arms above and into
-/// `tier_style_in`. The annotation reaches a tier through a capture and
-/// a role; the wire row names the tier outright; both must land on the
+/// `tier_color`. The annotation reaches a tier through a capture and a
+/// role; the wire row names the tier outright; both must land on the
 /// same color, and a second copy is how they would stop.
 fn tier_color_rgb(tier: Tier, p: &RgbPalette) -> Color {
     match tier {
@@ -353,22 +451,48 @@ fn tier_color_light_ansi16(tier: Tier) -> Color {
     }
 }
 
-/// The style a severity tier wears, named directly rather than reached
-/// through a syntax capture — what a wire row's bytes use (spec 0225
-/// §S11 "one classifier, two rows").
+/// The style a severity tier wears on a wire row: the tier's color as
+/// a *band* (spec 0225 §S11 "one classifier, two rows").
 ///
-/// Hue only. The wire row adds `REVERSED` itself, and only for the two
-/// anomaly tiers: reverse is a *locator* for a pair of hex digits lost
-/// among forty, not a severity, and a token in a sentence does not need
-/// one.
-pub fn tier_style(tier: Tier, theme: ThemeKind) -> Style {
-    tier_style_in(tier, theme, supports_rgb())
+/// Never leveled — these are the loudest colors in the palette and the
+/// wire row wears them at full strength.
+///
+/// A wire row spends both channels and neither is free for a tier to
+/// borrow: the foreground is the hex itself, one muted color the whole
+/// row long so that the digits read as digits, and the background says
+/// what each byte is *for*. An anomaly is the one thing that outranks
+/// what a byte is for, so it takes the background outright — the tier
+/// color unleveled, against the leveled bands of everything around it.
+///
+/// The alternative, tried first, was the tier in the foreground over
+/// the region's own band. It reads as a slightly different shade of
+/// text on a screen already full of colored text; a band swap at full
+/// strength does not.
+///
+/// The hex on top of it is drawn in the page's own background — black
+/// on `Dark`, white on `Light` — which is the far end of the palette
+/// from where the tier colors were chosen to sit, so the contrast comes
+/// out of the same choice that made them loud. In sixteen colors it is
+/// black on both themes: those six are all mid-brightness whatever the
+/// terminal renders them as, and black is the safer end against all of
+/// them.
+pub fn tier_band(tier: Tier, theme: ThemeKind) -> Style {
+    tier_band_in(tier, theme, supports_rgb())
 }
 
-/// `tier_style` with the color depth passed in — see `style_for_in` for
-/// why the split exists.
-fn tier_style_in(tier: Tier, theme: ThemeKind, rgb: bool) -> Style {
-    Style::default().fg(pick(
+fn tier_band_in(tier: Tier, theme: ThemeKind, rgb: bool) -> Style {
+    let text = pick(
+        theme,
+        rgb,
+        (Color::Black, Color::Black),
+        (Color::White, Color::Black),
+    );
+    Style::default().bg(tier_color(tier, theme, rgb)).fg(text)
+}
+
+/// The color of `tier`, in whichever of the four palettes applies.
+fn tier_color(tier: Tier, theme: ThemeKind, rgb: bool) -> Color {
+    pick(
         theme,
         rgb,
         (
@@ -379,7 +503,7 @@ fn tier_style_in(tier: Tier, theme: ThemeKind, rgb: bool) -> Style {
             tier_color_rgb(tier, &LIGHT_RGB),
             tier_color_light_ansi16(tier),
         ),
-    ))
+    )
 }
 
 /// The four parts of a wire row that carry a hue (spec 0225 S11).
@@ -396,7 +520,7 @@ fn tier_style_in(tier: Tier, theme: ThemeKind, rgb: bool) -> Style {
 pub enum WireRole {
     /// The tag's field-number bits — borrows the field name's color.
     Tag,
-    /// The tag's wire-type nibble — borrows the color the annotation
+    /// The tag's wire-type bits — borrows the color the annotation
     /// gives the type it names, which is a different fact from the
     /// field number and reads better as a different hue.
     Type,
@@ -418,9 +542,41 @@ pub enum WireRole {
 /// A legibility choice, not a measurement, with one hard bound each
 /// way. On dark it must sit below the dimmest borrowed document color
 /// or the "dim" becomes a brighten; on light, above the brightest.
-/// Between those, higher is more comfortable and less subordinate.
-const WIRE_LUMA_DARK: f32 = 130.0;
-const WIRE_LUMA_LIGHT: f32 = 150.0;
+/// Between those, the closer to the bound the more the wire row asserts
+/// itself, and it should not: it is a subordinate reading of the row
+/// above. The dimmest borrowed dark color is `comment` at luma 138; the
+/// brightest borrowed light one is `number` at 104.
+///
+/// Both started one step in from their bound — 130 and 150 — and ended
+/// far past it, because a *filled band* is not a dimmer version of
+/// colored text: it emits light across the whole cell where glyphs emit
+/// it across a fraction of one, so a wire row at the document row's own
+/// brightness still reads as the louder of the two.
+///
+/// They can go this far only because [`banded`] leaves the hex alone.
+/// While the row was reversed the band carried the glyphs' contrast
+/// too, which pinned it at 80; with the hex drawn in its own fixed
+/// color the band is free to be nothing but a tint. It settled at 58,
+/// a little under a third of the way to [`WIRE_TEXT_DARK`] — far
+/// enough below the hex to leave it legible, far enough above the page
+/// for the hue to be nameable. 197 is the same distance from white.
+const WIRE_LUMA_DARK: f32 = 58.0;
+const WIRE_LUMA_LIGHT: f32 = 197.0;
+
+/// The one color a wire row's hex is drawn in, whatever band it sits
+/// on.
+///
+/// Uniform along the row on purpose: with the background carrying both
+/// a byte's purpose and its defects, a foreground that also varied
+/// would be a third reading of the same forty glyphs. Muted rather than
+/// the terminal's own text color, so that a wire row stays visibly the
+/// subordinate of the document row above it even where its band is
+/// quietest.
+///
+/// The pair are equally far from their page — 176 above black, 176
+/// below white — so neither theme's rows are the louder.
+const WIRE_TEXT_DARK: Color = Color::Rgb(0xB0, 0xB0, 0xB0);
+const WIRE_TEXT_LIGHT: Color = Color::Rgb(0x4F, 0x4F, 0x4F);
 
 /// The style a wire byte wears (spec 0225 S11): `borrowed`'s color,
 /// brought to the wire row's brightness and worn as a *background*.
@@ -459,7 +615,7 @@ fn wire_styles(theme: ThemeKind) -> &'static [Style; ALL_ROLES.len()] {
     let build = |theme| {
         let mut styles = [Style::default(); ALL_ROLES.len()];
         for (slot, role) in styles.iter_mut().zip(ALL_ROLES) {
-            *slot = reversed(dimmed(style_for(role, theme), theme));
+            *slot = banded(style_for(role, theme), theme);
         }
         styles
     };
@@ -471,32 +627,40 @@ fn wire_styles(theme: ThemeKind) -> &'static [Style; ALL_ROLES.len()] {
     }
 }
 
-/// The hue moved from the foreground to the background (spec 0225 S11).
+/// The hue leveled and moved to the background, under
+/// [`WIRE_TEXT_DARK`]/[`WIRE_TEXT_LIGHT`] hex (spec 0225 S11).
 ///
-/// Only when there is a hue to move. A style carrying no color reversed
-/// is a solid block of the terminal's default foreground — the loudest
-/// thing on the screen, standing for the one case the row has nothing to
-/// say. Those stay `DIM` text on the ordinary background.
-pub fn reversed(style: Style) -> Style {
-    match style.fg {
-        Some(_) => style.add_modifier(Modifier::REVERSED),
-        None => style,
-    }
-}
-
-/// The same hue at the wire row's brightness (spec 0225 S11).
+/// Both channels are set explicitly, and `REVERSED` is not used. Under
+/// reverse video the terminal draws the hex in its *background* color,
+/// which ties the text's legibility to how dark the band is — the band
+/// could not be lowered past 80 without taking the digits down with it
+/// — and it leaves the row nothing to change when a byte is anomalous
+/// except the band it is already using to say what the byte is for.
+/// Naming the two colors separately unties both: the band goes as quiet
+/// as `WIRE_LUMA_DARK` likes, and `tier_band` can take it over outright.
 ///
 /// Which branch applies is read off the color itself rather than from a
 /// second `supports_rgb()` call: `style_for` has already resolved which
 /// palette is in play, so the color's shape is the exact discriminator
-/// and cannot disagree with it.
+/// and cannot disagree with it. In 16 colors there is no leveling to be
+/// had, and the ANSI color is worn as it is — and its hex keeps the
+/// terminal's own foreground, since an RGB text color under an ANSI
+/// band is exactly the mixture the fallback exists to avoid.
 ///
 /// Hue only, like `tier_style` — an inherited `UNDERLINED` or `ITALIC`
-/// would be a locator on a row that has its own.
-pub fn dimmed(style: Style, theme: ThemeKind) -> Style {
+/// would be a locator on a row that has its own. A style carrying no
+/// color has no band either: a band standing for "nothing to say" would
+/// be the loudest thing on the screen, so those stay `DIM` text on the
+/// ordinary background.
+pub fn banded(style: Style, theme: ThemeKind) -> Style {
+    let text = match theme {
+        ThemeKind::Dark => WIRE_TEXT_DARK,
+        ThemeKind::Light => WIRE_TEXT_LIGHT,
+        ThemeKind::System => system_must_be_resolved(),
+    };
     match style.fg {
-        Some(Color::Rgb(r, g, b)) => Style::default().fg(leveled(r, g, b, theme)),
-        Some(color) => Style::default().fg(color).add_modifier(Modifier::DIM),
+        Some(Color::Rgb(r, g, b)) => Style::default().bg(leveled(r, g, b, theme)).fg(text),
+        Some(color) => Style::default().bg(color),
         None => Style::default().add_modifier(Modifier::DIM),
     }
 }
@@ -521,6 +685,44 @@ fn leveled(r: u8, g: u8, b: u8, theme: ThemeKind) -> Color {
         ThemeKind::Light => (WIRE_LUMA_LIGHT, 255.0),
         ThemeKind::System => system_must_be_resolved(),
     };
+    blended(r, g, b, target, background)
+}
+
+/// A document color brought to its palette's [`RgbPalette::doc_luma`].
+///
+/// Unlike [`leveled`], which only ever moves a hue *toward* the page,
+/// this goes both ways — toward white to lift a color that is under the
+/// target on a dark theme, toward black to deepen one that is over it on
+/// a light theme. It has to: the point is that every hue ends at the
+/// same brightness, and the palette's spread straddles the target in
+/// both themes.
+///
+/// Blending toward the far end of the gray axis desaturates as it goes,
+/// which is the only visible cost. It is small at the distances
+/// involved — the widest move in either palette is about a fifth of the
+/// way — and it lands on the side that matters: the colors being lifted
+/// are the dim ones, which had the least to lose.
+///
+/// A non-RGB color is returned untouched. In sixteen colors there is
+/// nothing between the named entries to blend to, and the fallback
+/// palette was chosen for legibility as a set rather than for its
+/// brightnesses matching.
+fn doc_leveled(color: Color, target: f32) -> Color {
+    let Color::Rgb(r, g, b) = color else {
+        return color;
+    };
+    let here = luma(f32::from(r), f32::from(g), f32::from(b));
+    let background = if here < target { 255.0 } else { 0.0 };
+    blended(r, g, b, target, background)
+}
+
+/// Blends a truecolor toward `background` by exactly as much as it takes
+/// to land its luminance on `target`.
+///
+/// Luminance is affine in the blend factor, so the amount needed is a
+/// division rather than a search, and the result's luminance is the
+/// target exactly.
+fn blended(r: u8, g: u8, b: u8, target: f32, background: f32) -> Color {
     let here = luma(f32::from(r), f32::from(g), f32::from(b));
     let span = background - here;
     if span.abs() < 1.0 {
@@ -538,6 +740,14 @@ fn leveled(r: u8, g: u8, b: u8, theme: ThemeKind) -> Color {
 
 /// ANSI-16 fallback palette, dark (spec 0116 §9's "ANSI-16 palette"
 /// table).
+///
+/// `Type` stays cyan here while the RGB palettes turn it orange: the
+/// sixteen colors hold no orange, and both candidates for the warm slot
+/// are already spoken for by a severity tier — red by `Invalid`, yellow
+/// by `NonCanonical` — so borrowing one would make a declared type look
+/// like an anomaly, which is the one confusion the orange was chosen to
+/// prevent. What the fallback can deliver is separation between roles,
+/// and cyan already delivers it.
 fn style_for_dark_ansi16(role: SyntaxRole) -> Style {
     match role {
         SyntaxRole::Attribute => Style::default(),
@@ -545,6 +755,9 @@ fn style_for_dark_ansi16(role: SyntaxRole) -> Style {
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD),
         SyntaxRole::StringLiteral => Style::default().fg(Color::Green),
+        SyntaxRole::Number => Style::default().fg(Color::Green),
+        SyntaxRole::Boolean => Style::default().fg(Color::Green),
+        SyntaxRole::Constant => Style::default().fg(Color::Green),
         SyntaxRole::StringEscape => Style::default()
             .fg(Color::LightGreen)
             .add_modifier(Modifier::BOLD),
@@ -554,11 +767,6 @@ fn style_for_dark_ansi16(role: SyntaxRole) -> Style {
         SyntaxRole::Comment => Style::default()
             .fg(Color::DarkGray)
             .add_modifier(Modifier::ITALIC),
-        SyntaxRole::Number => Style::default().fg(Color::Blue),
-        SyntaxRole::Boolean => Style::default()
-            .fg(Color::Magenta)
-            .add_modifier(Modifier::BOLD),
-        SyntaxRole::Constant => Style::default().fg(Color::Magenta),
         SyntaxRole::PunctuationDelimiter => Style::default().fg(Color::DarkGray),
         SyntaxRole::PunctuationBracket => Style::default().fg(Color::Gray),
         SyntaxRole::PunctuationBracketList => Style::default().fg(Color::Yellow),
@@ -574,7 +782,8 @@ fn style_for_dark_ansi16(role: SyntaxRole) -> Style {
 }
 
 /// ANSI-16 fallback palette, light (spec 0116 §9's "ANSI-16 palette"
-/// table).
+/// table). See `style_for_dark_ansi16` for why `Type` is not orange
+/// here.
 fn style_for_light_ansi16(role: SyntaxRole) -> Style {
     match role {
         SyntaxRole::Attribute => Style::default(),
@@ -582,6 +791,9 @@ fn style_for_light_ansi16(role: SyntaxRole) -> Style {
             .fg(Color::Blue)
             .add_modifier(Modifier::BOLD),
         SyntaxRole::StringLiteral => Style::default().fg(Color::Green),
+        SyntaxRole::Number => Style::default().fg(Color::Green),
+        SyntaxRole::Boolean => Style::default().fg(Color::Green),
+        SyntaxRole::Constant => Style::default().fg(Color::Green),
         SyntaxRole::StringEscape => Style::default()
             .fg(Color::Green)
             .add_modifier(Modifier::BOLD),
@@ -591,11 +803,6 @@ fn style_for_light_ansi16(role: SyntaxRole) -> Style {
         SyntaxRole::Comment => Style::default()
             .fg(Color::DarkGray)
             .add_modifier(Modifier::ITALIC),
-        SyntaxRole::Number => Style::default().fg(Color::Cyan),
-        SyntaxRole::Boolean => Style::default()
-            .fg(Color::Magenta)
-            .add_modifier(Modifier::BOLD),
-        SyntaxRole::Constant => Style::default().fg(Color::Magenta),
         SyntaxRole::PunctuationDelimiter => Style::default().fg(Color::DarkGray),
         SyntaxRole::PunctuationBracket => Style::default().fg(Color::Black),
         SyntaxRole::PunctuationBracketList => Style::default().fg(Color::Yellow),
@@ -619,8 +826,8 @@ fn style_for_light_ansi16(role: SyntaxRole) -> Style {
 /// `Comment`'s values (minus `ITALIC`) — manual entries render in the
 /// terminal's plain default style, so only auto-derived entries stand
 /// out. (The manage-pane origin-path header row has its own, separate
-/// styling — `theme::style_for(SyntaxRole::Boolean, theme)`, applied
-/// directly by `render_manage_pane`, not through this function.)
+/// styling — [`accent_style`], applied directly by `render_manage_pane`,
+/// not through this function.)
 pub fn manage_entry_style(auto: bool, theme: ThemeKind) -> Style {
     if !auto {
         return Style::default();
@@ -633,28 +840,66 @@ pub fn manage_entry_style(auto: bool, theme: ThemeKind) -> Style {
     ))
 }
 
-/// Purpose-designed backgrounds for spec 0194's caret cues — not
-/// borrowed from `dark_rgb`/`light_rgb`, which are foreground palettes.
+/// The color of the two pieces of pane chrome that are not document
+/// text and must not be mistaken for it: the manage pane's origin-path
+/// header, and the heat cue's tie suffix `[3@85]`.
+///
+/// Both used to borrow `style_for(SyntaxRole::Boolean, …)`, which stopped
+/// working when every value role collapsed onto one color — a tie count
+/// is not a value, and the origin path is not a document at all. A
+/// standalone function, like `manage_entry_style`: neither has a
+/// `highlights.scm` capture behind it, so neither belongs in
+/// `SyntaxRole`.
+pub fn accent_style(theme: ThemeKind) -> Style {
+    let modifier = if supports_rgb() {
+        Modifier::empty()
+    } else {
+        Modifier::BOLD
+    };
+    Style::default()
+        .fg(pick(
+            theme,
+            supports_rgb(),
+            (DARK_RGB.accent, Color::Magenta),
+            (LIGHT_RGB.accent, Color::Magenta),
+        ))
+        .add_modifier(modifier)
+}
+
+/// Purpose-designed backgrounds for the caret's row and for a matched
+/// brace — not borrowed from `dark_rgb`/`light_rgb`, which are
+/// foreground palettes.
 ///
 /// The two shades of each pair must differ from each other and not only
-/// from the terminal's own background: the caret sits *on* the caret's
-/// row by definition, so the weaker cue is always underneath the
-/// stronger one (spec 0194 S4).
+/// from the terminal's own background: a folded node draws both members
+/// of its pair on the caret's own row, so the match tint is laid over
+/// the row cue there (spec 0233 S3).
 mod caret_rgb {
     use ratatui::style::Color;
 
     /// Dark theme, the caret's row — VSCode dark's own list-hover
     /// background, a barely-there lift off `#1E1E1E`.
     pub const DARK_ROW: Color = Color::Rgb(0x2A, 0x2D, 0x2E);
-    /// Dark theme, the caret's own cell while its brace partner is
-    /// showing — several steps lighter than `DARK_ROW`, so the caret
-    /// still reads as a cell rather than as part of its row.
-    pub const DARK_PAIRED: Color = Color::Rgb(0x51, 0x5C, 0x6A);
+    /// Dark theme, a matched brace — several steps lighter than
+    /// `DARK_ROW`, so it still reads as a cell rather than as part of
+    /// the row it may be sitting on.
+    pub const DARK_MATCH: Color = Color::Rgb(0x51, 0x5C, 0x6A);
     /// Light theme, the caret's row.
     pub const LIGHT_ROW: Color = Color::Rgb(0xEC, 0xEC, 0xEC);
-    /// Light theme, the caret's own cell while its brace partner is
-    /// showing.
-    pub const LIGHT_PAIRED: Color = Color::Rgb(0xC8, 0xD3, 0xE0);
+    /// Light theme, a matched brace.
+    pub const LIGHT_MATCH: Color = Color::Rgb(0xC8, 0xD3, 0xE0);
+
+    /// Dark theme, the search match the cursor will land on — a warm
+    /// amber, deliberately a different hue from `DARK_MATCH`'s cool
+    /// blue-gray, since a row can carry both (spec 0235 S14).
+    pub const DARK_SEARCH_CURRENT: Color = Color::Rgb(0x8A, 0x63, 0x00);
+    /// Dark theme, the other matches on screen — the same hue at about
+    /// a third the lift, so the pair reads as one cue at two strengths.
+    pub const DARK_SEARCH_OTHER: Color = Color::Rgb(0x4A, 0x38, 0x0A);
+    /// Light theme, the search match the cursor will land on.
+    pub const LIGHT_SEARCH_CURRENT: Color = Color::Rgb(0xFF, 0xD3, 0x6B);
+    /// Light theme, the other matches on screen.
+    pub const LIGHT_SEARCH_OTHER: Color = Color::Rgb(0xFF, 0xEE, 0xC2);
 }
 
 /// Spec 0194 S2: the caret itself — one character drawn inside out,
@@ -663,23 +908,72 @@ mod caret_rgb {
 /// Theme-independent, and deliberately a bare modifier rather than a
 /// color pair: reversing is what a terminal block cursor does, so it
 /// lands correctly on any palette the user has configured, including
-/// ones this crate knows nothing about. Spec 0194 S4 hands the same
-/// style to the *matching* brace when there is one — it is the strong
-/// cue, not the caret's own.
+/// ones this crate knows nothing about. Spec 0233 S2: nothing else in
+/// the pane is drawn this way, and the caret is drawn this way
+/// everywhere.
 pub fn caret_style() -> Style {
     Style::default().add_modifier(Modifier::REVERSED)
 }
 
-/// Spec 0194 S4: the caret's own cell while its matching brace is on
-/// screen and carrying `caret_style` instead. A background tint, not a
-/// reversal — the strong cue belongs to the member the user is looking
-/// *for*, not to the one they just moved to.
-pub fn caret_paired_style(theme: ThemeKind) -> Style {
+/// Spec 0233 S3: the brace matching the one the caret is standing on.
+///
+/// A background tint rather than a second inversion — inversion is the
+/// caret's idiom (`caret_style`) and sharing it is what made the two
+/// cells hard to tell apart. A background also composes with the
+/// character's syntax foreground instead of displacing it.
+pub fn brace_match_style(theme: ThemeKind) -> Style {
     Style::default().bg(pick(
         theme,
         supports_rgb(),
-        (caret_rgb::DARK_PAIRED, Color::Blue),
-        (caret_rgb::LIGHT_PAIRED, Color::Cyan),
+        (caret_rgb::DARK_MATCH, Color::Blue),
+        (caret_rgb::LIGHT_MATCH, Color::Cyan),
+    ))
+}
+
+/// Spec 0235 S14: the search match the cursor lands on at `Enter`.
+///
+/// A background, not an inversion, on spec 0233 S3's rule — and a warm
+/// hue, so that it is still tellable from `brace_match_style` and
+/// `cursor_row_style` when all three land on one row.
+pub fn search_current_style(theme: ThemeKind) -> Style {
+    Style::default().bg(pick(
+        theme,
+        supports_rgb(),
+        (caret_rgb::DARK_SEARCH_CURRENT, Color::LightYellow),
+        (caret_rgb::LIGHT_SEARCH_CURRENT, Color::LightYellow),
+    ))
+}
+
+/// Spec 0235 S14: the other occurrences of the pattern on screen —
+/// the same hue as `search_current_style`, muted, since they are
+/// context rather than the answer.
+///
+/// The ANSI-16 fallback keeps the hue and gives up the muting: the
+/// obvious dim choice there is `DarkGray`/`Gray`, which is what
+/// `cursor_row_style` already falls back to, and a match that vanishes
+/// on the cursor's own row is worse than one that is merely a shade
+/// less bright than the current one.
+pub fn search_match_style(theme: ThemeKind) -> Style {
+    Style::default().bg(pick(
+        theme,
+        supports_rgb(),
+        (caret_rgb::DARK_SEARCH_OTHER, Color::Yellow),
+        (caret_rgb::LIGHT_SEARCH_OTHER, Color::Yellow),
+    ))
+}
+
+/// Spec 0235 S10: the typed pattern while the live sweep has no match
+/// — which covers both "finished, nothing there" and "still looking",
+/// deliberately: from the user's seat those are one fact.
+///
+/// A foreground rather than a background, because it colors the prompt
+/// row's own text and not the document.
+pub fn search_unmatched_style(theme: ThemeKind) -> Style {
+    Style::default().fg(pick(
+        theme,
+        supports_rgb(),
+        (DARK_RGB.tier_invalid, Color::Red),
+        (LIGHT_RGB.tier_invalid, Color::Red),
     ))
 }
 
@@ -989,7 +1283,7 @@ mod tests {
             // is left alone: what is under test is that the *theme* is
             // renderable, not which palette comes back.
             manage_entry_style(true, theme);
-            caret_paired_style(theme);
+            brace_match_style(theme);
             cursor_row_style(theme);
             focus_style(theme);
             for rgb in [false, true] {
@@ -1052,6 +1346,12 @@ mod tests {
     /// capture and a `SyntaxRole`, the wire row asks for it by name.
     /// They must be the same color, in all four palettes, or the two
     /// rows of one document contradict each other about severity.
+    ///
+    /// `Tier::Landmark` is the one pair that is *not* equal, because
+    /// `style_for_rgb` levels it and the wire row's band does not (see
+    /// `RgbPalette::doc_luma`). It is checked through the same leveling
+    /// rather than dropped, so a landmark that drifted to a different
+    /// hue would still be caught.
     #[test]
     fn a_tier_looks_the_same_named_as_it_does_captured() {
         let pairs = [
@@ -1059,12 +1359,17 @@ mod tests {
             (Tier::NonCanonical, SyntaxRole::AnnotationNonCanonical),
             (Tier::Invalid, SyntaxRole::AnnotationInvalid),
         ];
-        for theme in [ThemeKind::Dark, ThemeKind::Light] {
+        for (theme, palette) in [(ThemeKind::Dark, &DARK_RGB), (ThemeKind::Light, &LIGHT_RGB)] {
             for rgb in [false, true] {
                 for (tier, role) in pairs {
+                    let named = tier_color(tier, theme, rgb);
+                    let named = match (tier, rgb) {
+                        (Tier::Landmark, true) => doc_leveled(named, palette.doc_luma),
+                        _ => named,
+                    };
                     assert_eq!(
-                        tier_style_in(tier, theme, rgb),
-                        style_for_in(role, theme, rgb),
+                        Some(named),
+                        style_for_in(role, theme, rgb).fg,
                         "{tier:?} disagrees with {role:?} ({theme:?}, rgb={rgb})",
                     );
                 }
@@ -1082,10 +1387,7 @@ mod tests {
         for theme in [ThemeKind::Dark, ThemeKind::Light] {
             for rgb in [false, true] {
                 let tiers = [Tier::Landmark, Tier::NonCanonical, Tier::Invalid];
-                let colors: Vec<_> = tiers
-                    .iter()
-                    .map(|&t| tier_style_in(t, theme, rgb).fg.expect("a tier has a color"))
-                    .collect();
+                let colors: Vec<_> = tiers.iter().map(|&t| tier_color(t, theme, rgb)).collect();
                 for (i, c) in colors.iter().enumerate() {
                     assert!(
                         !colors[i + 1..].contains(c),

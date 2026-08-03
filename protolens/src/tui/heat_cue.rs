@@ -285,10 +285,8 @@ impl App {
 
     /// This line's heat cue display, if any (spec 0154 G6) —
     /// `HeatDisplay::None` both when the cue is hidden (`i`) or gated
-    /// absent, and when `line_idx` isn't a node's own header line
-    /// (`node_at_header_line`, the header half of `node_at_own_line`'s
-    /// restriction — a cue is about the node's own type, not about its
-    /// closing brace).
+    /// absent, and when `line_idx` isn't a node's *first* line — see
+    /// `heat_cue_at`.
     ///
     /// Spec 0154 G4: a settled node is read directly, no cache lock at
     /// all. An unsettled node goes through `self.heat_lookup` (pushing
@@ -317,7 +315,13 @@ impl App {
     /// goes through here, so a frame costs no line-to-node lookups at
     /// all.
     pub(super) fn heat_cue_at(&mut self, pos: LinePos) -> HeatDisplay {
-        if self.is_footer(pos) {
+        // A node says its cue once, on the line it opens with. That
+        // covers a bracketed node's closing brace — a cue is about the
+        // node's own type, not about its brace — and a packed record,
+        // which is *one* node however many element lines it draws. A
+        // packed run repeating the same glyph down its whole length
+        // would read as a column of separate findings and is one.
+        if pos.line_in_node > 0 {
             return HeatDisplay::None;
         }
         let idx = pos.node;
