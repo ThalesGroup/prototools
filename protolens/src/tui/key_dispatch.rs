@@ -96,16 +96,16 @@ impl App {
             // lifetime. Say so rather than doing nothing, which reads
             // as a broken key.
             KeyCode::Tab => self.message = OVERRIDE_FOCUS_LOCK_MESSAGE.to_string(),
-            // Spec 0200 S1: `q` is deliberately *not* bound here. In the
-            // main pane it is `request_quit`, with a confirmation behind
-            // it; this pane locks focus (spec 0185 S5), so binding `q`
-            // to an exit would silently discard the highlighted
-            // candidate with no prompt. `Esc` and `t` are the ways out.
-            // It falls to `_ => {}` below with no message: `Tab` gets
-            // one because a user has a specific expectation of it that
-            // the focus lock defeats, whereas `q` has no meaning here to
-            // explain.
-            KeyCode::Esc | KeyCode::Char('t') => self.close_override(),
+            // Spec 0236 S18: `Esc` is the only way out. `t` closed this
+            // pane too until then — but `t` is the key that *opens* it
+            // from the main pane, and a pane that locks focus (spec
+            // 0185 S5) is better served by one unambiguous exit than by
+            // a toggle. Spec 0200 S1's reasoning for leaving `q`
+            // unbound here now holds for every letter: an exit that
+            // silently discards the highlighted candidate should not be
+            // one keystroke away, and `Esc` is the keystroke users
+            // already reach for when they mean "never mind".
+            KeyCode::Esc => self.close_override(),
             // Spec 0185 S5/G4: the main pane can still be panned while
             // the preview is up. Ctrl-arrows already pan this pane's own
             // candidate list (below), so the main pane gets Alt-arrows.
@@ -139,10 +139,13 @@ impl App {
             }
             KeyCode::Char('j') | KeyCode::Down => self.move_override_highlight(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_override_highlight(-1),
-            KeyCode::PageDown => {
+            // Spec 0236 S16: `f`/`b` page here exactly as they do in the
+            // main pane — `less`'s pager idiom, and the spelling that
+            // works on a keyboard with no `PageDown`.
+            KeyCode::PageDown | KeyCode::Char('f') => {
                 self.move_override_highlight(self.override_list_height.max(1) as isize)
             }
-            KeyCode::PageUp => {
+            KeyCode::PageUp | KeyCode::Char('b') => {
                 self.move_override_highlight(-(self.override_list_height.max(1) as isize))
             }
             KeyCode::Home => {
@@ -390,14 +393,6 @@ impl App {
         }
     }
 
-    /// First `q` press: arm `quit_confirm` and prompt; meaningless once
-    /// already armed (the top-of-`handle_key` check in that case handles
-    /// the second press directly, before dispatch ever reaches here).
-    pub(super) fn request_quit(&mut self) {
-        self.quit_confirm = true;
-        self.message = "quit? press q again to confirm, any other key cancels".to_string();
-    }
-
     /// Handle one key event, mutating cursor/fold/scroll/jumplist state.
     /// No `ratatui` rendering happens here — see spec 0111 §4.
     pub fn handle_key(&mut self, key: KeyEvent) {
@@ -410,41 +405,22 @@ impl App {
         // focus, dismisses a stale `self.message` before its own handler
         // runs — matching `handle_mouse`'s own unconditional clear at the
         // top of every mouse event. Placed ahead of every dispatch branch
-        // below, including `quit_confirm`'s own prompt: on the keypress
-        // that calls `request_quit()`, this clear fires before
-        // `request_quit()` sets the prompt, so it doesn't erase its own
-        // prompt; on the *following* keypress, this clear fires first and
-        // wipes the prompt unconditionally, whether that keypress
-        // confirms, cancels, or does neither.
+        // below, so a handler that sets a message of its own still wins.
         self.message.clear();
 
         // `Ctrl-Z` suspends the process (spec 0113 D31, Unix only) —
         // checked centrally here, ahead of every other dispatch, so it
-        // applies uniformly regardless of focus/mode, same as
-        // `quit_confirm` below. Left unbound on non-Unix platforms
-        // (no `SIGTSTP` equivalent). Doesn't touch `quit_confirm`, so a
-        // pending quit confirmation survives a suspend/resume cycle.
+        // applies uniformly regardless of focus/mode. Left unbound on
+        // non-Unix platforms (no `SIGTSTP` equivalent).
         #[cfg(unix)]
         if key.code == KeyCode::Char('z') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.should_suspend = true;
             return;
         }
 
-        // A prior `q` press is awaiting confirmation (see `request_quit`):
-        // resolve it here, ahead of every other dispatch, so it applies
-        // uniformly regardless of which mode/pane has focus. A second `q`
-        // quits; any other key cancels without otherwise acting on it.
-        if self.quit_confirm {
-            self.quit_confirm = false;
-            if key.code == KeyCode::Char('q') && !ctrl_or_alt(&key) {
-                self.should_quit = true;
-            }
-            return;
-        }
-
         // `F1` opens the help overlay regardless of current focus (spec
-        // 0126 G1) — checked centrally here, same tier as `Ctrl-Z`/
-        // `quit_confirm` above, ahead of every focus-specific dispatch.
+        // 0126 G1) — checked centrally here, same tier as `Ctrl-Z`
+        // above, ahead of every focus-specific dispatch.
         // Closing it again is still handled by `handle_help_key`'s own
         // `F1` arm below (`self.help_open` branch), which fires first
         // once help is open, so this only ever needs to *open* it.
@@ -493,11 +469,10 @@ impl App {
         // An empty tree (e.g. reopening an extracted `google.protobuf.Empty`,
         // or any all-default submessage — decoding zero bytes legitimately
         // yields zero fields, see spec 0113) has no cursor node to index
-        // into: only allow the keys that don't touch `self.tree`.
+        // into, and every key below touches `self.tree`. The keys that
+        // still have to work here — `:` above all, which is now the only
+        // way to quit (spec 0236 S20) — are dispatched centrally above.
         if self.tree.is_empty() {
-            if key.code == KeyCode::Char('q') && !ctrl_or_alt(&key) {
-                self.request_quit();
-            }
             return;
         }
 
@@ -524,20 +499,24 @@ impl App {
             let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
             let alt = key.modifiers.contains(KeyModifiers::ALT);
             match key.code {
-                // Page move (vim's), and Emacs' next/previous-line
-                // aliasing `j`/`k`. `Ctrl-F`/`Ctrl-B` are free in this
-                // pane: `command_line.rs` binds them to readline char
-                // motion, but `handle_command_key` returns before
-                // `handle_key` ever reaches here.
-                KeyCode::Char('f') if ctrl => self.move_page_down(),
-                KeyCode::Char('b') if ctrl => self.move_page_up(),
+                // Emacs' next/previous-line, aliasing `j`/`k`.
                 KeyCode::Char('n') if ctrl => self.move_down(),
                 KeyCode::Char('p') if ctrl => self.move_up(),
 
-                // Spec 0208 S1: `Ctrl-a`/`Ctrl-e` are `^`/`$`, as on
-                // every other text surface the user touches (the shell,
-                // the `:` command line). Word motion is `Alt-h`/`Alt-l`,
-                // aliasing the Alt-arrows below.
+                // The readline layer, spelled here exactly as the `:`
+                // command line spells it (`command_line.rs`): `Ctrl-b`/
+                // `Ctrl-f` a character, `Alt-b`/`Alt-f` a word,
+                // `Ctrl-a`/`Ctrl-e` to the ends (spec 0208 S1) — as on
+                // every other text surface the user touches, the shell
+                // included. `Alt-h`/`Alt-l` remain a second word-motion
+                // spelling, aliasing the Alt-arrows below.
+                //
+                // These are *not* vim's `Ctrl-F`/`Ctrl-B` page keys:
+                // paging is `b`/`f` unmodified, in the plain arms below.
+                KeyCode::Char('b') if ctrl => self.caret_left(),
+                KeyCode::Char('f') if ctrl => self.caret_right(),
+                KeyCode::Char('b') if alt => self.caret_word_left(),
+                KeyCode::Char('f') if alt => self.caret_word_right(),
                 KeyCode::Char('a') if ctrl => self.caret_to_line_start(),
                 KeyCode::Char('e') if ctrl => self.caret_to_line_end(),
                 KeyCode::Char('h') if alt => self.caret_word_left(),
@@ -625,8 +604,6 @@ impl App {
         }
 
         match key.code {
-            KeyCode::Char('q') => self.request_quit(),
-
             // Sibling-skip move (spec 0126 G2: Shift-Down/Shift-Up alias
             // `J`/`K` — checked before the plain Down/Up arms below, same
             // "modifier-guard first" convention as Ctrl/Shift-Left/Right
@@ -658,21 +635,25 @@ impl App {
             // Page move, in three spellings. `PageDown`/`PageUp` are the
             // literal ones; `Space`/`Shift-Space` are the pager idiom
             // (`less`, `man`), which is what a reader is most likely to
-            // try first; `Ctrl-F`/`Ctrl-B` are vim's (in the Ctrl/Alt
-            // gate above), and are the pair to reach for when the others
-            // are unavailable — a compact keyboard often has no
-            // `PageDown` key at all, and `Shift-Space` needs the terminal
-            // to report the modifier.
+            // try first; `f`/`b` are the *other* pager idiom — `less`
+            // binds them too — and are the pair to reach for when the
+            // others are unavailable, since a compact keyboard often has
+            // no `PageDown` key at all and `Shift-Space` needs the
+            // terminal to report the modifier.
             //
             // The Shift arm must precede the plain one: without
             // `DISAMBIGUATE_ESCAPE_CODES` (`terminal.rs`'s
             // `push_keyboard_enhancement`) a terminal reports
             // `Shift-Space` as a bare `Space`, so there it silently pages
-            // *down*. That is why `Ctrl-B` exists — a `Ctrl`-letter is a
-            // C0 control code and needs no modifier reporting at all, so
-            // it is the one page-up spelling that always works.
-            KeyCode::PageDown => self.move_page_down(),
-            KeyCode::PageUp => self.move_page_up(),
+            // *down*. That is why `b` matters — an unmodified letter
+            // needs no modifier reporting at all, so it is the one
+            // page-up spelling that always works.
+            //
+            // `b` is safe next to the `x` export chord above (`xb`,
+            // `xdb`): that match runs first and returns, so a bare `b`
+            // only reaches here with no chord armed.
+            KeyCode::PageDown | KeyCode::Char('f') => self.move_page_down(),
+            KeyCode::PageUp | KeyCode::Char('b') => self.move_page_up(),
             KeyCode::Char(' ') if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 self.move_page_up()
             }
@@ -780,9 +761,11 @@ impl App {
                 }
             }
 
-            // Override pane (spec 0114 §1/§2): `t` opens/closes it;
-            // `Esc` closes it (focus is the main pane here, since
+            // Override pane (spec 0114 §1/§2): `t` opens it; `Esc`
+            // closes it (focus is the main pane here, since
             // `override_focus` is checked earlier in `handle_key`).
+            // Spec 0236 S18 dropped `t`'s own close arm inside the
+            // pane, so from here `t` is only ever an open.
             KeyCode::Char('t') => self.toggle_override(),
 
             // `Enter` on a main-pane node (spec 0139): a smart proxy for
@@ -811,13 +794,22 @@ impl App {
             // pane never holds focus while it is open, so such an arm
             // would be unreachable.
 
-            // Override management pane (spec 0117 §3): `o` opens/closes
-            // it, mirroring `t`. `Tab` moves focus back into it while
-            // it's open (Q2: the management pane deliberately does *not*
-            // get the selection pane's focus lock — it performs actual
+            // Spec 0236 S15: edit the cursor node's override — type,
+            // origin and display name at once — as a pre-filled
+            // `:override-as`.
+            KeyCode::Char('o') => self.prefill_override_as(),
+
+            // Override management pane (spec 0117 §3): `m` opens it,
+            // mirroring `t`. `Tab` moves focus back into it while it's
+            // open (Q2: the management pane deliberately does *not* get
+            // the selection pane's focus lock — it performs actual
             // splices, so its main-pane content is committed content and
             // nothing there depends on an immutable anchor).
-            KeyCode::Char('o') => self.toggle_manage_pane(),
+            //
+            // Spec 0236 S19: this was `o` until `o` became the override
+            // editor above. `m` for "manage" sits beside `t` for
+            // "type" — the two panes' own names.
+            KeyCode::Char('m') => self.toggle_manage_pane(),
             KeyCode::Tab if self.manage_open => self.manage_focus = true,
 
             _ => {}
@@ -936,15 +928,25 @@ impl App {
             return;
         }
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc | KeyCode::F(1) => self.help_open = false,
+            // Spec 0236 S20: `q` is unbound app-wide, this overlay
+            // included — after it stops quitting and stops closing
+            // panes, `q` still closing exactly one overlay reads as a
+            // leftover rather than a convention.
+            KeyCode::Esc | KeyCode::F(1) => self.help_open = false,
             KeyCode::Char('j') | KeyCode::Down => {
                 self.help_scroll = self.help_scroll.saturating_add(1)
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.help_scroll = self.help_scroll.saturating_sub(1)
             }
-            KeyCode::PageDown => self.help_scroll = self.help_scroll.saturating_add(10),
-            KeyCode::PageUp => self.help_scroll = self.help_scroll.saturating_sub(10),
+            // Spec 0236 S16: `f`/`b` page here too, as in every other
+            // pane.
+            KeyCode::PageDown | KeyCode::Char('f') => {
+                self.help_scroll = self.help_scroll.saturating_add(10)
+            }
+            KeyCode::PageUp | KeyCode::Char('b') => {
+                self.help_scroll = self.help_scroll.saturating_sub(10)
+            }
             _ => {}
         }
     }

@@ -205,7 +205,9 @@ enum Command {
     /// dispatch — descriptor load, root-type resolution, decode,
     /// `App::new` — already runs for every mode, so this variant stays
     /// a faithful measurement without listing the phases it covers.
-    Exit,
+    ///
+    /// Named `quit` to match the TUI's own `:quit` (spec 0236 S21).
+    Quit,
 }
 
 /// Mirrors the TUI's `:export` flags (spec 0156 G2/G8) — a separate
@@ -430,7 +432,7 @@ fn main() -> ExitCode {
     // successful `export` writes nothing at all to stderr, and that is
     // the contract every batch subcommand but `exit` should inherit.
     // `exit` opts in because the phase lines *are* its output.
-    let announce = matches!(cli.command, None | Some(Command::Exit));
+    let announce = matches!(cli.command, None | Some(Command::Quit));
     // Spec 0217 S4: the whole session's budget, clamped once here so that
     // `--help`'s promise ("up to N") and what actually runs agree, and so
     // the number stored on `App` is already the honest one.
@@ -532,7 +534,7 @@ fn main() -> ExitCode {
     match cli.command {
         // Spec 0198 S1: every startup phase has already run above; this
         // arm is the whole subcommand.
-        Some(Command::Exit) => ExitCode::SUCCESS,
+        Some(Command::Quit) => ExitCode::SUCCESS,
         Some(Command::Export {
             path,
             load_overrides,

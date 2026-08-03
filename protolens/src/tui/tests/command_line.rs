@@ -10,11 +10,18 @@ fn resolve_command_prefix_and_exact_match() {
     assert_eq!(resolve_command("export"), Ok("export"));
     assert_eq!(resolve_command("e"), Ok("export"));
     assert!(resolve_command("zzz").is_err());
-    // "type-as" is itself a prefix of "type-as-raw" — exact match
-    // must still win (spec 0114 §7).
-    assert_eq!(resolve_command("type-as"), Ok("type-as"));
-    assert_eq!(resolve_command("type-as-raw"), Ok("type-as-raw"));
-    assert!(resolve_command("type-a").is_err());
+    assert_eq!(resolve_command("override-as"), Ok("override-as"));
+    assert_eq!(resolve_command("o"), Ok("override-as"));
+}
+
+/// Spec 0236: `:type-as` and `:type-as-raw` are gone — `:override-as`
+/// subsumes them exactly (`:type-as <fqdn>` is `:override-as <fqdn>`,
+/// `:type-as-raw` is a bare `:override-as`), so keeping them would have
+/// meant two spellings of one operation.
+#[test]
+fn resolve_command_no_longer_knows_type_as() {
+    assert!(resolve_command("type-as").is_err());
+    assert!(resolve_command("type-as-raw").is_err());
 }
 
 /// Spec 0156 G1/G10: the old command names no longer resolve at all
@@ -30,8 +37,8 @@ fn resolve_command_reflects_the_0156_renames() {
 }
 
 /// Item 9 (2026-07-17 feedback): `:quit`, and its unambiguous prefix
-/// `:q` (no other command starts with `q`), both quit directly — same
-/// effect as confirming `q` twice.
+/// `:q` (no other command starts with `q`), both quit directly — and
+/// since spec 0236 S20 they are the only way to.
 #[test]
 fn quit_command_and_its_q_prefix_both_resolve_and_quit() {
     assert_eq!(resolve_command("quit"), Ok("quit"));
@@ -66,7 +73,7 @@ fn colon_opens_the_command_line_from_override_and_manage_focus() {
     let mut app = message_node_app();
     app.splash = false;
     app.term_width = 120;
-    app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
     assert!(app.manage_focus);
     app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
     assert!(app.command_buffer.is_some());
@@ -99,9 +106,9 @@ fn tab_completes_the_unique_command_name() {
 }
 
 /// Spec 0113 D26: once a space precedes the cursor, `Tab` is a silent
-/// no-op for commands with no argument completion — `:export` has
-/// none (spec 0114 §7 only adds argument completion for `:type-as`'s
-/// FQDN argument, exercised separately).
+/// no-op for commands with no argument completion — `:export`'s
+/// argument is a path it cannot guess. Its *options* do complete
+/// (spec 0236 S22), but only once the token begins with `-`.
 #[test]
 fn tab_is_a_no_op_once_past_the_first_space() {
     let mut app = empty_app();
@@ -118,9 +125,8 @@ fn tab_is_a_no_op_once_past_the_first_space() {
 /// candidate list, wrapping around; `Shift-Tab` (`BackTab`) cycles
 /// backward. Exercised directly against `handle_tab_key`/a synthetic
 /// `CompletionState` (real multi-candidate cycling is also reachable
-/// end-to-end via `:type-as`/`:type-as-raw`, spec 0114 §7 — see
-/// `resolve_command_prefix_and_exact_match` and the `type_as_command_*`
-/// tests below).
+/// end-to-end via `:override-as`'s FQDN argument — see the
+/// `override_as_command_*` tests below).
 #[test]
 fn tab_cycles_forward_and_shift_tab_cycles_backward() {
     let mut app = empty_app();
@@ -352,46 +358,47 @@ fn round_trip_extract_and_encode_preserves_message_set_group_framing() {
     );
 }
 
-/// Spec 0114 §7: `:type-as <FQDN>` applies the override directly to
-/// the cursor node, bypassing the override pane entirely — it must
-/// never open (`override_target` stays `None` throughout).
+/// Spec 0114 §7, now spec 0236: `:override-as <FQDN>` applies the
+/// override directly to the cursor node, bypassing the override pane
+/// entirely — it must never open (`override_target` stays `None`
+/// throughout).
 #[test]
-fn type_as_command_applies_override_bypassing_pane() {
+fn override_as_command_applies_override_bypassing_pane() {
     let (mut app, inner_idx, _) = type_as_fixture();
     app.cursor = inner_idx;
-    app.run_command("type-as test.Inner");
+    app.run_command("override-as test.Inner");
     assert!(
         app.override_target.is_none(),
-        "the pane must never open for :type-as"
+        "the pane must never open for :override-as"
     );
     assert_eq!(type_name_of(&app, inner_idx), Some("test.Inner"));
     assert!(app.message.contains("test.Inner"));
 }
 
-/// Spec 0114 §7: `:type-as-raw` marks the cursor node's range as
-/// explicitly raw, bypassing the pane.
+/// Spec 0236 S4: a bare `:override-as`, with no `<FQDN>`, marks the
+/// cursor node's range as explicitly raw — what `:type-as-raw` did.
 #[test]
-fn type_as_raw_command_marks_raw() {
+fn a_bare_override_as_marks_raw() {
     let (mut app, inner_idx, _) = type_as_fixture();
     app.cursor = inner_idx;
-    app.run_command("type-as-raw");
+    app.run_command("override-as");
     assert!(app.override_target.is_none());
     assert_eq!(app.tree[inner_idx].span.type_fqdn, NO_FQDN);
 }
 
-/// Spec 0135 §G4 (test plan item 13): `:type-as sint32` on a
+/// Spec 0135 §G4 (test plan item 13): `:override-as sint32` on a
 /// `WT_VARINT` node succeeds and renders a zigzag-decoded value;
-/// `:type-as float` on the same node — wire-incompatible (`WT_VARINT`
-/// vs. `float`'s `WT_I32`) — fails with a clear message-line error,
-/// rather than silently applying.
+/// `:override-as float` on the same node — wire-incompatible
+/// (`WT_VARINT` vs. `float`'s `WT_I32`) — fails with a clear
+/// message-line error, rather than silently applying.
 #[test]
-fn type_as_command_rejects_a_wire_incompatible_primitive_keyword() {
+fn override_as_command_rejects_a_wire_incompatible_primitive_keyword() {
     let (mut app, _, id_idx) = type_as_fixture();
     app.cursor = id_idx;
 
-    app.run_command("type-as sint32");
+    app.run_command("override-as sint32");
     assert!(
-        app.message.contains("overridden as sint32"),
+        app.message.contains("as sint32"),
         "unexpected message: {}",
         app.message
     );
@@ -401,7 +408,7 @@ fn type_as_command_rejects_a_wire_incompatible_primitive_keyword() {
         "expected zigzag-decoded sint32 rendering, got: {line:?}"
     );
 
-    app.run_command("type-as float");
+    app.run_command("override-as float");
     assert!(
         app.message.contains("not wire-compatible"),
         "unexpected message: {}",
@@ -410,7 +417,7 @@ fn type_as_command_rejects_a_wire_incompatible_primitive_keyword() {
 }
 
 /// Regression test (spec 0135 follow-up, 2026-07-17): deactivating a
-/// `:type-as`-created primitive override (via the manage pane's `a`/
+/// `:override-as`-created primitive override (via the manage pane's `a`/
 /// Space key, i.e. `OverrideCollection::toggle_active`) must actually
 /// revert the field's main-pane rendering back to its natural type —
 /// not get silently stuck at the last-applied override, which is what
@@ -419,11 +426,11 @@ fn type_as_command_rejects_a_wire_incompatible_primitive_keyword() {
 /// `None` the instant the entry is deactivated, orphaning the plain
 /// scalar leaf before `resettle_node` could ever run on it again).
 #[test]
-fn deactivating_a_primitive_type_as_override_reverts_the_main_pane_rendering() {
+fn deactivating_a_primitive_override_reverts_the_main_pane_rendering() {
     let (mut app, _, id_idx) = type_as_fixture();
     app.cursor = id_idx;
 
-    app.run_command("type-as sint32");
+    app.run_command("override-as sint32");
     let line = app.document_lines()[app.absolute_start(id_idx)].clone();
     assert!(
         line.contains("sint32"),
@@ -436,7 +443,7 @@ fn deactivating_a_primitive_type_as_override_reverts_the_main_pane_rendering() {
         .entries()
         .iter()
         .position(|e| matches!(&e.origin, OverrideOrigin::Path { path } if *path == id_path))
-        .expect("type-as must have created an entry for the id field");
+        .expect("override-as must have created an entry for the id field");
 
     app.overrides.toggle_active(entry_idx);
     app.render_overrides(app.first_node);
@@ -452,18 +459,59 @@ fn deactivating_a_primitive_type_as_override_reverts_the_main_pane_rendering() {
     );
 }
 
-/// Spec 0114 §7: once the command-name token has unambiguously
-/// resolved to `type-as`, `Tab` completes its FQDN argument against
-/// `all_type_fqdns`.
+/// Spec 0114 §7, now spec 0236 S14: once the command-name token has
+/// unambiguously resolved to `override-as`, `Tab` completes its FQDN
+/// argument against `all_type_fqdns`.
 #[test]
-fn tab_completes_type_as_fqdn_argument() {
+fn tab_completes_the_override_as_fqdn_argument() {
     let (mut app, _, _) = type_as_fixture();
     app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
-    for c in "type-as test.In".chars() {
+    for c in "override-as test.In".chars() {
         app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    assert_eq!(app.command_buffer.as_deref(), Some("type-as test.Inner"));
+    assert_eq!(
+        app.command_buffer.as_deref(),
+        Some("override-as test.Inner")
+    );
+}
+
+/// Spec 0236 S22: a token beginning with `-` completes against the
+/// command's own option list, the way a shell's completion does —
+/// checked before any value completer, since no value the command line
+/// accepts starts with `-`.
+#[test]
+fn tab_completes_an_option_from_a_leading_dash() {
+    let (mut app, _, _) = type_as_fixture();
+    app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
+    for c in "override-as --f".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(
+        app.command_buffer.as_deref(),
+        Some("override-as --field-name")
+    );
+
+    // A lone `-` offers every option the command takes; `--o` narrows
+    // to the one that matches.
+    app.command_buffer = Some("override-as --o".to_string());
+    app.command_cursor = "override-as --o".chars().count();
+    app.completion = None;
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(app.command_buffer.as_deref(), Some("override-as --origin"));
+
+    // A command with options of its own completes them too — the
+    // dispatch is on the leading `-`, not on the command.
+    app.command_buffer = Some("export --desc".to_string());
+    app.command_cursor = "export --desc".chars().count();
+    app.completion = None;
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(
+        app.command_buffer.as_deref(),
+        Some("export --descriptor-"),
+        "the longest common prefix of the two --descriptor-* options"
+    );
 }
 
 /// Spec 0184 S1, the trap: ordinals count wire *records*, so the

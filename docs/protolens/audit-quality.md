@@ -180,7 +180,7 @@ a regression recognizable.
 
 `heat_worker.rs:603-608`. `shutdown_inner` joins the worker thread, but
 `score_all` has **no cancellation check**. On googleapis the join waits
-for a full scoring pass to run to completion, so pressing `q` appears to
+for a full scoring pass to run to completion, so quitting appears to
 hang for several seconds with the terminal already handed back.
 
 The fix is a cancellation flag polled inside `score_all`'s walk, not a

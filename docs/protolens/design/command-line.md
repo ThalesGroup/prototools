@@ -68,25 +68,36 @@ automatically, with no second registration point to remember.
 
 Completion isn't limited to command names. Once the first token has
 unambiguously resolved to a command that takes a particular kind of
-argument, the *second* token is completed against that argument's own
-domain: `type-as`'s argument completes against the session's full list
-of known type FQDNs — which the on-demand descriptor branch
+argument, the following tokens are completed against that argument's own
+domain: `override-as`'s type argument completes against the session's
+full list of known type FQDNs — which the on-demand descriptor branch
 ([descriptor-context.md](descriptor-context.md)) must still answer in
 full, and does, by reading names out of the `index.rkyv` sidecar
-without decoding the files behind them;
-`save-overrides`/`restore-overrides`'s argument
+without decoding the files behind them; `save`/`restore`'s argument
 completes against the filesystem, directory by directory, the same way a
 shell's own path completion works (each Tab descends one more directory
 level rather than trying to complete the whole remaining path at once).
-Every other command, and every position past a command's single
-expected argument, is a silent no-op — deliberately, since guessing at
+Every other command, and every position past a command's expected
+arguments, is a silent no-op — deliberately, since guessing at
 what a not-yet-designed future argument might mean would be worse than
 doing nothing.
+
+A token beginning with `-` is the one case checked *before* any of
+that, and independently of which command it belongs to: it completes
+against that command's own option list, held in a registry beside the
+command names. The check is safe to make command-independent because no
+*value* the command line accepts begins with `-` — not a path, not an
+FQDN, not an origin.
+
+`override-as` is also the one command whose completion dispatches on
+the token being completed rather than on a fixed argument position: its
+two flags may appear in either order, before or after the positional,
+so "the second token" is not a meaningful question to ask about it.
 
 Repeated `Tab` presses cycle through the current candidate list once
 completion is already active; the first press instead extends the
 in-progress token to the longest common prefix of all candidates (vim/zsh
 convention) without yet committing to any one of them, so a user typing
-`ty` and pressing Tab once sees `type-as` (or, if `type-as-raid` existed
-too, whatever their common prefix is) without the pane guessing which one
-was meant.
+`:export --desc` and pressing Tab once sees `--descriptor-`, the common
+prefix of the two options that match, without the pane guessing which
+one was meant.

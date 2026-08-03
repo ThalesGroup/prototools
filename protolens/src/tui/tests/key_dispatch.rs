@@ -5,48 +5,60 @@
 use super::super::*;
 use super::support::*;
 
+/// Spec 0236 S20: `q` is bound to nothing at all — not in the main
+/// pane, not on an empty tree, not in the help overlay — and `:quit`
+/// (or any unambiguous prefix of it) is the only way out. The
+/// `q`-then-`q` confirmation this replaced existed only because a
+/// single keystroke was one slip from an accidental exit.
 #[test]
-fn q_confirmation_is_cancelled_by_any_other_key() {
-    let mut app = empty_app();
+fn q_no_longer_quits_and_quit_is_reachable_only_as_a_command() {
+    let mut app = message_node_app();
     app.splash = false;
 
+    for _ in 0..2 {
+        app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(!app.should_quit);
+    }
+
+    app.help_open = true;
     app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
     assert!(!app.should_quit);
-    assert!(app.quit_confirm);
+    assert!(app.help_open, "q must not close the help overlay either");
+    app.help_open = false;
 
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(!app.should_quit);
-    assert!(!app.quit_confirm);
-    assert!(app.message.is_empty());
+    let mut empty = empty_app();
+    empty.splash = false;
+    empty.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+    assert!(!empty.should_quit);
 
-    // A fresh `q` press re-arms confirmation from scratch.
-    app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
-    assert!(app.quit_confirm);
-    app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+    app.run_command("q");
     assert!(app.should_quit);
+}
+
+/// Spec 0236 S23: `:help` opens the same overlay `F1` does — the one
+/// binding a newcomer cannot guess is the one that lists the others.
+#[test]
+fn help_command_opens_the_help_overlay() {
+    let mut app = message_node_app();
+    app.splash = false;
+
+    app.run_command("help");
+    assert!(app.help_open);
 }
 
 /// Spec 0113 D31: `Ctrl-Z` sets `should_suspend` (the actual
 /// `SIGTSTP`/terminal dance lives in `run_loop`/`suspend`, outside
 /// `App`'s own unit-testable surface) — checked centrally, so it
-/// fires uniformly regardless of a pending quit confirmation, and
-/// leaves that confirmation untouched.
+/// fires uniformly regardless of what has focus.
 #[test]
 #[cfg(unix)]
-fn ctrl_z_sets_should_suspend_without_disturbing_quit_confirm() {
+fn ctrl_z_sets_should_suspend() {
     let mut app = empty_app();
     app.splash = false;
-
-    app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
-    assert!(app.quit_confirm);
 
     app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
     assert!(app.should_suspend);
     assert!(!app.should_quit);
-    assert!(
-        app.quit_confirm,
-        "Ctrl-Z must not disturb a pending quit confirmation"
-    );
 }
 
 /// The splash screen is transparent to keyboard input (spec 0113 D22
@@ -63,8 +75,9 @@ fn splash_dismissing_keypress_is_also_processed_as_a_command() {
     assert_eq!(app.override_target, Some(0));
 }
 
-/// `F1` opens the help overlay; `q`, `Esc`, or `F1` closes it — `?` is
-/// no longer bound to help, since it now belongs to in-pane search.
+/// `F1` opens the help overlay; `Esc` or `F1` closes it — `?` is
+/// no longer bound to help, since it now belongs to in-pane search,
+/// and `q` no longer is either (spec 0236 S20).
 #[test]
 fn f1_opens_and_closes_the_help_overlay() {
     let mut app = message_node_app();
@@ -674,7 +687,7 @@ fn default_export_descriptor_path_uses_no_range_at_the_root() {
 fn default_export_descriptor_path_uses_an_active_rename_over_no_range() {
     let (mut app, _, _) = type_as_fixture();
     assert_eq!(app.cursor, app.first_node);
-    app.run_command("type-as test.Outer");
+    app.run_command("override-as test.Outer");
     let entry_idx = app
         .overrides
         .entries()
@@ -802,15 +815,15 @@ fn the_reassigned_keys_dispatch_where_the_table_says() {
     assert!(!app.folded.contains(&items[1]), "and toggles back");
 }
 
-/// `Space`/`Ctrl-F` page down and `Shift-Space`/`Ctrl-B` page up, each
-/// landing exactly where the literal `PageDown`/`PageUp` key does.
+/// `Space`/`f` page down and `Shift-Space`/`b` page up, each landing
+/// exactly where the literal `PageDown`/`PageUp` key does.
 ///
-/// `Ctrl-B` is the one that has to work: a terminal that does not report
+/// `b` is the one that has to work: a terminal that does not report
 /// modifiers on printable keys delivers `Shift-Space` as a bare `Space`,
 /// which pages the wrong way, and a compact keyboard may have no
 /// `PageUp` key at all.
 #[test]
-fn space_and_ctrl_f_page_down_shift_space_and_ctrl_b_page_up() {
+fn space_and_f_page_down_shift_space_and_b_page_up() {
     let paged = |keys: &[KeyEvent]| {
         let mut app = wide_sibling_scalars_app(200);
         app.splash = false;
@@ -828,7 +841,7 @@ fn space_and_ctrl_f_page_down_shift_space_and_ctrl_b_page_up() {
 
     for k in [
         KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
-        KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+        KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE),
     ] {
         assert_eq!(paged(&[k]), down, "{k:?} must page down");
     }
@@ -843,10 +856,62 @@ fn space_and_ctrl_f_page_down_shift_space_and_ctrl_b_page_up() {
 
     for k in [
         KeyEvent::new(KeyCode::Char(' '), KeyModifiers::SHIFT),
-        KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
+        KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE),
     ] {
         assert_eq!(paged(&[page_down, page_down, k]), up, "{k:?} must page up");
     }
+}
+
+/// Spec 0236 G5: `f`/`b` page in the override pane, the manage pane
+/// and the help overlay too, matching the main pane above. Freeing `f`
+/// in the manage pane — it used to open the rename buffer — is what
+/// made the set uniform.
+#[test]
+fn f_and_b_page_in_every_pane() {
+    let f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE);
+    let b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE);
+
+    // Override pane: `t` opens it on a field with a candidate list.
+    let (mut app, _inner_idx, id_idx) = type_as_fixture();
+    app.splash = false;
+    app.cursor = id_idx;
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert!(app.override_focus);
+    assert!(app.override_candidates.len() > 1);
+    let start = app.override_highlight;
+    app.handle_key(f);
+    assert_ne!(app.override_highlight, start, "`f` pages the candidates");
+    app.handle_key(b);
+    assert_eq!(app.override_highlight, start, "and `b` pages back");
+
+    // Manage pane.
+    let (mut app, _items) = repeated_message_fixture();
+    app.splash = false;
+    app.manage_open = true;
+    app.manage_focus = true;
+    for field in [1u64, 2] {
+        app.overrides.activate(
+            OverrideOrigin::PathField {
+                path: "/".to_string(),
+                field,
+            },
+            None,
+        );
+    }
+    app.manage_highlight = 0;
+    app.handle_key(f);
+    assert_ne!(app.manage_highlight, 0, "`f` pages the entries");
+    app.handle_key(b);
+    assert_eq!(app.manage_highlight, 0, "and `b` pages back");
+
+    // Help overlay.
+    let mut app = empty_app();
+    app.splash = false;
+    app.help_open = true;
+    app.handle_key(f);
+    assert!(app.help_scroll > 0, "`f` scrolls the help");
+    app.handle_key(b);
+    assert_eq!(app.help_scroll, 0, "and `b` scrolls back");
 }
 
 /// `Ctrl-N`/`Ctrl-P` are `Down`/`Up` in every pane that has a
@@ -925,7 +990,7 @@ fn only_the_bound_ctrl_and_alt_chords_do_anything_in_the_main_pane() {
     // through the gate would move one of these.
     fn state(app: &App) -> String {
         format!(
-            "{} {} {} {} {} {} {} {} {} {} {} {} {} {:?}",
+            "{} {} {} {} {} {} {} {} {} {} {} {} {:?}",
             app.cursor,
             app.cursor_column,
             app.cursor_line_in_node,
@@ -937,7 +1002,6 @@ fn only_the_bound_ctrl_and_alt_chords_do_anything_in_the_main_pane() {
             app.manage_open,
             app.command_buffer.is_some(),
             app.should_quit,
-            app.quit_confirm,
             app.help_open,
             app.message,
         )
@@ -947,7 +1011,7 @@ fn only_the_bound_ctrl_and_alt_chords_do_anything_in_the_main_pane() {
     // of `handle_key` and never reaching the gate.
     let bound = [
         (KeyModifiers::CONTROL, "fbnpaeoic"),
-        (KeyModifiers::ALT, "hl"),
+        (KeyModifiers::ALT, "hlbf"),
     ];
     // The letters, plus every punctuation key the pane binds plainly.
     let keys: Vec<char> = ('a'..='z').chain(" :/?$%^0gGtwxHLZ".chars()).collect();
@@ -977,18 +1041,16 @@ fn only_the_bound_ctrl_and_alt_chords_do_anything_in_the_main_pane() {
 }
 
 /// The same, for the manage pane — the surface where an ungated chord
-/// costs the most: `Ctrl-D` would delete the highlighted entry outright,
-/// `Ctrl-Q` close the pane, and `Ctrl-<anything>` type a literal
-/// character into an open rename buffer.
+/// costs the most: `Ctrl-D` would delete the highlighted entry outright
+/// and `Ctrl-Q` close the pane.
 #[test]
 fn only_the_bound_ctrl_and_alt_chords_do_anything_in_the_manage_pane() {
     fn state(app: &App) -> String {
         format!(
-            "{} {} {} {:?} {} {} {:?} {:?}",
+            "{} {} {} {} {} {:?} {:?}",
             app.manage_highlight,
             app.manage_open,
             app.manage_focus,
-            app.manage_rename,
             app.cursor,
             app.command_buffer.is_some(),
             app.overrides.entries(),
@@ -1024,16 +1086,6 @@ fn only_the_bound_ctrl_and_alt_chords_do_anything_in_the_manage_pane() {
                 state(&app),
                 before,
                 "{modifier:?}-{c} is not bound and must do nothing"
-            );
-
-            // And with a rename buffer open, where the fall-through was
-            // an unconditional `buffer.push(c)`.
-            app.manage_rename = Some(String::new());
-            app.handle_key(KeyEvent::new(KeyCode::Char(*c), modifier));
-            assert_eq!(
-                app.manage_rename.as_deref(),
-                Some(""),
-                "{modifier:?}-{c} must not type into the rename buffer"
             );
         }
     }

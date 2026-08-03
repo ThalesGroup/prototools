@@ -310,35 +310,6 @@ impl App {
     /// 0117 §3) — always focused while open, no separate focus check
     /// (unlike `handle_override_key`).
     pub(super) fn handle_manage_key(&mut self, key: KeyEvent) {
-        if let Some(buffer) = &mut self.manage_rename {
-            match key.code {
-                KeyCode::Esc => self.manage_rename = None,
-                KeyCode::Enter => {
-                    let buffer = self.manage_rename.take().expect("checked above");
-                    let name = if buffer.is_empty() {
-                        None
-                    } else {
-                        Some(buffer)
-                    };
-                    let was_active = self.overrides.entries()[self.manage_highlight].active;
-                    self.overrides.rename(self.manage_highlight, name);
-                    if was_active {
-                        self.render_overrides(self.first_node);
-                    }
-                }
-                KeyCode::Backspace => {
-                    buffer.pop();
-                }
-                // A `Control`/`Alt`-modified character is ignored, not
-                // inserted (see `ctrl_or_alt`) — this sub-mode binds
-                // none, and without the guard an unbound `Ctrl-u` would
-                // type a `u` into the name.
-                KeyCode::Char(_) if ctrl_or_alt(&key) => {}
-                KeyCode::Char(c) => buffer.push(c),
-                _ => {}
-            }
-            return;
-        }
         match self.take_g_chord(&key) {
             GChord::Fired => {
                 self.set_manage_highlight(0);
@@ -368,7 +339,11 @@ impl App {
 
         match key.code {
             KeyCode::Tab => self.manage_focus = false,
-            KeyCode::Esc | KeyCode::Char('o') | KeyCode::Char('q') => self.close_manage_pane(),
+            // Spec 0236 S18: `Esc` is the only way out. `o` and `q`
+            // used to close here too; three spellings for one exit is
+            // what spent the two letters this spec needed, and `Esc`
+            // is the one every other pane already answers to.
+            KeyCode::Esc => self.close_manage_pane(),
             // Opens the selection pane on the highlighted entry to
             // change its type; with nothing to select there is no pane
             // to open, so it closes this one instead.
@@ -409,10 +384,13 @@ impl App {
             }
             KeyCode::Char('j') | KeyCode::Down => self.move_manage_highlight(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_manage_highlight(-1),
-            KeyCode::PageDown => {
+            // Spec 0236 S16: `f`/`b` page here exactly as they do in the
+            // main pane. `f` was this pane's display-name rename until
+            // spec 0236 S17 moved that onto `e`/`:override-as`.
+            KeyCode::PageDown | KeyCode::Char('f') => {
                 self.move_manage_highlight(self.manage_list_height.max(1) as isize)
             }
-            KeyCode::PageUp => {
+            KeyCode::PageUp | KeyCode::Char('b') => {
                 self.move_manage_highlight(-(self.manage_list_height.max(1) as isize))
             }
             KeyCode::Home => self.set_manage_highlight(0),
@@ -461,18 +439,13 @@ impl App {
                     self.jump_to_manage_match(dir.reverse(), &pattern);
                 }
             }
-            // Spec 0119 §G4: edit the highlighted entry's display-name
-            // override, pre-filled with its current value (empty when
-            // unset).
-            KeyCode::Char('f') => {
-                if !self.overrides.entries().is_empty() {
-                    let current = self.overrides.entries()[self.manage_highlight]
-                        .name
-                        .clone()
-                        .unwrap_or_default();
-                    self.manage_rename = Some(current);
-                }
-            }
+            // Spec 0236 S15: edit the highlighted entry — type, origin
+            // and display name at once — as a pre-filled
+            // `:override-as`. This replaces spec 0119 §G4's bespoke
+            // inline rename sub-mode, which was a second text-entry
+            // implementation supporting strictly less than the command
+            // line it now uses.
+            KeyCode::Char('o') => self.prefill_override_as(),
             // `A`/Shift-Space is `toggle_active`'s cascading sibling —
             // same toggle, but also applied to every entry whose origin
             // sits at-or-under the highlighted entry's own origin

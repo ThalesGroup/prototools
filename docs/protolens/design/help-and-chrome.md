@@ -6,14 +6,13 @@ SPDX-License-Identifier: MIT
 
 # Pane: help and session chrome
 
-*last verified: 2026-07-19*
+*last verified: 2026-08-03*
 
 ## Executive summary
 
 A handful of session-level surfaces don't belong to any one pane above:
 the startup splash, the `F1` help overlay, the always-present global
-command/message row, and the confirmation flows for quitting and
-suspending. What unifies them
+command/message row, and suspending. What unifies them
 is that each works identically regardless of which "real" pane
 (main/override-select/manage) currently has focus — they're checked
 centrally, ahead of any focus-specific key dispatch, rather than being
@@ -23,25 +22,29 @@ threaded individually into every pane's own key handler.
 
 ### Centrally-checked, focus-independent keys
 
-`Ctrl-Z` (suspend), a pending quit confirmation, and `F1` (open help) are
+`Ctrl-Z` (suspend), `:` (open the command line) and `F1` (open help) are
 all checked at the very top of the key-handling entry point, before
 dispatch branches on which pane has focus. This ordering is deliberate,
-not incidental: these three concerns apply uniformly to the whole
+not incidental: these concerns apply uniformly to the whole
 session regardless of what the user happens to be doing inside a pane,
 so implementing them as an early-exit check avoids needing the same
-three checks duplicated (and kept in sync) inside every pane's own key
-handler.
+checks duplicated (and kept in sync) inside every pane's own key
+handler. It is also what makes `:quit` reachable on a document with no
+nodes at all, where the main pane's own dispatch returns immediately.
 
-### Quit confirmation is a one-shot flag, not a modal
+### Quitting is a command, not a keypress
 
-Pressing `q` the first time doesn't open a dialog — it sets a boolean and
-prompts via the ordinary status-message mechanism. The *next* keypress,
-of any kind, is intercepted by the same central check: a second `q`
-confirms, anything else silently cancels. This makes the confirmation
-state trivially resettable (any stray keypress clears it) at the cost of
-being slightly more permissive than a true modal would be — pressing `q`
-then immediately doing something else is treated as "cancel," not as
-"do that other thing, but remember I still want to quit."
+`:quit` (or its unambiguous prefix `:q`) is the only way out of
+protolens; no bare letter quits, and there is no confirmation flow to
+cancel (spec 0236). The letter that used to quit was `q`, which is also
+the letter every pane-like surface trains a user to press to close
+*itself* — so the same reflex either closed a pane or ended the session
+depending on focus. Freeing `q` entirely, and leaving `Esc` as the one
+key that closes a pane, removes the ambiguity at the source rather than
+guarding against it with a two-keypress confirmation. The cost is that
+quitting now takes five keystrokes instead of two; the benefit is that
+no keystroke can end the session by accident, which is what the
+confirmation was there to buy in the first place.
 
 ### Suspend leaves the terminal exactly as a clean exit would
 

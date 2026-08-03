@@ -287,32 +287,38 @@ impl App {
     }
 
     /// Complete the token the cursor currently sits in: the first token
-    /// (the command name, before any space) always; the second token, once
-    /// exactly one space precedes the cursor, only when the first token
-    /// has already unambiguously resolved to `type-as` (spec 0114 §7) — an
-    /// FQDN argument, completed against `all_type_fqdns`. Anywhere else
-    /// (past `type-as`'s single argument, or a second token following any
-    /// other command) is a silent no-op.
+    /// (the command name, before any space) always; a token beginning
+    /// with `-` against the command's own flags (spec 0236 S22); and
+    /// otherwise whatever that command's arguments are — an
+    /// `:override-as` type or origin, a `:save`/`:restore` path, a
+    /// `:proto-root` directory. Anywhere else is a silent no-op.
+    ///
+    /// The flag check comes first and is command-independent, so a `-`
+    /// never reaches a value completer that would try to read it as a
+    /// path or an FQDN. It is safe there precisely because no value
+    /// this line accepts begins with `-`.
     pub(super) fn start_tab_completion(&mut self) {
         let buf = self.command_buffer.clone().unwrap_or_default();
         let cursor_byte = self.char_byte_index(self.command_cursor);
         let prefix = &buf[..cursor_byte];
-        match prefix.split_once(' ') {
-            None => self.complete_command_name(prefix),
-            Some((cmd, arg_prefix))
-                if !arg_prefix.contains(' ') && resolve_command(cmd) == Ok("type-as") =>
-            {
-                self.complete_type_as_fqdn(cmd, arg_prefix);
-            }
-            Some((cmd, arg_prefix))
-                if matches!(resolve_command(cmd), Ok("save") | Ok("restore")) =>
-            {
-                self.complete_fs_path(cmd, arg_prefix);
-            }
-            Some((cmd, arg_prefix)) if resolve_command(cmd) == Ok("proto-root") => {
-                self.complete_dir_path(cmd, arg_prefix);
-            }
-            Some(_) => {}
+        let Some((cmd, rest)) = prefix.split_once(' ') else {
+            self.complete_command_name(prefix);
+            return;
+        };
+        let Ok(resolved) = resolve_command(cmd) else {
+            return;
+        };
+        let token_byte = rest.rfind(' ').map_or(0, |i| i + 1);
+        if rest[token_byte..].starts_with('-') {
+            let token_start = cmd.chars().count() + 1 + rest[..token_byte].chars().count();
+            self.complete_flag(resolved, token_start, &rest[token_byte..]);
+            return;
+        }
+        match resolved {
+            "override-as" => self.complete_override_as(cmd, rest),
+            "save" | "restore" => self.complete_fs_path(cmd, rest),
+            "proto-root" => self.complete_dir_path(cmd, rest),
+            _ => {}
         }
     }
 
@@ -328,14 +334,36 @@ impl App {
         self.apply_completion(0, prefix.chars().count(), candidates);
     }
 
-    /// `:type-as <FQDN>`'s argument completion (spec 0114 §7) — candidates
-    /// are `all_type_fqdns` (the same session-global, lexicographically-
-    /// sorted list §3.2/§6 already compute and cache), reused here rather
-    /// than recomputed, plus (spec 0135 §G4) the primitive type keywords
-    /// wire-compatible with the cursor node's current wire type (a packed
-    /// element's own effective wire type is always `WT_LEN`, per its
-    /// reconstructed record — spec 0135 §G1).
-    pub(super) fn complete_type_as_fqdn(&mut self, cmd: &str, arg_prefix: &str) {
+    /// Flag completion (spec 0236 S22): a token beginning with `-`
+    /// completes against `command_flags`, the way a shell's completion
+    /// does. A single `-` matches every flag, since every flag begins
+    /// with one.
+    fn complete_flag(&mut self, resolved: &str, token_start: usize, prefix: &str) {
+        let mut matches: Vec<String> =
+            complete_prefix(prefix, command_flags(resolved).iter().copied())
+                .into_iter()
+                .map(String::from)
+                .collect();
+        if matches.is_empty() {
+            self.message = format!("{resolved}: no option matches '{prefix}'");
+            return;
+        }
+        matches.sort_unstable();
+        self.apply_completion(token_start, prefix.chars().count(), matches);
+    }
+
+    /// Type-argument completion (spec 0114 §7, spec 0236 S12) —
+    /// candidates are `all_type_fqdns` (the same session-global,
+    /// lexicographically-sorted list §3.2/§6 already compute and cache),
+    /// reused here rather than recomputed, plus (spec 0135 §G4) the
+    /// primitive type keywords wire-compatible with the cursor node's
+    /// current wire type (a packed element's own effective wire type is
+    /// always `WT_LEN`, per its reconstructed record — spec 0135 §G1).
+    ///
+    /// Takes an explicit token start rather than assuming "just past the
+    /// command name": `:override-as`'s positional can sit anywhere on
+    /// the line, before or after either flag.
+    pub(super) fn complete_type_at(&mut self, token_start: usize, arg_prefix: &str) {
         let wire_type = decode::effective_wire_type(&self.tree[self.cursor].span);
         // Collected into owned `String`s upfront (rather than borrowing
         // `self.all_type_fqdns` for `matches`'s lifetime) so the
@@ -354,7 +382,6 @@ impl App {
             return;
         }
         matches.sort_unstable();
-        let token_start = cmd.chars().count() + 1;
         self.apply_completion(token_start, arg_prefix.chars().count(), matches);
     }
 
@@ -432,7 +459,12 @@ impl App {
     /// subsequent Tab press to cycle through (spec 0113 D26). `prefix_len`
     /// is the char length of what the user already typed, used to decide
     /// whether the LCP actually extends it.
-    fn apply_completion(&mut self, token_start: usize, prefix_len: usize, candidates: Vec<String>) {
+    pub(super) fn apply_completion(
+        &mut self,
+        token_start: usize,
+        prefix_len: usize,
+        candidates: Vec<String>,
+    ) {
         let cursor_byte = self.char_byte_index(self.command_cursor);
         let buf = self.command_buffer.clone().unwrap_or_default();
         let suffix = buf[cursor_byte..].to_string();
@@ -536,14 +568,18 @@ impl App {
         };
         match resolve_command(name) {
             Ok("export") => self.run_export(tokens.collect()),
-            // `:quit` (or any unambiguous prefix, e.g. `:q` — no other
-            // command starts with `q`) quits directly, same effect as
-            // confirming `q` twice: typing the full command out is
-            // itself the deliberate action `qq`'s second press
-            // otherwise confirms.
+            // Spec 0236 S20: `:quit` — or any unambiguous prefix, e.g.
+            // `:q`, since no other command starts with `q` — is the only
+            // way to quit. The `q`-then-`q` confirmation it replaced
+            // existed because `q` was one keystroke from an accidental
+            // exit; typing a command out and pressing Enter is already
+            // deliberate.
             Ok("quit") => self.should_quit = true,
-            Ok("type-as") => self.run_type_as(tokens.collect()),
-            Ok("type-as-raw") => self.run_type_as_raw(),
+            // Spec 0236 S23: the same overlay `F1` opens, reachable by
+            // name — the one binding a newcomer cannot guess is the one
+            // that lists the others.
+            Ok("help") => self.help_open = true,
+            Ok("override-as") => self.run_override_as(tokens.collect()),
             Ok("save") => self.run_save_overrides(tokens.collect()),
             Ok("restore") => self.run_restore_overrides(tokens.collect()),
             Ok("proto-root") => self.run_proto_root(tokens.collect()),
@@ -570,68 +606,6 @@ impl App {
             return None;
         }
         Some(args.join(" "))
-    }
-
-    /// `type-as <FQDN>` — apply `FQDN` as the cursor node's type override,
-    /// bypassing the override pane entirely (spec 0114 Goal 4/§5/§7). Same
-    /// validation/application as picking a ranked candidate from the pane.
-    pub(super) fn run_type_as(&mut self, args: Vec<&str>) {
-        let Some(fqdn) = self.require_arg(&args, "type-as: missing type FQDN") else {
-            return;
-        };
-        self.message = match self.type_as(Some(&fqdn)) {
-            Ok(()) => format!("overridden as {fqdn}"),
-            Err(e) => e,
-        };
-    }
-
-    /// `type-as-raw` — mark the cursor node's range as explicitly raw/
-    /// unschema'd (spec 0114 §3.1/§5/§7), bypassing the override pane.
-    pub(super) fn run_type_as_raw(&mut self) {
-        self.message = match self.type_as(None) {
-            Ok(()) => "overridden as raw".to_string(),
-            Err(e) => e,
-        };
-    }
-
-    /// Shared application logic for `type-as`/`type-as-raw` (spec 0114 §5
-    /// step 1, spec 0118 §6): validates the cursor is on an eligible node
-    /// (`can_override`, §1) — same refusal `t` gives — then activates a
-    /// `Path`-kind override for the cursor node's positional path and
-    /// runs the recursive `render_overrides` pass (§4/§6), without ever
-    /// opening the override pane. The override is persisted in the
-    /// collection, not spliced one-shot.
-    ///
-    /// A primitive type keyword (spec 0135 §G3/§G4) is rejected upfront,
-    /// before `render_overrides` runs, when it isn't wire-compatible with
-    /// the cursor node's current wire type (a packed element's own
-    /// effective wire type is always `WT_LEN`, per its reconstructed
-    /// record — spec 0135 §G1). Catching it early is what makes it a
-    /// clear message-line error instead of being masked by
-    /// `run_type_as`'s own success message. A message-FQDN target falls
-    /// back to deferred resolution inside `splice_override`.
-    pub(super) fn type_as(&mut self, new_fqdn: Option<&str>) -> Result<(), String> {
-        if !self.can_override(self.cursor) {
-            return Err(
-                "cannot override: not a message/group or length-delimited field".to_string(),
-            );
-        }
-        if let Some(name) = new_fqdn {
-            if decode::primitive_type_for_keyword(name).is_some() {
-                let wire_type = decode::effective_wire_type(&self.tree[self.cursor].span);
-                if !decode::primitive_keywords_for_wire_type(wire_type).contains(&name) {
-                    return Err(format!(
-                        "type '{name}' not wire-compatible with this node's wire type"
-                    ));
-                }
-            }
-        }
-        let origin = OverrideOrigin::Path {
-            path: self.positional_path(self.cursor),
-        };
-        self.overrides.activate(origin, new_fqdn.map(String::from));
-        self.render_overrides(self.first_node);
-        Ok(())
     }
 
     /// `export [--binary|--prototext|--descriptor-binary|

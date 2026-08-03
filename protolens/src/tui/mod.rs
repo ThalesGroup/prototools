@@ -114,8 +114,7 @@ fn is_double_click<T: PartialEq>(last: &mut Option<(Instant, T)>, key: T) -> boo
 /// How long a passive status message stays visible in the global
 /// command/message row before `track_message_timeout` auto-dismisses it
 /// — doesn't apply while that row is actively serving as a text-entry
-/// prompt or a pending `q` quit confirmation (see that function's doc
-/// comment).
+/// prompt (see that function's doc comment).
 const MESSAGE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Shown in the global command/message row when the user tries to take
@@ -150,12 +149,33 @@ const RENDER_CACHE_MAX_BYTES: usize = 1 << 20;
 const COMMANDS: &[&str] = &[
     "export",
     "quit",
-    "type-as",
-    "type-as-raw",
+    "help",
+    "override-as",
     "save",
     "restore",
     "proto-root",
 ];
+
+/// Every option each command accepts, for the command line's
+/// flag completion (spec 0236 S22): a token beginning with `-`
+/// completes against this rather than against the command's own value
+/// candidates, the way a shell's completion does.
+///
+/// Same standing as `COMMANDS`: the source of truth for the *spelling*
+/// of a flag, and for nothing else. A flag listed here still needs the
+/// arm in its command's own argument loop that acts on it.
+fn command_flags(cmd: &str) -> &'static [&'static str] {
+    match cmd {
+        "export" => &[
+            "--binary",
+            "--descriptor-binary",
+            "--descriptor-prototext",
+            "--prototext",
+        ],
+        "override-as" => &["--field-name", "--origin"],
+        _ => &[],
+    }
+}
 
 /// Filter `candidates` to those starting with `prefix` (spec 0113 D26) — a
 /// small generic primitive, not ad hoc to any one caller.
@@ -1166,11 +1186,6 @@ pub struct App {
     last_manage_row_click: Option<(Instant, usize)>,
     /// Last confirmed management-pane in-pane search — `n` repeats it.
     last_manage_search: Option<(SearchDir, String)>,
-    /// `Some` while `f` in the management pane is editing the highlighted
-    /// entry's display-name override (spec 0119 G4) — pre-filled with its
-    /// current `name` (empty if `None`), mutually exclusive with an
-    /// in-progress `command_buffer` search.
-    manage_rename: Option<String>,
     /// `Some((origin, kind, cursor_moves))` while a `z`/`Z` attempt in
     /// the management pane is unresolved (spec 0134 G2/G3): `origin` is
     /// the highlighted entry's origin at the time of that attempt,
@@ -1271,10 +1286,9 @@ pub struct App {
     /// exclusive (`override_target.is_some()` XOR `manage_open`).
     side_area: Rect,
     /// Global command/message row's `Rect` as of the last `render()`
-    /// call (spec 0147 G4), `None` when neither `command_buffer` nor
-    /// `manage_rename` is active — used to hit-test mouse hover for
-    /// Shift+wheel/native horizontal pan the same way `main_area`/
-    /// `side_area` do.
+    /// call (spec 0147 G4), `None` when `command_buffer` is inactive —
+    /// used to hit-test mouse hover for Shift+wheel/native horizontal
+    /// pan the same way `main_area`/`side_area` do.
     cmd_area: Option<Rect>,
     pub message: String,
     /// Every override still refused when `render_overrides`' most recent
@@ -1308,15 +1322,10 @@ pub struct App {
     /// Wall-clock time at which the current `self.message` should be
     /// auto-dismissed, `None` while `self.message` is empty. Consulted
     /// (and cleared) only by `track_message_timeout`, which never fires
-    /// while a text-entry prompt (`command_buffer`/`manage_rename`) or a
-    /// pending `q` quit confirmation is actively awaiting a keypress.
+    /// while the `command_buffer` text-entry prompt is actively awaiting
+    /// a keypress.
     message_deadline: Option<Instant>,
     pub should_quit: bool,
-    /// `true` right after a first `q` press asks for confirmation; a
-    /// second `q` press (any mode) actually quits, any other key cancels.
-    /// Checked centrally at the top of `handle_key`, ahead of every other
-    /// dispatch, so it applies uniformly regardless of focus.
-    quit_confirm: bool,
     /// `true` right after `Ctrl-Z` (spec 0113 D31, Unix only), checked by
     /// `run_loop` after each `handle_key` call — mirrors `should_quit`'s
     /// own "flag set here, acted on there" split, since actually
@@ -1478,7 +1487,6 @@ impl App {
             last_manage_click: None,
             last_manage_row_click: None,
             last_manage_search: None,
-            manage_rename: None,
             manage_pending_kind: None,
             manage_list_height: 0,
             back_stack: Vec::new(),
@@ -1510,7 +1518,6 @@ impl App {
             last_message_seen: String::new(),
             message_deadline: None,
             should_quit: false,
-            quit_confirm: false,
             should_suspend: false,
             proto_root,
             #[cfg(unix)]
@@ -1711,6 +1718,7 @@ mod navigation;
 #[cfg(unix)]
 mod neovim;
 mod override_apply;
+mod override_as;
 mod override_display;
 mod override_export;
 mod override_resolve;

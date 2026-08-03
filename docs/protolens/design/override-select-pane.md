@@ -81,13 +81,13 @@ than parsing it. The render cache key includes an `is_preview` flag so a
 truncated preview is never mistaken for, or reused as, a full confirmed
 render of the same range.
 
-Closing the pane by any route (`Enter`, `Esc`, or toggling `t` again)
-drops the overlay; `Enter` additionally runs the real
-`render_overrides` pass that commits the choice. All three routes
-return to whichever pane *opened* this one — the main pane for `t`, the
-[management pane](manage-pane.md) when it was opened from there (spec
-0200). `q` is deliberately not bound here at all, so the habit of
-quitting a pane with `q` cannot quit the program by accident.
+Closing the pane by either route (`Enter` or `Esc`) drops the overlay;
+`Enter` additionally runs the real `render_overrides` pass that commits
+the choice. Both routes return to whichever pane *opened* this one — the
+main pane for `t`, the [management pane](manage-pane.md) when it was
+opened from there (spec 0200). `t` itself no longer closes the pane
+(spec 0236): `Esc` is the one key that closes any pane, which is only a
+usable convention if it is also the *only* one.
 
 Live preview intentionally does not extend into nested Any/MessageSet
 auto-expansion within the previewed subtree — a preview shows the

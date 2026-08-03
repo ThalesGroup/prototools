@@ -12,10 +12,12 @@ use super::super::*;
 use super::support::*;
 
 /// Spec 0114 §1/§2: `t` opens the override pane for a message-shaped
-/// cursor node and moves focus there; a second `t` (from either
-/// pane's focus) closes it again.
+/// cursor node and moves focus there. Spec 0236 S18: `Esc` is the only
+/// way back out — `t` used to close it too, but the pane locks focus
+/// (spec 0185 S5), so every key it answers is a key the main pane
+/// cannot use, and `t` inside the pane bought nothing `Esc` did not.
 #[test]
-fn t_opens_and_closes_the_override_pane_on_a_message_node() {
+fn t_opens_the_override_pane_and_esc_is_the_only_way_out() {
     let mut app = message_node_app();
     app.splash = false;
     app.term_width = 120;
@@ -24,8 +26,14 @@ fn t_opens_and_closes_the_override_pane_on_a_message_node() {
     assert_eq!(app.override_target, Some(0));
     assert!(app.override_focus);
 
-    // `t` from override-pane focus closes it too.
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert_eq!(
+        app.override_target,
+        Some(0),
+        "`t` inside the pane must not close it"
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.override_target, None);
     assert!(!app.override_focus);
 }

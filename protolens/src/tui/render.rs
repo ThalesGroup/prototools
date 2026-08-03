@@ -936,12 +936,11 @@ impl App {
     /// it. `self.message` has no dedicated setter (assigned directly all
     /// over this file), so a freshly-set message is detected here by
     /// comparing against `last_message_seen` rather than at each
-    /// assignment site. Never dismissed while `command_buffer`/
-    /// `manage_rename` is `Some` (the global command/message row renders
-    /// those instead of `self.message` while either is active — see
-    /// `render`'s `cmd_text`) or while `quit_confirm` is armed (both are
-    /// actively awaiting a keypress, unlike a plain notice). Called once
-    /// per `render()`.
+    /// assignment site. Never dismissed while `command_buffer` is `Some`
+    /// — the global command/message row renders that instead of
+    /// `self.message` while it is active (see `render`'s `cmd_text`),
+    /// and it is actively awaiting a keypress, unlike a plain notice.
+    /// Called once per `render()`.
     pub(super) fn track_message_timeout(&mut self) {
         if self.message != self.last_message_seen {
             self.last_message_seen = self.message.clone();
@@ -952,7 +951,7 @@ impl App {
             };
             return;
         }
-        if self.command_buffer.is_some() || self.manage_rename.is_some() || self.quit_confirm {
+        if self.command_buffer.is_some() {
             return;
         }
         if let Some(deadline) = self.message_deadline {
@@ -1527,17 +1526,10 @@ impl App {
     /// `Length(1)` row, always reserved, shared across every pane — never
     /// duplicated per-pane, per the spec's "locality" principle.
     ///
-    /// The management pane's rename buffer (spec 0119 §G4's `f` key)
-    /// shares this same row rather than being appended inside the side
-    /// pane's own line list: a side-pane-local spot gets no real terminal
-    /// cursor, leaving it unclear where typing lands, and this row already
-    /// carries one for `:command`/`/`-search.
-    ///
     /// Split out of `render` because it is the one part of it that reads
     /// none of `render`'s locals: it takes its area and is otherwise a
-    /// function of the command/rename/message state alone.
+    /// function of the command/message state alone.
     fn render_command_row(&mut self, frame: &mut Frame, area: Rect) {
-        const RENAME_PREFIX: &str = "field name: ";
         let cmd_text = match &self.command_buffer {
             Some(buf) => {
                 let prefix = match self.command_kind {
@@ -1547,10 +1539,7 @@ impl App {
                 };
                 format!("{prefix}{buf}")
             }
-            None => match &self.manage_rename {
-                Some(buf) => format!("{RENAME_PREFIX}{buf}"),
-                None => self.message.clone(),
-            },
+            None => self.message.clone(),
         };
         // Spec 0190 S5: column 0 of the global row is reserved for the
         // activity dot, unconditionally — so the command row's geometry
@@ -1571,16 +1560,13 @@ impl App {
             self.cmd_area = Some(cmd_row);
 
             // Spec 0127 §G1: cursor char position (including the leading
-            // "prefix"/"field name: " char(s)) within `cmd_text`, `None` while
-            // just displaying a plain message (no active edit, so no
-            // cursor to keep visible).
-            let cursor_pos = if self.command_buffer.is_some() {
-                Some(1 + self.command_cursor)
-            } else {
-                self.manage_rename
-                    .as_ref()
-                    .map(|buf| RENAME_PREFIX.chars().count() + buf.chars().count())
-            };
+            // prefix char) within `cmd_text`, `None` while just
+            // displaying a plain message (no active edit, so no cursor
+            // to keep visible).
+            let cursor_pos = self
+                .command_buffer
+                .is_some()
+                .then_some(1 + self.command_cursor);
             let width = cmd_row.width as usize;
             if let Some(pos) = cursor_pos {
                 // Auto-follow the cursor while typing (mirrors the main

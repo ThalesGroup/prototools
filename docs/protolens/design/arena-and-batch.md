@@ -127,7 +127,7 @@ interior bytes handed to the renderer at
 ## Where the memory goes now
 
 Reference corpus is `googleapis.desc` (25.7 MB), driven through a pty,
-`:type-as-raw` on line 0 — the root retype, the only action that
+a bare `:override-as` on line 0 — the root retype, the only action that
 re-renders the whole document.
 
 | | before the 0211-0213 slot narrowing | today |

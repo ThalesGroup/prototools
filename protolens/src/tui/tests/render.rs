@@ -46,9 +46,12 @@ fn empty_tree_renders_and_handles_keys_without_panicking() {
     }
     terminal.draw(|frame| app.render(frame)).unwrap();
 
-    app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
-    assert!(!app.should_quit);
-    app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+    // Quitting from an empty tree still works: `handle_key` returns
+    // early on one, so `:` has to be dispatched before that gate — it
+    // is now the only way out (spec 0236 S20).
+    for code in [KeyCode::Char(':'), KeyCode::Char('q'), KeyCode::Enter] {
+        app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
     assert!(app.should_quit);
 }
 
@@ -489,11 +492,11 @@ fn the_eager_fallback_warning_survives_the_splash_timing_out() {
 }
 
 /// A message never auto-dismisses while the bottom bar is actively
-/// serving as a text-entry prompt (`command_buffer`) or a pending `q`
-/// quit confirmation — both are actively awaiting a keypress, unlike
-/// a plain notice.
+/// serving as a text-entry prompt (`command_buffer`): it is awaiting a
+/// keypress, unlike a plain notice. Since spec 0236 S20 dropped the
+/// `q` quit confirmation, that is the only such state left.
 #[test]
-fn message_is_not_dismissed_while_a_prompt_or_quit_confirm_is_active() {
+fn message_is_not_dismissed_while_a_prompt_is_active() {
     let mut app = empty_app();
     app.splash = false;
     let backend = TestBackend::new(80, 24);
@@ -510,13 +513,9 @@ fn message_is_not_dismissed_while_a_prompt_or_quit_confirm_is_active() {
     );
 
     app.command_buffer = None;
-    app.quit_confirm = true;
     app.message_deadline = Some(Instant::now() - Duration::from_millis(1));
     terminal.draw(|frame| app.render(frame)).unwrap();
-    assert_eq!(
-        app.message, "some notice",
-        "quit_confirm active: must not dismiss"
-    );
+    assert!(app.message.is_empty(), "prompt closed: must dismiss");
 }
 
 /// Spec 0133 G3/G4: the main-pane `a` key toggles display of each
@@ -675,7 +674,7 @@ fn the_active_override_hint_marks_header_and_footer_but_not_children() {
 
     let (mut app, inner_idx, id_idx) = type_as_fixture();
     app.cursor = inner_idx;
-    app.run_command("type-as test.Inner");
+    app.run_command("override-as test.Inner");
     assert_eq!(type_name_of(&app, inner_idx), Some("test.Inner"));
 
     let header_line = app.absolute_start(inner_idx);

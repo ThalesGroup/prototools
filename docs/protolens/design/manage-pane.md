@@ -10,9 +10,9 @@ SPDX-License-Identifier: MIT
 
 ## Executive summary
 
-The management pane (`o`) is the user-facing view of the
+The management pane (`m`) is the user-facing view of the
 [override collection](override-collection.md) as a whole — every override
-ever created this session, whether from the select pane, `:type-as`, or
+ever created this session, whether from the select pane, `:override-as`, or
 auto-seeded Any/MessageSet expansion, grouped by origin and listed in the
 collection's own canonical order. Where the select pane is about
 *choosing* a type for one node, the management pane is about *auditing
