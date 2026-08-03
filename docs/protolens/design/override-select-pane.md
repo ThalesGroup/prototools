@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # Pane: override selection pane
 
-*last verified: 2026-07-31*
+*last verified: 2026-08-03*
 
 ## Executive summary
 
@@ -88,6 +88,15 @@ main pane for `t`, the [management pane](manage-pane.md) when it was
 opened from there (spec 0200). `t` itself no longer closes the pane
 (spec 0236): `Esc` is the one key that closes any pane, which is only a
 usable convention if it is also the *only* one.
+
+`o` here opens a pre-filled `:override` for the pane's **target
+node** — deliberately the target and not the main-pane cursor, since
+those differ whenever the pane was opened from the management pane, and
+the target is what the pane is visibly about. It pre-fills the target's
+*current* type rather than whichever candidate is currently
+highlighted: picking from the list is what `Enter` does, and `o` exists
+for the two dimensions the list cannot express (origin and display
+name).
 
 Live preview intentionally does not extend into nested Any/MessageSet
 auto-expansion within the previewed subtree — a preview shows the

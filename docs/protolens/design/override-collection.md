@@ -34,7 +34,7 @@ exist, in increasing order of generality:
 - **`Path`** — an exact positional path (`/1/2/3`-style, purely
   structural, no schema knowledge required). Matches at most one node.
   This is what every override starts life as when first created from the
-  override-select pane or `:override-as`.
+  override-select pane or `:override`.
 - **`PathField`** — a parent's positional path plus a field number.
   Matches every child of that specific parent with that field number —
   useful for a repeated field where every element should get the same

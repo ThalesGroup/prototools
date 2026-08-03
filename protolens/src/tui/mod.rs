@@ -150,7 +150,7 @@ const COMMANDS: &[&str] = &[
     "export",
     "quit",
     "help",
-    "override-as",
+    "override",
     "save",
     "restore",
     "proto-root",
@@ -172,7 +172,7 @@ fn command_flags(cmd: &str) -> &'static [&'static str] {
             "--descriptor-prototext",
             "--prototext",
         ],
-        "override-as" => &["--field-name", "--origin"],
+        "override" => &["--as", "--field-name"],
         _ => &[],
     }
 }
@@ -1718,7 +1718,7 @@ mod navigation;
 #[cfg(unix)]
 mod neovim;
 mod override_apply;
-mod override_as;
+mod override_cmd;
 mod override_display;
 mod override_export;
 mod override_resolve;

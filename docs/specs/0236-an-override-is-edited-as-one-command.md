@@ -9,6 +9,11 @@ SPDX-License-Identifier: MIT
 Status: implemented
 Implemented in: 2026-08-03
 App: protolens
+Note: the command shipped here as `:override-as [<type>] [--origin
+        <origin>]`; spec 0237 respelled it `:override <origin> [--as
+        <type>]` the same day and replaced both of its value
+        completers. Everything below is the design as of this spec —
+        read 0237 for the current grammar.
 Refs: docs/specs/0113-….md (D26, the command line and Tab completion),
         docs/specs/0114-….md (`:type-as`, the override pane, argument
         completion — this spec retires the two commands),
@@ -50,8 +55,8 @@ Three consequences:
 
 ### The knock-on: freeing a key for it
 
-The new command wants one plain letter in two panes, and `o` is the
-mnemonic. `o` is taken in both:
+The new command wants one plain letter inside the two override panes,
+and `o` is the mnemonic. `o` is taken in both:
 
 | Where | Today |
 |---|---|
@@ -63,12 +68,16 @@ Two of those are *exits*, and having three spellings for one exit is
 what spends the letters. Collapsing every override pane onto `Esc`
 alone frees `o` and `q` in the manage pane at no cost — `Esc` is
 already bound there, already the universal pane exit elsewhere in the
-app, and is what a user reaches for anyway.
+app, and is what a user reaches for anyway. `t`'s close arm in the
+selection pane goes the same way, which frees `o` there too.
 
-That still leaves the main pane's `o`, which is not an exit but the
-management pane's only unconditional opener (`Enter` reaches it only
-when the cursor node already has an applicable entry — see
-`open_smart_override_or_manage`). It moves to `m`.
+The main pane's `o` is untouched: it is not an exit but the management
+pane's only unconditional opener (`Enter` reaches it only when the
+cursor node already has an applicable entry — see
+`open_smart_override_or_manage`), and it stays. `o` therefore reads the
+same way everywhere — "the overrides" — and means *edit this one* only
+where there is a single, visibly highlighted one to edit. In the main
+pane there is not, which is exactly why `o` opens a pane there.
 
 Separately, `q` in the main pane is `request_quit`, a two-press
 `q`-then-`q` gesture with a confirmation prompt behind it. `:quit`
@@ -86,7 +95,9 @@ directly. Retiring it frees `q` everywhere and leaves one answer to
   showing what is already true and `Enter` on an unedited line is a
   no-op.
 - **G3.** Tab-completion for `<type>` and `<origin>`.
-- **G4.** `o` opens it, in the main pane and the manage pane.
+- **G4.** `o` opens it inside the two override panes — the selection
+  pane's target node, the manage pane's highlighted entry. In the main
+  pane `o` keeps its existing meaning (open the management pane).
 - **G5.** `f`/`b` page in the override pane, the manage pane and the
   help overlay, matching the main pane (spec 0236's sibling change).
 - **G6.** Retire `manage_rename` entirely.
@@ -104,13 +115,10 @@ directly. Retiring it frees `q` everywhere and leaves one answer to
 
 ## Non-goals
 
-- **N1. No `o` in the override selection pane.** That pane locks focus
-  for the preview overlay's lifetime (spec 0185 S5) and `Enter` is
-  already its apply gesture; a second, competing apply path there would
-  have to define what happens to the in-flight preview. `f`/`b` paging
-  is still added there (G5) — that is navigation, not application.
-  `:override-as` remains *typeable* there, since `:` opens the command
-  line regardless of focus (spec 0126); it simply has no key.
+- **N1. No `o` for the cursor node in the main pane.** `o` there opens
+  the management pane, as it always has. Editing the cursor node's own
+  override without going through a pane is `:override-as` typed in
+  full, which is what `o` opens a pane to avoid having to do.
 - **N2. No compatibility alias for `:type-as`.** G10 retires the two
   commands outright rather than aliasing them. An alias would keep two
   spellings of one operation in `COMMANDS`, in the help text and in the
@@ -190,12 +198,25 @@ directly. Retiring it frees `q` everywhere and leaves one answer to
 
 - **S6.** `o` opens the command line (`CommandLineKind::Command`)
   pre-filled with the full command for the current subject — every
-  argument present, none elided. The subject is the cursor node in the
-  main pane, and the highlighted entry in the manage pane.
+  argument present, none elided. The subject is the highlighted entry
+  in the manage pane, and the *target node* in the selection pane.
+
+  The selection pane's target, not the main-pane cursor: the two are
+  the same node whenever the pane was opened with `t`, and differ only
+  when it was opened from the manage pane (spec 0200) — where the
+  target is what the pane is visibly about. One accessor
+  (`override_as_subject`) answers this for the pre-fill, for a bare
+  command's default origin (S9) and for `--origin` completion (S13), so
+  all three speak about the same node.
+
+  The selection pane pre-fills the target's *current* type, not the
+  type its candidate list currently highlights: `Enter` is what picks
+  from that list, and pre-filling the highlight would break S6's own
+  "`Enter` on the unedited line is a no-op".
 
 - **S7.** Each slot's pre-filled value:
 
-  | Slot | Main pane (cursor node) | Manage pane (highlighted entry) |
+  | Slot | Selection pane (target node) | Manage pane (highlighted entry) |
   |---|---|---|
   | `<type>` | the node's currently effective type — what it is being rendered as right now (`fqdns[span.type_fqdn]`); omitted when the node is raw | the entry's `r#type`; omitted when `None` |
   | `--origin` | the node's `Path` origin | the entry's own origin label |
@@ -215,10 +236,15 @@ directly. Retiring it frees `q` everywhere and leaves one answer to
 
 ### Applying
 
-- **S9.** Validation reuses what `:type-as` did — `can_override`, then
+- **S9.** An omitted `--origin` defaults to `override_as_subject`'s
+  `Path` origin (S6) — the selection pane's target while it is open,
+  else the cursor.
+
+  Validation reuses what `:type-as` did — `can_override`, then
   the primitive-keyword wire-compatibility check — against the origin's
-  **subject node**: its first affected node, falling back to the cursor
-  when it currently affects none. Not the cursor unconditionally:
+  **subject node**: its first affected node, falling back to
+  `override_as_subject` when it currently affects none. Not the cursor
+  unconditionally:
   editing an unrelated entry from the manage pane must not be refused
   because the main-pane cursor happens to sit on an ineligible node.
   An origin that also covers nodes of other wire types is handled where
@@ -277,10 +303,11 @@ directly. Retiring it frees `q` everywhere and leaves one answer to
 
 ### Key bindings
 
-- **S15.** `o` is bound in the main pane and the manage pane to open
-  the pre-filled command. In the main pane an ineligible node
-  (`!can_override`) leaves the existing message rather than opening the
-  line; in the manage pane an empty collection does nothing.
+- **S15.** `o` is bound in the selection pane and the manage pane to
+  open the pre-filled command. In the selection pane an ineligible
+  target (`!can_override`) leaves the existing message rather than
+  opening the line; in the manage pane an empty collection does
+  nothing.
 
 - **S16.** `f`/`b` are added next to `PageDown`/`PageUp` in
   `handle_override_key`, `handle_manage_key` and `handle_help_key`.
@@ -298,15 +325,17 @@ directly. Retiring it frees `q` everywhere and leaves one answer to
   `Esc`-closes-the-open-pane arms (`key_dispatch.rs:803`, `807`) are
   unchanged — they are already the same gesture from the other side.
 
-  `t` and `m` therefore *open* rather than toggle. `toggle_override`
-  and `toggle_manage_pane` keep their close-when-open branches, which
-  are still reached from `open_smart_override_or_manage`, the mouse
-  handlers and each other; only the key arms stop calling them to
-  close.
+  `t` therefore *opens* rather than toggles. `toggle_override` and
+  `toggle_manage_pane` keep their close-when-open branches, which are
+  still reached from `open_smart_override_or_manage`, the mouse
+  handlers, the main pane's own `o`, and each other; only the override
+  panes' own key arms stop calling them to close.
 
-- **S19.** The main pane's `o` (open the management pane) moves to
-  `m`. `m` is unbound in every pane, and reads as "manage" beside `t`
-  for "type" — the two panes' existing mnemonics.
+- **S19.** The main pane's `o` (open/close the management pane) is
+  unchanged. `o` means "the overrides" in all three panes, and means
+  *edit this one* only in the two panes that display a single
+  highlighted subject; freeing it in the manage pane (S18) is what lets
+  the two meanings coexist without either moving.
 
 - **S20.** `q` is unbound everywhere. Deleted: the `quit_confirm`
   field (`mod.rs:1319`, `1513`), `request_quit` (`key_dispatch.rs:399`),
@@ -393,11 +422,22 @@ one-keystroke quit — both had a better spelling already bound (`Esc`,
 `:q`). Spending a mnemonic to avoid retiring two redundancies is the
 wrong way round.
 
-**`O` for the management pane instead of `m`.** Keeps the letter, but
-`o` and `O` would then be two unrelated actions one Shift apart, in the
-same pane, on the same subject. Every other capital in this app is a
-*variant* of its lowercase (`z`/`Z`, `a`/`A`, `d`/`D`, `n`/`N`), and
-this would be the exception that teaches the rule wrong.
+**Move the management pane's opener to `m` and give the main pane's
+`o` to the pre-filled command.** Considered and reverted before
+landing. It reads well in isolation — `m` for "manage" beside `t` for
+"type" — but it retrains a binding users already have for the sake of a
+main-pane gesture that has no obvious subject: in the main pane the
+cursor node usually has *no* override at all, so `o` would open a
+command line to create one, while in the two override panes the same
+key would edit an existing one. Keeping `o` on the pane and putting the
+editor only where a subject is visibly highlighted costs one binding
+less and leaves `m` free.
+
+**`O` for the pre-filled command instead of `o`.** `o` and `O` would
+then be two unrelated actions one Shift apart, in the same pane, on the
+same subject. Every other capital in this app is a *variant* of its
+lowercase (`z`/`Z`, `a`/`A`, `d`/`D`, `n`/`N`), and this would be the
+exception that teaches the rule wrong.
 
 **Keep `q` in the help overlay.** The overlay is not an override pane,
 so G7 does not reach it, and `q`-closes-help is a common convention.
@@ -434,12 +474,15 @@ A new `tui/tests/override_as.rs` holds items 1-3 and 5-9.
 4. `override_as_command_rejects_a_wire_incompatible_primitive_keyword`
    (in `tests/command_line.rs`) — the S9 reuse of the `:type-as` check
    still fires.
-5. `o_prefills_the_current_state_and_enter_is_a_no_op` — `o` then
-   `Enter` on a schema-named node leaves the collection unchanged,
-   proving S8's schema-name normalization.
+5. `o_prefills_the_current_state_and_enter_is_a_no_op` — `o` (which
+   opens the manage pane) then `o` again (which edits the highlighted
+   entry) then `Enter`, on a schema-named node, leaves the collection
+   unchanged, proving S8's schema-name normalization.
 6. `o_prefills_f_position_when_the_schema_names_nothing` — the `f<P>`
    fallback, on the group fixture, where the node is field 5 and the
    first child: `<P>` is the sibling position, not the field number.
+   Driven through the selection pane (`t` then `o`), which also pins
+   S6's "the target, not the cursor".
 7. `override_as_reports_the_affected_node_count` — an `FqdnField`
    origin reports 3 nodes where the `Path` origin reports 1.
 8. `override_as_merges_into_an_existing_entry` — S10: editing an entry
@@ -457,9 +500,9 @@ A new `tui/tests/override_as.rs` holds items 1-3 and 5-9.
     `t_opens_the_override_pane_and_esc_is_the_only_way_out` — `o`/`q`
     in the manage pane and `t` in the selection pane leave the pane
     open; `Esc` closes it. S18.
-13. The four `m_*` manage-pane opener tests, renamed from `o_*`, plus
-    `colon_opens_the_command_line_from_override_and_manage_focus`
-    reaching manage focus via `m`. S19.
+13. The four `o_*` manage-pane opener tests and
+    `colon_opens_the_command_line_from_override_and_manage_focus` are
+    unchanged: the main pane's `o` still opens the pane. S19.
 14. `q_no_longer_quits_and_quit_is_reachable_only_as_a_command` —
     `q` twice, `q` in the help overlay and `q` on an empty tree all
     leave `should_quit` false; `:q` sets it. Replaces the three

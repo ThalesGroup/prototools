@@ -687,7 +687,10 @@ fn default_export_descriptor_path_uses_no_range_at_the_root() {
 fn default_export_descriptor_path_uses_an_active_rename_over_no_range() {
     let (mut app, _, _) = type_as_fixture();
     assert_eq!(app.cursor, app.first_node);
-    app.run_command("override-as test.Outer");
+    app.run_command(&format!(
+        "override {} --as test.Outer",
+        app.positional_path(app.cursor)
+    ));
     let entry_idx = app
         .overrides
         .entries()

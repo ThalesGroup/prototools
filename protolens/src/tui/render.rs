@@ -1579,27 +1579,39 @@ impl App {
                     self.command_pan_offset = pos + 1 - width;
                 }
             }
-            // Spec 0235 S10: while a search prompt is open and its live
-            // sweep has no match, the *pattern* says so — this row and
-            // the `pattern not found` message are the same row, and
-            // writing the message per keystroke would flicker the
-            // prompt away under the user's hands. "Still looking" and
-            // "finished, nothing there" share the tint deliberately:
-            // from the user's seat those are one fact.
-            let unmatched = matches!(self.command_kind, CommandLineKind::Search(_))
-                && self.command_buffer.as_ref().is_some_and(|b| !b.is_empty())
-                && !matches!(&self.search_sweep, Some(s) if s.found.is_some());
-            let raw = if unmatched {
-                let (prefix, pattern) = cmd_text.split_at(1);
-                vec![
-                    Span::raw(prefix.to_string()),
-                    Span::styled(
-                        pattern.to_string(),
-                        theme::search_unmatched_style(self.theme),
-                    ),
-                ]
-            } else {
-                vec![Span::raw(cmd_text)]
+            // Spec 0235 S10: while a search prompt is open, the
+            // *pattern* reports the sweep — this row and the `pattern
+            // not found` message are the same row, and writing the
+            // message per keystroke would flicker the prompt away under
+            // the user's hands.
+            //
+            // Spec 0237 S11 splits that report in three. 0235 tinted a
+            // running sweep the same red as a finished one, arguing the
+            // two were one fact from the user's seat; on a document
+            // large enough for the sweep to be visible at all they are
+            // not, and a red that is about to turn out fine teaches the
+            // user to ignore red.
+            let searching = matches!(self.command_kind, CommandLineKind::Search(_))
+                && self.command_buffer.as_ref().is_some_and(|b| !b.is_empty());
+            let pattern_style = searching
+                .then(|| match &self.search_sweep {
+                    // No sweep at all: an empty pane, nothing left to
+                    // look in — a finished miss by another name.
+                    None => Some(theme::search_unmatched_style(self.theme)),
+                    Some(s) if s.found.is_some() => None,
+                    Some(s) if s.is_finished() => Some(theme::search_unmatched_style(self.theme)),
+                    Some(_) => Some(theme::search_running_style(self.theme)),
+                })
+                .flatten();
+            let raw = match pattern_style {
+                Some(style) => {
+                    let (prefix, pattern) = cmd_text.split_at(1);
+                    vec![
+                        Span::raw(prefix.to_string()),
+                        Span::styled(pattern.to_string(), style),
+                    ]
+                }
+                None => vec![Span::raw(cmd_text)],
             };
             let spans = pan_spans(raw, self.command_pan_offset);
             frame.render_widget(Paragraph::new(Line::from(spans)), cmd_row);

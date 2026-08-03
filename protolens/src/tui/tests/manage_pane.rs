@@ -789,7 +789,7 @@ fn manage_pane_enter_closes_pane_when_empty() {
 
 /// Spec 0236 S18: `Esc` closes the management pane (not just blurs
 /// focus, unlike `Tab`) — and is the only key that does, now that `o`
-/// and `q` have been freed for `:override-as` and `:quit`.
+/// and `q` have been freed for `:override` and `:quit`.
 #[test]
 fn esc_is_the_only_key_that_closes_the_manage_pane() {
     for key in [KeyCode::Char('o'), KeyCode::Char('q')] {
@@ -1152,7 +1152,7 @@ fn manage_pane_gg_and_capital_g_jump_to_first_and_last() {
 }
 
 /// Drive the management pane's `o` (spec 0236 S15) on the highlighted
-/// entry and confirm the pre-filled `:override-as` with `name` as its
+/// entry and confirm the pre-filled `:override` with `name` as its
 /// `--field-name` — the gesture that replaced spec 0119 §G4's inline
 /// rename buffer. Only the name is edited; the pre-fill's own type and
 /// origin ride along, which is what makes this a rename and not a
@@ -1174,7 +1174,7 @@ fn rename_highlighted_entry(app: &mut App, name: &str) {
 }
 
 /// Spec 0236 S15: `o` in the management pane pre-fills the highlighted
-/// entry's whole `:override-as`; confirming it with an edited
+/// entry's whole `:override`; confirming it with an edited
 /// `--field-name` mutates the entry in place and — since the entry is
 /// active — triggers a re-render whose header line picks up the new
 /// name (the `(type, field_name)` re-splice gate).
@@ -1182,7 +1182,10 @@ fn rename_highlighted_entry(app: &mut App, name: &str) {
 fn manage_pane_rename_updates_entry_and_rerenders_active_override() {
     let (mut app, inner_idx, _) = type_as_fixture();
     app.cursor = inner_idx;
-    app.run_command("override-as test.Inner");
+    app.run_command(&format!(
+        "override {} --as test.Inner",
+        app.positional_path(app.cursor)
+    ));
     assert_eq!(type_name_of(&app, inner_idx), Some("test.Inner"));
 
     app.toggle_manage_pane();
@@ -1192,7 +1195,7 @@ fn manage_pane_rename_updates_entry_and_rerenders_active_override() {
         .entries()
         .iter()
         .position(|e| e.active && e.r#type.as_deref() == Some("test.Inner"))
-        .expect("override-as must have created an active entry for test.Inner");
+        .expect("override must have created an active entry for test.Inner");
     app.manage_highlight = entry_idx;
 
     rename_highlighted_entry(&mut app, "custom_name");
@@ -1210,7 +1213,7 @@ fn manage_pane_rename_updates_entry_and_rerenders_active_override() {
 }
 
 /// The rename gesture applies to the document root exactly like any
-/// other node: `:override-as`-ing the root creates an active
+/// other node: `:override`-ing the root creates an active
 /// `Path { path: "/" }` entry (`override_origin_for_kind`'s
 /// plain-`path` default, spec 0208 S2), which the manage pane's `o`
 /// renames and re-renders in place, same as a non-root node.
@@ -1218,7 +1221,10 @@ fn manage_pane_rename_updates_entry_and_rerenders_active_override() {
 fn manage_pane_rename_works_on_the_document_root_with_a_real_type() {
     let (mut app, _inner_idx, _) = type_as_fixture();
     app.cursor = app.first_node;
-    app.run_command("override-as test.Outer");
+    app.run_command(&format!(
+        "override {} --as test.Outer",
+        app.positional_path(app.cursor)
+    ));
 
     app.toggle_manage_pane();
     assert!(app.manage_open, "manage pane must open");
@@ -1227,7 +1233,7 @@ fn manage_pane_rename_works_on_the_document_root_with_a_real_type() {
         .entries()
         .iter()
         .position(|e| e.active && e.r#type.as_deref() == Some("test.Outer"))
-        .expect("override-as on root must have created an active entry");
+        .expect("override on root must have created an active entry");
     app.manage_highlight = entry_idx;
 
     rename_highlighted_entry(&mut app, "root_name");
@@ -1244,7 +1250,7 @@ fn manage_pane_rename_works_on_the_document_root_with_a_real_type() {
 }
 
 /// Same as above, but the root is explicitly raw — a bare
-/// `:override-as`, giving an active entry with `r#type: None` — rather
+/// `:override`, giving an active entry with `r#type: None` — rather
 /// than a real type. Renaming such a
 /// node must still show up in the header line: `splice_override`'s raw
 /// path has no synthetic-field placeholder to patch (no schema at all),
@@ -1254,7 +1260,7 @@ fn manage_pane_rename_works_on_the_document_root_with_a_real_type() {
 fn manage_pane_rename_works_on_a_raw_typed_root() {
     let (mut app, _inner_idx, _) = type_as_fixture();
     app.cursor = app.first_node;
-    app.run_command("override-as");
+    app.run_command(&format!("override {}", app.positional_path(app.cursor)));
 
     app.toggle_manage_pane();
     assert!(app.manage_open, "manage pane must open");
@@ -1263,7 +1269,7 @@ fn manage_pane_rename_works_on_a_raw_typed_root() {
         .entries()
         .iter()
         .position(|e| e.active && e.r#type.is_none())
-        .expect("a bare override-as on root must have created an active raw entry");
+        .expect("a bare override on root must have created an active raw entry");
     app.manage_highlight = entry_idx;
 
     rename_highlighted_entry(&mut app, "exemplar");
@@ -1282,7 +1288,7 @@ fn manage_pane_rename_works_on_a_raw_typed_root() {
 fn manage_pane_rename_works_on_a_raw_typed_non_root_node() {
     let (mut app, inner_idx, _) = type_as_fixture();
     app.cursor = inner_idx;
-    app.run_command("override-as");
+    app.run_command(&format!("override {}", app.positional_path(app.cursor)));
 
     app.toggle_manage_pane();
     assert!(app.manage_open, "manage pane must open");
@@ -1291,7 +1297,7 @@ fn manage_pane_rename_works_on_a_raw_typed_non_root_node() {
         .entries()
         .iter()
         .position(|e| e.active && e.r#type.is_none())
-        .expect("a bare override-as must have created an active raw entry");
+        .expect("a bare override must have created an active raw entry");
     app.manage_highlight = entry_idx;
 
     rename_highlighted_entry(&mut app, "custom_raw_name");
@@ -1497,7 +1503,7 @@ fn double_click_on_marker_cascades_like_a_single_shift_click() {
 /// on the entry currently active for the main-pane cursor's own node,
 /// when one exists.
 #[test]
-fn m_places_the_cursor_on_the_active_entry_for_the_cursor_node() {
+fn o_places_the_cursor_on_the_active_entry_for_the_cursor_node() {
     let (mut app, _, id_idx) = type_as_fixture();
     app.splash = false;
     app.term_width = 120;
@@ -1524,7 +1530,7 @@ fn m_places_the_cursor_on_the_active_entry_for_the_cursor_node() {
         .expect("entry must exist");
 
     app.cursor = id_idx;
-    app.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
     assert!(app.manage_open);
     assert_eq!(app.manage_highlight, entry_idx);
 }
@@ -1534,7 +1540,7 @@ fn m_places_the_cursor_on_the_active_entry_for_the_cursor_node() {
 /// order) entry that would apply to it if activated — not just any
 /// entry, and not necessarily the collection's own first entry.
 #[test]
-fn m_places_the_cursor_on_the_first_inactive_entry_that_would_apply() {
+fn o_places_the_cursor_on_the_first_inactive_entry_that_would_apply() {
     let (mut app, inner_idx, id_idx) = type_as_fixture();
     app.splash = false;
     app.term_width = 120;
@@ -1565,7 +1571,7 @@ fn m_places_the_cursor_on_the_first_inactive_entry_that_would_apply() {
     assert!(!app.overrides.entries()[entry_idx].active);
 
     app.cursor = id_idx;
-    app.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
     assert!(app.manage_open);
     assert_eq!(app.manage_highlight, entry_idx);
 }
@@ -1574,7 +1580,7 @@ fn m_places_the_cursor_on_the_first_inactive_entry_that_would_apply() {
 /// the cursor node at all — `m` falls back to the pane's own first
 /// entry.
 #[test]
-fn m_falls_back_to_the_first_entry_when_none_applies_to_the_cursor() {
+fn o_falls_back_to_the_first_entry_when_none_applies_to_the_cursor() {
     let (mut app, inner_idx, id_idx) = type_as_fixture();
     app.splash = false;
     app.term_width = 120;
@@ -1587,7 +1593,7 @@ fn m_falls_back_to_the_first_entry_when_none_applies_to_the_cursor() {
     );
 
     app.cursor = id_idx;
-    app.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
     assert!(app.manage_open);
     assert_eq!(app.manage_highlight, 0);
 }
@@ -1600,7 +1606,7 @@ fn m_falls_back_to_the_first_entry_when_none_applies_to_the_cursor() {
 /// is still reachable (e.g. deleting that seeded entry) and must not
 /// panic or misbehave.
 #[test]
-fn m_on_an_empty_override_collection_opens_with_highlight_zero() {
+fn o_on_an_empty_override_collection_opens_with_highlight_zero() {
     let (mut app, _, id_idx) = type_as_fixture();
     app.splash = false;
     app.term_width = 120;
@@ -1610,7 +1616,7 @@ fn m_on_an_empty_override_collection_opens_with_highlight_zero() {
     assert!(app.overrides.entries().is_empty());
 
     app.cursor = id_idx;
-    app.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
     assert!(app.manage_open);
     assert_eq!(app.manage_highlight, 0);
 }

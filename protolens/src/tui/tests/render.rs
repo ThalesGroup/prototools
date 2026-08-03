@@ -674,7 +674,10 @@ fn the_active_override_hint_marks_header_and_footer_but_not_children() {
 
     let (mut app, inner_idx, id_idx) = type_as_fixture();
     app.cursor = inner_idx;
-    app.run_command("override-as test.Inner");
+    app.run_command(&format!(
+        "override {} --as test.Inner",
+        app.positional_path(app.cursor)
+    ));
     assert_eq!(type_name_of(&app, inner_idx), Some("test.Inner"));
 
     let header_line = app.absolute_start(inner_idx);

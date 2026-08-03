@@ -962,9 +962,8 @@ pub fn search_match_style(theme: ThemeKind) -> Style {
     ))
 }
 
-/// Spec 0235 S10: the typed pattern while the live sweep has no match
-/// — which covers both "finished, nothing there" and "still looking",
-/// deliberately: from the user's seat those are one fact.
+/// Spec 0235 S10: the typed pattern once the live sweep has finished
+/// with no match — the whole document seen, the answer is no.
 ///
 /// A foreground rather than a background, because it colors the prompt
 /// row's own text and not the document.
@@ -974,6 +973,24 @@ pub fn search_unmatched_style(theme: ThemeKind) -> Style {
         supports_rgb(),
         (DARK_RGB.tier_invalid, Color::Red),
         (LIGHT_RGB.tier_invalid, Color::Red),
+    ))
+}
+
+/// Spec 0237 S11/S12: the typed pattern while the sweep is still
+/// running and has not found anything *yet*. Distinct from
+/// `search_unmatched_style` so that a slow sweep does not read as a
+/// failed one.
+///
+/// The palette's existing `Tier::NonCanonical` hue rather than a fourth
+/// severity color: "no verdict yet" sits in the same register as
+/// "suspicious but not wrong", and a second orange would only compete
+/// with it.
+pub fn search_running_style(theme: ThemeKind) -> Style {
+    Style::default().fg(pick(
+        theme,
+        supports_rgb(),
+        (DARK_RGB.tier_non_canonical, Color::Yellow),
+        (LIGHT_RGB.tier_non_canonical, Color::Yellow),
     ))
 }
 

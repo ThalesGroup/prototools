@@ -704,8 +704,9 @@ fn ctrl_a_and_ctrl_e_move_the_command_cursor() {
     assert_eq!(app.command_buffer.as_deref(), Some("abc"));
 }
 
-/// Spec 0235 test-plan item 18 (S18). An unbound control chord is
-/// ignored, not typed: `Ctrl-u` used to insert a bare `u`.
+/// Spec 0235 test-plan item 18 (S18), extended by spec 0237 S9. An
+/// unbound control chord is ignored, not typed: `Ctrl-u` used to insert
+/// a bare `u`. `Ctrl-d` is now bound, and must not insert a `d` either.
 #[test]
 fn a_control_modified_letter_is_not_inserted() {
     let mut app = sibling_leaves_app(&["alpha: 1"]);
@@ -716,6 +717,83 @@ fn a_control_modified_letter_is_not_inserted() {
     app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
     assert_eq!(app.command_buffer.as_deref(), Some("abc"));
     assert_eq!(app.command_cursor, 3);
+
+    // Bound, and at the end of the buffer, so it deletes nothing —
+    // which is exactly how a stray `d` would show up.
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+    assert_eq!(app.command_buffer.as_deref(), Some("abc"));
+    assert_eq!(app.command_cursor, 3);
+}
+
+/// Spec 0237 S9/S10. `Ctrl-d` is readline's forward-delete — the one
+/// hole left in the `Ctrl-a`/`Ctrl-e`/`Ctrl-b`/`Ctrl-f` set — and
+/// nothing more: it is *not* readline's delete-or-EOF, since an empty
+/// buffer is not a quit here (spec 0236 G8).
+#[test]
+fn ctrl_d_forward_deletes_in_the_command_line() {
+    let mut app = sibling_leaves_app(&["alpha: 1"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    type_keys(&mut app, "/abc");
+    app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+    assert_eq!(app.command_buffer.as_deref(), Some("bc"));
+    assert_eq!(app.command_cursor, 0, "forward-delete does not move");
+
+    for _ in 0..2 {
+        app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+    }
+    assert_eq!(app.command_buffer.as_deref(), Some(""));
+
+    // An empty buffer is not a quit, and the prompt stays open.
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+    assert_eq!(app.command_buffer.as_deref(), Some(""));
+    assert!(!app.should_quit);
+}
+
+/// Spec 0237 S11/S12. The prompt's pattern has three states, not two:
+/// orange while the sweep is still running, default once it has a hit,
+/// red only once it has finished with nothing. Spec 0235 tinted the
+/// first and the third alike, which trained the user to ignore red on
+/// any document big enough for the sweep to be visible.
+#[test]
+fn search_prompt_is_orange_while_sweeping_and_red_when_finished() {
+    let mut app = target_at(2500, 2000, 0);
+    app.splash = false;
+    app.term_width = 120;
+
+    let pattern_style = |app: &mut App| {
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let area = app.cmd_area.expect("the prompt must be on screen");
+        // Column 0 is the `/` sigil; the pattern starts at column 1.
+        terminal.backend().buffer()[(area.x + 1, area.y)].style().fg
+    };
+
+    type_keys(&mut app, "/target");
+    assert_eq!(app.search_sweep_step(), SweepStep::Progressed);
+    assert_eq!(
+        pattern_style(&mut app),
+        theme::search_running_style(app.theme).fg,
+        "still looking is not the same news as not there"
+    );
+
+    settle_sweep(&mut app);
+    assert!(app.search_sweep.as_ref().unwrap().found.is_some());
+    assert_eq!(
+        pattern_style(&mut app),
+        Some(Color::Reset),
+        "a found pattern carries no news at all"
+    );
+
+    type_keys(&mut app, "zzz");
+    settle_sweep(&mut app);
+    assert_eq!(
+        pattern_style(&mut app),
+        theme::search_unmatched_style(app.theme).fg,
+        "finished with nothing is the only red"
+    );
 }
 
 /// Spec 0235 test-plan item 19 (G8, S19). A line offers two haystacks

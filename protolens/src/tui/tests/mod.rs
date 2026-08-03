@@ -12,7 +12,7 @@ mod manage_pane;
 mod mouse;
 mod navigation;
 mod override_apply;
-mod override_as;
+mod override_cmd;
 mod override_preview;
 mod override_select;
 mod prefetch;

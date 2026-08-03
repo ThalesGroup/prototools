@@ -138,6 +138,12 @@ impl App {
                 // them to `^`/`$` in the main pane.
                 KeyCode::Char('a') if ctrl => self.command_cursor = 0,
                 KeyCode::Char('e') if ctrl => self.command_cursor = self.command_buffer_char_len(),
+                // Spec 0237 S9/S10: readline's forward-delete, the one
+                // hole left in the set above. Deliberately *not*
+                // readline's delete-or-EOF — an empty buffer is not a
+                // quit here (spec 0236 G8), so this is exactly the
+                // `Delete` arm below and nothing more.
+                KeyCode::Char('d') if ctrl => self.delete_char_forward(),
                 _ => {}
             }
             return;
@@ -240,12 +246,7 @@ impl App {
                     self.restart_search_sweep();
                 }
             }
-            KeyCode::Delete => {
-                if self.command_cursor < self.command_buffer_char_len() {
-                    self.remove_char_at(self.command_cursor);
-                    self.restart_search_sweep();
-                }
-            }
+            KeyCode::Delete => self.delete_char_forward(),
             KeyCode::Char(c) => {
                 let byte_idx = self.char_byte_index(self.command_cursor);
                 if let Some(buf) = self.command_buffer.as_mut() {
@@ -257,6 +258,15 @@ impl App {
                 self.restart_search_sweep();
             }
             _ => {}
+        }
+    }
+
+    /// Delete the character under the cursor, shared by `Delete` and
+    /// `Ctrl-d` (spec 0237 S9). A no-op at the end of the buffer.
+    fn delete_char_forward(&mut self) {
+        if self.command_cursor < self.command_buffer_char_len() {
+            self.remove_char_at(self.command_cursor);
+            self.restart_search_sweep();
         }
     }
 
@@ -290,7 +300,7 @@ impl App {
     /// (the command name, before any space) always; a token beginning
     /// with `-` against the command's own flags (spec 0236 S22); and
     /// otherwise whatever that command's arguments are — an
-    /// `:override-as` type or origin, a `:save`/`:restore` path, a
+    /// `:override` origin, type or field name, a `:save`/`:restore` path, a
     /// `:proto-root` directory. Anywhere else is a silent no-op.
     ///
     /// The flag check comes first and is command-independent, so a `-`
@@ -315,7 +325,7 @@ impl App {
             return;
         }
         match resolved {
-            "override-as" => self.complete_override_as(cmd, rest),
+            "override" => self.complete_override_cmd(cmd, rest),
             "save" | "restore" => self.complete_fs_path(cmd, rest),
             "proto-root" => self.complete_dir_path(cmd, rest),
             _ => {}
@@ -360,11 +370,18 @@ impl App {
     /// current wire type (a packed element's own effective wire type is
     /// always `WT_LEN`, per its reconstructed record — spec 0135 §G1).
     ///
-    /// Takes an explicit token start rather than assuming "just past the
-    /// command name": `:override-as`'s positional can sit anywhere on
-    /// the line, before or after either flag.
-    pub(super) fn complete_type_at(&mut self, token_start: usize, arg_prefix: &str) {
-        let wire_type = decode::effective_wire_type(&self.tree[self.cursor].span);
+    /// Takes an explicit `subject` node and token start rather than
+    /// assuming the cursor and "just past the command name":
+    /// `:override`'s `--as` can sit anywhere on the line, and speaks
+    /// about whichever node its origin names — which in the manage pane
+    /// is routinely not the cursor.
+    pub(super) fn complete_type_at(
+        &mut self,
+        subject: usize,
+        token_start: usize,
+        arg_prefix: &str,
+    ) {
+        let wire_type = decode::effective_wire_type(&self.tree[subject].span);
         // Collected into owned `String`s upfront (rather than borrowing
         // `self.all_type_fqdns` for `matches`'s lifetime) so the
         // subsequent `self.replace_token`/`self.completion = ...` calls
@@ -485,6 +502,41 @@ impl App {
         });
     }
 
+    /// An *unfiltered* rotation completion (spec 0237 S6/S7), as
+    /// opposed to `apply_completion`'s prefix match: `candidates` are
+    /// alternatives to each other rather than entries in a namespace,
+    /// so the token is replaced outright and no common prefix is
+    /// computed.
+    ///
+    /// The first Tab lands on the candidate *after* whichever one the
+    /// token already spells, so rotating away from a pre-filled value
+    /// moves on the first press; on a token spelling none of them it
+    /// lands on the first. This is the whole difference from
+    /// `apply_completion`, which leaves `index: None` so that its first
+    /// Tab only primes the cycle.
+    pub(super) fn apply_rotation(
+        &mut self,
+        token_start: usize,
+        prefix: &str,
+        candidates: Vec<String>,
+    ) {
+        let index = match candidates.iter().position(|c| c == prefix) {
+            Some(i) => (i + 1) % candidates.len(),
+            None if candidates.is_empty() => return,
+            None => 0,
+        };
+        let cursor_byte = self.char_byte_index(self.command_cursor);
+        let buf = self.command_buffer.clone().unwrap_or_default();
+        let suffix = buf[cursor_byte..].to_string();
+        self.replace_token(token_start, &suffix, &candidates[index]);
+        self.completion = Some(CompletionState {
+            token_start,
+            suffix,
+            candidates,
+            index: Some(index),
+        });
+    }
+
     /// Replace `command_buffer[token_start..command_cursor]` with
     /// `replacement`, re-appending `suffix` (the text that originally
     /// followed the token) verbatim, and move the cursor to just past the
@@ -579,7 +631,7 @@ impl App {
             // name — the one binding a newcomer cannot guess is the one
             // that lists the others.
             Ok("help") => self.help_open = true,
-            Ok("override-as") => self.run_override_as(tokens.collect()),
+            Ok("override") => self.run_override_cmd(tokens.collect()),
             Ok("save") => self.run_save_overrides(tokens.collect()),
             Ok("restore") => self.run_restore_overrides(tokens.collect()),
             Ok("proto-root") => self.run_proto_root(tokens.collect()),

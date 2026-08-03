@@ -6,13 +6,13 @@ SPDX-License-Identifier: MIT
 
 # Pane: override management pane
 
-*last verified: 2026-07-31*
+*last verified: 2026-08-03*
 
 ## Executive summary
 
-The management pane (`m`) is the user-facing view of the
+The management pane (`o` from the main pane) is the user-facing view of the
 [override collection](override-collection.md) as a whole — every override
-ever created this session, whether from the select pane, `:override-as`, or
+ever created this session, whether from the select pane, `:override`, or
 auto-seeded Any/MessageSet expansion, grouped by origin and listed in the
 collection's own canonical order. Where the select pane is about
 *choosing* a type for one node, the management pane is about *auditing
@@ -93,15 +93,24 @@ neutral `'│'` vertical separator divides it from the main pane when open
 — see [override-select-pane.md](override-select-pane.md) for that
 column's own details, since both side panes share it identically.
 
-### The rename buffer and search share the global command/message row
+### Editing an entry is one command, not a sub-mode
 
-Neither the display-name rename prompt (`f`) nor this pane's own `/`/`?`
-search reserves a row inside the side pane itself — both are typed into
-the same global command/message row the main pane and the
-override-select pane already use (see
-[command-line.md](command-line.md)). This wasn't the original design;
-folding text entry into one shared row (rather than an ad hoc spot inside
-each side pane) was adopted specifically because only the shared row
-gets a real terminal text cursor, which a side-pane-local input never
-had — a genuine usability gap in the pane's own space that reusing the
-existing row closed for every pane at once, not just this one.
+`o` on a highlighted entry opens the global command/message row
+pre-filled with the `:override` that describes that entry exactly —
+type, origin and display name, every argument present. Editing the
+entry is then editing that text, and `Enter` on the unedited line is a
+no-op. This replaced a bespoke inline rename sub-mode that could change
+only the display name, and only by way of a second text-entry
+implementation with no cursor, no completion and no history (spec
+0236).
+
+Neither that command nor this pane's own `/`/`?` search reserves a row
+inside the side pane itself — both are typed into the same global
+command/message row the main pane and the override-select pane already
+use (see [command-line.md](command-line.md)). This wasn't the original
+design; folding text entry into one shared row (rather than an ad hoc
+spot inside each side pane) was adopted specifically because only the
+shared row gets a real terminal text cursor, which a side-pane-local
+input never had — a genuine usability gap in the pane's own space that
+reusing the existing row closed for every pane at once, not just this
+one.

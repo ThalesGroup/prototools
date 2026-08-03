@@ -12,7 +12,8 @@ use super::*;
 const MANAGE_MARKER_COL: usize = 2;
 
 impl App {
-    /// `o`: toggle the override management pane (spec 0117 §3). Closes
+    /// `o` from the main pane: toggle the override management pane
+    /// (spec 0117 §3; inside the pane `o` edits an entry). Closes
     /// it (cancelling) if already open. Otherwise opens it — no
     /// cursor-node-kind precondition, unlike `t` — closing the override
     /// selection pane first if it's open (mutual exclusion, one shared
@@ -386,7 +387,7 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => self.move_manage_highlight(-1),
             // Spec 0236 S16: `f`/`b` page here exactly as they do in the
             // main pane. `f` was this pane's display-name rename until
-            // spec 0236 S17 moved that onto `e`/`:override-as`.
+            // spec 0236 S17 moved that onto `e`/`:override`.
             KeyCode::PageDown | KeyCode::Char('f') => {
                 self.move_manage_highlight(self.manage_list_height.max(1) as isize)
             }
@@ -441,11 +442,11 @@ impl App {
             }
             // Spec 0236 S15: edit the highlighted entry — type, origin
             // and display name at once — as a pre-filled
-            // `:override-as`. This replaces spec 0119 §G4's bespoke
+            // `:override`. This replaces spec 0119 §G4's bespoke
             // inline rename sub-mode, which was a second text-entry
             // implementation supporting strictly less than the command
             // line it now uses.
-            KeyCode::Char('o') => self.prefill_override_as(),
+            KeyCode::Char('o') => self.prefill_override_cmd(),
             // `A`/Shift-Space is `toggle_active`'s cascading sibling —
             // same toggle, but also applied to every entry whose origin
             // sits at-or-under the highlighted entry's own origin

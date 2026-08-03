@@ -187,6 +187,11 @@ impl App {
                     self.jump_to_override_match(dir.reverse(), &pattern);
                 }
             }
+            // Spec 0236 S15: edit the target node's override — type,
+            // origin and display name at once — as a pre-filled
+            // `:override`. The pane picks a type from a list; `o` is
+            // the way out to the other two dimensions it cannot express.
+            KeyCode::Char('o') => self.prefill_override_cmd(),
             KeyCode::Enter => {
                 let Some(idx) = self.override_target else {
                     return;
@@ -794,22 +799,19 @@ impl App {
             // pane never holds focus while it is open, so such an arm
             // would be unreachable.
 
-            // Spec 0236 S15: edit the cursor node's override — type,
-            // origin and display name at once — as a pre-filled
-            // `:override-as`.
-            KeyCode::Char('o') => self.prefill_override_as(),
-
-            // Override management pane (spec 0117 §3): `m` opens it,
+            // Override management pane (spec 0117 §3): `o` opens it,
             // mirroring `t`. `Tab` moves focus back into it while it's
             // open (Q2: the management pane deliberately does *not* get
             // the selection pane's focus lock — it performs actual
             // splices, so its main-pane content is committed content and
             // nothing there depends on an immutable anchor).
             //
-            // Spec 0236 S19: this was `o` until `o` became the override
-            // editor above. `m` for "manage" sits beside `t` for
-            // "type" — the two panes' own names.
-            KeyCode::Char('m') => self.toggle_manage_pane(),
+            // Spec 0236 S19: `o` keeps this meaning in the main pane and
+            // means "edit this override" only *inside* the two override
+            // panes, where there is a single obvious entry to edit. In
+            // the main pane there is not — hence `:override` typed in
+            // full, which is what `o` opens a pane to avoid.
+            KeyCode::Char('o') => self.toggle_manage_pane(),
             KeyCode::Tab if self.manage_open => self.manage_focus = true,
 
             _ => {}

@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # Pane: command line (global command/message row)
 
-*last verified: 2026-07-31*
+*last verified: 2026-08-03*
 
 ## Executive summary
 
@@ -69,7 +69,7 @@ automatically, with no second registration point to remember.
 Completion isn't limited to command names. Once the first token has
 unambiguously resolved to a command that takes a particular kind of
 argument, the following tokens are completed against that argument's own
-domain: `override-as`'s type argument completes against the session's
+domain: `override`'s `--as` argument completes against the session's
 full list of known type FQDNs — which the on-demand descriptor branch
 ([descriptor-context.md](descriptor-context.md)) must still answer in
 full, and does, by reading names out of the `index.rkyv` sidecar
@@ -89,7 +89,7 @@ command names. The check is safe to make command-independent because no
 *value* the command line accepts begins with `-` — not a path, not an
 FQDN, not an origin.
 
-`override-as` is also the one command whose completion dispatches on
+`override` is also the one command whose completion dispatches on
 the token being completed rather than on a fixed argument position: its
 two flags may appear in either order, before or after the positional,
 so "the second token" is not a meaningful question to ask about it.
@@ -101,3 +101,32 @@ convention) without yet committing to any one of them, so a user typing
 `:export --desc` and pressing Tab once sees `--descriptor-`, the common
 prefix of the two options that match, without the pane guessing which
 one was meant.
+
+### Two completers, because two kinds of argument
+
+Prefix matching is the right shape for an argument drawn from a
+namespace — an FQDN out of tens of thousands, a filename out of a
+directory. It is the wrong shape for an argument with a handful of
+mutually exclusive spellings, which is what `:override`'s `<origin>`
+and `--field-name` are: three origin shapes, four ways to name a field.
+Those two are completed by *rotation* instead — the candidates are
+offered whole, unfiltered by what is already typed, and the first `Tab`
+lands on the one *after* whatever the token currently spells.
+
+Both halves of that matter. Unfiltered, because the token is almost
+always the value `o` pre-filled, which prefix-matches none of its
+alternatives — filtering would leave `Tab` dead exactly where it is
+most wanted. And landing on the *next* candidate, because the prefix
+completer deliberately does not select anything on its first press (it
+only extends to the common prefix and primes the cycle), which on a
+rotation would read as `Tab` doing nothing at all.
+
+`--as` keeps the prefix completer, but consults two lists in sequence
+rather than one: the inference graph's ranked candidates for the node
+first, in decreasing score order, and only if none of them match, the
+lexicographic list. Sequenced, not concatenated — on a large descriptor
+set a two-character prefix matches thousands of FQDNs, and the handful
+of ranked ones would be buried among them, which is the whole value of
+ranking them. A cold score cache yields nothing and the lexicographic
+list answers instead, silently: a completer that sometimes ignores a
+keystroke is worse than one whose order is sometimes alphabetical.
