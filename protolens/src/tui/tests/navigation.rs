@@ -414,8 +414,8 @@ fn navigation_passes_through_an_empty_bracketed_message() {
 /// Spec 0142 empty-message fix: an empty-but-bracketed message is
 /// still foldable — it has its own fold marker/handle (`has_children`)
 /// and can be folded from the keyboard. The key was `Left` until spec
-/// 0194 S6 handed the unshifted arrows to the caret and moved folding
-/// onto `Space`.
+/// 0194 S6 handed the unshifted arrows to the caret, then `Space` until
+/// `Space` became page-down and `z` became the one-key toggle.
 #[test]
 fn empty_bracketed_message_is_foldable() {
     let (mut app, inner_idx) = empty_message_fixture();
@@ -428,11 +428,49 @@ fn empty_bracketed_message_is_foldable() {
 
     app.cursor = inner_idx;
     app.cursor_line_in_node = 0;
-    app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
 
     assert!(
         app.folded.contains(&inner_idx),
-        "Space must fold an empty message"
+        "z must fold an empty message"
+    );
+}
+
+/// `Z` folds the cursor node and every descendant with it, and unfolds
+/// the same set again — the whole subtree follows the state the cursor
+/// node itself took, not each node's own opposite.
+///
+/// The fixture's root wrapper holds three `Item` submessages, so this
+/// reaches two levels down; `z` on the wrapper would leave the `Item`s
+/// alone.
+#[test]
+fn shift_z_folds_the_whole_subtree_and_unfolds_it_again() {
+    let (mut app, items) = repeated_message_fixture();
+    app.splash = false;
+    let root = app.first_node;
+    assert!(app.has_children(root), "fixture sanity check");
+
+    app.set_cursor(root);
+    app.handle_key(KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::NONE));
+    assert!(app.folded.contains(&root), "`Z` folds the cursor node");
+    assert!(
+        items.iter().all(|i| app.folded.contains(i)),
+        "and every descendant with it"
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::NONE));
+    assert!(app.folded.is_empty(), "`Z` opens the whole subtree again");
+
+    // A mixed subtree has no meaningful "opposite", so `Z` follows the
+    // one node the user can see: with only a descendant folded, the
+    // cursor node is open, and `Z` closes everything rather than
+    // toggling each node separately.
+    app.folded.insert(items[0]);
+    app.refresh_line_counts(items[0]);
+    app.handle_key(KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::NONE));
+    assert!(
+        app.folded.contains(&root) && items.iter().all(|i| app.folded.contains(i)),
+        "the cursor node's own state decides for the subtree"
     );
 }
 

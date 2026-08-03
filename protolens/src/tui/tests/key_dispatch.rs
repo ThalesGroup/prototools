@@ -794,42 +794,249 @@ fn the_reassigned_keys_dispatch_where_the_table_says() {
     );
     assert_eq!(app.cursor, items[1]);
 
-    // `z` is a chord prefix: inert on its own, and folding on its
-    // second half.
+    // `z` acts on its own now — it was a chord prefix (`za`/`zc`/`zo`
+    // and their sibling-wide capitals) and is a one-key toggle.
     app.handle_key(plain('z'));
-    assert!(app.folded.is_empty(), "`z` alone does nothing");
-    app.handle_key(plain('c'));
-    assert!(app.folded.contains(&items[1]), "`zc` closes");
+    assert!(app.folded.contains(&items[1]), "`z` alone toggles");
     app.handle_key(plain('z'));
-    app.handle_key(plain('o'));
-    assert!(!app.folded.contains(&items[1]), "`zo` opens");
-    app.handle_key(plain('z'));
-    app.handle_key(plain('a'));
-    assert!(app.folded.contains(&items[1]), "`za` toggles");
-    app.handle_key(plain(' '));
-    assert!(!app.folded.contains(&items[1]), "and so does Space");
+    assert!(!app.folded.contains(&items[1]), "and toggles back");
+}
 
-    // The capitalized chords act on the whole sibling level.
-    app.handle_key(plain('z'));
-    app.handle_key(plain('C'));
+/// `Space`/`Ctrl-F` page down and `Shift-Space`/`Ctrl-B` page up, each
+/// landing exactly where the literal `PageDown`/`PageUp` key does.
+///
+/// `Ctrl-B` is the one that has to work: a terminal that does not report
+/// modifiers on printable keys delivers `Shift-Space` as a bare `Space`,
+/// which pages the wrong way, and a compact keyboard may have no
+/// `PageUp` key at all.
+#[test]
+fn space_and_ctrl_f_page_down_shift_space_and_ctrl_b_page_up() {
+    let paged = |keys: &[KeyEvent]| {
+        let mut app = wide_sibling_scalars_app(200);
+        app.splash = false;
+        app.main_area = Rect::new(0, 0, 40, 20);
+        for &k in keys {
+            app.handle_key(k);
+        }
+        app.cursor
+    };
+
+    let page_down = KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE);
+    let page_up = KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE);
+    let down = paged(&[page_down]);
+    assert!(down > 0, "a page down must move the cursor at all");
+
+    for k in [
+        KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+    ] {
+        assert_eq!(paged(&[k]), down, "{k:?} must page down");
+    }
+
+    // Two pages down, then one back up — a single page up from the top
+    // would have nowhere to go and prove nothing.
+    let up = paged(&[page_down, page_down, page_up]);
     assert!(
-        items.iter().all(|i| app.folded.contains(i)),
-        "`zC` closes every sibling"
+        up > 0 && up < down * 2,
+        "a page up must move back, not home"
     );
-    app.handle_key(plain('z'));
-    app.handle_key(plain('A'));
-    assert!(
-        items.iter().all(|i| !app.folded.contains(i)),
-        "`zA` toggles the level from the cursor's own state"
-    );
-    app.handle_key(plain('z'));
-    app.handle_key(plain('C'));
-    app.handle_key(plain('z'));
-    app.handle_key(plain('O'));
-    assert!(
-        items.iter().all(|i| !app.folded.contains(i)),
-        "`zO` opens every sibling"
-    );
+
+    for k in [
+        KeyEvent::new(KeyCode::Char(' '), KeyModifiers::SHIFT),
+        KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
+    ] {
+        assert_eq!(paged(&[page_down, page_down, k]), up, "{k:?} must page up");
+    }
+}
+
+/// `Ctrl-N`/`Ctrl-P` are `Down`/`Up` in every pane that has a
+/// `Down`/`Up` — Emacs' own next/previous-line, and the pair a reader
+/// reaches for when the arrow keys are inconvenient.
+#[test]
+fn ctrl_n_and_ctrl_p_alias_down_and_up_in_every_pane() {
+    let ctrl_n = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL);
+    let ctrl_p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
+
+    // Main pane.
+    let (mut app, items) = repeated_message_fixture();
+    app.splash = false;
+    app.set_cursor(items[0]);
+    app.handle_key(ctrl_n);
+    let after_down = app.cursor;
+    assert_ne!(after_down, items[0], "Ctrl-N moves down the document");
+    app.handle_key(ctrl_p);
+    assert_eq!(app.cursor, items[0], "and Ctrl-P moves back up");
+
+    // Override pane: `t` opens it on a field with a candidate list.
+    let (mut app, _inner_idx, id_idx) = type_as_fixture();
+    app.splash = false;
+    app.cursor = id_idx;
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert!(app.override_focus);
+    assert!(app.override_candidates.len() > 1);
+    let start = app.override_highlight;
+    app.handle_key(ctrl_n);
+    assert_eq!(app.override_highlight, start + 1);
+    app.handle_key(ctrl_p);
+    assert_eq!(app.override_highlight, start);
+
+    // Manage pane.
+    let (mut app, _items) = repeated_message_fixture();
+    app.splash = false;
+    app.manage_open = true;
+    app.manage_focus = true;
+    for field in [1u64, 2] {
+        app.overrides.activate(
+            OverrideOrigin::PathField {
+                path: "/".to_string(),
+                field,
+            },
+            None,
+        );
+    }
+    app.manage_highlight = 0;
+    app.handle_key(ctrl_n);
+    assert_eq!(app.manage_highlight, 1);
+    app.handle_key(ctrl_p);
+    assert_eq!(app.manage_highlight, 0);
+
+    // Help overlay.
+    let mut app = empty_app();
+    app.splash = false;
+    app.help_open = true;
+    app.handle_key(ctrl_n);
+    assert_eq!(app.help_scroll, 1);
+    app.handle_key(ctrl_p);
+    assert_eq!(app.help_scroll, 0);
+}
+
+/// The main pane's `Control`/`Alt` vocabulary is exactly what
+/// `handle_key`'s gate spells out, and nothing else.
+///
+/// Every plain-character arm in that match carries no modifier condition
+/// of its own, so before the gate existed a `Char('q')` arm answered
+/// `Ctrl-Q` too, and the whole lower-case alphabet was live under both
+/// modifiers. This walks every letter and every plainly-bound
+/// punctuation key under `Control` and under `Alt`, and asserts the
+/// unbound ones leave the app exactly as they found it.
+#[test]
+fn only_the_bound_ctrl_and_alt_chords_do_anything_in_the_main_pane() {
+    // Enough of the observable state that any plain-key arm leaking
+    // through the gate would move one of these.
+    fn state(app: &App) -> String {
+        format!(
+            "{} {} {} {} {} {} {} {} {} {} {} {} {} {:?}",
+            app.cursor,
+            app.cursor_column,
+            app.cursor_line_in_node,
+            app.folded.len(),
+            app.annotations,
+            app.wire,
+            app.heat_cues_hidden,
+            app.override_target.is_some(),
+            app.manage_open,
+            app.command_buffer.is_some(),
+            app.should_quit,
+            app.quit_confirm,
+            app.help_open,
+            app.message,
+        )
+    }
+
+    // `Ctrl-Z` is absent: it is the suspend key, handled at the very top
+    // of `handle_key` and never reaching the gate.
+    let bound = [
+        (KeyModifiers::CONTROL, "fbnpaeoic"),
+        (KeyModifiers::ALT, "hl"),
+    ];
+    // The letters, plus every punctuation key the pane binds plainly.
+    let keys: Vec<char> = ('a'..='z').chain(" :/?$%^0gGtwxHLZ".chars()).collect();
+
+    for (modifier, live) in bound {
+        for c in &keys {
+            if live.contains(*c) {
+                continue;
+            }
+            let (mut app, items) = repeated_message_fixture();
+            app.splash = false;
+            app.set_cursor(items[1]);
+            // Every keypress clears a stale notice before its own handler
+            // runs (spec 0147 G5), and the fixture starts with a startup
+            // warning in there — so clear it first, or the comparison is
+            // against a message no key could have left standing.
+            app.message.clear();
+            let before = state(&app);
+            app.handle_key(KeyEvent::new(KeyCode::Char(*c), modifier));
+            assert_eq!(
+                state(&app),
+                before,
+                "{modifier:?}-{c} is not bound and must do nothing"
+            );
+        }
+    }
+}
+
+/// The same, for the manage pane — the surface where an ungated chord
+/// costs the most: `Ctrl-D` would delete the highlighted entry outright,
+/// `Ctrl-Q` close the pane, and `Ctrl-<anything>` type a literal
+/// character into an open rename buffer.
+#[test]
+fn only_the_bound_ctrl_and_alt_chords_do_anything_in_the_manage_pane() {
+    fn state(app: &App) -> String {
+        format!(
+            "{} {} {} {:?} {} {} {:?} {:?}",
+            app.manage_highlight,
+            app.manage_open,
+            app.manage_focus,
+            app.manage_rename,
+            app.cursor,
+            app.command_buffer.is_some(),
+            app.overrides.entries(),
+            app.message,
+        )
+    }
+
+    let keys: Vec<char> = ('a'..='z').chain(" /?gGADZ".chars()).collect();
+    for modifier in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+        for c in &keys {
+            // The pane's whole Ctrl/Alt vocabulary.
+            if modifier == KeyModifiers::CONTROL && "np".contains(*c) {
+                continue;
+            }
+            let (mut app, _items) = repeated_message_fixture();
+            app.splash = false;
+            app.manage_open = true;
+            app.manage_focus = true;
+            for field in [1u64, 2] {
+                app.overrides.activate(
+                    OverrideOrigin::PathField {
+                        path: "/".to_string(),
+                        field,
+                    },
+                    None,
+                );
+            }
+            app.manage_highlight = 1;
+            app.message.clear();
+            let before = state(&app);
+            app.handle_key(KeyEvent::new(KeyCode::Char(*c), modifier));
+            assert_eq!(
+                state(&app),
+                before,
+                "{modifier:?}-{c} is not bound and must do nothing"
+            );
+
+            // And with a rename buffer open, where the fall-through was
+            // an unconditional `buffer.push(c)`.
+            app.manage_rename = Some(String::new());
+            app.handle_key(KeyEvent::new(KeyCode::Char(*c), modifier));
+            assert_eq!(
+                app.manage_rename.as_deref(),
+                Some(""),
+                "{modifier:?}-{c} must not type into the rename buffer"
+            );
+        }
+    }
 }
 
 /// Spec 0194 test-plan item 17, search half. `p` was spec 0195's

@@ -553,7 +553,7 @@ fn backspace_undoes_the_keystroke_before_it() {
     app.splash = false;
     app.term_width = 120;
 
-    let mut settle = |app: &mut App| {
+    let settle = |app: &mut App| {
         settle_sweep(app);
         app.center_search_match(pane());
         (app.scroll_offset, app.pan_offset)

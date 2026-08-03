@@ -1197,10 +1197,6 @@ pub struct App {
     /// press within the very next keystroke (`gg` chord, vim-style); any
     /// other key clears it.
     pending_g: bool,
-    /// Spec 0194 S6: set by a `z` press, consumed by the next key —
-    /// vim's fold prefix (`za`/`zc`/`zo` and their sibling-wide
-    /// capitals). Same shape as `pending_g` above.
-    pending_z: bool,
     /// Export-chord leader state (spec 0156 G3): `None` (no chord
     /// armed), `Leader` (a lone `x` was just pressed), `Descriptor`
     /// (`xd` was just pressed — one more key selects binary vs.
@@ -1489,7 +1485,6 @@ impl App {
             fwd_stack: Vec::new(),
             first_node: cursor,
             pending_g: false,
-            pending_z: false,
             pending_x: ExportChord::None,
             command_buffer: None,
             command_kind: CommandLineKind::Command,

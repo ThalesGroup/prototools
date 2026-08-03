@@ -139,7 +139,7 @@ impl App {
                 // for subsequent keystrokes too.
                 self.override_focus = false;
                 self.manage_focus = false;
-                self.handle_click(event.column, event.row);
+                let on_marker = self.handle_click(event.column, event.row);
                 let line_idx = self.main_pane_line_idx(event.column, event.row);
 
                 // Double-click detection: crossterm reports `Down`
@@ -149,9 +149,19 @@ impl App {
                 // line ourselves (`is_double_click`, shared with the
                 // manage pane's radio-marker double-click). The `Up`
                 // handler below is what acts on `pending_double_click`.
+                //
+                // A click that `handle_click` spent on a fold marker is
+                // never half of a pair. Each such click has already
+                // toggled the fold on its own, so a double-click there
+                // toggles twice and lands back where it started — which
+                // is what clicking a control twice should do. Opening the
+                // override pane is reserved for a double-click on the
+                // node's body. `last_click` is cleared rather than left
+                // alone so that no pair forms across the two zones
+                // either, in whichever order they are clicked.
                 self.pending_double_click = match line_idx {
-                    Some(l) => is_double_click(&mut self.last_click, l),
-                    None => {
+                    Some(l) if !on_marker => is_double_click(&mut self.last_click, l),
+                    _ => {
                         self.last_click = None;
                         false
                     }
@@ -357,13 +367,18 @@ impl App {
             .map(|(_, line)| line)
     }
 
-    pub(super) fn handle_click(&mut self, col: u16, row: u16) {
+    /// Returns whether the click landed on a fold marker and was spent
+    /// toggling it. The caller uses that to keep a second click on the
+    /// same marker from also counting as a double-click: a marker is a
+    /// control, so clicking it twice means toggling twice, not opening
+    /// the override pane on top of it.
+    pub(super) fn handle_click(&mut self, col: u16, row: u16) -> bool {
         let Some(line_idx) = self.main_pane_line_idx(col, row) else {
-            return;
+            return false;
         };
 
         let Some(pos) = self.line_pos(line_idx) else {
-            return;
+            return false;
         };
 
         // A click on a foldable node's own fold marker toggles it, and
@@ -388,7 +403,7 @@ impl App {
             let line = self.line_text(pos);
             if rel_col >= 1 && rel_col - 1 == render::marker_column(&line) {
                 self.toggle_fold(pos.node);
-                return;
+                return true;
             }
         }
 
@@ -403,6 +418,7 @@ impl App {
         // rather than through `set_cursor`: its caret reset would be
         // invisible.
         self.set_caret_from_click(col, line_idx, pos);
+        false
     }
 
     /// Spec 0194 S7: invert S1's column-to-screen mapping and put the

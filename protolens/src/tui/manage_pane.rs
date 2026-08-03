@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-use super::key_dispatch::GChord;
+use super::key_dispatch::{ctrl_or_alt, GChord};
 use super::*;
 
 /// Character column (within `manage_type_line`'s own "  <marker> ..."
@@ -329,18 +329,41 @@ impl App {
                 KeyCode::Backspace => {
                     buffer.pop();
                 }
+                // A `Control`/`Alt`-modified character is ignored, not
+                // inserted (see `ctrl_or_alt`) — this sub-mode binds
+                // none, and without the guard an unbound `Ctrl-u` would
+                // type a `u` into the name.
+                KeyCode::Char(_) if ctrl_or_alt(&key) => {}
                 KeyCode::Char(c) => buffer.push(c),
                 _ => {}
             }
             return;
         }
-        match self.take_g_chord(key.code) {
+        match self.take_g_chord(&key) {
             GChord::Fired => {
                 self.set_manage_highlight(0);
                 return;
             }
             GChord::Armed => return,
             GChord::Other => {}
+        }
+
+        // This pane's entire `Control`/`Alt` character vocabulary, in one
+        // place, so that the plain-character arms below — which carry no
+        // modifier condition of their own — cannot also answer for it
+        // (see `ctrl_or_alt`). That matters most here: `Ctrl-d` would
+        // otherwise delete the highlighted entry, and `Ctrl-q` close the
+        // pane. Everything else here is swallowed.
+        if matches!(key.code, KeyCode::Char(_)) && ctrl_or_alt(&key) {
+            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+            match key.code {
+                // Emacs' own next/previous-line, aliasing `j`/`k` as they
+                // do in every pane.
+                KeyCode::Char('n') if ctrl => self.move_manage_highlight(1),
+                KeyCode::Char('p') if ctrl => self.move_manage_highlight(-1),
+                _ => {}
+            }
+            return;
         }
 
         match key.code {

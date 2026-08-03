@@ -886,7 +886,7 @@ impl App {
         self.clamp_caret_column();
     }
 
-    /// Spec 0194 S6: `za`/`Space` — toggle the cursor node's own fold.
+    /// `z` — toggle the cursor node's own fold.
     pub(super) fn toggle_cursor_fold(&mut self) {
         if self.has_children(self.cursor) {
             self.toggle_fold(self.cursor);
@@ -895,35 +895,56 @@ impl App {
         }
     }
 
-    /// Spec 0194 S6: `zc` — close the cursor node's fold, a no-op when
-    /// it is already closed (vim's `zc` errors there; a reading tool has
-    /// nothing useful to say about it).
-    pub(super) fn fold_cursor(&mut self) {
+    /// `Z` — toggle the cursor node and force its whole subtree into the
+    /// state the cursor node just took, so one keystroke opens or closes
+    /// a message all the way down.
+    ///
+    /// The cursor node decides the target state for everyone, rather than
+    /// each descendant toggling its own: a subtree in mixed states has no
+    /// meaningful "opposite", and following the one node the user is
+    /// looking at makes `Z` agree with the `z` they can see the result
+    /// of.
+    ///
+    /// Descendants are visited deepest-first (the reverse of
+    /// `collect_descendants`' pre-order, in which a parent always
+    /// precedes its own descendants), because `refresh_line_counts`
+    /// walks *upward* recomputing each node from its children and stops
+    /// as soon as one is unchanged. Refreshing a parent before its
+    /// children would propagate counts that are about to move again.
+    ///
+    /// The `has_children` guard is on the folding side only, for the
+    /// reason `set_all_siblings_folded` gives: a leaf must never enter
+    /// `folded`, since nothing would take it back out.
+    pub(super) fn toggle_cursor_fold_recursive(&mut self) {
         if !self.has_children(self.cursor) {
             self.message = "not foldable".to_string();
-        } else if !self.folded.contains(&self.cursor) {
-            self.toggle_fold(self.cursor);
+            return;
         }
-    }
+        let fold = !self.folded.contains(&self.cursor);
+        let mut nodes = vec![self.cursor];
+        self.collect_descendants(self.cursor, &mut nodes);
 
-    /// Spec 0194 S6: `zo` — open the cursor node's fold.
-    pub(super) fn unfold_cursor(&mut self) {
-        if !self.has_children(self.cursor) {
-            self.message = "not foldable".to_string();
-        } else if self.folded.contains(&self.cursor) {
-            self.toggle_fold(self.cursor);
+        let mut changed = false;
+        for i in nodes.into_iter().rev() {
+            let moved = if fold {
+                self.has_children(i) && self.folded.insert(i)
+            } else {
+                self.folded.remove(&i)
+            };
+            if moved {
+                changed = true;
+                self.refresh_line_counts(i);
+            }
         }
-    }
-
-    /// Spec 0194 S6: `zA` — the sibling-wide counterpart of `za`.
-    /// Follows the cursor node's own state so the two stay predictable:
-    /// whatever `za` would do here, `zA` does to the whole level.
-    pub(super) fn toggle_all_siblings(&mut self) {
-        if self.folded.contains(&self.cursor) {
-            self.unfold_all_siblings();
-        } else {
-            self.fold_all_siblings();
+        if changed {
+            self.folds_changed();
         }
+        // The cursor is already on the node that was toggled, so unlike
+        // `toggle_fold` there is nobody to move — but its row's text has
+        // been rewritten underneath the caret just the same (spec 0194
+        // S11).
+        self.cursor_line_in_node = 0;
+        self.clamp_caret_column();
     }
 
     /// All siblings of `idx` (including `idx` itself), in document order —

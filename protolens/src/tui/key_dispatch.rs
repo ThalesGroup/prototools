@@ -4,6 +4,29 @@
 
 use super::*;
 
+/// Whether a key is held with `Control` or `Alt`.
+///
+/// A character pressed with either held is a *different* key from the
+/// same character pressed plainly — `Ctrl-D` is not `d` — but a
+/// `KeyCode::Char('d')` match arm carries no modifier condition of its
+/// own and so matches both. Every pane therefore gates its plain
+/// character arms behind this, in one place per handler, ahead of the
+/// match: whatever `Control`/`Alt` bindings that pane really has are
+/// spelled out there, and anything else is swallowed rather than
+/// falling through to a plain letter's action.
+///
+/// `Shift` is deliberately absent from the set. It is how the upper
+/// half of the keyboard is typed at all, so `H` legitimately arrives as
+/// `Char('H')` *with* `SHIFT` set once `DISAMBIGUATE_ESCAPE_CODES` is
+/// on (`terminal.rs`'s `push_keyboard_enhancement`), and must keep
+/// working. That is also why these gates do not use
+/// `modifiers.is_empty()`, which would silently kill every upper-case
+/// and shifted-punctuation binding in the app.
+pub(super) fn ctrl_or_alt(key: &KeyEvent) -> bool {
+    key.modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+}
+
 /// What a keypress did to the `gg` chord.
 pub(super) enum GChord {
     /// Both `g`s seen: jump to the first row.
@@ -21,8 +44,11 @@ impl App {
     /// panes: each arms on the first `g`, fires on the second, and
     /// clears on anything else. Only what it jumps *to* differs, which
     /// is why the caller keeps that and this keeps the state machine.
-    pub(super) fn take_g_chord(&mut self, code: KeyCode) -> GChord {
-        if code != KeyCode::Char('g') {
+    ///
+    /// `Ctrl-g`/`Alt-g` are not `g` (see `ctrl_or_alt`), so they neither
+    /// arm the chord nor fire it — they clear it, like any other key.
+    pub(super) fn take_g_chord(&mut self, key: &KeyEvent) -> GChord {
+        if key.code != KeyCode::Char('g') || ctrl_or_alt(key) {
             self.pending_g = false;
             return GChord::Other;
         }
@@ -37,7 +63,7 @@ impl App {
     /// Handle a keypress while the override pane has focus (spec 0114
     /// §2/§3/§4).
     pub(super) fn handle_override_key(&mut self, key: KeyEvent) {
-        match self.take_g_chord(key.code) {
+        match self.take_g_chord(&key) {
             GChord::Fired => {
                 self.override_highlight = 0;
                 self.preview_override_highlight();
@@ -45,6 +71,22 @@ impl App {
             }
             GChord::Armed => return,
             GChord::Other => {}
+        }
+
+        // This pane's entire `Control`/`Alt` character vocabulary, in one
+        // place, so that the plain-character arms below — which carry no
+        // modifier condition of their own — cannot also answer for it
+        // (see `ctrl_or_alt`). Everything else here is swallowed.
+        if matches!(key.code, KeyCode::Char(_)) && ctrl_or_alt(&key) {
+            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+            match key.code {
+                // Emacs' own next/previous-line, aliasing `j`/`k` as they
+                // do in every pane.
+                KeyCode::Char('n') if ctrl => self.move_override_highlight(1),
+                KeyCode::Char('p') if ctrl => self.move_override_highlight(-1),
+                _ => {}
+            }
+            return;
         }
 
         match key.code {
@@ -394,7 +436,7 @@ impl App {
         // quits; any other key cancels without otherwise acting on it.
         if self.quit_confirm {
             self.quit_confirm = false;
-            if key.code == KeyCode::Char('q') {
+            if key.code == KeyCode::Char('q') && !ctrl_or_alt(&key) {
                 self.should_quit = true;
             }
             return;
@@ -425,7 +467,7 @@ impl App {
         // dispatch below, same tier as `F1`/`Ctrl-Z` above, so `:quit`
         // (and every other command) is reachable from the override/
         // manage panes too, not just the main pane.
-        if key.code == KeyCode::Char(':') {
+        if key.code == KeyCode::Char(':') && !ctrl_or_alt(&key) {
             self.open_command_line(CommandLineKind::Command, String::new());
             return;
         }
@@ -435,7 +477,7 @@ impl App {
         // pane, the manage pane, and the main pane. Unix-only (mirrors
         // `Ctrl-Z` above): no terminal job-control equivalent elsewhere.
         #[cfg(unix)]
-        if key.code == KeyCode::Char('v') && key.modifiers.is_empty() {
+        if key.code == KeyCode::Char('v') && !ctrl_or_alt(&key) {
             self.open_definition();
             return;
         }
@@ -453,13 +495,13 @@ impl App {
         // yields zero fields, see spec 0113) has no cursor node to index
         // into: only allow the keys that don't touch `self.tree`.
         if self.tree.is_empty() {
-            if key.code == KeyCode::Char('q') {
+            if key.code == KeyCode::Char('q') && !ctrl_or_alt(&key) {
                 self.request_quit();
             }
             return;
         }
 
-        match self.take_g_chord(key.code) {
+        match self.take_g_chord(&key) {
             GChord::Fired => {
                 self.move_home();
                 return;
@@ -468,24 +510,65 @@ impl App {
             GChord::Other => {}
         }
 
-        // Spec 0194 S6: `z` is vim's fold prefix. `za`/`zc`/`zo` act on
-        // the cursor node, their capitals on the whole sibling level.
-        // Same shape as the `gg` chord above; any other key cancels.
-        if self.pending_z {
-            self.pending_z = false;
+        // This pane's entire `Control`/`Alt` character vocabulary, in one
+        // place, so that the plain-character arms further below — which
+        // carry no modifier condition of their own — cannot also answer
+        // for it (see `ctrl_or_alt`). Everything else here is swallowed.
+        //
+        // Placed ahead of the `x` chord below so that `Ctrl-x` cannot arm
+        // an export either; that also makes these the only keys that can
+        // run while the chord is armed, hence the explicit disarm — the
+        // chord's own arms below reset it the same way before acting.
+        if matches!(key.code, KeyCode::Char(_)) && ctrl_or_alt(&key) {
+            self.pending_x = ExportChord::None;
+            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+            let alt = key.modifiers.contains(KeyModifiers::ALT);
             match key.code {
-                KeyCode::Char('a') => self.toggle_cursor_fold(),
-                KeyCode::Char('c') => self.fold_cursor(),
-                KeyCode::Char('o') => self.unfold_cursor(),
-                KeyCode::Char('A') => self.toggle_all_siblings(),
-                KeyCode::Char('C') => self.fold_all_siblings(),
-                KeyCode::Char('O') => self.unfold_all_siblings(),
+                // Page move (vim's), and Emacs' next/previous-line
+                // aliasing `j`/`k`. `Ctrl-F`/`Ctrl-B` are free in this
+                // pane: `command_line.rs` binds them to readline char
+                // motion, but `handle_command_key` returns before
+                // `handle_key` ever reaches here.
+                KeyCode::Char('f') if ctrl => self.move_page_down(),
+                KeyCode::Char('b') if ctrl => self.move_page_up(),
+                KeyCode::Char('n') if ctrl => self.move_down(),
+                KeyCode::Char('p') if ctrl => self.move_up(),
+
+                // Spec 0208 S1: `Ctrl-a`/`Ctrl-e` are `^`/`$`, as on
+                // every other text surface the user touches (the shell,
+                // the `:` command line). Word motion is `Alt-h`/`Alt-l`,
+                // aliasing the Alt-arrows below.
+                KeyCode::Char('a') if ctrl => self.caret_to_line_start(),
+                KeyCode::Char('e') if ctrl => self.caret_to_line_end(),
+                KeyCode::Char('h') if alt => self.caret_word_left(),
+                KeyCode::Char('l') if alt => self.caret_word_right(),
+
+                // Navigation history.
+                KeyCode::Char('o') if ctrl => {
+                    if let Some(pos) = self.back_stack.pop() {
+                        self.fwd_stack.push(self.cursor_pos());
+                        self.restore_cursor_pos(pos);
+                    } else {
+                        self.message = "jumplist: at oldest position".to_string();
+                    }
+                }
+                KeyCode::Char('i') if ctrl => {
+                    if let Some(pos) = self.fwd_stack.pop() {
+                        self.back_stack.push(self.cursor_pos());
+                        self.restore_cursor_pos(pos);
+                    } else {
+                        self.message = "jumplist: at newest position".to_string();
+                    }
+                }
+
+                // Spec 0131 §G1: `Ctrl-C` is the single, explicit copy
+                // key — copies the active drag-selection if one exists,
+                // else the cursor's own current line. Mouse release does
+                // not copy by itself (see the no-op
+                // `Up(MouseButton::Left)` arm in `handle_mouse`).
+                KeyCode::Char('c') if ctrl => self.copy_current_selection_or_line(),
                 _ => {}
             }
-            return;
-        }
-        if key.code == KeyCode::Char('z') {
-            self.pending_z = true;
             return;
         }
 
@@ -572,9 +655,28 @@ impl App {
             KeyCode::Home => self.move_home(),
             KeyCode::End | KeyCode::Char('G') => self.move_end(),
 
-            // Page move.
+            // Page move, in three spellings. `PageDown`/`PageUp` are the
+            // literal ones; `Space`/`Shift-Space` are the pager idiom
+            // (`less`, `man`), which is what a reader is most likely to
+            // try first; `Ctrl-F`/`Ctrl-B` are vim's (in the Ctrl/Alt
+            // gate above), and are the pair to reach for when the others
+            // are unavailable — a compact keyboard often has no
+            // `PageDown` key at all, and `Shift-Space` needs the terminal
+            // to report the modifier.
+            //
+            // The Shift arm must precede the plain one: without
+            // `DISAMBIGUATE_ESCAPE_CODES` (`terminal.rs`'s
+            // `push_keyboard_enhancement`) a terminal reports
+            // `Shift-Space` as a bare `Space`, so there it silently pages
+            // *down*. That is why `Ctrl-B` exists — a `Ctrl`-letter is a
+            // C0 control code and needs no modifier reporting at all, so
+            // it is the one page-up spelling that always works.
             KeyCode::PageDown => self.move_page_down(),
             KeyCode::PageUp => self.move_page_up(),
+            KeyCode::Char(' ') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.move_page_up()
+            }
+            KeyCode::Char(' ') => self.move_page_down(),
 
             // Horizontal pan (spec 0113 D24). Checked before the
             // Shift-guarded and plain Left/Right arms below, since `Ctrl`
@@ -584,14 +686,10 @@ impl App {
 
             // Word motion (spec 0199 S8), over the same word definition
             // the `:` prompt uses. Checked before the plain arms below.
-            // `Alt-h`/`Alt-l` alias the arrows, as everywhere else in
-            // this table.
-            KeyCode::Left | KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.caret_word_left()
-            }
-            KeyCode::Right | KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.caret_word_right()
-            }
+            // Their `Alt-h`/`Alt-l` aliases are in the Ctrl/Alt gate
+            // above.
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => self.caret_word_left(),
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => self.caret_word_right(),
 
             // Spec 0199 S9's amendment of spec 0194 S6's organizing rule:
             // **motion happens in the text until the text runs out and
@@ -617,72 +715,48 @@ impl App {
             KeyCode::Char('l') | KeyCode::Right => self.caret_right(),
             // `0` and `^` are one destination here: column zero is the
             // fold gutter and unreachable (S3), so vim's two motions
-            // coincide.
-            //
-            // Spec 0208 S1: `Ctrl-a`/`Ctrl-e` alias them, as every other
-            // text surface the user touches (the shell, the `:` command
-            // line) binds those two to the same destinations. Separate
-            // guarded arms rather than `|`-alternatives, because the
-            // unmodified spellings are accepted under any modifier state
-            // and there is no reason to tighten that. `Ctrl-a` is free
-            // because the annotation toggle below is guarded to a bare
-            // `a` (spec 0199 S9); `Ctrl-e` is not bound at all.
+            // coincide. Their `Ctrl-a`/`Ctrl-e` aliases (spec 0208 S1)
+            // are in the Ctrl/Alt gate above.
             KeyCode::Char('0') | KeyCode::Char('^') => self.caret_to_line_start(),
-            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.caret_to_line_start()
-            }
             KeyCode::Char('$') => self.caret_to_line_end(),
-            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.caret_to_line_end()
-            }
             KeyCode::Char('%') => self.jump_matching_brace(),
 
-            // Fold/unfold toggle. `Space` exists alongside the `z` fold
-            // prefix so the common case still costs one key.
-            KeyCode::Char(' ') => self.toggle_cursor_fold(),
+            // Fold/unfold. `z` toggles the cursor node; `Z` toggles it
+            // and forces every descendant into whichever state it just
+            // took, so a subtree opens or closes all the way down in one
+            // keystroke.
+            //
+            // `z` was vim's fold *prefix* here (`za`/`zc`/`zo` and their
+            // sibling-wide capitals). Folding is the single most-used
+            // gesture in this pane, so it is spelled with one key rather
+            // than two; the sibling level keeps `H`/`L` below, which is
+            // where it was already reachable without a chord. A bare `z`
+            // is safe because `Ctrl-Z` (suspend) is handled and returned
+            // well above this match.
+            KeyCode::Char('z') => self.toggle_cursor_fold(),
+            KeyCode::Char('Z') => self.toggle_cursor_fold_recursive(),
 
             // Toggle main-pane annotation display (spec 0133 G3) — a
             // pure display attribute, distinct from the override pane's
             // own `a` (candidate sort toggle) and the manage pane's own
             // `a` (entry active toggle), both gated behind their own
-            // focus checks and unreachable here. Guarded to plain `a`
-            // (spec 0199 S9), leaving `Ctrl-a` to the caret.
-            KeyCode::Char('a') if key.modifiers.is_empty() => self.annotations = !self.annotations,
+            // focus checks and unreachable here.
+            KeyCode::Char('a') => self.annotations = !self.annotations,
 
             // Toggle the wire rows (spec 0225 S1) — like `a`, a pure
             // display attribute that invalidates no cache and bumps no
             // `structural_version`. It does halve the pane's line
             // capacity (S8), so the scroll and pan offsets are clamped
             // against the geometry it just changed.
-            KeyCode::Char('w') if key.modifiers.is_empty() => self.toggle_wire(),
+            KeyCode::Char('w') => self.toggle_wire(),
 
             // Toggle the main-pane inference-mismatch heat cue (spec
             // 0138) — hides/shows the cue without discarding the
             // heat-cue caches, distinct from the override pane's own `i`
             // (candidate sort toggle), gated behind its own focus check
-            // and unreachable here. Guarded to plain `i` so `Ctrl-i`
-            // (jumplist "forward", below) is unaffected.
-            KeyCode::Char('i') if key.modifiers.is_empty() => {
-                self.heat_cues_hidden = !self.heat_cues_hidden
-            }
-
-            // Navigation history.
-            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some(pos) = self.back_stack.pop() {
-                    self.fwd_stack.push(self.cursor_pos());
-                    self.restore_cursor_pos(pos);
-                } else {
-                    self.message = "jumplist: at oldest position".to_string();
-                }
-            }
-            KeyCode::Char('i') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some(pos) = self.fwd_stack.pop() {
-                    self.back_stack.push(self.cursor_pos());
-                    self.restore_cursor_pos(pos);
-                } else {
-                    self.message = "jumplist: at newest position".to_string();
-                }
-            }
+            // and unreachable here. `Ctrl-i` (jumplist "forward") is in
+            // the Ctrl/Alt gate above.
+            KeyCode::Char('i') => self.heat_cues_hidden = !self.heat_cues_hidden,
 
             // In-pane search (spec 0114 §4, extended to the main pane):
             // reuses the command-line row as the search prompt. Only
@@ -732,14 +806,6 @@ impl App {
                 self.clear_search_highlight();
             }
 
-            // Spec 0131 §G1: `Ctrl-C` is the single, explicit copy key —
-            // copies the active drag-selection if one exists, else the
-            // cursor's own current line. Mouse release does not copy by
-            // itself (see the no-op `Up(MouseButton::Left)` arm in
-            // `handle_mouse`).
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.copy_current_selection_or_line()
-            }
             // Spec 0185 S5: there is deliberately no `Tab`-into-the-
             // override-pane arm — the pane's focus lock means the main
             // pane never holds focus while it is open, so such an arm
@@ -854,6 +920,21 @@ impl App {
 
     /// Scroll/close the `F1` help overlay.
     pub(super) fn handle_help_key(&mut self, key: KeyEvent) {
+        // This overlay's entire `Control`/`Alt` character vocabulary, in
+        // one place, so that the plain-character arms below — which carry
+        // no modifier condition of their own — cannot also answer for it
+        // (see `ctrl_or_alt`). Everything else here is swallowed.
+        if matches!(key.code, KeyCode::Char(_)) && ctrl_or_alt(&key) {
+            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+            match key.code {
+                // Emacs' own next/previous-line, aliasing `j`/`k` as they
+                // do in every pane.
+                KeyCode::Char('n') if ctrl => self.help_scroll = self.help_scroll.saturating_add(1),
+                KeyCode::Char('p') if ctrl => self.help_scroll = self.help_scroll.saturating_sub(1),
+                _ => {}
+            }
+            return;
+        }
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc | KeyCode::F(1) => self.help_open = false,
             KeyCode::Char('j') | KeyCode::Down => {

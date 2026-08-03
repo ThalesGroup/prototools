@@ -703,6 +703,51 @@ fn clicking_the_fold_marker_focuses_the_main_pane_and_selects_the_node() {
     );
 }
 
+/// A fold marker is a control, so double-clicking it toggles twice —
+/// landing back where it started — and must *not* also open the
+/// override/manage panes the way a double-click on the node's body
+/// does. Each click has already spent itself on the fold, so it is
+/// never half of a pair.
+#[test]
+fn double_click_on_the_fold_marker_toggles_twice_and_opens_nothing() {
+    let (mut app, grp_idx) = group_type_fixture();
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 40, 20);
+    app.term_width = 120;
+
+    let line_idx = app.absolute_start(grp_idx);
+    let indent_len = (app.document_lines()[line_idx].len()
+        - app.document_lines()[line_idx].trim_start().len()) as u16;
+    let marker_col = indent_len + 1;
+
+    for _ in 0..2 {
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            app.handle_mouse(MouseEvent {
+                kind,
+                column: marker_col,
+                row: line_idx as u16,
+                modifiers: KeyModifiers::NONE,
+            });
+        }
+    }
+
+    assert!(
+        !app.folded.contains(&grp_idx),
+        "two clicks on the marker toggle twice, back to where they started"
+    );
+    assert!(
+        app.override_target.is_none(),
+        "the marker must not open the override selection pane"
+    );
+    assert!(
+        !app.manage_open,
+        "nor the manage pane — that is the body's double-click"
+    );
+}
+
 /// Spec 0147 G1: `main_area` excludes the main pane's own local
 /// statusline row, so a click on that row is not mistaken for a
 /// click on content row 0 — the cursor must not move.

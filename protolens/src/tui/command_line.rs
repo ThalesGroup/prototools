@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
+use super::key_dispatch::ctrl_or_alt;
 use super::*;
 
 /// `run_export`'s parsed `--binary`/`--prototext`/`--descriptor-binary`/
@@ -108,6 +109,39 @@ impl App {
         if !matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
             self.completion = None;
         }
+        // Spec 0235 S18: this line's entire `Control`/`Alt` character
+        // vocabulary, in one place, so that the plain `Char(c)` arm below
+        // — which carries no modifier condition of its own — cannot also
+        // answer for it (see `ctrl_or_alt`). Without it an unbound
+        // `Ctrl-u` typed a `u` into the pattern, and every future
+        // `Control`/`Alt` binding would have to be added defensively
+        // rather than usefully.
+        if matches!(key.code, KeyCode::Char(_)) && ctrl_or_alt(&key) {
+            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+            let alt = key.modifiers.contains(KeyModifiers::ALT);
+            match key.code {
+                // Emacs/readline-style char motion (vim's own command
+                // line supports these too), aliasing the plain arrow keys
+                // below; `Alt-f`/`Alt-b` are the word-wise pair, aliasing
+                // Alt-Left/Alt-Right.
+                KeyCode::Char('f') if ctrl => {
+                    let len = self.command_buffer_char_len();
+                    self.command_cursor = (self.command_cursor + 1).min(len);
+                }
+                KeyCode::Char('b') if ctrl => {
+                    self.command_cursor = self.command_cursor.saturating_sub(1)
+                }
+                KeyCode::Char('f') if alt => self.command_cursor = self.next_word_boundary(),
+                KeyCode::Char('b') if alt => self.command_cursor = self.prev_word_boundary(),
+                // Spec 0235 S17: the same two keys mean the same thing on
+                // both halves of the screen — spec 0208 S1 already binds
+                // them to `^`/`$` in the main pane.
+                KeyCode::Char('a') if ctrl => self.command_cursor = 0,
+                KeyCode::Char('e') if ctrl => self.command_cursor = self.command_buffer_char_len(),
+                _ => {}
+            }
+            return;
+        }
         match key.code {
             KeyCode::Tab if self.command_kind == CommandLineKind::Command => {
                 self.handle_tab_key(true)
@@ -174,27 +208,12 @@ impl App {
                 self.command_cursor = 0;
                 self.cancel_search();
             }
-            // Emacs/readline-style char motion (vim's own command-line mode
-            // supports these too): Ctrl-f/Ctrl-b as alternatives to the
-            // plain arrow keys below.
-            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let len = self.command_buffer_char_len();
-                self.command_cursor = (self.command_cursor + 1).min(len);
-            }
-            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.command_cursor = self.command_cursor.saturating_sub(1)
-            }
-            // Word motion: Alt-f/Alt-b and their Alt-Left/Alt-Right
-            // equivalents. Must precede the plain Left/Right arms below
-            // since match arms are checked in order.
-            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.command_cursor = self.next_word_boundary();
-            }
+            // Word motion: Alt-Left/Alt-Right, whose Alt-f/Alt-b aliases
+            // are in the Ctrl/Alt gate above. Must precede the plain
+            // Left/Right arms below since match arms are checked in
+            // order.
             KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
                 self.command_cursor = self.next_word_boundary();
-            }
-            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.command_cursor = self.prev_word_boundary();
             }
             KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
                 self.command_cursor = self.prev_word_boundary();
@@ -203,15 +222,6 @@ impl App {
             KeyCode::Right => {
                 let len = self.command_buffer_char_len();
                 self.command_cursor = (self.command_cursor + 1).min(len);
-            }
-            // Spec 0235 S17: the same two keys mean the same thing on
-            // both halves of the screen — spec 0208 S1 already binds
-            // them to `^`/`$` in the main pane.
-            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.command_cursor = 0
-            }
-            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.command_cursor = self.command_buffer_char_len()
             }
             KeyCode::Home => self.command_cursor = 0,
             KeyCode::End => self.command_cursor = self.command_buffer_char_len(),
@@ -236,12 +246,6 @@ impl App {
                     self.restart_search_sweep();
                 }
             }
-            // Spec 0235 S18: a `Ctrl-`modified character is ignored, not
-            // inserted. Without this every arm above has to be reached
-            // for the key to do no harm — an unbound `Ctrl-u` typed a
-            // `u` into the pattern — and every future `Ctrl-` binding
-            // would have to be added defensively rather than usefully.
-            KeyCode::Char(_) if key.modifiers.contains(KeyModifiers::CONTROL) => {}
             KeyCode::Char(c) => {
                 let byte_idx = self.char_byte_index(self.command_cursor);
                 if let Some(buf) = self.command_buffer.as_mut() {
