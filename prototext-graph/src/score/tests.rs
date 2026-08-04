@@ -120,18 +120,7 @@ fn make_merged() -> Merged {
 
 /// Build a graph binary in a tempdir and load it back.
 fn build_graph() -> score_load::LoadedGraph {
-    let merged = make_merged();
-    let (raw, reg) = graph::build(&merged);
-    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_, _| {});
-    let compiled = graph::compile(&raw, &reg, &partition, &merged.roots);
-
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("test.bin");
-    serial::write(&compiled, &path).expect("write graph");
-
-    // Keep tempdir alive by leaking it — fine for tests.
-    let _ = std::mem::ManuallyDrop::new(dir);
-    score_load::load_graph(&path).expect("load graph")
+    compile_and_load(&make_merged())
 }
 
 // ── Wire encoding helpers ─────────────────────────────────────────────────────
@@ -216,6 +205,7 @@ fn score_coefficients_rank_by_suspicion() {
             non_canonical: 0,
             mismatches: 0,
             vetoed: false,
+            termination: 0,
         };
         f(&mut s);
         s.score()
@@ -2187,4 +2177,287 @@ fn a_raised_cancel_flag_stops_the_walk() {
         stopped.iter().all(|r| r.matches == 0 && !r.vetoed),
         "the walk kept going past a raised cancel flag",
     );
+}
+
+// ── The SCAN policy (spec 0238 S9, S12-S16) ──────────────────────────────────
+
+/// Compile and load an arbitrary `Merged`, so a test can vary the schema
+/// rather than the payload.
+fn compile_and_load(merged: &Merged) -> score_load::LoadedGraph {
+    let (raw, reg) = graph::build(merged);
+    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_, _| {});
+    let compiled = graph::compile(&raw, &reg, &partition, &merged.roots);
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("test.bin");
+    serial::write(&compiled, &path).expect("write graph");
+
+    // Keep tempdir alive by leaking it — fine for tests.
+    let _ = std::mem::ManuallyDrop::new(dir);
+    score_load::load_graph(&path).expect("load graph")
+}
+
+fn scan_opts() -> walk::ScoringOpts {
+    walk::ScoringOpts {
+        policy: walk::Policy::Scan,
+        ..Default::default()
+    }
+}
+
+fn uint32(number: u32, label: FieldLabel) -> ScoringField {
+    ScoringField {
+        number,
+        kind: ScoringKind::Uint32,
+        child: None,
+        range: None,
+        label,
+    }
+}
+
+fn string(number: u32, label: FieldLabel) -> ScoringField {
+    ScoringField {
+        number,
+        kind: ScoringKind::LenString,
+        child: None,
+        range: None,
+        label,
+    }
+}
+
+/// A one-root schema, with `ext` as its extension ranges.
+fn scan_merged(fields: Vec<ScoringField>, ext: &[(u32, u32)]) -> Merged {
+    let mut states = std::collections::HashMap::new();
+    states.insert("Rec".to_string(), fields);
+    let mut ext_ranges = std::collections::HashMap::new();
+    if !ext.is_empty() {
+        ext_ranges.insert("Rec".to_string(), ext.to_vec());
+    }
+    Merged {
+        states,
+        node_kinds: std::collections::HashMap::new(),
+        roots: vec!["Rec".to_string()],
+        ext_ranges,
+        has_extension_ranges: true,
+    }
+}
+
+/// Test 7 (S9). Extension ranges are a precondition of `Scan`, not a
+/// modifier: a graph built without reproto's flag has an empty range set on
+/// *every* message, so honoring it silently would terminate on the first
+/// custom option of every descriptor and return plausible, wrong answers.
+#[test]
+#[should_panic(expected = "--emit-extension-ranges")]
+fn test_scan_requires_extension_ranges() {
+    // `build_graph`'s fixture leaves `has_extension_ranges` false.
+    let g = build_graph();
+    let _ = walk::score_all(&field_varint(1, 1), &g, &scan_opts());
+}
+
+/// Test 8 (S12 rule 2). A singular field cannot appear twice in one record,
+/// so its second appearance opens the next one. `required` terminates for the
+/// same reason `optional` does — the rule is about cardinality.
+#[test]
+fn test_scan_terminates_on_repeated_singular() {
+    for label in [FieldLabel::Optional, FieldLabel::Required] {
+        let g = compile_and_load(&scan_merged(
+            vec![string(1, label), uint32(2, FieldLabel::Repeated)],
+            &[],
+        ));
+
+        let mut pb = field_len(1, b"a"); // 0..3
+        pb.extend(field_varint(2, 7)); // 3..5
+        pb.extend(field_len(1, b"b")); // the next record starts here
+        pb.extend(field_varint(2, 9));
+
+        let r = score_entry_opts(&pb, &g, "Rec", &scan_opts());
+        assert_eq!(r.termination, 5, "{label:?}: wrong record boundary");
+        assert_eq!(r.matches, 2, "{label:?}: scored past the boundary");
+        assert_eq!(r.mismatches, 0, "{label:?}: the record is complete");
+
+        // Under `Score` the same bytes are one long instance of `Rec`: the
+        // second field 1 is a non-canonical duplicate, not a boundary.
+        let s = score_entry(&pb, &g, "Rec");
+        assert_eq!(s.termination, pb.len(), "{label:?}");
+        assert_eq!(s.matches, 4, "{label:?}");
+        assert_eq!(s.non_canonical, 1, "{label:?}");
+    }
+}
+
+/// Test 9 (S12 rule 1, S15). A state with an empty range set has declared
+/// itself closed, so an undeclared field number in it is a boundary — and the
+/// *same* field number becomes innocent once the message declares room for it.
+#[test]
+fn test_scan_terminates_on_closed_state_unknown() {
+    let mut pb = field_varint(1, 5); // 0..2
+    pb.extend(field_varint(9, 1)); // undeclared
+
+    let closed = compile_and_load(&scan_merged(vec![uint32(1, FieldLabel::Optional)], &[]));
+    let r = score_entry_opts(&pb, &closed, "Rec", &scan_opts());
+    assert_eq!(r.termination, 2, "a closed state must end at an unknown");
+    assert_eq!(r.matches, 1);
+    assert_eq!(r.unknowns, 0, "the field was never consumed");
+
+    let open = compile_and_load(&scan_merged(
+        vec![uint32(1, FieldLabel::Optional)],
+        &[(9, 9)],
+    ));
+    let r = score_entry_opts(&pb, &open, "Rec", &scan_opts());
+    assert_eq!(
+        r.termination,
+        pb.len(),
+        "a declared extension range must not end the record"
+    );
+    assert_eq!(r.matches, 1);
+    assert_eq!(
+        r.unknowns, 0,
+        "an extension is neither evidence for nor against (S15)"
+    );
+
+    // S15 is `Scan`-only: under `Score` an unknown is an unknown, whatever
+    // the graph declares.
+    assert_eq!(score_entry(&pb, &open, "Rec").unknowns, 1);
+}
+
+/// Test 10 (S13). The offset is the first byte of the terminating tag. A
+/// one-byte error here is invisible to every other test in this file and
+/// fatal to protoscan, so the terminating field is given a two-byte tag *and*
+/// a length prefix: reading `pos` after the verdict would report 4 or 5, not
+/// 2.
+#[test]
+fn test_scan_termination_offset_is_the_tag() {
+    let g = compile_and_load(&scan_merged(vec![uint32(1, FieldLabel::Optional)], &[]));
+
+    let mut pb = field_varint(1, 1); // 0..2
+    let terminator = field_len(1000, b"xyz"); // tag is 2 bytes, prefix 1 more
+    pb.extend(terminator.iter().copied());
+
+    let r = score_entry_opts(&pb, &g, "Rec", &scan_opts());
+    assert_eq!(r.termination, 2);
+    assert_eq!(
+        &pb[r.termination..r.termination + 2],
+        &tag(1000, 2)[..],
+        "the offset must land on the tag's first byte"
+    );
+}
+
+/// Test 11 (S13). Cardinality runs at the termination point, not at EOF: a
+/// `required` field that would have appeared after the boundary is genuinely
+/// absent from the record that ended.
+#[test]
+fn test_scan_cardinality_applied_at_termination() {
+    let g = compile_and_load(&scan_merged(
+        vec![
+            uint32(1, FieldLabel::Optional),
+            uint32(5, FieldLabel::Required),
+        ],
+        &[],
+    ));
+
+    let mut pb = field_varint(1, 1); // 0..2
+    pb.extend(field_varint(1, 2)); // the next record starts here
+    pb.extend(field_varint(5, 3)); // the required field, beyond the boundary
+
+    let r = score_entry_opts(&pb, &g, "Rec", &scan_opts());
+    assert_eq!(r.termination, 2);
+    assert_eq!(
+        r.mismatches, 1,
+        "the required field lies past the boundary, so the record lacks it"
+    );
+    assert_eq!(r.matches, 1);
+
+    // Deferring the pass to EOF would have found field 5 present and charged
+    // nothing — which is exactly what `Score` does, since it never stops.
+    let s = score_entry(&pb, &g, "Rec");
+    assert_eq!(s.mismatches, 0);
+    assert_eq!(s.matches, 3);
+}
+
+/// Test 12 (S13). Termination is recorded, not obeyed: two roots whose rules
+/// fire at different offsets are both scored correctly in a single pass. A
+/// walk that halted at the first termination would truncate the other root.
+#[test]
+fn test_scan_roots_terminate_independently() {
+    let mut states = std::collections::HashMap::new();
+    states.insert(
+        "RecA".to_string(),
+        vec![
+            uint32(1, FieldLabel::Optional),
+            uint32(2, FieldLabel::Optional),
+        ],
+    );
+    states.insert(
+        "RecB".to_string(),
+        vec![
+            uint32(1, FieldLabel::Optional),
+            uint32(2, FieldLabel::Repeated),
+        ],
+    );
+    let g = compile_and_load(&Merged {
+        states,
+        node_kinds: std::collections::HashMap::new(),
+        roots: vec!["RecA".to_string(), "RecB".to_string()],
+        ext_ranges: std::collections::HashMap::new(),
+        has_extension_ranges: true,
+    });
+
+    let mut pb = field_varint(1, 1); // 0..2
+    pb.extend(field_varint(2, 2)); // 2..4
+    pb.extend(field_varint(2, 3)); // 4..6 — a second singular 2 for RecA
+    pb.extend(field_varint(1, 4)); // 6..8 — a second singular 1 for RecB
+
+    let results = walk::score_all(&pb, &g, &scan_opts());
+    let a = results.iter().find(|r| r.fqdn == "RecA").expect("RecA");
+    let b = results.iter().find(|r| r.fqdn == "RecB").expect("RecB");
+
+    assert_eq!((a.termination, a.matches), (4, 2));
+    assert_eq!((b.termination, b.matches), (6, 3));
+}
+
+/// Test 13 (S12 rule 1, S15, S16). A custom option inside a declared range
+/// runs to the end, costs nothing, and — carrying bytes that are not valid
+/// UTF-8 — does not veto. The UTF-8 veto sits behind `is_string`, which an
+/// unknown field never reaches; this pins that, because S15 is the first
+/// change to make unknown-field handling policy-dependent.
+#[test]
+fn test_scan_does_not_terminate_on_custom_option() {
+    let g = compile_and_load(&scan_merged(
+        vec![string(1, FieldLabel::Optional)],
+        &[(1000, 536_870_911)],
+    ));
+
+    let mut pb = field_len(1, b"a");
+    pb.extend(field_len(1234, &[0xff, 0xfe]));
+
+    let r = score_entry_opts(&pb, &g, "Rec", &scan_opts());
+    assert!(!r.vetoed, "a custom option of unknown type must not veto");
+    assert_eq!(r.termination, pb.len());
+    assert_eq!(r.matches, 1);
+    assert_eq!(r.unknowns, 0);
+}
+
+/// Test 14 (G4). `Score` is untouched by any of the above, including on a
+/// graph that carries range data: `termination` is `pb.len()` and the
+/// counters are what they were before the policy existed.
+#[test]
+fn test_score_policy_output_unchanged() {
+    let g = compile_and_load(&scan_merged(
+        vec![
+            uint32(1, FieldLabel::Optional),
+            uint32(2, FieldLabel::Repeated),
+        ],
+        &[(1000, 2000)],
+    ));
+
+    let mut pb = field_varint(1, 1);
+    pb.extend(field_varint(2, 2));
+    pb.extend(field_varint(1, 3)); // would terminate under `Scan`
+    pb.extend(field_varint(1500, 4)); // in range, would be free under `Scan`
+    pb.extend(field_varint(9, 5)); // out of range, would terminate under `Scan`
+
+    let s = score_entry(&pb, &g, "Rec");
+    assert_eq!(s.termination, pb.len());
+    assert_eq!(s.matches, 3);
+    assert_eq!(s.unknowns, 2, "G4: an unknown is an unknown under `Score`");
+    assert_eq!(s.non_canonical, 1, "field 1 twice");
+    assert!(!s.vetoed);
 }

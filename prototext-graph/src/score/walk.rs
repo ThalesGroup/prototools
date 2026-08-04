@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use prototext_core::helpers::{payload_end, MAX_WIRE_DEPTH};
 use smallvec::SmallVec;
 
-use crate::build_scoring_graph::serial::{ArchivedCompiledGraph, ArchivedNodeEntry};
+use crate::build_scoring_graph::serial::{ArchivedCompiledGraph, ArchivedNodeEntry, NO_EXT_RANGES};
 
 // ── Wire-type constants (mirrors prototext-core/src/helpers/wire.rs) ──────────
 
@@ -69,6 +69,26 @@ pub struct EntryScore<'g> {
     /// never reaches here.
     pub mismatches: u64,
     pub vetoed: bool,
+    /// Byte offset at which this root stopped consuming (spec 0238 S14).
+    ///
+    /// Under [`Policy::Scan`] that is the termination offset — the first byte
+    /// of the tag this root could not carry — or `pb.len()` if the root
+    /// consumed the whole buffer. Under [`Policy::Score`] it is `pb.len()`
+    /// unconditionally, so every result is a `(score, termination)` pair and
+    /// no caller has to branch on the policy.
+    ///
+    /// A `usize` rather than an `Option<usize>`: termination fires *before* a
+    /// field is consumed, so a root cannot terminate at `pb.len()` —
+    /// "terminated at the end" and "ran to the end" are the same fact, and
+    /// there is no second state to encode. `Option<usize>` would also be 16
+    /// bytes to `usize`'s 8, which at 49 255 corpus roots is 400 KB of extra
+    /// result per `score_all` call.
+    ///
+    /// **Meaningless on a vetoed entry**, where it is `pb.len()` under both
+    /// policies: a veto fires part-way through a field already consumed, at
+    /// an offset that is not a record boundary and may lie past the true end
+    /// of the record.
+    pub termination: usize,
 }
 
 impl EntryScore<'_> {
@@ -96,6 +116,12 @@ impl EntryScore<'_> {
 #[derive(Clone, Copy)]
 enum Verdict {
     Unknown,
+    /// An undeclared field number that falls inside this state's declared
+    /// extension range set (spec 0238 S15). Produced only under
+    /// [`Policy::Scan`]. Scored exactly like `Unknown` except that it carries
+    /// no `unknowns` penalty: an extension's type is unknown, so it can be
+    /// neither validated nor held against the candidate.
+    Extension,
     Mismatch,
     Found(u32, u8), // (child_state_id, label)
     /// A LEN tag on a repeated scalar field: the packed encoding of the same
@@ -167,6 +193,7 @@ struct WalkState<'a, 'g> {
     /// If set, print a message to stderr whenever this FQDN is vetoed.
     debug_fqdn: Option<String>,
     expand_any: bool,
+    policy: Policy,
     /// See [`score_subset`]'s `cancel` parameter.
     cancel: Option<&'a AtomicBool>,
 }
@@ -186,6 +213,7 @@ impl<'a, 'g> WalkState<'a, 'g> {
             vetoed: vec![0u64; words],
             debug_fqdn: std::env::var("PROTOTEXT_DEBUG_FQDN").ok(),
             expand_any: opts.expand_any,
+            policy: opts.policy,
             cancel,
         }
     }
@@ -341,6 +369,19 @@ pub fn score_subset<'g>(
         graph.roots.len()
     );
 
+    // Spec 0238 S9: extension ranges are a *precondition* of `Scan`, not a
+    // modifier of it. `Scan` is strict — an empty range set means the message
+    // permits no extension and an undeclared field ends the record — and a
+    // graph built without reproto's flag has an empty set on every message.
+    // Honoring that silently would terminate on the first custom option of
+    // every descriptor and return plausible, wrong boundaries, so missing data
+    // has to fail loudly rather than be read as an answer.
+    assert!(
+        opts.policy != Policy::Scan || graph.has_extension_ranges,
+        "Policy::Scan needs a graph built with extension ranges; rebuild the \
+         schema database with reproto's --emit-extension-ranges"
+    );
+
     let mut scores: Vec<EntryScore<'g>> = roots
         .iter()
         .map(|&r| EntryScore {
@@ -351,6 +392,9 @@ pub fn score_subset<'g>(
             non_canonical: 0,
             mismatches: 0,
             vetoed: false,
+            // Overwritten only by an S12 termination, so "ran to the end" is
+            // the value a root keeps by not stopping.
+            termination: pb.len(),
         })
         .collect();
 
@@ -658,6 +702,30 @@ fn find_node(graph: &ArchivedCompiledGraph, state_id: u32) -> Option<&ArchivedNo
     n.get(start).filter(|e| e.state_id.to_native() == state_id)
 }
 
+/// True iff `state_id` declares an extension range containing `field_number`
+/// (spec 0238 S12 rule 1, S15).
+///
+/// False for a state that declares none: `NO_EXT_RANGES` is what a *closed*
+/// message says, and a closed message admits no unknown field at all.
+fn in_ext_range(graph: &ArchivedCompiledGraph, state_id: u32, field_number: u32) -> bool {
+    let Some(node) = find_node(graph, state_id) else {
+        return false;
+    };
+    let idx = node.ext_range_idx.to_native();
+    if idx == NO_EXT_RANGES {
+        return false;
+    }
+    let set = &graph.ext_range_sets[idx as usize];
+    let start = set.offset.to_native() as usize;
+    let end = start + set.len.to_native() as usize;
+    // Canonical sets are ascending, disjoint and non-adjacent (spec 0238 S3),
+    // so a linear scan could stop early — but a set holds a handful of ranges
+    // (three, on googleapis), and the branch to stop costs more than the loop.
+    graph.ext_ranges[start..end]
+        .iter()
+        .any(|r| r.0.to_native() <= field_number && field_number <= r.1.to_native())
+}
+
 /// True iff `state_id` has at least one outgoing transition, i.e. is a
 /// message/group state rather than a leaf (string/bytes) state.
 fn state_has_transitions(graph: &ArchivedCompiledGraph, state_id: u32) -> bool {
@@ -863,6 +931,41 @@ fn apply_cardinality_multi(
     }
 }
 
+/// True iff `tag` is the first field of the *next* record for this entry —
+/// i.e. the record `ae` has been reading ends here (spec 0238 S12).
+///
+/// Evaluated per `ActiveEntry`, so per depth-0 *state* rather than per root:
+/// entries sharing a state share their declared fields, their range set and
+/// their occurrence counts, and so necessarily terminate together.
+fn scan_terminates(graph: &ArchivedCompiledGraph, ae: &ActiveEntry, tag: &TagResult) -> bool {
+    // A field number of 0 or >= 2^29 is undeclarable and unrangeable — no
+    // extension clause can reach it — so rule 1 fires without a lookup.
+    if tag.out_of_range {
+        return true;
+    }
+    let field_number = tag.field_number as u32;
+    match find_transition(graph, ae.state_id, field_number) {
+        // Rule 1. Strict by construction: a state with an empty range set has
+        // declared itself closed, and an undeclared field number in a closed
+        // state is a boundary.
+        None => !in_ext_range(graph, ae.state_id, field_number),
+        // Rule 2. A singular field cannot appear twice in one record, so its
+        // second appearance belongs to the next one. This is what makes a
+        // `FileDescriptorSet` legible: the outer record header is a second
+        // field 1. `required` terminates for the same reason `optional` does
+        // — the rule is about cardinality, and a repeated `required` is a
+        // repeated singular. (Under `Score` it stays a `mismatches`
+        // candidate; nothing here changes that.)
+        Some(tr) => {
+            tr.label != LABEL_REPEATED
+                && ae
+                    .occurrences
+                    .binary_search_by_key(&field_number, |&(f, _)| f)
+                    .is_ok()
+        }
+    }
+}
+
 // ── Any expansion helpers (spec 0089 §8) ──────────────────────────────────────
 
 /// Block ID 0 is permanently reserved for `google.protobuf.Any` (spec 0089 §9).
@@ -1034,6 +1137,13 @@ fn score_message_multi(
 
         // ── Parse wire tag ────────────────────────────────────────────────────
 
+        // Saved before the tag is decoded because this — not `pos` — is what
+        // an S12 termination reports (spec 0238 S13). By the time the verdicts
+        // below are known, `pos` has advanced past the tag and any length
+        // prefix, so reading it at the termination point yields a boundary
+        // several bytes late.
+        let tag_start = pos;
+
         let tag = parse_wiretag(buf, pos);
         if tag.garbage.is_some() {
             veto_all(&mut active, ws, "garbage wire tag");
@@ -1042,6 +1152,39 @@ fn score_message_multi(
         let field_number = tag.field_number;
         let wire_type = tag.wire_type;
         pos = tag.next_pos;
+
+        // ── SCAN termination (spec 0238 S12-S13) ──────────────────────────────
+        //
+        // Ahead of every penalty and every verdict, because a terminated entry
+        // must not be charged for the tag that ended it: at this instant both
+        // its score and its occurrences describe exactly the record that
+        // ended, and so nothing has to be rolled back.
+        //
+        // Termination is recorded, not obeyed by the *walk*: roots terminate
+        // at different offsets — each has its own singular fields and its own
+        // extension ranges — so a walk that halted at the first one would
+        // truncate every other root's score. One pass, N independent offsets.
+        if ws.policy == Policy::Scan && depth == 0 {
+            for ae in active.iter_mut() {
+                if !scan_terminates(ws.graph, ae, &tag) {
+                    continue;
+                }
+                // At the termination point, not at EOF: a `required` field
+                // that would have appeared after the boundary is genuinely
+                // absent from the record that ended, and deferring this pass
+                // would instead judge it against occurrences polluted by the
+                // record that follows.
+                apply_cardinality_multi(ws.graph, ae, ws.scores);
+                for &e in &ae.entries {
+                    ws.scores[e as usize].termination = tag_start;
+                }
+                ae.entries.clear();
+            }
+            active.retain(|ae| !ae.entries.is_empty());
+            if active.is_empty() {
+                return tag_start;
+            }
+        }
 
         // ── Wire-level non-canonical penalties (all active entries) ───────────
 
@@ -1075,7 +1218,21 @@ fn score_message_multi(
                 Verdict::Unknown
             } else {
                 match find_transition(ws.graph, ae.state_id, field_number as u32) {
-                    None => Verdict::Unknown,
+                    None => {
+                        // Spec 0238 S15: an unknown field the message has
+                        // declared room for is neither evidence for nor
+                        // against — its type is unknown, so it cannot be
+                        // validated. Read only under `Scan`; under `Score` an
+                        // unknown is an unknown even on a graph that carries
+                        // range data.
+                        if ws.policy == Policy::Scan
+                            && in_ext_range(ws.graph, ae.state_id, field_number as u32)
+                        {
+                            Verdict::Extension
+                        } else {
+                            Verdict::Unknown
+                        }
+                    }
                     Some(tr) => {
                         let expected_wt = node_wire_type(ws.graph, tr.child_state_id) as u32;
                         if wire_type == expected_wt {
@@ -1164,6 +1321,9 @@ fn score_message_multi(
                         // wire-format-derived state is the shape of flaws C1
                         // through C4, and an unreachable-but-inert arm costs
                         // nothing.
+                        // Spec 0238 S15: an extension is read like an unknown
+                        // but costs nothing, so there is nothing to do.
+                        Verdict::Extension => {}
                         Verdict::Mismatch | Verdict::FoundPacked(_, _) => {}
                     }
                 }
@@ -1189,6 +1349,9 @@ fn score_message_multi(
                                 ws.scores[e as usize].matches += 1;
                             }
                         }
+                        // Spec 0238 S15: an extension is read like an unknown
+                        // but costs nothing, so there is nothing to do.
+                        Verdict::Extension => {}
                         Verdict::Mismatch | Verdict::FoundPacked(_, _) => {}
                     }
                 }
@@ -1337,6 +1500,11 @@ fn score_message_multi(
                                 }
                             }
                         }
+                        // Spec 0238 S15: an extension is read like an unknown
+                        // but costs nothing, so there is nothing to do. Not
+                        // recursed into either — its type is unknown, so
+                        // there is no state to recurse *with*.
+                        Verdict::Extension => {}
                         Verdict::Mismatch => {}
                     }
                 }
@@ -1418,6 +1586,13 @@ fn score_message_multi(
                                 stay_out_entries.push(e);
                             }
                         }
+                        // Spec 0238 S15: stays out of the group like an
+                        // `Unknown`, but is not pushed to `stay_out_entries`
+                        // — that list exists only to charge the unknowns.
+                        // The entry still advances to the group's end below,
+                        // which `parse_group_blind` supplies when no entry
+                        // recursed.
+                        Verdict::Extension => {}
                         Verdict::Mismatch | Verdict::FoundPacked(_, _) => {} // already vetoed above
                     }
                 }
@@ -1467,7 +1642,7 @@ fn score_message_multi(
                         None => {
                             // stay_out entries also can't parse it — veto them too.
                             for ae in active.iter_mut() {
-                                if matches!(ae.verdict, Verdict::Unknown) {
+                                if matches!(ae.verdict, Verdict::Unknown | Verdict::Extension) {
                                     for &e in &ae.entries {
                                         ws.set_vetoed(e, || {
                                             "malformed group (blind fallback)".to_string()
@@ -1538,6 +1713,9 @@ fn score_message_multi(
                                 ws.scores[e as usize].matches += 1;
                             }
                         }
+                        // Spec 0238 S15: an extension is read like an unknown
+                        // but costs nothing, so there is nothing to do.
+                        Verdict::Extension => {}
                         Verdict::Mismatch | Verdict::FoundPacked(_, _) => {}
                     }
                 }
@@ -1567,6 +1745,7 @@ mod set_vetoed_tests {
             vetoed: vec![0u64; words],
             debug_fqdn,
             expand_any: true,
+            policy: Policy::Score,
             cancel: None,
         }
     }
@@ -1613,6 +1792,7 @@ mod set_vetoed_tests {
             non_canonical: 0,
             mismatches: 0,
             vetoed: false,
+            termination: 0,
         }
     }
 

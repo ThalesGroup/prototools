@@ -574,6 +574,31 @@ type.
 *Checkpoint:* unit tests 7-14 below; then test 16 — all 7 771 FDPs in
 `googleapis.desc` terminate exactly at their record boundary.
 
+*Measured 2026-08-04.* Test 16 is **exact: 7 771 of 7 771**, none vetoed,
+none off by a byte. Each FDP payload was scored under `Scan` from its own
+start to the *end of the whole 25.6 MB buffer* — the walk is given no
+length prefix and no hint of where to stop — and every one of them
+reported its own record's length. The rule that fires is S12 rule 2: an
+FDP declares `name` singular, so the next `file` entry's field-1 tag is
+the boundary. The 7 771 records also tile the buffer exactly, which is
+the same fact said twice and worth saying: no gaps, no overlaps.
+
+The `Score` path is byte-for-byte what it was at step 5. A digest over
+`(fqdn, matches, unknowns, out_of_range, non_canonical, mismatches,
+vetoed)` for all 18 470 625 scored rows of the 375-blob corpus is
+`15ba501096a664a1` both before and after this step, compared against a
+build of the step-5 commit in a scratch worktree. `termination` was
+`pb.len()` on every one of those rows, so S14's "no caller branches on
+the policy" is a measured claim rather than a design intention.
+
+One deviation from the test plan: **item 14 is a unit test, not a corpus
+baseline.** It asserts the `Score` counters and `termination == pb.len()`
+against a graph that *does* carry range data — which is the part a
+regression would break — while the corpus half of the same guarantee is
+the digest above. Recording a 18 M-row baseline in the repo to assert
+what a 16-hex-digit comparison already asserts would be storage for its
+own sake.
+
 **Step 7 — protoscan switches over.** Separate work (N5).
 *Checkpoint:* protoscan's output on `googleapis.desc` diffs clean
 against step 0's oracle: 7 771 identical names in identical order.
