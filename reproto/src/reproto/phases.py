@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.resources
 import itertools
+from collections.abc import Callable
 from typing import Any
 import logging
 import sys
@@ -1540,46 +1541,8 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
                 ctx.schema_db_fdps.append(slot.out)
                 ctx.schema_db_fdp_origins.append(extra_node.name)
 
-    # ── 2. Collect per-file scoring-graph YAML strings (mirrors _phase_emit_scoring_graphs)
-    #
-    # Node/child names are rewritten through _canonical_scoring_name so
-    # hopcroft.rkyv's names stay in lockstep with .desc's own rewritten
-    # names (spec 0159, spec 0166 G1).  Pruning lookups (ctx.nodes.get)
-    # and node_kind's group_fqdns membership check stay keyed on the
-    # original (pre-rewrite) FQDN, unaffected.
-
-    def _collect(desc: Any, messages: dict, group_fqdns: 'set[str]', entries: list[str]) -> None:
-        msg_node = ctx.nodes.get(Fqdn(f'desc:.{desc.full_name}'))
-        if msg_node is not None and msg_node.is_pruned:
-            return
-        fields_out = []
-        # See the sibling `_collect` in `_phase_emit_scoring_graphs` for why
-        # extensions (except on message_set_wire_format types) are included
-        # here alongside the message's own declared fields (2026-07-25 fix).
-        known_fields = list(desc.fields_by_number.values())
-        if not desc.GetOptions().message_set_wire_format:
-            known_fields += list(ctx.pool.FindAllExtensions(desc))
-        for f in sorted(known_fields, key=lambda f: f.number):
-            field_node = ctx.nodes.get(Fqdn(f'fdsc:.{f.full_name}'))
-            if field_node is not None and field_node.is_pruned:
-                continue
-            type_str, child, range_ = _scoring_kind(f)
-            entry: dict = {'number': f.number, 'type': type_str}
-            if child is not None:
-                entry['child'] = _canonical_scoring_name(ctx, child)
-            if range_ is not None:
-                entry['range'] = list(range_)
-            label = _field_label(f)
-            if label != 'optional':
-                entry['label'] = label
-            fields_out.append(entry)
-        node_kind = 'GROUP' if desc.full_name in group_fqdns else 'LENDEL'
-        canonical_name = _canonical_scoring_name(ctx, desc.full_name)
-        _synthesize_message_set_item(desc, messages, fields_out, canonical_name)
-        messages[canonical_name] = {'kind': node_kind, 'fields': fields_out}
-        entries.append(canonical_name)
-        for nested in desc.nested_types:
-            _collect(nested, messages, group_fqdns, entries)
+    # ── 2. Collect per-file scoring-graph YAML strings (shares the collector
+    #      with _phase_emit_scoring_graphs; see _collect_scoring_messages)
 
     scoring_graphs: list[str] = []
 
@@ -1599,7 +1562,10 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
             messages: dict = {}
             entries: list[str] = []
             for msg_desc in fd.message_types_by_name.values():
-                _collect(msg_desc, messages, group_fqdns, entries)
+                _collect_scoring_messages(
+                    ctx, msg_desc, messages, group_fqdns, entries,
+                    lambda n: _canonical_scoring_name(ctx, n),
+                )
             entries.sort()
 
             scoring_graphs.append(
@@ -1789,8 +1755,7 @@ def _collect_group_fqdns(fd: Any) -> 'set[str]':
 
 
 def _synthesize_message_set_item(
-    desc: Any, messages: dict, fields_out: list,
-    canonical_full_name: 'str | None' = None,
+    desc: Any, messages: dict, fields_out: list, full_name: str,
 ) -> None:
     """Synthesize the protocol-fixed `Item` group for a MessageSet type (spec 0108).
 
@@ -1802,16 +1767,13 @@ def _synthesize_message_set_item(
     unknowns, and lets custom-named MessageSet types be recognized
     structurally (no FQDN heuristic needed).
 
-    canonical_full_name, when given, is used in place of desc.full_name to
-    build the synthesized Item's FQDN, so it lands in the same (possibly
-    variant-namespace-rewritten) namespace as the rest of the node's own
-    entry (spec 0166).  Defaults to desc.full_name, preserving
-    _phase_emit_scoring_graphs's existing (unrewritten) call site.
+    full_name is the caller's already-renamed name for desc, used to build the
+    synthesized Item's FQDN so that it lands in the same (possibly
+    variant-namespace-rewritten) namespace as the node's own entry (spec 0166).
     """
     if not desc.GetOptions().message_set_wire_format or fields_out:
         return
-    base_name = canonical_full_name if canonical_full_name is not None else desc.full_name
-    item_fqdn = f'{base_name}.Item'
+    item_fqdn = f'{full_name}.Item'
     messages[item_fqdn] = {
         'kind': 'GROUP',
         'fields': [
@@ -1882,47 +1844,72 @@ def _scoring_kind(field: Any) -> 'tuple[str, str | None, tuple[int, int] | None]
     raise ValueError(f'Unknown field type: {TYPE}')
 
 
+def _collect_scoring_messages(
+    ctx: 'Context',
+    desc: Any,
+    messages: dict,
+    group_fqdns: 'set[str]',
+    entries: list[str],
+    rename: 'Callable[[str], str]',
+) -> None:
+    """Collect `desc` and its nested types into a scoring-graph YAML mapping.
+
+    Shared by `_phase_emit_scoring_graphs` and `_phase_build_schema_db`, which
+    differ only in `rename` — applied to every *emitted* name.  The emit path
+    passes the identity; the schema-db path passes `_canonical_scoring_name`,
+    so that `hopcroft.rkyv`'s names stay in lockstep with `.desc`'s own
+    rewritten names (spec 0159, spec 0166 G1).
+
+    Renaming is confined to emitted names deliberately: the pruning lookups
+    (`ctx.nodes.get`) and `node_kind`'s `group_fqdns` membership test stay
+    keyed on the original, pre-rewrite FQDN.
+
+    Known transitions include both the message's own declared fields and every
+    extension targeting it elsewhere (`extend desc { ... }`, e.g. FieldOptions
+    extensions) — the compiled scoring graph must recognize extension field
+    numbers as matches, not as unknowns (2026-07-25 fix).  MessageSet
+    extensions are the one exception: `message_set_wire_format` messages never
+    carry their extensions' own field numbers on the wire (everything is
+    wrapped in the synthesized `Item` group), so including them here would
+    wrongly claim those field numbers as direct transitions.
+    """
+    msg_node = ctx.nodes.get(Fqdn(f'desc:.{desc.full_name}'))
+    if msg_node is not None and msg_node.is_pruned:
+        return
+    fields_out: list[dict] = []
+    known_fields = list(desc.fields_by_number.values())
+    if not desc.GetOptions().message_set_wire_format:
+        known_fields += list(ctx.pool.FindAllExtensions(desc))
+    for f in sorted(known_fields, key=lambda f: f.number):
+        field_node = ctx.nodes.get(Fqdn(f'fdsc:.{f.full_name}'))
+        if field_node is not None and field_node.is_pruned:
+            continue
+        type_str, child, range_ = _scoring_kind(f)
+        entry: dict = {'number': f.number, 'type': type_str}
+        if child is not None:
+            entry['child'] = rename(child)
+        if range_ is not None:
+            entry['range'] = list(range_)
+        label = _field_label(f)
+        if label != 'optional':
+            entry['label'] = label
+        fields_out.append(entry)
+    name = rename(desc.full_name)
+    # Must precede `messages[name]`: `yaml.dump(sort_keys=False)` makes the
+    # insertion order of `messages` the emitted order.
+    _synthesize_message_set_item(desc, messages, fields_out, name)
+    messages[name] = {
+        'kind': 'GROUP' if desc.full_name in group_fqdns else 'LENDEL',
+        'fields': fields_out,
+    }
+    entries.append(name)
+    for nested in desc.nested_types:
+        _collect_scoring_messages(ctx, nested, messages, group_fqdns, entries, rename)
+
+
 def _phase_emit_scoring_graphs(ctx: 'Context', out_dir: Path) -> None:
     """Emit one scoring-graph YAML file per FileDescriptorProto (spec 0045)."""
     import yaml
-
-    def _collect(desc: Any, messages: dict, group_fqdns: 'set[str]', entries: list[str]) -> None:
-        msg_node = ctx.nodes.get(Fqdn(f'desc:.{desc.full_name}'))
-        if msg_node is not None and msg_node.is_pruned:
-            return
-        fields_out = []
-        # Known transitions include both the message's own declared fields
-        # and every extension targeting it elsewhere (`extend desc { ... }`,
-        # e.g. FieldOptions extensions) — the compiled scoring graph must
-        # recognize extension field numbers as matches, not as unknowns
-        # (2026-07-25 fix). MessageSet extensions are the one exception:
-        # message_set_wire_format messages never carry their extensions'
-        # own field numbers on the wire (everything is wrapped in the
-        # synthesized `Item` group below), so including them here would
-        # wrongly claim those field numbers as direct transitions.
-        known_fields = list(desc.fields_by_number.values())
-        if not desc.GetOptions().message_set_wire_format:
-            known_fields += list(ctx.pool.FindAllExtensions(desc))
-        for f in sorted(known_fields, key=lambda f: f.number):
-            field_node = ctx.nodes.get(Fqdn(f'fdsc:.{f.full_name}'))
-            if field_node is not None and field_node.is_pruned:
-                continue
-            type_str, child, range_ = _scoring_kind(f)
-            entry: dict = {'number': f.number, 'type': type_str}
-            if child is not None:
-                entry['child'] = child
-            if range_ is not None:
-                entry['range'] = list(range_)
-            label = _field_label(f)
-            if label != 'optional':
-                entry['label'] = label
-            fields_out.append(entry)
-        _synthesize_message_set_item(desc, messages, fields_out)
-        node_kind = 'GROUP' if desc.full_name in group_fqdns else 'LENDEL'
-        messages[desc.full_name] = {'kind': node_kind, 'fields': fields_out}
-        entries.append(desc.full_name)
-        for nested in desc.nested_types:
-            _collect(nested, messages, group_fqdns, entries)
 
     from .mappings import canonize_dependency
     for re_file in ctx.nodes.values():
@@ -1950,7 +1937,10 @@ def _phase_emit_scoring_graphs(ctx: 'Context', out_dir: Path) -> None:
         messages: dict = {}
         entries: list[str] = []
         for msg_desc in fd.message_types_by_name.values():
-            _collect(msg_desc, messages, group_fqdns, entries)
+            # Identity rename: this path emits unrewritten FQDNs.
+            _collect_scoring_messages(
+                ctx, msg_desc, messages, group_fqdns, entries, lambda n: n,
+            )
         entries.sort()
 
         yaml_path = out_dir / Path(canonical_name).with_suffix('.yaml')
