@@ -164,13 +164,12 @@ pub fn merge_from_strings(scoring_graphs: &[String]) -> Result<Merged, Box<dyn s
                     }
                 }
                 std::collections::hash_map::Entry::Occupied(existing) => {
-                    // Spec 0238 S4: extensibility is part of what makes two
-                    // definitions of one FQDN the same definition. Comparing
-                    // only the fields would silently keep the first and drop a
-                    // genuine disagreement about which unknown numbers are legal.
-                    let ranges_differ = ext_ranges.get(&fqdn).map(Vec::as_slice).unwrap_or(&[])
-                        != msg_ext_ranges.as_slice();
-                    if *existing.get() != fields || ranges_differ {
+                    if definitions_conflict(
+                        existing.get(),
+                        ext_ranges.get(&fqdn).map(Vec::as_slice).unwrap_or(&[]),
+                        &fields,
+                        &msg_ext_ranges,
+                    ) {
                         eprintln!(
                             "warning: conflicting definitions for '{fqdn}' in scoring_graph[{i}]; using first",
                         );
@@ -189,6 +188,25 @@ pub fn merge_from_strings(scoring_graphs: &[String]) -> Result<Merged, Box<dyn s
         // merge has recorded nothing.
         has_extension_ranges: has_extension_ranges && !scoring_graphs.is_empty(),
     })
+}
+
+/// Whether a second definition of one FQDN disagrees with the first
+/// (spec 0238 S4).
+///
+/// Extensibility is part of what makes two definitions *the same* definition.
+/// Comparing only the fields would keep the first silently and drop a genuine
+/// disagreement about which unknown field numbers are legal there.
+///
+/// A closed message and one declaring no ranges are the same message, so the
+/// caller passes `&[]` for both — the "absent key" and "empty vector" spellings
+/// of closedness must not read as a conflict.
+fn definitions_conflict(
+    first_fields: &[ScoringField],
+    first_ranges: &[(u32, u32)],
+    second_fields: &[ScoringField],
+    second_ranges: &[(u32, u32)],
+) -> bool {
+    first_fields != second_fields || first_ranges != second_ranges
 }
 
 /// Validate that `ranges` is in the canonical form reproto promises
@@ -363,6 +381,31 @@ mod tests {
     fn the_marker_is_false_over_zero_files() {
         let m = merge_from_strings(&[]).unwrap();
         assert!(!m.has_extension_ranges);
+    }
+
+    #[test]
+    fn message_equality_distinguishes_ext_ranges() {
+        // Spec 0238 S4. Two definitions of one FQDN that agree on every field
+        // but disagree on extensibility are *not* the same definition: they
+        // disagree about which unknown field numbers are legal, which is the
+        // whole of what `Policy::Scan` reads.
+        let m = merge_from_strings(&[one_file(true, "")]).unwrap();
+        let f = m.states["A"].as_slice();
+
+        let open: &[(u32, u32)] = &[(1000, 2999)];
+        let closed: &[(u32, u32)] = &[];
+
+        assert!(!definitions_conflict(f, closed, f, closed));
+        assert!(!definitions_conflict(f, open, f, open));
+
+        assert!(definitions_conflict(f, closed, f, open));
+        assert!(definitions_conflict(f, open, f, closed));
+        assert!(definitions_conflict(f, open, f, &[(1000, 3999)]));
+
+        // The fields half of the predicate still bites.
+        let mut other = m.states["A"].clone();
+        other[0].number = 2;
+        assert!(definitions_conflict(f, open, &other, open));
     }
 
     #[test]
