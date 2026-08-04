@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use super::hopcroft::Partition;
 use super::load::{FieldLabel, Merged, NodeKind, ScoringField, ScoringKind};
 use super::serial::CompiledGraph;
-use super::serial::{NodeEntry, RootEntry, TransitionEntry};
+use super::serial::{NodeEntry, RootEntry, TransitionEntry, NO_EXT_RANGES};
 
 // ── Leaf sentinel node IDs ────────────────────────────────────────────────────
 //
@@ -345,6 +345,7 @@ pub fn compile(
             wire_type,
             is_string,
             range_idx,
+            ext_range_idx: NO_EXT_RANGES,
         })
         .collect();
     nodes.sort_by_key(|n| n.state_id);
@@ -371,6 +372,9 @@ pub fn compile(
         roots: root_entries,
         ranges: reg.ranges.clone(),
         num_states: partition.num_blocks() as u32,
+        ext_ranges: Vec::new(),
+        ext_range_sets: Vec::new(),
+        has_extension_ranges: false,
     }
 }
 
@@ -413,6 +417,7 @@ pub fn compile_initial(raw: &RawGraph, reg: &LeafRegistry, roots: &[String]) -> 
             wire_type: wt,
             is_string: false,
             range_idx: 0xFFFF,
+            ext_range_idx: NO_EXT_RANGES,
         });
     }
 
@@ -425,6 +430,7 @@ pub fn compile_initial(raw: &RawGraph, reg: &LeafRegistry, roots: &[String]) -> 
             wire_type: attrs.wire_type,
             is_string: attrs.is_string,
             range_idx: attrs.range_idx,
+            ext_range_idx: NO_EXT_RANGES,
         });
     }
     nodes.sort_by_key(|n| n.state_id);
@@ -447,6 +453,9 @@ pub fn compile_initial(raw: &RawGraph, reg: &LeafRegistry, roots: &[String]) -> 
         roots: root_entries,
         ranges: reg.ranges.clone(),
         num_states,
+        ext_ranges: Vec::new(),
+        ext_range_sets: Vec::new(),
+        has_extension_ranges: false,
     }
 }
 

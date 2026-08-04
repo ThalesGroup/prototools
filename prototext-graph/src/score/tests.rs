@@ -1666,7 +1666,7 @@ fn truncated_negative_enum_still_costs_exactly_one_penalty() {
 fn graph_with_out_of_range_root_offset_is_rejected() {
     let mut header = Vec::new();
     header.extend_from_slice(b"PTSGRAPH");
-    header.extend_from_slice(&2u32.to_le_bytes()); // version
+    header.extend_from_slice(&serial::GRAPH_VERSION.to_le_bytes());
     header.extend_from_slice(&0u32.to_le_bytes()); // reserved
     header.extend_from_slice(&u64::MAX.to_le_bytes()); // root_offset
     header.extend_from_slice(&[0u8; 32]); // some payload to map
@@ -1682,6 +1682,39 @@ fn graph_with_out_of_range_root_offset_is_rejected() {
     assert!(
         err.contains(&u64::MAX.to_string()),
         "load error should name the offending offset: {err}"
+    );
+}
+
+/// Spec 0238 S10/N4: a scoring-graph database is a build artifact, so an
+/// older version is rejected with a rebuild instruction rather than read
+/// through a compatibility shim. The v2 → v3 bump added
+/// `NodeEntry.ext_range_idx`, which changes the archived layout — reading a
+/// v2 file with a v3 reader would silently misinterpret every node.
+#[test]
+fn graph_with_older_version_is_rejected_with_a_rebuild_instruction() {
+    let mut header = Vec::new();
+    header.extend_from_slice(b"PTSGRAPH");
+    header.extend_from_slice(&(serial::GRAPH_VERSION - 1).to_le_bytes());
+    header.extend_from_slice(&0u32.to_le_bytes()); // reserved
+    header.extend_from_slice(&24u64.to_le_bytes()); // root_offset
+    header.extend_from_slice(&[0u8; 32]); // some payload to map
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("old-version.bin");
+    std::fs::write(&path, &header).expect("write graph");
+
+    let err = score_load::load_graph(&path)
+        .err()
+        .expect("an older graph version must not load")
+        .to_string();
+    assert!(
+        err.contains(&(serial::GRAPH_VERSION - 1).to_string())
+            && err.contains(&serial::GRAPH_VERSION.to_string()),
+        "load error should name both the file's version and this build's: {err}"
+    );
+    assert!(
+        err.contains("--schema-db-out"),
+        "load error should tell the operator how to rebuild: {err}"
     );
 }
 

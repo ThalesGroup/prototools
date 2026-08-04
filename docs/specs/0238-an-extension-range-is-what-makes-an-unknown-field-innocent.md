@@ -468,6 +468,13 @@ step 1. This deliberately isolates the format change from any
 semantics — so **record the `hopcroft.rkyv` size delta here**, where it
 is attributable to `NodeEntry`'s padding (S5) and nothing else.
 
+*Measured 2026-08-04.* googleapis `hopcroft.rkyv` 4 791 276 →
+4 858 080 bytes, **+66 804 (+1.39%)**, which is 4 bytes × 16 701 nodes
+to within the three new (empty) vector headers — exactly the padding S5
+predicts and nothing else. `prototext list-schemas` over the corpus's
+375 instances is byte-identical across 2 903 922 lines of output
+against the pre-change binary reading the pre-change v2 database.
+
 **Step 3 — reproto emits ranges under the flag (S2-S4).**
 *Checkpoint:* with the flag off, YAML and `hopcroft.rkyv` byte-identical
 to step 2; with the flag on, a `descriptor.proto`-only db carries

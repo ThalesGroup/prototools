@@ -9,7 +9,7 @@ use std::path::Path;
 use memmap2::Mmap;
 use rkyv::{access, api::access_unchecked, util::AlignedVec};
 
-use crate::build_scoring_graph::serial::ArchivedCompiledGraph;
+use crate::build_scoring_graph::serial::{ArchivedCompiledGraph, GRAPH_VERSION};
 
 const MAGIC: &[u8; 8] = b"PTSGRAPH";
 
@@ -56,8 +56,13 @@ fn check_header(bytes: &[u8], label: &str) -> Result<usize, Box<dyn std::error::
         return Err(format!("{label}: bad magic").into());
     }
     let version = u32::from_le_bytes(bytes[8..12].try_into()?);
-    if version != 2 {
-        return Err(format!("{label}: unsupported version {version}").into());
+    if version != GRAPH_VERSION {
+        return Err(format!(
+            "{label}: unsupported scoring-graph version {version} \
+             (this build reads version {GRAPH_VERSION}); rebuild the schema \
+             database with reproto --schema-db-out"
+        )
+        .into());
     }
     let root_offset = u64::from_le_bytes(bytes[16..24].try_into()?) as usize;
     // Spec 0172 S4: `root_offset` is attacker-controlled. Unvalidated, it

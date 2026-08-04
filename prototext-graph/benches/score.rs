@@ -80,7 +80,7 @@ fn synthetic_yaml(n: usize) -> String {
 fn build_graph(n: usize) -> LoadedGraph {
     let compiled = build_compiled(&[synthetic_yaml(n)]).expect("build synthetic graph");
     let mut bytes = Vec::from(*b"PTSGRAPH");
-    bytes.extend_from_slice(&2u32.to_le_bytes()); // version
+    bytes.extend_from_slice(&serial::GRAPH_VERSION.to_le_bytes());
     bytes.extend_from_slice(&0u32.to_le_bytes()); // reserved
     bytes.extend_from_slice(&24u64.to_le_bytes()); // root offset
     bytes.extend_from_slice(&serial::to_bytes(&compiled).expect("serialize"));
