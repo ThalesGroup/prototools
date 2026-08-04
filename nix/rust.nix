@@ -266,6 +266,11 @@ let
         -e 's|words\[COMP_CWORD\]="$2"|local _cur="''${COMP_LINE:0:''${COMP_POINT}}"; _cur="''${_cur##* }"; words[COMP_CWORD]="''${_cur}"|') \
       --zsh  <(PROTOLENS_COMPLETE=zsh  $out/bin/protolens) \
       --fish <(PROTOLENS_COMPLETE=fish $out/bin/protolens)
+
+    # Generate and install man page (spec 0228 S11). Before wrapProgram,
+    # so the generator runs the real binary rather than the wrapper.
+    PROTOLENS_GEN_MAN=$out/share/man/man1 $out/bin/protolens
+
     # `v`'s Neovim handoff (spec 0144 G5/G6) is a mandatory runtime
     # dependency, not merely a dev-shell convenience — bundle a pinned
     # Neovim and `buf` (for `buf lsp serve`) onto PATH so they resolve

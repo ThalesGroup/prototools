@@ -14,7 +14,8 @@
 #             The shellHook is structured as named Bash functions called in
 #             order, each printing a one-line recap:
 #
-#               _hook_env        — exports NIXSHELL_REPO, PYO3_PYTHON, PATH, PYTHONPATH
+#               _hook_env        — exports NIXSHELL_REPO, PROTOTEXT_DESCRIPTOR_SET,
+#                                  PYO3_PYTHON, PATH, PYTHONPATH
 #               _hook_python     — writes python.env, pyrightconfig.json, ruff.toml
 #               _hook_protos     — compiles fixture .pb descriptors (guarded)
 #               _hook_codegen    — runs patch_reproto.sh (guarded)
@@ -44,6 +45,7 @@
 , treeSitterTextproto
 , treeSitterTextprotoRustLib
 , protoscan
+, wktDb             # well-known-types schema DB; carries the PROTOTEXT_DESCRIPTOR_SET setup-hook
 , buf               # narrow-pinned buf (newer than the main nixpkgs pin's 1.59.0; see default.nix)
 }:
 
@@ -54,14 +56,17 @@
   user-shell = pkgs.mkShell {
     name = "prototools-user";
 
-    buildInputs = [ prototext protolens reproto protoscan ];
+    # wktDb contributes no binary — nix-shell sources each build input's
+    # setup-hook, and its is what exports PROTOTEXT_DESCRIPTOR_SET
+    # (spec 0228 S5), so no shellHook line is needed for it.
+    buildInputs = [ prototext protolens reproto protoscan wktDb ];
 
     shellHook = ''
       old_opts=$(set +o)
       set -euo pipefail
 
       export NIXSHELL_REPO="${repoRoot}"
-      export MANPATH="${prototext}/share/man:${reproto}/share/man:${protoscan}/share/man:''${MANPATH:-}"
+      export MANPATH="${prototext}/share/man:${protolens}/share/man:${reproto}/share/man:${protoscan}/share/man:''${MANPATH:-}"
       source ${prototext}/share/bash-completion/completions/prototext.bash
       source ${protolens}/share/bash-completion/completions/protolens.bash
       source ${reproto}/share/bash-completion/completions/reproto.bash
@@ -116,10 +121,17 @@
       # ── Named hook functions ───────────────────────────────────────────────
 
       _hook_env() {
-        echo "[hook] env: NIXSHELL_REPO, PYO3_PYTHON, PATH, PYTHONPATH"
+        echo "[hook] env: NIXSHELL_REPO, PROTOTEXT_DESCRIPTOR_SET, PYO3_PYTHON, PATH, PYTHONPATH"
         # Detected by ~/.claude/hooks/claude-hook-post-edit-lint to confirm
         # that the active nix-shell belongs to this repo.
         export NIXSHELL_REPO="${repoRoot}"
+
+        # The toolset builds its binaries from source here, so wktDb is not
+        # a build input and its setup-hook never fires (spec 0228 S6).
+        # Export the same value explicitly, so `nix-shell` and
+        # `nix-shell dev-shell.nix` agree.
+        export PROTOTEXT_DESCRIPTOR_SET="${wktDb}/share/prototools/wkt.desc"
+
         export PYO3_PYTHON="${pythonExecutable}"
         export PATH="${repoRoot}/bin:${pythonBin}/bin:${repoRoot}/target/release:$PATH"
         export PYTHONPATH="$PWD/reproto/src:$PWD/protoscan/src:${treeSitterTextproto}:${pythonPkgs.makePythonPath reprotoTestDeps}:$PYTHONPATH"
@@ -294,6 +306,9 @@ components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
         mkdir -p man/man1
         if command -v prototext-gen-man &>/dev/null; then
           prototext-gen-man man/man1
+        fi
+        if command -v protolens &>/dev/null; then
+          PROTOLENS_GEN_MAN=man/man1 protolens
         fi
         if python3 -c "import reproto.gen_man" 2>/dev/null; then
           python3 -m reproto.gen_man man/man1

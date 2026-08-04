@@ -9,6 +9,7 @@ mod complete;
 mod decode;
 mod export_descriptor;
 mod extract;
+mod man;
 mod override_pane;
 mod provenance;
 mod render_cache;
@@ -306,6 +307,10 @@ fn main() -> ExitCode {
     CompleteEnv::with_factory(Cli::command)
         .var("PROTOLENS_COMPLETE")
         .complete();
+
+    // Man page generation — same model, and before parsing for the same
+    // reason: `blob` is a required positional (spec 0228 S10).
+    man::generate_and_exit_if_requested(Cli::command());
 
     let cli = Cli::parse();
 

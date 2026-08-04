@@ -51,6 +51,20 @@ fn schema_path(schema_rel: &str) -> PathBuf {
     repo_root().join(schema_rel)
 }
 
+/// A `Command` for the `prototext` binary with the descriptor-set
+/// environment variables removed (spec 0228 S8).
+///
+/// The dev-shell exports `PROTOTEXT_DESCRIPTOR_SET`, and `nix-build` does
+/// not. Every test here passes `--descriptor-set` explicitly or means to
+/// exercise the built-in fallback, so an inherited value would silently
+/// make the two environments test different things.
+fn prototext_cmd() -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_prototext"));
+    cmd.env_remove("PROTOTEXT_DESCRIPTOR_SET")
+        .env_remove("PROTOTEXT_DEFAULT_DESCRIPTOR");
+    cmd
+}
+
 /// Run `prototext --descriptor-set <schema> decode --type <message>` on binary
 /// input, then `prototext encode` on the text output.
 /// Returns (text, re-encoded binary).
@@ -60,9 +74,7 @@ fn cli_roundtrip(
     message: &str,
     annotations: bool,
 ) -> (Vec<u8>, Vec<u8>) {
-    let bin = env!("CARGO_BIN_EXE_prototext");
-
-    let mut decode_cmd = Command::new(bin);
+    let mut decode_cmd = prototext_cmd();
     decode_cmd
         .arg("--descriptor-set")
         .arg(schema_path)
@@ -86,7 +98,7 @@ fn cli_roundtrip(
     );
     let text = decode_out.stdout;
 
-    let encode_out = Command::new(bin)
+    let encode_out = prototext_cmd()
         .arg("encode")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -207,9 +219,8 @@ fn unknown_len_decoded_as_nested_message() {
 /// full dump of every message name in the pool.
 #[test]
 fn decode_type_typo_suggests_closest_match() {
-    let bin = env!("CARGO_BIN_EXE_prototext");
     let sp = schema_path("fixtures/schemas/knife.pb");
-    let out = Command::new(bin)
+    let out = prototext_cmd()
         .arg("--descriptor-set")
         .arg(&sp)
         .arg("decode")
@@ -250,8 +261,6 @@ fn decode_type_typo_suggests_closest_match() {
 #[test]
 #[cfg(feature = "wkt-db")]
 fn score_still_honors_no_expand_any() {
-    let bin = env!("CARGO_BIN_EXE_prototext");
-
     #[rustfmt::skip]
     let payload: &[u8] = &[
         0x0a, 0x01, b'x',                       // Option.name = "x"
@@ -267,7 +276,7 @@ fn score_still_honors_no_expand_any() {
     ];
 
     let score = |extra: &[&str]| -> String {
-        let out = Command::new(bin)
+        let out = prototext_cmd()
             .args([
                 "score",
                 "--type",
@@ -311,7 +320,6 @@ fn score_still_honors_no_expand_any() {
 fn fixture_no_panic_no_annotations() {
     let mut ran = 0;
     let mut skipped = 0;
-    let bin = env!("CARGO_BIN_EXE_prototext");
 
     for &(name, func) in craft_a::ALL_FIXTURES {
         let Some((schema_rel, message)) = index_schema(name) else {
@@ -322,7 +330,7 @@ fn fixture_no_panic_no_annotations() {
 
         let wire = func();
         let sp = schema_path(&schema_rel);
-        let out = Command::new(bin)
+        let out = prototext_cmd()
             .arg("--descriptor-set")
             .arg(&sp)
             .arg("decode")

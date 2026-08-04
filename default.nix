@@ -345,18 +345,55 @@ let
 
     # Build the Hopcroft scoring graph from the WKT descriptor.
     # reproto -I takes a directory of .pb files; DESCRIPTOR_FILES are positional.
-    # --schema-db-out writes schemas.desc and schemas/hopcroft.rkyv.
+    # --schema-db-out writes wkt-db.desc and wkt-db/{hopcroft,index}.rkyv.
     # We copy hopcroft.rkyv to $out/wkt.rkyv for the build.rs fast-path.
     # --emit-extension-ranges is required, not optional: protoscan scores
     # descriptors under Policy::Scan against this graph, and that policy
     # asserts the graph carries range data (spec 0238 S9, spec 0239 S2).
+    #
+    # -O writes the decompiled .proto sources into the stub's `proto`
+    # child (spec 0228 S2), which is the one path reproto allows inside
+    # the reserved stub directory and exactly where protolens's
+    # --proto-root falls back to (spec 0155 G2). Emitting it here rather
+    # than in a second derivation keeps the sources, the .desc and the
+    # .rkyv the Rust fast path is built against from ever drifting apart.
+    #
+    # The stub is `wkt-db`, not `wkt`: $out/wkt.desc is already the raw
+    # protoc output above, and -I hands reproto that whole directory.
     python -m reproto.cli \
-      --schema-db-out="$out/schemas.desc" \
+      --schema-db-out="$out/wkt-db.desc" \
       --emit-extension-ranges \
       -I "$out" \
+      -O "$out/wkt-db/proto" \
       wkt.desc
-    cp "$out/schemas/hopcroft.rkyv" "$out/wkt.rkyv"
-    cp "$out/schemas/index.rkyv"    "$out/wkt_index.rkyv"
+    cp "$out/wkt-db/hopcroft.rkyv" "$out/wkt.rkyv"
+    cp "$out/wkt-db/index.rkyv"    "$out/wkt_index.rkyv"
+  '';
+
+  # ---------------------------------------------------------------------------
+  # wktDb — the well-known types as the toolset's default descriptor set
+  # (spec 0228). Carries wktRkyv's schema-DB output under its user-facing
+  # names, plus the setup-hook that exports PROTOTEXT_DESCRIPTOR_SET.
+  #
+  # The layout is load-bearing, not decorative: every consumer derives its
+  # sidecars from the descriptor path with the extension stripped, so this
+  # one variable delivers scoring (hopcroft.rkyv), lazy type lookup
+  # (index.rkyv) and protolens's jump-to-definition (proto/) at once.
+  #
+  # A derivation of its own, rather than the hook on wktRkyv: wktRkyv is a
+  # build input of prototext (full), so its setup-hook would fire inside
+  # that build — and inside the Python test derivations below it — which is
+  # exactly the leak spec 0228 S8 exists to prevent.
+  # ---------------------------------------------------------------------------
+  wktDb = pkgs.runCommand "wkt-db" { } ''
+    set -euo pipefail
+    install -Dm444 ${wktRkyv}/wkt-db.desc "$out/share/prototools/wkt.desc"
+    cp -r ${wktRkyv}/wkt-db "$out/share/prototools/wkt"
+    chmod -R u+w "$out/share/prototools/wkt"
+
+    mkdir -p "$out/nix-support"
+    echo "export PROTOTEXT_DESCRIPTOR_SET=$out/share/prototools/wkt.desc" \
+      > "$out/nix-support/setup-hook"
   '';
 
   shells = import ./nix/shells.nix {
@@ -364,16 +401,21 @@ let
             treeSitterTextprotoRustLib buf;
     inherit (rust) prototext protolens;
     inherit (python) reprotoSrc reprotoBare reprotoTestDeps reproto protoscan;
+    inherit wktDb;
     repoRoot    = toString ./.;
     rustcVersion = pkgs.rustc.unwrapped.version;
   };
 
   # ---------------------------------------------------------------------------
   # Convenience bundle: prototext + protolens + reproto + protoscan
+  #
+  # wktDb contributes no binary — it is here for its setup-hook, which
+  # exports PROTOTEXT_DESCRIPTOR_SET (spec 0228 S4). It is the only path
+  # with one, so the join has no conflict to resolve.
   # ---------------------------------------------------------------------------
   prototools = pkgs.symlinkJoin {
     name   = "prototools";
-    paths  = [ rust.prototext rust.protolens python.reproto python.protoscan ];
+    paths  = [ rust.prototext rust.protolens python.reproto python.protoscan wktDb ];
   };
 
   # ---------------------------------------------------------------------------
@@ -392,6 +434,7 @@ let
     python.reprotoTests python.protoscanTests python.fdpScanTests python.prototextCodecTests
     python.pythonLint python.pythonRuff
     treeSitterTextprotoHighlightTest
+    wktDb
   ];
 
   # ci-no-clippy — same as ci but without rustClippy.
@@ -404,6 +447,7 @@ let
     python.reprotoTests python.protoscanTests python.fdpScanTests python.prototextCodecTests
     python.pythonLint python.pythonRuff
     treeSitterTextprotoHighlightTest
+    wktDb
   ];
 
   full-tests = pkgs.linkFarmFromDrvs "full-tests" [
@@ -439,6 +483,7 @@ in
   custom-tests         = python.customTests;
   user-shell           = shells.user-shell;
   dev-shell            = shells.dev-shell;
+  wkt-db               = wktDb;
   protoscan            = python.protoscan;
   fdp-scan-lib         = rust.fdpScanLib;
   prototext-graph-lib  = rust.prototextGraphLib;

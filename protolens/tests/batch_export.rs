@@ -33,6 +33,12 @@ fn bin() -> &'static str {
 fn run(args: &[&str]) -> Output {
     Command::new(bin())
         .args(args)
+        // Spec 0228 S8: the dev-shell exports PROTOTEXT_DESCRIPTOR_SET
+        // (and honors the deprecated alias), while nix-build does not.
+        // Without clearing both, the same test would resolve a different
+        // descriptor set in the two environments.
+        .env_remove("PROTOTEXT_DESCRIPTOR_SET")
+        .env_remove("PROTOTEXT_DEFAULT_DESCRIPTOR")
         .output()
         .expect("failed to spawn protolens")
 }

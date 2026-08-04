@@ -14,6 +14,19 @@ import pytest
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def no_ambient_descriptor_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hide the toolset's default descriptor set from every test.
+
+    The dev-shell exports PROTOTEXT_DESCRIPTOR_SET (spec 0228 S6) and
+    nix-build does not, so a test that read it would behave differently in
+    the two environments.  No test relies on the fallback today; this is
+    here so that none acquires the dependency by accident.
+    """
+    for var in ("PROTOTEXT_DESCRIPTOR_SET", "PROTOTEXT_DEFAULT_DESCRIPTOR"):
+        monkeypatch.delenv(var, raising=False)
+
+
 def pytest_configure(config: pytest.Config) -> None:
     """Configure pytest with custom markers."""
     config.addinivalue_line(
