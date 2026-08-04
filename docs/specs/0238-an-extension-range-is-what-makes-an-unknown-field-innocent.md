@@ -481,12 +481,25 @@ Each step is separately committable and separately revertible. Steps 1,
 their checkpoints meaningful: any diff at those points is a bug, not a
 judgement call.
 
-**Step 0 — precondition, not part of this spec.** Land the
-one-condition boundary fix in `fdp-scan-pyo3/src/lib.rs` described in
+**Step 0 — optional, and not part of this spec.** Land the one-condition
+boundary fix in `fdp-scan-pyo3/src/lib.rs` described in
 `docs/protoscan/scan.md` §1.3. It takes `googleapis.desc` from 1
-candidate to 7 771 and becomes the **oracle** step 7 diffs against.
+candidate to 7 771.
 *Checkpoint:* the seven existing inline unit tests still pass; 7 771
 distinct names extracted.
+
+*Amended 2026-08-04 — this step is no longer a precondition.* It was
+listed as one because step 7 diffed against it; step 7 now uses step 6's
+length-prefix ground truth, which is independent of both stop rules
+rather than a second opinion from the same family of guess.
+
+What step 0 fixes is real — the shipped `protoscan` 0.2.1 returns one
+name where it should return 7 771, and returns it *silently*, because
+field 1 is singular and protobuf's last-wins rule overwrites `name`
+7 770 times without error. But the fix lands in `walk_protobuf_fields`
+and `looks_like_fdp_start`, both of which **step 7 deletes**. So it is
+scaffolding: worth landing to cut a corrected release before step 7, and
+worth skipping entirely if step 7 is the next thing done.
 
 **Step 1 — factorize the emitters (S1).**
 *Checkpoint:* reproto suite green; scoring-graph YAML byte-identical on
@@ -599,9 +612,27 @@ the digest above. Recording a 18 M-row baseline in the repo to assert
 what a 16-hex-digit comparison already asserts would be storage for its
 own sake.
 
-**Step 7 — protoscan switches over.** Separate work (N5).
-*Checkpoint:* protoscan's output on `googleapis.desc` diffs clean
-against step 0's oracle: 7 771 identical names in identical order.
+**Step 7 — protoscan switches over.** Separate work (N5). Also carries
+`--emit-extension-ranges` into `default.nix`'s `wktRkyv` derivation and
+regenerates `prototext/wkt/prebuilt/*.rkyv`, without which `Policy::Scan`
+against the embedded WKT graph trips the S9 assert.
+*Checkpoint:* protoscan's output on `googleapis.desc` is 7 771 names
+matching **step 6's boundaries**, in order.
+
+*Amended 2026-08-04.* This checkpoint originally diffed against step 0's
+oracle. That is the weaker of the two available, for a reason worth
+stating: step 0's stop rule is *this spec's* S12 rule 2 restricted to
+field 1 and written by hand, so diffing against it confirms only that the
+schema-derived rule reduces to the hand-written one on this input. S12 is
+strictly stronger — every singular field (1, 2, 8, 9, 12, 14), plus
+undeclared numbers, plus `out_of_range` — but on `googleapis.desc` every
+record opens with field 1, so the extra strength never fires and the two
+agree by construction. It is a regression check dressed as a validation.
+
+Step 6's measurement is genuine ground truth instead: `googleapis.desc`
+is a real `FileDescriptorSet`, so the true boundaries are read off the
+*length prefixes*, with no heuristic on either side of the comparison.
+That oracle is independent of both rules and is already in hand.
 
 ## Alternatives considered
 
