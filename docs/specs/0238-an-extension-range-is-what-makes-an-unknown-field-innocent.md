@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0238 — an extension range is what makes an unknown field innocent
 
-Status: draft
+Status: implemented
+Implemented in: 2026-08-04
 App: reproto | prototext-graph | protoscan
 Refs: docs/protoscan/scan.md (the protoscan investigation this comes
         from: why the current scanner fails on a FileDescriptorSet, and
@@ -618,6 +619,10 @@ regenerates `prototext/wkt/prebuilt/*.rkyv`, without which `Policy::Scan`
 against the embedded WKT graph trips the S9 assert.
 *Checkpoint:* protoscan's output on `googleapis.desc` is 7 771 names
 matching **step 6's boundaries**, in order.
+
+Landed as spec 0239, 2026-08-04. The checkpoint is met exactly: 7 771
+candidates, 7 771 distinct names, every `(start, end)` equal to the
+length-prefix boundary.
 
 *Amended 2026-08-04.* This checkpoint originally diffed against step 0's
 oracle. That is the weaker of the two available, for a reason worth

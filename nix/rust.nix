@@ -48,6 +48,31 @@ let
   # sandbox can compile prototext_codec_lib without a separate dep cache.
   workspaceArgs = "--no-default-features --workspace";
 
+  # Same, plus prototext's `prebuilt-wkt`, for every workspace-wide build that
+  # runs at or before the bootstrap.
+  #
+  # fdp_scan_lib embeds prototext's WKT scoring graph (spec 0239 S1), so it
+  # depends on prototext with default features, and Cargo unifies `wkt-db`
+  # on for the whole `--workspace` build. prototext's build.rs then wants a
+  # graph, and without WKT_RKYV it tries to generate one by running reproto.
+  #
+  # rustTests cannot have that graph, because it is upstream of it:
+  #
+  #   wktRkyv → reprotoSrcFull → reprotoBare → prototextGraphLib → rustTests
+  #
+  # (reproto --schema-db-out imports prototext_graph_lib to write hopcroft
+  # .rkyv; see nix/python.nix.) Handing rustTests a WKT_RKYV would close that
+  # loop. prototextBare, rustClippy and protolens are not in the loop, but
+  # pointing them at wktRkyv would serialize behind the bootstrap what runs
+  # in parallel with it today.
+  #
+  # `prebuilt-wkt` sidesteps both with the copy committed to git under
+  # prototext/wkt/prebuilt/, which is what nixpkgs already builds against.
+  # None of these four ships a graph — they consume it as a compile-time
+  # blob and throw it away. The one stage that ships one is _fdpScanLibExt,
+  # and that one gets the freshly generated graph.
+  bootstrapArgs = "${workspaceArgs} --features prebuilt-wkt";
+
   # ---------------------------------------------------------------------------
   # Base argument sets — hierarchic composition.
   #
@@ -114,7 +139,7 @@ let
     src                  = workspaceSrc;
     pname                = "prototools-clippy";
     cargoArtifacts       = depsCache;
-    cargoExtraArgs       = workspaceArgs;
+    cargoExtraArgs       = bootstrapArgs;
     cargoClippyExtraArgs = "-- -D warnings";
   });
 
@@ -125,7 +150,7 @@ let
     src            = workspaceSrc;
     pname          = "prototools-tests";
     cargoArtifacts = depsCache;
-    cargoExtraArgs = workspaceArgs;
+    cargoExtraArgs = bootstrapArgs;
   });
 
   # Common postInstall for both prototext variants.
@@ -181,7 +206,7 @@ let
     doInstallCargoArtifacts          = true;
     postInstall                      = prototextPostInstall;
     meta                             = prototextMeta;
-    buildPhaseCargoCommand           = "cargoWithProfile build ${workspaceArgs}";
+    buildPhaseCargoCommand           = "cargoWithProfile build ${bootstrapArgs}";
     doNotPostBuildInstallCargoBinaries = true;
     installPhaseCommand              = ''
       mkdir -p $out/bin
@@ -272,7 +297,7 @@ let
     doInstallCargoArtifacts            = true;
     postInstall                        = protolensPostInstall;
     meta                               = protolensMeta;
-    buildPhaseCargoCommand             = "cargoWithProfile build ${workspaceArgs}";
+    buildPhaseCargoCommand             = "cargoWithProfile build ${bootstrapArgs}";
     doNotPostBuildInstallCargoBinaries = true;
     installPhaseCommand                = ''
       mkdir -p $out/bin
@@ -306,13 +331,16 @@ let
   #                  [project] name), e.g. "prototext_codec" (from pyproject.toml)
   #   postBuildBin — name of the stub-generator binary target, e.g.
   #                  "prototext_post_build" (may differ from crateName)
+  #   extraAttrs   — merged into the Crane derivation; used to hand
+  #                  fdp_scan_lib the WKT graph it embeds (see _fdpScanLibExt)
   #
   # Returns: an attrset { pkg, artifacts } where:
   #   pkg       — the installable buildPythonPackage derivation
   #   artifacts — store path to the $out/artifacts directory of the Crane build
   #               (exposes the .so and .pyi for use by pyright/pythonLint)
   # ---------------------------------------------------------------------------
-  makePyo3Extension = { crateName, crateDir, pyDir, libName, pyiName, postBuildBin }:
+  makePyo3Extension = { crateName, crateDir, pyDir, libName, pyiName, postBuildBin
+                      , extraAttrs ? {} }:
     let
       # libExt is resolved at Nix eval time to a literal string "so" or
       # "dylib" — it looks like a bash assignment but is a Nix interpolation.
@@ -350,7 +378,7 @@ let
           # Rename <pyiName>.pyi → <libName>.pyi to match Python import name.
           cp ${crateDirName}/${pyiName}.pyi $out/artifacts/${libName}.pyi
         '';
-      });
+      } // extraAttrs);
       pkg = pythonPkgs.buildPythonPackage {
         pname     = crateName;
         version   = "0.1.0";
@@ -385,7 +413,20 @@ let
     libName      = "fdp_scan_lib";
     pyiName      = "fdp_scan";
     postBuildBin = "fdp_scan_post_build";
-    # no internal workspace deps
+    # This is the one stage that *ships* a WKT graph: fdp_scan_lib embeds
+    # prototext's for protoscan's Policy::Scan walk (spec 0239 S1). It gets
+    # the freshly generated one, not the git-committed prebuilt the
+    # bootstrap builds against, so that a wkt/SOURCES edit cannot leave
+    # protoscan scoring against a stale schema.
+    #
+    # Deliberate cost: this stage builds with prototext's default features
+    # (wkt-db, no prebuilt-wkt), which does not match bootstrapArgs, so
+    # prototext recompiles here — measured ~29 s wall, in a leaf derivation
+    # Nix runs in parallel with the other two extensions.
+    extraAttrs = {
+      WKT_RKYV  = "${wktRkyv}/wkt.rkyv";
+      WKT_INDEX = "${wktRkyv}/wkt_index.rkyv";
+    };
   };
 
   _prototextGraphLibExt = makePyo3Extension {

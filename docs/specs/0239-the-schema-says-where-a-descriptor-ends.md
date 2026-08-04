@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0239 — the schema says where a descriptor ends
 
-Status: draft
+Status: implemented
+Implemented in: 2026-08-04
 App: protoscan | fdp-scan-pyo3 | prototext
 Refs: docs/specs/0238-….md (the `SCAN` policy, `EntryScore.termination`
         and the extension-range precondition this consumes);
@@ -117,6 +118,46 @@ spends that.
   Note `wktRkyv` is a `let`-bound variable, not an exported attribute:
   `nix-build -A wktRkyv` fails. Regenerate per
   `prototext/wkt/prebuilt/README.md`.
+
+- **S2b.** Making `fdp_scan_lib` depend on `prototext` is a
+  *workspace-wide* change, because six Nix derivations build
+  `--no-default-features --workspace` and Cargo unifies features across
+  the whole workspace. `prototext/wkt-db` therefore turns on everywhere,
+  and `prototext/build.rs` starts wanting a graph in derivations that
+  cannot have one. `cargo` in the dev-shell stays green throughout — the
+  shell already has a graph — so this is only visible under `nix-build`.
+
+  Two things it must not do:
+
+  - `rustTests` can never be handed `WKT_RKYV`. It is *upstream* of the
+    graph: `wktRkyv → reprotoSrcFull → reprotoBare → prototextGraphLib →
+    rustTests`, because `reproto --schema-db-out` imports
+    `prototext_graph_lib`.
+  - `python.reprotoTestDeps` can never contain `fdpScanLib` once
+    `fdpScanLib` depends on `wktRkyv` — that is an eval-time infinite
+    recursion. `wktRkyvDeps` (`nix/python.nix`) is the narrowed set;
+    reproto never imports `fdp_scan_lib`.
+
+  So `rustClippy`, `rustTests`, `prototextBare` and `protolens` build
+  with `bootstrapArgs` = `workspaceArgs` + `--features prebuilt-wkt`,
+  taking the git-committed graph. None of them ships one. This costs no
+  extra compilation: they already compile the whole workspace, and
+  neither feature enables an external-dep feature, so `depsCache` is
+  untouched. It does require `./prototext/wkt` in `workspaceSrc` —
+  `fixtureFilter` admits no `.rkyv`.
+
+  `_fdpScanLibExt` is the one stage that *ships* a graph, so it alone
+  gets `WKT_RKYV`/`WKT_INDEX` from `wktRkyv`, via a new `extraAttrs`
+  parameter on `makePyo3Extension`. Its feature set then differs from
+  `rustTests`, so `prototext` recompiles there — measured 29 s wall in a
+  leaf derivation Nix runs in parallel with the other two extensions.
+  Chosen deliberately over the free option of `--features
+  prebuilt-wkt` here too: a stale committed graph would show up as a
+  scan result quietly missing, and the time lost investigating that
+  once exceeds 29 s per build.
+
+  The build system this fights with is not otherwise in scope; see spec
+  0240.
 
 ### The scan
 
@@ -250,12 +291,38 @@ Rejected by S1 — it is now a duplicate of the WKT graph.
 3. `test_garbage_name_ending_in_proto_rejected`,
    `test_simple_garbage_name_rejected` — the surviving start-rule tests
    from `lib.rs`, unchanged (N1).
-4. `test_accept_rule_is_size_independent` — a small FDP (score in the
-   tens) and a large one (score in the six figures) are both accepted,
-   pinning that no threshold crept back in.
+4. `test_accept_rule_is_size_independent` — a small FDP and a large one
+   are both accepted, pinning that no threshold crept back in.
 5. `test_scan_needs_extension_ranges` — the S9 assert fires with a
    graph built without the flag, naming `--emit-extension-ranges` (S2).
 
+Tests 1 and 2 need a corpus that is not in `workspaceSrc`, so they are
+`#[ignore]`d and read `PROTOSCAN_CORPUS_DESC`. Test 5 already exists as
+0238's test 7 (`prototext-graph/src/score/tests.rs`); nothing to add.
+
 ## Measured outcome
 
-Filled in at implementation.
+Implemented 2026-08-04. On
+`/nix/store/…-googleapis-db/googleapis.desc` (25 660 332 bytes):
+
+| | before | after |
+|---|---|---|
+| candidates | 1 | **7 771** |
+| distinct names recovered | 1 | **7 771** |
+| boundaries matching the framing | 0 | **7 771 / 7 771** |
+
+First candidate `(3, 294)` — the 291-byte record 0238 measured, found
+with the whole 25.6 MB handed to the walk. Last ends exactly at the
+buffer end. `scan()` costs 0.57 s over the corpus, wall clock, through
+the Python extension.
+
+`libfdp_scan_lib.so` grows 630 104 → 696 656 bytes (+10.6%) for the
+`prototext` + `prototext-graph` dependency; the linker drops most of
+what those crates pull in.
+
+`prototext/wkt/prebuilt/wkt.rkyv` grows 7 520 → 7 568 bytes (+48) under
+S2 — three interned range sets, the same three googleapis interns.
+`wkt_index.rkyv` is byte-identical.
+
+`scan()`'s signature is unchanged, so `fdp_scan.pyi` is untouched and
+`fdp-scan-pyo3/tests/test_scan.py` passes as written.

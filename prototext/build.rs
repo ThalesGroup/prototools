@@ -140,6 +140,12 @@ fn build_wkt_graph(out_dir: &str, manifest_dir: &str) {
         let reproto_bin = std::env::var("REPROTO_BIN").unwrap_or_else(|_| "reproto".to_string());
         let status = Command::new(&reproto_bin)
             .arg(format!("--build-schema-db={schemas_desc}"))
+            // Required, not optional: protoscan scores descriptors under
+            // Policy::Scan against this graph, and that policy asserts the
+            // graph carries range data (spec 0238 S9, spec 0239 S2). The
+            // other two producers of this artifact — default.nix's wktRkyv
+            // derivation and wkt/prebuilt/ — must agree.
+            .arg("--emit-extension-ranges")
             .arg(format!("-O{out_dir}/reproto-out"))
             .arg(format!("-I{out_dir}"))
             .arg("wkt.desc")

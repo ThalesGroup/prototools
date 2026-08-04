@@ -10,6 +10,33 @@ use pyo3::Bound;
 // Stub-generation helpers
 use pyo3_stub_gen::derive::gen_stub_pyfunction;
 
+use std::sync::OnceLock;
+
+use prototext_graph::score::load::LoadedGraph;
+use prototext_graph::score::{score_one, Policy, ScoringOpts};
+
+/// The only root a candidate is scored against (spec 0239 G3).
+///
+/// One root, not two. `SCAN` against `FileDescriptorProto` alone already
+/// refuses to swallow a whole `FileDescriptorSet` — `name` is singular, so
+/// the next `file` entry's field-1 tag terminates the walk — which is what
+/// makes the boundary correct. Adding `FileDescriptorSet` would only let the
+/// scanner *classify* its input, which is a different tool, and a root list
+/// admitting exactly one exception is not a root list.
+const FDP: &str = "google.protobuf.FileDescriptorProto";
+
+/// `prototext`'s embedded WKT graph, parsed once.
+///
+/// It carries `descriptor.proto`, and reproto registers every message it
+/// compiles as a root, so `FDP` is reachable by construction.
+fn wkt_graph() -> &'static LoadedGraph {
+    static GRAPH: OnceLock<LoadedGraph> = OnceLock::new();
+    GRAPH.get_or_init(|| {
+        LoadedGraph::from_static_bytes(prototext::WKT_GRAPH)
+            .expect("the embedded WKT graph must load; it is built by prototext's build.rs")
+    })
+}
+
 // ── scan ─────────────────────────────────────────────────────────────────────
 
 /// Scan a binary buffer for FileDescriptorProto candidates.
@@ -107,7 +134,7 @@ fn walk_candidates(data: &[u8]) -> Vec<(usize, usize)> {
 
                 if let Ok(name_str) = std::str::from_utf8(&data[name_start..name_end]) {
                     if name_str.len() <= MAX_PROTO_NAME_LEN && is_plausible_path(name_str) {
-                        if let Some(fdp_end) = walk_protobuf_fields(data, offset) {
+                        if let Some(fdp_end) = score_candidate(data, offset) {
                             result.push((offset, fdp_end));
                             offset = fdp_end;
                             continue;
@@ -122,73 +149,35 @@ fn walk_candidates(data: &[u8]) -> Vec<(usize, usize)> {
     result
 }
 
-/// Returns true if `data[pos..]` looks like the start of a new FDP —
-/// i.e. 0x0a (field 1, wire type 2) followed by a varint length followed
-/// by a string ending in ".proto".  Mirrors the heuristic in walk_candidates.
-fn looks_like_fdp_start(data: &[u8], pos: usize) -> bool {
-    let data_len = data.len();
-    if pos >= data_len || data[pos] != 0x0A {
-        return false;
-    }
-    let Some((name_len, varint_len)) = decode_varint(&data[pos + 1..]) else {
-        return false;
+/// Score the candidate starting at `start` and return where its record ends,
+/// or `None` if it is not a `FileDescriptorProto` (spec 0239 S3, S4).
+///
+/// The walk is handed **the rest of the buffer**, not a guessed length. That
+/// is the whole mechanism: under `Policy::Scan` a root stops at the first tag
+/// it cannot carry, and `FileDescriptorProto.name` is singular, so the next
+/// record's field-1 tag is the boundary. This replaces a hand-rolled wire
+/// walk whose stop rule was that same fact written out by hand, restricted to
+/// field 1 — the schema also supplies undeclared field numbers and the other
+/// five singular fields, for free.
+///
+/// The accept rule is on the **defect counters**, never on `score()`, which
+/// is a sum over matched fields and so ranges over four orders of magnitude
+/// with record size (8 … 171 309 across googleapis.desc). A genuine record
+/// has zero defects at every size.
+///
+/// A vetoed candidate yields no boundary at all: a veto fires inside a field
+/// already consumed, so it leaves the counters polluted by bytes that may lie
+/// past the true end of the record (spec 0238 N6).
+fn score_candidate(data: &[u8], start: usize) -> Option<usize> {
+    let opts = ScoringOpts {
+        policy: Policy::Scan,
+        ..Default::default()
     };
-    let name_start = pos + 1 + varint_len;
-    let Some(name_end) = name_start.checked_add(name_len as usize) else {
-        return false;
-    };
-    if name_end > data_len || name_end - name_start > MAX_PROTO_NAME_LEN {
-        return false;
+    let entry = score_one(&data[start..], FDP, wkt_graph().graph(), &opts)?;
+    if entry.vetoed || entry.unknowns != 0 || entry.mismatches != 0 {
+        return None;
     }
-    std::str::from_utf8(&data[name_start..name_end])
-        .map(is_plausible_path)
-        .unwrap_or(false)
-}
-
-fn walk_protobuf_fields(data: &[u8], start: usize) -> Option<usize> {
-    let mut pos = start;
-    let data_len = data.len();
-    let mut group_stack = 0;
-
-    while pos < data_len {
-        if data[pos] == 0x00 && group_stack == 0 {
-            return Some(pos);
-        }
-
-        // Field 1 (name) is singular in FileDescriptorProto — a second
-        // occurrence at pos > start unambiguously marks the end of this FDP
-        // and the beginning of the next one.
-        if pos > start && group_stack == 0 && looks_like_fdp_start(data, pos) {
-            return Some(pos);
-        }
-
-        let (_field_number, wire_type, tag_len) = decode_field_tag(&data[pos..])?;
-        pos += tag_len;
-
-        match wire_type {
-            0 => pos += decode_varint(&data[pos..])?.1,
-            1 => pos += 8,
-            2 => {
-                let (len_val, varint_len) = decode_varint(&data[pos..])?;
-                pos += varint_len + len_val as usize;
-            }
-            3 => group_stack += 1,
-            4 => {
-                if group_stack == 0 {
-                    return None;
-                }
-                group_stack -= 1;
-            }
-            5 => pos += 4,
-            _ => return None,
-        }
-
-        if pos > data_len {
-            return None;
-        }
-    }
-
-    Some(data_len)
+    Some(start + entry.termination)
 }
 
 fn decode_varint(data: &[u8]) -> Option<(u64, usize)> {
@@ -205,11 +194,6 @@ fn decode_varint(data: &[u8]) -> Option<(u64, usize)> {
         }
     }
     None
-}
-
-fn decode_field_tag(data: &[u8]) -> Option<(u32, u8, usize)> {
-    let (raw, varint_len) = decode_varint(data)?;
-    Some(((raw >> 3) as u32, (raw & 0x07) as u8, varint_len))
 }
 
 #[cfg(test)]
@@ -349,5 +333,103 @@ mod tests {
         );
         assert_eq!(ranges[0], (0, fdp1.len()));
         assert_eq!(ranges[1], (fdp1.len(), buf.len()));
+    }
+
+    /// Encode `payload` as one length-delimited field-`number` record.
+    fn framed(number: u32, payload: &[u8]) -> Vec<u8> {
+        let mut buf = vec![(number << 3) as u8 | 2];
+        let mut len = payload.len() as u64;
+        loop {
+            let byte = (len & 0x7F) as u8;
+            len >>= 7;
+            if len == 0 {
+                buf.push(byte);
+                break;
+            }
+            buf.push(byte | 0x80);
+        }
+        buf.extend_from_slice(payload);
+        buf
+    }
+
+    /// A FileDescriptorProto carrying `messages` empty `message_type` entries
+    /// (field 4), so that its score grows with `messages` while its defect
+    /// counters stay at zero.
+    fn make_fdp_with_messages(name: &str, messages: usize) -> Vec<u8> {
+        let mut buf = make_fdp(name);
+        for i in 0..messages {
+            let descriptor = make_fdp(&format!("M{i}")); // DescriptorProto.name
+            buf.extend_from_slice(&framed(4, &descriptor));
+        }
+        buf
+    }
+
+    /// The corpus `googleapis.desc`, or `None` when the env var is unset.
+    ///
+    /// The corpus is a Nix store artifact, not part of `workspaceSrc`, so the
+    /// tests that need it are `#[ignore]`d rather than conditionally skipped.
+    fn corpus() -> Vec<u8> {
+        let path = std::env::var("PROTOSCAN_CORPUS_DESC")
+            .expect("set PROTOSCAN_CORPUS_DESC to a googleapis.desc path");
+        std::fs::read(&path).unwrap_or_else(|e| panic!("failed to read '{path}': {e}"))
+    }
+
+    /// Ground truth: the `(start, end)` of every `file` payload, read off the
+    /// `FileDescriptorSet` framing — independent of both the old stop rule and
+    /// the new one (spec 0239 test 1).
+    fn framing_boundaries(data: &[u8]) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let mut offset = 0;
+        while offset < data.len() {
+            assert_eq!(data[offset], 0x0A, "not a FileDescriptorSet at {offset}");
+            let (len, varint_len) =
+                decode_varint(&data[offset + 1..]).expect("truncated length prefix");
+            let start = offset + 1 + varint_len;
+            let end = start + len as usize;
+            out.push((start, end));
+            offset = end;
+        }
+        out
+    }
+
+    #[test]
+    #[ignore = "needs a googleapis.desc in PROTOSCAN_CORPUS_DESC"]
+    fn test_scan_finds_every_record() {
+        let data = corpus();
+        let expected = framing_boundaries(&data);
+        let found = scan_bytes(&data);
+        assert_eq!(found, expected, "boundaries disagree with the framing");
+    }
+
+    #[test]
+    #[ignore = "needs a googleapis.desc in PROTOSCAN_CORPUS_DESC"]
+    fn test_a_record_never_swallows_its_successor() {
+        // The bug this spec fixes: handed the whole 25.6 MB buffer, the first
+        // record must report its own length. `FileDescriptorProto.name` is
+        // singular, so the next record's field-1 tag terminates the walk
+        // (spec 0238 S12 rule 2).
+        let data = corpus();
+        let (start, end) = framing_boundaries(&data)[0];
+        assert_eq!(
+            score_candidate(&data, start),
+            Some(end),
+            "the first record swallowed its successors"
+        );
+    }
+
+    #[test]
+    fn test_accept_rule_is_size_independent() {
+        // The accept rule reads the defect counters, never `score()`, which is
+        // a sum over matched fields and so grows without bound with record
+        // size (spec 0239 G2/S4). Both of these are genuine records; a
+        // threshold on `score()` would have to admit both.
+        for messages in [0, 2000] {
+            let fdp = make_fdp_with_messages("size/independence.proto", messages);
+            assert_eq!(
+                score_candidate(&fdp, 0),
+                Some(fdp.len()),
+                "an FDP with {messages} message_type entries was rejected"
+            );
+        }
     }
 }

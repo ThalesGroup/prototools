@@ -13,6 +13,12 @@ name       = "fdp_scan_lib"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+# The scoring walk (spec 0239 S3) and the WKT graph it walks against. The
+# graph is `prototext`'s embedded copy: descriptor.proto is already in
+# prototext/wkt/SOURCES, so a second artifact would be a second copy of the
+# same bytes to keep regenerated (spec 0239 S1).
+prototext        = { path = "../prototext", version = "0.2.1" }
+prototext-graph  = { path = "../prototext-graph", version = "0.2.1" }
 pyo3             = { version = "0.29", features = ["extension-module"] }
 pyo3_stub_gen    = { version = "0.23", package = "pyo3-stub-gen" }
 pyo3_stub_gen_derive = { version = "0.23", package = "pyo3-stub-gen-derive" }

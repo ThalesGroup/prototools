@@ -90,16 +90,25 @@ let
     treeSitterTextprotoPkg
   ];
 
-  # Full Python dependency set for running the reproto test suite and for the
-  # dev-shell PYTHONPATH.  Extends reprotoPropagatedDeps with the codec and
-  # pytest tools.  Used by reprotoTests, pythonLint, and dev-shell.
-  reprotoTestDeps = reprotoPropagatedDeps ++ [
+  # Python dependency set for the wktRkyv derivation: everything reproto
+  # needs to run `--schema-db-out`, and nothing more.
+  #
+  # fdpScanLib must NOT appear here. It embeds the freshly generated WKT
+  # scoring graph (spec 0239 S1, nix/rust.nix's _fdpScanLibExt), so it
+  # depends on wktRkyv; wktRkyv depending back on it is an eval-time
+  # infinite recursion. reproto never imports fdp_scan_lib — that is
+  # protoscan's scanner — so nothing is lost by leaving it out.
+  wktRkyvDeps = reprotoPropagatedDeps ++ [
     prototextCodec
-    fdpScanLib
     prototextGraphLib
     pythonPkgs.pytest
     pythonPkgs."pytest-xdist"
   ];
+
+  # Full Python dependency set for running the reproto test suite and for the
+  # dev-shell PYTHONPATH.  Extends reprotoPropagatedDeps with the codec and
+  # pytest tools.  Used by reprotoTests, pythonLint, and dev-shell.
+  reprotoTestDeps = wktRkyvDeps ++ [ fdpScanLib ];
 
   # Bootstrap package — installs reproto without running tests.
   # Provides bin/reproto and carries the patch scripts for the codegen stage.
@@ -568,6 +577,7 @@ in {
     reprotoSrcFull
     reprotoBare
     reprotoPropagatedDeps
+    wktRkyvDeps
     reprotoTestDeps
     reproto
     reprotoTests

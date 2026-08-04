@@ -715,6 +715,8 @@ checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 name = "fdp_scan_lib"
 version = "0.2.1"
 dependencies = [
+ "prototext",
+ "prototext-graph",
  "pyo3",
  "pyo3-stub-gen",
  "pyo3-stub-gen-derive",

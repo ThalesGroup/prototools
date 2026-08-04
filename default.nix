@@ -98,6 +98,12 @@ let
         # (spec 0226), and `prototext-core/tests/anomaly_fixture.rs`
         # include_str! it, so the test cannot compile without it.
         (fixtureFilter ./grpconf)
+        # prototext/wkt/prebuilt/*.rkyv — the git-committed WKT scoring
+        # graph. `prototext/build.rs` copies it under `--features
+        # prebuilt-wkt`, which nix/rust.nix's bootstrapArgs now passes to
+        # every workspace-wide build (spec 0239 S2). Taken wholesale:
+        # fixtureFilter admits only .pb/.proto/.yaml/.license, not .rkyv.
+        ./prototext/wkt
         ./README.md
       ])
       (pkgs.lib.fileset.unions [
@@ -318,10 +324,13 @@ let
   # proto filenames are read from prototext/wkt/SOURCES at eval time.
   # python.reprotoBare does not depend on the Rust prototext binary, so there
   # is no cycle: wktRkyv → python.reprotoBare → (pure Python) ✓
+  #
+  # wktRkyvDeps, not reprotoTestDeps: the latter carries fdpScanLib, which
+  # embeds this very graph (spec 0239 S1) and so depends on wktRkyv.
   wktRkyv = pkgs.runCommand "wkt-rkyv" {
     buildInputs = [
       pkgs.protobuf
-      (pythonPkgs.python.withPackages (_: python.reprotoTestDeps))
+      (pythonPkgs.python.withPackages (_: python.wktRkyvDeps))
     ];
   } ''
     set -euo pipefail
@@ -338,8 +347,12 @@ let
     # reproto -I takes a directory of .pb files; DESCRIPTOR_FILES are positional.
     # --schema-db-out writes schemas.desc and schemas/hopcroft.rkyv.
     # We copy hopcroft.rkyv to $out/wkt.rkyv for the build.rs fast-path.
+    # --emit-extension-ranges is required, not optional: protoscan scores
+    # descriptors under Policy::Scan against this graph, and that policy
+    # asserts the graph carries range data (spec 0238 S9, spec 0239 S2).
     python -m reproto.cli \
       --schema-db-out="$out/schemas.desc" \
+      --emit-extension-ranges \
       -I "$out" \
       wkt.desc
     cp "$out/schemas/hopcroft.rkyv" "$out/wkt.rkyv"
