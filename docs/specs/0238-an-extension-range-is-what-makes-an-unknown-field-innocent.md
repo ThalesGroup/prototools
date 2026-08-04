@@ -553,6 +553,23 @@ thread it through, convert the three `run.rs` literals to
 *Checkpoint:* corpus scores identical under both variants; plus a test
 that drives the `prototext` binary, per S11.
 
+*Measured 2026-08-04.* `score_all` run over the 375 googleapis corpus
+blobs against the step-4 graph, once per variant: **18 470 625 scored
+rows, zero differing** on any of `fqdn`, `matches`, `unknowns`,
+`out_of_range`, `non_canonical`, `mismatches` or `vetoed`. That result is
+a tautology at this step and worth naming as one — `policy` has no
+readers yet, so the two variants cannot diverge; what the sweep actually
+pins is that widening `ScoringOpts` and rewriting the three `run.rs`
+literals as struct updates changed no scoring behavior. The half of the
+checkpoint with teeth is the binary-driven test
+(`e2e::score_still_honors_no_expand_any`): it spawns `prototext score`
+twice on the same payload and asserts 3 versus 2 under
+`--no-expand-any`, so a field silently dropped from one of those literals
+fails the suite. Getting a difference to show at all required nesting the
+`Any` inside a `google.protobuf.Option` — Any-expansion fires from a
+*field* pointing at `ANY_BLOCK_ID`, never from scoring `Any` as the root
+type.
+
 **Step 6 — SCAN semantics (S9, S12-S16).**
 *Checkpoint:* unit tests 7-14 below; then test 16 — all 7 771 FDPs in
 `googleapis.desc` terminate exactly at their record boundary.

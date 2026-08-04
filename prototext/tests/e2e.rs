@@ -231,6 +231,76 @@ fn decode_type_typo_suggests_closest_match() {
     );
 }
 
+// ── Spec 0238 S11: the CLI's ScoringOpts still carries what the flags say ────
+
+/// `prototext score` must keep honoring `--no-expand-any`.
+///
+/// This drives the binary rather than `score_all` on purpose. `run.rs` builds
+/// `ScoringOpts` at three sites, and spec 0238 S11 converted them to
+/// `..Default::default()` so future fields cost nothing — which is exactly
+/// the shape that lets a flag quietly stop being wired up, since a dropped
+/// field then silently takes its default instead of failing to compile.
+/// `ScoringOpts::default()` would agree with the CLI either way, so a
+/// library-level test cannot see the difference.
+///
+/// The payload is a `google.protobuf.Option` whose `value` is an `Any`
+/// wrapping a `Duration`: Any expansion is reached only from a *field*
+/// pointing at the Any block, so the Any has to be nested rather than the
+/// scored type itself. Expanded, the inner `seconds` is a third match.
+#[test]
+#[cfg(feature = "wkt-db")]
+fn score_still_honors_no_expand_any() {
+    let bin = env!("CARGO_BIN_EXE_prototext");
+
+    #[rustfmt::skip]
+    let payload: &[u8] = &[
+        0x0a, 0x01, b'x',                       // Option.name = "x"
+        0x12, 0x32,                             // Option.value, LEN 50
+          0x0a, 0x2c,                           //   Any.type_url, LEN 44
+            b't', b'y', b'p', b'e', b'.', b'g', b'o', b'o', b'g', b'l', b'e',
+            b'a', b'p', b'i', b's', b'.', b'c', b'o', b'm', b'/',
+            b'g', b'o', b'o', b'g', b'l', b'e', b'.', b'p', b'r', b'o', b't',
+            b'o', b'b', b'u', b'f', b'.', b'D', b'u', b'r', b'a', b't', b'i',
+            b'o', b'n',
+          0x12, 0x02,                           //   Any.value, LEN 2
+            0x08, 0x05,                         //     Duration.seconds = 5
+    ];
+
+    let score = |extra: &[&str]| -> String {
+        let out = Command::new(bin)
+            .args([
+                "score",
+                "--type",
+                "google.protobuf.Option",
+                "--assume-binary",
+            ])
+            .args(extra)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to spawn prototext")
+            .wait_with_output_and_stdin(payload);
+        assert!(
+            out.status.success(),
+            "prototext score failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).expect("score output is UTF-8")
+    };
+
+    assert!(
+        score(&[]).contains("score: 3"),
+        "expanding the Any must score the wrapped Duration's field too, got:\n{}",
+        score(&[])
+    );
+    assert!(
+        score(&["--no-expand-any"]).contains("score: 2"),
+        "--no-expand-any must score the Any's value as plain bytes, got:\n{}",
+        score(&["--no-expand-any"])
+    );
+}
+
 // ── §3.2 No crash without annotations (all fixtures) ─────────────────────────
 
 /// CLI: `prototext decode --no-annotations` must exit 0 for every fixture.

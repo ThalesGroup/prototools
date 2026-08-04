@@ -435,6 +435,7 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
             let output_root = cli.output_root.clone();
             let scoring_opts = ScoringOpts {
                 expand_any: !no_expand_any,
+                ..Default::default()
             };
 
             validate_input_root_absolute(&cli.input_root, &paths)?;
@@ -510,6 +511,7 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
             })?;
             let scoring_opts = ScoringOpts {
                 expand_any: !no_expand_any,
+                ..Default::default()
             };
             run_list_schemas(
                 graph,
@@ -540,6 +542,7 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
             })?;
             let scoring_opts = ScoringOpts {
                 expand_any: !no_expand_any,
+                ..Default::default()
             };
             run_score(
                 graph,

@@ -246,17 +246,40 @@ fn group_by_state(pairs: impl Iterator<Item = (u32, u32)>) -> Vec<ActiveEntry> {
     result
 }
 
+/// What the walk is being asked to find out (spec 0238 S11).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Policy {
+    /// Score the whole buffer against every root: how well does this blob fit
+    /// this type? Every root consumes `pb` to its end.
+    #[default]
+    Score,
+    /// Score, and additionally find where each root's *record* ends — the
+    /// first field that a well-formed instance of that type could not carry.
+    Scan,
+}
+
 /// Options controlling walk behaviour.
+///
+/// New fields land here rather than in a new argument, so callers should
+/// build one with `..Default::default()` rather than field by field. Rust has
+/// no default-valued struct fields, so a complete literal has to name every
+/// one of them and breaks on each addition (spec 0238 S11).
 pub struct ScoringOpts {
     /// If true (default), google.protobuf.Any fields are expanded using the
     /// type resolved from type_url and scored against the wrapped type.
     /// If false (--no-expand-any), value scores as a plain bytes match.
     pub expand_any: bool,
+    /// Defaults to [`Policy::Score`], the behaviour every caller had before
+    /// the policy existed.
+    pub policy: Policy,
 }
 
 impl Default for ScoringOpts {
     fn default() -> Self {
-        Self { expand_any: true }
+        Self {
+            expand_any: true,
+            policy: Policy::default(),
+        }
     }
 }
 
