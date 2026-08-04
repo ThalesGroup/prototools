@@ -6,6 +6,7 @@
 /target/
 /prototext-graph/target/
 /prototext-graph/Cargo.lock
+/demo/ringer/target/
 /release/
 /result
 /result-*

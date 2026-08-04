@@ -109,6 +109,12 @@ let
       (pkgs.lib.fileset.unions [
         (pkgs.lib.fileset.maybeMissing ./target)
         (pkgs.lib.fileset.maybeMissing ./prototext-graph/target)
+        # demo/ringer is an excluded Cargo project (spec 0241 S1/S2), but
+        # `[workspace] exclude` does not reach crane: commonCargoSources
+        # admits any .rs/.toml it finds.  Without this subtraction every edit
+        # to ringer would change workspaceSrc's hash and rebuild the whole
+        # Rust world for a demo that ci does not even compile from here.
+        (pkgs.lib.fileset.maybeMissing ./demo/ringer)
       ]);
   };
 
@@ -402,6 +408,12 @@ let
     inherit (rust) prototext protolens;
     inherit (python) reprotoSrc reprotoBare reprotoTestDeps reproto protoscan;
     inherit wktDb;
+    # dev-shell only, for PROTOTEXT_GOOGLEAPIS_SET. Entering the dev-shell
+    # therefore forces googleapisDb — a fetch of the pinned corpus, a whole-
+    # corpus protoc run and a reproto --schema-db-out. It is `full-tests`
+    # material, not `ci` material, and it is deliberately kept out of
+    # user-shell for that reason.
+    inherit (python) googleapisDb;
     repoRoot    = toString ./.;
     rustcVersion = pkgs.rustc.unwrapped.version;
   };
@@ -481,6 +493,7 @@ in
   googleapis-tests     = python.googleapisTests;
   custom-db            = python.customDb;
   custom-tests         = python.customTests;
+  ringer-desc          = python.ringerDesc;
   user-shell           = shells.user-shell;
   dev-shell            = shells.dev-shell;
   wkt-db               = wktDb;

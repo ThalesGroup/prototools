@@ -384,6 +384,30 @@ EOF
       @"$TMPDIR/proto_list.txt"
   '';
 
+  # The descriptor set ringer embeds (spec 0241 S4).
+  #
+  # The same protoc invocation googleapisPbs makes, narrowed from the whole
+  # corpus to one entry point: routes_service.proto and its transitive
+  # imports, and nothing else.  That is what a real application ships, and it
+  # is what keeps ringer's DescriptorPool cheap — decoding the full 25.6 MB
+  # googleapis.desc costs 1.34 s and peaks at 720 MB RSS, against ~50 kB here.
+  #
+  # Cheap enough for `ci`: one protoc run over one file.  It pulls in
+  # corpusGoogleapis but not googleapisPbs or googleapisDb, so it costs the
+  # corpus fetch and nothing more.
+  ringerDesc = pkgs.runCommand "ringer-desc" {
+    buildInputs = [ pkgs.protobuf ];
+  } ''
+    set -euo pipefail
+    mkdir -p "$out"
+
+    protoc \
+      --proto_path="${corpusGoogleapis}" \
+      --descriptor_set_out="$out/ringer.desc" \
+      --include_imports \
+      google/maps/routing/v2/routes_service.proto
+  '';
+
   # Build the googleapis schema DB + instantiated messages.
   # Depends on googleapisPbs (single multi-FDP FDS) so proto compilation is
   # not repeated when reproto or instantiation logic changes.
@@ -590,6 +614,7 @@ in {
     googleapisPbs
     googleapisDb
     googleapisTests
+    ringerDesc
     customDb
     customTests;
 }

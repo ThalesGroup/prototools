@@ -29,6 +29,16 @@ members = [
     "workspace-hack",
 ]
 
+# demo/ringer is its own Cargo project with its own lockfile (spec 0241 S1).
+# Cargo unifies features across a workspace, so as a member it would pull
+# tonic, hyper, rustls and tokio into every `--workspace` derivation and into
+# `depsCache` — none of the four are in the graph today.  `workspaceSrc` in
+# default.nix subtracts the directory as well, because crane's
+# `commonCargoSources` admits any .rs/.toml it finds regardless of this list.
+exclude = [
+    "demo/ringer",
+]
+
 [workspace.dependencies]
 prototext-core   = { path = "prototext-core", version = "0.3.0", features = ["prost-bug-workaround"] }
 prototext-schema = { path = "prototext-schema", version = "0.1.0" }

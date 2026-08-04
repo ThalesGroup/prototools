@@ -15,6 +15,7 @@
 #             order, each printing a one-line recap:
 #
 #               _hook_env        — exports NIXSHELL_REPO, PROTOTEXT_DESCRIPTOR_SET,
+#                                  PROTOTEXT_WKT_SET, PROTOTEXT_GOOGLEAPIS_SET,
 #                                  PYO3_PYTHON, PATH, PYTHONPATH
 #               _hook_python     — writes python.env, pyrightconfig.json, ruff.toml
 #               _hook_protos     — compiles fixture .pb descriptors (guarded)
@@ -46,6 +47,7 @@
 , treeSitterTextprotoRustLib
 , protoscan
 , wktDb             # well-known-types schema DB; carries the PROTOTEXT_DESCRIPTOR_SET setup-hook
+, googleapisDb      # googleapis schema DB; dev-shell only (PROTOTEXT_GOOGLEAPIS_SET)
 , buf               # narrow-pinned buf (newer than the main nixpkgs pin's 1.59.0; see default.nix)
 }:
 
@@ -121,7 +123,7 @@
       # ── Named hook functions ───────────────────────────────────────────────
 
       _hook_env() {
-        echo "[hook] env: NIXSHELL_REPO, PROTOTEXT_DESCRIPTOR_SET, PYO3_PYTHON, PATH, PYTHONPATH"
+        echo "[hook] env: NIXSHELL_REPO, PROTOTEXT_{DESCRIPTOR,WKT,GOOGLEAPIS}_SET, PYO3_PYTHON, PATH, PYTHONPATH"
         # Detected by ~/.claude/hooks/claude-hook-post-edit-lint to confirm
         # that the active nix-shell belongs to this repo.
         export NIXSHELL_REPO="${repoRoot}"
@@ -131,6 +133,23 @@
         # Export the same value explicitly, so `nix-shell` and
         # `nix-shell dev-shell.nix` agree.
         export PROTOTEXT_DESCRIPTOR_SET="${wktDb}/share/prototools/wkt.desc"
+
+        # The two schema DBs by name, for reaching at one directly rather
+        # than switching the default. Both are `<stub>.desc` beside a
+        # `<stub>/` holding hopcroft.rkyv, index.rkyv and the decompiled
+        # proto/ tree, which is the layout every consumer derives from the
+        # descriptor path with its extension stripped — so either one is a
+        # complete answer to --descriptor-set on its own.
+        #
+        # PROTOTEXT_WKT_SET is the same path as the default above, named so
+        # that a script asking for the WKTs says so rather than relying on
+        # what the default happens to be today.
+        #
+        # dev-shell only. googleapisDb is a full-tests derivation — a corpus
+        # fetch, a whole-corpus protoc run and a reproto pass — and putting
+        # it in user-shell would make a first `nix-shell` build all of it.
+        export PROTOTEXT_WKT_SET="${wktDb}/share/prototools/wkt.desc"
+        export PROTOTEXT_GOOGLEAPIS_SET="${googleapisDb}/googleapis.desc"
 
         export PYO3_PYTHON="${pythonExecutable}"
         export PATH="${repoRoot}/bin:${pythonBin}/bin:${repoRoot}/target/release:$PATH"

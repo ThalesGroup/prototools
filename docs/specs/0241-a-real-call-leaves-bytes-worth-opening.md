@@ -40,6 +40,15 @@ There is also nothing in the repo that produces bytes from a live wire.
 `demo/01-tutorial.sh` drives committed fixtures end to end; the wire is
 always something we wrote.
 
+The two capabilities are **two demonstrations, and this spec is only the
+first**. Inspecting the logged bytes against a small, freshly built schema
+DB is a self-contained story: the application carries its own descriptors,
+`reproto` turns them into a scoring DB on the spot, protolens names the
+message. Re-running the same inspection against the full precomputed
+`googleapis.desc` is the second story, and it shows more precisely
+*because* the first one showed less. Building one artifact that serves
+both would blur them.
+
 ## Goals
 
 - **G1.** `ringer` makes a real unary gRPC call to a live Google API over
@@ -47,8 +56,15 @@ always something we wrote.
 - **G2.** Every googleapis message it builds or reads is handled
   **reflectively**, from descriptors. No `tonic-build`, no generated Rust
   type for any googleapis message.
-- **G3.** The descriptor set is embedded in the executable. ringer needs
-  no file on disk to know what it is sending.
+- **G3.** The descriptor set is embedded in the executable, and holds
+  **only what ringer actually calls** — the transitive closure of one
+  service file, not all of googleapis. That is what a real application
+  ships, and it keeps the binary and the pool honest.
+- **G3b.** `ringer --dump-descriptor <path>` writes that embedded set back
+  out, so `reproto --schema-db-out` can build a scoring DB from it at demo
+  time. The schema the audience inspects with is then provably the schema
+  the application was built against — extracted from the binary in front
+  of them rather than prepared earlier.
 - **G4.** The exact bytes ringer put on the wire are written to a file
   that `protolens` opens **without `--type`**, so the inference sweep
   names the message.
@@ -100,55 +116,75 @@ always something we wrote.
 
 - **S3.** `publish = false`.
 
-### The embedded descriptors (G3)
+### The embedded descriptors (G3, G3b)
 
-- **S4.** `build.rs` reads `RINGER_DESCRIPTOR_SET`, copies the file to
+- **S4.** A `ringerDesc` derivation runs `protoc --include_imports` over
+  the single file `google/maps/routing/v2/routes_service.proto` from the
+  pinned googleapis corpus, producing a `FileDescriptorSet` holding that
+  file and its transitive imports and nothing else. This is the same
+  `protoc` invocation `googleapisPbs` makes, narrowed from the whole
+  corpus to one entry point.
+
+- **S5.** `build.rs` reads `RINGER_DESCRIPTOR_SET`, copies the file to
   `$OUT_DIR/ringer.desc`, and emits `cargo::rerun-if-env-changed` plus
   `cargo::rerun-if-changed` for it. The binary does `include_bytes!`.
 
-- **S5.** The variable is `RINGER_DESCRIPTOR_SET`, **not**
-  `PROTOTEXT_DESCRIPTOR_SET`. After spec 0228 both shells export the
-  latter and point it at the well-known types; reusing it would mean that
+- **S6.** The variable is `RINGER_DESCRIPTOR_SET`, **not**
+  `PROTOTEXT_DESCRIPTOR_SET`. Spec 0228 makes the latter point at the
+  well-known types in both shells, so reusing it would mean that
   `cargo build` inside a dev-shell silently produced a ringer that cannot
   name `google.maps.routing.v2.Routes`, and the failure would surface as a
   runtime "type not found" a long way from its cause.
 
-- **S6.** If the variable is unset, the build **fails**, naming
-  `nix-build -A googleapis-db --no-out-link` in the error. No fallback to
+  It is not `PROTOTEXT_GOOGLEAPIS_SET` either (the dev-shell's path to the
+  full corpus DB): ringer embeds its own narrow set, and reaching for the
+  7 771-file one would be exactly the mistake S4 exists to avoid.
+
+- **S7.** If the variable is unset, the build **fails**, naming
+  `nix-build -A ringer-desc --no-out-link` in the error. No fallback to
   the WKTs: a ringer that cannot describe the service it calls is not a
   ringer, and a demo that half-works is worse than one that refuses to
   build.
 
-- **S7.** Embedded raw, not compressed. The 25 MB really is in the
-  executable, which is half of what the demo is showing; a decompression
-  step would hide it and would add startup cost to the program whose
-  slowest phase is already the pool build. Revisit only if binary size
-  becomes a distribution problem.
+- **S8.** Embedded raw, not compressed, and the `DescriptorPool` is built
+  once behind a `OnceLock`.
 
-- **S8.** The `DescriptorPool` is built once, lazily, behind a `OnceLock`.
-  `DescriptorPool::decode` over 25 MB is the single largest cost in the
-  process — larger, most likely, than the network round trip. Measure it
-  and record the number in *Measured outcome*.
+  On the narrow set this is cheap. On the full corpus it is not, which is
+  the measurement that settled S4: `DescriptorPool::decode` over the
+  25.6 MB `googleapis.desc` takes **1.34 s cold / 0.76 s warm** and peaks
+  at **720 MB RSS** — about 28x the file — for 7 771 files and 49 255
+  messages. That is a defensible cost for protolens, which exists to open
+  large schema sets. It is not what an application that calls one method
+  would ship, and a demo whose whole claim is "this is an ordinary app"
+  cannot open by contradicting itself.
+
+- **S9.** `ringer --dump-descriptor <path>` writes the embedded set to
+  `<path>` and exits, before any network setup. That is what makes the
+  demo self-contained: the audience extracts the schema from the binary,
+  runs `reproto --schema-db-out` on it to get `hopcroft.rkyv`,
+  `index.rkyv` and a decompiled `proto/` tree, and inspects the logged
+  request against a DB built in front of them from bytes that were inside
+  the executable a minute earlier.
 
 ### The call (G1, G2)
 
-- **S9.** A `DynamicCodec` implements `tonic::codec::Codec` over
+- **S10.** A `DynamicCodec` implements `tonic::codec::Codec` over
   `prost_reflect::DynamicMessage`, parameterized by the request and
   response `MessageDescriptor`s taken from the pool, and is driven through
   `tonic::client::Grpc::unary`. This is the entirety of the reflection
   story: the method path is a string, the messages are dynamic, and
   nothing about googleapis is known at compile time.
 
-- **S10.** Endpoint `https://routes.googleapis.com`, method path
+- **S11.** Endpoint `https://routes.googleapis.com`, method path
   `/google.maps.routing.v2.Routes/ComputeRoutes`. TLS through rustls with
   the platform root store.
 
-- **S11.** Request metadata carries `x-goog-api-key` from `RINGER_API_KEY`
+- **S12.** Request metadata carries `x-goog-api-key` from `RINGER_API_KEY`
   and `x-goog-fieldmask` (Routes rejects a call without a field mask).
   The key is read from the environment and from nowhere else — never a
   flag, so it cannot reach shell history or `/proc/<pid>/cmdline`.
 
-- **S12.** CLI:
+- **S13.** CLI:
   `ringer --origin <address> --destination <address> [--travel-mode DRIVE] [--depart-in <duration>] [--log-dir <dir>]`.
 
   `--origin`/`--destination` fill `Waypoint.address`, one arm of that
@@ -159,53 +195,60 @@ always something we wrote.
   visible in protolens, and none of it requiring the viewer to know the
   API.
 
-- **S13.** Fields are set through `DynamicMessage::set_field_by_name`, so
+- **S14.** Fields are set through `DynamicMessage::set_field_by_name`, so
   a wrong name is a run-time error rather than a compile error. That is
   not a shortcoming to apologize for in a comment; it is the property
   being demonstrated.
 
 ### The log (G4, G5)
 
-- **S14.** `--log-dir DIR` writes `DIR/request.pb` and `DIR/response.pb`:
+- **S15.** `--log-dir DIR` writes `DIR/request.pb` and `DIR/response.pb`:
   the message bytes exactly as the codec produced and consumed them, with
   the five-byte gRPC frame header (compression flag plus big-endian
   length) stripped. protolens reads messages, not frames; left in place,
   the leading zero byte would be decoded as a field-0 tag and the blob
   would open as garbage.
 
-- **S15.** The bytes are captured **inside** the codec, not by re-encoding
+- **S16.** The bytes are captured **inside** the codec, not by re-encoding
   a copy of the request afterwards. A second encode may legitimately
   differ from the first in field order and default elision, and the demo's
   whole claim is that these are the bytes that went out.
 
-- **S16.** On success ringer prints the command that reads them back:
+- **S17.** On success ringer prints the command that reads them back:
 
   ```
   protolens --descriptor-set <the path build.rs was given> <dir>/request.pb
   ```
 
-  with no `--type`. Naming the message from the bytes is what the
-  inference sweep is for, and a 58 777-type descriptor set is the case
-  that makes it worth having. The path is the one compiled in, so the
-  descriptor set protolens loads is the same file whose bytes are in the
-  executable.
+  with no `--type` — naming the message from the bytes is what the
+  inference sweep is for. The schema DB named there is the one
+  `reproto --schema-db-out` built from S9's dump, so nothing in the
+  printed command was prepared before the demo started.
 
 ### Nix (G6)
 
-- **S17.** A crane derivation with
-  `RINGER_DESCRIPTOR_SET = "${python.googleapisDb}/googleapis.desc"`,
-  exposed as `nix-build -A ringer` and added to `full-tests`. **Not**
-  added to `ci`: `googleapisDb` is a `full-tests` input precisely because
-  it is expensive, and `ci` must not acquire that dependency.
+- **S18.** `ringerDesc` (S4) is exposed as `nix-build -A ringer-desc`, and
+  a crane derivation building ringer against it as `nix-build -A ringer`.
+  Both are cheap — `ringerDesc` is one `protoc` run over one file — so
+  both belong in `ci`. Neither pulls in `googleapisDb`, which is what kept
+  the earlier draft's version of this out of `ci`.
 
-- **S18.** Neither shell exports `RINGER_DESCRIPTOR_SET` — doing so would
-  make entering the dev-shell build the googleapis corpus.
-  `demo/ringer/README.md` gives the one-liner instead:
+- **S19.** Neither shell exports `RINGER_DESCRIPTOR_SET`: it is a
+  build-time input to one excluded Cargo project, not a property of the
+  environment. `demo/ringer/README.md` gives the one-liner instead:
 
   ```
-  RINGER_DESCRIPTOR_SET=$(nix-build -A googleapis-db --no-out-link)/googleapis.desc \
+  RINGER_DESCRIPTOR_SET=$(nix-build -A ringer-desc --no-out-link)/ringer.desc \
     cargo build --release --manifest-path demo/ringer/Cargo.toml
   ```
+
+### The second demonstration
+
+- **S20.** Out of scope here, and recorded so that the first demo is not
+  grown to accommodate it: the same `request.pb` is re-opened against the
+  full `$PROTOTEXT_GOOGLEAPIS_SET`. Nothing in ringer changes for it — the
+  log is just bytes, and which descriptor set protolens is pointed at is a
+  command-line argument.
 
 ## Alternatives considered
 
@@ -224,17 +267,26 @@ Rejected as circular. The demo asserts that an ordinary application's
 egress is inspectable; an application that authors its requests in
 prototext has assumed the conclusion.
 
+**Embedding the whole 25.6 MB `googleapis.desc`.** This is what the first
+draft specified, on the reasoning that one artifact could serve both the
+inference demo and the scale demo. Rejected on two counts. The cost was
+measured and is not incidental — 1.34 s cold to build the pool and 720 MB
+peak RSS, for an application that calls one method (see S8). And it is not
+what a real application ships, so it would undercut the exact claim the
+demo exists to make. Scale is now a second demonstration against
+`$PROTOTEXT_GOOGLEAPIS_SET` (S20), which costs ringer nothing because the
+log is just bytes.
+
 **Reusing `prototext-schema`'s lazy index instead of
 `DescriptorPool::decode`.** Faster to start, and rejected for the same
-reason, plus it would couple a demo to an internal crate's layout. If S8's
-measurement turns out to be intolerable, compressing (S7) is the cheaper
-lever.
+reason as the previous entry plus one more: it would couple a demo to an
+internal crate's layout. Moot now that S4 keeps the set small.
 
 **grpcurl, or a shell script around it.** Rejected: it does not embed
 descriptors, and "the app carries its own schema" is half of what makes
 the logged bytes interesting.
 
-**Logging the framed stream rather than the message.** Rejected: see S14.
+**Logging the framed stream rather than the message.** Rejected: see S15.
 
 **`google.cloud.language.v1.AnalyzeEntities` as the method.** Present in
 the pinned corpus and simpler to call, but its request is one string and
@@ -252,28 +304,39 @@ None of these touch the network (N4).
 
 1. `pool_resolves_compute_routes` — the embedded set resolves
    `google.maps.routing.v2.ComputeRoutesRequest` and
-   `ComputeRoutesResponse`. Establishes that `build.rs` was given a real
-   googleapis set and not the well-known types.
+   `ComputeRoutesResponse`, and `pool.files().len()` is in the tens, not
+   the thousands. Establishes both that `build.rs` was given a real
+   descriptor set and that S4 narrowed it.
 2. `request_round_trips_through_the_codec` — build the request from CLI
    arguments, encode it with `DynamicCodec`, decode it back through the
-   same descriptor, assert the field values match. Exercises S13/S15's
+   same descriptor, assert the field values match. Exercises S14/S16's
    encode path with no socket.
 3. `logged_bytes_carry_no_frame_header` — the first byte of the captured
    request parses as a protobuf tag, not as a compression flag.
 4. `missing_api_key_fails_before_connecting` — with `RINGER_API_KEY`
    unset, ringer exits non-zero and opens no connection.
-5. `protolens_names_the_request` — run protolens's batch export over a
-   committed golden `request.pb` with `--descriptor-set` but no `--type`,
-   and assert the inferred root type is
-   `google.maps.routing.v2.ComputeRoutesRequest`. This is G4 stated as an
-   assertion. It needs the googleapis DB, so it lives with `full-tests`.
-6. Manual, with a real key: `ringer --origin … --destination … --log-dir /tmp/r`
+5. `dumped_descriptor_is_the_embedded_one` — `--dump-descriptor` writes
+   bytes equal to the embedded slice, and `reproto --schema-db-out` on the
+   result produces `hopcroft.rkyv`, `index.rkyv` and a `proto/` tree. This
+   is G3b, and it is what makes the demo self-contained.
+6. `protolens_names_the_request` — protolens's batch export over a
+   committed golden `request.pb`, against the schema DB from test 5, with
+   no `--type`; assert the inferred root type is
+   `google.maps.routing.v2.ComputeRoutesRequest`. G4 stated as an
+   assertion. Needs no googleapis DB now, so it can live in `ci`.
+7. Manual, with a real key: `ringer --origin … --destination … --log-dir /tmp/r`
    returns a route, writes both files, and the command it prints opens
    `request.pb` with the message correctly named.
 
 ## Measured outcome
 
-Filled in at implementation. Record: `DescriptorPool::decode` time for the
-25 MB set (S8), the stripped binary size (S7), and whether the inference
-sweep in test 5 names the request type on the first candidate or needs the
-full sweep.
+Filled in at implementation. Record: the narrowed set's file count and
+byte size against the full corpus's 7 771 / 25.6 MB, `DescriptorPool::decode`
+time for it, the stripped binary size, and whether the inference sweep in
+test 6 names the request type on the first candidate or needs the full
+sweep.
+
+Already measured, and the reason S4 exists (2026-08-04, this machine):
+`DescriptorPool::decode` over the full `googleapis.desc` — 25 660 332
+bytes, 7 771 files, 49 255 messages — takes **1.34 s cold, 0.76 s warm**
+and peaks at **720 MB RSS**.
