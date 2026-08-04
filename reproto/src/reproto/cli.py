@@ -166,6 +166,7 @@ _SECTIONS: dict[str, str] = {
     '--go-root':             'Rendering',
     '--schema-db-out':       'Advanced',
     '--emit-scoring-yaml':   'Advanced',
+    '--emit-extension-ranges': 'Advanced',
     '--scoring-html-out':    'Advanced',
     '--with-leaf-nodes':     'Advanced',
     '--hide':                'Advanced',
@@ -495,6 +496,14 @@ class _SectionedCommand(click.Command):
 )
 
 @click.option(
+    '--emit-extension-ranges',
+    is_flag=True,
+    help='Record each message\'s extension ranges in the scoring graph, so that '
+         'an unknown field number inside a declared range is not counted against '
+         'the type',
+)
+
+@click.option(
     '--emit-scoring-graphs',
     is_flag=True,
     hidden=True,
@@ -612,6 +621,7 @@ def main(
         build_schema_db: Path | None,
         build_schema_db_deprecated: Path | None,
         emit_scoring_yaml: bool,
+        emit_extension_ranges: bool,
         emit_scoring_graphs: bool,
         proto_variant: Path | None,
         use_variant: tuple[str, ...],
@@ -774,6 +784,7 @@ def main(
         source_info=source_info,
         build_schema_db=build_schema_db,
         emit_scoring_yaml=emit_scoring_yaml,
+        emit_extension_ranges=emit_extension_ranges,
         force_proto2_output=force_proto2_output,
         force_proto2_for_editions=force_proto2_for_editions or prost_workaround,
         debug=debug,

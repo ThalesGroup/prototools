@@ -1569,6 +1569,7 @@ mod set_vetoed_tests {
             states,
             node_kinds: std::collections::HashMap::new(),
             roots: vec!["pkg.Msg".to_string()],
+            ..Default::default()
         };
         let (raw, reg) = graph::build(&merged);
         let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_, _| {});

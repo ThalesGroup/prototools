@@ -1,0 +1,40 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
+syntax = "proto2";
+
+package extranges;
+
+message OneClause {
+  optional string name = 1;
+  extensions 1000 to 2999;
+}
+
+message TwoAdjacentClauses {
+  optional string name = 1;
+  extensions 1000 to 1999;
+  extensions 2000 to 2999;
+}
+
+message OutOfOrderClauses {
+  optional string name = 1;
+  extensions 2000 to 2999;
+  extensions 1000 to 1999;
+}
+
+message SingleNumberClause {
+  optional string name = 1;
+  extensions 1000 to 1998;
+  extensions 1999;
+  extensions 2000 to 2999;
+}
+
+message Unbounded {
+  optional string name = 1;
+  extensions 1000 to max;
+}
+
+message Closed {
+  optional string name = 1;
+}

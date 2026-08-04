@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+# Four messages with byte-for-byte identical transitions, differing only in
+# what field numbers they declare open to extension (spec 0238 S5-S7).
+#
+# Under the pre-0238 minimizer all four collapse into one state, which is
+# exactly the merge the SCAN policy cannot tolerate: it would have to answer
+# "is field 1500 legal here?" for a state that is both extensible and closed.
+
+extension_ranges: true
+
+entries:
+  - Extensible
+  - Closed
+  - SameRanges
+  - OtherRanges
+
+messages:
+  Extensible:
+    kind: LENDEL
+    fields:
+      - number: 1
+        type: uint64
+    ext_ranges:
+      - [1000, 2999]
+  Closed:
+    kind: LENDEL
+    fields:
+      - number: 1
+        type: uint64
+  SameRanges:
+    kind: LENDEL
+    fields:
+      - number: 1
+        type: uint64
+    ext_ranges:
+      - [1000, 2999]
+  OtherRanges:
+    kind: LENDEL
+    fields:
+      - number: 1
+        type: uint64
+    ext_ranges:
+      - [3000, 3999]

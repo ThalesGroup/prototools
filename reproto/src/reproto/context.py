@@ -87,6 +87,10 @@ class Options:
     dry_run: bool = False
     build_schema_db: Path | None = None
     emit_scoring_yaml: bool = False
+    # Extension ranges in the scoring graph (spec 0238 S2). Opt-in because a
+    # graph built without it declares every message closed, which the SCAN
+    # policy must be able to tell apart from "every message really is closed".
+    emit_extension_ranges: bool = False
     fallback_protos: list[str] = field(default_factory=list)
     go_root: str | None = None
     emit_scoring_html: Path | None = None

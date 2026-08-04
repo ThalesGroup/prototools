@@ -149,6 +149,77 @@ fn tc07_bisimilar_roots_collapse() {
     );
 }
 
+// ── TC-08: extension ranges seed the initial partition ───────────────────────
+
+/// The canonical range set a state points at, or `None` if it is closed.
+fn ext_ranges_of(g: &CompiledGraph, state: u32) -> Option<Vec<(u32, u32)>> {
+    let node = g
+        .nodes
+        .iter()
+        .find(|n| n.state_id == state)
+        .expect("state has a node entry");
+    if node.ext_range_idx == prototext_graph::build_scoring_graph::serial::NO_EXT_RANGES {
+        return None;
+    }
+    let set = &g.ext_range_sets[node.ext_range_idx as usize];
+    let lo = set.offset as usize;
+    Some(g.ext_ranges[lo..lo + set.len as usize].to_vec())
+}
+
+#[test]
+fn tc08_extensible_and_closed_do_not_merge() {
+    let g = load_fixture("tc-08");
+    let roots = root_states(&g);
+
+    assert_ne!(
+        roots["Extensible"], roots["Closed"],
+        "TC-08: identical transitions, but one admits unknown fields in 1000..2999 \
+         and the other admits none"
+    );
+    assert_ne!(
+        roots["Extensible"], roots["OtherRanges"],
+        "TC-08: disjoint extension ranges must not merge"
+    );
+    assert_eq!(
+        roots["Extensible"], roots["SameRanges"],
+        "TC-08: the same canonical set must intern to the same index, so these \
+         two states are genuinely equivalent and must collapse"
+    );
+}
+
+#[test]
+fn tc08_range_sets_are_interned_and_sorted() {
+    let g = load_fixture("tc-08");
+    let roots = root_states(&g);
+
+    assert!(
+        g.has_extension_ranges,
+        "TC-08: the fixture declares the flag"
+    );
+    assert_eq!(
+        g.ext_range_sets.len(),
+        2,
+        "TC-08: three messages declare ranges but only two distinct sets"
+    );
+    // Sorted by the set itself (spec 0238 S6), not by encounter order — which
+    // is what makes the indices independent of the loader's hash order.
+    assert_eq!(g.ext_ranges, vec![(1000, 2999), (3000, 3999)]);
+
+    assert_eq!(
+        ext_ranges_of(&g, roots["Extensible"]),
+        Some(vec![(1000, 2999)])
+    );
+    assert_eq!(
+        ext_ranges_of(&g, roots["OtherRanges"]),
+        Some(vec![(3000, 3999)])
+    );
+    assert_eq!(
+        ext_ranges_of(&g, roots["Closed"]),
+        None,
+        "TC-08: a closed message takes the sentinel, never an empty set"
+    );
+}
+
 // ── Full-corpus regression test ───────────────────────────────────────────────
 
 #[test]

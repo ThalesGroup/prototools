@@ -217,12 +217,36 @@ game.
   inclusive at both ends. When unset the key is never emitted and the
   YAML is byte-identical to today's.
 
-- **S3.** Ranges are canonicalized at emission: `max` is materialized as
-  the concrete `536870911` (2²⁹−1, the protobuf maximum field number),
-  never a sentinel; ranges are sorted by start; adjacent and
-  overlapping ranges are merged. Without materializing `max`,
-  `1000 to max` and `1000 to 536870911` intern as different sets and
-  split states that are in fact identical.
+- **S3.** Ranges are canonicalized at emission, and the canonical form
+  is **unique for a given set of field numbers**. That is the whole
+  point: S5 makes the intern index the equality test, so two messages
+  admitting exactly the same extension field numbers must reach the
+  same index no matter how their `.proto` spelled it. The procedure:
+
+  1. Convert protoc's half-open `[start, end)` to inclusive
+     `[start, end - 1]`. **`extension_range.end` is exclusive** —
+     `extensions 1000 to max` arrives as `(1000, 536870912)`, and
+     `extensions 10000` as `(10000, 10001)`.
+  2. Drop degenerate ranges (`end <= start`). protoc cannot emit one,
+     but a hand-assembled descriptor can.
+  3. Sort by start.
+  4. Merge overlapping **and adjacent** ranges: fold the next range in
+     whenever `next.start <= current.end + 1`.
+
+  The result is the unique minimal list of maximal, disjoint,
+  **non-adjacent**, ascending inclusive intervals. Uniqueness needs all
+  four steps, and step 4's adjacency clause is not hypothetical:
+  `FeatureSet` declares `1000 to 9994`, `9995 to 9999`, `10000` and so
+  arrives as three touching ranges, which canonicalize to the single
+  `[1000, 10000]` — the same set another `.proto` would get from one
+  `extensions 1000 to 10000` clause.
+
+  `max` needs no sentinel handling: protoc has already materialized it
+  as `536870912` (exclusive) by the time reproto sees the descriptor,
+  giving `536870911` = 2²⁹−1 inclusive. The requirement is only that
+  reproto must not *re*-introduce a symbolic `max` on the way out —
+  `1000 to max` and `1000 to 536870911` are the same set and must not
+  intern as two.
 
 - **S4.** `load.rs` gains `ext_ranges: Option<Vec<(u32, u32)>>` on
   `YamlMessage` and on the merged message representation. `MessageDef`'s
@@ -254,10 +278,20 @@ game.
   at step 2's checkpoint, where the format change is isolated from every
   semantic change and the artifact can be measured directly.
 
-  Expected table size is small: three entries for `descriptor.proto`
-  (`{}`, `{1000..536870911}`, `FeatureSet`'s three-range set), and small
-  on any corpus, because extension ranges are rare and overwhelmingly
-  spelled `1000 to max`.
+  Table size is small. Measured on `descriptor.proto` at step 3, **three**
+  entries cover its 34 messages:
+
+  | canonical set | messages |
+  |---|---|
+  | `[[1000, 536870911]]` | the nine `*Options` types |
+  | `[[1000, 10000]]` | `FeatureSet`, after S3's adjacency merge |
+  | `[[536000000, 536000000]]` | `FileDescriptorSet`, `SourceCodeInfo` |
+
+  The last row is the one this spec did not predict: both reserve the
+  single field number 536000000 for an internal declaration. Every other
+  message takes the `NO_EXT_RANGES` sentinel rather than an empty set, so
+  the empty set never occupies a slot. Small on any corpus too, because
+  extension ranges are rare and overwhelmingly spelled `1000 to max`.
 
 - **S6.** The intern table is ordered deterministically — sorted by
   canonical range set, not by first encounter — so that `hopcroft.rkyv`
@@ -477,14 +511,41 @@ against the pre-change binary reading the pre-change v2 database.
 
 **Step 3 — reproto emits ranges under the flag (S2-S4).**
 *Checkpoint:* with the flag off, YAML and `hopcroft.rkyv` byte-identical
-to step 2; with the flag on, a `descriptor.proto`-only db carries
-exactly three interned sets.
+to step 2; with the flag on, a `descriptor.proto`-only db carries the
+distinct range sets tabulated in S5.
+
+*Measured 2026-08-04.* Flag off: googleapis `hopcroft.rkyv` and the
+whole rendered `.proto` tree byte-identical to step 2. Flag on:
+`descriptor.proto`'s 34 messages carry **three** distinct sets, S5's
+table — including `FeatureSet`'s `[[1000, 10000]]`, which is S3's
+adjacency merge doing its job on real input, since that message's three
+declared clauses touch.
 
 **Step 4 — interning and the Hopcroft initial partition (S5-S7).**
 *Checkpoint:* with the flag off, state count and artifact unchanged from
 step 2. With the flag on, **record the state-count delta** — this is the
 one quantity this spec predicts (small, because extension ranges are
 rare) without having measured it.
+
+*Measured 2026-08-04.* Flag off: googleapis `hopcroft.rkyv`
+byte-identical to step 3. Flag on: **the state-count delta is zero** —
+16 696 states before and after, with the same 85 806 transitions. The
+prediction that it would be small was right for a reason weaker than the
+argument assumed: on this corpus the twelve extensible messages are all
+`descriptor.proto` types whose transition signatures were already
+unique, so S7's new partition key splits nothing that Σ was not already
+splitting. It earns its keep as a *guarantee* rather than as an
+observed refinement — nothing in the graph would otherwise stop a future
+schema's extensible message from merging with a closed twin. The file
+grows by 48 bytes: three ranges and three `ExtRangeSet` headers.
+
+The three interned sets are exactly S5's table, held by twelve nodes:
+the nine `*Options` types plus `ExtensionRangeOptions` take
+`[[1000, 536870911]]`, `FeatureSet` takes `[[1000, 10000]]`, and
+`FileDescriptorSet`/`SourceCodeInfo` share `[[536000000, 536000000]]`.
+The table's order confirms S6 — sorted by the set, so the two
+`1000`-based sets are adjacent regardless of which message the loader
+happened to visit first.
 
 **Step 5 — policy plumbing, `Scan` ≡ `Score` (S11).** Add the enum,
 thread it through, convert the three `run.rs` literals to
@@ -566,6 +627,11 @@ fact in code rather than in the schema.
 4. `graph: test_ext_ranges_interned_and_deduped` — two messages with the
    same canonical set share an index; `1000 to max` and
    `1000 to 536870911` intern identically (S3, S5).
+4b. `reproto: test_ext_ranges_canonical_form` — the uniqueness property
+   of S3, driven from spellings that differ only in form: adjacent
+   clauses (`1000 to 1999; 2000 to 2999`), out-of-order clauses,
+   overlapping clauses and a single-number clause (`10000`) must all
+   reduce to the one canonical list their field-number set determines.
 5. `hopcroft: test_extensible_and_closed_do_not_merge` — two messages
    with identical transitions, one extensible, land in different states
    (S7).

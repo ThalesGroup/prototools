@@ -12,6 +12,12 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 struct YamlFile {
+    /// True iff reproto was asked for extension ranges (spec 0238 S2). Absent
+    /// from a pre-0238 file and from any run without the flag, which is
+    /// exactly the distinction the SCAN policy needs: without it, a message
+    /// carrying no `ext_ranges` is *unrecorded*, not *closed*.
+    #[serde(default)]
+    extension_ranges: bool,
     entries: Vec<String>,
     messages: HashMap<String, YamlMessage>,
 }
@@ -22,6 +28,11 @@ struct YamlMessage {
     #[serde(default)]
     kind: String,
     fields: Vec<YamlField>,
+    /// Canonical extension ranges, inclusive at both ends (spec 0238 S3):
+    /// sorted, disjoint and non-adjacent. Absent means this message declares
+    /// none, i.e. it is closed.
+    #[serde(default)]
+    ext_ranges: Vec<(u32, u32)>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,6 +106,12 @@ pub enum NodeKind {
 }
 
 /// Merged result of all loaded YAML files.
+///
+/// `Default` exists for the test fixtures that build one by hand: they care
+/// about two or three fields and should not have to be edited every time the
+/// scoring graph learns a new one (spec 0238 S11 records the same lesson for
+/// `ScoringOpts`). `merge_from_strings` still fills every field explicitly.
+#[derive(Default)]
 pub struct Merged {
     /// FQDN → fields (sorted by field number).
     pub states: HashMap<String, Vec<ScoringField>>,
@@ -102,6 +119,16 @@ pub struct Merged {
     pub node_kinds: HashMap<String, NodeKind>,
     /// Root entry FQDNs (from all `entries` lists, deduplicated).
     pub roots: Vec<String>,
+    /// FQDN → canonical extension ranges (spec 0238 S3). A missing key means
+    /// the message declares none; no entry ever holds an empty vector.
+    pub ext_ranges: HashMap<String, Vec<(u32, u32)>>,
+    /// True iff **every** merged file declared `extension_ranges: true`.
+    ///
+    /// Conjunction, not disjunction: one file from a run without the flag is
+    /// enough to make "no `ext_ranges` key" ambiguous across the merged graph,
+    /// and the safe reading of an ambiguous graph is that ranges were never
+    /// recorded at all (spec 0238 S9).
+    pub has_extension_ranges: bool,
 }
 
 // ── Loading ───────────────────────────────────────────────────────────────────
@@ -112,10 +139,13 @@ pub fn merge_from_strings(scoring_graphs: &[String]) -> Result<Merged, Box<dyn s
     let mut node_kinds: HashMap<String, NodeKind> = HashMap::new();
     let mut roots: Vec<String> = Vec::new();
     let mut roots_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut ext_ranges: HashMap<String, Vec<(u32, u32)>> = HashMap::new();
+    let mut has_extension_ranges = true;
 
     for (i, text) in scoring_graphs.iter().enumerate() {
         let yaml: YamlFile =
             serde_yaml::from_str(text).map_err(|e| format!("scoring_graph[{i}]: {e}"))?;
+        has_extension_ranges &= yaml.extension_ranges;
         for fqdn in yaml.entries {
             if roots_seen.insert(fqdn.clone()) {
                 roots.push(fqdn);
@@ -125,12 +155,22 @@ pub fn merge_from_strings(scoring_graphs: &[String]) -> Result<Merged, Box<dyn s
             let nk = parse_node_kind(&msg.kind);
             node_kinds.entry(fqdn.clone()).or_insert(nk);
             let fields = parse_fields(&fqdn, msg.fields)?;
+            let msg_ext_ranges = check_ext_ranges(&fqdn, msg.ext_ranges)?;
             match states.entry(fqdn.clone()) {
                 std::collections::hash_map::Entry::Vacant(e) => {
                     e.insert(fields);
+                    if !msg_ext_ranges.is_empty() {
+                        ext_ranges.insert(fqdn.clone(), msg_ext_ranges);
+                    }
                 }
                 std::collections::hash_map::Entry::Occupied(existing) => {
-                    if *existing.get() != fields {
+                    // Spec 0238 S4: extensibility is part of what makes two
+                    // definitions of one FQDN the same definition. Comparing
+                    // only the fields would silently keep the first and drop a
+                    // genuine disagreement about which unknown numbers are legal.
+                    let ranges_differ = ext_ranges.get(&fqdn).map(Vec::as_slice).unwrap_or(&[])
+                        != msg_ext_ranges.as_slice();
+                    if *existing.get() != fields || ranges_differ {
                         eprintln!(
                             "warning: conflicting definitions for '{fqdn}' in scoring_graph[{i}]; using first",
                         );
@@ -144,8 +184,53 @@ pub fn merge_from_strings(scoring_graphs: &[String]) -> Result<Merged, Box<dyn s
         states,
         node_kinds,
         roots,
+        ext_ranges,
+        // Vacuously true over zero files, which is the wrong reading: an empty
+        // merge has recorded nothing.
+        has_extension_ranges: has_extension_ranges && !scoring_graphs.is_empty(),
     })
 }
+
+/// Validate that `ranges` is in the canonical form reproto promises
+/// (spec 0238 S3): inclusive, non-degenerate, ascending, disjoint and
+/// non-adjacent.
+///
+/// Checked rather than assumed because the intern index downstream *is* the
+/// equality test — two spellings of one set that reach this point uncanonical
+/// would intern as two and split states that admit the same field numbers.
+/// A hand-edited YAML is the realistic way that happens.
+fn check_ext_ranges(
+    fqdn: &str,
+    ranges: Vec<(u32, u32)>,
+) -> Result<Vec<(u32, u32)>, Box<dyn std::error::Error>> {
+    for (i, &(start, end)) in ranges.iter().enumerate() {
+        if start > end {
+            return Err(format!("{fqdn}: ext_ranges [{start}, {end}] is empty").into());
+        }
+        if end > MAX_FIELD_NUMBER {
+            return Err(format!(
+                "{fqdn}: ext_ranges [{start}, {end}] exceeds the maximum field number \
+                 {MAX_FIELD_NUMBER}"
+            )
+            .into());
+        }
+        if i > 0 {
+            let prev_end = ranges[i - 1].1;
+            if start <= prev_end + 1 {
+                return Err(format!(
+                    "{fqdn}: ext_ranges are not canonical — [{start}, {end}] is not \
+                     strictly after [{}, {prev_end}] with a gap",
+                    ranges[i - 1].0
+                )
+                .into());
+            }
+        }
+    }
+    Ok(ranges)
+}
+
+/// 2²⁹−1, the largest legal protobuf field number.
+const MAX_FIELD_NUMBER: u32 = 536_870_911;
 
 fn parse_fields(
     fqdn: &str,
@@ -222,5 +307,79 @@ impl PartialEq for ScoringField {
             && self.child == other.child
             && self.range == other.range
             && self.label == other.label
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One file declaring `A` with the given `ext_ranges` body (may be empty).
+    fn one_file(marker: bool, ext_ranges: &str) -> String {
+        let marker = if marker {
+            "extension_ranges: true\n"
+        } else {
+            ""
+        };
+        format!(
+            "{marker}entries: [A]\n\
+             messages:\n  \
+               A:\n    \
+                 fields:\n      \
+                   - number: 1\n        \
+                     type: uint64\n{ext_ranges}"
+        )
+    }
+
+    #[test]
+    fn ext_ranges_are_parsed() {
+        let m = merge_from_strings(&[one_file(true, "    ext_ranges: [[1000, 2999]]\n")]).unwrap();
+        assert_eq!(m.ext_ranges["A"], vec![(1000, 2999)]);
+        assert!(m.has_extension_ranges);
+    }
+
+    #[test]
+    fn a_closed_message_gets_no_entry_rather_than_an_empty_one() {
+        // Spec 0238 S5: closedness is the `NO_EXT_RANGES` sentinel downstream,
+        // so an empty vector must never occupy a key here either.
+        let m = merge_from_strings(&[one_file(true, "")]).unwrap();
+        assert!(!m.ext_ranges.contains_key("A"));
+    }
+
+    #[test]
+    fn the_marker_is_a_conjunction_over_the_merged_files() {
+        // Spec 0238 S9: one file from a run without the flag makes "no
+        // ext_ranges key" ambiguous across the whole merge.
+        let both = merge_from_strings(&[one_file(true, ""), one_file(true, "")]).unwrap();
+        assert!(both.has_extension_ranges);
+
+        let mixed = merge_from_strings(&[one_file(true, ""), one_file(false, "")]).unwrap();
+        assert!(!mixed.has_extension_ranges);
+    }
+
+    #[test]
+    fn the_marker_is_false_over_zero_files() {
+        let m = merge_from_strings(&[]).unwrap();
+        assert!(!m.has_extension_ranges);
+    }
+
+    #[test]
+    fn a_hand_edited_uncanonical_range_set_is_rejected() {
+        // Not reachable from reproto, which canonicalizes (S3) — but the
+        // intern index *is* the equality test downstream, so two spellings of
+        // one set reaching it uncanonical would split equivalent states.
+        for bad in [
+            "    ext_ranges: [[2999, 1000]]\n",               // empty
+            "    ext_ranges: [[1000, 536870912]]\n",          // past the maximum
+            "    ext_ranges: [[2000, 2999], [1000, 1999]]\n", // out of order
+            "    ext_ranges: [[1000, 1999], [2000, 2999]]\n", // adjacent, unmerged
+        ] {
+            assert!(
+                merge_from_strings(&[one_file(true, bad)]).is_err(),
+                "expected {bad:?} to be rejected"
+            );
+        }
     }
 }

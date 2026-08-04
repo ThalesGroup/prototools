@@ -1569,7 +1569,7 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
             entries.sort()
 
             scoring_graphs.append(
-                str(yaml.dump({'entries': entries, 'messages': messages},
+                str(yaml.dump(_scoring_yaml_doc(ctx, entries, messages),
                               sort_keys=False, allow_unicode=True))
             )
             advance()
@@ -1844,6 +1844,60 @@ def _scoring_kind(field: Any) -> 'tuple[str, str | None, tuple[int, int] | None]
     raise ValueError(f'Unknown field type: {TYPE}')
 
 
+def _scoring_yaml_doc(ctx: 'Context', entries: list[str], messages: dict) -> dict:
+    """Assemble one scoring-graph YAML document (spec 0045 format).
+
+    The `extension_ranges: true` marker (spec 0238 S2) declares that this file
+    was produced by a run that was *asked* for extension ranges, which is what
+    makes the absence of an `ext_ranges` key on a message mean "closed" rather
+    than "not recorded".  Without the marker the SCAN policy would read a graph
+    built by an ordinary run as one in which every message is closed, and
+    terminate on the first custom option of every descriptor.
+
+    Emitted only when the flag is set, so the document is byte-identical to
+    the pre-0238 one otherwise.
+    """
+    doc: dict = {}
+    if ctx.emit_extension_ranges:
+        doc['extension_ranges'] = True
+    doc['entries'] = entries
+    doc['messages'] = messages
+    return doc
+
+
+def _canonical_extension_ranges(desc: Any) -> 'list[list[int]]':
+    """Return `desc`'s extension ranges in canonical form (spec 0238 S3).
+
+    The canonical form is the unique minimal list of maximal, disjoint,
+    **non-adjacent**, ascending intervals, inclusive at both ends.  Uniqueness
+    is the whole requirement: the compiled graph interns range sets and uses
+    the intern index as the equality test, so two messages admitting exactly
+    the same extension field numbers must reach the same index however their
+    `.proto` spelled it.
+
+    Three things make that non-trivial:
+
+    - `extension_ranges` is **half-open** — `extensions 1000 to max` arrives as
+      `(1000, 536870912)` and `extensions 10000` as `(10000, 10001)`.
+    - Clauses need not be sorted or disjoint.
+    - Adjacent clauses must merge.  This is not hypothetical: `FeatureSet`
+      declares `1000 to 9994`, `9995 to 9999`, `10000`, which touch and so
+      canonicalize to the single `[1000, 10000]` that one
+      `extensions 1000 to 10000` clause would have given.
+
+    `max` needs no handling here: protoc has already materialized it as the
+    concrete 536870912 by the time reproto sees the descriptor.
+    """
+    spans = sorted((s, e - 1) for s, e in desc.extension_ranges if e > s)
+    merged: list[list[int]] = []
+    for start, end in spans:
+        if merged and start <= merged[-1][1] + 1:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return merged
+
+
 def _collect_scoring_messages(
     ctx: 'Context',
     desc: Any,
@@ -1898,10 +1952,15 @@ def _collect_scoring_messages(
     # Must precede `messages[name]`: `yaml.dump(sort_keys=False)` makes the
     # insertion order of `messages` the emitted order.
     _synthesize_message_set_item(desc, messages, fields_out, name)
-    messages[name] = {
+    body: dict = {
         'kind': 'GROUP' if desc.full_name in group_fqdns else 'LENDEL',
         'fields': fields_out,
     }
+    if ctx.emit_extension_ranges:
+        ext_ranges = _canonical_extension_ranges(desc)
+        if ext_ranges:
+            body['ext_ranges'] = ext_ranges
+    messages[name] = body
     entries.append(name)
     for nested in desc.nested_types:
         _collect_scoring_messages(ctx, nested, messages, group_fqdns, entries, rename)
@@ -1946,5 +2005,5 @@ def _phase_emit_scoring_graphs(ctx: 'Context', out_dir: Path) -> None:
         yaml_path = out_dir / Path(canonical_name).with_suffix('.yaml')
         yaml_path.parent.mkdir(parents=True, exist_ok=True)
         with open(yaml_path, 'w', encoding='utf-8') as fh:
-            yaml.dump({'entries': entries, 'messages': messages}, fh,
+            yaml.dump(_scoring_yaml_doc(ctx, entries, messages), fh,
                       sort_keys=False, allow_unicode=True)

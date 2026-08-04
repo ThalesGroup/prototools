@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use super::hopcroft::Partition;
 use super::load::{FieldLabel, Merged, NodeKind, ScoringField, ScoringKind};
 use super::serial::CompiledGraph;
-use super::serial::{NodeEntry, RootEntry, TransitionEntry, NO_EXT_RANGES};
+use super::serial::{ExtRangeSet, NodeEntry, RootEntry, TransitionEntry, NO_EXT_RANGES};
 
 // ── Leaf sentinel node IDs ────────────────────────────────────────────────────
 //
@@ -176,6 +176,16 @@ pub struct RawGraph {
     pub num_nodes: u32,
     /// wire_type per non-leaf node ID (2=LENDEL, 3=GROUP).
     pub node_wire_types: HashMap<u32, u8>,
+    /// Interned canonical extension-range sets, sorted (spec 0238 S5-S6).
+    /// Sorted by the set itself rather than by first encounter, so the table
+    /// — and every index into it — is independent of `merged.ext_ranges`'s
+    /// hash order.
+    pub ext_range_table: Vec<Vec<(u32, u32)>>,
+    /// Non-leaf node ID → index into `ext_range_table`. A node absent from
+    /// this map declares no extension ranges, i.e. it takes `NO_EXT_RANGES`.
+    pub node_ext_range_idx: HashMap<u32, u16>,
+    /// Carried through from `Merged` so `compile` can record it (spec 0238 S9).
+    pub has_extension_ranges: bool,
 }
 
 /// Reserved raw node ID for `google.protobuf.Any` (spec 0089 §9).
@@ -260,6 +270,30 @@ pub fn build(merged: &Merged) -> (RawGraph, LeafRegistry) {
         }
     }
 
+    // Intern the canonical extension-range sets (spec 0238 S5-S6). Sorting
+    // the sets themselves — rather than numbering them as the messages are
+    // walked — is what makes the table reproducible: `merged.ext_ranges` is a
+    // `HashMap`, and its iteration order would otherwise pick the indices.
+    let mut ext_range_table: Vec<Vec<(u32, u32)>> = merged.ext_ranges.values().cloned().collect();
+    ext_range_table.sort_unstable();
+    ext_range_table.dedup();
+    assert!(
+        ext_range_table.len() < NO_EXT_RANGES as usize,
+        "{} distinct extension-range sets exceeds what a u16 index can address",
+        ext_range_table.len()
+    );
+
+    let mut node_ext_range_idx: HashMap<u32, u16> = HashMap::new();
+    for (fqdn, ranges) in &merged.ext_ranges {
+        let Some(&node_id) = node_ids.get(fqdn) else {
+            continue;
+        };
+        let idx = ext_range_table
+            .binary_search(ranges)
+            .expect("every range set was just interned");
+        node_ext_range_idx.insert(node_id, idx as u16);
+    }
+
     let node_count = node_ids.len() as u32;
     let num_nodes = node_count + reg.num_leaves() as u32;
 
@@ -269,9 +303,26 @@ pub fn build(merged: &Merged) -> (RawGraph, LeafRegistry) {
             edges,
             num_nodes,
             node_wire_types,
+            ext_range_table,
+            node_ext_range_idx,
+            has_extension_ranges: merged.has_extension_ranges,
         },
         reg,
     )
+}
+
+/// Flatten the interned table into the archived pair of vectors (spec 0238 S8).
+fn flat_ext_ranges(table: &[Vec<(u32, u32)>]) -> (Vec<(u32, u32)>, Vec<ExtRangeSet>) {
+    let mut flat: Vec<(u32, u32)> = Vec::new();
+    let mut sets: Vec<ExtRangeSet> = Vec::with_capacity(table.len());
+    for set in table {
+        sets.push(ExtRangeSet {
+            offset: flat.len() as u32,
+            len: set.len() as u32,
+        });
+        flat.extend_from_slice(set);
+    }
+    (flat, sets)
 }
 
 // ── Compilation ───────────────────────────────────────────────────────────────
@@ -321,12 +372,19 @@ pub fn compile(
     // Leaf nodes: attributes come directly from LeafAttrs.
 
     // Map block_id → NodeEntry attributes.
-    let mut node_attrs: HashMap<u32, (u8, bool, u16)> = HashMap::new();
+    let mut node_attrs: HashMap<u32, (u8, bool, u16, u16)> = HashMap::new();
 
-    // Non-leaf node blocks: use pre-computed wire_types.
+    // Non-leaf node blocks: use pre-computed wire_types.  Taking the first
+    // node's `ext_range_idx` for the whole block is safe because it seeds the
+    // Hopcroft initial partition (spec 0238 S7) and refinement only splits.
     for (&node_id, &wt) in &raw.node_wire_types {
         let block = partition.block_of(node_id);
-        node_attrs.entry(block).or_insert((wt, false, 0xFFFF));
+        let ext = raw
+            .node_ext_range_idx
+            .get(&node_id)
+            .copied()
+            .unwrap_or(NO_EXT_RANGES);
+        node_attrs.entry(block).or_insert((wt, false, 0xFFFF, ext));
     }
 
     // Leaf node blocks.
@@ -335,18 +393,28 @@ pub fn compile(
         let sentinel = leaf_sentinel(li, reg);
         let block = partition.block_of_sentinel(sentinel, reg);
         let attrs = leaf_attrs(sentinel, reg);
-        node_attrs.insert(block, (attrs.wire_type, attrs.is_string, attrs.range_idx));
+        node_attrs.insert(
+            block,
+            (
+                attrs.wire_type,
+                attrs.is_string,
+                attrs.range_idx,
+                NO_EXT_RANGES,
+            ),
+        );
     }
 
     let mut nodes: Vec<NodeEntry> = node_attrs
         .into_iter()
-        .map(|(state_id, (wire_type, is_string, range_idx))| NodeEntry {
-            state_id,
-            wire_type,
-            is_string,
-            range_idx,
-            ext_range_idx: NO_EXT_RANGES,
-        })
+        .map(
+            |(state_id, (wire_type, is_string, range_idx, ext_range_idx))| NodeEntry {
+                state_id,
+                wire_type,
+                is_string,
+                range_idx,
+                ext_range_idx,
+            },
+        )
         .collect();
     nodes.sort_by_key(|n| n.state_id);
 
@@ -366,15 +434,17 @@ pub fn compile(
 
     let _ = msg_count; // used only for the sentinel loop above
 
+    let (ext_ranges, ext_range_sets) = flat_ext_ranges(&raw.ext_range_table);
+
     CompiledGraph {
         nodes,
         transitions,
         roots: root_entries,
         ranges: reg.ranges.clone(),
         num_states: partition.num_blocks() as u32,
-        ext_ranges: Vec::new(),
-        ext_range_sets: Vec::new(),
-        has_extension_ranges: false,
+        ext_ranges,
+        ext_range_sets,
+        has_extension_ranges: raw.has_extension_ranges,
     }
 }
 
@@ -417,7 +487,11 @@ pub fn compile_initial(raw: &RawGraph, reg: &LeafRegistry, roots: &[String]) -> 
             wire_type: wt,
             is_string: false,
             range_idx: 0xFFFF,
-            ext_range_idx: NO_EXT_RANGES,
+            ext_range_idx: raw
+                .node_ext_range_idx
+                .get(&node_id)
+                .copied()
+                .unwrap_or(NO_EXT_RANGES),
         });
     }
 
@@ -447,15 +521,16 @@ pub fn compile_initial(raw: &RawGraph, reg: &LeafRegistry, roots: &[String]) -> 
     }
 
     let num_states = msg_count + num_leaves as u32;
+    let (ext_ranges, ext_range_sets) = flat_ext_ranges(&raw.ext_range_table);
     CompiledGraph {
         nodes,
         transitions,
         roots: root_entries,
         ranges: reg.ranges.clone(),
         num_states,
-        ext_ranges: Vec::new(),
-        ext_range_sets: Vec::new(),
-        has_extension_ranges: false,
+        ext_ranges,
+        ext_range_sets,
+        has_extension_ranges: raw.has_extension_ranges,
     }
 }
 

@@ -27,6 +27,12 @@ use super::graph::{
     leaf_attrs, LeafRegistry, RawGraph, ANY_NODE_ID, LEAF_I32, LEAF_I64, LEAF_INT32, LEAF_LEN,
     LEAF_STRING, LEAF_UINT32, LEAF_UINT64, MESSAGE_SET_NODE_ID, NUM_FIXED_LEAVES,
 };
+use super::serial::NO_EXT_RANGES;
+
+/// The three attributes that separate message blocks in the initial partition:
+/// framing (`wire_type`), extensibility (`ext_range_idx`, spec 0238 S7) and the
+/// outgoing `(field_number, label)` signature.
+type MessageBlockKey = (u8, u16, Vec<(u32, u8)>);
 
 // ── Partition ─────────────────────────────────────────────────────────────────
 
@@ -123,7 +129,11 @@ pub fn minimize(
     }
 
     // ── Initial partition P₀ ─────────────────────────────────────────────────
-    let mut sig_to_block: HashMap<(u8, Vec<(u32, u8)>), usize> = HashMap::new();
+    // The message key carries `ext_range_idx` (spec 0238 S7): extensibility is
+    // an attribute of the state, which no edge carries, so it cannot join Σ —
+    // seeding the partition with it is what keeps an extensible message and a
+    // structurally identical closed one in separate blocks forever.
+    let mut sig_to_block: HashMap<MessageBlockKey, usize> = HashMap::new();
     let mut leaf_attr_to_block: HashMap<(u8, bool, u16), usize> = HashMap::new();
     // Note: leaf partition key is (wire_type, is_string, range_idx).
     // wire_type 8 = UINT32, 9 = INT32 ensure they start in distinct classes.
@@ -142,8 +152,13 @@ pub fn minimize(
             continue;
         }
         let wt = node_wire_types.get(&node_id).copied().unwrap_or(2);
+        let ext = raw
+            .node_ext_range_idx
+            .get(&node_id)
+            .copied()
+            .unwrap_or(NO_EXT_RANGES);
         let s = sig[i].clone();
-        let b = sig_to_block.entry((wt, s)).or_insert_with(|| {
+        let b = sig_to_block.entry((wt, ext, s)).or_insert_with(|| {
             let b = num_blocks;
             num_blocks += 1;
             b

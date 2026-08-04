@@ -114,6 +114,7 @@ fn make_merged() -> Merged {
         states,
         node_kinds: std::collections::HashMap::new(),
         roots: vec!["Outer".to_string()],
+        ..Default::default()
     }
 }
 
@@ -510,6 +511,7 @@ fn tc16_fixed_fields_known() {
         },
         node_kinds: std::collections::HashMap::new(),
         roots: vec!["M".to_string()],
+        ..Default::default()
     };
     let (raw, reg) = graph::build(&merged);
     let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_, _| {});
@@ -651,6 +653,7 @@ fn build_two_entry_graph() -> score_load::LoadedGraph {
         states,
         node_kinds: std::collections::HashMap::new(),
         roots: vec!["Outer".to_string(), "Inner".to_string()],
+        ..Default::default()
     };
 
     let (raw, reg) = graph::build(&merged);
@@ -977,6 +980,7 @@ fn map_entry_states_are_distinct() {
         states,
         node_kinds: std::collections::HashMap::new(),
         roots: vec!["MapWithOptions".to_string()],
+        ..Default::default()
     };
 
     let (raw, reg) = graph::build(&merged);
@@ -1017,6 +1021,7 @@ fn build_single_field_graph(
         },
         node_kinds: std::collections::HashMap::new(),
         roots: vec!["M".to_string()],
+        ..Default::default()
     };
     let (raw, reg) = graph::build(&merged);
     let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_, _| {});
@@ -1203,6 +1208,7 @@ fn tc77_12_bool_vs_int32_discrimination() {
         },
         node_kinds: std::collections::HashMap::new(),
         roots: vec!["Bool".to_string(), "Int32".to_string()],
+        ..Default::default()
     };
     let (raw, reg) = graph::build(&merged);
     let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_, _| {});
@@ -1307,6 +1313,7 @@ fn make_merged_any() -> Merged {
             "TargetVarint".to_string(),
             "TargetString".to_string(),
         ],
+        ..Default::default()
     }
 }
 
@@ -1426,6 +1433,7 @@ fn tc_of1_a_corpus_past_the_old_u16_ceiling_loads_and_scores() {
         states,
         node_kinds: std::collections::HashMap::new(),
         roots,
+        ..Default::default()
     };
 
     let (raw, reg) = graph::build(&merged);
@@ -1505,6 +1513,7 @@ fn build_recursive_graph() -> score_load::LoadedGraph {
         },
         node_kinds: std::collections::HashMap::new(),
         roots: vec!["Node".to_string()],
+        ..Default::default()
     };
     let (raw, reg) = graph::build(&merged);
     let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_, _| {});
@@ -1764,6 +1773,7 @@ fn survivors_keep_their_own_verdict_after_a_mismatch_retain() {
         states,
         node_kinds: std::collections::HashMap::new(),
         roots: vec!["R1".to_string(), "R2".to_string(), "R3".to_string()],
+        ..Default::default()
     };
     let (raw, reg) = graph::build(&merged);
     let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_, _| {});
@@ -1853,6 +1863,7 @@ fn build_packed_graph() -> score_load::LoadedGraph {
         states,
         node_kinds: std::collections::HashMap::new(),
         roots: vec!["P".to_string()],
+        ..Default::default()
     };
 
     let (raw, reg) = graph::build(&merged);
@@ -2019,6 +2030,7 @@ fn build_many_root_graph(n: u32) -> score_load::LoadedGraph {
         states,
         node_kinds: std::collections::HashMap::new(),
         roots: (0..n).map(|i| format!("R{i}")).collect(),
+        ..Default::default()
     };
     let (raw, reg) = graph::build(&merged);
     let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_, _| {});
