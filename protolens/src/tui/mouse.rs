@@ -368,10 +368,18 @@ impl App {
         // Spec 0142: a footer line carries no fold glyph, so the check
         // is confined to the rows a node draws its own content on.
         if !self.is_footer(pos) && self.has_children(pos.node) {
-            let rel_col = col - self.main_area.x;
             // Column 0 is always the heat-cue gutter (spec 0138 N1: a
             // glyph or a reserved blank, never part of the line's own
             // text) — the marker sits one column further right.
+            //
+            // `pan_offset` is added back for the same reason
+            // `set_caret_from_click` adds it: the fold margin is part of
+            // the row's content, so `pan_spans` drops it along with
+            // everything else the pan scrolls off the left edge. Without
+            // this the marker's hit target stays at the column it
+            // occupied *before* the pan, so on a panned view a click on
+            // the visible glyph places the caret and a click on some
+            // unrelated character folds the node.
             //
             // The hit target is the marker *and* the blank column
             // `fold_margin` draws beside it — the whole two-column fold
@@ -382,10 +390,11 @@ impl App {
             // a cell and one of its presses silently becomes a caret
             // placement instead of a toggle, which reads as a lost
             // click.
+            let rel_col = (col - self.main_area.x) as usize;
             let line = self.line_text(pos);
-            let marker = render::marker_column(&line);
-            let field = marker..marker + render::FOLD_FIELD_WIDTH as u16;
-            if rel_col >= 1 && field.contains(&(rel_col - 1)) {
+            let marker = render::marker_column(&line) as usize;
+            let field = marker..marker + render::FOLD_FIELD_WIDTH;
+            if rel_col >= 1 && field.contains(&(rel_col - 1 + self.pan_offset)) {
                 self.toggle_fold(pos.node);
                 return true;
             }

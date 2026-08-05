@@ -882,6 +882,53 @@ fn clicking_the_fold_marker_toggles_the_node_despite_the_heat_cue_gutter() {
     );
 }
 
+/// The fold margin is part of the row's content, so panning right
+/// scrolls it off the left edge along with everything else — the hit
+/// target has to follow the glyph the user can see, not the column it
+/// occupied before the pan.
+#[test]
+fn a_marker_click_follows_the_glyph_when_the_view_is_panned() {
+    let (mut app, grp_idx) = group_type_fixture();
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 40, 20);
+
+    let line_idx = app.absolute_start(grp_idx);
+    let row = line_idx as u16;
+    let marker = render::marker_column(&app.line_text(app.line_pos(line_idx).unwrap()));
+    assert!(marker >= 2, "the fixture's group must be indented");
+    app.pan_offset = marker as usize;
+
+    // Panned by exactly the marker's own column, the glyph is drawn in
+    // the pane's first text column, immediately right of the heat-cue
+    // gutter.
+    let drawn_col = app.main_area.x + 1;
+    let former_col = drawn_col + marker;
+    let click = |app: &mut App, column| {
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+    };
+
+    // The column the marker sat at before the pan now shows plain text,
+    // and must be treated as such. Checked first, because the fold
+    // below narrows the content and `folds_changed` clamps `pan_offset`
+    // to match.
+    click(&mut app, former_col);
+    assert!(
+        !app.folded.contains(&grp_idx),
+        "a click past the panned fold field places the caret, not a fold"
+    );
+
+    click(&mut app, drawn_col);
+    assert!(
+        app.folded.contains(&grp_idx),
+        "the panned marker must still toggle"
+    );
+}
+
 /// Clicking a foldable node's fold marker shifts keyboard focus to the
 /// main pane, as any main-pane click does, and puts the cursor on the
 /// node it folded.
