@@ -23,6 +23,53 @@ ALL_EXTENSIONS = BINARY_EXTENSIONS + TEXT_EXTENSIONS
 _GLOB_CHARS = set('*?[')
 
 
+# Memo for blob_members(), keyed on the root path. A blob is scanned in
+# full, and several DESCRIPTOR_FILES arguments may resolve against the
+# same root (spec 0243 S7).
+_blob_members: dict[Path, list[tuple[Path, bytes]]] = {}
+
+
+def blob_members(blob: Path) -> list[tuple[Path, bytes]]:
+    """Read a file-shaped -I root as protoscan would have expanded it.
+
+    Returns (root-relative path, FDP bytes) pairs — one per
+    FileDescriptorProto the scanner accepts inside `blob`, named after
+    the FDP itself with a '.proto' suffix rewritten to '.pb'. That is
+    byte-for-byte the tree `protoscan --proto_out` writes, which is what
+    lets everything keyed on a root-relative path (the '.' argument,
+    -s/-p patterns, the W7 dedup) work unchanged (spec 0243 S5/S6).
+    """
+    cached = _blob_members.get(blob)
+    if cached is not None:
+        return cached
+
+    # Deferred import (spec 0243 S10). fdp_scan_lib embeds the WKT
+    # scoring graph, and that graph is built by running reproto: a
+    # top-level import would put fdp_scan_lib into reprotoBare's closure
+    # and close an eval-time cycle in the Nix build.
+    from fdp_scan_lib import scan
+
+    data = blob.read_bytes()
+    view = memoryview(data)
+    members: list[tuple[Path, bytes]] = []
+    for start, end in scan(data):
+        fragment = bytes(view[start:end])
+        # scan() returns only candidates it has already accepted as a
+        # FileDescriptorProto (spec 0239 G4); parsing here is not a
+        # filter, it is how the member's name is read.
+        fdp = FileDescriptorProto()
+        fdp.ParseFromString(fragment)
+        if not fdp.name:
+            continue
+        rel_path = Path(fdp.name)
+        if rel_path.suffix == PROTO_EXTENSION:
+            rel_path = rel_path.with_suffix('.pb')
+        members.append((rel_path, fragment))
+
+    _blob_members[blob] = members
+    return members
+
+
 class PathPatterns:
     """A set of root-relative path patterns, partitioned for fast lookup.
 
@@ -84,6 +131,31 @@ class QualFile:
         self._desc = v
 
 
+def _blob_files(
+    ctx: Context,
+    root: Path,
+    rel_path: Path,
+) -> list[QualFile]:
+    """Select the members of a blob root named by `rel_path`."""
+    members = blob_members(root)
+
+    # A '.proto' argument names the member the same way a directory root
+    # would: by the source name, with the extension resolved for it.
+    wanted = rel_path
+    if wanted.suffix == PROTO_EXTENSION:
+        wanted = wanted.with_suffix('.pb')
+    whole_blob = rel_path == Path('.')
+
+    selected: list[QualFile] = []
+    for member, fragment in members:
+        if not whole_blob and member != wanted and wanted not in member.parents:
+            continue
+        if ctx.pruned_paths.matches(member):
+            continue
+        selected.append(QualFile(root, member, fragment))
+    return selected
+
+
 def _load_files(
     ctx: Context,
     roots: list[Path],
@@ -98,8 +170,14 @@ def _load_files(
     loaded_files: list[QualFile] = []
 
     for root in roots:
+        # A file-shaped root is a blob: it stands for the FDPs inside it
+        # (spec 0243 S5), so it is not joined with rel_path at all.
+        if root.is_file():
+            loaded_files.extend(_blob_files(ctx, root, rel_path))
+            continue
+
         res_path = root / rel_path
-        
+
         if res_path.is_dir():
             # Recursively collect all files with recognized extensions.
             # Do not stop here (spec 0148 G1): a directory-shaped seed

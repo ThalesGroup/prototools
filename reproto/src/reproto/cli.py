@@ -107,10 +107,34 @@ def _complete_paths(
     return [CompletionItem(value=c, type='arg') for c in completions]
 
 
+def _complete_blob_members(blob: Path, incomplete: str) -> list[CompletionItem]:
+    '''Complete against the members of a blob -I root (spec 0243 S12).
+
+    Whole member paths, prefix-matched — not one path segment at a time
+    as _complete_paths does for a directory. There is no directory to
+    descend into here, and the shell script already inserts whole paths
+    for -I-relative candidates.
+    '''
+    from .load import blob_members
+    try:
+        members = blob_members(blob)
+    except Exception:
+        return []
+    return [
+        CompletionItem(value=str(rel_path), type='arg')
+        for rel_path, _ in sorted(members)
+        if str(rel_path).startswith(incomplete)
+    ]
+
+
 def complete_pb_files(ctx: click.Context, param: click.Parameter, incomplete: str):
     '''Custom completer for DESCRIPTOR_FILES argument (relative to -I).'''
     include_dirs = list(ctx.params.get('pb_path') or ['.'])
-    items = _complete_paths(incomplete, include_dirs, suffixes=('.pb', '.textpb'))
+    blobs = [Path(d) for d in include_dirs if Path(d).is_file()]
+    dirs = [d for d in include_dirs if Path(d) not in blobs]
+    items = _complete_paths(incomplete, dirs, suffixes=('.pb', '.textpb'))
+    for blob in blobs:
+        items.extend(_complete_blob_members(blob, incomplete))
     # Re-tag as 'arg_I' so the shell script knows these paths are relative to
     # a -I directory (possibly outside CWD) and must not use -o filenames.
     return [CompletionItem(value=c.value, type='arg_I') for c in items]
@@ -149,6 +173,7 @@ _SECTIONS: dict[str, str] = {
     'DESCRIPTOR_FILES':      'Input',
     '--desc-root':           'Input',
     '--proto-out':           'Output',
+    '--no-proto-out':        'Output',
     '--emit-binary':         'Output',
     '--source-info':         'Output',
     '--dry-run':             'Output',
@@ -244,6 +269,9 @@ class _SectionedCommand(click.Command):
         '  # Build a scoring DB from a descriptor slice\n'
         '  reproto --schema-db-out slice.desc \\\n'
         '      --seed desc:.com.example.MyMessage schema.desc\n\n'
+        '  # Read the descriptors embedded in a blob, writing the DB to\n'
+        '  # out.desc and the .proto files to out/proto/\n'
+        '  reproto --schema-db-out out.desc -I some/blob\n\n'
         '  # Decompile all types reachable from a seed, pruning a noisy package\n'
         '  reproto -O out/ \\\n'
         '      --seed desc:.com.example.Root \\\n'
@@ -262,7 +290,7 @@ class _SectionedCommand(click.Command):
 # --- Input ---
 @click.argument(
     'pb_files',
-    required=True,
+    required=False,
     type=click.Path(path_type=Path),
     nargs=-1,
     metavar='DESCRIPTOR_FILES',
@@ -271,11 +299,15 @@ class _SectionedCommand(click.Command):
 @click.option(
     '-I', '--desc-root',
     'pb_path',
-    type=click.Path(file_okay=False, dir_okay=True, exists=True, path_type=Path),
+    type=click.Path(file_okay=True, dir_okay=True, exists=True, path_type=Path),
     multiple=True,
     help=(
-        'Root directory for resolving relative DESCRIPTOR_FILES paths '
-        'and for locating imports (repeatable; like protoc -I).'
+        'Root for resolving relative DESCRIPTOR_FILES paths and for '
+        'locating imports (repeatable; like protoc -I). A directory is '
+        'read as-is; a file is read as a blob, standing for the '
+        'descriptors embedded in it, one member per FileDescriptorProto '
+        'found (what protoscan would have extracted). '
+        'Defaults to the current directory.'
     ),
 )
 
@@ -298,8 +330,20 @@ class _SectionedCommand(click.Command):
     help=(
         'Output directory for generated .proto files (created if absent). '
         'Not required when using --schema-db-out, --scoring-html-out, or --dry-run. '
+        "Defaults to the --schema-db-out stub's 'proto' child when that "
+        'option is given; --no-proto-out suppresses that default. '
         'When --schema-db-out is also given, DIR may not be inside its stub '
         "directory unless DIR is that stub's immediate 'proto' child."
+    ),
+)
+
+@click.option(
+    '--no-proto-out',
+    'no_proto_out',
+    is_flag=True,
+    help=(
+        'Do not write .proto files. Suppresses the -O directory that '
+        '--schema-db-out otherwise implies; an error if -O is also given.'
     ),
 )
 
@@ -614,6 +658,7 @@ def main(
         force_proto2_for_editions: bool,
         prost_workaround: bool,
         proto_out: Path | None,
+        no_proto_out: bool,
         output_root_deprecated: Path | None,
         emit_binary: bool,
         source_info: bool,
@@ -688,14 +733,35 @@ def main(
         if emit_scoring_html is None:
             emit_scoring_html = emit_pyvis
 
+    # No DESCRIPTOR_FILES means "everything under the -I roots" — which is
+    # what every invocation that uses -I spells out anyway (spec 0243 S13).
+    if not pb_files:
+        pb_files = [Path('.')]
+
+    # Validated here rather than beside the other --schema-db-out checks
+    # below: the S1 default derives a directory from this path, and must
+    # not create one from a path that is about to be rejected.
+    if build_schema_db is not None and not str(build_schema_db).endswith('.desc'):
+        raise click.UsageError('--schema-db-out PATH must end in .desc')
+
+    # --schema-db-out names the .proto directory (spec 0243 S1): the stub
+    # directory's 'proto' child is the only place spec 0155 G1 lets -O
+    # point inside the stub, so there is nothing else it could mean.
+    if no_proto_out and proto_out is not None:
+        raise click.UsageError(
+            "--no-proto-out contradicts '-O' / '--proto-out'; drop one."
+        )
+    if proto_out is None and not no_proto_out and build_schema_db is not None:
+        proto_out = build_schema_db.with_suffix('') / 'proto'
+
     # --proto-out is required when .proto file output will be produced.
     # It is legitimately optional for modes that produce no .proto output:
-    #   --schema-db-out       → writes only .desc / .rkyv artifacts
+    #   --no-proto-out        → asks for no .proto output
     #   --dry-run             → writes nothing at all
     #   --scoring-html-out    → writes HTML visualisations
     #   --dump-resolved-features → returns early before phase 7
     output_only_mode = bool(
-        build_schema_db is not None or dry_run or emit_scoring_html is not None
+        no_proto_out or dry_run or emit_scoring_html is not None
         or dump_resolved_features
     )
     if proto_out is None and not output_only_mode:
@@ -703,7 +769,9 @@ def main(
             "Missing option '-O' / '--proto-out'.\n"
             "Required when generating .proto output.  Alternatives:\n"
             "  - Add -O DIR                   to write .proto files to DIR\n"
-            "  - Add --schema-db-out FILE     to write a schema DB only\n"
+            "  - Add --schema-db-out FILE     to write a schema DB, and .proto\n"
+            "                                 files under FILE's 'proto' child\n"
+            "  - Add --no-proto-out           to write no .proto files\n"
             "  - Add --scoring-html-out FILE  to write HTML graphs only\n"
             "  - Add --dry-run                to run without writing any files"
         )
@@ -757,9 +825,6 @@ def main(
         fallback_protos.append(_wk('google/protobuf/type.proto'))
     if 'api' in use_variant_set:
         fallback_protos.append(_wk('google/protobuf/api.proto'))
-
-    if build_schema_db is not None and not str(build_schema_db).endswith('.desc'):
-        raise click.UsageError('--schema-db-out PATH must end in .desc')
 
     # spec 0155 G1: -O may not land inside --schema-db-out's stub
     # directory (reserved for hopcroft.rkyv/index.rkyv) except as that
@@ -903,8 +968,22 @@ def main(
         seed_fqdns, seed_paths = _partition(all_seeds)
         prune_fqdns, prune_paths = _partition(all_stumps)
 
+        roots = list(pb_path) if pb_path else [Path('.')]
+
+        # A file-shaped -I root is an explicit claim that the file holds
+        # descriptors, so an empty scan is an error rather than one more
+        # W1 among many (spec 0243 S9). Checked up front, and it warms
+        # the scan memo the load phase then reuses.
+        from .load import blob_members
+        for root in roots:
+            if root.is_file() and not blob_members(root):
+                raise click.ClickException(
+                    f'-I {root} holds no FileDescriptorProto; '
+                    'a file given to -I is read as a blob of descriptors.'
+                )
+
         reproto(
-            list(pb_path) if pb_path else [Path('.')],
+            roots,
             pb_files,
             seed_fqdns,
             prune_fqdns,

@@ -96,8 +96,10 @@ let
   # fdpScanLib must NOT appear here. It embeds the freshly generated WKT
   # scoring graph (spec 0239 S1, nix/rust.nix's _fdpScanLibExt), so it
   # depends on wktRkyv; wktRkyv depending back on it is an eval-time
-  # infinite recursion. reproto never imports fdp_scan_lib — that is
-  # protoscan's scanner — so nothing is lost by leaving it out.
+  # infinite recursion. reproto does import fdp_scan_lib since spec 0243
+  # (-I on a blob), but only from inside that branch, never at module
+  # load — so reprotoBare, which is what builds wktRkyv, still runs
+  # without it. It is attached to the final reproto package instead.
   wktRkyvDeps = reprotoPropagatedDeps ++ [
     prototextCodec
     prototextGraphLib
@@ -168,6 +170,13 @@ let
     propagatedBuildInputs = reprotoPropagatedDeps ++ [
       prototextCodec   # reproto.load imports prototext_codec_lib at module load time
       prototextGraphLib  # reproto --schema-db-out imports scoring_graph_lib
+      # reproto -I <blob> imports fdp_scan_lib to expand the blob (spec
+      # 0243 S10). It belongs here and NOT in reprotoPropagatedDeps, for
+      # the reason spelled out on wktRkyvDeps above: fdpScanLib depends
+      # on wktRkyv, which is built by reprotoBare, so the shared list
+      # would close an eval-time recursion. reproto.load defers the
+      # import into the blob branch, so reprotoBare never needs it.
+      fdpScanLib
     ];
 
     doCheck = false;
