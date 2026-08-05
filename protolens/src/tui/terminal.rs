@@ -86,6 +86,24 @@ const STYLES_SETTLE_INTERVAL: Duration = Duration::from_millis(50);
 /// most one `TieredBounded::upsert`.
 const PREFETCH_STEPS_PER_ITERATION: usize = 8;
 
+/// Spec 0245 S1b: how long one dispatch pass may keep taking events off
+/// the queue before it stops and draws. Checked *after* each dispatch,
+/// so one expensive event is always allowed to finish and the overshoot
+/// is bounded by that event's own cost.
+///
+/// A time budget rather than an event count, because per-event dispatch
+/// cost spans orders of magnitude — a clamped wheel pan is microseconds,
+/// an override re-render is milliseconds — so a count that coalesced a
+/// wheel burst usefully would stall the frame for tens of milliseconds
+/// on a queue of expensive ones. What the user perceives is elapsed time
+/// without a frame, so that is the unit.
+///
+/// At 8 ms a saturated queue still draws better than 60 Hz, while
+/// sitting two to three orders of magnitude above one wheel dispatch —
+/// so a real wheel burst coalesces completely and never reaches the
+/// budget at all.
+const DRAIN_BUDGET: Duration = Duration::from_millis(8);
+
 /// Drain any input events already queued in the terminal's input buffer
 /// before disabling raw mode.
 ///
@@ -449,7 +467,76 @@ where
     Ok(())
 }
 
-fn run_loop<B: Backend>(
+/// Dispatch one received event.
+///
+/// Returns the `redraw_why` tag for an event that asks for a frame, or
+/// `None` for one that does not. A key `Release` is dispatched to
+/// nothing (see below) yet still asks for a frame, exactly as it did
+/// when `run_loop` decided this from the event's shape alone.
+pub(super) fn dispatch_event(app: &mut App, ev: &event::AppEvent) -> Option<&'static str> {
+    match ev {
+        // Some Kitty-protocol-aware terminals report a `Release` event
+        // for a keystroke in addition to `Press`, even though this app
+        // only requests `DISAMBIGUATE_ESCAPE_CODES` (not
+        // `REPORT_EVENT_TYPES`). A `Release` event dispatched through
+        // `handle_key` after its matching `Press` already changed focus
+        // (e.g. `t`/`Esc`/`Tab` closing the override pane) would land in
+        // the *new* focus's handler instead of being a no-op —
+        // surfacing as a keypress "leaking" into both panes. Ignore
+        // anything but `Press`/`Repeat`.
+        event::AppEvent::Term(Event::Key(key)) => {
+            if key.kind != KeyEventKind::Release {
+                let dispatched_at = Instant::now();
+                app.handle_key(*key);
+                trace::trace!(
+                    "key {:?} us={}",
+                    key.code,
+                    dispatched_at.elapsed().as_micros()
+                );
+            }
+            Some("key")
+        }
+        event::AppEvent::Term(Event::Mouse(mouse)) => {
+            let dispatched_at = Instant::now();
+            app.handle_mouse(*mouse);
+            trace::trace!(
+                "mouse {:?} col={} row={} mods={:?} us={}",
+                mouse.kind,
+                mouse.column,
+                mouse.row,
+                mouse.modifiers,
+                dispatched_at.elapsed().as_micros()
+            );
+            Some("mouse")
+        }
+        event::AppEvent::Term(_) => Some("term"),
+        // Spec 0224 S1: O(1). Terminal events share this channel in FIFO
+        // order, so anything done here is paid by the next keystroke
+        // behind it. Spec 0192 S3: it forces no frame of its own — it
+        // only owes one within `HEAT_REPAINT_INTERVAL`.
+        event::AppEvent::HeatWorkerProgress => {
+            app.poll_pending_override_work();
+            None
+        }
+    }
+}
+
+/// Spec 0245 S1c: whether the event just dispatched armed something
+/// that takes the terminal away from `run_loop`'s draw.
+///
+/// A drain must stop here and leave the rest of the queue in the
+/// channel. This is a correctness rule, not a tuning knob: dispatching
+/// a keystroke after the user asked to suspend would deliver it to a
+/// screen that is no longer ours.
+pub(super) fn control_transfer_pending(app: &App) -> bool {
+    #[cfg(unix)]
+    let editor = app.pending_editor_open.is_some();
+    #[cfg(not(unix))]
+    let editor = false;
+    app.should_quit || app.should_suspend || editor
+}
+
+pub(super) fn run_loop<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
     rx: &mpsc::Receiver<event::AppEvent>,
@@ -666,29 +753,75 @@ where
         if let Some(ev) = &received {
             input_pending.note_received(ev);
         }
-        // Spec 0190 S8. Three reasons to draw, checked here rather than
-        // after the dispatch below because that block can `return`, and
-        // because nothing in it can change the activity byte without
-        // also having produced the event that already forces a redraw.
+        // Spec 0190 S8, one of the reasons to draw. Sampled ahead of the
+        // dispatch below because nothing in it can change the activity
+        // byte without also having produced the event that already
+        // forces a redraw.
         //
-        // Spec 0191 S4: the third reason compares the debounced value,
+        // Spec 0191 S4: it compares the debounced value,
         // not a fresh probe. A fresh probe forces a frame on every
         // trough between two requests; folding them into the sliding
         // maximum keeps high-frequency toggling from costing main-thread
         // frames during exactly the period when the worker wants the
         // CPU.
         activity_window = activity_window.max(app.heat_activity());
-        // Spec 0192 S3: a completed heat request is the one event that
-        // does not force its own frame — it only owes one within
-        // `HEAT_REPAINT_INTERVAL`. Since spec 0224 that deadline is the
-        // *whole* of how the answer reaches the screen: the dispatch
-        // below no longer touches `heat_states`, and the frame this flag
-        // buys re-reads the cache for every unsettled row it draws.
-        if matches!(received, Some(event::AppEvent::HeatWorkerProgress)) {
-            heat_dirty = true;
+        // Spec 0245 S1: dispatch everything already queued, then draw
+        // once. A burst of input the loop absorbs comfortably costs one
+        // frame, not one frame each — and since `note_received` runs for
+        // every event the pass takes, the counter is back at zero by the
+        // time that frame samples it, so the frame is in color. Spec
+        // 0223's monochrome now means the machine is genuinely behind
+        // the input, which is what it was meant to mean.
+        //
+        // Dispatch order is untouched: coalescing removes frames, never
+        // events. A pane or mode change mid-burst is therefore not a
+        // reason to stop — the resulting state is identical, and the
+        // user generated every event in the burst against the pre-burst
+        // frame anyway.
+        let mut event_forces = false;
+        let mut event_why = "term";
+        let drain_started = Instant::now();
+        let mut current = received;
+        while let Some(ev) = &current {
+            // Spec 0192 S3: a completed heat request is the one event
+            // that does not force its own frame — it only owes one
+            // within `HEAT_REPAINT_INTERVAL`. Since spec 0224 that
+            // deadline is the *whole* of how the answer reaches the
+            // screen: the dispatch no longer touches `heat_states`, and
+            // the frame this flag buys re-reads the cache for every
+            // unsettled row it draws.
+            if matches!(ev, event::AppEvent::HeatWorkerProgress) {
+                heat_dirty = true;
+            }
+            // Spec 0245 S2: cleared before every dispatch, so the
+            // default is to redraw; only a pan that hit its bound sets
+            // it.
+            app.event_changed_nothing = false;
+            if let Some(why) = dispatch_event(app, ev) {
+                if !app.event_changed_nothing {
+                    event_forces = true;
+                    event_why = why;
+                }
+            }
+            // Spec 0245 S1c, then S1b, then S1a: stop at a control
+            // transfer, stop once the pass has spent its budget, and
+            // otherwise take only what is *already* queued. The last is
+            // what keeps the drain from chasing a producer that outpaces
+            // it and never drawing at all.
+            if control_transfer_pending(app) || drain_started.elapsed() >= DRAIN_BUDGET {
+                break;
+            }
+            current = match rx.try_recv() {
+                Ok(ev) => {
+                    input_pending.note_received(&ev);
+                    Some(ev)
+                }
+                // A disconnect is diagnosed by the receive at the head
+                // of the next iteration, which is the one place that
+                // knows how to report it.
+                Err(_) => None,
+            };
         }
-        let event_forces =
-            received.is_some() && !matches!(received, Some(event::AppEvent::HeatWorkerProgress));
         let heat_forces = heat_dirty && Instant::now() >= last_heat_frame + HEAT_REPAINT_INTERVAL;
         // Spec 0223 S4/G2. Gated on the queue being *empty*: recoloring
         // a viewport the user is still scrolling past would pay the
@@ -710,11 +843,7 @@ where
             || activity_forces
             || search_forces;
         redraw_why = if event_forces {
-            match &received {
-                Some(event::AppEvent::Term(Event::Key(_))) => "key",
-                Some(event::AppEvent::Term(Event::Mouse(_))) => "mouse",
-                _ => "term",
-            }
+            event_why
         } else if heat_forces {
             "heat"
         } else if styles_force {
@@ -732,44 +861,6 @@ where
         // single-high-water-mark draft lacked.
         activity_prev_window = activity_window;
         activity_window = None;
-        match received {
-            // Some Kitty-protocol-aware terminals report a `Release`
-            // event for a keystroke in addition to `Press`, even though
-            // this app only requests `DISAMBIGUATE_ESCAPE_CODES` (not
-            // `REPORT_EVENT_TYPES`). A `Release` event dispatched through
-            // `handle_key` after its matching `Press` already changed
-            // focus (e.g. `t`/`q`/`Esc`/`Tab` closing the override pane)
-            // would land in the *new* focus's handler instead of being a
-            // no-op — surfacing as a keypress "leaking" into both panes.
-            // Ignore anything but `Press`/`Repeat`.
-            Some(event::AppEvent::Term(Event::Key(key))) if key.kind != KeyEventKind::Release => {
-                let dispatched_at = Instant::now();
-                app.handle_key(key);
-                trace::trace!(
-                    "key {:?} us={}",
-                    key.code,
-                    dispatched_at.elapsed().as_micros()
-                );
-            }
-            Some(event::AppEvent::Term(Event::Mouse(mouse))) => {
-                let dispatched_at = Instant::now();
-                app.handle_mouse(mouse);
-                trace::trace!(
-                    "mouse {:?} col={} row={} mods={:?} us={}",
-                    mouse.kind,
-                    mouse.column,
-                    mouse.row,
-                    mouse.modifiers,
-                    dispatched_at.elapsed().as_micros()
-                );
-            }
-            Some(event::AppEvent::Term(_)) => {}
-            // Spec 0224 S1: O(1). Terminal events share this channel in
-            // FIFO order, so anything done here is paid by the next
-            // keystroke behind it.
-            Some(event::AppEvent::HeatWorkerProgress) => app.poll_pending_override_work(),
-            None => {} // deadline elapsed with nothing received
-        }
         if app.should_quit {
             return Ok(());
         }

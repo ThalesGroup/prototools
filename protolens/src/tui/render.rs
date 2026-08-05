@@ -533,13 +533,37 @@ impl App {
             .collect()
     }
 
-    /// Spec 0187 S3: recompute `window_styles` for the rows this frame
-    /// is about to draw. Called once per `render()`, from `render()`
-    /// only — the result is never retained across frames and is never
-    /// document-sized.
+    /// Spec 0187 S3: bring `window_styles` up to date for the rows this
+    /// frame is about to draw. Called once per `render()`, from
+    /// `render()` only — the result is never document-sized.
+    ///
+    /// Spec 0245 S3: kept, not recomputed and not dropped, when the
+    /// window is the one it was already computed for. `window_styles_for`
+    /// is a pure function of the window text and the indent size, so
+    /// while those hold the hints are current.
+    ///
+    /// Spec 0223 S3: only a *changed* window under pending input goes
+    /// monochrome, and it is *cleared* rather than merely left alone —
+    /// `row_spans` falls back to `NO_STYLES` for a missing entry, so an
+    /// empty vector is precisely the monochrome path, whereas keeping
+    /// the previous window's hints would paint one viewport's colors
+    /// onto another viewport's rows.
     pub(super) fn refresh_window_styles(&mut self, window: &[DisplayRow]) {
         let text = self.window_text(window);
+        let current = self
+            .window_styles_key
+            .as_ref()
+            .is_some_and(|(prev, indent)| *indent == self.indent_size && *prev == text);
+        if current {
+            return;
+        }
+        if self.input_pending {
+            self.window_styles.clear();
+            self.window_styles_key = None;
+            return;
+        }
         self.window_styles = window_styles_for(&text, self.indent_size);
+        self.window_styles_key = Some((text, self.indent_size));
     }
 
     /// A row as it is drawn, fold margin included — the row's own text
@@ -1125,18 +1149,11 @@ impl App {
         // immutable-`self` `text_lines` closure below — the same shape
         // and the same reason as the heat-cue pass that follows.
         //
-        // Spec 0223 S3: skipped entirely while terminal events are still
-        // queued. `window_styles` is *cleared* rather than merely left
-        // alone — `row_spans` falls back to `NO_STYLES` for a missing
-        // entry, so an empty vector is precisely the monochrome path,
-        // whereas keeping the previous window's hints would paint one
-        // viewport's colors onto another viewport's rows.
+        // Spec 0223 S3 / spec 0245 S3: whether that means parsing,
+        // keeping what is already there, or going monochrome is
+        // `refresh_window_styles`'s own decision.
         let t_styles = std::time::Instant::now();
-        if self.input_pending {
-            self.window_styles.clear();
-        } else {
-            self.refresh_window_styles(&window);
-        }
+        self.refresh_window_styles(&window);
         let d_styles = t_styles.elapsed();
 
         // Spec 0242 S11: the selection (if any) is a background tint,

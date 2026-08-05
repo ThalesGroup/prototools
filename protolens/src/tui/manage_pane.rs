@@ -132,7 +132,10 @@ impl App {
         } else {
             top + step as isize
         };
-        self.manage_scroll.set_top(moved.clamp(min_top, max_top), 1);
+        let landed = moved.clamp(min_top, max_top);
+        // Spec 0245 S2: a pan that hit its bound asks for no frame.
+        self.event_changed_nothing = landed == top;
+        self.manage_scroll.set_top(landed, 1);
     }
 
     /// Horizontal pan for the management pane (Ctrl-Left/Ctrl-Right,
@@ -142,7 +145,10 @@ impl App {
     pub(super) fn manage_pan_horizontal(&mut self, step: usize, left: bool) {
         let width = self.side_area.width as usize;
         let max_offset = self.manage_max_visible_line_len().saturating_sub(width);
+        let before = self.manage_pan_offset;
         pan_by_step_clamped(&mut self.manage_pan_offset, max_offset, step, left);
+        // Spec 0245 S2.
+        self.event_changed_nothing = self.manage_pan_offset == before;
     }
 
     /// One management-pane display row's rendered text — a `Header`'s own

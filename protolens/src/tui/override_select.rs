@@ -550,8 +550,10 @@ impl App {
         } else {
             top + step as isize
         };
-        self.override_scroll
-            .set_top(moved.clamp(min_top, max_top), 1);
+        let landed = moved.clamp(min_top, max_top);
+        // Spec 0245 S2: a pan that hit its bound asks for no frame.
+        self.event_changed_nothing = landed == top;
+        self.override_scroll.set_top(landed, 1);
     }
 
     /// Horizontal pan for the override pane (Ctrl-Left/Ctrl-Right,
@@ -562,7 +564,10 @@ impl App {
     pub(super) fn override_pan_horizontal(&mut self, step: usize, left: bool) {
         let width = self.side_area.width as usize;
         let max_offset = self.override_max_visible_line_len().saturating_sub(width);
+        let before = self.override_pan_offset;
         pan_by_step_clamped(&mut self.override_pan_offset, max_offset, step, left);
+        // Spec 0245 S2.
+        self.event_changed_nothing = self.override_pan_offset == before;
     }
 
     /// Pre-registers the synthetic wrapper descriptor

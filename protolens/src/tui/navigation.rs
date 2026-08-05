@@ -675,11 +675,13 @@ impl App {
     /// it stops once the rightmost character of the widest
     /// currently-visible row would be shown, never further.
     fn pan_horizontal(&mut self, step: usize, left: bool) {
+        let before = self.pan_offset;
         if left {
             self.pan_offset = self.pan_offset.saturating_sub(step);
         } else {
             self.pan_offset = (self.pan_offset + step).min(self.max_pan_offset());
         }
+        self.event_changed_nothing = self.pan_offset == before;
     }
 
     pub(super) fn pan_left(&mut self) {
@@ -719,6 +721,10 @@ impl App {
     /// Spec 0244 S6: bounded by `pan_top_bounds`, which lets the pane's
     /// top edge run past either end of the content — up until one
     /// terminal row of it is left on screen.
+    ///
+    /// Spec 0245 S2: a pan already sitting on its bound moves nothing,
+    /// and says so — a held wheel at the top of the document is the
+    /// commonest way to fill the event queue with no-ops.
     fn pan_vertical(&mut self, step: usize, up: bool) {
         let row_height = self.row_height();
         let content_rows = self.composed_row_count() * row_height;
@@ -726,7 +732,9 @@ impl App {
         let step = (step * row_height) as isize;
         let top = self.scroll_top();
         let moved = if up { top - step } else { top + step };
-        self.set_scroll_top(moved.clamp(min_top, max_top));
+        let landed = moved.clamp(min_top, max_top);
+        self.event_changed_nothing = landed == top;
+        self.set_scroll_top(landed);
     }
 
     pub(super) fn pan_vertical_up(&mut self) {

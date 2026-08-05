@@ -713,7 +713,12 @@ fn a_wire_row_goes_monochrome_with_the_document_row() {
         "the packed record's landmark must be colored"
     );
 
+    // Spec 0245 S3: the viewport has to move for spec 0223's clear to
+    // apply at all — a pending frame over the *same* window keeps the
+    // hints it already has, which is what stops a stalled wheel from
+    // flickering the pane gray.
     app.input_pending = true;
+    app.set_scroll_top(app.scroll_top() + app.row_height() as isize);
     terminal.draw(|frame| app.render(frame)).unwrap();
     assert!(
         app.wire_palette(1, &text).is_none(),

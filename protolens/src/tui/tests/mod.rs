@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 mod command_line;
+mod event_loop;
 mod export_fields;
 mod heat_cue;
 mod help_text;

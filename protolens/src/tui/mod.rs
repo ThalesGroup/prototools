@@ -769,6 +769,15 @@ pub struct App {
     /// (85% of a commit, measured) to produce data of which only the
     /// ~50 rows on screen were ever read.
     window_styles: Vec<LineStyles>,
+    /// Spec 0245 S3: the `(window text, indent_size)` that produced the
+    /// current `window_styles`, or `None` when they were discarded.
+    ///
+    /// `window_styles_for` is a pure function of exactly these two, so
+    /// they are the complete validity key: while it holds, the hints
+    /// are current rather than stale, and the frame neither recomputes
+    /// them nor drops them — which is what keeps a burst of input that
+    /// moves nothing from flickering the viewport monochrome.
+    window_styles_key: Option<(Vec<String>, usize)>,
     /// Resolved color theme (spec 0116 §9) — fixed for the session, never
     /// `ThemeKind::System` (resolved once in `main.rs` before `App::new`).
     theme: ThemeKind,
@@ -1156,6 +1165,17 @@ pub struct App {
     /// frame, and a counter read from inside `render` could answer
     /// differently for two panes of the same one.
     pub(super) input_pending: bool,
+    /// Spec 0245 S2: set by the event just dispatched to say that it
+    /// left the screen exactly as the user is already seeing it, so
+    /// `run_loop` owes it no frame. Cleared by the loop before every
+    /// dispatch, so the default is to redraw.
+    ///
+    /// Only the pan functions ever set it. A pan is the one input the
+    /// user generates in long unbroken runs against a hard bound, and
+    /// its whole effect is a single number that is trivially compared;
+    /// a general "did anything change?" test over `App` would be both
+    /// expensive and fragile.
+    pub(super) event_changed_nothing: bool,
     /// Incremented on every fold/unfold and every commit — i.e. every
     /// time a rendered line number may have shifted. `App::
     /// prefetch_step`'s staleness signal (spec 0164 G7) for restarting
@@ -1469,6 +1489,7 @@ impl App {
             indent_size,
             node_text: decoded.node_text,
             window_styles: Vec::new(),
+            window_styles_key: None,
             theme,
             tree: decoded.tree,
             arena: decoded.arena,
@@ -1528,6 +1549,7 @@ impl App {
             prefetch_trace: PrefetchTrace::default(),
             activity_shown: None,
             input_pending: false,
+            event_changed_nothing: false,
             structural_version: 0,
             override_candidates_pending: false,
             override_complete_pending: false,

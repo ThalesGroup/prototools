@@ -656,8 +656,31 @@ fn stale_styles_are_cleared_not_left() {
     );
 
     app.input_pending = true;
+    app.set_scroll_top(app.scroll_top() + 1);
     terminal.draw(|frame| app.render(frame)).unwrap();
     assert!(app.window_styles.is_empty());
+}
+
+/// Spec 0245 S3, the other half of the test above: a pending frame
+/// whose window did not move keeps the hints it already has. They are
+/// not stale — `window_styles_for` is a pure function of the window
+/// text and the indent size, and neither changed — so there is nothing
+/// to recompute and nothing to fear from reusing them. This is what
+/// stops a wheel held against the top of the document, which pans
+/// nothing, from flickering the pane between gray and colored.
+#[test]
+fn an_unchanged_window_keeps_its_styles_while_input_is_pending() {
+    let (mut app, _inner_idx, _id_idx) = type_as_fixture();
+    app.splash = false;
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let settled = app.window_styles.clone();
+    assert!(settled.iter().any(|hints| !hints.is_empty()));
+
+    app.input_pending = true;
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert_eq!(app.window_styles, settled);
 }
 
 /// Spec 0113 D33: the bold override hint applies to a node's own

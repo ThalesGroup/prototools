@@ -353,6 +353,46 @@ fn manage_pane_pans_past_both_ends() {
     assert_eq!(app.manage_highlight, target_idx);
 }
 
+/// Spec 0245 S2. A pan already sitting on its bound moves nothing and
+/// says so, so `run_loop` owes it no frame — a wheel held against the
+/// top of the document is the commonest way to fill the event queue
+/// with input that changes the screen not at all.
+///
+/// The flag must also be *cleared* by a pan that does move, since
+/// `run_loop` only resets it between dispatches: a stalled pan followed
+/// by a live one has to redraw.
+#[test]
+fn a_pan_that_hit_its_bound_asks_for_no_frame() {
+    let texts: Vec<String> = (0..40).map(|i| format!("f{i}: 0")).collect();
+    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let mut app = sibling_leaves_app(&refs);
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 40, 20);
+
+    app.set_scroll_top(1 - 20);
+    app.wheel_pan_up();
+    assert!(app.event_changed_nothing, "already at the top bound");
+    app.wheel_pan_down();
+    assert!(!app.event_changed_nothing, "and this one did move");
+
+    // The horizontal pan is bounded the same way, and no document here
+    // is wide enough to pan at all.
+    app.pan_left();
+    assert!(app.event_changed_nothing, "already at column 0");
+
+    // The side panes answer for themselves — they have their own
+    // `PaneScroll` and their own copy of the arithmetic.
+    app.override_focus = true;
+    app.override_target = Some(0);
+    app.override_candidates = (0..30).map(|i| (format!("cand.Type{i}"), None)).collect();
+    app.override_list_height = 5;
+    app.override_scroll.set_top(1 - 5, 1);
+    app.override_pan_vertical(WHEEL_PAN_STEP, true);
+    assert!(app.event_changed_nothing);
+    app.override_pan_vertical(WHEEL_PAN_STEP, false);
+    assert!(!app.event_changed_nothing);
+}
+
 /// Spec 0244 test-plan item 8 (N2): an over-pan survives moving the
 /// highlight. `clamp_scroll_to_visible` is a minimal nudge, not a
 /// re-anchoring — it only brings the highlight back on screen, and the
