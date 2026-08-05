@@ -144,6 +144,13 @@ impl App {
                 // quit here (spec 0236 G8), so this is exactly the
                 // `Delete` arm below and nothing more.
                 KeyCode::Char('d') if ctrl => self.delete_char_forward(),
+                // readline's `backward-delete-char` and `kill-line`. The
+                // first is an alias of `Backspace` — terminals that do not
+                // translate `Ctrl-h` themselves deliver it as a character,
+                // and it would otherwise fall through this gate as a
+                // no-op.
+                KeyCode::Char('h') if ctrl => self.backspace(),
+                KeyCode::Char('k') if ctrl => self.kill_to_end_of_line(),
                 _ => {}
             }
             return;
@@ -231,21 +238,7 @@ impl App {
             }
             KeyCode::Home => self.command_cursor = 0,
             KeyCode::End => self.command_cursor = self.command_buffer_char_len(),
-            KeyCode::Backspace => {
-                let empty = match &self.command_buffer {
-                    Some(buf) => buf.is_empty(),
-                    None => true,
-                };
-                if empty {
-                    self.command_buffer = None;
-                    self.command_cursor = 0;
-                    self.cancel_search();
-                } else if self.command_cursor > 0 {
-                    self.command_cursor -= 1;
-                    self.remove_char_at(self.command_cursor);
-                    self.restart_search_sweep();
-                }
-            }
+            KeyCode::Backspace => self.backspace(),
             KeyCode::Delete => self.delete_char_forward(),
             KeyCode::Char(c) => {
                 let byte_idx = self.char_byte_index(self.command_cursor);
@@ -258,6 +251,42 @@ impl App {
                 self.restart_search_sweep();
             }
             _ => {}
+        }
+    }
+
+    /// Delete the character before the cursor, shared by `Backspace` and
+    /// `Ctrl-h`. On an already-empty buffer it closes the line instead —
+    /// backspacing past the `:`/`/` prompt is how vim leaves it.
+    fn backspace(&mut self) {
+        let empty = match &self.command_buffer {
+            Some(buf) => buf.is_empty(),
+            None => true,
+        };
+        if empty {
+            self.command_buffer = None;
+            self.command_cursor = 0;
+            self.cancel_search();
+        } else if self.command_cursor > 0 {
+            self.command_cursor -= 1;
+            self.remove_char_at(self.command_cursor);
+            self.restart_search_sweep();
+        }
+    }
+
+    /// readline's `kill-line`: drop everything from the cursor to the end
+    /// of the buffer. Unlike [`Self::backspace`] an empty buffer is not a
+    /// close — there is nothing to kill, so nothing happens.
+    fn kill_to_end_of_line(&mut self) {
+        let byte_idx = self.char_byte_index(self.command_cursor);
+        let killed = match self.command_buffer.as_mut() {
+            Some(buf) if byte_idx < buf.len() => {
+                buf.truncate(byte_idx);
+                true
+            }
+            _ => false,
+        };
+        if killed {
+            self.restart_search_sweep();
         }
     }
 

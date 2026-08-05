@@ -5,29 +5,29 @@
 use super::super::*;
 use super::support::*;
 
-/// Spec 0126 G2: Shift-Down/Shift-Up alias `J`/`K`'s sibling-skip
-/// move, no-op-with-message on a childless-of-siblings node either
-/// way.
+/// Spec 0126 G2, re-spelled by spec 0242 S8: `Ctrl-Down`/`Ctrl-Up`
+/// alias `Ctrl-j`/`Ctrl-k`'s sibling-skip move, no-op-with-message on a
+/// childless-of-siblings node either way.
 #[test]
-fn shift_down_up_alias_sibling_skip_move() {
+fn ctrl_down_up_alias_sibling_skip_move() {
     let mut app = message_node_app();
     app.splash = false;
 
     let start = app.cursor;
-    app.handle_key(KeyEvent::new(KeyCode::Char('J'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
     let via_j = app.cursor;
 
     app.cursor = start;
-    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
-    assert_eq!(app.cursor, via_j, "Shift-Down must match J's result");
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
+    assert_eq!(app.cursor, via_j, "Ctrl-Down must match Ctrl-j's result");
 
     app.cursor = via_j;
-    app.handle_key(KeyEvent::new(KeyCode::Char('K'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL));
     let via_k = app.cursor;
 
     app.cursor = via_j;
-    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
-    assert_eq!(app.cursor, via_k, "Shift-Up must match K's result");
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
+    assert_eq!(app.cursor, via_k, "Ctrl-Up must match Ctrl-k's result");
 }
 
 /// Spec 0114 §1.1: the virtual encompassing wrapper protobuf makes
@@ -474,19 +474,25 @@ fn shift_z_folds_the_whole_subtree_and_unfolds_it_again() {
     );
 }
 
-/// Spec 0194 test-plan item 3 (S6, N5). One character per press, and
-/// neither end wraps onto the neighboring row — vim's default
-/// `whichwrap`, which leaves `h` and `l` line-bound.
+/// Spec 0194 test-plan item 3 (S6, N5). One character per press, and the
+/// left end does not wrap onto the row above — vim's default
+/// `whichwrap`, which leaves `h` line-bound.
 ///
-/// Both ends read as "no wrap" here only because `sibling_leaves_app`'s
-/// nodes are parentless, childless leaves *and* `reset_caret_column`
-/// leaves the anchor `Home`: under spec 0199 S5/S6 a press at either
-/// voluntary end falls through to `parent_move`/`first_child_move`,
-/// which on this fixture have nothing to fold, no parent and no child.
-/// A fixture with a real tree gets the tree assertions instead — see
+/// The left end reads as "no wrap" here only because
+/// `sibling_leaves_app`'s nodes are parentless, childless leaves *and*
+/// `reset_caret_column` leaves the anchor `Home`: under spec 0199 S5/S6
+/// a press at a voluntary `Home` falls through to `parent_move`, which
+/// on this fixture has nothing to fold and no parent. A fixture with a
+/// real tree gets the tree assertions instead — see
 /// `h_at_a_voluntary_home_folds_before_it_moves_to_the_parent`.
+///
+/// The right end is the asymmetric one: with nothing to descend into,
+/// a further press carries on to the first character of the next row
+/// rather than stopping dead, because a leaf's last character is the one
+/// place the caret could be blocked while the document plainly continued
+/// below.
 #[test]
-fn the_caret_moves_one_character_and_stops_at_both_ends() {
+fn the_caret_moves_one_character_and_wraps_only_off_the_right_end() {
     let mut app = sibling_leaves_app(&["  ab", "cd"]);
     app.cursor = 0;
     app.reset_caret_column();
@@ -494,11 +500,13 @@ fn the_caret_moves_one_character_and_stops_at_both_ends() {
 
     app.caret_left();
     assert_eq!(app.cursor_column, 2, "no wrap off the left end");
+    assert_eq!(app.cursor, 0, "and the left end does not change the node");
     app.caret_right();
     assert_eq!(app.cursor_column, 3);
+    assert_eq!(app.cursor, 0, "still inside the first row's text");
     app.caret_right();
-    assert_eq!(app.cursor_column, 3, "no wrap off the right end");
-    assert_eq!(app.cursor, 0, "and neither end changes the cursor node");
+    assert_eq!(app.cursor, 1, "past the last character, on to the next row");
+    assert_eq!(app.cursor_column, 0, "and at that row's first character");
 }
 
 /// Spec 0194 test-plan item 4 (S3). The indentation is not reachable at
@@ -993,13 +1001,14 @@ fn l_at_an_end_unfolds_before_it_descends_and_h_undoes_it() {
     assert_eq!(app.cursor, inner_idx);
 }
 
-/// Spec 0199 test-plan items 18 and 19 (G5, N3/N4). `H`/`L` are the
-/// sibling-wide fold: unconditional, at any caret column and from any
-/// anchor, and they never move the cursor. No column condition, because
-/// a shifted arrow has no caret meaning to defer to and such a
-/// condition would be invisible to the user.
+/// Spec 0199 test-plan items 18 and 19 (G5, N3/N4), as re-spelled by
+/// spec 0242 S8: `Ctrl-Left`/`Ctrl-Right` — and their `Ctrl-h`/`Ctrl-l`
+/// letter aliases — are the sibling-wide fold. Unconditional, at any
+/// caret column and from any anchor, and they never move the cursor. No
+/// column condition, because a modified arrow has no caret meaning to
+/// defer to and such a condition would be invisible to the user.
 #[test]
-fn shift_left_and_shift_right_fold_the_whole_sibling_level() {
+fn ctrl_left_and_ctrl_right_fold_the_whole_sibling_level() {
     let (mut app, items) = repeated_message_fixture();
     assert!(items.len() > 1, "fixture must have siblings");
     app.set_cursor(items[0]);
@@ -1007,72 +1016,78 @@ fn shift_left_and_shift_right_fold_the_whole_sibling_level() {
     app.caret_left();
     app.caret_anchor = CaretAnchor::Free;
 
-    app.handle_key(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
     for &item in &items {
-        assert!(app.folded.contains(&item), "`H` folds every sibling");
+        assert!(app.folded.contains(&item), "`Ctrl-h` folds every sibling");
     }
     assert_eq!(app.cursor, items[0], "and moves no cursor");
 
-    app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT));
+    app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
     for &item in &items {
-        assert!(!app.folded.contains(&item), "`L` unfolds every sibling");
+        assert!(
+            !app.folded.contains(&item),
+            "`Ctrl-l` unfolds every sibling"
+        );
     }
     assert_eq!(app.cursor, items[0]);
 }
 
-/// Spec 0199 test-plan item 20. `Shift-h` *is* `H` — one gesture with
-/// two spellings, since a terminal reports a capital letter as a
-/// character and a shifted arrow as a key plus a modifier. Pinned so
-/// the two rows of the binding table cannot drift apart again.
+/// Spec 0199 test-plan item 20, carried over to spec 0242 S4's new
+/// tenants. `Shift-h` *is* `H` — one gesture with two spellings, since
+/// a terminal reports a capital letter as a character and a shifted
+/// arrow as a key plus a modifier. Pinned so the two rows of the
+/// binding table cannot drift apart again.
 #[test]
 fn the_shifted_arrows_and_the_capital_letters_are_one_binding() {
-    let folded_after = |code: KeyCode, mods: KeyModifiers| {
+    let selected_after = |code: KeyCode, mods: KeyModifiers| {
         let (mut app, items) = repeated_message_fixture();
         app.set_cursor(items[0]);
+        app.caret_to_line_end();
         app.handle_key(KeyEvent::new(code, mods));
-        let cursor = app.cursor;
-        let mut folded: Vec<usize> = app.folded.iter().copied().collect();
-        folded.sort_unstable();
-        (folded, cursor)
+        (app.selection_span(), app.cursor, app.cursor_column)
     };
 
-    assert_eq!(
-        folded_after(KeyCode::Char('H'), KeyModifiers::SHIFT),
-        folded_after(KeyCode::Left, KeyModifiers::SHIFT),
-    );
-    // `L`/`Shift-Right` unfold, so fold everything first to have
-    // something to compare.
-    let unfolded_after = |code: KeyCode, mods: KeyModifiers| {
-        let (mut app, items) = repeated_message_fixture();
-        app.set_cursor(items[0]);
-        app.fold_all_siblings();
-        app.handle_key(KeyEvent::new(code, mods));
-        let mut folded: Vec<usize> = app.folded.iter().copied().collect();
-        folded.sort_unstable();
-        (folded, app.cursor)
-    };
-    assert_eq!(
-        unfolded_after(KeyCode::Char('L'), KeyModifiers::SHIFT),
-        unfolded_after(KeyCode::Right, KeyModifiers::SHIFT),
-    );
+    for (letter, arrow) in [
+        ('H', KeyCode::Left),
+        ('L', KeyCode::Right),
+        ('J', KeyCode::Down),
+        ('K', KeyCode::Up),
+    ] {
+        let by_letter = selected_after(KeyCode::Char(letter), KeyModifiers::SHIFT);
+        assert!(
+            by_letter.0.is_some(),
+            "`{letter}` must select something to compare"
+        );
+        assert_eq!(
+            by_letter,
+            selected_after(arrow, KeyModifiers::SHIFT),
+            "`{letter}` and its shifted arrow must be one binding"
+        );
+    }
 }
 
-/// Spec 0199 test-plan item 21 (G6). `Ctrl-Left`/`Ctrl-Right` keep
-/// spec 0113 D24's horizontal pan. This is the regression the amended
-/// table is most likely to cause, since `Ctrl` and `Shift` are
-/// independent modifier checks over the same key code.
+/// Spec 0199 test-plan item 21 (G6), re-spelled by spec 0242 S9: spec
+/// 0113 D24's horizontal pan is now `Shift-Alt-Up`/`Shift-Alt-Down`,
+/// the Ctrl-arrows having gone to the sibling fold. This is the
+/// regression the amended table is most likely to cause, since
+/// `contains(SHIFT)` is true of a `Shift-Alt` chord too — the pan arm
+/// has to be matched before the selection's.
 #[test]
-fn ctrl_arrows_still_pan_without_touching_the_caret() {
+fn shift_alt_arrows_still_pan_without_touching_the_caret() {
     let (mut app, inner_idx, _) = type_as_fixture();
     app.set_cursor(inner_idx);
     app.pan_offset = 4;
     let column = app.cursor_column;
 
-    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
-    assert!(app.pan_offset < 4, "Ctrl-Left must still pan");
+    app.handle_key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::SHIFT | KeyModifiers::ALT,
+    ));
+    assert!(app.pan_offset < 4, "Shift-Alt-Up must pan left");
     assert_eq!(app.cursor_column, column, "and must not move the caret");
     assert_eq!(app.cursor, inner_idx);
     assert!(app.folded.is_empty(), "nor fold anything");
+    assert_eq!(app.select_anchor, None, "nor start a selection");
 }
 
 /// Spec 0199 test-plan item 22 (G6, S8). `Alt`-arrows move by word,

@@ -654,11 +654,14 @@ pub(super) enum CaretAnchor {
 ///
 /// Deliberately does **not** carry the caret anchor (spec 0199 S10): it
 /// records where the cursor was, and the anchor is not part of where.
+///
+/// Spec 0242 S1 reuses it for `select_anchor`, which wants the same
+/// three numbers for the same reason — a place that survives a fold.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) struct CursorPos {
-    node: usize,
-    line_in_node: u32,
-    column: usize,
+    pub(super) node: usize,
+    pub(super) line_in_node: u32,
+    pub(super) column: usize,
 }
 
 /// Owns all cursor/fold/scroll/jumplist state — kept separate from
@@ -879,25 +882,49 @@ pub struct App {
     /// a round trip (e.g. Down then Up) that leaves the position
     /// numerically unchanged but is still a real move.
     cursor_moves: u64,
-    /// Mouse-driven whole-line selection in the main pane (spec 0129
-    /// §G1) — `line_idx` of the row a drag started on; `None` when no
-    /// selection is active. Never affects `self.cursor`, which only ever
-    /// moves via the initial `Down` click (`handle_click`, unchanged).
-    select_anchor: Option<usize>,
-    /// `line_idx` of the row the drag is currently over (or ended on);
-    /// `None`/`None` together with `select_anchor` means no selection.
-    /// Equal to `select_anchor` for a plain click with no drag.
-    select_end: Option<usize>,
+    /// Spec 0242 S1: the **fixed** end of the main-pane selection —
+    /// where the drag started, or where the caret was when the first
+    /// `Shift`-motion was pressed. `None` when nothing is selected.
+    ///
+    /// The **moving** end is the caret itself (S2), which is why there
+    /// is no second field: the mouse and the `Shift` keys both express
+    /// a selection by moving the caret, so they cannot disagree about
+    /// where it ends.
+    ///
+    /// A `CursorPos` because `cursor_pos()` already builds exactly this
+    /// — the anchor *is* a remembered caret position — and because a
+    /// node-relative line survives a fold, which an absolute line number
+    /// would not.
+    select_anchor: Option<CursorPos>,
+    /// Spec 0242 S2: whether the user has actually *expressed* a
+    /// selection since the anchor was set — a `Shift`-motion, a drag, or
+    /// a double-click — as opposed to a bare click, which arms the
+    /// anchor so that a following drag has somewhere to start from but
+    /// selects nothing on its own.
+    ///
+    /// This is what lets anchor-equal-to-caret mean **one character**
+    /// rather than none. Both endpoint cells are in the span, so once a
+    /// selection is engaged the caret resting on the anchor is a
+    /// perfectly good one-character selection (`Shift-Right`
+    /// `Shift-Left` is how the keyboard spells it); it is only the
+    /// *unengaged* click that must select nothing.
+    select_engaged: bool,
     /// Timestamp + `line_idx` of the most recent main-pane left-click
-    /// `Down` event — compared against on the next `Down` to recognize a
-    /// double-click (same line, within `DOUBLE_CLICK_THRESHOLD`). `None`
-    /// before the first click.
+    /// `Down` event that landed on a line's *text* — compared against on
+    /// the next such `Down` to recognize a double-click (same line,
+    /// within `DOUBLE_CLICK_THRESHOLD`), which selects that whole line.
+    /// `None` before the first click.
+    ///
+    /// A click on the fold field is deliberately not tracked here and
+    /// clears it: the fold toggle is a control, and a control must act
+    /// on every click that reaches it, never differently for being the
+    /// n-th of a fast run.
     last_click: Option<(Instant, usize)>,
     /// Whether the click currently in progress (`Down` already handled,
     /// matching `Up` not yet seen) was recognized as the second click of
     /// a double-click — consulted by the `Up` handler to decide whether a
     /// plain (non-dragged) click should deselect (`false`, the default)
-    /// or keep the single-line selection `Down` just set (`true`).
+    /// or select the whole line (`true`).
     pending_double_click: bool,
     folded: HashSet<usize>,
     scroll_offset: usize,
@@ -1432,7 +1459,7 @@ impl App {
             caret_suffix_len: 0,
             cursor_moves: 0,
             select_anchor: None,
-            select_end: None,
+            select_engaged: false,
             last_click: None,
             pending_double_click: false,
             folded: HashSet::new(),
@@ -1727,6 +1754,7 @@ mod prefetch;
 mod preview_truncate;
 mod render;
 mod search;
+mod selection;
 mod structure;
 mod terminal;
 mod tiered;

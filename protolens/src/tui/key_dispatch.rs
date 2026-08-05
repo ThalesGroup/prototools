@@ -27,6 +27,38 @@ pub(super) fn ctrl_or_alt(key: &KeyEvent) -> bool {
         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
 }
 
+/// Whether a key is held with `Shift` *and* `Alt` together (spec 0242
+/// S9's horizontal pan).
+///
+/// `contains(SHIFT)` is true of a `Shift-Alt` chord as well, so an arm
+/// guarded by this one must be matched *before* the bare-`Shift`
+/// selection arms, or the selection would swallow the pan.
+fn shift_alt(key: &KeyEvent) -> bool {
+    key.modifiers
+        .contains(KeyModifiers::SHIFT | KeyModifiers::ALT)
+}
+
+/// Spec 0242 S3: whether a main-pane key is allowed to leave the
+/// selection standing — the four `Shift`-motions that extend it, and the
+/// `Ctrl-c` that copies it. Every other key clears it.
+///
+/// The guards mirror the match arms in `handle_main_key` exactly, so
+/// that a key and its "does this select?" answer cannot drift apart:
+/// `Alt` disqualifies an arrow because `Shift-Alt` is the horizontal pan
+/// (S9), and `Control`/`Alt` disqualify a capital because `Ctrl-H` is
+/// not `H` (see [`ctrl_or_alt`]).
+fn extends_or_copies_selection(key: &KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right => {
+            key.modifiers.contains(KeyModifiers::SHIFT)
+                && !key.modifiers.contains(KeyModifiers::ALT)
+        }
+        KeyCode::Char('H' | 'J' | 'K' | 'L') => !ctrl_or_alt(key),
+        KeyCode::Char('c') => key.modifiers.contains(KeyModifiers::CONTROL),
+        _ => false,
+    }
+}
+
 /// What a keypress did to the `gg` chord.
 pub(super) enum GChord {
     /// Both `g`s seen: jump to the first row.
@@ -481,6 +513,16 @@ impl App {
             return;
         }
 
+        // Spec 0242 S3: everything that is not one of the four selection
+        // keys — nor the `Ctrl-c` that copies what they selected — drops
+        // the selection, so a plain motion does not drag it along behind
+        // the caret. One check here rather than a call in each of the
+        // dozens of arms below, which is also what keeps the rule true
+        // of arms added later.
+        if !extends_or_copies_selection(&key) {
+            self.clear_selection();
+        }
+
         match self.take_g_chord(&key) {
             GChord::Fired => {
                 self.move_home();
@@ -526,6 +568,18 @@ impl App {
                 KeyCode::Char('e') if ctrl => self.caret_to_line_end(),
                 KeyCode::Char('h') if alt => self.caret_word_left(),
                 KeyCode::Char('l') if alt => self.caret_word_right(),
+
+                // Spec 0242 S8: the four tree gestures that `H`/`J`/`K`/
+                // `L` used to spell, moved onto `Control` now that the
+                // plain shifted letters select. These are the letter
+                // spellings of the Ctrl-arrows in the plain-key match
+                // further below, and each keeps the direction it had:
+                // `h`/`l` fold and unfold the sibling level, `j`/`k`
+                // skip to the next and previous sibling.
+                KeyCode::Char('h') if ctrl => self.fold_all_siblings(),
+                KeyCode::Char('l') if ctrl => self.unfold_all_siblings(),
+                KeyCode::Char('j') if ctrl => self.next_sibling_move(),
+                KeyCode::Char('k') if ctrl => self.prev_sibling_move(),
 
                 // Navigation history.
                 KeyCode::Char('o') if ctrl => {
@@ -609,24 +663,36 @@ impl App {
         }
 
         match key.code {
-            // Sibling-skip move (spec 0126 G2: Shift-Down/Shift-Up alias
-            // `J`/`K` — checked before the plain Down/Up arms below, same
-            // "modifier-guard first" convention as Ctrl/Shift-Left/Right
-            // above).
-            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.next_sibling_move()
-            }
-            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => self.prev_sibling_move(),
-            KeyCode::Char('J') => self.next_sibling_move(),
-            KeyCode::Char('K') => self.prev_sibling_move(),
+            // Horizontal pan (spec 0242 S9). `Shift-Alt` must be matched
+            // before the bare `Shift` selection arms below, since
+            // `contains(SHIFT)` is true for both — the same
+            // "modifier-guard first" convention the rest of this match
+            // runs on, with the most-modified arm first.
+            KeyCode::Up if shift_alt(&key) => self.pan_left(),
+            KeyCode::Down if shift_alt(&key) => self.pan_right(),
 
             // Vertical pan: scrolls the viewport without moving the
-            // cursor (see `App::pan_vertical`). Checked before the
-            // plain Up/Down arms below, same "modifier-guard first"
-            // convention as the horizontal pan below.
-            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => self.pan_vertical_up(),
+            // cursor (see `App::pan_vertical`). On `Alt` since spec 0242
+            // S9 gave the Ctrl-arrows to the sibling moves.
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => self.pan_vertical_up(),
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => self.pan_vertical_down(),
+
+            // Spec 0242 S4: the four selection keys. `Shift-h` *is* `H`,
+            // so each pair is one gesture with two spellings.
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => self.select_down(),
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => self.select_up(),
+            KeyCode::Char('J') => self.select_down(),
+            KeyCode::Char('K') => self.select_up(),
+
+            // Sibling-skip move (spec 0126 G2), on `Ctrl` since spec
+            // 0242 S8 gave `Shift`/`J`/`K` to the selection. The
+            // `Ctrl-j`/`Ctrl-k` letter spellings are in the Ctrl/Alt
+            // gate above.
             KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.pan_vertical_down()
+                self.next_sibling_move()
+            }
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.prev_sibling_move()
             }
 
             // Document-order move.
@@ -664,11 +730,17 @@ impl App {
             }
             KeyCode::Char(' ') => self.move_page_down(),
 
-            // Horizontal pan (spec 0113 D24). Checked before the
-            // Shift-guarded and plain Left/Right arms below, since `Ctrl`
-            // and `Shift` are independent modifier checks.
-            KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => self.pan_left(),
-            KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => self.pan_right(),
+            // Sibling-level fold (spec 0199 S9), on `Ctrl` since spec
+            // 0242 S8 gave `Shift`/`H`/`L` to the selection. Checked
+            // before the Shift-guarded and plain Left/Right arms below,
+            // since `Ctrl` and `Shift` are independent modifier checks.
+            // These reuse the very functions `zC`/`zO` call.
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.fold_all_siblings()
+            }
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.unfold_all_siblings()
+            }
 
             // Word motion (spec 0199 S8), over the same word definition
             // the `:` prompt uses. Checked before the plain arms below.
@@ -677,20 +749,15 @@ impl App {
             KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => self.caret_word_left(),
             KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => self.caret_word_right(),
 
-            // Spec 0199 S9's amendment of spec 0194 S6's organizing rule:
-            // **motion happens in the text until the text runs out and
-            // then continues into the tree; `Shift` widens a fold to the
-            // sibling level; `z` folds.** `Shift-h` *is* `H`, so the two
-            // spellings of one gesture must agree — and neither is `h`.
-            // These reuse the very functions `zC`/`zO` call.
-            KeyCode::Char('H') => self.fold_all_siblings(),
-            KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.fold_all_siblings()
-            }
-            KeyCode::Char('L') => self.unfold_all_siblings(),
-            KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.unfold_all_siblings()
-            }
+            // Spec 0242 S4: the horizontal half of the selection. `Shift`
+            // no longer widens a fold — spec 0199 S9's organizing rule
+            // now reads **motion happens in the text until the text runs
+            // out and then continues into the tree; `Shift` selects;
+            // `Ctrl` widens a fold to the sibling level; `z` folds.**
+            KeyCode::Char('H') => self.select_left(),
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => self.select_left(),
+            KeyCode::Char('L') => self.select_right(),
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => self.select_right(),
 
             // Caret motion (spec 0194 S6, amended by spec 0199 S5/S6). No
             // wrapping at either end (N5), matching vim's default
@@ -785,8 +852,7 @@ impl App {
             // Spec 0129 §G3: `Esc` clears an active main-pane line
             // selection, alongside whatever else it already clears above.
             KeyCode::Esc => {
-                self.select_anchor = None;
-                self.select_end = None;
+                self.clear_selection();
                 // Spec 0235 S15/N5: and the search highlight — vim's
                 // `:nohlsearch` without the command. A highlight the
                 // user cannot dismiss leaves a third of a document

@@ -556,12 +556,19 @@ pub enum WireRole {
 /// They can go this far only because [`banded`] leaves the hex alone.
 /// While the row was reversed the band carried the glyphs' contrast
 /// too, which pinned it at 80; with the hex drawn in its own fixed
-/// color the band is free to be nothing but a tint. It settled at 58,
-/// a little under a third of the way to [`WIRE_TEXT_DARK`] — far
-/// enough below the hex to leave it legible, far enough above the page
-/// for the hue to be nameable. 197 is the same distance from white.
-const WIRE_LUMA_DARK: f32 = 58.0;
-const WIRE_LUMA_LIGHT: f32 = 197.0;
+/// color the band is free to be nothing but a tint.
+///
+/// It first settled at 58 (and 197, the same distance from white),
+/// which proved a step too quiet: at that depth the four hues are
+/// present but hard to tell apart, and naming a byte's purpose from its
+/// band is the whole reason the band is colored at all. 78 keeps every
+/// property the pair was chosen for — well under `comment`'s 138, well
+/// under [`WIRE_TEXT_DARK`]'s 176 so the hex stays legible on top — and
+/// buys back the saturation that made the hues nameable. The light
+/// target moves by the same 20 to keep the two themes' rows equally
+/// far from their page.
+const WIRE_LUMA_DARK: f32 = 78.0;
+const WIRE_LUMA_LIGHT: f32 = 177.0;
 
 /// The one color a wire row's hex is drawn in, whatever band it sits
 /// on.
@@ -900,6 +907,14 @@ mod caret_rgb {
     pub const LIGHT_SEARCH_CURRENT: Color = Color::Rgb(0xFF, 0xD3, 0x6B);
     /// Light theme, the other matches on screen.
     pub const LIGHT_SEARCH_OTHER: Color = Color::Rgb(0xFF, 0xEE, 0xC2);
+
+    /// Dark theme, the selection — VSCode dark's own
+    /// `editor.selectionBackground`. Well clear of `DARK_ROW`, since a
+    /// selection on the caret's own row is the common case, and of
+    /// `DARK_MATCH`, which may sit inside it.
+    pub const DARK_SELECTION: Color = Color::Rgb(0x26, 0x4F, 0x78);
+    /// Light theme, the selection.
+    pub const LIGHT_SELECTION: Color = Color::Rgb(0xAD, 0xD6, 0xFF);
 }
 
 /// Spec 0194 S2: the caret itself — one character drawn inside out,
@@ -913,6 +928,30 @@ mod caret_rgb {
 /// everywhere.
 pub fn caret_style() -> Style {
     Style::default().add_modifier(Modifier::REVERSED)
+}
+
+/// The selected span (spec 0242 S11, amended 2026-08-05).
+///
+/// A background tint on spec 0233 S3's rule, not the inversion this
+/// used to be. Inversion is the caret's idiom and only the caret's: the
+/// caret is the selection's own moving end, so the two cues always meet
+/// on one cell, and two reversals cancel — the character at the end of
+/// the selection came out looking plain, which is the most confusing
+/// thing it could look like.
+///
+/// The ANSI-16 fallback is magenta rather than the obvious blue. On 16
+/// colors the four background cues have to stay tellable apart with no
+/// shading to help them: the cursor's row is already `DarkGray`/`Gray`,
+/// a matched brace `Blue`/`Cyan` and a search hit `Yellow`, and any of
+/// the three can land inside a selection. Magenta is what is left that
+/// still reads as a solid block behind text.
+pub fn selection_style(theme: ThemeKind) -> Style {
+    Style::default().bg(pick(
+        theme,
+        supports_rgb(),
+        (caret_rgb::DARK_SELECTION, Color::Magenta),
+        (caret_rgb::LIGHT_SELECTION, Color::LightMagenta),
+    ))
 }
 
 /// Spec 0233 S3: the brace matching the one the caret is standing on.

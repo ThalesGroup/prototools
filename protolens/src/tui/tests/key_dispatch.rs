@@ -795,20 +795,30 @@ fn the_reassigned_keys_dispatch_where_the_table_says() {
     app.handle_key(plain('^'));
     assert_eq!(app.cursor_column, base, "`^` is `0`'s twin, not a variant");
 
-    // The shifted pair is the sibling-wide fold (spec 0199 S9). It used
-    // to be parent/first-child motion, which `h`/`l` absorbed.
-    app.handle_key(plain('H'));
+    // The sibling-wide fold (spec 0199 S9) moved onto `Control` when
+    // spec 0242 S8 gave the shifted pair to the selection. It used to
+    // be parent/first-child motion, which `h`/`l` absorbed.
+    let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+    app.handle_key(ctrl('h'));
     assert!(
         items.iter().all(|i| app.folded.contains(i)),
-        "`H` folds the whole sibling level"
+        "`Ctrl-h` folds the whole sibling level"
     );
     assert_eq!(app.cursor, items[1], "and moves no cursor");
-    app.handle_key(plain('L'));
+    app.handle_key(ctrl('l'));
     assert!(
         items.iter().all(|i| !app.folded.contains(i)),
-        "`L` unfolds it again"
+        "`Ctrl-l` unfolds it again"
     );
     assert_eq!(app.cursor, items[1]);
+
+    // And the shifted pair selects instead, folding nothing.
+    app.handle_key(plain('H'));
+    assert!(app.selection_span().is_some(), "`H` selects");
+    assert!(app.folded.is_empty(), "and folds nothing");
+    app.handle_key(plain('L'));
+    assert!(app.folded.is_empty(), "nor does `L`");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     // `z` acts on its own now — it was a chord prefix (`za`/`zc`/`zo`
     // and their sibling-wide capitals) and is a one-key toggle.
@@ -1013,7 +1023,7 @@ fn only_the_bound_ctrl_and_alt_chords_do_anything_in_the_main_pane() {
     // `Ctrl-Z` is absent: it is the suspend key, handled at the very top
     // of `handle_key` and never reaching the gate.
     let bound = [
-        (KeyModifiers::CONTROL, "fbnpaeoic"),
+        (KeyModifiers::CONTROL, "fbnpaeoichjkl"),
         (KeyModifiers::ALT, "hlbf"),
     ];
     // The letters, plus every punctuation key the pane binds plainly.

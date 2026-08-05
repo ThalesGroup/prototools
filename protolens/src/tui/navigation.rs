@@ -400,7 +400,26 @@ impl App {
             self.desired_column = self.cursor_column;
             return;
         }
-        self.first_child_move();
+        // A voluntary `End`. Descend if there is anywhere to descend to
+        // — a folded node to open, or a child to enter.
+        if self.cursor_folded() || self.first_child(self.cursor).is_some() {
+            self.first_child_move();
+            return;
+        }
+        // Otherwise carry on to the first character of the next row.
+        // Rightward motion at the end of a leaf's text used to stop dead
+        // with "no children", which is the one place the caret could be
+        // blocked while the document plainly continued below. Reading
+        // right off the end of a line and arriving at the start of the
+        // next is what every other text surface does, and it makes `l`
+        // alone enough to walk the whole document.
+        //
+        // Only `step_down` moves, not `move_down`: `carry_caret` would
+        // place the caret by `desired_column`, and the column being
+        // aimed at here is the new row's first, not the old row's last.
+        if self.step_down() {
+            self.caret_to_line_start();
+        }
     }
 
     /// Spec 0194 S6: `0`/`^`. The two are one key here — column zero is
@@ -525,7 +544,7 @@ impl App {
     /// `cursor_column`: `carry_caret` overwrites it from
     /// `desired_column` and `caret_anchor`, neither of which stepping
     /// touches, so the intermediate values are unobservable (S3).
-    fn step_down(&mut self) -> bool {
+    pub(super) fn step_down(&mut self) -> bool {
         let Some((next, _)) = self.next_visible(self.cursor_line_pos()) else {
             return false;
         };
@@ -536,7 +555,7 @@ impl App {
     }
 
     /// Spec 0215 S1: the stepping half of `move_up`. See `step_down`.
-    fn step_up(&mut self) -> bool {
+    pub(super) fn step_up(&mut self) -> bool {
         let Some((prev, _)) = self.prev_visible(self.cursor_line_pos()) else {
             return false;
         };

@@ -196,21 +196,20 @@ fn byte_of_char(text: &str, n: usize) -> usize {
 ///
 /// `Style::patch` composes `caret_style` over whatever syntax color the
 /// character already had, so the caret keeps the color of what it rests
-/// on. But `REVERSED` is a *toggle*, not a color: adding a second one to
-/// a span that a drag selection has already turned inside out cancels
-/// it, and the caret would vanish on exactly the rows where the two cues
-/// coincide. So the reversal is applied by flipping.
+/// on.
+///
+/// A plain patch is enough because `REVERSED` is the caret's alone (spec
+/// 0233 S2): every other cue in the pane — the cursor's row, the
+/// selection, a matched brace, a search hit — is a background tint, and
+/// a tint under an inversion still shows, as the character's color. The
+/// selection used to reverse too, and two reversals cancel, so the cell
+/// at the moving end of a selection came out looking plain; that is why
+/// `selection_style` is a background now.
 ///
 /// Takes no style. Spec 0233 S2: the caret is drawn the same wherever it
 /// rests, and a parameter here is the door that rule exists to close.
 fn apply_caret(spans: &mut Vec<Span<'static>>, index: usize) {
-    restyle_char(spans, index, move |style| {
-        let mut out = style.patch(theme::caret_style());
-        if style.add_modifier.contains(Modifier::REVERSED) {
-            out.add_modifier.remove(Modifier::REVERSED);
-        }
-        out
-    });
+    restyle_char(spans, index, move |style| style.patch(theme::caret_style()));
 }
 
 /// A rendered line with its trailing `#@ ...` annotation removed (spec
@@ -1140,14 +1139,10 @@ impl App {
         }
         let d_styles = t_styles.elapsed();
 
-        // Spec 0129 §G1: the drag-selected `line_idx` range (if any) gets
-        // the same `REVERSED` treatment as the single cursor row below —
-        // the two can coexist harmlessly since `REVERSED` on an already-
-        // `REVERSED` span is a no-op.
-        let selection_range = match (self.select_anchor, self.select_end) {
-            (Some(a), Some(b)) => Some(a.min(b)..=a.max(b)),
-            _ => None,
-        };
+        // Spec 0242 S11: the selection (if any) is a background tint,
+        // laid over the cursor row's own weaker one. Resolved once for
+        // the frame; each row then asks it for its own columns.
+        let selection_span = self.selection_span();
 
         // Spec 0154 G6: computed in its own pass, ahead of the
         // (immutable-`self`) `text_lines` closure below, since
@@ -1287,23 +1282,40 @@ impl App {
                 spans.insert(0, glyph);
 
                 // Spec 0194 S2: three distinct highlights, not one
-                // row-wide `REVERSED`. The selection keeps the full
-                // reverse; the caret's *row* gets the weaker
+                // row-wide `REVERSED`. The caret's *row* gets the weaker
                 // `cursor_row_style` (G7), patched so it colors the
                 // background and leaves every syntax foreground alone;
-                // and the caret itself is a single cell, applied last so
-                // it wins.
-                let selected = line_idx
-                    .is_some_and(|l| selection_range.as_ref().is_some_and(|r| r.contains(&l)));
+                // the selection gets a stronger background over it; and
+                // the caret itself is a single cell, applied last so it
+                // wins.
                 if on_cursor_row {
                     let row_style = theme::cursor_row_style(self.theme);
                     for span in &mut spans {
                         span.style = span.style.patch(row_style);
                     }
                 }
-                if selected {
-                    for span in &mut spans {
-                        span.style = span.style.add_modifier(Modifier::REVERSED);
+                // Spec 0242 S11: only the selected *characters*, not the
+                // whole row — a selection is a span of characters (G1),
+                // and the fold margin and the heat suffix are gutter
+                // furniture that is in no selection.
+                //
+                // `saturating_sub` rather than the search highlight's
+                // `checked_sub`: a selection routinely starts left of
+                // the pan (its first row is often scrolled past
+                // horizontally), and the visible tail of such a range
+                // still has to be tinted. Saturating to 0 clamps it to
+                // the leftmost drawn cell, which is exactly right.
+                if let Some(range) = line_idx.zip(selection_span).and_then(|(line, span)| {
+                    let text_chars = self.row_text(display_row).chars().count();
+                    self.selected_columns(span, line, text_chars)
+                }) {
+                    let width = inner.width as usize;
+                    let pan = self.pan_offset;
+                    let lo = (FOLD_FIELD_WIDTH + range.start).saturating_sub(pan) + 1;
+                    let hi = ((FOLD_FIELD_WIDTH + range.end).saturating_sub(pan) + 1).min(width);
+                    if lo < hi {
+                        let style = theme::selection_style(self.theme);
+                        restyle_range(&mut spans, lo..hi, |s| s.patch(style));
                     }
                 }
                 // Spec 0233 S3: a background patch, not a second

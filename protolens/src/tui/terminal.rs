@@ -751,7 +751,18 @@ where
                     dispatched_at.elapsed().as_micros()
                 );
             }
-            Some(event::AppEvent::Term(Event::Mouse(mouse))) => app.handle_mouse(mouse),
+            Some(event::AppEvent::Term(Event::Mouse(mouse))) => {
+                let dispatched_at = Instant::now();
+                app.handle_mouse(mouse);
+                trace::trace!(
+                    "mouse {:?} col={} row={} mods={:?} us={}",
+                    mouse.kind,
+                    mouse.column,
+                    mouse.row,
+                    mouse.modifiers,
+                    dispatched_at.elapsed().as_micros()
+                );
+            }
             Some(event::AppEvent::Term(_)) => {}
             // Spec 0224 S1: O(1). Terminal events share this channel in
             // FIFO order, so anything done here is paid by the next

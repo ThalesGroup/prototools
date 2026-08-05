@@ -1217,8 +1217,17 @@ fn clipboard_copy_strips_annotations_outside_the_viewport() {
     app.refresh_window_styles(&window);
 
     let last = app.document_lines().len() - 1;
-    app.select_anchor = Some(last - 3);
-    app.select_end = Some(last);
+    let anchor = app.line_pos(last - 3).expect("the anchor row must exist");
+    app.select_anchor = Some(CursorPos {
+        node: anchor.node,
+        line_in_node: anchor.line_in_node,
+        column: 0,
+    });
+    app.select_engaged = true;
+    let end = app.line_pos(last).expect("the last row must exist");
+    app.cursor = end.node;
+    app.cursor_line_in_node = end.line_in_node;
+    app.caret_to_line_end();
     let (count, copied) = app.selected_text().expect("the selection must yield text");
 
     assert_eq!(count, 4);
@@ -1710,41 +1719,63 @@ fn the_caret_covers_one_cell_and_leaves_the_rows_colors_alone() {
     );
 }
 
-/// Spec 0194 test-plan item 2 (S2, G7). The caret's row gets vim's
-/// `cursorline` tint, a drag selection gets the reversal it has always
-/// had, and a row that is both stays readable: the caret cell's own
-/// reversal cancels against the selection's, so the caret is still
-/// visible rather than merging into the block.
+/// Spec 0194 test-plan item 2 (S2, G7), as amended by spec 0242 S11 and
+/// again on 2026-08-05. The caret's row gets vim's `cursorline` tint,
+/// the selection tints the selected *characters* more strongly on top
+/// of it, and the caret is the one reversed cell — it no longer cancels
+/// against the selection, because the selection no longer reverses.
 #[test]
 fn a_selected_row_and_the_caret_row_stay_distinguishable() {
     let mut app = text_rows_app(&["a: 1", "b: 2", "c: 3"]);
+    // Anchored at the end of the second row with the caret at the start
+    // of the first: both rows are selected in full, and the caret sits
+    // on one of them.
+    app.cursor = 1;
+    app.reset_caret_column();
+    app.caret_to_line_end();
+    app.select_anchor = Some(app.cursor_pos());
+    app.select_engaged = true;
     app.cursor = 0;
     app.reset_caret_column();
-    app.select_anchor = Some(0);
-    app.select_end = Some(1);
     let terminal = drawn_frame(&mut app, 40, 6);
 
     let area = app.main_area;
     let buffer = terminal.backend().buffer();
-    // The heat-cue column, the fold field and the row's own four
-    // characters — the cells the row's spans actually cover.
-    let drawn = 1 + render::FOLD_FIELD_WIDTH as u16 + 4;
+    // The heat-cue column and the fold field come first; the row's own
+    // four characters start after them, and are the only cells a
+    // selection may touch.
+    let text_x = 1 + render::FOLD_FIELD_WIDTH as u16;
     let reversed = |row: u16, x: u16| {
         buffer[(area.x + x, area.y + row)]
             .style()
             .add_modifier
             .contains(Modifier::REVERSED)
     };
+    let selected = |row: u16, x: u16| {
+        buffer[(area.x + x, area.y + row)].style().bg == crate::theme::selection_style(app.theme).bg
+    };
 
     assert!(
-        (0..drawn).all(|x| reversed(1, x)),
-        "a selected row that is not the caret's is reversed throughout"
+        (text_x..text_x + 4).all(|x| selected(1, x)),
+        "a fully selected row that is not the caret's is tinted across its text"
     );
-    let plain: Vec<u16> = (0..drawn).filter(|&x| !reversed(0, x)).collect();
+    assert!(
+        (0..text_x).all(|x| !selected(1, x)),
+        "and the gutter it is drawn beside is not in the selection"
+    );
+    assert!(
+        (text_x..text_x + 4).all(|x| !reversed(1, x)),
+        "the selection is a tint, never an inversion — inversion is the caret's"
+    );
+    let inverted: Vec<u16> = (text_x..text_x + 4).filter(|&x| reversed(0, x)).collect();
     assert_eq!(
-        plain.len(),
-        1,
-        "on a row that is both, exactly the caret cell cancels back"
+        inverted,
+        vec![text_x],
+        "on a row that is both, the caret cell alone is inverted, and it is still selected"
+    );
+    assert!(
+        selected(0, text_x),
+        "the caret's own cell keeps the selection tint under the inversion"
     );
     assert_eq!(
         buffer[(area.x, area.y)].style().bg,
@@ -1752,7 +1783,7 @@ fn a_selected_row_and_the_caret_row_stay_distinguishable() {
         "and the caret's row carries the cursorline tint underneath"
     );
     assert!(
-        !reversed(2, 0),
+        !selected(2, text_x),
         "the unselected row below is left entirely alone"
     );
 }

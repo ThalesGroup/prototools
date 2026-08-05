@@ -130,8 +130,21 @@ impl App {
         // rather than by focus, and panning must keep working (G4).
         let main_interactive = over_main && self.override_target.is_none();
 
+        // `Ctrl` is an alias for `Shift` on a main-pane click, and the
+        // one that actually arrives: holding `Shift` is the long-
+        // standing terminal convention for "do your *own* selection,
+        // ignore the application's mouse reporting" (xterm, VTE, Kitty
+        // and others all honor it), so a `Shift`-click is usually eaten
+        // before protolens ever sees it — the same reason the manage
+        // pane's radio marker offers a double-click alternative to its
+        // `Shift`-click. The `Shift` arm is kept for the terminals that
+        // do forward it.
+        let extend_click = shift || event.modifiers.contains(KeyModifiers::CONTROL);
+
         if let MouseEventKind::Down(MouseButton::Left) = event.kind {
-            if main_interactive {
+            if main_interactive && extend_click {
+                self.shift_click_to(event.column, event.row);
+            } else if main_interactive {
                 // A click in the main pane always shifts keyboard focus
                 // back to it without closing the side pane —
                 // `handle_key` follows `override_focus`/`manage_focus`,
@@ -151,14 +164,12 @@ impl App {
                 // handler below is what acts on `pending_double_click`.
                 //
                 // A click that `handle_click` spent on a fold marker is
-                // never half of a pair. Each such click has already
-                // toggled the fold on its own, so a double-click there
-                // toggles twice and lands back where it started — which
-                // is what clicking a control twice should do. Opening the
-                // override pane is reserved for a double-click on the
-                // node's body. `last_click` is cleared rather than left
-                // alone so that no pair forms across the two zones
-                // either, in whichever order they are clicked.
+                // never half of a pair, and clears `last_click` so that
+                // no pair forms across the two zones either, in
+                // whichever order they are clicked. The marker is a
+                // *control*: it must act on every click that reaches
+                // it, and a run of four fast clicks on it must be four
+                // toggles, not three plus a gesture.
                 self.pending_double_click = match line_idx {
                     Some(l) if !on_marker => is_double_click(&mut self.last_click, l),
                     _ => {
@@ -167,14 +178,19 @@ impl App {
                     }
                 };
 
-                // Spec 0129 §G1: a click also (re-)seeds the drag
-                // selection's anchor/end, replacing any previous one, so
-                // a following `Drag` still works. Whether a *non-dragged*
-                // click keeps or discards this single-line selection is
-                // decided by the `Up` handler below: a plain click
-                // deselects, only a double-click keeps it selected.
-                self.select_anchor = line_idx;
-                self.select_end = line_idx;
+                // Spec 0242 S10: a click (re-)seeds the selection's
+                // anchor, replacing any previous one, so a following
+                // `Drag` still works. `handle_click` has already put the
+                // caret exactly where the click landed, and the caret is
+                // the selection's moving end — so anchoring on it is the
+                // whole of what starting a selection means.
+                //
+                // It does *not* engage the selection, which is what
+                // keeps a click from selecting the character under it: a
+                // drag or a double-click is the mouse saying so, a bare
+                // click is not.
+                self.select_anchor = line_idx.is_some().then(|| self.cursor_pos());
+                self.select_engaged = false;
             } else if over_main {
                 // Locked out by `main_interactive` above. Same reasoning
                 // as `handle_override_key`'s `Tab` arm: a click that does
@@ -196,15 +212,15 @@ impl App {
 
         if main_interactive {
             match event.kind {
-                // Spec 0129 §G1: dragging extends the selection's end to
-                // the row under the pointer; clamped to the pane's
-                // currently-visible rows (no auto-scroll past the top/
-                // bottom edge in this first cut — an out-of-bounds drag
-                // position simply leaves `select_end` where it was).
+                // Spec 0242 S10: dragging moves the *caret* to the
+                // character under the pointer, and the caret is the
+                // selection's moving end — so a drag and a run of
+                // `Shift`-motions to the same place leave identical
+                // state (G3). Clamped to the pane's currently-visible
+                // rows: an out-of-bounds drag position simply leaves the
+                // caret where it was (N3, no auto-scroll).
                 MouseEventKind::Drag(MouseButton::Left) => {
-                    if let Some(line_idx) = self.main_pane_line_idx(event.column, event.row) {
-                        self.select_end = Some(line_idx);
-                    }
+                    self.drag_caret_to(event.column, event.row);
                 }
                 // Spec 0131 §G1: mouse release deliberately does not copy
                 // by itself — selection state is already finalized by
@@ -212,90 +228,38 @@ impl App {
                 // §G3), and `Ctrl-C` is the sole trigger for the actual
                 // clipboard write.
                 //
-                // Single vs. double click vs. drag: a drag
-                // (`select_anchor != select_end`) always keeps its
-                // selection; a plain single click deselects everything;
-                // a double-click (recognized by the `Down` handler
-                // above, same line, within `DOUBLE_CLICK_THRESHOLD`)
-                // keeps the single-line selection `Down` just set and
-                // additionally acts as the same `t`/`o` smart proxy as
-                // `Enter` (spec 0139).
+                // Single vs. double click vs. drag: a drag always keeps
+                // the selection its caret motion built; a plain single
+                // click deselects everything; a double-click on a line's
+                // text (recognized by the `Down` handler above, same
+                // line, within `DOUBLE_CLICK_THRESHOLD`) selects the
+                // whole row it landed on.
+                //
+                // The double-click is the one mouse gesture that names a
+                // *line* rather than a character, which is why it says so
+                // here rather than relying on where the pointer happened
+                // to be: `Down` anchored on the clicked character, and a
+                // second click on the same character would otherwise
+                // select just that character.
+                //
+                // It selects, and does nothing else. It used to also act
+                // as the `t`/`o` smart proxy `Enter` is (spec 0139), but
+                // a gesture that both selects text and opens a side pane
+                // is two gestures wearing one name — and the pane is the
+                // more disruptive of the two to get by accident.
                 MouseEventKind::Up(MouseButton::Left) => {
                     if self.pending_double_click {
-                        self.open_smart_override_or_manage();
-                    } else if self.select_anchor == self.select_end {
-                        self.select_anchor = None;
-                        self.select_end = None;
+                        self.select_current_line();
+                    } else if !self.select_engaged {
+                        // No drag happened, so the click selected
+                        // nothing — drop the anchor it armed rather than
+                        // leave it standing.
+                        self.clear_selection();
                     }
                 }
                 _ => {}
             }
         }
-    }
-
-    /// Spec 0129 §G2: the currently-selected main-pane lines' full
-    /// (untruncated) text, one `row_text` per line in
-    /// `min(select_anchor, select_end)..=max(...)`, joined with `\n`,
-    /// alongside the line count — `None` if there is no active
-    /// selection. Split out from `copy_selection_to_clipboard` so the
-    /// text-building logic is testable independent of real OS clipboard
-    /// access (unavailable e.g. in headless/CI environments).
-    ///
-    /// `row_text`, not `row_content`: spec 0193 S1's fold margin is
-    /// gutter furniture, and a `▾` (or the two blank columns that stand
-    /// in for one) pasted into a `.textproto` would not parse.
-    pub(super) fn selected_text(&self) -> Option<(usize, String)> {
-        let (Some(anchor), Some(end)) = (self.select_anchor, self.select_end) else {
-            return None;
-        };
-        let (start, stop) = (anchor.min(end), anchor.max(end));
-        // Spec 0222 S3: one descent to enter the document and then a
-        // fold-blind walk, rather than a descent per selected line. The
-        // walk is fold-blind because the selection is a range of
-        // absolute lines, so a folded-away line inside it is copied
-        // exactly as it was before the text moved into the nodes.
-        let mut rows = Vec::with_capacity(stop - start + 1);
-        let mut at = self.line_pos(start);
-        let mut cursor = None;
-        let mut line = start;
-        while line <= stop {
-            let Some(pos) = at else { break };
-            let offset = self.advance_offset(&mut cursor, pos);
-            rows.push(self.row_text(DisplayRow::Committed(CommittedRow { line, pos, offset })));
-            at = self.next_line(pos);
-            line += 1;
-        }
-        Some((stop - start + 1, rows.join("\n")))
-    }
-
-    /// Spec 0129 §G2/0131 §G2: copy the currently-selected main-pane
-    /// lines to the OS clipboard. No-op if there is no active selection.
-    /// `copy_to_clipboard` always attempts an OSC 52 fallback when
-    /// `arboard` fails (no reliable ack from the terminal either way),
-    /// so a failure here still reports an (optimistic) success message
-    /// rather than "clipboard unavailable" — spec 0131 §G2's "safest
-    /// default."
-    pub(super) fn copy_selection_to_clipboard(&mut self) {
-        let Some((count, text)) = self.selected_text() else {
-            return;
-        };
-        self.message = match copy_to_clipboard(&text) {
-            Ok(()) => format!("{count} line(s) copied to clipboard"),
-            Err(_) => format!("{count} line(s) copied to clipboard (OSC 52 fallback)"),
-        };
-    }
-
-    /// Spec 0131 §G1: `Ctrl-C` — copies the active drag-selection if one
-    /// exists, else falls back to the cursor's own current line, treated
-    /// as a length-1 selection so the range-based copy logic applies
-    /// unchanged.
-    pub(super) fn copy_current_selection_or_line(&mut self) {
-        if self.select_anchor.is_none() {
-            let line_idx = self.cursor_line();
-            self.select_anchor = Some(line_idx);
-            self.select_end = Some(line_idx);
-        }
-        self.copy_selection_to_clipboard();
     }
 
     /// Whether `(col, row)` falls inside `area` (used for mouse hit-
@@ -367,11 +331,13 @@ impl App {
             .map(|(_, line)| line)
     }
 
-    /// Returns whether the click landed on a fold marker and was spent
-    /// toggling it. The caller uses that to keep a second click on the
-    /// same marker from also counting as a double-click: a marker is a
-    /// control, so clicking it twice means toggling twice, not opening
-    /// the override pane on top of it.
+    /// Dispatch one main-pane left-click: on a fold marker it toggles
+    /// the fold, anywhere else it moves the caret under the pointer.
+    ///
+    /// Returns whether the click was spent on a fold marker. The caller
+    /// uses that to keep such a click out of its double-click pairing
+    /// entirely: a marker is a control, and clicking a control n times
+    /// must mean acting on it n times, however fast they arrive.
     pub(super) fn handle_click(&mut self, col: u16, row: u16) -> bool {
         let Some(line_idx) = self.main_pane_line_idx(col, row) else {
             return false;
@@ -400,8 +366,20 @@ impl App {
             // Column 0 is always the heat-cue gutter (spec 0138 N1: a
             // glyph or a reserved blank, never part of the line's own
             // text) — the marker sits one column further right.
+            //
+            // The hit target is the marker *and* the blank column
+            // `fold_margin` draws beside it — the whole two-column fold
+            // field, never any of the row's text (the field is
+            // `FOLD_FIELD_WIDTH` wide by construction and the first
+            // non-blank starts after it). A one-column target is too
+            // small to click repeatedly: a fast run of clicks drifts by
+            // a cell and one of its presses silently becomes a caret
+            // placement instead of a toggle, which reads as a lost
+            // click.
             let line = self.line_text(pos);
-            if rel_col >= 1 && rel_col - 1 == render::marker_column(&line) {
+            let marker = render::marker_column(&line);
+            let field = marker..marker + render::FOLD_FIELD_WIDTH as u16;
+            if rel_col >= 1 && field.contains(&(rel_col - 1)) {
                 self.toggle_fold(pos.node);
                 return true;
             }
@@ -457,6 +435,63 @@ impl App {
         self.clamp_caret_column();
         self.desired_column = self.cursor_column;
         self.caret_anchor = CaretAnchor::Free;
+    }
+
+    /// Spec 0242 S10: move the caret to the character under a dragging
+    /// pointer, without any of the other things a *click* does.
+    ///
+    /// No fold-marker toggle: a drag across the gutter would otherwise
+    /// fold every node it passed. No `record_jump` either — a drag is
+    /// one continuous gesture, and filling the jumplist with a stop per
+    /// reported pointer position would make `Ctrl-o` useless.
+    ///
+    /// A drag *engages* the selection, and stays engaged even if the
+    /// pointer comes back to the character it started on: dragging out
+    /// and back is how the mouse asks for a single character, the
+    /// counterpart of `Shift-Right` `Shift-Left`.
+    fn drag_caret_to(&mut self, col: u16, row: u16) {
+        let Some(line_idx) = self.main_pane_line_idx(col, row) else {
+            return;
+        };
+        let Some(pos) = self.line_pos(line_idx) else {
+            return;
+        };
+        self.select_engaged = self.select_anchor.is_some();
+        self.cursor = pos.node;
+        self.cursor_line_in_node = pos.line_in_node;
+        self.cursor_moves += 1;
+        self.set_caret_from_click(col, line_idx, pos);
+    }
+
+    /// Spec 0242 S10: `Shift`-click extends the selection to the clicked
+    /// character — the mouse's spelling of holding `Shift` and pressing
+    /// an arrow until the caret gets there.
+    ///
+    /// With nothing engaged yet, the fixed end is wherever the caret
+    /// already is: the gesture selects the span between the caret and
+    /// the click. The anchor a bare click armed names that same cell,
+    /// but re-anchoring here is what makes the gesture work right after
+    /// a *keyboard* motion too. With a selection already engaged the
+    /// anchor stays put and only the caret moves, so the one gesture
+    /// extends or contracts depending on which side of the anchor the
+    /// click lands.
+    ///
+    /// It toggles no fold — a `Shift`-click on the fold field puts the
+    /// caret on the row's first character, like any other gutter click —
+    /// and forms no double-click pair, since a `Shift`-double-click
+    /// would then have to choose between the span and the line.
+    fn shift_click_to(&mut self, col: u16, row: u16) {
+        // Same focus claim as the plain click below.
+        self.override_focus = false;
+        self.manage_focus = false;
+        self.last_click = None;
+        self.pending_double_click = false;
+        if !self.select_engaged {
+            self.select_anchor = Some(self.cursor_pos());
+        }
+        // Engages, exactly as a drag to the same place would — the two
+        // gestures differ only in whether the button stayed down.
+        self.drag_caret_to(col, row);
     }
 
     /// Which drawn row `cursor`'s own currently-displayed line (header

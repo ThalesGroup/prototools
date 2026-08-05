@@ -197,8 +197,8 @@ impl App {
         self.upgrade_active_override_to_complete();
     }
 
-    /// `Enter`/double-click on a main-pane node (item 3, spec 0139
-    /// follow-up): a smart proxy for `t`/`o` — opens the management
+    /// `Enter` on a main-pane node (item 3, spec 0139 follow-up): a
+    /// smart proxy for `t`/`o` — opens the management
     /// pane (`o`) if an override already applies to the cursor node,
     /// active or not (the same Step A/B check spec 0139's `t` itself
     /// uses to pick its initial highlight); otherwise opens the

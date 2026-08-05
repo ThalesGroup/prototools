@@ -21,6 +21,7 @@ mod profiling;
 mod prune;
 mod render;
 mod search;
+mod selection;
 mod structure;
 mod support;
 mod support_any;

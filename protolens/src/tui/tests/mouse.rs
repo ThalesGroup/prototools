@@ -300,9 +300,11 @@ fn override_and_manage_panes_pan_independently_of_the_main_pane() {
     );
 }
 
-/// Spec 0129 §G1/§G3: click-drag across N main-pane rows, release —
-/// selects the whole `[start, end]` range in document order, and
-/// `render` highlights every row in that range with `REVERSED`.
+/// Spec 0129 §G1/§G3, as amended by spec 0242 S10: click-drag across N
+/// main-pane rows, release. The drag moves the *caret*, so the selection
+/// runs from the character the click landed on to the one under the
+/// pointer; dragging past the end of the last row's text clamps there,
+/// which is how a whole-line drag is spelled.
 #[test]
 fn drag_select_spans_multiple_main_pane_rows() {
     let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "gamma: 3", "delta: 4"]);
@@ -315,17 +317,20 @@ fn drag_select_spans_multiple_main_pane_rows() {
         row: 1,
         modifiers: KeyModifiers::NONE,
     });
-    assert_eq!(app.select_anchor, Some(1));
-    assert_eq!(app.select_end, Some(1));
+    assert!(app.select_anchor.is_some(), "the click seeds the anchor");
+    assert_eq!(
+        app.selection_span(),
+        None,
+        "but a click engages no selection, so nothing is selected yet"
+    );
 
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Drag(MouseButton::Left),
-        column: 0,
+        column: 39,
         row: 3,
         modifiers: KeyModifiers::NONE,
     });
-    assert_eq!(app.select_anchor, Some(1));
-    assert_eq!(app.select_end, Some(3));
+    assert_eq!(app.selection_span(), Some((1, 0, 3, 8)));
 
     let (count, text) = app.selected_text().expect("selection must be active");
     assert_eq!(count, 3);
@@ -333,16 +338,15 @@ fn drag_select_spans_multiple_main_pane_rows() {
 
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Up(MouseButton::Left),
-        column: 0,
+        column: 39,
         row: 3,
         modifiers: KeyModifiers::NONE,
     });
     assert_eq!(
-        app.select_anchor,
-        Some(1),
+        app.selection_span(),
+        Some((1, 0, 3, 8)),
         "selection persists after release"
     );
-    assert_eq!(app.select_end, Some(3));
     // Spec 0131 §G1/test plan item 3: mouse release no longer copies
     // by itself.
     assert!(
@@ -386,18 +390,17 @@ fn plain_click_with_no_drag_deselects() {
     });
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Drag(MouseButton::Left),
-        column: 0,
+        column: 39,
         row: 2,
         modifiers: KeyModifiers::NONE,
     });
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Up(MouseButton::Left),
-        column: 0,
+        column: 39,
         row: 2,
         modifiers: KeyModifiers::NONE,
     });
-    assert_eq!(app.select_anchor, Some(0));
-    assert_eq!(app.select_end, Some(2));
+    assert_eq!(app.selection_span(), Some((0, 0, 2, 8)));
 
     // A plain click on a different line (no drag) must clear it.
     app.handle_mouse(MouseEvent {
@@ -413,7 +416,123 @@ fn plain_click_with_no_drag_deselects() {
         modifiers: KeyModifiers::NONE,
     });
     assert_eq!(app.select_anchor, None, "plain click deselects");
-    assert_eq!(app.select_end, None);
+    assert_eq!(app.selection_span(), None);
+}
+
+/// Spec 0242 S10, the user's own correction (2026-08-05): the mouse's
+/// way of selecting exactly one character is to drag off it and back —
+/// the counterpart of `Shift-Right` `Shift-Left`. A drag engages the
+/// selection and stays engaged, so the caret returning to the anchor is
+/// one character rather than none, and the release keeps it.
+#[test]
+fn a_drag_out_and_back_selects_the_single_character_it_started_on() {
+    let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2"]);
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 40, 20);
+    let text_x = 1 + render::FOLD_FIELD_WIDTH as u16;
+
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: text_x + 2,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    });
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: text_x + 5,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(app.selection_span(), Some((0, 2, 0, 6)));
+
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: text_x + 2,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    });
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: text_x + 2,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(
+        app.selection_span(),
+        Some((0, 2, 0, 3)),
+        "back on the character it started on, and the release keeps it"
+    );
+
+    let (count, text) = app.selected_text().expect("selection must be active");
+    assert_eq!(count, 1);
+    assert_eq!(text, "p");
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    assert!(
+        app.message == "1 character(s) copied to clipboard"
+            || app.message == "1 character(s) copied to clipboard (OSC 52 fallback)",
+        "unexpected message: {}",
+        app.message
+    );
+}
+
+/// Spec 0242 S10, extended by the user (2026-08-05): `Shift`-click is
+/// the mouse's spelling of a run of `Shift`-motions. With nothing
+/// engaged it anchors at the caret and selects up to the click; with a
+/// selection already engaged the anchor holds still, so the same
+/// gesture extends it or contracts it depending on where it lands.
+#[test]
+fn shift_click_extends_the_selection_from_the_caret_then_from_the_anchor() {
+    let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2"]);
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 40, 20);
+    let text_x = 1 + render::FOLD_FIELD_WIDTH as u16;
+    let shift_click = |app: &mut App, column: u16, modifiers: KeyModifiers| {
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            app.handle_mouse(MouseEvent {
+                kind,
+                column,
+                row: 0,
+                modifiers,
+            });
+        }
+    };
+
+    // Put the caret on column 2 with a plain click, which selects
+    // nothing.
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: text_x + 2,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    });
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: text_x + 2,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(app.selection_span(), None);
+
+    // Unengaged: anchor at the caret, select through the click.
+    shift_click(&mut app, text_x + 5, KeyModifiers::SHIFT);
+    assert_eq!(app.selection_span(), Some((0, 2, 0, 6)));
+
+    // Engaged: the anchor stays on column 2 and the selection contracts.
+    // `Ctrl` is the alias most terminals actually forward.
+    shift_click(&mut app, text_x + 3, KeyModifiers::CONTROL);
+    assert_eq!(app.selection_span(), Some((0, 2, 0, 4)));
+
+    // ...and extends the other way, past the anchor.
+    shift_click(&mut app, text_x, KeyModifiers::SHIFT);
+    assert_eq!(app.selection_span(), Some((0, 0, 0, 3)));
+
+    let (lines, text) = app.selected_text().expect("selection must be active");
+    assert_eq!(lines, 1);
+    assert_eq!(text, "alp");
 }
 
 /// Feedback (2026-07-15): double-clicking a main-pane line (two
@@ -421,14 +540,13 @@ fn plain_click_with_no_drag_deselects() {
 /// explicitly selects that line for copy. Crossterm reports `Down`
 /// identically for single and double clicks, so this exercises the
 /// app's own timestamp/position-based disambiguation
-/// (`App::last_click`/`pending_double_click`). Since item 3 (spec
-/// 0139 follow-up), the same double-click also acts as the `t`/`o`
-/// smart proxy — this fixture's cursor node is the seeded root
-/// override's own target (active by construction), so the second
-/// click also opens the management pane; the copy check below uses
-/// `copy_selection_to_clipboard` directly rather than dispatching
-/// `Ctrl-C` through `handle_key`, since that now routes to the
-/// (focused) management pane instead of the main pane.
+/// (`App::last_click`/`pending_double_click`).
+///
+/// Spec 0242 S10, as amended by the user (2026-08-05): selecting the
+/// line is *all* it does. It used to double as the `t`/`o` smart proxy
+/// (spec 0139), and this fixture's cursor node is the seeded root
+/// override's own target, so the assertion that the manage pane stays
+/// shut is a real one.
 #[test]
 fn double_click_selects_the_clicked_line_for_copy() {
     let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2"]);
@@ -451,29 +569,72 @@ fn double_click_selects_the_clicked_line_for_copy() {
         });
     }
 
-    assert_eq!(app.select_anchor, Some(0), "double-click selects the line");
-    assert_eq!(app.select_end, Some(0));
+    assert_eq!(
+        app.selection_span(),
+        Some((0, 0, 0, 8)),
+        "double-click selects the whole line it landed on"
+    );
     assert!(
         app.message.is_empty(),
         "unexpected message: {}",
         app.message
     );
     assert!(
-        app.manage_open,
-        "double-click on the overridden root node also opens the management pane"
+        !app.manage_open,
+        "and does not also open a side pane, even on an overridden node"
     );
+    assert!(app.override_target.is_none());
 
     let (count, text) = app.selected_text().expect("selection must be active");
     assert_eq!(count, 1);
     assert_eq!(text, "alpha: 1");
 
-    app.copy_selection_to_clipboard();
+    // Spec 0242 S13: a selection inside one line is reported in
+    // characters, since "1 line(s)" would be a lie about a partial one
+    // and this message is the only sign the copy happened.
+    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
     assert!(
-        app.message == "1 line(s) copied to clipboard"
-            || app.message == "1 line(s) copied to clipboard (OSC 52 fallback)",
+        app.message == "8 character(s) copied to clipboard"
+            || app.message == "8 character(s) copied to clipboard (OSC 52 fallback)",
         "unexpected message: {}",
         app.message
     );
+}
+
+/// The user's report (2026-08-05): "a quick sequence of 4 clicks on the
+/// fold-toggle results as if there had only been 3." Whatever the
+/// terminal does with a fast run, the app's own contract is that every
+/// click that reaches it toggles — no timing, no counting, no state
+/// carried from the previous click.
+#[test]
+fn every_click_on_the_fold_marker_toggles_however_many_arrive() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 40, 20);
+    let node = 0;
+    let line = app.line_text(app.line_pos(app.absolute_start(node)).unwrap());
+    let marker = render::marker_column(&line);
+
+    let folded = app.folded.contains(&node);
+    for i in 1..=6 {
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: app.main_area.x + 1 + marker,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: app.main_area.x + 1 + marker,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(
+            app.folded.contains(&node),
+            folded != (i % 2 == 1),
+            "click {i} must have toggled"
+        );
+    }
 }
 
 /// Spec 0129 §G1/test plan item 3: dragging upward (end row above
@@ -487,7 +648,7 @@ fn drag_select_upward_still_copies_top_to_bottom() {
 
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
-        column: 0,
+        column: 39,
         row: 2,
         modifiers: KeyModifiers::NONE,
     });
@@ -497,8 +658,11 @@ fn drag_select_upward_still_copies_top_to_bottom() {
         row: 0,
         modifiers: KeyModifiers::NONE,
     });
-    assert_eq!(app.select_anchor, Some(2));
-    assert_eq!(app.select_end, Some(0));
+    assert_eq!(
+        app.selection_span(),
+        Some((0, 0, 2, 8)),
+        "the span is ordered, whichever way the pointer went"
+    );
 
     let (count, text) = app.selected_text().expect("selection must be active");
     assert_eq!(count, 3, "top-to-bottom order, not reversed");
@@ -535,8 +699,10 @@ fn ctrl_c_with_no_selection_copies_cursor_line() {
 
     assert_eq!(app.select_anchor, None, "no selection active yet");
     app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
-    assert_eq!(app.select_anchor, Some(0));
-    assert_eq!(app.select_end, Some(0));
+    assert_eq!(
+        app.select_anchor, None,
+        "and copying a line does not start one"
+    );
     assert!(
         app.message == "1 line(s) copied to clipboard"
             || app.message == "1 line(s) copied to clipboard (OSC 52 fallback)",
@@ -561,6 +727,11 @@ fn clipboard_unavailable_shows_fallback_message_without_panicking() {
         row: 0,
         modifiers: KeyModifiers::NONE,
     });
+    assert_eq!(
+        app.selection_span(),
+        None,
+        "spec 0242 S10: a click on a character selects nothing"
+    );
     app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
     // This sandbox has no reachable clipboard provider, so the
     // failure branch is exactly what's exercised here.
@@ -588,18 +759,17 @@ fn fresh_click_replaces_selection_esc_clears_it() {
     });
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Drag(MouseButton::Left),
-        column: 0,
+        column: 39,
         row: 2,
         modifiers: KeyModifiers::NONE,
     });
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Up(MouseButton::Left),
-        column: 0,
+        column: 39,
         row: 2,
         modifiers: KeyModifiers::NONE,
     });
-    assert_eq!(app.select_anchor, Some(0));
-    assert_eq!(app.select_end, Some(2));
+    assert_eq!(app.selection_span(), Some((0, 0, 2, 8)));
 
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -608,15 +778,13 @@ fn fresh_click_replaces_selection_esc_clears_it() {
         modifiers: KeyModifiers::NONE,
     });
     assert_eq!(
-        app.select_anchor,
-        Some(1),
-        "a fresh click replaces the old selection"
+        app.selection_span(),
+        None,
+        "a fresh click replaces the old selection with an empty one"
     );
-    assert_eq!(app.select_end, Some(1));
 
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.select_anchor, None, "Esc clears the selection");
-    assert_eq!(app.select_end, None);
 }
 
 /// Regression test: clicking a foldable node's `▸`/`▾` marker must
@@ -820,4 +988,14 @@ fn a_click_places_the_caret_except_on_the_fold_marker() {
         app.cursor_column, indent,
         "and leaves the caret exactly where it was"
     );
+
+    // The blank column `fold_margin` draws beside the marker is part of
+    // the same control: a one-cell target is too small to click twice in
+    // a row without drifting off it.
+    app.handle_click(marker + 2, row);
+    assert!(
+        !app.folded.contains(&items[1]),
+        "the whole two-column fold field toggles, not just the glyph"
+    );
+    assert_eq!(app.cursor_column, indent, "and still not the caret");
 }
