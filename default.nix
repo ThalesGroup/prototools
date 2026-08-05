@@ -310,7 +310,8 @@ let
     # are built, by which time wktRkyv is already available.
     prototext = rust.prototext;
     inherit (rust) prototextCodec fdpScanLib prototextGraphLib
-                   prototextExtensionArtifacts prototextGraphExtensionArtifacts;
+                   prototextExtensionArtifacts prototextGraphExtensionArtifacts
+                   fdpScanExtensionArtifacts;
   };
 
   cratesIo = import ./nix/crates-io.nix {

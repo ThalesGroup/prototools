@@ -28,6 +28,7 @@
 , prototextGraphLib
 , prototextExtensionArtifacts      # store path: $out/artifacts/ from prototext_codec ext
 , prototextGraphExtensionArtifacts # store path: $out/artifacts/ from prototext_graph ext
+, fdpScanExtensionArtifacts       # store path: $out/artifacts/ from fdp_scan ext
 , treeSitterTextproto
 }:
 
@@ -289,8 +290,18 @@ let
   #
   # Runs against reprotoSrcFull so the generated .pb descriptor files
   # are present.  The extension artifacts are injected so pyright can
-  # resolve prototext_codec_lib and scoring_graph_lib imports via the
-  # generated .pyi stubs.
+  # resolve prototext_codec_lib, scoring_graph_lib and fdp_scan_lib
+  # imports via the generated .pyi stubs.
+  #
+  # fdp_scan_lib is here even though it is banned from
+  # reprotoPropagatedDeps (see the comment there).  The ban exists so
+  # that reprotoBare's closure stays free of the WKT graph reproto is
+  # itself used to build; pythonLint is a leaf nothing builds from, so
+  # depending on the extension closes no cycle.  It has to be listed:
+  # load.py's import of it is deferred to inside the function (spec 0243
+  # S10) for that same eval-recursion reason, but pyright resolves
+  # imports statically wherever they sit, so deferring hides nothing
+  # from it.
   # ---------------------------------------------------------------------------
   pythonLint = pkgs.runCommand "python-lint" {
     buildInputs = [
@@ -305,10 +316,11 @@ let
     # pyright needs a writable working directory for its cache.
     cd "$TMPDIR"
 
-    # Make the prototext_codec_lib and scoring_graph_lib .pyi stubs visible to
-    # pyright.  tree-sitter, tree-sitter-language-pack, and treeSitterTextproto
-    # are now in reprotoPropagatedDeps and reach pyright via the Python env.
-    export PYTHONPATH="${reprotoSrcFull}/src:${prototextExtensionArtifacts}:${prototextGraphExtensionArtifacts}"
+    # Make the prototext_codec_lib, scoring_graph_lib and fdp_scan_lib
+    # .pyi stubs visible to pyright.  tree-sitter, tree-sitter-language-pack,
+    # and treeSitterTextproto are now in reprotoPropagatedDeps and reach
+    # pyright via the Python env.
+    export PYTHONPATH="${reprotoSrcFull}/src:${prototextExtensionArtifacts}:${prototextGraphExtensionArtifacts}:${fdpScanExtensionArtifacts}"
 
     # Write a hermetic pyrightconfig.json.
     cat > pyrightconfig.json <<EOF
@@ -319,7 +331,8 @@ let
   "extraPaths": [
     "${reprotoSrcFull}/src",
     "${prototextExtensionArtifacts}",
-    "${prototextGraphExtensionArtifacts}"
+    "${prototextGraphExtensionArtifacts}",
+    "${fdpScanExtensionArtifacts}"
   ],
   "exclude": [
     "result*",
