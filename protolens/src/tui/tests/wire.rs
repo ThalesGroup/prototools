@@ -481,8 +481,23 @@ fn toggling_wire_mode_invalidates_no_cache() {
 /// rows": the annotation and the wire bytes below it are two
 /// independent derivations of the same fact — one from rendered text
 /// through the grammar, one from the blob through `tier_of` — and a
-/// reader is meant to read them as one mark. They land on the same
-/// color or they are two marks.
+/// reader is meant to read them as one mark.
+///
+/// This test owns the two ends of that chain, which are about *this
+/// document*: that `pack_size` is captured as `AnnotationLandmark` at
+/// all, and that the band the wire row paints with `Tier::Landmark`
+/// covers the wire type and the length prefix and nothing else. The
+/// middle link — that the role and the tier resolve to one hue, in all
+/// four palettes — belongs to `theme`, where both tables are in scope:
+/// `theme::tests::a_tier_looks_the_same_named_as_it_does_captured`.
+///
+/// Asserting the hue here too was worse than redundant. It compared
+/// `style_for`'s output against `tier_band`'s directly, which stopped
+/// being true when the landmark started going through `doc_leveled`
+/// (a landmark is structure, not an anomaly, so it does not shout) —
+/// and it went unnoticed because the RGB palette was not reached: a
+/// leaked `COLORTERM` was pushing the suite onto the ANSI-16 fallback,
+/// where the leveling has no room to happen and the two agree.
 #[test]
 fn pack_size_and_its_wire_bytes_share_the_accent() {
     use crate::annotation::Tier;
@@ -505,15 +520,12 @@ fn pack_size_and_its_wire_bytes_share_the_accent() {
         .collect();
     assert_eq!(roles, [SyntaxRole::AnnotationLandmark]);
 
-    // The annotation wears the color as text and the wire row wears it
-    // as a band, which is the one thing about them that differs.
+    // The annotation wears the tier as text, the wire row wears it as a
+    // band — the one thing about them that differs, and why the band is
+    // the `bg` here.
     let accent = theme::tier_band(Tier::Landmark, app.theme)
         .bg
         .expect("a tier is a band");
-    assert_eq!(
-        theme::style_for(SyntaxRole::AnnotationLandmark, app.theme).fg,
-        Some(accent),
-    );
 
     let mut memo = PackedCursor::default();
     let pos = app.line_pos(1).expect("line 1 is inside the document");

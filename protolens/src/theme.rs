@@ -1273,36 +1273,67 @@ mod tests {
     /// earlier panicking test so later tests still run.
     static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
-        ENV_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    /// Holds `ENV_MUTEX` and puts `name` back the way it was found.
+    ///
+    /// The mutex alone is not enough. It only serializes the tests in
+    /// this module, and the variables are read from outside it:
+    /// `supports_rgb` looks `COLORTERM` up uncached, unlocked, on every
+    /// call, from every test in the binary. So a test that ended by
+    /// *removing* `COLORTERM` — as these did — did not restore a
+    /// pristine environment, it silently pushed the whole rest of the
+    /// process onto the ANSI-16 palette for the remainder of the run,
+    /// and the RGB palette stopped being exercised through `style_for`
+    /// at all. Restoring on `Drop` rather than at the end of the body
+    /// also survives a failing assertion.
+    struct EnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        name: &'static str,
+        prior: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn new(name: &'static str) -> Self {
+            let lock = ENV_MUTEX
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            Self {
+                _lock: lock,
+                name,
+                prior: std::env::var(name).ok(),
+            }
+        }
+
+        fn set(&self, value: &str) {
+            // SAFETY: no other thread touches this variable — the guard
+            // holds `ENV_MUTEX` for as long as it lives.
+            unsafe { std::env::set_var(self.name, value) }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: as above — the lock is released only after this.
+            unsafe {
+                match &self.prior {
+                    Some(value) => std::env::set_var(self.name, value),
+                    None => std::env::remove_var(self.name),
+                }
+            }
+        }
     }
 
     #[test]
     fn resolve_system_reads_colorfgbg_dark() {
-        let _guard = lock_env();
-        // SAFETY: single-threaded (guarded by ENV_MUTEX above).
-        unsafe {
-            std::env::set_var("COLORFGBG", "15;0");
-        }
+        let guard = EnvGuard::new("COLORFGBG");
+        guard.set("15;0");
         assert_eq!(resolve_system(), ThemeKind::Dark);
-        unsafe {
-            std::env::remove_var("COLORFGBG");
-        }
     }
 
     #[test]
     fn resolve_system_reads_colorfgbg_light() {
-        let _guard = lock_env();
-        // SAFETY: single-threaded (guarded by ENV_MUTEX above).
-        unsafe {
-            std::env::set_var("COLORFGBG", "0;15");
-        }
+        let guard = EnvGuard::new("COLORFGBG");
+        guard.set("0;15");
         assert_eq!(resolve_system(), ThemeKind::Light);
-        unsafe {
-            std::env::remove_var("COLORFGBG");
-        }
     }
 
     /// `ThemeKind::System` is a *request*, not a palette, and nothing in
@@ -1323,12 +1354,9 @@ mod tests {
     /// `cargo test` has no terminal to answer it and pays the timeout.
     #[test]
     fn every_styling_function_accepts_what_resolve_system_returns() {
-        let _guard = lock_env();
+        let guard = EnvGuard::new("COLORFGBG");
         for fg_bg in ["15;0", "0;15"] {
-            // SAFETY: single-threaded (guarded by ENV_MUTEX above).
-            unsafe {
-                std::env::set_var("COLORFGBG", fg_bg);
-            }
+            guard.set(fg_bg);
             let theme = resolve_system();
             assert_ne!(
                 theme,
@@ -1353,9 +1381,6 @@ mod tests {
                 }
                 heat_suffix_style_in(theme, rgb);
             }
-        }
-        unsafe {
-            std::env::remove_var("COLORFGBG");
         }
     }
 
@@ -1463,23 +1488,13 @@ mod tests {
     /// palettes on a machine whose terminal is true-color-capable.
     #[test]
     fn supports_rgb_follows_colorterm() {
-        let _guard = lock_env();
-        // SAFETY: single-threaded (guarded by ENV_MUTEX above).
-        unsafe {
-            std::env::set_var("COLORTERM", "truecolor");
-        }
+        let guard = EnvGuard::new("COLORTERM");
+        guard.set("truecolor");
         assert!(supports_rgb());
-        unsafe {
-            std::env::set_var("COLORTERM", "24bit");
-        }
+        guard.set("24bit");
         assert!(supports_rgb());
-        unsafe {
-            std::env::set_var("COLORTERM", "256color");
-        }
+        guard.set("256color");
         assert!(!colorterm_reports_truecolor());
-        unsafe {
-            std::env::remove_var("COLORTERM");
-        }
     }
 
     #[test]
