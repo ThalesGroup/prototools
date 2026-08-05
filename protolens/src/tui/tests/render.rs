@@ -1439,6 +1439,46 @@ fn column_of(content: &str, needle: &str) -> usize {
     content[..byte].chars().count()
 }
 
+/// Spec 0247 S10/S11: the fold toggle is what the status is *for*, so
+/// the color has to survive all the way to a drawn cell.
+///
+/// Both directions, because only the pair is informative: the fixture
+/// with one undeclared field must tint every marker above it, and the
+/// same document without that field must tint none — otherwise a test
+/// that only looked for the color would pass on a renderer that tinted
+/// everything.
+#[test]
+fn a_defect_tints_the_fold_marker_of_every_node_above_it() {
+    let want = crate::theme::status_color(crate::node_status::Status::Unknown, ThemeKind::Dark)
+        .expect("an unknown field must have a color of its own");
+
+    let (mut app, ..) = unknown_field_fixture();
+    app.theme = ThemeKind::Dark;
+    let terminal = drawn_frame(&mut app, 120, 12);
+    // The whole fold field is styled, indentation and all; only the
+    // glyph has ink in it, so the blank cells say nothing either way.
+    let tinted: Vec<_> = marked_cells(&app, &terminal, |s| s.fg == Some(want))
+        .into_iter()
+        .filter(|(_, sym)| sym != " ")
+        .collect();
+    // The root and `inner {` — every foldable node on the path.
+    assert_eq!(
+        tinted,
+        vec![(0, "\u{25be}".to_string()), (1, "\u{25be}".to_string())],
+        "the status color must reach the marker of every node above the defect"
+    );
+
+    let (mut clean, ..) = type_as_fixture();
+    clean.theme = ThemeKind::Dark;
+    clean.splash = false;
+    let terminal = drawn_frame(&mut clean, 120, 12);
+    assert_eq!(
+        marked_cells(&clean, &terminal, |s| s.fg == Some(want)),
+        Vec::new(),
+        "a document with nothing wrong must tint nothing"
+    );
+}
+
 /// Spec 0193 test-plan items 1 and 2 (G1, G2). `nested_any_fixture`
 /// renders `type_url: "..."` and `value {` as siblings at the same
 /// depth — one with nothing to fold, one foldable — which is exactly

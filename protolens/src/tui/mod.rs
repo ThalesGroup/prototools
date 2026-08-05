@@ -56,6 +56,7 @@ use crate::blob::wrapped;
 use crate::blob::Blob;
 use crate::colorize::{self, LineStyles, SyntaxRole};
 use crate::decode::{self, widen, Decoded, DescriptorContext, TreeNode};
+use crate::node_status::Status;
 pub(crate) use lines::LinePos;
 
 use crate::export_descriptor;
@@ -1160,6 +1161,16 @@ pub struct App {
     /// walk steps over it; `Resolved` nodes are read directly, no cache
     /// lock.
     heat_states: Vec<heat_cue::HeatState>,
+    /// Spec 0247 S6: the worst thing each node's *own* rows say,
+    /// parallel to `tree`.
+    status_own: Vec<Status>,
+    /// Spec 0247 S6: each node's status including its whole subtree —
+    /// what the fold toggle is colored by.
+    ///
+    /// Two parallel arrays rather than one of pairs: the roll-up's inner
+    /// loop is a `max` over a child block, and level order makes that
+    /// block a contiguous slice of *this* array alone.
+    status_rolled: Vec<Status>,
     /// Spec 0164 G7: main-pane zigzag read-ahead prefetch walk state,
     /// persisted across `run_loop` iterations.
     prefetch_walk: PrefetchWalk,
@@ -1573,6 +1584,10 @@ impl App {
             ))),
             heat_worker: None,
             heat_states: vec![heat_cue::HeatState::default(); tree_len],
+            // Filled by the `rebuild_status` below, once the tree the
+            // pass reads is in place.
+            status_own: vec![Status::Ok; tree_len],
+            status_rolled: vec![Status::Ok; tree_len],
             prefetch_walk: PrefetchWalk::exhausted(),
             prefetch_trace: PrefetchTrace::default(),
             activity_shown: None,
@@ -1636,6 +1651,10 @@ impl App {
             #[cfg(unix)]
             editor_state: neovim::EditorState::NotRunning,
         };
+        // Spec 0247 S7: the one full pass. Every later change to the
+        // document is a splice, and a splice repairs the two arrays
+        // incrementally.
+        app.rebuild_status();
         // Spec 0118 §2.1: the wrapper root is already rendered under
         // `root_override_type` by `decode()` itself, matching the
         // `seed_root` entry above (when one was seeded) — mark it as
@@ -1828,6 +1847,7 @@ mod mouse;
 mod navigation;
 #[cfg(unix)]
 mod neovim;
+mod node_status;
 mod override_apply;
 mod override_cmd;
 mod override_display;

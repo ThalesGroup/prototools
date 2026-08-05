@@ -12,6 +12,7 @@ mod lines;
 mod manage_pane;
 mod mouse;
 mod navigation;
+mod node_status;
 mod override_apply;
 mod override_cmd;
 mod override_preview;

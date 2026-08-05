@@ -657,6 +657,24 @@ impl App {
         })
     }
 
+    /// Spec 0247 S10: the color this row's fold glyph wears — the worst
+    /// status anywhere in its node's subtree, `None` when that is `Ok`.
+    ///
+    /// `None` for a row with no glyph, which is every leaf: a leaf's
+    /// status is already the color of its own annotation, so there is
+    /// nothing left for a glyph to add and it does not have one to
+    /// begin with (S11 and N1).
+    ///
+    /// The whole margin is styled rather than the glyph alone. The rest
+    /// of it is spaces, on which a foreground color is invisible, and
+    /// splitting the margin in two would cost a span on every row to
+    /// say nothing.
+    fn fold_marker_color(&self, owner: Option<usize>) -> Option<Color> {
+        let idx = owner?;
+        self.fold_marker_of(owner)?;
+        theme::status_color(self.status_of(idx), self.theme)
+    }
+
     /// Spec 0194 S4: the cursor node's brace pair, each member given as
     /// `(line index, caret-track column)` — the `{` on the node's own
     /// header line and the `}` that closes it.
@@ -785,7 +803,10 @@ impl App {
         cut_segments(&mut segments, 0..body_start);
         let mut spans = Vec::with_capacity(segments.len() + 4);
         if !margin.is_empty() {
-            spans.push(Span::raw(margin));
+            spans.push(match self.fold_marker_color(node) {
+                Some(color) => Span::styled(margin, Style::default().fg(color)),
+                None => Span::raw(margin),
+            });
         }
 
         // Spec 0194 S2: one insertion. The synthetic closing brace needs

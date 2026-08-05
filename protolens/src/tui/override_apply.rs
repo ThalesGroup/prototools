@@ -630,6 +630,7 @@ impl App {
             #[cfg(test)]
             if self.verify_repair {
                 self.assert_line_counts_are_exact();
+                self.assert_status_is_exact();
             }
             return;
         }
@@ -648,6 +649,7 @@ impl App {
         #[cfg(test)]
         if self.verify_repair {
             self.assert_line_counts_are_exact();
+            self.assert_status_is_exact();
         }
     }
 
@@ -896,6 +898,10 @@ impl App {
             // The cue answered a question about a node this rendering no
             // longer has; if the slot comes back it must be asked again.
             self.heat_states[d] = heat_cue::HeatState::default();
+            // Spec 0247 S8: same reasoning, and it also keeps the
+            // arrays equal to what a full rebuild would give — which is
+            // what `assert_status_is_exact` compares against.
+            self.clear_status(d);
         }
 
         // Spec 0216 S12: write the new rendering into the slots the arena
@@ -963,6 +969,14 @@ impl App {
         if let Some(parent) = self.parent(idx) {
             self.refresh_line_counts(parent);
         }
+
+        // Spec 0247 S8, and here for the same reason the line counts
+        // are: O(k) over the subtree just written, then O(depth · width)
+        // up the ancestors with an early stop. Deferring it to
+        // `finalize_override_batch` would leave a second splice in the
+        // same batch rolling up the first splice's stale ancestors.
+        self.refresh_status_subtree(idx);
+        self.refresh_status_ancestors(idx);
 
         // Spec 0160 G2: no eager walk of the document happens here — the
         // ancestor counts above are the whole structural consequence of

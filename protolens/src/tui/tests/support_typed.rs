@@ -112,6 +112,27 @@ pub(super) fn empty_message_fixture() -> (App, usize) {
     (app, inner_idx)
 }
 
+/// `Outer { inner: Inner { id: 5, 9: 7 } }` — `type_as_fixture`'s
+/// schema and one extra field no descriptor declares, so exactly one
+/// row is defective and every node above it must roll up to
+/// `Status::Unknown` (spec 0247).
+///
+/// Returns the `Inner` node and its two children, the known one first.
+pub(super) fn unknown_field_fixture() -> (App, usize, usize, usize) {
+    // `0A 04` — Outer field 1, four payload bytes — then `Inner`'s own
+    // `08 05` (`id: 5`) and `48 07` (field 9, varint, no schema).
+    let app = fixture_under(
+        "unknown-field",
+        &outer_inner_fds("test_unknown_field.proto"),
+        "test.Outer",
+        &[0x0Au8, 0x04, 0x08, 0x05, 0x48, 0x07],
+    );
+    let inner = node_with_type(&app, "test.Inner").expect("tree must contain the Inner submessage");
+    let known = app.nth_child(inner, 0).expect("Inner renders `id: 5`");
+    let unknown = app.nth_child(inner, 1).expect("Inner renders field 9");
+    (app, inner, known, unknown)
+}
+
 /// `Outer3 { durability: Durability = 0 (EPHEMERAL) }` — a scalar
 /// enum-typed field, for the enum-inclusive `natural_type` regression
 /// tests (2026-07-18 feedback: `t` then `Esc` on an enum field, and

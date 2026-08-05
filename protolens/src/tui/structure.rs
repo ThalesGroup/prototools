@@ -70,7 +70,7 @@ impl App {
     /// payload the walk decomposed but this rendering prints as a
     /// scalar. Either way there is nothing below it to navigate to.
     #[inline]
-    fn child_slots(&self, idx: usize) -> Range<usize> {
+    pub(super) fn child_slots(&self, idx: usize) -> Range<usize> {
         let first_child = self.arena.first_child();
         let block = first_child[idx] as usize..first_child[idx + 1] as usize;
         if block.is_empty() || !self.tree[block.start].is_rendered() {

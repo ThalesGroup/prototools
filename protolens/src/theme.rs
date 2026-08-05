@@ -14,6 +14,7 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::annotation::Tier;
 use crate::colorize::{SyntaxRole, ALL_ROLES};
+use crate::node_status::Status;
 
 /// The `--theme` CLI flag's three fixed choices (spec 0116 §9).
 /// `System` exists only at the CLI-selection layer: it is resolved to
@@ -488,6 +489,40 @@ fn tier_band_in(tier: Tier, theme: ThemeKind, rgb: bool) -> Style {
         (Color::White, Color::Black),
     );
     Style::default().bg(tier_color(tier, theme, rgb)).fg(text)
+}
+
+/// Spec 0247 S10: the color a fold toggle wears for the worst thing in
+/// its subtree, or `None` for [`Status::Ok`] — which keeps the margin
+/// unstyled rather than painting it a "fine" color, so that a colored
+/// toggle is the only thing on the row that changed.
+///
+/// The two anomaly rungs borrow the tier colors outright rather than
+/// approximating them: the toggle and the annotation it is summarizing
+/// are two readings of one fact (the same argument `tier_band` makes for
+/// the wire row), and a second copy is how they would drift.
+/// `Status::Unknown` has no tier to borrow from — an undeclared field is
+/// not an anomaly, the schema just has nothing to say — so it gets a
+/// palette entry of its own.
+pub fn status_color(status: Status, theme: ThemeKind) -> Option<Color> {
+    status_color_in(status, theme, supports_rgb())
+}
+
+fn status_color_in(status: Status, theme: ThemeKind, rgb: bool) -> Option<Color> {
+    Some(match status {
+        Status::Ok => return None,
+        Status::Unknown => pick(
+            theme,
+            rgb,
+            // VSCode's `constant.other` blue on each side: light against
+            // black, deep against white, mirroring how the tiers are
+            // chosen. Unleveled like them — the margin is its own column
+            // and prominence is the whole job.
+            (Color::Rgb(0x4F, 0xC1, 0xFF), Color::LightBlue),
+            (Color::Rgb(0x00, 0x70, 0xC1), Color::Blue),
+        ),
+        Status::NonCanonical => tier_color(Tier::NonCanonical, theme, rgb),
+        Status::Invalid => tier_color(Tier::Invalid, theme, rgb),
+    })
 }
 
 /// The color of `tier`, in whichever of the four palettes applies.

@@ -10,6 +10,7 @@ mod decode;
 mod export_descriptor;
 mod extract;
 mod man;
+mod node_status;
 mod override_pane;
 mod provenance;
 mod render_cache;
