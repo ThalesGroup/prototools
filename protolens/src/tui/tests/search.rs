@@ -453,9 +453,9 @@ fn typing_into_a_search_prompt_scrolls_to_the_match() {
 
     let row = app.visible_row_of_line(150).expect("the match's row");
     assert!(
-        (app.scroll_offset..app.scroll_offset + pane().height as usize).contains(&row),
+        (app.scroll.index..app.scroll.index + pane().height as usize).contains(&row),
         "the match must be on screen: row {row} against scroll {}",
-        app.scroll_offset
+        app.scroll.index
     );
     assert_eq!(
         (app.cursor, app.cursor_line_in_node, app.cursor_column),
@@ -556,7 +556,7 @@ fn backspace_undoes_the_keystroke_before_it() {
     let settle = |app: &mut App| {
         settle_sweep(app);
         app.center_search_match(pane());
-        (app.scroll_offset, app.pan_offset)
+        (app.scroll.index, app.pan_offset)
     };
 
     type_keys(&mut app, "/fo");
@@ -575,20 +575,20 @@ fn backspace_undoes_the_keystroke_before_it() {
 #[test]
 fn esc_puts_the_view_back_and_never_moved_the_cursor() {
     let mut app = target_at(200, 150, 0);
-    let view = (app.scroll_offset, app.pan_offset);
+    let view = (app.scroll.index, app.pan_offset);
     let cursor = (app.cursor, app.cursor_line_in_node, app.cursor_column);
 
     type_keys(&mut app, "/target");
     settle_sweep(&mut app);
     app.center_search_match(pane());
-    assert_ne!((app.scroll_offset, app.pan_offset), view);
+    assert_ne!((app.scroll.index, app.pan_offset), view);
     assert_eq!(
         (app.cursor, app.cursor_line_in_node, app.cursor_column),
         cursor
     );
 
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert_eq!((app.scroll_offset, app.pan_offset), view);
+    assert_eq!((app.scroll.index, app.pan_offset), view);
     assert_eq!(
         (app.cursor, app.cursor_line_in_node, app.cursor_column),
         cursor
@@ -654,9 +654,9 @@ fn a_match_already_on_screen_moves_nothing() {
 
     type_keys(&mut app, "/target");
     settle_sweep(&mut app);
-    let before = (app.scroll_offset, app.pan_offset);
+    let before = (app.scroll.index, app.pan_offset);
     app.center_search_match(pane());
-    assert_eq!((app.scroll_offset, app.pan_offset), before);
+    assert_eq!((app.scroll.index, app.pan_offset), before);
 }
 
 /// Spec 0235 test-plan item 12 (G4, S12). An axis the match does *not*
@@ -672,7 +672,7 @@ fn a_match_off_screen_is_centered_on_both_axes() {
 
     // 150 - (10 - 1) / 2, the topmost row that leaves the match in the
     // middle of a ten-row pane.
-    assert_eq!(app.scroll_offset, 146);
+    assert_eq!(app.scroll.index, 146);
     // 100 - (38 - 6) / 2, over the 38 columns left once the fold field
     // has taken its two.
     assert!(

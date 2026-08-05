@@ -292,7 +292,13 @@ impl App {
         if rel_row >= self.override_list_height {
             return;
         }
-        let absolute_row = self.override_scroll + rel_row;
+        // Spec 0244 S9: an over-panned pane draws blank rows above its
+        // first candidate, and a click on one of those names no row.
+        let rel_row = rel_row as isize + self.override_scroll.skip;
+        if rel_row < 0 {
+            return;
+        }
+        let absolute_row = self.override_scroll.index + rel_row as usize;
         // Spec 0137: `override_candidates` is indexed directly, with no
         // pinned "raw" row to offset past.
         if absolute_row < self.override_candidates.len() {
@@ -318,16 +324,16 @@ impl App {
         // rows thick, so a click anywhere in the pair selects the line —
         // the rows are simply taller, not separately clickable.
         //
-        // Spec 0230: `scroll_skip` shifts the whole pane by a terminal
+        // Spec 0230: `scroll.skip` shifts the whole pane by a terminal
         // row, so it is added back before the division. A negative skip
         // draws blank rows above the document, and a click on one of
         // those names no line at all.
-        let rel_row = (row - area.y) as isize + self.scroll_skip;
+        let rel_row = (row - area.y) as isize + self.scroll.skip;
         if rel_row < 0 {
             return None;
         }
         let rel_row = rel_row as usize / self.row_height();
-        self.visible_row_pos(self.scroll_offset + rel_row)
+        self.visible_row_pos(self.scroll.index + rel_row)
             .map(|(_, line)| line)
     }
 

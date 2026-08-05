@@ -999,7 +999,7 @@ impl App {
         }
         self.render_overrides(self.first_node);
         self.set_manage_highlight(0);
-        self.manage_scroll = 0;
+        self.manage_scroll = PaneScroll::default();
         self.last_manage_highlight = None;
         self.manage_pan_offset = 0;
         Ok(OverrideLoad {

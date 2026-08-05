@@ -122,7 +122,7 @@ fn mouse_click_in_main_pane_refocuses_without_closing_the_manage_pane() {
 /// whichever pane currently has keyboard focus (2026-07-14 feedback,
 /// item 4). 2026-07-19 feedback item 2: the wheel now pans the
 /// hovered pane's own scroll/pan offset instead of moving the cursor/
-/// highlight, so this checks `scroll_offset`/`override_scroll` — a
+/// highlight, so this checks `scroll.index`/`override_scroll` — a
 /// 1-row pane height on both sides ensures each has room to pan by
 /// `WHEEL_PAN_STEP`.
 #[test]
@@ -137,8 +137,8 @@ fn mouse_wheel_routes_by_hover_position_not_keyboard_focus() {
     app.override_candidates = vec![("a.B".to_string(), None), ("a.C".to_string(), None)];
     app.override_list_height = 1;
     app.override_highlight = 0;
-    app.override_scroll = 0;
-    app.scroll_offset = 0;
+    app.override_scroll.index = 0;
+    app.scroll.index = 0;
 
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::ScrollDown,
@@ -147,12 +147,12 @@ fn mouse_wheel_routes_by_hover_position_not_keyboard_focus() {
         modifiers: KeyModifiers::NONE,
     });
     assert_eq!(
-        app.scroll_offset, WHEEL_PAN_STEP,
+        app.scroll.index, WHEEL_PAN_STEP,
         "hovering the main pane must pan it, even though the side \
          pane still has keyboard focus"
     );
     assert_eq!(
-        app.override_scroll, 0,
+        app.override_scroll.index, 0,
         "the unhovered side pane must not react"
     );
 
@@ -163,11 +163,11 @@ fn mouse_wheel_routes_by_hover_position_not_keyboard_focus() {
         modifiers: KeyModifiers::NONE,
     });
     assert_eq!(
-        app.scroll_offset, WHEEL_PAN_STEP,
+        app.scroll.index, WHEEL_PAN_STEP,
         "hovering the side pane must not pan the main pane"
     );
     assert_eq!(
-        app.override_scroll, WHEEL_PAN_STEP,
+        app.override_scroll.index, WHEEL_PAN_STEP,
         "hovering the side pane must pan it"
     );
 }
@@ -208,7 +208,7 @@ fn shift_wheel_pans_the_hovered_main_pane_plain_wheel_still_scrolls() {
     });
     assert_eq!(app.pan_offset, 0, "Shift+ScrollUp must pan left");
 
-    let scroll_before = app.scroll_offset;
+    let scroll_before = app.scroll.index;
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::ScrollDown,
         column: 2,
@@ -221,7 +221,7 @@ fn shift_wheel_pans_the_hovered_main_pane_plain_wheel_still_scrolls() {
          feedback item 2)"
     );
     assert_ne!(
-        app.scroll_offset, scroll_before,
+        app.scroll.index, scroll_before,
         "plain wheel (no Shift) must still pan the viewport vertically"
     );
     assert_eq!(app.pan_offset, 0, "plain wheel must not pan horizontally");
@@ -298,6 +298,59 @@ fn override_and_manage_panes_pan_independently_of_the_main_pane() {
         app.manage_pan_offset, WHEEL_PAN_STEP,
         "unrelated to the override pane's own offset"
     );
+}
+
+/// Spec 0244 S9 / test-plan item 9: an over-panned side pane draws blank
+/// rows above its first row, and clicking one of them names nothing —
+/// without the guard the negative skip would fold back into an index and
+/// select a row several places further down the list.
+#[test]
+fn a_click_on_a_blank_row_selects_nothing() {
+    let (mut app, items) = repeated_message_fixture();
+    app.side_area = Rect::new(60, 0, 20, 5);
+
+    // Override pane: three blank rows, then candidate 0.
+    app.override_target = Some(items[0]);
+    app.override_list_height = 5;
+    app.override_candidates = (0..10).map(|i| (format!("cand.Type{i}"), None)).collect();
+    app.override_highlight = 7;
+    app.override_scroll.set_top(-3, 1);
+    for row in 0..3 {
+        app.handle_override_click(62, row);
+        assert_eq!(
+            app.override_highlight, 7,
+            "blank row {row} must leave the highlight alone"
+        );
+    }
+    app.handle_override_click(62, 3);
+    assert_eq!(
+        app.override_highlight, 0,
+        "the first real row is candidate 0"
+    );
+
+    // Manage pane, same shape.
+    app.override_target = None;
+    app.manage_open = true;
+    app.manage_list_height = 5;
+    for field in 1..=4 {
+        app.overrides.activate(
+            OverrideOrigin::PathField {
+                path: "/".to_string(),
+                field,
+            },
+            None,
+        );
+    }
+    let last = app.overrides.entries().len() - 1;
+    app.manage_highlight = last;
+    app.manage_scroll.set_top(-3, 1);
+    for row in 0..3 {
+        app.handle_manage_click(70, row, false);
+        assert_eq!(
+            app.manage_highlight, last,
+            "blank row {row} must leave the highlight alone"
+        );
+    }
 }
 
 /// Spec 0129 §G1/§G3, as amended by spec 0242 S10: click-drag across N

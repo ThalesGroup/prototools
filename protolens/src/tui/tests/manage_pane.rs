@@ -61,7 +61,7 @@ fn clicking_the_current_override_advances_to_the_next_impacted_node() {
     app.manage_open = true;
     app.side_area = Rect::new(0, 0, 40, 20);
     app.manage_list_height = 10;
-    app.manage_scroll = 0;
+    app.manage_scroll.index = 0;
     app.manage_pan_offset = 0;
 
     let origin = OverrideOrigin::PathField {
@@ -111,7 +111,7 @@ fn clicking_a_different_override_only_moves_the_highlight() {
     app.manage_open = true;
     app.side_area = Rect::new(0, 0, 40, 20);
     app.manage_list_height = 10;
-    app.manage_scroll = 0;
+    app.manage_scroll.index = 0;
     app.manage_pan_offset = 0;
 
     let origin = OverrideOrigin::PathField {
@@ -235,7 +235,7 @@ fn double_click_on_a_non_marker_cell_opens_the_selection_pane() {
     app.term_width = 120;
     app.side_area = Rect::new(0, 0, 40, 20);
     app.manage_list_height = 10;
-    app.manage_scroll = 0;
+    app.manage_scroll.index = 0;
     app.manage_pan_offset = 0;
 
     let origin = OverrideOrigin::Path {
@@ -1461,7 +1461,7 @@ fn double_click_on_marker_cascades_like_a_single_shift_click() {
     app.manage_focus = true;
     app.side_area = Rect::new(0, 0, 40, 20);
     app.manage_list_height = 10;
-    app.manage_scroll = 0;
+    app.manage_scroll.index = 0;
     app.manage_pan_offset = 0;
 
     let origin = OverrideOrigin::PathField {

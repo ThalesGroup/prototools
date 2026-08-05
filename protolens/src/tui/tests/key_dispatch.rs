@@ -219,11 +219,13 @@ fn ctrl_left_right_pan_the_override_and_manage_panes() {
 
 /// 2026-07-19 feedback items 1/2: `Ctrl-Up`/`Ctrl-Down` pan the override
 /// pane's candidate list vertically without moving the highlight,
-/// bounded only by the content itself (`0` at the top, `total -
-/// list_height` at the bottom) — no longer tied to keeping the
+/// bounded only by the content itself — no longer tied to keeping the
 /// highlighted row in view.
+///
+/// Spec 0244 test-plan item 7 (G2): the side panes run past both ends by
+/// the same rule as the main pane, leaving one row of content on screen.
 #[test]
-fn ctrl_up_down_pan_the_override_pane_without_moving_the_highlight() {
+fn override_pane_pans_past_both_ends() {
     let mut app = message_node_app();
     app.splash = false;
     app.override_focus = true;
@@ -231,13 +233,14 @@ fn ctrl_up_down_pan_the_override_pane_without_moving_the_highlight() {
     app.override_candidates = (0..30).map(|i| (format!("cand.Type{i}"), None)).collect();
     app.override_list_height = 5;
     app.override_highlight = 19;
-    app.override_scroll = 15;
-    let max_scroll = 30 - 5; // total candidates - list_height
+    app.override_scroll.index = 15;
+    let max_top = 30 - 1;
+    let min_top = 1 - 5;
 
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
     assert_eq!(
-        app.override_scroll,
-        (15 + PAN_STEP).min(max_scroll),
+        app.override_scroll.top(1),
+        (15 + PAN_STEP as isize).min(max_top),
         "Ctrl-Down must pan toward the content's own bottom edge"
     );
     assert_eq!(
@@ -245,32 +248,43 @@ fn ctrl_up_down_pan_the_override_pane_without_moving_the_highlight() {
         "panning must not move the highlight"
     );
 
-    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
+    for _ in 0..4 {
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
+    }
     assert_eq!(
-        app.override_scroll, max_scroll,
-        "further Ctrl-Down stops at the content's own bottom edge"
+        app.override_scroll.top(1),
+        max_top,
+        "the last candidate alone on the pane's first row, and no further"
     );
 
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
-    assert_eq!(app.override_scroll, max_scroll.saturating_sub(PAN_STEP));
+    assert_eq!(app.override_scroll.top(1), max_top - PAN_STEP as isize);
     assert_eq!(app.override_highlight, 19);
 
-    app.override_scroll = 0;
+    app.override_scroll = PaneScroll::default();
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
     assert_eq!(
-        app.override_scroll, 0,
-        "Ctrl-Up stops at the content's own top edge"
+        app.override_scroll.top(1),
+        min_top,
+        "the first candidate alone on the pane's last row, and no further"
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
+    assert_eq!(
+        app.override_scroll.top(1),
+        min_top,
+        "already at the top bound"
     );
 }
 
 /// 2026-07-19 feedback items 1/2: `Ctrl-Up`/`Ctrl-Down` pan the manage
 /// pane's list vertically without moving the highlight, bounded only by
-/// the content itself (`0` at the top, `total - list_height` at the
-/// bottom) — no longer tied to keeping the highlighted row in view.
-/// Uses 30 distinct-origin entries (each gets its own `Header` row,
-/// spec 0117 §3 amendment).
+/// the content itself — no longer tied to keeping the highlighted row in
+/// view. Uses 30 distinct-origin entries (each gets its own `Header`
+/// row, spec 0117 §3 amendment).
+///
+/// Spec 0244 test-plan item 7 (G2), the manage-pane half.
 #[test]
-fn ctrl_up_down_pan_the_manage_pane_without_moving_the_highlight() {
+fn manage_pane_pans_past_both_ends() {
     let mut app = message_node_app();
     app.splash = false;
     app.manage_open = true;
@@ -299,14 +313,15 @@ fn ctrl_up_down_pan_the_manage_pane_without_moving_the_highlight() {
         .unwrap();
     app.manage_highlight = target_idx;
     app.manage_list_height = 5;
-    app.manage_scroll = 10;
+    app.manage_scroll.index = 10;
     let total_rows = app.manage_display_rows().len();
-    let max_scroll = total_rows - 5;
+    let max_top = total_rows as isize - 1;
+    let min_top = 1 - 5;
 
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
     assert_eq!(
-        app.manage_scroll,
-        (10 + PAN_STEP).min(max_scroll),
+        app.manage_scroll.top(1),
+        (10 + PAN_STEP as isize).min(max_top),
         "Ctrl-Down must pan toward the content's own bottom edge"
     );
     assert_eq!(
@@ -314,20 +329,97 @@ fn ctrl_up_down_pan_the_manage_pane_without_moving_the_highlight() {
         "panning must not move the highlight"
     );
 
-    app.manage_scroll = max_scroll;
+    app.manage_scroll.set_top(max_top, 1);
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
     assert_eq!(
-        app.manage_scroll, max_scroll,
-        "further Ctrl-Down stops at the content's own bottom edge"
+        app.manage_scroll.top(1),
+        max_top,
+        "the last row alone on the pane's first row, and no further"
     );
 
-    app.manage_scroll = 0;
+    app.manage_scroll = PaneScroll::default();
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
     assert_eq!(
-        app.manage_scroll, 0,
-        "Ctrl-Up stops at the content's own top edge"
+        app.manage_scroll.top(1),
+        min_top,
+        "the first row alone on the pane's last row, and no further"
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
+    assert_eq!(
+        app.manage_scroll.top(1),
+        min_top,
+        "already at the top bound"
     );
     assert_eq!(app.manage_highlight, target_idx);
+}
+
+/// Spec 0244 test-plan item 8 (N2): an over-pan survives moving the
+/// highlight. `clamp_scroll_to_visible` is a minimal nudge, not a
+/// re-anchoring — it only brings the highlight back on screen, and the
+/// blank rows that are not in its way stay where the pan put them.
+#[test]
+fn moving_the_highlight_pulls_the_viewport_no_further_than_needed() {
+    let area = Rect::new(0, 0, 40, 6);
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+
+    let mut app = message_node_app();
+    app.splash = false;
+    app.override_focus = true;
+    app.override_target = Some(0);
+    app.override_candidates = (0..30).map(|i| (format!("cand.Type{i}"), None)).collect();
+    // Four blank rows above candidate 0, which then sits on the pane's
+    // last row — the top bound for a 5-row list.
+    app.override_scroll.set_top(-4, 1);
+    app.override_highlight = 0;
+    app.last_override_highlight = None;
+    terminal
+        .draw(|f| app.render_override_pane(f, area))
+        .unwrap();
+    assert_eq!(app.override_list_height, 5);
+    assert_eq!(
+        app.override_scroll.top(1),
+        -4,
+        "the highlight is already on screen, so nothing is owed"
+    );
+
+    app.override_highlight = 2;
+    terminal
+        .draw(|f| app.render_override_pane(f, area))
+        .unwrap();
+    assert_eq!(
+        app.override_scroll.top(1),
+        -2,
+        "candidate 2 comes to the last row; the other two blanks stay"
+    );
+
+    let mut app = message_node_app();
+    app.splash = false;
+    app.manage_open = true;
+    app.manage_focus = true;
+    for field in 1..=30 {
+        app.overrides.activate(
+            OverrideOrigin::PathField {
+                path: "/".to_string(),
+                field,
+            },
+            None,
+        );
+    }
+    app.manage_scroll.set_top(-4, 1);
+    app.manage_highlight = 0;
+    app.last_manage_highlight = None;
+    terminal.draw(|f| app.render_manage_pane(f, area)).unwrap();
+    assert_eq!(app.manage_list_height, 5);
+    let first_row = app.manage_highlighted_row();
+    assert_eq!(
+        app.manage_scroll.top(1),
+        -4 + first_row as isize,
+        "pulled down only by the header rows above the first entry"
+    );
+    assert!(
+        app.manage_scroll.top(1) < 0,
+        "and the blank rows it did not need are still there"
+    );
 }
 
 /// Spec 0144 G1/G2: `v` resolves the FQDN under focus from whichever

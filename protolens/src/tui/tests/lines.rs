@@ -371,7 +371,7 @@ fn teleports_land_on_the_named_line_with_a_fold_above_them() {
     // 3. A click on the row the fold displaced it to. Column 4 is
     //    inside the text, clear of the heat gutter and the fold margin.
     app.set_cursor(app.first_node);
-    app.scroll_offset = 0;
+    app.scroll.index = 0;
     app.handle_click(4, row as u16);
     assert_eq!(
         (app.cursor, app.cursor_on_footer()),

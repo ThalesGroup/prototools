@@ -302,22 +302,19 @@ fn the_selection_pane_holds_focus_but_still_lets_the_main_pane_pan() {
     // G4: a one-row-high pane is what gives this three-line fixture
     // something to scroll.
     app.main_area.height = 1;
-    app.scroll_offset = 0;
+    app.scroll.index = 0;
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::ALT));
-    assert!(app.scroll_offset > 0, "Alt-Down must pan the main pane");
+    assert!(app.scroll.index > 0, "Alt-Down must pan the main pane");
     assert_eq!(app.cursor, cursor);
 
-    app.scroll_offset = 0;
+    app.scroll.index = 0;
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::ScrollDown,
         column: app.main_area.x,
         row: app.main_area.y,
         modifiers: KeyModifiers::NONE,
     });
-    assert_eq!(
-        app.scroll_offset, WHEEL_PAN_STEP,
-        "the wheel must still pan"
-    );
+    assert_eq!(app.scroll.index, WHEEL_PAN_STEP, "the wheel must still pan");
     assert_eq!(app.cursor, cursor);
 }
 

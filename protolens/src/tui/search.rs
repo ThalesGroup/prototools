@@ -87,7 +87,7 @@ pub(super) struct SweepHit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct SearchOrigin {
     pub(super) scope: SearchScope,
-    scroll: usize,
+    scroll: PaneScroll,
     pan: usize,
     at: SweepCursor,
 }
@@ -134,7 +134,7 @@ impl App {
     pub(super) fn search_origin_for(&self, scope: SearchScope) -> SearchOrigin {
         let (scroll, pan, at) = match scope {
             SearchScope::Main => (
-                self.scroll_offset,
+                self.scroll,
                 self.pan_offset,
                 SweepCursor::Line(LinePos {
                     node: self.cursor,
@@ -166,7 +166,7 @@ impl App {
     fn restore_search_origin(&mut self, origin: SearchOrigin) {
         match origin.scope {
             SearchScope::Main => {
-                self.scroll_offset = origin.scroll;
+                self.scroll = origin.scroll;
                 self.pan_offset = origin.pan;
             }
             SearchScope::Override => {
@@ -555,8 +555,13 @@ impl App {
                     SearchScope::Override => (&mut self.override_scroll, self.override_list_height),
                     _ => (&mut self.manage_scroll, self.manage_list_height),
                 };
-                if height > 0 && (i < *scroll || i >= *scroll + height) {
-                    *scroll = i.saturating_sub(height / 2);
+                let top = scroll.top(1);
+                let i = i as isize;
+                if height > 0 && (i < top || i >= top + height as isize) {
+                    // Never above the first row: centering brings a match
+                    // into view, and blank rows above it would be room
+                    // spent on nothing.
+                    scroll.set_top((i - (height / 2) as isize).max(0), 1);
                 }
             }
         }

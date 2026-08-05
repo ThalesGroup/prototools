@@ -65,6 +65,7 @@ use crate::provenance::{ProvenanceTable, NOT_RENDERED};
 use crate::render_cache::RenderCache;
 use crate::theme::{self, ThemeKind};
 use help_text::HELP_TEXT;
+use pane_scroll::PaneScroll;
 use prefetch::{PrefetchStep, PrefetchTrace, PrefetchWalk};
 use search::{SearchScope, SweepStep};
 pub use terminal::run;
@@ -325,19 +326,56 @@ fn clamp_highlight(current: usize, delta: isize, max: usize) -> usize {
     (current as isize + delta).clamp(0, max as isize) as usize
 }
 
-/// Shared scroll-to-keep-target-visible arithmetic behind the main,
-/// override, and manage panes' own render passes: nudges `*scroll` by the
-/// minimum amount needed to keep `target` within the `height`-row visible
-/// window. No-op when `height` is `0`.
-fn clamp_scroll_to_visible(scroll: &mut usize, target: usize, height: usize) {
+/// Shared scroll-to-keep-target-visible arithmetic behind the override
+/// and manage panes' own render passes: nudges `scroll` by the minimum
+/// amount needed to keep `target` within the `height`-row visible window.
+/// No-op when `height` is `0`.
+///
+/// Spec 0244 S8: stated on the signed top, mirroring
+/// `clamp_scroll_to_cursor`. A pane may be over-panned, in which case
+/// blank rows above the content push the last of its rows past the bottom
+/// edge — comparing `target` against `scroll.index` alone would call
+/// those rows visible.
+///
+/// Deliberately a *minimum* nudge (spec 0244 N2): a target that is
+/// already on screen moves the viewport not at all, blank rows and all,
+/// so an over-pan survives highlight movement within it.
+fn clamp_scroll_to_visible(scroll: &mut PaneScroll, target: usize, height: usize) {
     if height == 0 {
         return;
     }
-    if target < *scroll {
-        *scroll = target;
-    } else if target >= *scroll + height {
-        *scroll = target + 1 - height;
+    let top = scroll.top(1);
+    let target = target as isize;
+    if target < top {
+        scroll.set_top(target, 1);
+    } else if target >= top + height as isize {
+        scroll.set_top(target + 1 - height as isize, 1);
     }
+}
+
+/// Spec 0244 S5: how far a vertical pan may go, in terminal rows measured
+/// from the top of content row 0.
+///
+/// Both ends leave exactly one terminal row of content on screen: the
+/// lower bound puts the content's first row on the pane's last row, the
+/// upper bound puts its last row on the pane's first. Bounded by the
+/// content and nothing else — deliberately *not* by keeping the cursor or
+/// highlight row in view, which is `clamp_scroll_to_cursor`/
+/// `clamp_scroll_to_visible`'s job alone.
+///
+/// In terminal rows rather than whole content rows, so that in wire mode
+/// (spec 0225 S8) a bound may fall between a document line and its wire
+/// row. That is deliberate: `w` holds the cursor's *terminal* row still
+/// across the toggle, so a bound rounded to whole lines would be a
+/// position `w` can reach and a pan cannot.
+///
+/// Both ends are clamped against `0`, so a pane with no room and content
+/// with no rows both give a bound of `0..=0` rather than an inverted
+/// range.
+fn pan_top_bounds(content_rows: usize, pane_height: usize) -> (isize, isize) {
+    let min_top = (1 - pane_height as isize).min(0);
+    let max_top = content_rows.saturating_sub(1) as isize;
+    (min_top, max_top)
 }
 
 /// Shared pan-by-`step` arithmetic behind the command bar's Shift+wheel/
@@ -355,23 +393,19 @@ fn pan_by_step(offset: &mut usize, step: usize, left: bool) {
     };
 }
 
-/// Shared pan-by-`step` arithmetic for every pan bounded at both ends:
-/// the override and manage panes' Ctrl-Left/Ctrl-Right, and
-/// Ctrl-Up/Ctrl-Down plus the plain wheel in the main, override and
-/// manage panes. `step` is `PAN_STEP` for the keys, `WHEEL_PAN_STEP`
-/// for the wheel; `backward` is left or up depending on the axis.
+/// Shared pan-by-`step` arithmetic for the override and manage panes'
+/// horizontal Ctrl-Left/Ctrl-Right. `step` is `PAN_STEP` for the keys,
+/// `WHEEL_PAN_STEP` for the wheel.
 ///
 /// Like `pan_by_step`, but bounded on the far side by `max_offset` —
-/// horizontally each pane's own `..._max_visible_line_len().
-/// saturating_sub(width)`, so it stops once the rightmost character of
-/// the widest currently-visible row would be shown and never further,
-/// as the main pane's `pan_right` does; vertically the highest scroll
-/// offset that still shows a full page.
+/// each pane's own `..._max_visible_line_len().saturating_sub(width)`,
+/// so it stops once the rightmost character of the widest
+/// currently-visible row would be shown and never further, as the main
+/// pane's `pan_right` does.
 ///
-/// Bounded by the content and nothing else — deliberately *not* by
-/// keeping the cursor/highlight row in view. Bringing it back into
-/// view on its own movement is `clamp_scroll_to_visible`'s job alone
-/// (see `last_cursor_row` and friends).
+/// The vertical pans went through here too until spec 0244 S7, which
+/// gave all three panes one signed bound (`pan_top_bounds`) that this
+/// unsigned offset cannot express.
 fn pan_by_step_clamped(offset: &mut usize, max_offset: usize, step: usize, backward: bool) {
     *offset = if backward {
         offset.saturating_sub(step)
@@ -443,17 +477,25 @@ fn statusline_text(left: &str, right: Option<&str>, width: usize) -> String {
 /// of the document, so the last scroll position before `Bot` reads as a
 /// high percentage rather than as `total - height`'s fraction. This is
 /// vim's own arithmetic.
-fn viewport_label(first_visible: usize, height: usize, total: usize) -> String {
-    if total <= height {
-        return "All".to_string();
+///
+/// Spec 0244 S10: `top` is the pane's signed top edge, not a floored row
+/// index, and `All` means both ends are on screen rather than merely
+/// `total <= height`. A pane may now be over-panned, and a short document
+/// panned until only its last row shows still satisfies `total <= height`
+/// — which would have reported `All` while most of it was off screen.
+/// `top`, `height` and `total` are in whatever row unit the caller
+/// counts in, so long as it is the same one for all three.
+fn viewport_label(top: isize, height: usize, total: usize) -> String {
+    let (height, total) = (height as isize, total as isize);
+    let bottom_shown = top + height >= total;
+    match (top <= 0, bottom_shown) {
+        (true, true) => "All".to_string(),
+        (true, false) => "Top".to_string(),
+        (false, true) => "Bot".to_string(),
+        // Reachable only with `0 < top < total - height`, so the
+        // denominator is positive and the quotient lands in `1..100`.
+        (false, false) => format!("{}%", top * 100 / (total - height)),
     }
-    if first_visible == 0 {
-        return "Top".to_string();
-    }
-    if first_visible + height >= total {
-        return "Bot".to_string();
-    }
-    format!("{}%", first_visible * 100 / (total - height))
 }
 
 /// Resolve a typed command `name` against `COMMANDS`, with **exact match
@@ -927,24 +969,13 @@ pub struct App {
     /// or select the whole line (`true`).
     pending_double_click: bool,
     folded: HashSet<usize>,
-    scroll_offset: usize,
-    /// Spec 0230: the fractional part of the vertical scroll, in terminal
-    /// rows, signed.
-    ///
-    /// `scroll_offset` names a whole document line, which in wire mode is
-    /// two terminal rows thick — too coarse a unit to hold a row still
-    /// across a `w` toggle. This is the remainder: positive means that
-    /// many terminal rows of the line at `scroll_offset` are cut off the
-    /// top of the pane, negative means that many blank rows are drawn
-    /// above the document's first line.
-    ///
-    /// The pair is always normalized so that the two together name the
-    /// same *terminal* row of the document (`scroll_top`), which leaves
-    /// the value in `0..row_height()` except at the very top, where there
-    /// is no whole line left to borrow from and it goes negative.
-    scroll_skip: isize,
+    /// The main pane's vertical viewport (specs 0230, 0244 S2): the first
+    /// document line drawn, plus the signed terminal-row remainder that
+    /// lets a `w` toggle hold a row still. `scroll.index` counts document
+    /// lines, which in wire mode are two terminal rows thick.
+    scroll: PaneScroll,
     /// `cursor_display_row()`'s value as of the last render pass that
-    /// applied `clamp_scroll_to_visible` to `scroll_offset` — compared
+    /// applied `clamp_scroll_to_visible` to `scroll` — compared
     /// against the *current* row at the top of every render, so the
     /// auto-pan-into-view only fires on genuine cursor movement, not on
     /// every frame regardless of cause (which would otherwise fight a
@@ -1063,9 +1094,10 @@ pub struct App {
     /// `<raw / no type>` entry; `1..=override_candidates.len()` is
     /// `override_candidates[row - 1]`.
     override_highlight: usize,
-    /// Scroll offset (in rows, the pinned raw entry included) for the
-    /// override pane's candidate list.
-    override_scroll: usize,
+    /// Vertical viewport (in rows, the pinned raw entry included) for the
+    /// override pane's candidate list. Its rows are one terminal row
+    /// tall, so `skip` is only ever `0` or negative (spec 0244 S3).
+    override_scroll: PaneScroll,
     /// `override_highlight`'s value as of the last render pass that
     /// applied `clamp_scroll_to_visible` to `override_scroll` (mirrors
     /// `last_cursor_row`) — reset to `None` everywhere `override_scroll`
@@ -1188,8 +1220,9 @@ pub struct App {
     /// Highlighted row (index into `overrides.entries()`) in the
     /// management pane.
     manage_highlight: usize,
-    /// Scroll offset (in rows) for the management pane's listing.
-    manage_scroll: usize,
+    /// Vertical viewport (in rows) for the management pane's listing.
+    /// One terminal row per row, as `override_scroll`.
+    manage_scroll: PaneScroll,
     /// `manage_highlighted_row()`'s value as of the last render pass that
     /// applied `clamp_scroll_to_visible` to `manage_scroll` (mirrors
     /// `last_cursor_row`) — reset to `None` everywhere `manage_scroll`
@@ -1463,8 +1496,7 @@ impl App {
             last_click: None,
             pending_double_click: false,
             folded: HashSet::new(),
-            scroll_offset: 0,
-            scroll_skip: 0,
+            scroll: PaneScroll::default(),
             last_cursor_row: None,
             pan_offset: 0,
             override_pan_offset: 0,
@@ -1482,7 +1514,7 @@ impl App {
             override_sort: SortMode::Inferred,
             override_candidates: Vec::new(),
             override_highlight: 0,
-            override_scroll: 0,
+            override_scroll: PaneScroll::default(),
             last_override_highlight: None,
             last_override_search: None,
             term_width: 0,
@@ -1509,7 +1541,7 @@ impl App {
             manage_open: false,
             manage_focus: false,
             manage_highlight: 0,
-            manage_scroll: 0,
+            manage_scroll: PaneScroll::default(),
             last_manage_highlight: None,
             last_manage_click: None,
             last_manage_row_click: None,
@@ -1750,6 +1782,7 @@ mod override_display;
 mod override_export;
 mod override_resolve;
 mod override_select;
+mod pane_scroll;
 mod prefetch;
 mod preview_truncate;
 mod render;

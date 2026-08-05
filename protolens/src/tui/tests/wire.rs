@@ -255,26 +255,26 @@ fn toggling_wire_mode_keeps_the_cursor_on_its_terminal_row() {
     assert_eq!(cursor_terminal_row(&app), 9);
 
     // Nine is odd, so holding it puts the pane's top edge in the middle
-    // of a document line — spec 0230's `scroll_skip` is what lets it.
+    // of a document line — spec 0230's `scroll.skip` is what lets it.
     press(&mut app, 'w');
     assert_eq!(cursor_terminal_row(&app), 9);
-    assert_eq!((app.scroll_offset, app.scroll_skip), (15, 1));
+    assert_eq!((app.scroll.index, app.scroll.skip), (15, 1));
     // The pane's first row is the second half of line 15, and a click on
     // it still names line 15.
     assert_eq!(app.main_pane_line_idx(0, 0), Some(15));
     assert_eq!(app.main_pane_line_idx(0, 1), Some(16));
     press(&mut app, 'w');
     assert_eq!(cursor_terminal_row(&app), 9);
-    assert_eq!((app.scroll_offset, app.scroll_skip), (11, 0));
+    assert_eq!((app.scroll.index, app.scroll.skip), (11, 0));
 
     // An even offset needs no half line, and is held just the same.
-    app.scroll_offset = 14;
+    app.scroll.index = 14;
     app.last_cursor_row = None;
     app.clamp_pan_offset();
     assert_eq!(cursor_terminal_row(&app), 6);
     press(&mut app, 'w');
     assert_eq!(cursor_terminal_row(&app), 6);
-    assert_eq!((app.scroll_offset, app.scroll_skip), (17, 0));
+    assert_eq!((app.scroll.index, app.scroll.skip), (17, 0));
     press(&mut app, 'w');
     assert_eq!(cursor_terminal_row(&app), 6);
 }
@@ -282,7 +282,7 @@ fn toggling_wire_mode_keeps_the_cursor_on_its_terminal_row() {
 /// Turning the wire rows *off* wants twice as many document lines above
 /// the cursor as were on screen, and near the top of the document they
 /// do not exist. Holding the row then means starting the document part
-/// way down the pane, which a negative `scroll_skip` is exactly what
+/// way down the pane, which a negative `scroll.skip` is exactly what
 /// records — and it is spent again, a row at a time, by the first
 /// downward scrolling that reaches it.
 #[test]
@@ -297,12 +297,12 @@ fn turning_wire_mode_off_near_the_top_pads_above_the_first_line() {
     }
     app.clamp_pan_offset();
     assert_eq!(app.cursor_display_row(), 3);
-    assert_eq!(app.scroll_offset, 0, "all four lines fit in five");
+    assert_eq!(app.scroll.index, 0, "all four lines fit in five");
     assert_eq!(cursor_terminal_row(&app), 6);
 
     press(&mut app, 'w');
-    assert_eq!(app.scroll_offset, 0, "there is nothing above line 0");
-    assert_eq!(app.scroll_skip, -3, "so three blank rows stand in");
+    assert_eq!(app.scroll.index, 0, "there is nothing above line 0");
+    assert_eq!(app.scroll.skip, -3, "so three blank rows stand in");
     assert_eq!(cursor_terminal_row(&app), 6);
     assert_eq!(app.main_pane_line_idx(0, 0), None, "a blank row is no line");
     assert_eq!(app.main_pane_line_idx(0, 3), Some(0));
@@ -313,7 +313,100 @@ fn turning_wire_mode_off_near_the_top_pads_above_the_first_line() {
         app.move_down();
     }
     app.clamp_pan_offset();
-    assert_eq!((app.scroll_offset, app.scroll_skip), (0, -2));
+    assert_eq!((app.scroll.index, app.scroll.skip), (0, -2));
+    assert_eq!(cursor_terminal_row(&app), 9);
+}
+
+/// Spec 0244 test-plan item 4, the reported defect. Turning the wire
+/// rows off near the top leaves blank rows above line 0, and the old
+/// bound at `0` meant the very next Ctrl-Up threw them away and snapped
+/// the viewport back down — an upward key that moved the document *up*
+/// the screen. Now the pan continues upward from where the toggle left
+/// it.
+#[test]
+fn pan_up_after_a_wire_toggle_does_not_snap_back() {
+    let texts: Vec<String> = (0..40).map(|i| format!("f{i}: 0")).collect();
+    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let mut app = sibling_leaves_app(&refs);
+    app.main_area = Rect::new(0, 0, 40, 20);
+    press(&mut app, 'w');
+    for _ in 0..3 {
+        app.move_down();
+    }
+    app.clamp_pan_offset();
+    press(&mut app, 'w');
+    assert_eq!(app.scroll_top(), -3, "three blank rows above line 0");
+
+    app.pan_vertical_up();
+    assert_eq!(
+        app.scroll_top(),
+        -3 - PAN_STEP as isize,
+        "Ctrl-Up must carry on upward, not snap back to the top"
+    );
+}
+
+/// Spec 0244 test-plan item 5. The bounds are counted in terminal rows,
+/// which in wire mode are half a document line — so each end may settle
+/// one row past where a whole-line bound would have stopped it, showing
+/// a wire row whose document row is off the top, or a document row whose
+/// wire row is off the bottom. Test 6 is why that is the right choice.
+#[test]
+fn wire_mode_bounds_are_terminal_rows() {
+    let texts: Vec<String> = (0..40).map(|i| format!("f{i}: 0")).collect();
+    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let mut app = sibling_leaves_app(&refs);
+    app.main_area = Rect::new(0, 0, 40, 10);
+    press(&mut app, 'w');
+
+    // 40 lines two rows thick, so the bottom bound is row 79 — odd, and
+    // the pane's first row is line 39's wire row alone.
+    for _ in 0..8 {
+        app.pan_vertical_down();
+    }
+    assert_eq!(app.scroll_top(), 40 * 2 - 1);
+    assert_eq!((app.scroll.index, app.scroll.skip), (39, 1));
+    assert_eq!(app.main_pane_line_idx(0, 0), Some(39));
+
+    // The top bound is `1 - height`, again odd against a two-row line:
+    // nine blank rows, then line 0's document row with its wire row
+    // already off the bottom.
+    app.set_scroll_top(0);
+    app.pan_vertical_up();
+    assert_eq!(app.scroll_top(), 1 - 10);
+    assert_eq!((app.scroll.index, app.scroll.skip), (0, -9));
+    assert_eq!(app.main_pane_line_idx(0, 8), None, "a blank row is no line");
+    assert_eq!(app.main_pane_line_idx(0, 9), Some(0));
+}
+
+/// Spec 0244 test-plan item 6, and the reason item 5's bounds are in
+/// terminal rows rather than whole document lines: `w` holds the cursor
+/// on the terminal row it was drawn on, and at either bound that row is
+/// the only content row there is. A whole-line bound would have to move
+/// it.
+#[test]
+fn a_wire_toggle_keeps_the_cursor_row_at_the_bounds() {
+    let texts: Vec<String> = (0..40).map(|i| format!("f{i}: 0")).collect();
+    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let mut app = sibling_leaves_app(&refs);
+    app.main_area = Rect::new(0, 0, 40, 10);
+    for _ in 0..39 {
+        app.move_down();
+    }
+
+    // The bottom bound: the last line alone on the pane's first row.
+    app.set_scroll_top(40 - 1);
+    assert_eq!(cursor_terminal_row(&app), 0);
+    press(&mut app, 'w');
+    assert_eq!(cursor_terminal_row(&app), 0);
+
+    // The top bound: the first line alone on the pane's last row.
+    press(&mut app, 'w');
+    for _ in 0..39 {
+        app.move_up();
+    }
+    app.set_scroll_top(1 - 10);
+    assert_eq!(cursor_terminal_row(&app), 9);
+    press(&mut app, 'w');
     assert_eq!(cursor_terminal_row(&app), 9);
 }
 

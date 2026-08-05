@@ -79,22 +79,16 @@ impl App {
 
     /// The top edge of the viewport, in terminal rows counted from the
     /// top of document line 0. Negative means blank rows above the
-    /// document's first line. See `App::scroll_skip`.
+    /// document's first line. See `App::scroll`.
     pub(super) fn scroll_top(&self) -> isize {
-        (self.scroll_offset * self.row_height()) as isize + self.scroll_skip
+        self.scroll.top(self.row_height())
     }
 
     /// Puts the viewport's top edge at `top`, splitting it back into the
     /// whole line and the remainder. The only writer of the pair.
     pub(super) fn set_scroll_top(&mut self, top: isize) {
-        let height = self.row_height() as isize;
-        if top < 0 {
-            self.scroll_offset = 0;
-            self.scroll_skip = top;
-        } else {
-            self.scroll_offset = (top / height) as usize;
-            self.scroll_skip = top % height;
-        }
+        let row_height = self.row_height();
+        self.scroll.set_top(top, row_height);
     }
 
     /// The terminal row `row` is drawn on, relative to the top of the
@@ -653,8 +647,8 @@ impl App {
     pub(super) fn max_visible_line_len(&mut self) -> usize {
         let pane_height = self.document_pane_height();
         let total = self.composed_row_count();
-        let start = self.scroll_offset.min(total);
-        let end = (self.scroll_offset + pane_height).min(total);
+        let start = self.scroll.index.min(total);
+        let end = (self.scroll.index + pane_height).min(total);
         self.build_window(start, end - start)
             .into_iter()
             .map(|row| self.row_content(row).chars().count())
@@ -721,14 +715,18 @@ impl App {
     /// Spec 0230: stated in terminal rows, so that a pan started from a
     /// half-line scroll left over from a `w` toggle lands back on whole
     /// lines rather than carrying the offset forever.
+    ///
+    /// Spec 0244 S6: bounded by `pan_top_bounds`, which lets the pane's
+    /// top edge run past either end of the content — up until one
+    /// terminal row of it is left on screen.
     fn pan_vertical(&mut self, step: usize, up: bool) {
-        let row_height = self.row_height() as isize;
-        let content = self.composed_row_count() as isize * row_height;
-        let max_top = (content - self.main_area.height as isize).max(0);
-        let step = step as isize * row_height;
+        let row_height = self.row_height();
+        let content_rows = self.composed_row_count() * row_height;
+        let (min_top, max_top) = pan_top_bounds(content_rows, self.main_area.height as usize);
+        let step = (step * row_height) as isize;
         let top = self.scroll_top();
         let moved = if up { top - step } else { top + step };
-        self.set_scroll_top(moved.clamp(0, max_top));
+        self.set_scroll_top(moved.clamp(min_top, max_top));
     }
 
     pub(super) fn pan_vertical_up(&mut self) {

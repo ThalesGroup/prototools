@@ -62,7 +62,7 @@ impl App {
         }
         self.override_target = Some(self.cursor);
         self.override_focus = true;
-        self.override_scroll = 0;
+        self.override_scroll = PaneScroll::default();
         self.last_override_highlight = None;
         self.override_pan_offset = 0;
 
@@ -303,7 +303,7 @@ impl App {
         self.manage_open = false;
         self.override_target = Some(target);
         self.override_focus = true;
-        self.override_scroll = 0;
+        self.override_scroll = PaneScroll::default();
         self.last_override_highlight = None;
         self.override_pan_offset = 0;
         self.override_opened_from_manage = true;
@@ -383,7 +383,7 @@ impl App {
             },
         };
         self.override_highlight = 0;
-        self.override_scroll = 0;
+        self.override_scroll = PaneScroll::default();
         self.last_override_highlight = None;
         self.override_pan_offset = 0;
     }
@@ -487,7 +487,7 @@ impl App {
                         .map(|(f, s)| (f.clone(), Some(*s)))
                         .collect();
                     self.override_highlight = 0;
-                    self.override_scroll = 0;
+                    self.override_scroll = PaneScroll::default();
                     self.last_override_highlight = None;
                     self.message.clear();
                 }
@@ -539,13 +539,19 @@ impl App {
     /// Vertical pan for the override pane (Ctrl-Up/Ctrl-Down at `step ==
     /// PAN_STEP`, plain mouse wheel at `step == WHEEL_PAN_STEP`):
     /// scrolls the candidate list without moving the highlight, bounded
-    /// only by the content itself.
+    /// only by the content itself — and, per spec 0244 S7, past either
+    /// end of it, by the same `pan_top_bounds` the main pane uses.
     pub(super) fn override_pan_vertical(&mut self, step: usize, up: bool) {
-        let max_scroll = self
-            .override_candidates
-            .len()
-            .saturating_sub(self.override_list_height);
-        pan_by_step_clamped(&mut self.override_scroll, max_scroll, step, up);
+        let (min_top, max_top) =
+            pan_top_bounds(self.override_candidates.len(), self.override_list_height);
+        let top = self.override_scroll.top(1);
+        let moved = if up {
+            top - step as isize
+        } else {
+            top + step as isize
+        };
+        self.override_scroll
+            .set_top(moved.clamp(min_top, max_top), 1);
     }
 
     /// Horizontal pan for the override pane (Ctrl-Left/Ctrl-Right,
@@ -645,9 +651,10 @@ impl App {
     /// `max_visible_line_len`.
     pub(super) fn override_max_visible_line_len(&self) -> usize {
         let total = self.override_candidates.len();
-        let start = self.override_scroll.min(total);
-        let end = (self.override_scroll + self.override_list_height).min(total);
-        (start..end)
+        let (_, visible) = self
+            .override_scroll
+            .window(self.override_list_height, 1, total);
+        visible
             .map(|row| self.override_row_display(row).0.chars().count())
             .max()
             .unwrap_or(0)

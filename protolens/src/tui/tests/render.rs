@@ -242,7 +242,7 @@ fn a_frame_costs_the_same_at_the_end_of_a_wide_document_as_at_the_start() {
             .expect("at least one sample")
     };
 
-    // `render` clamps `scroll_offset` to the cursor itself
+    // `render` clamps `scroll.index` to the cursor itself
     // (render.rs:507), so moving the cursor is all it takes.
     app.cursor = 0;
     let at_start = time_here(&mut app, &mut terminal);
@@ -1260,7 +1260,7 @@ fn marked_cells(
     let buffer = terminal.backend().buffer();
     let mut found = Vec::new();
     for y in area.y..area.y + area.height {
-        let Some((_, line)) = app.visible_row_pos(app.scroll_offset + (y - area.y) as usize) else {
+        let Some((_, line)) = app.visible_row_pos(app.scroll.index + (y - area.y) as usize) else {
             continue;
         };
         for x in area.x..area.x + area.width {
@@ -1493,7 +1493,7 @@ fn a_brace_pairs_with_its_match_only_when_the_caret_is_on_it() {
     let mut terminal = drawn_frame(&mut app, 40, 8);
     // No cursor movement in between, so `render`'s auto-pan-into-view
     // guard leaves this alone.
-    app.scroll_offset = footer;
+    app.scroll.index = footer;
     terminal.draw(|frame| app.render(frame)).unwrap();
     assert_eq!(
         caret_cells(&app, &terminal),
@@ -1962,8 +1962,8 @@ fn the_caret_crosses_a_multi_byte_character_in_one_press() {
 /// which is the case a naive percentage gets wrong.
 #[test]
 fn viewport_label_matches_vims_rule_at_the_boundaries() {
-    for (first, height, total, want) in [
-        (0usize, 10usize, 10usize, "All"),
+    for (top, height, total, want) in [
+        (0isize, 10usize, 10usize, "All"),
         (0, 10, 3, "All"),
         (0, 10, 100, "Top"),
         (90, 10, 100, "Bot"),
@@ -1972,9 +1972,36 @@ fn viewport_label_matches_vims_rule_at_the_boundaries() {
         (1, 10, 100, "1%"),
     ] {
         assert_eq!(
-            viewport_label(first, height, total),
+            viewport_label(top, height, total),
             want,
-            "viewport_label({first}, {height}, {total})"
+            "viewport_label({top}, {height}, {total})"
+        );
+    }
+}
+
+/// Spec 0244 test-plan item 10 (S10). An over-panned viewport is the
+/// case the old `total <= height` first test got wrong: a document
+/// shorter than the pane still reads `All` only while both of its ends
+/// are on screen, and says which one has left once one has.
+#[test]
+fn viewport_label_over_a_short_over_panned_document() {
+    for (top, height, total, want) in [
+        // Three rows in a ten-row pane, panned neither way.
+        (0isize, 10usize, 3usize, "All"),
+        // Panned up until only the first row is left, on the last row of
+        // the pane — the bottom edge is far past the content's end, but
+        // the content's own top is not on screen.
+        (-9, 10, 3, "Top"),
+        // Blank rows above, and still every row on screen.
+        (-7, 10, 3, "All"),
+        // Panned down until only the last row is left, on the pane's
+        // first row.
+        (2, 10, 3, "Bot"),
+    ] {
+        assert_eq!(
+            viewport_label(top, height, total),
+            want,
+            "viewport_label({top}, {height}, {total})"
         );
     }
 }

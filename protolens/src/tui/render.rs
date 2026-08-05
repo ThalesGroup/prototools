@@ -1097,8 +1097,6 @@ impl App {
         // The two do not in fact contend — the clamp is gated on the
         // cursor having moved, and a sweep (S8) never moves it.
         self.center_search_match(inner);
-        let content_rows = (inner.height as isize + self.scroll_skip).max(0) as usize;
-        let pane_height = content_rows.div_ceil(self.row_height());
         // Spec 0185 S2: the row the cursor is *drawn* on, in composed
         // coordinates — distinct from `cursor_row` above, which stays in
         // committed visible-row coordinates because that is what
@@ -1110,14 +1108,16 @@ impl App {
             self.cursor_composed_row()
         };
         let total_rows = self.composed_row_count();
-        let end = (self.scroll_offset + pane_height).min(total_rows);
+        let (blank_rows, rows) =
+            self.scroll
+                .window(inner.height as usize, self.row_height(), total_rows);
         // Collected (not a borrowed slice) so the heat-cue pass below can
         // mutate `self.heat_range_cache`/`self.heat_current_score_cache`
         // — a plain slice would keep `self` borrowed immutably for the
         // rest of this block.
         let t_window = std::time::Instant::now();
-        let first_row = self.scroll_offset.min(total_rows);
-        let window: Vec<DisplayRow> = self.build_window(first_row, end - first_row);
+        let first_row = rows.start;
+        let window: Vec<DisplayRow> = self.build_window(first_row, rows.len());
         let d_window = t_window.elapsed();
 
         // Spec 0187 S3: highlight exactly the rows about to be drawn,
@@ -1268,7 +1268,7 @@ impl App {
                 // where the caret track's suffix zone begins. Measured
                 // before the chrome goes on and only on the row that
                 // needs it.
-                let on_cursor_row = self.scroll_offset + row == cursor_draw_row;
+                let on_cursor_row = self.scroll.index + row == cursor_draw_row;
                 let panned_chars = on_cursor_row.then(|| {
                     spans
                         .iter()
@@ -1436,12 +1436,15 @@ impl App {
         // of them is fully on screen, so this is where the difference
         // belongs — a `skip`/`repeat` pair rather than anything the row
         // builders have to know about.
-        let text_lines = match self.scroll_skip {
-            0 => text_lines,
-            skip if skip > 0 => text_lines.split_off((skip as usize).min(text_lines.len())),
-            skip => std::iter::repeat_n(Line::default(), skip.unsigned_abs())
+        let text_lines = if self.scroll.skip > 0 {
+            let cut = (self.scroll.skip as usize).min(text_lines.len());
+            text_lines.split_off(cut)
+        } else if blank_rows > 0 {
+            std::iter::repeat_n(Line::default(), blank_rows)
                 .chain(text_lines)
-                .collect(),
+                .collect()
+        } else {
+            text_lines
         };
         let d_lines = t_lines.elapsed();
         frame.render_widget(Paragraph::new(text_lines), inner);
@@ -1512,7 +1515,14 @@ impl App {
                 "L{}/{}  {}",
                 self.cursor_line() + 1,
                 self.total_lines(),
-                viewport_label(self.scroll_offset, window.len(), total_rows),
+                // Spec 0244 S10: in terminal rows, the unit the signed
+                // top is counted in — `total_rows` is document lines,
+                // which in wire mode are two rows thick.
+                viewport_label(
+                    self.scroll_top(),
+                    inner.height as usize,
+                    total_rows * self.row_height(),
+                ),
             );
             let right = if half_width {
                 line_ruler
@@ -1720,8 +1730,8 @@ impl App {
             );
             self.last_override_highlight = Some(self.override_highlight);
         }
-        let end = (self.override_scroll + list_height).min(total_rows);
-        let start = self.override_scroll.min(total_rows);
+        let (blank_rows, rows) = self.override_scroll.window(list_height, 1, total_rows);
+        let (start, end) = (rows.start, rows.end);
 
         // Spec 0193 S4: drawn only now, since the viewport label needs
         // the scroll offset this pane's own clamp above just settled.
@@ -1729,7 +1739,7 @@ impl App {
             "L{}/{}  {}",
             self.override_highlight + 1,
             total_rows,
-            viewport_label(start, list_height, total_rows),
+            viewport_label(self.override_scroll.top(1), list_height, total_rows),
         );
         let text = statusline_text(&left, Some(&right), split[1].width as usize);
         frame.render_widget(Paragraph::new(Line::styled(text, style)), split[1]);
@@ -1740,7 +1750,9 @@ impl App {
         // keystroke.
         self.warm_visible_override_wrappers(start, end);
 
-        let mut lines: Vec<Line> = Vec::new();
+        // Spec 0244 S9: an over-panned viewport draws blank rows above
+        // the first candidate, exactly as the main pane does.
+        let mut lines: Vec<Line> = vec![Line::default(); blank_rows];
         for row in start..end {
             // Spec 0114/0137: the lexicographic-mode color scheme is
             // deliberately plain — primitive types (including the `None`

@@ -304,7 +304,7 @@ impl App {
                 self.close_override();
                 if returning_to_manage {
                     self.manage_highlight = target_highlight.unwrap_or(0);
-                    self.manage_scroll = 0;
+                    self.manage_scroll = PaneScroll::default();
                     self.last_manage_highlight = None;
                     self.manage_pan_offset = 0;
                 }

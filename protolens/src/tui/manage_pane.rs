@@ -36,7 +36,7 @@ impl App {
         self.manage_open = true;
         self.manage_focus = true;
         self.set_manage_highlight(self.initial_manage_highlight());
-        self.manage_scroll = 0;
+        self.manage_scroll = PaneScroll::default();
         self.last_manage_highlight = None;
         self.manage_pan_offset = 0;
         self.last_manage_click = None;
@@ -122,13 +122,17 @@ impl App {
     /// Vertical pan for the management pane (Ctrl-Up/Ctrl-Down at `step
     /// == PAN_STEP`, plain mouse wheel at `step == WHEEL_PAN_STEP`):
     /// scrolls the listing without moving the highlight, bounded only by
-    /// the content itself.
+    /// the content itself — and, per spec 0244 S7, past either end of it.
     pub(super) fn manage_pan_vertical(&mut self, step: usize, up: bool) {
-        let max_scroll = self
-            .manage_display_rows()
-            .len()
-            .saturating_sub(self.manage_list_height);
-        pan_by_step_clamped(&mut self.manage_scroll, max_scroll, step, up);
+        let (min_top, max_top) =
+            pan_top_bounds(self.manage_display_rows().len(), self.manage_list_height);
+        let top = self.manage_scroll.top(1);
+        let moved = if up {
+            top - step as isize
+        } else {
+            top + step as isize
+        };
+        self.manage_scroll.set_top(moved.clamp(min_top, max_top), 1);
     }
 
     /// Horizontal pan for the management pane (Ctrl-Left/Ctrl-Right,
@@ -158,9 +162,8 @@ impl App {
     pub(super) fn manage_max_visible_line_len(&self) -> usize {
         let rows = self.manage_display_rows();
         let total = rows.len();
-        let start = self.manage_scroll.min(total);
-        let end = (self.manage_scroll + self.manage_list_height).min(total);
-        rows[start..end]
+        let (_, visible) = self.manage_scroll.window(self.manage_list_height, 1, total);
+        rows[visible]
             .iter()
             .map(|r| self.manage_row_text(r).chars().count())
             .max()
@@ -697,7 +700,13 @@ impl App {
         if rel_row >= self.manage_list_height {
             return;
         }
-        let absolute_row = self.manage_scroll + rel_row;
+        // Spec 0244 S9: an over-panned pane draws blank rows above its
+        // first entry, and a click on one of those names no entry.
+        let rel_row = rel_row as isize + self.manage_scroll.skip;
+        if rel_row < 0 {
+            return;
+        }
+        let absolute_row = self.manage_scroll.index + rel_row as usize;
         let rows = self.manage_display_rows();
         if let Some(&ManageRow::Entry(idx)) = rows.get(absolute_row) {
             let was_current = idx == self.manage_highlight;
@@ -782,8 +791,8 @@ impl App {
             clamp_scroll_to_visible(&mut self.manage_scroll, highlighted_row, list_height);
             self.last_manage_highlight = Some(highlighted_row);
         }
-        let end = (self.manage_scroll + list_height).min(total_rows);
-        let start = self.manage_scroll.min(total_rows);
+        let (blank_rows, visible) = self.manage_scroll.window(list_height, 1, total_rows);
+        let (start, end) = (visible.start, visible.end);
 
         let origin_path = self
             .overrides
@@ -797,12 +806,13 @@ impl App {
             "L{}/{}  {}",
             highlighted_row + 1,
             total_rows,
-            viewport_label(start, list_height, total_rows),
+            viewport_label(self.manage_scroll.top(1), list_height, total_rows),
         );
         let text = statusline_text(&left, Some(&right), split[1].width as usize);
         frame.render_widget(Paragraph::new(Line::styled(text, style)), split[1]);
 
-        let mut lines: Vec<Line> = Vec::new();
+        // Spec 0244 S9: blank rows above the first entry when over-panned.
+        let mut lines: Vec<Line> = vec![Line::default(); blank_rows];
         for row in &rows[start..end] {
             match row {
                 // Spec 0127 §G1: pan the manage pane's own rows

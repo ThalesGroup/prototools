@@ -575,14 +575,14 @@ fn deactivating_override_reclamps_pan_offset_to_the_shrunk_content() {
 
 /// Deactivating an override must recompute `max_visible_line_len`'s
 /// clamping bound against the window the *next* render will actually
-/// show — not a stale `scroll_offset` left over from before the
+/// show — not a stale `scroll.index` left over from before the
 /// splice (2026-07-24 follow-up feedback, after the blank-pane fix
 /// above): the cursor sits on a *sibling* field after `inner`, whose
 /// row shifts down several lines once `inner`'s body re-expands from
 /// the override's 1-line collapse back to its real 4-line shape, so
-/// `scroll_offset` must advance to keep that sibling in view — same
+/// `scroll.index` must advance to keep that sibling in view — same
 /// as `render()`'s own `clamp_scroll_to_visible` would do. Using the
-/// stale, pre-splice `scroll_offset` instead leaves the window
+/// stale, pre-splice `scroll.index` instead leaves the window
 /// pointing at the wrong rows, missing the wide field row that
 /// scrolled into view alongside the cursor, and under-estimates the
 /// true visible width — over-clamping `pan_offset` too far left.
@@ -635,7 +635,7 @@ fn deactivating_override_recomputes_the_pan_bound_against_the_post_splice_scroll
 
     // Rest the cursor on the `pad_a` sibling field, as a normal render
     // pass would have already scrolled to keep it in view — seeds
-    // `scroll_offset`/`last_cursor_row` exactly as they'd be just
+    // `scroll.index`/`last_cursor_row` exactly as they'd be just
     // before the user deactivates the override.
     app.cursor = pad_a_idx;
 
@@ -656,7 +656,7 @@ fn deactivating_override_recomputes_the_pan_bound_against_the_post_splice_scroll
     // type (`resettle_node`'s `natural_type(idx)`), not a raw `None`
     // retype (spec 0135 G1). `inner` re-expands from its 1-line
     // collapse back to its real 4-line shape, pushing `pad_a` (the
-    // cursor's node) several rows further down — `scroll_offset` must
+    // cursor's node) several rows further down — `scroll.index` must
     // advance to keep it in view.
     app.splice_override(inner_idx, Some("test.Inner".to_string()), false)
         .unwrap();
