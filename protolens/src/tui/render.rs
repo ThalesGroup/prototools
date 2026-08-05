@@ -742,7 +742,19 @@ impl App {
     /// Spec 0187 S3: `window_index` is the row's position in the window
     /// `refresh_window_styles` was last called with, which is the
     /// coordinate system `self.window_styles` lives in.
-    pub(super) fn row_spans(&self, row: DisplayRow, window_index: usize) -> Vec<Span<'static>> {
+    ///
+    /// Spec 0192 S2: `emphasis` is the row's active-override weight. It
+    /// lands on the type name alone (see `make_span`) whenever the row
+    /// has one, and on the whole row when it has not — a row with the
+    /// annotations hidden (`a`), or a bare footer, has nowhere else to
+    /// carry the cue, and losing it there would say the node is not
+    /// overridden.
+    pub(super) fn row_spans(
+        &self,
+        row: DisplayRow,
+        window_index: usize,
+        emphasis: Modifier,
+    ) -> Vec<Span<'static>> {
         let (source, node) = self.display_row_source(row);
         let full_content: &str = &source;
         let full_hints = self.window_styles.get(window_index).unwrap_or(&NO_STYLES);
@@ -760,6 +772,11 @@ impl App {
                 _ => (full_content, full_hints.to_vec()),
             };
         let mut segments = segment_line(content, &hints);
+        let (type_emphasis, row_emphasis) =
+            match segments.iter().any(|&(_, r)| r == Some(SyntaxRole::Type)) {
+                true => (emphasis, Modifier::empty()),
+                false => (Modifier::empty(), emphasis),
+            };
 
         // Spec 0193 S1: the margin *replaces* the line's indentation
         // rather than displacing it, so those bytes are cut from the
@@ -783,7 +800,12 @@ impl App {
             };
             insertions.push((insert_at, " ... }".to_string(), None));
         }
-        spans.extend(self.spans_with_insertions(content, segments, insertions));
+        spans.extend(self.spans_with_insertions(content, segments, insertions, type_emphasis));
+        if !row_emphasis.is_empty() {
+            for span in &mut spans {
+                span.style = span.style.add_modifier(row_emphasis);
+            }
+        }
         spans
     }
 
@@ -800,6 +822,7 @@ impl App {
         content: &str,
         segments: Vec<(Range<usize>, Option<SyntaxRole>)>,
         mut insertions: Vec<(usize, String, Option<Style>)>,
+        emphasis: Modifier,
     ) -> Vec<Span<'static>> {
         insertions.sort_by_key(|(pos, _, _)| *pos);
         let mut segments: std::collections::VecDeque<_> = segments.into();
@@ -807,9 +830,13 @@ impl App {
         for (ins_pos, ins_text, ins_style) in insertions {
             while let Some((range, role)) = segments.pop_front() {
                 if range.end <= ins_pos {
-                    result.push(self.make_span(content[range].to_string(), role));
+                    result.push(self.make_span(content[range].to_string(), role, emphasis));
                 } else if range.start < ins_pos {
-                    result.push(self.make_span(content[range.start..ins_pos].to_string(), role));
+                    result.push(self.make_span(
+                        content[range.start..ins_pos].to_string(),
+                        role,
+                        emphasis,
+                    ));
                     segments.push_front((ins_pos..range.end, role));
                     break;
                 } else {
@@ -823,7 +850,7 @@ impl App {
             });
         }
         for (range, role) in segments {
-            result.push(self.make_span(content[range].to_string(), role));
+            result.push(self.make_span(content[range].to_string(), role, emphasis));
         }
         result
     }
@@ -886,8 +913,21 @@ impl App {
         }
     }
 
-    pub(super) fn make_span(&self, text: String, role: Option<SyntaxRole>) -> Span<'static> {
+    /// `emphasis` (spec 0192 S2) rides only on a `Type` segment, which
+    /// on a rendered row is the type name in its `#@ Type = N`
+    /// annotation — the one part of the row an override actually
+    /// changes.
+    pub(super) fn make_span(
+        &self,
+        text: String,
+        role: Option<SyntaxRole>,
+        emphasis: Modifier,
+    ) -> Span<'static> {
         match role {
+            Some(SyntaxRole::Type) => Span::styled(
+                text,
+                theme::style_for(SyntaxRole::Type, self.theme).add_modifier(emphasis),
+            ),
             Some(role) => Span::styled(text, theme::style_for(role, self.theme)),
             None => Span::raw(text),
         }
@@ -908,9 +948,15 @@ impl App {
             .or_else(|| self.node_at_footer_line(line_idx))
     }
 
-    /// Spec 0192 S2: which of `window`'s rows draw in bold because the
-    /// node they belong to carries an active override, plus how many
-    /// `resolve_active_override` calls that took.
+    /// Spec 0192 S2: the extra weight each of `window`'s rows draws its
+    /// type name with because the node it belongs to carries an active
+    /// override, plus how many resolutions that took.
+    ///
+    /// `Modifier::empty()` is no override at all. An auto-derived one
+    /// (the Any/MessageSet expansion protolens seeds itself, spec 0120)
+    /// is bold; one the user asked for is bold *and* underlined, since
+    /// bold alone does not read as reliably as a deliberate override
+    /// deserves.
     ///
     /// Hoisted out of `render`'s `text_lines` closure into a pass of its
     /// own — same shape and position as the heat-cue pass (spec 0154 G6)
@@ -927,14 +973,14 @@ impl App {
     ///
     /// The returned count is what makes that claim testable rather than
     /// merely asserted.
-    pub(super) fn override_bold_flags(&self, window: &[DisplayRow]) -> (Vec<bool>, usize) {
+    pub(super) fn override_emphasis(&self, window: &[DisplayRow]) -> (Vec<Modifier>, usize) {
         let mut resolutions = 0;
-        let mut last: Option<(usize, bool)> = None;
+        let mut last: Option<(usize, Modifier)> = None;
         let flags = window
             .iter()
             .map(|&row| {
                 let DisplayRow::Committed(c) = row else {
-                    return false;
+                    return Modifier::empty();
                 };
                 let idx = c.pos.node;
                 let reusable = last.filter(|&(seen, _)| seen == idx);
@@ -942,7 +988,11 @@ impl App {
                     Some((_, answer)) => answer,
                     None => {
                         resolutions += 1;
-                        let answer = self.resolve_active_override(idx).is_some();
+                        let answer = match self.resolve_active_override_entry(idx) {
+                            None => Modifier::empty(),
+                            Some(e) if e.auto => Modifier::BOLD,
+                            Some(_) => Modifier::BOLD | Modifier::UNDERLINED,
+                        };
                         last = Some((idx, answer));
                         answer
                     }
@@ -1179,7 +1229,7 @@ impl App {
             .collect();
         let d_heat = t_heat.elapsed();
         let t_ovr = std::time::Instant::now();
-        let (row_overridden, _) = self.override_bold_flags(&window);
+        let (row_emphasis, _) = self.override_emphasis(&window);
         let d_ovr = t_ovr.elapsed();
 
         // Spec 0194 S1: the caret track's suffix zone is exactly as long
@@ -1275,12 +1325,10 @@ impl App {
                 // exactly as it already gates fold markers inside
                 // `row_spans`.
                 let line_idx = display_row.committed_line();
-                let mut spans = pan_spans(self.row_spans(display_row, row), self.pan_offset);
-                if row_overridden[row] {
-                    for span in &mut spans {
-                        span.style = span.style.add_modifier(Modifier::BOLD);
-                    }
-                }
+                let mut spans = pan_spans(
+                    self.row_spans(display_row, row, row_emphasis[row]),
+                    self.pan_offset,
+                );
                 // Spec 0194 S1: where the row's own text ends, which is
                 // where the caret track's suffix zone begins. Measured
                 // before the chrome goes on and only on the row that

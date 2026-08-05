@@ -349,7 +349,7 @@ fn the_override_check_runs_once_per_record_not_once_per_row() {
         .filter_map(|d| app.display_row(d))
         .collect();
 
-    let (flags, resolutions) = app.override_bold_flags(&window);
+    let (flags, resolutions) = app.override_emphasis(&window);
     assert_eq!(flags.len(), window.len());
 
     // Or the count assertion below would pass vacuously.
@@ -359,13 +359,20 @@ fn the_override_check_runs_once_per_record_not_once_per_row() {
     );
 
     // The whole answer, recomputed with no collapsing at all.
-    let naive: Vec<bool> = window
+    let naive: Vec<Modifier> = window
         .iter()
         .map(|&row| match row {
             DisplayRow::Committed(c) => app
                 .node_at_own_line(c.line)
-                .is_some_and(|idx| app.resolve_active_override(idx).is_some()),
-            DisplayRow::Overlay(_) => false,
+                .and_then(|idx| app.resolve_active_override_entry(idx))
+                .map_or(Modifier::empty(), |e| {
+                    if e.auto {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::BOLD | Modifier::UNDERLINED
+                    }
+                }),
+            DisplayRow::Overlay(_) => Modifier::empty(),
         })
         .collect();
     assert_eq!(flags, naive, "collapsing must not change the answer");
@@ -382,6 +389,78 @@ fn the_override_check_runs_once_per_record_not_once_per_row() {
         "{resolutions} resolutions for {rows_with_a_node} rows carrying a \
          node — the per-row work did not collapse at all"
     );
+}
+
+/// Spec 0192 S2: an active override weights the type name in the row's
+/// `#@ Type = N` annotation and nothing else — that name is the only
+/// part of the row the override changed. A deliberate override is
+/// underlined as well as bold; an auto-derived one (spec 0120) is not.
+///
+/// A row with no type name to weight — a bare footer, or any row once
+/// `a` has hidden the annotations — falls back to the whole row, which
+/// is what the emphasis was before it was narrowed. The cue has to
+/// survive there or the row reads as not overridden at all.
+///
+/// The comparison is against the same row drawn with no emphasis, so it
+/// states "only the type name" directly rather than by enumerating the
+/// modifiers every other span happens to carry.
+#[test]
+fn an_override_weights_the_type_name_and_nothing_else() {
+    let mut app = nested_any_fixture();
+    let window: Vec<DisplayRow> = (0..app.composed_row_count())
+        .filter_map(|d| app.display_row(d))
+        .collect();
+
+    // The fixture's root carries the deliberate override that named its
+    // type; the `Any` payload carries the auto-derived one.
+    let row_of = |needle: &str| {
+        window
+            .iter()
+            .position(|&r| app.row_content(r).contains(needle))
+            .unwrap_or_else(|| panic!("no row containing {needle:?}"))
+    };
+    let manual = row_of("#@ Level1");
+    let auto = row_of("#@ Payload");
+
+    let check = |app: &mut App| {
+        app.refresh_window_styles(&window);
+        let (emphasis, _) = app.override_emphasis(&window);
+        assert_eq!(emphasis[manual], Modifier::BOLD | Modifier::UNDERLINED);
+        assert_eq!(emphasis[auto], Modifier::BOLD);
+
+        let mut weighted_rows = 0;
+        for (i, &row) in window.iter().enumerate() {
+            let plain = app.row_spans(row, i, Modifier::empty());
+            let drawn = app.row_spans(row, i, emphasis[i]);
+            let changed: Vec<String> = plain
+                .iter()
+                .zip(drawn.iter())
+                .filter(|(p, d)| p.style != d.style)
+                .map(|(_, d)| d.content.to_string())
+                .collect();
+            let expected: Vec<String> = if emphasis[i].is_empty() {
+                vec![]
+            } else if app.annotations && i == manual {
+                vec!["Level1".to_string()]
+            } else if app.annotations && i == auto {
+                vec!["Payload".to_string()]
+            } else {
+                drawn.iter().map(|s| s.content.to_string()).collect()
+            };
+            if !expected.is_empty() {
+                weighted_rows += 1;
+            }
+            assert_eq!(changed, expected, "row {i}: {:?}", app.row_content(row));
+        }
+        weighted_rows
+    };
+
+    // Header and footer of the root, and of the `Any` payload.
+    assert_eq!(check(&mut app), 4);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+    assert!(!app.annotations, "`a` must have hidden the annotations");
+    assert_eq!(check(&mut app), 4);
 }
 
 /// A passive status message auto-dismisses once `MESSAGE_TIMEOUT` has
@@ -576,7 +655,7 @@ fn a_toggles_the_main_pane_annotation_display() {
     let window = [app.committed_row(0).unwrap()];
     app.refresh_window_styles(&window);
     let spanned: String = app
-        .row_spans(window[0], 0)
+        .row_spans(window[0], 0, Modifier::empty())
         .iter()
         .map(|s| s.content.as_ref())
         .collect();
@@ -1433,7 +1512,7 @@ fn marker_column_agrees_with_what_is_drawn_at_every_indent_width() {
                 continue;
             };
             let drawn: String = app
-                .row_spans(row, i)
+                .row_spans(row, i, Modifier::empty())
                 .iter()
                 .map(|s| s.content.to_string())
                 .collect();
@@ -1469,7 +1548,7 @@ fn row_content_and_row_spans_agree_byte_for_byte() {
     assert!(window.len() > 4, "the fixture must have rows to compare");
     for (i, &row) in window.iter().enumerate() {
         let drawn: String = app
-            .row_spans(row, i)
+            .row_spans(row, i, Modifier::empty())
             .iter()
             .map(|s| s.content.to_string())
             .collect();
