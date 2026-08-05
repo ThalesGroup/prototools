@@ -442,6 +442,16 @@ fn restyled_runs(plain: &[Span<'static>], drawn: &[Span<'static>]) -> Vec<String
 /// The comparison is against the same row drawn with no emphasis, so it
 /// states "only these" directly rather than by enumerating the
 /// modifiers every other span happens to carry.
+///
+/// The type name is the one target whose cue is not always *visible*:
+/// the ANSI-16 fallback palette already spends bold on `Type`, so an
+/// auto-derived override adds nothing the eye can see there. That is a
+/// property of the palette, not of this pass, and the expectation is
+/// read off `theme::style_for` rather than assumed — the terminal the
+/// suite runs under is not fixed, and a Nix sandbox has no `COLORTERM`.
+/// It also makes the point the three targets exist for: the key and the
+/// marker are unstyled in both palettes, so they carry the cue when the
+/// type name cannot.
 #[test]
 fn an_override_weights_the_key_the_marker_and_the_type_name() {
     let mut app = nested_any_fixture();
@@ -487,10 +497,25 @@ fn an_override_weights_the_key_the_marker_and_the_type_name() {
     };
 
     let run = |parts: &[&str]| -> Vec<String> { parts.iter().map(|s| s.to_string()).collect() };
+
+    // Does weighting `Type` change how it is drawn at all? Under RGB it
+    // always does; under ANSI-16 a bare `BOLD` does not.
+    let plain_type = theme::style_for(SyntaxRole::Type, app.theme);
+    let shows = |emphasis: Modifier| plain_type.add_modifier(emphasis) != plain_type;
+    let with_type = |mut base: Vec<String>, emphasis: Modifier, name: &str| {
+        if shows(emphasis) {
+            base.push(name.to_string());
+        }
+        base
+    };
     check(
         &mut app,
-        &run(&[&glyph, "1", "Level1"]),
-        &run(&[&glyph, "value", "Payload"]),
+        &with_type(
+            run(&[&glyph, "1"]),
+            Modifier::BOLD | Modifier::UNDERLINED,
+            "Level1",
+        ),
+        &with_type(run(&[&glyph, "value"]), Modifier::BOLD, "Payload"),
     );
 
     app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
