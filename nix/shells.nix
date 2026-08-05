@@ -200,24 +200,39 @@ RUFFEOF
       _hook_protos() {
         # Compile prototext fixture .pb descriptors into
         # prototext/fixtures/prebuilt/, mirroring what protoPatchPhase does in
-        # the Nix build.  Skipped if the descriptor files are already present.
-        if [[ ! -f "$PWD/prototext/fixtures/prebuilt/descriptor.pb" ]]; then
-          echo "[hook] protos: compiling fixture .pb descriptors"
-          mkdir -p "$PWD/prototext/fixtures/prebuilt"
-          protoc \
-            --descriptor_set_out="$PWD/prototext/fixtures/prebuilt/descriptor.pb" \
-            google/protobuf/descriptor.proto
-          protoc \
-            --descriptor_set_out="$PWD/prototext/fixtures/prebuilt/knife.pb" \
-            --proto_path="$PWD/prototext/fixtures/schemas" \
-            knife.proto
-          protoc \
-            --descriptor_set_out="$PWD/prototext/fixtures/prebuilt/enum_collision.pb" \
-            --proto_path="$PWD/prototext/fixtures/schemas" \
-            enum_collision.proto
-        else
+        # default.nix.  The list must stay in step with that phase and with
+        # prototext/build.rs's fallback, which copies all four unconditionally.
+        #
+        # Each file is guarded on its own rather than behind a single
+        # descriptor.pb sentinel: with one sentinel, a fixture added after a
+        # working tree was first populated is never compiled there, and the
+        # failure surfaces far away as a build.rs panic ("failed to copy
+        # message_set.pb: No such file or directory").
+        local prebuilt="$PWD/prototext/fixtures/prebuilt"
+        local schemas="$PWD/prototext/fixtures/schemas"
+        local name missing=()
+        for name in descriptor knife enum_collision message_set; do
+          [[ -f "$prebuilt/$name.pb" ]] || missing+=("$name")
+        done
+        if (( ''${#missing[@]} == 0 )); then
           echo "[hook] protos: already compiled — skipping"
+          return
         fi
+        echo "[hook] protos: compiling ''${missing[*]}"
+        mkdir -p "$prebuilt"
+        for name in "''${missing[@]}"; do
+          if [[ $name == descriptor ]]; then
+            # Not in fixtures/schemas: protoc resolves it from its own include.
+            protoc \
+              --descriptor_set_out="$prebuilt/descriptor.pb" \
+              google/protobuf/descriptor.proto
+          else
+            protoc \
+              --descriptor_set_out="$prebuilt/$name.pb" \
+              --proto_path="$schemas" \
+              "$name.proto"
+          fi
+        done
       }
 
       _hook_codegen() {
