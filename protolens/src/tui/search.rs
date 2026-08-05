@@ -57,6 +57,11 @@ pub(super) enum SearchScope {
     Manage,
 }
 
+/// Spec 0246 S13: how many committed patterns `Up` can reach. vim's
+/// default `'history'`; the entries are short strings and no
+/// measurement stands behind the number.
+const SEARCH_HISTORY_MAX: usize = 50;
+
 /// One candidate: a document line in the main pane, a list index in the
 /// two side panes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,10 +70,52 @@ pub(super) enum SweepCursor {
     Index(usize),
 }
 
+/// Spec 0246 S1: which of a candidate's matches count as stops.
+///
+/// A candidate is still a *row* — that is the unit of work the slice
+/// budget counts, and the identity `next_candidate` enumerates. Match
+/// granularity rides alongside it as this bound, which is `Whole` for
+/// every row but the origin's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowBound {
+    /// Every match in the candidate is a stop.
+    Whole,
+    /// No stop here — spec 0246 N4: a side pane's origin entry on the
+    /// way out, so that `n` leaves the entry it starts on.
+    Nothing,
+    /// Only matches whose byte start lies in `lo..hi`. The main pane's
+    /// origin row, which S2 visits twice and S3 splits at the caret.
+    Starts { lo: usize, hi: usize },
+}
+
+impl RowBound {
+    fn admits(self, start: usize) -> bool {
+        match self {
+            Self::Whole => true,
+            Self::Nothing => false,
+            Self::Starts { lo, hi } => start >= lo && start < hi,
+        }
+    }
+}
+
+/// Spec 0246 S14: an open prompt's walk back through `search_history`.
+pub(super) struct SearchBrowse {
+    /// Which entry the buffer is showing.
+    index: usize,
+    /// What the user had typed before the first `Up`, restored by
+    /// `Down` past the newest entry.
+    draft: String,
+}
+
 /// Spec 0235 S2: what a sweep found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct SweepHit {
     pub(super) at: SweepCursor,
+    /// The match's byte offset in the haystack it was found in — zero
+    /// for a path match, which spec 0246 S9 makes a single stop at the
+    /// row's start. What a rotation restarts from (S18), and what S3's
+    /// bounds are compared against.
+    pub(super) start: usize,
     /// The column the caret lands on at `Enter` — the matched
     /// character's for a text match, the row's first non-blank for a
     /// path match (spec 0235 S20).
@@ -90,6 +137,10 @@ pub(super) struct SearchOrigin {
     scroll: PaneScroll,
     pan: usize,
     at: SweepCursor,
+    /// Spec 0246 S8: the caret's byte offset within `at`'s row, which
+    /// S3 splits that row at. Zero for a side pane, whose bounds are
+    /// `Nothing`/`Whole` and need no offset.
+    column: usize,
 }
 
 /// Spec 0235 S2: a search in progress.
@@ -97,9 +148,10 @@ pub(super) struct SearchSweep {
     pub(super) pattern: SearchPattern,
     dir: SearchDir,
     origin: SearchOrigin,
-    /// The next candidate to test. `None` once the walk has finished,
-    /// either by finding a match or by seeing the whole document.
-    at: Option<SweepCursor>,
+    /// The next candidate to test, and which of its matches count
+    /// (spec 0246 S1). `None` once the walk has finished, either by
+    /// finding a match or by seeing the whole document.
+    at: Option<(SweepCursor, RowBound)>,
     pub(super) found: Option<SweepHit>,
     /// Candidates left before the whole document has been seen — the
     /// wrap budget, decremented per candidate.
@@ -132,24 +184,33 @@ impl App {
 
     /// Spec 0235 S6: this pane's current position and view.
     pub(super) fn search_origin_for(&self, scope: SearchScope) -> SearchOrigin {
-        let (scroll, pan, at) = match scope {
-            SearchScope::Main => (
-                self.scroll,
-                self.pan_offset,
-                SweepCursor::Line(LinePos {
+        let (scroll, pan, at, column) = match scope {
+            SearchScope::Main => {
+                let pos = LinePos {
                     node: self.cursor,
                     line_in_node: self.cursor_line_in_node,
-                }),
-            ),
+                };
+                // Spec 0246 S8: `cursor_column` counts characters and
+                // the sweep's bounds count bytes, so the conversion
+                // happens once, here, rather than per candidate.
+                let text = self.line_text(pos);
+                let column = text
+                    .char_indices()
+                    .nth(self.cursor_column)
+                    .map_or(text.len(), |(i, _)| i);
+                (self.scroll, self.pan_offset, SweepCursor::Line(pos), column)
+            }
             SearchScope::Override => (
                 self.override_scroll,
                 self.override_pan_offset,
                 SweepCursor::Index(self.override_highlight),
+                0,
             ),
             SearchScope::Manage => (
                 self.manage_scroll,
                 self.manage_pan_offset,
                 SweepCursor::Index(self.manage_highlight),
+                0,
             ),
         };
         SearchOrigin {
@@ -157,6 +218,7 @@ impl App {
             scroll,
             pan,
             at,
+            column,
         }
     }
 
@@ -206,11 +268,18 @@ impl App {
         }
     }
 
-    /// A sweep of `pattern` over `origin`'s pane, starting one candidate
-    /// past the origin so that the origin's own row comes *last* — which
-    /// is what makes a wrapped search land back where it started rather
-    /// than report "not found". `None` for an empty pattern or an empty
-    /// pane, neither of which has anything to walk.
+    /// A sweep of `pattern` over `origin`'s pane.
+    ///
+    /// Spec 0246 S2: it starts *at* the origin's own row and budgets one
+    /// candidate more than the pane has, so that row is visited twice —
+    /// once for the matches past the caret and once, at the end of the
+    /// wrap, for the ones at or before it. The two halves partition the
+    /// row, which is what makes a full cycle visit every match exactly
+    /// once and land back where it started rather than report "not
+    /// found".
+    ///
+    /// `None` for an empty pattern or an empty pane, neither of which
+    /// has anything to walk.
     pub(super) fn begin_search_sweep(
         &self,
         pattern: &str,
@@ -225,9 +294,9 @@ impl App {
             pattern: SearchPattern::new(pattern),
             dir,
             origin,
-            at: Some(self.next_candidate(origin.at, dir, n)?),
+            at: Some((origin.at, origin_bound(origin, dir, Visit::Out))),
             found: None,
-            remaining: n,
+            remaining: n + 1,
             path: PathScratch::default(),
         })
     }
@@ -239,7 +308,15 @@ impl App {
     /// path — with no shape test and no reserved syntax. The text is
     /// tried first, so that a line matching both ways lands on the
     /// column the user can see (S20).
-    fn sweep_test(&self, sweep: &mut SearchSweep, at: SweepCursor) -> Option<SweepHit> {
+    ///
+    /// Spec 0246 S1: `bound` says which of the candidate's matches are
+    /// stops — everything but the origin's own row passes `Whole`.
+    fn sweep_test(
+        &self,
+        sweep: &mut SearchSweep,
+        at: SweepCursor,
+        bound: RowBound,
+    ) -> Option<SweepHit> {
         let haystack: Cow<'_, str> = match (sweep.origin.scope, at) {
             (SearchScope::Main, SweepCursor::Line(pos)) => {
                 // A closing `}` draws no content of its own, and a
@@ -248,18 +325,37 @@ impl App {
                     return None;
                 }
                 let text = self.line_text(pos);
-                if let Some(range) = sweep.pattern.find_range(&text) {
+                // The row's first non-blank — where a path match lands
+                // (S20), and the floor every stop's position is measured
+                // against (spec 0246 S3a).
+                let indent = text.len() - text.trim_start().len();
+                if let Some(range) = pick_match(&sweep.pattern, &text, indent, sweep.dir, bound) {
                     return Some(SweepHit {
                         at,
+                        start: range.start.max(indent),
                         column: text[..range.start].chars().count(),
                         width: text[range].chars().count(),
                         on_path: false,
                     });
                 }
-                // The row's first non-blank, which is where a path match
-                // lands (S20) — measured here, while its text is in
-                // hand, rather than resolved again at `Enter`.
-                let indent = text.len() - text.trim_start().len();
+                // Spec 0246 S9: the path is the row's stop only when the
+                // row's *text* has no match at all. A text match the
+                // bound merely excluded still means the row belongs to
+                // its text — without this test the origin row would
+                // offer its text matches and then a path stop as well,
+                // and the walk would visit it twice per cycle.
+                //
+                // The extra scan falls only on a bounded row, and the
+                // origin is the only row a sweep ever bounds.
+                if bound != RowBound::Whole && sweep.pattern.find_range(&text).is_some() {
+                    return None;
+                }
+                // The stop sits where its caret lands, so a bound that
+                // has already passed that offset excludes it and a full
+                // cycle still visits it once.
+                if !bound.admits(indent) {
+                    return None;
+                }
                 drop(text);
                 self.write_positional_path(&mut sweep.path, pos.node);
                 return sweep
@@ -267,6 +363,7 @@ impl App {
                     .is_match(sweep.path.as_str())
                     .then_some(SweepHit {
                         at,
+                        start: indent,
                         column: indent,
                         width: 1,
                         on_path: true,
@@ -282,8 +379,18 @@ impl App {
             // shape with it, so the remaining pairs do not occur.
             _ => return None,
         };
+        // Spec 0246 N4: a side pane's entry is a whole-row highlight, so
+        // it stays one stop — its origin is excluded by `Nothing` on the
+        // way out and admitted whole on the way back, and no `Starts`
+        // bound is ever built for an index cursor.
+        if bound == RowBound::Nothing {
+            return None;
+        }
         sweep.pattern.find_range(&haystack).map(|range| SweepHit {
             at,
+            // Spec 0246 N4: never read back — a side pane's stops are
+            // its entries, and only a `Nothing` bound ever skips one.
+            start: range.start,
             column: haystack[..range.start].chars().count(),
             width: haystack[range].chars().count(),
             on_path: false,
@@ -295,16 +402,30 @@ impl App {
     fn advance_sweep(&self, sweep: &mut SearchSweep, budget: usize) {
         let n = self.search_candidate_count(sweep.origin.scope);
         for _ in 0..budget {
-            let Some(at) = sweep.at else { return };
-            if let Some(hit) = self.sweep_test(sweep, at) {
+            let Some((at, bound)) = sweep.at else { return };
+            if let Some(hit) = self.sweep_test(sweep, at, bound) {
                 sweep.found = Some(hit);
                 sweep.at = None;
                 return;
             }
             sweep.remaining -= 1;
-            sweep.at = (sweep.remaining > 0)
+            let next = (sweep.remaining > 0)
                 .then(|| self.next_candidate(at, sweep.dir, n))
                 .flatten();
+            // Spec 0246 S2: `next_candidate` is a bijection over the
+            // candidates, so the origin comes round again exactly once —
+            // on the last of the `n + 1` visits — and that is the one
+            // that takes the closing half of the split.
+            let origin_at = sweep.origin.at;
+            let closing = origin_bound(sweep.origin, sweep.dir, Visit::Back);
+            sweep.at = next.map(|next| {
+                let bound = if next == origin_at {
+                    closing
+                } else {
+                    RowBound::Whole
+                };
+                (next, bound)
+            });
         }
     }
 
@@ -402,12 +523,98 @@ impl App {
         self.search_sweep = None;
         self.search_highlight = true;
         self.search_dirty = true;
+        // Spec 0246 S16: no browse survives a prompt.
+        self.search_browse = None;
+    }
+
+    /// Spec 0246 S17/S18: show the next match in `dir` — absolute
+    /// document directions, whichever way the prompt itself points.
+    ///
+    /// A fresh sweep from where the displayed match sits, which S2's
+    /// two-visit walk then steps off and cycles back to, so a
+    /// single-match pattern rotates to itself. `search_origin` is
+    /// deliberately untouched (S19): it is still what `Esc` restores and
+    /// what the next edit re-searches from.
+    pub(super) fn rotate_search_match(&mut self, dir: SearchDir) {
+        let Some(origin) = self.search_origin else {
+            return;
+        };
+        // Spec 0246 S21: nothing displayed — the sweep is still walking,
+        // or it finished having missed — is nothing to rotate from.
+        let Some(hit) = self.search_sweep.as_ref().and_then(|s| s.found) else {
+            return;
+        };
+        let pattern = self.command_buffer.clone().unwrap_or_default();
+        let from = SearchOrigin {
+            at: hit.at,
+            column: hit.start,
+            ..origin
+        };
+        let Some(sweep) = self.begin_search_sweep(&pattern, dir, from) else {
+            return;
+        };
+        // Spec 0246 S22: walked by `run_loop`'s idle arm like any other,
+        // so a rotation over a large document does not block the key.
+        self.search_sweep = Some(sweep);
+        self.search_dirty = true;
+    }
+
+    /// Spec 0246 S12: remember a committed pattern. A repeat moves to
+    /// the end rather than being stored twice — a history of one pattern
+    /// typed five times is a history of one pattern.
+    fn push_search_history(&mut self, pattern: &str) {
+        if pattern.is_empty() {
+            return;
+        }
+        if let Some(i) = self.search_history.iter().position(|p| p == pattern) {
+            self.search_history.remove(i);
+        }
+        self.search_history.push(pattern.to_string());
+        if self.search_history.len() > SEARCH_HISTORY_MAX {
+            self.search_history.remove(0);
+        }
+    }
+
+    /// Spec 0246 S14/S15: `Up` (`back`) and `Down` through
+    /// `search_history`.
+    ///
+    /// Neither end wraps, and neither reports why it did nothing: a
+    /// prompt row is the pattern's, not a place for a message.
+    pub(super) fn browse_search_history(&mut self, back: bool) {
+        let next = match (&self.search_browse, back) {
+            (None, true) if self.search_history.is_empty() => return,
+            (None, true) => Some(self.search_history.len() - 1),
+            (None, false) => return,
+            (Some(b), true) if b.index == 0 => return,
+            (Some(b), true) => Some(b.index - 1),
+            // Past the newest entry is back to the user's own text.
+            (Some(b), false) if b.index + 1 >= self.search_history.len() => None,
+            (Some(b), false) => Some(b.index + 1),
+        };
+        let draft = match self.search_browse.take() {
+            Some(b) => b.draft,
+            None => self.command_buffer.clone().unwrap_or_default(),
+        };
+        let text = match next {
+            Some(i) => self.search_history[i].clone(),
+            None => draft.clone(),
+        };
+        self.command_cursor = text.chars().count();
+        self.command_buffer = Some(text);
+        // Spec 0246 S15: a recall *is* a pattern change, so the sweep
+        // restarts from the prompt's origin like any edit — and since
+        // that clears the browse (S16), the new state is set after it.
+        self.restart_search_sweep();
+        self.search_browse = next.map(|index| SearchBrowse { index, draft });
     }
 
     /// Spec 0235 S7: any change to the pattern replaces the sweep —
     /// unconditionally, with no exception for "the pattern only grew".
     /// That symmetry is the entire reason `Backspace` reads as an undo.
     pub(super) fn restart_search_sweep(&mut self) {
+        // Spec 0246 S16: the one place the browse ends, and it is on the
+        // path of every editing key — so any edit ends it.
+        self.search_browse = None;
         let (Some(origin), CommandLineKind::Search(dir)) = (self.search_origin, self.command_kind)
         else {
             return;
@@ -427,6 +634,11 @@ impl App {
     /// arrives here with none, and gets a fresh walk from the same
     /// origin.
     pub(super) fn commit_search(&mut self, dir: SearchDir, pattern: &str) {
+        // Spec 0246 S12: here rather than at the three `Enter` branches,
+        // so that every committed pattern is remembered once and `n`/`N`
+        // — which repeat rather than commit — remember nothing.
+        self.push_search_history(pattern);
+        self.search_browse = None;
         let origin = self
             .search_origin
             .take()
@@ -477,6 +689,8 @@ impl App {
         if let Some(origin) = self.search_origin.take() {
             self.restore_search_origin(origin);
         }
+        // Spec 0246 S16.
+        self.search_browse = None;
         self.clear_search_highlight();
     }
 
@@ -604,4 +818,101 @@ impl App {
     pub(super) fn take_search_dirty(&mut self) -> bool {
         std::mem::take(&mut self.search_dirty)
     }
+}
+
+/// Which of the origin row's two visits (spec 0246 S2) a bound is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Visit {
+    /// The first candidate of the walk.
+    Out,
+    /// The last one, after the wrap.
+    Back,
+}
+
+/// Spec 0246 S3: the origin row's half, split at the caret.
+///
+/// The two halves are complementary, which is the property the whole
+/// scheme rests on: every match of the row falls in exactly one of them,
+/// so a full cycle sees each once. Strictness at the caret is what makes
+/// `n` leave the match it is standing on.
+///
+/// The exclusive bounds are stated as `column + 1` rather than as the
+/// next character boundary: match starts are boundaries, so `start >=
+/// c + 1` is `start > c` and `start < c + 1` is `start <= c`, and
+/// `find_range_from` rounds a mid-character `lo` up for itself.
+fn origin_bound(origin: SearchOrigin, dir: SearchDir, visit: Visit) -> RowBound {
+    let c = origin.column;
+    match (origin.at, dir, visit) {
+        // Spec 0246 N4: a side pane counts entries, not matches.
+        (SweepCursor::Index(_), _, Visit::Out) => RowBound::Nothing,
+        (SweepCursor::Index(_), _, Visit::Back) => RowBound::Whole,
+        (_, SearchDir::Forward, Visit::Out) => RowBound::Starts {
+            lo: c + 1,
+            hi: usize::MAX,
+        },
+        (_, SearchDir::Forward, Visit::Back) => RowBound::Starts { lo: 0, hi: c + 1 },
+        (_, SearchDir::Backward, Visit::Out) => RowBound::Starts { lo: 0, hi: c },
+        (_, SearchDir::Backward, Visit::Back) => RowBound::Starts {
+            lo: c,
+            hi: usize::MAX,
+        },
+    }
+}
+
+/// Spec 0246 S4: the match a candidate stops at — the first eligible
+/// start going forward, the **last** going backward.
+///
+/// Taking the last is not symmetry for its own sake: a backward search
+/// arriving at a row must land on its rightmost match, or it lands right
+/// of where the user is looking. It costs a scan of the row's matches,
+/// which the forward direction does not pay.
+///
+/// Spec 0246 S5: the scan resumes one character past a match's *start*,
+/// not past its end, so overlapping matches (`aa` in `aaa`) are separate
+/// stops — vim's rule, and the only one under which S3's two halves
+/// partition the row.
+///
+/// Spec 0246 S3a: a stop is placed at `max(start, floor)`, `floor` being
+/// the row's first non-blank. The bounds come from a caret, and spec
+/// 0194 S3 keeps a caret out of the indentation, so a match reaching
+/// back into it has to be compared at the column the caret will actually
+/// occupy — otherwise the row splits *ahead* of the stop the search just
+/// landed on, and the next `n` finds it again, forever. The cost is that
+/// several matches inside one indentation collapse to a single stop,
+/// which is the same thing the caret does to them.
+fn pick_match(
+    pattern: &SearchPattern,
+    haystack: &str,
+    floor: usize,
+    dir: SearchDir,
+    bound: RowBound,
+) -> Option<Range<usize>> {
+    let (lo, hi) = match bound {
+        RowBound::Nothing => return None,
+        RowBound::Whole => (0, usize::MAX),
+        RowBound::Starts { lo, hi } => (lo, hi),
+    };
+    // Where the lower bound first admits something. `max(start, floor)`
+    // rises with `start`, so below this offset nothing can qualify and
+    // above it everything does.
+    let from = if floor >= lo { 0 } else { lo };
+    if dir == SearchDir::Forward {
+        return pattern
+            .find_range_from(haystack, from)
+            .filter(|r| r.start.max(floor) < hi);
+    }
+    let mut best = None;
+    let mut from = from;
+    while let Some(range) = pattern.find_range_from(haystack, from) {
+        if range.start.max(floor) >= hi {
+            break;
+        }
+        from = range.start
+            + haystack[range.start..]
+                .chars()
+                .next()
+                .map_or(1, char::len_utf8);
+        best = Some(range);
+    }
+    best
 }

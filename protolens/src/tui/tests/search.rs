@@ -277,40 +277,65 @@ fn override_pane_search_is_smartcase() {
     assert_eq!(app.override_highlight, 2);
 }
 
-/// Where a linear scan of the whole rendered text would land, starting
-/// one line off `from` and moving in `dir` — the `App::lines` scan spec
+/// The caret's byte offset within its own row — spec 0246 S8's
+/// conversion, which the oracle needs because it holds match positions
+/// in bytes and `cursor_column` counts characters.
+fn caret_byte_offset(app: &App) -> usize {
+    let Some(pos) = app.line_pos(app.cursor_line()) else {
+        return 0;
+    };
+    let text = app.line_text(pos);
+    text.char_indices()
+        .nth(app.cursor_column)
+        .map_or(text.len(), |(i, _)| i)
+}
+
+/// Every stop a linear scan of the whole rendered text would make, in
+/// document order, as `(line, byte offset)` — the `App::lines` scan spec
 /// 0222 S6 replaced, written out so the walk can be held against it.
 ///
 /// Deliberately the crudest possible implementation: a `Vec<String>`,
-/// modular arithmetic, and no structure at all. It shares nothing with
-/// the walk but the matcher, which has its own tests above and is not
-/// what is on trial here.
+/// enumerated front to back, with no structure at all. It shares the
+/// matcher with the walk, and — since spec 0246 S4 made a stop a match
+/// rather than a row — S5's one-character step as well; both have their
+/// own tests above and neither is what is on trial here, which is the
+/// *order* a node-to-node step visits the document in.
 ///
 /// A closing brace is skipped because it draws no content of its own —
 /// it is the one line whose characters the nodes do not store, and the
 /// search has never matched one.
 ///
-/// Spec 0235 S19: a line's owning node's positional path is a second
-/// haystack, so the oracle tries it too. Without it the oracle would
-/// disagree with the walk on every row whose path happens to contain
-/// the pattern — and `1` is a pattern most paths contain.
-fn scan_the_whole_text(app: &App, from: usize, dir: SearchDir, pattern: &str) -> Option<usize> {
+/// Spec 0235 S19/0246 S9: a line's owning node's positional path is a
+/// second haystack, tried only when the text offered nothing and worth
+/// exactly one stop. Without it the oracle would disagree with the walk
+/// on every row whose path happens to contain the pattern — and `1` is a
+/// pattern most paths contain.
+fn every_match_in_text_order(app: &App, pattern: &str) -> Vec<(usize, usize)> {
     let lines = app.document_lines();
-    let n = lines.len();
     let needle = SearchPattern::new(pattern);
-    (1..=n)
-        .map(|k| match dir {
-            SearchDir::Forward => (from + k) % n,
-            SearchDir::Backward => (from + n - k) % n,
-        })
-        .find(|&line| {
-            let Some(pos) = app.line_pos(line) else {
-                return false;
-            };
-            !app.is_footer(pos)
-                && (needle.find(&lines[line]).is_some()
-                    || needle.is_match(&app.positional_path(pos.node)))
-        })
+    let mut out = Vec::new();
+    for (line, text) in lines.iter().enumerate() {
+        let Some(pos) = app.line_pos(line) else {
+            continue;
+        };
+        if app.is_footer(pos) {
+            continue;
+        }
+        // Spec 0246 S3a: a stop sits at the column its caret lands on,
+        // never left of the row's first non-blank.
+        let indent = text.len() - text.trim_start().len();
+        let before = out.len();
+        let mut from = 0;
+        while let Some(range) = needle.find_range_from(text, from) {
+            out.push((line, range.start.max(indent)));
+            from = range.start + text[range.start..].chars().next().map_or(1, char::len_utf8);
+        }
+        out.dedup();
+        if out.len() == before && needle.is_match(&app.positional_path(pos.node)) {
+            out.push((line, indent));
+        }
+    }
+    out
 }
 
 /// Spec 0222, test-plan item 7: the walk-based search visits the
@@ -345,20 +370,35 @@ fn search_finds_the_same_hits_in_the_same_order() {
         for pattern in [":", "{", "1"] {
             for dir in [SearchDir::Forward, SearchDir::Backward] {
                 app.set_cursor(app.first_node);
-                let mut want = Vec::new();
-                let mut at = app.cursor_line();
-                for _ in 0..12 {
-                    let Some(next) = scan_the_whole_text(&app, at, dir, pattern) else {
-                        break;
-                    };
-                    want.push(next);
-                    at = next;
-                }
+                let all = every_match_in_text_order(&app, pattern);
+                // The sequence below is twelve long whatever this is, so
+                // the wrap is covered either way; what has to hold is
+                // that the pattern matches more than once, or an order
+                // proves nothing.
                 assert!(
-                    want.len() > 3,
-                    "{name}/{pattern:?}: the fixture must offer several \
-                     matches, or the order proves nothing"
+                    all.len() > 1,
+                    "{name}/{pattern:?}: the fixture must offer several matches"
                 );
+                // Spec 0246 S3: the caret's own position is the split, so
+                // the first stop is the nearest match strictly past it —
+                // which for a `Backward` start at the top of the document
+                // is the wrap onto the very last one.
+                let start = (app.cursor_line(), caret_byte_offset(&app));
+                let mut i = match dir {
+                    SearchDir::Forward => all.iter().position(|&p| p > start).unwrap_or(0),
+                    SearchDir::Backward => all
+                        .iter()
+                        .rposition(|&p| p < start)
+                        .unwrap_or(all.len() - 1),
+                };
+                let mut want = Vec::new();
+                for _ in 0..12 {
+                    want.push(all[i].0);
+                    i = match dir {
+                        SearchDir::Forward => (i + 1) % all.len(),
+                        SearchDir::Backward => (i + all.len() - 1) % all.len(),
+                    };
+                }
 
                 app.set_cursor(app.first_node);
                 let got: Vec<usize> = (0..want.len())
@@ -872,6 +912,498 @@ fn the_side_panes_match_text_only() {
     app.jump_to_override_match(SearchDir::Forward, "/1");
     assert_eq!(app.override_highlight, 0);
     assert!(app.message.contains("not found"));
+}
+
+// ---------------------------------------------------------------------
+// Spec 0246: match granularity, the history, and the rotation.
+// ---------------------------------------------------------------------
+
+/// Press `code` with no modifier.
+fn press(app: &mut App, code: KeyCode) {
+    app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+}
+
+/// Press `code` with `Control` — spec 0246 S17's two rotation keys.
+fn press_ctrl(app: &mut App, code: KeyCode) {
+    app.handle_key(KeyEvent::new(code, KeyModifiers::CONTROL));
+}
+
+/// Type `/pattern` and confirm it, the way a user records a history
+/// entry (spec 0246 S12).
+fn commit_search_by_key(app: &mut App, pattern: &str) {
+    type_keys(app, "/");
+    type_keys(app, pattern);
+    press(app, KeyCode::Enter);
+}
+
+/// Spec 0246 test-plan item 1 (G5, S2, S3). `n` over a row carrying
+/// three occurrences stops at each of them before the row changes, and
+/// the cycle closes on the one it started from.
+#[test]
+fn n_stops_at_every_match_on_a_line() {
+    let mut app = sibling_leaves_app(&["ab ab ab", "zz"]);
+
+    let got: Vec<(usize, usize)> = (0..4)
+        .map(|_| {
+            app.jump_to_match(SearchDir::Forward, "ab");
+            (app.cursor, app.cursor_column)
+        })
+        .collect();
+    // Starting on the match at column 0, the caret steps off it onto the
+    // row's other two, and the wrap brings it back to where it began.
+    assert_eq!(got, vec![(0, 3), (0, 6), (0, 0), (0, 3)]);
+}
+
+/// Spec 0246 test-plan item 2 (S4) — Background 4's first consequence.
+/// A backward search arriving at a row takes its *rightmost* match; the
+/// leftmost would land right of where the user is looking.
+#[test]
+fn a_backward_search_lands_on_the_last_match_of_the_row() {
+    let mut app = sibling_leaves_app(&["zz", "ab ab ab"]);
+
+    app.jump_to_match(SearchDir::Backward, "ab");
+    assert_eq!((app.cursor, app.cursor_column), (1, 6));
+}
+
+/// Spec 0246 test-plan item 3 (S2, S3). The origin row is visited twice
+/// and the two halves partition it, so a document with one match sends
+/// `n` back to that match rather than reporting "not found".
+#[test]
+fn a_search_wraps_back_to_the_match_it_started_on() {
+    let mut app = sibling_leaves_app(&["ab", "zz"]);
+    app.message.clear();
+
+    app.jump_to_match(SearchDir::Forward, "ab");
+    assert_eq!((app.cursor, app.cursor_column), (0, 0));
+    assert!(
+        app.message.is_empty(),
+        "the match is still there: {}",
+        app.message
+    );
+}
+
+/// Spec 0246 test-plan item 4 (S5). The scan for the next eligible start
+/// resumes one character past the previous *start*, not past its end, so
+/// `aa` has two stops in `aaa` — vim's rule, and the only one under
+/// which S3's two halves partition the row.
+#[test]
+fn overlapping_matches_are_separate_stops() {
+    let mut app = sibling_leaves_app(&["aaa", "zz"]);
+
+    app.jump_to_match(SearchDir::Forward, "aa");
+    assert_eq!((app.cursor, app.cursor_column), (0, 1));
+    app.jump_to_match(SearchDir::Forward, "aa");
+    assert_eq!((app.cursor, app.cursor_column), (0, 0));
+}
+
+/// Spec 0246 test-plan item 5 (S2). Spec 0235 skipped the caret's own
+/// row entirely, so a match later on it was unreachable without a wrap
+/// through the whole document; the first visit of the two now finds it.
+#[test]
+fn the_caret_row_is_searched_ahead_of_the_caret() {
+    let mut app = sibling_leaves_app(&["ab ab", "zz"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    type_keys(&mut app, "/ab");
+    settle_sweep(&mut app);
+    assert_eq!(app.search_current_cell(), Some((0, 3, 2, false)));
+}
+
+/// Spec 0246 test-plan item 6 (S9). A path match is one stop per row
+/// however many times the pattern occurs in the path, and the bound
+/// still admits it exactly once per cycle — so a run of rows matching
+/// only on their paths visits each of them once.
+#[test]
+fn a_path_match_is_one_stop_per_row() {
+    let mut app = sibling_leaves_app(&["alpha: 0", "beta: 0", "gamma: 0"]);
+    // The pattern must be reachable *only* through the path, or the
+    // text branch is what is being measured.
+    assert!(app.document_lines().iter().all(|l| !l.contains('/')));
+
+    let got: Vec<usize> = (0..4)
+        .map(|_| {
+            app.jump_to_match(SearchDir::Forward, "/");
+            app.cursor
+        })
+        .collect();
+    assert_eq!(got, vec![1, 2, 0, 1]);
+    assert_eq!(app.caret_anchor, CaretAnchor::Home);
+}
+
+/// Spec 0246 test-plan item 7 (N4). A side pane highlights whole
+/// entries, so a second stop inside one entry would draw as nothing
+/// having happened: its stop count stays its entry count, whatever the
+/// pattern does inside an entry's text.
+#[test]
+fn the_manage_pane_still_stops_once_per_entry() {
+    let (mut app, items) = repeated_message_fixture();
+    app.manage_focus = true;
+    app.manage_open = true;
+
+    // Every type carries the pattern twice, so a match-granular walk
+    // would take six stops to come back round instead of three.
+    for (item, ty) in items.iter().zip(["pkg.zz1", "pkg.zz2", "pkg.zz3"]) {
+        let origin = OverrideOrigin::Path {
+            path: app.positional_path(*item),
+        };
+        app.overrides.activate(origin, Some(ty.to_string()));
+    }
+    // Entry 0 is the auto-derived root (`/ test.Outer`), which carries
+    // no `z`; the three activated ones are 1, 2 and 3.
+    app.manage_highlight = 1;
+    app.message.clear();
+
+    let got: Vec<usize> = (0..3)
+        .map(|_| {
+            app.jump_to_manage_match(SearchDir::Forward, "z");
+            app.manage_highlight
+        })
+        .collect();
+    assert_eq!(got, vec![2, 3, 1], "{}", app.message);
+}
+
+/// Spec 0246 test-plan item 8 (G1, S14, S15). `Up` recalls the newest
+/// committed pattern and leaves the command cursor at its end, ready to
+/// be edited; the oldest entry is where `Up` stops, without wrapping and
+/// without a message.
+#[test]
+fn up_at_a_search_prompt_recalls_the_last_committed_pattern() {
+    let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    commit_search_by_key(&mut app, "alpha");
+    commit_search_by_key(&mut app, "beta");
+
+    type_keys(&mut app, "/");
+    press(&mut app, KeyCode::Up);
+    assert_eq!(app.command_buffer.as_deref(), Some("beta"));
+    assert_eq!(app.command_cursor, 4);
+
+    press(&mut app, KeyCode::Up);
+    assert_eq!(app.command_buffer.as_deref(), Some("alpha"));
+    assert_eq!(app.command_cursor, 5);
+
+    press(&mut app, KeyCode::Up);
+    assert_eq!(app.command_buffer.as_deref(), Some("alpha"), "no wrap");
+}
+
+/// Spec 0246 test-plan item 9 (S14). The draft is stashed, not
+/// discarded: `Down` past the newest entry gives back what was typed.
+/// `Down` when no browse is under way does nothing at all — there is no
+/// "future" to walk into.
+#[test]
+fn down_past_the_newest_history_entry_restores_what_was_typed() {
+    let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    commit_search_by_key(&mut app, "alpha");
+
+    type_keys(&mut app, "/be");
+    press(&mut app, KeyCode::Up);
+    assert_eq!(app.command_buffer.as_deref(), Some("alpha"));
+
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.command_buffer.as_deref(), Some("be"));
+    assert_eq!(app.command_cursor, 2);
+
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.command_buffer.as_deref(), Some("be"));
+}
+
+/// Spec 0246 test-plan item 10 (S16). Editing a recalled entry ends the
+/// browse, so the edited text is the user's own again: `Down` no longer
+/// answers, and the next `Up` starts a fresh walk whose stash is the
+/// edit rather than the empty buffer the first one saw.
+#[test]
+fn editing_after_a_history_recall_ends_the_browse() {
+    let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    commit_search_by_key(&mut app, "alpha");
+    commit_search_by_key(&mut app, "beta");
+
+    type_keys(&mut app, "/");
+    press(&mut app, KeyCode::Up);
+    type_keys(&mut app, "x");
+    assert_eq!(app.command_buffer.as_deref(), Some("betax"));
+
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.command_buffer.as_deref(), Some("betax"));
+
+    press(&mut app, KeyCode::Up);
+    assert_eq!(app.command_buffer.as_deref(), Some("beta"));
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.command_buffer.as_deref(), Some("betax"));
+}
+
+/// Spec 0246 test-plan item 11 (S11). One history across all three
+/// panes, as vim keeps one across buffers — a per-pane history would
+/// make `Up` in a side pane skip a pattern typed seconds earlier in the
+/// main one.
+#[test]
+fn the_search_history_is_shared_across_panes() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.term_width = 120;
+
+    commit_search_by_key(&mut app, "message");
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert!(app.override_focus);
+    app.override_candidates = vec![("pkg.Alpha".to_string(), None)];
+    app.override_highlight = 0;
+
+    type_keys(&mut app, "/");
+    press(&mut app, KeyCode::Up);
+    assert_eq!(app.command_buffer.as_deref(), Some("message"));
+}
+
+/// Spec 0246 test-plan item 12 (S12). A history of one pattern typed
+/// three times is a history of one pattern: the repeat moves to the end
+/// rather than being stored again, so `Up` never offers the same text
+/// twice in a row.
+#[test]
+fn a_repeated_pattern_moves_to_the_end_of_the_history() {
+    let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    commit_search_by_key(&mut app, "alpha");
+    commit_search_by_key(&mut app, "beta");
+    commit_search_by_key(&mut app, "alpha");
+
+    type_keys(&mut app, "/");
+    press(&mut app, KeyCode::Up);
+    assert_eq!(app.command_buffer.as_deref(), Some("alpha"));
+    press(&mut app, KeyCode::Up);
+    assert_eq!(app.command_buffer.as_deref(), Some("beta"));
+    press(&mut app, KeyCode::Up);
+    assert_eq!(
+        app.command_buffer.as_deref(),
+        Some("beta"),
+        "the repeat moved rather than adding a third entry"
+    );
+}
+
+/// Spec 0246 test-plan item 13 (G2, S18, S19). `Ctrl-Right` moves the
+/// preview on and nothing else: the cursor is where it was, the
+/// jumplist is empty, and `search_origin` still names the row the prompt
+/// opened over.
+#[test]
+fn ctrl_right_previews_the_next_match_without_moving_the_cursor() {
+    let mut app = sibling_leaves_app(&["ab", "ab", "ab"]);
+    app.splash = false;
+    app.term_width = 120;
+    let before = (app.cursor, app.cursor_line_in_node, app.cursor_column);
+
+    type_keys(&mut app, "/ab");
+    settle_sweep(&mut app);
+    assert_eq!(app.search_current_cell(), Some((1, 0, 2, false)));
+
+    press_ctrl(&mut app, KeyCode::Right);
+    settle_sweep(&mut app);
+    assert_eq!(app.search_current_cell(), Some((2, 0, 2, false)));
+
+    assert_eq!(
+        (app.cursor, app.cursor_line_in_node, app.cursor_column),
+        before
+    );
+    assert!(app.back_stack.is_empty(), "a preview is not a jump");
+}
+
+/// Spec 0246 test-plan item 14 (S17, S20). The arrow means what it
+/// draws: `Ctrl-Left` goes backward through the document even inside a
+/// `/` prompt, and leaves the prompt a `/` prompt — so `Enter` still
+/// records a forward search and `n` still means forward.
+#[test]
+fn ctrl_left_rotates_backward_in_a_forward_prompt() {
+    let mut app = sibling_leaves_app(&["ab", "ab", "ab"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    type_keys(&mut app, "/ab");
+    settle_sweep(&mut app);
+    assert_eq!(app.search_current_cell(), Some((1, 0, 2, false)));
+
+    press_ctrl(&mut app, KeyCode::Left);
+    settle_sweep(&mut app);
+    assert_eq!(app.search_current_cell(), Some((0, 0, 2, false)));
+    assert_eq!(
+        app.command_kind,
+        CommandLineKind::Search(SearchDir::Forward)
+    );
+}
+
+/// Spec 0246 test-plan item 15 (S18). The rotation's fresh sweep starts
+/// *at* the shown match, so S2's two-visit walk steps off it and cycles
+/// back onto it: a pattern with one match rotates to itself, either way,
+/// rather than falling to "not found".
+#[test]
+fn rotation_wraps_back_to_the_only_match() {
+    let mut app = sibling_leaves_app(&["ab", "zz"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    type_keys(&mut app, "/ab");
+    settle_sweep(&mut app);
+    let only = Some((0, 0, 2, false));
+    assert_eq!(app.search_current_cell(), only);
+
+    press_ctrl(&mut app, KeyCode::Right);
+    settle_sweep(&mut app);
+    assert_eq!(app.search_current_cell(), only);
+
+    press_ctrl(&mut app, KeyCode::Left);
+    settle_sweep(&mut app);
+    assert_eq!(app.search_current_cell(), only);
+}
+
+/// Spec 0246 test-plan item 16 (S21). Rotating from a guess is worse
+/// than not rotating, so the key is ignored while the sweep has nothing
+/// to show — both while it is still walking and once it has finished
+/// having missed.
+#[test]
+fn rotation_is_ignored_while_the_sweep_is_still_walking() {
+    let mut app = target_at(2500, 2000, 0);
+
+    type_keys(&mut app, "/target");
+    assert_eq!(app.search_sweep_step(), SweepStep::Progressed);
+    assert!(app.search_sweep.as_ref().unwrap().found.is_none());
+    app.take_search_dirty();
+    press_ctrl(&mut app, KeyCode::Right);
+    assert!(
+        !app.take_search_dirty(),
+        "nothing shown is nothing to rotate from"
+    );
+    settle_sweep(&mut app);
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(2000));
+
+    type_keys(&mut app, "zzz");
+    settle_sweep(&mut app);
+    app.take_search_dirty();
+    press_ctrl(&mut app, KeyCode::Left);
+    assert!(!app.take_search_dirty(), "and a miss is not a match either");
+    assert!(app.search_sweep.as_ref().unwrap().is_finished());
+}
+
+/// Spec 0246 test-plan item 17 (G3, S23) — the point of the whole spec.
+/// `Enter` commits what the prompt is *showing*, which after a rotation
+/// is not the first match.
+#[test]
+fn enter_commits_the_rotated_match_not_the_first_one() {
+    let mut app = sibling_leaves_app(&["ab", "ab", "ab"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    type_keys(&mut app, "/ab");
+    settle_sweep(&mut app);
+    press_ctrl(&mut app, KeyCode::Right);
+    settle_sweep(&mut app);
+    assert_eq!(app.search_current_cell(), Some((2, 0, 2, false)));
+
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.cursor, 2);
+}
+
+/// Spec 0246 test-plan item 18 (G4, S19). A rotation moves the live
+/// sweep and not the origin, so the next edit searches from where the
+/// prompt was opened — however far the preview had wandered.
+#[test]
+fn typing_after_a_rotation_searches_from_the_prompts_origin() {
+    let mut app = sibling_leaves_app(&["zz", "abc", "abc", "abc"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    type_keys(&mut app, "/ab");
+    settle_sweep(&mut app);
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(1));
+    for _ in 0..2 {
+        press_ctrl(&mut app, KeyCode::Right);
+        settle_sweep(&mut app);
+    }
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(3));
+
+    type_keys(&mut app, "c");
+    settle_sweep(&mut app);
+    assert_eq!(
+        app.search_current_cell().map(|c| c.0),
+        Some(1),
+        "the first match after the origin, not after the rotation"
+    );
+}
+
+/// Spec 0246 test-plan item 19 (S19). Because the origin never moved,
+/// `Esc` is still a single restore of scroll and pan — no unwinding of
+/// however many rotations happened in between, and still nothing to
+/// restore about the cursor.
+#[test]
+fn esc_after_a_rotation_restores_the_opening_view() {
+    let mut app = wide_sibling_scalars_app(400);
+    app.node_text[100] = Some(Box::from("target: 0"));
+    app.node_text[300] = Some(Box::from("target: 0"));
+    app.splash = false;
+    app.term_width = 120;
+    app.message.clear();
+    let view = (app.scroll.index, app.pan_offset);
+    let cursor = (app.cursor, app.cursor_line_in_node, app.cursor_column);
+
+    type_keys(&mut app, "/target");
+    settle_sweep(&mut app);
+    app.center_search_match(pane());
+    press_ctrl(&mut app, KeyCode::Right);
+    settle_sweep(&mut app);
+    app.center_search_match(pane());
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(300));
+    assert_ne!((app.scroll.index, app.pan_offset), view);
+
+    press(&mut app, KeyCode::Esc);
+    assert_eq!((app.scroll.index, app.pan_offset), view);
+    assert_eq!(
+        (app.cursor, app.cursor_line_in_node, app.cursor_column),
+        cursor
+    );
+}
+
+/// Spec 0246 test-plan item 20 (N1, S24). At a `:` prompt both pairs are
+/// inert — and `Ctrl-Right` is inert rather than falling through to the
+/// plain `Right` arm and moving the text cursor, which is what an arm
+/// placed after it would have done.
+#[test]
+fn ctrl_right_at_a_colon_prompt_does_not_rotate() {
+    let mut app = sibling_leaves_app(&["alpha: 1"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    press(&mut app, KeyCode::Char(':'));
+    type_keys(&mut app, "ab");
+    app.command_cursor = 0;
+
+    press_ctrl(&mut app, KeyCode::Right);
+    assert_eq!(app.command_cursor, 0, "swallowed, not a plain Right");
+    press_ctrl(&mut app, KeyCode::Left);
+    assert_eq!(app.command_cursor, 0);
+    assert!(app.search_sweep.is_none());
+}
+
+/// Spec 0246 N1, the other half of test-plan item 20: no `:` history.
+#[test]
+fn up_at_a_colon_prompt_is_still_inert() {
+    let mut app = sibling_leaves_app(&["alpha: 1"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    commit_search_by_key(&mut app, "alpha");
+
+    press(&mut app, KeyCode::Char(':'));
+    type_keys(&mut app, "q");
+    press(&mut app, KeyCode::Up);
+    assert_eq!(app.command_buffer.as_deref(), Some("q"));
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.command_buffer.as_deref(), Some("q"));
 }
 
 /// Spec 0235 test-plan item 23 (S1). The `memchr2` prefilter is guarded

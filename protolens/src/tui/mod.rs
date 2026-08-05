@@ -261,6 +261,26 @@ impl SearchPattern {
         self.find_range(haystack).map(|r| r.start)
     }
 
+    /// The first match's byte range at or after `from`. Spec 0246 S6:
+    /// the walk stops at every match rather than every row, and both of
+    /// its picks — the first eligible start going forward, the last one
+    /// going backward — are loops over this, so they inherit
+    /// [`Self::find_range`]'s prefilter and both of its ASCII guards.
+    ///
+    /// `from` is clamped and rounded *up* to a character boundary,
+    /// which costs nothing: no match can start inside a character, so
+    /// rounding up cannot skip one. That totality is what lets a caller
+    /// pass "one byte past the caret" without first asking how wide the
+    /// character under it was.
+    pub(super) fn find_range_from(&self, haystack: &str, from: usize) -> Option<Range<usize>> {
+        let mut from = from.min(haystack.len());
+        while !haystack.is_char_boundary(from) {
+            from += 1;
+        }
+        self.find_range(&haystack[from..])
+            .map(|r| from + r.start..from + r.end)
+    }
+
     /// The first match's byte range. Spec 0235 S14 tints a match over
     /// its whole extent, and folding makes that extent the haystack's
     /// own rather than the needle's — `İ` is two bytes on screen and
@@ -1319,7 +1339,15 @@ pub struct App {
     search_sweep: Option<search::SearchSweep>,
     /// Spec 0235 S6: where the open `/`/`?` prompt was opened from —
     /// what each keystroke searches again from, and what `Esc` restores.
+    /// Spec 0246 S19: a rotation does *not* move it.
     search_origin: Option<search::SearchOrigin>,
+    /// Spec 0246 S11: every committed search pattern, oldest last,
+    /// shared by all three panes as vim shares one across buffers.
+    search_history: Vec<String>,
+    /// Spec 0246 S14: how far `Up`/`Down` have walked back into
+    /// `search_history`, and the text they displaced. `None` when the
+    /// buffer is the user's own typing.
+    search_browse: Option<search::SearchBrowse>,
     /// Spec 0235 S15: whether search matches are drawn. On while a
     /// `Search` prompt is open, and stays on after a commit and after
     /// `n`/`N`; `Esc` clears it, inside the prompt and outside it.
@@ -1581,6 +1609,8 @@ impl App {
             last_search: None,
             search_sweep: None,
             search_origin: None,
+            search_history: Vec::new(),
+            search_browse: None,
             search_highlight: false,
             search_dirty: false,
             search_center: false,

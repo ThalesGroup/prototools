@@ -2103,10 +2103,11 @@ fn eager_fallback_app() -> App {
 #[test]
 fn every_visible_match_is_tinted_and_the_current_one_differently() {
     let mut app = sibling_leaves_app(&["ab ab ab", "zz"]);
-    // Forward from the first row: past `zz`, wrapping onto the first
-    // occurrence of the row it started on.
+    // Spec 0246 S2/S3: forward from column 0 of the first row, which is
+    // itself a match — so the walk steps off it onto the *second*
+    // occurrence of the same row rather than leaving the row entirely.
     search_by_key(&mut app, "ab");
-    assert_eq!((app.cursor, app.cursor_column), (0, 0));
+    assert_eq!((app.cursor, app.cursor_column), (0, 3));
 
     let terminal = drawn_frame(&mut app, 40, 8);
     assert_eq!(

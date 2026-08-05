@@ -231,6 +231,31 @@ impl App {
             KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
                 self.command_cursor = self.prev_word_boundary();
             }
+            // Spec 0246 S17/S24: rotate the preview through the matches
+            // of the pattern as typed. Must precede the plain Left/Right
+            // arms for the same reason the Alt pair does — the Ctrl/Alt
+            // gate above only answers for `Char` keys, so without an arm
+            // here a `Ctrl-Right` would move the text cursor. At a `:`
+            // prompt they are swallowed rather than passed on, which is
+            // what keeps that from being a surprise later (N1).
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if matches!(self.command_kind, CommandLineKind::Search(_)) {
+                    self.rotate_search_match(SearchDir::Forward);
+                }
+            }
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if matches!(self.command_kind, CommandLineKind::Search(_)) {
+                    self.rotate_search_match(SearchDir::Backward);
+                }
+            }
+            // Spec 0246 S14: the search history. Unbound at a `:` prompt
+            // (N1), where these fall through to the catch-all below.
+            KeyCode::Up if matches!(self.command_kind, CommandLineKind::Search(_)) => {
+                self.browse_search_history(true)
+            }
+            KeyCode::Down if matches!(self.command_kind, CommandLineKind::Search(_)) => {
+                self.browse_search_history(false)
+            }
             KeyCode::Left => self.command_cursor = self.command_cursor.saturating_sub(1),
             KeyCode::Right => {
                 let len = self.command_buffer_char_len();
