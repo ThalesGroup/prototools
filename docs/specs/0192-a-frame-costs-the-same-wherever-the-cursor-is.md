@@ -15,15 +15,26 @@ Status: implemented — but S1's stored field is gone, and for a better
         maintain. The goal S1 states holds; the mechanism it specifies
         does not exist. S2 to S5 stand — but S2's pass is now
         `override_emphasis`, returning a `Modifier` per row rather than
-        a `bool`: since 2026-08-05 the weight lands on the type name in
-        the row's `#@ Type = N` annotation rather than on the whole
-        line, and a deliberate override is underlined as well as bold
-        (an auto-derived one, spec 0120, stays plain bold). A row with
-        no type name to weight — a bare footer, or any row once `a` has
-        hidden the annotations — still takes the weight across the whole
-        row, or the cue would vanish exactly where nothing else carries
-        it. The pass's shape, its one-entry memo and its resolution
-        count are unchanged, and so is test 5.
+        a `bool`. A deliberate override is underlined as well as bold;
+        an auto-derived one (spec 0120) is plain bold. Since 2026-08-05
+        the weight lands on the three things that say what an override
+        *is* — the row's key, its fold marker, and the type name in its
+        `#@ Type = N` annotation — and on nothing else. Two details are
+        not obvious. The key is the **first** `Attribute` segment: the
+        annotation's trailing field number is an `Attribute` too, and is
+        deliberately left unweighted, since it only repeats what the key
+        already says. And the fold marker is weighted **glyph-only**,
+        not margin-wide — a color is invisible on the surrounding spaces
+        (which is why spec 0247 S10 could settle for one span) but an
+        underline is not, and would draw a rule across the indentation.
+        There is no whole-row fallback: a bare footer carries no cue,
+        which is accepted, because the header it closes is on screen
+        carrying all three. Once `a` hides the annotations, the key and
+        the marker still carry it. Mechanically, `spans_with_insertions`
+        now threads a `Modifier` per *segment* rather than one per row,
+        so a segment split by an insertion keeps its parent's weight.
+        The pass's shape, its one-entry memo and its resolution count
+        are unchanged, and so is test 5.
 Implemented in: 2026-07-27
 App: protolens
 Refs: docs/specs/0216-the-arena-is-a-function-of-the-bytes.md (replaces

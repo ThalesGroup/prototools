@@ -391,28 +391,68 @@ fn the_override_check_runs_once_per_record_not_once_per_row() {
     );
 }
 
-/// Spec 0192 S2: an active override weights the type name in the row's
-/// `#@ Type = N` annotation and nothing else — that name is the only
-/// part of the row the override changed. A deliberate override is
-/// underlined as well as bold; an auto-derived one (spec 0120) is not.
+/// The runs of characters `drawn` gives a different style from `plain`
+/// — the emphasis, read off the finished spans character by character
+/// rather than off the span list's shape, which the fold margin now
+/// splits or does not split depending on what it has to say.
+fn restyled_runs(plain: &[Span<'static>], drawn: &[Span<'static>]) -> Vec<String> {
+    let flatten = |spans: &[Span<'static>]| -> Vec<(char, Style)> {
+        spans
+            .iter()
+            .flat_map(|s| {
+                let style = s.style;
+                s.content.chars().map(move |c| (c, style))
+            })
+            .collect()
+    };
+    let (plain, drawn) = (flatten(plain), flatten(drawn));
+    assert_eq!(
+        plain.len(),
+        drawn.len(),
+        "the emphasis must not change what the row says"
+    );
+    let mut runs: Vec<String> = Vec::new();
+    let mut open = false;
+    for ((_, was), (c, now)) in plain.iter().zip(drawn.iter()) {
+        if was == now {
+            open = false;
+            continue;
+        }
+        if !open {
+            runs.push(String::new());
+            open = true;
+        }
+        runs.last_mut().expect("just pushed").push(*c);
+    }
+    runs
+}
+
+/// Spec 0192 S2, as revised 2026-08-05: an active override weights the
+/// three places that say what an override *is* — the row's key, its
+/// fold marker, and the type name in its `#@ Type = N` annotation — and
+/// nothing else. A deliberate override is underlined as well as bold;
+/// an auto-derived one (spec 0120) is not.
 ///
-/// A row with no type name to weight — a bare footer, or any row once
-/// `a` has hidden the annotations — falls back to the whole row, which
-/// is what the emphasis was before it was narrowed. The cue has to
-/// survive there or the row reads as not overridden at all.
+/// Both halves matter. The `a` case is why the key is on the list at
+/// all: with the annotations hidden there is no type name left, and the
+/// key is what keeps the row from reading as un-overridden. The bare
+/// footer is the deliberate loss — it has none of the three, and the
+/// header it closes is what speaks for the node.
 ///
 /// The comparison is against the same row drawn with no emphasis, so it
-/// states "only the type name" directly rather than by enumerating the
+/// states "only these" directly rather than by enumerating the
 /// modifiers every other span happens to carry.
 #[test]
-fn an_override_weights_the_type_name_and_nothing_else() {
+fn an_override_weights_the_key_the_marker_and_the_type_name() {
     let mut app = nested_any_fixture();
     let window: Vec<DisplayRow> = (0..app.composed_row_count())
         .filter_map(|d| app.display_row(d))
         .collect();
 
     // The fixture's root carries the deliberate override that named its
-    // type; the `Any` payload carries the auto-derived one.
+    // type; the `Any` payload carries the auto-derived one. Both are
+    // bracketed, so each also has a footer row carrying the same
+    // override and none of the three places.
     let row_of = |needle: &str| {
         window
             .iter()
@@ -421,46 +461,41 @@ fn an_override_weights_the_type_name_and_nothing_else() {
     };
     let manual = row_of("#@ Level1");
     let auto = row_of("#@ Payload");
+    let glyph = render::FOLD_GLYPH_OPEN.to_string();
 
-    let check = |app: &mut App| {
+    let check = |app: &mut App, want_manual: &[String], want_auto: &[String]| {
         app.refresh_window_styles(&window);
         let (emphasis, _) = app.override_emphasis(&window);
         assert_eq!(emphasis[manual], Modifier::BOLD | Modifier::UNDERLINED);
         assert_eq!(emphasis[auto], Modifier::BOLD);
 
-        let mut weighted_rows = 0;
         for (i, &row) in window.iter().enumerate() {
             let plain = app.row_spans(row, i, Modifier::empty());
             let drawn = app.row_spans(row, i, emphasis[i]);
-            let changed: Vec<String> = plain
-                .iter()
-                .zip(drawn.iter())
-                .filter(|(p, d)| p.style != d.style)
-                .map(|(_, d)| d.content.to_string())
-                .collect();
-            let expected: Vec<String> = if emphasis[i].is_empty() {
-                vec![]
-            } else if app.annotations && i == manual {
-                vec!["Level1".to_string()]
-            } else if app.annotations && i == auto {
-                vec!["Payload".to_string()]
-            } else {
-                drawn.iter().map(|s| s.content.to_string()).collect()
+            let want: &[String] = match i {
+                _ if i == manual => want_manual,
+                _ if i == auto => want_auto,
+                _ => &[],
             };
-            if !expected.is_empty() {
-                weighted_rows += 1;
-            }
-            assert_eq!(changed, expected, "row {i}: {:?}", app.row_content(row));
+            assert_eq!(
+                restyled_runs(&plain, &drawn),
+                want,
+                "row {i}: {:?}",
+                app.row_content(row)
+            );
         }
-        weighted_rows
     };
 
-    // Header and footer of the root, and of the `Any` payload.
-    assert_eq!(check(&mut app), 4);
+    let run = |parts: &[&str]| -> Vec<String> { parts.iter().map(|s| s.to_string()).collect() };
+    check(
+        &mut app,
+        &run(&[&glyph, "1", "Level1"]),
+        &run(&[&glyph, "value", "Payload"]),
+    );
 
     app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
     assert!(!app.annotations, "`a` must have hidden the annotations");
-    assert_eq!(check(&mut app), 4);
+    check(&mut app, &run(&[&glyph, "1"]), &run(&[&glyph, "value"]));
 }
 
 /// A passive status message auto-dismisses once `MESSAGE_TIMEOUT` has

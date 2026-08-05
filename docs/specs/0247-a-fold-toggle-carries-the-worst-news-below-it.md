@@ -237,6 +237,14 @@ whether to look inside, and it is currently drawn unstyled
   delegates to the private `tier_color` for the two shared rungs, so
   there is one home for each color.
 
+  *Amended 2026-08-05.* The margin is now split so that only the
+  **glyph** is styled, the surrounding spaces staying raw. Coloring the
+  whole margin was harmless — ink on a space is invisible — but spec
+  0192's override cue also lands on this marker, and an underline on a
+  space is not invisible: it would draw a rule across the indentation,
+  saying how deep the node is rather than anything about the node. The
+  split is paid only on a margin that has something to say.
+
 - **S11.** The toggle shows `rolled[i]` whether the node is folded or
   not. Unfolded it is redundant with what is on screen only when the
   whole node fits the viewport — which is exactly when it costs

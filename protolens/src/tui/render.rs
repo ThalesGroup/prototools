@@ -31,7 +31,7 @@ pub(super) const ACTIVITY_GLYPH: &str = "●";
 
 /// Spec 0193 S1: the fold marker's glyphs, open (children shown) and
 /// closed (children collapsed into `{ ... }`).
-const FOLD_GLYPH_OPEN: char = '▾';
+pub(super) const FOLD_GLYPH_OPEN: char = '▾';
 const FOLD_GLYPH_CLOSED: char = '▸';
 
 /// Spec 0193 S1: how many columns the fold field reserves left of the
@@ -665,10 +665,8 @@ impl App {
     /// nothing left for a glyph to add and it does not have one to
     /// begin with (S11 and N1).
     ///
-    /// The whole margin is styled rather than the glyph alone. The rest
-    /// of it is spaces, on which a foreground color is invisible, and
-    /// splitting the margin in two would cost a span on every row to
-    /// say nothing.
+    /// Applied to the glyph alone by `margin_spans`, which is where the
+    /// reason it cannot be the whole margin is written down.
     fn fold_marker_color(&self, owner: Option<usize>) -> Option<Color> {
         let idx = owner?;
         self.fold_marker_of(owner)?;
@@ -762,11 +760,12 @@ impl App {
     /// coordinate system `self.window_styles` lives in.
     ///
     /// Spec 0192 S2: `emphasis` is the row's active-override weight. It
-    /// lands on the type name alone (see `make_span`) whenever the row
-    /// has one, and on the whole row when it has not — a row with the
-    /// annotations hidden (`a`), or a bare footer, has nowhere else to
-    /// carry the cue, and losing it there would say the node is not
-    /// overridden.
+    /// lands on the three places that say what an override *is* — the
+    /// row's key, its fold marker, and the type name in its `#@ Type =
+    /// N` annotation — and nowhere else. Which of the three are on
+    /// screen varies (a leaf has no marker, `a` hides the annotation),
+    /// and the key is always there, which is what keeps the cue from
+    /// disappearing.
     pub(super) fn row_spans(
         &self,
         row: DisplayRow,
@@ -790,24 +789,39 @@ impl App {
                 _ => (full_content, full_hints.to_vec()),
             };
         let mut segments = segment_line(content, &hints);
-        let (type_emphasis, row_emphasis) =
-            match segments.iter().any(|&(_, r)| r == Some(SyntaxRole::Type)) {
-                true => (emphasis, Modifier::empty()),
-                false => (Modifier::empty(), emphasis),
-            };
 
         // Spec 0193 S1: the margin *replaces* the line's indentation
         // rather than displacing it, so those bytes are cut from the
         // segments and re-emitted as one raw span in front.
         let (margin, body_start) = self.fold_margin_of(row, content);
         cut_segments(&mut segments, 0..body_start);
-        let mut spans = Vec::with_capacity(segments.len() + 4);
+        let mut spans = Vec::with_capacity(segments.len() + 6);
         if !margin.is_empty() {
-            spans.push(match self.fold_marker_color(node) {
-                Some(color) => Span::styled(margin, Style::default().fg(color)),
-                None => Span::raw(margin),
-            });
+            spans.extend(self.margin_spans(margin, node, emphasis));
         }
+
+        // Spec 0192 S2: the key is the *first* `Attribute` segment. The
+        // annotation's field number — the `1` of `#@ Inner = 1` — is an
+        // `Attribute` too, and is deliberately left alone: it repeats
+        // what the key already says, and a third weighted run on the
+        // same row reads as noise rather than as a cue.
+        let mut key_seen = false;
+        let segments: Vec<_> = segments
+            .into_iter()
+            .map(|(range, role)| {
+                let weighted = match role {
+                    Some(SyntaxRole::Type) => true,
+                    Some(SyntaxRole::Attribute) => !std::mem::replace(&mut key_seen, true),
+                    _ => false,
+                };
+                let weight = if weighted {
+                    emphasis
+                } else {
+                    Modifier::empty()
+                };
+                (range, role, weight)
+            })
+            .collect();
 
         // Spec 0194 S2: one insertion. The synthetic closing brace needs
         // no span of its own to carry `brace_match_style` — the caret
@@ -821,11 +835,45 @@ impl App {
             };
             insertions.push((insert_at, " ... }".to_string(), None));
         }
-        spans.extend(self.spans_with_insertions(content, segments, insertions, type_emphasis));
-        if !row_emphasis.is_empty() {
-            for span in &mut spans {
-                span.style = span.style.add_modifier(row_emphasis);
-            }
+        spans.extend(self.spans_with_insertions(content, segments, insertions));
+        spans
+    }
+
+    /// The fold margin: one span when it has nothing to say, three when
+    /// it does.
+    ///
+    /// The glyph alone is styled, not the whole margin. A foreground
+    /// color would show on the surrounding spaces either way (spec 0247
+    /// S10 settled for one span on that argument), but an underline
+    /// does not — it would draw a rule across the indentation, which
+    /// says nothing about the node and everything about how deep it is.
+    /// The two extra spans are paid only on a row that has a marker
+    /// *and* something to say about it.
+    fn margin_spans(
+        &self,
+        margin: String,
+        owner: Option<usize>,
+        emphasis: Modifier,
+    ) -> Vec<Span<'static>> {
+        let color = self.fold_marker_color(owner);
+        if color.is_none() && emphasis.is_empty() {
+            return vec![Span::raw(margin)];
+        }
+        let Some(at) = self.fold_marker_of(owner).and_then(|g| margin.find(g)) else {
+            return vec![Span::raw(margin)];
+        };
+        let end = at + margin[at..].chars().next().map_or(0, char::len_utf8);
+        let mut style = Style::default().add_modifier(emphasis);
+        if let Some(color) = color {
+            style = style.fg(color);
+        }
+        let mut spans = Vec::with_capacity(3);
+        if at > 0 {
+            spans.push(Span::raw(margin[..at].to_string()));
+        }
+        spans.push(Span::styled(margin[at..end].to_string(), style));
+        if end < margin.len() {
+            spans.push(Span::raw(margin[end..].to_string()));
         }
         spans
     }
@@ -838,30 +886,36 @@ impl App {
     /// `segments` need not cover all of `content`: `cut_segments` removes
     /// the bytes the fold margin replaces, and those an insertion stands
     /// in for (spec 0193). Anything cut is simply never emitted.
+    ///
+    /// Each segment carries its own override weight (spec 0192 S2)
+    /// rather than the whole row taking one: which segment is weighted
+    /// depends on where it sits, not only on its role — the row's key
+    /// and the annotation's field number are both `Attribute` — so the
+    /// caller is the only one that can decide, and a split segment
+    /// simply keeps the answer its parent had.
     pub(super) fn spans_with_insertions(
         &self,
         content: &str,
-        segments: Vec<(Range<usize>, Option<SyntaxRole>)>,
+        segments: Vec<(Range<usize>, Option<SyntaxRole>, Modifier)>,
         mut insertions: Vec<(usize, String, Option<Style>)>,
-        emphasis: Modifier,
     ) -> Vec<Span<'static>> {
         insertions.sort_by_key(|(pos, _, _)| *pos);
         let mut segments: std::collections::VecDeque<_> = segments.into();
         let mut result = Vec::new();
         for (ins_pos, ins_text, ins_style) in insertions {
-            while let Some((range, role)) = segments.pop_front() {
+            while let Some((range, role, weight)) = segments.pop_front() {
                 if range.end <= ins_pos {
-                    result.push(self.make_span(content[range].to_string(), role, emphasis));
+                    result.push(self.make_span(content[range].to_string(), role, weight));
                 } else if range.start < ins_pos {
                     result.push(self.make_span(
                         content[range.start..ins_pos].to_string(),
                         role,
-                        emphasis,
+                        weight,
                     ));
-                    segments.push_front((ins_pos..range.end, role));
+                    segments.push_front((ins_pos..range.end, role, weight));
                     break;
                 } else {
-                    segments.push_front((range, role));
+                    segments.push_front((range, role, weight));
                     break;
                 }
             }
@@ -870,8 +924,8 @@ impl App {
                 None => Span::raw(ins_text),
             });
         }
-        for (range, role) in segments {
-            result.push(self.make_span(content[range].to_string(), role, emphasis));
+        for (range, role, weight) in segments {
+            result.push(self.make_span(content[range].to_string(), role, weight));
         }
         result
     }
@@ -934,10 +988,8 @@ impl App {
         }
     }
 
-    /// `emphasis` (spec 0192 S2) rides only on a `Type` segment, which
-    /// on a rendered row is the type name in its `#@ Type = N`
-    /// annotation — the one part of the row an override actually
-    /// changes.
+    /// One segment's span: its role's color, plus whatever weight the
+    /// caller decided this segment carries (spec 0192 S2).
     pub(super) fn make_span(
         &self,
         text: String,
@@ -945,12 +997,13 @@ impl App {
         emphasis: Modifier,
     ) -> Span<'static> {
         match role {
-            Some(SyntaxRole::Type) => Span::styled(
+            Some(role) => Span::styled(
                 text,
-                theme::style_for(SyntaxRole::Type, self.theme).add_modifier(emphasis),
+                theme::style_for(role, self.theme).add_modifier(emphasis),
             ),
-            Some(role) => Span::styled(text, theme::style_for(role, self.theme)),
-            None => Span::raw(text),
+            // `Style::default()` is what `Span::raw` sets, so an
+            // unweighted roleless segment is unchanged.
+            None => Span::styled(text, Style::default().add_modifier(emphasis)),
         }
     }
 
