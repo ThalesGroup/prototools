@@ -555,7 +555,7 @@ exactly those two classes, plus a landmark and plain:
 | tier | color | wire row | annotation |
 |---|---|---|---|
 | plain | the region's borrowed hue | ordinary bytes | `varint`, `bytes` |
-| landmark | accent | a packed record's tag and length | `pack_size: N` |
+| landmark | accent | a packed record's length prefix | `pack_size: N` |
 | non-canonical | yellow | the redundant bytes | `tag_ohb: 3` |
 | invalid | red | the offending bytes | `TAG_OOR` |
 
@@ -583,6 +583,26 @@ different shade of text on a screen already full of colored text; a band
 swap at full strength does not. Nothing is lost by displacing the region
 hue, because the accused byte's neighbours still carry it and the
 annotation above already names the field.
+
+**Amended 2026-08-06: the landmark is the exception, on both counts.**
+Everything above is about an *anomaly*, and `pack_size` is not one — it
+says where a packed record begins, which is a reading aid. So it takes
+neither the band nor the tag:
+
+- The length prefix wears `style_for(AnnotationLandmark)` — literally
+  the style the `#@ pack_size` token wears on the row above, violet in
+  the **foreground**, over its region's ordinary background. "One
+  classifier, two rows" becomes one `Style`, two rows.
+- The wire type and the field number keep the hues they wear on every
+  other row. Both are the document's own facts, already accounted for by
+  the annotation above; only the length is *about* the packing.
+
+The band was the original reading and it overstated the case twice over:
+it spent the row's loudest signal — reserved for "these bytes are
+wrong" — on structure, and it spread that signal across a wire type that
+had nothing to do with the record. This is the same correction spec 0231
+made on the document row, where the landmark goes through `doc_leveled`
+so that loudness keeps meaning one thing.
 
 The first tag byte is drawn in **two halves** — `t|nn`, per the
 punctuation section above. They are colored separately because they fail
@@ -1147,8 +1167,9 @@ is split wrongly.
     is `@constant`, which is now the number color. A packed enum's
     `Color([1, 2])` is still one number-colored token.
 33. `pack_size_and_its_wire_bytes_share_the_accent` — on the first
-    element line of a packed record: the wire type and the length
-    prefix wear the accent, and the field number does not.
+    element line of a packed record: the length prefix wears the
+    annotation's own landmark style, nothing else does, and no byte on
+    the row wears the landmark band (2026-08-06 amendment).
 34. `enum_unknown_is_yellow_not_red` — ALL CAPS, non-canonical tier.
     The capitalization rule's counterexample in the direction
     `pack_size` does not cover.

@@ -676,7 +676,7 @@ pub(super) fn wire_spans(
         palette,
         region: Region::Unclaimed,
         last_block: None,
-        plain: None,
+        packed_len: false,
         spans: Vec::new(),
         #[cfg(test)]
         flags: Vec::new(),
@@ -834,25 +834,29 @@ fn draw_stray_group_end(painter: &mut Painter) -> Option<usize> {
     Some(painter.limit)
 }
 
-/// S4's element-0 row: the record's wire type and length wearing the
-/// landmark accent — the same accent `pack_size` wears in the annotation
-/// above, so the record boundary appears at the same place in both rows.
+/// S4's element-0 row: the record's *length* wearing the landmark
+/// accent — the same accent `pack_size` wears in the annotation above,
+/// so the record boundary appears at the same place in both rows.
 ///
-/// Not the field number, which `Painter::plain_in` holds back: it is the
-/// document's own field number and belongs in the field-name hue here as
-/// on every other row.
+/// The length prefix alone, and only its foreground. `pack_size` is not
+/// a defect: it says where a packed record begins, which is a reading
+/// aid, so it neither takes a band (the row's way of saying a byte is
+/// wrong) nor spreads to the tag. The wire type is the one the document
+/// row's own annotation already accounts for and reads as it does on
+/// every other row, and the field number was never the packing's to
+/// color.
 fn draw_packed_head(painter: &mut Painter, varint: bool, close: bool) -> usize {
-    painter.plain = painter.accuse("pack_size");
+    painter.accuse("pack_size");
     let (mut at, wtype) = draw_tag(painter, false);
     if wtype != Some(WT_LEN) {
-        painter.plain = None;
         return at;
     }
     painter.punct(":");
     painter.region = Region::Len;
+    painter.packed_len = true;
     let (_, next) = draw_varint(painter, at, "len_ohb", "INVALID_LEN");
     at = next;
-    painter.plain = None;
+    painter.packed_len = false;
     painter.punct("[");
     painter.region = Region::Payload;
     let end = draw_element(painter, at, varint);
@@ -1094,11 +1098,9 @@ struct Painter<'a> {
     /// halves — ends on its field-number half, which is the half a
     /// multi-byte tag's remaining bytes continue.
     last_block: Option<Style>,
-    /// The tier an unremarkable byte takes — `None` everywhere except
-    /// inside a packed record's wire type and length prefix,
-    /// which are a landmark rather than an anomaly. See `plain_in`,
-    /// which is what excludes the field number from it.
-    plain: Option<Tier>,
+    /// Set while the pen is inside a packed record's length prefix, the
+    /// bytes that say where the record ends. See `style_in`.
+    packed_len: bool,
     spans: Vec<Span<'static>>,
     #[cfg(test)]
     flags: Vec<&'static str>,
@@ -1125,6 +1127,14 @@ impl Painter<'_> {
     /// cannot claim a severity the other has stopped showing. Bytes no
     /// framing claimed keep the same subdued text, since a band would
     /// be a claim about them.
+    ///
+    /// A packed record's length prefix is the one exception to "the
+    /// foreground is the hex and the background says the rest". It is
+    /// not an anomaly — it marks where a record begins — so it takes
+    /// the annotation's own landmark violet in the *foreground* and
+    /// leaves its region's band alone. A band there would say the bytes
+    /// are wrong, which is the one thing the row's loudest signal is
+    /// reserved for.
     fn style(&self, tier: Option<Tier>) -> Style {
         self.style_in(self.region, tier)
     }
@@ -1135,6 +1145,7 @@ impl Painter<'_> {
         };
         match tier {
             Some(tier) => theme::tier_band(tier, self.theme),
+            None if self.packed_len => theme::style_for(SyntaxRole::AnnotationLandmark, self.theme),
             None => match region {
                 Region::Tag => palette.tag,
                 Region::Type => palette.ty,
@@ -1142,23 +1153,6 @@ impl Painter<'_> {
                 Region::Payload => palette.payload,
                 Region::Unclaimed => subdued(),
             },
-        }
-    }
-
-    /// The tier an otherwise-unremarkable byte takes in `region`.
-    ///
-    /// [`Painter::plain`] everywhere but `Region::Tag`, which a packed
-    /// record does not own. The field number there is the document's
-    /// own — the same number the annotation prints after its `=`, and
-    /// the same one the field name at the head of the row stands for —
-    /// so it wears the field-name hue on every row alike, packed or
-    /// not. Only what is *about* the packing takes the landmark accent:
-    /// the wire type that says LEN and the length prefix that
-    /// says how long the record is.
-    fn plain_in(&self, region: Region) -> Option<Tier> {
-        match region {
-            Region::Tag => None,
-            _ => self.plain,
         }
     }
 
@@ -1188,7 +1182,7 @@ impl Painter<'_> {
             self.dropped += 1;
             return;
         }
-        let style = self.style(tier.or(self.plain_in(self.region)));
+        let style = self.style(tier);
         self.separate(style);
         self.spans
             .push(Span::styled(format!("{:02x}", self.rec[i]), style));
@@ -1233,8 +1227,8 @@ impl Painter<'_> {
             return;
         }
         let byte = self.rec[i];
-        let number_style = self.style_in(Region::Tag, number.or(self.plain_in(Region::Tag)));
-        let wtype_style = self.style_in(Region::Type, wtype.or(self.plain_in(Region::Type)));
+        let number_style = self.style_in(Region::Tag, number);
+        let wtype_style = self.style_in(Region::Type, wtype);
         self.separate(wtype_style);
         self.spans
             .push(Span::styled(format!("{}", byte & 0x07), wtype_style));
@@ -1623,7 +1617,7 @@ mod tests {
     }
 
     #[test]
-    fn a_packed_records_tag_and_length_wear_the_landmark() {
+    fn a_packed_records_length_wears_the_landmark_in_the_foreground() {
         // field 1, LEN, two varint elements: 01 02.
         let blob = [0x0A, 0x02, 0x01, 0x02];
         let head = draw_of(
@@ -1641,17 +1635,27 @@ mod tests {
         // the same keyword the annotation above it carries, and
         // `tier_of` is what turns that into a landmark.
         assert_eq!(head.flags, ["pack_size"]);
-        let accent = tier_hue(Tier::Landmark);
+        let accent = theme::style_for(SyntaxRole::AnnotationLandmark, ThemeKind::Dark);
         let landmarked: Vec<&str> = head
             .spans
             .iter()
-            .filter(|s| s.style.bg == Some(accent))
+            .filter(|s| s.style == accent)
             .map(|s| s.content.as_ref())
             .collect();
-        // The wire type and the length prefix, and not the field
-        // number: `08` is the document's own field number and wears the
-        // field-name hue on a packed row as on any other.
-        assert_eq!(landmarked, ["2", "02"]);
+        // The length prefix alone, and as text: `pack_size` is not a
+        // defect, so it takes no band. The tag keeps the hues it wears
+        // on any other row — `08` is the document's own field number,
+        // and the wire type is the document's own wire type.
+        assert_eq!(landmarked, ["02"]);
+        assert_eq!(head.spans[0].style.bg, Some(TYPE_HUE), "the wire type");
+        assert_eq!(head.spans[2].style.bg, Some(TAG_HUE), "the field number");
+        assert!(
+            !head
+                .spans
+                .iter()
+                .any(|s| s.style.bg == Some(tier_hue(Tier::Landmark))),
+            "a landmark never takes a band",
+        );
         // The element bytes are not part of the landmark.
         let last = draw_of(
             &blob,

@@ -485,19 +485,16 @@ fn toggling_wire_mode_invalidates_no_cache() {
 ///
 /// This test owns the two ends of that chain, which are about *this
 /// document*: that `pack_size` is captured as `AnnotationLandmark` at
-/// all, and that the band the wire row paints with `Tier::Landmark`
-/// covers the wire type and the length prefix and nothing else. The
-/// middle link — that the role and the tier resolve to one hue, in all
-/// four palettes — belongs to `theme`, where both tables are in scope:
-/// `theme::tests::a_tier_looks_the_same_named_as_it_does_captured`.
+/// all, and that the wire row wears that role's own style on the
+/// record's length prefix and nowhere else.
 ///
-/// Asserting the hue here too was worse than redundant. It compared
-/// `style_for`'s output against `tier_band`'s directly, which stopped
-/// being true when the landmark started going through `doc_leveled`
-/// (a landmark is structure, not an anomaly, so it does not shout) —
-/// and it went unnoticed because the RGB palette was not reached: a
-/// leaked `COLORTERM` was pushing the suite onto the ANSI-16 fallback,
-/// where the leveling has no room to happen and the two agree.
+/// One mark now means one `Style`. The two rows used to differ — text
+/// on the annotation, a band on the wire row — and that difference was
+/// the record's packing borrowing the row's loudest signal, which is
+/// reserved for bytes that are *wrong*. `pack_size` says where a record
+/// begins, so both rows say it the same quiet way, and this test can
+/// compare the styles outright instead of routing around the fact that
+/// only one of them went through `doc_leveled`.
 #[test]
 fn pack_size_and_its_wire_bytes_share_the_accent() {
     use crate::annotation::Tier;
@@ -520,12 +517,9 @@ fn pack_size_and_its_wire_bytes_share_the_accent() {
         .collect();
     assert_eq!(roles, [SyntaxRole::AnnotationLandmark]);
 
-    // The annotation wears the tier as text, the wire row wears it as a
-    // band — the one thing about them that differs, and why the band is
-    // the `bg` here.
-    let accent = theme::tier_band(Tier::Landmark, app.theme)
-        .bg
-        .expect("a tier is a band");
+    // The very style the annotation above wears — not a hue derived a
+    // second way.
+    let accent = theme::style_for(SyntaxRole::AnnotationLandmark, app.theme);
 
     let mut memo = PackedCursor::default();
     let pos = app.line_pos(1).expect("line 1 is inside the document");
@@ -535,13 +529,18 @@ fn pack_size_and_its_wire_bytes_share_the_accent() {
         .expect("it claims bytes");
     let accented: Vec<&str> = spans
         .iter()
-        .filter(|span| span.style.bg == Some(accent))
+        .filter(|span| span.style == accent)
         .map(|span| span.content.as_ref())
         .collect();
-    // The wire type and the length prefix — what the record's packing
-    // is *about*. The field number is not: it is the document's own,
-    // and keeps the field-name hue.
-    assert_eq!(accented, ["2", "03"], "row was {}", hex_of(&spans));
+    // The length prefix, and only it. Neither the field number nor the
+    // wire type: both are the document's own and read the same on a
+    // packed row as on any other.
+    assert_eq!(accented, ["03"], "row was {}", hex_of(&spans));
+    let band = theme::tier_band(Tier::Landmark, app.theme).bg;
+    assert!(
+        !spans.iter().any(|span| span.style.bg == band),
+        "the record's start is not an anomaly, so it takes no band",
+    );
 }
 
 /// `test.Row { string name = 1; int32 num = 2; }` holding
