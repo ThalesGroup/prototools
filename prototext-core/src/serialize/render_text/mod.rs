@@ -1099,6 +1099,34 @@ mod tests {
         assert!(text.starts_with("1: \""), "got: {text}");
     }
 
+    #[test]
+    fn probe_sink_rejects_a_group_that_never_closes() {
+        // A group carries no length prefix, so an unterminated one is found
+        // only by parsing to the end of the buffer — at which point the
+        // probe's other two tests are both satisfied: nothing called
+        // `malformed`, and the group consumed every remaining byte so
+        // `next_pos == data.len()`. Counting the missing `END_GROUP` is the
+        // only thing standing between this payload and a nested render.
+        //
+        // The payload is the real string that exposed this: an unknown
+        // `google.api.method_signature` on a `MethodOptions`. Its bytes
+        // parse as fixed64 `d_break,`, fixed32 `pdat`, fixed32 `_mas`, and
+        // then a trailing `k` — 0x6b, which is field 13, START_GROUP.
+        let payload = b"ad_break,update_mask";
+        let mut buf = vec![0x0A, payload.len() as u8];
+        buf.extend_from_slice(payload);
+        let out = decode_and_render(
+            &buf,
+            None,
+            DecodeRenderOpts {
+                indent_size: 2,
+                ..Default::default()
+            },
+        );
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text, "1: \"ad_break,update_mask\"\n");
+    }
+
     // ── Bounds arithmetic and depth caps (spec 0171) ────────────────────────
 
     /// Build a one-file `ParsedSchema` from the given message descriptors,

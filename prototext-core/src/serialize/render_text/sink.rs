@@ -887,7 +887,8 @@ impl Sink for TextSink {
 /// found by parsing through them), and any malformities found inside a
 /// nested group roll up into this same counter automatically, since the
 /// same `&mut ProbeSink` is threaded through every recursion level
-/// (spec 0110 Open Issue #1).
+/// (spec 0110 Open Issue #1) — as does a group that never reached its
+/// `END_GROUP` tag, which `end_nested` counts.
 ///
 /// Never mutates any shared render-mode thread-local state (`tracks_level`
 /// returns `false`): it is a read-only helper that may be invoked from the
@@ -933,8 +934,19 @@ impl Sink for ProbeSink {
         &mut self,
         _mark: (),
         _raw_range: Range<usize>,
-        _close_facts: Option<GroupCloseFacts>,
+        close_facts: Option<GroupCloseFacts>,
     ) {
+        // `treat_len_as_opaque` makes `render_len_field` return before it
+        // ever opens a nested message, so the only nesting that reaches
+        // here is a group — and for a group, `None` means the buffer ran
+        // out before the `END_GROUP` tag. That is a structural defect as
+        // much as a bad varint is, and counting it is what stops a plain
+        // string whose last byte happens to be a `START_GROUP` tag from
+        // passing as a message: the group swallows the remaining bytes, so
+        // `next_pos == data.len()` holds too and nothing else objects.
+        if close_facts.is_none() {
+            self.malformity_count += 1;
+        }
     }
 
     fn virtual_scalar(

@@ -891,6 +891,24 @@ touched (§ Files changed) and the module retirement involved (§5).
    `decoder::parse_message`'s `WT_START_GROUP` arm has today. Test coverage
    confirming the resulting counts match expectations:
    `probe_sink_rolls_up_nested_group_malformity` (`render_text/mod.rs`).
+
+   **Amended 2026-08-06.** The rollup covered malformities found *inside*
+   a group but not the group itself failing to close: `ProbeSink::
+   end_nested` was an empty body, so a missing `END_GROUP` cost nothing.
+   That is the one defect the probe's other two tests cannot catch, since
+   an unterminated group consumes the rest of the buffer and therefore
+   satisfies `next_pos == data.len()` as well. The cost was real — a
+   plain string whose last byte happens to be a `START_GROUP` tag
+   rendered as a nested message. `google.api.method_signature`'s value
+   `"ad_break,update_mask"` is such a string: it parses as fixed64
+   `d_break,`, fixed32 `pdat`, fixed32 `_mas`, and a trailing `k` = 0x6b,
+   which is field 13, `START_GROUP`. `end_nested` now counts
+   `close_facts.is_none()`, which under `ProbeSink` is unambiguous —
+   `treat_len_as_opaque` returns before any nested *message* is opened,
+   so the only nesting that reaches it is a group. A *mismatched*
+   `END_GROUP` is deliberately still not counted: it closes, and the
+   render annotates it. Test:
+   `probe_sink_rejects_a_group_that_never_closes` (`render_text/mod.rs`).
 2. ~~**Exact `Sink` trait shape — event granularity only.**~~ **Resolved, then
    grew by two during implementation**: §1 originally settled the trait at 6
    methods — `scalar_field`, `begin_nested`, `end_nested`, `malformed`, plus
