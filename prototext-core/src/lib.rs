@@ -13,7 +13,8 @@ pub mod serialize;
 pub use prost_reflect::MessageDescriptor;
 pub use schema::{decode_pool, schema_from_pool, ParsedSchema, SchemaError};
 pub use serialize::render_text::{
-    build_arena, clear_any_loader, is_prototext_text, set_any_loader, AnyLoader, Arena,
+    build_arena, clear_any_loader, is_prototext_text, set_any_loader, set_ext_loader, AnyLoader,
+    Arena, ExtLoader, ExtLoaderGuard,
 };
 
 // ── Public API types ──────────────────────────────────────────────────────────

@@ -13,7 +13,7 @@ use serde::Serialize;
 use prototext_core::serialize::render_text::EXTRA_HEADER;
 use prototext_core::{
     clear_any_loader, decode_pool, is_prototext_text, render_as_bytes, render_as_text,
-    set_any_loader, AnyLoader, CodecError, RenderOpts,
+    set_any_loader, set_ext_loader, AnyLoader, CodecError, ExtLoader, ExtLoaderGuard, RenderOpts,
 };
 use prototext_graph::score::{
     load::{load_graph, LoadedGraph},
@@ -632,16 +632,21 @@ fn resolve_root_desc(
     })
 }
 
-// ── Any JIT loader ────────────────────────────────────────────────────────────
+// ── JIT loaders ───────────────────────────────────────────────────────────────
 
-/// Install a JIT loader for `google.protobuf.Any` type resolution (spec 0099).
+/// Install the two render-time JIT loaders: one for `google.protobuf.Any` type
+/// resolution (spec 0099), one for extension resolution (spec 0248).
 ///
-/// On the lazy-pool path, `lazy.get_message(fqdn)` loads the FDP on demand.
-/// On the eager-pool path, the type is either already in the pool or absent.
-/// In both cases the loader then returns the descriptor from the shared pool.
+/// On the lazy-pool path, `lazy.get_message`/`lazy.get_extension` loads the FDP
+/// on demand. On the eager-pool path, the type is either already in the pool or
+/// absent. In both cases the loader then returns the descriptor from the shared
+/// pool.
 ///
-/// The caller must call `clear_any_loader()` after rendering completes.
-fn install_any_loader(desc_ctx: &mut DescriptorContext) {
+/// The caller must call `clear_any_loader()` after rendering completes, and must
+/// hold the returned guard for at least that long — it clears the extension
+/// loader on drop.
+#[must_use]
+fn install_loaders(desc_ctx: &mut DescriptorContext) -> ExtLoaderGuard {
     // SAFETY: `desc_ctx` outlives every rendering call that uses this loader.
     // The loader is cleared by `clear_any_loader()` before the caller that
     // holds `desc_ctx` returns, so the raw pointer is never dangling.
@@ -686,6 +691,21 @@ fn install_any_loader(desc_ctx: &mut DescriptorContext) {
         ctx.pool().get_message_by_name(key).map(std::sync::Arc::new)
     });
     set_any_loader(loader);
+
+    // Spec 0248. The extendee resolves from the root's closure; the file that
+    // *declares* the extension is in nobody's closure, so on the lazy path it
+    // has to be pulled in here. The post-load lookup goes through `ctx.pool()`
+    // for the `Arc::make_mut` reason spelled out above.
+    let ext_loader: ExtLoader = Box::new(move |extendee: &str, number: u32| {
+        let ctx = unsafe { &mut *ctx_ptr };
+        if let Some(lazy) = ctx.lazy.as_mut() {
+            let _ = lazy.get_extension(extendee, number);
+        }
+        ctx.pool()
+            .get_message_by_name(extendee)
+            .and_then(|ed| ed.get_extension(number))
+    });
+    set_ext_loader(ext_loader)
 }
 
 // ── decode handler ────────────────────────────────────────────────────────────
@@ -837,7 +857,7 @@ fn run_decode(
                     }
                     let infer_desc = resolve_root_desc(desc_ctx, lookup)?;
                     EXTRA_HEADER.with(|h| *h.borrow_mut() = inferred_header(&inferred));
-                    install_any_loader(desc_ctx);
+                    let _ext_guard = install_loaders(desc_ctx);
                     let out = process(&data, true, Some(&infer_desc), decode_opts.clone());
                     clear_any_loader();
                     EXTRA_HEADER.with(|h| h.borrow_mut().clear());
@@ -847,7 +867,7 @@ fn run_decode(
             }
         }
 
-        install_any_loader(desc_ctx);
+        let _ext_guard = install_loaders(desc_ctx);
         let out = process(&data, true, root_desc.as_ref(), decode_opts.clone());
         clear_any_loader();
         write_output(&out?, output.as_deref())?;
@@ -879,7 +899,7 @@ fn run_decode(
                     }
                     let infer_desc = resolve_root_desc(desc_ctx, lookup)?;
                     EXTRA_HEADER.with(|h| *h.borrow_mut() = inferred_header(&inferred));
-                    install_any_loader(desc_ctx);
+                    let _ext_guard = install_loaders(desc_ctx);
                     let out = process(&data, true, Some(&infer_desc), decode_opts.clone());
                     clear_any_loader();
                     EXTRA_HEADER.with(|h| h.borrow_mut().clear());
@@ -889,7 +909,7 @@ fn run_decode(
             }
         }
 
-        install_any_loader(desc_ctx);
+        let _ext_guard = install_loaders(desc_ctx);
         let out = process(&data, true, root_desc.as_ref(), decode_opts.clone());
         clear_any_loader();
         write_output(&out?, output.as_deref())?;
@@ -1296,7 +1316,7 @@ fn run_batch_infer(
             }
         };
         EXTRA_HEADER.with(|h| *h.borrow_mut() = inferred_header(inferred));
-        install_any_loader(desc_ctx);
+        let _ext_guard = install_loaders(desc_ctx);
         let raw_out = process(data, true, Some(&root_desc), opts.clone());
         clear_any_loader();
         EXTRA_HEADER.with(|h| h.borrow_mut().clear());

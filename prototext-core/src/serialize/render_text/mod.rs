@@ -131,6 +131,14 @@ impl FieldOrExt {
 /// Boxed JIT loader callback for `Any`/`MessageSet` type resolution (spec 0099).
 pub type AnyLoader = Box<dyn FnMut(&str) -> Option<Arc<MessageDescriptor>>>;
 
+/// Boxed JIT loader callback for extension resolution (spec 0248).
+///
+/// Called with the extendee's fully-qualified name and the field number seen
+/// on the wire, only after both the schema's own fields and its already-known
+/// extensions have missed. The file declaring an extension is in nobody's
+/// dependency closure, so on a lazily loaded pool it is routinely absent.
+pub type ExtLoader = Box<dyn FnMut(&str, u32) -> Option<ExtensionDescriptor>>;
+
 // ── Render-mode state ─────────────────────────────────────────────────────────
 //
 // `CBL_START` is set to `out.len()` by `write_close_brace` before writing a
@@ -159,6 +167,11 @@ thread_local! {
     // of the rendering call that set it.  Always cleared before the setting
     // stack frame returns.
     pub(super) static ANY_LOADER: RefCell<Option<AnyLoader>> = const { RefCell::new(None) };
+    // JIT loader for extension resolution (spec 0248).
+    // Installed by `set_ext_loader`, whose guard clears it on drop — a render
+    // can return early on a `CodecError`, and a stale loader would hand the
+    // next render on this thread a dangling pointer.
+    pub(super) static EXT_LOADER: RefCell<Option<ExtLoader>> = const { RefCell::new(None) };
     // Spec 0171: actual `render_message` recursion depth, capped at
     // `MAX_WIRE_DEPTH`. Distinct from `LEVEL`, which is the *indentation*
     // counter and is deliberately not maintained by every sink.
@@ -178,6 +191,26 @@ pub fn set_any_loader(loader: AnyLoader) {
 /// Clear the JIT loader installed by `set_any_loader`.
 pub fn clear_any_loader() {
     ANY_LOADER.with(|l| *l.borrow_mut() = None);
+}
+
+/// Clears `EXT_LOADER` when dropped.
+pub struct ExtLoaderGuard(());
+
+impl Drop for ExtLoaderGuard {
+    fn drop(&mut self) {
+        EXT_LOADER.with(|l| *l.borrow_mut() = None);
+    }
+}
+
+/// Install a JIT loader for extension resolution (spec 0248), for as long as
+/// the returned guard lives.
+///
+/// # Safety
+/// The caller guarantees that the closure (and any references it captures)
+/// remains valid until the guard is dropped.
+pub fn set_ext_loader(loader: ExtLoader) -> ExtLoaderGuard {
+    EXT_LOADER.with(|l| *l.borrow_mut() = Some(loader));
+    ExtLoaderGuard(())
 }
 
 /// RAII guard for `LEVEL`: increments on construction, decrements on drop.
@@ -532,8 +565,21 @@ fn render_message<'a, S: Sink>(
         let field_schema: Option<FieldOrExt> = schema.and_then(|s| {
             if let Some(f) = s.get_field(field_number as u32) {
                 Some(FieldOrExt::Field(f))
+            } else if let Some(e) = s.get_extension(field_number as u32) {
+                Some(FieldOrExt::Ext(e))
             } else {
-                s.get_extension(field_number as u32).map(FieldOrExt::Ext)
+                // Spec 0248: the file declaring an extension is in nobody's
+                // dependency closure, so on a lazily loaded pool `s` routinely
+                // does not have it yet. Being inside `schema.and_then` is what
+                // keeps the schema-less walkers (`ProbeSink`, `ArenaSink`, raw
+                // mode) from ever reaching this.
+                EXT_LOADER
+                    .with(|l| {
+                        l.borrow_mut()
+                            .as_mut()
+                            .and_then(|load| load(s.full_name(), field_number as u32))
+                    })
+                    .map(FieldOrExt::Ext)
             }
         });
 

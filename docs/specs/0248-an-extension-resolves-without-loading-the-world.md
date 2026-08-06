@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0248 — an extension resolves without loading the world
 
-Status: draft
+Status: implemented
+Implemented in: 2026-08-06
 App: prototext-core, prototext, protolens
 Refs: docs/specs/0100-message-set-expansion.md (`ext_to_file`, and the
         `"extendee/number"` loader key it introduced),
@@ -268,4 +269,43 @@ does, to serve a case that is usually empty.
 
 ## Measured outcome
 
-Filled in at implementation.
+G1 holds on the original reproduction: `protolens --descriptor-set
+googleapis.desc googleapis.desc export /91/16/5` is now byte-identical
+with and without `index.rkyv`, and renders
+
+```
+[google.api.method_signature]: "ad_break,update_mask"  #@ repeated string = 1051
+```
+
+The `install_ext_loader` borrow discussed in S6 is enforced rather than
+argued: `DescriptorContext::install_ext_loader` returns an
+`ExtLoaderScope<'_>` that holds the `&mut DescriptorContext` for as long
+as the loader is installed, so the compiler rules out a second path to
+the context while a render can call through the raw pointer. Both
+protolens sites compiled without the field-disjointness trouble S6
+anticipated. `prototext`'s `install_any_loader` became
+`install_loaders`, returning the `ExtLoaderGuard` its five call sites now
+bind.
+
+**Test-plan step 4 — no memo.** On `googleapis.desc` decoded as a
+`FileDescriptorSet`, the render resolves **120 238** extension
+occurrences through the loader (70 284 `field_behavior`, 12 914 `http`,
+12 610 `resource_reference`, 11 365 `method_signature`, 12 more names).
+Best of seven full decodes, against the same binary with S2's arm
+stubbed out:
+
+| | best of 7 | spread |
+|---|---|---|
+| with the loader | 828 ms | 828–1154 ms |
+| arm stubbed out | 785 ms | 785–1092 ms |
+
+**+43 ms, or ~0.36 µs per occurrence** — under the run-to-run spread of
+either column. S4's re-entry stays as written.
+
+**Test-plan step 5 — N3 holds.** `the_arena_covers_a_real_corpus` over
+the same blob: 2 829 367 rendered nodes inside 4 737 284 arena slots,
+reassembling all 5 278 324 lines byte for byte. The slot count is
+unchanged from spec 0216's, which is the point — a schema-driven render
+now produces *different* nodes in places (a payload the byte walk
+descended into renders as a scalar `method_signature` string), and the
+arena still covers them.

@@ -12,6 +12,7 @@
 #[cfg(test)]
 use std::collections::HashMap;
 use std::fmt;
+use std::marker::PhantomData;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -23,7 +24,9 @@ use prototext_core::serialize::render_text::NO_FQDN;
 use prototext_core::serialize::render_text::{
     decode_and_render_indexed, DecodeRenderOpts, FqdnTable, NodeSpan, NO_PACKED_RECORD,
 };
-use prototext_core::{build_arena, decode_pool, render_as_bytes, Arena, RenderOpts};
+use prototext_core::{
+    build_arena, decode_pool, render_as_bytes, set_ext_loader, Arena, ExtLoaderGuard, RenderOpts,
+};
 use prototext_graph::score::load::{load_graph, LoadedGraph};
 use prototext_schema::LazyPool;
 
@@ -96,6 +99,17 @@ pub struct DescriptorContext {
     pub fallback: Option<EagerFallback>,
 }
 
+/// Keeps the extension loader (spec 0248) installed, and keeps the context it
+/// points at borrowed, until dropped.
+///
+/// The borrow is the point: the loader reaches the context through a raw
+/// pointer, and this is what makes the compiler rule out a second path to it
+/// while a render is running.
+pub(crate) struct ExtLoaderScope<'a> {
+    _guard: ExtLoaderGuard,
+    _ctx: PhantomData<&'a mut DescriptorContext>,
+}
+
 impl DescriptorContext {
     /// The live pool. On the lazy branch this is the `LazyPool`'s own pool,
     /// which starts empty and grows as types are asked for — so a caller
@@ -144,6 +158,33 @@ impl DescriptorContext {
     pub(crate) fn load_extension(&mut self, extendee: &str, number: u32) {
         if let Some(lazy) = self.lazy.as_mut() {
             let _ = lazy.get_extension(extendee, number);
+        }
+    }
+
+    /// Install the render-time extension loader (spec 0248) for as long as
+    /// the returned scope lives.
+    ///
+    /// The file declaring an extension is in nobody's dependency closure, so
+    /// on the lazy branch it is never loaded by resolving the extendee. Without
+    /// this the field renders as unknown — numeric key, no type.
+    pub(crate) fn install_ext_loader(&mut self) -> ExtLoaderScope<'_> {
+        let ctx_ptr: *mut DescriptorContext = self;
+        let guard = set_ext_loader(Box::new(move |extendee: &str, number: u32| {
+            // SAFETY: `ExtLoaderScope` holds the `&mut self` borrow for as
+            // long as the loader is installed, so nothing else can reach the
+            // context through a reference while a render is calling this.
+            let ctx = unsafe { &mut *ctx_ptr };
+            ctx.load_extension(extendee, number);
+            // The lookup must restart from the pool: `prost_reflect` adds
+            // files with `Arc::make_mut`, so a descriptor obtained before the
+            // load above is blind to what the load registered.
+            ctx.pool()
+                .get_message_by_name(extendee)
+                .and_then(|ed| ed.get_extension(number))
+        }));
+        ExtLoaderScope {
+            _guard: guard,
+            _ctx: PhantomData,
         }
     }
 
@@ -1688,6 +1729,9 @@ pub fn render_resolved(
     // Spec 0212 S4: the table is created here, at the document's own
     // birth, and handed to every later sub-render of it.
     let mut fqdns = FqdnTable::new();
+    // Spec 0248: `wrapper_desc` is already in hand, so the context is free to
+    // be lent to the loader for the duration of the render.
+    let _ext_scope = ctx.install_ext_loader();
     let rendered = decode_and_render_indexed(&blob, wrapper_desc.as_ref(), &mut fqdns, opts)
         .map_err(|e| DecodeError::Schema(e.to_string()))?;
 

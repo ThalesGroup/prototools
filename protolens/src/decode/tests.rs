@@ -1216,3 +1216,73 @@ fn an_extension_jit_loads_from_outside_the_root_closure() {
         "load_extension must have pulled ext.proto in"
     );
 }
+
+/// `Root { leaf { id: 5, [t.tag]: 42 } }` — field 100 is the
+/// extension `ext.proto` declares, and `ext.proto` is in nobody's
+/// dependency closure.
+const EXT_BLOB: &[u8] = &[0x0a, 0x05, 0x08, 0x05, 0xa0, 0x06, 0x2a];
+
+/// Spec 0248 test 1 (G1). Rendering — not MessageSet expansion, not an
+/// explicit override — is what has to reach `ext_to_file` here. Before
+/// the `EXT_LOADER` hook the field rendered as `100: 42`, because the
+/// schema lookup only ever asked the descriptor it already held.
+#[test]
+fn an_extension_resolves_through_the_lazy_pool() {
+    let lazy = Fixture::new("ext-render-lazy").with_index();
+    let eager = Fixture::new("ext-render-eager");
+
+    let mut lazy_ctx = lazy.load();
+    let mut eager_ctx = eager.load();
+    assert!(lazy_ctx.lazy.is_some(), "sidecar present: on-demand branch");
+    assert!(eager_ctx.lazy.is_none(), "no sidecar: eager branch");
+
+    let from_lazy = decode(
+        wrapped(EXT_BLOB),
+        &mut lazy_ctx,
+        RootType::Named("t.Root"),
+        2,
+    )
+    .unwrap();
+    let from_eager = decode(
+        wrapped(EXT_BLOB),
+        &mut eager_ctx,
+        RootType::Named("t.Root"),
+        2,
+    )
+    .unwrap();
+
+    assert!(
+        from_lazy
+            .document_lines()
+            .iter()
+            .any(|l| l.contains("[t.tag]: 42")),
+        "the extension must render by name: {:?}",
+        from_lazy.document_lines()
+    );
+    assert_eq!(
+        from_lazy.document_lines(),
+        from_eager.document_lines(),
+        "the branch is not observable in the rendered text"
+    );
+}
+
+/// Spec 0248 test 2 (G2). The hook is reached only by a field number
+/// that missed twice, so a blob carrying no extension must leave the
+/// declaring file exactly where it was. This is the assertion every
+/// preloading alternative fails.
+#[test]
+fn a_blob_without_an_extension_leaves_the_declaring_file_unloaded() {
+    let fixture = Fixture::new("ext-render-untouched").with_index();
+    let mut ctx = fixture.load();
+
+    decode(wrapped(ROOT_BLOB), &mut ctx, RootType::Named("t.Root"), 2).unwrap();
+
+    assert!(
+        ctx.pool()
+            .get_message_by_name("t.Leaf")
+            .expect("Leaf is in the closure")
+            .get_extension(100)
+            .is_none(),
+        "nothing on the wire asked for field 100, so ext.proto must still be unloaded"
+    );
+}

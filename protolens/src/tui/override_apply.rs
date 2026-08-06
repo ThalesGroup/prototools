@@ -1174,6 +1174,11 @@ impl App {
                     expand_message_set: false,
                     ..Default::default()
                 };
+                // Spec 0248: an extension on a spliced subtree resolves the
+                // same way it does in the document render. `self.ctx` is
+                // borrowed for the render; `self.fqdns` and
+                // `self.render_cache` are disjoint fields and stay reachable.
+                let _ext_scope = self.ctx.install_ext_loader();
                 // Spec 0212 S4: `self.fqdns` is the one table every span in
                 // this document indexes into, so a spliced subtree's ids
                 // mean the same thing as the arena's around it.
