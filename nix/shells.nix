@@ -97,6 +97,9 @@
       reuse
       gh
       protobuf
+      # Google's wire-format inspector — a second, independent opinion on
+      # what a blob's bytes say, for cross-checking prototext/protolens.
+      protoscope
       neovim
       mandoc
       zola
