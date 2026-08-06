@@ -345,6 +345,26 @@ comes first only because it makes every measurement in step 2 smaller.
   defect and this is its fix; without it every future `Ctrl-` binding
   has to be added defensively to stop a stray letter appearing.
 
+- **S18a, added 2026-08-06.** `Ctrl-V` inserts the OS clipboard's text
+  at the caret — the paste counterpart of `Ctrl-C`'s copy (spec 0129
+  G2), and the first way to get a long FQDN or path into this line
+  without retyping it. `Ctrl-V` rather than readline's `Ctrl-y`: what it
+  reads is the OS clipboard, not a kill ring, and `Ctrl-V` is what every
+  other single-line field on the user's screen answers to.
+
+  The line is one line, so a paste is **cut at the first line break**
+  and stripped of control characters. Cutting rather than joining: a
+  two-line clipboard concatenated into `foobar` is a plausible-looking
+  command nobody asked for, while a truncated one is visibly incomplete.
+
+  There is no OSC 52 fallback, unlike the copy path. Reading the
+  clipboard that way means writing a query and then parsing the
+  terminal's reply out of the input stream, racing every real keystroke,
+  and most terminals refuse the read half by default anyway. A failed
+  read reports through `self.message` and inserts nothing — the open
+  command line is covering that row, but nothing appearing is the
+  feedback the user actually reads.
+
 ### Step 6 — a line has two haystacks
 
 - **S19.** In the main pane, every candidate line offers **two**
@@ -356,8 +376,18 @@ comes first only because it makes every measurement in step 2 smaller.
      `positional_path` (`navigation.rs:976`).
 
   A line matches if either does. There is no pattern reserved to one or
-  the other: `4/2` is tried against both and matches `/1/4/23` on the
-  path, and `2` is tried against both too.
+  the other: every pattern is tried against both.
+
+  **Amended 2026-08-06.** The path haystack is matched **anchored** —
+  `^/a/b`, as an `egrep` user would write it — while the text haystack
+  stays unanchored. A path is read from the root down, so the part of it
+  a user knows is its head; an unanchored path match is almost always an
+  accident, since `/2` occurs somewhere inside most of a large
+  document's paths. `4/2` therefore no longer matches `/1/4/23`, and
+  `/1/4` does. The union rule of the paragraph above is unchanged: a
+  pattern is still offered to both haystacks with no shape test, but a
+  pattern that does not begin with `/` now matches no path, which is
+  what keeps an ordinary word search out of the second haystack.
 
 - **S20.** A path match's landing column is the row's **Home anchor** —
   its first non-blank, spec 0199 S1's `CaretAnchor::Home`. The path is
@@ -387,6 +417,12 @@ comes first only because it makes every measurement in step 2 smaller.
   steps through nearly every row. That is inherent to two haystacks and
   bites only patterns too short to be worth typing.
 
+  **Amended 2026-08-06.** S19's anchoring removes that cost: a short
+  pattern that does not begin with `/` matches no path at all, and one
+  that does begin with `/` selects a subtree rather than most of the
+  document. The tinting rule above stands on its own terms — a path
+  match still has nothing visible to mark — so it is unchanged.
+
 - **S23.** The override and manage panes list FQDNs, not nodes. They
   have one haystack; S19–S22 do not apply there.
 
@@ -403,6 +439,12 @@ predict: there is no rule to remember about which patterns mean what,
 and no pattern that becomes unsearchable as text. The shape test's own
 advantage — that short patterns stay sparse — is bought back where it
 actually shows, in the rendering (S22), rather than in the matching.
+
+Still rejected after S19's 2026-08-06 amendment, and by then for less:
+anchoring buys the sparseness in the matching after all, without a rule
+about which patterns mean what. A leading `/` is the only thing that
+sends a pattern to the path haystack, and that is a property of the
+pattern the user typed, not a classification of it.
 
 ### A2. Sweep on a worker thread
 

@@ -198,19 +198,19 @@ fn main_pane_search_matches_the_current_not_original_rendering() {
 #[test]
 fn smartcase_folds_only_an_all_lowercase_pattern() {
     let lower = SearchPattern::new("beta");
-    assert!(lower.is_match("beta: 1"));
-    assert!(lower.is_match("Beta: 1"));
-    assert!(lower.is_match("BETA: 1"));
+    assert!(lower.find_range("beta: 1").is_some());
+    assert!(lower.find_range("Beta: 1").is_some());
+    assert!(lower.find_range("BETA: 1").is_some());
 
     let mixed = SearchPattern::new("Beta");
-    assert!(mixed.is_match("Beta: 1"));
-    assert!(!mixed.is_match("beta: 1"));
-    assert!(!mixed.is_match("BETA: 1"));
+    assert!(mixed.find_range("Beta: 1").is_some());
+    assert!(mixed.find_range("beta: 1").is_none());
+    assert!(mixed.find_range("BETA: 1").is_none());
 
     let upper = SearchPattern::new("BETA");
-    assert!(upper.is_match("BETA: 1"));
-    assert!(!upper.is_match("beta: 1"));
-    assert!(!upper.is_match("Beta: 1"));
+    assert!(upper.find_range("BETA: 1").is_some());
+    assert!(upper.find_range("beta: 1").is_none());
+    assert!(upper.find_range("Beta: 1").is_none());
 }
 
 /// Spec 0195 S2: the case fold runs per `char` and streams, because a
@@ -220,7 +220,7 @@ fn smartcase_folds_only_an_all_lowercase_pattern() {
 #[test]
 fn the_case_fold_handles_a_multi_character_lowercase_mapping() {
     let dotted = SearchPattern::new("i\u{307}d");
-    assert!(dotted.is_match("\u{130}d: 7"));
+    assert!(dotted.find_range("\u{130}d: 7").is_some());
 }
 
 /// Spec 0195 Background 4 / test plan 8: nothing trims the pattern, so a
@@ -230,8 +230,8 @@ fn the_case_fold_handles_a_multi_character_lowercase_mapping() {
 #[test]
 fn a_leading_space_is_part_of_the_pattern() {
     let spaced = SearchPattern::new(" id");
-    assert!(spaced.is_match("  id: 7"));
-    assert!(!spaced.is_match("id: 7"));
+    assert!(spaced.find_range("  id: 7").is_some());
+    assert!(spaced.find_range("id: 7").is_none());
 }
 
 /// Spec 0195 G2 in the main pane: a lowercase pattern reaches a
@@ -306,10 +306,9 @@ fn caret_byte_offset(app: &App) -> usize {
 /// search has never matched one.
 ///
 /// Spec 0235 S19/0246 S9: a line's owning node's positional path is a
-/// second haystack, tried only when the text offered nothing and worth
-/// exactly one stop. Without it the oracle would disagree with the walk
-/// on every row whose path happens to contain the pattern — and `1` is a
-/// pattern most paths contain.
+/// second haystack, tried only when the text offered nothing, worth
+/// exactly one stop, and matched *anchored* — a pattern not starting
+/// with `/` never reaches it.
 fn every_match_in_text_order(app: &App, pattern: &str) -> Vec<(usize, usize)> {
     let lines = app.document_lines();
     let needle = SearchPattern::new(pattern);
@@ -331,7 +330,7 @@ fn every_match_in_text_order(app: &App, pattern: &str) -> Vec<(usize, usize)> {
             from = range.start + text[range.start..].chars().next().map_or(1, char::len_utf8);
         }
         out.dedup();
-        if out.len() == before && needle.is_match(&app.positional_path(pos.node)) {
+        if out.len() == before && needle.starts_with(&app.positional_path(pos.node)) {
             out.push((line, indent));
         }
     }
@@ -861,6 +860,36 @@ fn a_pattern_is_tried_against_the_path_and_the_text() {
     assert_eq!(app.cursor, id, "the path match comes first in the document");
     app.jump_to_match(SearchDir::Forward, "/2/1");
     assert_eq!(app.cursor, a);
+}
+
+/// Spec 0235 S19 as amended. The path haystack is matched *anchored*:
+/// `2/1` is a suffix of `/2/1`, and that no longer counts. Only a
+/// pattern that spells the path from the root reaches the node, so an
+/// ordinary word search never touches the second haystack at all.
+#[test]
+fn a_path_matches_only_from_its_start() {
+    let (mut app, _run, tail, _a, _b) = packed_run_with_tail_fixture();
+    let id = app.nth_child(tail, 0).expect("tail has one child");
+    assert_eq!(app.positional_path(id), "/2/1");
+
+    app.set_cursor(app.first_node);
+    app.jump_to_match(SearchDir::Forward, "2/1");
+    assert_ne!(app.cursor, id, "a suffix of the path is not a match");
+    assert!(app.message.contains("not found"));
+
+    // A prefix of the path is a match — it reaches the ancestor it
+    // spells first, then the node itself.
+    app.message.clear();
+    app.set_cursor(app.first_node);
+    app.jump_to_match(SearchDir::Forward, "/2");
+    assert_eq!(app.cursor, tail, "`/2` is the parent's whole path");
+    app.jump_to_match(SearchDir::Forward, "/2");
+    assert_eq!(app.cursor, id);
+    assert!(app.message.is_empty());
+
+    app.set_cursor(app.first_node);
+    app.jump_to_match(SearchDir::Forward, "/2/1");
+    assert_eq!(app.cursor, id);
 }
 
 /// Spec 0235 test-plan item 20 (S20). A path is not on screen, so a path
@@ -1415,16 +1444,16 @@ fn up_at_a_colon_prompt_is_still_inert() {
 fn the_prefilter_preserves_smartcase() {
     // The prefilter's own case, which is the overwhelming majority.
     let ascii = SearchPattern::new("beta");
-    assert!(ascii.is_match("BETA: 1"));
-    assert_eq!(ascii.find("x beta"), Some(2));
+    assert!(ascii.find_range("BETA: 1").is_some());
+    assert_eq!(ascii.find_range("x beta").map(|r| r.start), Some(2));
 
     // A non-ASCII needle skips it on the first guard.
     let accented = SearchPattern::new("é");
-    assert!(accented.is_match("café: 1"));
-    assert!(accented.is_match("CAFÉ: 1"));
+    assert!(accented.find_range("café: 1").is_some());
+    assert!(accented.find_range("CAFÉ: 1").is_some());
 
     // An ASCII needle against a non-ASCII haystack skips it on the
     // second, which is the guard a first-character test alone misses.
     let k = SearchPattern::new("k");
-    assert!(k.is_match("\u{212A}elvin: 1"));
+    assert!(k.find_range("\u{212A}elvin: 1").is_some());
 }

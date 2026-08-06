@@ -485,6 +485,48 @@ fn tab_completes_the_override_as_fqdn_argument() {
     );
 }
 
+/// `Ctrl-V` inserts the clipboard at the caret. The clipboard read
+/// itself is untestable here — a headless test environment has no
+/// provider — so this drives the insertion half, which is where the
+/// rules are: the command line is one line, so a paste stops at the
+/// first line break and carries no control characters.
+#[test]
+fn a_paste_inserts_one_line_at_the_caret() {
+    let (mut app, _, _) = type_as_fixture();
+    app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
+    for c in "override ".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+
+    app.insert_pasted("/1/2");
+    assert_eq!(app.command_buffer.as_deref(), Some("override /1/2"));
+    assert_eq!(app.command_cursor, "override /1/2".chars().count());
+
+    // The caret is where the insertion happens, not the end.
+    app.command_cursor = "override ".chars().count();
+    app.insert_pasted("--as x ");
+    assert_eq!(app.command_buffer.as_deref(), Some("override --as x /1/2"));
+    assert_eq!(app.command_cursor, "override --as x ".chars().count());
+
+    // A multi-line clipboard is cut at the break, not joined across it,
+    // and a trailing newline alone loses nothing.
+    app.command_buffer = Some(String::new());
+    app.command_cursor = 0;
+    app.insert_pasted("foo\nbar");
+    assert_eq!(app.command_buffer.as_deref(), Some("foo"));
+    app.command_buffer = Some(String::new());
+    app.command_cursor = 0;
+    app.insert_pasted("foo\n");
+    assert_eq!(app.command_buffer.as_deref(), Some("foo"));
+
+    // A clipboard with nothing insertable in it leaves the line alone.
+    app.command_buffer = Some("kept".to_string());
+    app.command_cursor = 4;
+    app.insert_pasted("\n\t\x07");
+    assert_eq!(app.command_buffer.as_deref(), Some("kept"));
+    assert_eq!(app.command_cursor, 4);
+}
+
 /// Spec 0236 S22: a token beginning with `-` completes against the
 /// command's own option list, the way a shell's completion does —
 /// checked before any value completer, since no value the command line

@@ -358,9 +358,13 @@ impl App {
                 }
                 drop(text);
                 self.write_positional_path(&mut sweep.path, pos.node);
+                // Spec 0235 S19 as amended: the path is matched
+                // *anchored*, as if the pattern were `^/a/b`. A path is
+                // read from the root down, so an unanchored match on one
+                // is nearly always an accident.
                 return sweep
                     .pattern
-                    .is_match(sweep.path.as_str())
+                    .starts_with(sweep.path.as_str())
                     .then_some(SweepHit {
                         at,
                         start: indent,

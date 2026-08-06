@@ -151,6 +151,12 @@ impl App {
                 // no-op.
                 KeyCode::Char('h') if ctrl => self.backspace(),
                 KeyCode::Char('k') if ctrl => self.kill_to_end_of_line(),
+                // The paste counterpart of `Ctrl-c`'s copy (spec 0129
+                // G2). `Ctrl-v` rather than readline's `Ctrl-y` because
+                // the clipboard it reads is the OS one, not a kill
+                // ring, and `Ctrl-v` is what every other single-line
+                // field on the user's screen answers to.
+                KeyCode::Char('v') if ctrl => self.paste_from_clipboard(),
                 _ => {}
             }
             return;
@@ -277,6 +283,43 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// `Ctrl-v`: insert the OS clipboard's text at the cursor.
+    ///
+    /// A failed read is reported through `self.message`, which the open
+    /// command line is currently covering — but nothing was inserted,
+    /// and that is the feedback the user actually reads. The message is
+    /// there for when the line closes.
+    fn paste_from_clipboard(&mut self) {
+        match clipboard_text() {
+            Ok(text) => self.insert_pasted(&text),
+            Err(e) => self.message = format!("clipboard unavailable: {e}"),
+        }
+    }
+
+    /// Insert `text` at the cursor as if it had been typed, minus what
+    /// cannot be.
+    ///
+    /// The command line is one line and holds no control characters, so
+    /// a paste is cut at the first line break and stripped of the rest.
+    /// Cutting rather than joining: a two-line clipboard concatenated
+    /// into `foobar` is a plausible-looking command nobody asked for,
+    /// while a truncated one is visibly incomplete.
+    pub(super) fn insert_pasted(&mut self, text: &str) {
+        let cut = text.find(['\n', '\r']).unwrap_or(text.len());
+        let cleaned: String = text[..cut].chars().filter(|c| !c.is_control()).collect();
+        if cleaned.is_empty() {
+            return;
+        }
+        let byte_idx = self.char_byte_index(self.command_cursor);
+        if let Some(buf) = self.command_buffer.as_mut() {
+            buf.insert_str(byte_idx, &cleaned);
+        }
+        self.command_cursor += cleaned.chars().count();
+        // Spec 0235 S7, same as the typed-character arm: any edit of the
+        // pattern replaces the sweep in flight.
+        self.restart_search_sweep();
     }
 
     /// Delete the character before the cursor, shared by `Backspace` and

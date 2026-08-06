@@ -235,31 +235,26 @@ impl SearchPattern {
         }
     }
 
-    pub(super) fn is_match(&self, haystack: &str) -> bool {
-        self.find(haystack).is_some()
-    }
-
-    /// Byte offset of the first match in `haystack`, which spec 0194 S8
-    /// needs so a search hit can put the caret on the match rather than
-    /// merely on its row.
+    /// Whether `haystack` *begins* with the pattern — `^pattern`, not
+    /// `pattern`.
     ///
-    /// Spec 0235 S1: the case-insensitive arm runs `starts_with_folded`
-    /// only at positions a `memchr2` over the needle's first character's
-    /// two cases proposes, instead of at every one. Spec 0235's
-    /// Background 4 measured the same walk with a `memchr` in front of
-    /// it — that is what the case-*sensitive* row of its table is — at
-    /// six times the speed.
+    /// Spec 0235 S19 as amended: the positional-path haystack is matched
+    /// this way. A path is read from the root down, so the part of it a
+    /// user knows is its head, and an unanchored match on a path is
+    /// almost always an accident — `/2` occurs somewhere inside most of
+    /// a large document's paths. Anchoring also means a pattern that
+    /// does not start with `/` never matches a path at all, which is
+    /// what keeps an ordinary word search out of the second haystack.
     ///
-    /// Both guards are load-bearing, and the second is the subtle one.
-    /// A prefilter is only the same predicate when folding is one byte
-    /// to one byte, which is true of ASCII and not of Unicode in either
-    /// direction: `U+212A` KELVIN SIGN folds to `k` and `U+0130` folds
-    /// to `i` plus a combining dot, so a haystack holding either would
-    /// lose a match that the every-position walk finds. Rendered
-    /// textproto is ASCII on all but a handful of string values, so the
-    /// fallback is rare and exact.
-    pub(super) fn find(&self, haystack: &str) -> Option<usize> {
-        self.find_range(haystack).map(|r| r.start)
+    /// Folded rather than `starts_with` on the insensitive arm, for the
+    /// reason [`folded_prefix_len`] exists: the needle's length and the
+    /// haystack's differ wherever a character's lowercase is not one
+    /// character.
+    pub(super) fn starts_with(&self, haystack: &str) -> bool {
+        if self.case_sensitive {
+            return haystack.starts_with(&self.needle);
+        }
+        folded_prefix_len(haystack, &self.needle).is_some()
     }
 
     /// The first match's byte range at or after `from`. Spec 0246 S6:
@@ -285,7 +280,25 @@ impl SearchPattern {
     /// The first match's byte range. Spec 0235 S14 tints a match over
     /// its whole extent, and folding makes that extent the haystack's
     /// own rather than the needle's — `İ` is two bytes on screen and
-    /// three folded characters in the needle.
+    /// three folded characters in the needle. Spec 0194 S8 needs the
+    /// range's start for the same reason: a search hit puts the caret on
+    /// the match, not merely on its row.
+    ///
+    /// Spec 0235 S1: the case-insensitive arm runs `starts_with_folded`
+    /// only at positions a `memchr2` over the needle's first character's
+    /// two cases proposes, instead of at every one. Spec 0235's
+    /// Background 4 measured the same walk with a `memchr` in front of
+    /// it — that is what the case-*sensitive* row of its table is — at
+    /// six times the speed.
+    ///
+    /// Both guards are load-bearing, and the second is the subtle one.
+    /// A prefilter is only the same predicate when folding is one byte
+    /// to one byte, which is true of ASCII and not of Unicode in either
+    /// direction: `U+212A` KELVIN SIGN folds to `k` and `U+0130` folds
+    /// to `i` plus a combining dot, so a haystack holding either would
+    /// lose a match that the every-position walk finds. Rendered
+    /// textproto is ASCII on all but a handful of string values, so the
+    /// fallback is rare and exact.
     pub(super) fn find_range(&self, haystack: &str) -> Option<Range<usize>> {
         if self.case_sensitive {
             let at = haystack.find(&self.needle)?;
@@ -1821,6 +1834,18 @@ fn copy_to_clipboard(text: &str) -> Result<(), arboard::Error> {
         emit_osc52_copy(text);
     }
     result
+}
+
+/// Read the OS clipboard as plain text, for the command line's paste.
+///
+/// There is no OSC 52 counterpart to `emit_osc52_copy` here: reading the
+/// clipboard that way means writing a query and then *parsing the
+/// terminal's reply out of the input stream*, racing every real
+/// keystroke, and most terminals refuse the read half by default anyway.
+/// A paste that only works with a local clipboard provider is the honest
+/// shape of this.
+fn clipboard_text() -> Result<String, arboard::Error> {
+    arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text())
 }
 
 /// Spec 0131 §G2: emit `ESC ]52;c;{base64(text)}\x07` to stdout — the
