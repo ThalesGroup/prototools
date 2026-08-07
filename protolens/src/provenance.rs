@@ -75,11 +75,13 @@ impl ProvenanceTable {
 
     /// The provenance behind an id, or `None` for [`NOT_RENDERED`].
     ///
-    /// `#[cfg(test)]` because nothing in the shipping binary resolves an
-    /// id back: production only ever compares one provenance against
-    /// another, which is the whole point of interning it. The tests print
-    /// it, where `ProvenanceId(37)` would name nothing.
-    #[cfg(test)]
+    /// This used to be `#[cfg(test)]`, on the grounds that production
+    /// only ever compares one interned provenance against another.
+    /// Spec 0249 S8 is the first caller that genuinely has to resolve
+    /// one back: expanding an auto-fold re-renders a node under the
+    /// target it is *already* showing, and the node's own id is where
+    /// that target is recorded. It is still not a hot path — one lookup
+    /// per expanded fold — and it is still the only one.
     pub fn get(&self, id: ProvenanceId) -> Option<&Provenance> {
         self.values.get(id.0 as usize)
     }

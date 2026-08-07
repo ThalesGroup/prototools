@@ -839,6 +839,53 @@ impl App {
     /// Overridable at startup via `--override-preview-byte-budget`.
     pub(crate) const OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT: usize = 4096;
 
+    /// The smallest row budget that can expand anything (spec 0249 S8).
+    ///
+    /// A budget of 1 is spent on the node's own header, so `descend`
+    /// refuses the body and the node stops at itself again — S6's case,
+    /// and no progress at all. Two buys the header plus the first row
+    /// under it, which is enough for the walk to move down. It matters
+    /// only when the pane's height is unknown or absurd; every real
+    /// terminal is far above it.
+    const MIN_EXPAND_ROWS: usize = 2;
+
+    /// Spec 0249 S8: render the body of a node a bounded render stopped
+    /// at, so opening it shows its content rather than an empty pair of
+    /// braces.
+    ///
+    /// The target is the one the node is *already* rendered under —
+    /// this is not a change of interpretation, it is the same one
+    /// continued — so it comes from the node's own provenance rather
+    /// than from a fresh override lookup. The fallback mirrors
+    /// `resettle_node`'s: no active entry means the natural type.
+    ///
+    /// Bounded again, by a screenful. The subtree may be the whole
+    /// document, which is the situation this spec exists for, so an
+    /// unbounded render here would reintroduce the freeze one keystroke
+    /// later. The stops this render leaves behind are expanded the same
+    /// way when they in turn come into view.
+    pub(super) fn expand_auto_fold(&mut self, idx: usize) {
+        debug_assert!(
+            self.auto_folded.contains(&idx),
+            "only a node whose body was never rendered needs expanding"
+        );
+        let explicit = match self.provenance.get(self.tree[idx].rendered_as) {
+            Some((Some(t), _)) => Some(t.clone()),
+            _ => None,
+        };
+        let effective = match explicit {
+            Some(t) => t,
+            None => self.natural_type(idx),
+        };
+        let budget = self.document_pane_height().max(Self::MIN_EXPAND_ROWS);
+        if let Err(e) = self.splice_override(idx, effective, Some(budget)) {
+            // Left in `auto_folded` by the failed splice, so the node
+            // stays drawn collapsed and the row is not claiming to show
+            // a body it does not have.
+            self.message = format!("cannot expand: {e}");
+        }
+    }
+
     /// Unified splice mechanic (spec 0118 §4, reworked spec 0135 G1):
     /// regenerates the *whole* rendering of `idx` — header, interior, and
     /// footer alike — under `target` (`None` = revert to raw, `Some(fqdn)`

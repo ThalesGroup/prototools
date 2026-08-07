@@ -1503,3 +1503,86 @@ fn a_node_level_jump_puts_the_caret_on_the_first_non_blank() {
     assert_eq!(app.cursor, items[0]);
     assert_eq!(app.cursor_column, app.caret_bounds().0);
 }
+
+/// Spec 0249 S8: opening a node a bounded render stopped at is a
+/// render, not a set removal.
+///
+/// Without it, `z` would drop the node from `auto_folded` and draw an
+/// empty pair of braces over a body that does exist — the row would
+/// stop saying "not shown here" and start saying "nothing here".
+///
+/// `z` reaches the node at all because `has_children` is
+/// `is_bracketed`, and a stop is bracketed: it emitted its header and
+/// footer, just nothing between.
+#[test]
+fn opening_an_auto_fold_renders_the_body_it_stood_for() {
+    let (mut app, items) = repeated_message_fixture();
+    app.splash = false;
+
+    let idx = items[0];
+
+    // The same splice unbounded, as the reference. Taken through the
+    // splice rather than from the fixture's own first render so that
+    // both sides are the same interpretation of the same node.
+    app.splice_override(app.first_node, Some("test.Outer".to_string()), None)
+        .expect("an unbounded splice must succeed");
+    let want_start = app.absolute_start(idx);
+    let want_rows = app.tree[idx].lines_total as usize;
+    let unbounded = app.document_lines();
+
+    app.splice_override(app.first_node, Some("test.Outer".to_string()), Some(2))
+        .expect("a bounded splice must succeed");
+    assert!(app.auto_folded.contains(&idx), "the budget stopped here");
+    assert_eq!(
+        app.tree[idx].lines_total, 2,
+        "and emitted a header and a footer and nothing between"
+    );
+
+    app.set_cursor(idx);
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+
+    assert!(
+        !app.is_folded(idx),
+        "`z` opens a stop like any other fold: {:?}",
+        app.auto_folded
+    );
+    assert!(
+        app.tree[idx].lines_total > 2,
+        "and the body it stood for is there now"
+    );
+    assert!(app.folded.is_empty(), "with no user fold invented for it");
+
+    // The rows it now occupies are the ones the unbounded render gives
+    // at that node — the expansion is the same render, later.
+    let start = app.absolute_start(idx);
+    let opened = app.document_lines();
+    assert_eq!(
+        app.tree[idx].lines_total as usize, want_rows,
+        "expanded height must match the unbounded render"
+    );
+    assert_eq!(
+        &opened[start + 1..start + want_rows],
+        &unbounded[want_start + 1..want_start + want_rows],
+        "expanded body must match the unbounded render"
+    );
+
+    // The header is compared separately because of one pre-existing
+    // deviation, recorded as a stated limit of S8: a splice rooted at a
+    // repeated element renders it behind a synthetic *optional* field
+    // (spec 0135), so the annotation says `Item` where the parent's own
+    // render said `repeated Item`. It predates this spec — overriding
+    // the same node has always done it — but expanding a fold is the
+    // first time it happens without the user asking for a retype. The
+    // key and the type name, which is what the row is read for, are
+    // unchanged.
+    assert_eq!(
+        opened[start].replace("repeated ", ""),
+        unbounded[want_start].replace("repeated ", ""),
+        "expanded header must differ only in the repeated qualifier"
+    );
+    assert_ne!(
+        opened[start], unbounded[want_start],
+        "if this now matches, the deviation is fixed and the note in \
+         spec 0249 S8 should go"
+    );
+}

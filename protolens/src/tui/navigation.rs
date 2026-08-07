@@ -181,6 +181,29 @@ impl App {
         self.folded.remove(&idx) | self.auto_folded.remove(&idx)
     }
 
+    /// Open `idx` on the user's behalf, rendering its body first if a
+    /// bounded render never did (spec 0249 S8).
+    ///
+    /// This is the difference between the two fold sets that a *reader*
+    /// still cannot see: a user fold hides rows that exist, so opening
+    /// it is a set removal; an auto-fold stands where no rows were ever
+    /// produced, so opening it is a render. Plain [`App::unfold`] does
+    /// only the removal and is for the paths that are not a gesture —
+    /// the descendant scrub, which is vacating those slots anyway, and
+    /// `unfold_ancestors`, which cannot meet an auto-fold because a
+    /// stop has no rendered descendants to climb from.
+    pub(super) fn open(&mut self, idx: usize) -> bool {
+        if self.auto_folded.contains(&idx) {
+            // Removed first: the splice below takes `idx` out of
+            // `auto_folded` itself, and a node in both sets would
+            // otherwise stay drawn collapsed after an open gesture.
+            self.folded.remove(&idx);
+            self.expand_auto_fold(idx);
+            return true;
+        }
+        self.unfold(idx)
+    }
+
     /// Unfold every ancestor of `idx`, so it becomes visible.
     pub(super) fn unfold_ancestors(&mut self, idx: usize) {
         let mut p = self.parent(idx);
@@ -913,7 +936,7 @@ impl App {
     /// clamp finds the new cursor already in view and leaves
     /// `scroll_offset` alone.
     pub(super) fn toggle_fold(&mut self, idx: usize) {
-        if !self.unfold(idx) {
+        if !self.open(idx) {
             self.folded.insert(idx);
         }
         if idx == self.cursor {
@@ -931,6 +954,12 @@ impl App {
     }
 
     /// `z` — toggle the cursor node's own fold.
+    ///
+    /// Spec 0249 S8 needs no arm of its own here: `has_children` is
+    /// `is_bracketed`, and a node a bounded render stopped at is
+    /// bracketed — it emitted its header and footer, just nothing
+    /// between. So a stop is foldable by the same test as any other
+    /// message, and `open` is what makes the gesture render.
     pub(super) fn toggle_cursor_fold(&mut self) {
         if self.has_children(self.cursor) {
             self.toggle_fold(self.cursor);
@@ -973,7 +1002,12 @@ impl App {
             let moved = if fold {
                 self.has_children(i) && self.folded.insert(i)
             } else {
-                self.unfold(i)
+                // Spec 0249 S8: opening a stop renders it, one screenful
+                // deep. The stops that render then leaves behind are not
+                // in `nodes` and stay folded — `Z` opens what the
+                // document currently has, not what it could be made to
+                // have, which is the same promise it always made.
+                self.open(i)
             };
             if moved {
                 changed = true;
@@ -1031,7 +1065,7 @@ impl App {
             let moved = if fold {
                 self.has_children(i) && self.folded.insert(i)
             } else {
-                self.unfold(i)
+                self.open(i)
             };
             if moved {
                 changed = true;

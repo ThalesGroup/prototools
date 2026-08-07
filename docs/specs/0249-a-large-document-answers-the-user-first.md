@@ -434,6 +434,48 @@ agree byte for byte.
   view, rendered, spliced, then drawn. Unfolding one by hand is the
   same call.
 
+  **The hand-unfold half is IMPLEMENTED 2026-08-07.** Opening an
+  auto-fold is a *render*, not a set removal — dropping the node from
+  `auto_folded` alone would draw an empty pair of braces over a body
+  that exists, turning "not shown here" into "nothing here". So
+  `App::open` replaces `App::unfold` at the three gesture sites (`z`,
+  `Z`, the sibling fold commands) and routes an auto-folded node to
+  `App::expand_auto_fold`. Plain `unfold` stays for the two paths that
+  are not gestures: the descendant scrub, which is vacating those slots
+  anyway, and `unfold_ancestors`, which cannot meet an auto-fold
+  because a stop has no rendered descendants to climb from.
+
+  Three details the implementation settled.
+
+  **The target comes from the node's own provenance**, not from a fresh
+  override lookup: this is the same interpretation continued, not a
+  change of one. `ProvenanceTable::get` was `#[cfg(test)]` on the
+  grounds that nothing in the binary ever resolves an id back; this is
+  the first caller that does, and still the only one.
+
+  **The budget has a floor of 2.** A budget of 1 is spent on the node's
+  own header, so the node stops at itself again and nothing expands
+  (S6). Two buys the header plus the first row under it, which is
+  enough for the walk to move down. It binds only when the pane height
+  is unknown; a real terminal is far above it.
+
+  **`has_children` needed no change.** It is `is_bracketed`, and a stop
+  *is* bracketed — it emitted its header and footer, just nothing
+  between. So `z` reaches it by the same test as any other message.
+
+  **Stated limit: the expanded header can lose a `repeated`
+  qualifier.** A splice rooted at a repeated element renders it behind
+  a synthetic *optional* field (spec 0135), so the annotation reads
+  `Item` where the parent's own render said `repeated Item`. Measured,
+  and **pre-existing** — overriding such a node has always done this —
+  but expanding a fold is the first time it happens without the user
+  asking for a retype. The body is byte-identical and the key and type
+  name are unchanged. Out of scope here: it belongs to the synthetic
+  wrapper, not to the budget.
+
+  The scroll-into-view half is not implemented and rides with S10's
+  viewport work, which is where the pane's own geometry is settled.
+
 - **S9. Freshness is per slot; a generation guards only the
   write-back.** A per-slot fresh/stale bit (one bitset, ~0.6 MB at
   4.74 M slots) records what the last override invalidated. A global
@@ -810,8 +852,11 @@ thousands of splices.
    *(Implemented 2026-08-07, as part of test 7.)*
 9. `an_override_marks_only_its_own_subtree_stale` — the fresh/stale
    bitset differs only over `collect_descendants`. S7.
-10. `a_stale_subtree_expands_when_it_scrolls_into_view` — and the rows
-    it then occupies equal the unbounded render at that node. S8.
+10. `opening_an_auto_fold_renders_the_body_it_stood_for` — and the rows
+    it then occupies equal the unbounded render at that node, header
+    aside (the `repeated` qualifier above). S8. *(Implemented
+    2026-08-07 for the hand unfold; the scroll-into-view case rides
+    with S10.)*
 11. `a_bake_keeps_the_user_folds_around_it` — a bake clears its own
     auto-fold and nothing else, and the subtree its scrub walks is
     vacant, which is why. S3, S11, open question 3. *(Implemented
