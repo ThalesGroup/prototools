@@ -86,16 +86,29 @@ impl RenderCache {
 
     /// Insert (or replace) `key`'s cached render, evicting
     /// least-recently-used entries until back under the byte budget.
+    ///
+    /// An entry that alone exceeds the whole budget is **rejected**
+    /// (spec 0251 S7). Keeping it — which is what this used to do, under
+    /// an `entries.len() > 1` floor on the eviction loop — meant one
+    /// large render evicted every other entry and then sat alone, so the
+    /// cache degenerated to a single entry precisely when hits were
+    /// wanted. Re-rendering one thing is cheaper than losing everything
+    /// else.
     pub fn insert(&mut self, key: RenderKey, value: RenderValue) {
+        let value_bytes = render_bytes(&value);
+        if value_bytes > self.max_bytes {
+            return;
+        }
         if let Some(pos) = self.entries.iter().position(|(k, _)| *k == key) {
             let (_, old) = self.entries.remove(pos);
             self.total_bytes -= render_bytes(&old);
         }
-        self.total_bytes += render_bytes(&value);
+        self.total_bytes += value_bytes;
         self.entries.push((key, value));
-        // Always keep at least the entry just inserted, even if it alone
-        // exceeds the budget.
-        while self.total_bytes > self.max_bytes && self.entries.len() > 1 {
+        // Terminates without a length floor: the entry just pushed fits
+        // the budget on its own, so the loop stops at the latest when it
+        // is the only one left.
+        while self.total_bytes > self.max_bytes {
             let (_, evicted) = self.entries.remove(0);
             self.total_bytes -= render_bytes(&evicted);
         }
@@ -146,10 +159,18 @@ mod tests {
         assert!(cache.get(&(20..30, None, false)).is_some());
     }
 
+    /// Spec 0251 S7. The point is the *second* assertion: an entry too
+    /// big to cache must not take the rest of the cache down with it.
     #[test]
-    fn render_cache_keeps_oversized_entry_alone() {
-        let mut cache = RenderCache::new(1);
-        cache.insert((0..10, None, false), value("way too big for the budget"));
+    fn an_oversized_entry_evicts_nothing() {
+        let mut cache = RenderCache::new(2);
+        cache.insert((0..10, None, false), value("a"));
+        cache.insert((10..20, None, false), value("b"));
+
+        cache.insert((20..30, None, false), value("way too big for the budget"));
+
+        assert!(cache.get(&(20..30, None, false)).is_none());
         assert!(cache.get(&(0..10, None, false)).is_some());
+        assert!(cache.get(&(10..20, None, false)).is_some());
     }
 }
