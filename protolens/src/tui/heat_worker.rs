@@ -74,9 +74,36 @@ enum PopMode {
     UrgentOnly,
 }
 
+/// A request as the *queue* holds it: what the caller asked for, plus
+/// the window it was asked for (spec 0252 S1).
+///
+/// The generation is deliberately not a field of [`HeatRequest`]. No
+/// caller supplies it — `push` stamps it from the queue's own counter —
+/// and keeping it out of the request is what makes S1's merge rule
+/// automatic rather than a rule somebody has to remember: a range
+/// scrolled away and back is re-stamped with the current generation by
+/// construction, instead of inheriting the stale stamp of the entry it
+/// merged into.
+#[derive(Clone)]
+struct QueuedRequest {
+    req: HeatRequest,
+    generation: u64,
+}
+
 struct HeatRequestQueueState {
-    mru: TieredBounded<usize, HeatRequest>,
+    mru: TieredBounded<usize, QueuedRequest>,
     stop: bool,
+    /// Which window the main pane is drawing (spec 0252 S1) — bumped by
+    /// [`new_window`](HeatRequestQueue::new_window) whenever the set of
+    /// rows on screen changes.
+    ///
+    /// Plain state under the same `Mutex` as `mru` rather than an
+    /// atomic: `push` reads it to stamp and `pop` reads it to compare,
+    /// both already holding this lock, so keeping it here makes the two
+    /// exact instead of merely close. Bumped outside the lock, a
+    /// request pushed *for* the new window could be stamped with the
+    /// old one and discarded, costing a frame's delay for nothing.
+    generation: u64,
     /// Ranges (by `start`) somebody has asked the *whole* candidate
     /// list of and not been served yet — spec 0250 S8's gate on
     /// [`CompleteLists`].
@@ -204,6 +231,7 @@ impl HeatRequestQueue {
             state: Mutex::new(HeatRequestQueueState {
                 mru: TieredBounded::new(HEAT_REQUEST_QUEUE_MAX_ENTRIES),
                 stop: false,
+                generation: 0,
                 complete_wanted: std::collections::HashSet::new(),
                 in_flight: Vec::new(),
             }),
@@ -365,13 +393,24 @@ impl HeatRequestQueue {
             Some(existing) => HeatRequest {
                 range: req.range.clone(),
                 current_key: req.current_key.clone(),
-                start: existing.start.min(req.start),
-                end: existing.end.max(req.end),
+                start: existing.req.start.min(req.start),
+                end: existing.req.end.max(req.end),
                 tier,
             },
             None => HeatRequest { tier, ..req },
         };
-        let outcome = state.mru.upsert(key, merged, tier);
+        // Spec 0252 S1: always the *current* generation, including on a
+        // merge — the ask being recorded is this one, whatever window
+        // the entry it merged into belonged to.
+        let generation = state.generation;
+        let outcome = state.mru.upsert(
+            key,
+            QueuedRequest {
+                req: merged,
+                generation,
+            },
+            tier,
+        );
         self.publish_occupancy(&state);
         self.condvar.notify_one();
         outcome
@@ -416,6 +455,15 @@ impl HeatRequestQueue {
     /// has work of its own to get back to.
     fn pop(&self, mode: PopMode) -> Option<(usize, HeatRequest)> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        // Spec 0252 S1: set by a stale discard, and owed a `notify_all`
+        // before this call blocks or returns. Draining the last stale
+        // entry clears the `visible` bit, and that transition is a
+        // handover to workers asleep in `await_quiet` with nothing else
+        // due to wake them — the same obligation `end_sweep` carries.
+        // Once per drain rather than once per entry: a full band is up
+        // to `HEAT_REQUEST_QUEUE_MAX_ENTRIES` discards, and only the
+        // last of them can change the answer they are waiting on.
+        let mut drained_stale = false;
         loop {
             if state.stop {
                 return None;
@@ -429,9 +477,18 @@ impl HeatRequestQueue {
                 PopMode::UrgentOnly => state.mru.band_occupancy() & URGENT_TIERS != 0,
             };
             if servable {
-                if let Some(entry) = state.mru.pop_highest() {
+                if let Some((key, entry)) = state.mru.pop_highest() {
                     self.publish_occupancy(&state);
-                    if state.in_flight.iter().any(|(s, _)| *s == entry.0) {
+                    // Spec 0252 S1: asked for a window that is gone, so
+                    // nobody is looking at the row it would answer.
+                    // `User` is exempt — the cursor's own row and the
+                    // override pane are waited on whatever the window
+                    // did — and `Prefetch` has `start_new_wave`.
+                    if entry.req.tier == Tier::Visible && entry.generation != state.generation {
+                        drained_stale = true;
+                        continue;
+                    }
+                    if state.in_flight.iter().any(|(s, _)| *s == key) {
                         // Dropped, so the urgent bit it was holding up
                         // may have just cleared — and a parked worker
                         // waiting for exactly that is asleep on the
@@ -439,10 +496,17 @@ impl HeatRequestQueue {
                         self.condvar.notify_all();
                         continue;
                     }
-                    state.in_flight.push((entry.0, entry.1.tier));
+                    state.in_flight.push((key, entry.req.tier));
                     self.publish_in_flight(&state);
-                    return Some(entry);
+                    if drained_stale {
+                        self.condvar.notify_all();
+                    }
+                    return Some((key, entry.req));
                 }
+            }
+            if drained_stale {
+                self.condvar.notify_all();
+                drained_stale = false;
             }
             if mode == PopMode::UrgentOnly {
                 return None;
@@ -544,6 +608,27 @@ impl HeatRequestQueue {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.mru.start_new_wave();
         self.publish_occupancy(&state);
+    }
+
+    /// Spec 0252 S1: the main pane is drawing a different set of rows
+    /// than it was, so every `Visible` request queued for the old set is
+    /// an unpaid sweep on a row nobody is looking at.
+    ///
+    /// This is `start_new_wave`'s argument applied to the band it was
+    /// never applied to. It differs in mechanism for a reason: the
+    /// prefetch splice discards a *whole* wave, which is right when the
+    /// origin has moved and every ranking is re-derived, whereas a
+    /// one-row scroll shares all but one of its rows with the window
+    /// before it. Stamping and comparing keeps those; a splice would
+    /// throw them away and wait for the next frame to ask again.
+    ///
+    /// O(1) and nothing is walked here — the discarding happens in
+    /// `pop`, on the worker, where it is free. That keeps the UI
+    /// thread's critical path clear, which is the same rule spec 0164 G4
+    /// imposes on the splice.
+    fn new_window(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.generation += 1;
     }
 
     /// Test-only entry-count introspection (spec 0152 test plan).
@@ -1175,6 +1260,11 @@ impl HeatWorkerHandle {
         self.queue.start_new_wave();
     }
 
+    /// Spec 0252 S1: passthrough to [`HeatRequestQueue::new_window`].
+    pub(super) fn new_window(&self) {
+        self.queue.new_window();
+    }
+
     /// Spec 0190 S4: passthrough to `HeatRequestQueue::activity` —
     /// what the activity dot renders. Lock-free on both sides.
     pub(super) fn activity(&self) -> Option<Tier> {
@@ -1471,6 +1561,132 @@ mod tests {
             Some(3),
             "only the live request may be served"
         );
+    }
+
+    // ── Stale visible requests (spec 0252 S1) ───────────────────────
+
+    /// The rule itself: a `Visible` request asked for a window that has
+    /// since scrolled away answers a row nobody is looking at, so the
+    /// worker discards it rather than paying a sweep for it.
+    #[test]
+    fn a_visible_request_for_a_departed_window_is_dropped_not_served() {
+        let queue = HeatRequestQueue::new();
+        queue.push(req_at(1, Tier::Visible), Tier::Visible);
+        queue.new_window();
+        queue.push(req_at(2, Tier::Visible), Tier::Visible);
+
+        assert_eq!(
+            queue.take_one().map(|(key, _)| key),
+            Some(2),
+            "the entry asked for the current window is served"
+        );
+        assert!(
+            queue.pop(PopMode::UrgentOnly).is_none(),
+            "and the one asked for the window before it is discarded"
+        );
+        assert_eq!(queue.len(), 0, "discarded, not merely skipped over");
+    }
+
+    /// The exemption, which is the half a naive implementation gets
+    /// wrong. `User` is the cursor's own row or the override pane, and
+    /// the user is waiting on it whatever the window did.
+    #[test]
+    fn a_user_request_survives_a_window_change() {
+        let queue = HeatRequestQueue::new();
+        queue.push(req_at(1, Tier::User), Tier::User);
+        queue.new_window();
+        assert_eq!(queue.take_one().map(|(key, _)| key), Some(1));
+    }
+
+    /// The merge rule. Without it a row scrolled away and back inherits
+    /// the stale stamp of the entry it merged into and is discarded
+    /// every time it is asked for — so it would never resolve at all.
+    #[test]
+    fn a_re_pushed_range_adopts_the_current_generation() {
+        let queue = HeatRequestQueue::new();
+        queue.push(req_at(7, Tier::Visible), Tier::Visible);
+        queue.new_window();
+        queue.push(req_at(7, Tier::Visible), Tier::Visible);
+        assert_eq!(queue.len(), 1, "the same range.start still merges");
+        assert_eq!(
+            queue.take_one().map(|(key, _)| key),
+            Some(7),
+            "re-asking re-stamps: the merged entry belongs to this window"
+        );
+    }
+
+    /// The drain happens inside one `pop`, not one discard per call. A
+    /// caller that had to ask 2048 times to reach the live entry would
+    /// be starved by exactly the backlog this rule exists to clear.
+    #[test]
+    fn a_stale_band_is_drained_in_one_pop() {
+        let queue = HeatRequestQueue::new();
+        for start in 0..64 {
+            queue.push(req_at(start, Tier::Visible), Tier::Visible);
+        }
+        queue.new_window();
+        queue.push(req_at(100, Tier::Visible), Tier::Visible);
+
+        // The band is LIFO, so the live entry is at its head and is
+        // served without the stale ones being looked at — which is why
+        // they cost throughput rather than the user's place in the
+        // queue.
+        assert_eq!(queue.take_one().map(|(key, _)| key), Some(100));
+        assert_eq!(queue.len(), 64, "the stale band is still standing");
+
+        assert!(queue.pop(PopMode::UrgentOnly).is_none());
+        assert_eq!(queue.len(), 0, "and one pop clears all of it");
+    }
+
+    /// G2, and the reason S1 is worth doing at all. A stale entry holds
+    /// `band_occupancy`'s visible bit high, which is `urgent_live`'s
+    /// input — so until it is drained every speculative worker yields
+    /// and parks for a row nobody is looking at.
+    #[test]
+    fn a_drained_stale_band_stops_counting_as_urgent() {
+        let queue = HeatRequestQueue::new();
+        queue.push(req_at(1, Tier::Visible), Tier::Visible);
+        queue.new_window();
+        assert!(
+            queue.urgent_live(),
+            "a queued Visible entry counts as urgent however stale it is"
+        );
+
+        assert!(queue.pop(PopMode::UrgentOnly).is_none());
+        assert!(
+            !queue.urgent_live(),
+            "draining it must republish the band as no longer urgent"
+        );
+    }
+
+    /// The wakeup that pairs with the rule above: the worker parked in
+    /// `await_quiet` is asleep on the condvar precisely because the
+    /// stale band said someone was waiting, so the drain that proves
+    /// otherwise is the only event that can release it.
+    #[test]
+    fn a_stale_drain_wakes_a_parked_worker() {
+        let queue = Arc::new(HeatRequestQueue::new());
+        queue.push(req_at(1, Tier::Visible), Tier::Visible);
+        queue.new_window();
+
+        let waiter = Arc::clone(&queue);
+        let join = thread::spawn(move || waiter.await_quiet());
+
+        // Give the waiter time to reach the condvar before the drain,
+        // so that the drain's `notify_all` is what releases it rather
+        // than the predicate simply being false on arrival.
+        thread::sleep(Duration::from_millis(20));
+        assert!(queue.pop(PopMode::UrgentOnly).is_none());
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !join.is_finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            join.is_finished(),
+            "the drain owes a notify_all: nothing else was going to wake it"
+        );
+        join.join().expect("waiter must not panic");
     }
 
     /// Spec 0190 S3: the in-flight tier is reported even though the

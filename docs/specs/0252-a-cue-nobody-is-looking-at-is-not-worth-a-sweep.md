@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0252 — a cue nobody is looking at is not worth a sweep
 
-Status: draft
+Status: implemented
+Implemented in: 2026-08-07
 App: protolens
 Refs: docs/specs/0250-the-machine-works-on-what-the-user-waits-for.md
         (its S3 parked worker is what the stale band stalls, and its S4
@@ -200,8 +201,50 @@ policy fixes a yield gate that is reading the wrong question.
 
 ## Measured outcome
 
-Filled in at implementation. Record the `Visible` sweep count over the
-same reproduction (2529 before) and the peak queue length (2048 before).
-State plainly if the prefetcher's progress does not improve — G2 claims
-it will, and that claim has not been measured, only derived from
-`urgent_live`'s definition.
+Measured 2026-08-07 on 12 CPUs against `googleapis.desc` (25.6 MB) in a
+200x50 pty: 45 s settle, a burst of 400 `PgDn` at 20 ms spacing, then 30
+one-second samples. A/B on the same binary, S1 switched off by making
+`new_window` return early. Two runs of each.
+
+This is not the window Background's 2529 came from — that one was taken
+before spec 0250's step 4 put a worker on every core, so its absolute
+counts are not comparable with these. The A/B pair below is, since both
+arms are the same binary minutes apart.
+
+| | S1 off | S1 on |
+|---|---|---|
+| `Visible` sweeps | 1256 / 906 | **436 / 457** |
+| `Prefetch` sweeps | 3090 / 2975 | **23819 / 7287** |
+| `User` sweeps | 345 / 342 | 334 / 345 |
+| stale entries discarded | 0 | 1557 / 1513 |
+| peak queue length | 2048 | 2048 |
+| generations bumped | 0 | 402 / 402 |
+| `[?]` on screen, settled | 20 | **3** |
+
+**G1 holds, and by more than the sweep count alone says.** `Visible`
+sweeps fall roughly in half, but the 1500-odd discards are the truer
+number: two thirds of the `Visible` work this window asked for was for
+rows that had scrolled away before a worker reached them.
+
+**G2 holds, and it is the large effect.** Prefetch throughput is between
+2.4x and 8.0x. The spread is real — a prefetch sweep is a part of a
+resumable walk, so its count depends on where the walk had got to — but
+both S1-on runs are well clear of both S1-off runs, and S1-off is stable
+at ~3000 across runs. This is the parked-worker stall predicted from
+`urgent_live`'s definition, now observed: with the stale band drained,
+the speculative workers stop being held in `await_quiet` by urgency that
+no longer exists.
+
+**The peak queue length did not move**, which is what N4 expected: the
+2048 cap is reached during the burst either way. Tail eviction and the
+generation discard are answering different questions, and S1 does not
+relieve the cap.
+
+**N1 was wrong, and pleasantly so.** The spec claimed no latency effect
+and asked for a surprise to be reported. The count of unresolved `[?]`
+cues on the settled screen drops from 20 to 3 — stable across both runs
+of each arm. The mechanism is not the queue's ordering, which S1 does
+not touch; it is that an unparked prefetcher reaches the rows *adjacent
+to the cursor* while the user is still scrolling, so the row the burst
+lands on is already in the cache. The latency win is a second-order
+effect of G2, not of G1.

@@ -1293,6 +1293,22 @@ impl App {
         // no cue. That is correct rather than merely convenient — a cue
         // reports how well a *committed* node's bytes score as its
         // current type, and an overlay row has no committed node.
+        //
+        // Spec 0252 S1: ahead of the pass, so the requests it pushes
+        // carry the new window rather than the one being left. The key
+        // is what decides *which rows are drawn* and nothing else:
+        // `first_row` and the row count for a scroll, a pan or a resize,
+        // and `structural_version` for a fold or a splice, which change
+        // the rows without moving the viewport. The cursor is not in it
+        // — an `Alt` pan moves the window and leaves the cursor where it
+        // is.
+        let window_key = (first_row, window.len(), self.structural_version);
+        if self.heat_window_key != Some(window_key) {
+            self.heat_window_key = Some(window_key);
+            if let Some(worker) = &self.heat_worker {
+                worker.new_window();
+            }
+        }
         let t_heat = std::time::Instant::now();
         let heat_displays: Vec<heat_cue::HeatDisplay> = window
             .iter()

@@ -1243,6 +1243,15 @@ pub struct App {
     /// prefetch_step`'s staleness signal (spec 0164 G7) for restarting
     /// its walk.
     structural_version: u64,
+    /// What the last drawn frame's window was, as `(first row, row
+    /// count, structural version)` — spec 0252 S1's change detector for
+    /// bumping the request queue's generation.
+    ///
+    /// Held here rather than derived, because the queue must be told
+    /// only when the set of drawn rows actually changes: bumping every
+    /// frame would discard every `Visible` request before any worker
+    /// could reach it, and the cues would never resolve at all.
+    heat_window_key: Option<(usize, usize, u64)>,
     /// `true` while `recompute_override_candidates`'s `SortMode::
     /// Inferred` branch is waiting on a worker request for the
     /// override pane's first page (spec 0152 G7).
@@ -1625,6 +1634,7 @@ impl App {
             input_pending: false,
             event_changed_nothing: false,
             structural_version: 0,
+            heat_window_key: None,
             override_candidates_pending: false,
             override_complete_pending: false,
             heat_cues_hidden: false,
