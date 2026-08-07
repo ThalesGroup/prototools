@@ -193,10 +193,10 @@ agree byte for byte.
 
 ### The bounded render
 
-- **S1. A render can be bounded by rows emitted.** The budget is a
-  count of rendered document lines, checked where the renderer is about
-  to recurse. Once spent, a nested field is emitted with an empty body
-  and reported as *undescended*.
+- **S1. A render can be bounded by rows emitted. — IMPLEMENTED
+  2026-08-07.** The budget is a count of rendered document lines,
+  checked where the renderer is about to recurse. Once spent, a nested
+  field is emitted with an empty body and reported as *undescended*.
 
   It is a **row** budget, not a byte budget (spec 0174) and not a depth
   cap (spec 0171 §S4): the cut then falls on a node boundary by
@@ -238,6 +238,45 @@ agree byte for byte.
 
   At the googleapis root that is ~7 771 one-line entries to support a
   50-row screen, against 5.28 M rows unbounded.
+
+  **Measured 2026-08-07** (`prototext-core/examples/bounded_render.rs`,
+  googleapis.desc as its own `FileDescriptorSet`, `taskset -c 4-7`):
+
+  | budget | wall | text | rows | spans | stops |
+  |---|---|---|---|---|---|
+  | 1 | 5.1 ms | 357 KB | 15 542 | 7 771 | 7 771 |
+  | 51 | **4.9 ms** | 360 KB | 15 599 | 7 820 | 7 770 |
+  | 101 | 5.2 ms | 362 KB | 15 650 | 7 863 | 7 770 |
+  | 1 001 | 5.6 ms | 401 KB | 16 549 | 8 638 | 7 769 |
+  | 10 001 | 8.5 ms | 739 KB | 25 612 | 15 985 | 7 804 |
+  | none | **2.0 s** | 239 MB | 5 278 322 | 4 499 335 | 0 |
+
+  Three corrections to what is written above.
+
+  **The frontier is what a bounded render costs, not the budget.** From
+  budget 1 to budget 101 the output moves by 108 rows and the wall time
+  not at all: 15 540 of the ~15 600 rows are the unwind. A screenful is
+  free on top of a fixed ~5 ms, so the budget could be far larger before
+  anything noticed — which retires the worry behind S10's "overshooting
+  by up to one screenful".
+
+  **A frontier entry is one *stored* line but two *rendered* ones.**
+  7 770 stops hold 15 540 rows: a header and a `}`. Both statements in
+  S2 are right and they are about different things — `node_text` keeps
+  the header alone and derives the footer (spec 0222), so the ~7 771
+  figure is the storage and the drawn row, while the render text and
+  `lines_total` see 2 each.
+
+  **Every row of the ≈5 s table shrinks by 300-600x, together**, as
+  claimed: text 239 MB → 360 KB (664x), spans 4 499 335 → 7 820 (575x),
+  rows 5 278 322 → 15 599 (338x). The renderer itself is 2.0 s → 4.9 ms
+  (410x).
+
+  The depth-first rule is visible in the numbers: at budget 51 exactly
+  one root child is missing from the stop list, at budget 101 that child
+  is rendered whole and one node *inside the next file* is stopped
+  instead. That is "the interior of `file[0]` at full depth, and folds
+  `file[1..7770]`", not a level-by-level fan-out.
 
   **Stated limit: a wide-and-flat document cannot be bounded by
   folding.** A scalar child is not foldable, so a message with millions
@@ -446,18 +485,59 @@ agree byte for byte.
 ## Open questions
 
 1. **Where does the row budget live, and what does an undescended node
-   emit?** Three things are unsettled: whether the counter rides on the
-   sink or on a thread-local like `HIDE_UNKNOWN`; what the emitted body
-   is exactly (an empty `{}` pair, or a header the splice closes
-   itself); and how the undescended set is reported back.
+   emit? — ANSWERED 2026-08-07, implemented with S1.** Three decisions,
+   each with its reason.
 
-   The natural candidate for the report is the span stream, and that is
-   where the risk is: **`slots_for_spans` (`decode.rs:727`) maps spans
-   to slots by *positional* descent (`first_child[parent] + ordinal`)
-   and drops an out-of-range result silently.** A bounded render must
-   emit a span for every node it stops at, in arena order, and if it
-   does not, the failure is invisible rather than loud. Settle this
-   first — everything after S1 assumes the report exists.
+   **The budget rides on the sink.** `TextSink::line_count` already is
+   the counter the budget compares against, so a thread-local beside
+   `DEPTH` would be a second copy of a number the sink holds. The
+   decisive argument is a different one: `ProbeSink` must *not* see the
+   budget. A probe that stopped early would decide spec 0097's
+   LEN-cascade differently, turning a presentational budget into a
+   structural change in what the document is. On the trait the budget
+   is two methods with defaults — `row_budget_spent` returning `false`
+   and `note_undescended` ignoring the call — so `ProbeSink` and
+   `ArenaSink` opt out by saying nothing, which is exactly the property
+   wanted. A thread-local is ambient and would have had to be *masked*
+   at every probe site instead.
+
+   **An undescended node emits its `begin_nested`/`end_nested` pair
+   with no body.** Not a distinct token, not an empty `{}` special
+   case: the renderer's recursion sites are wrapped in a `descend`
+   helper that skips the body and reports back, and everything on
+   either side runs unchanged. So a sink that never asks for a budget
+   cannot tell an undescended node from an empty one, and neither the
+   arena build nor the probe needed a single line of change. The row
+   the user sees is a folded header — spec 0193's one row whatever is
+   beneath it — because S3's auto-fold set is what makes it fold, not
+   the renderer.
+
+   **The report is `IndexedRender::undescended: Vec<u32>`, span
+   indices, not a `NodeSpan` field.** `NodeSpan` is exactly 32 bytes
+   with no padding hole (spec 0212 S8) and protolens holds ~4.5 M of
+   them in three places at once, so a `bool` would cost ~54 MB to carry
+   a fact that is false for every unbounded render. The side vector is
+   bounded by budget + frontier and is empty whenever `row_budget` is
+   `None`. Span indices also mean the report is validated by the same
+   `slots_for_spans` map the spans themselves go through.
+
+   That map was the risk named here, and it is closed: **the silent
+   drop is now an `assert!`** in `overlay_spans` (`decode.rs`). A span
+   with no arena slot is a structural disagreement between the render
+   and the maximal walk, and the overlay it produces is wrong wherever
+   it lands, so it fails loudly. Verified against 761 protolens tests
+   and a real 2.8 M-node googleapis root-override splice.
+
+   **Stated limit: a group cannot be bounded.** A group has no length
+   prefix, so its extent is knowable only by parsing through to
+   `END_GROUP`. Skipping the walk would leave the cursor at the group's
+   start and the parent would read the group's children as its own
+   siblings — a *wrong* structure, not an unexpanded one. So
+   `render_group_field` descends unconditionally, and a document whose
+   rows are mostly inside one group is bounded only down to that
+   group's size. This is the same reason `ProbeSink` recurses into
+   groups despite `treat_len_as_opaque`. Groups are proto2-only and
+   rare; no corpus document hits this.
 
 2. **What do the two header-rewriting cases cost at scale?** S6 is O(1)
    per site for `--as <fqdn>`, but `--field-name` and the
