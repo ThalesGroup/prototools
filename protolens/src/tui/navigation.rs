@@ -162,12 +162,31 @@ impl App {
         self.clamp_pan_offset();
     }
 
+    /// Whether `idx` is drawn collapsed — because the user folded it,
+    /// or because a row-bounded render never emitted its body
+    /// (spec 0249 S3). Every *read* of fold state goes through here:
+    /// on screen the two are the same row, and every operation that
+    /// acts on a folded node acts on both kinds. Only writes
+    /// distinguish them.
+    pub(super) fn is_folded(&self, idx: usize) -> bool {
+        self.folded.contains(&idx) || self.auto_folded.contains(&idx)
+    }
+
+    /// Open `idx` whichever set folded it, reporting whether it moved.
+    ///
+    /// Non-short-circuiting `|`: a node can be in both sets — the user
+    /// can fold a node that was already auto-folded — and leaving it in
+    /// one of them would draw it collapsed after an unfold gesture.
+    pub(super) fn unfold(&mut self, idx: usize) -> bool {
+        self.folded.remove(&idx) | self.auto_folded.remove(&idx)
+    }
+
     /// Unfold every ancestor of `idx`, so it becomes visible.
     pub(super) fn unfold_ancestors(&mut self, idx: usize) {
         let mut p = self.parent(idx);
         let mut changed = false;
         while let Some(pi) = p {
-            if self.folded.remove(&pi) {
+            if self.unfold(pi) {
                 changed = true;
                 // Innermost first, so each level's recomputation reads
                 // children that are already up to date. The climb inside
@@ -311,13 +330,13 @@ impl App {
     /// exactly what is wanted here: an empty-but-bracketed message is
     /// foldable and must fold.
     fn cursor_expanded(&self) -> bool {
-        self.has_children(self.cursor) && !self.folded.contains(&self.cursor)
+        self.has_children(self.cursor) && !self.is_folded(self.cursor)
     }
 
     /// The cursor node is currently folded — the state in which a
     /// rightward key unfolds instead of moving (spec 0199 G4).
     fn cursor_folded(&self) -> bool {
-        self.folded.contains(&self.cursor)
+        self.is_folded(self.cursor)
     }
 
     /// Spec 0194 S6 / spec 0199 S5: `h`, `Left`, `Backspace`.
@@ -894,7 +913,7 @@ impl App {
     /// clamp finds the new cursor already in view and leaves
     /// `scroll_offset` alone.
     pub(super) fn toggle_fold(&mut self, idx: usize) {
-        if !self.folded.remove(&idx) {
+        if !self.unfold(idx) {
             self.folded.insert(idx);
         }
         if idx == self.cursor {
@@ -945,7 +964,7 @@ impl App {
             self.message = "not foldable".to_string();
             return;
         }
-        let fold = !self.folded.contains(&self.cursor);
+        let fold = !self.is_folded(self.cursor);
         let mut nodes = vec![self.cursor];
         self.collect_descendants(self.cursor, &mut nodes);
 
@@ -954,7 +973,7 @@ impl App {
             let moved = if fold {
                 self.has_children(i) && self.folded.insert(i)
             } else {
-                self.folded.remove(&i)
+                self.unfold(i)
             };
             if moved {
                 changed = true;
@@ -1012,7 +1031,7 @@ impl App {
             let moved = if fold {
                 self.has_children(i) && self.folded.insert(i)
             } else {
-                self.folded.remove(&i)
+                self.unfold(i)
             };
             if moved {
                 changed = true;

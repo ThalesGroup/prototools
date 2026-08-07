@@ -152,11 +152,7 @@ impl App {
                     child = self.next_sibling(c);
                 }
                 // Header and footer, one line each, whatever is between.
-                let shown = if self.folded.contains(&n) {
-                    1
-                } else {
-                    visible + 2
-                };
+                let shown = if self.is_folded(n) { 1 } else { visible + 2 };
                 (total + 2, shown)
             } else {
                 // A flat node's rows are its own — a scalar's single line
@@ -417,7 +413,7 @@ impl App {
     pub(super) fn next_visible(&self, pos: LinePos) -> Option<(LinePos, usize)> {
         let total = self.tree[pos.node].lines_total;
         if self.tree[pos.node].is_bracketed() {
-            if pos.line_in_node == 0 && !self.folded.contains(&pos.node) {
+            if pos.line_in_node == 0 && !self.is_folded(pos.node) {
                 if let Some(child) = self.first_child(pos.node) {
                     return Some((LinePos::header(child), 1));
                 }
@@ -503,7 +499,7 @@ impl App {
     /// A folded node shows only its header, so the step back over it is
     /// the whole of its extent rather than one line.
     fn last_visible_of(&self, idx: usize) -> (LinePos, usize) {
-        if self.folded.contains(&idx) {
+        if self.is_folded(idx) {
             return (LinePos::header(idx), self.tree[idx].lines_total as usize);
         }
         (

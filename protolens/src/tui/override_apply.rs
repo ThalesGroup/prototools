@@ -744,7 +744,7 @@ impl App {
                      occupy {sum_total} lines",
                     kids.len()
                 );
-                let want_visible = if self.folded.contains(&n) {
+                let want_visible = if self.is_folded(n) {
                     1
                 } else {
                     sum_visible + 2
@@ -754,7 +754,7 @@ impl App {
                     want_visible,
                     "node {n}'s lines_visible is {visible} but its children's \
                      come to {sum_visible} (folded: {})",
-                    self.folded.contains(&n)
+                    self.is_folded(n)
                 );
             } else {
                 assert_eq!(
@@ -898,7 +898,7 @@ impl App {
         let mut old_descendants = Vec::new();
         self.collect_descendants(idx, &mut old_descendants);
         for &d in &old_descendants {
-            self.folded.remove(&d);
+            self.unfold(d);
             self.tree[d] = decode::TreeNode::vacant();
             self.node_text[d] = None;
             // The cue answered a question about a node this rendering no
@@ -941,6 +941,12 @@ impl App {
         // expects.
         self.tree[idx] = decode::TreeNode::vacant();
         self.node_text[idx] = None;
+        // Spec 0249 S3: `auto_folded` means "this node's body has not
+        // been rendered", and the render just above rendered it. A
+        // bounded one puts `idx` back in the set; an unbounded one is
+        // the reason the entry has to go, and `idx`'s *user* fold is
+        // untouched either way.
+        self.auto_folded.remove(&idx);
         decode::overlay_spans(
             &mut self.tree,
             &mut self.node_text,
@@ -960,7 +966,7 @@ impl App {
         // scrubbed, above — spec 0118 §7), and a folded node shows one
         // line whatever is beneath it. `overlay_spans` cannot know that,
         // so it set both counts to the full size.
-        if self.folded.contains(&idx) {
+        if self.is_folded(idx) {
             self.tree[idx].lines_visible = 1;
         }
 

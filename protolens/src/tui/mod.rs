@@ -1029,7 +1029,19 @@ pub struct App {
     /// plain (non-dragged) click should deselect (`false`, the default)
     /// or select the whole line (`true`).
     pending_double_click: bool,
+    /// Nodes the *user* folded. Never written by anything the user did
+    /// not ask for, which is the whole point of it being separate from
+    /// `auto_folded` (spec 0249 S3).
     folded: HashSet<usize>,
+    /// Nodes folded because their body has not been rendered — the ones
+    /// a row-bounded render stopped at (spec 0249 S1/S3).
+    ///
+    /// Separate from `folded` in both directions. A bake clears only
+    /// this set, so a fold the user made never pops open by itself; and
+    /// a fold the user made over a baked node is not silently undone by
+    /// a later bake finishing. Reads do not care which set a node is in
+    /// — that is what [`App::is_folded`] is for — only writes do.
+    auto_folded: HashSet<usize>,
     /// The main pane's vertical viewport (specs 0230, 0244 S2): the first
     /// document line drawn, plus the signed terminal-row remainder that
     /// lets a `w` toggle hold a row still. `scroll.index` counts document
@@ -1596,6 +1608,7 @@ impl App {
             last_click: None,
             pending_double_click: false,
             folded: HashSet::new(),
+            auto_folded: HashSet::new(),
             scroll: PaneScroll::default(),
             last_cursor_row: None,
             pan_offset: 0,

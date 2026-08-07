@@ -650,7 +650,7 @@ impl App {
         if !self.has_children(idx) {
             return None;
         }
-        Some(if self.folded.contains(&idx) {
+        Some(if self.is_folded(idx) {
             FOLD_GLYPH_CLOSED
         } else {
             FOLD_GLYPH_OPEN
@@ -695,7 +695,7 @@ impl App {
         let header_text = self.row_text(header_row);
         let open = header_text.rfind('{')?;
         let open_pos = (header, char_column(&header_text, open));
-        if self.folded.contains(&self.cursor) && self.has_children(self.cursor) {
+        if self.is_folded(self.cursor) && self.has_children(self.cursor) {
             // `row_text` splices the six bytes `" ... }"` in immediately
             // after the `{`, so the synthetic closing brace is the sixth
             // of them.
@@ -828,7 +828,7 @@ impl App {
         // restyles it by character index over the finished span list —
         // so the summary stays one piece of text.
         let mut insertions: Vec<(usize, String, Option<Style>)> = Vec::new();
-        if node.is_some_and(|idx| self.folded.contains(&idx) && self.has_children(idx)) {
+        if node.is_some_and(|idx| self.is_folded(idx) && self.has_children(idx)) {
             let insert_at = match content.rfind('{') {
                 Some(pos) => pos + 1,
                 None => content.len(),

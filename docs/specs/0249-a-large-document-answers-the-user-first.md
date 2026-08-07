@@ -285,9 +285,23 @@ agree byte for byte.
   is an observation about this corpus, not a proof.
 
 - **S3. An undescended node is folded, and an auto-fold is not a user
-  fold.** They are tracked in separate sets. `folded: HashSet<usize>`
-  is the user's; a landing bake clears only its own, so folds the user
-  made never pop open by themselves.
+  fold. — IMPLEMENTED 2026-08-07.** They are tracked in separate sets.
+  `folded: HashSet<usize>` is the user's; a landing bake clears only
+  its own, so folds the user made never pop open by themselves.
+
+  The asymmetry is confined to the *writers*. Every read goes through
+  `App::is_folded(idx)`, because on screen the two are the same row and
+  every operation that acts on a folded node acts on both kinds — a
+  user cannot be asked to know which set a fold came from. Unfolding
+  likewise goes through `App::unfold(idx)`, which clears both with a
+  non-short-circuiting `|`: a node can be in both sets (the user folds
+  something a bounded render already stopped at), and leaving it in one
+  of them would redraw it collapsed right after an unfold gesture.
+
+  The set's invariant is "this node's body has not been rendered", so
+  `splice_override` removes `idx` from it before overlaying — the
+  render just above rendered that body. A bounded render is what puts
+  it back (S5).
 
 - **S4. The schema-free verdict comes from the arena, not from a
   probe. — IMPLEMENTED 2026-08-07.** To emit a parent's row for a

@@ -524,6 +524,73 @@ fn shift_z_folds_the_whole_subtree_and_unfolds_it_again() {
     );
 }
 
+/// Spec 0249 S3: a node folded because its body was never rendered
+/// draws and behaves exactly like one the user folded — same collapsed
+/// row count, same closed marker, opened by the same keystroke.
+///
+/// The user cannot be asked to know which set a fold came from, so the
+/// asymmetry is confined to the writers.
+#[test]
+fn an_auto_fold_reads_and_opens_like_a_user_fold() {
+    let (mut app, items) = repeated_message_fixture();
+    app.splash = false;
+    let idx = items[0];
+
+    app.auto_folded.insert(idx);
+    app.refresh_line_counts(idx);
+
+    assert!(app.is_folded(idx), "an auto-fold is a fold");
+    assert_eq!(
+        app.tree[idx].lines_visible, 1,
+        "and shows one row whatever is beneath it"
+    );
+
+    app.set_cursor(idx);
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+
+    assert!(!app.is_folded(idx), "`z` opens it like any other fold");
+    assert!(
+        app.auto_folded.is_empty(),
+        "and takes it out of the set it was actually in"
+    );
+    assert!(
+        app.folded.is_empty(),
+        "without leaving a user fold behind that nobody asked for"
+    );
+}
+
+/// Spec 0249 S3: the two sets are independent, and a node can be in
+/// both — the user folds a node that a bounded render already stopped
+/// at. One unfold gesture must open it, so the unfold clears both;
+/// clearing one set alone must leave the other's fold standing.
+#[test]
+fn a_user_fold_and_an_auto_fold_survive_each_other() {
+    let (mut app, items) = repeated_message_fixture();
+    app.splash = false;
+    let idx = items[0];
+
+    app.auto_folded.insert(idx);
+    app.folded.insert(idx);
+    app.refresh_line_counts(idx);
+
+    // A bake landing clears only its own set. The user's fold stands.
+    app.auto_folded.clear();
+    assert!(
+        app.is_folded(idx),
+        "clearing the auto-folds must not pop open a fold the user made"
+    );
+
+    // And the other way round: the user's unfold is not undone by an
+    // auto-fold entry left in place.
+    app.auto_folded.insert(idx);
+    app.set_cursor(idx);
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+    assert!(
+        !app.is_folded(idx),
+        "one unfold gesture opens a node that is in both sets"
+    );
+}
+
 /// Spec 0194 test-plan item 3 (S6, N5). One character per press, and the
 /// left end does not wrap onto the row above — vim's default
 /// `whichwrap`, which leaves `h` line-bound.
