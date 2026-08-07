@@ -303,6 +303,33 @@ agree byte for byte.
   render just above rendered that body. A bounded render is what puts
   it back (S5).
 
+  **A user fold inside a subtree that is baked survives, and survives
+  for free** (this was open question 3). `splice_override` scrubs
+  `folded` over every descendant of the node it re-renders, which reads
+  like it would clear the user's folds the moment a bake landed over
+  them. It cannot, because of the invariant above: **a bake splices
+  only at a node whose body has not been rendered**, and such a node
+  has no rendered descendants — the bounded splice that created it
+  vacated them and put back no span for any of them. The scrub runs
+  over vacant slots and finds nothing.
+
+  So the scrub stays what it always was, a *retype* concern: a change
+  of interpretation can make a slot show something else, and a fold
+  flag left on it would be honored again for content the user never
+  folded. A bake is not a change of interpretation — it is the same
+  interpretation, continued — and it never reaches a slot the user
+  could have folded.
+
+  The one node the user *can* have folded on this path is the stop
+  itself, which is then in both sets. A bake clears only `auto_folded`,
+  so the node stays collapsed and the user's gesture is what holds it
+  — which is exactly S3's rule, arrived at from the other side.
+
+  This is a constraint on S11 rather than an observation about it: if a
+  bake is ever made to splice at a node that is not auto-folded, the
+  scrub becomes a live bug. Enforced by a `debug_assert!` at the bake's
+  splice.
+
 - **S4. The schema-free verdict comes from the arena, not from a
   probe. — IMPLEMENTED 2026-08-07.** To emit a parent's row for a
   child, the renderer must know whether the child is `field { … }`
@@ -639,12 +666,12 @@ agree byte for byte.
    worth of stops in one call rather than one at a time — not an
    argument about S6.
 
-3. **What happens to a user fold inside a subtree that is baked?**
-   Folds are keyed on slot and the slots survive (spec 0216), so the
-   expectation is that they persist — but the invalidation path
-   currently clears `folded` for the whole affected subtree
-   (`override_apply.rs:894-905`). Decide whether that is a bug being
-   preserved or a behavior worth keeping, and record it in S3.
+3. **What happens to a user fold inside a subtree that is baked?
+   ANSWERED 2026-08-07 — it survives, and the scrub stays.** Recorded
+   in S3: a bake splices only at a node whose body has not been
+   rendered, so the subtree the scrub walks is vacant and holds no user
+   fold to clear. The scrub remains a retype concern, and S11's splice
+   carries a `debug_assert!` that its target is auto-folded.
 
 4. **Where does the bake's cue live?** S13's dot is the "unobtrusive
    cue that a background job is running" that specs 0204/0205/0209
@@ -785,8 +812,11 @@ thousands of splices.
    bitset differs only over `collect_descendants`. S7.
 10. `a_stale_subtree_expands_when_it_scrolls_into_view` — and the rows
     it then occupies equal the unbounded render at that node. S8.
-11. `a_bake_clears_auto_folds_and_keeps_user_folds` — S3, S11, and open
-    question 3.
+11. `a_bake_keeps_the_user_folds_around_it` — a bake clears its own
+    auto-fold and nothing else, and the subtree its scrub walks is
+    vacant, which is why. S3, S11, open question 3. *(Implemented
+    2026-08-07 against a bake-shaped splice; S11's own scheduling is
+    still to come.)*
 12. `a_second_override_wins_over_an_in_flight_bake` — a bake started
     before a second override does not write over the second override's
     slots. S9.

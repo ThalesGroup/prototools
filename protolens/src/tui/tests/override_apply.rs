@@ -1410,3 +1410,59 @@ fn a_budget_of_one_renders_exactly_the_header() {
         "a raw node shows its bare field number: {raw:?}"
     );
 }
+
+/// Spec 0249 S3 / open question 3: a bake does not clear a user fold,
+/// and does not have to try not to.
+///
+/// A bake splices at a node whose body has not been rendered, so
+/// `splice_override`'s scrub of `folded` walks a vacant subtree and
+/// finds nothing to clear. That is the invariant this asserts first —
+/// it is what makes the scrub safe on this path, and S11's bake carries
+/// the matching `debug_assert!`.
+#[test]
+fn a_bake_keeps_the_user_folds_around_it() {
+    let (mut app, items) = repeated_message_fixture();
+    let root = app.first_node;
+
+    app.splice_override(root, Some("test.Outer".to_string()), Some(2))
+        .expect("a bounded splice must succeed");
+
+    // The invariant: nothing is rendered under a stop, so nothing under
+    // a stop can carry a fold the scrub would clear.
+    for &stop in &app.auto_folded.clone() {
+        let mut below = Vec::new();
+        app.collect_descendants(stop, &mut below);
+        assert!(
+            below.is_empty(),
+            "stop {stop} has rendered descendants: {below:?}"
+        );
+    }
+
+    // The user folds one stop by hand. It is now in both sets.
+    app.folded.insert(items[0]);
+
+    // Bake a different one: unbounded, same interpretation.
+    app.splice_override(items[1], Some("test.Item".to_string()), None)
+        .expect("a bake must succeed");
+
+    assert!(
+        !app.auto_folded.contains(&items[1]),
+        "a rendered body owes no fold"
+    );
+    assert!(app.tree[items[1]].lines_total > 2, "and shows its body");
+
+    assert!(
+        app.folded.contains(&items[0]),
+        "the user's fold is untouched by a bake elsewhere"
+    );
+    assert!(app.is_folded(items[0]), "and still draws collapsed");
+
+    // Baking the one the user folded clears only the auto-fold: the
+    // gesture is what holds it collapsed from here on.
+    app.splice_override(items[0], Some("test.Item".to_string()), None)
+        .expect("a bake must succeed");
+    assert!(!app.auto_folded.contains(&items[0]));
+    assert!(app.folded.contains(&items[0]));
+    assert!(app.is_folded(items[0]), "the user's fold still holds it");
+    assert_eq!(app.tree[items[0]].lines_visible, 1);
+}
