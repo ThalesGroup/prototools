@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0251 — a cached render is read, not copied
 
-Status: partly implemented (S5-S8, 2026-08-07; S1-S4 withdrawn)
+Status: implemented (S5-S10; S1-S4 withdrawn)
+Implemented in: 2026-08-07
 App: protolens
 Refs: docs/specs/0116-tree-sitter-textproto-highlight-captures.md §8
         (the render cache, and its still-open issue 7: the byte budget
@@ -301,17 +302,44 @@ Tests 1-6 of the draft belonged to S1-S4 and go with them.
 
 ## Measured outcome
 
-Partly in (2026-08-07); the rest waits on a run against googleapis.
-
-Measured so far:
+In, 2026-08-07.
 
 | what | before | after |
 |---|---|---|
 | worst-case preview render | — | 104 512 B (2051 lines, 2049 spans) |
 | `RENDER_CACHE_MAX_BYTES` | 1 MiB, asserted | 8 MiB, derived |
+| `RenderCache::insert` on a root override | 0.56 s | **212 ns** |
+| `render_node_as` on a root override | 2.09 s | **1.50 s** |
 
-Still owed: the root-override phase table re-run, showing the 0.56 s
-clone gone and the confirmed path's `to_vec` of the node with it; and
-peak and at-rest memory on googleapis across a `t`/`Enter`/`o`/`d`
-cycle, against spec 0207's 1.66 GiB / 0.94 GiB. State plainly anything
-that did not improve.
+The root-override re-run repeats spec 0249's method exactly:
+`googleapis.desc` (25.6 MB) opened `--raw`, overridden at `/` to
+`google.protobuf.FileDescriptorSet` through `export / --load-overrides`,
+under `flock -x … taskset -c 4-7`, with throwaway `trace!` timers around
+the phases. Two runs, 5 279 383 rendered lines each:
+
+| phase | before | run 1 | run 2 |
+|---|---|---|---|
+| `prototext-core` render | 1.06 s | 1.094 s | 1.028 s |
+| split into `String`s | 0.43 s | 0.408 s | 0.407 s |
+| `RenderCache::insert` clone | 0.56 s | 212 ns | 268 ns |
+| `render_node_as` total | 2.09 s | 1.538 s | 1.470 s |
+| `splice_override` total | ≈3.5 s | 2.782 s | 2.652 s |
+
+The clone is gone outright — 212 ns is the `is_preview` branch not
+taken — and the two phases that remain are unchanged, which is the
+point: S5 removed work rather than moving it. `render_node_as` is down
+26%, and the whole confirmed splice by ~0.75 s, of ≈4.1 s.
+
+S6's `to_vec` does not show up separately, and should not: 25 MB is
+~5 ms, well inside the run-to-run spread. It was removed because a
+25 MB allocation made *before* the cache is consulted is wrong on its
+own terms, not because it was measurable here.
+
+**Not measured, and deliberately:** peak and at-rest memory across a
+`t`/`Enter`/`o`/`d` cycle against spec 0207's 1.66 GiB / 0.94 GiB. That
+figure belonged to the withdrawn S1-S4, whose subject was keeping one
+copy of a render instead of two. What shipped never holds a large
+render in the cache at all, so there is no residency to compare;
+the transient 25 MB of S6 and the transient ~250 MB of the withdrawn
+clone are peaks, not occupancy, and the phase table already prices
+them.
