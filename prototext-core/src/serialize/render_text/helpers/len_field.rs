@@ -9,7 +9,7 @@ use prost_reflect::{Cardinality, Kind, MessageDescriptor};
 
 use super::super::sink::{GroupCloseFacts, NestedKind, ProbeSink, ScalarValue, Sink, TagFacts};
 use super::super::{
-    at_depth_cap, enter_level, render_message, FieldOrExt, EXPAND_ANY, EXPAND_MESSAGE_SET,
+    at_depth_cap, descend, enter_level, render_message, FieldOrExt, EXPAND_ANY, EXPAND_MESSAGE_SET,
     HIDE_UNKNOWN,
 };
 use super::any_field::render_any_expansion;
@@ -111,11 +111,13 @@ pub(in super::super) fn render_len_field<S: Sink>(
                 raw_range.start,
                 raw_range.end - data.len(),
             );
-            {
-                let _guard = enter_level(sink);
+            let descended = descend(sink, |sink| {
                 render_message(data, 0, None, None, schema_present, sink);
-            }
+            });
             sink.end_nested(mark, raw_range, None);
+            if !descended {
+                sink.note_undescended();
+            }
             return;
         }
 
@@ -254,11 +256,13 @@ pub(in super::super) fn render_len_field<S: Sink>(
                 raw_range.start,
                 raw_range.end - data.len(),
             );
-            {
-                let _guard = enter_level(sink);
+            let descended = descend(sink, |sink| {
                 render_message(data, 0, None, nested_schema, schema_present, sink);
-            }
+            });
             sink.end_nested(mark, raw_range, None);
+            if !descended {
+                sink.note_undescended();
+            }
             return;
         }
     }
@@ -320,6 +324,19 @@ pub(in super::super) fn render_group_field<S: Sink>(
     );
 
     // ── Recurse: parse and render child fields ────────────────────────────────
+    //
+    // Spec 0249 S1's row budget deliberately does *not* apply here. A group
+    // has no length prefix, so its extent is only knowable by parsing
+    // through to its `END_GROUP` tag — the same reason `ProbeSink` recurses
+    // into groups despite `treat_len_as_opaque`. Skipping the walk would
+    // leave `*pos` at the group's start and the parent would go on to read
+    // the group's own children as its siblings, which is a wrong structure
+    // rather than an unexpanded one.
+    //
+    // The stated limit, then: a bounded render is bounded except across a
+    // group. Every group is itself inside a LEN record that *was* reached
+    // under budget, so the exposure is one group subtree deep, and proto3
+    // has no groups at all.
     let start = *pos;
     let (new_pos, end_tag) = {
         let _guard = enter_level(sink);

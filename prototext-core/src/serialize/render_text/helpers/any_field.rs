@@ -10,7 +10,7 @@ use std::sync::Arc;
 use prost_reflect::MessageDescriptor;
 
 use super::super::sink::{NestedKind, Sink};
-use super::super::{enter_level, render_message, ANY_LOADER, EXPAND_ANY};
+use super::super::{descend, enter_level, render_message, ANY_LOADER, EXPAND_ANY};
 use super::len_field::FieldCtx;
 
 use super::group_scan::scan_group_extent;
@@ -201,8 +201,8 @@ pub(in super::super) fn render_any_expansion<S: Sink>(
     );
 
     // ── recurse into value bytes ──────────────────────────────────────────────
-    {
-        let inner_guard = enter_level(sink);
+    // `descend` decrements LEVEL on the way out, before "value" is closed.
+    let descended = descend(sink, |sink| {
         render_message(
             value_bytes,
             0,
@@ -211,8 +211,7 @@ pub(in super::super) fn render_any_expansion<S: Sink>(
             schema_present,
             sink,
         );
-        drop(inner_guard); // decrement LEVEL before closing "value"
-    }
+    });
 
     // ── close value block ─────────────────────────────────────────────────────
     // Same coordinate frame as `value_mark` was opened in (the Any's own
@@ -224,6 +223,11 @@ pub(in super::super) fn render_any_expansion<S: Sink>(
         value_payload_start..value_payload_start + value_bytes.len(),
         None,
     );
+    // Spec 0249 S1: `value` is the node that lost its body, not the `Any`
+    // field around it — the wrapper's own `type_url` line was emitted.
+    if !descended {
+        sink.note_undescended();
+    }
 
     // ── close Any block ───────────────────────────────────────────────────────
     // Drop outer_guard to decrement LEVEL back to the Any field's level before

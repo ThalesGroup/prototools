@@ -236,6 +236,30 @@ fn enter_level<S: Sink>(sink: &S) -> Option<LevelGuard> {
     }
 }
 
+/// Render one nested node's body, unless spec 0249 S1's row budget is
+/// already spent. Returns whether the body ran.
+///
+/// Called between the node's own `begin_nested` and `end_nested`, so a
+/// node the budget stops at is still opened and closed: it keeps its
+/// header line — byte for byte what the unbounded render writes there —
+/// and its footer, and loses only its children. That is what makes it
+/// foldable, and it is why the cut falls on a node boundary rather than
+/// mid-line as a byte budget's would.
+///
+/// The caller reports the stop with `Sink::note_undescended` *after*
+/// `end_nested`, when the node's span exists.
+///
+/// `enter_level` is inside, so the indentation counter is entered only
+/// when something is going to be written at that level.
+fn descend<S: Sink>(sink: &mut S, body: impl FnOnce(&mut S)) -> bool {
+    if sink.row_budget_spent() {
+        return false;
+    }
+    let _guard = enter_level(sink);
+    body(sink);
+    true
+}
+
 /// RAII guard for `DEPTH` (spec 0171): increments on construction,
 /// decrements on drop, so an unwind cannot leave the counter high.
 struct DepthGuard;
@@ -318,6 +342,20 @@ pub struct DecodeRenderOpts {
     /// destined to be spliced into an existing document's text, which must
     /// not repeat the header.
     pub emit_header: bool,
+    /// Spec 0249 S1: stop *descending* once this many rows have been
+    /// emitted. `None` is the unbounded render every caller but a bounded
+    /// one wants.
+    ///
+    /// A node reached with the budget spent is still opened and closed —
+    /// it keeps its own header line, byte for byte what the unbounded
+    /// render writes there, and its footer — but its body is empty, and
+    /// `decode_and_render_indexed` reports it as undescended. The walk
+    /// stays depth-first in document order, so the emitted rows are a
+    /// true prefix of the unbounded render's, and the output is
+    /// `row_budget` plus the breadth of the walk's right frontier: the
+    /// unwind still emits the siblings it had not reached, one folded row
+    /// each, so a consumer's line counts stay exact.
+    pub row_budget: Option<usize>,
 }
 
 impl Default for DecodeRenderOpts {
@@ -330,6 +368,7 @@ impl Default for DecodeRenderOpts {
             expand_message_set: true,
             initial_level: 0,
             emit_header: false,
+            row_budget: None,
         }
     }
 }
@@ -358,9 +397,11 @@ pub fn decode_and_render(
         expand_message_set,
         initial_level,
         emit_header,
+        row_budget,
     } = opts;
     let capacity = buf.len() * 8;
     let mut sink = TextSink::new(capacity);
+    sink.set_row_budget(row_budget);
 
     // Header — only emitted when annotations are on and the caller wants
     // one; without field-level annotations prototext encode cannot
@@ -425,6 +466,14 @@ pub struct IndexedRender {
     /// One span per node, in post-order (a container follows all of its
     /// descendants).
     pub spans: Vec<NodeSpan>,
+    /// Spec 0249 S1: indices into `spans` of the nested nodes
+    /// `DecodeRenderOpts::row_budget` stopped at — emitted with their own
+    /// header and footer but no body. Always empty when `row_budget` is
+    /// `None`, which is every caller that has not asked to be bounded.
+    ///
+    /// Ascending, and a consumer can map each one to its own structure
+    /// with the same span-to-node correspondence it uses for `spans`.
+    pub undescended: Vec<u32>,
 }
 
 /// Sibling to `decode_and_render`, sharing the exact same parameter list,
@@ -465,9 +514,11 @@ pub fn decode_and_render_indexed(
         expand_message_set,
         initial_level,
         emit_header,
+        row_budget,
     } = opts;
     let capacity = buf.len() * 8;
     let mut sink = IndexingTextSink::new(capacity, fqdns);
+    sink.set_row_budget(row_budget);
 
     if annotations && emit_header {
         sink.write_header(b"#@ prototext: protoc\n");
@@ -491,8 +542,12 @@ pub fn decode_and_render_indexed(
 
     render_message(buf, 0, None, root_desc, schema_present, &mut sink);
 
-    let (text, spans) = sink.into_parts();
-    Ok(IndexedRender { text, spans })
+    let (text, spans, undescended) = sink.into_parts();
+    Ok(IndexedRender {
+        text,
+        spans,
+        undescended,
+    })
 }
 
 // ── Core recursive render-while-decode ───────────────────────────────────────
@@ -963,6 +1018,106 @@ mod tests {
         };
         render_message(buf, 0, None, None, false, &mut greedy);
         assert_eq!(greedy.nested, 1, "greedy opens it regardless");
+    }
+
+    /// Spec 0249 S1, and the property everything after it assumes: a
+    /// row-budgeted render emits the *same bytes* as the unbounded one for
+    /// as far as it goes, because the two use one renderer and the budget
+    /// only decides whether to descend.
+    ///
+    /// The two renders are not prefixes of each other outright — the first
+    /// undescended node closes immediately instead of holding its
+    /// children — so the test locates the first differing line and pins
+    /// three things about it: it is at or past the budget, it is a closing
+    /// brace, and the node it closes was reported as undescended.
+    #[test]
+    fn a_row_budgeted_render_is_the_start_of_the_full_one() {
+        let pb: &[u8] = include_bytes!("../../../fixtures/descriptor.pb");
+        let schema = crate::parse_schema(pb, "google.protobuf.FileDescriptorSet")
+            .expect("descriptor.pb is self-describing");
+        let desc = schema.root_descriptor();
+
+        let render = |budget: Option<usize>| {
+            let mut fqdns = FqdnTable::new();
+            decode_and_render_indexed(
+                pb,
+                desc.as_ref(),
+                &mut fqdns,
+                DecodeRenderOpts {
+                    annotations: true,
+                    indent_size: 2,
+                    row_budget: budget,
+                    ..DecodeRenderOpts::default()
+                },
+            )
+            .expect("descriptor.pb is well within MAX_INDEXED_BUFFER")
+        };
+
+        let full = render(None);
+        assert!(
+            full.undescended.is_empty(),
+            "an unbounded render stops at nothing"
+        );
+        let full_lines: Vec<&str> = std::str::from_utf8(&full.text).unwrap().lines().collect();
+
+        for budget in [1usize, 2, 5, 20, 100] {
+            let bounded = render(Some(budget));
+            let text = std::str::from_utf8(&bounded.text).unwrap();
+            let lines: Vec<&str> = text.lines().collect();
+
+            assert!(
+                !bounded.undescended.is_empty(),
+                "budget {budget} is far under {} lines",
+                full_lines.len()
+            );
+            assert!(
+                lines.len() < full_lines.len(),
+                "budget {budget} bounded nothing"
+            );
+
+            let diff = (0..lines.len().min(full_lines.len()))
+                .find(|&i| lines[i] != full_lines[i])
+                .expect("a bounded render cannot equal the full one line for line");
+
+            // Every line before the cut is the full render's own byte for
+            // byte — that is the whole point of bounding rows rather than
+            // bytes, and it is what makes the frame after a confirm final.
+            assert_eq!(&lines[..diff], &full_lines[..diff]);
+            assert!(
+                diff >= budget,
+                "budget {budget} diverged at line {diff}, short of what was asked for"
+            );
+            assert!(
+                lines[diff].trim_start().starts_with('}'),
+                "budget {budget}: line {diff} is {:?}, not the close of an undescended node",
+                lines[diff]
+            );
+
+            // The cut is reported, and it is reported against a node whose
+            // body is exactly the two lines the renderer wrote for it.
+            let stopped: Vec<&NodeSpan> = bounded
+                .undescended
+                .iter()
+                .map(|&i| &bounded.spans[i as usize])
+                .collect();
+            assert!(stopped.iter().all(|s| s.is_message));
+            assert!(
+                stopped
+                    .iter()
+                    .all(|s| s.text_range.end - s.text_range.start == 2),
+                "an undescended node is its header and its derived footer"
+            );
+            assert!(
+                stopped
+                    .iter()
+                    .any(|s| s.text_range.end as usize == diff + 1),
+                "the first line not emitted belongs to a node reported as undescended"
+            );
+            assert!(
+                bounded.undescended.windows(2).all(|w| w[0] < w[1]),
+                "the report is ascending, so a consumer can zip it with the spans"
+            );
+        }
     }
 
     fn err_text(len: usize) -> String {

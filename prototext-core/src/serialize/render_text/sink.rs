@@ -238,6 +238,34 @@ pub(super) trait Sink {
         false
     }
 
+    /// Whether this sink has already emitted every row it was asked for,
+    /// so the renderer should stop *descending* (spec 0249 S1).
+    ///
+    /// Consulted at each recursion site right after the nested node's own
+    /// header has been written: the node is opened and closed as usual, so
+    /// it keeps its header line, its annotations and its derived footer —
+    /// it simply has no body. A consumer folding it draws exactly one row
+    /// (spec 0193), which is why a row budget cuts on a node boundary by
+    /// construction and a byte budget (spec 0174) cannot.
+    ///
+    /// On the sink rather than on a thread-local like `at_depth_cap`'s
+    /// `DEPTH`, because the row counter already lives there
+    /// (`TextSink::line_count`) and because `ProbeSink` must not see it: a
+    /// probe that stopped early would decide spec 0097's cascade
+    /// differently, turning a presentational budget into a structural
+    /// change. `ProbeSink` takes this default and is unaffected.
+    fn row_budget_spent(&self) -> bool {
+        false
+    }
+
+    /// The node whose `end_nested` has just returned was emitted without
+    /// descending into it, because `row_budget_spent` said so.
+    ///
+    /// Called *after* `end_nested`, so a sink recording spans knows the
+    /// index the node was just given. Default: ignore it — a sink that
+    /// never returns `true` from `row_budget_spent` never hears this.
+    fn note_undescended(&mut self) {}
+
     /// Whether this sink's own rendering depends on `LEVEL`, the shared
     /// thread-local recursion-depth counter used for indentation. `enter_level`
     /// consults this before touching `LEVEL` at all. `ProbeSink` overrides
@@ -297,6 +325,9 @@ pub(super) struct TextSink {
     /// (spec 0110 § Design rationale). `IndexingTextSink` reads this via
     /// `line_count()` to derive `NodeSpan::text_range`.
     line_count: usize,
+    /// Spec 0249 S1: stop descending once `line_count` reaches this.
+    /// `None` — every caller but a bounded render — is unbounded.
+    row_budget: Option<usize>,
 }
 
 impl TextSink {
@@ -304,7 +335,14 @@ impl TextSink {
         Self {
             out: Vec::with_capacity(capacity),
             line_count: 0,
+            row_budget: None,
         }
+    }
+
+    /// Bound this render to `budget` emitted rows (spec 0249 S1). Header
+    /// lines count: they occupy rows on screen like any other.
+    pub(super) fn set_row_budget(&mut self, budget: Option<usize>) {
+        self.row_budget = budget;
     }
 
     pub(super) fn into_inner(self) -> Vec<u8> {
@@ -342,6 +380,10 @@ impl TextSink {
 
 impl Sink for TextSink {
     type Mark = TextMark;
+
+    fn row_budget_spent(&self) -> bool {
+        self.row_budget.is_some_and(|b| self.line_count >= b)
+    }
 
     fn scalar_field(
         &mut self,
@@ -1187,6 +1229,13 @@ fn declared_type_fqdn(field_schema: Option<&FieldOrExt>, fqdns: &mut FqdnTable) 
 pub(super) struct IndexingTextSink<'f> {
     inner: TextSink,
     spans: Vec<NodeSpan>,
+    /// Spec 0249 S1: indices into `spans` of the nodes the row budget
+    /// stopped at. Empty for every unbounded render, and bounded by the
+    /// budget plus the walk's right frontier for a bounded one — which is
+    /// why it is a side vector and not a `NodeSpan` field: a span is
+    /// exactly 32 bytes with no padding hole, and `protolens` holds
+    /// millions of them at once (spec 0212 S8).
+    undescended: Vec<u32>,
     /// Absolute offset (w.r.t. the original top-level buffer) that local
     /// offset `0` currently maps to — i.e. the base of whatever coordinate
     /// frame is "active" at this point in the recursive descent. Starts at
@@ -1206,9 +1255,15 @@ impl<'f> IndexingTextSink<'f> {
         Self {
             inner: TextSink::new(capacity),
             spans: Vec::new(),
+            undescended: Vec::new(),
             raw_base: 0,
             fqdns,
         }
+    }
+
+    /// See `TextSink::set_row_budget` (spec 0249 S1).
+    pub(super) fn set_row_budget(&mut self, budget: Option<usize>) {
+        self.inner.set_row_budget(budget);
     }
 
     /// Write raw header bytes (see `TextSink::write_header`), keeping
@@ -1224,9 +1279,10 @@ impl<'f> IndexingTextSink<'f> {
         self.inner.out.len()
     }
 
-    /// Consume `self`, returning the rendered text and its `NodeSpan` index.
-    pub(super) fn into_parts(self) -> (Vec<u8>, Vec<NodeSpan>) {
-        (self.inner.into_inner(), self.spans)
+    /// Consume `self`, returning the rendered text, its `NodeSpan` index,
+    /// and the span indices of the nodes the row budget stopped at.
+    pub(super) fn into_parts(self) -> (Vec<u8>, Vec<NodeSpan>, Vec<u32>) {
+        (self.inner.into_inner(), self.spans, self.undescended)
     }
 }
 
@@ -1491,6 +1547,18 @@ impl Sink for IndexingTextSink<'_> {
 
     fn unknown_len_is_message(&self) -> bool {
         self.inner.unknown_len_is_message()
+    }
+
+    fn row_budget_spent(&self) -> bool {
+        self.inner.row_budget_spent()
+    }
+
+    fn note_undescended(&mut self) {
+        // `end_nested` has just pushed this node's span, so the index is
+        // the last one. Spans are post-order and an undescended node has
+        // no children, so nothing else can have landed in between.
+        let last = self.spans.len() - 1;
+        self.undescended.push(narrow(last));
     }
 
     fn tracks_level(&self) -> bool {

@@ -9,7 +9,7 @@ use std::ops::Range;
 use prost_reflect::{Kind, MessageDescriptor};
 
 use super::super::sink::{NestedKind, Sink, TagFacts};
-use super::super::{enter_level, render_message, ANY_LOADER};
+use super::super::{descend, enter_level, render_message, ANY_LOADER};
 use super::len_field::FieldCtx;
 
 use crate::helpers::{
@@ -294,8 +294,7 @@ pub(in super::super) fn render_message_set_expansion<S: Sink>(
                     raw_range.start,
                     msg_payload_start,
                 );
-                {
-                    let _msg = enter_level(sink);
+                let descended = descend(sink, |sink| {
                     render_message(
                         msg_bytes,
                         0,
@@ -304,7 +303,7 @@ pub(in super::super) fn render_message_set_expansion<S: Sink>(
                         schema_present,
                         sink,
                     );
-                }
+                });
                 // Same coordinate frame as `msg_mark` was opened in (the
                 // MessageSet's own payload `data`): use the exact `msg_bytes`
                 // sub-slice bounds, not the outer field's `raw_range`
@@ -314,6 +313,12 @@ pub(in super::super) fn render_message_set_expansion<S: Sink>(
                     msg_payload_start..msg_payload_start + msg_bytes.len(),
                     None,
                 ); // closes message
+
+                // Spec 0249 S1: `message` is the node that lost its body —
+                // `Item` still shows its `type_id` line.
+                if !descended {
+                    sink.note_undescended();
+                }
             }
             // `Item`'s own frame is `data` itself (payload_start was `0`
             // above), and `scan_message_set` doesn't track each item's own
