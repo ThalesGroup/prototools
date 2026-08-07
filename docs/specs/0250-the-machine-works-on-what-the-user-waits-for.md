@@ -578,7 +578,37 @@ question 3. S1 rests on throughput and on S3's checkpoint, not on cost.
 
 ## Measured outcome
 
-Filled in at implementation. It must include: time from opening the
+**S3's original parked-sweep rule shipped as a regression and was
+reversed in the same series.** Recorded here rather than only in S3.4,
+because this is where a reader looks for what the spec cost.
+
+Between `c3b4b2a` and `4fecd67` a parked sweep stayed registered in
+flight. Two symptoms, both reported from live use against
+`googleapis.desc`, both from that one rule:
+
+- **`[?]` cues that never resolved.** A visible row inside the parked
+  range pushed a `Visible` request every frame, and S4's rule dropped it
+  every frame because the range looked busy. A sweep stays parked as
+  long as the user keeps asking for things, so while scrolling this
+  never ended.
+- **An activity dot that never settled.** A parked entry is registered
+  at `Tier::Prefetch`, so `activity()` returned `Some(Prefetch)`
+  permanently — dark blue with nothing walking.
+
+Both cleared with the reversal. The lesson is the one now stated on
+`park_sweep`: `in_flight` means *a walk is happening right now*, not
+*somebody intends to finish this*, and both of its consumers — S4's
+duplicate rule and the dot — want that reading.
+
+A false trail worth not re-walking: the same symptoms were first blamed
+on the un-superseded `Visible` band, and a whole spec was drafted
+against that theory. The band is a real waste and spec 0252 addresses
+it, but it cannot produce these symptoms — stale `Visible` entries hold
+`band_occupancy`'s visible bit high, which would have made the dot
+**red**. The dot's color was the discriminator, and it was in the report
+all along.
+
+Still to fill in at implementation: time from opening the
 override pane to a full list, with and without the prefetcher
 saturated, before and after; the observed yield latency against S3's
 0.23 s mean and ~0.8 s worst part; queries per second of speculative
