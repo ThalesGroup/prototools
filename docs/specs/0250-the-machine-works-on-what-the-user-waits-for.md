@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0250 — the machine works on what the user waits for
 
-Status: draft
+Status: implemented
+Implemented in: 2026-08-07
 App: protolens
 Refs: docs/specs/0217-the-sweep-is-divided-among-the-cores.md (the
         sharded sweep, `--jobs` as a ceiling, the 16 MiB walker stack),
@@ -445,6 +446,11 @@ much care each needs.
    nobody has computed. It bounds the answer to question 1 from the
    other side.
 
+   **Answered 2026-08-07: under 8 MB, and it bounds nothing.** See the
+   measured outcome — a parked sweep holds a partial ranking of a *node*
+   range, not of the document, so the ~5 MB-per-list arithmetic the
+   question assumed does not apply.
+
 3. **Is the partition cheaper in energy, or only in time?** On
    googleapis 24 parts are 21% faster on one thread and on pdb 36%
    slower, and nobody knows why (spec 0218's "what is not understood").
@@ -608,11 +614,70 @@ it, but it cannot produce these symptoms — stale `Visible` entries hold
 **red**. The dot's color was the discriminator, and it was in the report
 all along.
 
-Still to fill in at implementation: time from opening the
-override pane to a full list, with and without the prefetcher
-saturated, before and after; the observed yield latency against S3's
-0.23 s mean and ~0.8 s worst part; queries per second of speculative
-work, against the 2.2-vs-1.1 estimate in S1; the memory held by the
-parked workers (open question 2); and the measured size of one full
-ranked list and what that makes 16 of them (S9). State plainly anything
-that did not improve.
+### What the arrangement measures at
+
+Measured 2026-08-07 on 12 CPUs against `googleapis.desc` (25.6 MB) in a
+200x50 pty: 45 s settle, 200 `PgDn` to saturate the read-ahead, then
+three rounds over the same three rows, opening the override pane with `t`
+and holding it 12 s. A/B on S3's yield, switched off by making the
+`should_yield` closure return `false`. Two runs with the yield, one
+without; the worker lived ≈166 s in each.
+
+| | yield on | yield off |
+|---|---|---|
+| pane, first open of a row | 7.5 / 15.4 / 6.8 ms | 6.6 / 15.4 / 10.0 ms |
+| pane, later opens | 0 ms ×6 | 0 ms ×6 |
+| speculative part, mean | **216 µs** | 226 µs |
+| part p90 / p99 | 421 / 843 µs | 434 / 1099 µs |
+| part, worst observed | 17.6 ms | 17.8 ms |
+| speculative queries completed | 17203 / 17236 | 18299 |
+| park events | 1376 / 1480 | 0 |
+| peak bytes held parked | 3.9 / 7.8 MB | 0 |
+
+**A part is 216 µs, not 0.23 s — S3's estimate was out by three orders
+of magnitude, and in the safe direction.** The estimate divided the
+*whole-document* sweep by 24. A real speculative request is a node
+range, so the checkpoint the yield lands on is far finer than the
+arithmetic suggested: p99 843 µs, worst observed 17.6 ms, against a
+derived "order 0.8 s". S3 promised a `User` request would wait "well
+under a second" for the machine; the measured bound is well under a
+millisecond nineteen times in twenty.
+
+**S3's yield does not measurably change what the user waits for on this
+workload, and that is the same fact.** Cold pane opens cost 6.6-16.8 ms
+whether speculative sweeps step aside or run to completion. When a part
+is 216 µs there is nothing worth stepping aside from — the `User`
+request is served within one part either way. This is not S3 failing:
+S3 buys a *bound*, the bound is real (1376-1480 parks actually fired,
+about nine a second), and it is what keeps the wait short if the
+speculative range is ever a large one. It is S3's *motivation* that was
+mis-sized. The ≈0.9-vs-≈5.5 s figures that justified S2 and S3 are
+whole-document sweeps, and the override pane is opened on a node.
+
+**G3 holds.** The first open of each row pays a sweep and every later
+open in the run is served synchronously — six of nine opens free. Test 7
+pins this deterministically (and was verified non-vacuous by cutting the
+cap to 1); the live run is consistent with it, with the caveat that
+after nine minutes of read-ahead a later open could also be a prefetch
+hit rather than a `CompleteLists` hit.
+
+**Yielding costs about 6% of speculative throughput** — 17203/17236
+completed speculative queries against 18299 without, over the same
+window, or ≈104/s against ≈110/s. That is the price of the bound above
+and it is worth paying.
+
+**The 2.2-vs-1.1 queries/s estimate in S1 is untested.** ≈104/s is not
+that number rescaled: the estimate was for whole-document queries at
+5.53 s each, and a real speculative request costs about 5 ms. The
+estimate's *ratio* — whole queries in parallel against sharded queries
+in series — is not what this workload measures, and nothing here
+confirms or refutes it.
+
+**Open question 2 is answered, and the fear was misplaced.** The parked
+set peaked at 3.9 MB in one run and 7.8 MB in the other, not the ≈60 MB
+that twelve workers × S9's 4.27 MB list would imply. Same reason as
+above: a parked sweep holds a partial ranking of a node range, not of
+the document. Parked-sweep memory does not bound the worker count.
+
+**S9's list size is measured in S9** — 49 255 entries, 4.27 MB — and is
+what moved the cache from 16 lists to 8.
