@@ -530,12 +530,15 @@ agree byte for byte.
   work is therefore bounded by the viewport plus a per-site constant,
   not by the document.
 
-  **Confirm-time invalidation work is not.** `collect_descendants` is
-  O(subtree), and a whole-document `FqdnField` override's subtrees can
-  partition the document — millions of slot writes and, worse, millions
-  of `Box<str>` frees, on the event thread. This is allocator work the
-  ≈5 s table never measured, because today the render dwarfed it. It is
-  open question 6.
+  **Confirm-time invalidation work is not, and stays unbounded.**
+  `collect_descendants` is O(subtree) over the *old* rendering, and a
+  whole-document `FqdnField` override's subtrees partition the document,
+  so the vacate loop runs over every slot whatever the budget is.
+  Measured (open question 6): **≈0.22 s for one pass over 2.86 M
+  slots** — a per-confirm floor a row budget cannot lower, and the only
+  phase of the splice that a budget does not shrink. Accepted. It is
+  *not* dominated by the `Box<str>` frees, which are 47 ms of it; the
+  rest is the pointer walk and four plain stores per slot.
 
 - **S10a. An anchor whose slot stops being rendered climbs to its
   nearest rendered ancestor.** The slot itself never disappears: the
@@ -730,27 +733,60 @@ agree byte for byte.
    writer is the cheap moment.
 
 6. **What does confirm-time invalidation cost for a whole-document
-   `FqdnField` override?** S10b names it: dropping the descendants'
-   text is O(subtree) per site, and a type that occurs everywhere makes
-   that O(document) — millions of slot writes and millions of
-   `Box<str>` frees, on the event thread, *after* the bounded render has
-   made everything else fast. It is the existing vacate loop
-   (`override_apply.rs:894-905`): `node_text[d] = None` drops one
-   `Box<str>` per descendant, while the loop's other four writes are
-   plain stores. Nobody has measured it, because until now the 4.12 s
-   render hid it.
+   `FqdnField` override? MEASURED 2026-08-07 — 0.22 s per document-full,
+   and the premise was wrong.** Two headless `export /` runs against
+   googleapis.desc (25.6 MB, 4 737 283 slots), each phase of
+   `splice_override` tallied over the whole batch. Both produce
+   byte-identical 232 892 696-byte output.
 
-   **The likely answer is not to move the work but to delete it.** Once
-   S9's stale bit is the authority on whether a slot's text is worth
-   anything, `is_some()` no longer has to mean "fresh" — so confirm can
-   flip bits and leave the strings where they are, and each old
-   `Box<str>` is dropped by whoever overwrites the slot, on the bake
-   thread, spread across the bake. Confirm-time frees go to zero, and
-   the memory was resident anyway. Measure first, but expect this shape.
-   The argument does not extend to `tree`/`heat_states`/`status`: those
-   are allocation-free and can keep being cleared eagerly. Open question
-   5's flattened `node_text` would dissolve it too, by making a drop an
-   offset write.
+   | | one site | 7 772 sites |
+   |---|---|---|
+   | origin | `/` → `FileDescriptorSet` | that, plus `FileDescriptorSet`.1 → `FileDescriptorProto` |
+   | splices | 1 | 7 772 |
+   | slots vacated | 2 864 189 | 5 686 372 |
+   | descend marks | 0.04 s | 0.10 s |
+   | render | 1.58 | 3.09 |
+   | **vacate** | **0.22** | **0.67** |
+   | `overlay_spans` | 0.70 | 1.35 |
+   | dropping the new lines | 0.10 | 0.43 |
+   | line counts | 0.00 | 0.11 |
+   | status roll-up | 0.48 | 1.02 |
+   | `mark_fresh_subtree` | 0.60 | 0.94 |
+   | **total** | **3.70** | **7.64** |
+
+   **Per-site overhead is negligible: 1.29 µs per slot at one site,
+   1.40 µs per slot at 7 772.** Spreading identical work over four
+   orders of magnitude more sites costs ≈0.24 s in total, and most of
+   that is the two phases that really are per-site — the O(depth)
+   ancestor line-count refresh (0.11 s) and the whole-arena descend-mark
+   rescan an `FqdnField` origin forces (0.10 s against 2 µs for a
+   `Path` origin, `compute_descend_marks`' documented exception). The
+   fear that "one entry is thousands of splices" multiplies a fixed cost
+   is unfounded; the cost tracks slots.
+
+   **And the `Box<str>` frees are not where the time goes.** Leaking
+   them instead of freeing them (`mem::forget` in the vacate loop, same
+   run otherwise) moves vacate from 0.22 s to 0.17 s: **47 ms over
+   2.86 M slots, 16 ns each.** The remaining 0.17 s is
+   `collect_descendants`' pointer walk plus the loop's four plain
+   stores. So the "delete the work" plan below would buy 47 ms, not
+   0.22 s — **it is not worth doing**, and S9's stale bit should be
+   justified by what else it buys, not by this.
+
+   What this does establish is the residue a row budget cannot touch.
+   Every other phase above is proportional to the *new* rendering and
+   shrinks with the budget; the vacate loop is proportional to the *old*
+   one, which on a baked document is the whole document however small
+   the new render is. **That residue is ≈0.22 s per confirm** — one
+   pass, not one per site — and it is accepted. It is also the floor a
+   bounded render approaches: no budget, however small, brings a confirm
+   on this document below it.
+
+   ~~The likely answer is not to move the work but to delete it~~ —
+   kept only as the disproved hypothesis: confirm would flip stale bits
+   and let the bake thread drop each `Box<str>` as it overwrote the
+   slot. Measurement says the frees were 21% of the phase and 1.3% of
+   the confirm.
 
 ## Alternatives considered
 
