@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0251 — a cached render is read, not copied
 
-Status: draft
+Status: partly implemented (S5-S8, 2026-08-07; S1-S4 withdrawn)
 App: protolens
 Refs: docs/specs/0116-tree-sitter-textproto-highlight-captures.md §8
         (the render cache, and its still-open issue 7: the byte budget
@@ -95,17 +95,18 @@ one and nothing else.
 
 ## Goals
 
-- **G1.** A cached render is consumed read-only, so a hit costs a
-  refcount bump rather than a copy of every line.
-- **G2.** Every last-minute edit to a row's text happens at draw time,
-  in one place, alongside the fold summary that already works that way.
+- **G1.** No copy of a render is made that nothing reads. *(Stated as
+  "a hit costs a refcount bump" in the draft — the `Arc` was a means,
+  and S5 reached the goal without it. See the S1-S4 withdrawal.)*
+- **G2.** The cache's budget is derived from what it holds, and it
+  holds only what a second lookup can reach.
 - **G3.** No cache is written by a workload that scans the whole
   document.
 
 ## Non-goals
 
 - **N1. The rendered grammar is not extended.** Nothing here adds a
-  token; the `...` marker S2 moves is display-only and must continue
+  token; the `...` truncation marker is display-only and must continue
   never to reach the parser.
 - **N2. No cache is merged with another.** `CandidateCache` was deleted
   because a shared MRU generic was not worth it at two call sites; a
@@ -113,49 +114,53 @@ one and nothing else.
 
 ## Specification
 
-### Move the mutations to draw time
+### S1-S4 are superseded by S5 — WITHDRAWN 2026-08-07
 
-- **S1. The field-name patch happens in `display_row_text`, not at
-  splice time.** A row already knows its owner (`display_row_source`),
-  and the override-emphasis machinery (spec 0192) already resolves per
-  drawn row whether that node carries an override and which. A patched
-  row returns `Cow::Owned`; every other row keeps its borrow.
+S1 moved the field-name patch to draw time and S2 moved the truncation
+marker to the overlay, so that S3 could make `RenderCache::get` return
+an `Arc` and S4 could let the preview share it. All four existed to
+turn one clone into a refcount bump.
 
-  **It must go above `window_text`, not in `row_text_of`.**
-  `window_styles` is keyed on `display_row_text` offsets, so patching
-  after the highlighter has parsed the placeholder `_` shifts every
-  column right of the patch by `len(name) - 1`. Spec 0193's summary
-  survives being applied later only because `spans_with_insertions`
-  threads it through as an explicit insertion (`render.rs:743`, "the
-  two **must** agree"); a rename *replaces* a token the grammar cares
-  about, and belongs where the parser can see it.
+**S5 removed the clone they were aimed at.** Once the confirmed render
+leaves the cache, the only remaining caller is the preview, whose
+render is bounded by `override_preview_byte_budget`. The worst shape
+that bound admits was measured at the default 4096 bytes: 2051 lines,
+2049 spans, **104 512 B** (`measure_a_preview_renders_size`). Cloning
+that is ~10 us, once per candidate keystroke.
 
-  The packed-run case (`patch_rows`) is preserved: a run draws one row
-  per element, each carrying its own placeholder.
+Against that, S1 costs a text edit on the per-frame path for every
+drawn row; a hard ordering constraint, since it must land above
+`window_text` or every style right of the patch shifts by
+`len(name) - 1`; and a borrow problem that was not visible when it was
+written — choosing between the synthetic and the raw patch needs the
+node's field type, which comes from `wrapper_target_for`, and that
+takes `&mut self` (`decode.rs:1248`) while `display_row_text` is
+`&self` and `render` holds `&self.tree` across the draw.
 
-- **S2. A truncated preview's `...` marker is reported by the overlay,
-  not spliced into the render.** `PreviewOverlay` already knows it is
-  truncated; it reports one extra row rather than mutating cached lines
-  and spans. `window_text`'s blanking of the marker (`render.rs:527`)
-  is unchanged — the marker is not prototext and must not reach the
-  parser.
+They are withdrawn as *superseded*, not declined: the reasoning was
+sound until S5 changed which path uses the cache. If a future change
+puts a large render back in the cache, they become live again — and
+the ordering constraint above is the part to re-read first.
 
-### Then the sharing is real
+### The confirmed render leaves the cache
 
-- **S3.** With S1 and S2 nothing mutates a cached render, so
-  `RenderCache::get` returns `Arc<RenderValue>` and clones no strings.
+- **S5. The confirmed splice does not use the cache. — IMPLEMENTED
+  2026-08-07.** Sharing would not have helped it: `node_text[slot]`
+  must own its `Box<str>`, so copying out of a shared `Arc` copies
+  anyway.
 
-- **S4. The preview path shares it.** `PreviewOverlay`'s lines become
-  an `Arc` held jointly with the cache — the workload the cache was
-  built for (spec 0116 §8).
+  The draft said "takes on a hit and never inserts". Implementation
+  showed the two halves are one: `is_preview` is part of the key, so if
+  nothing inserts a confirmed render nothing can ever hit one either.
+  The confirmed path therefore skips the lookup as well as the insert.
 
-- **S5. The confirmed splice takes on a hit and never inserts.**
-  Sharing does not help it: `node_text[slot]` must own its `Box<str>`,
-  so copying out of a shared `Arc` copies anyway. Taking gives zero
-  copies. The cost is one re-render on revert-and-re-apply, which is
-  user-paced.
+  What it gives up is one re-render on revert-and-re-apply, which is
+  user-paced. What it removes is 0.56 s of a 4.12 s root override —
+  a clone to hand the value back plus a clone to store it, for a 250 MB
+  entry that `insert` was going to reject anyway (S7).
 
-- **S6. `RenderedAs`'s preview-only product is `bytes`, not `spans`.**
+- **S6. `RenderedAs`'s preview-only product is `bytes`, not `spans`.
+  — IMPLEMENTED 2026-08-07.**
 
   Spec 0207 recorded that the preview renders a `Vec<NodeSpan>` and
   discards it. **That is no longer true and this spec repeated it
@@ -180,16 +185,27 @@ one and nothing else.
 
 ### The budget
 
-- **S7. An entry that alone busts the budget is not kept.** The
+- **S7. An entry that alone busts the budget is not kept. —
+  IMPLEMENTED 2026-08-07.** The
   `entries.len() > 1` floor in `insert` is what turns one large render
   into a full eviction. Reject the oversized entry instead: it is
   cheaper to re-render one thing than to lose everything else.
 
-- **S8. `RENDER_CACHE_MAX_BYTES` is re-derived after S5, not before.**
-  Once confirmed renders leave the cache on use, the budget only has to
-  hold previews. Derive it from a measured preview size times the
-  candidates a user arrows through, and put the derivation in the
-  constant's doc comment (spec 0116's open issue 7).
+- **S8. `RENDER_CACHE_MAX_BYTES` is re-derived after S5, not before.
+  — IMPLEMENTED 2026-08-07.** Once confirmed renders leave the cache,
+  the budget only has to hold previews.
+
+  Measured worst case at the default 4096-byte input budget: 2051
+  lines, 2049 spans, **104 512 B**, i.e. ~25x the input. A screenful of
+  the ranked candidate list is ~50 entries, so one pass through it
+  costs ~5 MB. **1 MiB -> 8 MiB**, derivation in the constant's doc
+  comment (spec 0116's open issue 7, now closed).
+
+  The doc comment also records an interaction nobody had written down:
+  raise `--override-preview-byte-budget` far enough and one preview
+  exceeds the whole cache, after which S7 rejects every entry and the
+  cache quietly stops working. At the default there are ~80 worst-case
+  entries of headroom.
 
 - **S9. No document-scanning workload writes to the cache.** A full
   document scan visits every node exactly once; under MRU eviction it
@@ -205,16 +221,14 @@ one and nothing else.
 
 ## Open questions
 
-1. **What is a preview render's real size?** S8 cannot be derived
-   without it. Measure one at the sizes the override pane actually
-   produces (spec 0174 bounds the interior at 4096 bytes by default),
-   times a plausible number of candidates arrowed through.
+1. ~~**What is a preview render's real size?**~~ **Answered
+   2026-08-07: 104 512 B** for the worst shape the default 4096-byte
+   interior budget admits — 2051 lines, 2049 spans, ~25x the input.
+   See S8.
 
-2. **Does anything else mutate a cache hit?** S1 and S2 are the two
-   found by reading `render_node_as`. The `Arc` in S3 makes any
-   remaining one a compile error rather than a silent copy, so the
-   answer arrives for free — but it should be looked for first, in case
-   one of them is load-bearing and needs its own treatment.
+2. ~~**Does anything else mutate a cache hit?**~~ Moot with S1-S4
+   withdrawn: a cache hit is still a private copy, so mutating it is
+   allowed and costs nothing shared.
 
 ## Alternatives considered
 
@@ -243,35 +257,37 @@ about to reuse.
 
 ## Test plan
 
-1. `a_cache_hit_returns_the_same_allocation` — two lookups of one key
-   yield `Arc`s that are `ptr_eq`. S3.
-2. `a_cached_render_is_never_mutated` — the value seen through the
-   cache after a splice equals the value inserted. S1, S2.
-3. `a_renamed_field_shows_its_name` — the drawn row carries the display
-   name although nothing stored does. S1.
-4. `a_packed_run_names_every_row` — the `patch_rows` case survives the
-   move to draw time. S1.
-5. `the_highlight_lands_on_the_renamed_field` — a style hint's columns
-   agree with the drawn text. Must drive a real render: `window_styles`
-   is keyed on `display_row_text` offsets, **not** `row_content`.
-6. `a_truncated_preview_shows_its_marker` — the overlay reports the
-   marker row and the cached lines do not contain it. S2.
-7. `a_confirmed_splice_leaves_no_entry_behind` — after a commit the key
-   is absent, so a large render cannot evict the previews. S5.
-8. `an_oversized_entry_evicts_nothing` — inserting an entry larger than
+Tests 1-6 of the draft belonged to S1-S4 and go with them.
+
+1. `a_confirmed_splice_leaves_no_entry_behind` — a confirmed render
+   leaves the cache empty; a preview of the same node fills it. S5.
+   **Implemented 2026-08-07.**
+2. `an_oversized_entry_evicts_nothing` — inserting an entry larger than
    the whole budget leaves the existing entries in place. S7.
    **Implemented 2026-08-07.**
-9. `a_sweep_writes_to_no_cache` — cache contents identical before and
-   after a full-document search. S9.
-10. `a_confirmed_render_copies_no_bytes` — the confirmed path allocates
-    no copy of the node's own bytes, and the preview path still draws a
-    wire row from the truncated buffer it does own. S6.
+3. `a_confirmed_render_copies_no_bytes` — the confirmed path allocates
+   no copy of the node's own bytes, and the preview path still owns the
+   truncated buffer its spans index into. S6. **Implemented
+   2026-08-07.**
+4. `measure_a_preview_renders_size` — `#[ignore]`d; reports the number
+   S8's derivation rests on, so the derivation can be re-run rather
+   than trusted. **Implemented 2026-08-07.**
+5. `a_sweep_writes_to_no_cache` — cache contents identical before and
+   after a workload that visits the whole document. S9.
 
 ## Measured outcome
 
-Filled in at implementation. It must include: the per-hit render cost
-before and after; the root-override phase table re-run, showing the
-0.56 s clone gone; peak and at-rest memory on googleapis across a
-`t`/`Enter`/`o`/`d` cycle, against spec 0207's 1.66 GiB / 0.94 GiB; and
-the re-derived budget with its derivation (S8, open question 1). State
-plainly anything that did not improve.
+Partly in (2026-08-07); the rest waits on a run against googleapis.
+
+Measured so far:
+
+| what | before | after |
+|---|---|---|
+| worst-case preview render | — | 104 512 B (2051 lines, 2049 spans) |
+| `RENDER_CACHE_MAX_BYTES` | 1 MiB, asserted | 8 MiB, derived |
+
+Still owed: the root-override phase table re-run, showing the 0.56 s
+clone gone and the confirmed path's `to_vec` of the node with it; and
+peak and at-rest memory on googleapis across a `t`/`Enter`/`o`/`d`
+cycle, against spec 0207's 1.66 GiB / 0.94 GiB. State plainly anything
+that did not improve.
