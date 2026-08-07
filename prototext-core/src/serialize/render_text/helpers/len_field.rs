@@ -88,24 +88,26 @@ pub(in super::super) fn render_len_field<S: Sink>(
         // Step 1: probe as nested message via `ProbeSink` (spec 0110 §2/Step 4).
         // Rendering failures inside the nested message do not affect this probe.
         //
-        // A sink building the maximal tree asks to skip the probe entirely
-        // (spec 0216 S14): the probe's verdict is *whether to recurse*, and
-        // such a sink must recurse unconditionally or an override that later
-        // declares this payload a message will find no nodes for its
-        // contents. The predicate is a constant per monomorphization, so the
-        // probe — and this whole branch — folds away for the sinks that keep
-        // the default.
-        let is_message = sink.unknown_len_is_message() || {
+        // This is the *only* place the verdict is computed. A sink building
+        // the maximal tree recurses regardless of it (spec 0216 S14) — a
+        // payload the probe declines is one a later type override could
+        // still declare a message, and the render would then need child
+        // nodes that were never created — but it is handed the verdict all
+        // the same, on `NestedKind::Message`, so that recording what the
+        // cascade would have decided never means re-deriving it.
+        let probed_as_message = {
             let mut probe = ProbeSink::default();
             let (next_pos, _) = render_message(data, 0, None, None, false, &mut probe);
             probe.malformity_count() == 0 && next_pos == data.len()
         };
-        if is_message {
+        if probed_as_message || sink.unknown_len_is_message() {
             let mark = sink.begin_nested(
                 field_number,
                 None,
                 tag,
-                NestedKind::Message,
+                NestedKind::Message {
+                    probed_as_message: Some(probed_as_message),
+                },
                 raw_range.start,
                 raw_range.end - data.len(),
             );
@@ -245,7 +247,10 @@ pub(in super::super) fn render_len_field<S: Sink>(
                 field_number,
                 Some(fs),
                 tag,
-                NestedKind::Message,
+                NestedKind::Message {
+                    // A declared message field: the schema decided, no probe ran.
+                    probed_as_message: None,
+                },
                 raw_range.start,
                 raw_range.end - data.len(),
             );

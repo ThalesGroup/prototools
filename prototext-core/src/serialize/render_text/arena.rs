@@ -44,7 +44,7 @@ const _: () = assert!(MAX_WIRE_DEPTH <= u16::MAX as usize);
 /// recorded.
 const MAX_NODE_DEPTH: u16 = (MAX_WIRE_DEPTH - 1) as u16;
 
-/// Phase 1's output: four parallel arrays, one entry per node, in document
+/// Phase 1's output: five parallel arrays, one entry per node, in document
 /// order (S8, S18).
 ///
 /// `parent` holds a slot index into these same arrays; a depth-0 node is
@@ -54,6 +54,11 @@ pub(super) struct DocumentOrderNodes {
     pub(super) depth: Vec<u16>,
     pub(super) raw_start: Vec<u32>,
     pub(super) raw_end: Vec<u32>,
+    /// Spec 0097's unknown-LEN probe verdict for this node's payload, as
+    /// a by-product of the walk that was already reading those bytes —
+    /// see [`Arena::probes_as_message`]. `false` for every node that is
+    /// not a nested one, where the question does not arise.
+    pub(super) probes_as_message: Vec<bool>,
 }
 
 impl DocumentOrderNodes {
@@ -97,6 +102,7 @@ impl ArenaSink {
                 depth: Vec::with_capacity(capacity),
                 raw_start: Vec::with_capacity(capacity),
                 raw_end: Vec::with_capacity(capacity),
+                probes_as_message: Vec::with_capacity(capacity),
             },
             raw_base: 0,
             parent: 0,
@@ -113,6 +119,10 @@ impl ArenaSink {
         self.nodes.depth.push(self.depth);
         self.nodes.raw_start.push(raw_start);
         self.nodes.raw_end.push(raw_end);
+        // A scalar or malformed node is not a nested one, so no probe
+        // verdict applies; `end_nested` overwrites this for the slots
+        // where the question is meaningful.
+        self.nodes.probes_as_message.push(false);
         if self.depth > self.max_depth {
             self.max_depth = self.depth;
         }
@@ -153,7 +163,7 @@ impl Sink for ArenaSink {
         _field_number: u64,
         _field_schema: Option<&FieldOrExt>,
         _tag: TagFacts,
-        _kind: NestedKind,
+        kind: NestedKind,
         raw_start: usize,
         payload_start: usize,
     ) -> ArenaMark {
@@ -165,6 +175,16 @@ impl Sink for ArenaSink {
         // groups need no special case (S20): a group carries no length
         // prefix, and its extent is simply where its own walk stopped.
         let slot = self.push(start, start);
+        // The one thing about this node the bytes alone do not say: what
+        // spec 0097's cascade would have made of it. The walk descends
+        // either way (S14), so the verdict has to be recorded here or lost.
+        // `Group` and a schema-decided message never faced a probe.
+        self.nodes.probes_as_message[slot as usize] = matches!(
+            kind,
+            NestedKind::Message {
+                probed_as_message: Some(true)
+            }
+        );
         let mark = ArenaMark {
             slot,
             raw_base,
@@ -290,6 +310,7 @@ pub(super) fn walk_document_order(buf: &[u8]) -> Result<DocumentOrderNodes, Code
     nodes.depth.shrink_to_fit();
     nodes.raw_start.shrink_to_fit();
     nodes.raw_end.shrink_to_fit();
+    nodes.probes_as_message.shrink_to_fit();
     Ok(nodes)
 }
 
@@ -306,12 +327,13 @@ const NO_FIRST_CHILD: u32 = 0;
 /// `i - first_child[parent[i]]`. A root is its own parent, which terminates
 /// the climb without a sentinel value.
 ///
-/// The four arrays live in **one** allocation, sliced rather than owned
+/// The arrays live in **one** allocation, sliced rather than owned
 /// separately: they are built together, have identical lifetimes, and the
 /// passes over them are disjoint, so one `malloc` and one first touch beat
 /// four (S8).
 pub struct Arena {
-    /// `first_child` (n + 1), then `parent`, `raw_start`, `raw_end` (n each).
+    /// `first_child` (n + 1), then `parent`, `raw_start`, `raw_end` (n
+    /// each), then the `probes_as_message` bitset (`n.div_ceil(32)`).
     cells: Vec<u32>,
     len: usize,
 }
@@ -343,7 +365,33 @@ impl Arena {
 
     /// One past each node's last byte.
     pub fn raw_end(&self) -> &[u32] {
-        &self.cells[3 * self.len + 1..]
+        &self.cells[3 * self.len + 1..4 * self.len + 1]
+    }
+
+    /// Whether spec 0097's unknown-LEN cascade would render this node's
+    /// payload as a nested message rather than as a string or bytes.
+    ///
+    /// The walk that builds the arena descends into every LEN payload
+    /// whatever it looks like — that is what makes the arena maximal — so
+    /// the arena's *shape* cannot answer this. The verdict is recorded
+    /// alongside it instead, taken verbatim from the one place that
+    /// computes it (`render_len_field`) rather than re-derived here, so
+    /// that the two can never come to disagree about what the cascade
+    /// would do.
+    ///
+    /// Two limits are worth stating rather than inferring:
+    ///
+    /// - It answers the *schema-free* question only. A LEN field whose
+    ///   descriptor says `message` is rendered as one with no probe at
+    ///   all, and a caller with a schema should not consult this.
+    /// - It is `false` for every node that is not a nested one — a scalar,
+    ///   a packed run, a malformed region — where the question does not
+    ///   arise. `false` therefore means "not a message *or* not nested",
+    ///   and the caller is expected to know which it is looking at.
+    pub fn probes_as_message(&self, slot: usize) -> bool {
+        debug_assert!(slot < self.len, "slot out of range");
+        let word = self.cells[4 * self.len + 1 + slot / 32];
+        word & (1 << (slot % 32)) != 0
     }
 }
 
@@ -370,6 +418,7 @@ fn sort_into_level_order(nodes: DocumentOrderNodes) -> Arena {
         depth,
         raw_start,
         raw_end,
+        probes_as_message,
     } = nodes;
 
     // 1-2. Count per depth, then prefix-sum in place so that `base[d]` is
@@ -395,19 +444,25 @@ fn sort_into_level_order(nodes: DocumentOrderNodes) -> Arena {
         *cursor += 1;
     }
 
-    // One exact-size allocation for all four output arrays. `n` is known
-    // now, so nothing here grows or reallocates.
-    let mut cells = vec![0u32; 4 * n + 1];
+    // One exact-size allocation for all the output arrays. `n` is known
+    // now, so nothing here grows or reallocates. The probe verdicts go in
+    // as a bitset: one bit per slot rather than one word costs a fifth of
+    // the arena's whole footprint against a thirtieth of it.
+    let mut cells = vec![0u32; 4 * n + 1 + n.div_ceil(32)];
     {
         let (first_child, rest) = cells.split_at_mut(n + 1);
         let (out_parent, rest) = rest.split_at_mut(n);
-        let (out_start, out_end) = rest.split_at_mut(n);
+        let (out_start, rest) = rest.split_at_mut(n);
+        let (out_end, out_probe) = rest.split_at_mut(n);
 
         for i in 0..n {
             let j = new_index[i] as usize;
             out_parent[j] = new_index[parent[i] as usize];
             out_start[j] = raw_start[i];
             out_end[j] = raw_end[i];
+            if probes_as_message[i] {
+                out_probe[j / 32] |= 1 << (j % 32);
+            }
         }
 
         // `first_child`, in two sweeps. Forward: a parent's children are
@@ -452,6 +507,7 @@ pub fn build_arena(buf: &[u8]) -> Result<Arena, CodecError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::helpers::{parse_varint, parse_wiretag, WT_LEN};
 
     /// One length-delimited field: a single-byte tag, a varint length, the
     /// payload. The length is a real varint because the deep-nesting tests
@@ -838,5 +894,113 @@ mod tests {
         let nodes = walk_document_order(&buf).expect("walks");
         assert_eq!(nodes.len(), 64);
         assert_eq!(nodes.parent.capacity(), nodes.len());
+    }
+
+    // ── The cached probe verdict ────────────────────────────────────────────
+
+    /// Spec 0097's cascade Step 1, verbatim from `render_len_field` — the
+    /// answer the cached bit claims to already know.
+    fn probe_says_message(payload: &[u8]) -> bool {
+        let mut probe = super::super::sink::ProbeSink::default();
+        let (next_pos, _) = render_message(payload, 0, None, None, false, &mut probe);
+        probe.malformity_count() == 0 && next_pos == payload.len()
+    }
+
+    /// Every node whose bytes are a well-framed LEN field must carry the
+    /// verdict a real probe of its payload gives. That set is exactly the
+    /// nodes `render_len_field` opened as nested messages: a malformed
+    /// region runs to the end of its frame and so is framed correctly only
+    /// by coincidence, and a group's bytes start with a `START_GROUP` tag.
+    fn assert_cached_verdicts_are_real(buf: &[u8]) {
+        let arena = build_arena(buf).expect("builds");
+        let (raw_start, raw_end) = (arena.raw_start(), arena.raw_end());
+        let mut checked = 0;
+        for slot in 0..arena.len() {
+            let node = &buf[raw_start[slot] as usize..raw_end[slot] as usize];
+            let expected = well_framed_len_payload(node).map(probe_says_message);
+            // A node that is not a well-framed LEN field never faced the
+            // cascade — a group, a scalar, a packed run, a malformed region
+            // — and must read `false`. Asserting that is the whole point:
+            // it is where an implementation that re-derived the verdict
+            // instead of being handed it went wrong, by answering a
+            // question nobody asked.
+            checked += usize::from(expected.is_some());
+            assert_eq!(
+                arena.probes_as_message(slot),
+                expected.unwrap_or(false),
+                "slot {slot} at {}..{}",
+                raw_start[slot],
+                raw_end[slot]
+            );
+        }
+        assert!(checked > 0, "the fixture contains no LEN node to check");
+    }
+
+    /// A node's payload, if its bytes are exactly one length-delimited
+    /// field — which is what `render_len_field` opened a nested message on.
+    fn well_framed_len_payload(node: &[u8]) -> Option<&[u8]> {
+        let tag = parse_wiretag(node, 0);
+        if tag.wtype != Some(WT_LEN) {
+            return None;
+        }
+        let len = parse_varint(node, tag.next_pos);
+        let length = len.varint? as usize;
+        (len.next_pos + length == node.len()).then(|| &node[len.next_pos..])
+    }
+
+    /// The bit the arena's *shape* cannot carry: these five bytes get
+    /// children either way (see `an_unknown_payload_is_descended_into_
+    /// regardless`), and only the verdict distinguishes them from a real
+    /// message.
+    #[test]
+    fn a_payload_the_cascade_declines_is_recorded_as_declined() {
+        let arena = build_arena(&len_field(1, b"hello")).expect("builds");
+        assert!(!arena.probes_as_message(0));
+        assert!(arena.len() > 1, "and it was descended into anyway");
+
+        let inner = len_field(2, &[0x18, 0x2A]);
+        let arena = build_arena(&len_field(1, &inner)).expect("builds");
+        assert!(arena.probes_as_message(0));
+    }
+
+    /// `ProbeSink` is shallow for LEN (`treat_len_as_opaque`), so a defect
+    /// buried in a nested message is invisible to the probe of the node
+    /// containing it — that node validated a length prefix and stopped.
+    #[test]
+    fn a_defect_inside_a_nested_message_does_not_reach_its_parent() {
+        let broken = len_field(2, b"hello");
+        let buf = len_field(1, &broken);
+        let arena = build_arena(&buf).expect("builds");
+        assert!(arena.probes_as_message(0), "the outer sees a framed field");
+        assert!(!arena.probes_as_message(1), "the inner sees the defect");
+        assert_cached_verdicts_are_real(&buf);
+    }
+
+    /// A group has no length prefix, so the probe of the node containing it
+    /// can only find its end by parsing through it, and takes on whatever
+    /// it meets on the way — including the group never closing at all
+    /// (spec 0110 Open Issue #1). The group's *own* slot still reads
+    /// `false`: no cascade ever judged it.
+    #[test]
+    fn a_group_that_never_closes_condemns_the_node_containing_it() {
+        // START_GROUP(1), varint field 2 = 42, and no END_GROUP.
+        let buf = len_field(1, &[0x0B, 0x10, 0x2A]);
+        let arena = build_arena(&buf).expect("builds");
+        assert!(!arena.probes_as_message(0));
+
+        // The same group, closed: nothing to charge to anyone.
+        let buf = len_field(1, &[0x0B, 0x10, 0x2A, 0x0C]);
+        let arena = build_arena(&buf).expect("builds");
+        assert!(arena.probes_as_message(0));
+    }
+
+    /// The verdict survives the sort into level order, and agrees with a
+    /// real probe on every node of a real blob.
+    #[test]
+    fn a_real_blob_carries_the_verdict_a_real_probe_gives() {
+        assert_cached_verdicts_are_real(include_bytes!("../../../fixtures/descriptor.pb"));
+        if let Ok(p) = std::env::var("PROBE_BITS_CORPUS") {
+            assert_cached_verdicts_are_real(&std::fs::read(p).expect("read"));
+        }
     }
 }

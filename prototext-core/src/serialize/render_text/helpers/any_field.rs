@@ -162,7 +162,10 @@ pub(in super::super) fn render_any_expansion<S: Sink>(
         field_number,
         field_schema,
         tag,
-        NestedKind::Message,
+        NestedKind::Message {
+            // An `Any` expansion: the schema decided, no probe ran.
+            probed_as_message: None,
+        },
         raw_range.start,
         raw_range.end - data.len(),
     );

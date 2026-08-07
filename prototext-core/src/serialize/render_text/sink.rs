@@ -51,7 +51,17 @@ pub(super) enum ScalarValue<'a> {
 /// Distinguishes a LEN-delimited nested message from a GROUP wire record at
 /// `begin_nested` — see that method's doc comment.
 pub(super) enum NestedKind {
-    Message,
+    Message {
+        /// Spec 0097 cascade Step 1's verdict on this payload: would a
+        /// structural probe have judged it a message? `None` when no probe
+        /// ran, which is every case a schema decided — a declared message
+        /// field, an `Any`, a `MessageSet` item.
+        ///
+        /// Reported rather than re-derived so that a sink wanting to
+        /// *record* the verdict (`ArenaSink`) and a sink wanting to *obey*
+        /// it (everything else) cannot come to different conclusions.
+        probed_as_message: Option<bool>,
+    },
     Group,
 }
 
@@ -219,6 +229,11 @@ pub(super) trait Sink {
     /// Orthogonal to `treat_len_as_opaque`, which stops the descent
     /// altogether rather than forcing it. Default `false`, so the cascade is
     /// unchanged for every sink that does not ask.
+    ///
+    /// Overriding this does not *hide* the probe's verdict: it still
+    /// arrives, on `begin_nested`'s `NestedKind::Message`, so a sink can
+    /// recurse unconditionally and record what the cascade would have
+    /// decided at the same time.
     fn unknown_len_is_message(&self) -> bool {
         false
     }
@@ -613,7 +628,7 @@ impl Sink for TextSink {
         _payload_start: usize,
     ) -> TextMark {
         match kind {
-            NestedKind::Message => {
+            NestedKind::Message { .. } => {
                 let is_known = field_schema.is_some();
                 wob_prefix_n(field_number, field_schema, !is_known, &mut self.out);
                 if ANNOTATIONS.with(|c| c.get()) {
@@ -1318,7 +1333,7 @@ impl Sink for IndexingTextSink<'_> {
         let level = LEVEL.with(|c| c.get());
         let type_fqdn = declared_type_fqdn(field_schema, self.fqdns);
         let wire_type = match kind {
-            NestedKind::Message => WT_LEN,
+            NestedKind::Message { .. } => WT_LEN,
             NestedKind::Group => WT_START_GROUP,
         };
         let raw_base = self.raw_base;

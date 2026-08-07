@@ -183,7 +183,10 @@ pub(in super::super) fn render_message_set_expansion<S: Sink>(
         field_number,
         field_schema,
         tag,
-        NestedKind::Message,
+        NestedKind::Message {
+            // A `MessageSet` item: the schema decided, no probe ran.
+            probed_as_message: None,
+        },
         raw_range.start,
         raw_range.end - data.len(),
     );
