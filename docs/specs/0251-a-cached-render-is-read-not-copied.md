@@ -207,13 +207,22 @@ the ordering constraint above is the part to re-read first.
   cache quietly stops working. At the default there are ~80 worst-case
   entries of headroom.
 
-- **S9. No document-scanning workload writes to the cache.** A full
-  document scan visits every node exactly once; under MRU eviction it
-  gets a hit rate of approximately zero *and* leaves the cache holding
-  the tail of the document for the interactive work that follows. A
-  scan that needs a render obtains it, tests it, and discards it. This
-  is spec 0250 S8 stated for the other cache, and the reason is the
-  same.
+- **S9. No document-scanning workload writes to the cache.**
+  **IMPLEMENTED 2026-08-07 — by S5, with a test to hold it there.** A
+  full document scan visits every node exactly once; under MRU eviction
+  it gets a hit rate of approximately zero *and* leaves the cache
+  holding the tail of the document for the interactive work that
+  follows. A scan that needs a render obtains it, tests it, and
+  discards it. This is spec 0250 S8 stated for the other cache, and the
+  reason is the same.
+
+  S5 makes this structural rather than a rule to be remembered: the
+  cache's only writer is now the `is_preview == true` arm, and the only
+  caller that passes `true` is `preview_override_highlight`, which
+  renders the single node under the cursor. Every document-scanning
+  path reaches the renderer through `resettle_node`
+  (`override_apply.rs:100`), which passes `false`. There is no second
+  place to police.
 
 - **S10. Housekeeping.** `docs/protolens/design/caches.md` describes
   two caches; `CandidateCache` is gone and `render_cache.rs`'s module
@@ -273,7 +282,11 @@ Tests 1-6 of the draft belonged to S1-S4 and go with them.
    S8's derivation rests on, so the derivation can be re-run rather
    than trusted. **Implemented 2026-08-07.**
 5. `a_sweep_writes_to_no_cache` — cache contents identical before and
-   after a workload that visits the whole document. S9.
+   after a workload that visits the whole document. S9. **Implemented
+   2026-08-07.** Two previews are primed first, so the assertion is
+   "unchanged" and not the weaker "still empty"; the sweep asserts it
+   actually spliced, so the test cannot pass by sweeping nothing; and
+   removing S5's guard was checked to make it fail (2 -> 3 entries).
 
 ## Measured outcome
 

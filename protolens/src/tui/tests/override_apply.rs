@@ -305,6 +305,65 @@ fn a_deleted_override_restores_a_packed_run_rather_than_a_type_mismatch() {
     );
 }
 
+/// Spec 0251 S9: the render cache serves the live preview and nothing
+/// else, so a workload that visits the whole document must leave it
+/// exactly as it found it. This is what keeps the 8 MB budget a budget
+/// for one node at the cursor rather than a share of the document —
+/// before S5 a full-document pass inserted an entry per spliced node
+/// and evicted whatever the user was actually looking at.
+///
+/// `len()` is a faithful witness of "wrote nothing" here: nothing can
+/// shrink it (only an insert evicts) and a sweep's keys carry
+/// `is_preview == false`, so they can never collide with the primed
+/// preview entries and be absorbed into them.
+#[test]
+fn a_sweep_writes_to_no_cache() {
+    let (mut app, run, tail, _a, _b) = packed_run_with_tail_fixture();
+
+    // Prime with two previews, so the assertion below is "unchanged"
+    // rather than the weaker "still empty".
+    app.render_node_as(run, Some("int32"), true)
+        .expect("a preview of the packed run must render");
+    app.render_node_as(tail, Some("test.Inner"), true)
+        .expect("a preview of the tail must render");
+    assert_eq!(app.render_cache.len(), 2, "both previews must be cached");
+
+    // A full-document pass that really splices: activating an override
+    // on the run makes `resettle_node` re-render it and everything the
+    // walk revisits. Asserted, so the test cannot pass by sweeping
+    // nothing.
+    let before = app.document_lines().clone();
+    let origin = OverrideOrigin::Path {
+        path: app.positional_path(run),
+    };
+    app.overrides.activate(origin.clone(), None);
+    app.render_overrides(app.first_node);
+    assert_ne!(
+        app.document_lines(),
+        before,
+        "the sweep must have spliced something for this test to mean anything"
+    );
+    assert_eq!(
+        app.render_cache.len(),
+        2,
+        "a sweep must not write to the render cache"
+    );
+
+    let entry_idx = app
+        .overrides
+        .entries()
+        .iter()
+        .position(|e| e.origin == origin)
+        .expect("the entry must exist");
+    app.overrides.toggle_active(entry_idx);
+    app.render_overrides(app.first_node);
+    assert_eq!(
+        app.render_cache.len(),
+        2,
+        "the sweep that reverts the override must not write either"
+    );
+}
+
 /// Spec 0184 test plan, "ordinal stability across override state": the
 /// whole path map is identical before an override on a packed run,
 /// while it is active, and after deactivating it. This is the property
