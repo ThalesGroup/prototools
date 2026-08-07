@@ -157,6 +157,32 @@ much care each needs.
   waste is a whole query. Keep an in-flight set keyed on `range.start`
   and merge against it too.
 
+  **IMPLEMENTED 2026-08-07.** The set lives in `HeatRequestQueueState`,
+  under the same `Mutex` as the queue itself, and `pop_blocking`
+  registers a request before releasing that lock. The two must be one
+  atomic act: split across two locks there is a window in which a worker
+  has taken a range off the queue but not yet announced it, and a second
+  worker popping a re-push in that window sees an empty set and sweeps
+  the range twice — the exact waste this item removes.
+
+  A pop of a range already in flight **drops** the request rather than
+  serving or requeueing it. Dropping is self-healing, because the reader
+  re-checks the cache each frame and pushes again once the sweep in
+  flight has written its answer, whereas requeueing would spin the
+  worker on an entry it cannot act on. No ask is lost that way either:
+  S8's `complete_wanted` is keyed on the range and consumed by whichever
+  sweep answers it, not by the request that carried it.
+
+  This changed nothing about the queue's ordering rules but did expose
+  an assumption in five queue tests: they used `pop_blocking` as a plain
+  dequeue and never declared the sweep over, so under the new rule a
+  later push of a key they had already popped was correctly dropped and
+  the test waited forever on a queue it had emptied itself. They now go
+  through a `take_one` helper that models a whole worker turn — pop,
+  then end. The deadlock was the test's, not the queue's, but it is the
+  kind of thing worth stating: **a bare `pop_blocking` now leases a
+  range, and every path out of one owes an `end_sweep`.**
+
 - **S5. `in_flight` stops being a single-writer store.**
   `set_in_flight` *stores* one encoded tier (`heat_worker.rs:149-151`):
   worker B overwrites A, and whichever finishes first stores `None`
@@ -166,11 +192,36 @@ much care each needs.
   silent. It becomes a per-tier count, or a set the workers register
   in.
 
+  **IMPLEMENTED 2026-08-07** as the set — the same one S4 needs, so the
+  two items cost one structure between them. The `AtomicU8` survives as
+  a *mirror* of it rather than as the state itself: `publish_in_flight`
+  recomputes the tier mask under the lock and stores it, exactly the
+  `publish_occupancy` idiom already in the file, which keeps
+  `activity()` lock-free and makes the byte read 0 only when the set is
+  empty. `one_worker_finishing_does_not_clear_anothers_in_flight_tier`
+  pins it.
+
+  Two existing activity tests had been written against the old
+  single-store API and asserted its shape directly. Both were
+  restatements of the same thing: that a request stops being reported
+  when the worker *says* it is done, not when it leaves the queue. That
+  claim survives — the moment it becomes true just moved earlier, from
+  a `set_in_flight` call after the pop to the pop itself.
+
 - **S6. `score_all_calls` becomes order-independent.** The
   `#[cfg(test)]` counter is read before/after in tests asserting that a
   sweep did or did not happen; with concurrent workers the delta no
   longer says *which* sweep ran. Test-only, but it makes those tests
   flaky rather than failing, so it must be fixed with the rest.
+
+  **IMPLEMENTED 2026-08-07.** The counter becomes a
+  `Mutex<Vec<(range.start, Tier)>>` log, and `score_all_calls()` its
+  length — so every existing call site keeps working unchanged — plus
+  `sweeps_of(range_start)`, which is what an assertion about one range
+  should use, being independent of what any other range's sweeps did
+  meanwhile. `a_prefetch_does_not_evict_a_user_list` was the one test
+  whose assertion was genuinely of the flaky shape (a `+ 1` delta
+  around a prefetch); it now names the prefetch's own range.
 
   (The fourth is `HeatCaches::complete`, S7's subject. Its failure is
   benign: the reader checks `range.start`, so a clobbered slot never
@@ -351,19 +402,33 @@ question 3. S1 rests on throughput and on S3's checkpoint, not on cost.
    the parts it had already done, and its result equals an
    uninterrupted one. S3.
 5. `the_same_range_is_swept_once` — pushing a range already in flight
-   starts no second sweep. S4.
+   starts no second sweep. S4. **Written** as
+   `a_range_already_in_flight_is_not_popped_a_second_time`, against the
+   queue directly rather than against two live workers: with one worker
+   the rule is dormant by construction, so a worker-level test could
+   only ever pass vacuously. It pushes the duplicate *last*, so that a
+   most-recently-touched-first pop reaches it first and has to step over
+   it to answer at all — pushed first, the pop would have returned the
+   other entry without ever examining it, which is how the assertion
+   read on its first draft.
 6. `activity_survives_several_workers` — `activity()` reports the
    highest live tier with more than one worker registered, and does not
-   report idle while one is still walking. S5.
+   report idle while one is still walking. S5. **Written** as
+   `one_worker_finishing_does_not_clear_anothers_in_flight_tier`.
+6b. `sweeps_of` names a range rather than counting a delta — S6, folded
+   into test 8 rather than given a test of its own, since the assertion
+   it exists to make honest is exactly the one test 8 makes.
 7. `the_pane_reopens_from_the_cache` — visiting 3 ranges then returning
    to the first re-scores nothing. S7, G3. **Written**, against a real
    worker thread; verified non-vacuous by cutting the cap to 1, which
    fails it.
 8. `a_prefetch_does_not_evict_a_user_list` — a prefetch completing
    between two visits leaves the cached list intact. S8. **Written**,
-   and it asserts the prefetch really swept (`score_all_calls` grew)
-   before asserting the list survived, so it cannot pass by the
-   prefetch not happening.
+   and it asserts the prefetch really swept before asserting the list
+   survived, so it cannot pass by the prefetch not happening. That
+   assertion is now `sweeps_of(2) == 1` — the prefetch's own range —
+   rather than the `score_all_calls` delta it started as, which is S6's
+   point made on the one test that needed it.
 9. `the_complete_cache_evicts_what_was_not_read` — added: a read
    promotes, so the cap evicts the least recently *used* entry and not
    the least recently inserted. S7. Without it, a user alternating

@@ -13,9 +13,6 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 
-#[cfg(test)]
-use std::sync::atomic::AtomicUsize;
-
 use prototext_graph::score::load::LoadedGraph;
 
 use super::event::AppEvent;
@@ -78,6 +75,21 @@ struct HeatRequestQueueState {
     /// Entries are consumed on being answered, so this holds only
     /// outstanding asks: one `usize` per range whose pane is opening.
     complete_wanted: std::collections::HashSet<usize>,
+    /// The ranges being swept right now, and at which tier — spec 0250
+    /// S4 and S5's replacement for the single `in_flight` store.
+    ///
+    /// Lives here, under the same `Mutex` as `mru`, so that popping a
+    /// request and registering it are one atomic act. Split across two
+    /// locks there is a window in which a worker has taken a range off
+    /// the queue but not yet announced it, and a second worker popping
+    /// a re-push of the same range in that window sees an empty
+    /// registry and sweeps it a second time — which is exactly the
+    /// waste S4 exists to remove.
+    ///
+    /// A `Vec` because it holds at most one entry per live worker: a
+    /// linear scan over a single-digit number of `usize` comparisons,
+    /// on a path that already holds a lock.
+    in_flight: Vec<(usize, Tier)>,
 }
 
 /// Merge-on-push, most-recently-touched-first request queue (spec
@@ -98,16 +110,23 @@ pub(super) struct HeatRequestQueue {
     /// slightly old value by construction — it re-reads on the next
     /// tick (G3).
     queued: AtomicU8,
-    /// The tier of the request the worker is executing right now, or 0
-    /// for "idle" (spec 0190 S3). Written by the worker thread only,
-    /// *outside* the `Mutex`.
+    /// Lock-free mirror of `state.in_flight`: one bit per tier that
+    /// some worker is sweeping at right now, 0 for "nothing in flight"
+    /// (spec 0190 S3, amended by spec 0250 S5).
+    ///
+    /// This used to be a plain `store` of the *one* tier the *one*
+    /// worker was on. With more than one worker that is a lie in the
+    /// direction that matters: whichever worker finishes first stores
+    /// "idle" while the other is still walking, so `activity()` reports
+    /// an idle machine during live work — silently, since nothing
+    /// crashes and no result is wrong. Mirroring the registry instead
+    /// means the byte reads 0 only when the registry is empty.
     ///
     /// Kept separate from `queued` rather than packed into the same
-    /// byte precisely because the two are written by different threads
-    /// at different moments: separated, each writer does a plain
-    /// `store` and never a read-modify-write, and there is no window
-    /// in which one writer's update is half-applied from the other's
-    /// point of view.
+    /// byte precisely because the two are republished at different
+    /// moments: separated, each store publishes exactly the state its
+    /// writer just established, and there is no window in which one
+    /// writer's update is half-applied from the other's point of view.
     in_flight: AtomicU8,
     /// `HeatRequestQueueState::stop`, republished outside the `Mutex` so
     /// the walk can poll it (spec 0217's `score_subset` `cancel`).
@@ -118,19 +137,26 @@ pub(super) struct HeatRequestQueue {
     /// the wait. The walk, in contrast, holds no lock and must not take
     /// one per wire field.
     stop_flag: AtomicBool,
-    /// Test-only full-sweep call counter (spec 0152/0154 test plans) —
+    /// Test-only log of the full sweeps this queue's workers have run,
+    /// in completion order (spec 0152/0154 test plans; spec 0250 S6) —
     /// proves the "no second `score_all` call" claim for a request the
     /// cache already covers by the time the worker re-checks it.
     ///
+    /// A log rather than the counter it replaces, because with more
+    /// than one worker a before/after *delta* no longer says **which**
+    /// sweep ran: a test asserting "the pane's range was not re-scored"
+    /// would pass or fail on whether some unrelated prefetch happened
+    /// to land inside its window. Recording `(range.start, tier)` lets
+    /// the assertion name the range it means, which is order- and
+    /// concurrency-independent.
+    ///
     /// It lives here, rather than in a `static`, precisely because this
     /// queue is the one structure both `HeatWorkerHandle` and its own
-    /// `heat_worker_loop` already share. A process-global counter would
-    /// be read as a before/after delta while other tests in the same
-    /// binary spawn real workers of their own, letting an unrelated
-    /// test's sweep land inside the window — green in isolation, flaky
-    /// under the full suite.
+    /// `heat_worker_loop` already share. A process-global log would be
+    /// read while other tests in the same binary spawn real workers of
+    /// their own — green in isolation, flaky under the full suite.
     #[cfg(test)]
-    score_all_calls: AtomicUsize,
+    sweeps_performed: Mutex<Vec<(usize, Tier)>>,
 }
 
 impl HeatRequestQueue {
@@ -140,13 +166,14 @@ impl HeatRequestQueue {
                 mru: TieredBounded::new(HEAT_REQUEST_QUEUE_MAX_ENTRIES),
                 stop: false,
                 complete_wanted: std::collections::HashSet::new(),
+                in_flight: Vec::new(),
             }),
             condvar: Condvar::new(),
             queued: AtomicU8::new(0),
             in_flight: AtomicU8::new(0),
             stop_flag: AtomicBool::new(false),
             #[cfg(test)]
-            score_all_calls: AtomicUsize::new(0),
+            sweeps_performed: Mutex::new(Vec::new()),
         }
     }
 
@@ -159,15 +186,50 @@ impl HeatRequestQueue {
             .store(state.mru.band_occupancy(), Ordering::Relaxed);
     }
 
-    /// Spec 0190 S3: called by `heat_worker_loop` around the scoring
-    /// of one popped request. `Some(tier)` on entry, `None` once that
-    /// request is done — including on the early-out path where the
-    /// cache already covers it by the time the worker re-checks.
+    /// Republishes `in_flight` from the registry the caller has just
+    /// established (spec 0190 S3, spec 0250 S5) — the same idiom as
+    /// `publish_occupancy`, and exact for the same reason: every store
+    /// happens under the `Mutex`, so the stores are totally ordered
+    /// and each publishes the state its writer just established.
+    ///
     /// Encoded as the same bitmask `band_occupancy` uses, so
     /// `activity` can simply `|` the two together; 0 means idle.
-    fn set_in_flight(&self, tier: Option<Tier>) {
-        let encoded = tier.map_or(0, Tier::bit);
-        self.in_flight.store(encoded, Ordering::Relaxed);
+    fn publish_in_flight(&self, state: &HeatRequestQueueState) {
+        let mask = state.in_flight.iter().fold(0, |m, (_, t)| m | t.bit());
+        self.in_flight.store(mask, Ordering::Relaxed);
+    }
+
+    /// Spec 0250 S4/S5: the sweep of the range starting at `start` is
+    /// over — deregister it and republish the mirror. Called by
+    /// `heat_worker_loop` on every path out of a popped request,
+    /// including the early-outs where no sweep actually ran.
+    fn end_sweep(&self, start: usize) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.in_flight.retain(|(s, _)| *s != start);
+        self.publish_in_flight(&state);
+    }
+
+    /// Test-only view of what is being swept right now (spec 0250 S5).
+    #[cfg(test)]
+    fn in_flight_ranges(&self) -> Vec<(usize, Tier)> {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.in_flight.clone()
+    }
+
+    /// Test-only: one whole worker turn — pop a request, then declare
+    /// its sweep over, as `heat_worker_loop` does around every request
+    /// it handles.
+    ///
+    /// Tests about *ordering* must use this rather than a bare
+    /// `pop_blocking`, which leaves the range registered as in flight:
+    /// under spec 0250 S4 a later push of that same range is then
+    /// correctly dropped, and a test that meant only "take the next
+    /// entry" would wait on a queue it had itself emptied.
+    #[cfg(test)]
+    fn take_one(&self) -> Option<(usize, HeatRequest)> {
+        let popped = self.pop_blocking()?;
+        self.end_sweep(popped.0);
+        Some(popped)
     }
 
     /// Spec 0190 S4: the highest-priority tier that is live — queued
@@ -237,6 +299,23 @@ impl HeatRequestQueue {
     /// can never block a UI-thread `push` (G4); draining the band under
     /// one lock hold would put that whole batch back on the critical
     /// path, on the worker instead of the UI thread.
+    ///
+    /// Spec 0250 S4: `push` merges on `range.start` only while a
+    /// request is still *queued*, so once popped, a re-push of the same
+    /// range would start a second live sweep of it. The results are
+    /// identical, so that is pure waste — and the unit of waste is a
+    /// whole query. A pop of a range some other worker is already
+    /// sweeping is therefore **dropped**, not served and not requeued:
+    /// dropping is self-healing, because the reader re-checks the cache
+    /// each frame and pushes again once the sweep in flight has
+    /// finished and written its answer, whereas requeueing would spin
+    /// this worker on an entry it cannot act on. Nor can an ask be lost
+    /// this way — `complete_wanted` is keyed on the range and consumed
+    /// by whichever sweep answers it, not by this request.
+    ///
+    /// The returned request is registered in `state.in_flight` before
+    /// the lock is released — see that field for why the two must be
+    /// one atomic act.
     fn pop_blocking(&self) -> Option<(usize, HeatRequest)> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         loop {
@@ -245,6 +324,11 @@ impl HeatRequestQueue {
             }
             if let Some(entry) = state.mru.pop_highest() {
                 self.publish_occupancy(&state);
+                if state.in_flight.iter().any(|(s, _)| *s == entry.0) {
+                    continue;
+                }
+                state.in_flight.push((entry.0, entry.1.tier));
+                self.publish_in_flight(&state);
                 return Some(entry);
             }
             if state.mru.discard_one_superseded() {
@@ -633,12 +717,12 @@ pub(super) fn heat_worker_loop(
     // `&'static` copied out of one, so the borrow below cannot outlive it.
     let graph = graph.graph();
     while let Some((start, req)) = queue.pop_blocking() {
-        // Spec 0190 S3: bracket the whole handling of one request, so
-        // the activity dot shows a `User` sweep the user is actually
-        // waiting on. The `(true, true)` "already done" arm is inside
-        // the bracket too — it is short, but leaving it out would mean
-        // a stretch of work reported as idle.
-        queue.set_in_flight(Some(req.tier));
+        // Spec 0190 S3: `pop_blocking` has already registered this
+        // request as in flight, so the activity dot shows a `User`
+        // sweep the user is actually waiting on. The `(true, true)`
+        // "already done" arm is inside that bracket too — it is short,
+        // but leaving it out would mean a stretch of work reported as
+        // idle. Every path out of here ends with `end_sweep(start)`.
         let (covers_window, covers_current) = {
             let mut c = caches.lock().unwrap_or_else(|e| e.into_inner());
             // The same predicate the readers use, rather than a
@@ -676,7 +760,11 @@ pub(super) fn heat_worker_loop(
             (false, _) => {
                 let range_bytes = &blob[req.range.clone()];
                 #[cfg(test)]
-                queue.score_all_calls.fetch_add(1, Ordering::SeqCst);
+                queue
+                    .sweeps_performed
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push((start, req.tier));
                 let candidates = override_pane::inferred_candidates(
                     range_bytes,
                     graph,
@@ -689,7 +777,7 @@ pub(super) fn heat_worker_loop(
                 // is waiting for it either: the only thing that raises the
                 // flag is a shutdown.
                 if queue.stop_flag.load(Ordering::Relaxed) {
-                    queue.set_in_flight(None);
+                    queue.end_sweep(start);
                     break;
                 }
                 let wants_complete = queue.take_complete_wanted(start);
@@ -740,7 +828,7 @@ pub(super) fn heat_worker_loop(
         // Spec 0164 G10: a `Prefetch`-tier completion writes its cache
         // entry but never wakes the main thread — a large read-ahead
         // burst would otherwise mean thousands of no-op redraws.
-        queue.set_in_flight(None);
+        queue.end_sweep(start);
         if req.tier != Tier::Prefetch {
             let _ = progress.send(AppEvent::HeatWorkerProgress);
         }
@@ -814,10 +902,31 @@ impl HeatWorkerHandle {
     }
 
     /// Test-only full-sweep count for *this* worker (see
-    /// `HeatRequestQueue::score_all_calls`).
+    /// `HeatRequestQueue::sweeps_performed`).
     #[cfg(test)]
     pub(super) fn score_all_calls(&self) -> usize {
-        self.queue.score_all_calls.load(Ordering::SeqCst)
+        self.queue
+            .sweeps_performed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
+    }
+
+    /// Test-only: how many full sweeps of the range starting at
+    /// `range_start` this worker has run (spec 0250 S6).
+    ///
+    /// This, not the count above, is what an assertion about one
+    /// range should use: it is independent of what any other range's
+    /// sweeps did in the meantime.
+    #[cfg(test)]
+    pub(super) fn sweeps_of(&self, range_start: usize) -> usize {
+        self.queue
+            .sweeps_performed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(s, _)| *s == range_start)
+            .count()
     }
 
     /// Test-only construction (spec 0152 test plan) — a live queue
@@ -920,7 +1029,7 @@ mod tests {
             Tier::User,
         );
         assert_eq!(queue.len(), 1, "same range.start must merge into one entry");
-        let (key, merged) = queue.pop_blocking().unwrap();
+        let (key, merged) = queue.take_one().unwrap();
         assert_eq!(key, 5);
         assert_eq!(merged.start, 0);
         assert_eq!(merged.end, 5);
@@ -937,21 +1046,21 @@ mod tests {
         queue.push(req(1, 0, 1), Tier::User);
         queue.push(req(2, 0, 1), Tier::User);
         queue.push(req(3, 0, 1), Tier::User);
-        assert_eq!(queue.pop_blocking().unwrap().0, 3);
-        assert_eq!(queue.pop_blocking().unwrap().0, 2);
-        assert_eq!(queue.pop_blocking().unwrap().0, 1);
+        assert_eq!(queue.take_one().unwrap().0, 3);
+        assert_eq!(queue.take_one().unwrap().0, 2);
+        assert_eq!(queue.take_one().unwrap().0, 1);
 
         queue.push(req(1, 0, 1), Tier::User);
         queue.push(req(2, 0, 1), Tier::User);
         queue.push(req(1, 1, 3), Tier::User);
-        let (key, merged) = queue.pop_blocking().unwrap();
+        let (key, merged) = queue.take_one().unwrap();
         assert_eq!(key, 1, "the re-asked key jumps back ahead of key 2");
         assert_eq!(
             (merged.start, merged.end),
             (0, 3),
             "and its window is still the union of both pushes"
         );
-        assert_eq!(queue.pop_blocking().unwrap().0, 2);
+        assert_eq!(queue.take_one().unwrap().0, 2);
     }
 
     // ── Activity reporting (spec 0190 test plan) ────────────────────
@@ -984,9 +1093,9 @@ mod tests {
         queue.push(req_at(3, Tier::User), Tier::User);
         assert_eq!(queue.activity(), Some(Tier::User));
 
-        queue.pop_blocking(); // User
+        queue.take_one(); // User
         assert_eq!(queue.activity(), Some(Tier::Visible));
-        queue.pop_blocking(); // Visible
+        queue.take_one(); // Visible
         assert_eq!(queue.activity(), Some(Tier::Prefetch));
 
         queue.push(req_at(4, Tier::Prefetch), Tier::Prefetch);
@@ -1041,18 +1150,77 @@ mod tests {
     fn a_popped_request_is_still_reported_as_activity_while_in_flight() {
         let queue = HeatRequestQueue::new();
         queue.push(req_at(1, Tier::User), Tier::User);
-        let (_, popped) = queue.pop_blocking().unwrap();
+        let (start, _) = queue.pop_blocking().unwrap();
         assert_eq!(
             queue.activity(),
-            None,
-            "nothing queued and nothing bracketed yet"
+            Some(Tier::User),
+            "the pop itself registers the sweep (spec 0250 S5)"
         );
 
-        queue.set_in_flight(Some(popped.tier));
-        assert_eq!(queue.activity(), Some(Tier::User));
-
-        queue.set_in_flight(None);
+        queue.end_sweep(start);
         assert_eq!(queue.activity(), None);
+    }
+
+    /// Spec 0250 S5: two workers sweeping at once, and the first to
+    /// finish must not report the machine idle while the second is
+    /// still walking. That was the single `store`'s silent failure —
+    /// nothing crashes, no result is wrong, the busy indicator simply
+    /// lies.
+    #[test]
+    fn one_worker_finishing_does_not_clear_anothers_in_flight_tier() {
+        let queue = HeatRequestQueue::new();
+        queue.push(req_at(1, Tier::User), Tier::User);
+        queue.push(req_at(2, Tier::Prefetch), Tier::Prefetch);
+        let (first, _) = queue.pop_blocking().unwrap();
+        let (second, _) = queue.pop_blocking().unwrap();
+        assert_eq!(first, 1, "the User band drains first");
+        assert_eq!(second, 2);
+        assert_eq!(
+            queue.in_flight_ranges(),
+            vec![(1, Tier::User), (2, Tier::Prefetch)],
+            "both sweeps are live"
+        );
+
+        queue.end_sweep(first);
+        assert_eq!(
+            queue.activity(),
+            Some(Tier::Prefetch),
+            "the surviving sweep must still be reported"
+        );
+
+        queue.end_sweep(second);
+        assert_eq!(queue.activity(), None, "now, and only now, idle");
+    }
+
+    /// Spec 0250 S4: a range some worker is already sweeping is
+    /// dropped when popped rather than swept a second time. The two
+    /// sweeps would produce identical results, so the duplicate is
+    /// pure waste — and the unit of waste is a whole query.
+    #[test]
+    fn a_range_already_in_flight_is_not_popped_a_second_time() {
+        let queue = HeatRequestQueue::new();
+        queue.push(req_at(1, Tier::User), Tier::User);
+        let (start, _) = queue.pop_blocking().unwrap();
+        assert_eq!(start, 1);
+
+        // Same range again, now that it is no longer *queued* and so
+        // has nothing left to merge with. Pushed *last*, so that a
+        // most-recently-touched-first pop reaches the duplicate first
+        // and has to step over it in order to answer at all.
+        queue.push(req_at(7, Tier::User), Tier::User);
+        queue.push(req_at(1, Tier::User), Tier::User);
+        assert_eq!(
+            queue.pop_blocking().unwrap().0,
+            7,
+            "the duplicate must be skipped over, not served"
+        );
+        assert_eq!(queue.len(), 0, "and dropped rather than requeued");
+
+        // Self-healing: once the sweep in flight is over, the same
+        // range is servable again.
+        queue.end_sweep(1);
+        queue.push(req_at(1, Tier::User), Tier::User);
+        assert_eq!(queue.pop_blocking().unwrap().0, 1);
     }
 
     /// Spec 0190 S4: the two sources are combined by priority, not by
@@ -1061,20 +1229,29 @@ mod tests {
     #[test]
     fn activity_takes_the_highest_tier_across_queued_and_in_flight() {
         let queue = HeatRequestQueue::new();
-        queue.set_in_flight(Some(Tier::Prefetch));
-        queue.push(req_at(1, Tier::User), Tier::User);
-        assert_eq!(queue.activity(), Some(Tier::User));
-
+        queue.push(req_at(9, Tier::Prefetch), Tier::Prefetch);
         queue.pop_blocking();
+        queue.push(req_at(1, Tier::User), Tier::User);
+        assert_eq!(
+            queue.activity(),
+            Some(Tier::User),
+            "a queued User outranks an in-flight Prefetch"
+        );
+
+        let (user, _) = queue.pop_blocking().unwrap();
+        queue.end_sweep(user);
         assert_eq!(
             queue.activity(),
             Some(Tier::Prefetch),
             "the in-flight prefetch must remain visible"
         );
 
-        queue.set_in_flight(Some(Tier::User));
-        queue.push(req_at(2, Tier::Prefetch), Tier::Prefetch);
-        assert_eq!(queue.activity(), Some(Tier::User));
+        queue.push(req_at(2, Tier::User), Tier::User);
+        assert_eq!(
+            queue.activity(),
+            Some(Tier::User),
+            "and an in-flight Prefetch does not mask a queued User"
+        );
     }
 
     /// Spec 0164 G1/G3: a `Tier::Visible` push for a brand-new key
@@ -1087,11 +1264,11 @@ mod tests {
         queue.push(req(1, 0, 1), Tier::User);
         queue.push(req(2, 0, 1), Tier::Visible);
         assert_eq!(
-            queue.pop_blocking().unwrap().0,
+            queue.take_one().unwrap().0,
             1,
             "the User-tier request must still pop first"
         );
-        assert_eq!(queue.pop_blocking().unwrap().0, 2);
+        assert_eq!(queue.take_one().unwrap().0, 2);
     }
 
     /// Spec 0164 G5: a lower-tier push that merges into an
@@ -1107,11 +1284,11 @@ mod tests {
         // not re-promote it ahead of key 2, nor change its tier.
         queue.push(req(1, 1, 3), Tier::Visible);
         assert_eq!(
-            queue.pop_blocking().unwrap().0,
+            queue.take_one().unwrap().0,
             2,
             "key 2 must still pop first — the Visible push must not reorder key 1"
         );
-        let (key, merged) = queue.pop_blocking().unwrap();
+        let (key, merged) = queue.take_one().unwrap();
         assert_eq!(key, 1);
         assert_eq!(
             (merged.start, merged.end),
@@ -1438,8 +1615,6 @@ messages:
             .newest()
             .cloned()
             .expect("the user's whole-list request must record one");
-        let calls = worker.score_all_calls();
-
         // A speculative sweep of somewhere else. `Tier::Prefetch` sends
         // no progress event (spec 0164 G10), so poll `by_range` for its
         // arrival instead of waiting on the channel.
@@ -1471,9 +1646,13 @@ messages:
             landed,
             "the prefetch must have swept, or this proves nothing"
         );
+        // Spec 0250 S6: named by range rather than as a before/after
+        // delta on one counter — with more than one worker a delta no
+        // longer says *which* sweep ran, and this assertion means the
+        // prefetch's.
         assert_eq!(
-            worker.score_all_calls(),
-            calls + 1,
+            worker.sweeps_of(2),
+            1,
             "the prefetch must really have been a full sweep"
         );
 
