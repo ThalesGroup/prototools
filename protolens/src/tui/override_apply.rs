@@ -921,8 +921,10 @@ impl App {
         // `raw_range` and `packed_record_start` from the arena, and the
         // arena is expressed against `self.blob` by construction. A
         // truncated preview's narrower length varint therefore cannot
-        // put a span in the wrong place; at worst it produces a span the
-        // maximal walk never saw, which `slots_for_spans` rejects.
+        // put a span in the wrong place. It could produce a span the
+        // maximal walk never saw, which `slots_for_spans` maps to
+        // `NO_NODE` — and since spec 0249 that is a panic, not a silent
+        // drop. No caller splices a byte-budgeted preview.
         //
         // `idx`'s own slot has to be vacated first, alongside the
         // descendants above: `overlay_spans` treats a second span landing

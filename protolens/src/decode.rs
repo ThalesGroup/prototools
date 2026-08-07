@@ -720,10 +720,13 @@ impl TreeNode {
 /// elements all belong to `root` — the only way one field's bytes can
 /// produce more than one top-level span.
 ///
-/// `NO_NODE` for a span the arena has no slot for. That happens only for
-/// a budget-truncated preview (spec 0174), whose cut can fall inside a
-/// record and so produce structure the walk of the whole bytes never
-/// saw; the caller drops such a span rather than indexing with it.
+/// `NO_NODE` for a span the arena has no slot for. The maximal walk sees
+/// every structure any interpretation can produce (spec 0216), so on a
+/// render of real bytes this cannot happen — and [`overlay_spans`]
+/// asserts that it does not. The one construction that could produce it
+/// is a *byte*-budgeted preview (spec 0174), whose cut can fall inside a
+/// record; no caller splices one, and spec 0249 turns on that being
+/// true. See `overlay_spans`.
 fn slots_for_spans(spans: &[NodeSpan], arena: &Arena, root: usize) -> Vec<u32> {
     let n = spans.len();
     let mut parent = vec![NO_NODE; n];
@@ -1030,9 +1033,15 @@ pub(crate) fn overlay_spans(
     let (raw_start, raw_end) = (arena.raw_start(), arena.raw_end());
 
     for (i, mut span) in spans.into_iter().enumerate() {
-        if slots[i] == NO_NODE {
-            continue;
-        }
+        // Spec 0249: a render the arena has no slot for is a structural
+        // disagreement between the render and the maximal walk, and the
+        // overlay it produces is wrong wherever it lands. Fail loudly
+        // rather than dropping the span and leaving a node holding some
+        // other node's text. See [`slots_for_spans`].
+        assert!(
+            slots[i] != NO_NODE,
+            "render span {i} has no arena slot under root {root}"
+        );
         let slot = slots[i] as usize;
         // Spec 0210 S1. `text_range` is exact here and only here — it is
         // the render's own line counter, read before any splice can
