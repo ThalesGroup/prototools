@@ -247,6 +247,33 @@ fn a_confirmed_splice_leaves_no_entry_behind() {
     );
 }
 
+/// Spec 0251 S8 / open question 1: how big is a preview render really?
+/// The cache holds nothing else after S5, so this is what sizes
+/// `RENDER_CACHE_MAX_BYTES`. Reported, not asserted — run with
+/// `--ignored --nocapture`.
+#[test]
+#[ignore]
+fn measure_a_preview_renders_size() {
+    // The worst case the budget admits: a two-byte field per line, so
+    // the line count is as high as 4096 interior bytes can make it.
+    let field_count = App::OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT * 2;
+    let (mut app, blob_idx) = preview_budget_fixture(field_count);
+
+    let (_, _, r) = app
+        .render_node_as(blob_idx, Some("test.Empty"), true)
+        .expect("a preview render must complete");
+
+    let line_bytes: usize = r.lines.iter().map(String::len).sum();
+    let span_bytes = r.spans.len() * std::mem::size_of::<NodeSpan>();
+    println!(
+        "preview render: {} lines, {line_bytes} B text, {} spans, \
+         {span_bytes} B spans, {} B total",
+        r.lines.len(),
+        r.spans.len(),
+        line_bytes + span_bytes
+    );
+}
+
 /// Spec 0174 §S2: `App::override_preview_byte_budget` is a plain field,
 /// not a fixed constant — setting it to a custom value (as `main.rs`'s
 /// `--override-preview-byte-budget` does) must actually change where a

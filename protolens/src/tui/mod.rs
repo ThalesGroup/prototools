@@ -132,9 +132,27 @@ const OVERRIDE_FOCUS_LOCK_MESSAGE: &str =
 /// deadline-based approach.
 const SPLASH_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// Byte budget for `App::render_cache` (spec 0116 §8) — tuned
-/// generously, since an interactive session is short-lived.
-const RENDER_CACHE_MAX_BYTES: usize = 1 << 20;
+/// Byte budget for `App::render_cache` (spec 0116 §8).
+///
+/// Derived (spec 0251 S8), where before it was asserted. Since S5 the
+/// cache holds preview renders and nothing else, so its unit is one
+/// preview and the question is how many a user arrows through.
+///
+/// A preview's input is bounded by `override_preview_byte_budget`, and
+/// its *output* was measured against that bound at the default 4096
+/// bytes: **104 512 B** — 2051 lines and 2049 spans — for the worst
+/// shape the budget admits, a two-byte field per line
+/// (`measure_a_preview_renders_size`). Call it ~25x the input budget.
+/// A screenful of the ranked candidate list is ~50 entries, so holding
+/// one pass through it costs ~5 MB; 8 MB leaves margin and is nothing
+/// against a document that sits at ~1 GB.
+///
+/// Note the interaction with `--override-preview-byte-budget`: raise it
+/// far enough and a single preview exceeds this budget, at which point
+/// `RenderCache::insert` rejects every entry and the cache quietly
+/// stops working. At the default there are ~80 worst-case entries of
+/// headroom.
+const RENDER_CACHE_MAX_BYTES: usize = 8 << 20;
 
 /// Single source-of-truth command-name registry (spec 0113 D26) — backs
 /// both `resolve_command`'s exact-match-wins prefix dispatch and the
