@@ -493,12 +493,23 @@ agree byte for byte.
    text is O(subtree) per site, and a type that occurs everywhere makes
    that O(document) — millions of slot writes and millions of
    `Box<str>` frees, on the event thread, *after* the bounded render has
-   made everything else fast. Nobody has measured it, because until now
-   the 4.12 s render hid it. Measure it before assuming the confirm
-   frame is instant; if it is material, the vacating moves to the bake
-   thread behind the fresh/stale bitset, which is what the bitset makes
-   possible. Open question 5's flattened `node_text` would also dissolve
-   it, since dropping text would become an offset write.
+   made everything else fast. It is the existing vacate loop
+   (`override_apply.rs:894-905`): `node_text[d] = None` drops one
+   `Box<str>` per descendant, while the loop's other four writes are
+   plain stores. Nobody has measured it, because until now the 4.12 s
+   render hid it.
+
+   **The likely answer is not to move the work but to delete it.** Once
+   S9's stale bit is the authority on whether a slot's text is worth
+   anything, `is_some()` no longer has to mean "fresh" — so confirm can
+   flip bits and leave the strings where they are, and each old
+   `Box<str>` is dropped by whoever overwrites the slot, on the bake
+   thread, spread across the bake. Confirm-time frees go to zero, and
+   the memory was resident anyway. Measure first, but expect this shape.
+   The argument does not extend to `tree`/`heat_states`/`status`: those
+   are allocation-free and can keep being cleared eagerly. Open question
+   5's flattened `node_text` would dissolve it too, by making a drop an
+   offset write.
 
 ## Alternatives considered
 
