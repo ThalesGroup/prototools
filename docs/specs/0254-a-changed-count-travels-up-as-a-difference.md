@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0254 — a changed count travels up as a difference
 
-Status: draft
+Status: implemented
+Implemented in: 2026-08-07
 App: protolens
 Refs: docs/specs/0210-the-nodes-hold-sizes-not-positions.md (the two
         counts, and `refresh_line_counts` itself),
@@ -158,9 +159,72 @@ right frontier), and the cost is per *splice*, so a multi-site
    still fires, observed through the counts of a node above the stop
    being untouched.
 
+Items 3 and 4 needed a **five**-level fixture, not the four the shape
+suggests. A splice's refresh starts at the spliced node's *parent*, and
+S2's folded rule applies only to nodes the walk climbs *to* — so with
+the fold one level above the splice it is S1's starting sum that handles
+it and the rule under test never runs. `shrinkable_chain_fixture` puts a
+plain level in between.
+
+Item 4 also had to be rewritten. Under S1 the early exit has no outward
+sign at all: continuing past a zero difference *adds zero*, so a walk
+that failed to stop writes the same numbers back. That is a real change
+from the old code, where continuing meant recomputing, which visibly
+repaired a poisoned ancestor. What the test checks instead is the
+barrier S3 exists to reach — that folding a node under a folded ancestor
+leaves that ancestor and everything above it untouched, the changed set
+being exactly the levels in between. Both rewritten tests were confirmed
+against two mutations of the shipped code (the folded rule deleted; the
+total difference's sign flipped), each of which they catch.
+
 ## Measured outcome
 
-Filled in at implementation. The number to beat is spec 0249 S11's
-simulation: line counts must fall from 7.57 s to a rounding error at
-budget 500, taking the whole bake from 12.6 s to ≈5.1 s, with the
-document still byte-identical to the unbounded render.
+Implemented 2026-08-07. Same simulation as spec 0249 S11 (a bounded root
+override on googleapis.desc, then every auto-fold drained), same
+instrumented binary, only `refresh_line_counts` differing, pinned to the
+E-core cluster with `taskset -c 4-7`:
+
+| bake row budget | splices | line counts | whole bake | worst step |
+|---|---|---|---|---|
+| 50 | 419 723 | 13.33 → **2.43 s** | 21.41 → **9.66 s** | 777 → **21.8 ms** |
+| 500 | 209 153 | 7.61 → **2.26 s** | 13.10 → **7.49 s** | 768 → **21.5 ms** |
+| 5000 | 70 797 | 3.78 → **2.01 s** | 7.58 → **5.66 s** | 745 → **22.6 ms** |
+
+All three budgets still produce a document byte-identical to each other
+and to the pre-change bake — 232 892 696 B, `cmp`-clean (G2).
+
+The single bounded confirm that precedes the bake: line counts **0.100 s
+→ 0.0015 s**, a 67x drop and ≈19% of the 0.53 s bounded confirm removed.
+
+Three things the table says that the spec did not predict:
+
+**The tail is what really moved.** The worst single expansion falls 35x,
+from ~770 ms to ~22 ms, at *every* budget — and the steps over 8 ms fall
+from 26-29 to 2, those over 50 ms from 2 to none. Spec 0249 S11 recorded
+766 ms as the stated limit on interrupting a bake, and concluded "a bake
+step is therefore not interruptible at a granularity the event loop can
+rely on". That conclusion no longer holds: the pathological step *was*
+the quadratic, on the widest node, and it is gone. S11 may now assume a
+step is tens of milliseconds.
+
+**Line counts did not fall to a rounding error**, as the goal above
+predicted — 2.0-2.4 s remains. That is N3, working as specified: the
+starting node is still summed from its children, and under the
+googleapis root that one sum is 7 771 additions. It shows up as a
+residue that *grows* with the budget per splice (5.8 µs at budget 50,
+10.8 at 500, 28.3 at 5000) while falling in total, because a larger
+budget means bigger subtrees and wider parents per splice. Removing it
+needs the caller to say what changed, which is the alternative rejected
+above and still rejected: it buys ~2 s of a bake and puts the invariant
+in six places.
+
+**Nothing else in the bake got faster, and the bake is still not fast.**
+At budget 500 it is 13.1 → 7.5 s, of which 2.3 s is still this function.
+This spec was the blocker, not the answer; S11 owns the rest.
+
+A note for whoever measures next: **this workload is unusable
+unpinned.** Three unpinned runs of the identical binary gave 7.33, 7.83
+and 12.80 s — a 1.7x spread that swamps the effect being measured, and
+in one ordering made the changed code look 2x *slower*. Pinned, three
+runs agreed to within 4% and reproduced spec 0249 S11's independently
+taken table to two figures.

@@ -318,6 +318,210 @@ fn a_folded_body_is_represented_by_its_fold_header_row() {
     }
 }
 
+/// A chain ending in a message that can be re-read as one row:
+/// `Top { Mid m { Deep d { Holder h { Inner x { id: 5 } } } } }`, where
+/// `test.Blobby` declares the same field 1 as `bytes` and so draws
+/// `h`'s body on a single line instead of three.
+///
+/// Spec 0254's tests need a node whose subtree genuinely *shrinks* — a
+/// fold moves only `lines_visible`, so it cannot exercise the
+/// `lines_total` difference at all, and it is the negative one a `u32`
+/// would wrap on.
+///
+/// `Deep` is why the chain is five levels and not four. A splice's
+/// refresh *starts* at the spliced node's parent, and the folded-
+/// ancestor rule only applies to nodes the walk climbs *to* — so with
+/// the fold one level up it is the starting sum that handles it, and
+/// the rule under test never runs. `Deep` puts a plain level between
+/// the two. Returns `(app, m, h)`.
+fn shrinkable_chain_fixture() -> (App, usize, usize) {
+    use prost_types::field_descriptor_proto::{Label, Type};
+
+    let wraps = |name: &str, inner: &str| {
+        message(
+            name,
+            vec![field_of("m", 1, Label::Optional, Type::Message, inner)],
+        )
+    };
+    let fds = proto3_fds(
+        "test_shrinkable_chain.proto",
+        vec![
+            wraps("Top", ".test.Mid"),
+            wraps("Mid", ".test.Deep"),
+            wraps("Deep", ".test.Holder"),
+            message(
+                "Holder",
+                vec![field_of(
+                    "x",
+                    1,
+                    Label::Optional,
+                    Type::Message,
+                    ".test.Inner",
+                )],
+            ),
+            message("Blobby", vec![field("x", 1, Label::Optional, Type::Bytes)]),
+            message("Inner", vec![field("id", 1, Label::Optional, Type::Int32)]),
+        ],
+    );
+
+    // Top's body: four nested LEN field-1 wrappers around `id: 5`.
+    let app = fixture_under(
+        "shrinkable-chain",
+        &fds,
+        "test.Top",
+        &[0x0Au8, 0x08, 0x0A, 0x06, 0x0A, 0x04, 0x0A, 0x02, 0x08, 0x05],
+    );
+    let m = node_with_type(&app, "test.Mid").expect("the chain's Mid");
+    let d = node_with_type(&app, "test.Deep").expect("the chain's Deep");
+    let h = node_with_type(&app, "test.Holder").expect("the chain's Holder");
+    assert_eq!(app.parent(h), Some(d), "h must sit directly under d");
+    assert_eq!(app.parent(d), Some(m), "d must sit directly under m");
+    assert_eq!(app.parent(m), Some(app.first_node), "m must sit under root");
+    (app, m, h)
+}
+
+/// Spec 0254 test-plan item 2: a subtree that shrinks carries a
+/// *negative* difference up.
+///
+/// The growing direction is covered by every override test in the
+/// suite. This is the one that would wrap if the difference were
+/// computed in `u32`, and the wrap would not be a panic — it would be a
+/// root claiming four billion lines.
+#[test]
+fn a_shrinking_subtree_carries_a_negative_difference() {
+    let (mut app, m, h) = shrinkable_chain_fixture();
+    let root = app.first_node;
+    let (h_before, m_before, root_before) = (
+        app.tree[h].lines_total,
+        app.tree[m].lines_total,
+        app.tree[root].lines_total,
+    );
+    assert_eq!(
+        root_before as usize,
+        app.document_lines().len(),
+        "the fixture's root must account for the whole document"
+    );
+
+    app.override_target = Some(h);
+    app.splice_override(h, Some("test.Blobby".to_string()), None)
+        .expect("re-reading the Holder as Blobby must succeed");
+
+    let shrank = i64::from(h_before) - i64::from(app.tree[h].lines_total);
+    assert!(
+        shrank > 0,
+        "the fixture must shrink, or this proves nothing: {h_before} -> {}",
+        app.tree[h].lines_total
+    );
+    assert_eq!(
+        i64::from(app.tree[m].lines_total),
+        i64::from(m_before) - shrank,
+        "the ancestor must lose exactly what the subtree lost"
+    );
+    assert_eq!(
+        i64::from(app.tree[root].lines_total),
+        i64::from(root_before) - shrank,
+        "and so must the root, two levels up"
+    );
+    assert_eq!(
+        app.total_lines(),
+        app.document_lines().len(),
+        "the counts must still describe the text"
+    );
+}
+
+/// Spec 0254 test-plan item 3: a folded ancestor absorbs the visible
+/// difference while still passing the total one on.
+///
+/// The two counts part company exactly here, and only here. A folded
+/// node draws one row whatever happens beneath it (spec 0193), so the
+/// visible difference above it is zero — but the lines are still
+/// *there*, so `lines_total` moves all the way to the root.
+#[test]
+fn a_folded_ancestor_absorbs_the_visible_difference() {
+    let (mut app, m, h) = shrinkable_chain_fixture();
+    let root = app.first_node;
+
+    app.folded.insert(m);
+    app.refresh_line_counts(m);
+    assert_eq!(app.tree[m].lines_visible, 1, "a fold shows one row");
+    let (h_before, m_before, root_before) = (
+        app.tree[h].lines_total,
+        app.tree[m].lines_total,
+        app.tree[root].lines_total,
+    );
+    let root_visible = app.tree[root].lines_visible;
+
+    app.override_target = Some(h);
+    app.splice_override(h, Some("test.Blobby".to_string()), None)
+        .expect("re-reading the Holder as Blobby must succeed");
+
+    let shrank = i64::from(h_before) - i64::from(app.tree[h].lines_total);
+    assert!(shrank > 0, "the fixture must shrink");
+    assert_eq!(
+        i64::from(app.tree[m].lines_total),
+        i64::from(m_before) - shrank,
+        "the folded ancestor's total still moves"
+    );
+    assert_eq!(
+        app.tree[m].lines_visible, 1,
+        "while its visible count does not"
+    );
+    assert_eq!(
+        i64::from(app.tree[root].lines_total),
+        i64::from(root_before) - shrank,
+        "and the total keeps travelling past it"
+    );
+    assert_eq!(
+        app.tree[root].lines_visible, root_visible,
+        "nothing above the fold may change a visible count"
+    );
+}
+
+/// Spec 0254 test-plan item 4: the walk stops at an ancestor nothing
+/// moved.
+///
+/// A fold moves no `lines_total` at all, and a folded ancestor swallows
+/// the `lines_visible` difference — so folding a node underneath one
+/// leaves `m` and everything above it byte-for-byte as it was, and the
+/// changed set is the two levels in between and nothing else.
+///
+/// The early exit itself has no separate outward sign: adding a zero
+/// difference is a no-op, so a walk that failed to stop would write the
+/// same numbers back. What is checkable — and what the exit is there to
+/// protect — is that the barrier exists at all: drop the folded rule
+/// and `m`'s own visible count goes to −1 and the root's follows it
+/// down.
+#[test]
+fn refresh_line_counts_stops_at_an_unchanged_ancestor() {
+    let (mut app, m, h) = shrinkable_chain_fixture();
+    let x = app.first_child(h).expect("Holder wraps an Inner");
+    assert!(
+        app.tree[x].is_bracketed(),
+        "the fold target must be foldable"
+    );
+
+    app.folded.insert(m);
+    app.refresh_line_counts(m);
+    let before: Vec<(u32, u32)> = app
+        .tree
+        .iter()
+        .map(|n| (n.lines_total, n.lines_visible))
+        .collect();
+
+    app.folded.insert(x);
+    app.refresh_line_counts(x);
+
+    let changed: Vec<usize> = (0..app.tree.len())
+        .filter(|&i| (app.tree[i].lines_total, app.tree[i].lines_visible) != before[i])
+        .collect();
+    let mut want = vec![x, h, app.parent(h).expect("Holder sits under Deep")];
+    want.sort_unstable();
+    assert_eq!(
+        changed, want,
+        "a fold under a folded ancestor must stop at that ancestor"
+    );
+}
+
 /// Spec 0210 test-plan item 9: the three teleports.
 ///
 /// A teleport is the one place a full descent is still paid, and the

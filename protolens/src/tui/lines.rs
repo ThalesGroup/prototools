@@ -129,43 +129,60 @@ impl App {
     }
 
     /// `idx`'s subtree just changed shape or fold state — recompute both
-    /// of its counts from its children and carry the difference up to
+    /// of its counts from its children and carry the *difference* up to
     /// the root.
     ///
-    /// O(depth + the fanout of each node on the way up), and it stops
-    /// early: once a node's two counts come out equal to what they
-    /// already were, nothing above it can have moved either. That early
-    /// exit is what makes a fold toggle cheap — a fold changes only
-    /// `lines_visible`, and above a *folded* ancestor even that is
-    /// unchanged, because such an ancestor shows one line whatever
-    /// happens beneath it.
+    /// Spec 0254 S1: only `idx` is summed, because only `idx` is known
+    /// to have moved and nobody has said by how much. Every ancestor
+    /// above it is adjusted by the difference instead of re-added from
+    /// its own children, which is what makes the climb O(depth) rather
+    /// than O(depth + the fanout of each node on the way up) — a splice
+    /// under the reference corpus's root used to re-add 7 771 numbers to
+    /// discover that exactly one of them had moved.
+    ///
+    /// It stops as soon as both differences are zero, which is the same
+    /// early exit as before, computed instead of compared. That is what
+    /// makes a fold toggle cheap: a fold moves only `lines_visible`, and
+    /// above a *folded* ancestor even that difference is zero, because
+    /// such an ancestor shows one line whatever happens beneath it (spec
+    /// 0193).
     pub(super) fn refresh_line_counts(&mut self, idx: usize) {
-        let mut cur = Some(idx);
+        let (want_total, want_visible) = if self.tree[idx].is_bracketed() {
+            let mut total = 0u32;
+            let mut visible = 0u32;
+            let mut child = self.first_child(idx);
+            while let Some(c) = child {
+                total += self.tree[c].lines_total;
+                visible += self.tree[c].lines_visible;
+                child = self.next_sibling(c);
+            }
+            // Header and footer, one line each, whatever is between.
+            let shown = if self.is_folded(idx) { 1 } else { visible + 2 };
+            (total + 2, shown)
+        } else {
+            // A flat node's rows are its own — a scalar's single line or
+            // a packed record's elements. Nothing below it can move
+            // them, and it cannot be folded, so the walk ends here.
+            (self.tree[idx].lines_total, self.tree[idx].lines_total)
+        };
+        let d_total = i64::from(want_total) - i64::from(self.tree[idx].lines_total);
+        let mut d_visible = i64::from(want_visible) - i64::from(self.tree[idx].lines_visible);
+        self.tree[idx].lines_total = want_total;
+        self.tree[idx].lines_visible = want_visible;
+
+        let mut cur = self.parent(idx);
         while let Some(n) = cur {
-            let (want_total, want_visible) = if self.tree[n].is_bracketed() {
-                let mut total = 0u32;
-                let mut visible = 0u32;
-                let mut child = self.first_child(n);
-                while let Some(c) = child {
-                    total += self.tree[c].lines_total;
-                    visible += self.tree[c].lines_visible;
-                    child = self.next_sibling(c);
-                }
-                // Header and footer, one line each, whatever is between.
-                let shown = if self.is_folded(n) { 1 } else { visible + 2 };
-                (total + 2, shown)
-            } else {
-                // A flat node's rows are its own — a scalar's single line
-                // or a packed record's elements. Nothing below it can
-                // move them, and it cannot be folded.
-                (self.tree[n].lines_total, self.tree[n].lines_total)
-            };
-            if self.tree[n].lines_total == want_total && self.tree[n].lines_visible == want_visible
-            {
+            if d_total == 0 && d_visible == 0 {
                 return;
             }
-            self.tree[n].lines_total = want_total;
-            self.tree[n].lines_visible = want_visible;
+            self.tree[n].lines_total = adjust(self.tree[n].lines_total, d_total);
+            if self.is_folded(n) {
+                // One row whatever is beneath it, so its own visible
+                // count did not move and nothing above it can have.
+                d_visible = 0;
+            } else {
+                self.tree[n].lines_visible = adjust(self.tree[n].lines_visible, d_visible);
+            }
             cur = self.parent(n);
         }
     }
@@ -668,6 +685,20 @@ impl App {
     pub(super) fn document_lines(&self) -> Vec<String> {
         decode::document_lines(&self.tree, &self.node_text, &self.arena)
     }
+}
+
+/// A line count moved by a signed difference — negative when the
+/// subtree beneath it shrank.
+///
+/// Spec 0254 S4: a difference that would take a count below zero is a
+/// corrupted tree, not a case to handle. `assert_line_counts_are_exact`
+/// runs over the whole document after every splice in the test suite
+/// and is what would catch it first; this is only the backstop that
+/// keeps a release build from wrapping to four billion lines.
+fn adjust(count: u32, delta: i64) -> u32 {
+    let moved = i64::from(count) + delta;
+    debug_assert!(moved >= 0, "line count {count} moved by {delta} to {moved}");
+    moved.clamp(0, i64::from(u32::MAX)) as u32
 }
 
 /// The line beginning at `offset`, up to but not including its newline.
