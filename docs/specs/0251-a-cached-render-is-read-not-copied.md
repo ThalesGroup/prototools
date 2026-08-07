@@ -155,9 +155,28 @@ one and nothing else.
   copies. The cost is one re-render on revert-and-re-apply, which is
   user-paced.
 
-- **S6. `RenderedAs` splits its two products.** The preview renders a
-  `Vec<NodeSpan>` and discards it — `preview_override_highlight` takes
-  only the lines (`override_select.rs:825`).
+- **S6. `RenderedAs`'s preview-only product is `bytes`, not `spans`.**
+
+  Spec 0207 recorded that the preview renders a `Vec<NodeSpan>` and
+  discards it. **That is no longer true and this spec repeated it
+  without checking.** `PreviewOverlay.spans` is read by
+  `preview_wire_row` (`wire.rs:439`), which feeds it to `preview_slice`
+  to draw the wire row under a preview — spec 0225 S9, added after 0207
+  was written. `RenderedAs`'s own doc comment already says so. Both
+  products are live on both paths; there is nothing to split there.
+
+  The field that *is* one-sided is `bytes`. `render_node_as` opens with
+  `self.blob[raw_range].to_vec()` (`:1118`) — a full copy of the node's
+  own bytes, 25 MB for a root override — and `splice_override`
+  discards it (`:878-882`, `..`). Worse, the copy is made *before* the
+  cache lookup, so a cache hit pays for it too.
+
+  It exists for the preview alone, whose spans index into a truncated
+  buffer that exists nowhere else. So: borrow the blob through a cloned
+  `Arc` (O(1)) and keep a `Cow`, materializing an owned `Vec` only when
+  the preview budget actually cut it or when the overlay actually needs
+  it. `RenderedAs.bytes` becomes `Option<Vec<u8>>`, `Some` exactly when
+  `is_preview`.
 
 ### The budget
 
@@ -241,8 +260,12 @@ about to reuse.
    is absent, so a large render cannot evict the previews. S5.
 8. `an_oversized_entry_evicts_nothing` — inserting an entry larger than
    the whole budget leaves the existing entries in place. S7.
+   **Implemented 2026-08-07.**
 9. `a_sweep_writes_to_no_cache` — cache contents identical before and
    after a full-document search. S9.
+10. `a_confirmed_render_copies_no_bytes` — the confirmed path allocates
+    no copy of the node's own bytes, and the preview path still draws a
+    wire row from the truncated buffer it does own. S6.
 
 ## Measured outcome
 
