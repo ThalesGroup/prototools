@@ -98,6 +98,14 @@ is what S1 rests on.
 - **N3. No cache is merged with another.** `CandidateCache` was deleted
   because a shared MRU generic was not worth it at two call sites; a
   third would have to appear first.
+- **N4. A new prefetch wave does not discard a parked sweep.**
+  `start_new_wave` clears the *queue*; a parked sweep is worker-local
+  state it cannot see. So a speculative sweep whose wave has been
+  superseded still runs to completion. That is deliberate: it is already
+  most of the way through, its result is not wrong — just no longer the
+  most interesting range — and it lands in `by_range` where a later
+  visit will find it. Discarding it would throw away work to save
+  nothing anybody is waiting for.
 
 ## Specification
 
@@ -124,11 +132,40 @@ is what S1 rests on.
   nobody is waiting for it — and only because S3 stops it being in the
   way.
 
+  **IMPLEMENTED 2026-08-07** as `sweep::Resumable`: it partitions once
+  in `new`, walks parts from a `next` cursor, keeps each part's ranking
+  in `runs`, and hands the same lazy N-way `Merged` its parts in the
+  same order the sharded path would have — so the ranking is not merely
+  equivalent, it is the identical value.
+
+  `target_parts` is **untouched**. The item above proposed changing what
+  `target_parts(1)` returns, but that function answers a different
+  question — how many parts a *sharded* sweep should cut for a given
+  worker count — and its `1` is the `--jobs 1` escape hatch that makes a
+  sweep single-part and so debuggable. The speculative caller names
+  `SWEEP_PARTS` itself instead. Nothing else had to move.
+
+  (Only the first of the two halves shipped here. One worker walking one
+  query single-threaded is *slower* than today; what makes S1 a win is
+  several such workers at once, which is a separate step.)
+
 - **S2. `User` and `Visible` requests take the whole machine.** They
   are latency-bound and someone is waiting, so they fan `SWEEP_PARTS`
   parts across every available core — not across whatever a reservation
   left over. Serving the override pane's full list in ≈0.9 s rather
   than ≈5.5 s is the entire point of the arrangement.
+
+  **IMPLEMENTED 2026-08-07**, and it is the path that did not change:
+  `User` and `Visible` keep calling `inferred_candidates` with the
+  worker's `jobs`, which is what already fanned out over the machine.
+  The new `(false, _) if req.tier == Tier::Prefetch` arm sits *above* it
+  and takes only speculation away.
+
+  The dividing line is named once, as `URGENT_TIERS = User | Visible`.
+  It is a tier test rather than a "is this the override pane" test
+  because `heat_tier_for` gives the cursor's own row `Tier::User` too —
+  and that is correct here: the user is waiting on the cursor row's cue
+  in exactly the sense this item means.
 
 - **S3. A speculative worker yields at a part boundary.** When a `User`
   request arrives, speculative workers finish the part in hand, record
@@ -143,6 +180,40 @@ is what S1 rests on.
 
   This replaces reserving a core. A reservation would leave a `User`
   request one core and therefore ≈5.5 s, which is worse than today.
+
+  **IMPLEMENTED 2026-08-07.** `walk_until_yield` polls a `should_yield`
+  closure before each part and returns `false` if it fires, leaving the
+  cursor where it stopped; the worker holds the half-walked sweep in a
+  `ParkedSweep` and comes back to it.
+
+  Three things this needed that were not obvious:
+
+  1. **The gate counts the sweep that is *walking*, not just the one
+     queued.** `urgent_live()` is `(queued | in_flight) & URGENT_TIERS`.
+     On the queued half alone the handover would last only until the
+     urgent request was *dequeued*: every parked worker would then see
+     an empty queue and resume against the very sweep it stepped aside
+     for. Counting it while it walks makes the handover last as long as
+     the work — and S5's registry, built for an unrelated reason, is
+     what makes that expressible with no new state at all.
+
+  2. **A parked worker must not block on the queue.** It asks in a new
+     `PopMode::UrgentOnly`, which serves urgent work and otherwise
+     answers `None` immediately rather than waiting — it has work of its
+     own to get back to. It also must not *spin*, which it would: the
+     urgent request that made it yield may have gone to another worker,
+     so `UrgentOnly` returns `None` while `urgent_live()` still holds.
+     `await_quiet()` is the third state, sleeping on the condvar until
+     the machine is handed back.
+
+  3. **`end_sweep` has to `notify_all`.** By the time an urgent sweep
+     finishes, the queue may be empty and no push is coming — so the end
+     of that sweep is the *only* event that can release the workers
+     parked behind it, and nothing else was going to wake them.
+
+  A parked sweep stays registered in flight, deliberately: the range
+  really is being swept, just not this instant, and letting it look free
+  would wave a duplicate of it straight through S4's rule.
 
 ### What assumes a single worker
 
@@ -390,17 +461,42 @@ question 3. S1 rests on throughput and on S3's checkpoint, not on cost.
 
 1. `a_prefetch_walks_its_parts_on_one_thread` — a `Prefetch` request
    spawns nothing yet still cuts `SWEEP_PARTS` parts; a `User` request
-   spreads them. S1, S2.
+   spreads them. S1, S2. **Written** as
+   `a_speculative_sweep_records_what_the_fanned_out_one_would_have`,
+   which is the claim that matters: the arm is a scheduling change, so
+   what it writes into the cache must equal what the fanned-out call
+   would have written. Counting threads was the weaker test — it would
+   have restated the code.
 2. `walking_threads_never_exceed_the_cpu_count` — with the prefetcher
    saturated and a `User` request issued, live walker count stays
-   within `available_cpus()` throughout the handover. G2.
+   within `available_cpus()` throughout the handover. G2. **Deferred**
+   to the step that adds the speculative workers: with one worker there
+   is nothing to exceed the count with.
 3. `a_user_request_does_not_wait_for_a_whole_prefetch` — issued while
    speculative work is in flight, it starts within one part rather than
-   one query. G1, S3.
+   one query. G1, S3. **Written as three tests of the gate rather than
+   one of the race**, because the race is not schedulable: the test
+   graph's sweep is a handful of microseconds, so a test that pushes a
+   `User` request "while the prefetch walks" is a coin toss on a
+   millisecond sleep. What is deterministic, and is what the claim
+   actually rests on:
+   `an_urgent_only_pop_refuses_speculative_work_instead_of_blocking`,
+   `the_yield_gate_stays_shut_while_an_urgent_sweep_is_still_walking`
+   (which pins the in-flight half specifically — the half whose absence
+   would make the handover last only until the request was dequeued),
+   and `await_quiet_returns_when_the_urgent_sweep_it_waits_on_ends`
+   plus `await_quiet_returns_on_stop` for the wakeups.
 4. `a_yielded_prefetch_resumes_where_it_stopped` — after the `User`
    sweep completes, the speculative query finishes without re-walking
    the parts it had already done, and its result equals an
-   uninterrupted one. S3.
+   uninterrupted one. S3. **Written** at the sweep level, as
+   `a_sweep_stopped_and_resumed_produces_the_uninterrupted_ranking`,
+   under the most-interrupted schedule there is: it yields before
+   *every* part, so the sweep is put down and picked up 24 times, and
+   the result must still equal `ranked(&blob, graph, 1, None)` exactly.
+   Its two siblings pin the endpoints —
+   `a_sweep_told_to_yield_immediately_walks_no_part` and
+   `an_uninterrupted_resumable_sweep_equals_the_ordinary_one`.
 5. `the_same_range_is_swept_once` — pushing a range already in flight
    starts no second sweep. S4. **Written** as
    `a_range_already_in_flight_is_not_popped_a_second_time`, against the

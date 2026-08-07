@@ -54,6 +54,26 @@ pub(super) struct HeatRequest {
     pub(super) tier: Tier,
 }
 
+/// The tiers somebody is actually waiting on (spec 0250 S2): a `User`
+/// request is the cursor's own row or the override pane, a `Visible` one
+/// is a row on screen. Speculative read-ahead is everything else.
+///
+/// This is the line the whole arrangement is drawn along — these fan out
+/// over the machine, and work below it steps aside for them.
+const URGENT_TIERS: u8 = Tier::User.bit() | Tier::Visible.bit();
+
+/// What a worker is willing to be handed (spec 0250 S3).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PopMode {
+    /// Anything, waiting for it if need be — a worker with nothing else
+    /// to do.
+    Block,
+    /// Only work somebody is waiting on, and never waiting for it — a
+    /// worker holding a parked speculative sweep, which has its own work
+    /// to get back to and must not sleep on the queue holding it.
+    UrgentOnly,
+}
+
 struct HeatRequestQueueState {
     mru: TieredBounded<usize, HeatRequest>,
     stop: bool,
@@ -177,6 +197,20 @@ impl HeatRequestQueue {
         }
     }
 
+    /// Test-only: notes that a real sweep of `range_start` is about to
+    /// begin, for [`sweeps_of`](HeatWorkerHandle::sweeps_of).
+    ///
+    /// Called once per sweep *started*, not per part: a speculative
+    /// sweep put down and picked up again is still one sweep, which is
+    /// the whole claim spec 0250 S3 makes about it.
+    #[cfg(test)]
+    fn note_sweep(&self, range_start: usize, tier: Tier) {
+        self.sweeps_performed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((range_start, tier));
+    }
+
     /// Republishes `queued` from the state the caller has just
     /// established (spec 0190 S2). Every mutating operation calls this
     /// as its last act *before* releasing the lock, which is what
@@ -207,6 +241,10 @@ impl HeatRequestQueue {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.in_flight.retain(|(s, _)| *s != start);
         self.publish_in_flight(&state);
+        // Spec 0250 S3: the end of an urgent sweep is the handover back
+        // to the speculative workers parked behind it, and this is the
+        // only thing that will tell them.
+        self.condvar.notify_all();
     }
 
     /// Test-only view of what is being swept right now (spec 0250 S5).
@@ -316,20 +354,42 @@ impl HeatRequestQueue {
     /// The returned request is registered in `state.in_flight` before
     /// the lock is released — see that field for why the two must be
     /// one atomic act.
-    fn pop_blocking(&self) -> Option<(usize, HeatRequest)> {
+    /// Spec 0250 S3: in [`PopMode::UrgentOnly`] this does not block and
+    /// serves nothing speculative — it is what a worker holding a parked
+    /// sweep calls, which must never sit on the condvar while it still
+    /// has work of its own to get back to.
+    fn pop(&self, mode: PopMode) -> Option<(usize, HeatRequest)> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         loop {
             if state.stop {
                 return None;
             }
-            if let Some(entry) = state.mru.pop_highest() {
-                self.publish_occupancy(&state);
-                if state.in_flight.iter().any(|(s, _)| *s == entry.0) {
-                    continue;
+            // In `UrgentOnly` the band mask is consulted under the same
+            // lock hold as the pop, which is what makes it exact: bands
+            // drain by priority, so `pop_highest` returns an urgent
+            // entry exactly when an urgent bit is set.
+            let servable = match mode {
+                PopMode::Block => true,
+                PopMode::UrgentOnly => state.mru.band_occupancy() & URGENT_TIERS != 0,
+            };
+            if servable {
+                if let Some(entry) = state.mru.pop_highest() {
+                    self.publish_occupancy(&state);
+                    if state.in_flight.iter().any(|(s, _)| *s == entry.0) {
+                        // Dropped, so the urgent bit it was holding up
+                        // may have just cleared — and a parked worker
+                        // waiting for exactly that is asleep on the
+                        // condvar with nothing else due to wake it.
+                        self.condvar.notify_all();
+                        continue;
+                    }
+                    state.in_flight.push((entry.0, entry.1.tier));
+                    self.publish_in_flight(&state);
+                    return Some(entry);
                 }
-                state.in_flight.push((entry.0, entry.1.tier));
-                self.publish_in_flight(&state);
-                return Some(entry);
+            }
+            if mode == PopMode::UrgentOnly {
+                return None;
             }
             if state.mru.discard_one_superseded() {
                 drop(state);
@@ -338,6 +398,63 @@ impl HeatRequestQueue {
             }
             state = self.condvar.wait(state).unwrap_or_else(|e| e.into_inner());
         }
+    }
+
+    /// Test-only shorthand for the mode the worker loop uses whenever it
+    /// has nothing of its own parked. Production code names the mode.
+    #[cfg(test)]
+    fn pop_blocking(&self) -> Option<(usize, HeatRequest)> {
+        self.pop(PopMode::Block)
+    }
+
+    /// Is somebody waiting on a sweep right now — queued or walking?
+    /// Spec 0250 S3's yield gate, and its handover gate too.
+    ///
+    /// Both halves are needed, and the *in-flight* half is the one that
+    /// is easy to miss. Yielding on the queued half alone would clear
+    /// the machine only until the urgent request was dequeued: the
+    /// moment some worker popped it, every parked worker would see an
+    /// empty queue, resume, and be back competing with the very sweep
+    /// they had just stepped aside for. Counting it while it walks is
+    /// what makes the handover last as long as the work does — which is
+    /// what S5's registry, built for an unrelated reason, happens to
+    /// make expressible without any new state.
+    ///
+    /// Two relaxed loads, no lock, because the walker polls it between
+    /// every part.
+    fn urgent_live(&self) -> bool {
+        let live = self.queued.load(Ordering::Relaxed) | self.in_flight.load(Ordering::Relaxed);
+        live & URGENT_TIERS != 0
+    }
+
+    /// Blocks a worker holding a parked sweep until the urgent work it
+    /// stepped aside for is over (spec 0250 S3).
+    ///
+    /// Without this the worker would spin: `walk_until_yield` returns
+    /// immediately while [`urgent_live`](Self::urgent_live) holds, and
+    /// `pop(UrgentOnly)` has already answered `None` — the urgent
+    /// request went to some *other* worker — so there would be nothing
+    /// to do but ask again as fast as the CPU allows, on a core the
+    /// urgent sweep wants.
+    ///
+    /// Returns on a stop too, so a shutdown never waits for quiet.
+    fn await_quiet(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        while !state.stop && Self::urgent_live_locked(&state) {
+            state = self.condvar.wait(state).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    /// [`urgent_live`](Self::urgent_live) read off the state itself
+    /// rather than off its atomic mirrors — which is what a condvar
+    /// predicate must do, since the mirrors can be republished between
+    /// the test and the wait and the wakeup would then be lost.
+    fn urgent_live_locked(state: &HeatRequestQueueState) -> bool {
+        state.mru.band_occupancy() & URGENT_TIERS != 0
+            || state
+                .in_flight
+                .iter()
+                .any(|(_, t)| t.bit() & URGENT_TIERS != 0)
     }
 
     /// Spec 0250 S8: has anyone asked for the whole candidate list of
@@ -696,6 +813,75 @@ impl App {
     }
 }
 
+/// A speculative sweep set down at a part boundary, waiting for the
+/// machine to be free again (spec 0250 S3).
+///
+/// A worker holds at most one, which is a consequence of the loop's
+/// shape rather than a cap enforced anywhere: a worker with one parked
+/// accepts only urgent requests, and an urgent request is never parked.
+struct ParkedSweep {
+    start: usize,
+    req: HeatRequest,
+    sweep: crate::sweep::Resumable,
+}
+
+/// Everything learned from one completed sweep, written into the shared
+/// cache under one lock hold (spec 0152 G5).
+///
+/// Factored out because the same writes follow both a sweep walked in
+/// one go and one that was put down and resumed several times — and a
+/// second copy of them is a second chance to pair `best_score` with the
+/// wrong `best_count`.
+fn record_sweep(
+    queue: &HeatRequestQueue,
+    caches: &Mutex<HeatCaches>,
+    start: usize,
+    req: &HeatRequest,
+    candidates: Vec<(String, i64)>,
+) {
+    let wants_complete = queue.take_complete_wanted(start);
+    let stats = heat_cue::derive_stats(&candidates);
+    let current_score = req
+        .current_key
+        .as_deref()
+        .and_then(|k| heat_cue::score_of(&candidates, k));
+    let mut c = caches.lock().unwrap_or_else(|e| e.into_inner());
+    let top_n_len = c
+        .by_range
+        .peek(&start, req.tier)
+        .map_or(0, |e| e.top_n.len())
+        .max(req.end);
+    c.by_range.upsert(
+        start,
+        RangeHeatEntry::new(
+            stats,
+            candidates.iter().take(top_n_len.max(1)).cloned().collect(),
+        ),
+        req.tier,
+    );
+    if let Some(key) = &req.current_key {
+        c.current_score
+            .upsert((start, key.clone()), current_score, req.tier);
+    }
+    // Spec 0250 S8: a list is recorded only where somebody asked for a
+    // whole list of this range — which is exactly
+    // `upgrade_active_override_to_complete`, the override pane's
+    // `[0, usize::MAX)` request. Every other caller asks for a screenful
+    // and is served from `by_range`, and a prefetch that wrote here
+    // would evict the answer the user is alternating between.
+    //
+    // The tier cannot be the test: `Tier::User` is also the cursor row's
+    // own cue tier (`heat_tier_for`), so gating on it would let every
+    // arrow key record a 4 MB list for a row the cursor merely passed
+    // over — the same defect S7 exists to fix, from another source.
+    //
+    // Asked *after* the walk, so this thread's own sweep can serve an
+    // ask that arrived while it was walking.
+    if wants_complete {
+        c.complete.insert(req.range.clone(), candidates);
+    }
+}
+
 /// Worker loop body (spec 0152 G5): block until a request is
 /// available, pop the most-recently-touched one, lock the cache
 /// briefly to double-check it's still actually missing (cheap
@@ -705,6 +891,13 @@ impl App {
 /// expensive call with no lock held, then re-lock briefly to write
 /// everything just learned into the shared cache, then notify the
 /// main thread before looping again.
+///
+/// Spec 0250 S1/S2/S3 add the one exception to "run it to completion":
+/// a `Prefetch` sweep is speculative, so it is walked one part at a
+/// time on this thread alone and **set down** the moment somebody starts
+/// waiting on something. The parts already walked are kept, the worker
+/// serves the urgent request, and the sweep is picked up again where it
+/// stopped once the machine is quiet.
 pub(super) fn heat_worker_loop(
     queue: Arc<HeatRequestQueue>,
     caches: Arc<Mutex<HeatCaches>>,
@@ -716,13 +909,55 @@ pub(super) fn heat_worker_loop(
     // Spec 0180 S2: the worker owns a handle to the mapping rather than a
     // `&'static` copied out of one, so the borrow below cannot outlive it.
     let graph = graph.graph();
-    while let Some((start, req)) = queue.pop_blocking() {
-        // Spec 0190 S3: `pop_blocking` has already registered this
-        // request as in flight, so the activity dot shows a `User`
-        // sweep the user is actually waiting on. The `(true, true)`
-        // "already done" arm is inside that bracket too — it is short,
-        // but leaving it out would mean a stretch of work reported as
-        // idle. Every path out of here ends with `end_sweep(start)`.
+    let mut parked: Option<ParkedSweep> = None;
+    loop {
+        // A worker holding a parked sweep asks only for work somebody is
+        // waiting on, and never blocks on the queue: it has its own work
+        // to get back to.
+        let mode = if parked.is_some() {
+            PopMode::UrgentOnly
+        } else {
+            PopMode::Block
+        };
+        let Some((start, req)) = queue.pop(mode) else {
+            if queue.stop_flag.load(Ordering::Relaxed) {
+                break;
+            }
+            // Nothing urgent to serve. Either pick the parked sweep back
+            // up, or — if the machine is still busy with somebody else's
+            // urgent sweep — wait for it rather than spinning against it.
+            let Some(mut p) = parked.take() else { break };
+            if queue.urgent_live() {
+                queue.await_quiet();
+                parked = Some(p);
+                continue;
+            }
+            let done = p.sweep.walk_until_yield(
+                &blob[p.req.range.clone()],
+                graph,
+                Some(&queue.stop_flag),
+                || queue.urgent_live(),
+            );
+            if queue.stop_flag.load(Ordering::Relaxed) {
+                queue.end_sweep(p.start);
+                break;
+            }
+            if !done {
+                parked = Some(p);
+                continue;
+            }
+            record_sweep(&queue, &caches, p.start, &p.req, p.sweep.finish());
+            queue.end_sweep(p.start);
+            continue;
+        };
+        // Spec 0190 S3: `pop` has already registered this request as in
+        // flight, so the activity dot shows a `User` sweep the user is
+        // actually waiting on. The `(true, true)` "already done" arm is
+        // inside that bracket too — it is short, but leaving it out
+        // would mean a stretch of work reported as idle. Every path out
+        // of here ends with `end_sweep(start)` — except the one that
+        // parks, which is still in flight precisely because it is not
+        // finished.
         let (covers_window, covers_current) = {
             let mut c = caches.lock().unwrap_or_else(|e| e.into_inner());
             // The same predicate the readers use, rather than a
@@ -757,14 +992,41 @@ pub(super) fn heat_worker_loop(
                 c.current_score
                     .upsert((start, key.to_string()), score, req.tier);
             }
+            (false, _) if req.tier == Tier::Prefetch => {
+                // Spec 0250 S1: speculative, so it takes one thread and
+                // walks its parts from its own cursor rather than
+                // spreading them over the machine. Nobody is waiting for
+                // it, and being interruptible is worth more to everyone
+                // else than being fast is to it.
+                #[cfg(test)]
+                queue.note_sweep(start, req.tier);
+                let mut sweep = crate::sweep::Resumable::new(graph, crate::sweep::SWEEP_PARTS);
+                let done = sweep.walk_until_yield(
+                    &blob[req.range.clone()],
+                    graph,
+                    Some(&queue.stop_flag),
+                    || queue.urgent_live(),
+                );
+                if queue.stop_flag.load(Ordering::Relaxed) {
+                    queue.end_sweep(start);
+                    break;
+                }
+                if !done {
+                    // Parked, and deliberately still registered in
+                    // flight: the range *is* being swept, just not this
+                    // instant, and letting it look free would let S4's
+                    // rule wave a duplicate sweep of it straight through.
+                    parked = Some(ParkedSweep { start, req, sweep });
+                    continue;
+                }
+                record_sweep(&queue, &caches, start, &req, sweep.finish());
+            }
             (false, _) => {
+                // Spec 0250 S2: somebody is waiting, so this one takes
+                // the whole machine.
                 let range_bytes = &blob[req.range.clone()];
                 #[cfg(test)]
-                queue
-                    .sweeps_performed
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push((start, req.tier));
+                queue.note_sweep(start, req.tier);
                 let candidates = override_pane::inferred_candidates(
                     range_bytes,
                     graph,
@@ -780,49 +1042,7 @@ pub(super) fn heat_worker_loop(
                     queue.end_sweep(start);
                     break;
                 }
-                let wants_complete = queue.take_complete_wanted(start);
-                let stats = heat_cue::derive_stats(&candidates);
-                let current_score = req
-                    .current_key
-                    .as_deref()
-                    .and_then(|k| heat_cue::score_of(&candidates, k));
-                let mut c = caches.lock().unwrap_or_else(|e| e.into_inner());
-                let top_n_len = c
-                    .by_range
-                    .peek(&start, req.tier)
-                    .map_or(0, |e| e.top_n.len())
-                    .max(req.end);
-                c.by_range.upsert(
-                    start,
-                    RangeHeatEntry::new(
-                        stats,
-                        candidates.iter().take(top_n_len.max(1)).cloned().collect(),
-                    ),
-                    req.tier,
-                );
-                if let Some(key) = &req.current_key {
-                    c.current_score
-                        .upsert((start, key.clone()), current_score, req.tier);
-                }
-                // Spec 0250 S8: a list is recorded only where somebody
-                // asked for a whole list of this range — which is
-                // exactly `upgrade_active_override_to_complete`, the
-                // override pane's `[0, usize::MAX)` request. Every
-                // other caller asks for a screenful and is served from
-                // `by_range`, and a prefetch that wrote here would
-                // evict the answer the user is alternating between.
-                //
-                // The tier cannot be the test: `Tier::User` is also the
-                // cursor row's own cue tier (`heat_tier_for`), so
-                // gating on it would let every arrow key record a 4 MB
-                // list for a row the cursor merely passed over — the
-                // same defect S7 exists to fix, from another source.
-                //
-                // Asked *after* the walk, so this thread's own sweep
-                // can serve an ask that arrived while it was walking.
-                if wants_complete {
-                    c.complete.insert(req.range.clone(), candidates);
-                }
+                record_sweep(&queue, &caches, start, &req, candidates);
             }
         }
         // Spec 0164 G10: a `Prefetch`-tier completion writes its cache
@@ -1338,6 +1558,101 @@ mod tests {
         assert!(result.is_none());
     }
 
+    // ── Spec 0250 S3: parking and the handover gate ─────────────────
+
+    /// A worker holding a parked sweep asks in `UrgentOnly`, and that
+    /// mode is what makes it possible for it to come back to its own
+    /// work: it answers `None` immediately against a queue holding
+    /// nothing but speculation, rather than serving it or blocking.
+    #[test]
+    fn an_urgent_only_pop_refuses_speculative_work_instead_of_blocking() {
+        let queue = HeatRequestQueue::new();
+        queue.push(req_at(5, Tier::Prefetch), Tier::Prefetch);
+        assert!(
+            queue.pop(PopMode::UrgentOnly).is_none(),
+            "a parked worker must not be handed read-ahead"
+        );
+        assert_eq!(
+            queue.len(),
+            1,
+            "and refusing it must leave it on the queue for whoever is free"
+        );
+
+        queue.push(req_at(6, Tier::Visible), Tier::Visible);
+        assert_eq!(
+            queue.pop(PopMode::UrgentOnly).map(|(s, _)| s),
+            Some(6),
+            "but work somebody is waiting on is exactly what it does take"
+        );
+    }
+
+    /// The yield gate counts the *walking* half as well as the queued
+    /// one. Without that, a parked worker would resume the instant some
+    /// other worker dequeued the urgent request — that is, at the start
+    /// of the very sweep it stepped aside for, not the end.
+    #[test]
+    fn the_yield_gate_stays_shut_while_an_urgent_sweep_is_still_walking() {
+        let queue = HeatRequestQueue::new();
+        assert!(!queue.urgent_live(), "an idle queue holds nobody up");
+
+        queue.push(req_at(3, Tier::Prefetch), Tier::Prefetch);
+        assert!(
+            !queue.urgent_live(),
+            "speculation is not something anybody waits on"
+        );
+
+        queue.push(req_at(4, Tier::User), Tier::User);
+        assert!(queue.urgent_live(), "queued and waiting");
+
+        let (start, _) = queue.pop_blocking().unwrap();
+        assert_eq!(start, 4);
+        assert!(
+            queue.urgent_live(),
+            "dequeued is not done — this is the case the queued half alone misses"
+        );
+
+        queue.end_sweep(4);
+        assert!(
+            !queue.urgent_live(),
+            "and only finishing it hands the machine back"
+        );
+    }
+
+    /// `await_quiet` is what stops a parked worker spinning between a
+    /// `walk_until_yield` that returns at once and an `UrgentOnly` pop
+    /// that has nothing for it. It must return when the urgent sweep
+    /// ends — which means `end_sweep` has to wake it, since by then
+    /// there is nothing left on the queue to do so.
+    #[test]
+    fn await_quiet_returns_when_the_urgent_sweep_it_waits_on_ends() {
+        let queue = Arc::new(HeatRequestQueue::new());
+        queue.push(req_at(7, Tier::User), Tier::User);
+        let (start, _) = queue.pop_blocking().unwrap();
+
+        let parked = Arc::clone(&queue);
+        let join = thread::spawn(move || parked.await_quiet());
+        thread::sleep(Duration::from_millis(20)); // let it reach the condvar
+        assert!(!join.is_finished(), "it must still be waiting");
+
+        queue.end_sweep(start);
+        join.join().expect("the parked worker must not panic");
+    }
+
+    /// And a stop wakes it too, or shutdown would hang on a worker
+    /// waiting for a handover that is never coming.
+    #[test]
+    fn await_quiet_returns_on_stop() {
+        let queue = Arc::new(HeatRequestQueue::new());
+        queue.push(req_at(8, Tier::User), Tier::User);
+        queue.pop_blocking().unwrap();
+
+        let parked = Arc::clone(&queue);
+        let join = thread::spawn(move || parked.await_quiet());
+        thread::sleep(Duration::from_millis(20));
+        queue.signal_stop();
+        join.join().expect("the parked worker must not panic");
+    }
+
     // ── HeatCaches / worker round trip (spec 0152 test plan) ────────
 
     /// A minimal, real, in-memory scoring graph — one message with a
@@ -1664,6 +1979,63 @@ messages:
             "the user's list must survive a prefetch completing behind it"
         );
         drop(c);
+
+        worker.shutdown();
+    }
+
+    /// Spec 0250 S1: a speculative sweep walks its parts one at a time
+    /// on the worker's own thread instead of spreading them over the
+    /// machine — and that is a scheduling change only. What it writes
+    /// into the cache is what the fanned-out call would have written.
+    ///
+    /// The `Resumable` path's ranking is pinned against the ordinary one
+    /// under the most-interrupted schedule possible in
+    /// `sweep::tests::a_sweep_stopped_and_resumed_produces_the_uninterrupted_ranking`;
+    /// this is the same claim made about the worker that uses it.
+    #[test]
+    fn a_speculative_sweep_records_what_the_fanned_out_one_would_have() {
+        let graph = Arc::new(test_scoring_graph());
+        let range_bytes = vec![0x08, 0x05];
+        let blob = Arc::new(Blob::unwrapped(range_bytes.clone()));
+        let caches = Arc::new(Mutex::new(HeatCaches::new(8)));
+        let (tx, _rx) = mpsc::channel::<AppEvent>();
+        let worker = HeatWorkerHandle::spawn(
+            Arc::clone(&caches),
+            Arc::clone(&graph),
+            Arc::clone(&blob),
+            tx,
+            1,
+        );
+
+        worker.push(
+            HeatRequest {
+                range: 0..2,
+                current_key: None,
+                start: 0,
+                end: 1,
+                tier: Tier::Prefetch,
+            },
+            Tier::Prefetch,
+        );
+        // No progress event at this tier (spec 0164 G10), so poll.
+        let mut entry = None;
+        for _ in 0..200 {
+            if let Some(e) = caches.lock().unwrap().by_range.peek(&0, Tier::Prefetch) {
+                entry = Some(e);
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let entry = entry.expect("the speculative sweep must populate by_range");
+
+        let expected = override_pane::inferred_candidates(&range_bytes, graph.graph(), 1, None);
+        let expected_stats = heat_cue::derive_stats(&expected);
+        assert_eq!(entry.best_score, expected_stats.best_score);
+        assert_eq!(entry.best_count, expected_stats.best_count);
+        assert_eq!(
+            entry.top_n,
+            expected.iter().take(1).cloned().collect::<Vec<_>>()
+        );
 
         worker.shutdown();
     }

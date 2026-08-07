@@ -21,8 +21,8 @@ pub(super) enum Tier {
 
 impl Tier {
     /// This tier's bit in the activity bitmask of spec 0190 S1 — the
-    /// encoding `band_occupancy`, `HeatRequestQueue::set_in_flight` and
-    /// `HeatRequestQueue::activity` all share, so that `activity` can
+    /// encoding `band_occupancy`, `HeatRequestQueue::publish_in_flight`
+    /// and `HeatRequestQueue::activity` all share, so that `activity` can
     /// `|` a queued mask with an in-flight one and read the result with
     /// the same rule.
     ///
@@ -30,7 +30,9 @@ impl Tier {
     /// back, and a set of shifts): a fourth tier added to only two of
     /// them would compile, and would then report the wrong subsystem as
     /// busy with nothing to say it had.
-    pub(super) fn bit(self) -> u8 {
+    /// `const` so that a mask over several tiers can itself be a
+    /// constant — `URGENT_TIERS` in `heat_worker` is one.
+    pub(super) const fn bit(self) -> u8 {
         match self {
             Tier::User => 0b001,
             Tier::Visible => 0b010,
