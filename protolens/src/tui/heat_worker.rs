@@ -157,6 +157,25 @@ pub(super) struct HeatRequestQueue {
     /// the wait. The walk, in contrast, holds no lock and must not take
     /// one per wire field.
     stop_flag: AtomicBool,
+    /// Held for the duration of a fanned-out sweep, so that only one is
+    /// ever walking (spec 0250 S2 and G2).
+    ///
+    /// Without it G2 fails outright rather than marginally: a screenful
+    /// of rows produces a `Visible` request each, every worker pops one,
+    /// and every one of them spreads `SWEEP_PARTS` parts over the whole
+    /// machine — `workers × jobs` walkers against `jobs` cores.
+    ///
+    /// Serializing them is not a compromise, it is the better schedule.
+    /// Two urgent sweeps at full width one after the other finish the
+    /// first one sooner than two at half width finish either, and the
+    /// queue's bands already decide which goes first: `User` drains
+    /// before `Visible`, so the one the user is most directly waiting on
+    /// reaches this lock first.
+    ///
+    /// A worker blocked here is registered in flight and so still counts
+    /// as urgent, which is what keeps the speculative workers parked
+    /// while it waits its turn.
+    fanout: Mutex<()>,
     /// Test-only log of the full sweeps this queue's workers have run,
     /// in completion order (spec 0152/0154 test plans; spec 0250 S6) —
     /// proves the "no second `score_all` call" claim for a request the
@@ -192,6 +211,7 @@ impl HeatRequestQueue {
             queued: AtomicU8::new(0),
             in_flight: AtomicU8::new(0),
             stop_flag: AtomicBool::new(false),
+            fanout: Mutex::new(()),
             #[cfg(test)]
             sweeps_performed: Mutex::new(Vec::new()),
         }
@@ -245,6 +265,42 @@ impl HeatRequestQueue {
         // to the speculative workers parked behind it, and this is the
         // only thing that will tell them.
         self.condvar.notify_all();
+    }
+
+    /// The sweep of `start` is being set down (spec 0250 S3), so the
+    /// range stops counting as in flight.
+    ///
+    /// It is the same deregistration as `end_sweep`, and it is *not* an
+    /// optimization — it is what stops a parked sweep holding its range
+    /// hostage. A parked sweep is stalled for as long as the user keeps
+    /// asking for things, which while scrolling is indefinitely; left
+    /// registered, S4's rule would drop every request for a row inside
+    /// that range, every frame, and those cues would never resolve.
+    ///
+    /// `in_flight` therefore means *a walk is happening right now*, not
+    /// *somebody intends to finish this* — which is also the reading its
+    /// other consumer, the activity dot, wants.
+    fn park_sweep(&self, start: usize) {
+        self.end_sweep(start);
+    }
+
+    /// Picks a parked sweep's range back up, or refuses (spec 0250 S3).
+    ///
+    /// It refuses when somebody else has taken the range on meanwhile,
+    /// in which case the parked sweep is abandoned: its answer is being
+    /// produced anyway and walking it twice is exactly the waste S4
+    /// exists to remove. Refusing here is what makes the release in
+    /// `park_sweep` safe — registration is only ever held by one walker
+    /// at a time, so `end_sweep`'s remove-by-`start` cannot take
+    /// somebody else's entry with it.
+    fn resume_sweep(&self, start: usize, tier: Tier) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.in_flight.iter().any(|(s, _)| *s == start) {
+            return false;
+        }
+        state.in_flight.push((start, tier));
+        self.publish_in_flight(&state);
+        true
     }
 
     /// Test-only view of what is being swept right now (spec 0250 S5).
@@ -932,6 +988,11 @@ pub(super) fn heat_worker_loop(
                 parked = Some(p);
                 continue;
             }
+            // Take the range back before walking it again — or give the
+            // sweep up, if somebody else has taken it on meanwhile.
+            if !queue.resume_sweep(p.start, p.req.tier) {
+                continue;
+            }
             let done = p.sweep.walk_until_yield(
                 &blob[p.req.range.clone()],
                 graph,
@@ -943,6 +1004,7 @@ pub(super) fn heat_worker_loop(
                 break;
             }
             if !done {
+                queue.park_sweep(p.start);
                 parked = Some(p);
                 continue;
             }
@@ -955,9 +1017,8 @@ pub(super) fn heat_worker_loop(
         // actually waiting on. The `(true, true)` "already done" arm is
         // inside that bracket too — it is short, but leaving it out
         // would mean a stretch of work reported as idle. Every path out
-        // of here ends with `end_sweep(start)` — except the one that
-        // parks, which is still in flight precisely because it is not
-        // finished.
+        // of here ends with either `end_sweep(start)` or
+        // `park_sweep(start)`.
         let (covers_window, covers_current) = {
             let mut c = caches.lock().unwrap_or_else(|e| e.into_inner());
             // The same predicate the readers use, rather than a
@@ -1012,10 +1073,11 @@ pub(super) fn heat_worker_loop(
                     break;
                 }
                 if !done {
-                    // Parked, and deliberately still registered in
-                    // flight: the range *is* being swept, just not this
-                    // instant, and letting it look free would let S4's
-                    // rule wave a duplicate sweep of it straight through.
+                    // Parked, and the range is released while it is —
+                    // see `park_sweep`. Holding it would drop every
+                    // request the user makes for a row inside it, for as
+                    // long as they keep scrolling.
+                    queue.park_sweep(start);
                     parked = Some(ParkedSweep { start, req, sweep });
                     continue;
                 }
@@ -1023,8 +1085,11 @@ pub(super) fn heat_worker_loop(
             }
             (false, _) => {
                 // Spec 0250 S2: somebody is waiting, so this one takes
-                // the whole machine.
+                // the whole machine — and takes it exclusively, or
+                // several workers would each spread `jobs` walkers over
+                // the same `jobs` cores. See `HeatRequestQueue::fanout`.
                 let range_bytes = &blob[req.range.clone()];
+                let _fanout = queue.fanout.lock().unwrap_or_else(|e| e.into_inner());
                 #[cfg(test)]
                 queue.note_sweep(start, req.tier);
                 let candidates = override_pane::inferred_candidates(
@@ -1055,17 +1120,27 @@ pub(super) fn heat_worker_loop(
     }
 }
 
-/// Owns the worker thread's join handle and its request queue (spec
+/// Owns the worker threads' join handles and their request queue (spec
 /// 0152 Specification). `Drop` covers the one shutdown path an
 /// explicit `shutdown()` call can't reach — a panic unwinding through
 /// `run_loop` before that call — see "Shutdown and safety" in spec
 /// 0152.
 pub(super) struct HeatWorkerHandle {
     queue: Arc<HeatRequestQueue>,
-    join: Option<JoinHandle<()>>,
+    joins: Vec<JoinHandle<()>>,
 }
 
 impl HeatWorkerHandle {
+    /// Spawns `jobs` workers behind one queue.
+    ///
+    /// The same number twice, deliberately (spec 0250 S1): `jobs` is the
+    /// core budget the heat subsystem has been given, and both readings
+    /// of it are that same budget. As a **thread count** it is how many
+    /// speculative queries may walk at once, each on its own thread and
+    /// each one core's worth of work. As a **fan-out width** it is how
+    /// wide a single urgent sweep spreads — and since
+    /// `HeatRequestQueue::fanout` allows only one of those at a time,
+    /// the two never add up.
     pub(super) fn spawn(
         caches: Arc<Mutex<HeatCaches>>,
         graph: Arc<LoadedGraph>,
@@ -1074,16 +1149,20 @@ impl HeatWorkerHandle {
         jobs: usize,
     ) -> Self {
         let queue = Arc::new(HeatRequestQueue::new());
-        let worker_queue = Arc::clone(&queue);
-        let join = thread::Builder::new()
-            .name("heat-worker".to_string())
-            .stack_size(crate::sweep::SCORING_THREAD_STACK_SIZE)
-            .spawn(move || heat_worker_loop(worker_queue, caches, graph, blob, progress, jobs))
-            .expect("spawn heat worker thread");
-        HeatWorkerHandle {
-            queue,
-            join: Some(join),
-        }
+        let joins = (0..jobs.max(1))
+            .map(|n| {
+                spawn_worker(
+                    n,
+                    Arc::clone(&queue),
+                    Arc::clone(&caches),
+                    Arc::clone(&graph),
+                    Arc::clone(&blob),
+                    progress.clone(),
+                    jobs,
+                )
+            })
+            .collect();
+        HeatWorkerHandle { queue, joins }
     }
 
     pub(super) fn push(&self, req: HeatRequest, tier: Tier) -> UpsertOutcome<usize> {
@@ -1102,16 +1181,25 @@ impl HeatWorkerHandle {
         self.queue.activity()
     }
 
-    /// Signal stop, then block until the worker exits. Shared body
+    /// Signal stop, then block until every worker exits. Shared body
     /// with `Drop` below.
     fn shutdown_inner(&mut self) {
         self.queue.signal_stop();
-        if let Some(join) = self.join.take() {
+        for join in self.joins.drain(..) {
             let _ = join.join();
         }
     }
 
     pub(super) fn shutdown(mut self) {
+        self.shutdown_inner();
+    }
+
+    /// Test-only: `shutdown` without consuming the handle, so that the
+    /// sweep log can be read once every worker has stopped writing to
+    /// it. An assertion about how many sweeps happened is otherwise
+    /// racing the workers it is counting.
+    #[cfg(test)]
+    pub(super) fn stop_and_join(&mut self) {
         self.shutdown_inner();
     }
 
@@ -1157,7 +1245,7 @@ impl HeatWorkerHandle {
     pub(super) fn stub_for_test() -> Self {
         HeatWorkerHandle {
             queue: Arc::new(HeatRequestQueue::new()),
-            join: None,
+            joins: Vec::new(),
         }
     }
 
@@ -1182,16 +1270,40 @@ impl HeatWorkerHandle {
         progress: mpsc::Sender<AppEvent>,
         jobs: usize,
     ) -> Self {
-        let worker_queue = Arc::clone(&self.queue);
-        self.join = Some(
-            thread::Builder::new()
-                .name("heat-worker".to_string())
-                .stack_size(crate::sweep::SCORING_THREAD_STACK_SIZE)
-                .spawn(move || heat_worker_loop(worker_queue, caches, graph, blob, progress, jobs))
-                .expect("spawn heat worker thread"),
-        );
+        self.joins = (0..jobs.max(1))
+            .map(|n| {
+                spawn_worker(
+                    n,
+                    Arc::clone(&self.queue),
+                    Arc::clone(&caches),
+                    Arc::clone(&graph),
+                    Arc::clone(&blob),
+                    progress.clone(),
+                    jobs,
+                )
+            })
+            .collect();
         self
     }
+}
+
+/// One worker thread. Numbered in its name so that a stack trace or a
+/// `top -H` says which of them is walking.
+#[allow(clippy::too_many_arguments)]
+fn spawn_worker(
+    n: usize,
+    queue: Arc<HeatRequestQueue>,
+    caches: Arc<Mutex<HeatCaches>>,
+    graph: Arc<LoadedGraph>,
+    blob: Arc<Blob>,
+    progress: mpsc::Sender<AppEvent>,
+    jobs: usize,
+) -> JoinHandle<()> {
+    thread::Builder::new()
+        .name(format!("heat-worker-{n}"))
+        .stack_size(crate::sweep::SCORING_THREAD_STACK_SIZE)
+        .spawn(move || heat_worker_loop(queue, caches, graph, blob, progress, jobs))
+        .expect("spawn heat worker thread")
 }
 
 impl Drop for HeatWorkerHandle {
@@ -1638,6 +1750,59 @@ mod tests {
         join.join().expect("the parked worker must not panic");
     }
 
+    /// Spec 0250 S3, regression: a **parked** sweep must not keep its
+    /// range registered, or it holds it hostage.
+    ///
+    /// A parked sweep is stalled for as long as the user keeps asking
+    /// for things, which while scrolling is indefinitely. S4's rule
+    /// drops a pop of a range already in flight — so a request for a row
+    /// inside that range is dropped every frame, forever, and its cue
+    /// never resolves. That is the `[?]` that never clears, and with one
+    /// parked sweep per worker it is a whole screenful of them.
+    #[test]
+    fn a_parked_sweep_does_not_hold_its_range_against_the_user() {
+        let queue = HeatRequestQueue::new();
+        queue.push(req_at(5, Tier::Prefetch), Tier::Prefetch);
+        let (start, _) = queue.pop_blocking().unwrap();
+        assert_eq!(start, 5);
+
+        // The worker walks a part, somebody starts waiting, it parks.
+        queue.park_sweep(5);
+
+        queue.push(req_at(5, Tier::Visible), Tier::Visible);
+        assert_eq!(
+            queue.pop(PopMode::UrgentOnly).map(|(s, _)| s),
+            Some(5),
+            "the user's request for a parked range must be served, not dropped"
+        );
+    }
+
+    /// The other half of the same rule: a parked sweep that is picked up
+    /// again while somebody else is sweeping its range is **dropped**.
+    /// The answer is being produced anyway, and walking it twice is the
+    /// waste S4 exists to remove.
+    #[test]
+    fn a_parked_sweep_is_abandoned_if_its_range_is_taken_over() {
+        let queue = HeatRequestQueue::new();
+        queue.push(req_at(6, Tier::Prefetch), Tier::Prefetch);
+        queue.pop_blocking().unwrap();
+        queue.park_sweep(6);
+
+        // Somebody else takes the range on.
+        queue.push(req_at(6, Tier::User), Tier::User);
+        assert_eq!(queue.pop_blocking().map(|(s, _)| s), Some(6));
+
+        assert!(
+            !queue.resume_sweep(6, Tier::Prefetch),
+            "the parked sweep must give up rather than duplicate the walk"
+        );
+        queue.end_sweep(6);
+        assert!(
+            queue.resume_sweep(6, Tier::Prefetch),
+            "and take it back once the range is free again"
+        );
+    }
+
     /// And a stop wakes it too, or shutdown would hang on a worker
     /// waiting for a handover that is never coming.
     #[test]
@@ -2038,6 +2203,80 @@ messages:
         );
 
         worker.shutdown();
+    }
+
+    /// Spec 0250 S1: several workers behind one queue serve every range
+    /// asked for, and no range is swept twice — eight workers racing for
+    /// sixteen ranges, each pushed twice.
+    ///
+    /// This pins the *outcome*, not the mechanism, and the distinction
+    /// was checked rather than assumed: disabling S4's in-flight rule
+    /// leaves the test green, because at this scale a sweep takes
+    /// microseconds and the worker's own `covers_window` re-check
+    /// catches the duplicate first. S4 is what covers the case the
+    /// re-check cannot — a duplicate arriving during a sweep that has
+    /// not written its answer yet — and that window is only wide enough
+    /// to hit deterministically at the queue level, which is where
+    /// `a_range_already_in_flight_is_not_popped_a_second_time` tests it.
+    #[test]
+    fn several_workers_behind_one_queue_serve_every_range_once() {
+        const RANGES: usize = 16;
+        let graph = Arc::new(test_scoring_graph());
+        let blob = Arc::new(Blob::unwrapped([0x08u8, 0x05].repeat(RANGES)));
+        let caches = Arc::new(Mutex::new(HeatCaches::new(RANGES * 2)));
+        let (tx, _rx) = mpsc::channel::<AppEvent>();
+        let worker = HeatWorkerHandle::spawn(
+            Arc::clone(&caches),
+            Arc::clone(&graph),
+            Arc::clone(&blob),
+            tx,
+            8,
+        );
+
+        // Each range twice, so a pop that ignored the in-flight registry
+        // would have a second copy waiting for it.
+        for _ in 0..2 {
+            for i in 0..RANGES {
+                worker.push(
+                    HeatRequest {
+                        range: i * 2..i * 2 + 2,
+                        current_key: None,
+                        start: 0,
+                        end: 1,
+                        tier: Tier::Prefetch,
+                    },
+                    Tier::Prefetch,
+                );
+            }
+        }
+
+        let mut landed = 0;
+        for _ in 0..400 {
+            let mut c = caches.lock().unwrap();
+            landed = (0..RANGES)
+                .filter(|i| c.by_range.peek(&(i * 2), Tier::Prefetch).is_some())
+                .count();
+            drop(c);
+            if landed == RANGES {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(landed, RANGES, "every range asked for must be swept");
+
+        // Shut down first: a range still in flight could otherwise be
+        // counted before its duplicate had a chance to be dropped, which
+        // would make this pass for the wrong reason.
+        let mut worker = worker;
+        worker.stop_and_join();
+        for i in 0..RANGES {
+            assert_eq!(
+                worker.sweeps_of(i * 2),
+                1,
+                "range {} was swept more than once",
+                i * 2
+            );
+        }
     }
 
     /// W-01 (spec 0154 test plan): once a range's window is already

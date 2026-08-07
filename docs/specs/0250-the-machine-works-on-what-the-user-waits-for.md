@@ -145,9 +145,18 @@ is what S1 rests on.
   sweep single-part and so debuggable. The speculative caller names
   `SWEEP_PARTS` itself instead. Nothing else had to move.
 
-  (Only the first of the two halves shipped here. One worker walking one
-  query single-threaded is *slower* than today; what makes S1 a win is
-  several such workers at once, which is a separate step.)
+  **Second half IMPLEMENTED 2026-08-07.** `HeatWorkerHandle` spawns
+  `jobs` workers rather than one, each still fanning out to width `jobs`
+  when it draws urgent work. `join: Option<JoinHandle>` becomes
+  `joins: Vec<JoinHandle>` and shutdown joins them all.
+
+  This needs one piece of mutual exclusion that S2 did not anticipate: a
+  `fanout: Mutex<()>` held for the length of a fanned-out sweep. Without
+  it G2 fails outright rather than marginally — a screenful of rows
+  produces a `Visible` request each, every worker pops one, and every
+  one of them spreads `SWEEP_PARTS` parts over the whole machine, giving
+  `workers × jobs` walkers against `jobs` cores. Speculative sweeps do
+  not take it: they are single-threaded by S1 and so compose freely.
 
 - **S2. `User` and `Visible` requests take the whole machine.** They
   are latency-bound and someone is waiting, so they fan `SWEEP_PARTS`
@@ -211,9 +220,24 @@ is what S1 rests on.
      of that sweep is the *only* event that can release the workers
      parked behind it, and nothing else was going to wake them.
 
-  A parked sweep stays registered in flight, deliberately: the range
-  really is being swept, just not this instant, and letting it look free
-  would wave a duplicate of it straight through S4's rule.
+  4. **A parked sweep must *release* its range.** This spec first said
+     the opposite — that a parked sweep stays registered in flight,
+     because the range really is being swept and letting it look free
+     would wave a duplicate straight through S4's rule. That reasoning
+     is right about the duplicate and wrong about the priority.
+
+     A sweep parks precisely because the user is asking for something,
+     and while the user keeps asking it stays parked — which, during a
+     scroll, is indefinitely. Registered, S4's rule would drop every
+     request landing inside that range, every frame, for as long as the
+     park lasts; the rows inside it would never resolve. The cost of
+     releasing is at worst one duplicate sweep of a range nobody is
+     waiting on. The cost of holding is a permanently unresolved cue.
+
+     So `park_sweep` calls `end_sweep`, and `resume_sweep` takes the
+     range back — or **refuses**, if another worker has picked it up
+     meanwhile, in which case the parked sweep is abandoned rather than
+     walked twice.
 
 ### What assumes a single worker
 
@@ -406,6 +430,15 @@ much care each needs.
    Measure the thing that matters: time from opening the override pane
    to a full list, with the prefetcher saturated.
 
+   **Answered 2026-08-07: `jobs`, one per core.** Not because the yield
+   cost was measured — it was not — but because the tension the question
+   assumes turned out not to be the binding one. A measured scroll over
+   googleapis showed the machine is not short of speculative throughput;
+   it is saturated by *urgent* work, which the `fanout` mutex serializes
+   regardless of how many workers exist. So the worker count is chosen
+   for the simple reason and left there until something measures against
+   it. See spec 0252, which is about that saturation.
+
 2. **What does a yielded prefetch cost in memory?** Each parked worker
    holds a partial ranked list and its cursor. With twelve of them and
    S9's ~5 MB per full list, the parked set is a real number that
@@ -469,9 +502,17 @@ question 3. S1 rests on throughput and on S3's checkpoint, not on cost.
    have restated the code.
 2. `walking_threads_never_exceed_the_cpu_count` — with the prefetcher
    saturated and a `User` request issued, live walker count stays
-   within `available_cpus()` throughout the handover. G2. **Deferred**
-   to the step that adds the speculative workers: with one worker there
-   is nothing to exceed the count with.
+   within `available_cpus()` throughout the handover. G2. **Not
+   written** even once the workers exist, because with the `fanout`
+   mutex the bound is structural rather than emergent: at most one sweep
+   is fanned out at a time and the speculative ones are single-threaded,
+   so the count cannot exceed `jobs + workers − 1` by construction. A
+   test would have to observe live walker counts inside `score_subset`.
+   `several_workers_behind_one_queue_serve_every_range_once` covers what
+   is testable at this level — that N workers behind one queue still
+   sweep each range once — and it pins the *outcome*, not the mechanism:
+   at test scale `covers_window` catches the duplicate before S4's rule
+   does.
 3. `a_user_request_does_not_wait_for_a_whole_prefetch` — issued while
    speculative work is in flight, it starts within one part rather than
    one query. G1, S3. **Written as three tests of the gate rather than
@@ -497,6 +538,10 @@ question 3. S1 rests on throughput and on S3's checkpoint, not on cost.
    Its two siblings pin the endpoints —
    `a_sweep_told_to_yield_immediately_walks_no_part` and
    `an_uninterrupted_resumable_sweep_equals_the_ordinary_one`.
+4b. The park-release rule of S3.4, added once the second half of S1
+   made it reachable: `a_parked_sweep_does_not_hold_its_range_against_
+   the_user` (a request inside a parked range is served, not dropped)
+   and `a_parked_sweep_is_abandoned_if_its_range_is_taken_over`.
 5. `the_same_range_is_swept_once` — pushing a range already in flight
    starts no second sweep. S4. **Written** as
    `a_range_already_in_flight_is_not_popped_a_second_time`, against the

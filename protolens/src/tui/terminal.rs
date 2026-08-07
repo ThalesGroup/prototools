@@ -372,10 +372,15 @@ pub fn run(app: &mut App) -> io::Result<()> {
             // nothing re-scores the blob and re-renders the whole
             // document through the splice machinery underneath a reader
             // who has already started browsing.
-            // Spec 0217 S6: the worker sweeps while the main thread is
-            // drawing, so it gets the budget less the one thread the
+            // Spec 0217 S6: the workers sweep while the main thread is
+            // drawing, so they get the budget less the one thread the
             // main loop is already spending — never less than 1, which
             // is the un-sharded sweep this has always been.
+            //
+            // Spec 0250 S1: this is now a thread count as well as a
+            // fan-out width — that many speculative queries may walk at
+            // once — which is why it must stay a per-core budget rather
+            // than becoming, say, the queue depth.
             let worker_jobs = app.sweep_jobs.saturating_sub(1).max(1);
             app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
                 Arc::clone(&app.heat_caches),
