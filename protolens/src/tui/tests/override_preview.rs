@@ -76,7 +76,7 @@ fn overlay_lines_match_the_committed_splice() {
 
         let (mut app_b, inner_idx_b, _) = type_as_fixture();
         app_b
-            .splice_override(inner_idx_b, Some(candidate.to_string()), false)
+            .splice_override(inner_idx_b, Some(candidate.to_string()), None)
             .expect("the committed splice must succeed");
         let committed = app_b.node_lines(inner_idx_b);
 

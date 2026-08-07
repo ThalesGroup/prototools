@@ -694,7 +694,7 @@ impl App {
             .override_candidates
             .get(self.override_highlight)
             .map(|(fqdn, _)| fqdn.clone());
-        match self.render_node_as(idx, tentative.as_deref(), true) {
+        match self.render_node_as(idx, tentative.as_deref(), true, None) {
             Ok((_target, span, rendered)) => {
                 // Spec 0210 S2: the committed node's line range, carried
                 // into visible-row space at both ends. `span.text_range`

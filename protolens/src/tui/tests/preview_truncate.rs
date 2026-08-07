@@ -143,7 +143,7 @@ fn preview_on_a_pathological_candidate_is_bounded_by_the_byte_budget() {
     // blob this spec came from, so it is asserted on directly rather than
     // through the arena a splice would have grown from it.
     let (_, _, rendered) = app
-        .render_node_as(blob_idx, Some("test.Empty"), true)
+        .render_node_as(blob_idx, Some("test.Empty"), true, None)
         .expect("a pathological candidate render must still complete");
 
     // The budget admits at most one node per two interior bytes, i.e. a
@@ -171,7 +171,7 @@ fn confirmed_override_is_not_truncated() {
     let field_count = App::OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT * 2;
     let (mut app, blob_idx) = preview_budget_fixture(field_count);
 
-    app.splice_override(blob_idx, Some("test.Empty".to_string()), false)
+    app.splice_override(blob_idx, Some("test.Empty".to_string()), None)
         .expect("a confirmed override splice must complete");
 
     assert!(
@@ -199,7 +199,7 @@ fn a_confirmed_render_copies_no_bytes() {
     let (mut app, blob_idx) = preview_budget_fixture(field_count);
 
     let (_, _, confirmed) = app
-        .render_node_as(blob_idx, Some("test.Empty"), false)
+        .render_node_as(blob_idx, Some("test.Empty"), false, None)
         .expect("a confirmed render must complete");
     assert!(
         confirmed.bytes.is_none(),
@@ -207,7 +207,7 @@ fn a_confirmed_render_copies_no_bytes() {
     );
 
     let (_, _, preview) = app
-        .render_node_as(blob_idx, Some("test.Empty"), true)
+        .render_node_as(blob_idx, Some("test.Empty"), true, None)
         .expect("a preview render must complete");
     let bytes = preview.bytes.expect("a preview owns its bytes");
     assert!(
@@ -230,7 +230,7 @@ fn a_confirmed_splice_leaves_no_entry_behind() {
     let field_count = 40;
     let (mut app, blob_idx) = preview_budget_fixture(field_count);
 
-    app.render_node_as(blob_idx, Some("test.Empty"), false)
+    app.render_node_as(blob_idx, Some("test.Empty"), false, None)
         .expect("a confirmed render must complete");
     assert_eq!(
         app.render_cache.len(),
@@ -238,7 +238,7 @@ fn a_confirmed_splice_leaves_no_entry_behind() {
         "a confirmed render must leave the cache untouched"
     );
 
-    app.render_node_as(blob_idx, Some("test.Empty"), true)
+    app.render_node_as(blob_idx, Some("test.Empty"), true, None)
         .expect("a preview render must complete");
     assert_eq!(
         app.render_cache.len(),
@@ -260,7 +260,7 @@ fn measure_a_preview_renders_size() {
     let (mut app, blob_idx) = preview_budget_fixture(field_count);
 
     let (_, _, r) = app
-        .render_node_as(blob_idx, Some("test.Empty"), true)
+        .render_node_as(blob_idx, Some("test.Empty"), true, None)
         .expect("a preview render must complete");
 
     let line_bytes: usize = r.lines.iter().map(String::len).sum();
@@ -396,7 +396,7 @@ fn truncated_preview_ends_with_an_ellipsis_line() {
     // Spec 0210 S1: asked of the render's own spans rather than of the
     // document, which never holds a marker (see `preview_lines`).
     let (_, _, rendered) = app
-        .render_node_as(blob_idx, Some("test.Empty"), true)
+        .render_node_as(blob_idx, Some("test.Empty"), true, None)
         .expect("the same render must succeed twice");
     // An enclosing message's span legitimately spans the marker; what may
     // not exist is a node whose *own* header or footer that line is, since
@@ -557,14 +557,14 @@ fn an_unknown_length_delimited_blob_can_be_read_as_a_packed_run() {
     // Step one: make the interior unknown. `test.Empty` declares no
     // fields, so field 2 lands as a bare LEN record with no schema
     // behind it at all.
-    app.splice_override(blob_idx, Some("test.Empty".to_string()), false)
+    app.splice_override(blob_idx, Some("test.Empty".to_string()), None)
         .expect("retyping the blob to an empty message must succeed");
     let unknown = app
         .nth_child(blob_idx, 0)
         .expect("the empty message must hold the unknown LEN record");
 
     // Step two: ask for it as a run of varints.
-    app.splice_override(unknown, Some("int32".to_string()), false)
+    app.splice_override(unknown, Some("int32".to_string()), None)
         .expect("retyping an unknown LEN record to int32 must succeed");
 
     let bare = bare_lines(&app.document_lines());

@@ -914,7 +914,10 @@ pub(crate) fn build_tree(
 ) -> (Vec<TreeNode>, Vec<Option<Box<str>>>) {
     let mut nodes: Vec<TreeNode> = (0..arena.len()).map(|_| TreeNode::vacant()).collect();
     let mut text: Vec<Option<Box<str>>> = vec![None; arena.len()];
-    overlay_spans(&mut nodes, &mut text, spans, lines, arena, 0);
+    // The document render is never bounded — a bounded one is issued for
+    // one node, at confirm (spec 0249 S5) — so there is nothing to report.
+    let stopped = overlay_spans(&mut nodes, &mut text, spans, lines, arena, 0, &[]);
+    debug_assert!(stopped.is_empty());
     (nodes, text)
 }
 
@@ -1021,6 +1024,11 @@ fn push_subtree_lines(
 /// subtree's own render for a splice. A bracketed node keeps only its
 /// header line (its footer is derived, S2); a flat one keeps all of its
 /// rows joined by `\n` in a single allocation.
+///
+/// Spec 0249 S1: `undescended` is the render's own report of the nodes
+/// it emitted without a body, as indices into `spans`; the return value
+/// is the same list as slots. Both are empty unless the render was
+/// row-budgeted.
 pub(crate) fn overlay_spans(
     nodes: &mut [TreeNode],
     text: &mut [Option<Box<str>>],
@@ -1028,7 +1036,8 @@ pub(crate) fn overlay_spans(
     lines: &[String],
     arena: &Arena,
     root: usize,
-) {
+    undescended: &[u32],
+) -> Vec<usize> {
     let slots = slots_for_spans(&spans, arena, root);
     let (raw_start, raw_end) = (arena.raw_start(), arena.raw_end());
 
@@ -1100,6 +1109,18 @@ pub(crate) fn overlay_spans(
             rendered_as: NOT_RENDERED,
         };
     }
+
+    // Spec 0249 S1/S3: the render reports the nodes it stopped at as
+    // indices into `spans`, and the caller wants them as slots.
+    // Translated here rather than by the caller because `slots` is
+    // derived here and `spans` is consumed above — so the report goes
+    // through the same derivation, and the same assertion, as every
+    // span it accompanies. Empty for every render that asked for no
+    // budget, which is every render but a bounded one.
+    undescended
+        .iter()
+        .map(|&i| slots[i as usize] as usize)
+        .collect()
 }
 
 // ── Public entry point ──────────────────────────────────────────────────────

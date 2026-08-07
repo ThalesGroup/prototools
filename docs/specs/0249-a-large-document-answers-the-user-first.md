@@ -337,10 +337,33 @@ agree byte for byte.
 ### Confirming, invalidating, baking
 
 - **S5. Confirming an override splices a row-bounded render and queues
-  the unbounded one.** The work stays synchronous on the event thread,
-  in the order it has today — render, splice, draw — because at one
-  screenful it is cheap enough to be. Every phase of the ≈5 s table
+  the unbounded one. — MECHANISM IMPLEMENTED 2026-08-07; no caller
+  passes a budget yet.** The work stays synchronous on the event
+  thread, in the order it has today — render, splice, draw — because at
+  one screenful it is cheap enough to be. Every phase of the ≈5 s table
   shrinks with the row count.
+
+  `splice_override` takes `row_budget: Option<usize>`, hands it to
+  `render_node_as`, and folds every node the render reports stopping
+  at. The translation from the render's span indices to arena slots
+  happens inside `overlay_spans`, because that is where `slots` is
+  derived and where the assertion that every span *has* a slot already
+  runs — the report is validated by the same machinery as the spans it
+  accompanies, rather than by a second copy of it.
+
+  `row_budget` took the place of a **dead `is_preview` parameter**.
+  Spec 0185 S3 made the live preview an overlay that calls
+  `render_node_as` and stops, so no preview has reached
+  `splice_override` since; every call site in the crate, production and
+  test, passed `false`. The two budgets are asserted never to combine:
+  a byte budget (spec 0174) cuts wherever the byte count runs out and
+  needs the `...` marker to say so, while a row budget cuts on a node
+  boundary and says so by folding. A row budget also never meets the
+  render cache, which spec 0251 S5 confined to the preview path.
+
+  What is left is the policy — which callers ask for a budget, and how
+  big — because until the bake exists (S11) a bounded confirm would
+  leave the document truncated with nothing to fill it back in.
 
 - **S6. Invalidating a subtree keeps its header and drops its
   descendants.** This is the multi-site case, and it costs no render at

@@ -33,6 +33,11 @@ pub(super) struct RenderedAs {
     /// immediately dropped. The renderer reads the blob through a
     /// borrow instead.
     pub(super) bytes: Option<Vec<u8>>,
+    /// Spec 0249 S1: indices into `spans` of the nodes the row budget
+    /// stopped at — emitted with a header and a footer but no body.
+    /// Empty unless a budget was asked for, which the preview never
+    /// does (it bounds bytes, not rows).
+    pub(super) undescended: Vec<u32>,
 }
 
 impl App {
@@ -97,7 +102,7 @@ impl App {
                 Some(explicit) => explicit.clone(),
                 None => self.natural_type(idx),
             };
-            match self.splice_override(idx, effective, false) {
+            match self.splice_override(idx, effective, None) {
                 Ok(()) => {
                     self.tree[idx].rendered_as = current;
                     // Spec 0221 S1: this node is settled after all, so
@@ -862,28 +867,32 @@ impl App {
     /// `old_span` to its whole extent, and there are no sibling nodes to
     /// absorb.
     ///
-    /// `is_preview`: `true` from `preview_override_highlight`'s sole live-
-    /// preview call site — caps the *interior bytes* handed to the
-    /// renderer at `override_preview_byte_budget` (spec 0174). `false`
-    /// from every other call site (routed through `resettle_node`, i.e.
-    /// an already-confirmed/active override being (re)applied) — renders
-    /// completely, unbounded, since this is the content that actually
-    /// gets shown as the real override, not a speculative preview.
+    /// `row_budget` bounds the render to that many emitted rows (spec
+    /// 0249 S1), folding every node it stopped at. `None` renders the
+    /// whole subtree, which is what a bake does and what every splice
+    /// did before this spec.
+    ///
+    /// There is deliberately no preview flag here. Spec 0185 S3 made the
+    /// live preview an overlay that calls `render_node_as` and stops, so
+    /// no preview has reached this function since; the parameter that
+    /// used to say so was `false` at every call site in the crate.
     pub(super) fn splice_override(
         &mut self,
         idx: usize,
         target: Option<String>,
-        is_preview: bool,
+        row_budget: Option<usize>,
     ) -> Result<(), String> {
         // Spec 0185 S3: the "what does this node look like as `target`"
         // half lives in `render_node_as`, shared verbatim with the live
         // preview — including the packed-record normalization, which is
         // what resolves `idx` to the run and widens `old_span` to the
         // run's whole extent (spec 0135 G1).
-        let (idx, _old_span, rendered) = self.render_node_as(idx, target.as_deref(), is_preview)?;
+        let (idx, _old_span, rendered) =
+            self.render_node_as(idx, target.as_deref(), false, row_budget)?;
         let RenderedAs {
             lines: new_lines,
             spans: new_spans,
+            undescended,
             ..
         } = rendered;
         self.batch_spliced = true;
@@ -947,14 +956,34 @@ impl App {
         // the reason the entry has to go, and `idx`'s *user* fold is
         // untouched either way.
         self.auto_folded.remove(&idx);
-        decode::overlay_spans(
+        let stopped = decode::overlay_spans(
             &mut self.tree,
             &mut self.node_text,
             new_spans,
             &new_lines,
             &self.arena,
             idx,
+            &undescended,
         );
+        // Spec 0249 S1/S3: the budget stopped here, so these nodes have
+        // a header and a footer and nothing between. Folding them is
+        // what makes each one a single row instead of an empty pair of
+        // braces claiming the node is empty — and it is what S8 later
+        // reads to know which rows still owe a render.
+        //
+        // Recorded for every node first, then rolled up, so a parent
+        // shared by two of them is recomputed once its children are all
+        // in the set rather than once per child.
+        for &slot in &stopped {
+            debug_assert!(
+                self.tree[slot].is_bracketed(),
+                "only a message recursion can be undescended (spec 0249 S1)"
+            );
+            self.auto_folded.insert(slot);
+        }
+        for &slot in &stopped {
+            self.refresh_line_counts(slot);
+        }
         // `idx` itself was just retyped, so a cue resolved for it before
         // now answers a question about the superseded interpretation
         // (spec 0152 G6). Its descendants were reset above, when their
@@ -1045,12 +1074,23 @@ impl App {
     /// render-cache key, so a truncated preview render and a full
     /// confirmed render of the same `(range, target)` are never
     /// conflated.
+    ///
+    /// `row_budget` caps the *rows emitted* instead (spec 0249 S1), and
+    /// is the confirmed path's bound rather than the preview's. The two
+    /// are never combined: a byte budget cuts wherever the byte count
+    /// runs out and needs the `...` marker to say so, while a row budget
+    /// cuts on a node boundary and says so by folding the node.
     pub(super) fn render_node_as(
         &mut self,
         idx: usize,
         target: Option<&str>,
         is_preview: bool,
+        row_budget: Option<usize>,
     ) -> Result<(usize, NodeSpan, RenderedAs), String> {
+        assert!(
+            !(is_preview && row_budget.is_some()),
+            "spec 0249 S1: a preview bounds bytes, a confirm bounds rows"
+        );
         // Spec 0160 G2: `self.tree[idx].span` is already authoritative
         // by the time this is called — either `render_overrides_inner`'s
         // prologue already applied `idx`'s own pending correction (and,
@@ -1179,13 +1219,16 @@ impl App {
         // 0116 §8), where each render is bounded to
         // `override_preview_byte_budget` interior bytes and the same
         // candidate is revisited constantly.
+        //
+        // A row budget therefore never meets the cache either: it is a
+        // confirmed render's bound, and `is_preview` is false there.
         let cached = if is_preview {
             self.render_cache.get(&cache_key)
         } else {
             None
         };
-        let (mut new_lines, new_spans) = match cached {
-            Some(cached) => cached,
+        let (mut new_lines, new_spans, undescended) = match cached {
+            Some((lines, spans)) => (lines, spans, Vec::new()),
             None => {
                 let wrapper_desc = match field_type {
                     Some(ft) => Some(
@@ -1212,6 +1255,8 @@ impl App {
                     // prototext-core's own virtual-node expansion.
                     expand_any: false,
                     expand_message_set: false,
+                    // Spec 0249 S1.
+                    row_budget,
                     ..Default::default()
                 };
                 // Spec 0248: an extension on a spliced subtree resolves the
@@ -1237,7 +1282,7 @@ impl App {
                 if is_preview {
                     self.render_cache.insert(cache_key, value.clone());
                 }
-                value
+                (value.0, value.1, rendered.undescended)
             }
         };
 
@@ -1312,6 +1357,7 @@ impl App {
                 lines: new_lines,
                 spans: new_spans,
                 bytes: is_preview.then(|| field_bytes.into_owned()),
+                undescended,
             },
         ))
     }

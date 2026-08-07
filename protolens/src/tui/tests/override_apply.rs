@@ -98,7 +98,7 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
     app.override_target = Some(node_idx);
 
     // 1) Re-typed as itself: idempotent structural round-trip.
-    app.splice_override(node_idx, Some("test.Node".to_string()), false)
+    app.splice_override(node_idx, Some("test.Node".to_string()), None)
         .expect("re-typing as the same type must succeed");
     assert_children(&app, "re-typed as itself");
     assert_eq!(type_name_of(&app, node_idx), Some("test.Node"));
@@ -108,13 +108,13 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
     );
 
     // 2) Raw override (no schema).
-    app.splice_override(node_idx, None, false)
+    app.splice_override(node_idx, None, None)
         .expect("raw override must succeed");
     assert_eq!(app.tree[node_idx].span.type_fqdn, NO_FQDN);
 
     // 3) Re-typed again, on top of two prior overrides — exercises
     // repeated overrides of the same node.
-    app.splice_override(node_idx, Some("test.Node".to_string()), false)
+    app.splice_override(node_idx, Some("test.Node".to_string()), None)
         .expect("third override must still succeed");
     assert_children(&app, "re-typed a third time");
 
@@ -202,7 +202,7 @@ fn splice_override_on_an_incompatible_scalar_does_not_panic() {
         "a WT_LEN scalar must be overridable"
     );
 
-    app.splice_override(s_idx, Some("incompat.Target".to_string()), false)
+    app.splice_override(s_idx, Some("incompat.Target".to_string()), None)
         .expect("override onto an incompatible type must still succeed");
     assert!(
         app.document_lines()
@@ -241,7 +241,7 @@ fn overriding_a_packed_run_does_not_renumber_later_siblings() {
     }
 
     app.override_target = Some(run);
-    app.splice_override(run, None, false)
+    app.splice_override(run, None, None)
         .expect("raw override on a packed element must succeed");
 
     for (&idx, path) in [tail, _a, _b].iter().zip(&before) {
@@ -296,7 +296,7 @@ fn a_deleted_override_restores_a_packed_run_rather_than_a_type_mismatch() {
 
     let (mut retyped, run, _, _, _) = packed_run_with_tail_fixture();
     retyped
-        .splice_override(run, Some("int32".to_string()), false)
+        .splice_override(run, Some("int32".to_string()), None)
         .expect("retyping a packed run to its own element type must succeed");
     assert_eq!(
         retyped.document_lines(),
@@ -322,9 +322,9 @@ fn a_sweep_writes_to_no_cache() {
 
     // Prime with two previews, so the assertion below is "unchanged"
     // rather than the weaker "still empty".
-    app.render_node_as(run, Some("int32"), true)
+    app.render_node_as(run, Some("int32"), true, None)
         .expect("a preview of the packed run must render");
-    app.render_node_as(tail, Some("test.Inner"), true)
+    app.render_node_as(tail, Some("test.Inner"), true, None)
         .expect("a preview of the tail must render");
     assert_eq!(app.render_cache.len(), 2, "both previews must be cached");
 
@@ -496,7 +496,7 @@ fn splice_override_on_a_varint_mismatch_does_not_corrupt_type_mismatch_annotatio
         .position(|n| n.span.field_number == 2)
         .expect("must find field 2");
 
-    app.splice_override(idx, Some("double".to_string()), false)
+    app.splice_override(idx, Some("double".to_string()), None)
         .expect("override onto an incompatible primitive type must still succeed");
 
     assert!(
@@ -552,7 +552,7 @@ fn a_commit_touches_only_the_spliced_subtree() {
     };
 
     let before = app.node_text.clone();
-    app.splice_override(inner_idx, Some("string".to_string()), false)
+    app.splice_override(inner_idx, Some("string".to_string()), None)
         .expect("overriding a submessage field as string must succeed");
 
     let touched: Vec<usize> = (0..before.len())
@@ -597,7 +597,7 @@ fn deactivating_override_reclamps_pan_offset_to_the_shrunk_content() {
     app.main_area = Rect::new(0, 0, 10, 5);
 
     let widest_before = app.max_visible_line_len();
-    app.splice_override(inner_idx, Some("string".to_string()), false)
+    app.splice_override(inner_idx, Some("string".to_string()), None)
         .expect("overriding a submessage field as string must succeed");
     assert!(
         app.max_visible_line_len() > widest_before,
@@ -618,7 +618,7 @@ fn deactivating_override_reclamps_pan_offset_to_the_shrunk_content() {
     // retype (spec 0135 G1) — `None` is a distinct, explicit "show
     // raw" choice a user can select in the override pane, not what
     // happens when an override is simply removed.
-    app.splice_override(inner_idx, Some("test.Inner".to_string()), false)
+    app.splice_override(inner_idx, Some("test.Inner".to_string()), None)
         .unwrap();
 
     let usable_width = app.main_area.width as usize - 1;
@@ -698,7 +698,7 @@ fn deactivating_override_recomputes_the_pan_bound_against_the_post_splice_scroll
     // before the user deactivates the override.
     app.cursor = pad_a_idx;
 
-    app.splice_override(inner_idx, Some("int32".to_string()), false)
+    app.splice_override(inner_idx, Some("int32".to_string()), None)
         .expect("overriding a submessage field as int32 must still succeed (as a type mismatch)");
 
     let wide_field_row = app
@@ -717,7 +717,7 @@ fn deactivating_override_recomputes_the_pan_bound_against_the_post_splice_scroll
     // collapse back to its real 4-line shape, pushing `pad_a` (the
     // cursor's node) several rows further down — `scroll.index` must
     // advance to keep it in view.
-    app.splice_override(inner_idx, Some("test.Inner".to_string()), false)
+    app.splice_override(inner_idx, Some("test.Inner".to_string()), None)
         .unwrap();
 
     let wide_field_row = app
@@ -745,7 +745,7 @@ fn deactivating_override_recomputes_the_pan_bound_against_the_post_splice_scroll
 #[test]
 fn splice_override_on_a_group_field_keeps_the_group_prefix() {
     let (mut app, grp_idx) = group_type_fixture();
-    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false)
+    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), None)
         .unwrap();
     let header = &app.document_lines()[app.absolute_start(grp_idx)];
     assert!(
@@ -771,7 +771,7 @@ fn splice_override_on_a_group_field_keeps_the_group_prefix() {
 #[test]
 fn splice_override_keeps_colors_aligned_after_a_header_length_change() {
     let (mut app, grp_idx) = group_type_fixture();
-    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false)
+    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), None)
         .unwrap();
     let value_idx = app
         .first_child(grp_idx)
@@ -812,7 +812,7 @@ fn splice_override_on_a_group_field_keeps_the_tag_ohb_modifier() {
         header_before.contains("tag_ohb: 1"),
         "fixture must exercise the anomaly modifier, got: {header_before:?}"
     );
-    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false)
+    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), None)
         .unwrap();
     let header = &app.document_lines()[app.absolute_start(grp_idx)];
     assert!(
@@ -827,7 +827,7 @@ fn splice_override_on_a_group_field_keeps_the_tag_ohb_modifier() {
 #[test]
 fn splice_override_on_a_wt_len_field_has_no_group_prefix() {
     let (mut app, inner_idx, _) = type_as_fixture();
-    app.splice_override(inner_idx, Some("test.Outer".to_string()), false)
+    app.splice_override(inner_idx, Some("test.Outer".to_string()), None)
         .unwrap();
     let header = &app.document_lines()[app.absolute_start(inner_idx)];
     assert!(
@@ -853,7 +853,7 @@ fn splice_override_preserves_the_header_line_indentation() {
     let start = app.absolute_start(inner_idx);
     let indent_before =
         app.document_lines()[start].len() - app.document_lines()[start].trim_start().len();
-    app.splice_override(inner_idx, Some("test.Outer".to_string()), false)
+    app.splice_override(inner_idx, Some("test.Outer".to_string()), None)
         .unwrap();
     let header = &app.document_lines()[app.absolute_start(inner_idx)];
     let indent_after = header.len() - header.trim_start().len();
@@ -874,9 +874,9 @@ fn splice_override_preserves_the_header_line_indentation() {
 #[test]
 fn splice_override_reverting_a_group_field_restores_bare_group() {
     let (mut app, grp_idx) = group_type_fixture();
-    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), false)
+    app.splice_override(grp_idx, Some("test.NewGroup".to_string()), None)
         .unwrap();
-    app.splice_override(grp_idx, None, false).unwrap();
+    app.splice_override(grp_idx, None, None).unwrap();
     let header = &app.document_lines()[app.absolute_start(grp_idx)];
     assert!(
         header.contains("#@ group"),
@@ -897,7 +897,7 @@ fn splice_override_reverting_a_group_field_restores_bare_group() {
 #[test]
 fn splice_override_shows_the_root_field_number_in_the_header_line() {
     let (mut app, _, _) = type_as_fixture();
-    app.splice_override(app.first_node, Some("test.Outer".to_string()), false)
+    app.splice_override(app.first_node, Some("test.Outer".to_string()), None)
         .unwrap();
     assert!(
         app.document_lines()[0].starts_with("1 "),
@@ -912,7 +912,7 @@ fn splice_override_shows_the_root_field_number_in_the_header_line() {
 #[test]
 fn splice_override_raw_root_shows_the_field_number_in_the_header_line() {
     let (mut app, _, _) = type_as_fixture();
-    app.splice_override(app.first_node, None, false).unwrap();
+    app.splice_override(app.first_node, None, None).unwrap();
     assert!(
         app.document_lines()[0].starts_with("1 "),
         "raw root header line must show the field number: {:?}",
@@ -1289,4 +1289,73 @@ fn no_resolved_root_type_seeds_no_override_and_still_renders_raw() {
          got {:#?}",
         app.overrides.entries()
     );
+}
+
+/// Spec 0249 S1/S5, test-plan item 2: a splice given a row budget stops
+/// at a node boundary, and every node it stopped at is auto-folded — so
+/// the truncation reads as a collapsed subtree rather than as an empty
+/// one.
+///
+/// Budget 2 on a wrapper holding three `Item`s: the wrapper's own header
+/// is row 1, and the first `Item`'s header is row 2, at which point the
+/// budget is spent and no `Item` gets a body.
+#[test]
+fn a_row_budgeted_splice_folds_every_node_it_stopped_at() {
+    let (mut app, items) = repeated_message_fixture();
+    let root = app.first_node;
+
+    let full = app.document_lines();
+    assert!(
+        full.len() > 5,
+        "fixture must have a body to leave out: {full:?}"
+    );
+
+    app.splice_override(root, Some("test.Outer".to_string()), Some(2))
+        .expect("a bounded splice must succeed");
+
+    assert_eq!(
+        app.auto_folded.len(),
+        items.len(),
+        "each Item is one stop: {:?}",
+        app.auto_folded
+    );
+    for i in &items {
+        assert!(app.is_folded(*i), "Item {i} must be folded");
+        assert_eq!(
+            app.tree[*i].lines_total, 2,
+            "a stopped node has a header and a footer and nothing between"
+        );
+        assert_eq!(app.tree[*i].lines_visible, 1, "and draws as one row");
+    }
+    assert!(
+        app.folded.is_empty(),
+        "an auto-fold is not a user fold (S3)"
+    );
+
+    // The rows the user sees: the wrapper's own two, plus one per Item.
+    // `lines_total` stays at the unfolded height, as it does under any
+    // fold — an auto-fold hides rows, it does not delete them, which is
+    // what lets S8 expand one back without re-deriving the document.
+    assert_eq!(
+        app.tree[root].lines_visible as usize,
+        2 + items.len(),
+        "bounded document: {:?}",
+        app.document_lines()
+    );
+    assert_eq!(
+        app.tree[root].lines_total as usize,
+        2 + 2 * items.len(),
+        "and every stopped node still counts its own two"
+    );
+
+    // And the same splice unbounded restores every row, taking the
+    // auto-folds back out with it.
+    app.splice_override(root, Some("test.Outer".to_string()), None)
+        .expect("an unbounded splice must succeed");
+    assert!(
+        app.auto_folded.is_empty(),
+        "a rendered body owes no fold: {:?}",
+        app.auto_folded
+    );
+    assert_eq!(app.document_lines(), full, "and shows what it did before");
 }
