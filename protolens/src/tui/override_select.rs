@@ -714,7 +714,9 @@ impl App {
                     covered_rows,
                     lines: rendered.lines,
                     spans: rendered.spans,
-                    bytes: rendered.bytes,
+                    // Spec 0251 S6: `Some` exactly when `is_preview`,
+                    // which the call above passes unconditionally.
+                    bytes: rendered.bytes.expect("a preview render owns its bytes"),
                 });
             }
             // Spec 0185 S6: a candidate that fails to render leaves the

@@ -8,6 +8,7 @@ use super::*;
 
 use prost_reflect::prost_types::field_descriptor_proto::Type;
 use prototext_core::serialize::render_text::NodeSpan;
+use std::borrow::Cow;
 
 /// Spec 0185 S3: one node's complete rendering under a candidate type,
 /// with no tree mutation whatsoever — everything `splice_override` used
@@ -23,10 +24,15 @@ pub(super) struct RenderedAs {
     pub(super) spans: Vec<NodeSpan>,
     /// The bytes those spans index into: the node's own
     /// `tag[+length]+payload`, cut to the preview budget when there was
-    /// one. Not the blob, and not a sub-slice of it — a truncated
-    /// preview's bytes exist nowhere else, and the spans' `raw_range`s
-    /// are relative to this.
-    pub(super) bytes: Vec<u8>,
+    /// one. A truncated preview's bytes exist nowhere else, and the
+    /// spans' `raw_range`s are relative to this.
+    ///
+    /// `Some` exactly when `is_preview` (spec 0251 S6). The confirmed
+    /// splice discards this field, so materializing it there is a full
+    /// copy of the node — 25 MB for a root override — allocated and
+    /// immediately dropped. The renderer reads the blob through a
+    /// borrow instead.
+    pub(super) bytes: Option<Vec<u8>>,
 }
 
 impl App {
@@ -1115,7 +1121,14 @@ impl App {
 
         // Decode `idx`'s own real tag+payload bytes directly (spec 0135
         // G1) — no synthetic tag prepended.
-        let mut field_bytes = self.blob[widen(&old_span.raw_range)].to_vec();
+        //
+        // Spec 0251 S6: borrowed, not copied. The `Arc` clone is a
+        // refcount bump and exists only to detach the slice's lifetime
+        // from `&self`, which `decode_and_render_indexed` needs because
+        // it takes `&mut self.fqdns`. Only a budget-truncated preview
+        // owns its bytes, because those exist nowhere else.
+        let blob = Arc::clone(&self.blob);
+        let mut field_bytes: Cow<'_, [u8]> = Cow::Borrowed(&blob[widen(&old_span.raw_range)]);
 
         // Spec 0174: only a live preview is speculative and needs
         // bounding — a confirmed override must render completely (G5).
@@ -1128,7 +1141,7 @@ impl App {
             if let Some(cut) =
                 truncate_interior(&field_bytes, self.override_preview_byte_budget, shape)
             {
-                field_bytes = cut;
+                field_bytes = Cow::Owned(cut);
                 truncated = true;
             }
         }
@@ -1269,7 +1282,7 @@ impl App {
             RenderedAs {
                 lines: new_lines,
                 spans: new_spans,
-                bytes: field_bytes,
+                bytes: is_preview.then(|| field_bytes.into_owned()),
             },
         ))
     }

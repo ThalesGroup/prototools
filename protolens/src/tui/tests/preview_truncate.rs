@@ -187,6 +187,41 @@ fn confirmed_override_is_not_truncated() {
     );
 }
 
+/// Spec 0251 S6: `bytes` is the preview's product alone. A confirmed
+/// render must not copy the node out of the blob — for a root override
+/// that copy is the whole document, allocated before the render cache
+/// is even consulted and discarded by the splice. A preview must still
+/// own its buffer, because a budget-truncated one exists nowhere else
+/// and its spans are relative to it.
+#[test]
+fn a_confirmed_render_copies_no_bytes() {
+    let field_count = App::OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT * 2;
+    let (mut app, blob_idx) = preview_budget_fixture(field_count);
+
+    let (_, _, confirmed) = app
+        .render_node_as(blob_idx, Some("test.Empty"), false)
+        .expect("a confirmed render must complete");
+    assert!(
+        confirmed.bytes.is_none(),
+        "a confirmed render must not carry a copy of the node's bytes"
+    );
+
+    let (_, _, preview) = app
+        .render_node_as(blob_idx, Some("test.Empty"), true)
+        .expect("a preview render must complete");
+    let bytes = preview.bytes.expect("a preview owns its bytes");
+    assert!(
+        bytes.len() < app.blob.len(),
+        "the truncated buffer must be shorter than the blob it came from"
+    );
+    for span in &preview.spans {
+        assert!(
+            usize::try_from(span.raw_range.end).unwrap_or(usize::MAX) <= bytes.len(),
+            "every preview span must index into the buffer the preview owns"
+        );
+    }
+}
+
 /// Spec 0174 §S2: `App::override_preview_byte_budget` is a plain field,
 /// not a fixed constant — setting it to a custom value (as `main.rs`'s
 /// `--override-preview-byte-budget` does) must actually change where a
