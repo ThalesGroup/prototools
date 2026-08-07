@@ -336,13 +336,42 @@ agree byte for byte.
   across the splice, take its new absolute line, and `set_top` so that
   the slot lands on the terminal row it occupied before.
 
-  **Confirming an override moves nothing.** Everything above the
-  overridden node is untouched by S7's scoped invalidation, so its line
-  count is unchanged and the node keeps the screen row it already had.
-  A node that starts half way down the viewport needs no special start
-  point — which is also why S1's budget is not reduced by the node's
+  **It runs on every splice batch, confirm included — not only when a
+  bake lands.** For a single-site `Path` origin below the anchor,
+  confirming moves nothing: S7's scoped invalidation leaves every row
+  above untouched, and the node keeps the screen row it had. A
+  `PathField` or `FqdnField` origin is the opposite case and is the one
+  that governs: its sites are scattered document-wide, *including above
+  the viewport*, and each off-screen site collapses from its real height
+  to one folded row the moment the override is confirmed. The line count
+  above the caret therefore changes at confirm, by a lot, and grows back
+  as the bake lands.
+
+  **So absolute line numbers are unstable for the duration of a bake,
+  and that is accepted.** The alternative is the ≈5 s. What is *not*
+  accepted is the caret or the viewport moving: they are anchored on
+  slots and recomputed after every batch, so the user's row stays put
+  while the numbers beside it change.
+
+  A node that starts half way down the viewport still needs no special
+  start point — which is why S1's budget is not reduced by the node's
   offset into the screen. Overshooting by up to one screenful is one
   screenful of cheap render; undershooting leaves a hole at the bottom.
+
+- **S10b. A bounded render is issued only for a site that intersects the
+  viewport.** A multi-site origin has no single "overridden node" to
+  bound the budget around. At most a screenful of sites can be visible,
+  so at most a screenful of bounded renders is issued at confirm; every
+  other site takes S6's header-keep-and-auto-fold path and calls the
+  renderer not at all. Confirm-time *render* work is bounded by the
+  viewport, not by the site count.
+
+  **Confirm-time invalidation work is not.** `collect_descendants` is
+  O(subtree), and a whole-document `FqdnField` override's subtrees can
+  partition the document — millions of slot writes and, worse, millions
+  of `Box<str>` frees, on the event thread. This is allocator work the
+  ≈5 s table never measured, because today the render dwarfed it. It is
+  open question 6.
 
 - **S10a. An anchor whose slot stops being rendered climbs to its
   nearest rendered ancestor.** The slot itself never disappears: the
@@ -459,6 +488,18 @@ agree byte for byte.
    ever done, doing it while this spec is already rewriting every
    writer is the cheap moment.
 
+6. **What does confirm-time invalidation cost for a whole-document
+   `FqdnField` override?** S10b names it: dropping the descendants'
+   text is O(subtree) per site, and a type that occurs everywhere makes
+   that O(document) — millions of slot writes and millions of
+   `Box<str>` frees, on the event thread, *after* the bounded render has
+   made everything else fast. Nobody has measured it, because until now
+   the 4.12 s render hid it. Measure it before assuming the confirm
+   frame is instant; if it is material, the vacating moves to the bake
+   thread behind the fresh/stale bitset, which is what the bitset makes
+   possible. Open question 5's flattened `node_text` would also dissolve
+   it, since dropping text would become an offset write.
+
 ## Alternatives considered
 
 **Answer a stale line just-in-time.** An earlier draft of this spec: a
@@ -573,10 +614,18 @@ thousands of splices.
     it after the bake returns the full set. S13.
 15. `the_viewport_holds_its_node_when_a_bake_lands` — including a bake
     landing above the viewport. S10.
-16. `a_node_starting_mid_viewport_does_not_move` — confirm on a node
-    whose header is half way down the screen; every row above it is
-    byte-identical and the header stays on its terminal row. S10.
-17. `an_anchor_swallowed_by_its_parent_climbs` — an `FqdnField`
+16. `a_node_starting_mid_viewport_does_not_move` — confirm a `Path`
+    override on a node whose header is half way down the screen; every
+    row above it is byte-identical and the header stays on its terminal
+    row. S10.
+17. `a_multi_site_override_holds_the_caret_while_the_numbers_move` — an
+    `FqdnField` origin with sites above the viewport: the caret's slot
+    keeps its terminal row across confirm, and its absolute line number
+    does change. S10. This is the case that `Path` does not exercise.
+18. `only_visible_sites_are_rendered` — an `FqdnField` confirm issues
+    renderer calls for the sites intersecting the viewport and no
+    others, whatever the site count. S10b.
+19. `an_anchor_swallowed_by_its_parent_climbs` — an `FqdnField`
     override that flattens the caret's *parent* to `bytes` leaves the
     caret on that parent, with a drawn row, and the pane anchored on
     it. S10a.
