@@ -463,18 +463,15 @@ agree byte for byte.
   *is* bracketed — it emitted its header and footer, just nothing
   between. So `z` reaches it by the same test as any other message.
 
-  **Stated limit: the expanded header can lose a `repeated`
-  qualifier.** A splice rooted at a repeated element renders it behind
-  a synthetic *optional* field (spec 0135), so the annotation reads
-  `Item` where the parent's own render said `repeated Item`. Measured,
-  and **pre-existing** — overriding such a node has always done this —
-  but expanding a fold is the first time it happens without the user
-  asking for a retype. The body is byte-identical and the key and type
-  name are unchanged. Out of scope here: it belongs to the synthetic
-  wrapper, not to the budget — **spec 0253 fixes it**, and retires both
-  this paragraph and the `assert_ne!` sentinel in
-  `opening_an_auto_fold_renders_the_body_it_stood_for` that exists to
-  fire when it is fixed.
+  **An expanded node is byte-identical to the unbounded render, header
+  included.** It was not at first: a splice rooted at a repeated
+  element rendered it behind a synthetic *optional* field, so the
+  header read `Item` where the parent's own render said `repeated
+  Item`. That was pre-existing — overriding such a node had always done
+  it — but expanding a fold is the first time it happens without the
+  user asking for a retype, which is what made it worth fixing rather
+  than tolerating. Spec 0253 fixed it, at the synthetic wrapper where
+  it belonged.
 
   The scroll-into-view half is not implemented and rides with S10's
   viewport work, which is where the pane's own geometry is settled.
