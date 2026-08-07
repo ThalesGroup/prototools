@@ -74,6 +74,14 @@ impl RenderCache {
         }
     }
 
+    /// How many entries are held. For tests asserting *what* the cache
+    /// is allowed to hold (spec 0251 S5/S9), not for the eviction path,
+    /// which is bounded by bytes rather than by count.
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
     /// Look up `key`'s cached render, promoting it to most-recently-used
     /// on a hit.
     pub fn get(&mut self, key: &RenderKey) -> Option<RenderValue> {

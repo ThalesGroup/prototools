@@ -1157,7 +1157,26 @@ impl App {
         // same `(range, target)` must never be conflated, or confirming
         // an override could silently reuse a truncated preview render.
         let cache_key = (interior_range, target.map(str::to_string), is_preview);
-        let (mut new_lines, new_spans) = match self.render_cache.get(&cache_key) {
+        // Spec 0251 S5: the cache serves the preview path alone. A
+        // confirmed render is the one that can be enormous — 250 MB for
+        // the googleapis root — and caching it cost a full clone to hand
+        // back plus a full clone to store, 0.56 s of a 4.12 s override,
+        // for an entry that no lookup could ever reach twice. Nothing is
+        // lost by not storing it: `is_preview` is part of the key, so a
+        // confirmed lookup can only ever hit another confirmed render,
+        // i.e. the same node overridden the same way twice — a
+        // revert-and-re-apply, which is user-paced and re-renders.
+        //
+        // What the cache is *for* is arrowing through candidates (spec
+        // 0116 §8), where each render is bounded to
+        // `override_preview_byte_budget` interior bytes and the same
+        // candidate is revisited constantly.
+        let cached = if is_preview {
+            self.render_cache.get(&cache_key)
+        } else {
+            None
+        };
+        let (mut new_lines, new_spans) = match cached {
             Some(cached) => cached,
             None => {
                 let wrapper_desc = match field_type {
@@ -1207,7 +1226,9 @@ impl App {
                     .map_err(|e| format!("rendered text is not valid UTF-8: {e}"))?;
                 let new_lines: Vec<String> = new_text.lines().map(str::to_string).collect();
                 let value = (new_lines, new_spans);
-                self.render_cache.insert(cache_key, value.clone());
+                if is_preview {
+                    self.render_cache.insert(cache_key, value.clone());
+                }
                 value
             }
         };

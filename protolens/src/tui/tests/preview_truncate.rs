@@ -222,6 +222,31 @@ fn a_confirmed_render_copies_no_bytes() {
     }
 }
 
+/// Spec 0251 S5: the render cache serves the preview path alone. A
+/// confirmed render is the one that can be enormous, and caching it cost
+/// two full clones of it for an entry no second lookup could reach.
+#[test]
+fn a_confirmed_splice_leaves_no_entry_behind() {
+    let field_count = 40;
+    let (mut app, blob_idx) = preview_budget_fixture(field_count);
+
+    app.render_node_as(blob_idx, Some("test.Empty"), false)
+        .expect("a confirmed render must complete");
+    assert_eq!(
+        app.render_cache.len(),
+        0,
+        "a confirmed render must leave the cache untouched"
+    );
+
+    app.render_node_as(blob_idx, Some("test.Empty"), true)
+        .expect("a preview render must complete");
+    assert_eq!(
+        app.render_cache.len(),
+        1,
+        "a preview render is what the cache is for"
+    );
+}
+
 /// Spec 0174 §S2: `App::override_preview_byte_budget` is a plain field,
 /// not a fixed constant — setting it to a custom value (as `main.rs`'s
 /// `--override-preview-byte-budget` does) must actually change where a
