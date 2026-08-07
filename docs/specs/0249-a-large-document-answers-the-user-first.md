@@ -331,6 +331,38 @@ agree byte for byte.
   the line number would make the view jump every time a background bake
   completed somewhere the user cannot see.
 
+  `PaneScroll.index` is a document *line* (spec 0244), so this is an
+  explicit recomputation, not a change of type: hold the caret's slot
+  across the splice, take its new absolute line, and `set_top` so that
+  the slot lands on the terminal row it occupied before.
+
+  **Confirming an override moves nothing.** Everything above the
+  overridden node is untouched by S7's scoped invalidation, so its line
+  count is unchanged and the node keeps the screen row it already had.
+  A node that starts half way down the viewport needs no special start
+  point — which is also why S1's budget is not reduced by the node's
+  offset into the screen. Overshooting by up to one screenful is one
+  screenful of cheap render; undershooting leaves a hole at the bottom.
+
+- **S10a. An anchor whose slot stops being rendered climbs to its
+  nearest rendered ancestor.** The slot itself never disappears: the
+  arena is immutable (spec 0216) and a splice allocates and frees no
+  slots, so an index stays valid for the life of the document. What can
+  disappear is the node's *rendering* — an `FqdnField` override can
+  match a node's **parent** and flatten it to `bytes`, after which the
+  child's bytes are inside an opaque scalar and it has no row, no
+  `node_text`, and no line number to anchor to.
+
+  The rule, for both the caret and the pane anchor: walk `parent[]`
+  until a rendered slot is found. It is O(1) per step and terminates —
+  the root is always rendered — over a chain that is 13 deep on
+  googleapis against a cap of 1000. The user lands on the ancestor that
+  swallowed the node, which is where the override they just made
+  actually took effect.
+
+  This is distinct from an auto-fold: a folded node *is* rendered, as
+  one row, and is a perfectly good anchor.
+
 - **S11. The bake is the same work, moved.** It renders each queued
   subtree unbounded, splices it under the S9 guard, and clears its
   auto-fold. It is off the event thread, interruptible between
@@ -541,6 +573,13 @@ thousands of splices.
     it after the bake returns the full set. S13.
 15. `the_viewport_holds_its_node_when_a_bake_lands` — including a bake
     landing above the viewport. S10.
+16. `a_node_starting_mid_viewport_does_not_move` — confirm on a node
+    whose header is half way down the screen; every row above it is
+    byte-identical and the header stays on its terminal row. S10.
+17. `an_anchor_swallowed_by_its_parent_climbs` — an `FqdnField`
+    override that flattens the caret's *parent* to `bytes` leaves the
+    caret on that parent, with a drawn row, and the pane anchored on
+    it. S10a.
 
 ## Measured outcome
 
