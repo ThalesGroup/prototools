@@ -392,6 +392,29 @@ agree byte for byte.
   big — because until the bake exists (S11) a bounded confirm would
   leave the document truncated with nothing to fill it back in.
 
+  **What a bounded confirm actually costs — measured 2026-08-07.** The
+  googleapis root override, `/` → `FileDescriptorSet`, with every splice
+  bounded to 50 rows:
+
+  | phase | unbounded | bounded to 50 |
+  |---|---|---|
+  | render | 1.58 s | **0.005 s** |
+  | vacate | 0.22 | 0.21 |
+  | `overlay_spans` | 0.70 | 0.21 |
+  | line counts | 0.00 | 0.10 |
+  | status, drop, fresh | 1.18 | 0.01 |
+  | **total** | **3.70 s** | **0.53 s** |
+
+  **7x, and the renderer is no longer in the picture at all** — 5 ms of
+  530. What the budget cannot reach is the rest: the vacate loop walks
+  the *old* rendering (open question 6's 0.22 s floor), `overlay_spans`
+  keeps a ~0.21 s component that does not shrink with 5.28 M lines
+  becoming 15 593, and the line counts pay 0.10 s for the 7 771 stops.
+  **0.53 s is therefore the floor of this design on this document, not
+  an implementation detail to tune away**, and it is what S5's policy
+  has to be judged against. It is a freeze the user will notice and not
+  one they will report.
+
 - **S6. Invalidating a subtree keeps its header and drops its
   descendants — which is S5 with a budget of one.** This is the
   multi-site case.
@@ -576,6 +599,65 @@ agree byte for byte.
 
   A user scrolling into unbaked territory meanwhile does not wait for
   the bake: they hit an auto-fold and S8 expands it on the spot.
+
+  **The bake was simulated end to end on 2026-08-07, and it does not
+  work yet.** `App::bake_sim` drained `auto_folded` by repeated
+  `expand_auto_fold` after a bounded root override of googleapis.desc,
+  until no stop remained:
+
+  | budget | confirm | bake steps | bake | of which render | of which line counts | total |
+  |---|---|---|---|---|---|---|
+  | unbounded | 3.70 s | — | — | 1.58 s | 0.00 s | 3.70 s |
+  | 50 | 0.53 | 419 723 | 21.8 s | 5.22 | **13.66** | 22.4 s |
+  | 500 | 0.54 | 209 153 | 12.6 | 3.36 | **7.57** | 13.1 |
+  | 5000 | 0.56 | 70 797 | 7.9 | 2.54 | **3.91** | 8.4 |
+
+  **The correctness result first, because it is the one that was in
+  doubt: at all three budgets the fully baked document is byte-identical
+  to the unbounded render** — 232 892 696 bytes, after 419 723 separate
+  bounded expansions. S1's "the bounded lines are the unbounded lines,
+  because they are the same lines" is not just an argument.
+
+  Three findings, in order of how much they matter.
+
+  **1. `refresh_line_counts` is 50-63% of the bake, and it is
+  quadratic.** It recomputes each ancestor's counts by *re-summing that
+  ancestor's children* (`lines.rs:142`, and its doc comment says so:
+  "O(depth + the fanout of each node on the way up)"). One splice under
+  the googleapis root therefore re-adds 7 771 numbers to learn that one
+  of them changed. Over 419 723 splices that is billions of additions —
+  ≈33 µs per splice, independent of the budget, which is exactly the
+  shape the table shows (steps halve, the column halves). **The bake is
+  not viable until this carries a delta up instead: a child's count
+  changed by Δ, so every ancestor's sum changed by Δ.** O(depth), exact,
+  and the existing early exit becomes "stop when Δ is zero". A folded
+  ancestor still pins `lines_visible` to 1. Deleting this column takes
+  the budget-500 bake from 12.6 s to 5.1 s.
+
+  **2. A small budget is the wrong choice for the bake, and the right
+  one for the confirm.** They need not be the same number and should not
+  be. The bake's own render is 3.3x the unbounded one at budget 50 and
+  1.6x at 5000: every bounded render re-emits its whole right frontier
+  as folded rows (S1's "output size = budget + breadth"), and those rows
+  are rendered again by the step that expands them. A large bake budget
+  amortizes the frontier; a small confirm budget is what makes the first
+  frame cheap. So S5's policy is two budgets, and the bake's is
+  thousands of rows.
+
+  **3. The stated limit has a number: 766 ms.** The worst single
+  expansion is ~0.75 s at every budget, and it is the same node each
+  time — a wide-and-flat one, where a budget of 50 stops descending
+  immediately but the walk still emits one folded row per child. 25-29
+  steps exceed 8 ms and 2 exceed 50 ms, out of 419 723; the distribution
+  is fine and the tail is not. **A bake step is therefore not
+  interruptible at a granularity the event loop can rely on**, which
+  rules out "run it from the idle arm in 8 ms slices" as a complete
+  answer and is an argument for the off-thread half of this item.
+  Bounding *breadth* as well as depth is the alternative, and it is not
+  in this spec.
+
+  Peak `auto_folded` occupancy was 84 428 entries at budget 50 — the
+  queue is small enough to be a plain set.
 
 ### Saying what is not yet known
 
