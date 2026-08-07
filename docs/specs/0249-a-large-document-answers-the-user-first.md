@@ -401,19 +401,23 @@ agree byte for byte.
   | render | 1.58 s | **0.005 s** |
   | vacate | 0.22 | 0.21 |
   | `overlay_spans` | 0.70 | 0.21 |
-  | line counts | 0.00 | 0.10 |
+  | line counts | 0.00 | 0.10 → **0.0015** (spec 0254) |
   | status, drop, fresh | 1.18 | 0.01 |
-  | **total** | **3.70 s** | **0.53 s** |
+  | **total** | **3.70 s** | **0.53 → ≈0.43 s** |
 
-  **7x, and the renderer is no longer in the picture at all** — 5 ms of
-  530. What the budget cannot reach is the rest: the vacate loop walks
-  the *old* rendering (open question 6's 0.22 s floor), `overlay_spans`
-  keeps a ~0.21 s component that does not shrink with 5.28 M lines
-  becoming 15 593, and the line counts pay 0.10 s for the 7 771 stops.
-  **0.53 s is therefore the floor of this design on this document, not
+  **8x, and the renderer is no longer in the picture at all** — 5 ms of
+  430. What the budget cannot reach is the rest, and it is now nearly
+  all of it: the vacate loop walks the *old* rendering (open question
+  6's 0.22 s floor) and `overlay_spans` keeps a ~0.21 s component that
+  does not shrink with 5.28 M lines becoming 15 593. The line counts
+  were the third such item and spec 0254 removed them.
+
+  **≈0.43 s is therefore the floor of this design on this document, not
   an implementation detail to tune away**, and it is what S5's policy
   has to be judged against. It is a freeze the user will notice and not
-  one they will report.
+  one they will report. Getting below it means making the two
+  invalidation passes proportional to the viewport rather than the
+  document — S9 and S10, not a smaller budget.
 
 - **S6. Invalidating a subtree keeps its header and drops its
   descendants — which is S5 with a budget of one.** This is the
@@ -603,7 +607,11 @@ agree byte for byte.
   **The bake was simulated end to end on 2026-08-07, and it does not
   work yet.** `App::bake_sim` drained `auto_folded` by repeated
   `expand_auto_fold` after a bounded root override of googleapis.desc,
-  until no stop remained:
+  until no stop remained. The table below is the simulation as first
+  taken; **finding 1 has since been fixed by spec 0254 and finding 3
+  no longer holds** — the post-0254 column is in that spec's measured
+  outcome, and the summary is `13.10 → 7.49 s` at budget 500 with a
+  worst step of 21.5 ms.
 
   | budget | confirm | bake steps | bake | of which render | of which line counts | total |
   |---|---|---|---|---|---|---|
@@ -621,18 +629,18 @@ agree byte for byte.
   Three findings, in order of how much they matter.
 
   **1. `refresh_line_counts` is 50-63% of the bake, and it is
-  quadratic.** It recomputes each ancestor's counts by *re-summing that
-  ancestor's children* (`lines.rs:142`, and its doc comment says so:
-  "O(depth + the fanout of each node on the way up)"). One splice under
-  the googleapis root therefore re-adds 7 771 numbers to learn that one
-  of them changed. Over 419 723 splices that is billions of additions —
-  ≈33 µs per splice, independent of the budget, which is exactly the
-  shape the table shows (steps halve, the column halves). **The bake is
-  not viable until this carries a delta up instead: a child's count
-  changed by Δ, so every ancestor's sum changed by Δ.** O(depth), exact,
-  and the existing early exit becomes "stop when Δ is zero". A folded
-  ancestor still pins `lines_visible` to 1. Deleting this column takes
-  the budget-500 bake from 12.6 s to 5.1 s.
+  quadratic. — FIXED by spec 0254, 2026-08-07.** It recomputed each
+  ancestor's counts by *re-summing that ancestor's children*, so one
+  splice under the googleapis root re-added 7 771 numbers to learn that
+  one of them changed — ≈33 µs per splice, independent of the budget,
+  which is exactly the shape the table shows (steps halve, the column
+  halves). It now carries the signed difference up instead.
+
+  The prediction here was slightly optimistic: the column fell to 2.26 s
+  at budget 500, not to nothing, because the *starting* node is still
+  summed from its children and under the googleapis root that one sum is
+  7 771 additions (spec 0254 N3). The bake went 13.10 → 7.49 s rather
+  than to 5.1.
 
   **2. A small budget is the wrong choice for the bake, and the right
   one for the confirm.** They need not be the same number and should not
@@ -644,17 +652,21 @@ agree byte for byte.
   frame cheap. So S5's policy is two budgets, and the bake's is
   thousands of rows.
 
-  **3. The stated limit has a number: 766 ms.** The worst single
-  expansion is ~0.75 s at every budget, and it is the same node each
-  time — a wide-and-flat one, where a budget of 50 stops descending
-  immediately but the walk still emits one folded row per child. 25-29
-  steps exceed 8 ms and 2 exceed 50 ms, out of 419 723; the distribution
-  is fine and the tail is not. **A bake step is therefore not
-  interruptible at a granularity the event loop can rely on**, which
-  rules out "run it from the idle arm in 8 ms slices" as a complete
-  answer and is an argument for the off-thread half of this item.
-  Bounding *breadth* as well as depth is the alternative, and it is not
-  in this spec.
+  **3. The stated limit had a number, 766 ms — and it was the
+  quadratic. NO LONGER HOLDS after spec 0254.** The worst single
+  expansion was ~0.75 s at every budget, always the same node: a
+  wide-and-flat one, where a budget of 50 stops descending immediately
+  but the walk still emits one folded row per child — so the widest node
+  in the document was also the one paying the largest ancestor re-sum.
+  With the difference walk it is **~22 ms**, again at every budget; the
+  steps over 8 ms fell from 26-29 to 2 and those over 50 ms from 2 to
+  none.
+
+  This item may therefore assume a bake step is tens of milliseconds.
+  Bounding *breadth* as well as depth is no longer needed to make one
+  interruptible, and running the bake from the idle arm in slices is
+  back on the table — though the off-thread argument stands on its own
+  merits, since 7.5 s of slices is 7.5 s of a busy idle arm.
 
   Peak `auto_folded` occupancy was 84 428 entries at budget 50 — the
   queue is small enough to be a plain set.
