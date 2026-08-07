@@ -342,6 +342,6 @@ bug or is one refactor away from doing so.
   model and the render-pass/batch architecture.
 - [main-pane.md](main-pane.md) — fold/unfold and highlighting from the
   pane's point of view.
-- [caches.md](caches.md) — the `RenderCache`/`CandidateCache` pair.
+- [caches.md](caches.md) — the `RenderCache`.
 - [override-select-pane.md](override-select-pane.md) — the live-preview
   overlay.

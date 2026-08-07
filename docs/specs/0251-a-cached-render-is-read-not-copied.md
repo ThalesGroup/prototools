@@ -224,9 +224,20 @@ the ordering constraint above is the part to re-read first.
   (`override_apply.rs:100`), which passes `false`. There is no second
   place to police.
 
-- **S10. Housekeeping.** `docs/protolens/design/caches.md` describes
-  two caches; `CandidateCache` is gone and `render_cache.rs`'s module
-  doc already says it is "the only one in the crate". Correct it here.
+- **S10. Housekeeping. IMPLEMENTED 2026-08-07.**
+  `docs/protolens/design/caches.md` describes two caches;
+  `CandidateCache` is gone and `render_cache.rs`'s module doc already
+  says it is "the only one in the crate". Correct it here.
+
+  The rewrite turned out to be more than a deletion, because both
+  surviving sections had also gone stale: "shared eviction discipline"
+  documented the never-evict-the-entry-just-inserted floor that S7
+  reverses, and nothing recorded that the cache now serves the preview
+  alone. The two design docs that link to it
+  (`design/README.md`, `design/rendering.md`) name the deleted type in
+  their one-line summaries and are corrected with it. The audit and
+  review docs that mention `CandidateCache` are dated records of
+  findings, not current-state documentation, and are left alone.
 
 ## Open questions
 

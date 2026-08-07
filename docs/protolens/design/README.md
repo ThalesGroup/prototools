@@ -55,9 +55,9 @@ At the top level:
   name, this is data, not UI (the UI lives in `tui/override_select.rs`
   and `tui/manage_pane.rs`; `override` is a reserved word in Rust, hence
   the file's name).
-- `render_cache.rs` / (the `CandidateCache` half of `override_pane.rs`) —
-  two structurally identical, byte-bounded MRU caches that make repeated
-  re-rendering and re-scoring of the same byte range cheap.
+- `render_cache.rs` — the crate's one byte-bounded MRU cache, making
+  repeated re-rendering of the same byte range under different candidate
+  types cheap.
 - `provenance.rs` — the interned `(type, origin)` pair a node records as
   what it was last rendered as.
 - `sweep.rs` — the parallel root-type inference sweep and the stack-size
@@ -125,7 +125,7 @@ own.
 | [arena-and-batch.md](arena-and-batch.md) | The node arena: how it is built from the bytes alone, what level order buys, the superset property, the splice, and where the memory goes (measured) |
 | [document-tree.md](document-tree.md) | What the arena means to the rest of protolens: provenance and demotion detection, Any/MessageSet auto-expansion |
 | [override-collection.md](override-collection.md) | The override data model, origin/kind system, auto vs. manual entries, YAML persistence, the render-pass architecture |
-| [caches.md](caches.md) | The two MRU byte-bounded caches and why they exist |
+| [caches.md](caches.md) | The render cache: what is in its key, why only the preview is cached, and how it evicts |
 
 ### Panes
 
