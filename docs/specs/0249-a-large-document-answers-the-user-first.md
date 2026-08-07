@@ -1,0 +1,560 @@
+<!--
+SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+
+SPDX-License-Identifier: MIT
+-->
+
+# 0249 — a large document answers the user first
+
+Status: draft (S4 already implemented — see below)
+App: protolens
+Refs: docs/specs/0216-the-arena-is-a-function-of-the-bytes.md (the
+        immutable arena: the structure exists before any rendering
+        does, which is the whole premise here),
+      docs/specs/0097-raw-recursive-lendel.md (the
+        message/string/bytes cascade for an unknown LEN payload — the
+        verdict S4 caches),
+      docs/specs/0193-the-fold-marker-lives-in-a-gutter.md (a folded
+        node is one row whatever is beneath it — the invariant this
+        spec is built on),
+      docs/specs/0222-the-text-lives-in-the-nodes.md (`node_text`: each
+        slot owns its lines, and a bracketed node stores only its
+        header because the footer is derived),
+      docs/specs/0210-a-node-counts-its-own-lines.md (nodes store line
+        *counts*, not positions — a subtree can change size without
+        moving a coordinate anyone else holds),
+      docs/specs/0171-wire-format-bounds-arithmetic-and-recursion-depth-caps.md
+        §S4 (`at_depth_cap` — the existing "stop recursing here"
+        check, and the precedent for S1's),
+      docs/specs/0174-preview-interior-truncation-and-node-budget-removal.md
+        (the preview *byte* budget — what S1 replaces, and why),
+      docs/specs/0235-a-search-answers-while-it-is-still-being-typed.md
+        (the sweep and the measured full-document numbers the haystack
+        rule protects),
+      docs/specs/0244-a-pan-may-run-past-either-end-of-the-content.md
+        (`PaneScroll`'s signed `skip`, which is why the budget is
+        `viewport_height + 1`),
+      docs/specs/0247-a-fold-toggle-carries-the-worst-news-below-it.md
+        (the status ladder S11 extends),
+      docs/specs/0251-a-cached-render-is-read-not-copied.md (the render
+        cache; S5's splice takes on hit),
+      docs/specs/0207-where-the-override-memory-work-stands.md (records
+        the render clone as the outstanding item)
+
+## Background
+
+Confirming a type override at the root of a large document freezes
+protolens for about five seconds. This spec makes that frame immediate.
+
+### The ≈5 s is the render, and invalidation is already scoped
+
+`splice_override` (`tui/override_apply.rs`) renders **first**, on the
+event thread (`:877`, `render_node_as`), and only then vacates slots —
+the loop at `:894-905` clears `folded`, `tree`, `node_text`,
+`heat_states` and status for `collect_descendants(idx)` alone.
+
+So there is no scoped-invalidation scheme left to invent: invalidation
+is already confined to the affected subtree, and it is cheap (a walk
+writing `None`, milliseconds even at 4.7 M slots). There is a
+synchronous, unbounded render to bound.
+
+### One entry is many splices
+
+`Origin` (`override_pane.rs:142-146`) has three kinds. `Path` names one
+node; `PathField` matches that field under every node at the path — a
+repeated field is many; `FqdnField` matches that field in *every*
+message of the type, anywhere in the document. Each match is spliced
+separately via `resettle_node`, so one confirmed entry can touch
+thousands of scattered subtrees. Any design assuming "one subtree is
+unbaked at a time" is wrong.
+
+### Where the ≈5 s actually goes
+
+Measured 2026-08-07 with throwaway timers inside `splice_override`,
+`render_node_as` and `mark_fresh_subtree`, on `googleapis.desc`
+(25.6 MB), opened `--raw` and then overridden at `/` to
+`google.protobuf.FileDescriptorSet` via `export / --load-overrides`,
+pinned with `flock -x … taskset -c 4-7`. One `resettle_node`, one
+splice, one `render_overrides_inner` call.
+
+| phase | time | size |
+|---|---|---|
+| `render_node_as` | **2.09 s** | |
+| — `prototext-core` render | 1.06 s | 249.7 MB of text |
+| — split into `String`s | 0.43 s | 5 278 324 lines |
+| — `RenderCache::insert` clone | 0.56 s | (spec 0251's subject) |
+| `collect_descendants` | 0.08 s | 2 864 189 nodes |
+| vacate loop (:894-905) | 0.10 s | same |
+| `overlay_spans` | 0.68 s | 5 278 324 lines, 4 499 336 spans |
+| `refresh_line_counts` | 1.2 µs | O(depth) |
+| `refresh_status_subtree`/`_ancestors` | **0.48 s** | |
+| dropping the temporary line vector | 0.09 s | 5 278 324 `String`s |
+| `mark_fresh_subtree` | 0.10 s | 2 829 366 fresh, 1 target |
+| unattributed | ≈ 0.40 s | |
+| **total** | **4.12 s** | |
+
+Three things this settles.
+
+**The renderer is a quarter of it.** `prototext-core` is 1.06 s of
+4.12 s. Deferring only the render — the obvious reading of "make the
+render async" — leaves 3 s on the event thread. What has to be bounded
+is the whole splice.
+
+**Everything else scales with the rendered document.** `overlay_spans`,
+the status roll-up, the vacate loop, the split and the drop are one
+pass each over 2.8–5.3 M items, 1.4 s together. That is exactly why
+bounding the *rows* is cheap: it bounds the text, the line count, the
+span count and the status roll-up in one move, so every row of the
+table shrinks together.
+
+**The root override is the typed startup, re-done.** Startup with
+`-t google.protobuf.FileDescriptorSet` costs 5.35 s: arena 0.51 s,
+render 1.10 s (249.7 MB, 4 499 336 spans), split 0.49 s (5 278 324
+lines), `build_tree` 0.70 s, `App::new` 1.38 s. The same `--raw`
+startup costs 2.89 s (103.5 MB, 3 668 694 lines, 2 864 190 spans). The
+override reproduces the typed figures exactly, which is the expected
+identity and a check on the numbers: the arena is not rebuilt (spec
+0216), everything else is.
+
+The ≈0.40 s unattributed sits inside `splice_override` between the
+timed phases; no decision here turns on it. Spec 0207's "about 1
+second", recorded 2026-07-31, is **superseded rather than reconciled** —
+it does not say what it timed, and the corpus, the arena design and the
+status roll-up have all changed since.
+
+### The search is what the pre-baked lines are for
+
+A full-document search miss on googleapis (5 281 124 lines) costs
+**183–272 ms** folding and 276–422 ms case-sensitive (spec 0235), and
+the sweep never lowercases the haystack — `memchr2` runs over the
+needle's first character's two cases and folds only at the positions it
+proposes (`tui/mod.rs:302-318`). There is no "we walked every line
+anyway" credit to spend against re-rendering. The lines are baked once
+and read many times; anything that makes the haystack more expensive to
+obtain has to answer to those numbers.
+
+### The arena already knows the structure
+
+The arena is built from the bytes by a schema-free maximal wire walk,
+before any rendering (spec 0216). It holds, for every node, where it
+starts, where it ends and where its children begin. The structure of a
+large node is therefore **not** something rendering has to discover;
+rendering rediscovers what is already stored. That is what lets a
+render be stopped early and still produce an exact structure.
+
+One thing the arena's *shape* could not answer, because the walk
+descends into every LEN payload whatever it looks like: whether spec
+0097's cascade would render an unknown payload as a nested message or
+as a string. See S4 — that is now cached, and is the only part of this
+spec already implemented.
+
+## Goals
+
+- **G1. Confirming an override draws the next frame immediately**, at
+  the viewport it was already at, however large the retyped node is.
+- **G2. A drawn line is always a stored line.** Everything drawn comes
+  from `node_text`, as it does today. Rendering is deferred; *reading*
+  is not indirected.
+- **G3. The pre-baked lines stay the search haystack**, so a
+  full-document miss stays within 1 s on googleapis.
+- **G4. Counts are exact at every moment.** `lines_total = 1 + Σ
+  children + 1`, `assert_status_is_exact`, the scrollbar and row→node
+  resolution hold continuously, never "once the bake lands".
+
+## Non-goals
+
+- **N1. `node_text` is not made lazy, and no line is rendered per
+  frame.** Rendering *is* deferred — that is the whole spec — but the
+  unit of deferral is a spliced region, never a line materialized for
+  one frame. Memory is not the objective; latency is. See Alternatives.
+- **N2. No progress bar over a synchronous commit.** The freeze it
+  would annotate is what this spec removes.
+- **N3. The search's matching semantics are unchanged** (specs 0235,
+  0246) — but its *completeness* is not. S13 says so explicitly; this
+  is a deliberate, visible, converging change, not an invariant kept.
+- **N4. Nothing here retunes the sweep** (spec 0250) **or the render
+  cache's budget** (spec 0251).
+
+## Specification
+
+The design in one sentence: **a bounded render is a full render in
+which every node not descended into is folded.** A folded node is
+already exactly one row whatever is beneath it (spec 0193), so the
+bounded result is a complete, exactly-counted structure — not a
+truncation, and not a provisional one.
+
+Rendering stays on demand: confirming an override renders a screenful,
+scrolling to a fold renders another, the rest bakes behind. What does
+*not* happen is answering an individual line at draw time. Every
+bounded render is **rendered → spliced → drawn**, in that order, so a
+region's text, counts, spans and status are in place before anything
+reads them. Hence G2, and hence no pair of rendering paths that must
+agree byte for byte.
+
+### The bounded render
+
+- **S1. A render can be bounded by rows emitted.** The budget is a
+  count of rendered document lines, checked where the renderer is about
+  to recurse. Once spent, a nested field is emitted with an empty body
+  and reported as *undescended*.
+
+  It is a **row** budget, not a byte budget (spec 0174) and not a depth
+  cap (spec 0171 §S4): the cut then falls on a node boundary by
+  construction, so the emitted lines are the unbounded render's lines,
+  produced by the same renderer with the same annotations. Nothing has
+  to be verified about their agreement.
+
+  The precedent is in the same function: `render_len_field` already
+  short-circuits recursion at the depth cap. A row budget is the same
+  shape of check with a different degradation — an empty nested body
+  rather than opaque bytes, because the node must stay foldable.
+
+  **The walk stays depth-first, in document order.** This is a choice
+  against the alternative of expanding level by level, and it is what
+  makes the frame after `Enter` *final*: the rows on screen are the
+  true first `viewport_height + 1` lines of the new rendering, so they
+  will still be there, unchanged, when the bake completes. Overriding
+  the googleapis root therefore shows the interior of `file[0]` at full
+  depth, and folds `file[1..7770]` — not "every first-level child
+  folded", which is what a level-by-level budget would give and which
+  would visibly rearrange itself as the bake landed.
+
+  **The budget is `viewport_height + 1`**, the `+1` being spec 0244's
+  signed `skip`, which can leave the top and bottom rows partially
+  visible. No further margin: the bake covers the whole document within
+  seconds, so hedging against the next scroll step hedges against
+  something that will be baked before the user reaches it.
+
+- **S2. The output is `budget + right-frontier breadth`, and that is
+  the price of G4.** Emission stops descending, not walking: the walk
+  unwinds and still emits the siblings it had not reached, one folded
+  row each, at every level. They are needed — the parent's
+  `lines_total`, the scrollbar extent and "can the user scroll down"
+  are all wrong otherwise — and they are cheap, because in document
+  order they land *below* the viewport and each is `indent + key + " {"`
+  with no payload touched. Closing braces cost nothing at all: a
+  bracketed node stores only its header and the footer is derived (spec
+  0222).
+
+  At the googleapis root that is ~7 771 one-line entries to support a
+  50-row screen, against 5.28 M rows unbounded.
+
+  **Stated limit: a wide-and-flat document cannot be bounded by
+  folding.** A scalar child is not foldable, so a message with millions
+  of direct scalar fields renders millions of rows whatever the budget.
+  A packed run is one arena slot, which is why googleapis is safe; that
+  is an observation about this corpus, not a proof.
+
+- **S3. An undescended node is folded, and an auto-fold is not a user
+  fold.** They are tracked in separate sets. `folded: HashSet<usize>`
+  is the user's; a landing bake clears only its own, so folds the user
+  made never pop open by themselves.
+
+- **S4. The schema-free verdict comes from the arena, not from a
+  probe. — IMPLEMENTED 2026-08-07.** To emit a parent's row for a
+  child, the renderer must know whether the child is `field { … }`
+  (foldable, one row when folded) or `field: "…"` (a scalar). With a
+  schema the field declares it; without one, spec 0097's cascade
+  decides, and deciding needs a structural probe of the *whole*
+  payload — the exact recursive cost the budget exists to avoid.
+
+  `Arena::probes_as_message(slot)` supplies it as a bit lookup. Two
+  properties:
+
+  - It is a function of the immutable bytes, so no override can
+    invalidate it. Computed once, at load.
+  - It is **reported by the one site that computes it** —
+    `render_len_field` hands it to `Sink::begin_nested` on
+    `NestedKind::Message { probed_as_message: Option<bool> }`, `None`
+    meaning no probe ran because a schema decided. `ProbeSink` is
+    untouched. This was not cosmetic: the first attempt re-derived the
+    verdict from a malformity tally inside `ArenaSink` and disagreed
+    with the real cascade on **49 050 of 855 344 nodes (5.7%)**,
+    because it also answered for groups, which never face a cascade.
+
+  Cost on googleapis.desc (25.6 MB, 4 737 283 slots, `taskset`-pinned):
+  arena build **244–256 ms → 338–349 ms**, i.e. **+95 ms (+38%)**, plus
+  ~590 KB for the bitset. 806 294 slots probe as a message. Verified
+  slot by slot against a real `ProbeSink` over the whole corpus.
+
+  This is the piece that makes a bounded render possible on an unknown
+  document rather than only on a schema-covered one, which is why it
+  was implemented first and independently.
+
+### Confirming, invalidating, baking
+
+- **S5. Confirming an override splices a row-bounded render and queues
+  the unbounded one.** The work stays synchronous on the event thread,
+  in the order it has today — render, splice, draw — because at one
+  screenful it is cheap enough to be. Every phase of the ≈5 s table
+  shrinks with the row count.
+
+- **S6. Invalidating a subtree keeps its header and drops its
+  descendants.** This is the multi-site case, and it costs no render at
+  all in the common one: **a node's own header line does not depend on
+  its own type.** The key comes from the *parent's* descriptor and the
+  annotations describe the parent-frame wire record (tag, length);
+  changing the node's type changes its *children*. So an ordinary
+  `--as <fqdn>` override keeps the existing header string, drops the
+  descendants' text, and marks the node auto-folded — O(1) per site,
+  no renderer call.
+
+  Two cases do rewrite the header and must be bounded separately:
+  `--field-name`, which replaces the key, and the `Any` /`MessageSet`
+  expansion paths, which change how the node's own line reads.
+
+- **S7. Invalidation stays scoped to the affected subtrees.** It
+  already is (`collect_descendants`) and it must stay that way: a
+  global invalidation would fold the whole document for a one-field
+  override, and almost nothing would be searchable.
+
+- **S8. Scrolling to an auto-fold expands it — the same operation as
+  S5, later and smaller.** A fresh row budget for what just came into
+  view, rendered, spliced, then drawn. Unfolding one by hand is the
+  same call.
+
+- **S9. Freshness is per slot; a generation guards only the
+  write-back.** A per-slot fresh/stale bit (one bitset, ~0.6 MB at
+  4.74 M slots) records what the last override invalidated. A global
+  era counter exists solely so that a bake started in era E writes its
+  result only if the era is still E — a second override landing
+  mid-bake must not be overwritten by the first one's tail. The era
+  does **not** invalidate globally (S7).
+
+- **S10. The viewport re-anchors on the node, never on the line
+  number.** When a bake lands and a subtree's real height replaces its
+  folded one, the node the user is on keeps its screen row; absolute
+  line numbers shift once, at that moment.
+
+  This matters because of the multi-site property: a bake landing far
+  above the viewport also changes the document's height. Anchoring on
+  the line number would make the view jump every time a background bake
+  completed somewhere the user cannot see.
+
+- **S11. The bake is the same work, moved.** It renders each queued
+  subtree unbounded, splices it under the S9 guard, and clears its
+  auto-fold. It is off the event thread, interruptible between
+  subtrees, and it writes `node_text` — which is storage — without
+  populating the render cache (spec 0251 S9).
+
+  **It draws no frame per subtree.** By S1's depth-first rule the
+  visible rows after a confirm are already final, so a landing bake
+  changes nothing on screen except the document's total height — the
+  scrollbar thumb, the line-count footer and S13's remainder. One
+  entry can be thousands of splices, so a frame per splice is
+  thousands of frames redrawing the same rows, which is exactly what
+  spec 0245 removed. The bake requests a redraw on a coalescing
+  interval instead, plus one when it finishes.
+
+  A user scrolling into unbaked territory meanwhile does not wait for
+  the bake: they hit an auto-fold and S8 expands it on the spot.
+
+### Saying what is not yet known
+
+- **S12. The status ladder gains `Unbaked`, in violet.** It becomes
+  `Ok < Unbaked < Unknown < NonCanonical < Invalid`, colored with
+  `style_for(AnnotationLandmark)` — the same violet as `pack_size`'s
+  length-prefix accent (spec 0225, amended 2026-08-06).
+
+  The rank looks wrong and is right: an unbaked subtree might hide an
+  `Invalid`, so ranking it just above `Ok` means a *known* bad sibling
+  still wins the fold toggle's color, while "everything known is fine,
+  something has not been looked at" reads violet — provisional. It
+  never claims `Ok`. Without this, spec 0247's promise that a toggle
+  carries the worst news below it is simply false over an auto-fold.
+
+- **S13. A search reports what is not yet baked.** A folded region has
+  no text, so a search during a bake sweeps the baked slots at today's
+  speed and reports a remainder — the number of subtrees still queued.
+  It is complete again once the bake catches up, and with S7 the
+  remainder is bounded by the override, so a search anywhere else is
+  unaffected.
+
+  Two surfaces, deliberately: a **steady** violet dot while a bake is
+  running, and the count in the search's own result line —
+  `3 matches (412 subtrees not yet baked)`. The dot carries the ambient
+  state; the result line carries the consequence, and it is where the
+  user is actually looking when they care.
+
+  Steady, not flashing: a blink is a timer-driven redraw every ~500 ms
+  for the whole bake, which reopens spec 0245's rule that a frame is
+  drawn only when something changed. Violet, not red: red is `Invalid`
+  in spec 0247's ladder, and a bake in progress is not an error — the
+  dot and the fold markers should agree at a glance.
+
+## Open questions
+
+1. **Where does the row budget live, and what does an undescended node
+   emit?** Three things are unsettled: whether the counter rides on the
+   sink or on a thread-local like `HIDE_UNKNOWN`; what the emitted body
+   is exactly (an empty `{}` pair, or a header the splice closes
+   itself); and how the undescended set is reported back.
+
+   The natural candidate for the report is the span stream, and that is
+   where the risk is: **`slots_for_spans` (`decode.rs:727`) maps spans
+   to slots by *positional* descent (`first_child[parent] + ordinal`)
+   and drops an out-of-range result silently.** A bounded render must
+   emit a span for every node it stops at, in arena order, and if it
+   does not, the failure is invisible rather than loud. Settle this
+   first — everything after S1 assumes the report exists.
+
+2. **What do the two header-rewriting cases cost at scale?** S6 is O(1)
+   per site for `--as <fqdn>`, but `--field-name` and the
+   `Any`/`MessageSet` paths need one row rendered per site, each
+   carrying the renderer's per-call setup (descriptor resolution,
+   `install_ext_loader`). Measure setup against per-row separately: if
+   setup dominates, the sites must be batched into one call. This is
+   the same measurement that prices S5.
+
+3. **What happens to a user fold inside a subtree that is baked?**
+   Folds are keyed on slot and the slots survive (spec 0216), so the
+   expectation is that they persist — but the invalidation path
+   currently clears `folded` for the whole affected subtree
+   (`override_apply.rs:894-905`). Decide whether that is a bug being
+   preserved or a behavior worth keeping, and record it in S3.
+
+4. **Where does the bake's cue live?** S13's dot is the "unobtrusive
+   cue that a background job is running" that specs 0204/0205/0209
+   claim as their subject. Either it lands there or this spec
+   supersedes them — decide before it grows a second home.
+
+5. **Is `node_text`'s shape worth changing while it is being
+   reworked?** It is `Vec<Option<Box<str>>>` over ~4.74 M slots:
+   ~76 MB of pointers and ~4.7 M individual heap allocations before any
+   text. Flattening it into one arena `String` with per-slot `(u32,
+   u32)` offsets plus a small overlay for spliced slots keeps every
+   property here. Orthogonal, and should not be bundled — but if it is
+   ever done, doing it while this spec is already rewriting every
+   writer is the cheap moment.
+
+## Alternatives considered
+
+**Answer a stale line just-in-time.** An earlier draft of this spec: a
+slot keeps its old text, and an accessor renders on demand whatever is
+stale. It needs a dual-source accessor whose two paths must return
+identical bytes, a per-call setup cost nobody has measured, and an
+answer to "which node is row *r*" inside a region that was never
+rendered. It cannot work where it is most needed anyway: the new
+rendering has a different line count than the old one, so a per-row
+answer would not correspond to the row the structure says is there.
+Folding is exact by construction and needs none of it.
+
+**Use the existing byte-budgeted preview render as the instant frame.**
+Also an earlier draft, and attractive because the render already exists
+and is already interactive (spec 0174, `is_preview: true`, driven per
+keystroke by `preview_override_highlight`). Dropped because a *byte*
+budget does not cut on a node boundary: the two renders need not agree
+on the lines they share, so the view would change visibly when the bake
+landed, and the property had to be established by test rather than by
+construction. Its `...` marker is also not prototext and must be kept
+away from the parser (spec 0187). A row budget gives the prefix
+property for free.
+
+**Synthesize an unbaked node's folded row at display time and emit
+nothing.** Would remove S2's frontier tail. Rejected: it puts a second
+source of drawn text back in — the thing G2 exists to prevent — to save
+7 771 trivial rows.
+
+**Make `node_text` lazy to save memory.** Rejected as N1. Memory is not
+the complaint; the at-rest 0.94 GiB is affordable. Laziness costs the
+two things that matter: the search would have to render its own
+haystack (order seconds, missing G3 by 5-25x), and a lazy line still
+has to be counted before the viewport can skip it.
+
+**Defer the line counts as well as the text.** The general version of
+S1: draw the viewport by rendering forward and leave the subtree's
+height unknown until the bake lands. It gives progressive reveal, and
+it costs a third state for every invariant currently phrased as "counts
+are exact" (G4). The fold makes it unnecessary — an undescended node
+counts as one row, exactly, today.
+
+**Land the override entirely folded and bake behind the fold.** The
+degenerate case of S1, budget zero. Counts stay exact for free, but it
+shows the user *nothing* of what they just asked for. A budget of one
+viewport shows them a screenful for the same structural cost, which is
+why the budget is a number and not a flag.
+
+**A global era number as the invalidation mechanism.** Appealing —
+invalidation becomes O(1) — and rejected as the *invalidation* rule
+(S7): bumping a global era folds the whole document for a one-field
+override. Per-slot invalidation is not a new mechanism either:
+`splice_override` already writes over exactly the affected slots. The
+era survives in S9 for the one job a per-slot bit cannot do.
+
+**Let the search read stale text rather than skip it.** Rejected. A
+match would land on the right node with text nobody can see, and
+highlight a column computed from a rendering that no longer exists.
+
+**A progress bar over the existing synchronous commit.** The smaller
+change, and seriously considered: 5 s is paid once and the document is
+fast again afterward. Rejected because a progress bar makes a freeze
+legible rather than absent (G1). Two facts also weaken "once":
+`resettle_node` re-applies confirmed overrides, and one entry can be
+thousands of splices.
+
+## Test plan
+
+1. `a_row_budgeted_render_is_the_start_of_the_full_one` — the bounded
+   lines equal the corresponding lines of the unbounded render byte for
+   byte, and the first line not emitted belongs to a node reported as
+   undescended. S1. **Write it first**: it is the property everything
+   else assumes, and it should hold by construction.
+2. `an_undescended_node_is_reported_and_folded` — every undescended
+   node lands in the auto-fold set and none of them in the user's. S1,
+   S3.
+3. `the_frontier_is_emitted_as_folded_rows` — for a node whose budget
+   runs out inside its first child, every later sibling is present as
+   one row, and `lines_total` matches what the viewport can scroll
+   through. S2, G4.
+4. `counts_stay_exact_with_auto_folds` — after a bounded splice
+   `lines_total` is exact, `assert_status_is_exact` holds, and the
+   scrollbar's extent matches the drawn document. G4.
+5. `an_unknown_payload_is_bounded_without_a_probe` — a bounded render
+   over a document with no schema produces the same shape as the
+   unbounded one for the rows it emits, driven by
+   `Arena::probes_as_message`. S4. *(The arena side already has tests:
+   a declined payload, a defect that does not reach the parent, an
+   unterminated group, and a whole-corpus cross-check against a real
+   `ProbeSink`.)*
+6. `a_confirmed_override_draws_before_it_bakes` — confirming on a
+   root-sized node produces a frame without waiting for the unbounded
+   render, and the overridden node keeps its viewport row. G1, S5, S10.
+7. `an_ordinary_retype_renders_no_header` — an `--as <fqdn>` override
+   over many sites issues zero renderer calls for the headers, and the
+   headers drawn are byte-identical to the ones before. S6.
+8. `a_renamed_field_rewrites_only_its_own_header` — the `--field-name`
+   case does re-render, and only the header. S6.
+9. `an_override_marks_only_its_own_subtree_stale` — the fresh/stale
+   bitset differs only over `collect_descendants`. S7.
+10. `a_stale_subtree_expands_when_it_scrolls_into_view` — and the rows
+    it then occupies equal the unbounded render at that node. S8.
+11. `a_bake_clears_auto_folds_and_keeps_user_folds` — S3, S11, and open
+    question 3.
+12. `a_second_override_wins_over_an_in_flight_bake` — a bake started
+    before a second override does not write over the second override's
+    slots. S9.
+13. `an_auto_fold_reads_unbaked_not_ok` — the toggle's color is violet
+    over an auto-fold whose children are all fine, and stays red when
+    one of them is `Invalid`. S12.
+14. `a_search_reports_the_unbaked_remainder` — a search during a bake
+    returns the baked matches plus a non-zero remainder, and re-running
+    it after the bake returns the full set. S13.
+15. `the_viewport_holds_its_node_when_a_bake_lands` — including a bake
+    landing above the viewport. S10.
+
+## Measured outcome
+
+Filled in at implementation. It must include: time from `Enter` on a
+root override to the next frame, before and after, **with the same
+phase breakdown as the 4.12 s table**, so it is visible that every row
+shrank together; the renderer's per-call setup cost against its per-row
+cost, and the total for a `--field-name` override at its real site
+count (open question 2); the cost of expanding one auto-fold; the
+unbounded bake's wall time and whether the UI stays responsive across
+it; a search run during a bake, reporting both the swept time and the
+size of the remainder; and a re-run of the full-document search
+confirming G3 against 183–272 ms. State plainly anything that did not
+improve.
+
+`Arena::probes_as_message` (S4) is already measured above: +95 ms on
+the arena build, ~590 KB, 806 294 of 4 737 283 slots.
