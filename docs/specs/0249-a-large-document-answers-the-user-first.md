@@ -366,18 +366,36 @@ agree byte for byte.
   leave the document truncated with nothing to fill it back in.
 
 - **S6. Invalidating a subtree keeps its header and drops its
-  descendants.** This is the multi-site case, and it costs no render at
-  all in the common one: **a node's own header line does not depend on
-  its own type.** The key comes from the *parent's* descriptor and the
-  annotations describe the parent-frame wire record (tag, length);
-  changing the node's type changes its *children*. So an ordinary
-  `--as <fqdn>` override keeps the existing header string, drops the
-  descendants' text, and marks the node auto-folded — O(1) per site,
-  no renderer call.
+  descendants — which is S5 with a budget of one.** This is the
+  multi-site case.
 
-  Two cases do rewrite the header and must be bounded separately:
-  `--field-name`, which replaces the key, and the `Any` /`MessageSet`
-  expansion paths, which change how the node's own line reads.
+  An earlier draft of this item claimed that a node's own header does
+  not depend on its own type, and that an ordinary `--as <fqdn>`
+  override could therefore keep the existing header string verbatim and
+  skip the renderer entirely. **That is false, and was measured false
+  on 2026-08-07.** The same node's header line, before and after an
+  `--as test.Outer`, and then reverted to raw:
+
+  ```
+  before  "  inner {  #@ Inner = 1"
+   after  "  inner {  #@ Outer = 1"
+     raw  "  1 {  #@ message"
+  ```
+
+  The `#@` annotation names the node's *own* type, so `--as <fqdn>` —
+  the case the draft called free — is exactly the header-rewriting
+  case. Reverting to raw also drops the key back to the bare field
+  number, because the field name came from the override too. There is
+  no O(1) path and no special case: **every** site is re-rendered.
+
+  It costs nothing to add, because the mechanism is already S5's. A
+  `row_budget` of `1` spends the budget on the node's own header, so
+  `descend` refuses the body and the node reports itself undescended —
+  a two-line render (header, footer) drawn as one row. Verified:
+  `splice_override(idx, Some("test.Outer"), Some(1))` leaves
+  `lines_total == 2`, `lines_visible == 1`, and `idx` in `auto_folded`.
+  So S6 is not a separate code path; it is the row budget set to its
+  floor.
 
 - **S7. Invalidation stays scoped to the affected subtrees.** It
   already is (`collect_descendants`) and it must stay that way: a
@@ -437,10 +455,11 @@ agree byte for byte.
 - **S10b. A bounded render is issued only for a site that intersects the
   viewport.** A multi-site origin has no single "overridden node" to
   bound the budget around. At most a screenful of sites can be visible,
-  so at most a screenful of bounded renders is issued at confirm; every
-  other site takes S6's header-keep-and-auto-fold path and calls the
-  renderer not at all. Confirm-time *render* work is bounded by the
-  viewport, not by the site count.
+  so at most a screenful of sites gets a viewport-sized budget at
+  confirm; every other site takes S6's budget of 1 and renders its own
+  header and nothing else, at ≈1.6 µs a site. Confirm-time *render*
+  work is therefore bounded by the viewport plus a per-site constant,
+  not by the document.
 
   **Confirm-time invalidation work is not.** `collect_descendants` is
   O(subtree), and a whole-document `FqdnField` override's subtrees can
@@ -576,13 +595,49 @@ agree byte for byte.
    groups despite `treat_len_as_opaque`. Groups are proto2-only and
    rare; no corpus document hits this.
 
-2. **What do the two header-rewriting cases cost at scale?** S6 is O(1)
-   per site for `--as <fqdn>`, but `--field-name` and the
-   `Any`/`MessageSet` paths need one row rendered per site, each
-   carrying the renderer's per-call setup (descriptor resolution,
-   `install_ext_loader`). Measure setup against per-row separately: if
-   setup dominates, the sites must be batched into one call. This is
-   the same measurement that prices S5.
+2. **What does a header rewrite cost at scale? ANSWERED 2026-08-07 —
+   setup does not dominate, and the sites need not be batched.** The
+   question was posed on the assumption that only `--field-name` and
+   the `Any`/`MessageSet` paths rewrite a header; S6 records that every
+   site does. So the cost that matters is one budget-1 render *per
+   site*, not per exceptional site.
+
+   Measured with `prototext-core/examples/bounded_render.rs` against
+   googleapis.desc, rendering each of the 7 771 top-level records on
+   its own (their payload is a `FileDescriptorProto`, a real type, so
+   the proxy needs no synthetic wrapper):
+
+   | per-site budget | rows/site | wall, all 7 771 | per site |
+   |---|---|---|---|
+   | 1   |  21 |  37.1 ms | 4.8 µs |
+   | 51  |  80 | 114.5 ms | 14.7 µs |
+   | none| 677 | 980.5 ms | 126.2 µs |
+
+   The three points are linear in rows: **≈1.3 µs of per-call setup and
+   ≈0.17 µs per row** (the model puts the unbounded site at 115 µs
+   against a measured 126 µs). Setup is therefore ~7% of even the
+   cheapest bounded site, and 7 771 × 1.3 µs ≈ 10 ms of it in total.
+   Batching the sites into one call would save that 10 ms and nothing
+   else; it is not worth a second code path.
+
+   The real S6 site is *cheaper* than the 4.8 µs row of the table. The
+   proxy renders from inside the node, so its budget of 1 buys the
+   node's own right frontier — 21 rows. A protolens splice renders the
+   node's own tag and payload behind a synthetic wrapper, so the budget
+   is spent on the node's own header and the render is exactly two
+   rows: ≈1.6 µs per site, ≈12 ms for all 7 771, against 995 ms for the
+   one unbounded render of the same document.
+
+   Two caveats. This prices the *renderer* only — protolens adds
+   `register_wrapper` (name-keyed, early-return cached, so sites
+   sharing `(field_number, field_type, target, packed)` pay it once),
+   `install_ext_loader`, and the span-to-slot overlay per site; those
+   are part of the 3 s that spec 0251's measurement attributes to
+   everything other than the renderer. And the batched single call is
+   still 8.6x cheaper than the per-site loop at the same budget (4.3 ms
+   against 37.1 ms), which is an argument for S8 expanding a viewport's
+   worth of stops in one call rather than one at a time — not an
+   argument about S6.
 
 3. **What happens to a user fold inside a subtree that is baked?**
    Folds are keyed on slot and the slots survive (spec 0216), so the
@@ -720,11 +775,12 @@ thousands of splices.
 6. `a_confirmed_override_draws_before_it_bakes` — confirming on a
    root-sized node produces a frame without waiting for the unbounded
    render, and the overridden node keeps its viewport row. G1, S5, S10.
-7. `an_ordinary_retype_renders_no_header` — an `--as <fqdn>` override
-   over many sites issues zero renderer calls for the headers, and the
-   headers drawn are byte-identical to the ones before. S6.
-8. `a_renamed_field_rewrites_only_its_own_header` — the `--field-name`
-   case does re-render, and only the header. S6.
+7. `a_budget_of_one_renders_exactly_the_header` — and that header is
+   the *new* one: an `--as <fqdn>` changes the node's own annotation,
+   which is why S6 has no free path. S6. *(Implemented 2026-08-07.)*
+8. `a_reverted_node_shows_its_bare_field_number` — the other half of
+   the same point: dropping the override rewrites the key too. S6.
+   *(Implemented 2026-08-07, as part of test 7.)*
 9. `an_override_marks_only_its_own_subtree_stale` — the fresh/stale
    bitset differs only over `collect_descendants`. S7.
 10. `a_stale_subtree_expands_when_it_scrolls_into_view` — and the rows

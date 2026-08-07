@@ -1359,3 +1359,54 @@ fn a_row_budgeted_splice_folds_every_node_it_stopped_at() {
     );
     assert_eq!(app.document_lines(), full, "and shows what it did before");
 }
+
+/// Spec 0249 S6: the row budget's floor. A budget of 1 is spent on the
+/// node's own header, so `descend` refuses the body and the node comes
+/// back undescended — a two-line render drawn as one row.
+///
+/// The assertion that matters is not the count but the *content*: the
+/// header the bounded render produces is the new one. An earlier draft
+/// of S6 held that a node's header does not depend on its own type and
+/// that an `--as <fqdn>` could therefore keep the old string verbatim
+/// and skip the renderer. The `#@` annotation names the node's own
+/// type, so it can't — and a revert changes the key as well, the field
+/// name having come from the override too.
+#[test]
+fn a_budget_of_one_renders_exactly_the_header() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+
+    let header = |app: &App| app.document_lines()[app.absolute_start(inner_idx)].clone();
+    let before = header(&app);
+    assert!(
+        before.contains("inner {") && before.contains("Inner"),
+        "fixture header: {before:?}"
+    );
+
+    app.splice_override(inner_idx, Some("test.Outer".to_string()), Some(1))
+        .expect("a budget-1 splice must succeed");
+
+    assert_eq!(
+        app.tree[inner_idx].lines_total, 2,
+        "a header and a footer and nothing between"
+    );
+    assert_eq!(app.tree[inner_idx].lines_visible, 1, "drawn as one row");
+    assert!(
+        app.is_folded(inner_idx),
+        "the node the budget stopped at is folded: {:?}",
+        app.auto_folded
+    );
+    let after = header(&app);
+    assert!(
+        after.contains("Outer"),
+        "the header is the new one, not the old: {before:?} -> {after:?}"
+    );
+
+    // And reverting to raw rewrites the key, not just the annotation.
+    app.splice_override(inner_idx, None, Some(1))
+        .expect("a budget-1 revert must succeed");
+    let raw = header(&app);
+    assert!(
+        !raw.contains("inner"),
+        "a raw node shows its bare field number: {raw:?}"
+    );
+}

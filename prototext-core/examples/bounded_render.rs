@@ -91,4 +91,82 @@ fn main() {
             );
         }
     }
+
+    // Spec 0249 S6 / open question 2: the multi-site case renders each site
+    // on its own. Price one call per site against the single batched call
+    // above, and separate the per-call setup from the per-row work by
+    // rendering the same sites at two budgets.
+    //
+    // The sites here are the blob's top-level `file` records, whose payload
+    // is a `FileDescriptorProto` — a real type, so no synthetic wrapper is
+    // needed to render one on its own.
+    let sites = top_level_len_payloads(&buf);
+    println!("\nper-site: {} top-level records", sites.len());
+    let file_schema = prototext_core::parse_schema(&buf, "google.protobuf.FileDescriptorProto")
+        .expect("parse FileDescriptorProto");
+    let file_desc = file_schema.root_descriptor();
+    for budget in [Some(1usize), Some(51), None] {
+        let mut fqdns = FqdnTable::new();
+        let t = Instant::now();
+        let mut rows = 0usize;
+        let mut bytes = 0usize;
+        for &(s, e) in &sites {
+            let r = decode_and_render_indexed(
+                &buf[s..e],
+                file_desc.as_ref(),
+                &mut fqdns,
+                DecodeRenderOpts {
+                    annotations: true,
+                    indent_size: 2,
+                    row_budget: budget,
+                    ..DecodeRenderOpts::default()
+                },
+            )
+            .expect("render site");
+            rows += r.text.iter().filter(|&&b| b == b'\n').count();
+            bytes += r.text.len();
+        }
+        let wall = t.elapsed();
+        println!(
+            "{:>10}  {:>10.1?}  {:>12}  {:>10}  {:>12.1?} per site",
+            budget.map_or("none".to_string(), |b| b.to_string()),
+            wall,
+            bytes,
+            rows,
+            wall / sites.len() as u32,
+        );
+    }
+}
+
+/// Byte ranges of the payloads of the blob's top-level length-delimited
+/// records, in document order.
+fn top_level_len_payloads(buf: &[u8]) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < buf.len() {
+        let (tag, n) = varint(buf, i);
+        i += n;
+        if tag & 7 != 2 {
+            panic!("top-level record at {i} is not length-delimited");
+        }
+        let (len, n) = varint(buf, i);
+        i += n;
+        out.push((i, i + len as usize));
+        i += len as usize;
+    }
+    out
+}
+
+fn varint(buf: &[u8], mut i: usize) -> (u64, usize) {
+    let start = i;
+    let (mut v, mut shift) = (0u64, 0u32);
+    loop {
+        let b = buf[i];
+        v |= u64::from(b & 0x7f) << shift;
+        i += 1;
+        if b & 0x80 == 0 {
+            return (v, i - start);
+        }
+        shift += 7;
+    }
 }
