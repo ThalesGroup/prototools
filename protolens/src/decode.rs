@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use prost_reflect::prost_types::field_descriptor_proto::{Label, Type};
 use prost_reflect::prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto};
-use prost_reflect::{DescriptorPool, EnumDescriptor, MessageDescriptor};
+use prost_reflect::{Cardinality, DescriptorPool, EnumDescriptor, MessageDescriptor};
 use prototext_core::serialize::render_text::NO_FQDN;
 use prototext_core::serialize::render_text::{
     decode_and_render_indexed, DecodeRenderOpts, FqdnTable, NodeSpan, NO_PACKED_RECORD,
@@ -1192,15 +1192,31 @@ impl Decoded {
 /// the `.proto` identifier grammar requires the first character to be a
 /// letter. Generic over any `Type`/`type_name` pair — including
 /// `Type::Enum`, though this spec never constructs that case (Non-goals).
+///
+/// Spec 0253 S3: `cardinality` is part of the key because this name is
+/// the pool key `register_wrapper`'s early return depends on. Two
+/// wrappers that differ only in their label — field 1 `optional int32`
+/// and field 1 `required int32` — would otherwise collide on whichever
+/// registered first, and the second node would render under the first's
+/// declaration. Appended only when it is not `Optional`, so no name that
+/// existed before that spec changes; the names are session-local pool
+/// entries that nothing persists, so there is no compatibility question
+/// either way.
 fn synthetic_wrapper_name(
     field_number: u32,
     field_type: Type,
     type_name: &str,
     packed: bool,
+    cardinality: Cardinality,
 ) -> String {
     let mut key = format!("{field_number}:{}:{type_name}", field_type.as_str_name());
     if packed {
         key.push_str(":packed");
+    }
+    match cardinality {
+        Cardinality::Optional => {}
+        Cardinality::Required => key.push_str(":required"),
+        Cardinality::Repeated => key.push_str(":repeated"),
     }
     // Truncated to the first 16 bytes: this is a name-collision guard,
     // not a signature, and 32 hex characters already sit inside every
@@ -1325,14 +1341,26 @@ pub(crate) fn register_wrapper(
     field_type: Type,
     target: Option<WrapperTarget>,
     packed: bool,
+    cardinality: Cardinality,
 ) -> Result<MessageDescriptor, DecodeError> {
     let packed = packed && is_packable(field_type);
+    // Spec 0253 S1: the caller owns the label, and this is the one rule
+    // kept here — because it is protobuf's, not a preference. A packed
+    // field must be repeated, so a caller that asks for `optional` on a
+    // packed run gets `repeated` anyway. `packed` is already gated on
+    // `is_packable`, so this only fires where packing is legal at all.
+    let cardinality = if packed {
+        Cardinality::Repeated
+    } else {
+        cardinality
+    };
     let type_name = target.as_ref().map(|t| format!(".{}", t.full_name()));
     let full_name = synthetic_wrapper_name(
         field_number,
         field_type,
         type_name.as_deref().unwrap_or(""),
         packed,
+        cardinality,
     );
     if let Some(existing) = pool.get_message_by_name(&full_name) {
         return Ok(existing);
@@ -1348,10 +1376,14 @@ pub(crate) fn register_wrapper(
         // never reaches a span — the sink reports it as malformed instead
         // (spec 0212; `render_text::sink::NodeSpan::field_number`).
         number: Some(field_number as i32),
-        label: Some(if packed {
-            Label::Repeated
-        } else {
-            Label::Optional
+        // Spec 0253: the node's own cardinality in its parent's schema,
+        // so an override does not silently drop a `repeated`/`required`
+        // qualifier the un-overridden node showed. `Required` is only
+        // legal because `register_synthetic` declares the file `proto2`.
+        label: Some(match cardinality {
+            Cardinality::Optional => Label::Optional,
+            Cardinality::Required => Label::Required,
+            Cardinality::Repeated => Label::Repeated,
         } as i32),
         r#type: Some(field_type as i32),
         type_name,
@@ -1733,6 +1765,9 @@ pub fn render_resolved(
                 Type::Message,
                 Some(WrapperTarget::Message(desc.clone())),
                 false,
+                // Spec 0253 N4: the document root has no parent and so
+                // no cardinality to inherit.
+                Cardinality::Optional,
             )?),
         ),
         None => ("<raw / no type>".to_string(), None),

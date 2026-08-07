@@ -602,6 +602,12 @@ impl App {
         // up — which would restore the per-keystroke registration stall
         // this function exists to remove.
         let packed = decode::packed_framing(span);
+        // Spec 0253 S4: the same reason, for the other half of the
+        // wrapper name — warming under a different label would register
+        // a wrapper the splice never looks up, restoring the
+        // per-keystroke registration stall this function exists to
+        // remove.
+        let cardinality = self.field_cardinality(idx);
         let end = end.min(self.override_candidates.len());
         for row in start..end {
             let name = self.override_candidates[row].0.clone();
@@ -618,6 +624,7 @@ impl App {
                 field_type,
                 target_desc,
                 packed,
+                cardinality,
             );
         }
     }

@@ -1560,29 +1560,12 @@ fn opening_an_auto_fold_renders_the_body_it_stood_for() {
         app.tree[idx].lines_total as usize, want_rows,
         "expanded height must match the unbounded render"
     );
+    // Header included: spec 0253 gave the synthetic wrapper the node's
+    // own cardinality, so the expanded header no longer drops the
+    // `repeated` qualifier the unbounded render shows.
     assert_eq!(
-        &opened[start + 1..start + want_rows],
-        &unbounded[want_start + 1..want_start + want_rows],
-        "expanded body must match the unbounded render"
-    );
-
-    // The header is compared separately because of one pre-existing
-    // deviation, recorded as a stated limit of S8: a splice rooted at a
-    // repeated element renders it behind a synthetic *optional* field
-    // (spec 0135), so the annotation says `Item` where the parent's own
-    // render said `repeated Item`. It predates this spec — overriding
-    // the same node has always done it — but expanding a fold is the
-    // first time it happens without the user asking for a retype. The
-    // key and the type name, which is what the row is read for, are
-    // unchanged.
-    assert_eq!(
-        opened[start].replace("repeated ", ""),
-        unbounded[want_start].replace("repeated ", ""),
-        "expanded header must differ only in the repeated qualifier"
-    );
-    assert_ne!(
-        opened[start], unbounded[want_start],
-        "if this now matches, the deviation is fixed and the note in \
-         spec 0249 S8 should go"
+        &opened[start..start + want_rows],
+        &unbounded[want_start..want_start + want_rows],
+        "expanded rows must match the unbounded render"
     );
 }

@@ -1466,3 +1466,141 @@ fn a_bake_keeps_the_user_folds_around_it() {
     assert!(app.is_folded(items[0]), "the user's fold still holds it");
     assert_eq!(app.tree[items[0]].lines_visible, 1);
 }
+
+// ── Spec 0253: an override keeps the field's cardinality ────────────────────
+
+/// Spec 0253 G1, and the measured regression it was written for: before
+/// it, a splice rooted at a repeated element rendered it behind a
+/// synthetic *optional* field, so the header read `#@ Item = 1` where
+/// the un-overridden node read `#@ repeated Item = 1`.
+#[test]
+fn an_override_keeps_the_repeated_qualifier() {
+    let (mut app, items) = repeated_message_fixture();
+    let before = app.document_lines()[app.absolute_start(items[0])].clone();
+    assert!(
+        before.contains("repeated Item"),
+        "fixture must start out repeated: {before:?}"
+    );
+
+    app.splice_override(items[0], Some("test.Item".to_string()), None)
+        .expect("retyping an element to its own type must succeed");
+
+    assert_eq!(
+        app.document_lines()[app.absolute_start(items[0])].clone(),
+        before,
+        "an override to the same type must not change the header at all"
+    );
+}
+
+/// Spec 0253 S2: `required` is the other half of the rule, and it is
+/// only reachable because `register_synthetic` declares the synthetic
+/// wrapper file `proto2` — under proto3 the label would be rejected at
+/// registration and the splice would fail outright.
+#[test]
+fn an_override_keeps_the_required_qualifier() {
+    use prost_types::field_descriptor_proto::{Label, Type};
+
+    let fds = proto2_fds(
+        "test_required_cardinality.proto",
+        vec![
+            message(
+                "Outer",
+                vec![field_of(
+                    "inner",
+                    1,
+                    Label::Required,
+                    Type::Message,
+                    ".test.Inner",
+                )],
+            ),
+            message("Inner", vec![field("v", 1, Label::Optional, Type::Int32)]),
+        ],
+    );
+
+    // inner: field 1 (tag 0x0A, LEN) wrapping Inner { v: 5 }.
+    let mut app = fixture_under(
+        "required-cardinality",
+        &fds,
+        "test.Outer",
+        &[0x0Au8, 0x02, 0x08, 0x05],
+    );
+    let inner = app
+        .nth_child(app.first_node, 0)
+        .expect("the root has the one `inner` field");
+
+    let before = app.document_lines()[app.absolute_start(inner)].clone();
+    assert!(
+        before.contains("required Inner"),
+        "fixture must start out required: {before:?}"
+    );
+
+    app.splice_override(inner, Some("test.Inner".to_string()), None)
+        .expect("a required field must still be overridable");
+
+    assert_eq!(
+        app.document_lines()[app.absolute_start(inner)].clone(),
+        before,
+        "an override must keep the `required` qualifier too"
+    );
+}
+
+/// Spec 0253: the common case does not gain a spurious qualifier —
+/// `optional` is the default and prototext writes nothing for it.
+#[test]
+fn an_optional_field_gains_no_qualifier() {
+    let (mut app, inner, _leaf) = type_as_fixture();
+    app.splice_override(inner, Some("test.Inner".to_string()), None)
+        .expect("retyping to its own type must succeed");
+
+    let header = app.document_lines()[app.absolute_start(inner)].clone();
+    assert!(
+        !header.contains("repeated")
+            && !header.contains("required")
+            && !header.contains("optional"),
+        "an optional field carries no qualifier at all: {header:?}"
+    );
+}
+
+/// Spec 0253 N2, the "(if any)" case: nothing declares the field, so
+/// there is no cardinality to inherit and the header says nothing.
+/// Deliberately *not* guessed from how many siblings the document
+/// happens to carry — that guess belongs to `export --descriptor`, which
+/// has to name a label whatever happens.
+#[test]
+fn an_override_under_a_raw_parent_has_no_qualifier() {
+    let (mut app, _inner, _known, unknown) = unknown_field_fixture();
+    assert!(
+        app.parent_field(unknown).is_none(),
+        "field 9 must be the one nothing declares"
+    );
+
+    app.splice_override(unknown, Some("int32".to_string()), None)
+        .expect("an unknown field is still overridable");
+
+    let row = app.document_lines()[app.absolute_start(unknown)].clone();
+    assert!(
+        !row.contains("repeated") && !row.contains("required"),
+        "an undeclared field inherits no qualifier: {row:?}"
+    );
+}
+
+/// Spec 0253 S4 / spec 0219 S4: warming and the splice must hash to the
+/// same wrapper name, or arrowing onto a candidate pays the registration
+/// the warming pass exists to have already made. Observed by counting
+/// the pool's files: a splice that finds its wrapper registers nothing.
+#[test]
+fn warming_registers_the_wrapper_the_splice_looks_up() {
+    let (mut app, items) = repeated_message_fixture();
+    app.override_target = Some(items[0]);
+    app.override_candidates = vec![("test.Item".to_string(), None)];
+    app.warm_visible_override_wrappers(0, 1);
+
+    let warmed = app.ctx.pool().files().len();
+    app.splice_override(items[0], Some("test.Item".to_string()), None)
+        .expect("the splice must succeed");
+    assert_eq!(
+        app.ctx.pool().files().len(),
+        warmed,
+        "the splice must reuse the warmed wrapper, not register a second one"
+    );
+}

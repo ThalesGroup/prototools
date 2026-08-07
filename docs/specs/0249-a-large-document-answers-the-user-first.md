@@ -471,7 +471,10 @@ agree byte for byte.
   but expanding a fold is the first time it happens without the user
   asking for a retype. The body is byte-identical and the key and type
   name are unchanged. Out of scope here: it belongs to the synthetic
-  wrapper, not to the budget.
+  wrapper, not to the budget — **spec 0253 fixes it**, and retires both
+  this paragraph and the `assert_ne!` sentinel in
+  `opening_an_auto_fold_renders_the_body_it_stood_for` that exists to
+  fire when it is fixed.
 
   The scroll-into-view half is not implemented and rides with S10's
   viewport work, which is where the pane's own geometry is settled.

@@ -72,6 +72,20 @@ pub(super) fn proto3_fds_in(
     }
 }
 
+/// [`proto3_fds`]'s `proto2` counterpart, for the one thing proto3
+/// cannot express: a `required` field.
+pub(super) fn proto2_fds(file_name: &str, messages: Vec<DescriptorProto>) -> FileDescriptorSet {
+    FileDescriptorSet {
+        file: vec![FileDescriptorProto {
+            name: Some(file_name.to_string()),
+            package: Some("test".to_string()),
+            message_type: messages,
+            syntax: Some("proto2".to_string()),
+            ..Default::default()
+        }],
+    }
+}
+
 /// [`proto3_fds_in`] under package `test`, which is what most fixtures
 /// use — the package name is only observable when a test quotes a fully
 /// qualified name, and `test` reads as "no particular package".

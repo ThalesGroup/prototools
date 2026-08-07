@@ -1286,3 +1286,67 @@ fn a_blob_without_an_extension_leaves_the_declaring_file_unloaded() {
         "nothing on the wire asked for field 100, so ext.proto must still be unloaded"
     );
 }
+
+/// Spec 0253 S3. The wrapper's name is the pool key `register_wrapper`
+/// returns early on, so a label that is not part of that name makes two
+/// genuinely different declarations collide: the second call hands back
+/// the first's descriptor and the node renders under the wrong label.
+#[test]
+fn two_cardinalities_are_two_wrappers() {
+    let mut ctx = DescriptorContext::empty_for_test();
+    let wrapper = |ctx: &mut DescriptorContext, packed, cardinality| {
+        register_wrapper(ctx.pool_mut(), 1, Type::Int32, None, packed, cardinality).unwrap()
+    };
+
+    let optional = wrapper(&mut ctx, false, Cardinality::Optional);
+    let required = wrapper(&mut ctx, false, Cardinality::Required);
+    let repeated = wrapper(&mut ctx, false, Cardinality::Repeated);
+
+    let label = |m: &MessageDescriptor| {
+        m.get_field(1)
+            .expect("field 1 is the wrapper's")
+            .cardinality()
+    };
+    assert_eq!(label(&optional), Cardinality::Optional);
+    assert_eq!(label(&required), Cardinality::Required);
+    assert_eq!(label(&repeated), Cardinality::Repeated);
+
+    let names = [
+        optional.full_name().to_string(),
+        required.full_name().to_string(),
+        repeated.full_name().to_string(),
+    ];
+    for (i, a) in names.iter().enumerate() {
+        for b in &names[i + 1..] {
+            assert_ne!(a, b, "each label must key its own wrapper");
+        }
+    }
+
+    // And asking twice still returns the one already registered.
+    assert_eq!(
+        wrapper(&mut ctx, false, Cardinality::Required).full_name(),
+        required.full_name()
+    );
+}
+
+/// Spec 0253 S1. Protobuf requires a packed field to be repeated, so
+/// that one rule stays inside `register_wrapper` and overrules whatever
+/// the caller derived from the parent's schema.
+#[test]
+fn a_packed_wrapper_is_repeated_whatever_the_caller_asked_for() {
+    let mut ctx = DescriptorContext::empty_for_test();
+    let packed = register_wrapper(
+        ctx.pool_mut(),
+        1,
+        Type::Int32,
+        None,
+        true,
+        Cardinality::Optional,
+    )
+    .unwrap();
+    assert_eq!(
+        packed.get_field(1).unwrap().cardinality(),
+        Cardinality::Repeated
+    );
+    assert!(packed.get_field(1).unwrap().is_packed());
+}

@@ -81,6 +81,29 @@ impl App {
             })
     }
 
+    /// The cardinality `idx`'s own field is declared with on its parent's
+    /// schema, for the synthetic wrapper an override renders it through
+    /// (spec 0253 S2).
+    ///
+    /// `Optional` whenever there is no declaration to read — no parent,
+    /// an unresolved parent type, or a field the parent does not declare.
+    /// That is the "(if any)" case, and saying nothing is the honest
+    /// answer: guessing `Repeated` from how many siblings the *document*
+    /// happens to carry (which is what `override_export`'s
+    /// `|| g.count > 1` does, because an exported descriptor has to name
+    /// a label for a field nothing declares) would make the qualifier a
+    /// fact about the blob rather than about the schema, so a `repeated`
+    /// field holding one element would annotate as optional.
+    ///
+    /// Deliberately blind to `packed`: `register_wrapper` forces
+    /// `Repeated` on a packed run itself, so the packed rule stays in the
+    /// one place spec 0219 put it.
+    pub(super) fn field_cardinality(&self, idx: usize) -> Cardinality {
+        self.parent_field(idx)
+            .map(|f| f.cardinality())
+            .unwrap_or(Cardinality::Optional)
+    }
+
     /// The type `idx` would naturally have from its parent's schema, used
     /// as the fallback when no active override applies (spec 0119 §G1) —
     /// `None` only when genuinely no type information is available at all

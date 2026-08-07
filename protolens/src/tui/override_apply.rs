@@ -1171,6 +1171,13 @@ impl App {
         // splice looking up the same wrapper.
         let packed = decode::packed_framing(&old_span);
 
+        // Spec 0253 S2/S4: the node keeps the cardinality its own field
+        // is declared with. Read here, before the splice replaces
+        // `idx`'s span; `warm_visible_override_wrappers` asks the same
+        // function of the same node, which is what keeps warming and the
+        // splice hashing to the same wrapper name.
+        let cardinality = self.field_cardinality(idx);
+
         let field_number = old_span.field_number;
         let field_name = self.field_name_for(idx);
         let renamed = self
@@ -1285,6 +1292,7 @@ impl App {
                             ft,
                             target_desc,
                             packed,
+                            cardinality,
                         )
                         .map_err(|e| e.to_string())?,
                     ),
