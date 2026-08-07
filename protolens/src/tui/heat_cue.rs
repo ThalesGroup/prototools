@@ -518,7 +518,15 @@ impl App {
                     .current_score
                     .upsert((start, key.clone()), current_entry, Tier::Visible);
             }
-            caches.complete = Some((range.clone(), candidates));
+            // Spec 0250 S8 reserves this cache for the override pane's
+            // whole-list request, and this arm is a *cue*. It writes
+            // anyway because in the no-worker configuration it is the
+            // only thing that ever will: with no worker there is
+            // nothing for `heat_lookup` to push a request to, so the
+            // pane's `[0, usize::MAX)` lookup can only ever be answered
+            // out of what a cue already computed here — `by_range`'s
+            // `top_n` is a screenful and can never cover it.
+            caches.complete.insert(range.clone(), candidates);
             HeatState::new(Some(stats), Some(current_entry))
         };
 

@@ -735,7 +735,7 @@ fn g3_the_startup_sweep_seeds_the_root_range() {
     assert_eq!(entry.best_score, Some(50));
     assert_eq!(entry.best_count, 1);
     assert_eq!(
-        caches.complete.as_ref().map(|(r, c)| (r.clone(), c.len())),
+        caches.complete.newest().map(|(r, c)| (r.clone(), c.len())),
         Some((range.clone(), candidates.len())),
         "`complete` holds the full list, keyed by the root's range"
     );
@@ -771,7 +771,7 @@ fn g3_seeded_top_n_is_capped_but_complete_is_not() {
     let entry = caches.by_range.peek(&range.start, Tier::User).unwrap();
     assert_eq!(entry.top_n.len(), HEAT_CUE_PREVIEW);
     assert_eq!(
-        caches.complete.as_ref().unwrap().1.len(),
+        caches.complete.newest().unwrap().1.len(),
         candidates.len(),
         "the uncapped list belongs in `complete`"
     );
@@ -787,7 +787,7 @@ fn g3_no_sweep_seeds_nothing() {
     let range = app.heat_scored_range(app.first_node);
     let mut caches = app.heat_caches.lock().unwrap();
     assert!(caches.by_range.peek(&range.start, Tier::User).is_none());
-    assert!(caches.complete.is_none());
+    assert_eq!(caches.complete.len(), 0);
 }
 
 // The seeding is only sound because the sweep's input and the cue's

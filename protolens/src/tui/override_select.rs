@@ -248,7 +248,9 @@ impl App {
                 Tier::Visible,
             );
             if self.override_candidates_complete {
-                caches.complete = Some((range, self.override_inferred_raw.clone()));
+                caches
+                    .complete
+                    .insert(range, self.override_inferred_raw.clone());
             }
         }
         self.override_inferred_raw.clear();

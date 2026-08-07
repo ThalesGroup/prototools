@@ -1764,7 +1764,7 @@ impl App {
             heat_worker::RangeHeatEntry::new(stats, top_n),
             tiered::Tier::User,
         );
-        caches.complete = Some((range, candidates));
+        caches.complete.insert(range, candidates);
     }
 }
 

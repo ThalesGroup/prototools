@@ -182,6 +182,13 @@ much care each needs.
   ranked lists keyed on `range.start`, replacing the single slot. No
   invalidation: the key is a byte offset into an immutable blob.
 
+  **IMPLEMENTED 2026-08-07** as `CompleteLists` in `heat_worker.rs`,
+  holding **8** rather than 16 — see S9. A `Vec` in MRU order rather
+  than a map, because at that cap a linear scan over 8 `usize`
+  comparisons beats hashing and the MRU order is the storage order.
+  A read promotes; that is what the cache is for, and
+  `the_complete_cache_evicts_what_was_not_read` pins it.
+
 - **S8. Only the `User` sweeps that serve the override pane write to
   it.** A prefetch must not evict the answer the user is alternating
   between — that is the whole defect. Prefetch results continue to land
@@ -193,11 +200,79 @@ much care each needs.
   cache holding the tail of its own scan for the interactive work that
   follows. Spec 0251 S9 states the same rule for the render cache.
 
+  **IMPLEMENTED 2026-08-07**, with the rule sharpened twice by what
+  implementation found.
+
+  *The tier is the wrong test.* `Tier::User` is also the tier of the
+  **cursor row's own heat cue** (`heat_tier_for`), so gating on it
+  would record a 4 MB list for every row the cursor merely passed over
+  — the same eviction defect from another source. What identifies the
+  override pane is that it asks for the *whole* list:
+  `upgrade_active_override_to_complete`'s `[0, usize::MAX)` is the only
+  such request in the crate.
+
+  *The asking request and the answering sweep need not be the same
+  one.* Opening the pane pushes the bounded first page and then the
+  unbounded list back to back (`open_override_on_default`); if the
+  worker pops the first before the second is pushed, the two do not
+  merge, and gating on the popped request's own `end` would make the
+  pane pay a **second full sweep** for a list the first had already
+  computed and thrown away. So the queue keeps a `complete_wanted` set
+  of ranges somebody has asked the whole list of, and the worker
+  consults it *after* its walk — by which point the pane's ask,
+  microseconds behind against a walk of ~0.9 s, has landed. Entries are
+  consumed on being answered.
+
+  Three writers besides the worker exist and the spec named none of
+  them; all three are the override pane's own list and all three keep
+  writing: `seed_root_heat` (the startup ranking, so the root's pane
+  opens free), `close_override` (the pane handing its list back), and
+  `heat_cue_resolve`'s synchronous arm. That last one is a *cue* and so
+  is an exception to the rule, stated at the call site: in the
+  no-worker configuration `heat_lookup` has nothing to push a request
+  to, so a whole-list ask can only ever be answered out of what a cue
+  already computed — `by_range`'s `top_n` is a screenful and can never
+  cover `usize::MAX`.
+
+  What this costs, stated plainly: the *first* `t` on a range now
+  sweeps, where before a cue's sweep for that same range might have
+  left its list in the slot. In practice that saving was already
+  illusory — the slot was clobbered by *every* completed sweep,
+  including each of the prefetcher's, so by the time the user pressed
+  `t` it almost never still held the cursor's range. That is the defect
+  in this spec's Background. Second and later opens are now free, which
+  is the trade.
+
 - **S9. Size it before trusting 16.** Estimated at 49 255 roots ×
   ~90-100 B ≈ 4.5-5 MB per list, so 16 lists ≈ 80 MB — an estimate, and
   large enough that if it holds, the count is a decision and not a
   detail. Measure a real list first and record the figure in the
   constant's doc comment; adjust the count, not the rule.
+
+  **MEASURED 2026-08-07.** The estimate held: on googleapis a real full
+  list is 49 255 entries and **4.27 MB** — 1.58 MB of `(String, i64)`
+  tuples plus 2.69 MB of FQDN bytes at a mean 54.7 B each.
+
+  One guess in the estimate's neighborhood was wrong and worth
+  recording: vetoing does *not* prune the list. Three real instance
+  blobs left 100%, 99.6% and 19.9% of roots non-vetoed, so a full list
+  is normally the whole root count and 4.27 MB is the ordinary case
+  rather than a worst one.
+
+  So the count is a decision, and it is **8**, not 16: ~34 MB on the
+  largest corpus in hand, against ~68 MB for 16. The workload S7 exists
+  for is a user alternating between *a handful* of fields; nobody has
+  measured how many, and the smaller number serves that while halving
+  the bill. It scales with the graph, not the document — twice the
+  roots costs twice this.
+
+  Recorded in the constant's doc comment along with the way out that is
+  *not* a smaller count: two thirds of a list is FQDN bytes copied out
+  of the archived graph, which `EntryScore` already borrows as
+  `&'g str`. Borrowing them through would cost 1.18 MB a list rather
+  than 4.27 MB — but it means threading the graph lifetime through
+  `RankedCandidates` and every cache holding one, which is not this
+  spec's business.
 
 ## Open questions
 
@@ -281,9 +356,19 @@ question 3. S1 rests on throughput and on S3's checkpoint, not on cost.
    highest live tier with more than one worker registered, and does not
    report idle while one is still walking. S5.
 7. `the_pane_reopens_from_the_cache` — visiting 3 ranges then returning
-   to the first re-scores nothing. S7, G3.
+   to the first re-scores nothing. S7, G3. **Written**, against a real
+   worker thread; verified non-vacuous by cutting the cap to 1, which
+   fails it.
 8. `a_prefetch_does_not_evict_a_user_list` — a prefetch completing
-   between two visits leaves the cached list intact. S8.
+   between two visits leaves the cached list intact. S8. **Written**,
+   and it asserts the prefetch really swept (`score_all_calls` grew)
+   before asserting the list survived, so it cannot pass by the
+   prefetch not happening.
+9. `the_complete_cache_evicts_what_was_not_read` — added: a read
+   promotes, so the cap evicts the least recently *used* entry and not
+   the least recently inserted. S7. Without it, a user alternating
+   between two ranges loses one as soon as the cache fills with ranges
+   nobody came back to.
 
 ## Measured outcome
 

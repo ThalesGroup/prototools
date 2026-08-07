@@ -60,6 +60,24 @@ pub(super) struct HeatRequest {
 struct HeatRequestQueueState {
     mru: TieredBounded<usize, HeatRequest>,
     stop: bool,
+    /// Ranges (by `start`) somebody has asked the *whole* candidate
+    /// list of and not been served yet — spec 0250 S8's gate on
+    /// [`CompleteLists`].
+    ///
+    /// A set rather than a flag on the request because the ask and the
+    /// sweep that answers it need not be the same request. Opening the
+    /// override pane pushes the bounded first page and the unbounded
+    /// list back to back (`open_override_on_default`); if the worker
+    /// pops the first before the second is pushed they do not merge,
+    /// and gating the write on the *popped* request's own `end` would
+    /// make the pane pay a second full sweep for a list the first one
+    /// had already computed and thrown away. The worker consults this
+    /// *after* its walk instead, by which point the pane's ask —
+    /// microseconds behind, against a walk of ~0.9 s — has landed.
+    ///
+    /// Entries are consumed on being answered, so this holds only
+    /// outstanding asks: one `usize` per range whose pane is opening.
+    complete_wanted: std::collections::HashSet<usize>,
 }
 
 /// Merge-on-push, most-recently-touched-first request queue (spec
@@ -121,6 +139,7 @@ impl HeatRequestQueue {
             state: Mutex::new(HeatRequestQueueState {
                 mru: TieredBounded::new(HEAT_REQUEST_QUEUE_MAX_ENTRIES),
                 stop: false,
+                complete_wanted: std::collections::HashSet::new(),
             }),
             condvar: Condvar::new(),
             queued: AtomicU8::new(0),
@@ -179,6 +198,12 @@ impl HeatRequestQueue {
     fn push(&self, req: HeatRequest, tier: Tier) -> UpsertOutcome<usize> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let key = req.range.start;
+        // Spec 0250 S8: recorded before the merge, since the merge is
+        // what would otherwise hide an unbounded ask inside a bounded
+        // request's `end`.
+        if req.end == usize::MAX {
+            state.complete_wanted.insert(key);
+        }
         let existing = state.mru.peek(&key, tier);
         let merged = match &existing {
             Some(existing) => HeatRequest {
@@ -229,6 +254,14 @@ impl HeatRequestQueue {
             }
             state = self.condvar.wait(state).unwrap_or_else(|e| e.into_inner());
         }
+    }
+
+    /// Spec 0250 S8: has anyone asked for the whole candidate list of
+    /// the range starting at `start`? Consumes the ask, so the sweep
+    /// that answers it is the only one that records a list.
+    fn take_complete_wanted(&self, start: usize) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.complete_wanted.remove(&start)
     }
 
     fn signal_stop(&self) {
@@ -303,10 +336,95 @@ impl RangeHeatEntry {
     }
 }
 
-/// The most recently fully-scored range and its complete candidate
-/// list — factored into a named type to keep clippy's
-/// `type_complexity` lint happy.
+/// One fully-scored range and its complete candidate list — factored
+/// into a named type to keep clippy's `type_complexity` lint happy.
 type CompleteSlot = (Range<usize>, Vec<(String, i64)>);
+
+/// How many complete candidate lists [`CompleteLists`] holds (spec 0250
+/// S7/S9).
+///
+/// **A list is big, and its size follows the graph rather than the
+/// document.** Measured on googleapis (49 255 roots): a real full list
+/// is 49 255 entries and **4.27 MB** — 1.58 MB of `(String, i64)`
+/// tuples plus 2.69 MB of FQDN bytes at a mean 54.7 B each. Vetoing
+/// prunes almost nothing on a typical blob (100%, 99.6% and 19.9% of
+/// roots survived on three real instance blobs), so that figure is the
+/// normal case and not a worst case.
+///
+/// So this is a decision and not a detail: 8 lists is ~34 MB on the
+/// largest corpus in hand, and a graph with twice the roots costs twice
+/// that. 8 rather than 16 because the workload S7 exists for is a user
+/// alternating between *a handful* of fields; nobody has measured how
+/// many, and the smaller number still serves that while halving the
+/// bill. Raise it only against a measurement of that alternation.
+///
+/// The obvious way to make this cheap is not a smaller count: two
+/// thirds of a list is FQDN bytes copied out of the archived graph,
+/// which `EntryScore` already borrows as `&'g str`. Borrowing them
+/// through would cost 1.18 MB a list rather than 4.27 MB, but it means
+/// threading the graph lifetime through `RankedCandidates` and every
+/// cache that holds one — out of scope here, and recorded so the next
+/// person weighing this count knows the alternative exists.
+pub(super) const COMPLETE_LIST_ENTRIES: usize = 8;
+
+/// The complete candidate lists of recently fully-scored ranges (spec
+/// 0250 S7), most-recently-used first.
+///
+/// This replaces the single slot that preceded it, whose defect was
+/// that *every* completed sweep overwrote it: a user alternating
+/// between a handful of fields re-scored each one from scratch, because
+/// a sweep for somewhere else had evicted the answer in between.
+///
+/// Keyed on the range's `start` offset alone, and needing no
+/// invalidation, because a range is a byte offset into a blob that is
+/// immutable for the whole session (spec 0216).
+#[derive(Default)]
+pub(super) struct CompleteLists {
+    /// MRU order, front first. A `Vec` rather than a map because the
+    /// cap is single digits: a linear scan over 8 `usize` comparisons
+    /// beats hashing, and the MRU order is the storage order.
+    entries: Vec<CompleteSlot>,
+}
+
+impl CompleteLists {
+    /// The list for the range starting at `range_start`, promoted to
+    /// most-recently-used.
+    fn get(&mut self, range_start: usize) -> Option<&[(String, i64)]> {
+        let i = self
+            .entries
+            .iter()
+            .position(|(r, _)| r.start == range_start)?;
+        if i != 0 {
+            self.entries[..=i].rotate_right(1);
+        }
+        Some(&self.entries[0].1)
+    }
+
+    /// Records `candidates` as the complete list for `range`, evicting
+    /// the least-recently-used entry once the cap is exceeded.
+    ///
+    /// A re-insert on a range already held replaces it in place rather
+    /// than piling up a second entry: the key is a byte offset into an
+    /// immutable blob, so the two lists are the same list.
+    pub(super) fn insert(&mut self, range: Range<usize>, candidates: Vec<(String, i64)>) {
+        self.entries.retain(|(r, _)| r.start != range.start);
+        self.entries.insert(0, (range, candidates));
+        self.entries.truncate(COMPLETE_LIST_ENTRIES);
+    }
+
+    /// Test-only entry-count introspection.
+    #[cfg(test)]
+    pub(super) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Test-only: the most recently used entry, which for a test that
+    /// has inserted once is the one it inserted.
+    #[cfg(test)]
+    pub(super) fn newest(&self) -> Option<&CompleteSlot> {
+        self.entries.first()
+    }
+}
 
 /// `heat_lookup_ex`'s return type (spec 0164 G7) — factored into a
 /// named type for the same reason as `CompleteSlot` above.
@@ -325,11 +443,18 @@ pub(super) struct HeatCaches {
     /// candidate list on every override edit) and because it may not
     /// be one of `top_n`'s entries at all.
     pub(super) current_score: TieredBounded<(usize, String), Option<i64>>,
-    /// The most recently *fully* scored range's complete candidate
-    /// list — a single slot, not a cache: only one override pane can
-    /// be open at a time. Refreshed unconditionally by the worker
-    /// every time it fully scores *any* range (G5).
-    pub(super) complete: Option<CompleteSlot>,
+    /// The complete candidate lists of recently fully-scored ranges
+    /// (spec 0250 S7) — what the override pane's unbounded
+    /// `[0, usize::MAX)` request reads, and the only cache here that
+    /// holds a whole ranking rather than a screenful of one.
+    ///
+    /// Written only by the paths that produce a list *for the override
+    /// pane* (S8): a whole-list request the worker serves,
+    /// `seed_root_heat`'s startup ranking, and the pane handing its own
+    /// list back on close. A prefetch never writes here — it would
+    /// evict the answer the user is alternating between, which is the
+    /// defect S7 exists to fix.
+    pub(super) complete: CompleteLists,
     /// Reusable probe key for `current_score`, owned by the cache so
     /// that a lookup allocates nothing.
     ///
@@ -354,7 +479,7 @@ impl HeatCaches {
         HeatCaches {
             by_range: TieredBounded::new(max_entries),
             current_score: TieredBounded::new(max_entries),
-            complete: None,
+            complete: CompleteLists::default(),
             probe: (0, String::new()),
         }
     }
@@ -382,7 +507,7 @@ impl HeatCaches {
     /// Read-only-in-spirit lookup, no access to the queue (spec 0152
     /// G4): `Some` (a clone of) the answer for `[start, end)` if
     /// either `by_range`'s `top_n` already covers it, or `complete`
-    /// holds this exact range; `None` otherwise. `by_range`'s check
+    /// still holds this range; `None` otherwise. `by_range`'s check
     /// goes through the promoting `peek(key, tier)` (spec 0164 G9) —
     /// a `by_range` hit bumps the entry's tracked tier up to `tier`
     /// if it was lower.
@@ -416,12 +541,10 @@ impl HeatCaches {
         if let Some(window) = window.flatten() {
             return Some(window);
         }
-        if let Some((range, candidates)) = &self.complete {
-            if range.start == range_start {
-                let end = end.min(candidates.len());
-                let start = start.min(end);
-                return Some(candidates[start..end].to_vec());
-            }
+        if let Some(candidates) = self.complete.get(range_start) {
+            let end = end.min(candidates.len());
+            let start = start.min(end);
+            return Some(candidates[start..end].to_vec());
         }
         None
     }
@@ -569,6 +692,7 @@ pub(super) fn heat_worker_loop(
                     queue.set_in_flight(None);
                     break;
                 }
+                let wants_complete = queue.take_complete_wanted(start);
                 let stats = heat_cue::derive_stats(&candidates);
                 let current_score = req
                     .current_key
@@ -592,7 +716,25 @@ pub(super) fn heat_worker_loop(
                     c.current_score
                         .upsert((start, key.clone()), current_score, req.tier);
                 }
-                c.complete = Some((req.range.clone(), candidates)); // always refreshed
+                // Spec 0250 S8: a list is recorded only where somebody
+                // asked for a whole list of this range — which is
+                // exactly `upgrade_active_override_to_complete`, the
+                // override pane's `[0, usize::MAX)` request. Every
+                // other caller asks for a screenful and is served from
+                // `by_range`, and a prefetch that wrote here would
+                // evict the answer the user is alternating between.
+                //
+                // The tier cannot be the test: `Tier::User` is also the
+                // cursor row's own cue tier (`heat_tier_for`), so
+                // gating on it would let every arrow key record a 4 MB
+                // list for a row the cursor merely passed over — the
+                // same defect S7 exists to fix, from another source.
+                //
+                // Asked *after* the walk, so this thread's own sweep
+                // can serve an ask that arrived while it was walking.
+                if wants_complete {
+                    c.complete.insert(req.range.clone(), candidates);
+                }
             }
         }
         // Spec 0164 G10: a `Prefetch`-tier completion writes its cache
@@ -1045,12 +1187,11 @@ messages:
     /// Real worker thread, real tiny in-memory graph, no file I/O:
     /// pushing a request populates `by_range` with the same answer a
     /// direct, synchronous `inferred_candidates`/`derive_stats` call
-    /// produces, and refreshes `complete` unconditionally (G5). A
-    /// second, cache-covered request for the same range is answered
-    /// without a second `score_all` call (proven via the test-only
-    /// call counter) — and so is a third whose window is *wider* than
-    /// anything `top_n` holds but which the `complete` slot answers in
-    /// full (item D1 of the quality audit).
+    /// produces. A second, cache-covered request for the same range is
+    /// answered without a second `score_all` call (proven via the
+    /// test-only call counter) — and so is a repeat of the unbounded
+    /// request whose result `complete` records (item D1 of the quality
+    /// audit, restated for spec 0250 S8's write rule).
     #[test]
     fn heat_caches_worker_round_trip() {
         let graph = Arc::new(test_scoring_graph());
@@ -1101,8 +1242,10 @@ messages:
         let want_top_n: Vec<_> = expected_candidates.iter().take(1).cloned().collect();
         assert_eq!(entry.top_n, want_top_n);
 
-        let complete = caches.lock().unwrap().complete.clone();
-        assert_eq!(complete, Some((0..2, expected_candidates.clone())));
+        // Spec 0250 S8: the priming request above asked for a bounded
+        // window, so nothing recorded a complete list — `by_range` is
+        // the whole of what a screenful-sized ask leaves behind.
+        assert_eq!(caches.lock().unwrap().complete.len(), 0);
 
         let calls_before = worker.score_all_calls();
         worker.push(
@@ -1123,30 +1266,225 @@ messages:
             "a cache-covered request must not re-score"
         );
 
-        // D1: a third request for the same range with a *larger* `end`
-        // than the first — what `upgrade_active_override_to_complete`
-        // issues right after `recompute_override_candidates`. `top_n`
-        // holds one candidate and so does not cover `end: 2`, but
-        // `complete` holds the whole list and does. The worker's
-        // pre-flight check used to test only the `top_n` half and pay
-        // for a second full sweep here.
+        // D1: `upgrade_active_override_to_complete`'s own request — the
+        // unbounded `[0, usize::MAX)` one. `top_n` cannot cover it by
+        // construction and no complete list has been recorded, so this
+        // one does sweep, and recording its result is what spec 0250 S8
+        // reserves `complete` for.
         worker.push(
             HeatRequest {
                 range: 0..2,
                 current_key: None,
                 start: 0,
-                end: 2,
+                end: usize::MAX,
                 tier: Tier::User,
             },
             Tier::User,
         );
         rx.recv_timeout(Duration::from_secs(2))
-            .expect("progress must fire for the widened request");
+            .expect("progress must fire for the unbounded request");
         assert_eq!(
             worker.score_all_calls(),
-            calls_before,
-            "a request the complete slot already answers must not re-score"
+            calls_before + 1,
+            "an unbounded request no cache covers must sweep exactly once"
         );
+        assert_eq!(
+            caches.lock().unwrap().complete.newest(),
+            Some(&(0..2, expected_candidates.clone())),
+            "the whole list the user asked for must be recorded"
+        );
+
+        // And the point of recording it: asking again is free. This is
+        // the pre-flight check `heat_worker_loop` makes against the
+        // reader's own predicate — testing only `by_range`'s `top_n`
+        // would report "not covered" and pay for a second full sweep.
+        worker.push(
+            HeatRequest {
+                range: 0..2,
+                current_key: None,
+                start: 0,
+                end: usize::MAX,
+                tier: Tier::User,
+            },
+            Tier::User,
+        );
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("progress must fire for the repeated request");
+        assert_eq!(
+            worker.score_all_calls(),
+            calls_before + 1,
+            "a request the recorded list already answers must not re-score"
+        );
+
+        worker.shutdown();
+    }
+
+    /// Spec 0250 S7: the cap evicts the least *recently used* entry,
+    /// not the least recently inserted — a read has to promote, or a
+    /// user alternating between two ranges loses one of them as soon as
+    /// the cache fills with ranges nobody came back to.
+    #[test]
+    fn the_complete_cache_evicts_what_was_not_read() {
+        let mut lists = CompleteLists::default();
+        for i in 0..COMPLETE_LIST_ENTRIES {
+            lists.insert(i..i + 1, vec![(format!("a.T{i}"), i as i64)]);
+        }
+        assert_eq!(lists.len(), COMPLETE_LIST_ENTRIES);
+
+        // Read the oldest one back, which makes it the newest.
+        assert!(lists.get(0).is_some());
+
+        // One more insert therefore evicts entry 1, not entry 0.
+        lists.insert(900..901, vec![("a.New".to_string(), 9)]);
+        assert_eq!(lists.len(), COMPLETE_LIST_ENTRIES, "the cap must hold");
+        assert!(lists.get(0).is_some(), "a read entry must survive");
+        assert!(lists.get(1).is_none(), "the least recently used goes");
+
+        // Re-inserting a range already held replaces it rather than
+        // piling up a second entry for the same key.
+        lists.insert(900..901, vec![("a.Again".to_string(), 1)]);
+        assert_eq!(lists.len(), COMPLETE_LIST_ENTRIES);
+        assert_eq!(
+            lists.get(900).map(<[(String, i64)]>::len),
+            Some(1),
+            "the same range must be held once"
+        );
+    }
+
+    /// Pushes one request and waits for the worker to finish it.
+    fn serve(worker: &HeatWorkerHandle, rx: &mpsc::Receiver<AppEvent>, range: Range<usize>) {
+        let end = usize::MAX;
+        worker.push(
+            HeatRequest {
+                range,
+                current_key: None,
+                start: 0,
+                end,
+                tier: Tier::User,
+            },
+            Tier::User,
+        );
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("progress must fire");
+    }
+
+    /// Spec 0250 S7/G3: the override pane reopens on a range it has
+    /// visited before without re-scoring it, even after the pane has
+    /// been elsewhere in between.
+    ///
+    /// This is the whole point of replacing the single slot: the old
+    /// one held the *most recent* full sweep, so visiting B and C
+    /// between two visits to A guaranteed A had been overwritten and
+    /// the second visit paid for a second walk.
+    #[test]
+    fn the_pane_reopens_from_the_cache() {
+        let graph = Arc::new(test_scoring_graph());
+        // Three distinct, individually valid ranges: field 1 = 5, thrice.
+        let blob = Arc::new(Blob::unwrapped(vec![0x08, 0x05, 0x08, 0x05, 0x08, 0x05]));
+        let caches = Arc::new(Mutex::new(HeatCaches::new(8)));
+        let (tx, rx) = mpsc::channel::<AppEvent>();
+        let worker = HeatWorkerHandle::spawn(
+            Arc::clone(&caches),
+            Arc::clone(&graph),
+            Arc::clone(&blob),
+            tx,
+            1,
+        );
+
+        serve(&worker, &rx, 0..2);
+        serve(&worker, &rx, 2..4);
+        serve(&worker, &rx, 4..6);
+        let calls = worker.score_all_calls();
+        assert_eq!(calls, 3, "three distinct ranges must cost three sweeps");
+        assert_eq!(
+            caches.lock().unwrap().complete.len(),
+            3,
+            "each of the three must have recorded its list"
+        );
+
+        serve(&worker, &rx, 0..2);
+        assert_eq!(
+            worker.score_all_calls(),
+            calls,
+            "returning to the first range must not re-score it"
+        );
+
+        worker.shutdown();
+    }
+
+    /// Spec 0250 S8: a prefetch completing between two visits leaves
+    /// the recorded list intact. A prefetch is a whole sweep, and under
+    /// the old single slot its completion was what evicted the answer
+    /// the user was about to come back to.
+    #[test]
+    fn a_prefetch_does_not_evict_a_user_list() {
+        let graph = Arc::new(test_scoring_graph());
+        let blob = Arc::new(Blob::unwrapped(vec![0x08, 0x05, 0x08, 0x05]));
+        let caches = Arc::new(Mutex::new(HeatCaches::new(8)));
+        let (tx, rx) = mpsc::channel::<AppEvent>();
+        let worker = HeatWorkerHandle::spawn(
+            Arc::clone(&caches),
+            Arc::clone(&graph),
+            Arc::clone(&blob),
+            tx,
+            1,
+        );
+
+        serve(&worker, &rx, 0..2);
+        let recorded = caches
+            .lock()
+            .unwrap()
+            .complete
+            .newest()
+            .cloned()
+            .expect("the user's whole-list request must record one");
+        let calls = worker.score_all_calls();
+
+        // A speculative sweep of somewhere else. `Tier::Prefetch` sends
+        // no progress event (spec 0164 G10), so poll `by_range` for its
+        // arrival instead of waiting on the channel.
+        worker.push(
+            HeatRequest {
+                range: 2..4,
+                current_key: None,
+                start: 0,
+                end: 1,
+                tier: Tier::Prefetch,
+            },
+            Tier::Prefetch,
+        );
+        let mut landed = false;
+        for _ in 0..200 {
+            if caches
+                .lock()
+                .unwrap()
+                .by_range
+                .peek(&2, Tier::Prefetch)
+                .is_some()
+            {
+                landed = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            landed,
+            "the prefetch must have swept, or this proves nothing"
+        );
+        assert_eq!(
+            worker.score_all_calls(),
+            calls + 1,
+            "the prefetch must really have been a full sweep"
+        );
+
+        let c = caches.lock().unwrap();
+        assert_eq!(c.complete.len(), 1, "the prefetch must record no list");
+        assert_eq!(
+            c.complete.newest(),
+            Some(&recorded),
+            "the user's list must survive a prefetch completing behind it"
+        );
+        drop(c);
 
         worker.shutdown();
     }
@@ -1195,7 +1533,7 @@ messages:
                 .expect("window must be primed");
             (
                 (entry.best_score, entry.best_count, entry.top_n.clone()),
-                c.complete.clone(),
+                c.complete.len(),
             )
         };
         let calls_before = worker.score_all_calls();
@@ -1232,7 +1570,8 @@ messages:
             "by_range must be untouched by the cheap path"
         );
         assert_eq!(
-            c.complete, complete_before,
+            c.complete.len(),
+            complete_before,
             "complete must be untouched by the cheap path"
         );
         drop(c);

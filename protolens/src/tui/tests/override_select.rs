@@ -944,10 +944,10 @@ fn upgrade_active_override_to_complete_pushes_pending_and_respects_the_mismatch_
 
     // Mismatch guard: `complete` holds a different range — the flag
     // must stay set and `override_inferred_raw` must stay untouched.
-    app.heat_caches.lock().unwrap().complete = Some((
+    app.heat_caches.lock().unwrap().complete.insert(
         range.start + 1000..range.start + 1001,
         vec![("pkg.Z".to_string(), 1)],
-    ));
+    );
     app.poll_pending_override_work();
     assert!(
         app.override_complete_pending,
@@ -975,8 +975,11 @@ fn upgrade_active_override_to_complete_pushes_pending_and_respects_the_mismatch_
 
     // Only a `complete` hit for the exact range applies the full list
     // wholesale and clears the flag.
-    app.heat_caches.lock().unwrap().complete =
-        Some((range.clone(), vec![("pkg.C".to_string(), 9); 6]));
+    app.heat_caches
+        .lock()
+        .unwrap()
+        .complete
+        .insert(range.clone(), vec![("pkg.C".to_string(), 9); 6]);
     app.poll_pending_override_work();
     assert!(!app.override_complete_pending);
     assert!(app.override_candidates_complete);
