@@ -510,6 +510,11 @@ pub fn status_color(status: Status, theme: ThemeKind) -> Option<Color> {
 fn status_color_in(status: Status, theme: ThemeKind, rgb: bool) -> Option<Color> {
     Some(match status {
         Status::Ok => return None,
+        // Spec 0249 S12: the violet `pack_size`'s length prefix wears.
+        // Borrowed rather than given a palette entry of its own because
+        // the two say the same thing in the same register — provisional,
+        // not wrong — and they never appear in the same column.
+        Status::Unbaked => tier_color(Tier::Landmark, theme, rgb),
         Status::Unknown => pick(
             theme,
             rgb,

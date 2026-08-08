@@ -14,6 +14,7 @@
 //! every splice in the whole suite already compares the incrementally
 //! maintained arrays against a full rebuild.
 
+use super::super::bake::BakeStep;
 use super::support::*;
 use crate::node_status::Status;
 
@@ -88,6 +89,60 @@ fn folding_does_not_change_any_status() {
     app.rebuild_status();
 
     assert_eq!(app.status_rolled, before);
+}
+
+/// Spec 0249 S12: a bounded confirm's stops read violet, every ancestor
+/// carries it, and the bake clears it as it goes.
+///
+/// Without the rung, spec 0247's promise that a toggle carries the worst
+/// news below it is false over an auto-fold — a stop's descendants are
+/// vacant slots that all say `Ok`, so the toggle would claim the subtree
+/// is fine when nothing has looked at it.
+#[test]
+fn an_unbaked_stop_reads_provisional_until_the_bake_reaches_it() {
+    let (mut app, items) = repeated_message_fixture();
+    let root = app.first_node;
+
+    app.splice_override(root, Some("test.Outer".to_string()), Some(2))
+        .expect("a bounded splice must succeed");
+
+    for i in &items {
+        assert_eq!(
+            app.status_of(*i),
+            Status::Unbaked,
+            "Item {i} stopped here and nothing has looked below it"
+        );
+    }
+    assert_eq!(
+        app.status_of(root),
+        Status::Unbaked,
+        "and the root above them says so too"
+    );
+
+    while app.bake_step() != BakeStep::Idle {}
+
+    assert_eq!(app.status_of(root), Status::Ok, "the debt is paid");
+    for i in &items {
+        assert_eq!(app.status_of(*i), Status::Ok);
+    }
+}
+
+/// The rank, on a document rather than on the enum: a *known* defect
+/// outranks a subtree nobody has looked at, so a bake in progress never
+/// hides an `Invalid` that is already on screen.
+#[test]
+fn a_known_defect_outranks_an_unbaked_sibling() {
+    let (mut app, inner, _, unknown) = unknown_field_fixture();
+    assert_eq!(app.status_of(unknown), Status::Unknown);
+
+    app.auto_folded.insert(unknown);
+    app.rebuild_status();
+
+    assert_eq!(
+        app.status_of(inner),
+        Status::Unknown,
+        "the news that is already known is the news the toggle carries"
+    );
 }
 
 /// Spec 0247 S9: naming a field is what clears the blue, and it needs

@@ -25,18 +25,31 @@ pub enum Status {
     /// Nothing to say.
     #[default]
     Ok = 0,
+    /// A bounded confirm stopped here and the bake has not reached it
+    /// yet, so nothing below has been looked at (spec 0249 S12).
+    ///
+    /// **The rank looks wrong and is right.** An unbaked subtree might
+    /// hide an `Invalid`, so ranking it just *above* `Ok` lets a known
+    /// bad sibling still win the fold toggle's color, while "everything
+    /// known is fine, something has not been looked at" reads violet —
+    /// provisional. What it must never do is claim `Ok`, because that
+    /// would make spec 0247's promise — that a toggle carries the worst
+    /// news below it — simply false over an auto-fold.
+    Unbaked = 1,
     /// No schema declares this field, so the row shows a field *number*
     /// and prototext could say nothing about what the bytes mean.
-    Unknown = 1,
+    Unknown = 2,
     /// Legal on the wire and round-trips, but no conformant writer
     /// emits one.
-    NonCanonical = 2,
+    NonCanonical = 3,
     /// Not legal. The blob is malformed, or the schema cannot be this.
-    Invalid = 3,
+    Invalid = 4,
 }
 
 impl From<Tier> for Status {
-    /// `Tier::Landmark` is not a defect — see the module doc.
+    /// `Tier::Landmark` is not a defect — see the module doc. It shares
+    /// its violet with `Unbaked` (spec 0249 S12) and nothing else: both
+    /// mean "read this as provisional", and neither is an anomaly.
     fn from(tier: Tier) -> Self {
         match tier {
             Tier::Landmark => Status::Ok,
@@ -115,7 +128,9 @@ mod tests {
 
     #[test]
     fn the_ladder_is_ordered_by_severity() {
-        assert!(Status::Ok < Status::Unknown);
+        assert!(Status::Ok < Status::Unbaked);
+        // Spec 0249 S12: below every *known* defect, deliberately.
+        assert!(Status::Unbaked < Status::Unknown);
         assert!(Status::Unknown < Status::NonCanonical);
         assert!(Status::NonCanonical < Status::Invalid);
         assert_eq!(Status::default(), Status::Ok);

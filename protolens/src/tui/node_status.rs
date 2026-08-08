@@ -99,7 +99,8 @@ impl App {
         self.status_rolled[idx] = Status::Ok;
     }
 
-    /// The worst thing `idx`'s own rows say (S2, S3).
+    /// The worst thing `idx`'s own rows say (S2, S3), plus whether it
+    /// has been looked at at all (spec 0249 S12).
     ///
     /// One exception, at the root. `row_status` reads `Unknown` off a
     /// numeric key, and a root's key is always numeric — the wrapper is
@@ -109,13 +110,28 @@ impl App {
     /// opened, which is the one place the signal has to mean something.
     /// A root has no enclosing message, so there is no schema that
     /// could have declared it and nothing for the rung to say.
+    ///
+    /// The `Unbaked` rung is the node's *own*, not a roll-up: a stop's
+    /// descendants are vacant slots that say `Ok`, so reading the fold
+    /// off the children would find nothing. Rolling it up then happens
+    /// by the ordinary `max`, which is the point — every ancestor of an
+    /// unbaked region reads provisional until the bake reaches it.
     fn own_status(&self, idx: usize) -> Status {
-        let Some(text) = self.node_text[idx].as_deref() else {
-            return Status::Ok;
+        let mut worst = match self.node_text[idx].as_deref() {
+            Some(text) => {
+                let text_says = text.split('\n').map(row_status).max().unwrap_or_default();
+                if text_says == Status::Unknown && self.parent(idx).is_none() {
+                    Status::Ok
+                } else {
+                    text_says
+                }
+            }
+            None => Status::Ok,
         };
-        let worst = text.split('\n').map(row_status).max().unwrap_or_default();
-        if worst == Status::Unknown && self.parent(idx).is_none() {
-            return Status::Ok;
+        // A stop always has text — its header and its footer — so this
+        // is never the reason a vacant slot gets a status.
+        if self.auto_folded.contains(&idx) {
+            worst = worst.max(Status::Unbaked);
         }
         worst
     }
