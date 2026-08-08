@@ -15,7 +15,10 @@
 //! re-ordered: the queue is document order, and a reader who jumps is
 //! not in document order.
 
-use super::{App, DisplayRow};
+use ratatui::style::Style;
+
+use super::{theme, App, DisplayRow};
+use crate::node_status::Status;
 
 /// What one call to [`App::bake_step`] did.
 ///
@@ -98,6 +101,35 @@ impl App {
     /// `BAKE_ROW_BUDGET` rows depth-first from it, which is a hundred
     /// times a pane, so the rows that replace it are final and the stops
     /// it leaves behind fall below the fold rather than into it.
+    /// Spec 0249 S13: the ambient half of "the document is still
+    /// filling in" — the activity dot, in `Unbaked`'s violet, whenever
+    /// anything still owes a body.
+    ///
+    /// This settles spec 0249's open question 4: the bake's cue lands on
+    /// the dot spec 0190 already put in that cell, and this spec
+    /// therefore supersedes specs 0204/0205/0209's claim to invent one.
+    /// A second such cue is a second thing to keep consistent, and the
+    /// user would have to learn which corner meant which job.
+    ///
+    /// The heat subsystem keeps the cell when it is using it. That costs
+    /// almost nothing in practice — read-ahead is deferred while a bake
+    /// runs (spec 0255 S5), so the two collide only on the `Visible` and
+    /// `User` tiers, which are about a row the user is looking at and
+    /// outrank an ambient one either way.
+    ///
+    /// Read straight off `auto_folded`, which is the truth about what is
+    /// owed (spec 0255 S3) — so this is steady for exactly as long as
+    /// the bake runs, and needs no flag anybody has to remember to
+    /// clear. Steady, not flashing: a blink would be a timer-driven
+    /// redraw every ~500 ms for the whole bake, reopening spec 0245's
+    /// rule that a frame is drawn only when something changed.
+    pub(super) fn bake_dot_style(&self) -> Option<Style> {
+        if self.auto_folded.is_empty() {
+            return None;
+        }
+        theme::status_color(Status::Unbaked, self.theme).map(|c| Style::default().fg(c))
+    }
+
     pub(super) fn note_visible_stops(&mut self, window: &[DisplayRow]) {
         self.visible_stops.clear();
         if self.auto_folded.is_empty() {

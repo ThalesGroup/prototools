@@ -732,6 +732,24 @@ agree byte for byte.
   in spec 0247's ladder, and a bake in progress is not an error — the
   dot and the fold markers should agree at a glance.
 
+  **IMPLEMENTED 2026-08-08, with one amendment.** The count rides on the
+  *miss*, not on a count of matches: `pattern not found: nowhere (412
+  subtrees not yet baked)`. There is no match count to qualify — the
+  sweep stops at the first hit (spec 0246 made searching match-granular,
+  not exhaustive) — and a hit would not want one anyway, being a real
+  row at a real position. The miss is the one answer an unbaked
+  remainder can falsify, so it is the one that has to admit it.
+
+  Subtrees rather than rows because that is what is *known*: a stop's
+  body has not been rendered, so nobody can say how many rows it stands
+  for. Only a main-pane search is qualified; the two side panes search
+  lists that have nothing to do with the document.
+
+  Both surfaces read `auto_folded.len()` and `auto_folded.is_empty()`
+  directly — the truth about what is owed (spec 0255 S3) — so neither
+  needs a flag anybody has to remember to clear, and the dot is steady
+  for exactly as long as the bake runs.
+
 ## Open questions
 
 1. **Where does the row budget live, and what does an undescended node
@@ -840,10 +858,27 @@ agree byte for byte.
    fold to clear. The scrub remains a retype concern, and S11's splice
    carries a `debug_assert!` that its target is auto-folded.
 
-4. **Where does the bake's cue live?** S13's dot is the "unobtrusive
-   cue that a background job is running" that specs 0204/0205/0209
-   claim as their subject. Either it lands there or this spec
-   supersedes them — decide before it grows a second home.
+4. **Where does the bake's cue live? — ANSWERED 2026-08-08. On the dot
+   spec 0190 already put in column 0, and this spec supersedes specs
+   0204/0205/0209's claim to invent one.**
+
+   There was never a second surface to build. Spec 0190's activity dot
+   *is* the "unobtrusive cue that a background job is running": one
+   cell, colored by which job, blank when there is none. A second such
+   cue would be a second thing to keep consistent and would make the
+   user learn which corner meant which job.
+
+   The heat subsystem keeps the cell whenever it is using it, and the
+   bake takes it otherwise. That costs almost nothing in practice —
+   read-ahead is deferred while a bake runs (spec 0255 S5), so the two
+   can only collide on the `Visible` and `User` tiers, which are about
+   a row the user is looking at and outrank an ambient signal either
+   way.
+
+   Specs 0204, 0205 and 0209 are three drafts of "a long batch says so",
+   and each has said so about a batch that no longer exists: since spec
+   0255 the confirm is a screenful and does not block. What remains of
+   their subject is this dot.
 
 5. **Is `node_text`'s shape worth changing while it is being
    reworked?** It is `Vec<Option<Box<str>>>` over ~4.74 M slots:
@@ -1029,10 +1064,18 @@ thousands of splices.
     slots. S9.
 13. `an_auto_fold_reads_unbaked_not_ok` — the toggle's color is violet
     over an auto-fold whose children are all fine, and stays red when
-    one of them is `Invalid`. S12.
+    one of them is `Invalid`. S12. *(Implemented 2026-08-08, as
+    `an_unbaked_stop_reads_provisional_until_the_bake_reaches_it` plus
+    `a_known_defect_outranks_an_unbaked_sibling` — the two halves want
+    different fixtures, so they are two tests.)*
 14. `a_search_reports_the_unbaked_remainder` — a search during a bake
     returns the baked matches plus a non-zero remainder, and re-running
-    it after the bake returns the full set. S13.
+    it after the bake returns the full set. S13. *(Implemented
+    2026-08-08 as `a_search_that_misses_says_how_much_it_did_not_look_
+    at`, on the miss rather than on a match count — see S13's amendment.
+    The dot is `a_bake_in_progress_lights_the_dot_in_violet`, which also
+    pins open question 4's answer that the heat subsystem keeps the
+    cell.)*
 15. `the_viewport_holds_its_node_when_a_bake_lands` — including a bake
     landing above the viewport. S10.
 16. `a_node_starting_mid_viewport_does_not_move` — confirm a `Path`

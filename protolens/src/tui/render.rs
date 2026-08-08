@@ -1821,14 +1821,17 @@ impl App {
     /// order.
     ///
     fn render_activity_dot(&mut self, frame: &mut Frame, area: Rect) {
-        let style = self.activity_shown.and_then(|tier| {
-            let (hue, level) = match tier {
-                tiered::Tier::User => (theme::HeatHue::Red, 12),
-                tiered::Tier::Visible => (theme::HeatHue::Red, 5),
-                tiered::Tier::Prefetch => (theme::HeatHue::Blue, 5),
-            };
-            theme::heat_style(level, hue, self.theme)
-        });
+        let style = self
+            .activity_shown
+            .and_then(|tier| {
+                let (hue, level) = match tier {
+                    tiered::Tier::User => (theme::HeatHue::Red, 12),
+                    tiered::Tier::Visible => (theme::HeatHue::Red, 5),
+                    tiered::Tier::Prefetch => (theme::HeatHue::Blue, 5),
+                };
+                theme::heat_style(level, hue, self.theme)
+            })
+            .or_else(|| self.bake_dot_style());
         let span = match style {
             Some(style) => Span::styled(ACTIVITY_GLYPH, style),
             None => Span::raw(" "),

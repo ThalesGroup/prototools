@@ -6,12 +6,18 @@ SPDX-License-Identifier: MIT
 
 # 0209 — a long commit keeps a pulse
 
-Status: draft — and contested. Specs 0204, 0205 and 0209 are three
-        proposals against the same stall; none is implemented. Pick one
-        before starting any of them. This spec's Background says "tens
-        of seconds" on `googleapis.desc`; a root override there was
-        measured at about 1 s on 2026-07-31. See spec 0207's open
-        question 1.
+Status: superseded by spec 0249 (2026-08-08). Since spec 0255 a confirm
+        renders one screenful and the remainder is baked in the idle
+        loop, so there is no long commit left to keep a pulse during.
+        The pulse itself was also rejected on its own terms: spec 0249
+        S13 wants the cue *steady*, because a blink is a timer-driven
+        redraw every ~500 ms for the whole job and spec 0245's rule is
+        that a frame is drawn only when something changed. What
+        survives is that spec's dot, on the cell spec 0190 already
+        established. Kept for the record; do not implement.
+        Its Background says "tens of seconds" on `googleapis.desc`; a
+        root override there measured about 1 s on 2026-07-31 and 0.59 s
+        after spec 0255.
 App: protolens
 Refs: docs/specs/0151-protolens-heat-cue-cache-and-startup-progress.md
         (G8, `warm_up_heat_cues` — the existing precedent for a long

@@ -6,14 +6,18 @@ SPDX-License-Identifier: MIT
 
 # 0204 — a long batch says so before it blocks
 
-Status: draft — and contested. Two later drafts each claim to replace
-        it: spec 0205 S3 (a measured 150 ms trigger instead of this
-        spec's predicted one) and spec 0209 S8 (the same banner, plus a
-        pulse). None of the three is implemented. Pick one before
-        starting any of them — and note that all three argue from a
-        commit of 4.8 s or worse, while a root override on
-        `googleapis.desc` was measured at about 1 s on 2026-07-31. See
-        spec 0207's open question 1.
+Status: superseded by spec 0249 (2026-08-08). The stall this spec
+        announces no longer happens: since spec 0255 a confirm renders
+        one screenful and the remainder is baked in the idle loop, so
+        there is no long blocking batch to put a banner in front of.
+        What survives of the subject — an unobtrusive cue that a
+        background job is running — is spec 0249 S13, on the activity
+        dot spec 0190 already established (0249 open question 4). Kept
+        for the record; do not implement.
+        Its premises were stale besides: all three of 0204/0205/0209
+        argue from a commit of 4.8 s or worse, while a root override on
+        `googleapis.desc` measured about 1 s on 2026-07-31 and 0.59 s
+        after spec 0255.
 Implemented in: —
 App: protolens
 Refs: docs/specs/0118-protolens-recursive-override-rendering.md (§6,

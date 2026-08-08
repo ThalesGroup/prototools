@@ -6,13 +6,17 @@ SPDX-License-Identifier: MIT
 
 # 0205 — the batch runs off the input thread
 
-Status: draft — and contested. Specs 0204, 0205 and 0209 are three
-        proposals against the same stall; none is implemented. Pick one
-        before starting any of them. Parts of the Background and S7
-        below rest on premises spec 0216 has since removed — the
-        annotations mark which. The Background's ~4.8 s batch is one of
-        them: a root override on `googleapis.desc` was measured at about
-        1 s on 2026-07-31. See spec 0207's open question 1.
+Status: superseded by spec 0249 (2026-08-08). The stall is gone rather
+        than moved: since spec 0255 a confirm renders one screenful and
+        the remainder is baked in the idle loop, so there is no long
+        batch left to take off the input thread — and spec 0255 S5
+        records why running it on a *thread* would have been the wrong
+        answer anyway (every splice bumps `structural_version`, which
+        the other background walkers restart on). Kept for the record;
+        do not implement.
+        Parts of the Background and S7 below also rest on premises spec
+        0216 removed — the annotations mark which — and its ~4.8 s
+        batch measured about 1 s on 2026-07-31, 0.59 s after 0255.
 Implemented in: —
 App: protolens
 Refs: docs/specs/0152-protolens-heat-cue-background-scoring-thread.md

@@ -663,8 +663,31 @@ impl App {
             Some(hit) => self.apply_sweep_hit(origin.scope, hit),
             // Spec 0235 S10: the message returns at `Enter`, and only
             // here — while the prompt was open it shared that row.
-            None => self.message = format!("pattern not found: {pattern}"),
+            None => self.message = self.not_found(pattern, origin.scope),
         }
+    }
+
+    /// Spec 0249 S13: "not found" is a claim about the whole document,
+    /// and during a bake it is not one the search can make.
+    ///
+    /// A folded region has no text, so the sweep never looked at it. The
+    /// caveat rides on the *miss* and not on a hit: a hit is a real row
+    /// at a real position and needs no qualification, while a miss is
+    /// the one answer an unbaked remainder can falsify.
+    ///
+    /// The count is of subtrees rather than rows because that is what is
+    /// known — a stop's body has not been rendered, so nobody can say
+    /// how many rows it stands for. Only the main pane is qualified;
+    /// the two side panes search lists that have nothing to do with the
+    /// document.
+    fn not_found(&self, pattern: &str, scope: SearchScope) -> String {
+        let base = format!("pattern not found: {pattern}");
+        if scope != SearchScope::Main || self.auto_folded.is_empty() {
+            return base;
+        }
+        let n = self.auto_folded.len();
+        let plural = if n == 1 { "subtree" } else { "subtrees" };
+        format!("{base} ({n} {plural} not yet baked)")
     }
 
     /// `n`/`N`, and every non-incremental caller: one sweep of `scope`,
@@ -683,7 +706,7 @@ impl App {
         self.search_sweep = Some(sweep);
         match found {
             Some(hit) => self.apply_sweep_hit(scope, hit),
-            None => self.message = format!("pattern not found: {pattern}"),
+            None => self.message = self.not_found(pattern, scope),
         }
     }
 

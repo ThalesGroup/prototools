@@ -5,8 +5,11 @@
 //! `App::bake_step` — finishing a bounded confirm's document (spec 0255).
 
 use super::super::bake::BakeStep;
+use super::super::render::ACTIVITY_GLYPH;
+use super::super::search::SearchScope;
 use super::super::*;
 use super::support::*;
+use crate::node_status::Status;
 
 /// Drive the bake to exhaustion, returning how many steps it took.
 ///
@@ -210,6 +213,87 @@ fn baking_what_is_on_screen_first_reaches_the_same_document() {
 
     assert!(app.auto_folded.is_empty(), "nothing still owes a body");
     assert_eq!((app.document_lines(), counts(&app)), want);
+}
+
+/// Spec 0249 S13, the ambient half. The dot spec 0190 already put in
+/// column 0 is where the bake's cue lives — open question 4 — so this
+/// asserts on that cell rather than on any new surface.
+#[test]
+fn a_bake_in_progress_lights_the_dot_in_violet() {
+    let (mut app, _) = repeated_message_fixture();
+    app.splash = false;
+    let mut terminal = ratatui::Terminal::new(TestBackend::new(80, 10)).unwrap();
+    let dot = (0u16, 9u16); // column 0 of the bottom (global) row
+    let violet = theme::status_color(Status::Unbaked, app.theme);
+
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert_eq!(
+        terminal.backend().buffer()[dot].symbol(),
+        " ",
+        "nothing is owed, so nothing is reported"
+    );
+
+    let root = app.first_node;
+    app.splice_override(root, Some("test.Outer".to_string()), Some(2))
+        .expect("a bounded splice must succeed");
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert_eq!(terminal.backend().buffer()[dot].symbol(), ACTIVITY_GLYPH);
+    assert_eq!(
+        terminal.backend().buffer()[dot].style().fg,
+        violet,
+        "the same violet the unbaked fold toggles wear"
+    );
+
+    // The heat subsystem keeps the cell while it is using it: the bake
+    // is ambient and a cue is about a row the user is looking at.
+    app.activity_shown = Some(tiered::Tier::User);
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert_eq!(terminal.backend().buffer()[dot].symbol(), ACTIVITY_GLYPH);
+    assert_ne!(terminal.backend().buffer()[dot].style().fg, violet);
+    app.activity_shown = None;
+
+    drain(&mut app);
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert_eq!(
+        terminal.backend().buffer()[dot].symbol(),
+        " ",
+        "the debt is paid, so the cue goes out on its own"
+    );
+}
+
+/// Spec 0249 S13, the consequential half. "Not found" is a claim about
+/// the whole document, and a bake in progress is exactly the state in
+/// which the search cannot make it.
+///
+/// Amended from the spec as written: S13 asked for the caveat on a
+/// *count* of matches, and there is none to qualify — the sweep stops at
+/// the first hit (spec 0246). A hit needs no caveat anyway; it is a real
+/// row at a real position. The miss is the one answer an unbaked
+/// remainder can falsify.
+#[test]
+fn a_search_that_misses_says_how_much_it_did_not_look_at() {
+    let (mut app, _) = repeated_message_fixture();
+    app.splash = false;
+    app.main_area = ratatui::layout::Rect::new(0, 0, 40, 20);
+    let root = app.first_node;
+
+    app.splice_override(root, Some("test.Outer".to_string()), Some(2))
+        .expect("a bounded splice must succeed");
+    assert_eq!(app.auto_folded.len(), 3);
+
+    app.run_search(SearchScope::Main, SearchDir::Forward, "nowhere");
+    assert_eq!(
+        app.message,
+        "pattern not found: nowhere (3 subtrees not yet baked)"
+    );
+
+    drain(&mut app);
+    app.message.clear();
+    app.run_search(SearchScope::Main, SearchDir::Forward, "nowhere");
+    assert_eq!(
+        app.message, "pattern not found: nowhere",
+        "with nothing left unread the search speaks for the whole document"
+    );
 }
 
 /// Every node's two line counts, in slot order — the structural half of
