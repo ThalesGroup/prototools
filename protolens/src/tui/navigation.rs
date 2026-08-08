@@ -125,7 +125,27 @@ impl App {
                 self.last_cursor_row = Some(cursor_row);
             }
         }
-        self.pan_offset = self.pan_offset.min(self.max_pan_offset());
+        // An unpanned document has nothing to clamp, and `0.min(x)` is
+        // `0` for every `x` — so the guard changes no outcome, only what
+        // it costs to reach it. `max_pan_offset` resolves the entire
+        // visible window through `build_window`, against a window cache
+        // the `structural_version` bump immediately above has just
+        // emptied, which is O(pane height) *per splice*.
+        //
+        // That is a real bill and it predates the bake: measured over a
+        // full drain of googleapis.desc, it was 19.9 ms per pane row —
+        // 1.0 s of a 6.55 s drain on a 50-row terminal, and 97 s of
+        // 102 s on a 5000-row one. Every fold and every commit pays the
+        // same rate; the bake only made it visible by splicing 70 894
+        // times in a row.
+        //
+        // `pan_offset` is zero unless the reader has actually panned
+        // right, so this is the common path, not an optimization for a
+        // corner. When it is *not* zero the bill is still owed, because
+        // the clamp's bound genuinely depends on which rows are visible.
+        if self.pan_offset > 0 {
+            self.pan_offset = self.pan_offset.min(self.max_pan_offset());
+        }
     }
 
     /// Spec 0225 S8: `w` — show or hide the wire rows.
@@ -681,11 +701,11 @@ impl App {
     ///
     /// Resolved through `build_window`, exactly as a frame is, rather
     /// than one `display_row` per row (spec 0210 S3).
-    /// `clamp_pan_offset` calls this on every fold and every commit,
-    /// right after the `structural_version` bump that empties the window
-    /// cache, and each row's content is then asked for its owner several
-    /// times over, so resolving per row would cost a handful of full
-    /// descents per row of the pane.
+    /// `clamp_pan_offset` calls this on a fold or a commit that finds a
+    /// non-zero pan, right after the `structural_version` bump that
+    /// empties the window cache, and each row's content is then asked
+    /// for its owner several times over, so resolving per row would cost
+    /// a handful of full descents per row of the pane.
     pub(super) fn max_visible_line_len(&mut self) -> usize {
         let pane_height = self.document_pane_height();
         let total = self.composed_row_count();
