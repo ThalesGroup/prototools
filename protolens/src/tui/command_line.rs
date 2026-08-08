@@ -781,6 +781,13 @@ impl App {
         let path = path_parts.join(" ");
         match format {
             ExportFormat::DescriptorBinary | ExportFormat::DescriptorPrototext => {
+                // Spec 0261 S4: the descriptor formats read the *shape*
+                // of the cursor's children, and `child_slots` reports a
+                // stop as having none — so an unbaked node would export
+                // as a message with no fields at all.
+                if !self.drain_for_export() {
+                    return;
+                }
                 let as_prototext = format == ExportFormat::DescriptorPrototext;
                 self.message = match self.export_descriptor(&path, as_prototext) {
                     Ok(()) => format!("exported to {path}"),
@@ -793,6 +800,13 @@ impl App {
                 } else {
                     ExtractFormat::Text
                 };
+                // Spec 0261 N4: `--binary` slices the blob by the node's
+                // raw range and never reads a rendered line, so it has
+                // nothing to wait for — and making it wait would turn a
+                // free root export into a multi-second one.
+                if extract_format == ExtractFormat::Text && !self.drain_for_export() {
+                    return;
+                }
                 let lines = self.subtree_lines(self.cursor);
                 match extract::extract(
                     Path::new(&path),
@@ -807,6 +821,28 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Spec 0261 S1/S5: make the cursor's subtree whole before a format
+    /// that reads the render gets hold of it, and say whether the export
+    /// may proceed.
+    ///
+    /// A refusal writes no file. Silence here would be the defect this
+    /// spec exists to remove — a document that looks complete and is
+    /// not — so the one case the drain cannot fix is the one case the
+    /// user is told about. `expand_auto_fold` has already put the
+    /// underlying splice failure in `message`, which is the useful half
+    /// of the news, so this wraps it rather than overwriting it.
+    fn drain_for_export(&mut self) -> bool {
+        if self.bake_subtree(self.cursor) {
+            return true;
+        }
+        self.message = format!(
+            "export refused: this node is still incomplete and could not be \
+             finished ({})",
+            self.message
+        );
+        false
     }
 
     /// Shared core of `xdb`/`xdp` (TUI) and batch's

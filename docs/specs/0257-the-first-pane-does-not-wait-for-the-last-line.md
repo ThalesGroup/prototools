@@ -143,6 +143,12 @@ mechanism and the fix.
   because this spec is what makes it reachable in the first ten seconds
   of every session.
 
+  Decided and fixed in
+  docs/specs/0261-an-export-waits-for-the-lines-it-names.md: the export
+  waits. Two corrections that spec makes to this paragraph — the
+  clipboard was never affected, and `--descriptor-*` was, by a second
+  route this one does not name.
+
 ## Specification
 
 ### S1. The document render takes a row budget

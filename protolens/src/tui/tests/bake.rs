@@ -1145,3 +1145,217 @@ fn a_bounded_startup_expands_any_below_the_screenful() {
         "and land on the document an unbounded startup produces"
     );
 }
+
+// ── Spec 0261: an export waits for the lines it names ──────────────────────
+
+/// Export the cursor to a scratch file and read the bytes back.
+///
+/// `run_export` writes to a path rather than returning anything, so a
+/// file is not optional. It is removed before the caller's assertion, not
+/// after it, so a red run leaves nothing behind.
+fn exported(app: &mut App, tag: &str, flags: &[&str]) -> Option<Vec<u8>> {
+    let path = std::env::temp_dir().join(format!("protolens-0261-{tag}.pb"));
+    let _ = std::fs::remove_file(&path);
+    let as_arg = path.to_string_lossy().into_owned();
+    let mut argv: Vec<&str> = flags.to_vec();
+    argv.push(&as_arg);
+    app.run_export(argv);
+    let written = std::fs::read(&path).ok();
+    let _ = std::fs::remove_file(&path);
+    written
+}
+
+/// Spec 0261 test-plan item 1, and the defect the spec exists for: a stop
+/// exported as text used to come out as its header and its closing brace
+/// with nothing in between — an empty message rather than an unread one.
+///
+/// Also the scope: an export names one node, and the stops it pays off
+/// are the ones under that node. A sibling stop is nobody's business
+/// here and must be left for the bake.
+#[test]
+fn an_export_of_a_stop_is_whole() {
+    let (mut app, items) = bounded_repeated_message_fixture(3);
+    app.splash = false;
+    let target = items[2];
+    let sibling = items[1];
+    assert!(
+        app.auto_folded.contains(&target) && app.auto_folded.contains(&sibling),
+        "the fixture must leave both of the last two items unbaked"
+    );
+
+    app.set_cursor(target);
+    let got = exported(&mut app, "stop", &[]).expect("the export must write a file");
+    assert!(
+        !app.auto_folded.contains(&target),
+        "the export must have paid off the node it names"
+    );
+    assert!(
+        app.auto_folded.contains(&sibling),
+        "and only that node — a sibling stop is the bake's business"
+    );
+
+    let (mut whole, items) = repeated_message_fixture();
+    whole.splash = false;
+    whole.set_cursor(items[2]);
+    let want = exported(&mut whole, "stop-whole", &[]).expect("a file");
+
+    let got = String::from_utf8(got).unwrap();
+    assert_eq!(got, String::from_utf8(want).unwrap());
+    assert!(
+        got.contains("v: 7"),
+        "the item's body must be in the file, got {got:?}"
+    );
+}
+
+/// Test-plan item 2: the root, which has every stop in the document
+/// under it — the case with the most to wait for.
+#[test]
+fn an_export_of_the_root_is_whole() {
+    let (mut app, _) = bounded_repeated_message_fixture(3);
+    app.splash = false;
+    let root = app.first_node;
+    app.set_cursor(root);
+    let got = exported(&mut app, "root", &[]).expect("the export must write a file");
+    assert!(
+        app.auto_folded.is_empty(),
+        "an export of the root has every stop under it"
+    );
+
+    let (mut whole, _) = repeated_message_fixture();
+    whole.splash = false;
+    let root = whole.first_node;
+    whole.set_cursor(root);
+    let want = exported(&mut whole, "root-whole", &[]).expect("a file");
+
+    let got = String::from_utf8(got).unwrap();
+    assert_eq!(got, String::from_utf8(want).unwrap());
+    for v in ["v: 5", "v: 6", "v: 7"] {
+        assert!(
+            got.contains(v),
+            "the whole document must be in the file: {v}"
+        );
+    }
+}
+
+/// Test-plan item 3 / S4 / N4. `--binary` slices the blob by the node's
+/// raw range and never reads a rendered line, so it must not pay for a
+/// drain it has no use for — on a real document that is the difference
+/// between an instant root export and a multi-second one.
+#[test]
+fn a_binary_export_does_not_wait() {
+    let (mut app, items) = bounded_repeated_message_fixture(3);
+    app.splash = false;
+    app.set_cursor(items[2]);
+    let stops = app.auto_folded.len();
+    assert!(
+        stops > 0,
+        "the fixture must have something to skip waiting for"
+    );
+
+    let got = exported(&mut app, "binary", &["--binary"]).expect("a file");
+    assert_eq!(
+        app.auto_folded.len(),
+        stops,
+        "--binary must not have expanded anything"
+    );
+
+    let (mut whole, items) = repeated_message_fixture();
+    whole.splash = false;
+    whole.set_cursor(items[2]);
+    let want = exported(&mut whole, "binary-whole", &["--binary"]).expect("a file");
+    assert_eq!(got, want, "the bytes are the blob's, baked or not");
+}
+
+/// Test-plan item 4: the second truncation, which spec 0257 N5 does not
+/// name. The descriptor formats read the *shape* of the cursor's
+/// children through `child_slots`, which reports a node whose first
+/// child is unrendered as having none — so an unbaked message exported
+/// as a `FileDescriptorSet` used to come out with no fields at all.
+#[test]
+fn a_descriptor_export_of_a_stop_has_its_fields() {
+    use prost_reflect::prost::Message as _;
+
+    let (mut app, items) = bounded_repeated_message_fixture(3);
+    app.splash = false;
+    assert!(app.auto_folded.contains(&items[2]));
+    app.set_cursor(items[2]);
+
+    let bytes =
+        exported(&mut app, "descriptor", &["--descriptor-binary"]).expect("the export must write");
+    let fds = prost_types::FileDescriptorSet::decode(&bytes[..]).expect("a descriptor set");
+    let message = &fds.file[0].message_type[0];
+    assert_eq!(
+        message.field.len(),
+        1,
+        "the stop's own field must be described, got {:#?}",
+        message.field
+    );
+    assert_eq!(message.field[0].number, Some(1));
+}
+
+/// Test-plan item 5 / S5. The one case the drain cannot fix is the one
+/// case the user has to be told about: an export that would truncate
+/// writes nothing at all and says why.
+#[test]
+fn a_refused_expansion_refuses_the_export() {
+    let (mut app, items) = bounded_repeated_message_fixture(3);
+    app.splash = false;
+    let stop = items[2];
+    assert!(app.auto_folded.contains(&stop));
+
+    // A splice refuses when its target does not resolve, and
+    // `expand_auto_fold` re-renders a node under the target its own
+    // provenance records — so naming a type that is not in the pool is
+    // enough to make the expansion fail the way a real one would.
+    let bogus = app
+        .provenance
+        .intern(&(Some(Some("no.such.Type".to_string())), "items".to_string()));
+    app.tree[stop].rendered_as = bogus;
+    app.set_cursor(stop);
+
+    assert!(
+        exported(&mut app, "refused", &[]).is_none(),
+        "a refused export must write no file at all"
+    );
+    assert!(
+        app.message.starts_with("export refused:"),
+        "the refusal must say so, got {:?}",
+        app.message
+    );
+}
+
+/// Test-plan item 6 / S2. A refused splice leaves its node in
+/// `auto_folded` on purpose, so a drain that retried until the set
+/// emptied would never return. One attempt per node — and the refusal of
+/// one node must not stop the descent from clearing the others.
+#[test]
+fn bake_subtree_attempts_each_node_once() {
+    let (mut app, items) = bounded_repeated_message_fixture(3);
+    app.splash = false;
+    let stop = items[2];
+    let bogus = app
+        .provenance
+        .intern(&(Some(Some("no.such.Type".to_string())), "items".to_string()));
+    app.tree[stop].rendered_as = bogus;
+
+    let others: Vec<usize> = app
+        .auto_folded
+        .iter()
+        .copied()
+        .filter(|&i| i != stop)
+        .collect();
+    assert!(
+        !others.is_empty(),
+        "the fixture must have a second stop, or the descent proves nothing"
+    );
+
+    assert!(
+        !app.bake_subtree(app.first_node),
+        "the refusal must be reported"
+    );
+    assert_eq!(
+        app.auto_folded.iter().copied().collect::<Vec<_>>(),
+        vec![stop],
+        "every stop but the refusing one must have been paid off"
+    );
+}

@@ -952,9 +952,18 @@ pub(crate) fn derived_close(header: &str) -> String {
 /// The lines `idx`'s subtree draws, in document order — spec 0222 S1's
 /// per-node text put back together.
 ///
-/// Structural, so it lives beside the overlay it reads: the TUI's
-/// export and clipboard paths want one subtree, and the tests want the
-/// whole document ([`document_lines`]), but it is the same walk.
+/// Structural, so it lives beside the overlay it reads: the TUI's two
+/// export paths want one subtree, and the tests want the whole document
+/// ([`document_lines`]), but it is the same walk. Not the clipboard,
+/// whatever this comment used to say — a copy takes the rows that were
+/// drawn (spec 0261 N2).
+///
+/// Every node in the subtree must have been rendered. A node the bake
+/// has not reached has vacant children, and a *bracketed* one still
+/// writes its header and its closing brace around them — so it comes out
+/// as an empty message rather than as an unread one. Spec 0261 S4 is why
+/// no caller can reach here with one: an export bakes what it names
+/// first, or refuses.
 pub(crate) fn subtree_lines(
     tree: &[TreeNode],
     text: &[Option<Box<str>>],

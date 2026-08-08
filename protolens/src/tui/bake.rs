@@ -146,6 +146,52 @@ impl App {
         theme::status_color(Status::Unbaked, self.theme).map(|c| Style::default().fg(c))
     }
 
+    /// Spec 0261 S1: pay off every stop under `idx`, right now, and say
+    /// whether the subtree came out clear.
+    ///
+    /// What the bake would have done to this subtree eventually, brought
+    /// forward because something outside the TUI is about to read it as
+    /// text. Spec 0249 S8's rule with a different claimant: the queue is
+    /// document order, and an export is not.
+    ///
+    /// A descent rather than one `expand_auto_fold`, because an
+    /// expansion runs `render_overrides` over what it revealed and a
+    /// nested `Any` under there registers stops of its own through
+    /// `confirm_row_budget` (spec 0255 S2). Those are below `idx`, so
+    /// the children are read *after* the expansion, never before it.
+    ///
+    /// The budget is unbounded (S3). `BAKE_ROW_BUDGET` exists to keep a
+    /// keystroke responsive between idle steps, which an export has
+    /// already given up on, and a bounded render re-emits its whole
+    /// right frontier per step: over a full drain of googleapis.desc
+    /// that is 70 856 expansions and 6.65 s against 7 770 and 3.56 s
+    /// here, for identical output. Per export target the median is
+    /// 168 µs and the worst of the corpus's 7 770 files is 226 ms.
+    ///
+    /// Each node is attempted at most once (S2): a splice that refuses
+    /// leaves the node in `auto_folded` deliberately, so retrying until
+    /// the set emptied would not terminate.
+    pub(super) fn bake_subtree(&mut self, idx: usize) -> bool {
+        // The whole point of the descent is the stops, so once there are
+        // none left there is nothing below to look for. This is also
+        // what keeps an export of an already-baked document from walking
+        // the arena at all.
+        if self.auto_folded.is_empty() {
+            return true;
+        }
+        if self.auto_folded.contains(&idx) {
+            self.expand_auto_fold(idx, usize::MAX);
+            if self.auto_folded.contains(&idx) {
+                return false;
+            }
+        }
+        let mut clear = true;
+        for child in self.child_slots(idx) {
+            clear &= self.bake_subtree(child);
+        }
+        clear
+    }
+
     pub(super) fn note_visible_stops(&mut self, window: &[DisplayRow]) {
         self.visible_stops.clear();
         if self.auto_folded.is_empty() {
