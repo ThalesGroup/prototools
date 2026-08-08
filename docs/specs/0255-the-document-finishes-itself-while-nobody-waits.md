@@ -258,5 +258,16 @@ So the bake proper is 5.55 s and the pan clamp is 1.0 s of the 6.55 —
 15% on a normal terminal, and 94% on an absurd one. It is a per-splice
 cost that predates this spec and is paid by every fold and every commit
 today; the bake only makes it visible by doing 70 894 splices in a row.
-Not fixed here: it is one clamp per *batch*, and a bake step that draws
-no frame (S6) has nothing to clamp for until the next one is drawn.
+
+**Fixed immediately after, and the fix is a guard rather than a
+redesign.** `pan_offset` is zero unless the reader has actually panned
+right, and `0.min(x)` is `0` for every `x`, so the measurement is dead
+work in the common case. `clamp_pan_offset` now skips it at a pan of
+zero, which changes no outcome. The drain became flat in the pane
+height — **5.42 / 5.51 / 5.78 s** at 50 / 500 / 5000, against
+6.55 / 15.53 / 102.24 — and lands on the 5.55 s the extrapolation
+predicted. The exported document is unchanged at all three.
+
+A reader who *has* panned still pays, because the clamp's bound
+genuinely depends on which rows are visible. That is the residual, and
+it is bounded by one clamp per splice at a real terminal's height.
