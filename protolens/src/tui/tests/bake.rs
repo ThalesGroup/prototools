@@ -419,3 +419,178 @@ fn a_confirm_is_unbounded_without_an_event_loop() {
         "the fixture must have a body to leave out: {full:?}"
     );
 }
+
+/// `nested_any_fixture` with its root re-rendered under a row budget,
+/// leaving the `Any` three plain levels down on the revealed side of the
+/// cut.
+///
+/// A standalone `splice_override`, as the spec 0255 tests above use:
+/// the confirm's surrounding `render_overrides` walk would resettle its
+/// way straight back down a twelve-line document and leave no stop at
+/// all. What the walk cannot reach on a real corpus is exactly what this
+/// spec is about, so the splice is driven directly.
+fn bounded_any_fixture(budget: usize) -> App {
+    let mut app = nested_any_fixture();
+    app.bounded_confirms = true;
+    app.main_area = ratatui::layout::Rect::new(0, 0, 40, budget as u16);
+    let root = app.first_node;
+    app.splice_override(root, Some("acme.Level1".to_string()), Some(budget))
+        .expect("a bounded splice must succeed");
+    app
+}
+
+/// Spec 0258 G1, and the defect the spec exists for: `expand_auto_fold`
+/// spliced without ever entering a `render_overrides` batch, so spec
+/// 0120's `Any` expansion never ran on what the bake revealed — and
+/// `descend`'s watermark (spec 0188 S4) over a fixed arena (spec 0216)
+/// meant no later batch would revisit it either.
+///
+/// The `Any` sits three plain levels down, below any screenful this
+/// fixture can be given, which is what puts it on the revealed side of
+/// the cut.
+#[test]
+fn a_revealed_subtree_expands_any() {
+    let want = nested_any_fixture().document_lines();
+
+    let mut app = bounded_any_fixture(App::MIN_EXPAND_ROWS);
+    assert!(
+        !app.auto_folded.is_empty(),
+        "the bounded pass must have stopped somewhere"
+    );
+    assert!(
+        !has_node_with_type(&app, "acme.Payload"),
+        "and stopped above the Any, or this proves nothing: {:?}",
+        app.document_lines()
+    );
+
+    drain(&mut app);
+
+    assert!(
+        has_node_with_type(&app, "acme.Payload"),
+        "the revealed Any must expand: {:?}",
+        app.document_lines()
+    );
+    assert_eq!(
+        app.document_lines(),
+        want,
+        "and the baked document is the unbounded one"
+    );
+}
+
+/// The other half of `collect_descend_targets`. An `Any` is found by
+/// `is_auto_expand_candidate`; an override entry the user placed is
+/// found by its path. One route working does not imply the other, and
+/// the path route is the one a `--load-overrides` file depends on.
+#[test]
+fn a_revealed_subtree_applies_a_path_override() {
+    // The `label` leaf inside the expanded payload — five plain levels
+    // down, and only reachable once the Any has expanded, so this is
+    // also an override on a node the bounded render never emitted.
+    //
+    // `want` is the unbounded document with the same entry already
+    // applied, and the assertion is an equality against it. An absence
+    // assertion — "`label` is gone, so the override ran" — would be
+    // vacuous here: `label` is equally absent when the `Any` never
+    // expanded at all, so the test would pass with the fix removed.
+    let (origin, want) = {
+        let mut app = nested_any_fixture();
+        let payload = node_with_type(&app, "acme.Payload").expect("the Any must have expanded");
+        let deep = app
+            .first_child(payload)
+            .expect("the payload must have its `label` field");
+        let origin = override_pane::OverrideOrigin::Path {
+            path: app.positional_path(deep),
+        };
+        app.overrides.activate(origin.clone(), None);
+        let root = app.first_node;
+        app.render_overrides(root);
+        (origin, app.document_lines())
+    };
+    assert_ne!(
+        want,
+        nested_any_fixture().document_lines(),
+        "the entry must change the unbounded document, or the comparison \
+         below proves nothing"
+    );
+
+    let mut app = bounded_any_fixture(App::MIN_EXPAND_ROWS);
+    app.overrides.activate(origin, None);
+    drain(&mut app);
+
+    assert_eq!(
+        app.document_lines(),
+        want,
+        "the revealed subtree must honor the entry the way an unbounded \
+         render does"
+    );
+}
+
+/// Spec 0258 S3. A bake runs thousands of passes nobody asked for, and
+/// the user's own open gesture asked to see a body rather than to apply
+/// an override — so a refusal from either is not an answer to a question
+/// and must not take the status line.
+#[test]
+fn a_revealed_subtree_reports_no_refusal() {
+    let origin = {
+        let app = nested_any_fixture();
+        let payload = node_with_type(&app, "acme.Payload").expect("the Any must have expanded");
+        override_pane::OverrideOrigin::Path {
+            path: app.positional_path(payload),
+        }
+    };
+
+    let mut app = bounded_any_fixture(App::MIN_EXPAND_ROWS);
+    app.overrides
+        .activate(origin, Some("acme.NoSuchType".to_string()));
+    app.message.clear();
+
+    drain(&mut app);
+
+    assert!(
+        !app.refusals.is_empty(),
+        "the override must actually have been refused, or this asserts \
+         nothing"
+    );
+    assert_eq!(
+        app.message, "",
+        "and the refusal stayed off the status line"
+    );
+}
+
+/// Spec 0258 S1's other caller. `expand_auto_fold` is reached from the
+/// bake and from the user opening a fold over a stop (spec 0249 S8), and
+/// the second is the one a reader notices — a subtree that renders one
+/// way when the bake got there first and another way when they did.
+///
+/// This is why the fix sits in `expand_auto_fold` rather than in
+/// `bake_step`. A reader who outruns the bake — which is the whole point
+/// of expand-on-arrival — must not be shown a different document for it,
+/// so this reaches the bottom without a single `bake_step`.
+///
+/// A stop whose body is itself an `Any` is expanded by the pass over its
+/// *parent*, not by its own: `mark_fresh_subtree` collects strict
+/// descendants, and by the time a node is a stop it has already been
+/// emitted as a header by the render that stopped there.
+#[test]
+fn an_opened_stop_expands_any_too() {
+    let want = nested_any_fixture().document_lines();
+
+    let mut app = bounded_any_fixture(App::MIN_EXPAND_ROWS);
+    let mut opened = 0;
+    while let Some(&stop) = app.auto_folded.iter().next() {
+        app.open(stop);
+        opened += 1;
+        assert!(opened < 100, "opening stops by hand must terminate");
+    }
+
+    assert!(
+        has_node_with_type(&app, "acme.Payload"),
+        "reading down by hand must expand the Any: {:?}",
+        app.document_lines()
+    );
+    assert_eq!(
+        app.document_lines(),
+        want,
+        "and reach the document the bake would have"
+    );
+}

@@ -1525,6 +1525,17 @@ pub struct App {
     /// the terminal), while a pass triggered from inside the session
     /// reports through `self.message` as it always has.
     pub refusals: Vec<(usize, String)>,
+    /// Spec 0258 S3: whether the `render_overrides` pass now running was
+    /// asked for by the user. `expand_auto_fold`'s resolution pass sets
+    /// it, because a refusal deep in a subtree the bake happened to
+    /// reveal — or that the user merely opened a fold over — is not an
+    /// answer to any question they asked, and a drain runs thousands of
+    /// such passes.
+    ///
+    /// A flag rather than saving and restoring `self.message` around the
+    /// pass: restoring would clobber whatever else wrote the status line
+    /// while it ran.
+    silent_refusals: bool,
     /// Mirrors `self.message` as of the last `track_message_timeout()`
     /// call — used to detect a freshly-set message (`self.message` has
     /// no dedicated setter; it's assigned directly all over this file),
@@ -1740,6 +1751,7 @@ impl App {
             cmd_area: None,
             message: fallback_warning,
             refusals: Vec::new(),
+            silent_refusals: false,
             last_message_seen: String::new(),
             message_deadline: None,
             should_quit: false,

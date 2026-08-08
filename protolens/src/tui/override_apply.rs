@@ -367,7 +367,13 @@ impl App {
             // The startup pass sets it too, harmlessly: `main.rs`
             // replaces it with the "see stderr" wording once it has
             // printed the detail there (S4).
+            //
+            // Spec 0258 S3: except when nobody asked. The refusals
+            // themselves are still collected — `expand_auto_fold` clears
+            // them with the rest of the batch — so a test can assert
+            // what was refused without the status line being written.
             match self.refusals.len() {
+                _ if self.silent_refusals => {}
                 0 => {}
                 1 => self.message = format!("cannot apply override: {}", self.refusals[0].1),
                 n => {
@@ -456,14 +462,21 @@ impl App {
     /// splice does not append to the arena — it rewrites the overlay on
     /// the slots those bytes already had — so there is no new tail a
     /// range could name.
-    fn mark_fresh_subtree(&mut self, idx: usize, path: &str) {
+    ///
+    /// Spec 0258 S4: returns whether anything was marked, which is what
+    /// tells `expand_auto_fold` whether a resolution pass over the
+    /// revealed subtree has anything to find. Inside a batch the answer
+    /// is ignored — the walk is already running.
+    fn mark_fresh_subtree(&mut self, idx: usize, path: &str) -> bool {
         let mut fresh = Vec::new();
         self.collect_descendants(idx, &mut fresh);
         if fresh.is_empty() {
-            return;
+            return false;
         }
         let targets = self.collect_descend_targets(fresh.iter().copied(), Some(path));
+        let marked = !targets.is_empty();
         self.mark_targets(targets);
+        marked
     }
 
     /// Set `descend` on every target and on every ancestor of one,
@@ -686,7 +699,7 @@ impl App {
         // Spec 0183 S3: the nodes the splice just re-decoded were not
         // marked when the batch's marks were computed, so mark them now.
         if spliced {
-            self.mark_fresh_subtree(idx, path);
+            let _ = self.mark_fresh_subtree(idx, path);
         }
         // Spec 0216 S22: a packed run is one slot, so a child's ordinal
         // is just its position in the block — no `same_packed_record`
@@ -1013,7 +1026,33 @@ impl App {
             // stays drawn collapsed and the row is not claiming to show
             // a body it does not have.
             self.message = format!("cannot expand: {e}");
+            return;
         }
+        // Spec 0258 S1: the splice just wrote slots that were scanned
+        // long ago and found to be nothing, and `descend` is a watermark
+        // (spec 0188 S4) over a fixed-size arena (spec 0216) — so no
+        // later batch will ever revisit them. Without this the subtree
+        // keeps whatever a schema-blind render produced: an `Any` stays
+        // an unexpanded `type_url`/`value` pair for the life of the
+        // session.
+        //
+        // The mark is the gate as well as the repair. Most revealed
+        // subtrees hold no `Any`, no MessageSet and no override origin,
+        // and those stop here having paid one `collect_descendants` —
+        // which matters at the bake's tens of thousands of splices.
+        let path = self.positional_path(idx);
+        if !self.mark_fresh_subtree(idx, &path) {
+            return;
+        }
+        // `resettle_node` on `idx` itself is a no-op: the splice above
+        // just wrote `idx`'s provenance to the target it rendered under.
+        // The pass exists for what is below `idx`, and its own nested
+        // splices stay bounded through `confirm_row_budget` (S2), so an
+        // auto-expanded `Any` under a revealed node registers its own
+        // stops and is baked in turn.
+        self.silent_refusals = true;
+        self.render_overrides(idx);
+        self.silent_refusals = false;
     }
 
     /// Unified splice mechanic (spec 0118 §4, reworked spec 0135 G1):
