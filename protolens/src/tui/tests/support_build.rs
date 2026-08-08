@@ -266,3 +266,37 @@ pub(super) fn fixture_under(tag: &str, fds: &FileDescriptorSet, root: &str, blob
     let decoded = decode(wrapped(blob), &mut ctx, RootType::Named(root), 2).unwrap();
     fixture_app(decoded, ctx)
 }
+
+/// [`fixture_under`] with spec 0257's startup row budget in force — what
+/// `main` now does for every interactive session.
+///
+/// It goes the long way round `decode`, through the two halves `main`
+/// calls, because the budget is a `render_resolved` parameter and
+/// `decode` deliberately passes `None`. The `App` it hands back has the
+/// render's stops already in `auto_folded` and `bake_queue`, and
+/// `bounded_confirms` set, so a `drain` over it exercises the startup
+/// path rather than a confirm's.
+pub(super) fn bounded_fixture_under(
+    tag: &str,
+    fds: &FileDescriptorSet,
+    root: &str,
+    blob: &[u8],
+    budget: usize,
+) -> App {
+    let mut ctx = ctx_from_fds(tag, fds);
+    let blob = wrapped(blob);
+    let (root_desc, root_candidates, arena) =
+        crate::decode::resolve_root_type_and_arena(&blob, &mut ctx, RootType::Named(root), 1)
+            .unwrap();
+    let decoded = crate::decode::render_resolved(
+        blob,
+        &mut ctx,
+        root_desc,
+        root_candidates,
+        arena,
+        2,
+        Some(budget),
+    )
+    .unwrap();
+    fixture_app(decoded, ctx)
+}

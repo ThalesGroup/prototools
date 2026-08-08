@@ -23,6 +23,9 @@ fn own_line_each(lines: &[String]) -> Vec<Option<Box<str>>> {
 pub(super) fn empty_app() -> App {
     let decoded = Decoded {
         total_lines: 0,
+        // Spec 0257 S1: a hand-built document was never bounded.
+        stops: Vec::new(),
+        row_budget: None,
         node_text: Vec::new(),
         tree: Vec::new(),
         root_type: "google.protobuf.Empty".to_string(),
@@ -70,9 +73,12 @@ pub(super) fn message_node_app_with_root_candidates(
     // malformed child slots the arena keeps and this interpretation
     // does not show, which is exactly the vacant case.
     let arena = crate::decode::arena_of(&blob);
-    let (tree, node_text) = crate::decode::build_tree(vec![span], &lines, &arena);
+    let (tree, node_text, _stops) = crate::decode::build_tree(vec![span], &lines, &arena, &[]);
     let decoded = Decoded {
         total_lines: lines.len(),
+        // Spec 0257 S1: a hand-built document was never bounded.
+        stops: Vec::new(),
+        row_budget: None,
         node_text,
         tree,
         root_type: "google.protobuf.FileDescriptorProto".to_string(),
@@ -167,6 +173,9 @@ pub(super) fn sibling_leaves_app(texts: &[&str]) -> App {
         .collect();
     let decoded = Decoded {
         total_lines: lines.len(),
+        // Spec 0257 S1: a hand-built document was never bounded.
+        stops: Vec::new(),
+        row_budget: None,
         node_text: own_line_each(&lines),
         tree,
         root_type: "google.protobuf.FileDescriptorProto".to_string(),
@@ -216,6 +225,9 @@ pub(super) fn wide_sibling_scalars_app(n: usize) -> App {
         .collect();
     let decoded = Decoded {
         total_lines: lines.len(),
+        // Spec 0257 S1: a hand-built document was never bounded.
+        stops: Vec::new(),
+        row_budget: None,
         node_text: own_line_each(&lines),
         tree,
         root_type: "google.protobuf.FileDescriptorProto".to_string(),

@@ -972,16 +972,26 @@ impl App {
     /// under it, which is enough for the walk to move down. It matters
     /// only when the pane's height is unknown or absurd; every real
     /// terminal is far above it.
-    pub(super) const MIN_EXPAND_ROWS: usize = 2;
+    ///
+    /// `pub(crate)` because spec 0257 S2 clamps `main`'s startup budget
+    /// to it too, for the same reason and against the same renderer.
+    pub(crate) const MIN_EXPAND_ROWS: usize = 2;
 
     /// Spec 0255 S1/S2: what a confirm renders — a screenful under an
     /// event loop that can bake the rest, and the whole subtree
     /// otherwise.
     ///
     /// `None` is not a fallback but the correct answer wherever no bake
-    /// will run: `App::new`'s startup pass, a headless `export`, and
-    /// every test that has not asked for a bounded confirm. A budget
-    /// there would truncate the document with nothing to finish it.
+    /// will run: a headless `export`, and every test that has not asked
+    /// for a bounded confirm. A budget there would truncate the document
+    /// with nothing to finish it.
+    ///
+    /// `App::new`'s own startup pass used to be in that list. Spec 0257
+    /// S3 took it out: when the document render was itself bounded, that
+    /// pass's splices — `Any` expansion, a seeded root — must be bounded
+    /// too, or they undo the bound in the one place hardest to notice.
+    /// Which is why the flag is now set from `Decoded` before the pass
+    /// runs rather than one statement into the event loop.
     pub(super) fn confirm_row_budget(&self) -> Option<usize> {
         self.bounded_confirms
             .then(|| self.document_pane_height().max(Self::MIN_EXPAND_ROWS))

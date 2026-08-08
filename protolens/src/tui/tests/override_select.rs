@@ -128,6 +128,9 @@ fn t_opens_the_override_pane_on_an_unresolved_message_node() {
     };
     let decoded = Decoded {
         total_lines: lines.len(),
+        // Spec 0257 S1: a hand-built document was never bounded.
+        stops: Vec::new(),
+        row_budget: None,
         // Spec 0222 S1/S2: a bracketed node keeps its header alone, and
         // the `}` is derived from it.
         node_text: vec![Some(Box::from(lines[0].as_str()))],
@@ -174,6 +177,9 @@ fn t_opens_the_override_pane_on_a_varint_scalar_field() {
     };
     let decoded = Decoded {
         total_lines: lines.len(),
+        // Spec 0257 S1: a hand-built document was never bounded.
+        stops: Vec::new(),
+        row_budget: None,
         node_text: vec![Some(Box::from(lines[0].as_str()))],
         tree: vec![node],
         root_type: "test.Scalar".to_string(),
@@ -329,9 +335,12 @@ fn t_opens_the_override_pane_on_a_length_delimited_scalar_field() {
     // decomposes `"hi"` further than this rendering shows, so the tree
     // has to be derived rather than written out.
     let arena = crate::decode::arena_of(&[0x0A, 0x02, b'h', b'i']);
-    let (tree, node_text) = crate::decode::build_tree(vec![span], &lines, &arena);
+    let (tree, node_text, _stops) = crate::decode::build_tree(vec![span], &lines, &arena, &[]);
     let decoded = Decoded {
         total_lines: lines.len(),
+        // Spec 0257 S1: a hand-built document was never bounded.
+        stops: Vec::new(),
+        row_budget: None,
         node_text,
         tree,
         root_type: "test.Scalar".to_string(),

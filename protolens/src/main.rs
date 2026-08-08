@@ -262,6 +262,65 @@ fn resolve_proto_root(
     })
 }
 
+/// What the document render is allowed to emit before it starts folding
+/// (spec 0257 S1/S2), or `None` for a whole render.
+///
+/// Bounded whenever something will drain the stops — the TUI, and `quit`
+/// (S4), whose whole purpose is to time what a session pays. `export` is
+/// never bounded: nothing there would ever bake, so a budget would write
+/// a truncated file (S4, and spec 0256 S3 before it).
+///
+/// The height comes from `crossterm::terminal::size()`, which is an
+/// `ioctl` rather than an escape-sequence probe — so unlike the theme
+/// and RGB detection `main` skips for `quit`, asking costs no timeout
+/// and can be done on every bounded path.
+///
+/// Two chrome rows come off it, the same two the first frame will spend:
+/// the global command/message row and the main pane's own statusline
+/// (spec 0147 G1). Deliberately not `App::document_pane_height()` —
+/// `main_area` is written by `render_main_pane` and is
+/// `Rect::default()` until the first frame, so asking `App` would return
+/// zero.
+///
+/// And then one row is added back, which is what G2 costs. The budget
+/// counts lines *emitted*, and a stop's own header is one of them: the
+/// renderer stops at a node when `line_count >= budget` with that node's
+/// header already written, so the first stop's header lands on document
+/// line `budget` exactly. A pane `budget` rows tall would draw it, and a
+/// stop is a row that pops open a moment later. Every later stop is
+/// pushed further down than folding pulls it up — a stop contributes two
+/// rendered lines and one drawn row — so `budget = pane + 1` puts all of
+/// them off the bottom of the first frame, not just the first.
+///
+/// `FALLBACK_ROWS` when there is no terminal to ask. This is the one
+/// place S2 and S4 pull in opposite directions: S2 reasons that a failed
+/// `size()` means no interactive session, but `quit` under a benchmark
+/// harness has no tty and is exactly the case S4 wants bounded. So the
+/// fallback keeps the bound rather than dropping it, and the Background
+/// table is what makes the number safe to pick — startup is flat across
+/// budgets from 50 to 5000, so this is not a tuning knob.
+///
+/// Getting it wrong is cheap in both directions: too small and the
+/// visible stops are expanded by the first frame itself, through spec
+/// 0249 S8's `note_visible_stops`, before the user can act on them; too
+/// large and it costs nothing measurable.
+fn startup_row_budget(command: &Option<Command>) -> Option<usize> {
+    /// A screenful when nobody can tell us what a screen is.
+    const FALLBACK_ROWS: usize = 50;
+    /// The command/message row and the main pane's statusline.
+    const CHROME_ROWS: usize = 2;
+    match command {
+        None | Some(Command::Quit) => {
+            let rows = crossterm::terminal::size()
+                .map(|(_, rows)| rows as usize)
+                .unwrap_or(FALLBACK_ROWS);
+            let pane = rows.saturating_sub(CHROME_ROWS);
+            Some((pane + 1).max(tui::App::MIN_EXPAND_ROWS))
+        }
+        Some(Command::Export { .. }) => None,
+    }
+}
+
 /// `" (N MB)"` for a startup progress message, or `""`.
 ///
 /// The unit is chosen to fit, because the number is the whole point:
@@ -439,6 +498,7 @@ fn main() -> ExitCode {
     // the contract every batch subcommand but `exit` should inherit.
     // `exit` opts in because the phase lines *are* its output.
     let announce = matches!(cli.command, None | Some(Command::Quit));
+    let startup_row_budget = startup_row_budget(&cli.command);
     // Spec 0217 S4: the whole session's budget, clamped once here so that
     // `--help`'s promise ("up to N") and what actually runs agree, and so
     // the number stored on `App` is already the honest one.
@@ -469,6 +529,7 @@ fn main() -> ExitCode {
                 root_candidates,
                 arena,
                 cli.indent,
+                startup_row_budget,
             )
         },
     );
@@ -515,11 +576,11 @@ fn main() -> ExitCode {
         Some(_) => theme::ThemeKind::Dark,
     };
 
-    // The last unannounced startup phase, and on a descriptor set the
-    // largest: `App::new` builds both line maps, seeds the override
-    // collection, and runs one full `render_overrides` pass over the whole
-    // document — 5.2 s on a 1.1 MB descriptor set, longer than the render
-    // that precedes it.
+    // The last unannounced startup phase: `App::new` seeds the override
+    // collection, seeds the stops the render reported (spec 0257 S3), and
+    // runs one `render_overrides` pass. The pass used to be the largest
+    // phase of startup; measured on googleapis it is 94 ms, and under
+    // spec 0257's budget it walks a screenful rather than the document.
     if announce {
         eprintln!("protolens: indexing {} lines...", decoded.total_lines);
     }

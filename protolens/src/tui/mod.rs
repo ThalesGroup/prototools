@@ -1600,6 +1600,14 @@ impl App {
         };
         let tree_len = decoded.tree.len();
         let root_candidates = std::mem::take(&mut decoded.root_candidates);
+        // Spec 0257 S3: the startup render's own stops, in its document
+        // order — the same pair of sets a bounded confirm builds in
+        // `splice_override`, seeded here instead because there was no
+        // splice. `row_budget` and not `stops.is_empty()`: a document
+        // small enough to fit the screen stops nowhere and still asked
+        // to be bounded, and its confirms must be too.
+        let stops = std::mem::take(&mut decoded.stops);
+        let bounded_confirms = decoded.row_budget.is_some();
         let header = format!("protolens — {blob_label} — {}", decoded.root_type);
         // Spec 0216 S1: the arena is in level order and slot 0 is the
         // wrapper, so the document-order first node is the first slot —
@@ -1660,10 +1668,10 @@ impl App {
             last_click: None,
             pending_double_click: false,
             folded: HashSet::new(),
-            auto_folded: HashSet::new(),
-            bake_queue: VecDeque::new(),
+            auto_folded: stops.iter().copied().collect(),
+            bake_queue: stops.iter().copied().collect(),
             visible_stops: VecDeque::new(),
-            bounded_confirms: false,
+            bounded_confirms,
             discarded_text: Vec::new(),
             scroll: PaneScroll::default(),
             last_cursor_row: None,
@@ -1762,6 +1770,19 @@ impl App {
             #[cfg(unix)]
             editor_state: neovim::EditorState::NotRunning,
         };
+        // Spec 0257 S3: `build_tree` gave each stop the header-plus-footer
+        // pair it actually emitted, but it cannot know the node is folded,
+        // so its `lines_visible` is 2 where the document shows 1. Fixing
+        // it here rather than inside `overlay_spans` keeps the fold sets
+        // the `App`'s business, and it has to happen before
+        // `rebuild_status` below, which reads `auto_folded`.
+        for &slot in &stops {
+            debug_assert!(
+                app.tree[slot].is_bracketed(),
+                "only a message recursion can be undescended (spec 0249 S1)"
+            );
+            app.refresh_line_counts(slot);
+        }
         // Spec 0247 S7: the one full pass. Every later change to the
         // document is a splice, and a splice repairs the two arrays
         // incrementally.

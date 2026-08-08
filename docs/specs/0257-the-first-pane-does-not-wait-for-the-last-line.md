@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0257 — the first pane does not wait for the last line
 
-Status: draft
+Status: implemented
+Implemented in: 2026-08-08
 App: protolens
 Refs: docs/specs/0249-a-large-document-answers-the-user-first.md (S1/S3,
         the row budget and `auto_folded`; S8, expand-on-arrival; S13,
@@ -166,8 +167,21 @@ from the tree's counters and stays correct throughout the bake.
 
 `main.rs` obtains it from `crossterm::terminal::size()`, subtracts the
 two chrome rows the same way the first frame will, and clamps to
-`App::MIN_EXPAND_ROWS`. When `size()` fails there is no interactive
-session to bound (S4), so the question does not arise.
+`App::MIN_EXPAND_ROWS`.
+
+**And then adds one row back, which G2 turned out to require.** The
+budget counts lines *emitted*, and a stop's own header is one of them:
+the renderer stops at a node when `line_count >= budget` with that
+node's header already written, so the first stop's header lands on
+document line `budget` exactly, and a pane `budget` rows tall draws it.
+Every later stop is pushed further down than folding pulls it back up —
+a stop contributes two rendered lines and one drawn row — so a budget of
+`pane + 1` puts *all* of them off the bottom of the first frame, not
+just the first. Found by test-plan item 4, which failed on the last row
+of the first frame at the smallest budget.
+
+When `size()` fails there is nevertheless a budget: see the resolution
+under "What implementation settled" below.
 
 Getting the number wrong is cheap in both directions and this is what
 removes the pressure to be exact:
@@ -191,8 +205,8 @@ and calls `refresh_line_counts` on each — the same three things
 reason: a stop is rendered as a header and a footer, and folding it is
 what makes it one row instead of an empty pair of braces.
 
-`bounded_confirms` becomes a constructor parameter instead of an
-assignment inside `run_loop`. It has to be true *before* `App::new`'s
+`bounded_confirms` is set by `App::new` instead of by an assignment
+inside `run_loop`. It has to be true *before* `App::new`'s
 `render_overrides` pass, or that pass's own splices — Any expansion, a
 seeded root — would render unbounded and undo the bound in the one place
 it is hardest to notice. Spec 0255 rule 2's requirement that the flag be
@@ -283,9 +297,67 @@ side effect.
    including that `--raw` is mandatory when the point is to exercise a
    root override.
 
+### What implementation settled
+
+**S2 and S4 pull in opposite directions when there is no tty, and S4
+wins.** S2 reasoned that a failed `terminal::size()` means no
+interactive session and so no question to answer. But `quit` under a
+benchmark harness has no tty and is exactly the case S4 wants bounded —
+timing the unbounded path would be timing something no user
+experiences. So the fallback keeps the bound rather than dropping it, at
+a hardcoded 50 rows, and the Background table is what makes picking a
+number safe: startup is flat from 50 to 5000, so it is not a tuning
+knob. `terminal::size()` is an `ioctl` and not an escape-sequence probe,
+which is why it can be asked on `quit`'s path at all, unlike the theme
+and RGB detection `main` skips there.
+
+**`bounded_confirms` is not a constructor parameter.** An eighth
+parameter on `App::new` touches nineteen call sites, seventeen of them
+throwaway test fixtures with nothing to say about it. `Decoded` carries
+`row_budget: Option<usize>` instead — `render_resolved` already receives
+it — and `App::new` sets `bounded_confirms = decoded.row_budget
+.is_some()`. It is not derivable from the stops: a document small enough
+to fit the screen stops nowhere and must still bound its *confirms*.
+
+**Item 5 needed a fixture of its own**, `bounded_nested_any_fixture`.
+Spec 0258's tests reach the same mechanism through a standalone
+`splice_override`; this one has to come through `render_resolved`, or it
+tests the confirm path over again rather than the startup one.
+
 ## Measured outcome
 
-Filled in at implementation. The probe above (S1's threading only, on
-one binary, `taskset -c 4-11`) puts the target at **8.72 s → ~1.14 s**
-typed and **4.65 s → ~1.13 s** raw, with the residual dominated by N1's
-arena build.
+`googleapis.desc` (25.6 MB), release build, `taskset -c 4-11`.
+
+End-to-end `quit`, three runs each, against the Background table's
+before:
+
+| | before | after |
+|---|---|---|
+| typed | 8.72 s | **1.10 / 1.13 / 1.08 s** |
+| `--raw` | 4.65 s | **1.13 / 1.09 / 1.10 s** |
+| lines indexed | 5 279 383 | 15 575 |
+
+**7.9x typed and 4.2x raw**, and the two are now the same number: what
+is left is N1's blob map and arena build, which the root type does not
+touch.
+
+G3 at corpus scale, an A/B inside one process (which also pays a
+`DescriptorContext::load` and leaves `verify_repair` on, so its absolute
+figures are higher than the CLI's):
+
+| | unbounded | bounded |
+|---|---|---|
+| startup | 9.00 s | **2.05 s** |
+| lines | 5 278 324 | 15 595 |
+| stops | — | 7 771 |
+| document | 249 734 534 B | **byte-identical** |
+
+The drain that gets there is 5.90 s over 70 857 steps with a 30.9 ms
+worst step — spec 0255's bake unchanged, now the path every session
+takes rather than the path an override takes.
+
+The three unit-test mutations all bite: dropping the
+`refresh_line_counts` loop, dropping the stop seeding, and hardcoding
+`bounded_confirms` to `false` each fail the new tests, the first of them
+through `assert_line_counts_are_exact` rather than through an assertion
+written for it.

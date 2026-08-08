@@ -7,7 +7,9 @@
 //! record.
 
 use super::super::*;
-use super::support_build::{field, field_of, fixture_under, message, proto3_fds};
+use super::support_build::{
+    bounded_fixture_under, field, field_of, fixture_under, message, proto3_fds,
+};
 use prost_types::field_descriptor_proto::{Label, Type};
 
 /// `Outer { repeated int32 vals = 1; }`, packed, 3 elements (`5, 6,
@@ -59,7 +61,37 @@ pub(super) fn repeated_scalar_fixture() -> (App, usize) {
 /// positional ordinal — an unpacked repeated *message* field is one
 /// wire record per element and so keeps distinct paths by construction.
 pub(super) fn repeated_message_fixture() -> (App, Vec<usize>) {
-    let fds = proto3_fds(
+    with_items(fixture_under(
+        "repeated-message",
+        &repeated_message_fds(),
+        "test.Outer",
+        REPEATED_MESSAGE_BLOB,
+    ))
+}
+
+/// [`repeated_message_fixture`] opened under spec 0257's startup row
+/// budget, so the `Item`s past the budget arrive as stops rather than as
+/// rendered bodies.
+pub(super) fn bounded_repeated_message_fixture(budget: usize) -> (App, Vec<usize>) {
+    with_items(bounded_fixture_under(
+        "repeated-message-bounded",
+        &repeated_message_fds(),
+        "test.Outer",
+        REPEATED_MESSAGE_BLOB,
+        budget,
+    ))
+}
+
+/// items: field 1 (tag 0x0A, LEN), thrice, each wrapping
+/// `Item { v: 5 | 6 | 7 }` (field 1, tag 0x08, one-byte varint).
+const REPEATED_MESSAGE_BLOB: &[u8] = &[
+    0x0Au8, 0x02, 0x08, 0x05, //
+    0x0A, 0x02, 0x08, 0x06, //
+    0x0A, 0x02, 0x08, 0x07,
+];
+
+fn repeated_message_fds() -> prost_types::FileDescriptorSet {
+    proto3_fds(
         "test_repeated_message.proto",
         vec![
             message(
@@ -74,23 +106,14 @@ pub(super) fn repeated_message_fixture() -> (App, Vec<usize>) {
             ),
             message("Item", vec![field("v", 1, Label::Optional, Type::Int32)]),
         ],
-    );
+    )
+}
 
-    // items: field 1 (tag 0x0A, LEN), thrice, each wrapping
-    // Item { v: 5 | 6 | 7 } (field 1, tag 0x08, one-byte varint).
-    let app = fixture_under(
-        "repeated-message",
-        &fds,
-        "test.Outer",
-        &[
-            0x0Au8, 0x02, 0x08, 0x05, //
-            0x0A, 0x02, 0x08, 0x06, //
-            0x0A, 0x02, 0x08, 0x07,
-        ],
-    );
-
-    // Spec 0216: the root is slot 0 — the wrapper — and the `Item`s are
-    // its children, wherever the current interpretation puts them.
+/// Spec 0216: the root is slot 0 — the wrapper — and the `Item`s are its
+/// children, wherever the current interpretation puts them. True of a
+/// bounded render too: a stop still has its header, so it is still a
+/// child.
+fn with_items(app: App) -> (App, Vec<usize>) {
     let items: Vec<usize> = (0..app.child_count(app.first_node))
         .map(|k| {
             app.nth_child(app.first_node, k)

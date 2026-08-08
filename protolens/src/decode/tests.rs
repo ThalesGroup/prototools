@@ -1175,7 +1175,7 @@ fn a_type_loaded_after_the_root_can_still_be_rendered_through() {
     let desc = ctx.message("t.Stray").expect("must load on demand");
     let stray = wrapped(&stray_blob);
     let arena = build_arena(stray.as_ref()).expect("stray blob is walkable");
-    let decoded = render_resolved(stray, &mut ctx, Some(desc), Vec::new(), arena, 2).unwrap();
+    let decoded = render_resolved(stray, &mut ctx, Some(desc), Vec::new(), arena, 2, None).unwrap();
 
     assert_eq!(decoded.root_type, "t.Stray");
     assert!(

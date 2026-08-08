@@ -877,6 +877,9 @@ fn default_export_descriptor_path_falls_back_to_the_numeric_range_when_unresolva
     let tree = vec![make_node(1, 0..2), make_node(2, 2..4)];
     let decoded = Decoded {
         total_lines: 2,
+        // Spec 0257 S1: a hand-built document was never bounded.
+        stops: Vec::new(),
+        row_budget: None,
         node_text: vec![Some(Box::from("a")), Some(Box::from("b"))],
         tree,
         root_type: "google.protobuf.FileDescriptorProto".to_string(),

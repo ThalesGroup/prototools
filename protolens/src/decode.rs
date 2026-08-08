@@ -907,18 +907,22 @@ fn arena_gap(spans: &[NodeSpan], arena: &Arena) -> Option<String> {
 /// substituted in. That range substitution is the reason a caller
 /// wanting element k's bytes has to re-parse the payload: the elements'
 /// individual ranges are exactly what collapsing throws away.
+/// Spec 0257 S1: `undescended` is the render's own report of the nodes
+/// it emitted without a body, and the `stopped` list comes back out
+/// beside the tree. Both are empty unless the document render was
+/// row-budgeted, which since spec 0257 it is for every interactive
+/// session — the `debug_assert!(stopped.is_empty())` that used to stand
+/// here went with the assumption that only a confirm could be bounded.
 pub(crate) fn build_tree(
     spans: Vec<NodeSpan>,
     lines: &[String],
     arena: &Arena,
-) -> (Vec<TreeNode>, Vec<Option<Box<str>>>) {
+    undescended: &[u32],
+) -> (Vec<TreeNode>, Vec<Option<Box<str>>>, Vec<usize>) {
     let mut nodes: Vec<TreeNode> = (0..arena.len()).map(|_| TreeNode::vacant()).collect();
     let mut text: Vec<Option<Box<str>>> = vec![None; arena.len()];
-    // The document render is never bounded — a bounded one is issued for
-    // one node, at confirm (spec 0249 S5) — so there is nothing to report.
-    let stopped = overlay_spans(&mut nodes, &mut text, spans, lines, arena, 0, &[]);
-    debug_assert!(stopped.is_empty());
-    (nodes, text)
+    let stopped = overlay_spans(&mut nodes, &mut text, spans, lines, arena, 0, undescended);
+    (nodes, text, stopped)
 }
 
 /// Spec 0222 S2: the closing line of a bracketed node, derived from its
@@ -1130,7 +1134,24 @@ pub struct Decoded {
     /// message alone. Spec 0222 deleted the `Vec<String>` this used to
     /// be `len()` of; the live count is `App::total_lines`, derived from
     /// the roots' own counters so that a splice cannot leave it stale.
+    ///
+    /// Under spec 0257's row budget this is the *bounded* count, which is
+    /// the honest number for what the render did. `App::total_lines`
+    /// grows past it as the bake pays the stops off.
     pub total_lines: usize,
+    /// Spec 0257 S1/S3: the slots the render emitted without a body,
+    /// which `App::new` turns into `auto_folded` entries and bake-queue
+    /// work. Empty for an unbounded render.
+    pub stops: Vec<usize>,
+    /// The budget the render was given, remembered so that `App::new`
+    /// can set `bounded_confirms` from it (spec 0257 S3).
+    ///
+    /// Not derivable from `stops`: a small document rendered under a
+    /// budget stops nowhere, and a session that asked to be bounded must
+    /// still bound its *confirms* — otherwise the first override on a
+    /// small file would render unbounded and the flag would disagree
+    /// with the caller that set it.
+    pub row_budget: Option<usize>,
     /// Spec 0222 S1: the lines each arena slot draws itself, its
     /// children's excluded — `None` for a slot this interpretation does
     /// not render. Parallel to `tree`, and indexed the same way.
@@ -1710,7 +1731,18 @@ pub fn decode(
 ) -> Result<Decoded, DecodeError> {
     let (root_desc, root_candidates, arena) =
         resolve_root_type_and_arena(&blob, ctx, root_type_request, 1)?;
-    render_resolved(blob, ctx, root_desc, root_candidates, arena, indent_size)
+    // Unbounded: a test that wants spec 0257's bound calls
+    // `render_resolved` with a budget, and every other one wants the
+    // whole document it has always got.
+    render_resolved(
+        blob,
+        ctx,
+        root_desc,
+        root_candidates,
+        arena,
+        indent_size,
+        None,
+    )
 }
 
 /// Steps 3 and 4 of spec 0217's startup sequence, run at the same time.
@@ -1748,6 +1780,10 @@ pub fn resolve_root_type_and_arena(
 /// blob, and a single message spanning both makes whichever one is
 /// running look like a hang in the other. Every other caller wants
 /// `decode`.
+/// Spec 0257 S1: `row_budget` bounds the document render the way spec
+/// 0249's bounds a confirm — a full render in which every node the
+/// budget stopped at keeps its header and footer and loses its children.
+/// `None` renders whole, which is what a headless `export` needs (S4).
 pub fn render_resolved(
     blob: Arc<Blob>,
     ctx: &mut DescriptorContext,
@@ -1755,6 +1791,7 @@ pub fn render_resolved(
     root_candidates: RankedCandidates,
     arena: Arena,
     indent_size: usize,
+    row_budget: Option<usize>,
 ) -> Result<Decoded, DecodeError> {
     let (root_type, wrapper_desc) = match &root_desc {
         Some(desc) => (
@@ -1789,6 +1826,9 @@ pub fn render_resolved(
         // (including `type_url`/`type_id`) a real `NodeSpan`.
         expand_any: false,
         expand_message_set: false,
+        // Spec 0257 S1: the one renderer call in the program that used to
+        // take the default `None` here.
+        row_budget,
         ..Default::default()
     };
     // Spec 0212 S4: the table is created here, at the document's own
@@ -1838,7 +1878,8 @@ pub fn render_resolved(
     if let Some(gap) = arena_gap(&rendered.spans, &arena) {
         panic!("spec 0216: the arena is not a superset of the render — {gap}");
     }
-    let (tree, node_text) = build_tree(rendered.spans, &lines, &arena);
+    let (tree, node_text, stops) =
+        build_tree(rendered.spans, &lines, &arena, &rendered.undescended);
     // Spec 0222, test-plan item 3. Same argument as the check above, and
     // the same only-place-it-means-anything: `lines` dies at the end of
     // this function, so a systematic off-by-one in S1's ownership split
@@ -1864,6 +1905,8 @@ pub fn render_resolved(
     }
     Ok(Decoded {
         total_lines: lines.len(),
+        stops,
+        row_budget,
         node_text,
         tree,
         arena,

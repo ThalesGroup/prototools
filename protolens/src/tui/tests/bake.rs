@@ -594,3 +594,198 @@ fn an_opened_stop_expands_any_too() {
         "and reach the document the bake would have"
     );
 }
+
+// ── Spec 0257: the startup render is bounded too ────────────────────────
+
+/// Spec 0257 test-plan item 1. The startup render reports stops the same
+/// way a confirm's does, and `App::new` has to do with them what
+/// `splice_override` does: fold each one, queue it, and fix the row count
+/// folding it changed.
+///
+/// The `lines_visible == 1` assertion is the one that catches the missing
+/// `refresh_line_counts`. Without it a stop claims the two rows it
+/// rendered while the document draws one, so every row number below the
+/// first stop is wrong — and nothing else in the frame says so.
+#[test]
+fn a_bounded_startup_leaves_stops() {
+    let (app, items) = bounded_repeated_message_fixture(3);
+
+    assert!(
+        app.bounded_confirms,
+        "a budgeted startup is a bounded session (spec 0257 S3)"
+    );
+    assert_eq!(
+        app.auto_folded.len(),
+        2,
+        "the budget bought the first Item's body and stopped at the other \
+         two: {:?}",
+        app.auto_folded
+    );
+    for i in [items[1], items[2]] {
+        assert!(app.auto_folded.contains(&i), "Item {i} must be a stop");
+        assert!(
+            app.bake_queue.contains(&i),
+            "and must be queued for the bake"
+        );
+        assert_eq!(
+            (app.tree[i].lines_total, app.tree[i].lines_visible),
+            (2, 1),
+            "a stop rendered a header and a footer, and draws one row"
+        );
+    }
+    assert!(
+        !app.auto_folded.contains(&items[0]),
+        "the first Item was inside the budget"
+    );
+}
+
+/// Spec 0257 G3 / test-plan item 2, and the assertion the spec rests on:
+/// a document reached by a bounded startup plus a full bake is the
+/// document an unbounded startup produces. Not merely the same height —
+/// the same text and the same counts at every node.
+///
+/// The corpus version is a `cmp` over 249 MB, and it is a measurement
+/// rather than a test.
+///
+/// Parametrized from `MIN_EXPAND_ROWS` up. A budget of 1 is not a smaller
+/// case of this but a different one — it buys the root's header and
+/// nothing else, so the walk never descends and the drain has a raw
+/// document to finish rather than a short one. That is what the clamp in
+/// `main`'s `startup_row_budget` exists for.
+#[test]
+fn a_baked_startup_is_the_unbounded_startup() {
+    let (want_lines, want_counts) = {
+        let (app, _) = repeated_message_fixture();
+        (app.document_lines(), counts(&app))
+    };
+
+    for budget in [App::MIN_EXPAND_ROWS, 3, 7] {
+        let (mut app, _) = bounded_repeated_message_fixture(budget);
+        assert_ne!(
+            app.document_lines(),
+            want_lines,
+            "budget {budget}: the bounded document must actually be short, \
+             or this proves nothing"
+        );
+
+        drain(&mut app);
+        while app.discard_step() {}
+
+        assert_eq!(
+            app.document_lines(),
+            want_lines,
+            "budget {budget}: same text"
+        );
+        assert_eq!(
+            counts(&app),
+            want_counts,
+            "budget {budget}: same counts at every node"
+        );
+        assert!(
+            app.folded.is_empty(),
+            "budget {budget}: and the startup invented no user fold: {:?}",
+            app.folded
+        );
+    }
+}
+
+/// Spec 0257 S4. `main` passes no budget when there is no event loop to
+/// bake in, and this is the whole of what "no budget" has to mean: a
+/// complete document and nothing owed.
+///
+/// The guard between a scripted `export` and a truncated file — spec 0257
+/// N5 records that `push_subtree_lines` writes an empty pair of braces
+/// for a stop rather than refusing, so a regression here is silent.
+#[test]
+fn a_headless_startup_renders_whole() {
+    let (app, items) = repeated_message_fixture();
+
+    assert!(
+        !app.bounded_confirms,
+        "no budget means no bounded confirms either (spec 0257 S3)"
+    );
+    assert!(
+        app.auto_folded.is_empty() && app.bake_queue.is_empty(),
+        "nothing owes a body: {:?}",
+        app.auto_folded
+    );
+    for i in items {
+        assert!(
+            app.tree[i].lines_total > 2,
+            "Item {i} rendered its body straight away"
+        );
+    }
+}
+
+/// Spec 0257 G2 / test-plan item 4: every row of the first frame is
+/// final. A stop drawn on it would pop open a moment later under the
+/// bake's `Visible` arm, which is a document that moves while it is being
+/// read.
+///
+/// This is also the check that S2's arithmetic agrees with the
+/// renderer's, and it is what found the off-by-one that arithmetic now
+/// carries: the budget counts lines *emitted*, and a stop's own header is
+/// one of them, so the first stop lands on document line `budget`
+/// exactly. `main` therefore asks for one row more than the pane, and the
+/// pane here is `budget - 1` document rows — plus the command row and the
+/// statusline, which is why the terminal is `budget + 1` tall.
+///
+/// Driven at three budgets because the bound has to hold for *every*
+/// stop, not just the first, and how many stops there are is what the
+/// budget varies.
+#[test]
+fn a_first_frame_over_a_bounded_document_has_no_visible_stop() {
+    for budget in [App::MIN_EXPAND_ROWS, 3, 4] {
+        let (mut app, _) = bounded_repeated_message_fixture(budget);
+        assert!(
+            !app.auto_folded.is_empty(),
+            "budget {budget}: there must be a stop somewhere to miss"
+        );
+
+        draw(&mut app, budget as u16 + 1);
+
+        assert!(
+            app.visible_stops.is_empty(),
+            "budget {budget}: the first frame drew a stop: {:?}",
+            app.visible_stops
+        );
+    }
+}
+
+/// Spec 0257 test-plan item 5, and why spec 0258 is a prerequisite
+/// rather than a nice-to-have.
+///
+/// Before this spec the startup render was followed by one
+/// `render_overrides` pass over the whole document, so every `Any`
+/// anywhere in the file expanded. Bounding the render moves everything
+/// below the first screenful onto the bake's side of the cut, where spec
+/// 0258's fix is the only thing that expands it — on every file, in every
+/// session, rather than only after a root override plus scrolling.
+#[test]
+fn a_bounded_startup_expands_any_below_the_screenful() {
+    let want = nested_any_fixture().document_lines();
+
+    let mut app = bounded_nested_any_fixture(App::MIN_EXPAND_ROWS);
+    assert!(
+        !app.auto_folded.is_empty(),
+        "the budget must have stopped above the Any"
+    );
+    assert!(
+        !has_node_with_type(&app, "acme.Payload"),
+        "and the Any must still be unexpanded, or this proves nothing: {:?}",
+        app.document_lines()
+    );
+
+    drain(&mut app);
+
+    assert!(
+        has_node_with_type(&app, "acme.Payload"),
+        "the bake must expand an Any the startup never reached: {:?}",
+        app.document_lines()
+    );
+    assert_eq!(
+        app.document_lines(),
+        want,
+        "and land on the document an unbounded startup produces"
+    );
+}

@@ -7,8 +7,8 @@
 
 use super::super::*;
 use super::support_build::{
-    any_body, any_proto_file, field, field_of, fixture_app, fixture_under, message,
-    wrap_len_field_1, wrapper_message, TempFile,
+    any_body, any_proto_file, bounded_fixture_under, field, field_of, fixture_app, fixture_under,
+    message, wrap_len_field_1, wrapper_message, TempFile,
 };
 use prost_types::descriptor_proto::ExtensionRange;
 use prost_types::field_descriptor_proto::{Label, Type};
@@ -132,6 +132,23 @@ pub(super) fn message_set_fixture() -> App {
 /// with the `Any` directly under the root would still pass with the
 /// upward walk missing entirely, and would prove nothing.
 pub(super) fn nested_any_fixture() -> App {
+    let (fds, blob) = nested_any_parts();
+    fixture_under("nested-any", &fds, "acme.Level1", &blob)
+}
+
+/// [`nested_any_fixture`] opened under spec 0257's startup row budget.
+///
+/// The burial the doc comment above describes is what makes this the
+/// fixture for a bounded *startup*: with the budget spent before the
+/// walk reaches `Level3`, the `Any` is below the first screenful and
+/// only the bake can reach it — which is spec 0258's mechanism seen on
+/// the path spec 0257 needs it for.
+pub(super) fn bounded_nested_any_fixture(budget: usize) -> App {
+    let (fds, blob) = nested_any_parts();
+    bounded_fixture_under("nested-any-bounded", &fds, "acme.Level1", &blob, budget)
+}
+
+fn nested_any_parts() -> (FileDescriptorSet, Vec<u8>) {
     let acme_file = FileDescriptorProto {
         name: Some("acme_nested_any.proto".to_string()),
         syntax: Some("proto2".to_string()),
@@ -160,7 +177,7 @@ pub(super) fn nested_any_fixture() -> App {
         blob = wrap_len_field_1(blob);
     }
 
-    fixture_under("nested-any", &fds, "acme.Level1", &blob)
+    (fds, blob)
 }
 
 /// `ms_test.Top { Mid m { Container c { extensions: TestMessageSet {

@@ -620,11 +620,14 @@ where
     // looking at owes that frame immediately instead — the rows it
     // replaced are the ones being read, not the footer's total.
     let mut bake_visible = false;
-    // Spec 0255 S2: this is the only place that turns a confirm into a
-    // bounded render, because this is the only place with a loop to bake
-    // the remainder in. `App::new`'s startup pass has already run by
-    // now, and a headless export never gets here.
-    app.bounded_confirms = true;
+    // Spec 0257 S3/S4 reversed spec 0255 S2's assignment here: the flag
+    // is now set by `App::new`, from the budget `main` chose for the
+    // *startup* render, because that render has to be bounded too and
+    // the pass inside `App::new` must already see the flag. The rule it
+    // stood for is unchanged — only a session with a loop to bake in is
+    // bounded, and a headless export still passes no budget.
+    // Not asserted here: the event-loop tests drive `run_loop` over
+    // fixtures built unbounded on purpose.
     loop {
         // A background thread died (see the hook in `run`). Say so, and
         // let go of the worker: its thread is gone, so every request

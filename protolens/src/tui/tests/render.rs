@@ -685,6 +685,9 @@ fn a_toggles_the_main_pane_annotation_display() {
     };
     let decoded = Decoded {
         total_lines: 1,
+        // Spec 0257 S1: a hand-built document was never bounded.
+        stops: Vec::new(),
+        row_budget: None,
         node_text: vec![Some(Box::from(line.as_str()))],
         tree: vec![node],
         root_type: "test.Msg".to_string(),
