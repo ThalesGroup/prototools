@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0255 — the document finishes itself while nobody waits
 
-Status: draft
+Status: implemented
+Implemented in: 2026-08-08
 App: protolens
 Refs: docs/specs/0249-a-large-document-answers-the-user-first.md (S1's
         bounded render, S3's `auto_folded`, S5's unused policy, S8's
@@ -222,7 +223,40 @@ consistent.
 
 ## Measured outcome
 
-To fill in on implementation: the interactive confirm's wall time, the
-drain's total and worst step, and a `cmp` of the drained document
-against the unbounded one on googleapis.desc — all pinned to
-`taskset -c 4-7`.
+googleapis.desc (25.6 MB), the root override, `taskset -c 4-7`, release
+build. The confirm is timed over the whole of `load_overrides`, which is
+more than the render, and the same timer is used on both sides.
+
+| | confirm | bake | worst step |
+|---|---|---|---|
+| unbounded (before) | **4.55 s** | — | — |
+| bounded, 50-row pane | **0.59 s** | 6.55 s | 25 ms |
+
+**G1 holds**: 7.7x, and the 0.59 s screenful is the real document, not a
+placeholder. **G3 holds**: over 70 894 steps the worst is 25 ms, two are
+over 8 ms and none over 50.
+
+**G2 holds at corpus scale.** The drained export is byte-identical
+(`cmp`-clean, 232 892 696 B) to the unbounded one at pane heights of 50,
+500 and 5000 — three different confirms, one document.
+
+### The bake's cost is not all the bake's
+
+The drain was 6.55 s at a 50-row pane, 15.53 s at 500 and 102.24 s at
+5000, for a step count that never moves (70 894 / 70 893 / 70 797) and
+identical queue pushes (63 123) and materialized lines (5.26 M). The
+same work, three wall times.
+
+It is linear in the *pane height*: 19.96 ms per pane row across the
+50→500 interval and 19.27 ms across 500→5000, extrapolating to 5.55 s at
+a pane of zero. The cause is `finalize_override_batch`'s
+`clamp_pan_offset` (`override_apply.rs:651`), which every splice runs and
+which resolves the whole visible window through `max_visible_line_len`
+against a window cache the `structural_version` bump has just emptied.
+
+So the bake proper is 5.55 s and the pan clamp is 1.0 s of the 6.55 —
+15% on a normal terminal, and 94% on an absurd one. It is a per-splice
+cost that predates this spec and is paid by every fold and every commit
+today; the bake only makes it visible by doing 70 894 splices in a row.
+Not fixed here: it is one clamp per *batch*, and a bake step that draws
+no frame (S6) has nothing to clamp for until the next one is drawn.

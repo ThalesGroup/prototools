@@ -16,6 +16,7 @@
 //! re-renders, but no index ever moves.
 
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::io;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -65,6 +66,7 @@ use crate::override_pane::{self, OverrideKind, OverrideOrigin, SortMode};
 use crate::provenance::{ProvenanceTable, NOT_RENDERED};
 use crate::render_cache::RenderCache;
 use crate::theme::{self, ThemeKind};
+use bake::BakeStep;
 use help_text::HELP_TEXT;
 use pane_scroll::PaneScroll;
 use prefetch::{PrefetchStep, PrefetchTrace, PrefetchWalk};
@@ -1042,6 +1044,23 @@ pub struct App {
     /// a later bake finishing. Reads do not care which set a node is in
     /// — that is what [`App::is_folded`] is for — only writes do.
     auto_folded: HashSet<usize>,
+    /// The order the bake works through `auto_folded` in (spec 0255 S3).
+    ///
+    /// A hint, not the truth: `auto_folded` decides whether a node still
+    /// owes a body, and a pop whose node has left that set is discarded.
+    /// That is what makes a duplicate entry, a node the user expanded by
+    /// hand, and a node whose ancestor was re-overridden underneath it
+    /// all harmless without a generation counter.
+    ///
+    /// It exists because the set alone cannot name a next element
+    /// cheaply — `HashSet::iter().next()` scans buckets from the top,
+    /// and a drain empties ~84 000 entries without shrinking the table,
+    /// so the last steps would each scan all of it.
+    bake_queue: VecDeque<usize>,
+    /// Spec 0255 S2: whether a confirm renders a screenful or the whole
+    /// subtree. Set by `run_loop` and by nothing else, so `App::new`'s
+    /// own startup pass and every headless export stay unbounded (N6).
+    bounded_confirms: bool,
     /// The main pane's vertical viewport (specs 0230, 0244 S2): the first
     /// document line drawn, plus the signed terminal-row remainder that
     /// lets a `w` toggle hold a row still. `scroll.index` counts document
@@ -1609,6 +1628,8 @@ impl App {
             pending_double_click: false,
             folded: HashSet::new(),
             auto_folded: HashSet::new(),
+            bake_queue: VecDeque::new(),
+            bounded_confirms: false,
             scroll: PaneScroll::default(),
             last_cursor_row: None,
             pan_offset: 0,
@@ -1901,6 +1922,7 @@ fn emit_osc52_copy(text: &str) {
     let _ = std::io::stdout().flush();
 }
 
+mod bake;
 mod command_line;
 mod event;
 mod heat_cue;

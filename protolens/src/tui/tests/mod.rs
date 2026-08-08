@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
+mod bake;
 mod command_line;
 mod event_loop;
 mod export_fields;

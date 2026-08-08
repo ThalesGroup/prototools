@@ -102,7 +102,7 @@ impl App {
                 Some(explicit) => explicit.clone(),
                 None => self.natural_type(idx),
             };
-            match self.splice_override(idx, effective, None) {
+            match self.splice_override(idx, effective, self.confirm_row_budget()) {
                 Ok(()) => {
                     self.tree[idx].rendered_as = current;
                     // Spec 0221 S1: this node is settled after all, so
@@ -849,6 +849,19 @@ impl App {
     /// terminal is far above it.
     const MIN_EXPAND_ROWS: usize = 2;
 
+    /// Spec 0255 S1/S2: what a confirm renders — a screenful under an
+    /// event loop that can bake the rest, and the whole subtree
+    /// otherwise.
+    ///
+    /// `None` is not a fallback but the correct answer wherever no bake
+    /// will run: `App::new`'s startup pass, a headless `export`, and
+    /// every test that has not asked for a bounded confirm. A budget
+    /// there would truncate the document with nothing to finish it.
+    pub(super) fn confirm_row_budget(&self) -> Option<usize> {
+        self.bounded_confirms
+            .then(|| self.document_pane_height().max(Self::MIN_EXPAND_ROWS))
+    }
+
     /// Spec 0249 S8: render the body of a node a bounded render stopped
     /// at, so opening it shows its content rather than an empty pair of
     /// braces.
@@ -859,12 +872,17 @@ impl App {
     /// than from a fresh override lookup. The fallback mirrors
     /// `resettle_node`'s: no active entry means the natural type.
     ///
-    /// Bounded again, by a screenful. The subtree may be the whole
-    /// document, which is the situation this spec exists for, so an
-    /// unbounded render here would reintroduce the freeze one keystroke
-    /// later. The stops this render leaves behind are expanded the same
-    /// way when they in turn come into view.
-    pub(super) fn expand_auto_fold(&mut self, idx: usize) {
+    /// Bounded again. The subtree may be the whole document, which is
+    /// the situation this spec exists for, so an unbounded render here
+    /// would reintroduce the freeze one keystroke later. The stops this
+    /// render leaves behind are expanded the same way when they in turn
+    /// come into view, or by the bake.
+    ///
+    /// `row_budget` is the caller's because the two callers want
+    /// different numbers (spec 0255 S1): a keystroke wants the screenful
+    /// it is about to draw, the bake wants a slice large enough to
+    /// amortize the folded frontier it re-emits.
+    pub(super) fn expand_auto_fold(&mut self, idx: usize, row_budget: usize) {
         debug_assert!(
             self.auto_folded.contains(&idx),
             "only a node whose body was never rendered needs expanding"
@@ -877,7 +895,7 @@ impl App {
             Some(t) => t,
             None => self.natural_type(idx),
         };
-        let budget = self.document_pane_height().max(Self::MIN_EXPAND_ROWS);
+        let budget = row_budget.max(Self::MIN_EXPAND_ROWS);
         if let Err(e) = self.splice_override(idx, effective, Some(budget)) {
             // Left in `auto_folded` by the failed splice, so the node
             // stays drawn collapsed and the row is not claiming to show
@@ -1027,6 +1045,10 @@ impl App {
                 "only a message recursion can be undescended (spec 0249 S1)"
             );
             self.auto_folded.insert(slot);
+            // Spec 0255 S3: the bake's walk order, appended in the
+            // render's own document order so a drain works downward
+            // from the viewport rather than diving.
+            self.bake_queue.push_back(slot);
         }
         for &slot in &stopped {
             self.refresh_line_counts(slot);

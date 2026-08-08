@@ -198,7 +198,7 @@ impl App {
             // `auto_folded` itself, and a node in both sets would
             // otherwise stay drawn collapsed after an open gesture.
             self.folded.remove(&idx);
-            self.expand_auto_fold(idx);
+            self.expand_auto_fold(idx, self.document_pane_height());
             return true;
         }
         self.unfold(idx)

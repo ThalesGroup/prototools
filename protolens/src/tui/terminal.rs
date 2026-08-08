@@ -72,6 +72,19 @@ const HEAT_REPAINT_INTERVAL: Duration = Duration::from_millis(50);
 /// which reads as immediate.
 const STYLES_SETTLE_INTERVAL: Duration = Duration::from_millis(50);
 
+/// Spec 0255 S6: the shortest interval between two frames drawn *solely*
+/// because the bake grew the document.
+///
+/// Ten times `HEAT_REPAINT_INTERVAL` because what it repaints is
+/// smaller. A completed cue colors a row the user is reading; a bake
+/// step changes the document's total height, which reaches only the
+/// scrollbar thumb and the line-count footer — the rows on screen are
+/// already final (spec 0249 S1's depth-first rule). One entry can be
+/// tens of thousands of steps, so the alternative is tens of thousands
+/// of frames redrawing identical text, which is what spec 0245 exists to
+/// prevent.
+const BAKE_REPAINT_INTERVAL: Duration = Duration::from_millis(500);
+
 /// Spec 0192 S4: read-ahead steps guaranteed per main-loop iteration,
 /// regardless of how busy the event channel is. Read-ahead is still
 /// opportunistic — the `TryRecvError::Empty` arm in `run_loop` spends
@@ -597,6 +610,17 @@ where
     // incidental.
     let mut styles_stale = false;
     let mut last_mono_frame = Instant::now();
+    // Spec 0255 S6: the bake owes a frame the way a completed cue does —
+    // the document got taller, so the footer's line count and the
+    // scrollbar are wrong until something redraws them. Nothing else
+    // will ask.
+    let mut bake_dirty = false;
+    let mut last_bake_frame = Instant::now();
+    // Spec 0255 S2: this is the only place that turns a confirm into a
+    // bounded render, because this is the only place with a loop to bake
+    // the remainder in. `App::new`'s startup pass has already run by
+    // now, and a headless export never gets here.
+    app.bounded_confirms = true;
     loop {
         // A background thread died (see the hook in `run`). Say so, and
         // let go of the worker: its thread is gone, so every request
@@ -625,6 +649,8 @@ where
             }
             heat_dirty = false;
             last_heat_frame = drawn_at;
+            bake_dirty = false;
+            last_bake_frame = drawn_at;
             trace::trace!("draw {redraw_why} us={}", drawn_at.elapsed().as_micros());
             // Sample again immediately after the draw. `render` is
             // itself a producer — `heat_cue_for` pushes a `Visible`
@@ -673,6 +699,14 @@ where
         if styles_stale {
             deadline = deadline.min(last_mono_frame + STYLES_SETTLE_INTERVAL);
         }
+        // Spec 0255 S6: and a bake's growth is a sixth. Without the
+        // clause the last frame of a bake waits for an unrelated event —
+        // the self-deadlock spec 0191 S3 and spec 0192 S3 each hit in
+        // turn, and the activity tick would only bound it at 250 ms
+        // rather than remove it.
+        if bake_dirty {
+            deadline = deadline.min(last_bake_frame + BAKE_REPAINT_INTERVAL);
+        }
         // Spec 0192 S4: read-ahead's guaranteed slice, taken before the
         // receive loop below rather than only in its `Empty` arm.
         for _ in 0..PREFETCH_STEPS_PER_ITERATION {
@@ -695,45 +729,59 @@ where
                 // (its reason for being discarded here) and keeps a
                 // hovering pointer from looking like pending input.
                 Ok(ev) => break Some(ev),
-                // Spec 0235 S3: the incremental search takes this arm
-                // ahead of read-ahead. A sweep exists only while a
-                // pattern is being typed, and the user is waiting on
-                // its answer; read-ahead is speculative and is not.
-                Err(mpsc::TryRecvError::Empty) => match app.search_sweep_step() {
-                    SweepStep::Progressed => {
+                // Three background workers share this arm, in a fixed
+                // order (spec 0255 S5). Each does one unit and yields,
+                // both to a pending event and to the deadline computed
+                // above — an expiring message, the splash's
+                // auto-dismiss, a due repaint, the activity tick — none
+                // of which has an event to announce it, and this loop is
+                // the only thing between them and the frame that honors
+                // them. Without the check a worker holds the thread
+                // until it runs dry and all of them are simply late.
+                // Breaking with no event is exactly the timeout case the
+                // sleep below produces, and the `*_forces` tests just
+                // past the loop already know what to do with it.
+                Err(mpsc::TryRecvError::Empty) => {
+                    // Spec 0235 S3: first, because a sweep exists only
+                    // while a pattern is being typed and the user is
+                    // waiting on its answer. The other two are not
+                    // waited on by anyone.
+                    if matches!(app.search_sweep_step(), SweepStep::Progressed) {
                         if Instant::now() >= deadline {
                             break None;
                         }
                         continue;
                     }
-                    SweepStep::Idle => match app.prefetch_step() {
-                        PrefetchStep::Progressed => {
-                            // Yielding to a pending event is not enough:
-                            // every deadline computed above — an expiring
-                            // message, the splash's auto-dismiss, a due
-                            // heat repaint, the activity tick — comes due
-                            // with no event to announce it, and this loop
-                            // is the only thing between them and the frame
-                            // that honors them. Without the check,
-                            // read-ahead holds the thread until it runs dry
-                            // and all four are simply late. Breaking with
-                            // no event is exactly the timeout case the
-                            // `Idle` arm below produces, and the
-                            // `*_forces` tests just past the loop already
-                            // know what to do with it.
-                            if Instant::now() >= deadline {
-                                break None;
-                            }
-                            continue;
+                    // Spec 0255 S5: second — ahead of read-ahead, and
+                    // not because it is the more deserving of the two.
+                    // Read-ahead cannot make progress between two bake
+                    // steps at all: each splice bumps
+                    // `structural_version`, which supersedes the
+                    // read-ahead wave, so interleaving them buys a full
+                    // re-walk and three lock acquisitions per bake step
+                    // and issues heat requests for rows the next bake
+                    // step will move — spec 0252's waste, reintroduced.
+                    // The queue is finite, so this defers read-ahead
+                    // until the structure holds still, which is the only
+                    // state it can work in.
+                    if matches!(app.bake_step(), BakeStep::Progressed) {
+                        bake_dirty = true;
+                        if Instant::now() >= deadline {
+                            break None;
                         }
-                        PrefetchStep::Idle => {
-                            // Read-ahead has nothing left to do, so this is
-                            // the one place the loop genuinely sleeps.
-                            let timeout = deadline.saturating_duration_since(Instant::now());
-                            break rx.recv_timeout(timeout).ok(); // timeout elapsed => None
+                        continue;
+                    }
+                    if matches!(app.prefetch_step(), PrefetchStep::Progressed) {
+                        if Instant::now() >= deadline {
+                            break None;
                         }
-                    },
-                },
+                        continue;
+                    }
+                    // Nothing left to do, so this is the one place the
+                    // loop genuinely sleeps.
+                    let timeout = deadline.saturating_duration_since(Instant::now());
+                    break rx.recv_timeout(timeout).ok(); // timeout elapsed => None
+                }
                 // Cannot fire as the code stands: this loop holds `tx`
                 // for the Neovim handoff's reader respawn below, so a
                 // sender outlives every receive here. Reported as an
