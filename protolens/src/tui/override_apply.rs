@@ -146,6 +146,118 @@ impl App {
         }
     }
 
+    /// Drop every fold flag standing on a strict descendant of `idx`
+    /// (spec 0256 S4).
+    ///
+    /// There are two ways to ask this, and which is cheaper is a
+    /// property of the call rather than of the question. Asking each
+    /// vacated slot whether it is folded is two hash lookups per *slot
+    /// of the document*: 78 ms of a 448 ms root override on
+    /// `googleapis.desc`, to answer a question about a set that usually
+    /// holds tens of entries. Asking the sets instead costs
+    /// `HashSet::retain`, which is O(capacity) — and `auto_folded`'s
+    /// capacity peaks around 84 000 mid-bake without shrinking, which
+    /// the *bake's* 70 893 splices, a handful of descendants each, would
+    /// pay 70 893 times over. Measured: retaining unconditionally takes
+    /// the drain from 5.4 s to 17.5 s.
+    ///
+    /// So the smaller side is walked, and neither cost can exceed the
+    /// other. Both spellings clear the same flags: `descendants` is the
+    /// rendered subtree, and a fold flag can only stand on a node some
+    /// rendering showed.
+    ///
+    /// Ancestry is resolved through `App::parent`, i.e. through the
+    /// arena, which is immutable (spec 0216) — the rendered tree is
+    /// being taken apart around this call and cannot be walked.
+    fn scrub_folds_under(&mut self, idx: usize, descendants: &[usize]) {
+        if self.folded.is_empty() && self.auto_folded.is_empty() {
+            return;
+        }
+        if self.folded.capacity() + self.auto_folded.capacity() > descendants.len() {
+            for &d in descendants {
+                self.unfold(d);
+            }
+            return;
+        }
+        // Taken out and put back so the closure can borrow `self` for
+        // the ancestry walk; `retain` would otherwise hold the set
+        // mutably for the duration.
+        let mut folded = std::mem::take(&mut self.folded);
+        folded.retain(|&f| !self.descends_from(f, idx));
+        self.folded = folded;
+        let mut auto_folded = std::mem::take(&mut self.auto_folded);
+        auto_folded.retain(|&f| !self.descends_from(f, idx));
+        self.auto_folded = auto_folded;
+    }
+
+    /// Whether `node` is a strict descendant of `ancestor`. O(depth),
+    /// which the arena caps at 13 on the corpus.
+    fn descends_from(&self, node: usize, ancestor: usize) -> bool {
+        let mut cur = self.parent(node);
+        while let Some(n) = cur {
+            if n == ancestor {
+                return true;
+            }
+            cur = self.parent(n);
+        }
+        false
+    }
+
+    /// Hand `idx`'s text to the idle loop instead of freeing it here
+    /// (spec 0256 S1).
+    ///
+    /// Freeing the previous interpretation's 2.86 M `Box<str>` is 56% of
+    /// a root override on `googleapis.desc`, and four fifths of that
+    /// does not even land at the free site: glibc pools small frees
+    /// without coalescing and bills `malloc_consolidate` to the next
+    /// allocation request, which is inside `overlay_spans`. See spec
+    /// 0256's Background — that 0.195 s was read as `overlay_spans`'
+    /// own cost for two specs running.
+    ///
+    /// Gated on `bounded_confirms`, which means "an event loop is
+    /// running and will drain this". A headless `export` has none, so it
+    /// frees inline; deferring there would grow the vector to hold the
+    /// whole previous document with nothing to empty it (the same trap
+    /// spec 0255 rule 2 records for the row budget, and deliberately the
+    /// same switch).
+    fn discard_text(&mut self, idx: usize) {
+        match self.node_text[idx].take() {
+            Some(text) if self.bounded_confirms => self.discarded_text.push(text),
+            _ => {}
+        }
+    }
+
+    /// Free at most `DISCARD_CHUNK` of the boxes `discard_text` set
+    /// aside, and say whether anything is left (spec 0256 S2).
+    ///
+    /// Runs ahead of `bake_step` in the idle arm. The bake is what grows
+    /// the *new* document, so draining afterwards would hold the old
+    /// 180 MB alive alongside it; draining first leaves peak memory
+    /// where it was before this spec, at the price of 0.25 s on a 5.5 s
+    /// drain.
+    ///
+    /// Draws no frame and owes none. Nothing on screen is derived from
+    /// this vector, so unlike the bake it has no deferred repaint to
+    /// arrange and needs no `*_forces` term in `run_loop`.
+    pub(super) fn discard_step(&mut self) -> bool {
+        /// One step's worth of freeing.
+        ///
+        /// The 2 864 189 boxes of a root override on `googleapis.desc`
+        /// cost 0.251 s to free including the `malloc_consolidate` pass
+        /// they defer, i.e. ~88 ns each, so this is ~5.7 ms — comfortably
+        /// inside the ~22 ms worst step the bake already spends at
+        /// `BAKE_ROW_BUDGET`, which is what sets the event loop's
+        /// tolerance.
+        const DISCARD_CHUNK: usize = 65_536;
+
+        let len = self.discarded_text.len();
+        if len == 0 {
+            return false;
+        }
+        self.discarded_text.truncate(len - len.min(DISCARD_CHUNK));
+        true
+    }
+
     /// Whether `entry` (assumed `auto == true`) would still be re-derived
     /// with the same `r#type` if `render_overrides` visited its node
     /// again right now — i.e. it is still "in scope" (spec 0125 §G2).
@@ -847,7 +959,7 @@ impl App {
     /// under it, which is enough for the walk to move down. It matters
     /// only when the pane's height is unknown or absurd; every real
     /// terminal is far above it.
-    const MIN_EXPAND_ROWS: usize = 2;
+    pub(super) const MIN_EXPAND_ROWS: usize = 2;
 
     /// Spec 0255 S1/S2: what a confirm renders — a screenful under an
     /// event loop that can bake the rest, and the whole subtree
@@ -962,19 +1074,20 @@ impl App {
         } = rendered;
         self.batch_spliced = true;
 
+        // A fold flag on a slot this rendering does not show would be
+        // honored again the moment some later override brings the slot
+        // back, hiding unrelated content. `idx` itself is deliberately
+        // left in both sets untouched (spec 0118 §7 — fold state on
+        // `idx` survives its own retype); its `auto_folded` entry is
+        // dealt with separately, below.
         // Everything the *previous* interpretation showed under `idx`,
-        // collected before any of it is vacated. Scrub the whole set from
-        // `folded`: a fold flag on a slot this rendering does not show
-        // would be honored again the moment some later override brings
-        // the slot back, hiding unrelated content. `idx` itself is
-        // deliberately left in `folded` untouched (spec 0118 §7 — fold
-        // state on `idx` survives its own retype).
+        // collected before any of it is vacated.
         let mut old_descendants = Vec::new();
         self.collect_descendants(idx, &mut old_descendants);
+        self.scrub_folds_under(idx, &old_descendants);
         for &d in &old_descendants {
-            self.unfold(d);
             self.tree[d] = decode::TreeNode::vacant();
-            self.node_text[d] = None;
+            self.discard_text(d);
             // The cue answered a question about a node this rendering no
             // longer has; if the slot comes back it must be asked again.
             self.heat_states[d] = heat_cue::HeatState::default();
@@ -1014,7 +1127,7 @@ impl App {
         // against `new_lines`, which is exactly what `overlay_spans`
         // expects.
         self.tree[idx] = decode::TreeNode::vacant();
-        self.node_text[idx] = None;
+        self.discard_text(idx);
         // Spec 0249 S3: `auto_folded` means "this node's body has not
         // been rendered", and the render just above rendered it. A
         // bounded one puts `idx` back in the set; an unbounded one is

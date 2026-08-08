@@ -92,6 +92,10 @@ fn a_bounded_confirm_leaves_stops_and_the_bake_drains_them() {
 ///
 /// The 232 MB corpus version of this is a `cmp`, and it is a
 /// measurement rather than a test.
+///
+/// Run at three budgets (spec 0256 test-plan item 5): the budget is the
+/// pane's height, so it is the one input a user varies without meaning
+/// to, and G3 is what makes deferring the old document's frees safe.
 #[test]
 fn a_baked_document_is_the_unbounded_document() {
     let want_lines = {
@@ -109,25 +113,42 @@ fn a_baked_document_is_the_unbounded_document() {
         counts(&app)
     };
 
-    let (mut app, _) = repeated_message_fixture();
-    let root = app.first_node;
-    app.splice_override(root, Some("test.Outer".to_string()), Some(2))
-        .expect("a bounded splice must succeed");
-    assert_ne!(
-        app.document_lines(),
-        want_lines,
-        "the bounded document must actually be short, or this proves nothing"
-    );
+    // From `MIN_EXPAND_ROWS` up. A budget of 1 is not a smaller case of
+    // this but a different one — it buys the header and nothing else, so
+    // the node stops at itself and the walk cannot move down, which is
+    // why `confirm_row_budget` clamps it away before any caller sees it.
+    for budget in [App::MIN_EXPAND_ROWS, 3, 7] {
+        let (mut app, _) = repeated_message_fixture();
+        app.bounded_confirms = true;
+        let root = app.first_node;
+        app.splice_override(root, Some("test.Outer".to_string()), Some(budget))
+            .expect("a bounded splice must succeed");
+        assert_ne!(
+            app.document_lines(),
+            want_lines,
+            "budget {budget}: the bounded document must actually be short, \
+             or this proves nothing"
+        );
 
-    drain(&mut app);
+        drain(&mut app);
+        while app.discard_step() {}
 
-    assert_eq!(app.document_lines(), want_lines, "same text");
-    assert_eq!(counts(&app), want_counts, "same counts at every node");
-    assert!(
-        app.folded.is_empty(),
-        "and the bake invented no user fold: {:?}",
-        app.folded
-    );
+        assert_eq!(
+            app.document_lines(),
+            want_lines,
+            "budget {budget}: same text"
+        );
+        assert_eq!(
+            counts(&app),
+            want_counts,
+            "budget {budget}: same counts at every node"
+        );
+        assert!(
+            app.folded.is_empty(),
+            "budget {budget}: and the bake invented no user fold: {:?}",
+            app.folded
+        );
+    }
 }
 
 /// Spec 0249 S8's scroll half: a reader who jumps is not in document

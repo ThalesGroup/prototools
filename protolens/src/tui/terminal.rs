@@ -734,10 +734,10 @@ where
                 // (its reason for being discarded here) and keeps a
                 // hovering pointer from looking like pending input.
                 Ok(ev) => break Some(ev),
-                // Three background workers share this arm, in a fixed
-                // order (spec 0255 S5). Each does one unit and yields,
-                // both to a pending event and to the deadline computed
-                // above — an expiring message, the splash's
+                // Four background jobs share this arm, in a fixed order
+                // (spec 0255 S5, spec 0256 S2). Each does one unit and
+                // yields, both to a pending event and to the deadline
+                // computed above — an expiring message, the splash's
                 // auto-dismiss, a due repaint, the activity tick — none
                 // of which has an event to announce it, and this loop is
                 // the only thing between them and the frame that honors
@@ -757,7 +757,22 @@ where
                         }
                         continue;
                     }
-                    // Spec 0255 S5: second — ahead of read-ahead, and
+                    // Spec 0256 S2: second, and ahead of the bake
+                    // because the bake is what grows the replacement
+                    // document. Draining after it would hold the old
+                    // document's text alive next to the new one and
+                    // raise peak memory; draining first keeps peak
+                    // where it was. Sets no dirty flag and breaks with
+                    // no event: nothing on screen depends on it, so
+                    // unlike the bake it does not even owe a deferred
+                    // repaint.
+                    if app.discard_step() {
+                        if Instant::now() >= deadline {
+                            break None;
+                        }
+                        continue;
+                    }
+                    // Spec 0255 S5: third — ahead of read-ahead, and
                     // not because it is the more deserving of the two.
                     // Read-ahead cannot make progress between two bake
                     // steps at all: each splice bumps

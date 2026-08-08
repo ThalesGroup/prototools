@@ -1073,7 +1073,16 @@ pub struct App {
     /// Spec 0255 S2: whether a confirm renders a screenful or the whole
     /// subtree. Set by `run_loop` and by nothing else, so `App::new`'s
     /// own startup pass and every headless export stay unbounded (N6).
+    ///
+    /// Spec 0256 S3 reads it for a second meaning that happens to be the
+    /// same fact: an event loop is running, so there is somewhere to
+    /// defer work to.
     bounded_confirms: bool,
+    /// The previous interpretation's text, moved aside by
+    /// `splice_override` rather than dropped, and freed by `run_loop`'s
+    /// idle arm a chunk at a time (spec 0256 S1/S2). Never non-empty
+    /// without `bounded_confirms`.
+    discarded_text: Vec<Box<str>>,
     /// The main pane's vertical viewport (specs 0230, 0244 S2): the first
     /// document line drawn, plus the signed terminal-row remainder that
     /// lets a `w` toggle hold a row still. `scroll.index` counts document
@@ -1644,6 +1653,7 @@ impl App {
             bake_queue: VecDeque::new(),
             visible_stops: VecDeque::new(),
             bounded_confirms: false,
+            discarded_text: Vec::new(),
             scroll: PaneScroll::default(),
             last_cursor_row: None,
             pan_offset: 0,

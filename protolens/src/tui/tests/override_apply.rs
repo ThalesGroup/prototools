@@ -1604,3 +1604,141 @@ fn warming_registers_the_wrapper_the_splice_looks_up() {
         "the splice must reuse the warmed wrapper, not register a second one"
     );
 }
+
+/// Spec 0256 S1 / test-plan item 1: the vacate loop hands the previous
+/// interpretation's text to the idle loop rather than freeing it on the
+/// keystroke.
+///
+/// Asserted on both halves at once, because the whole design rests on
+/// them being one move: every vacated slot is `None`, and every box that
+/// left one is in the vector. Anything that leaks a box would still pass
+/// the first assertion alone.
+#[test]
+fn a_confirm_moves_the_old_text_aside_instead_of_dropping_it() {
+    let (mut app, _) = repeated_message_fixture();
+    app.bounded_confirms = true;
+    let root = app.first_node;
+
+    let mut descendants = Vec::new();
+    app.collect_descendants(root, &mut descendants);
+    let with_text = descendants
+        .iter()
+        .filter(|&&d| app.node_text[d].is_some())
+        .count();
+    assert!(with_text > 0, "the fixture must have text to move aside");
+    let root_had_text = app.node_text[root].is_some();
+
+    app.splice_override(root, Some("test.Outer".to_string()), None)
+        .expect("the splice must succeed");
+
+    assert_eq!(
+        app.discarded_text.len(),
+        with_text + usize::from(root_had_text),
+        "every box the vacate loop took is in the vector"
+    );
+    // The invariant the move must not break, and the reason the boxes
+    // go to a vector rather than being left in place: a vacant slot
+    // (`lines_total == 0`) holds no text.
+    for d in 0..app.tree.len() {
+        assert!(
+            app.tree[d].lines_total > 0 || app.node_text[d].is_none(),
+            "slot {d} is vacant, so it must hold no text"
+        );
+    }
+}
+
+/// Spec 0256 S3 / test-plan item 2: the guard, and the only thing
+/// standing between a scripted `export` and a vector that grows to hold
+/// the whole previous document with nothing to empty it.
+#[test]
+fn a_headless_confirm_frees_inline() {
+    let (mut app, _) = repeated_message_fixture();
+    assert!(
+        !app.bounded_confirms,
+        "the default is the safe one: no event loop, no deferral"
+    );
+    let root = app.first_node;
+
+    app.splice_override(root, Some("test.Outer".to_string()), None)
+        .expect("the splice must succeed");
+
+    assert!(
+        app.discarded_text.is_empty(),
+        "with nothing to drain it, the old text is freed where it is dropped"
+    );
+}
+
+/// Spec 0256 S2 / test-plan item 3: the drain terminates, and says so.
+///
+/// `discard_step` is the whole of what `run_loop`'s idle arm calls, so
+/// driving it directly is driving the loop. The step count is the
+/// assertion that it is chunked rather than one unbounded free.
+#[test]
+fn the_idle_loop_empties_the_discarded_text() {
+    let (mut app, _) = repeated_message_fixture();
+    app.bounded_confirms = true;
+    let root = app.first_node;
+    app.splice_override(root, Some("test.Outer".to_string()), None)
+        .expect("the splice must succeed");
+    assert!(!app.discarded_text.is_empty());
+
+    let mut steps = 0;
+    while app.discard_step() {
+        steps += 1;
+        assert!(steps < 1000, "the drain must terminate");
+    }
+    assert!(app.discarded_text.is_empty());
+    assert!(steps > 0, "there was something to free");
+    assert!(
+        !app.discard_step(),
+        "and an empty vector is not progress, or the idle arm never sleeps"
+    );
+}
+
+/// Spec 0256 S4 / test-plan item 4: fold flags are scrubbed by asking
+/// the fold sets which of their entries sit under `idx`, not by asking
+/// every slot of the document whether it is folded.
+///
+/// The mutation guard for S4 — dropping the `retain` entirely must fail
+/// here — and equally the guard against scrubbing too much: a fold on a
+/// sibling subtree is untouched, and `idx`'s own fold survives its own
+/// retype (spec 0118 §7).
+#[test]
+fn a_fold_under_a_retyped_node_is_scrubbed() {
+    let (mut app, items) = repeated_message_fixture();
+    let under = app
+        .nth_child(items[0], 0)
+        .expect("Item has a field to fold");
+    let sibling = items[1];
+
+    // Seeded directly, because the four cases have to coexist and no
+    // single gesture produces all of them. Both sets feed derived state
+    // — the line counts and the `Unbaked` rung — and the splice under
+    // test asserts both are exact, so they are brought back in line
+    // here rather than left for the assertion to find.
+    app.folded.insert(under);
+    app.folded.insert(sibling);
+    app.folded.insert(items[0]);
+    app.auto_folded.insert(under);
+    app.auto_folded.insert(sibling);
+    app.refresh_line_counts(under);
+    app.refresh_line_counts(items[0]);
+    app.refresh_line_counts(sibling);
+    app.rebuild_status();
+
+    app.splice_override(items[0], Some("test.Item".to_string()), None)
+        .expect("the splice must succeed");
+
+    assert!(
+        !app.folded.contains(&under) && !app.auto_folded.contains(&under),
+        "a fold under the retyped node describes content that is gone"
+    );
+    assert!(
+        app.folded.contains(&sibling) && app.auto_folded.contains(&sibling),
+        "a fold on a sibling subtree is none of this splice's business"
+    );
+    assert!(
+        app.folded.contains(&items[0]),
+        "spec 0118 §7: a node keeps its own fold across its own retype"
+    );
+}

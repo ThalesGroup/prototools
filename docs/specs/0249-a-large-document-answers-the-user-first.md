@@ -539,6 +539,12 @@ agree byte for byte.
   mid-bake must not be overwritten by the first one's tail. The era
   does **not** invalidate globally (S7).
 
+  **NOT IMPLEMENTED, and twice disposed of.** Spec 0255 S3 removed the
+  bake's need for it (`auto_folded` is the truth, so a stale queue entry
+  is harmless); spec 0256 N2 weighs the remaining case — making the
+  vacate loop lazy — at ≈95 ms against a version check in front of four
+  hot arrays, and declines. Do not build it without a new reason.
+
 - **S10. The viewport re-anchors on the node, never on the line
   number.** When a bake lands and a subtree's real height replaces its
   folded one, the node the user is on keeps its screen row; absolute
@@ -591,9 +597,15 @@ agree byte for byte.
   so the vacate loop runs over every slot whatever the budget is.
   Measured (open question 6): **≈0.22 s for one pass over 2.86 M
   slots** — a per-confirm floor a row budget cannot lower, and the only
-  phase of the splice that a budget does not shrink. Accepted. It is
-  *not* dominated by the `Box<str>` frees, which are 47 ms of it; the
-  rest is the pointer walk and four plain stores per slot.
+  phase of the splice that a budget does not shrink.
+
+  **Not accepted after all, and the reason it looked acceptable was a
+  mis-attributed measurement.** Spec 0256 (2026-08-08) re-took it with
+  timers around each phase: the `Box<str>` frees cost **0.251 s, 56% of
+  a 448 ms confirm**, of which only 56 ms lands at the free site — the
+  other 195 ms is glibc consolidating fastbins, billed to the next
+  `malloc`, which is inside `overlay_spans`. Read spec 0256's Background
+  before quoting anything from this bullet or from open question 6.
 
 - **S10a. An anchor whose slot stops being rendered climbs to its
   nearest rendered ancestor.** The slot itself never disappears: the
@@ -921,29 +933,26 @@ agree byte for byte.
    fear that "one entry is thousands of splices" multiplies a fixed cost
    is unfounded; the cost tracks slots.
 
-   **And the `Box<str>` frees are not where the time goes.** Leaking
-   them instead of freeing them (`mem::forget` in the vacate loop, same
-   run otherwise) moves vacate from 0.22 s to 0.17 s: **47 ms over
-   2.86 M slots, 16 ns each.** The remaining 0.17 s is
-   `collect_descendants`' pointer walk plus the loop's four plain
-   stores. So the "delete the work" plan below would buy 47 ms, not
-   0.22 s — **it is not worth doing**, and S9's stale bit should be
-   justified by what else it buys, not by this.
+   **WRONG, corrected by spec 0256 (2026-08-08) — do not quote the
+   paragraph this replaces.** It read "the `Box<str>` frees are not
+   where the time goes … 47 ms … it is not worth doing", from the same
+   `mem::forget` control run. The control was right and the accounting
+   was not: the `mem::forget` run is 259 ms faster overall, not 47 ms.
+   Only 56 ms of that lands in the vacate loop; the other 195 ms is
+   glibc's deferred `malloc_consolidate`, charged to the first
+   allocation after the loop — which is inside `overlay_spans`, where
+   it has been misread as `overlay_spans`' own cost ever since. Freeing
+   the old text is **56% of the confirm**, and deferring it is spec
+   0256 S1.
 
-   What this does establish is the residue a row budget cannot touch.
-   Every other phase above is proportional to the *new* rendering and
-   shrinks with the budget; the vacate loop is proportional to the *old*
-   one, which on a baked document is the whole document however small
-   the new render is. **That residue is ≈0.22 s per confirm** — one
-   pass, not one per site — and it is accepted. It is also the floor a
-   bounded render approaches: no budget, however small, brings a confirm
-   on this document below it.
-
-   ~~The likely answer is not to move the work but to delete it~~ —
-   kept only as the disproved hypothesis: confirm would flip stale bits
-   and let the bake thread drop each `Box<str>` as it overwrote the
-   slot. Measurement says the frees were 21% of the phase and 1.3% of
-   the confirm.
+   What this bullet does establish is the residue a row budget cannot
+   touch. Every other phase above is proportional to the *new* rendering
+   and shrinks with the budget; the vacate loop is proportional to the
+   *old* one, which on a baked document is the whole document however
+   small the new render is. Spec 0256 takes 0.25 s of frees and 0.08 s
+   of fold scrubbing out of it; what is left — `collect_descendants`'
+   pointer walk and three plain stores per slot, ≈95 ms — is the real
+   floor, and spec 0256 N2 records what removing *that* would cost.
 
 ## Alternatives considered
 
