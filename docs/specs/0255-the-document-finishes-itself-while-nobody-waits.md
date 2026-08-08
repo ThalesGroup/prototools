@@ -175,6 +175,25 @@ calls, which is what makes this spec small.
   and spec 0192 S3 each hit in turn. The interval is 500 ms because the
   thing it repaints is a number in a footer, not the text.
 
+  **Amended 2026-08-08 — and the deadline clause alone is not enough.**
+  The version that shipped with this spec had the clause and nothing
+  else, so the bake narrowed the loop's deadline, the loop woke up on
+  time, and then drew nothing: `deadline` decides *when* the loop
+  reconsiders, `redraw` decides whether it draws, and only the second
+  one puts pixels on the screen. The bake ran to completion behind a
+  frame still showing the bounded document's line count — the very
+  self-deadlock the paragraph above claims to have avoided. Fixed by
+  adding a `bake_forces` term to `redraw`, modeled on `heat_forces`
+  which had it all along. Pinned by
+  `a_progressing_bake_forces_a_repaint`, which asserts against a control
+  run on the same fixture and the same wait so that it cannot pass on a
+  frame some other timer happened to owe.
+
+  Spec 0249 S8's scroll half rides on the same flag. A step that expands
+  a stop the user is *looking at* has changed the text under their eyes,
+  not a footer, so it owes a frame now rather than within the interval;
+  `BakeStep` is three-valued to say which of the two just happened.
+
 ## Alternatives considered
 
 ### Bound the confirm and let the user expand what they scroll to
@@ -220,6 +239,16 @@ consistent.
 6. Whole existing suite. Every splice the bake performs runs
    `assert_line_counts_are_exact`, which is spec 0254's guard and
    applies unchanged here.
+7. *(Added 2026-08-08, with S6's amendment and spec 0249 S8's scroll
+   half.)* `a_progressing_bake_forces_a_repaint` — an idle `run_loop`
+   over a bounded confirm draws more frames than the same loop over the
+   same fixture with nothing owed. `a_stop_on_screen_is_baked_before_
+   the_queue_order` — a one-row pane scrolled to the *last* stop, so
+   that an implementation which only pops the queue expands the first
+   one instead. `baking_what_is_on_screen_first_reaches_the_same_
+   document` — G2 again, with a frame drawn between every step, because
+   re-ordering the bake must change when it finishes and not what it
+   produces.
 
 ## Measured outcome
 

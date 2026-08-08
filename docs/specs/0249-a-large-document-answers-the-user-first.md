@@ -500,8 +500,36 @@ agree byte for byte.
   than tolerating. Spec 0253 fixed it, at the synthetic wrapper where
   it belonged.
 
-  The scroll-into-view half is not implemented and rides with S10's
-  viewport work, which is where the pane's own geometry is settled.
+  **The scroll half is IMPLEMENTED 2026-08-08**, and it did not need
+  S10's viewport work after all — spec 0255's bake supplied the missing
+  piece, which was not geometry but a *worker*. A stop that comes into
+  view is not a fourth gesture; it is the bake's own work, re-ordered.
+  The bake's queue is document order and drains from the top, and a
+  reader who presses `G` or lands on a search match is sitting in front
+  of rows the queue will not reach for seconds. So the frame records
+  which of the rows it is about to draw are stops
+  (`App::note_visible_stops`, one hash lookup per drawn row, no extra
+  descent — `render_main_pane` has already built the window), and
+  `bake_step` pays those off before it touches the queue.
+
+  Two consequences worth stating.
+
+  **The list is replaced per frame, not appended to.** It describes one
+  frame, and the frame after a jump describes somewhere else entirely.
+  A stop that scrolled back off screen goes back to waiting its turn in
+  the queue, which is where it already is.
+
+  **A visible expansion owes a frame immediately**, where a queue
+  expansion owes one within half a second (spec 0255 S6). Those rows
+  are normally final by S1's depth-first rule, which is what lets the
+  repaint be deferred at all; expanding a stop that is on screen is
+  exactly the case where that premise does not hold. `BakeStep` is
+  three-valued for this reason alone.
+
+  This terminates without a guard. Expanding the topmost visible stop
+  renders `BAKE_ROW_BUDGET` rows depth-first from it — a hundred times a
+  pane — so the rows that replace it are final, and the stops it leaves
+  behind fall below the fold rather than into it.
 
 - **S9. Freshness is per slot; a generation guards only the
   write-back.** A per-slot fresh/stale bit (one bitset, ~0.6 MB at
@@ -985,8 +1013,12 @@ thousands of splices.
 10. `opening_an_auto_fold_renders_the_body_it_stood_for` — and the rows
     it then occupies equal the unbounded render at that node, header
     aside (the `repeated` qualifier above). S8. *(Implemented
-    2026-08-07 for the hand unfold; the scroll-into-view case rides
-    with S10.)*
+    2026-08-07 for the hand unfold. The scroll case landed 2026-08-08
+    as part of the bake instead, covered by
+    `a_stop_on_screen_is_baked_before_the_queue_order` and
+    `baking_what_is_on_screen_first_reaches_the_same_document` — spec
+    0255 test plan 7. It needed no viewport work, so it did not ride
+    with S10 after all.)*
 11. `a_bake_keeps_the_user_folds_around_it` — a bake clears its own
     auto-fold and nothing else, and the subtree its scrub walks is
     vacant, which is why. S3, S11, open question 3. *(Implemented

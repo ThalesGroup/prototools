@@ -616,6 +616,10 @@ where
     // will ask.
     let mut bake_dirty = false;
     let mut last_bake_frame = Instant::now();
+    // Spec 0249 S8: and a bake step that expanded a stop the user was
+    // looking at owes that frame immediately instead — the rows it
+    // replaced are the ones being read, not the footer's total.
+    let mut bake_visible = false;
     // Spec 0255 S2: this is the only place that turns a confirm into a
     // bounded render, because this is the only place with a loop to bake
     // the remainder in. `App::new`'s startup pass has already run by
@@ -650,6 +654,7 @@ where
             heat_dirty = false;
             last_heat_frame = drawn_at;
             bake_dirty = false;
+            bake_visible = false;
             last_bake_frame = drawn_at;
             trace::trace!("draw {redraw_why} us={}", drawn_at.elapsed().as_micros());
             // Sample again immediately after the draw. `render` is
@@ -764,12 +769,25 @@ where
                     // The queue is finite, so this defers read-ahead
                     // until the structure holds still, which is the only
                     // state it can work in.
-                    if matches!(app.bake_step(), BakeStep::Progressed) {
-                        bake_dirty = true;
-                        if Instant::now() >= deadline {
+                    match app.bake_step() {
+                        // Spec 0249 S8: the rows on screen just changed
+                        // under the reader, so this one does not wait
+                        // for `BAKE_REPAINT_INTERVAL` or for anything
+                        // else. Leaving with no event is the timeout
+                        // case, and the draw at the head of the next
+                        // iteration is the point.
+                        BakeStep::Visible => {
+                            bake_visible = true;
                             break None;
                         }
-                        continue;
+                        BakeStep::Progressed => {
+                            bake_dirty = true;
+                            if Instant::now() >= deadline {
+                                break None;
+                            }
+                            continue;
+                        }
+                        BakeStep::Idle => {}
                     }
                     if matches!(app.prefetch_step(), PrefetchStep::Progressed) {
                         if Instant::now() >= deadline {
@@ -876,6 +894,14 @@ where
             };
         }
         let heat_forces = heat_dirty && Instant::now() >= last_heat_frame + HEAT_REPAINT_INTERVAL;
+        // Spec 0255 S6, and the half of it the deadline clause above
+        // cannot do on its own: waking for the repaint is not drawing
+        // it. Without this the bake's frame is owed forever and arrives
+        // only when some unrelated event happens to force one — the
+        // document grows by millions of lines and the footer keeps
+        // reporting the first screenful.
+        let bake_forces = bake_visible
+            || (bake_dirty && Instant::now() >= last_bake_frame + BAKE_REPAINT_INTERVAL);
         // Spec 0223 S4/G2. Gated on the queue being *empty*: recoloring
         // a viewport the user is still scrolling past would pay the
         // highlighting cost for a frame nobody stops on, which is the
@@ -891,6 +917,7 @@ where
         let search_forces = app.take_search_dirty();
         redraw = event_forces
             || heat_forces
+            || bake_forces
             || styles_force
             || deadline_forces
             || activity_forces
@@ -899,6 +926,12 @@ where
             event_why
         } else if heat_forces {
             "heat"
+        } else if bake_forces {
+            if bake_visible {
+                "bake-visible"
+            } else {
+                "bake"
+            }
         } else if styles_force {
             "styles"
         } else if deadline_forces {

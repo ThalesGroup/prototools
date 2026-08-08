@@ -1267,6 +1267,7 @@ impl App {
         let first_row = rows.start;
         let window: Vec<DisplayRow> = self.build_window(first_row, rows.len());
         let d_window = t_window.elapsed();
+        self.note_visible_stops(&window);
 
         // Spec 0187 S3: highlight exactly the rows about to be drawn,
         // and nothing else. Its own `&mut self` pass, ahead of the

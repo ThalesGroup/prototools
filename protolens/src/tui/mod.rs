@@ -1057,6 +1057,19 @@ pub struct App {
     /// and a drain empties ~84 000 entries without shrinking the table,
     /// so the last steps would each scan all of it.
     bake_queue: VecDeque<usize>,
+    /// The stops the last drawn frame actually put on screen (spec 0249
+    /// S8's scroll half), in row order — what the bake works through
+    /// *before* `bake_queue`.
+    ///
+    /// Written only by `render_main_pane`, because the frame is the one
+    /// place that knows what is visible and it has already built the
+    /// window to draw it. That also makes this self-correcting: a jump
+    /// re-aims the bake on the very next frame, and no gesture has to
+    /// remember to.
+    ///
+    /// A hint in the same sense `bake_queue` is, and discarded by the
+    /// same `auto_folded` check.
+    visible_stops: VecDeque<usize>,
     /// Spec 0255 S2: whether a confirm renders a screenful or the whole
     /// subtree. Set by `run_loop` and by nothing else, so `App::new`'s
     /// own startup pass and every headless export stay unbounded (N6).
@@ -1629,6 +1642,7 @@ impl App {
             folded: HashSet::new(),
             auto_folded: HashSet::new(),
             bake_queue: VecDeque::new(),
+            visible_stops: VecDeque::new(),
             bounded_confirms: false,
             scroll: PaneScroll::default(),
             last_cursor_row: None,

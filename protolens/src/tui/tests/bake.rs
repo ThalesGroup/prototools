@@ -16,11 +16,22 @@ use super::support::*;
 /// loops is a bake that has stopped making progress.
 fn drain(app: &mut App) -> usize {
     let mut steps = 0;
-    while app.bake_step() == BakeStep::Progressed {
+    while app.bake_step() != BakeStep::Idle {
         steps += 1;
         assert!(steps < 1000, "the bake must terminate");
     }
     steps
+}
+
+/// Draw one real frame into a terminal `height` rows tall, which is what
+/// populates `visible_stops` — `render_main_pane` is the only writer,
+/// deliberately, so a test that wants a viewport has to draw one.
+///
+/// The document pane is `height - 2`: the global command/message row and
+/// the main pane's own statusline each take one (spec 0147 G1).
+fn draw(app: &mut App, height: u16) {
+    let mut terminal = ratatui::Terminal::new(TestBackend::new(40, height)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
 }
 
 /// Spec 0255 test-plan item 3. The resting state, asserted because this
@@ -114,6 +125,91 @@ fn a_baked_document_is_the_unbounded_document() {
         "and the bake invented no user fold: {:?}",
         app.folded
     );
+}
+
+/// Spec 0249 S8's scroll half: a reader who jumps is not in document
+/// order, and the bake's queue is. A stop that is *on screen* is paid
+/// off before the queue's head, however far down the document it sits.
+///
+/// The discriminator is the one-row pane: with the viewport on the last
+/// stop, the queue still names the first, so an implementation that only
+/// pops the queue expands the wrong node.
+#[test]
+fn a_stop_on_screen_is_baked_before_the_queue_order() {
+    let (mut app, items) = repeated_message_fixture();
+    let root = app.first_node;
+    app.splash = false;
+
+    app.splice_override(root, Some("test.Outer".to_string()), Some(2))
+        .expect("a bounded splice must succeed");
+    assert_eq!(
+        app.bake_queue.front(),
+        Some(&items[0]),
+        "the queue is in document order, so it names the first stop"
+    );
+
+    // One document row of pane, scrolled to the last stop: the bounded
+    // document is the root's header, one folded row per Item, and the
+    // root's footer, so the third stop is row 3.
+    app.scroll.index = 3;
+    draw(&mut app, 3);
+    assert_eq!(
+        app.visible_stops,
+        vec![items[2]],
+        "the frame drew exactly one stop, the third"
+    );
+
+    assert_eq!(app.bake_step(), BakeStep::Visible);
+    assert!(
+        !app.auto_folded.contains(&items[2]),
+        "the stop the reader is looking at is the one that got a body"
+    );
+    assert!(
+        app.auto_folded.contains(&items[0]) && app.auto_folded.contains(&items[1]),
+        "and the ones off screen waited their turn: {:?}",
+        app.auto_folded
+    );
+
+    // With nothing left on screen to owe, the bake goes back to the
+    // queue — and says so, because the two answers buy different frames.
+    assert_eq!(app.bake_step(), BakeStep::Progressed);
+}
+
+/// The same document either way (spec 0255 G2) — re-ordering the bake
+/// must not change what it produces, only when. Without this, S8's
+/// re-aim is a plausible source of a divergence that only shows up on a
+/// 232 MB corpus.
+#[test]
+fn baking_what_is_on_screen_first_reaches_the_same_document() {
+    let want = {
+        let (mut app, _) = repeated_message_fixture();
+        let root = app.first_node;
+        app.splice_override(root, Some("test.Outer".to_string()), None)
+            .unwrap();
+        (app.document_lines(), counts(&app))
+    };
+
+    let (mut app, _) = repeated_message_fixture();
+    let root = app.first_node;
+    app.splash = false;
+    app.splice_override(root, Some("test.Outer".to_string()), Some(2))
+        .unwrap();
+
+    // Drain with a frame between every step, from the bottom of the
+    // document, so the visible path is taken as often as it can be.
+    let mut steps = 0;
+    loop {
+        app.scroll.index = app.document_lines().len().saturating_sub(1);
+        draw(&mut app, 3);
+        if app.bake_step() == BakeStep::Idle {
+            break;
+        }
+        steps += 1;
+        assert!(steps < 1000, "the bake must still terminate");
+    }
+
+    assert!(app.auto_folded.is_empty(), "nothing still owes a body");
+    assert_eq!((app.document_lines(), counts(&app)), want);
 }
 
 /// Every node's two line counts, in slot order — the structural half of

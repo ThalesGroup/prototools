@@ -7,6 +7,7 @@
 use std::convert::Infallible;
 use std::io;
 use std::sync::mpsc;
+use std::time::Duration;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::{Backend, ClearType, TestBackend, WindowSize};
@@ -130,6 +131,77 @@ fn run_over(app: &mut App, events: Vec<AppEvent>) -> (usize, usize) {
     .expect("`:q` must return cleanly");
     let left = rx.try_iter().count();
     (terminal.backend().draws, left)
+}
+
+/// Drives `run_loop` with an idle terminal, quitting from another thread
+/// after `idle`, and reports the frames it drew.
+///
+/// The pane is deliberately tiny — one document row — so the fixture's
+/// stops all sit off screen and every bake step is `Progressed`. That is
+/// the path spec 0255 S6 defers, and the one a missing `bake_forces`
+/// silences.
+fn run_idle(app: &mut App, idle: Duration) -> usize {
+    let (tx, rx) = mpsc::channel();
+    let quitter = {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(idle);
+            for ev in quit_keys() {
+                let _ = tx.send(ev);
+            }
+        })
+    };
+    let mut terminal = Terminal::new(CountingBackend::new(40, 3)).unwrap();
+    let mut reader = None;
+    run_loop(
+        &mut terminal,
+        app,
+        &rx,
+        &mut reader,
+        &tx,
+        &InputPending::default(),
+    )
+    .expect("`:q` must return cleanly");
+    quitter.join().expect("the quitter must not panic");
+    terminal.backend().draws
+}
+
+/// Spec 0255 S6, and the bug that shipped with it: narrowing the loop's
+/// deadline wakes it up, but only `redraw` draws. Without the
+/// `bake_forces` term the bake ran to completion behind a frame that
+/// still showed the bounded document's line count.
+///
+/// Asserted against a control on the same fixture and the same wait, so
+/// it cannot pass on a frame some other timer happened to owe.
+#[test]
+fn a_progressing_bake_forces_a_repaint() {
+    let idle = Duration::from_millis(700);
+
+    let quiet = {
+        let (mut app, _) = repeated_message_fixture();
+        app.splash = false;
+        run_idle(&mut app, idle)
+    };
+    assert_eq!(quiet, 1, "an idle loop with no bake draws once and waits");
+
+    let (mut app, _) = repeated_message_fixture();
+    app.splash = false;
+    let root = app.first_node;
+    app.splice_override(root, Some("test.Outer".to_string()), Some(2))
+        .expect("a bounded splice must succeed");
+    assert!(!app.bake_queue.is_empty(), "there is a debt to pay");
+
+    let draws = run_idle(&mut app, idle);
+
+    assert!(
+        app.auto_folded.is_empty(),
+        "the bake finished: {:?}",
+        app.auto_folded
+    );
+    assert!(
+        draws > quiet,
+        "the bake must buy a frame the quiet loop does not: {draws}"
+    );
 }
 
 /// Spec 0245 S1. Every event already on the queue is dispatched before
