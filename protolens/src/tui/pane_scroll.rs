@@ -7,6 +7,8 @@
 
 use std::ops::Range;
 
+use super::{App, DisplayRow};
+
 /// A pane's vertical viewport: the first content row it draws, plus the
 /// signed remainder in terminal rows.
 ///
@@ -73,6 +75,111 @@ impl PaneScroll {
         let start = self.index.min(total);
         let end = (self.index + rows).min(total);
         (self.skip.min(0).unsigned_abs(), start..end)
+    }
+}
+
+/// Which of a node's own rows an anchor names, in a form that survives
+/// the node's row count changing under it (spec 0259 S2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum AnchorLine {
+    /// Counted from the node's header: a bracketed node's header, or any
+    /// row of a flat node, whose count a splice does not change.
+    FromStart(u32),
+    /// A bracketed node's closing brace. It lives at `lines_total - 1`,
+    /// so its `line_in_node` is stale the moment the body it closes is
+    /// baked in — stored as "the last one" instead, and resolved against
+    /// whatever the count has become.
+    Footer,
+}
+
+/// The main pane's viewport, expressed against the document's structure
+/// rather than against its row numbering (spec 0259 S1).
+///
+/// A splice renumbers every row below it, so a viewport held as a row
+/// number moves the content out from under the reader. Held as a node it
+/// does not: the arena is immutable (spec 0216), so a slot index stays
+/// valid for the life of the document and nothing has to invalidate this.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ScrollAnchor {
+    node: usize,
+    line: AnchorLine,
+    /// `PaneScroll.skip` as it was, so a wire-mode viewport that starts
+    /// half way down a row lands back half way down it.
+    skip: isize,
+}
+
+impl App {
+    /// Spec 0259 S1: remember which node the pane's top row belongs to,
+    /// so that the next splice can put that row back where it was.
+    ///
+    /// Read off the window the frame has already built — `build_window`
+    /// resolves every row to its owning node (spec 0222 S3), so the top
+    /// one is in hand and this costs no descent.
+    ///
+    /// Spec 0259 S5: not while a preview overlay is held. With an
+    /// overlay a display row and a committed visible row are different
+    /// numbers, and the restore answers in the second. No anchor leaves
+    /// the pre-spec behavior, which is what the overlay had anyway.
+    pub(super) fn capture_scroll_anchor(&mut self, window: &[DisplayRow]) {
+        self.scroll_anchor = None;
+        if self.preview_overlay.is_some() {
+            return;
+        }
+        let Some(&DisplayRow::Committed(c)) = window.first() else {
+            return;
+        };
+        self.scroll_anchor = Some(ScrollAnchor {
+            node: c.pos.node,
+            line: if self.is_footer(c.pos) {
+                AnchorLine::Footer
+            } else {
+                AnchorLine::FromStart(c.pos.line_in_node)
+            },
+            skip: self.scroll.skip,
+        });
+    }
+
+    /// Spec 0259 S3: put the anchored row back on the terminal row it was
+    /// drawn on.
+    ///
+    /// Called at the top of `finalize_override_batch`, before the pan
+    /// clamp — with the viewport already restored the clamp finds the
+    /// caret inside the pane and moves nothing, so the two compose
+    /// instead of fighting. The other order undoes this and leaves the
+    /// caret off screen.
+    pub(super) fn restore_scroll_anchor(&mut self) {
+        let Some(anchor) = self.scroll_anchor else {
+            return;
+        };
+        // Spec 0259 S4: an `FqdnField` override can flatten this node's
+        // parent to `bytes`, leaving the node with no row of its own.
+        // The root is always rendered, so the climb terminates.
+        let mut node = anchor.node;
+        let mut climbed = false;
+        while self.tree[node].lines_total == 0 {
+            match self.parent(node) {
+                Some(p) => {
+                    node = p;
+                    climbed = true;
+                }
+                None => return,
+            }
+        }
+        // A climb lands on the node that swallowed the anchor, and the
+        // row within it that the anchor named is gone with the rendering
+        // it was part of — so the ancestor's own header is what is left
+        // to aim at.
+        let line_in_node = match anchor.line {
+            _ if climbed => 0,
+            AnchorLine::Footer => self.tree[node].lines_total.saturating_sub(1),
+            AnchorLine::FromStart(k) => k.min(self.tree[node].lines_total.saturating_sub(1)),
+        };
+        let line = self.absolute_start(node) + line_in_node as usize;
+        let Some(row) = self.visible_row_of_line(line) else {
+            return;
+        };
+        let top = (row * self.row_height()) as isize + anchor.skip;
+        self.set_scroll_top(top);
     }
 }
 

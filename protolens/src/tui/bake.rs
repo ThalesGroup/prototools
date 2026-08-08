@@ -130,6 +130,22 @@ impl App {
         theme::status_color(Status::Unbaked, self.theme).map(|c| Style::default().fg(c))
     }
 
+    /// Spec 0260 S2: the color a folded node's `{ ... }` summary wears,
+    /// or `None` for a region the reader collapsed themselves.
+    ///
+    /// The predicate is membership in `auto_folded`, not `is_folded`
+    /// (S3). A node can be in both sets — the user can fold a stop —
+    /// and it is unread either way, so the set that means "the renderer
+    /// never went in here" is the one to ask. `auto_folded` is the
+    /// truth about what is owed (spec 0255 S3); the bake queue is only
+    /// a hint.
+    pub(super) fn unread_fold_style(&self, idx: usize) -> Option<Style> {
+        if !self.auto_folded.contains(&idx) {
+            return None;
+        }
+        theme::status_color(Status::Unbaked, self.theme).map(|c| Style::default().fg(c))
+    }
+
     pub(super) fn note_visible_stops(&mut self, window: &[DisplayRow]) {
         self.visible_stops.clear();
         if self.auto_folded.is_empty() {

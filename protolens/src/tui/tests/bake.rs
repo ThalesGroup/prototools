@@ -752,6 +752,362 @@ fn a_first_frame_over_a_bounded_document_has_no_visible_stop() {
     }
 }
 
+// ── Spec 0260: a fold nobody has read says so ───────────────────────────
+
+/// The foreground colors of the `{ ... }` collapse summary on `node`'s
+/// row, one per character.
+///
+/// Read character-wise rather than off the span list's shape: whether
+/// the summary arrives as one span or three is an implementation detail
+/// of `spans_with_insertions`, and a test that asserted on it would
+/// break for the wrong reason. Searched over `char`s, not bytes — the
+/// fold margin ahead of it holds a multi-byte glyph.
+fn summary_colors(app: &mut App, node: usize) -> Vec<Option<Color>> {
+    let row = visible_row_of(app, node);
+    let window = app.build_window(row, 1);
+    app.refresh_window_styles(&window);
+    let drawn: Vec<(char, Option<Color>)> = app
+        .row_spans(window[0], 0, Modifier::empty())
+        .iter()
+        .flat_map(|s| {
+            let fg = s.style.fg;
+            s.content.chars().map(move |c| (c, fg)).collect::<Vec<_>>()
+        })
+        .collect();
+    let want: Vec<char> = "{ ... }".chars().collect();
+    let at = drawn
+        .windows(want.len())
+        .position(|w| w.iter().map(|(c, _)| *c).eq(want.iter().copied()))
+        .unwrap_or_else(|| {
+            let text: String = drawn.iter().map(|(c, _)| *c).collect();
+            panic!("no collapse summary on {text:?}")
+        });
+    drawn[at..at + want.len()].iter().map(|(_, c)| *c).collect()
+}
+
+/// Spec 0260 G2: a node the bake has not reached draws its whole brace
+/// pair in the `Unbaked` violet — including the opening brace, which
+/// would otherwise keep its grammar color and split the cue in two.
+#[test]
+fn an_unbaked_fold_is_violet() {
+    let (mut app, items) = bounded_repeated_message_fixture(3);
+    app.splash = false;
+    let violet = theme::status_color(Status::Unbaked, app.theme);
+    assert!(violet.is_some(), "the fixture must run on an RGB palette");
+
+    assert!(
+        app.auto_folded.contains(&items[1]),
+        "the stop the bake owes"
+    );
+    assert_eq!(
+        summary_colors(&mut app, items[1]),
+        vec![violet; 7],
+        "every character of `{{ ... }}`, the brace included"
+    );
+
+    app.expand_auto_fold(items[1], App::BAKE_ROW_BUDGET);
+    let row = visible_row_of(&app, items[1]);
+    assert!(
+        !app.row_content(app.build_window(row, 1)[0]).contains("..."),
+        "the debt is paid, so there is nothing left to summarize"
+    );
+}
+
+/// Spec 0260 N4/S3: a region the reader collapsed is complete, and the
+/// cue must mean "unread" rather than "folded". Fails if the predicate
+/// is `is_folded`.
+#[test]
+fn a_hand_folded_region_is_not_violet() {
+    let (mut app, items) = repeated_message_fixture();
+    app.splash = false;
+    let violet = theme::status_color(Status::Unbaked, app.theme);
+    assert!(
+        app.auto_folded.is_empty(),
+        "nothing is owed in this fixture"
+    );
+
+    app.toggle_fold(items[1]);
+    let colors = summary_colors(&mut app, items[1]);
+    assert_eq!(colors.len(), 7);
+    assert!(
+        colors.iter().all(|c| *c != violet),
+        "a collapsed region must not claim to be an unread one: {colors:?}"
+    );
+}
+
+/// Spec 0260 S3: the two fold sets are not exclusive — the user can fold
+/// a stop — and such a node is still one nobody has looked inside, so
+/// `auto_folded` membership is the test rather than which set folded it
+/// last.
+#[test]
+fn a_folded_stop_the_user_also_folded_stays_violet() {
+    let (mut app, items) = bounded_repeated_message_fixture(3);
+    app.splash = false;
+    let violet = theme::status_color(Status::Unbaked, app.theme);
+
+    assert!(app.auto_folded.contains(&items[1]));
+    app.folded.insert(items[1]);
+
+    assert_eq!(summary_colors(&mut app, items[1]), vec![violet; 7]);
+}
+
+// ── Spec 0259: the rows on screen stay where they are ───────────────────
+
+/// Which line the main pane draws on its top row, as the node that owns
+/// it — the quantity spec 0259 is about, and the one a row number cannot
+/// express across a splice.
+fn top_row(app: &App) -> LinePos {
+    match app.build_window(app.scroll.index, 1).first() {
+        Some(DisplayRow::Committed(c)) => c.pos,
+        _ => panic!("the pane must have a committed top row"),
+    }
+}
+
+/// Park the viewport so that `node`'s header is the pane's top row, with
+/// the caret on it, and draw a frame — which is what captures the anchor.
+fn park_on(app: &mut App, node: usize, height: u16) {
+    app.scroll.index = visible_row_of(app, node);
+    app.cursor = node;
+    app.cursor_line_in_node = 0;
+    draw(app, height);
+}
+
+/// Park the viewport at `row` with the caret left behind on the root's
+/// header — the state an `Alt` pan produces, which spec 0244 supports
+/// deliberately and which `last_cursor_row` exists to keep the caret
+/// clamp from fighting.
+///
+/// The discriminating setup for every anchor test but the first: with the
+/// caret on the anchored row, `clamp_scroll_to_cursor` restores the
+/// viewport all by itself and the anchor is never exercised. With the
+/// caret parked on row 0 — a row no splice below it can move — the anchor
+/// is the only thing that can hold the viewport.
+fn park_viewport_at(app: &mut App, row: usize, height: u16) {
+    app.cursor = app.first_node;
+    app.cursor_line_in_node = 0;
+    app.scroll.index = row;
+    app.last_cursor_row = Some(0);
+    draw(app, height);
+    assert_eq!(app.scroll.index, row, "the caret clamp must not have moved");
+}
+
+fn visible_row_of(app: &App, node: usize) -> usize {
+    app.visible_row_of_line(app.absolute_start(node))
+        .expect("the node must be on a drawn row")
+}
+
+/// Spec 0259 G1, and the Background's measurement as an assertion: a bake
+/// landing above the viewport must not move the rows in it.
+///
+/// The discriminator is that the viewport is *scrolled*. With the pane at
+/// the top of the document there is nothing above it to grow, so the
+/// defect cannot show and neither can the fix.
+#[test]
+fn a_bake_above_the_viewport_holds_the_rows() {
+    let (mut app, items) = bounded_repeated_message_fixture(3);
+    app.splash = false;
+
+    // The last Item, which sits below the stop at `items[1]`.
+    park_on(&mut app, items[2], 5);
+    let before_top = top_row(&app);
+    let before_caret = app.terminal_row_of(app.cursor_display_row());
+    assert_eq!(before_top.node, items[2], "the setup must have scrolled");
+
+    assert!(
+        app.auto_folded.contains(&items[1]),
+        "there must be a stop above the viewport to bake"
+    );
+    app.expand_auto_fold(items[1], App::BAKE_ROW_BUDGET);
+
+    assert_eq!(
+        top_row(&app),
+        before_top,
+        "the row at the top of the pane must be the row it was"
+    );
+    assert_eq!(
+        app.terminal_row_of(app.cursor_display_row()),
+        before_caret,
+        "and the caret must keep its terminal row"
+    );
+}
+
+/// Spec 0259 S2. A reader who has pressed `G` is sitting on a stack of
+/// closing braces, and a closing brace lives at `lines_total - 1` — a
+/// coordinate that moves the moment the body it closes is baked in.
+///
+/// Anchoring it from the start instead lands inside the new body, which
+/// is a silent wrong answer rather than a crash, so this asserts on the
+/// identity of the row and not merely on its existence.
+#[test]
+fn an_anchor_on_a_footer_survives_its_body_arriving() {
+    let (mut app, items) = bounded_repeated_message_fixture(3);
+    app.splash = false;
+    let root = app.first_node;
+
+    // The document's last row is the root's own closing brace — where `G`
+    // puts a reader of a bounded document.
+    let last_row = app.visible_row_count() - 1;
+    park_viewport_at(&mut app, last_row, 3);
+
+    let before_top = top_row(&app);
+    assert!(
+        app.is_footer(before_top),
+        "the setup must park the pane on a closing brace: {before_top:?}"
+    );
+    assert_eq!(before_top.node, root);
+
+    assert!(app.auto_folded.contains(&items[1]));
+    app.expand_auto_fold(items[1], App::BAKE_ROW_BUDGET);
+
+    let after_top = top_row(&app);
+    assert_eq!(
+        (after_top.node, app.is_footer(after_top)),
+        (root, true),
+        "the closing brace must still be the top row, not a line of the \
+         body that just arrived inside it"
+    );
+    // And it is a *different* coordinate than the one captured, which is
+    // exactly why the anchor cannot store one.
+    assert_ne!(
+        after_top.line_in_node, before_top.line_in_node,
+        "the brace must have moved, or this proves nothing"
+    );
+}
+
+/// The caret's own `line_in_node` is stale for exactly as long as the
+/// footer anchor's is, and for the same reason: a bake grows the node
+/// whose closing brace it sits on. `splice_override` repairs it — but
+/// `finalize_override_batch` *reads* it, through `clamp_pan_offset`, to
+/// decide whether the caret needs scrolling into view.
+///
+/// So the repair has to happen first. With the two in the other order the
+/// clamp reads a coordinate pointing into the body of the node the brace
+/// closes and scrolls the viewport by however far the two differ — a
+/// defect that predates this spec and that the anchor cannot cover for,
+/// because the anchor runs inside the same finalizer.
+#[test]
+fn a_caret_on_a_brace_does_not_drag_the_viewport() {
+    let (mut app, items) = bounded_repeated_message_fixture(3);
+    app.splash = false;
+    let root = app.first_node;
+
+    // Caret on the root's closing brace, viewport at the bottom of the
+    // document — where `G` leaves a reader.
+    app.cursor = root;
+    app.cursor_line_in_node = app.tree[root].lines_total - 1;
+    app.scroll.index = app.visible_row_count() - 1;
+    draw(&mut app, 3);
+
+    let before_top = top_row(&app);
+    assert!(app.is_footer(before_top), "the setup must park on a brace");
+
+    assert!(app.auto_folded.contains(&items[1]));
+    app.expand_auto_fold(items[1], App::BAKE_ROW_BUDGET);
+
+    assert_eq!(
+        app.cursor_line_in_node,
+        app.tree[root].lines_total - 1,
+        "the caret must still be on the brace it was on"
+    );
+    assert_eq!(
+        (top_row(&app).node, app.is_footer(top_row(&app))),
+        (root, true),
+        "a stale caret coordinate must not have scrolled the pane off the \
+         brace"
+    );
+}
+
+/// The negative case. Without it the restore could pass every test above
+/// by scrolling to a fixed place rather than by holding a node still.
+#[test]
+fn a_bake_below_the_viewport_moves_nothing() {
+    let (mut app, items) = bounded_repeated_message_fixture(3);
+    app.splash = false;
+
+    park_on(&mut app, items[0], 5);
+    let before_top = top_row(&app);
+    let before_scroll = app.scroll;
+
+    assert!(
+        app.auto_folded.contains(&items[2]),
+        "the stop must be below the viewport"
+    );
+    app.expand_auto_fold(items[2], App::BAKE_ROW_BUDGET);
+
+    assert_eq!(top_row(&app), before_top);
+    assert_eq!(
+        app.scroll, before_scroll,
+        "a bake below the fold must not move the viewport at all"
+    );
+}
+
+/// Spec 0259 G2: a confirm is a splice batch like any other. The user
+/// asked for a new interpretation, not to be scrolled somewhere else.
+#[test]
+fn a_confirm_holds_the_rows_too() {
+    let (mut app, items) = repeated_message_fixture();
+    app.splash = false;
+
+    let row = visible_row_of(&app, items[2]);
+    park_viewport_at(&mut app, row, 5);
+    let before_top = top_row(&app);
+    let before_rows = app.visible_row_count();
+    assert_eq!(before_top.node, items[2], "the setup must have scrolled");
+
+    // Flattening the *first* Item to a scalar drops every row it drew,
+    // which renumbers everything below it — the row the pane is on
+    // included.
+    app.splice_override(items[0], Some("bytes".to_string()), None)
+        .expect("flattening to a scalar must succeed");
+    assert_ne!(
+        app.visible_row_count(),
+        before_rows,
+        "the confirm must actually have changed the document's height, or \
+         this proves nothing"
+    );
+
+    assert_eq!(
+        top_row(&app),
+        before_top,
+        "confirming an override elsewhere must not scroll the reader"
+    );
+}
+
+/// Spec 0259 S4 / spec 0249 S10a. The anchor's node can stop being
+/// rendered outright: an override on an ancestor can flatten it to
+/// `bytes`, after which it has no row of its own to return to.
+///
+/// The rule is to climb to the nearest rendered ancestor, which is the
+/// node that swallowed it — where the override the user just made
+/// actually took effect. What must not happen is a panic or a silent
+/// jump to row 0.
+#[test]
+fn an_anchor_climbs_out_of_a_flattened_subtree() {
+    let (mut app, items) = repeated_message_fixture();
+    app.splash = false;
+
+    // Park on a row *inside* the first Item, then flatten the Item.
+    let inner = app
+        .first_child(items[0])
+        .expect("an Item must have a field to park on");
+    park_on(&mut app, inner, 8);
+    assert_eq!(top_row(&app).node, inner);
+
+    app.splice_override(items[0], Some("bytes".to_string()), None)
+        .expect("flattening to a scalar must succeed");
+
+    assert_eq!(
+        app.tree[inner].lines_total, 0,
+        "the anchored node must actually have lost its rendering, or this \
+         proves nothing"
+    );
+    assert_eq!(
+        top_row(&app).node,
+        items[0],
+        "the anchor climbs to the node that swallowed it"
+    );
+}
+
 /// Spec 0257 test-plan item 5, and why spec 0258 is a prerequisite
 /// rather than a nice-to-have.
 ///

@@ -795,6 +795,32 @@ impl App {
         // segments and re-emitted as one raw span in front.
         let (margin, body_start) = self.fold_margin_of(row, content);
         cut_segments(&mut segments, 0..body_start);
+
+        // Spec 0194 S2: one insertion. The synthetic closing brace needs
+        // no span of its own to carry `brace_match_style` — the caret
+        // restyles it by character index over the finished span list —
+        // so the summary stays one piece of text.
+        let mut insertions: Vec<(usize, String, Option<Style>)> = Vec::new();
+        if let Some(idx) = node.filter(|&i| self.is_folded(i) && self.has_children(i)) {
+            let brace = content.rfind('{');
+            match (brace, self.unread_fold_style(idx)) {
+                // Spec 0260 S2: a node the bake has not reached is not a
+                // region the reader collapsed, it is one nobody has
+                // looked inside, and the summary is where that shows.
+                // The whole brace pair takes the color — a violet
+                // `... }` beside a grammar-colored `{` reads as two
+                // things when the point is that the region is one — so
+                // the opening brace is cut from the segments and
+                // re-emitted as part of the insertion.
+                (Some(pos), Some(style)) => {
+                    cut_segments(&mut segments, pos..pos + 1);
+                    insertions.push((pos, "{ ... }".to_string(), Some(style)));
+                }
+                (Some(pos), None) => insertions.push((pos + 1, " ... }".to_string(), None)),
+                (None, style) => insertions.push((content.len(), " ... }".to_string(), style)),
+            }
+        }
+
         let mut spans = Vec::with_capacity(segments.len() + 6);
         if !margin.is_empty() {
             spans.extend(self.margin_spans(margin, node, emphasis));
@@ -823,18 +849,6 @@ impl App {
             })
             .collect();
 
-        // Spec 0194 S2: one insertion. The synthetic closing brace needs
-        // no span of its own to carry `brace_match_style` — the caret
-        // restyles it by character index over the finished span list —
-        // so the summary stays one piece of text.
-        let mut insertions: Vec<(usize, String, Option<Style>)> = Vec::new();
-        if node.is_some_and(|idx| self.is_folded(idx) && self.has_children(idx)) {
-            let insert_at = match content.rfind('{') {
-                Some(pos) => pos + 1,
-                None => content.len(),
-            };
-            insertions.push((insert_at, " ... }".to_string(), None));
-        }
         spans.extend(self.spans_with_insertions(content, segments, insertions));
         spans
     }
@@ -1268,6 +1282,9 @@ impl App {
         let window: Vec<DisplayRow> = self.build_window(first_row, rows.len());
         let d_window = t_window.elapsed();
         self.note_visible_stops(&window);
+        // Spec 0259 S1: and remember which node owns the pane's top row,
+        // so the next splice can put that row back where it was drawn.
+        self.capture_scroll_anchor(&window);
 
         // Spec 0187 S3: highlight exactly the rows about to be drawn,
         // and nothing else. Its own `&mut self` pass, ahead of the

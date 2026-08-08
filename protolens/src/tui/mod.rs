@@ -1088,6 +1088,12 @@ pub struct App {
     /// lets a `w` toggle hold a row still. `scroll.index` counts document
     /// lines, which in wire mode are two terminal rows thick.
     scroll: PaneScroll,
+    /// Spec 0259 S1: `scroll`, as of the last frame, said in nodes
+    /// instead of in row numbers — so that a splice, which renumbers
+    /// every row below it, can put the top of the pane back where the
+    /// reader last saw it. `None` before the first frame and while a
+    /// preview overlay is held (S5).
+    scroll_anchor: Option<pane_scroll::ScrollAnchor>,
     /// `cursor_display_row()`'s value as of the last render pass that
     /// applied `clamp_scroll_to_visible` to `scroll` — compared
     /// against the *current* row at the top of every render, so the
@@ -1674,6 +1680,7 @@ impl App {
             bounded_confirms,
             discarded_text: Vec::new(),
             scroll: PaneScroll::default(),
+            scroll_anchor: None,
             last_cursor_row: None,
             pan_offset: 0,
             override_pan_offset: 0,

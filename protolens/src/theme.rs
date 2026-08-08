@@ -338,10 +338,26 @@ const DARK_RGB: RgbPalette = RgbPalette {
     accent: Color::Rgb(0x56, 0x9C, 0xD6),        // Azul Mystic
     punctuation_bracket_list: Color::Rgb(0xDC, 0xDC, 0xAA), // Pale Hazel
     punctuation_bracket_extension: Color::Rgb(0xD1, 0x69, 0x69), // Alexa
-    // VSCode's landmark and invalid, each scaled up until one channel
-    // saturates: same hue, same relative mix, as much light as the hue
-    // can carry.
-    tier_landmark: Color::Rgb(0xFF, 0xAE, 0xF8), // Lavender Rose
+    // VSCode's invalid, scaled up until one channel saturates: same
+    // hue, same relative mix, as much light as the hue can carry.
+    //
+    // Spec 0260 S1: the landmark is not, because that treatment gave it
+    // `#FFAEF8` — full value at saturation 0.318, against 0.667 to
+    // 0.749 for every other color the fold margin can wear, which wears
+    // them unleveled. It arrived as a tint rather than as a hue and was
+    // reported as too close to the default foreground. Saturation is
+    // the axis that separates a color from white; there was no room on
+    // the other one, the color already being at value 1.0.
+    //
+    // Hue 285°, saturation 0.70, value 1.0: its neighbors' saturation,
+    // at a hue twenty degrees off the pink `#FFAEF8` reads as. Luma 118
+    // beside `tier_invalid`'s 121, so it is no dimmer in the margin
+    // than the color the palette already trusts there. Leveled to
+    // `doc_luma` for the `#@` annotation and the wire row's `pack_size`
+    // prefix it lands on `#E390FF`, saturation 0.435 — quiet at the
+    // same brightness as before, which is what leveling is for, but
+    // still a hue.
+    tier_landmark: Color::Rgb(0xD2, 0x4D, 0xFF), // Electric Purple
     // Pulled from VSCode's gold (hue 49°) down to amber at 36°, away
     // from `r#type`'s 55°: the two were reported as reading alike, and
     // the tier is the one that has to be unmistakable. It goes toward
@@ -1515,6 +1531,42 @@ mod tests {
                         "two tiers share {c:?} ({theme:?}, rgb={rgb})",
                     );
                 }
+            }
+        }
+    }
+
+    /// Spec 0260 S1: every color the fold margin can wear is saturated
+    /// enough to read as a hue rather than as a tint of the foreground.
+    ///
+    /// The margin wears these *unleveled* — prominence is the column's
+    /// whole job — so saturation is all that separates one from white on
+    /// a dark theme, or from black on a light one. `Tier::Landmark` used
+    /// to sit at 0.318 against the others' 0.667 and up, and was
+    /// reported as too close to the default foreground.
+    ///
+    /// The floor is stated rather than the values: this exists to hand
+    /// the constraint to the next person choosing one of these colors,
+    /// not to pin the four they inherited.
+    #[test]
+    fn every_status_color_is_a_hue_and_not_a_tint() {
+        let statuses = [
+            Status::Unbaked,
+            Status::Unknown,
+            Status::NonCanonical,
+            Status::Invalid,
+        ];
+        for theme in [ThemeKind::Dark, ThemeKind::Light] {
+            for status in statuses {
+                let Some(Color::Rgb(r, g, b)) = status_color_in(status, theme, true) else {
+                    panic!("{status:?} has no truecolor entry on {theme:?}");
+                };
+                let (hi, lo) = (r.max(g).max(b), r.min(g).min(b));
+                let saturation = f32::from(hi - lo) / f32::from(hi);
+                assert!(
+                    saturation >= 0.6,
+                    "{status:?} on {theme:?} is a tint, not a hue: \
+                     #{r:02X}{g:02X}{b:02X}, saturation {saturation:.3}",
+                );
             }
         }
     }

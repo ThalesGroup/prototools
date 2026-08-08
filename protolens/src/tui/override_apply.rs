@@ -773,6 +773,12 @@ impl App {
         self.batch_spliced = false;
         // Line numbers moved, so the read-ahead walk must restart.
         self.structural_version += 1;
+        // Spec 0259 S3: they moved under the reader too. Put the row that
+        // was at the top of the pane back at the top of the pane, before
+        // the clamp below — which then finds the caret inside the pane
+        // and moves nothing, except in the one case where content really
+        // did grow between the two.
+        self.restore_scroll_anchor();
         self.clamp_pan_offset();
 
         // Spec 0186 G3, carried onto spec 0210's own invariant. Hung
@@ -1252,19 +1258,6 @@ impl App {
         self.refresh_status_subtree(idx);
         self.refresh_status_ancestors(idx);
 
-        // Spec 0160 G2: no eager walk of the document happens here — the
-        // ancestor counts above are the whole structural consequence of
-        // this splice. When called from
-        // within a `render_overrides` batch (`override_batch_depth > 0`),
-        // reconciliation is deferred to that outer call's own
-        // `finalize_override_batch` — which is every production call
-        // since spec 0185 made the preview an overlay. A standalone
-        // splice (`override_batch_depth == 0`, tests only) must finalize
-        // immediately itself.
-        if self.override_batch_depth == 0 {
-            self.finalize_override_batch();
-        }
-
         // Spec 0142 G6.1: `idx` keeps its own slot across a retype (see
         // this function's own doc comment), but not its shape, so a
         // cursor resting anywhere but the header has to be re-placed.
@@ -1272,6 +1265,16 @@ impl App {
         // the coordinate is not stable: a message's closing brace moves
         // whenever the body it encloses changes size, and the retype may
         // have turned the node flat, in which case the brace is gone.
+        //
+        // Spec 0259: ahead of the finalizer below, not after it. The
+        // ancestor counts written above are the whole structural
+        // consequence of this splice, so the tree is already final here —
+        // and `finalize_override_batch` reads the caret's row, through
+        // `clamp_pan_offset`, to decide whether to scroll it into view.
+        // Repairing afterwards left that decision to be made from a
+        // coordinate pointing into the body of the node the caret's brace
+        // closes, which scrolled the viewport by however far the two
+        // differ.
         if self.cursor_line_in_node != 0 {
             let node = &self.tree[self.cursor];
             self.cursor_line_in_node = if node.is_bracketed() {
@@ -1279,6 +1282,17 @@ impl App {
             } else {
                 self.cursor_line_in_node.min(node.lines_total - 1)
             };
+        }
+
+        // Spec 0160 G2: no eager walk of the document happens here. When
+        // called from within a `render_overrides` batch
+        // (`override_batch_depth > 0`), reconciliation is deferred to that
+        // outer call's own `finalize_override_batch` — which is every
+        // production call since spec 0185 made the preview an overlay. A
+        // standalone splice (`override_batch_depth == 0`, tests only) must
+        // finalize immediately itself.
+        if self.override_batch_depth == 0 {
+            self.finalize_override_batch();
         }
 
         Ok(())
