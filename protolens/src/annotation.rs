@@ -12,21 +12,17 @@
 //! decides what a tier looks like.
 //!
 //! Severity is keyed on the **keyword**, not on its capitalization.
-//! The format does spell severity in case, but as a convention with
-//! counterexamples in both directions (`pack_size` is lower case and
-//! not an anomaly; `ENUM_UNKNOWN` is ALL CAPS and only non-canonical),
-//! so a pair of case regexes would need its own exception list and
-//! would miscolor the next exception in silence.
+//! The format does spell severity in case, but as a convention with at
+//! least one counterexample — `ENUM_UNKNOWN` is ALL CAPS and only
+//! non-canonical — so a pair of case regexes would need its own
+//! exception list and would miscolor the next exception in silence.
 
 /// How serious an annotation keyword is. `None` — the absence of a
-/// tier — is the fourth, commonest state: a wire-type name or a field
-/// declaration is not an anomaly at all.
+/// tier — is the third, commonest state: a wire-type name, a field
+/// declaration or a plain modifier such as `pack_size` is not an
+/// anomaly at all.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tier {
-    /// Structural, not an anomaly: where one packed wire record begins.
-    /// Wears an accent so it stands out in a run of identical element
-    /// lines, which is its whole job.
-    Landmark,
     /// Legal on the wire and round-trips, but no conformant writer
     /// emits one.
     NonCanonical,
@@ -45,9 +41,6 @@ pub enum Tier {
 /// which is the slot a type name would fill.
 #[cfg(test)]
 pub const WIRE_TYPE_NAMES: [&str; 5] = ["varint", "fixed64", "fixed32", "bytes", "group"];
-
-/// [`Tier::Landmark`]'s sole member.
-pub const LANDMARK: [&str; 1] = ["pack_size"];
 
 /// [`Tier::NonCanonical`]'s members.
 ///
@@ -102,9 +95,7 @@ pub const INVALID: [&str; 15] = [
 /// uncolored, which is visible, instead of being classified by a rule
 /// that was never told about it.
 pub fn tier_of(keyword: &str) -> Option<Tier> {
-    if LANDMARK.contains(&keyword) {
-        Some(Tier::Landmark)
-    } else if NON_CANONICAL.contains(&keyword) {
+    if NON_CANONICAL.contains(&keyword) {
         Some(Tier::NonCanonical)
     } else if INVALID.contains(&keyword) {
         Some(Tier::Invalid)
@@ -122,7 +113,6 @@ pub fn vocabulary() -> Vec<(&'static str, Option<Tier>)> {
     WIRE_TYPE_NAMES
         .iter()
         .map(|&k| (k, None))
-        .chain(LANDMARK.iter().map(|&k| (k, Some(Tier::Landmark))))
         .chain(NON_CANONICAL.iter().map(|&k| (k, Some(Tier::NonCanonical))))
         .chain(INVALID.iter().map(|&k| (k, Some(Tier::Invalid))))
         .collect()
@@ -144,13 +134,15 @@ mod tests {
     }
 
     #[test]
-    fn the_two_capitalization_counterexamples_are_where_they_belong() {
+    fn the_capitalization_counterexample_is_where_it_belongs() {
         // The whole reason this module keys on keywords rather than on
-        // case. If either of these ever agrees with its capitalization
-        // again, the case regexes become viable and this module does
-        // not.
-        assert_eq!(tier_of("pack_size"), Some(Tier::Landmark));
+        // case. If this one ever agrees with its capitalization again,
+        // the case regexes become viable and this module does not.
         assert_eq!(tier_of("ENUM_UNKNOWN"), Some(Tier::NonCanonical));
+        // And the other direction, spec 0267: a lower-case modifier
+        // that is not an anomaly gets no tier rather than the mildest
+        // one.
+        assert_eq!(tier_of("pack_size"), None);
     }
 
     #[test]

@@ -147,7 +147,7 @@ i: 'has # hash'  # real
 a: 1  #@ varint; pack_size: 3
 # <- attribute
 #        ^ type
-#                ^ annotation.landmark
+#                ^ comment
 #                           ^ number
 b: 2  #@ varint; len_ohb: 2; TAG_OOR
 #                ^ annotation.non_canonical
@@ -156,7 +156,7 @@ b: 2  #@ varint; len_ohb: 2; TAG_OOR
 c: 3  #@ repeated int32 [packed=true] = 85; ENUM_UNKNOWN
 #        ^ type
 #                 ^ type
-#                       ^ annotation.landmark
+#                       ^ type
 #                                       ^ attribute
 #                                           ^ annotation.non_canonical
 d: 4  #@ google.protobuf.FileDescriptorProto = 2

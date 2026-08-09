@@ -8,10 +8,10 @@
 //! `tui::node_status` for the roll-up itself. This module only decides
 //! what one row says.
 //!
-//! Deliberately *not* [`annotation::Tier`]: `Tier::Landmark`
-//! (`pack_size`) says where a packed record begins, which is structure
-//! and not a defect, and `Unknown` is not a tier at all but a rendering
-//! convention (see [`row_status`]).
+//! Deliberately *not* [`annotation::Tier`]: `Unknown` is not a tier at
+//! all but a rendering convention (see [`row_status`]), and `Unbaked`
+//! is a fact about how much of the document has been looked at rather
+//! than about the bytes.
 
 use prototext_core::serialize::encode_text::annotation_start;
 
@@ -47,12 +47,8 @@ pub enum Status {
 }
 
 impl From<Tier> for Status {
-    /// `Tier::Landmark` is not a defect — see the module doc. It shares
-    /// its violet with `Unbaked` (spec 0249 S12) and nothing else: both
-    /// mean "read this as provisional", and neither is an anomaly.
     fn from(tier: Tier) -> Self {
         match tier {
-            Tier::Landmark => Status::Ok,
             Tier::NonCanonical => Status::NonCanonical,
             Tier::Invalid => Status::Invalid,
         }
@@ -155,10 +151,10 @@ mod tests {
     }
 
     #[test]
-    fn a_landmark_is_not_a_defect() {
-        // `pack_size` is the one keyword with a tier that is not a
-        // defect — the whole reason `Status` is not `Tier`.
-        assert_eq!(annotation::tier_of("pack_size"), Some(Tier::Landmark));
+    fn pack_size_is_not_a_defect() {
+        // Spec 0267: it counts a record's elements and accuses nothing,
+        // so it carries no tier and cannot raise a row's rung.
+        assert_eq!(annotation::tier_of("pack_size"), None);
         // A packed element row. Its key is always symbolic: `render_packed`
         // calls `wfl_prefix_n(…, Some(foe), false, …)`, and it only reaches
         // that call at all because a schema said the field was packed.

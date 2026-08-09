@@ -477,29 +477,18 @@ fn toggling_wire_mode_invalidates_no_cache() {
     assert_eq!(after_text, text, "the document rows are untouched");
 }
 
-/// Test plan 20, and the whole point of S11's "one classifier, two
-/// rows": the annotation and the wire bytes below it are two
-/// independent derivations of the same fact — one from rendered text
-/// through the grammar, one from the blob through `tier_of` — and a
-/// reader is meant to read them as one mark.
+/// Test plan 20, on the real document: `pack_size` is an ordinary
+/// modifier in both rows (spec 0267).
 ///
-/// This test owns the two ends of that chain, which are about *this
-/// document*: that `pack_size` is captured as `AnnotationLandmark` at
-/// all, and that the wire row wears that role's own style on the
-/// record's length prefix and nowhere else.
-///
-/// One mark now means one `Style`. The two rows used to differ — text
-/// on the annotation, a band on the wire row — and that difference was
-/// the record's packing borrowing the row's loudest signal, which is
-/// reserved for bytes that are *wrong*. `pack_size` says where a record
-/// begins, so both rows say it the same quiet way, and this test can
-/// compare the styles outright instead of routing around the fact that
-/// only one of them went through `doc_leveled`.
+/// The two ends of one chain — the rendered text through the grammar,
+/// and the blob through `tier_of` — used to meet on a violet accent
+/// invented for this one keyword. It counts a record's elements, which
+/// accuses nobody of anything, so the annotation says it in the comment
+/// color and the wire row draws the length prefix it describes from the
+/// same length hue every other record's prefix gets.
 #[test]
-fn pack_size_and_its_wire_bytes_share_the_accent() {
-    use crate::annotation::Tier;
+fn pack_size_and_its_wire_bytes_are_both_ordinary() {
     use crate::colorize::{self, SyntaxRole};
-    use crate::theme;
 
     let (app, _run, _tail, _a, _b) = packed_run_with_tail_fixture();
     // Line 1 is the packed record's first element — the one whose
@@ -515,11 +504,7 @@ fn pack_size_and_its_wire_bytes_share_the_accent() {
         .filter(|hint| hint.range.contains(&at))
         .map(|hint| hint.role)
         .collect();
-    assert_eq!(roles, [SyntaxRole::AnnotationLandmark]);
-
-    // The very style the annotation above wears — not a hue derived a
-    // second way.
-    let accent = theme::style_for(SyntaxRole::AnnotationLandmark, app.theme);
+    assert_eq!(roles, [SyntaxRole::Comment]);
 
     let mut memo = PackedCursor::default();
     let pos = app.line_pos(1).expect("line 1 is inside the document");
@@ -527,19 +512,16 @@ fn pack_size_and_its_wire_bytes_share_the_accent() {
     let spans = app
         .wire_row(pos, 0, &mut memo, Some(&palette))
         .expect("it claims bytes");
-    let accented: Vec<&str> = spans
+    let prefix = spans
         .iter()
-        .filter(|span| span.style == accent)
-        .map(|span| span.content.as_ref())
-        .collect();
-    // The length prefix, and only it. Neither the field number nor the
-    // wire type: both are the document's own and read the same on a
-    // packed row as on any other.
-    assert_eq!(accented, ["03"], "row was {}", hex_of(&spans));
-    let band = theme::tier_band(Tier::Landmark, app.theme).bg;
+        .find(|span| span.content.as_ref() == "03")
+        .unwrap_or_else(|| panic!("the record's length prefix: {}", hex_of(&spans)));
+    assert_eq!(prefix.style, palette.len, "row was {}", hex_of(&spans));
+    // And nothing on the row is picked out in the foreground.
     assert!(
-        !spans.iter().any(|span| span.style.bg == band),
-        "the record's start is not an anomaly, so it takes no band",
+        spans.iter().all(|span| span.style.fg.is_none()),
+        "row was {}",
+        hex_of(&spans),
     );
 }
 

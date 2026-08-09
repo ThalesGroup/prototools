@@ -56,12 +56,11 @@ pub enum SyntaxRole {
     PunctuationBracket,
     PunctuationBracketList,
     PunctuationBracketExtension,
-    /// The three `#@` annotation severity tiers (spec 0225 §S12). Which
+    /// The two `#@` annotation severity tiers (spec 0225 §S12). Which
     /// keyword is which tier is decided by `highlights.scm`'s `#any-of?`
     /// lists, mirroring `crate::annotation`'s; what color a tier is is
     /// decided by `theme::tier_color`, which a wire row reaches through
     /// `theme::tier_band`.
-    AnnotationLandmark,
     AnnotationNonCanonical,
     AnnotationInvalid,
 }
@@ -82,7 +81,7 @@ pub enum SyntaxRole {
 /// collapses a capture we care about into some unrelated ancestor the
 /// way `tree-sitter highlight`'s CLI default theme does (see spec 0116
 /// §7's investigation notes).
-const ROLES: [(SyntaxRole, &str); 16] = [
+const ROLES: [(SyntaxRole, &str); 15] = [
     (SyntaxRole::Attribute, "attribute"),
     (SyntaxRole::Type, "type"),
     (SyntaxRole::StringLiteral, "string"),
@@ -102,7 +101,6 @@ const ROLES: [(SyntaxRole, &str); 16] = [
         SyntaxRole::PunctuationBracketExtension,
         "punctuation.bracket.extension",
     ),
-    (SyntaxRole::AnnotationLandmark, "annotation.landmark"),
     (
         SyntaxRole::AnnotationNonCanonical,
         "annotation.non_canonical",
@@ -747,7 +745,6 @@ mod tests {
         use crate::annotation::Tier;
         match tier {
             None => SyntaxRole::Type,
-            Some(Tier::Landmark) => SyntaxRole::AnnotationLandmark,
             Some(Tier::NonCanonical) => SyntaxRole::AnnotationNonCanonical,
             Some(Tier::Invalid) => SyntaxRole::AnnotationInvalid,
         }
@@ -845,16 +842,13 @@ mod tests {
         // The field number is the document's own, and wears the color
         // its name wears at the head of the line — not the value color.
         assert_eq!(roles_across(text, "85"), vec![SyntaxRole::Attribute]);
-        // Both statements about packing, one in the declaration and one
-        // in the modifiers, wear the landmark accent.
-        assert_eq!(
-            roles_across(text, "[packed=true]"),
-            vec![SyntaxRole::AnnotationLandmark],
-        );
-        assert_eq!(
-            roles_across(text, "pack_size"),
-            vec![SyntaxRole::AnnotationLandmark],
-        );
+        // Spec 0267: `[packed=true]` is the declaration's third word,
+        // between the type and the `=`, so it is one statement in one
+        // color with the two beside it.
+        assert_eq!(roles_across(text, "[packed=true]"), vec![SyntaxRole::Type]);
+        // And `pack_size` is a modifier like any other unclassified
+        // one: it counts a record's elements, which accuses nothing.
+        assert_eq!(roles_across(text, "pack_size"), vec![SyntaxRole::Comment]);
 
         // An extension name is a field name: `[acme.blade]: 3` names a
         // field, and on the wire it is a tag like any other field's.

@@ -135,27 +135,25 @@
 ((annotation_item (annotation_word) @type . (annotation_enum_value)))
 ((annotation_item (annotation_word) @type . (annotation_attribute)))
 
+; `[packed=true]` is the third word of the declaration, not a fourth
+; kind of thing: it sits between the type and the `=` and says what the
+; field is, exactly as the label and the type name do (spec 0267 S1).
+(annotation_attribute) @type
+
 ; The field number, after the `=`. It is the document's field number,
 ; and the field-name color is what says so — the same color the name it
 ; belongs to wears at the head of the line, and the same the wire row's
 ; tag bytes borrow.
 ((annotation_item (annotation_eq) . (annotation_number) @attribute))
 
-; `[packed=true]` joins `pack_size` in the landmark color: both are
-; statements about packing, one in the declaration and one in the
-; modifiers, and a reader who has learned the color on one meets it on
-; the other.
-(annotation_attribute) @annotation.landmark
-
 ; The severity tiers, last so they win over @type for a keyword that
 ; happens to sit before an `=`. Wire-type names (varint, fixed64,
 ; fixed32, bytes, group) are deliberately absent: they are the
 ; document's own vocabulary quoted back, not an anomaly, and the @type
-; pattern above is what claims them.
-((annotation_word) @annotation.landmark
- (#any-of? @annotation.landmark
-  "pack_size"))
-
+; pattern above is what claims them. `pack_size` is absent for the same
+; reason (spec 0267 S2): it counts a record's elements, which is a fact
+; about the encoding and not a complaint about it, so it falls through
+; to the comment color every unclassified token takes.
 ((annotation_word) @annotation.non_canonical
  (#any-of? @annotation.non_canonical
   "tag_ohb" "val_ohb" "len_ohb" "etag_ohb" "ohb" "packed_ohb"

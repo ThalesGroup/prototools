@@ -277,10 +277,14 @@ struct RgbPalette {
     /// bright thing. On `Dark` that means fully saturated; on `Light` it
     /// means the opposite, since prominence against white is depth
     /// rather than brightness.
-    tier_landmark: Color,
     tier_non_canonical: Color,
     tier_invalid: Color,
-    /// The one luminance every color above *except the three tiers* is
+    /// The color of a fold whose subtree has not been baked yet
+    /// (spec 0249 S12, value measured in spec 0260). Not a tier: it
+    /// says "provisional", not "wrong", and it appears only in the fold
+    /// margin, never in an annotation.
+    status_unbaked: Color,
+    /// The one luminance every color above *except the two tiers* is
     /// brought to, by [`doc_leveled`], before it is ever drawn.
     ///
     /// The palette is borrowed from VSCode, where brightness is part of
@@ -295,8 +299,7 @@ struct RgbPalette {
     /// deliberately not leveled: after this, an anomaly is the only text
     /// on a document row that is brighter (dark) or deeper (light) than
     /// everything around it, without the reader having to know the
-    /// palette. `Tier::Landmark` is leveled with everything else — it is
-    /// structural, not an anomaly.
+    /// palette.
     ///
     /// Heat cues are outside this too — they are their own gradient in
     /// their own reserved column, and the whole point of a gradient is
@@ -341,23 +344,6 @@ const DARK_RGB: RgbPalette = RgbPalette {
     // VSCode's invalid, scaled up until one channel saturates: same
     // hue, same relative mix, as much light as the hue can carry.
     //
-    // Spec 0260 S1: the landmark is not, because that treatment gave it
-    // `#FFAEF8` — full value at saturation 0.318, against 0.667 to
-    // 0.749 for every other color the fold margin can wear, which wears
-    // them unleveled. It arrived as a tint rather than as a hue and was
-    // reported as too close to the default foreground. Saturation is
-    // the axis that separates a color from white; there was no room on
-    // the other one, the color already being at value 1.0.
-    //
-    // Hue 285°, saturation 0.70, value 1.0: its neighbors' saturation,
-    // at a hue twenty degrees off the pink `#FFAEF8` reads as. Luma 118
-    // beside `tier_invalid`'s 121, so it is no dimmer in the margin
-    // than the color the palette already trusts there. Leveled to
-    // `doc_luma` for the `#@` annotation and the wire row's `pack_size`
-    // prefix it lands on `#E390FF`, saturation 0.435 — quiet at the
-    // same brightness as before, which is what leveling is for, but
-    // still a hue.
-    tier_landmark: Color::Rgb(0xD2, 0x4D, 0xFF), // Electric Purple
     // Pulled from VSCode's gold (hue 49°) down to amber at 36°, away
     // from `r#type`'s 55°: the two were reported as reading alike, and
     // the tier is the one that has to be unmistakable. It goes toward
@@ -371,6 +357,19 @@ const DARK_RGB: RgbPalette = RgbPalette {
     // than the ordinary text it has to stand out from.
     tier_non_canonical: Color::Rgb(0xFF, 0xB4, 0x40), // Yellow Orange
     tier_invalid: Color::Rgb(0xFF, 0x55, 0x55),       // Sunset Orange
+    // Spec 0260 S1. The scaling above gave this one `#FFAEF8` — full
+    // value at saturation 0.318, against 0.667 to 0.749 for every other
+    // color the fold margin can wear. It arrived as a tint rather than
+    // as a hue and was reported as too close to the default foreground.
+    // Saturation is the axis that separates a color from white; there
+    // was no room on the other one, the color already being at value
+    // 1.0.
+    //
+    // Hue 285°, saturation 0.70, value 1.0: its neighbors' saturation,
+    // at a hue twenty degrees off the pink `#FFAEF8` reads as. Luma 118
+    // beside `tier_invalid`'s 121, so it is no dimmer in the margin
+    // than the color the palette already trusts there.
+    status_unbaked: Color::Rgb(0xD2, 0x4D, 0xFF), // Electric Purple
     doc_luma: 170.0,
 };
 
@@ -386,13 +385,13 @@ const LIGHT_RGB: RgbPalette = RgbPalette {
     accent: Color::Rgb(0x00, 0x00, 0xFF),        // Blue
     punctuation_bracket_list: Color::Rgb(0x04, 0x51, 0xA5), // French Blue
     punctuation_bracket_extension: Color::Rgb(0x81, 0x1F, 0x3F), // Dried Burgundy
-    tier_landmark: Color::Rgb(0xAF, 0x00, 0xDB), // Violet
     // Deepened from VSCode's `#BF8803`, which was the one weak anomaly
     // mark on white: luma 138 against the violet's 53 and the red's 63,
     // so it read as the quietest of the three while meaning more than
-    // the landmark does. The other two are already deep and stand.
+    // an unbaked fold does. The other two are already deep and stand.
     tier_non_canonical: Color::Rgb(0x9C, 0x6A, 0x00), // Golden Brown
     tier_invalid: Color::Rgb(0xE5, 0x14, 0x00),       // Scarlet
+    status_unbaked: Color::Rgb(0xAF, 0x00, 0xDB),     // Violet
     doc_luma: 85.0,
 };
 
@@ -423,13 +422,6 @@ fn style_for_rgb(role: SyntaxRole, p: &RgbPalette) -> Style {
         SyntaxRole::PunctuationBracket => Style::default(),
         SyntaxRole::PunctuationBracketList => hue(p.punctuation_bracket_list),
         SyntaxRole::PunctuationBracketExtension => hue(p.punctuation_bracket_extension),
-        // Leveled with the ordinary roles, unlike the two tiers below:
-        // `pack_size` and `[packed=true]` say where a packed record
-        // begins, which is structure, not an anomaly. Loudness on a
-        // document row means "something is wrong with these bytes", and
-        // a landmark that shouted it would spend the one signal the
-        // leveling exists to reserve.
-        SyntaxRole::AnnotationLandmark => hue(tier_color_rgb(Tier::Landmark, p)),
         SyntaxRole::AnnotationNonCanonical => {
             Style::default().fg(tier_color_rgb(Tier::NonCanonical, p))
         }
@@ -446,7 +438,6 @@ fn style_for_rgb(role: SyntaxRole, p: &RgbPalette) -> Style {
 /// same color, and a second copy is how they would stop.
 fn tier_color_rgb(tier: Tier, p: &RgbPalette) -> Color {
     match tier {
-        Tier::Landmark => p.tier_landmark,
         Tier::NonCanonical => p.tier_non_canonical,
         Tier::Invalid => p.tier_invalid,
     }
@@ -454,7 +445,6 @@ fn tier_color_rgb(tier: Tier, p: &RgbPalette) -> Color {
 
 fn tier_color_dark_ansi16(tier: Tier) -> Color {
     match tier {
-        Tier::Landmark => Color::LightMagenta,
         Tier::NonCanonical => Color::Yellow,
         Tier::Invalid => Color::LightRed,
     }
@@ -462,7 +452,6 @@ fn tier_color_dark_ansi16(tier: Tier) -> Color {
 
 fn tier_color_light_ansi16(tier: Tier) -> Color {
     match tier {
-        Tier::Landmark => Color::Magenta,
         Tier::NonCanonical => Color::Yellow,
         Tier::Invalid => Color::Red,
     }
@@ -516,9 +505,10 @@ fn tier_band_in(tier: Tier, theme: ThemeKind, rgb: bool) -> Style {
 /// approximating them: the toggle and the annotation it is summarizing
 /// are two readings of one fact (the same argument `tier_band` makes for
 /// the wire row), and a second copy is how they would drift.
-/// `Status::Unknown` has no tier to borrow from — an undeclared field is
-/// not an anomaly, the schema just has nothing to say — so it gets a
-/// palette entry of its own.
+/// `Status::Unknown` and `Status::Unbaked` have no tier to borrow from
+/// — neither is an anomaly, one being a schema with nothing to say and
+/// the other a subtree nobody has looked at — so each gets a palette
+/// entry of its own.
 pub fn status_color(status: Status, theme: ThemeKind) -> Option<Color> {
     status_color_in(status, theme, supports_rgb())
 }
@@ -526,11 +516,15 @@ pub fn status_color(status: Status, theme: ThemeKind) -> Option<Color> {
 fn status_color_in(status: Status, theme: ThemeKind, rgb: bool) -> Option<Color> {
     Some(match status {
         Status::Ok => return None,
-        // Spec 0249 S12: the violet `pack_size`'s length prefix wears.
-        // Borrowed rather than given a palette entry of its own because
-        // the two say the same thing in the same register — provisional,
-        // not wrong — and they never appear in the same column.
-        Status::Unbaked => tier_color(Tier::Landmark, theme, rgb),
+        // Spec 0249 S12's violet, measured in spec 0260. Unleveled
+        // like the tiers: the margin is its own column, and a fold
+        // nobody has read has to be visible in it.
+        Status::Unbaked => pick(
+            theme,
+            rgb,
+            (DARK_RGB.status_unbaked, Color::LightMagenta),
+            (LIGHT_RGB.status_unbaked, Color::Magenta),
+        ),
         Status::Unknown => pick(
             theme,
             rgb,
@@ -834,9 +828,6 @@ fn style_for_dark_ansi16(role: SyntaxRole) -> Style {
         SyntaxRole::PunctuationBracket => Style::default().fg(Color::Gray),
         SyntaxRole::PunctuationBracketList => Style::default().fg(Color::Yellow),
         SyntaxRole::PunctuationBracketExtension => Style::default().fg(Color::LightRed),
-        SyntaxRole::AnnotationLandmark => {
-            Style::default().fg(tier_color_dark_ansi16(Tier::Landmark))
-        }
         SyntaxRole::AnnotationNonCanonical => {
             Style::default().fg(tier_color_dark_ansi16(Tier::NonCanonical))
         }
@@ -870,9 +861,6 @@ fn style_for_light_ansi16(role: SyntaxRole) -> Style {
         SyntaxRole::PunctuationBracket => Style::default().fg(Color::Black),
         SyntaxRole::PunctuationBracketList => Style::default().fg(Color::Yellow),
         SyntaxRole::PunctuationBracketExtension => Style::default().fg(Color::Red),
-        SyntaxRole::AnnotationLandmark => {
-            Style::default().fg(tier_color_light_ansi16(Tier::Landmark))
-        }
         SyntaxRole::AnnotationNonCanonical => {
             Style::default().fg(tier_color_light_ansi16(Tier::NonCanonical))
         }
@@ -1440,7 +1428,7 @@ mod tests {
         }
     }
 
-    const ALL_ROLES: [SyntaxRole; 16] = [
+    const ALL_ROLES: [SyntaxRole; 15] = [
         SyntaxRole::Attribute,
         SyntaxRole::Type,
         SyntaxRole::StringLiteral,
@@ -1454,7 +1442,6 @@ mod tests {
         SyntaxRole::PunctuationBracket,
         SyntaxRole::PunctuationBracketList,
         SyntaxRole::PunctuationBracketExtension,
-        SyntaxRole::AnnotationLandmark,
         SyntaxRole::AnnotationNonCanonical,
         SyntaxRole::AnnotationInvalid,
     ];
@@ -1462,7 +1449,7 @@ mod tests {
     // `PunctuationDelimiter`/`PunctuationBracket` are deliberately
     // unstyled (terminal default) in both the RGB and ANSI-16 palettes
     // — excluded from the "must be Rgb" assertion below.
-    const COLORED_ROLES: [SyntaxRole; 14] = [
+    const COLORED_ROLES: [SyntaxRole; 13] = [
         SyntaxRole::Attribute,
         SyntaxRole::Type,
         SyntaxRole::StringLiteral,
@@ -1474,7 +1461,6 @@ mod tests {
         SyntaxRole::Constant,
         SyntaxRole::PunctuationBracketList,
         SyntaxRole::PunctuationBracketExtension,
-        SyntaxRole::AnnotationLandmark,
         SyntaxRole::AnnotationNonCanonical,
         SyntaxRole::AnnotationInvalid,
     ];
@@ -1484,28 +1470,19 @@ mod tests {
     /// They must be the same color, in all four palettes, or the two
     /// rows of one document contradict each other about severity.
     ///
-    /// `Tier::Landmark` is the one pair that is *not* equal, because
-    /// `style_for_rgb` levels it and the wire row's band does not (see
-    /// `RgbPalette::doc_luma`). It is checked through the same leveling
-    /// rather than dropped, so a landmark that drifted to a different
-    /// hue would still be caught.
+    /// Since spec 0267 there is no exception: both surviving tiers are
+    /// anomalies, so neither is leveled and both are equal outright.
     #[test]
     fn a_tier_looks_the_same_named_as_it_does_captured() {
         let pairs = [
-            (Tier::Landmark, SyntaxRole::AnnotationLandmark),
             (Tier::NonCanonical, SyntaxRole::AnnotationNonCanonical),
             (Tier::Invalid, SyntaxRole::AnnotationInvalid),
         ];
-        for (theme, palette) in [(ThemeKind::Dark, &DARK_RGB), (ThemeKind::Light, &LIGHT_RGB)] {
+        for theme in [ThemeKind::Dark, ThemeKind::Light] {
             for rgb in [false, true] {
                 for (tier, role) in pairs {
-                    let named = tier_color(tier, theme, rgb);
-                    let named = match (tier, rgb) {
-                        (Tier::Landmark, true) => doc_leveled(named, palette.doc_luma),
-                        _ => named,
-                    };
                     assert_eq!(
-                        Some(named),
+                        Some(tier_color(tier, theme, rgb)),
                         style_for_in(role, theme, rgb).fg,
                         "{tier:?} disagrees with {role:?} ({theme:?}, rgb={rgb})",
                     );
@@ -1514,7 +1491,7 @@ mod tests {
         }
     }
 
-    /// The three tiers must be told apart at a glance, so no two of them
+    /// The tiers must be told apart at a glance, so no two of them
     /// may share a color. Not asserted against the *roles*: ANSI-16 has
     /// sixteen colors and `PunctuationBracketList` already holds yellow,
     /// so a collision there is forced, and harmless — a tier and a
@@ -1523,7 +1500,7 @@ mod tests {
     fn no_two_tiers_share_a_color() {
         for theme in [ThemeKind::Dark, ThemeKind::Light] {
             for rgb in [false, true] {
-                let tiers = [Tier::Landmark, Tier::NonCanonical, Tier::Invalid];
+                let tiers = [Tier::NonCanonical, Tier::Invalid];
                 let colors: Vec<_> = tiers.iter().map(|&t| tier_color(t, theme, rgb)).collect();
                 for (i, c) in colors.iter().enumerate() {
                     assert!(

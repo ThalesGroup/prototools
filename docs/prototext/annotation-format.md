@@ -150,7 +150,6 @@ Non-canonical encodings are losslessly recoverable — they round-trip exactly.
 | `etag_ohb: N` | integer | END_GROUP tag varint uses N redundant continuation bytes |
 | `truncated_neg` | flag | Negative int32/enum encoded as 5-byte truncated varint instead of canonical 10-byte sign-extended form |
 | `nan_bits: 0xHH…` | hex integer | Non-canonical NaN bit pattern for a `float` (8 hex digits) or `double` (16 hex digits) field |
-| `pack_size: N` | integer | Number of elements in this packed wire record (on the first element line of each record) |
 | `ohb: N` | integer | Per-element varint overhang bytes (packed varint fields, on each element line) |
 | `neg` | flag | Per-element truncated-negative int32/enum (packed fields, on each element line) |
 
@@ -172,6 +171,7 @@ Invalid encodings indicate data integrity issues.
 | Name | Value type | Meaning |
 |---|---|---|
 | `ENUM_UNKNOWN` | flag | Enum value is not in the schema's value table (integer emitted as field value) |
+| `pack_size: N` | integer | Number of elements in this packed wire record (on the first element line of each record) |
 
 ---
 
@@ -343,15 +343,17 @@ invalid_wire_type := "INVALID_TAG_TYPE" | "INVALID_VARINT" | "INVALID_FIXED64"
                   |  "INVALID_PACKED_RECORDS" | "INVALID_STRING" | "INVALID_GROUP_END"
 
 -- Modifiers
-modifier := noncanon_valued | noncanon_flag | invalid_valued | invalid_flag | info_flag
+modifier := noncanon_valued | noncanon_flag | invalid_valued | invalid_flag
+         |  info_valued | info_flag
 
-noncanon_valued := ("tag_ohb" | "val_ohb" | "len_ohb" | "etag_ohb" | "ohb" | "pack_size") ":" SP INTEGER
+noncanon_valued := ("tag_ohb" | "val_ohb" | "len_ohb" | "etag_ohb" | "ohb") ":" SP INTEGER
                |  "nan_bits: 0x" HEX+
 noncanon_flag   := "truncated_neg" | "neg"
 
 invalid_valued  := ("MISSING" | "END_MISMATCH") ":" SP INTEGER
 invalid_flag    := "TAG_OOR" | "ETAG_OOR" | "OPEN_GROUP" | "TYPE_MISMATCH"
 
+info_valued     := "pack_size" ":" SP INTEGER
 info_flag       := "ENUM_UNKNOWN"
 
 -- Tokens
