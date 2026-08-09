@@ -1464,7 +1464,13 @@ fn spawn_worker(
     thread::Builder::new()
         .name(format!("heat-worker-{n}"))
         .stack_size(crate::sweep::SCORING_THREAD_STACK_SIZE)
-        .spawn(move || heat_worker_loop(queue, caches, graph, blob, progress, partition))
+        .spawn(move || {
+            // Spec 0264 S7: undo the main thread's narrowing, inherited
+            // across `clone(2)`. A heat worker is throughput work and
+            // wants every CPU the process was given.
+            crate::affinity::widen();
+            heat_worker_loop(queue, caches, graph, blob, progress, partition)
+        })
         .expect("spawn heat worker thread")
 }
 

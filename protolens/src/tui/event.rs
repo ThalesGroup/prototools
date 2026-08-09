@@ -364,6 +364,11 @@ impl InputReaderHandle {
         };
 
         let join = thread::spawn(move || {
+            // Spec 0264 S7: this thread inherited whatever mask the main
+            // thread is under. It has no reason to sit on a fast core —
+            // since spec 0263 it is blocked in `poll(2)` with no timed
+            // wakeups — and every reason not to hold one.
+            crate::affinity::widen();
             #[cfg(unix)]
             if let Some(wait) = wait {
                 read_loop(&thread_stop, &pending, &tx, || wait.wait());

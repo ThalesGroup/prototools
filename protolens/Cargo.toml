@@ -39,7 +39,8 @@ base64 = "0.22"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-nix  = { version = "0.29", features = ["poll", "process", "signal", "term"] }
+# "sched" is spec 0264's sched_get/setaffinity; the rest predate it.
+nix  = { version = "0.29", features = ["poll", "process", "sched", "signal", "term"] }
 # Spec 0263 S10: the input reader registers its own SIGWINCH pipe so it
 # can block in an untimed poll(2). Already in the lockfile via crossterm,
 # which uses it for the same purpose.

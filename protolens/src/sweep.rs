@@ -226,6 +226,11 @@ pub(crate) fn ranked_with<T>(
                     .name("protolens-sweep".to_string())
                     .stack_size(SCORING_THREAD_STACK_SIZE)
                     .spawn_scoped(scope, move || {
+                        // Spec 0264 S7: a sweep wants the whole machine,
+                        // not the fast cluster the main thread may have
+                        // narrowed itself to and which this thread
+                        // inherited across `clone(2)`.
+                        crate::affinity::widen();
                         // Spec 0218 S4: one run per part, kept separate.
                         // Concatenating a thread's parts would break the
                         // sortedness `Merged` relies on.

@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
+mod affinity;
 mod annotation;
 mod blob;
 mod colorize;
@@ -373,6 +374,13 @@ fn main() -> ExitCode {
     man::generate_and_exit_if_requested(Cli::command());
 
     let cli = Cli::parse();
+
+    // Spec 0264: on a machine whose kernel says which CPUs are the fast
+    // ones, the thread that draws every frame runs on them. Here rather
+    // than at the top of the interactive path so that startup — the
+    // longest wait protolens imposes — is covered too. Silent, and a
+    // no-op wherever the kernel does not say.
+    affinity::apply();
 
     let descriptor_set = cli.descriptor_set.as_deref();
     if descriptor_set.is_none() && cli.r#type.is_some() {
