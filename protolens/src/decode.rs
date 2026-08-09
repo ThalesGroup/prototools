@@ -446,26 +446,30 @@ pub enum RootType<'a> {
 /// 0217 S6). Only the `Infer` path has anything to overlap with; the
 /// other two resolve in constant time, so `meanwhile` simply runs before
 /// they return. It runs exactly once either way.
+///
+/// It is handed the number of threads the sweep is really walking on —
+/// `0` on the three paths where no sweep runs at all, which is exactly
+/// the condition `main` gates its "inferring root type" line on.
 pub fn determine_root_type_meanwhile<T>(
     blob: &[u8],
     ctx: &mut DescriptorContext,
     root_type: RootType<'_>,
     jobs: usize,
-    meanwhile: impl FnOnce() -> T,
+    meanwhile: impl FnOnce(usize) -> T,
 ) -> Result<(Option<MessageDescriptor>, RankedCandidates, T), DecodeError> {
     match root_type {
         RootType::Named(fqdn) => {
-            let meanwhile = meanwhile();
+            let meanwhile = meanwhile(0);
             ctx.message(fqdn)
                 .map(|desc| (Some(desc), Vec::new(), meanwhile))
                 .ok_or_else(|| {
                     DecodeError::Determination(format!("type '{fqdn}' not found in descriptor set"))
                 })
         }
-        RootType::Raw => Ok((None, Vec::new(), meanwhile())),
+        RootType::Raw => Ok((None, Vec::new(), meanwhile(0))),
         RootType::Infer => {
             let Some(graph) = ctx.graph.clone() else {
-                return Ok((None, Vec::new(), meanwhile()));
+                return Ok((None, Vec::new(), meanwhile(0)));
             };
             let (candidates, meanwhile) =
                 sweep::ranked_with(blob, graph.graph(), jobs, None, meanwhile);
@@ -1739,7 +1743,7 @@ pub fn decode(
     indent_size: usize,
 ) -> Result<Decoded, DecodeError> {
     let (root_desc, root_candidates, arena) =
-        resolve_root_type_and_arena(&blob, ctx, root_type_request, 1)?;
+        resolve_root_type_and_arena(&blob, ctx, root_type_request, 1, |_| ())?;
     // Unbounded: a test that wants spec 0257's bound calls
     // `render_resolved` with a budget, and every other one wants the
     // whole document it has always got.
@@ -1765,14 +1769,21 @@ pub fn decode(
 ///
 /// Split out from [`decode`] rather than inlined because `main` needs the
 /// two halves apart to announce them separately.
+///
+/// `announce` is called with the number of threads the sweep is walking
+/// on, or `0` where no sweep runs, just before the arena build begins —
+/// so the startup line names the threads that turned up rather than the
+/// `--jobs` ceiling they were drawn from (spec 0270).
 pub fn resolve_root_type_and_arena(
     blob: &Arc<Blob>,
     ctx: &mut DescriptorContext,
     root_type_request: RootType<'_>,
     jobs: usize,
+    announce: impl FnOnce(usize),
 ) -> Result<(Option<MessageDescriptor>, RankedCandidates, Arena), DecodeError> {
     let (root_desc, root_candidates, arena) =
-        determine_root_type_meanwhile(blob.payload(), ctx, root_type_request, jobs, || {
+        determine_root_type_meanwhile(blob.payload(), ctx, root_type_request, jobs, |threads| {
+            announce(threads);
             // Spec 0216 S1: the maximal tree is a function of the
             // wrapped bytes, so it is built from the whole blob — slot 0
             // is the wrapper itself and the top-level occurrences are

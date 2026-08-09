@@ -511,36 +511,44 @@ fn main() -> ExitCode {
     // `--help`'s promise ("up to N") and what actually runs agree, and so
     // the number stored on `App` is already the honest one.
     let jobs = sweep::effective_jobs(cli.jobs as usize);
-    if announce && root_type == decode::RootType::Infer && ctx.graph.is_some() {
-        eprintln!(
-            "protolens: inferring root type{} on {jobs} thread{}...",
-            size_suffix(&cli.blob),
-            if jobs == 1 { "" } else { "s" },
-        );
-    }
-    let decoded = decode::resolve_root_type_and_arena(&blob, &mut ctx, root_type, jobs).and_then(
-        |(root_desc, root_candidates, arena)| {
-            if announce {
-                eprintln!(
-                    "protolens: rendering root node as {}{}...",
-                    root_desc
-                        .as_ref()
-                        .map(|d| d.full_name())
-                        .unwrap_or("<raw / no type>"),
-                    size_suffix(&cli.blob)
-                );
-            }
-            decode::render_resolved(
-                Arc::clone(&blob),
-                &mut ctx,
-                root_desc,
-                root_candidates,
-                arena,
-                cli.indent,
-                startup_row_budget,
-            )
-        },
-    );
+    // Spec 0270: the count is the sweep's to report, not this line's to
+    // guess. `--jobs` is a ceiling, and since spec 0269 the seating can
+    // lower it and the calling thread can join — so `jobs` was the one
+    // number here guaranteed *not* to be the answer. `0` is "no sweep
+    // ran", which subsumes the `Infer`-and-a-graph test this used to
+    // make for itself.
+    let announce_sweep = |threads: usize| {
+        if announce && threads > 0 {
+            eprintln!(
+                "protolens: inferring root type{} on {threads} thread{}...",
+                size_suffix(&cli.blob),
+                if threads == 1 { "" } else { "s" },
+            );
+        }
+    };
+    let decoded =
+        decode::resolve_root_type_and_arena(&blob, &mut ctx, root_type, jobs, announce_sweep)
+            .and_then(|(root_desc, root_candidates, arena)| {
+                if announce {
+                    eprintln!(
+                        "protolens: rendering root node as {}{}...",
+                        root_desc
+                            .as_ref()
+                            .map(|d| d.full_name())
+                            .unwrap_or("<raw / no type>"),
+                        size_suffix(&cli.blob)
+                    );
+                }
+                decode::render_resolved(
+                    Arc::clone(&blob),
+                    &mut ctx,
+                    root_desc,
+                    root_candidates,
+                    arena,
+                    cli.indent,
+                    startup_row_budget,
+                )
+            });
     let decoded = match decoded {
         Ok(d) => d,
         Err(e) => {

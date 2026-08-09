@@ -465,7 +465,7 @@ impl HeatRequestQueue {
     /// is an admission, unwrapped to the request it admits.
     #[cfg(test)]
     fn admit_one(&self) -> Option<(usize, HeatRequest)> {
-        match self.next_task()? {
+        match self.next_task(None)? {
             Task::Admit { start, req } => Some((start, req)),
             Task::Walk { .. } => panic!("this test activated no query"),
         }
@@ -594,8 +594,11 @@ impl HeatRequestQueue {
     /// The admitted request is registered in `state.in_flight` before
     /// the lock is released — see that field for why the two must be
     /// one atomic act.
-    fn next_task(&self) -> Option<Task> {
-        self.next_task_inner(true)
+    /// `me` is the caller's chair (spec 0270). `None` — the tests — is a
+    /// caller that is neither barred from `User` parts nor holds a seat
+    /// to give back.
+    fn next_task(&self, me: Option<&crate::sweep::Member<'_>>) -> Option<Task> {
+        self.next_task_inner(me, true)
     }
 
     /// [`next_task`](Self::next_task), with the option of answering
@@ -604,10 +607,20 @@ impl HeatRequestQueue {
     /// The non-blocking reading exists for tests, which need to ask
     /// "and is there anything else?" of a queue no worker is draining —
     /// a question that has no answer if asking it blocks forever.
-    fn next_task_inner(&self, blocking: bool) -> Option<Task> {
+    fn next_task_inner(
+        &self,
+        me: Option<&crate::sweep::Member<'_>>,
+        blocking: bool,
+    ) -> Option<Task> {
+        // Spec 0270 S3: a worker with no seat is not one of the members
+        // the crew is sized for, so it does not take a `User` part —
+        // that part is worth more on a core of its own than on this
+        // thread's share of a contended one.
+        let barred = me.is_some_and(crate::sweep::Member::barred);
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         loop {
             if state.stop {
+                release(me);
                 return None;
             }
             // Recomputed each turn rather than carried across the wait:
@@ -628,6 +641,7 @@ impl HeatRequestQueue {
                 .iter()
                 .enumerate()
                 .filter(|(_, q)| !q.pending.is_empty() && q.req.tier >= floor)
+                .filter(|(_, q)| !(barred && q.req.tier == Tier::User))
                 .max_by_key(|(_, q)| q.req.tier)
                 .map(|(i, q)| (i, q.req.tier));
             let best_queued = Tier::highest_in(state.mru.band_occupancy()).filter(|t| *t >= floor);
@@ -641,12 +655,21 @@ impl HeatRequestQueue {
                 let query = &mut state.active[i];
                 let part = query.pending.pop().expect("filtered on a non-empty stack");
                 query.outstanding += 1;
-                return Some(Task::Walk {
+                let task = Task::Walk {
                     start: query.start,
                     part,
                     req: query.req.clone(),
                     epoch,
-                });
+                };
+                // Spec 0270 S5: the seat is kept for a `User` part and
+                // only for one. Giving it back *here* would be a gift
+                // this thread immediately takes back — `sit()` returns
+                // to the very CPU it just donated, on top of the
+                // straggler now moving onto it.
+                if query.req.tier != Tier::User {
+                    release(me);
+                }
+                return Some(task);
             }
             if best_queued.is_some() {
                 if let Some((key, entry)) = state.mru.pop_highest() {
@@ -668,6 +691,9 @@ impl HeatRequestQueue {
                     }
                     state.in_flight.push((key, entry.req.tier));
                     self.publish_in_flight(&state);
+                    if entry.req.tier != Tier::User {
+                        release(me);
+                    }
                     return Some(Task::Admit {
                         start: key,
                         req: entry.req,
@@ -675,6 +701,7 @@ impl HeatRequestQueue {
                 }
             }
             if !blocking {
+                release(me);
                 return None;
             }
             if state.mru.discard_one_superseded() {
@@ -682,6 +709,9 @@ impl HeatRequestQueue {
                 state = self.state.lock().unwrap_or_else(|e| e.into_inner());
                 continue;
             }
+            // About to sleep, so whatever this thread was sitting on is
+            // better spent on a member still walking.
+            release(me);
             state = self.condvar.wait(state).unwrap_or_else(|e| e.into_inner());
         }
     }
@@ -689,7 +719,7 @@ impl HeatRequestQueue {
     /// Test-only: the next task if there is one, without blocking.
     #[cfg(test)]
     fn try_next_task(&self) -> Option<Task> {
-        self.next_task_inner(false)
+        self.next_task_inner(None, false)
     }
 
     /// Spec 0250 S8: has anyone asked for the whole candidate list of
@@ -1123,6 +1153,18 @@ fn record_sweep(
     }
 }
 
+/// Spec 0270 S4: give the seat back, if this caller was holding one.
+///
+/// The widening is here rather than inside `Member::leave` because the
+/// startup sweep's main thread also leaves a chair, and it must keep
+/// the drawing core spec 0265 gave it. Only a pool worker wants every
+/// CPU back.
+fn release(me: Option<&crate::sweep::Member<'_>>) {
+    if me.is_some_and(crate::sweep::Member::leave) {
+        crate::affinity::widen();
+    }
+}
+
 /// Worker loop body (spec 0152 G5, spec 0262 S2): take whatever the
 /// pool has for this thread and do it, until stop.
 ///
@@ -1139,18 +1181,24 @@ fn record_sweep(
 /// Nothing here owns a query, which is the point. A screenful is ~40
 /// queries of wildly unequal size, and one worker per query leaves the
 /// pool idle behind whichever query is the document root's.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn heat_worker_loop(
+    me: usize,
     queue: Arc<HeatRequestQueue>,
     caches: Arc<Mutex<HeatCaches>>,
     graph: Arc<LoadedGraph>,
     blob: Arc<Blob>,
     progress: mpsc::Sender<AppEvent>,
     partition: Arc<crate::sweep::Partition>,
+    crew: Arc<crate::sweep::Crew>,
 ) {
     // Spec 0180 S2: the worker owns a handle to the mapping rather than a
     // `&'static` copied out of one, so the borrow below cannot outlive it.
     let graph = graph.graph();
-    while let Some(task) = queue.next_task() {
+    // Spec 0270 S2: the seat is the worker index. Nothing is claimed
+    // here — the chair is only occupied while a `User` part is in hand.
+    let me = crew.member(me);
+    while let Some(task) = queue.next_task(Some(&me)) {
         match task {
             Task::Admit { start, req } => {
                 // Spec 0190 S3: `next_task` has already registered this
@@ -1230,7 +1278,18 @@ pub(super) fn heat_worker_loop(
                 } else {
                     &queue.stand_aside
                 };
+                // Spec 0270 S4: take the seat for the length of this
+                // part and no longer. The guard stamps the chair so a
+                // member that runs out of parts can find the longest
+                // runner and hand its own core over; every way out of
+                // the walk below drops it.
+                let user = req.tier == Tier::User;
+                let walking = user.then(|| {
+                    me.sit();
+                    me.walking()
+                });
                 let run = partition.walk(part, &blob[req.range.clone()], graph, Some(cancel));
+                drop(walking);
                 if queue.stop_flag.load(Ordering::Relaxed) {
                     queue.end_sweep(start);
                     break;
@@ -1289,6 +1348,11 @@ impl HeatWorkerHandle {
         // `partition_roots` is 7.3 ms on googleapis against a median
         // visible query of 5.4–10.4 ms.
         let partition = Arc::new(crate::sweep::Partition::new(graph.graph(), jobs));
+        // Spec 0270 S6: one crew for the pool's whole life, holding one
+        // chair per worker. A chair is only occupied while its worker
+        // walks a `User` part; between queries every one of them is
+        // vacant and the crew is inert.
+        let crew = Arc::new(crate::sweep::Crew::new(jobs.max(1)));
         let joins = (0..jobs.max(1))
             .map(|n| {
                 spawn_worker(
@@ -1299,6 +1363,7 @@ impl HeatWorkerHandle {
                     Arc::clone(&blob),
                     progress.clone(),
                     Arc::clone(&partition),
+                    Arc::clone(&crew),
                 )
             })
             .collect();
@@ -1432,6 +1497,7 @@ impl HeatWorkerHandle {
         jobs: usize,
     ) -> Self {
         let partition = Arc::new(crate::sweep::Partition::new(graph.graph(), jobs));
+        let crew = Arc::new(crate::sweep::Crew::new(jobs.max(1)));
         self.joins = (0..jobs.max(1))
             .map(|n| {
                 spawn_worker(
@@ -1442,6 +1508,7 @@ impl HeatWorkerHandle {
                     Arc::clone(&blob),
                     progress.clone(),
                     Arc::clone(&partition),
+                    Arc::clone(&crew),
                 )
             })
             .collect();
@@ -1460,6 +1527,7 @@ fn spawn_worker(
     blob: Arc<Blob>,
     progress: mpsc::Sender<AppEvent>,
     partition: Arc<crate::sweep::Partition>,
+    crew: Arc<crate::sweep::Crew>,
 ) -> JoinHandle<()> {
     thread::Builder::new()
         .name(format!("heat-worker-{n}"))
@@ -1469,7 +1537,7 @@ fn spawn_worker(
             // across `clone(2)`. A heat worker is throughput work and
             // wants every CPU the process was given.
             crate::affinity::widen();
-            heat_worker_loop(queue, caches, graph, blob, progress, partition)
+            heat_worker_loop(n, queue, caches, graph, blob, progress, partition, crew)
         })
         .expect("spawn heat worker thread")
 }
@@ -1488,6 +1556,7 @@ mod tests {
     use prototext_graph::score::load::LoadedGraph;
 
     use super::*;
+    use crate::affinity::Seat;
 
     fn req(range_start: usize, start: usize, end: usize) -> HeatRequest {
         HeatRequest {
@@ -2053,7 +2122,7 @@ mod tests {
         assert_eq!(start, 7);
 
         let waiting = Arc::clone(&queue);
-        let join = thread::spawn(move || waiting.next_task().is_some());
+        let join = thread::spawn(move || waiting.next_task(None).is_some());
         thread::sleep(Duration::from_millis(20)); // let it reach the condvar
         assert!(!join.is_finished(), "it must not be handed the prefetch");
 
@@ -2065,6 +2134,140 @@ mod tests {
         assert!(
             join.join().expect("the worker must not panic"),
             "end_sweep owes a notify_all: nothing else was going to wake it"
+        );
+    }
+
+    // ── Seating the pool (spec 0270 test plan) ──────────────────────
+
+    /// A seating the machine running these tests does not have. Every
+    /// one of them fabricates its crew, because `affinity::seats()` is
+    /// `None` here — which is also why every *other* test in this file
+    /// still passes unchanged.
+    static SEATS: [Seat; 2] = [
+        Seat { cpu: 0, fast: true },
+        Seat {
+            cpu: 1,
+            fast: false,
+        },
+    ];
+
+    fn seated_crew(members: usize) -> crate::sweep::Crew {
+        crate::sweep::Crew::with_seats(Some(&SEATS), members)
+    }
+
+    /// S3. A `User` part is worth more on a core of its own than on a
+    /// third worker's share of a contended one, so the pool hands it
+    /// only to the workers it has seats for.
+    #[test]
+    fn an_unseated_worker_does_not_take_a_user_part() {
+        let queue = HeatRequestQueue::new();
+        queue.activate(5, req_at(5, Tier::User), 2);
+        let crew = seated_crew(3);
+
+        let unseated = crew.member(2);
+        assert!(
+            queue.next_task_inner(Some(&unseated), false).is_none(),
+            "a worker past the last seat is offered nothing, and parks"
+        );
+        assert!(
+            matches!(
+                queue.next_task_inner(Some(&crew.member(1)), false),
+                Some(Task::Walk { start: 5, .. })
+            ),
+            "and the very same part is there for a seated one — the part \
+             was withheld, not consumed"
+        );
+    }
+
+    /// G2. The kernel says nothing about core speeds on a VM, in CI, or
+    /// under a `taskset`, and then there are no seats to be off. Barring
+    /// every worker of an unseated crew would strand the query forever.
+    #[test]
+    fn an_unseated_worker_takes_a_user_part_when_nobody_is_seated() {
+        let queue = HeatRequestQueue::new();
+        queue.activate(5, req_at(5, Tier::User), 2);
+        let crew = crate::sweep::Crew::with_seats(None, 3);
+
+        assert!(
+            matches!(
+                queue.next_task_inner(Some(&crew.member(2)), false),
+                Some(Task::Walk { start: 5, .. })
+            ),
+            "the same index that is barred above is free here"
+        );
+    }
+
+    /// S3 cannot strand a query, however few seats there are: one
+    /// seated worker walks all of it, slowly, rather than the pool
+    /// walking none of it.
+    #[test]
+    fn a_user_query_is_served_when_only_one_worker_is_seated() {
+        static ONE: [Seat; 1] = [Seat { cpu: 0, fast: true }];
+        let queue = HeatRequestQueue::new();
+        queue.activate(5, req_at(5, Tier::User), crate::sweep::SWEEP_PARTS);
+        let crew = crate::sweep::Crew::with_seats(Some(&ONE), 4);
+
+        let me = crew.member(0);
+        let mut parts = Vec::new();
+        while let Some(Task::Walk { part, .. }) = queue.next_task_inner(Some(&me), false) {
+            parts.push(part);
+        }
+        parts.sort_unstable();
+        assert_eq!(
+            parts,
+            (0..crate::sweep::SWEEP_PARTS).collect::<Vec<_>>(),
+            "every part of the query must reach the one worker allowed it"
+        );
+    }
+
+    /// S6. Nothing resets the crew between queries, so the invariant
+    /// has to be that draining one vacates every chair by itself —
+    /// otherwise the next query inherits a rescue and re-seats onto
+    /// seats that are still taken.
+    #[test]
+    fn a_drained_query_leaves_every_chair_vacant() {
+        let queue = HeatRequestQueue::new();
+        queue.activate(5, req_at(5, Tier::User), 2);
+        let crew = seated_crew(2);
+        // Stands in for the `sit()` the walk arm does. `lend` publishes
+        // the chair without narrowing this thread, so the test states
+        // the invariant without moving itself onto a CPU.
+        for (i, seat) in SEATS.iter().enumerate() {
+            crew.member(i).lend(*seat);
+        }
+        assert!(crew.occupied(0) && crew.occupied(1));
+
+        for i in 0..2 {
+            let me = crew.member(i);
+            while queue.next_task_inner(Some(&me), false).is_some() {}
+        }
+        assert!(
+            !crew.occupied(0) && !crew.occupied(1),
+            "the last worker to run out donates to nobody and vacates all \
+             the same"
+        );
+    }
+
+    /// S4 and G5: the widen that follows the last `User` part is owed
+    /// exactly once. The mask itself is not observable here — `widen()`
+    /// is inert wherever `apply()` declined, which is everywhere this
+    /// test runs — so what is asserted is the decision that drives it:
+    /// `leave` reports a seat given back on the first call and not on
+    /// the ones after, so a worker parking repeatedly does not re-widen.
+    #[test]
+    fn a_worker_widens_after_its_last_user_part() {
+        let crew = seated_crew(2);
+        let me = crew.member(0);
+        me.lend(SEATS[0]);
+
+        assert!(me.leave(), "the seat it held is the widen it owes");
+        assert!(
+            !me.leave() && !me.leave(),
+            "and a worker that parks again owes nothing further"
+        );
+        assert!(
+            !crew.member(1).leave(),
+            "a worker that never sat never widens either"
         );
     }
 

@@ -26,7 +26,7 @@ fn determine_root_type(
     ctx: &mut DescriptorContext,
     root_type: RootType<'_>,
 ) -> Result<(Option<MessageDescriptor>, RankedCandidates), DecodeError> {
-    determine_root_type_meanwhile(blob, ctx, root_type, 1, || ()).map(|(d, c, ())| (d, c))
+    determine_root_type_meanwhile(blob, ctx, root_type, 1, |_| ()).map(|(d, c, ())| (d, c))
 }
 
 #[test]

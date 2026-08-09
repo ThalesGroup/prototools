@@ -145,6 +145,15 @@ Two smaller facts fall out of the same measurements and shape the fix:
   with another. `widen()` remains for every other spawn site and for
   the unseated case.
 
+  **Corrected 2026-08-09 (spec 0270 S9).** As shipped, the seat count
+  *replaced* `--jobs` rather than lowering it, so on a hybrid host
+  `protolens -j 2` would have spawned 11 threads. `--jobs` is a ceiling
+  and not a target (spec 0217 S4), and seating a member per core is a
+  reason to spawn fewer threads, never a licence to overrun the number
+  the caller allowed. No test caught it: `affinity::seats()` is `None`
+  on every machine the suite runs on, and there the expression was
+  already right.
+
 - **S3. The main thread takes a seat on the drawing core once
   `meanwhile` returns, and pulls parts like any worker.** It already
   owns that core and is otherwise blocked in `join` — spec 0265's

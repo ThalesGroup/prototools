@@ -285,9 +285,14 @@ pub(super) fn bounded_fixture_under(
 ) -> App {
     let mut ctx = ctx_from_fds(tag, fds);
     let blob = wrapped(blob);
-    let (root_desc, root_candidates, arena) =
-        crate::decode::resolve_root_type_and_arena(&blob, &mut ctx, RootType::Named(root), 1)
-            .unwrap();
+    let (root_desc, root_candidates, arena) = crate::decode::resolve_root_type_and_arena(
+        &blob,
+        &mut ctx,
+        RootType::Named(root),
+        1,
+        |_| {},
+    )
+    .unwrap();
     let decoded = crate::decode::render_resolved(
         blob,
         &mut ctx,
