@@ -13,6 +13,8 @@ use std::sync::OnceLock;
 use nix::sched::{sched_getaffinity, sched_setaffinity, CpuSet};
 use nix::unistd::Pid;
 
+use super::Seat;
+
 /// The mask every thread protolens spawns adopts — `Some` only once the
 /// main thread has actually been narrowed, so [`widen`] costs nothing on
 /// the overwhelmingly common machine where [`apply`] declined.
@@ -21,6 +23,16 @@ use nix::unistd::Pid;
 /// subtracts the drawing core from it, and that subtraction is the whole
 /// of the reservation: every spawn site already calls [`widen`].
 static WORKER: OnceLock<CpuSet> = OnceLock::new();
+
+/// Spec 0269 S1: one seat per physical core of the worker mask, fast
+/// cores first. Set exactly when [`WORKER`] is, so a machine spec 0264
+/// declined on seats nobody.
+static SEATS: OnceLock<Vec<Seat>> = OnceLock::new();
+
+/// Spec 0269 S3: the seat the main thread names once `meanwhile` is
+/// done. Set only when spec 0265 reserved a whole physical core, since
+/// otherwise there is no core the main thread has to itself to lend.
+static DRAWING: OnceLock<Seat> = OnceLock::new();
 
 /// `Pid::from_raw(0)` is "the calling thread" to both affinity calls.
 fn me() -> Pid {
@@ -37,7 +49,7 @@ fn apply_at(root: &Path) {
     let Ok(inherited) = sched_getaffinity(me()) else {
         return;
     };
-    let Some((main, worker)) = plan(root, &to_set(&inherited)) else {
+    let Some(plan) = plan(root, &to_set(&inherited)) else {
         return;
     };
 
@@ -48,20 +60,41 @@ fn apply_at(root: &Path) {
     // session to the size of the fast set.
     let _ = crate::sweep::available_cpus();
 
-    let (Some(main), Some(worker)) = (to_mask(&main), to_mask(&worker)) else {
+    let (Some(main), Some(worker)) = (to_mask(&plan.main), to_mask(&plan.worker)) else {
         return;
     };
     if sched_setaffinity(me(), &main).is_ok() {
         let _ = WORKER.set(worker);
+        if !plan.seats.is_empty() {
+            let _ = SEATS.set(plan.seats);
+        }
+        if let Some(drawing) = plan.drawing {
+            let _ = DRAWING.set(drawing);
+        }
     }
 }
 
-/// What the main thread keeps and what every spawned thread adopts, or
-/// `None` if this machine gives no reason to touch either.
+/// Everything this machine's topology decides, or `None` if it gives no
+/// reason to touch anything.
+struct Plan {
+    /// Spec 0264/0265: the CPUs the main thread keeps.
+    main: BTreeSet<usize>,
+    /// Spec 0264 S7: the CPUs every spawned thread adopts through
+    /// [`widen`].
+    worker: BTreeSet<usize>,
+    /// Spec 0269 S1: one seat per physical core of `worker`.
+    seats: Vec<Seat>,
+    /// Spec 0269 S3: the CPU the main thread lends the sweep, present
+    /// only where spec 0265 gave it a whole physical core.
+    drawing: Option<Seat>,
+}
+
+/// What this machine's topology decides, or `None` if it gives no reason
+/// to touch anything.
 ///
 /// Pure, so that the whole decision is testable on a machine that would
 /// decline: only the two `sched_setaffinity` calls above are not.
-fn plan(root: &Path, inherited: &BTreeSet<usize>) -> Option<(BTreeSet<usize>, BTreeSet<usize>)> {
+fn plan(root: &Path, inherited: &BTreeSet<usize>) -> Option<Plan> {
     let online = read_cpu_list(&root.join("devices/system/cpu/online"))?;
 
     // Spec 0264 S4: a mask narrower than the machine means a human, a
@@ -77,15 +110,94 @@ fn plan(root: &Path, inherited: &BTreeSet<usize>) -> Option<(BTreeSet<usize>, BT
     // Spec 0265: the main thread takes one whole physical core and the
     // workers give it up. Declining leaves spec 0264 intact rather than
     // undoing it — the main thread still gets the fast cluster.
-    Some(match drawing_core(root, &fast) {
-        Some(drawing) => (drawing.clone(), inherited - &drawing),
-        None => (fast, inherited.clone()),
+    //
+    // Spec 0269 S3: the main thread lends *one* CPU of the core it was
+    // given, and only when it was given a whole one. Where spec 0265
+    // declined there is no core it has to itself, so there is nothing
+    // to lend and the workers are already sitting on the fast cluster.
+    let (main, worker, drawing) = match drawing_core(root, &fast) {
+        Some(core) => {
+            let seat = Seat {
+                cpu: *core.first()?,
+                fast: true,
+            };
+            (core.clone(), inherited - &core, Some(seat))
+        }
+        None => (fast.clone(), inherited.clone(), None),
+    };
+    Some(Plan {
+        // An empty seating declines spec 0269 and nothing else: a
+        // machine whose sibling lists are unreadable still gets spec
+        // 0264, which needs no topology beyond the fast set.
+        seats: seating(root, &worker, &fast).unwrap_or_default(),
+        drawing,
+        main,
+        worker,
     })
+}
+
+/// One CPU per physical core of `cpus`, fast cores first and by CPU
+/// number within that (spec 0269 S1).
+///
+/// A core contributes its lowest-numbered CPU — arbitrary, but a
+/// function of the topology alone, so two runs on one machine seat the
+/// crew identically. `None` if any CPU's sibling list is unreadable or
+/// does not name itself, because a partial seating would silently put
+/// two workers on one core, which is the whole thing S2 exists to
+/// prevent.
+fn seating(root: &Path, cpus: &BTreeSet<usize>, fast: &BTreeSet<usize>) -> Option<Vec<Seat>> {
+    let mut cores: Vec<BTreeSet<usize>> = Vec::new();
+    let mut seats: Vec<Seat> = Vec::new();
+    // `cpus` iterates ascending, so the first CPU seen on a core is its
+    // lowest-numbered one.
+    for cpu in cpus {
+        let path = root.join(format!(
+            "devices/system/cpu/cpu{cpu}/topology/thread_siblings_list"
+        ));
+        let siblings = read_cpu_list(&path)?;
+        if !siblings.contains(cpu) {
+            return None; // A list that omits its own CPU is not one.
+        }
+        if cores.contains(&siblings) {
+            continue;
+        }
+        cores.push(siblings);
+        seats.push(Seat {
+            cpu: *cpu,
+            fast: fast.contains(cpu),
+        });
+    }
+    // Fast first, so that the workers spawned earliest — which are the
+    // ones that draw the first parts — sit on the best cores.
+    seats.sort_by_key(|seat| (!seat.fast, seat.cpu));
+    Some(seats)
 }
 
 pub(super) fn widen() {
     if let Some(worker) = WORKER.get() {
         let _ = sched_setaffinity(me(), worker);
+    }
+}
+
+pub(super) fn seats() -> Option<&'static [Seat]> {
+    SEATS.get().map(Vec::as_slice)
+}
+
+pub(super) fn drawing_seat() -> Option<Seat> {
+    DRAWING.get().copied()
+}
+
+pub(super) fn this_thread() -> i32 {
+    nix::unistd::gettid().as_raw()
+}
+
+pub(super) fn pin(thread: i32, cpu: usize) {
+    let mut mask = CpuSet::new();
+    if mask.set(cpu).is_ok() {
+        // Spec 0269 S7: a single CPU, so the mask cannot contain the one
+        // the thread is already on — which is the only condition under
+        // which the kernel moves a running, never-sleeping thread.
+        let _ = sched_setaffinity(Pid::from_raw(thread), &mask);
     }
 }
 
@@ -386,9 +498,100 @@ mod tests {
     fn a_worker_mask_excludes_the_drawing_core() {
         let dir = host_root("worker-mask");
         let inherited: BTreeSet<usize> = (0..=13).collect();
-        let (main, worker) = plan(&dir, &inherited).expect("the host layout is answerable");
-        assert_eq!(main, set(&[0, 1]));
-        assert_eq!(worker, (2..=13).collect::<BTreeSet<_>>());
+        let plan = plan(&dir, &inherited).expect("the host layout is answerable");
+        assert_eq!(plan.main, set(&[0, 1]));
+        assert_eq!(plan.worker, (2..=13).collect::<BTreeSet<_>>());
+    }
+
+    /// Spec 0269 S1: one CPU per *physical* core, the drawing core
+    /// absent because the workers gave it up, and the fast seat first.
+    #[test]
+    fn a_seating_plan_is_one_cpu_per_physical_core() {
+        let dir = host_root("seating");
+        let inherited: BTreeSet<usize> = (0..=13).collect();
+        let plan = plan(&dir, &inherited).expect("the host layout is answerable");
+
+        // Core {2,3} contributes cpu 2 alone — cpu 3 is its hyperthread,
+        // and a second worker there would buy 4% throughput for 1.92x
+        // the latency on the part each is walking.
+        let expected: Vec<Seat> = std::iter::once(Seat { cpu: 2, fast: true })
+            .chain((4..=13).map(|cpu| Seat { cpu, fast: false }))
+            .collect();
+        assert_eq!(plan.seats, expected);
+
+        // Spec 0269 S3: the main thread lends one CPU of core {0,1}.
+        assert_eq!(plan.drawing, Some(Seat { cpu: 0, fast: true }));
+    }
+
+    /// G2, which is every machine this repo is developed and tested on:
+    /// a kernel that names no fast CPUs seats nobody, and spec 0269 is
+    /// then not merely inert but absent.
+    #[test]
+    fn a_silent_kernel_seats_nobody() {
+        let dir = root_with("silent", &[]);
+        assert!(plan(&dir, &(0..=3).collect()).is_none());
+
+        // And a kernel that says which CPUs are online but nothing about
+        // how fast they are — a VM, and the development one in
+        // particular.
+        let dir = root_with("uniform-host", &[("devices/system/cpu/online", "0-3\n")]);
+        assert!(plan(&dir, &(0..=3).collect()).is_none());
+    }
+
+    /// Spec 0269 S7, and the one kernel behavior the whole endgame rests
+    /// on: `sched_setaffinity` moves a running, never-sleeping thread
+    /// only when the new mask excludes the CPU it is already on. [`pin`]
+    /// passes a single CPU for exactly this reason.
+    #[test]
+    fn a_migrated_thread_leaves_its_cpu() {
+        use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
+
+        let cpus = to_set(&sched_getaffinity(me()).expect("read this thread's affinity"));
+        let mut it = cpus.iter().copied();
+        let (Some(from), Some(to)) = (it.next(), it.next()) else {
+            return; // One CPU, so there is nowhere to move to.
+        };
+
+        let stop = AtomicBool::new(false);
+        let thread = AtomicI32::new(0);
+        let seen = AtomicUsize::new(from);
+
+        let observed = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                pin(nix::unistd::gettid().as_raw(), from);
+                thread.store(nix::unistd::gettid().as_raw(), Ordering::Release);
+                // Spin without ever yielding: a thread that sleeps would
+                // be re-placed on wake-up and would prove nothing.
+                while !stop.load(Ordering::Acquire) {
+                    if let Ok(cpu) = nix::sched::sched_getcpu() {
+                        seen.store(cpu, Ordering::Relaxed);
+                    }
+                }
+            });
+
+            while thread.load(Ordering::Acquire) == 0 {
+                std::hint::spin_loop();
+            }
+            pin(thread.load(Ordering::Relaxed), to);
+
+            // Measured at under a millisecond on the reference host; a
+            // second is not a race, it is a failure.
+            let mut observed = from;
+            for _ in 0..1000 {
+                observed = seen.load(Ordering::Relaxed);
+                if observed != from {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            stop.store(true, Ordering::Release);
+            observed
+        });
+
+        assert_eq!(
+            observed, to,
+            "a running thread must leave cpu{from} for cpu{to}"
+        );
     }
 
     /// G1 itself, on a machine that cannot demonstrate it: the fake root

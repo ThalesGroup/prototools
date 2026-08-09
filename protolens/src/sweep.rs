@@ -19,12 +19,16 @@
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::atomic::{
+    AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering as AtomicOrdering,
+};
 use std::thread;
+use std::time::Instant;
 
 use prototext_graph::build_scoring_graph::serial::ArchivedCompiledGraph;
 use prototext_graph::score::{partition_roots, score_subset, EntryScore, ScoringOpts};
 
+use crate::affinity::Seat;
 use crate::decode::RankedCandidates;
 
 /// Stack reservation for any thread that runs the scoring walk (spec 0180
@@ -212,35 +216,50 @@ pub(crate) fn ranked_with<T>(
     // published before the scope opens (`pb`, `graph`, `parts`) or
     // returned through `join`, which synchronizes already.
     let cursor = AtomicUsize::new(0);
-    // Spec 0218 S3: threads, not parts, bound the spawn. Spawning one per
-    // part would reinstate the fixed assignment the cursor exists to undo.
-    let threads = workers.min(parts.len());
+    // Spec 0269 S1/S2: where the kernel published a seating plan, one
+    // worker per *physical core* — two threads on the two hyperthreads
+    // of one core deliver 1.04 cores of throughput for 1.92x the latency
+    // on each, so the second one buys nothing and lengthens the part it
+    // is walking. Elsewhere, spec 0218 S3 unchanged: threads, not parts,
+    // bound the spawn, since spawning one per part would reinstate the
+    // fixed assignment the cursor exists to undo.
+    let seats = crate::affinity::seats();
+    let drawing = crate::affinity::drawing_seat();
+    let threads = seats.map_or(workers, <[Seat]>::len).min(parts.len());
+
+    // Spec 0269 S3: the main thread joins the pull loop after
+    // `meanwhile`, so it gets a chair of its own — the last one.
+    let crew: Vec<Chair> = (0..threads + 1).map(|_| Chair::vacant()).collect();
+    let pull = Pull {
+        pb,
+        graph,
+        opts: &opts,
+        parts: &parts,
+        cursor: &cursor,
+        cancel,
+        crew: &crew,
+        epoch: Instant::now(),
+    };
 
     let (runs, meanwhile_result) = thread::scope(|scope| {
         let handles: Vec<_> = (0..threads)
-            .map(|_| {
-                let cursor = &cursor;
-                let parts = &parts;
-                let opts = &opts;
+            .map(|i| {
+                let pull = &pull;
                 thread::Builder::new()
                     .name("protolens-sweep".to_string())
                     .stack_size(SCORING_THREAD_STACK_SIZE)
                     .spawn_scoped(scope, move || {
-                        // Spec 0264 S7: a sweep wants the whole machine,
-                        // not the fast cluster the main thread may have
-                        // narrowed itself to and which this thread
-                        // inherited across `clone(2)`.
-                        crate::affinity::widen();
-                        // Spec 0218 S4: one run per part, kept separate.
-                        // Concatenating a thread's parts would break the
-                        // sortedness `Merged` relies on.
-                        let mut runs = Vec::new();
-                        loop {
-                            let i = cursor.fetch_add(1, AtomicOrdering::Relaxed);
-                            let Some(part) = parts.get(i) else { break };
-                            runs.push(rank(score_subset(pb, graph, opts, part, cancel)));
+                        match seats.map(|seats| seats[i]) {
+                            // Spec 0269 S2.
+                            Some(seat) => pull.crew[i].sit(seat),
+                            // Spec 0264 S7: a sweep wants the whole
+                            // machine, not the fast cluster the main
+                            // thread may have narrowed itself to and
+                            // which this thread inherited across
+                            // `clone(2)`.
+                            None => crate::affinity::widen(),
                         }
-                        runs
+                        pull.run(i)
                     })
                     .expect("spawn sweep worker")
             })
@@ -248,16 +267,210 @@ pub(crate) fn ranked_with<T>(
 
         let meanwhile_result = meanwhile();
 
-        let runs: Vec<RankedCandidates> = handles
-            .into_iter()
-            // A worker panicking is the walk panicking; re-raise it here
-            // rather than letting a partial ranking look like an answer.
-            .flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
-            .collect();
+        // Spec 0269 S3: `meanwhile` is the reason spec 0265 reserved a
+        // core for this thread, and it is done. The machine's best core
+        // now joins the sweep for the part of it that decides the
+        // makespan, rather than standing idle inside `join`.
+        //
+        // This thread keeps its whole-core mask: it is about to block,
+        // so the seat below is a CPU it can give away, not one it holds
+        // against anybody.
+        let mut runs = match drawing {
+            Some(seat) => {
+                crew[threads].sit_without_pinning(seat);
+                pull.run(threads)
+            }
+            None => Vec::new(),
+        };
+
+        runs.extend(
+            handles
+                .into_iter()
+                // A worker panicking is the walk panicking; re-raise it
+                // here rather than letting a partial ranking look like
+                // an answer.
+                .flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))),
+        );
         (runs, meanwhile_result)
     });
 
     (Merged::new(runs).collect(), meanwhile_result)
+}
+
+/// A CPU number no seat can have, so one word says both "which CPU" and
+/// "nobody's".
+const VACANT: usize = usize::MAX;
+
+/// One crew member's published state (spec 0269 S4-S6).
+///
+/// Published rather than private because a donation is something one
+/// thread does *to* another: the donor reads every chair, picks a
+/// victim, and re-pins that victim's thread. The victim is inside
+/// `score_subset` throughout and never checks anything.
+struct Chair {
+    /// The member's kernel thread id, which is what `affinity::pin`
+    /// takes. Written once, before the member draws its first part.
+    thread: AtomicI32,
+    /// The CPU this member holds, or [`VACANT`] before it sits and
+    /// after it donates.
+    cpu: AtomicUsize,
+    /// Whether that CPU is one the kernel calls fast. Written by the
+    /// donor, after it wins the claim, so a rescued member stops looking
+    /// like a rescue target.
+    fast: AtomicBool,
+    /// Nanoseconds since the sweep opened at which the member started
+    /// the part it is walking, or 0 when it is between parts.
+    since: AtomicU64,
+}
+
+/// One chair as the chooser sees it (spec 0269 S5).
+///
+/// A plain snapshot, so that [`rescue`] is a pure function of the crew's
+/// state and can be tested on a machine that seats nobody.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Busy {
+    cpu: usize,
+    fast: bool,
+    since: u64,
+}
+
+/// Which member a donor on a `donor_fast` seat should rescue, if any
+/// (spec 0269 S5).
+///
+/// On a slower seat than the donor's, and among those the one that has
+/// been walking its part the longest. `detect_fast` is binary, so
+/// "slower" is exactly "the donor is fast and this one is not"; and
+/// longest-running is the only signal there is, since a part's remaining
+/// work is unknowable before the walk and the parts still running at the
+/// end are the expensive ones.
+///
+/// Ties break on the lower index, which matters only for the test — two
+/// members cannot start a part in the same nanosecond in practice.
+fn rescue(donor_fast: bool, crew: &[Busy]) -> Option<usize> {
+    if !donor_fast {
+        return None;
+    }
+    crew.iter()
+        .enumerate()
+        .filter(|(_, m)| !m.fast && m.cpu != VACANT && m.since != 0)
+        .min_by_key(|(i, m)| (m.since, *i))
+        .map(|(i, _)| i)
+}
+
+impl Chair {
+    fn vacant() -> Self {
+        Chair {
+            thread: AtomicI32::new(0),
+            cpu: AtomicUsize::new(VACANT),
+            fast: AtomicBool::new(false),
+            since: AtomicU64::new(0),
+        }
+    }
+
+    /// Take `seat` and move onto it (spec 0269 S2).
+    fn sit(&self, seat: Seat) {
+        crate::affinity::pin(crate::affinity::this_thread(), seat.cpu);
+        self.sit_without_pinning(seat);
+    }
+
+    /// Take `seat` without narrowing this thread to it — what the main
+    /// thread does, since it owns the whole core the seat is on.
+    fn sit_without_pinning(&self, seat: Seat) {
+        self.thread
+            .store(crate::affinity::this_thread(), AtomicOrdering::Relaxed);
+        self.fast.store(seat.fast, AtomicOrdering::Relaxed);
+        self.cpu.store(seat.cpu, AtomicOrdering::Release);
+    }
+
+    fn snapshot(&self) -> Busy {
+        Busy {
+            cpu: self.cpu.load(AtomicOrdering::Acquire),
+            fast: self.fast.load(AtomicOrdering::Relaxed),
+            since: self.since.load(AtomicOrdering::Relaxed),
+        }
+    }
+
+    /// Give this chair's seat to the straggler, and leave (spec 0269 S4).
+    ///
+    /// A worker reaching the end of the cursor *is* the event that a core
+    /// has gone idle, so this is the whole of the endgame: no deadline,
+    /// no estimate of when the tail begins, no sentinel.
+    fn donate(&self, crew: &[Chair]) {
+        let cpu = self.cpu.swap(VACANT, AtomicOrdering::AcqRel);
+        // An unseated crew — G2, and the whole of it.
+        if cpu == VACANT {
+            return;
+        }
+        let fast = self.fast.load(AtomicOrdering::Relaxed);
+        loop {
+            let seen: Vec<Busy> = crew.iter().map(Chair::snapshot).collect();
+            let Some(who) = rescue(fast, &seen) else {
+                return;
+            };
+            // Spec 0269 S6: two members can go idle at once and pick the
+            // same victim. The claim is this exchange, and the loser
+            // re-reads and looks again — without it one thread would be
+            // pinned twice and one donated core wasted.
+            if crew[who]
+                .cpu
+                .compare_exchange(
+                    seen[who].cpu,
+                    cpu,
+                    AtomicOrdering::AcqRel,
+                    AtomicOrdering::Relaxed,
+                )
+                .is_ok()
+            {
+                crew[who].fast.store(true, AtomicOrdering::Relaxed);
+                crate::affinity::pin(crew[who].thread.load(AtomicOrdering::Relaxed), cpu);
+                return;
+            }
+        }
+    }
+}
+
+/// Everything a puller shares, so that the spawned workers and the main
+/// thread run the identical loop (spec 0269 S3).
+struct Pull<'a> {
+    pb: &'a [u8],
+    graph: &'a ArchivedCompiledGraph,
+    opts: &'a ScoringOpts,
+    parts: &'a [Vec<u32>],
+    cursor: &'a AtomicUsize,
+    cancel: Option<&'a AtomicBool>,
+    crew: &'a [Chair],
+    /// What `since` is measured from. An `Instant` is not storable in an
+    /// atomic, and the crew only ever compares start times with each
+    /// other, so one origin per sweep is enough.
+    epoch: Instant,
+}
+
+impl Pull<'_> {
+    /// Draw parts until the cursor is empty, then donate the chair.
+    fn run(&self, me: usize) -> Vec<RankedCandidates> {
+        let chair = &self.crew[me];
+        // Spec 0218 S4: one run per part, kept separate. Concatenating a
+        // thread's parts would break the sortedness `Merged` relies on.
+        let mut runs = Vec::new();
+        loop {
+            let i = self.cursor.fetch_add(1, AtomicOrdering::Relaxed);
+            let Some(part) = self.parts.get(i) else { break };
+            // Non-zero even in the first nanosecond of the sweep, so that
+            // 0 keeps its one meaning of "between parts".
+            let since = self.epoch.elapsed().as_nanos() as u64 + 1;
+            chair.since.store(since, AtomicOrdering::Relaxed);
+            runs.push(rank(score_subset(
+                self.pb,
+                self.graph,
+                self.opts,
+                part,
+                self.cancel,
+            )));
+            chair.since.store(0, AtomicOrdering::Relaxed);
+        }
+        chair.donate(self.crew);
+        runs
+    }
 }
 
 /// The graph's roots cut into parts, once for the process (spec 0262
@@ -693,6 +906,88 @@ mod tests {
             Merged::new(reversed).collect::<RankedCandidates>(),
             expected
         );
+    }
+
+    fn busy(cpu: usize, fast: bool, since: u64) -> Busy {
+        Busy { cpu, fast, since }
+    }
+
+    /// Spec 0269 S5, over a fabricated crew — which is the only way to
+    /// state it, since the machine running the test seats nobody.
+    #[test]
+    fn a_rescue_takes_the_longest_running_slow_seat() {
+        let crew = [
+            busy(0, true, 10),  // fast, and the longest-running of all
+            busy(4, false, 40), // slow, started late
+            busy(5, false, 20), // slow, started earliest of the slow
+        ];
+        assert_eq!(
+            rescue(true, &crew),
+            Some(2),
+            "a fast seat is never a victim, however long it has run"
+        );
+
+        assert_eq!(
+            rescue(false, &crew),
+            None,
+            "a donor that is not faster has nothing to offer"
+        );
+
+        assert_eq!(
+            rescue(true, &[busy(4, false, 0), busy(5, false, 0)]),
+            None,
+            "a member between parts is not a straggler"
+        );
+        assert_eq!(
+            rescue(true, &[busy(VACANT, false, 30)]),
+            None,
+            "a member that has already left its seat is not a straggler"
+        );
+        assert_eq!(rescue(true, &[]), None);
+    }
+
+    /// Spec 0269 S6. Two members go idle at once and see the same
+    /// straggler; exactly one donation lands, and the loser moves on
+    /// rather than pinning the same thread a second time.
+    #[test]
+    fn a_rescue_is_claimed_once() {
+        // A thread id no thread has, so the `pin` inside `donate` fails
+        // with ESRCH and this test moves no real thread anywhere. It is
+        // the claim that is under test, not the migration.
+        let nobody = i32::MAX;
+        let crew: Vec<Chair> = (0..3).map(|_| Chair::vacant()).collect();
+        for (i, cpu) in [(0usize, 2usize), (1, 3)] {
+            crew[i].thread.store(nobody, AtomicOrdering::Relaxed);
+            crew[i].fast.store(true, AtomicOrdering::Relaxed);
+            crew[i].cpu.store(cpu, AtomicOrdering::Relaxed);
+        }
+        crew[2].thread.store(nobody, AtomicOrdering::Relaxed);
+        crew[2].cpu.store(9, AtomicOrdering::Relaxed);
+        crew[2].since.store(1, AtomicOrdering::Relaxed);
+
+        thread::scope(|scope| {
+            let crew = &crew;
+            for i in 0..2 {
+                scope.spawn(move || crew[i].donate(crew));
+            }
+        });
+
+        let landed = crew[2].cpu.load(AtomicOrdering::Acquire);
+        assert!(
+            landed == 2 || landed == 3,
+            "the straggler must hold exactly one donor's seat, got {landed}"
+        );
+        assert!(
+            crew[2].fast.load(AtomicOrdering::Relaxed),
+            "a rescued member must stop looking like a rescue target"
+        );
+        for donor in crew.iter().take(2) {
+            assert_eq!(
+                donor.cpu.load(AtomicOrdering::Acquire),
+                VACANT,
+                "a donor leaves its seat whether or not it won the claim"
+            );
+        }
     }
 
     /// The merge is lazy: taking two elements must not drain the runs
