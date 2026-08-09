@@ -6,7 +6,10 @@ SPDX-License-Identifier: MIT
 
 # 0249 — a large document answers the user first
 
-Status: draft (S4 already implemented — see below)
+Status: implemented, across this spec and eight descendants — see the
+        Measured outcome for which item landed where. S9 is the one item
+        deliberately never built.
+Implemented in: 2026-08-08
 App: protolens
 Refs: docs/specs/0216-the-arena-is-a-function-of-the-bytes.md (the
         immutable arena: the structure exists before any rendering
@@ -364,8 +367,9 @@ agree byte for byte.
 ### Confirming, invalidating, baking
 
 - **S5. Confirming an override splices a row-bounded render and queues
-  the unbounded one. — MECHANISM IMPLEMENTED 2026-08-07; no caller
-  passes a budget yet.** The work stays synchronous on the event
+  the unbounded one. — MECHANISM IMPLEMENTED 2026-08-07; the policy
+  shipped with spec 0255 (2026-08-08), which is where the two budgets
+  and their callers live.** The work stays synchronous on the event
   thread, in the order it has today — render, splice, draw — because at
   one screenful it is cheap enough to be. Every phase of the ≈5 s table
   shrinks with the row count.
@@ -388,9 +392,13 @@ agree byte for byte.
   boundary and says so by folding. A row budget also never meets the
   render cache, which spec 0251 S5 confined to the preview path.
 
-  What is left is the policy — which callers ask for a budget, and how
-  big — because until the bake exists (S11) a bounded confirm would
-  leave the document truncated with nothing to fill it back in.
+  What was left when this was written is the policy — which callers ask
+  for a budget, and how big — because until the bake exists (S11) a
+  bounded confirm would leave the document truncated with nothing to
+  fill it back in. Spec 0255 settled it: a confirm takes the pane's
+  height, the bake takes `BAKE_ROW_BUDGET`, and a headless export takes
+  no budget at all, which has to be an explicit flag rather than an
+  inference or a batch export silently truncates.
 
   **What a bounded confirm actually costs — measured 2026-08-07.** The
   googleapis root override, `/` → `FileDescriptorSet`, with every splice
@@ -420,8 +428,8 @@ agree byte for byte.
   document — S9 and S10, not a smaller budget.
 
 - **S6. Invalidating a subtree keeps its header and drops its
-  descendants — which is S5 with a budget of one.** This is the
-  multi-site case.
+  descendants — which is S5 with a budget of one. — IMPLEMENTED
+  2026-08-07, as nothing.** This is the multi-site case.
 
   An earlier draft of this item claimed that a node's own header does
   not depend on its own type, and that an ordinary `--as <fqdn>`
@@ -451,7 +459,7 @@ agree byte for byte.
   So S6 is not a separate code path; it is the row budget set to its
   floor.
 
-- **S7. Invalidation stays scoped to the affected subtrees.** It
+- **S7. Invalidation stays scoped to the affected subtrees. — HELD.** It
   already is (`collect_descendants`) and it must stay that way: a
   global invalidation would fold the whole document for a one-field
   override, and almost nothing would be searchable.
@@ -546,7 +554,8 @@ agree byte for byte.
   hot arrays, and declines. Do not build it without a new reason.
 
 - **S10. The viewport re-anchors on the node, never on the line
-  number.** When a bake lands and a subtree's real height replaces its
+  number. — IMPLEMENTED 2026-08-08 by spec 0259**, along with S10a and
+  S10b. When a bake lands and a subtree's real height replaces its
   folded one, the node the user is on keeps its screen row; absolute
   line numbers shift once, at that moment.
 
@@ -626,11 +635,28 @@ agree byte for byte.
   This is distinct from an auto-fold: a folded node *is* rendered, as
   one row, and is a perfectly good anchor.
 
-- **S11. The bake is the same work, moved.** It renders each queued
-  subtree unbounded, splices it under the S9 guard, and clears its
-  auto-fold. It is off the event thread, interruptible between
-  subtrees, and it writes `node_text` — which is storage — without
-  populating the render cache (spec 0251 S9).
+- **S11. The bake is the same work, moved. — IMPLEMENTED 2026-08-08 by
+  spec 0255, with two deviations.** It renders each queued subtree
+  unbounded, splices it under the S9 guard, and clears its auto-fold. It
+  is off the event thread, interruptible between subtrees, and it writes
+  `node_text` — which is storage — without populating the render cache
+  (spec 0251 S9).
+
+  **It is not off the event thread**, and there is no S9 guard. Both
+  fell out of finding 3 below: once spec 0254 made the worst step ~22 ms
+  the "running it from the idle arm in slices" option this item leaves
+  on the table became the cheap one, and a step that runs on the event
+  thread between two `try_recv` calls cannot race a second override, so
+  the era counter it would have needed guards nothing. The remaining
+  argument for a thread — that 7.5 s of slices is 7.5 s of a busy idle
+  arm — is answered by the idle arm being idle: the bake yields to the
+  channel between every step.
+
+  **The bake is also not the only claimant on `auto_folded` any more.**
+  Two later specs reorder it around somebody who is waiting: spec 0255
+  pays off the stops that are *on screen* first (this item's own S8, as
+  a queue in front of the queue), and spec 0261 drains a named subtree
+  synchronously when an export is about to read it as text.
 
   **It draws no frame per subtree.** By S1's depth-first rule the
   visible rows after a confirm are already final, so a landing bake
@@ -713,7 +739,10 @@ agree byte for byte.
 
 ### Saying what is not yet known
 
-- **S12. The status ladder gains `Unbaked`, in violet.** It becomes
+- **S12. The status ladder gains `Unbaked`, in violet. — IMPLEMENTED
+  2026-08-08 by spec 0260**, which also gave the fold's `{ ... }`
+  summary the same violet, so an unread region says so where the reader
+  is looking rather than only in the toggle's gutter. It becomes
   `Ok < Unbaked < Unknown < NonCanonical < Invalid`, colored with
   `style_for(AnnotationLandmark)` — the same violet as `pack_size`'s
   length-prefix accent (spec 0225, amended 2026-08-06).
@@ -1105,17 +1134,101 @@ thousands of splices.
 
 ## Measured outcome
 
-Filled in at implementation. It must include: time from `Enter` on a
-root override to the next frame, before and after, **with the same
-phase breakdown as the 4.12 s table**, so it is visible that every row
-shrank together; the renderer's per-call setup cost against its per-row
-cost, and the total for a `--field-name` override at its real site
-count (open question 2); the cost of expanding one auto-fold; the
-unbounded bake's wall time and whether the UI stays responsive across
-it; a search run during a bake, reporting both the swept time and the
-size of the remainder; and a re-run of the full-document search
-confirming G3 against 183–272 ms. State plainly anything that did not
-improve.
+This spec was implemented as a campaign, so each item's numbers were
+taken and are kept where that item landed. This section is the index and
+the totals; every table cited here is in the named spec's own Measured
+outcome, against googleapis.desc (25.6 MB, 7 771 files, 4 737 283 slots),
+release, pinned.
+
+### Where each item landed
+
+| item | shipped in | date |
+|---|---|---|
+| S1 bounded render, S3 two fold sets, S4 arena verdict | this spec | 2026-08-07 |
+| S5 mechanism (`row_budget` on `splice_override`) | this spec | 2026-08-07 |
+| S6 (the budget at its floor) | this spec — no code of its own | 2026-08-07 |
+| S8 hand-unfold | this spec | 2026-08-07 |
+| S2, S7 | properties, held by construction | — |
+| **S9** | **never built** — see the item | — |
+| S5 policy, S8 on scroll, S11 bake | 0255 | 2026-08-08 |
+| S10, S10a, S10b | 0259 | 2026-08-08 |
+| S12 | 0260 | 2026-08-08 |
+| S13 | this spec | 2026-08-08 |
+
+Five specs fell out along the way and are part of the result: **0254**
+(the ancestor climb carries a difference), **0256** (the confirm stops
+freeing the document it replaces), **0257** (the startup render is
+bounded too), **0258** (a revealed subtree is the subtree it would have
+been) and **0261** (an export waits for the lines it names).
+
+### The confirm
+
+The root override, `/` → `FileDescriptorSet`, `Enter` to the next frame:
+
+| | before | after | in |
+|---|---|---|---|
+| whole confirm | **4.55 s** | **0.59 s** | 0255 |
+| then the deferred frees + fold scrub | 0.44 s | **0.16 s** | 0256 |
+
+The two rows are **not** multipliable: 0255 timed the whole of
+`load_overrides` and 0256 ran a single-binary A/B on a narrower timer,
+which is why its before column is 0.44 s and not 0.59 s. Take 7.7x from
+the first and 2.8x from the second, and do not quote a product.
+
+**Every row of the 4.12 s table shrank** — the phase
+breakdown is S5's table above (render 1.58 → 0.005 s, `overlay_spans`
+0.70 → 0.21, line counts 0.10 → 0.0015 by spec 0254, status/drop/fresh
+1.18 → 0.01) with spec 0256 then taking 0.20 s of `Box<str>` frees and
+0.078 s of fold scrub out of what remained.
+
+**Two things did not improve, and both were named in advance.** The
+vacate loop is 0.22 s per document-full whatever the budget is (S10b,
+open question 6), and `overlay_spans` keeps a ~0.21 s component that
+does not shrink with 5.28 M lines becoming 15 593. They are the floor
+this design has on this document.
+
+The renderer's own cost at multi-site scale (open question 2):
+**≈1.6 µs a site**, of which ≈1.3 µs is per-call setup — so a
+`--field-name` override at its real googleapis site count is ≈12 ms
+against 995 ms unbounded.
+
+### The bake, and G3
+
+70 894 steps at a 50-row pane, **worst step 25 ms**, two over 8 ms and
+none over 50 (0255). The drain is 5.42 / 5.51 / 5.78 s at pane heights
+50 / 500 / 5000 — flat, after 0255's `clamp_pan_offset` guard; before it
+the same work cost 6.55 / 15.53 / 102.24 s, which is a pre-existing
+per-splice cost the bake merely made visible. Spec 0256's deferred frees
+move ≈0.3 s (≈5%) into the drain, which is N1's conserved work landing
+where nobody waits for it.
+
+Expanding **one** auto-fold, over all 7 770 of the corpus's stops each
+drained on its own (0261): median **168 µs**, p90 780 µs, p99 3.9 ms,
+worst 226 ms.
+
+### G2, at corpus scale
+
+The drained document is byte-identical to the unbounded one —
+`cmp`-clean at 232 892 696 B, at pane heights 50, 500 and 5000, i.e.
+three different confirms (0255); byte-identical again across 419 723
+separate bounded expansions in the S11 simulation; and byte-identical
+per subtree over 20 root children sampled across the file (0261). Spec
+0257's bounded *startup* reproduces its document at 249 734 534 B.
+
+### Startup, which was not in this spec's scope and became so
+
+Spec 0257 applied S1 to the first render. End-to-end `quit` on
+googleapis: typed **8.72 → 1.10 s**, `--raw` **4.65 → 1.13 s**, lines
+indexed 5 279 383 → 15 575.
+
+### What was not re-measured
+
+**The search.** S13's remainder is exact by construction — both surfaces
+read `auto_folded` directly — and a search over a bounded document
+sweeps strictly fewer slots than over an unbounded one, so G3's
+183–272 ms can only have improved. Neither the during-a-bake sweep nor
+the full-document re-run was timed, and no number should be quoted for
+them.
 
 `Arena::probes_as_message` (S4) is already measured above: +95 ms on
 the arena build, ~590 KB, 806 294 of 4 737 283 slots.
