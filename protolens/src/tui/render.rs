@@ -1270,9 +1270,10 @@ impl App {
             self.cursor_composed_row()
         };
         let total_rows = self.composed_row_count();
-        let (blank_rows, rows) =
-            self.scroll
-                .window(inner.height as usize, self.row_height(), total_rows);
+        let heights = self.row_heights();
+        let (blank_rows, rows) = self
+            .scroll
+            .window(inner.height as usize, &heights, total_rows);
         // Collected (not a borrowed slice) so the heat-cue pass below can
         // mutate `self.heat_range_cache`/`self.heat_current_score_cache`
         // — a plain slice would keep `self` borrowed immutably for the
@@ -1583,7 +1584,12 @@ impl App {
                 // `window_styles`, which spec 0223 clears then. So the
                 // row goes monochrome with the document row it echoes,
                 // rather than the two disagreeing.
-                let wire_line = self.wire.then(|| {
+                //
+                // Spec 0268 S1: only the rows in the shown run get one,
+                // which is the same question `heights` already answered
+                // for the viewport.
+                let shows_bytes = heights.height(self.scroll.index + row) > 1;
+                let wire_line = shows_bytes.then(|| {
                     let source = self.display_row_text(display_row);
                     let indent = source.len() - source.trim_start().len();
                     let palette = self.wire_palette(row, &source);
@@ -1693,11 +1699,11 @@ impl App {
                 self.total_lines(),
                 // Spec 0244 S10: in terminal rows, the unit the signed
                 // top is counted in — `total_rows` is document lines,
-                // which in wire mode are two rows thick.
+                // and the ones showing their bytes are two rows thick.
                 viewport_label(
                     self.scroll_top(),
                     inner.height as usize,
-                    total_rows * self.row_height(),
+                    heights.offset(total_rows),
                 ),
             );
             let right = if half_width {
@@ -1909,7 +1915,9 @@ impl App {
             );
             self.last_override_highlight = Some(self.override_highlight);
         }
-        let (blank_rows, rows) = self.override_scroll.window(list_height, 1, total_rows);
+        let (blank_rows, rows) = self
+            .override_scroll
+            .window(list_height, &FLAT_ROWS, total_rows);
         let (start, end) = (rows.start, rows.end);
 
         // Spec 0193 S4: drawn only now, since the viewport label needs
@@ -1918,7 +1926,11 @@ impl App {
             "L{}/{}  {}",
             self.override_highlight + 1,
             total_rows,
-            viewport_label(self.override_scroll.top(1), list_height, total_rows),
+            viewport_label(
+                self.override_scroll.top(&FLAT_ROWS),
+                list_height,
+                total_rows
+            ),
         );
         let text = statusline_text(&left, Some(&right), split[1].width as usize);
         frame.render_widget(Paragraph::new(Line::styled(text, style)), split[1]);

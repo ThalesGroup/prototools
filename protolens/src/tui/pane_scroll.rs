@@ -9,6 +9,77 @@ use std::ops::Range;
 
 use super::{App, DisplayRow};
 
+/// How tall each content row is, in terminal rows (spec 0268 S4).
+///
+/// Every row is one terminal row except those in `tall`, which are two —
+/// the wire row (spec 0225) is drawn under them. Spec 0268 N1's
+/// single-span rule is what keeps this three numbers instead of a set:
+/// the map from a content row to the terminal row it starts on is
+/// arithmetic, and invertible in the same form.
+///
+/// The side panes have no wire rows, so they pass `RowHeights::default()`
+/// and every method below degenerates to the identity.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct RowHeights {
+    /// The content rows drawn two terminal rows tall. Empty means none.
+    tall: Range<usize>,
+}
+
+impl RowHeights {
+    /// The rows in `tall` are two terminal rows; everything else is one.
+    pub(super) fn new(tall: Range<usize>) -> Self {
+        Self {
+            tall: if tall.is_empty() { 0..0 } else { tall },
+        }
+    }
+
+    /// The terminal row that content row `row` starts on, counted from
+    /// the top of content row 0.
+    pub(super) fn offset(&self, row: usize) -> usize {
+        row + (row.clamp(self.tall.start, self.tall.end) - self.tall.start)
+    }
+
+    /// How many terminal rows content row `row` occupies.
+    pub(super) fn height(&self, row: usize) -> usize {
+        if self.tall.contains(&row) {
+            2
+        } else {
+            1
+        }
+    }
+
+    /// `offset`'s inverse: the content row containing terminal row
+    /// `offset`, and how far into it that row is.
+    pub(super) fn row_at(&self, offset: usize) -> (usize, usize) {
+        if offset < self.tall.start {
+            return (offset, 0);
+        }
+        let past = offset - self.tall.start;
+        let span = self.tall.len() * 2;
+        if past < span {
+            (self.tall.start + past / 2, past % 2)
+        } else {
+            (self.tall.end + (past - span), 0)
+        }
+    }
+
+    /// How many content rows starting at `start` it takes to *cover*
+    /// `terminal_rows` — a partial row at the end counts, because it is
+    /// still drawn.
+    pub(super) fn rows_to_cover(&self, start: usize, terminal_rows: usize) -> usize {
+        let (row, part) = self.row_at(self.offset(start) + terminal_rows);
+        (row + usize::from(part > 0)).saturating_sub(start)
+    }
+
+    /// How many content rows starting at `start` fit *whole* within
+    /// `terminal_rows`.
+    pub(super) fn rows_fitting(&self, start: usize, terminal_rows: usize) -> usize {
+        self.row_at(self.offset(start) + terminal_rows)
+            .0
+            .saturating_sub(start)
+    }
+}
+
 /// A pane's vertical viewport: the first content row it draws, plus the
 /// signed remainder in terminal rows.
 ///
@@ -39,20 +110,20 @@ pub(super) struct PaneScroll {
 impl PaneScroll {
     /// The top edge of the viewport, in terminal rows counted from the
     /// top of content row 0. Negative means blank rows above it.
-    pub(super) fn top(&self, row_height: usize) -> isize {
-        (self.index * row_height) as isize + self.skip
+    pub(super) fn top(&self, heights: &RowHeights) -> isize {
+        heights.offset(self.index) as isize + self.skip
     }
 
     /// Puts the viewport's top edge at `top`, splitting it back into the
     /// whole row and the remainder. The only writer of the pair.
-    pub(super) fn set_top(&mut self, top: isize, row_height: usize) {
-        let row_height = row_height as isize;
+    pub(super) fn set_top(&mut self, top: isize, heights: &RowHeights) {
         if top < 0 {
             self.index = 0;
             self.skip = top;
         } else {
-            self.index = (top / row_height) as usize;
-            self.skip = top % row_height;
+            let (index, skip) = heights.row_at(top as usize);
+            self.index = index;
+            self.skip = skip as isize;
         }
     }
 
@@ -67,16 +138,20 @@ impl PaneScroll {
     pub(super) fn window(
         &self,
         pane_height: usize,
-        row_height: usize,
+        heights: &RowHeights,
         total: usize,
     ) -> (usize, Range<usize>) {
         let terminal_rows = (pane_height as isize + self.skip).max(0) as usize;
-        let rows = terminal_rows.div_ceil(row_height);
+        let rows = heights.rows_to_cover(self.index, terminal_rows);
         let start = self.index.min(total);
         let end = (self.index + rows).min(total);
         (self.skip.min(0).unsigned_abs(), start..end)
     }
 }
+
+/// Every content row one terminal row tall: the side panes always, and
+/// the main pane whenever no bytes are shown.
+pub(super) const FLAT_ROWS: RowHeights = RowHeights { tall: 0..0 };
 
 /// Which of a node's own rows an anchor names, in a form that survives
 /// the node's row count changing under it (spec 0259 S2).
@@ -90,6 +165,42 @@ pub(super) enum AnchorLine {
     /// baked in — stored as "the last one" instead, and resolved against
     /// whatever the count has become.
     Footer,
+}
+
+/// Spec 0268 S1: the one run of rows currently showing their bytes.
+///
+/// Held as a pair of nodes rather than a pair of line numbers for the
+/// same reason [`ScrollAnchor`] is: a splice renumbers every line below
+/// it, so a span kept as numbers slides off the rows it was pointing at.
+/// [`AnchorLine::Footer`] does the other half — it means "the node's
+/// last line, whatever the count has become", which is what lets a `W`
+/// at the root keep covering the lines a bake has not produced yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct WireSpan {
+    pub(super) first: WireAnchor,
+    pub(super) last: WireAnchor,
+}
+
+/// One end of a [`WireSpan`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct WireAnchor {
+    pub(super) node: usize,
+    pub(super) line: AnchorLine,
+}
+
+/// A [`WireSpan`] resolved to visible rows, and the structure it was
+/// resolved against.
+///
+/// Resolving costs two descents and the geometry asks for the answer
+/// several times a frame, so `App` keeps the last one. The two questions
+/// this answers are deliberately separate fields rather than nested
+/// `Option`s: whether an answer exists at all is the *cache's* business,
+/// while `rows` being `None` is a real answer — the span's ends are
+/// currently folded away, and no row shows its bytes.
+#[derive(Clone, Debug)]
+pub(super) struct WireRowCache {
+    pub(super) version: u64,
+    pub(super) rows: Option<Range<usize>>,
 }
 
 /// The main pane's viewport, expressed against the document's structure
@@ -178,7 +289,7 @@ impl App {
         let Some(row) = self.visible_row_of_line(line) else {
             return;
         };
-        let top = (row * self.row_height()) as isize + anchor.skip;
+        let top = self.row_heights().offset(row) as isize + anchor.skip;
         self.set_scroll_top(top);
     }
 }
@@ -187,26 +298,33 @@ impl App {
 mod tests {
     use super::*;
 
+    /// No wire rows anywhere: every content row is one terminal row.
+    fn flat() -> RowHeights {
+        RowHeights::default()
+    }
+
+    /// Wire rows under the whole document, which is what the pre-0268
+    /// `row_height() == 2` meant.
+    fn all_tall() -> RowHeights {
+        RowHeights::new(0..1000)
+    }
+
     /// `set_top` and `top` are inverses at every offset, in both row
     /// heights, on both sides of zero — the invariant every other method
     /// here assumes.
     #[test]
     fn set_top_and_top_round_trip() {
-        for row_height in [1usize, 2] {
-            for top in -8isize..=8 {
+        for heights in [flat(), all_tall(), RowHeights::new(3..6)] {
+            for top in -8isize..=16 {
                 let mut scroll = PaneScroll::default();
-                scroll.set_top(top, row_height);
-                assert_eq!(
-                    scroll.top(row_height),
-                    top,
-                    "row_height {row_height}, top {top}"
-                );
-                assert!(
-                    scroll.skip < row_height as isize,
-                    "skip must stay under one row: {scroll:?}"
-                );
+                scroll.set_top(top, &heights);
+                assert_eq!(scroll.top(&heights), top, "{heights:?}, top {top}");
                 if top >= 0 {
                     assert!(scroll.skip >= 0, "only a negative top borrows: {scroll:?}");
+                    assert!(
+                        scroll.skip < heights.height(scroll.index) as isize,
+                        "skip must stay under its own row: {scroll:?} in {heights:?}",
+                    );
                 } else {
                     assert_eq!(scroll.index, 0, "nothing above row 0 to name: {scroll:?}");
                 }
@@ -214,13 +332,46 @@ mod tests {
         }
     }
 
+    /// Spec 0268 S4: the map is a bijection on terminal rows at every
+    /// span position, the empty span included.
+    #[test]
+    fn offset_and_row_at_round_trip() {
+        let spans = [
+            0..0,
+            0..1,
+            0..12,
+            3..4,
+            3..7,
+            7..8,
+            11..12,
+            11..40,
+            39..40,
+            40..41,
+        ];
+        for span in spans {
+            let heights = RowHeights::new(span.clone());
+            let mut expected = 0;
+            for row in 0..24 {
+                assert_eq!(heights.offset(row), expected, "{span:?} row {row}");
+                for part in 0..heights.height(row) {
+                    assert_eq!(
+                        heights.row_at(expected + part),
+                        (row, part),
+                        "{span:?} row {row} part {part}",
+                    );
+                }
+                expected += heights.height(row);
+            }
+        }
+    }
+
     /// A viewport sitting exactly on a row draws no blank rows and
-    /// exactly `pane_height / row_height` of them.
+    /// exactly as many content rows as fit.
     #[test]
     fn window_on_a_whole_row() {
         let scroll = PaneScroll { index: 3, skip: 0 };
-        assert_eq!(scroll.window(5, 1, 100), (0, 3..8));
-        assert_eq!(scroll.window(6, 2, 100), (0, 3..6));
+        assert_eq!(scroll.window(5, &flat(), 100), (0, 3..8));
+        assert_eq!(scroll.window(6, &all_tall(), 100), (0, 3..6));
     }
 
     /// A positive skip cuts the top row in half, so one more content row
@@ -228,7 +379,7 @@ mod tests {
     #[test]
     fn window_with_a_partial_row_at_the_top() {
         let scroll = PaneScroll { index: 3, skip: 1 };
-        assert_eq!(scroll.window(6, 2, 100), (0, 3..7));
+        assert_eq!(scroll.window(6, &all_tall(), 100), (0, 3..7));
     }
 
     /// A negative skip is blank rows above the content, and that many
@@ -236,8 +387,20 @@ mod tests {
     #[test]
     fn window_with_blank_rows_above() {
         let scroll = PaneScroll { index: 0, skip: -3 };
-        assert_eq!(scroll.window(5, 1, 100), (3, 0..2));
-        assert_eq!(scroll.window(5, 2, 100), (3, 0..1));
+        assert_eq!(scroll.window(5, &flat(), 100), (3, 0..2));
+        assert_eq!(scroll.window(5, &all_tall(), 100), (3, 0..1));
+    }
+
+    /// Spec 0268 G3: only the rows in the span cost two terminal rows,
+    /// so a pane whose span is over by row 5 keeps drawing one row per
+    /// row after it.
+    #[test]
+    fn window_spends_two_rows_only_inside_the_span() {
+        let scroll = PaneScroll { index: 2, skip: 0 };
+        // Rows 2 and 3 are two rows each, then 4..8 are one: 4 + 4 = 8.
+        assert_eq!(scroll.window(8, &RowHeights::new(2..4), 100), (0, 2..8));
+        // Ahead of the span it is flat until row 6, which is cut in half.
+        assert_eq!(scroll.window(5, &RowHeights::new(6..9), 100), (0, 2..7));
     }
 
     /// Content shorter than the pane, and a pane with no room at all,
@@ -246,11 +409,11 @@ mod tests {
     #[test]
     fn window_is_clamped_to_the_content() {
         let scroll = PaneScroll { index: 4, skip: 0 };
-        assert_eq!(scroll.window(10, 1, 6), (0, 4..6));
-        assert_eq!(scroll.window(10, 1, 2), (0, 2..2));
-        assert_eq!(scroll.window(0, 1, 6), (0, 4..4));
+        assert_eq!(scroll.window(10, &flat(), 6), (0, 4..6));
+        assert_eq!(scroll.window(10, &flat(), 2), (0, 2..2));
+        assert_eq!(scroll.window(0, &flat(), 6), (0, 4..4));
 
         let scroll = PaneScroll { index: 0, skip: -9 };
-        assert_eq!(scroll.window(5, 1, 6), (9, 0..0));
+        assert_eq!(scroll.window(5, &flat(), 6), (9, 0..0));
     }
 }

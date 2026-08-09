@@ -239,7 +239,7 @@ fn override_pane_pans_past_both_ends() {
 
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
     assert_eq!(
-        app.override_scroll.top(1),
+        app.override_scroll.top(&FLAT_ROWS),
         (15 + PAN_STEP as isize).min(max_top),
         "Ctrl-Down must pan toward the content's own bottom edge"
     );
@@ -252,25 +252,28 @@ fn override_pane_pans_past_both_ends() {
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
     }
     assert_eq!(
-        app.override_scroll.top(1),
+        app.override_scroll.top(&FLAT_ROWS),
         max_top,
         "the last candidate alone on the pane's first row, and no further"
     );
 
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
-    assert_eq!(app.override_scroll.top(1), max_top - PAN_STEP as isize);
+    assert_eq!(
+        app.override_scroll.top(&FLAT_ROWS),
+        max_top - PAN_STEP as isize
+    );
     assert_eq!(app.override_highlight, 19);
 
     app.override_scroll = PaneScroll::default();
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
     assert_eq!(
-        app.override_scroll.top(1),
+        app.override_scroll.top(&FLAT_ROWS),
         min_top,
         "the first candidate alone on the pane's last row, and no further"
     );
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
     assert_eq!(
-        app.override_scroll.top(1),
+        app.override_scroll.top(&FLAT_ROWS),
         min_top,
         "already at the top bound"
     );
@@ -320,7 +323,7 @@ fn manage_pane_pans_past_both_ends() {
 
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
     assert_eq!(
-        app.manage_scroll.top(1),
+        app.manage_scroll.top(&FLAT_ROWS),
         (10 + PAN_STEP as isize).min(max_top),
         "Ctrl-Down must pan toward the content's own bottom edge"
     );
@@ -329,10 +332,10 @@ fn manage_pane_pans_past_both_ends() {
         "panning must not move the highlight"
     );
 
-    app.manage_scroll.set_top(max_top, 1);
+    app.manage_scroll.set_top(max_top, &FLAT_ROWS);
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
     assert_eq!(
-        app.manage_scroll.top(1),
+        app.manage_scroll.top(&FLAT_ROWS),
         max_top,
         "the last row alone on the pane's first row, and no further"
     );
@@ -340,13 +343,13 @@ fn manage_pane_pans_past_both_ends() {
     app.manage_scroll = PaneScroll::default();
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
     assert_eq!(
-        app.manage_scroll.top(1),
+        app.manage_scroll.top(&FLAT_ROWS),
         min_top,
         "the first row alone on the pane's last row, and no further"
     );
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
     assert_eq!(
-        app.manage_scroll.top(1),
+        app.manage_scroll.top(&FLAT_ROWS),
         min_top,
         "already at the top bound"
     );
@@ -386,7 +389,7 @@ fn a_pan_that_hit_its_bound_asks_for_no_frame() {
     app.override_target = Some(0);
     app.override_candidates = (0..30).map(|i| (format!("cand.Type{i}"), None)).collect();
     app.override_list_height = 5;
-    app.override_scroll.set_top(1 - 5, 1);
+    app.override_scroll.set_top(1 - 5, &FLAT_ROWS);
     app.override_pan_vertical(WHEEL_PAN_STEP, true);
     assert!(app.event_changed_nothing);
     app.override_pan_vertical(WHEEL_PAN_STEP, false);
@@ -409,7 +412,7 @@ fn moving_the_highlight_pulls_the_viewport_no_further_than_needed() {
     app.override_candidates = (0..30).map(|i| (format!("cand.Type{i}"), None)).collect();
     // Four blank rows above candidate 0, which then sits on the pane's
     // last row — the top bound for a 5-row list.
-    app.override_scroll.set_top(-4, 1);
+    app.override_scroll.set_top(-4, &FLAT_ROWS);
     app.override_highlight = 0;
     app.last_override_highlight = None;
     terminal
@@ -417,7 +420,7 @@ fn moving_the_highlight_pulls_the_viewport_no_further_than_needed() {
         .unwrap();
     assert_eq!(app.override_list_height, 5);
     assert_eq!(
-        app.override_scroll.top(1),
+        app.override_scroll.top(&FLAT_ROWS),
         -4,
         "the highlight is already on screen, so nothing is owed"
     );
@@ -427,7 +430,7 @@ fn moving_the_highlight_pulls_the_viewport_no_further_than_needed() {
         .draw(|f| app.render_override_pane(f, area))
         .unwrap();
     assert_eq!(
-        app.override_scroll.top(1),
+        app.override_scroll.top(&FLAT_ROWS),
         -2,
         "candidate 2 comes to the last row; the other two blanks stay"
     );
@@ -445,19 +448,19 @@ fn moving_the_highlight_pulls_the_viewport_no_further_than_needed() {
             None,
         );
     }
-    app.manage_scroll.set_top(-4, 1);
+    app.manage_scroll.set_top(-4, &FLAT_ROWS);
     app.manage_highlight = 0;
     app.last_manage_highlight = None;
     terminal.draw(|f| app.render_manage_pane(f, area)).unwrap();
     assert_eq!(app.manage_list_height, 5);
     let first_row = app.manage_highlighted_row();
     assert_eq!(
-        app.manage_scroll.top(1),
+        app.manage_scroll.top(&FLAT_ROWS),
         -4 + first_row as isize,
         "pulled down only by the header rows above the first entry"
     );
     assert!(
-        app.manage_scroll.top(1) < 0,
+        app.manage_scroll.top(&FLAT_ROWS) < 0,
         "and the blank rows it did not need are still there"
     );
 }
@@ -1138,7 +1141,7 @@ fn only_the_bound_ctrl_and_alt_chords_do_anything_in_the_main_pane() {
     // through the gate would move one of these.
     fn state(app: &App) -> String {
         format!(
-            "{} {} {} {} {} {} {} {} {} {} {} {} {:?}",
+            "{} {} {} {} {} {:?} {} {} {} {} {} {} {:?}",
             app.cursor,
             app.cursor_column,
             app.cursor_line_in_node,
@@ -1162,7 +1165,7 @@ fn only_the_bound_ctrl_and_alt_chords_do_anything_in_the_main_pane() {
         (KeyModifiers::ALT, "hlbf"),
     ];
     // The letters, plus every punctuation key the pane binds plainly.
-    let keys: Vec<char> = ('a'..='z').chain(" :/?$%^0gGtwxHLZ".chars()).collect();
+    let keys: Vec<char> = ('a'..='z').chain(" :/?$%^0gGtwxWHLZ".chars()).collect();
 
     for (modifier, live) in bound {
         for c in &keys {

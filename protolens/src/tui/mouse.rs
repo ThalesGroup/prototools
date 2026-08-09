@@ -320,9 +320,10 @@ impl App {
         if !Self::rect_contains(area, col, row) {
             return None;
         }
-        // Spec 0225 S8: in wire mode each document line is two terminal
-        // rows thick, so a click anywhere in the pair selects the line —
-        // the rows are simply taller, not separately clickable.
+        // Spec 0225 S8: a line showing its bytes is two terminal rows
+        // thick, so a click anywhere in the pair selects the line — the
+        // rows are simply taller, not separately clickable. Which rows
+        // those are is spec 0268 S4's map rather than a division.
         //
         // Spec 0230: `scroll.skip` shifts the whole pane by a terminal
         // row, so it is added back before the division. A negative skip
@@ -332,9 +333,9 @@ impl App {
         if rel_row < 0 {
             return None;
         }
-        let rel_row = rel_row as usize / self.row_height();
-        self.visible_row_pos(self.scroll.index + rel_row)
-            .map(|(_, line)| line)
+        let heights = self.row_heights();
+        let (content_row, _) = heights.row_at(heights.offset(self.scroll.index) + rel_row as usize);
+        self.visible_row_pos(content_row).map(|(_, line)| line)
     }
 
     /// Dispatch one main-pane left-click: on a fold marker it toggles

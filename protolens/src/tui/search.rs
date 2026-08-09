@@ -796,13 +796,13 @@ impl App {
                     SearchScope::Override => (&mut self.override_scroll, self.override_list_height),
                     _ => (&mut self.manage_scroll, self.manage_list_height),
                 };
-                let top = scroll.top(1);
+                let top = scroll.top(&FLAT_ROWS);
                 let i = i as isize;
                 if height > 0 && (i < top || i >= top + height as isize) {
                     // Never above the first row: centering brings a match
                     // into view, and blank rows above it would be room
                     // spent on nothing.
-                    scroll.set_top((i - (height / 2) as isize).max(0), 1);
+                    scroll.set_top((i - (height / 2) as isize).max(0), &FLAT_ROWS);
                 }
             }
         }
@@ -811,16 +811,17 @@ impl App {
     /// The vertical half of S12, in terminal rows so that a wire row
     /// (spec 0225 S8) counts as the half of a line it is.
     fn center_row(&mut self, row: usize, pane_height: isize) {
-        let line = self.row_height() as isize;
+        let heights = self.row_heights();
+        let line = heights.height(row) as isize;
         if pane_height < line {
             return;
         }
-        let pos = (row * self.row_height()) as isize;
+        let pos = heights.offset(row) as isize;
         let top = self.scroll_top();
         if pos >= top && pos + line <= top + pane_height {
             return;
         }
-        let last = (self.composed_row_count() as isize * line - pane_height).max(0);
+        let last = (heights.offset(self.composed_row_count()) as isize - pane_height).max(0);
         self.set_scroll_top((pos - (pane_height - line) / 2).clamp(0, last));
     }
 

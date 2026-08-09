@@ -546,7 +546,7 @@ impl App {
     pub(super) fn override_pan_vertical(&mut self, step: usize, up: bool) {
         let (min_top, max_top) =
             pan_top_bounds(self.override_candidates.len(), self.override_list_height);
-        let top = self.override_scroll.top(1);
+        let top = self.override_scroll.top(&FLAT_ROWS);
         let moved = if up {
             top - step as isize
         } else {
@@ -555,7 +555,7 @@ impl App {
         let landed = moved.clamp(min_top, max_top);
         // Spec 0245 S2: a pan that hit its bound asks for no frame.
         self.event_changed_nothing = landed == top;
-        self.override_scroll.set_top(landed, 1);
+        self.override_scroll.set_top(landed, &FLAT_ROWS);
     }
 
     /// Horizontal pan for the override pane (Ctrl-Left/Ctrl-Right,
@@ -665,9 +665,9 @@ impl App {
     /// `max_visible_line_len`.
     pub(super) fn override_max_visible_line_len(&self) -> usize {
         let total = self.override_candidates.len();
-        let (_, visible) = self
-            .override_scroll
-            .window(self.override_list_height, 1, total);
+        let (_, visible) =
+            self.override_scroll
+                .window(self.override_list_height, &FLAT_ROWS, total);
         visible
             .map(|row| self.override_row_display(row).0.chars().count())
             .max()

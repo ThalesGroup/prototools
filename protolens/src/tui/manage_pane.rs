@@ -126,7 +126,7 @@ impl App {
     pub(super) fn manage_pan_vertical(&mut self, step: usize, up: bool) {
         let (min_top, max_top) =
             pan_top_bounds(self.manage_display_rows().len(), self.manage_list_height);
-        let top = self.manage_scroll.top(1);
+        let top = self.manage_scroll.top(&FLAT_ROWS);
         let moved = if up {
             top - step as isize
         } else {
@@ -135,7 +135,7 @@ impl App {
         let landed = moved.clamp(min_top, max_top);
         // Spec 0245 S2: a pan that hit its bound asks for no frame.
         self.event_changed_nothing = landed == top;
-        self.manage_scroll.set_top(landed, 1);
+        self.manage_scroll.set_top(landed, &FLAT_ROWS);
     }
 
     /// Horizontal pan for the management pane (Ctrl-Left/Ctrl-Right,
@@ -168,7 +168,9 @@ impl App {
     pub(super) fn manage_max_visible_line_len(&self) -> usize {
         let rows = self.manage_display_rows();
         let total = rows.len();
-        let (_, visible) = self.manage_scroll.window(self.manage_list_height, 1, total);
+        let (_, visible) = self
+            .manage_scroll
+            .window(self.manage_list_height, &FLAT_ROWS, total);
         rows[visible]
             .iter()
             .map(|r| self.manage_row_text(r).chars().count())
@@ -797,7 +799,9 @@ impl App {
             clamp_scroll_to_visible(&mut self.manage_scroll, highlighted_row, list_height);
             self.last_manage_highlight = Some(highlighted_row);
         }
-        let (blank_rows, visible) = self.manage_scroll.window(list_height, 1, total_rows);
+        let (blank_rows, visible) = self
+            .manage_scroll
+            .window(list_height, &FLAT_ROWS, total_rows);
         let (start, end) = (visible.start, visible.end);
 
         let origin_path = self
@@ -812,7 +816,7 @@ impl App {
             "L{}/{}  {}",
             highlighted_row + 1,
             total_rows,
-            viewport_label(self.manage_scroll.top(1), list_height, total_rows),
+            viewport_label(self.manage_scroll.top(&FLAT_ROWS), list_height, total_rows),
         );
         let text = statusline_text(&left, Some(&right), split[1].width as usize);
         frame.render_widget(Paragraph::new(Line::styled(text, style)), split[1]);

@@ -39,15 +39,16 @@ fn shift_alt(key: &KeyEvent) -> bool {
 }
 
 /// Spec 0242 S3: whether a main-pane key is allowed to leave the
-/// selection standing — the four `Shift`-motions that extend it, and the
-/// `Ctrl-c` that copies it. Every other key clears it.
+/// selection standing — the four `Shift`-motions that extend it, the
+/// `Ctrl-c` that copies it, and spec 0268's `w`/`W`, which read it.
+/// Every other key clears it.
 ///
 /// The guards mirror the match arms in `handle_main_key` exactly, so
 /// that a key and its "does this select?" answer cannot drift apart:
 /// `Alt` disqualifies an arrow because `Shift-Alt` is the horizontal pan
 /// (S9), and `Control`/`Alt` disqualify a capital because `Ctrl-H` is
 /// not `H` (see [`ctrl_or_alt`]).
-fn extends_or_copies_selection(key: &KeyEvent) -> bool {
+fn keeps_the_selection(key: &KeyEvent) -> bool {
     match key.code {
         KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right => {
             key.modifiers.contains(KeyModifiers::SHIFT)
@@ -55,6 +56,7 @@ fn extends_or_copies_selection(key: &KeyEvent) -> bool {
         }
         KeyCode::Char('H' | 'J' | 'K' | 'L') => !ctrl_or_alt(key),
         KeyCode::Char('c') => key.modifiers.contains(KeyModifiers::CONTROL),
+        KeyCode::Char('w' | 'W') => !ctrl_or_alt(key),
         _ => false,
     }
 }
@@ -519,7 +521,7 @@ impl App {
         // the caret. One check here rather than a call in each of the
         // dozens of arms below, which is also what keeps the rule true
         // of arms added later.
-        if !extends_or_copies_selection(&key) {
+        if !keeps_the_selection(&key) {
             self.clear_selection();
         }
 
@@ -796,12 +798,14 @@ impl App {
             // focus checks and unreachable here.
             KeyCode::Char('a') => self.annotations = !self.annotations,
 
-            // Toggle the wire rows (spec 0225 S1) — like `a`, a pure
-            // display attribute that invalidates no cache and bumps no
-            // `structural_version`. It does halve the pane's line
-            // capacity (S8), so the scroll and pan offsets are clamped
-            // against the geometry it just changed.
-            KeyCode::Char('w') => self.toggle_wire(),
+            // Show the bytes under the lines the reader is looking at
+            // (spec 0268 S2), or under the whole subtree they are in
+            // (S3) — like `a`, a pure display attribute that invalidates
+            // no cache and bumps no `structural_version`. It does change
+            // how many lines the pane holds, so the scroll and pan
+            // offsets are clamped against the geometry it just changed.
+            KeyCode::Char('w') => self.wire_lines(),
+            KeyCode::Char('W') => self.wire_subtree(),
 
             // Toggle the main-pane inference-mismatch heat cue (spec
             // 0138) — hides/shows the cue without discarding the

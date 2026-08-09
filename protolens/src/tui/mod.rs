@@ -68,7 +68,9 @@ use crate::render_cache::RenderCache;
 use crate::theme::{self, ThemeKind};
 use bake::BakeStep;
 use help_text::HELP_TEXT;
-use pane_scroll::PaneScroll;
+use pane_scroll::{
+    AnchorLine, PaneScroll, RowHeights, WireAnchor, WireRowCache, WireSpan, FLAT_ROWS,
+};
 use prefetch::{PrefetchStep, PrefetchTrace, PrefetchWalk};
 use search::{SearchScope, SweepStep};
 pub use terminal::run;
@@ -398,12 +400,12 @@ fn clamp_scroll_to_visible(scroll: &mut PaneScroll, target: usize, height: usize
     if height == 0 {
         return;
     }
-    let top = scroll.top(1);
+    let top = scroll.top(&FLAT_ROWS);
     let target = target as isize;
     if target < top {
-        scroll.set_top(target, 1);
+        scroll.set_top(target, &FLAT_ROWS);
     } else if target >= top + height as isize {
-        scroll.set_top(target + 1 - height as isize, 1);
+        scroll.set_top(target + 1 - height as isize, &FLAT_ROWS);
     }
 }
 
@@ -784,14 +786,24 @@ pub struct App {
     /// `a` key, decoupled from the underlying `lines`, which always carry
     /// full annotations regardless of this flag.
     annotations: bool,
-    /// Spec 0225 S1: whether each drawn document line is followed by a
-    /// second terminal row showing that line's own bytes in hex.
+    /// Spec 0225 S1: which drawn document lines are followed by a second
+    /// terminal row showing that line's own bytes in hex.
     ///
-    /// Toggled by `w`, and — exactly like `annotations` — a pure
-    /// *display* attribute: no line count, no `LinePos`, no fold, search
-    /// or export knows it exists. It does change the pane's geometry,
-    /// which is what `document_pane_height` answers for.
-    wire: bool,
+    /// Spec 0268 S1 narrowed it from a `bool` to the one span the reader
+    /// last asked for; `None` is "no bytes anywhere". Written by `w` and
+    /// `W` and — exactly like `annotations` — a pure *display*
+    /// attribute: no line count, no `LinePos`, no fold, search or export
+    /// knows it exists. It does change the pane's geometry, which is
+    /// what `row_heights` answers for.
+    wire: Option<WireSpan>,
+    /// `wire` resolved to a visible-row range, against the
+    /// `structural_version` it was resolved under.
+    ///
+    /// A fold and a splice both bump `structural_version`; a `w` or `W`
+    /// clears this itself, being the only other thing that can move the
+    /// answer. `RefCell` rather than `Cell` because a `Range` is not
+    /// `Copy`; neither borrow is held across a call.
+    wire_rows: std::cell::RefCell<Option<WireRowCache>>,
     /// Indentation step (spaces per nesting level) this session was decoded
     /// with — reused by `apply_override` (spec 0114 §5) so a splice
     /// re-render matches the rest of the document's own indentation.
@@ -1642,7 +1654,8 @@ impl App {
             // from here on, toggled at runtime by the `a` key.
             annotations: true,
             // Spec 0225 S1: off until the `w` key asks for it.
-            wire: false,
+            wire: None,
+            wire_rows: std::cell::RefCell::new(None),
             indent_size,
             node_text: decoded.node_text,
             window_styles: Vec::new(),

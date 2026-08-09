@@ -314,7 +314,7 @@ fn a_click_on_a_blank_row_selects_nothing() {
     app.override_list_height = 5;
     app.override_candidates = (0..10).map(|i| (format!("cand.Type{i}"), None)).collect();
     app.override_highlight = 7;
-    app.override_scroll.set_top(-3, 1);
+    app.override_scroll.set_top(-3, &FLAT_ROWS);
     for row in 0..3 {
         app.handle_override_click(62, row);
         assert_eq!(
@@ -343,7 +343,7 @@ fn a_click_on_a_blank_row_selects_nothing() {
     }
     let last = app.overrides.entries().len() - 1;
     app.manage_highlight = last;
-    app.manage_scroll.set_top(-3, 1);
+    app.manage_scroll.set_top(-3, &FLAT_ROWS);
     for row in 0..3 {
         app.handle_manage_click(70, row, false);
         assert_eq!(

@@ -79,6 +79,21 @@ fn press(app: &mut App, c: char) {
     app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
 }
 
+/// Spec 0268 test plan 9: the whole document shows its bytes — the span
+/// the pre-0268 whole-pane `w` amounted to, and what the viewport tests
+/// below were always testing.
+///
+/// Called a second time it turns them off, because the span's own first
+/// line is then already shown (S2). Not a key press: `sibling_leaves_app`
+/// makes each record a separate *root*, so there is no one node for `W`
+/// to climb to.
+fn wire_everything(app: &mut App) {
+    let last = app.total_lines() - 1;
+    let span = app.wire_span_of_lines(0, last);
+    let probe = app.cursor_display_row();
+    app.set_wire_span(span, probe);
+}
+
 /// Test plan 1/2/5/6/7 in one pass over one fixture, because the point
 /// of S2's head/tail rule is that the *same* rule produces all of them.
 ///
@@ -220,21 +235,304 @@ fn the_lines_that_fit_halve_when_wire_mode_is_on() {
     app.main_area = Rect::new(0, 0, 40, 10);
 
     assert_eq!(app.document_pane_height(), 10);
-    press(&mut app, 'w');
-    assert!(app.wire);
+    wire_everything(&mut app);
+    assert!(app.wire.is_some());
     assert_eq!(app.document_pane_height(), 5);
-    press(&mut app, 'w');
-    assert!(!app.wire);
+    wire_everything(&mut app);
+    assert!(app.wire.is_none());
     assert_eq!(app.document_pane_height(), 10);
 
     // A pane one row tall still shows a line, cut in half or not.
     app.main_area = Rect::new(0, 0, 40, 1);
-    press(&mut app, 'w');
+    wire_everything(&mut app);
     assert_eq!(app.document_pane_height(), 1);
 }
 
+/// Spec 0268 G3: a span shorter than the document costs the pane only
+/// the rows it covers — three lines showing their bytes take three rows
+/// away, not half the pane.
+#[test]
+fn rows_outside_the_run_stay_one_terminal_row() {
+    let texts: Vec<String> = (0..24).map(|i| format!("f{i}: 0")).collect();
+    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let mut app = sibling_leaves_app(&refs);
+    app.main_area = Rect::new(0, 0, 40, 10);
+
+    let span = app.wire_span_of_lines(2, 4);
+    app.set_wire_span(span, 2);
+    assert_eq!(app.document_pane_height(), 7, "three lines cost three rows");
+    // The whole-document span is what halves it, and nothing less does.
+    wire_everything(&mut app);
+    assert_eq!(app.document_pane_height(), 5);
+}
+
+/// Which visible rows show their bytes, asked the way the renderer asks
+/// it: spec 0268 S4's height map is the one answer both it and the
+/// viewport read.
+fn shown_rows(app: &App) -> Vec<usize> {
+    let heights = app.row_heights();
+    (0..app.composed_row_count())
+        .filter(|&row| heights.height(row) > 1)
+        .collect()
+}
+
+/// The document rows drawn with their bytes underneath, read back off a
+/// real frame. Spec 0225 S5's connector points *up* at the row whose
+/// bytes it shows, so the row above each wire row is the answer.
+fn drawn_wire_rows(app: &mut App) -> Vec<String> {
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let rows: Vec<String> = (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect()
+        })
+        .collect();
+    (1..rows.len())
+        .filter(|&y| rows[y].contains(wire::WIRE_CONNECTOR))
+        .map(|y| rows[y - 1].trim().to_string())
+        .collect()
+}
+
+/// Anchor on `first`, caret at the end of `last` — spec 0242's
+/// selection, left the way a drag across those rows leaves it.
+fn select_lines(app: &mut App, first: usize, last: usize) {
+    let start = app.line_pos(first).expect("the first line must exist");
+    app.select_anchor = Some(CursorPos {
+        node: start.node,
+        line_in_node: start.line_in_node,
+        column: 0,
+    });
+    app.select_engaged = true;
+    let end = app.line_pos(last).expect("the last line must exist");
+    app.cursor = end.node;
+    app.cursor_line_in_node = end.line_in_node;
+    app.caret_to_line_end();
+}
+
+/// Spec 0268 test plan 1, and G1: with nothing selected, `w` shows the
+/// bytes of the caret's own line and of no other.
+#[test]
+fn w_with_no_selection_shows_only_the_caret_line() {
+    let (mut app, _run, _tail, _a, _b) = packed_run_with_tail_fixture();
+    app.main_area = Rect::new(0, 0, 80, 22);
+    for _ in 0..7 {
+        app.move_down();
+    }
+    assert_eq!(app.cursor_line(), 7, "the fixture's `a: 42`");
+
+    press(&mut app, 'w');
+    assert_eq!(shown_rows(&app), vec![7]);
+
+    let drawn = drawn_wire_rows(&mut app);
+    assert_eq!(drawn.len(), 1, "one wire row on screen: {drawn:?}");
+    assert!(
+        drawn[0].contains("a: 42"),
+        "and it hangs under the caret's line: {drawn:?}"
+    );
+}
+
+/// Spec 0268 test plan 2: with a selection, `w` shows exactly the
+/// selected lines — including, here, the middle of a submessage.
+#[test]
+fn w_over_a_selection_shows_exactly_those_lines() {
+    let (mut app, _run, _tail, _a, _b) = packed_run_with_tail_fixture();
+    app.main_area = Rect::new(0, 0, 80, 22);
+    select_lines(&mut app, 4, 7);
+
+    press(&mut app, 'w');
+    assert_eq!(shown_rows(&app), vec![4, 5, 6, 7]);
+}
+
+/// The reader's amendment: the *caret's* line is what decides the new
+/// state, and the selection only widens what the decision applies to.
+///
+/// The discriminating case is a selection whose first line is already
+/// lit while the caret's is not: reading the state off the first line
+/// would turn the run *off*, and the reader who put the caret on a dark
+/// line asked for the opposite.
+#[test]
+fn the_caret_decides_and_the_selection_follows() {
+    let (mut app, _run, _tail, _a, _b) = packed_run_with_tail_fixture();
+    app.main_area = Rect::new(0, 0, 80, 22);
+    for _ in 0..4 {
+        app.move_down();
+    }
+    press(&mut app, 'w');
+    assert_eq!(shown_rows(&app), vec![4]);
+
+    select_lines(&mut app, 4, 7);
+    assert_eq!(app.cursor_line(), 7, "the caret is the selection's end");
+    press(&mut app, 'w');
+    assert_eq!(
+        shown_rows(&app),
+        vec![4, 5, 6, 7],
+        "the caret's line was dark, so the whole selection lights up"
+    );
+
+    // And with the caret's line lit, the same gesture turns the run off.
+    select_lines(&mut app, 4, 7);
+    press(&mut app, 'w');
+    assert!(shown_rows(&app).is_empty());
+}
+
+/// Spec 0268 test plan 3, and the reader's own example: `W` at the root
+/// lights the document, and a `w` anywhere inside that run turns the
+/// whole run off rather than carving a hole in it (N1).
+#[test]
+fn w_inside_a_shown_run_turns_the_whole_run_off() {
+    let (mut app, _run, _tail, _a, _b) = packed_run_with_tail_fixture();
+    app.main_area = Rect::new(0, 0, 80, 22);
+
+    press(&mut app, 'W');
+    assert_eq!(shown_rows(&app), (0..10).collect::<Vec<_>>());
+
+    for _ in 0..7 {
+        app.move_down();
+    }
+    press(&mut app, 'w');
+    assert!(shown_rows(&app).is_empty());
+    assert!(app.wire.is_none());
+    assert!(
+        drawn_wire_rows(&mut app).is_empty(),
+        "and no row in the frame has bytes under it"
+    );
+}
+
+/// Spec 0268 test plan 4, and G2: `W` on a submessage shows that
+/// message's own lines — header, body and footer — and leaves its
+/// siblings dark.
+#[test]
+fn capital_w_shows_a_subtree_and_nothing_beside_it() {
+    let (mut app, _run, _tail, _a, _b) = packed_run_with_tail_fixture();
+    app.main_area = Rect::new(0, 0, 80, 22);
+    for _ in 0..4 {
+        app.move_down();
+    }
+    assert_eq!(app.cursor_line(), 4, "the fixture's `tail {{`");
+
+    press(&mut app, 'W');
+    assert_eq!(shown_rows(&app), vec![4, 5, 6]);
+
+    // Two rows drawn, not three: a LEN submessage's closing brace claims
+    // no bytes of its own — only a group's footer does, which is what
+    // `a_group_footer_row_shows_the_end_tag` is about — so its row is
+    // two terminal rows tall with the second one blank.
+    let drawn = drawn_wire_rows(&mut app);
+    assert_eq!(drawn.len(), 2, "the header and the body: {drawn:?}");
+    assert!(
+        drawn.iter().any(|r| r.contains("id: 5")),
+        "the body included: {drawn:?}"
+    );
+    assert!(
+        !drawn.iter().any(|r| r.contains("a: 42")),
+        "the sibling excluded: {drawn:?}"
+    );
+}
+
+/// Spec 0268 test plan 5: with a selection spanning two subtrees, `W`
+/// climbs to the deepest node holding both — here from `id: 5`, inside
+/// `tail`, and `a: 42` outside it, which meet only at the root.
+#[test]
+fn capital_w_with_a_selection_climbs_to_the_common_ancestor() {
+    let (mut app, _run, _tail, _a, _b) = packed_run_with_tail_fixture();
+    app.main_area = Rect::new(0, 0, 80, 22);
+    select_lines(&mut app, 5, 7);
+
+    press(&mut app, 'W');
+    assert_eq!(
+        shown_rows(&app),
+        (0..10).collect::<Vec<_>>(),
+        "the root is the only node containing both ends"
+    );
+}
+
+/// Spec 0268 S3's packed-record rule. A packed run's elements are drawn
+/// as the message's own fields — `vals: 5` at the same indent as
+/// `a: 42`, no header, no brace — so two of them are siblings, and the
+/// subtree a `W` over them names is the message. The arena collapsing
+/// the run into one node (spec 0216 S22) is an implementation detail the
+/// reader is not looking at.
+#[test]
+fn capital_w_over_two_packed_elements_climbs_to_the_message() {
+    let (mut app, run, _tail, _a, _b) = packed_run_with_tail_fixture();
+    app.main_area = Rect::new(0, 0, 80, 22);
+    select_lines(&mut app, 1, 2);
+    assert_eq!(
+        app.line_pos(1).unwrap().node,
+        run,
+        "both ends must be the one packed node, or this proves nothing"
+    );
+    assert_eq!(app.line_pos(2).unwrap().node, run);
+
+    press(&mut app, 'W');
+    assert_eq!(
+        shown_rows(&app),
+        (0..10).collect::<Vec<_>>(),
+        "the run's third element, `tail`, `a` and `b` all come with it"
+    );
+}
+
+/// The other side of that rule: one element is a *leaf*, exactly as any
+/// other single child of the message is, so `W` on it lights that
+/// element and nothing else — the same answer `w` gives. The run is not
+/// a subtree the reader can see, so `W` never names it.
+#[test]
+fn capital_w_on_one_packed_element_lights_that_element() {
+    for selected in [false, true] {
+        let (mut app, _run, _tail, _a, _b) = packed_run_with_tail_fixture();
+        app.main_area = Rect::new(0, 0, 80, 22);
+        if selected {
+            select_lines(&mut app, 2, 2);
+        } else {
+            for _ in 0..2 {
+                app.move_down();
+            }
+        }
+
+        press(&mut app, 'W');
+        assert_eq!(shown_rows(&app), vec![2], "selected: {selected}");
+    }
+}
+
+/// Spec 0268 test plan 6, and the reason S1's ends are `AnchorLine`s
+/// rather than line numbers: `W` on a node that is still baking has to
+/// cover the lines that have not arrived yet. `Footer` says "the node's
+/// last line, whatever the count has become", so the run grows with it.
+#[test]
+fn a_growing_subtree_keeps_its_bytes() {
+    let mut app = nested_any_fixture();
+    app.splash = false;
+    app.bounded_confirms = true;
+    app.main_area = Rect::new(0, 0, 40, App::MIN_EXPAND_ROWS as u16);
+    let root = app.first_node;
+    app.splice_override(
+        root,
+        Some("acme.Level1".to_string()),
+        Some(App::MIN_EXPAND_ROWS),
+    )
+    .expect("a bounded splice must succeed");
+
+    app.cursor = root;
+    app.cursor_line_in_node = 0;
+    app.wire_subtree();
+    let short = app.composed_row_count();
+    assert_eq!(shown_rows(&app), (0..short).collect::<Vec<_>>());
+
+    while app.bake_step() != BakeStep::Idle {}
+    let full = app.composed_row_count();
+    assert!(full > short, "the bake must reveal rows: {short} -> {full}");
+    assert_eq!(
+        shown_rows(&app),
+        (0..full).collect::<Vec<_>>(),
+        "and the run must have grown with the subtree it names"
+    );
+}
+
 /// Which *terminal* row the cursor is drawn on — the one the user is
-/// looking at, and the thing `toggle_wire` is trying to hold still.
+/// looking at, and the thing `set_wire_span` is trying to hold still.
 fn cursor_terminal_row(app: &App) -> isize {
     app.terminal_row_of(app.cursor_display_row())
 }
@@ -256,14 +554,14 @@ fn toggling_wire_mode_keeps_the_cursor_on_its_terminal_row() {
 
     // Nine is odd, so holding it puts the pane's top edge in the middle
     // of a document line — spec 0230's `scroll.skip` is what lets it.
-    press(&mut app, 'w');
+    wire_everything(&mut app);
     assert_eq!(cursor_terminal_row(&app), 9);
     assert_eq!((app.scroll.index, app.scroll.skip), (15, 1));
     // The pane's first row is the second half of line 15, and a click on
     // it still names line 15.
     assert_eq!(app.main_pane_line_idx(0, 0), Some(15));
     assert_eq!(app.main_pane_line_idx(0, 1), Some(16));
-    press(&mut app, 'w');
+    wire_everything(&mut app);
     assert_eq!(cursor_terminal_row(&app), 9);
     assert_eq!((app.scroll.index, app.scroll.skip), (11, 0));
 
@@ -272,10 +570,10 @@ fn toggling_wire_mode_keeps_the_cursor_on_its_terminal_row() {
     app.last_cursor_row = None;
     app.clamp_pan_offset();
     assert_eq!(cursor_terminal_row(&app), 6);
-    press(&mut app, 'w');
+    wire_everything(&mut app);
     assert_eq!(cursor_terminal_row(&app), 6);
     assert_eq!((app.scroll.index, app.scroll.skip), (17, 0));
-    press(&mut app, 'w');
+    wire_everything(&mut app);
     assert_eq!(cursor_terminal_row(&app), 6);
 }
 
@@ -291,7 +589,7 @@ fn turning_wire_mode_off_near_the_top_pads_above_the_first_line() {
     let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
     let mut app = sibling_leaves_app(&refs);
     app.main_area = Rect::new(0, 0, 40, 10);
-    press(&mut app, 'w');
+    wire_everything(&mut app);
     for _ in 0..3 {
         app.move_down();
     }
@@ -300,7 +598,7 @@ fn turning_wire_mode_off_near_the_top_pads_above_the_first_line() {
     assert_eq!(app.scroll.index, 0, "all four lines fit in five");
     assert_eq!(cursor_terminal_row(&app), 6);
 
-    press(&mut app, 'w');
+    wire_everything(&mut app);
     assert_eq!(app.scroll.index, 0, "there is nothing above line 0");
     assert_eq!(app.scroll.skip, -3, "so three blank rows stand in");
     assert_eq!(cursor_terminal_row(&app), 6);
@@ -329,12 +627,12 @@ fn pan_up_after_a_wire_toggle_does_not_snap_back() {
     let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
     let mut app = sibling_leaves_app(&refs);
     app.main_area = Rect::new(0, 0, 40, 20);
-    press(&mut app, 'w');
+    wire_everything(&mut app);
     for _ in 0..3 {
         app.move_down();
     }
     app.clamp_pan_offset();
-    press(&mut app, 'w');
+    wire_everything(&mut app);
     assert_eq!(app.scroll_top(), -3, "three blank rows above line 0");
 
     app.pan_vertical_up();
@@ -356,7 +654,7 @@ fn wire_mode_bounds_are_terminal_rows() {
     let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
     let mut app = sibling_leaves_app(&refs);
     app.main_area = Rect::new(0, 0, 40, 10);
-    press(&mut app, 'w');
+    wire_everything(&mut app);
 
     // 40 lines two rows thick, so the bottom bound is row 79 — odd, and
     // the pane's first row is line 39's wire row alone.
@@ -396,17 +694,17 @@ fn a_wire_toggle_keeps_the_cursor_row_at_the_bounds() {
     // The bottom bound: the last line alone on the pane's first row.
     app.set_scroll_top(40 - 1);
     assert_eq!(cursor_terminal_row(&app), 0);
-    press(&mut app, 'w');
+    wire_everything(&mut app);
     assert_eq!(cursor_terminal_row(&app), 0);
 
     // The top bound: the first line alone on the pane's last row.
-    press(&mut app, 'w');
+    wire_everything(&mut app);
     for _ in 0..39 {
         app.move_up();
     }
     app.set_scroll_top(1 - 10);
     assert_eq!(cursor_terminal_row(&app), 9);
-    press(&mut app, 'w');
+    wire_everything(&mut app);
     assert_eq!(cursor_terminal_row(&app), 9);
 }
 
@@ -420,7 +718,7 @@ fn a_click_on_a_wire_row_selects_the_line_above_it() {
     app.main_area = Rect::new(0, 0, 40, 10);
 
     assert_eq!(app.main_pane_line_idx(0, 2), Some(2));
-    press(&mut app, 'w');
+    wire_everything(&mut app);
     assert_eq!(app.main_pane_line_idx(0, 2), Some(1));
     assert_eq!(app.main_pane_line_idx(0, 3), Some(1));
     assert_eq!(app.main_pane_line_idx(0, 4), Some(2));
@@ -438,7 +736,7 @@ fn page_down_advances_by_the_halved_height() {
     app.move_page_down();
     assert_eq!(app.cursor_line(), 10);
 
-    press(&mut app, 'w');
+    wire_everything(&mut app);
     app.move_page_down();
     assert_eq!(app.cursor_line(), 15);
     app.move_page_up();
@@ -461,9 +759,9 @@ fn toggling_wire_mode_invalidates_no_cache() {
         .map(|l| app.row_content(app.committed_row(l).unwrap()))
         .collect();
 
-    press(&mut app, 'w');
+    wire_everything(&mut app);
 
-    assert!(app.wire);
+    assert!(app.wire.is_some());
     assert_eq!(app.structural_version, version);
     let after: Vec<_> = app
         .heat_states
@@ -547,7 +845,7 @@ fn hue_fixture() -> App {
         &[0x0A, 0x02, 0x69, 0x64, 0x10, 0x05],
     );
     app.splash = false;
-    app.wire = true;
+    wire_everything(&mut app);
     app
 }
 
@@ -669,7 +967,7 @@ fn the_length_prefix_takes_the_comment_hue_with_or_without_an_annotation() {
 fn a_wire_row_goes_monochrome_with_the_document_row() {
     let (mut app, _run, _tail, _a, _b) = packed_run_with_tail_fixture();
     app.splash = false;
-    app.wire = true;
+    wire_everything(&mut app);
     let mut terminal = ratatui::Terminal::new(TestBackend::new(60, 20)).unwrap();
 
     // Line 1 is the packed run's first element — the one row here whose
@@ -699,7 +997,8 @@ fn a_wire_row_goes_monochrome_with_the_document_row() {
     // hints it already has, which is what stops a stalled wheel from
     // flickering the pane gray.
     app.input_pending = true;
-    app.set_scroll_top(app.scroll_top() + app.row_height() as isize);
+    let one_row = app.row_heights().height(app.scroll.index) as isize;
+    app.set_scroll_top(app.scroll_top() + one_row);
     terminal.draw(|frame| app.render(frame)).unwrap();
     assert!(
         app.wire_palette(1, &text).is_none(),

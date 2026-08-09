@@ -32,6 +32,105 @@ impl App {
         self.structural_version += 1;
     }
 
+    /// Spec 0268 S1: the shown run, resolved to visible rows.
+    ///
+    /// `None` when nothing is shown, and also when the span's own nodes
+    /// have been rendered away — an `FqdnField` override can flatten a
+    /// parent to `bytes`, leaving the anchored node with no row at all,
+    /// and the honest answer to "which rows show their bytes" is then
+    /// none.
+    fn wire_rows(&self) -> Option<std::ops::Range<usize>> {
+        let span = self.wire?;
+        if let Some(cache) = self.wire_rows.borrow().as_ref() {
+            if cache.version == self.structural_version {
+                return cache.rows.clone();
+            }
+        }
+        let rows = self
+            .wire_anchor_row(span.first)
+            .zip(self.wire_anchor_row(span.last))
+            .map(|(a, b)| a.min(b)..a.max(b) + 1);
+        *self.wire_rows.borrow_mut() = Some(WireRowCache {
+            version: self.structural_version,
+            rows: rows.clone(),
+        });
+        rows
+    }
+
+    /// One end of the span, as a visible row.
+    fn wire_anchor_row(&self, anchor: WireAnchor) -> Option<usize> {
+        let total = self.tree.get(anchor.node)?.lines_total as usize;
+        let last = total.checked_sub(1)?;
+        let line_in_node = match anchor.line {
+            AnchorLine::Footer => last,
+            AnchorLine::FromStart(k) => (k as usize).min(last),
+        };
+        self.visible_row_of_line(self.absolute_start(anchor.node) + line_in_node)
+    }
+
+    /// Spec 0268 S4: how tall each of the main pane's rows is.
+    pub(super) fn row_heights(&self) -> RowHeights {
+        match self.wire_rows() {
+            Some(rows) => RowHeights::new(rows),
+            None => FLAT_ROWS,
+        }
+    }
+
+    /// How many *document* lines the main pane can show.
+    ///
+    /// Spec 0268 S5: the rows from the current top that fit in the
+    /// pane's terminal rows, which is no longer a division — the ones
+    /// showing their bytes cost two rows and the rest cost one. Every
+    /// scroll computation is stated in document lines, so they all come
+    /// here rather than reading `main_area.height` themselves. The side
+    /// panes are unaffected and keep reading their own heights.
+    pub(super) fn document_pane_height(&self) -> usize {
+        let height = self.main_area.height as usize;
+        self.row_heights()
+            .rows_fitting(self.scroll.index, height)
+            .max(1)
+    }
+
+    /// The top edge of the viewport, in terminal rows counted from the
+    /// top of document line 0. Negative means blank rows above the
+    /// document's first line. See `App::scroll`.
+    pub(super) fn scroll_top(&self) -> isize {
+        self.scroll.top(&self.row_heights())
+    }
+
+    /// Puts the viewport's top edge at `top`, splitting it back into the
+    /// whole line and the remainder. The only writer of the pair.
+    pub(super) fn set_scroll_top(&mut self, top: isize) {
+        let heights = self.row_heights();
+        self.scroll.set_top(top, &heights);
+    }
+
+    /// The terminal row `row` is drawn on, relative to the top of the
+    /// main area. Negative or `>= main_area.height` means off screen.
+    pub(super) fn terminal_row_of(&self, row: usize) -> isize {
+        self.row_heights().offset(row) as isize - self.scroll_top()
+    }
+
+    /// Scrolls just far enough that `row`'s own line is on screen.
+    ///
+    /// Its wire row, if any, is deliberately not required to be: a
+    /// cursor on the pane's last terminal row is where the user put it,
+    /// and insisting on the byte row under it would scroll the document
+    /// out from under them to show something they can already toggle off.
+    pub(super) fn clamp_scroll_to_cursor(&mut self, row: usize) {
+        let pane = self.main_area.height as isize;
+        if pane <= 0 {
+            return;
+        }
+        let pos = self.row_heights().offset(row) as isize;
+        let top = self.scroll_top();
+        if pos < top {
+            self.set_scroll_top(pos);
+        } else if pos >= top + pane {
+            self.set_scroll_top(pos + 1 - pane);
+        }
+    }
+
     /// Clamps `pan_offset` to the current content's valid range — the
     /// same `max_pan_offset` bound `pan_horizontal`'s right branch
     /// enforces, but applied proactively rather than only when the user
@@ -51,72 +150,6 @@ impl App {
     /// the next render will show around the (possibly moved) cursor —
     /// clamps against the wrong rows, panning further left than the true
     /// content width allows.
-    /// How many *document* lines the main pane can show.
-    ///
-    /// Spec 0225 S8: in wire mode each window entry draws two terminal
-    /// rows, so the pane holds half as many lines. Every scroll
-    /// computation is stated in document lines, so they all come here
-    /// rather than reading `main_area.height` themselves. The side
-    /// panes are unaffected and keep reading their own heights.
-    pub(super) fn document_pane_height(&self) -> usize {
-        let height = self.main_area.height as usize;
-        if self.wire {
-            (height / 2).max(1)
-        } else {
-            height
-        }
-    }
-
-    /// How many terminal rows one document line costs — two in wire
-    /// mode, one otherwise (spec 0225 S8).
-    pub(super) fn row_height(&self) -> usize {
-        if self.wire {
-            2
-        } else {
-            1
-        }
-    }
-
-    /// The top edge of the viewport, in terminal rows counted from the
-    /// top of document line 0. Negative means blank rows above the
-    /// document's first line. See `App::scroll`.
-    pub(super) fn scroll_top(&self) -> isize {
-        self.scroll.top(self.row_height())
-    }
-
-    /// Puts the viewport's top edge at `top`, splitting it back into the
-    /// whole line and the remainder. The only writer of the pair.
-    pub(super) fn set_scroll_top(&mut self, top: isize) {
-        let row_height = self.row_height();
-        self.scroll.set_top(top, row_height);
-    }
-
-    /// The terminal row `row` is drawn on, relative to the top of the
-    /// main area. Negative or `>= main_area.height` means off screen.
-    pub(super) fn terminal_row_of(&self, row: usize) -> isize {
-        (row * self.row_height()) as isize - self.scroll_top()
-    }
-
-    /// Scrolls just far enough that `row`'s own line is on screen.
-    ///
-    /// Its wire row, if any, is deliberately not required to be: a
-    /// cursor on the pane's last terminal row is where the user put it,
-    /// and insisting on the byte row under it would scroll the document
-    /// out from under them to show something they can already toggle off.
-    pub(super) fn clamp_scroll_to_cursor(&mut self, row: usize) {
-        let pane = self.main_area.height as isize;
-        if pane <= 0 {
-            return;
-        }
-        let pos = (row * self.row_height()) as isize;
-        let top = self.scroll_top();
-        if pos < top {
-            self.set_scroll_top(pos);
-        } else if pos >= top + pane {
-            self.set_scroll_top(pos + 1 - pane);
-        }
-    }
-
     pub(super) fn clamp_pan_offset(&mut self) {
         if !self.tree.is_empty() {
             let cursor_row = self.cursor_display_row();
@@ -148,29 +181,161 @@ impl App {
         }
     }
 
-    /// Spec 0225 S8: `w` — show or hide the wire rows.
+    /// Spec 0268 S2: `w` — toggle the caret's own line, and carry the
+    /// rest of the selection with it.
     ///
-    /// The document does not change and neither does the cursor; what
-    /// changes is that a document line starts or stops costing two
-    /// terminal rows. Left alone that moves the cursor's row down or up
-    /// the screen by however far it sat from the top, which on a full
-    /// pane is most of it — the user asked to see the bytes, not to be
-    /// scrolled.
+    /// The caret's line is what *decides* the new state, and the
+    /// selection only widens what that decision applies to. So `w`
+    /// always does to the line under the caret what the reader can see
+    /// they asked for, whatever else is selected.
     ///
-    /// So the terminal row the cursor is drawn on is measured before the
-    /// flip and restored after it, by moving the viewport's top edge —
-    /// which spec 0230 made a signed count of terminal rows precisely so
-    /// that it can answer here. The two cases a whole-line offset could
-    /// not serve both work out of it: turning the wire rows on from an
-    /// odd row leaves the pane starting mid-line, and turning them off
-    /// near the top leaves blank rows above the document's first line.
+    /// "Unless the caret is outside the selection" needs no code: spec
+    /// 0242 made the caret the selection's own moving end, so it is
+    /// always one of the two lines the span is built from.
+    pub(super) fn wire_lines(&mut self) {
+        let caret = self.cursor_line();
+        let (first, last) = match self.selection_span() {
+            Some((lo, _, hi, _)) => (lo, hi),
+            None => (caret, caret),
+        };
+        let target = self.wire_span_of_lines(first, last);
+        self.set_wire_span(target, self.cursor_display_row());
+    }
+
+    /// Spec 0268 S3: `W` — the same for the whole subtree containing the
+    /// selection, or the caret's own node when nothing is selected.
+    pub(super) fn wire_subtree(&mut self) {
+        let (lo, hi) = match self.selection_span() {
+            Some((lo, _, hi, _)) => (lo, hi),
+            None => {
+                let caret = self.cursor_line();
+                (caret, caret)
+            }
+        };
+        let (Some(a), Some(b)) = (self.line_pos(lo), self.line_pos(hi)) else {
+            return;
+        };
+
+        // A packed record's elements are drawn as the message's own
+        // fields — `vals: 5` sits at the same indent as `a: 42`, with no
+        // header and no brace of its own (spec 0216 S7) — even though
+        // the arena collapses the whole run into one node. The reader is
+        // not looking at that node, so for `W` an element *line* is the
+        // unit: one of them is a leaf, and two of them are siblings.
+        //
+        // Both ends in one unbracketed node of several lines is exactly
+        // that case and no other.
+        if a.node == b.node && !self.has_children(a.node) && self.tree[a.node].lines_total > 1 {
+            if lo == hi {
+                // A leaf, so `W` on it is `w` on it — spec 0268 S3's
+                // literal case.
+                return self.wire_lines();
+            }
+            // Siblings, so the subtree they name is the message holding
+            // them: the run's other elements, the other fields, and any
+            // second packed record beside this one.
+            let parent = self.parent(a.node).unwrap_or(a.node);
+            return self.wire_whole_node(parent);
+        }
+        self.wire_whole_node(self.common_ancestor(a.node, b.node));
+    }
+
+    /// Shows the bytes of every line `node` draws, its descendants'
+    /// included.
     ///
-    /// The document does not change and neither does the cursor.
-    pub(super) fn toggle_wire(&mut self) {
+    /// A node's lines are contiguous and its descendants' lie between
+    /// its header and its footer, so its whole subtree is one span.
+    fn wire_whole_node(&mut self, node: usize) {
+        let span = WireSpan {
+            first: WireAnchor {
+                node,
+                line: AnchorLine::FromStart(0),
+            },
+            last: WireAnchor {
+                node,
+                line: AnchorLine::Footer,
+            },
+        };
+        let probe = self.wire_anchor_row(span.first).unwrap_or(0);
+        self.set_wire_span(Some(span), probe);
+    }
+
+    /// The span covering absolute lines `first..=last`, or `None` if
+    /// either end has no node to anchor to.
+    pub(super) fn wire_span_of_lines(&self, first: usize, last: usize) -> Option<WireSpan> {
+        let anchor = |line| {
+            let pos = self.line_pos(line)?;
+            Some(WireAnchor {
+                node: pos.node,
+                line: if self.is_footer(pos) {
+                    AnchorLine::Footer
+                } else {
+                    AnchorLine::FromStart(pos.line_in_node)
+                },
+            })
+        };
+        Some(WireSpan {
+            first: anchor(first)?,
+            last: anchor(last)?,
+        })
+    }
+
+    /// The deepest node containing both `a` and `b`, found by climbing
+    /// until the two root paths meet — O(depth), which is 13 on the
+    /// reference corpus.
+    fn common_ancestor(&self, a: usize, b: usize) -> usize {
+        let mut path = vec![a];
+        let mut cur = a;
+        while let Some(p) = self.parent(cur) {
+            path.push(p);
+            cur = p;
+        }
+        let mut cur = b;
+        loop {
+            if path.contains(&cur) {
+                return cur;
+            }
+            match self.parent(cur) {
+                Some(p) => cur = p,
+                // Separate roots, which only the multi-record test
+                // fixtures have: neither contains the other, so there is
+                // nothing above them to aim at.
+                None => return b,
+            }
+        }
+    }
+
+    /// Spec 0268 S2: turn `target` on, unless `probe_row` already shows
+    /// its bytes — in which case the gesture is asking for them off, and
+    /// since one `w` *replaces* the run, off means `None`.
+    ///
+    /// `probe_row` is the row the gesture is pointing at: the caret's
+    /// own for `w`, the subtree's header for `W`. There are only ever
+    /// these two outcomes, which is what makes the state describable
+    /// without reference to its history.
+    ///
+    /// Spec 0225 S8: the document does not change and neither does the
+    /// cursor; what changes is that a document line starts or stops
+    /// costing two terminal rows. Left alone that moves the cursor's row
+    /// down or up the screen by however far it sat from the top, which
+    /// on a full pane is most of it — the user asked to see the bytes,
+    /// not to be scrolled. So the terminal row the cursor is drawn on is
+    /// measured before the change and restored after it, by moving the
+    /// viewport's top edge, which spec 0230 made a signed count of
+    /// terminal rows precisely so that it can answer here. The two cases
+    /// a whole-line offset could not serve both work out of it: turning
+    /// the bytes on from an odd row leaves the pane starting mid-line,
+    /// and turning them off near the top leaves blank rows above the
+    /// document's first line.
+    pub(super) fn set_wire_span(&mut self, target: Option<WireSpan>, probe_row: usize) {
+        let shown = self
+            .wire_rows()
+            .is_some_and(|rows| rows.contains(&probe_row));
         let cursor_row = self.cursor_display_row();
         let drawn = self.terminal_row_of(cursor_row);
-        self.wire = !self.wire;
-        let pos = (cursor_row * self.row_height()) as isize;
+        self.wire = if shown { None } else { target };
+        *self.wire_rows.borrow_mut() = None;
+        let pos = self.row_heights().offset(cursor_row) as isize;
         self.set_scroll_top(pos - drawn);
         // `clamp_pan_offset` re-syncs the scroll only when the cursor has
         // moved since the last clamp, and it has not — the pane changed
@@ -788,10 +953,24 @@ impl App {
     /// and says so — a held wheel at the top of the document is the
     /// commonest way to fill the event queue with no-ops.
     fn pan_vertical(&mut self, step: usize, up: bool) {
-        let row_height = self.row_height();
-        let content_rows = self.composed_row_count() * row_height;
+        let heights = self.row_heights();
+        let content_rows = heights.offset(self.composed_row_count());
         let (min_top, max_top) = pan_top_bounds(content_rows, self.main_area.height as usize);
-        let step = (step * row_height) as isize;
+        // The step is a count of *document* rows, so it is measured in
+        // terminal rows over the rows it would actually cross — spec
+        // 0268 S4 having made those two different numbers.
+        let from = self.scroll.index;
+        let step = if up {
+            // Panning up past row 0 is what leaves blank rows above the
+            // document (spec 0244 S6), and there are no rows there to
+            // measure — they stand in for the first one, so they are
+            // counted at its height.
+            let missing = step.saturating_sub(from);
+            heights.offset(from) - heights.offset(from - (step - missing))
+                + missing * heights.height(0)
+        } else {
+            heights.offset(from + step) - heights.offset(from)
+        } as isize;
         let top = self.scroll_top();
         let moved = if up { top - step } else { top + step };
         let landed = moved.clamp(min_top, max_top);
