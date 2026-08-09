@@ -929,11 +929,25 @@ impl Sink for TextSink {
 
 // ── `ProbeSink`: lean structural-validity probe ─────────────────────────────
 
-/// Read-only structural probe: walks a wire record via `render_message`,
-/// counting malformities, without producing any output. Used to check "does
-/// this payload parse as a well-formed message?" (spec 0097's unknown-LEN-
-/// field cascade Step 1) without paying for tree construction (spec 0110
-/// §2).
+/// Read-only structural probe: walks a wire record via `render_message`
+/// without producing any output, to answer "does this payload parse as a
+/// well-formed message?" (spec 0097's unknown-LEN-field cascade Step 1)
+/// without paying for tree construction (spec 0110 §2).
+///
+/// **The answer is no if rendering it would report anything invalid**
+/// (spec 0266 S1). The classification is not this type's to invent:
+/// `docs/prototext/annotation-format.md` already splits the annotation
+/// vocabulary into invalid tokens, which mean a data-integrity issue, and
+/// non-canonical ones, which round-trip exactly — and the case of the
+/// token is the verdict, ALL CAPS disqualifying and lower case not. A
+/// message from an eccentric but working encoder is still a message; a
+/// record whose framing contradicts itself is not.
+///
+/// Rather than enumerate the anomalies that disqualify — a list that was
+/// wrong at every point in its life, because anything nobody enumerated
+/// was accepted silently — every payload type reaching this sink is
+/// destructured **exhaustively**, so that a new anomaly stops the build
+/// here until somebody classifies it (spec 0266 S3).
 ///
 /// Always assumes its argument is a message being probed for plausibility.
 /// LEN-delimited fields are treated as opaque bytes and never recursed into
@@ -941,11 +955,10 @@ impl Sink for TextSink {
 /// already bounds-checked by `render_message` before dispatch, is all the
 /// validation needed at this level. GROUP fields still get mandatory
 /// recursion (they have no length prefix, so their extent can only be
-/// found by parsing through them), and any malformities found inside a
-/// nested group roll up into this same counter automatically, since the
+/// found by parsing through them), and anything invalid found inside a
+/// nested group rolls up into this same counter automatically, since the
 /// same `&mut ProbeSink` is threaded through every recursion level
-/// (spec 0110 Open Issue #1) — as does a group that never reached its
-/// `END_GROUP` tag, which `end_nested` counts.
+/// (spec 0110 Open Issue #1).
 ///
 /// Never mutates any shared render-mode thread-local state (`tracks_level`
 /// returns `false`): it is a read-only helper that may be invoked from the
@@ -953,12 +966,47 @@ impl Sink for TextSink {
 /// must not disturb that render's own state.
 #[derive(Default)]
 pub(super) struct ProbeSink {
-    malformity_count: u64,
+    invalid_count: u64,
 }
 
 impl ProbeSink {
-    pub(super) fn malformity_count(&self) -> u64 {
-        self.malformity_count
+    /// Spec 0097 cascade Step 1's verdict, stated once (spec 0266 S4).
+    ///
+    /// `next_pos` is what `render_message` returned; `data` the payload it
+    /// was given. Both conditions matter: a payload that stopped short is
+    /// not a message either, even if everything it did parse was clean.
+    pub(super) fn says_message(&self, next_pos: usize, data: &[u8]) -> bool {
+        self.invalid_count == 0 && next_pos == data.len()
+    }
+
+    /// Note that rendering this payload as a message would report an
+    /// **invalid** token — an ALL-CAPS one, in the vocabulary
+    /// `docs/prototext/annotation-format.md` defines (spec 0266 S1).
+    fn invalid(&mut self) {
+        self.invalid_count += 1;
+    }
+
+    /// Everything a tag can be wrong about.
+    ///
+    /// Destructured exhaustively — no `..` — so that a fact added to
+    /// `TagFacts` stops the build here until somebody classifies it
+    /// (spec 0266 S3).
+    fn note_tag(&mut self, tag: TagFacts) {
+        let TagFacts {
+            // `tag_ohb` / `len_ohb` — non-canonical: an over-encoded varint
+            // round-trips exactly, so an eccentric encoder is still an
+            // encoder.
+            tag_ohb: _,
+            len_ohb: _,
+            // `TAG_OOR` — invalid. A field number outside 1..=536870911,
+            // which most often means the byte was never a tag: `0x00` is a
+            // tag for field 0, so without this every NUL in a string helps
+            // that string pass for a message.
+            tag_oor,
+        } = tag;
+        if tag_oor {
+            self.invalid();
+        }
     }
 }
 
@@ -969,22 +1017,38 @@ impl Sink for ProbeSink {
         &mut self,
         _field_number: u64,
         _field_schema: Option<&FieldOrExt>,
-        _tag: TagFacts,
-        _value: ScalarValue<'_>,
+        tag: TagFacts,
+        value: ScalarValue<'_>,
         _raw_range: Range<usize>,
         _schema_present: bool,
     ) {
+        self.note_tag(tag);
+        // Exhaustive, and every arm is empty: a scalar's *value* carries
+        // exactly one anomaly, `val_ohb`, and that one is non-canonical.
+        // The match earns its keep by failing to compile if that stops
+        // being true (spec 0266 S3).
+        match value {
+            ScalarValue::Varint {
+                raw_val: _,
+                val_ohb: _,
+            } => {}
+            ScalarValue::Fixed64(_) => {}
+            ScalarValue::Fixed32(_) => {}
+            ScalarValue::Bytes(_) => {}
+            ScalarValue::Packed(_) => {}
+        }
     }
 
     fn begin_nested(
         &mut self,
         _field_number: u64,
         _field_schema: Option<&FieldOrExt>,
-        _tag: TagFacts,
+        tag: TagFacts,
         _kind: NestedKind,
         _raw_start: usize,
         _payload_start: usize,
     ) {
+        self.note_tag(tag);
     }
 
     fn end_nested(
@@ -995,14 +1059,31 @@ impl Sink for ProbeSink {
     ) {
         // `treat_len_as_opaque` makes `render_len_field` return before it
         // ever opens a nested message, so the only nesting that reaches
-        // here is a group — and for a group, `None` means the buffer ran
-        // out before the `END_GROUP` tag. That is a structural defect as
-        // much as a bad varint is, and counting it is what stops a plain
-        // string whose last byte happens to be a `START_GROUP` tag from
-        // passing as a message: the group swallows the remaining bytes, so
-        // `next_pos == data.len()` holds too and nothing else objects.
-        if close_facts.is_none() {
-            self.malformity_count += 1;
+        // here is a group.
+        let Some(facts) = close_facts else {
+            // `OPEN_GROUP` — invalid. The buffer ran out before the
+            // `END_GROUP` tag. Counting it is what stops a plain string
+            // whose last byte happens to be a `START_GROUP` tag from
+            // passing as a message: the group swallows the remaining
+            // bytes, so `next_pos == data.len()` holds too and nothing
+            // else objects.
+            self.invalid();
+            return;
+        };
+        let GroupCloseFacts {
+            // `etag_ohb` — non-canonical, like every other overhang.
+            end_tag_overhang_count: _,
+            // `ETAG_OOR` — invalid, for the same reason as `TAG_OOR`.
+            end_tag_is_out_of_range,
+            // `END_MISMATCH` — invalid. The group closed against a
+            // different field number than it opened with, so the framing
+            // contradicts itself. Uppercase text produces this pair
+            // readily: wire type 3 is any byte ending in `011` (`C K S [`)
+            // and wire type 4 any byte ending in `100` (`D L T \`).
+            mismatched_group_end,
+        } = facts;
+        if end_tag_is_out_of_range || mismatched_group_end.is_some() {
+            self.invalid();
         }
     }
 
@@ -1036,12 +1117,24 @@ impl Sink for ProbeSink {
     fn malformed(
         &mut self,
         _field_number: u64,
-        _tag: TagFacts,
-        _kind: MalformedKind,
+        tag: TagFacts,
+        kind: MalformedKind,
         _raw: &[u8],
         _raw_range: Range<usize>,
     ) {
-        self.malformity_count += 1;
+        self.note_tag(tag);
+        // Every `MalformedKind` is an invalid token, and the match says so
+        // one variant at a time rather than through a wildcard, so that a
+        // new one cannot inherit that answer by default (spec 0266 S3).
+        match kind {
+            MalformedKind::InvalidTagType
+            | MalformedKind::InvalidVarint
+            | MalformedKind::InvalidFixed64
+            | MalformedKind::InvalidFixed32
+            | MalformedKind::InvalidLen
+            | MalformedKind::TruncatedBytes { missing: _ }
+            | MalformedKind::InvalidGroupEnd => self.invalid(),
+        }
     }
 
     fn treat_len_as_opaque(&self) -> bool {

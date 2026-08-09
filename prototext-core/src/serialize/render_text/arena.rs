@@ -898,12 +898,14 @@ mod tests {
 
     // ── The cached probe verdict ────────────────────────────────────────────
 
-    /// Spec 0097's cascade Step 1, verbatim from `render_len_field` — the
-    /// answer the cached bit claims to already know.
+    /// Spec 0097's cascade Step 1 — the answer the cached bit claims to
+    /// already know. It calls the same `says_message` `render_len_field`
+    /// does (spec 0266 S4), so the live verdict and the cached one cannot
+    /// drift by the test transcribing the rule and then falling behind it.
     fn probe_says_message(payload: &[u8]) -> bool {
         let mut probe = super::super::sink::ProbeSink::default();
         let (next_pos, _) = render_message(payload, 0, None, None, false, &mut probe);
-        probe.malformity_count() == 0 && next_pos == payload.len()
+        probe.says_message(next_pos, payload)
     }
 
     /// Every node whose bytes are a well-framed LEN field must carry the

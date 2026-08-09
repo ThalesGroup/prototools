@@ -98,7 +98,7 @@ pub(in super::super) fn render_len_field<S: Sink>(
         let probed_as_message = {
             let mut probe = ProbeSink::default();
             let (next_pos, _) = render_message(data, 0, None, None, false, &mut probe);
-            probe.malformity_count() == 0 && next_pos == data.len()
+            probe.says_message(next_pos, data)
         };
         if probed_as_message || sink.unknown_len_is_message() {
             let mark = sink.begin_nested(

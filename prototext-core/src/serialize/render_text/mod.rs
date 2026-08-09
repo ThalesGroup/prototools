@@ -1328,6 +1328,88 @@ mod tests {
         assert_eq!(text, "1: \"ad_break,update_mask\"\n");
     }
 
+    // ── Any invalid token disqualifies the payload (spec 0266) ──────────────
+
+    /// Render an unknown LEN field carrying `payload`, at indent 2.
+    fn render_unknown_len(payload: &[u8]) -> String {
+        let mut buf = vec![0x0A];
+        buf.push(u8::try_from(payload.len()).expect("fixture payload is short"));
+        buf.extend_from_slice(payload);
+        let out = decode_and_render(
+            &buf,
+            None,
+            DecodeRenderOpts {
+                indent_size: 2,
+                ..Default::default()
+            },
+        );
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn a_string_that_opens_a_group_is_not_a_message() {
+        // The reported payload. Every "field" in it is a letter: `A` (0x41)
+        // is a FIXED64 tag for field 8, `P` (0x50) a VARINT tag for field 10
+        // with `D` as its value, and the pair `C` `T` is START_GROUP field 8
+        // followed by END_GROUP field 10 — which closes, consuming the last
+        // byte, so the only thing standing between this string and a nested
+        // render is that the close does not match the open.
+        let text = render_unknown_len(b"ANALYST_UPDATE_VERDICT");
+        assert_eq!(text, "1: \"ANALYST_UPDATE_VERDICT\"\n");
+    }
+
+    #[test]
+    fn a_mismatched_group_end_fails_the_probe() {
+        // `C` opens a group on field 8, `T` closes one on field 10. Nothing
+        // else is wrong: both field numbers are in range and every byte is
+        // consumed. `END_MISMATCH` is invalid, so this is a string.
+        assert_eq!(render_unknown_len(b"CT"), "1: \"CT\"\n");
+    }
+
+    #[test]
+    fn an_out_of_range_field_number_fails_the_probe() {
+        // `0x00` is a tag for field 0 — a VARINT, whose value is the second
+        // NUL. Without `TAG_OOR` counting, every NUL in a string helps that
+        // string pass for a message.
+        let text = render_unknown_len(b"\x00\x00");
+        assert!(!text.starts_with("1 {"), "got: {text}");
+        assert!(text.starts_with("1: \""), "got: {text}");
+    }
+
+    #[test]
+    fn a_mismatched_end_tag_out_of_range_fails_the_probe() {
+        // `ETAG_OOR` is not writable on its own — an end tag whose field
+        // number is out of range cannot match the open tag either, so it
+        // always arrives together with `END_MISMATCH: 536870912`. Here a
+        // group opens on field 1 and closes with the five-byte tag for
+        // field 2^29, one past the last legal field number.
+        let payload = [0x0B, 0x84, 0x80, 0x80, 0x80, 0x10];
+        let text = render_unknown_len(&payload);
+        assert!(!text.starts_with("1 {"), "got: {text}");
+    }
+
+    #[test]
+    fn an_over_encoded_tag_still_probes_as_a_message() {
+        // The other half of the rule: a non-canonical token does *not*
+        // disqualify. `0x88 0x00` is the field-1 VARINT tag written in two
+        // bytes instead of one — legal protobuf, round-trips exactly, and
+        // the render says so in lower case (`tag_ohb`). A payload from an
+        // eccentric but working encoder is still a message.
+        let buf = [0x0A, 0x03, 0x88, 0x00, 0x2A];
+        let out = decode_and_render(
+            &buf,
+            None,
+            DecodeRenderOpts {
+                annotations: true,
+                indent_size: 2,
+                ..Default::default()
+            },
+        );
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("1 {"), "got: {text}");
+        assert!(text.contains("tag_ohb"), "got: {text}");
+    }
+
     // ── Bounds arithmetic and depth caps (spec 0171) ────────────────────────
 
     /// Build a one-file `ParsedSchema` from the given message descriptors,
