@@ -156,7 +156,7 @@ b: 2  #@ varint; len_ohb: 2; TAG_OOR
 c: 3  #@ repeated int32 [packed=true] = 85; ENUM_UNKNOWN
 #        ^ type
 #                 ^ type
-#                       ^ type
+#                       ^ comment
 #                                       ^ attribute
 #                                           ^ annotation.non_canonical
 d: 4  #@ google.protobuf.FileDescriptorProto = 2

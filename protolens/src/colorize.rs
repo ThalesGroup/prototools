@@ -842,10 +842,13 @@ mod tests {
         // The field number is the document's own, and wears the color
         // its name wears at the head of the line — not the value color.
         assert_eq!(roles_across(text, "85"), vec![SyntaxRole::Attribute]);
-        // Spec 0267: `[packed=true]` is the declaration's third word,
-        // between the type and the `=`, so it is one statement in one
-        // color with the two beside it.
-        assert_eq!(roles_across(text, "[packed=true]"), vec![SyntaxRole::Type]);
+        // Spec 0267 S1 as amended: `[packed=true]` says how the encoder
+        // chose to write the field, not what the field is, so it reads
+        // with `pack_size` rather than with the two words beside it.
+        assert_eq!(
+            roles_across(text, "[packed=true]"),
+            vec![SyntaxRole::Comment],
+        );
         // And `pack_size` is a modifier like any other unclassified
         // one: it counts a record's elements, which accuses nothing.
         assert_eq!(roles_across(text, "pack_size"), vec![SyntaxRole::Comment]);

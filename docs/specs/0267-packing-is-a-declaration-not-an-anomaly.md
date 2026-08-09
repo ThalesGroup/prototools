@@ -41,8 +41,9 @@ exception to spec 0231's "one loudness, one meaning".
 
 ## Goals
 
-- **G1.** `[packed=true]` reads as part of the declaration it belongs to
-  — the type color, the same one `repeated` and `int32` already wear.
+- **G1.** `[packed=true]` reads as an informative statement about the
+  encoding, carrying no judgement — the same comment color `pack_size`
+  takes. *(Amended 2026-08-09; it first said the type color, see S1.)*
 - **G2.** `pack_size: N` reads as an ordinary modifier — the comment
   color every unclassified annotation token already falls through to.
 - **G3.** A packed record's wire row is drawn like every other record's:
@@ -62,12 +63,22 @@ exception to spec 0231's "one loudness, one meaning".
 
 ## Specification
 
-- **S1. `[packed=true]` takes `@type`.** `highlights.scm`'s
-  `(annotation_attribute)` rule joins the two that already give
-  `repeated`/`required` and the type name the same capture. The wire
-  row's borrowed wire type is unaffected: it reads the *first* token
-  after `#@ `, which on a packed row is `repeated`, and that was
-  already a type.
+- **S1. `[packed=true]` falls through to `@comment`, with `pack_size`.**
+  `highlights.scm` gets no `(annotation_attribute)` rule;
+  `(annotation) @comment`, declared first and narrowed by everything
+  below it, is what remains. The wire row's borrowed wire type is
+  unaffected: it reads the *first* token after `#@ `, which on a packed
+  row is `repeated`, and that is a type.
+
+  *Amended 2026-08-09.* S1 first said `@type`, on the argument that
+  `[packed=true]` sits inside the declaration and graying it splits one
+  sentence into three colors. What settled it the other way is that the
+  label and the type name say what the field **is** — they are schema —
+  while packing says how this encoder chose to **write** it, which is
+  the same kind of fact `pack_size: N` states two tokens later. Two
+  tokens saying one thing now say it in one color, and the declaration
+  keeps exactly the words that come from the schema. See the
+  alternative below, which is what shipped.
 
 - **S2. `pack_size` falls through to `@comment`.** Its `#any-of?` rule
   is deleted; `(annotation) @comment`, declared first and narrowed by
@@ -119,19 +130,21 @@ Where `annotation-format.md` files it today. It would go yellow, next
 to `tag_ohb` and `ENUM_UNKNOWN` — which says the encoder did something
 no conformant writer does. Every packed record has a `pack_size`.
 
-### Give `[packed=true]` the comment color with `pack_size`
+### Give `[packed=true]` the type color with `repeated` and `int32`
 
-Both are about packing, so both could go quiet. But `[packed=true]` is
-inside the declaration, between the type and the `=`; graying it splits
-one sentence into three colors and leaves the reader deciding whether
-the gray part is still part of the declaration.
+What S1 first said, on the argument that `[packed=true]` is inside the
+declaration, between the type and the `=`, and that graying it splits
+one sentence into three colors. **Rejected on the amendment above**: the
+sentence it is inside is not all one thing. `repeated int32` is the
+schema's answer to what the field is; `[packed=true]` is this encoder's
+answer to how it wrote it, and it belongs with `pack_size`.
 
 ## Test plan
 
 1. `the_declaration_echo_matches_the_documents_own_styles` (colorize,
-   existing) gains `[packed=true]` — it already asserts `repeated` and
-   `int32` on the very row this is about, so a second test would have
-   restated it.
+   existing) gains `[packed=true]` → `SyntaxRole::Comment` — it already
+   asserts `repeated` and `int32` on the very row this is about, so a
+   second test would have restated it.
 2. The same test gains `pack_size` → `SyntaxRole::Comment`.
 3. `every_keyword_is_colored_by_its_tier` (colorize, existing) — still
    passes over the two remaining tiers.
@@ -144,8 +157,8 @@ the gray part is still part of the declaration.
    replacing `pack_size_and_its_wire_bytes_share_the_accent`) — on the
    real fixture, `pack_size` is `Comment` in the annotation and the
    record's length prefix is `palette.len` in the wire row.
-6. The tree-sitter highlight fixture — `[packed=true]` asserts `type`,
-   `pack_size` asserts `comment`.
+6. The tree-sitter highlight fixture — `[packed=true]` and `pack_size`
+   both assert `comment`.
 
 ## Measured outcome
 

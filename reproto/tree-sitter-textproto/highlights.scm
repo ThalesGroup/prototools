@@ -135,10 +135,11 @@
 ((annotation_item (annotation_word) @type . (annotation_enum_value)))
 ((annotation_item (annotation_word) @type . (annotation_attribute)))
 
-; `[packed=true]` is the third word of the declaration, not a fourth
-; kind of thing: it sits between the type and the `=` and says what the
-; field is, exactly as the label and the type name do (spec 0267 S1).
-(annotation_attribute) @type
+; `[packed=true]` itself has no rule, and falls through to the comment
+; color (spec 0267 S1, amended). It is not a *third* thing the field is:
+; the label and the type name say what the field is, and packing says
+; how the encoder chose to write it — the same kind of fact
+; `pack_size: N` states two tokens later, in the same color.
 
 ; The field number, after the `=`. It is the document's field number,
 ; and the field-name color is what says so — the same color the name it
