@@ -26,7 +26,7 @@ pub(crate) fn apply() {
     linux::apply();
 }
 
-/// Undo [`apply`] for the calling thread.
+/// Put the calling thread on the CPUs the *workers* may use.
 ///
 /// **Every thread protolens spawns must call this as its first
 /// statement** (spec 0264 S7). An affinity mask is inherited across
@@ -34,6 +34,12 @@ pub(crate) fn apply() {
 /// worker it spawns to the fast cluster — on the machine above, 4 CPUs
 /// out of 14 — and a latency optimization becomes a 70% throughput
 /// loss.
+///
+/// It is not quite the inverse of [`apply`]: under spec 0265 the mask it
+/// hands back is everything the process inherited *minus* the physical
+/// core the main thread draws on, so that no protolens thread runs on
+/// that core's other hyperthread. A busy sibling costs a frame about
+/// 1.8x; a busy CPU on any other core costs it 1.15x.
 pub(crate) fn widen() {
     #[cfg(target_os = "linux")]
     linux::widen();

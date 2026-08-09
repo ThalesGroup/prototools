@@ -13,10 +13,14 @@ use std::sync::OnceLock;
 use nix::sched::{sched_getaffinity, sched_setaffinity, CpuSet};
 use nix::unistd::Pid;
 
-/// The mask to hand back to spawned threads — `Some` only once the main
-/// thread has actually been narrowed, so [`widen`] costs nothing on the
-/// overwhelmingly common machine where [`apply`] declined.
-static INHERITED: OnceLock<CpuSet> = OnceLock::new();
+/// The mask every thread protolens spawns adopts — `Some` only once the
+/// main thread has actually been narrowed, so [`widen`] costs nothing on
+/// the overwhelmingly common machine where [`apply`] declined.
+///
+/// Under spec 0264 it was the inherited mask, unchanged. Spec 0265
+/// subtracts the drawing core from it, and that subtraction is the whole
+/// of the reservation: every spawn site already calls [`widen`].
+static WORKER: OnceLock<CpuSet> = OnceLock::new();
 
 /// `Pid::from_raw(0)` is "the calling thread" to both affinity calls.
 fn me() -> Pid {
@@ -33,44 +37,97 @@ fn apply_at(root: &Path) {
     let Ok(inherited) = sched_getaffinity(me()) else {
         return;
     };
-    let Some(online) = read_cpu_list(&root.join("devices/system/cpu/online")) else {
+    let Some((main, worker)) = plan(root, &to_set(&inherited)) else {
         return;
     };
 
-    // S4: a mask narrower than the machine means a human, a `taskset` or
-    // a container already decided. This is also what keeps `bin/bench`
-    // and the repo's `taskset -c 4-7` discipline honest, and why no
-    // opt-out environment variable is needed.
-    if to_set(&inherited) != online {
-        return;
-    }
-
-    let Some(fast) = detect_fast(root, &online) else {
-        return;
-    };
-
-    // S8: `available_parallelism` respects the affinity mask and
-    // `available_cpus` caches its answer for the process. Asking now
+    // Spec 0264 S8: `available_parallelism` respects the affinity mask
+    // and `available_cpus` caches its answer for the process. Asking now
     // fixes it at the machine's real width; asking first from inside a
     // sweep, after the narrowing below, would clamp every sweep in the
     // session to the size of the fast set.
     let _ = crate::sweep::available_cpus();
 
-    let mut mask = CpuSet::new();
-    for cpu in &fast {
-        if mask.set(*cpu).is_err() {
-            return;
-        }
-    }
-    if sched_setaffinity(me(), &mask).is_ok() {
-        let _ = INHERITED.set(inherited);
+    let (Some(main), Some(worker)) = (to_mask(&main), to_mask(&worker)) else {
+        return;
+    };
+    if sched_setaffinity(me(), &main).is_ok() {
+        let _ = WORKER.set(worker);
     }
 }
 
-pub(super) fn widen() {
-    if let Some(inherited) = INHERITED.get() {
-        let _ = sched_setaffinity(me(), inherited);
+/// What the main thread keeps and what every spawned thread adopts, or
+/// `None` if this machine gives no reason to touch either.
+///
+/// Pure, so that the whole decision is testable on a machine that would
+/// decline: only the two `sched_setaffinity` calls above are not.
+fn plan(root: &Path, inherited: &BTreeSet<usize>) -> Option<(BTreeSet<usize>, BTreeSet<usize>)> {
+    let online = read_cpu_list(&root.join("devices/system/cpu/online"))?;
+
+    // Spec 0264 S4: a mask narrower than the machine means a human, a
+    // `taskset` or a container already decided. This is also what keeps
+    // `bin/bench` and the repo's `taskset -c 4-7` discipline honest, and
+    // why no opt-out environment variable is needed.
+    if *inherited != online {
+        return None;
     }
+
+    let fast = detect_fast(root, &online)?;
+
+    // Spec 0265: the main thread takes one whole physical core and the
+    // workers give it up. Declining leaves spec 0264 intact rather than
+    // undoing it — the main thread still gets the fast cluster.
+    Some(match drawing_core(root, &fast) {
+        Some(drawing) => (drawing.clone(), inherited - &drawing),
+        None => (fast, inherited.clone()),
+    })
+}
+
+pub(super) fn widen() {
+    if let Some(worker) = WORKER.get() {
+        let _ = sched_setaffinity(me(), worker);
+    }
+}
+
+/// The physical core to reserve for the main thread, or `None` if this
+/// machine cannot afford it (spec 0265 S2, S6).
+///
+/// The core is the one holding the lowest-numbered fast CPU — an
+/// arbitrary choice made deterministic. Two conditions decline:
+///
+/// 1. it has no SMT sibling, so there is nothing to reserve and
+///    same-CPU contention is the scheduler's business;
+/// 2. the fast set holds fewer than two physical cores, so reserving
+///    one would leave the workers no fast core at all.
+fn drawing_core(root: &Path, fast: &BTreeSet<usize>) -> Option<BTreeSet<usize>> {
+    let mut cores: Vec<BTreeSet<usize>> = Vec::new();
+    for cpu in fast {
+        let path = root.join(format!(
+            "devices/system/cpu/cpu{cpu}/topology/thread_siblings_list"
+        ));
+        let siblings = read_cpu_list(&path)?;
+        if !siblings.contains(cpu) {
+            return None; // A list that omits its own CPU is not one.
+        }
+        if !cores.contains(&siblings) {
+            cores.push(siblings);
+        }
+    }
+    if cores.len() < 2 {
+        return None;
+    }
+    let drawing = cores
+        .into_iter()
+        .min_by_key(|core| *core.first().expect("a sibling list is never empty"))?;
+    (drawing.len() >= 2).then_some(drawing)
+}
+
+fn to_mask(cpus: &BTreeSet<usize>) -> Option<CpuSet> {
+    let mut mask = CpuSet::new();
+    for cpu in cpus {
+        mask.set(*cpu).ok()?;
+    }
+    Some(mask)
 }
 
 /// The CPUs the kernel calls fast, or `None` if it does not say.
@@ -266,6 +323,74 @@ mod tests {
         assert_eq!(detect_fast(&dir, &online), None);
     }
 
+    /// The reference host's own topology, as `lscpu` reports it: the
+    /// P-cores are SMT pairs and the E-cores are not.
+    fn host_root(name: &str) -> std::path::PathBuf {
+        let mut files = vec![
+            ("devices/system/cpu/online".to_string(), "0-13".to_string()),
+            ("devices/cpu_core/cpus".to_string(), "0-3".to_string()),
+            ("devices/cpu_atom/cpus".to_string(), "4-13".to_string()),
+        ];
+        for cpu in 0..=13 {
+            let siblings = match cpu {
+                0 | 1 => "0-1".to_string(),
+                2 | 3 => "2-3".to_string(),
+                _ => cpu.to_string(),
+            };
+            files.push((
+                format!("devices/system/cpu/cpu{cpu}/topology/thread_siblings_list"),
+                siblings,
+            ));
+        }
+        let refs: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .collect();
+        root_with(name, &refs)
+    }
+
+    /// Spec 0265 S2: the drawing core is a whole physical core, not the
+    /// single CPU that names it.
+    #[test]
+    fn a_drawing_core_is_the_whole_physical_core() {
+        let dir = host_root("drawing-core");
+        let fast = set(&[0, 1, 2, 3]);
+        assert_eq!(drawing_core(&dir, &fast), Some(set(&[0, 1])));
+    }
+
+    /// S6 condition 1: with nothing on the sibling there is nothing to
+    /// reserve, and same-CPU contention is the scheduler's business.
+    #[test]
+    fn a_single_threaded_fast_core_reserves_nothing() {
+        let dir = root_with(
+            "no-smt",
+            &[
+                ("devices/system/cpu/cpu0/topology/thread_siblings_list", "0"),
+                ("devices/system/cpu/cpu1/topology/thread_siblings_list", "1"),
+            ],
+        );
+        assert_eq!(drawing_core(&dir, &set(&[0, 1])), None);
+    }
+
+    /// S6 condition 2: reserving the only fast core would leave the
+    /// workers none, trading a throughput collapse for a latency gain.
+    #[test]
+    fn a_lone_fast_core_reserves_nothing() {
+        let dir = host_root("lone-core");
+        assert_eq!(drawing_core(&dir, &set(&[0, 1])), None);
+    }
+
+    /// S4, the whole of the enforcement: what a spawned thread adopts is
+    /// the inherited mask minus the drawing core.
+    #[test]
+    fn a_worker_mask_excludes_the_drawing_core() {
+        let dir = host_root("worker-mask");
+        let inherited: BTreeSet<usize> = (0..=13).collect();
+        let (main, worker) = plan(&dir, &inherited).expect("the host layout is answerable");
+        assert_eq!(main, set(&[0, 1]));
+        assert_eq!(worker, (2..=13).collect::<BTreeSet<_>>());
+    }
+
     /// G1 itself, on a machine that cannot demonstrate it: the fake root
     /// declares this process's *own* CPUs online and half of them fast,
     /// which is the one arrangement under which `apply` acts.
@@ -337,7 +462,10 @@ mod tests {
         if cpus.len() < 2 {
             return; // Nothing to narrow to.
         }
-        let _ = INHERITED.set(inherited);
+        // `WORKER` is process-wide and `apply_at`'s own test writes it
+        // too; both write the mask this process inherited, because every
+        // fabricated root in this module declines spec 0265.
+        let _ = WORKER.set(inherited);
 
         let mut narrow = CpuSet::new();
         narrow.set(*cpus.iter().next().unwrap()).unwrap();
@@ -351,7 +479,7 @@ mod tests {
         .join()
         .unwrap();
 
-        sched_setaffinity(me(), INHERITED.get().unwrap()).expect("restore");
+        sched_setaffinity(me(), WORKER.get().unwrap()).expect("restore");
 
         // The first half is the hazard itself: a spawned thread really
         // does inherit the narrowing.
