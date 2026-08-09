@@ -255,101 +255,75 @@ pub(crate) fn ranked_with<T>(
     (Merged::new(runs).collect(), meanwhile_result)
 }
 
-/// A sweep that can be put down at a part boundary and picked up again
-/// (spec 0250 S3).
+/// The graph's roots cut into parts, once for the process (spec 0262
+/// S1).
 ///
-/// The speculative arrangement, and only that one: one thread walking
-/// [`SWEEP_PARTS`] parts one after another from its own cursor. Nobody is
-/// waiting for it, so it can afford to be interrupted — and being
-/// interruptible is what lets a `User` request have the whole machine
-/// within one part rather than one whole query.
+/// [`partition_roots`] is a pure function of the graph and the part
+/// count, and both are fixed for the session — yet the heat worker used
+/// to rebuild it inside every query. That is **7.3 ms** on googleapis
+/// against a median visible query of 5.4–10.4 ms, so more than half of
+/// a speculative query was spent re-deriving a constant.
 ///
-/// **Resumption is why the partition survives the drop to one thread.**
-/// Cutting a single-threaded sweep into parts is already the faster
-/// arrangement on googleapis (6.96 → 5.53 s of total work, spec 0250's
-/// table), but that is a bonus; the reason it is not simply one part is
-/// that a part boundary is the checkpoint. Parts are independent — they
-/// partition the roots and share nothing but the immutable `pb` and
-/// `graph` — so the parts already walked stay valid whatever happens
-/// next, and resuming means starting the next one rather than redoing
-/// any.
-///
-/// This holds no borrow of the graph: `rank` turns each part's
-/// `EntryScore<'g>` into owned `(String, i64)` before it is stored, so a
-/// parked sweep can sit in the worker's local state indefinitely without
-/// tying it to a lifetime.
-pub(crate) struct Resumable {
+/// It holds no borrow of the graph: a part is a list of root indices,
+/// and `rank` turns each part's `EntryScore<'g>` into owned
+/// `(String, i64)` before anyone stores it. So one of these can be
+/// shared by every worker for the life of the process.
+pub(crate) struct Partition {
     parts: Vec<Vec<u32>>,
-    /// `parts[..next]` are walked and their results are in `runs`.
-    next: usize,
-    /// One run per walked part, kept separate — concatenating them would
-    /// break the sortedness [`Merged`] relies on, exactly as in the
-    /// sharded path.
-    runs: Vec<RankedCandidates>,
     opts: ScoringOpts,
 }
 
-impl Resumable {
-    /// Cuts `graph`'s roots into `parts` parts, ready to walk.
+impl Partition {
+    /// Cuts `graph`'s roots for a pool of `jobs` workers.
     ///
-    /// Nothing is walked here — the partition is O(G log G) on a few
-    /// thousand groups, so a caller that yields before its first part
-    /// has still paid almost nothing.
-    pub(crate) fn new(graph: &ArchivedCompiledGraph, parts: usize) -> Self {
-        Resumable {
-            parts: partition_roots(graph, parts),
-            next: 0,
-            runs: Vec::new(),
+    /// `jobs` reaches [`target_parts`] through [`effective_jobs`], so a
+    /// machine that can really run only one thread still takes the
+    /// un-sharded single part — see `target_parts` for why that escape
+    /// hatch is not merely a special case of the general rule.
+    pub(crate) fn new(graph: &ArchivedCompiledGraph, jobs: usize) -> Self {
+        Partition {
+            parts: partition_roots(graph, target_parts(effective_jobs(jobs))),
             opts: ScoringOpts::default(),
         }
     }
 
-    /// Walks parts until they run out or `should_yield` says to stop,
-    /// whichever comes first. `true` when the sweep is complete.
+    /// How many parts a query is, which is how many tasks it becomes.
+    pub(crate) fn parts(&self) -> usize {
+        self.parts.len()
+    }
+
+    /// Scores `pb` against part `index`'s roots alone, ranked.
     ///
-    /// `should_yield` is consulted only *between* parts, which is the
-    /// whole latency contract: a part is atomic, so an interruption
-    /// costs at most one part's walk (≈0.23 s mean on googleapis, order
-    /// 0.8 s at the tail of a ~7x imbalance) and discards nothing.
-    /// Polling more finely would mean abandoning a part mid-walk, whose
-    /// partial scores are meaningless — see `score_subset`'s `cancel`.
-    ///
-    /// It is checked *before* each part rather than after, so a walker
-    /// that is told to yield before it starts does not first pay for a
-    /// part nobody is waiting for.
-    ///
-    /// `cancel` is the other thing entirely: it abandons a part
-    /// mid-walk, so a cancelled sweep must be discarded rather than
-    /// finished. Raising it here leaves this `Resumable` unusable, which
-    /// is why it reports completion and not a result.
-    pub(crate) fn walk_until_yield(
-        &mut self,
+    /// One part of one query — the unit of work the whole pool is built
+    /// out of. `cancel` abandons the walk mid-field, and the run
+    /// returned is then **partial and meaningless**: a caller that
+    /// raised it must discard this and walk the part again.
+    pub(crate) fn walk(
+        &self,
+        index: usize,
         pb: &[u8],
         graph: &ArchivedCompiledGraph,
         cancel: Option<&AtomicBool>,
-        should_yield: impl Fn() -> bool,
-    ) -> bool {
-        while self.next < self.parts.len() {
-            if should_yield() {
-                return false;
-            }
-            let part = &self.parts[self.next];
-            self.runs
-                .push(rank(score_subset(pb, graph, &self.opts, part, cancel)));
-            self.next += 1;
-        }
-        true
+    ) -> RankedCandidates {
+        rank(score_subset(
+            pb,
+            graph,
+            &self.opts,
+            &self.parts[index],
+            cancel,
+        ))
     }
+}
 
-    /// The ranking, merged out of the parts walked so far.
-    ///
-    /// Only meaningful once [`walk_until_yield`](Self::walk_until_yield)
-    /// has answered `true`: over a prefix of the parts this is a ranking
-    /// of a subset of the roots, which looks exactly like a complete one
-    /// and is not.
-    pub(crate) fn finish(self) -> RankedCandidates {
-        Merged::new(self.runs).collect()
-    }
+/// The ranking a query's parts add up to (spec 0262 S4).
+///
+/// The same [`Merged`] the sharded path uses, so a ranking assembled
+/// from parts walked by different workers at different times is
+/// bit-for-bit the one a single-threaded sweep produces —
+/// [`candidate_order`] is a total order, which is what makes that
+/// identity rather than equivalence.
+pub(crate) fn merge(runs: Vec<RankedCandidates>) -> RankedCandidates {
+    Merged::new(runs).collect()
 }
 
 /// One shard's scores, filtered to the non-vetoed and sorted into
@@ -619,12 +593,17 @@ mod tests {
         assert_eq!(merged, vec![c("a.Early", 7), c("z.Late", 7)]);
     }
 
-    /// Spec 0250 S3: the whole point of yielding at a part boundary is
-    /// that nothing is discarded, so a sweep put down and picked up any
-    /// number of times must produce the ranking an uninterrupted one
-    /// produces — not merely a similar one.
+    /// Spec 0262 S2/S4: a query walked one part at a time, by whoever
+    /// happens to take each part and in whatever order, must produce
+    /// the ranking one whole sweep produces — not merely a similar one.
+    /// That identity is what lets the pool hand a single query's parts
+    /// to several workers at once.
+    ///
+    /// The parts are walked here in reverse and the runs merged in that
+    /// order, because the pool guarantees nothing at all about which
+    /// worker finishes which part first.
     #[test]
-    fn a_sweep_stopped_and_resumed_produces_the_uninterrupted_ranking() {
+    fn a_query_walked_part_by_part_produces_the_whole_sweeps_ranking() {
         let graph = many_root_graph();
         let blob = scorable_blob();
         let reference = ranked(&blob, graph.graph(), 1, None);
@@ -633,58 +612,29 @@ mod tests {
             "the fixture must actually score something"
         );
 
-        // Yield before every single part, so the sweep is put down and
-        // picked up as many times as there are parts — the most
-        // interrupted schedule there is.
-        let mut sweep = Resumable::new(graph.graph(), SWEEP_PARTS);
-        let mut resumes = 0;
-        loop {
-            let always_yield = std::cell::Cell::new(true);
-            let done = sweep.walk_until_yield(&blob, graph.graph(), None, || {
-                // Yield on every part but the first of this call, so
-                // each call makes exactly one part of progress.
-                !always_yield.replace(false)
-            });
-            resumes += 1;
-            if done {
-                break;
-            }
-            assert!(resumes < 1000, "the sweep must make progress each time");
-        }
+        let partition = Partition::new(graph.graph(), 8);
         assert!(
-            resumes > 2,
-            "the fixture must cut into enough parts to be interrupted at all, \
-             got {resumes} resumptions"
+            partition.parts() > 4,
+            "the fixture must cut into enough parts to be shared at all, got {}",
+            partition.parts()
         );
-        assert_eq!(sweep.finish(), reference);
+        let runs: Vec<RankedCandidates> = (0..partition.parts())
+            .rev()
+            .map(|i| partition.walk(i, &blob, graph.graph(), None))
+            .collect();
+        assert_eq!(merge(runs), reference);
     }
 
-    /// A walker told to yield before it starts walks nothing at all —
-    /// the check is before the part, not after it. Without this a
-    /// `User` request arriving just as a speculative sweep is picked up
-    /// still waits a whole part for a walk nobody wanted.
+    /// Spec 0262 S1: the partition is the part count `target_parts`
+    /// asks for, and one worker still takes the un-sharded single part.
     #[test]
-    fn a_sweep_told_to_yield_immediately_walks_no_part() {
+    fn the_partition_follows_the_worker_budget() {
         let graph = many_root_graph();
-        let blob = scorable_blob();
-        let mut sweep = Resumable::new(graph.graph(), SWEEP_PARTS);
-        assert!(!sweep.walk_until_yield(&blob, graph.graph(), None, || true));
-        assert!(
-            sweep.finish().is_empty(),
-            "nothing was walked, so there is nothing to merge"
+        assert_eq!(Partition::new(graph.graph(), 1).parts(), 1);
+        assert_eq!(
+            Partition::new(graph.graph(), 4).parts(),
+            partition_roots(graph.graph(), SWEEP_PARTS).len()
         );
-    }
-
-    /// An uninterrupted resumable sweep is just a sweep: same ranking,
-    /// no yielding involved. Stated separately from the interrupted
-    /// case so that a failure says which of the two broke.
-    #[test]
-    fn an_uninterrupted_resumable_sweep_equals_the_ordinary_one() {
-        let graph = many_root_graph();
-        let blob = scorable_blob();
-        let mut sweep = Resumable::new(graph.graph(), SWEEP_PARTS);
-        assert!(sweep.walk_until_yield(&blob, graph.graph(), None, || false));
-        assert_eq!(sweep.finish(), ranked(&blob, graph.graph(), 1, None));
     }
 
     /// Spec 0218 S1/S5: the part count comes from the constant, not from

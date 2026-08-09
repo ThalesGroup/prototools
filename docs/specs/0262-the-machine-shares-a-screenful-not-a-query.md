@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0262 — the machine shares a screenful, not a query
 
-Status: draft
+Status: implemented
+Implemented in: 2026-08-09
 App: protolens
 Refs: docs/specs/0217-the-sweep-is-divided-among-the-cores.md,
         docs/specs/0218-the-sweep-is-pulled-from-a-shared-cursor.md (the
@@ -220,6 +221,22 @@ behind the rest.
   meaning "a `User` task is live", handed to every task walking below
   that tier.
 
+  **The flag alone is not enough: it needs an epoch beside it.** A part
+  handed out, aborted, and then finding the flag *low* again — because
+  the user's work finished while it was unwinding — would look like a
+  completed walk and be cached, and a truncated `score_subset` is
+  wrong, not partial. So the queue also counts raises of the flag; a
+  task carries the count it was handed out under, and a part whose
+  epoch has moved is discarded whatever the flag says now.
+
+  **A worker that abandons a part must not be handed it straight back**,
+  or the pool spins instead of standing aside. So `next_task` withholds
+  every sub-`User` task while `User` work is live — queued *or*
+  walking — and parks the worker on the condvar; `end_sweep`'s
+  `notify_all` is what releases it. This is a consequence, not an extra
+  rule: the flag and the hand-out floor are the same predicate read at
+  two moments.
+
   **Abort is confined to this one boundary.** `Visible` over `Prefetch`
   must *not* abort: `Visible` requests arrive continuously throughout a
   scroll, so aborting on them would destroy read-ahead during exactly
@@ -308,18 +325,24 @@ exception to it.
 
 ## Measured outcome
 
-Filled in at implementation. The four arrangements have already been
-measured against each other, on googleapis.desc, release, `taskset -c
-4-11`, `jobs` = 7 — wall time for one screenful of distinct ranges:
+The four arrangements were measured against each other before
+implementation, on googleapis.desc, release, `taskset -c 4-11`, `jobs`
+= 7 — wall time for one screenful of distinct ranges. The last column
+is the shipped code, re-measured the same way: a real `App`, a real
+`HeatWorkerHandle::spawn`, one `Visible` push per distinct
+`heat_scored_range` of a 50-row pane, timed until every one of them has
+landed in `by_range`.
 
-| pane top row | A: today | A': S1 only | B: one query per worker | C: this spec |
-|---|---|---|---|---|
-| 0 | 3.57 s | 3.34 s | 14.83 s | **3.20 s** |
-| 5 000 | 412 ms | 196 ms | 163 ms | **98 ms** |
-| 200 000 | 408 ms | 225 ms | 111 ms | **96 ms** |
-| 2 000 000 | 259 ms | 109 ms | 69 ms | **48 ms** |
+| pane top row | A: today | A': S1 only | B: one query per worker | C: predicted | C: shipped |
+|---|---|---|---|---|---|
+| 0 | 3.57 s | 3.34 s | 14.83 s | 3.20 s | **3.29 s** |
+| 5 000 | 412 ms | 196 ms | 163 ms | 98 ms | **91 ms** |
+| 200 000 | 408 ms | 225 ms | 111 ms | 96 ms | **93 ms** |
+| 2 000 000 | 259 ms | 109 ms | 69 ms | 48 ms | **59 ms** |
 
-C is 4.2–5.4x on an ordinary screenful and never worse than today.
+**4.4–4.5x on an ordinary screenful and never worse than today**, and
+within 20% of the projection at every pane top — the simulation
+harness modelled the arrangement, not just the walk.
 
 Preemption latency, G2: the corpus's most expensive query is the
 document root, whose 24 parts take 15.17 s in total, median 512 ms and

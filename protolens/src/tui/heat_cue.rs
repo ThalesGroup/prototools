@@ -335,27 +335,32 @@ impl App {
         display
     }
 
-    /// The tier a main-pane heat request for node `idx` is asked at
-    /// (spec 0208 S3): `User` for the node under the cursor, `Visible`
-    /// for every other node on screen.
+    /// Re-asks for the cursor row's cue, so that it sits at the head of
+    /// the `Visible` band (spec 0262 S7).
     ///
-    /// `Tier::Visible` is right for the other forty-odd lines — that
-    /// request runs every frame just to re-check its own pending
-    /// status, and must not repeatedly jump ahead of a request a
-    /// genuine user action queued. It is wrong for exactly one line:
-    /// the node under the cursor is the one whose type the status line
-    /// reports, whose cue the user is waiting on, and the one `t` will
-    /// open the selection pane on.
+    /// The cursor row used to be asked for at `Tier::User`, which made a
+    /// held arrow key one `User` request per keystroke — and `User` now
+    /// means "stop the whole pool for this". It is one of forty-odd rows
+    /// on screen and it is scored the same way they are; what it is owed
+    /// is to be *first* among them, and a re-ask is exactly that: a
+    /// same-tier merging push moves an entry back to the head of its
+    /// band (spec 0208 S4c).
+    ///
+    /// Called once per frame, after the window's own row-by-row pass, so
+    /// that it is the last `Visible` push of the frame and therefore the
+    /// front of the band. A settled cursor row pushes nothing at all —
+    /// `heat_cue_resolve` returns before the lookup.
     ///
     /// `self.cursor` is a node index, not a line index, and it names
     /// the node whose bracket pair the caret belongs to whether the
     /// caret rests on the header line or the footer (spec 0142) — so
-    /// the comparison is exact and needs no line-map lookup.
-    fn heat_tier_for(&self, idx: usize) -> Tier {
-        if idx == self.cursor {
-            Tier::User
-        } else {
-            Tier::Visible
+    /// this needs no line-map lookup.
+    pub(super) fn refresh_cursor_heat_cue(&mut self) {
+        // An empty document has no node for the cursor to be resting on;
+        // the row-by-row pass never meets that case because it has no
+        // rows to walk.
+        if self.cursor < self.tree.len() && self.can_override(self.cursor) {
+            self.heat_cue_resolve(self.cursor);
         }
     }
 
@@ -400,11 +405,11 @@ impl App {
     /// node's heat is, in one place, so `heat_cue_resolve` and
     /// `prefetch_step_inner` cannot come to read it two different ways.
     ///
-    /// `tier` is the node's own (`heat_tier_for`, spec 0208 S3), never a
-    /// flat `Tier::Visible`: `peek` is a *promoting* read (spec 0164
-    /// G9), so reading the cursor node's own result at `Visible` would
-    /// undo the promotion its request earned and hand it back to
-    /// eviction ahead of a result the user has stopped looking at.
+    /// `tier` is whatever the caller pushed its request at: `peek` is a
+    /// *promoting* read (spec 0164 G9), so reading a result back at a
+    /// lower tier than it was asked for would undo the promotion the
+    /// request earned and hand it to eviction ahead of a result nobody
+    /// is looking at.
     ///
     /// `peek_with`, not `peek`: this runs per unsettled node per frame,
     /// and the two fields wanted sit alongside a whole ranked candidate
@@ -450,13 +455,16 @@ impl App {
         // missing, merged into the queue per G3); the AND-gated return
         // value itself is discarded — `best`/`current` are re-read
         // independently just below, since either may already be known
-        // even when this reports a miss. See `heat_tier_for` (spec 0208
-        // S3) for why the tier is per-node.
-        let tier = self.heat_tier_for(idx);
+        // even when this reports a miss.
+        //
+        // Spec 0262 S7: every main-pane row is `Visible`, the cursor's
+        // included. Its precedence comes from `refresh_cursor_heat_cue`
+        // asking again at the end of the frame, not from a tier of its
+        // own — `Tier::User` now stops the whole worker pool, and a held
+        // arrow key must not do that once per keystroke.
+        let tier = Tier::Visible;
         self.heat_lookup(&range, current_key.as_deref(), 0, HEAT_CUE_PREVIEW, tier);
 
-        // The read takes the same tier as the push above, not a flat
-        // `Tier::Visible` — see `read_heat_state`.
         let state = self.read_heat_state(start, current_key.as_deref(), tier);
 
         if state.settled() || self.heat_worker.is_some() {

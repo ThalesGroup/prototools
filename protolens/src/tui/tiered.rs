@@ -31,7 +31,7 @@ impl Tier {
     /// them would compile, and would then report the wrong subsystem as
     /// busy with nothing to say it had.
     /// `const` so that a mask over several tiers can itself be a
-    /// constant — `URGENT_TIERS` in `heat_worker` is one.
+    /// constant.
     pub(super) const fn bit(self) -> u8 {
         match self {
             Tier::User => 0b001,

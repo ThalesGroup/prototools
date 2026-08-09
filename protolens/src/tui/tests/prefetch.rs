@@ -205,7 +205,7 @@ fn a_rejected_push_makes_the_next_call_idle_with_no_further_push() {
 /// reachable by `pop_highest`, so the worker reclaims it rather than
 /// spending a `score_all` on a range ranked from an origin that no
 /// longer exists. That reclamation is the worker's job and is covered
-/// by `pop_blocking_discards_a_superseded_wave_instead_of_serving_it`.
+/// by `next_task_discards_a_superseded_wave_instead_of_serving_it`.
 #[test]
 fn changing_cursor_restarts_the_walk_and_supersedes_the_old_wave() {
     let mut app = wide_sibling_scalars_app(5);

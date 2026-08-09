@@ -1335,6 +1335,9 @@ impl App {
                 DisplayRow::Overlay(_) => heat_cue::HeatDisplay::None,
             })
             .collect();
+        // Spec 0262 S7: the cursor row asks last, so that among this
+        // frame's `Visible` pushes it is the one at the head of the band.
+        self.refresh_cursor_heat_cue();
         let d_heat = t_heat.elapsed();
         let t_ovr = std::time::Instant::now();
         let (row_emphasis, _) = self.override_emphasis(&window);

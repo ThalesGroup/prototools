@@ -9,7 +9,7 @@
 //! See spec 0152's "The approach, in plain terms" for the design.
 
 use std::ops::Range;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 
@@ -54,24 +54,49 @@ pub(super) struct HeatRequest {
     pub(super) tier: Tier,
 }
 
-/// The tiers somebody is actually waiting on (spec 0250 S2): a `User`
-/// request is the cursor's own row or the override pane, a `Visible` one
-/// is a row on screen. Speculative read-ahead is everything else.
+/// What a worker is handed by [`HeatRequestQueue::next_task`] (spec
+/// 0262 S2).
 ///
-/// This is the line the whole arrangement is drawn along — these fan out
-/// over the machine, and work below it steps aside for them.
-const URGENT_TIERS: u8 = Tier::User.bit() | Tier::Visible.bit();
+/// Two shapes rather than one because the cache re-check a popped
+/// request needs takes the *caches* lock, and `next_task` is called
+/// holding the *queue* lock. Admission is therefore its own turn: a
+/// worker takes a request off the queue, checks it, and either answers
+/// it outright or registers its parts in the pool for whoever asks
+/// next — itself included.
+enum Task {
+    /// A request just off the queue, not yet checked against the cache.
+    Admit { start: usize, req: HeatRequest },
+    /// One part of a query already admitted and registered.
+    Walk {
+        start: usize,
+        part: usize,
+        req: HeatRequest,
+        /// [`HeatRequestQueue::abort_epoch`] as it stood when this task
+        /// was handed out — see there for what a change in it means.
+        epoch: u64,
+    },
+}
 
-/// What a worker is willing to be handed (spec 0250 S3).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PopMode {
-    /// Anything, waiting for it if need be — a worker with nothing else
-    /// to do.
-    Block,
-    /// Only work somebody is waiting on, and never waiting for it — a
-    /// worker holding a parked speculative sweep, which has its own work
-    /// to get back to and must not sleep on the queue holding it.
-    UrgentOnly,
+/// A query the pool is walking (spec 0262 S2): the parts still to be
+/// handed out, the parts handed out and not yet accounted for, and the
+/// runs the finished ones produced.
+///
+/// The runs accumulate here rather than in any worker because no worker
+/// owns the query. Whichever one accounts for the last part takes them
+/// all and merges (S4).
+struct ActiveQuery {
+    start: usize,
+    req: HeatRequest,
+    /// Part indices not yet handed to a worker. A stack, so a part
+    /// abandoned under S8 goes straight back to the top and is the
+    /// first thing redone once the machine is free again.
+    pending: Vec<usize>,
+    /// Parts handed out and neither deposited nor abandoned. The query
+    /// is complete when this is zero *and* `pending` is empty — either
+    /// alone would call a query finished while a worker was still
+    /// inside it.
+    outstanding: usize,
+    runs: Vec<crate::decode::RankedCandidates>,
 }
 
 /// A request as the *queue* holds it: what the caller asked for, plus
@@ -137,6 +162,15 @@ struct HeatRequestQueueState {
     /// linear scan over a single-digit number of `usize` comparisons,
     /// on a path that already holds a lock.
     in_flight: Vec<(usize, Tier)>,
+    /// The queries the pool is walking (spec 0262 S2), one entry per
+    /// range in `in_flight` that got as far as needing a sweep.
+    ///
+    /// Same `Mutex` as `mru` and `in_flight` for the same reason they
+    /// share one: handing a part out, accounting for it and declaring
+    /// the query over are all decisions about the same fact, and split
+    /// across two locks each seam is a window in which the pool
+    /// disagrees with itself about whether a query is finished.
+    active: Vec<ActiveQuery>,
 }
 
 /// Merge-on-push, most-recently-touched-first request queue (spec
@@ -179,30 +213,38 @@ pub(super) struct HeatRequestQueue {
     /// the walk can poll it (spec 0217's `score_subset` `cancel`).
     ///
     /// A duplicate rather than a replacement: `stop` is read under the
-    /// same lock as the condvar wait in `pop_blocking`, and moving it out
+    /// same lock as the condvar wait in `next_task`, and moving it out
     /// would open the classic lost-wakeup window between the test and
     /// the wait. The walk, in contrast, holds no lock and must not take
     /// one per wire field.
     stop_flag: AtomicBool,
-    /// Held for the duration of a fanned-out sweep, so that only one is
-    /// ever walking (spec 0250 S2 and G2).
+    /// Is the whole pool owed to `Tier::User` work right now (spec 0262
+    /// S8)? Lock-free, because the walker polls it once per wire field.
     ///
-    /// Without it G2 fails outright rather than marginally: a screenful
-    /// of rows produces a `Visible` request each, every worker pops one,
-    /// and every one of them spreads `SWEEP_PARTS` parts over the whole
-    /// machine — `workers × jobs` walkers against `jobs` cores.
+    /// This is the `cancel` flag every sub-`User` part is walked under,
+    /// so raising it stops those walks mid-field rather than at the next
+    /// part boundary. A `User` request is the override pane's, with a
+    /// human blocked on it, and the worst part of the document root's
+    /// query is 1.5 s — too long to wait for politely.
     ///
-    /// Serializing them is not a compromise, it is the better schedule.
-    /// Two urgent sweeps at full width one after the other finish the
-    /// first one sooner than two at half width finish either, and the
-    /// queue's bands already decide which goes first: `User` drains
-    /// before `Visible`, so the one the user is most directly waiting on
-    /// reaches this lock first.
+    /// It is raised by a `User` request being *queued*, not by one being
+    /// picked up: the pool has to be free before the request can be
+    /// admitted, so waiting for the admission would be waiting for the
+    /// thing this flag exists to arrange. Stop raises it too, so a
+    /// shutdown unwinds every walk in the pool and not only the
+    /// `User`-tier ones.
+    stand_aside: AtomicBool,
+    /// How many times `stand_aside` has been *raised* (spec 0262 S8).
     ///
-    /// A worker blocked here is registered in flight and so still counts
-    /// as urgent, which is what keeps the speculative workers parked
-    /// while it waits its turn.
-    fanout: Mutex<()>,
+    /// A worker cannot test `stand_aside` after its walk to learn
+    /// whether it was cancelled: raised and lowered again while the walk
+    /// ran, the flag reads false and the worker would cache a truncated
+    /// — that is, wrong — ranking. A counter cannot be missed that way.
+    /// It is read under the queue lock as a part is handed out, when
+    /// `stand_aside` is known to be low, so any raise afterwards changes
+    /// it. Unchanged therefore means "no raise happened", which is
+    /// exactly "this run is whole".
+    abort_epoch: AtomicU64,
     /// Test-only log of the full sweeps this queue's workers have run,
     /// in completion order (spec 0152/0154 test plans; spec 0250 S6) —
     /// proves the "no second `score_all` call" claim for a request the
@@ -234,12 +276,14 @@ impl HeatRequestQueue {
                 generation: 0,
                 complete_wanted: std::collections::HashSet::new(),
                 in_flight: Vec::new(),
+                active: Vec::new(),
             }),
             condvar: Condvar::new(),
             queued: AtomicU8::new(0),
             in_flight: AtomicU8::new(0),
             stop_flag: AtomicBool::new(false),
-            fanout: Mutex::new(()),
+            stand_aside: AtomicBool::new(false),
+            abort_epoch: AtomicU64::new(0),
             #[cfg(test)]
             sweeps_performed: Mutex::new(Vec::new()),
         }
@@ -248,9 +292,9 @@ impl HeatRequestQueue {
     /// Test-only: notes that a real sweep of `range_start` is about to
     /// begin, for [`sweeps_of`](HeatWorkerHandle::sweeps_of).
     ///
-    /// Called once per sweep *started*, not per part: a speculative
-    /// sweep put down and picked up again is still one sweep, which is
-    /// the whole claim spec 0250 S3 makes about it.
+    /// Called once per sweep *started*, not per part: a query is one
+    /// sweep however many workers walk it and however often a part of
+    /// it is abandoned and redone (spec 0262 S2/S8).
     #[cfg(test)]
     fn note_sweep(&self, range_start: usize, tier: Tier) {
         self.sweeps_performed
@@ -266,6 +310,7 @@ impl HeatRequestQueue {
     fn publish_occupancy(&self, state: &HeatRequestQueueState) {
         self.queued
             .store(state.mru.band_occupancy(), Ordering::Relaxed);
+        self.refresh_stand_aside(state);
     }
 
     /// Republishes `in_flight` from the registry the caller has just
@@ -279,56 +324,134 @@ impl HeatRequestQueue {
     fn publish_in_flight(&self, state: &HeatRequestQueueState) {
         let mask = state.in_flight.iter().fold(0, |m, (_, t)| m | t.bit());
         self.in_flight.store(mask, Ordering::Relaxed);
+        self.refresh_stand_aside(state);
     }
 
-    /// Spec 0250 S4/S5: the sweep of the range starting at `start` is
+    /// Republishes [`stand_aside`](Self::stand_aside) from the state the
+    /// caller has just established, counting every *raise* in
+    /// [`abort_epoch`](Self::abort_epoch) (spec 0262 S8).
+    ///
+    /// Called from both `publish_*` above rather than from the handful
+    /// of sites that can change the answer, because those two are
+    /// already the "last act before releasing the lock" idiom this
+    /// depends on. Calling it twice under one lock hold is free: only a
+    /// transition bumps the counter, and the second call sees no
+    /// transition.
+    ///
+    /// A stop is folded in from the atomic rather than from
+    /// `state.stop`, because `signal_stop` raises the atomic *before*
+    /// taking the lock — read off the state alone, a refresh landing in
+    /// that window would lower the flag again and a walk already
+    /// unwinding would carry on.
+    fn refresh_stand_aside(&self, state: &HeatRequestQueueState) {
+        let now =
+            self.stop_flag.load(Ordering::Relaxed) || state.stop || Self::user_live_locked(state);
+        if !self.stand_aside.swap(now, Ordering::Relaxed) && now {
+            self.abort_epoch.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Is `Tier::User` work live — queued or being walked (spec 0262
+    /// S7/S8)?
+    ///
+    /// Read off the state itself rather than off the atomic mirrors,
+    /// which is what a condvar predicate must do: a mirror can be
+    /// republished between the test and the wait, and the wakeup is then
+    /// lost.
+    ///
+    /// Both halves are needed, and the in-flight half is the one that is
+    /// easy to miss. Standing aside for the queued half alone would
+    /// clear the pool only until the request was admitted: the moment
+    /// some worker took it, everyone else would see an empty `User` band
+    /// and go straight back to competing with the very query they had
+    /// stepped aside for.
+    fn user_live_locked(state: &HeatRequestQueueState) -> bool {
+        state.mru.band_occupancy() & Tier::User.bit() != 0
+            || state.in_flight.iter().any(|(_, t)| *t == Tier::User)
+    }
+
+    /// Spec 0250 S4/S5: the query over the range starting at `start` is
     /// over — deregister it and republish the mirror. Called by
-    /// `heat_worker_loop` on every path out of a popped request,
-    /// including the early-outs where no sweep actually ran.
+    /// `heat_worker_loop` on every path out of an admitted request,
+    /// including the early-outs where no sweep actually ran, and by the
+    /// worker that accounts for a query's last part.
+    ///
+    /// `in_flight` means *a walk is happening right now*, not *somebody
+    /// intends to finish this* — which is also the reading its other
+    /// consumer, the activity dot, wants.
     fn end_sweep(&self, start: usize) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.in_flight.retain(|(s, _)| *s != start);
+        state.active.retain(|q| q.start != start);
         self.publish_in_flight(&state);
-        // Spec 0250 S3: the end of an urgent sweep is the handover back
-        // to the speculative workers parked behind it, and this is the
-        // only thing that will tell them.
+        // Spec 0262 S8: the end of a `User` query is the handover back
+        // to everyone who stood aside for it, and this is the only thing
+        // that will tell them.
         self.condvar.notify_all();
     }
 
-    /// The sweep of `start` is being set down (spec 0250 S3), so the
-    /// range stops counting as in flight.
+    /// Registers the query over `start` as a set of `parts` tasks (spec
+    /// 0262 S2) and wakes the pool to come and take them.
     ///
-    /// It is the same deregistration as `end_sweep`, and it is *not* an
-    /// optimization — it is what stops a parked sweep holding its range
-    /// hostage. A parked sweep is stalled for as long as the user keeps
-    /// asking for things, which while scrolling is indefinitely; left
-    /// registered, S4's rule would drop every request for a row inside
-    /// that range, every frame, and those cues would never resolve.
-    ///
-    /// `in_flight` therefore means *a walk is happening right now*, not
-    /// *somebody intends to finish this* — which is also the reading its
-    /// other consumer, the activity dot, wants.
-    fn park_sweep(&self, start: usize) {
-        self.end_sweep(start);
+    /// Called by the worker that admitted the request, after its cache
+    /// re-check found the answer really is missing — so a query that
+    /// never needed a sweep never becomes tasks at all.
+    fn activate(&self, start: usize, req: HeatRequest, parts: usize) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.active.push(ActiveQuery {
+            start,
+            req,
+            // Reversed, so that popping this stack hands the parts out
+            // in index order. The order is cosmetic — `merge` restores
+            // one total order whatever sequence the runs arrive in —
+            // but a `top -H` reading 0, 1, 2 is easier to believe.
+            pending: (0..parts).rev().collect(),
+            outstanding: 0,
+            runs: Vec::new(),
+        });
+        self.condvar.notify_all();
     }
 
-    /// Picks a parked sweep's range back up, or refuses (spec 0250 S3).
+    /// Accounts for a finished part (spec 0262 S4). `Some` — carrying
+    /// every run the query produced — exactly for the worker that walked
+    /// its **last** part; that worker merges and records.
     ///
-    /// It refuses when somebody else has taken the range on meanwhile,
-    /// in which case the parked sweep is abandoned: its answer is being
-    /// produced anyway and walking it twice is exactly the waste S4
-    /// exists to remove. Refusing here is what makes the release in
-    /// `park_sweep` safe — registration is only ever held by one walker
-    /// at a time, so `end_sweep`'s remove-by-`start` cannot take
-    /// somebody else's entry with it.
-    fn resume_sweep(&self, start: usize, tier: Tier) -> bool {
+    /// The merge is charged to a worker rather than to a collector on
+    /// purpose, and it is not a detail: merged serially it costs 244 ms
+    /// per screenful on googleapis against 96 ms merged in the pool.
+    fn deposit_part(
+        &self,
+        start: usize,
+        run: crate::decode::RankedCandidates,
+    ) -> Option<Vec<crate::decode::RankedCandidates>> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if state.in_flight.iter().any(|(s, _)| *s == start) {
-            return false;
+        let i = state.active.iter().position(|q| q.start == start)?;
+        let query = &mut state.active[i];
+        query.runs.push(run);
+        query.outstanding -= 1;
+        // Both halves: `outstanding` alone would call the query finished
+        // while parts abandoned under S8 were still waiting to be redone,
+        // and `pending` alone while another worker was still inside one.
+        if query.outstanding > 0 || !query.pending.is_empty() {
+            return None;
         }
-        state.in_flight.push((start, tier));
-        self.publish_in_flight(&state);
-        true
+        Some(state.active.remove(i).runs)
+    }
+
+    /// Gives a part back unwalked (spec 0262 S8) — its run was cancelled
+    /// by a `User` arrival and is therefore partial, which is to say
+    /// wrong rather than incomplete.
+    ///
+    /// It goes back on the pending stack rather than being dropped: the
+    /// query is still owed an answer, and nothing else would ever ask
+    /// for this part again.
+    fn abandon_part(&self, start: usize, part: usize) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(query) = state.active.iter_mut().find(|q| q.start == start) {
+            query.pending.push(part);
+            query.outstanding -= 1;
+        }
+        self.condvar.notify_all();
     }
 
     /// Test-only view of what is being swept right now (spec 0250 S5).
@@ -338,20 +461,30 @@ impl HeatRequestQueue {
         state.in_flight.clone()
     }
 
-    /// Test-only: one whole worker turn — pop a request, then declare
-    /// its sweep over, as `heat_worker_loop` does around every request
-    /// it handles.
+    /// Test-only: the next task, which in a test with no query active
+    /// is an admission, unwrapped to the request it admits.
+    #[cfg(test)]
+    fn admit_one(&self) -> Option<(usize, HeatRequest)> {
+        match self.next_task()? {
+            Task::Admit { start, req } => Some((start, req)),
+            Task::Walk { .. } => panic!("this test activated no query"),
+        }
+    }
+
+    /// Test-only: one whole worker turn — admit a request, then declare
+    /// its query over, as `heat_worker_loop` does around every request
+    /// whose answer the cache already holds.
     ///
     /// Tests about *ordering* must use this rather than a bare
-    /// `pop_blocking`, which leaves the range registered as in flight:
+    /// `admit_one`, which leaves the range registered as in flight:
     /// under spec 0250 S4 a later push of that same range is then
     /// correctly dropped, and a test that meant only "take the next
     /// entry" would wait on a queue it had itself emptied.
     #[cfg(test)]
     fn take_one(&self) -> Option<(usize, HeatRequest)> {
-        let popped = self.pop_blocking()?;
-        self.end_sweep(popped.0);
-        Some(popped)
+        let admitted = self.admit_one()?;
+        self.end_sweep(admitted.0);
+        Some(admitted)
     }
 
     /// Spec 0190 S4: the highest-priority tier that is live — queued
@@ -416,14 +549,26 @@ impl HeatRequestQueue {
         outcome
     }
 
-    /// Blocks until a request is available or `stop` is set; pops the
-    /// highest-priority entry (spec 0164 G3: `TieredBounded::
-    /// pop_highest`). `None` once `stop` is set — checked *before*
-    /// popping, so a `shutdown()` mid-backlog abandons whatever is
-    /// still queued instead of draining it first (each entry can be
-    /// an expensive `inferred_candidates` call; the one request already
-    /// popped and mid-flight when `stop` was set still finishes
-    /// normally — unavoidable, and bounded to one item).
+    /// Blocks until there is something for a worker to do, or `stop` is
+    /// set (spec 0262 S2/S3).
+    ///
+    /// Two shapes of work compete here, and they are ranked on the one
+    /// axis: a part of a query already under way, and a request still on
+    /// the queue. The highest tier wins; a tie goes to the part, because
+    /// finishing a query is what produces an answer and starting another
+    /// only spreads the pool thinner.
+    ///
+    /// `None` once `stop` is set — checked *before* serving anything, so
+    /// a `shutdown()` mid-backlog abandons whatever is still queued
+    /// instead of draining it first (each entry can be an expensive
+    /// sweep; the parts already handed out when `stop` was set unwind
+    /// through their `cancel` flag).
+    ///
+    /// Spec 0262 S8: while `User` work is live nothing below `User` is
+    /// handed out at all. That is the same decision as the abort — a
+    /// worker that gave a part back and were handed it straight back
+    /// would abort it again immediately, and spin on the core the
+    /// override pane is waiting for.
     ///
     /// Spec 0189 S3: with nothing live to do, the worker reclaims
     /// superseded requests instead of scoring them — `pop_highest`
@@ -434,81 +579,102 @@ impl HeatRequestQueue {
     /// path, on the worker instead of the UI thread.
     ///
     /// Spec 0250 S4: `push` merges on `range.start` only while a
-    /// request is still *queued*, so once popped, a re-push of the same
-    /// range would start a second live sweep of it. The results are
-    /// identical, so that is pure waste — and the unit of waste is a
-    /// whole query. A pop of a range some other worker is already
+    /// request is still *queued*, so once admitted, a re-push of the
+    /// same range would start a second live query over it. The results
+    /// are identical, so that is pure waste — and the unit of waste is a
+    /// whole query. An admission of a range some other worker is already
     /// sweeping is therefore **dropped**, not served and not requeued:
     /// dropping is self-healing, because the reader re-checks the cache
-    /// each frame and pushes again once the sweep in flight has
+    /// each frame and pushes again once the query in flight has
     /// finished and written its answer, whereas requeueing would spin
     /// this worker on an entry it cannot act on. Nor can an ask be lost
     /// this way — `complete_wanted` is keyed on the range and consumed
     /// by whichever sweep answers it, not by this request.
     ///
-    /// The returned request is registered in `state.in_flight` before
+    /// The admitted request is registered in `state.in_flight` before
     /// the lock is released — see that field for why the two must be
     /// one atomic act.
-    /// Spec 0250 S3: in [`PopMode::UrgentOnly`] this does not block and
-    /// serves nothing speculative — it is what a worker holding a parked
-    /// sweep calls, which must never sit on the condvar while it still
-    /// has work of its own to get back to.
-    fn pop(&self, mode: PopMode) -> Option<(usize, HeatRequest)> {
+    fn next_task(&self) -> Option<Task> {
+        self.next_task_inner(true)
+    }
+
+    /// [`next_task`](Self::next_task), with the option of answering
+    /// `None` instead of blocking.
+    ///
+    /// The non-blocking reading exists for tests, which need to ask
+    /// "and is there anything else?" of a queue no worker is draining —
+    /// a question that has no answer if asking it blocks forever.
+    fn next_task_inner(&self, blocking: bool) -> Option<Task> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        // Spec 0252 S1: set by a stale discard, and owed a `notify_all`
-        // before this call blocks or returns. Draining the last stale
-        // entry clears the `visible` bit, and that transition is a
-        // handover to workers asleep in `await_quiet` with nothing else
-        // due to wake them — the same obligation `end_sweep` carries.
-        // Once per drain rather than once per entry: a full band is up
-        // to `HEAT_REQUEST_QUEUE_MAX_ENTRIES` discards, and only the
-        // last of them can change the answer they are waiting on.
-        let mut drained_stale = false;
         loop {
             if state.stop {
                 return None;
             }
-            // In `UrgentOnly` the band mask is consulted under the same
-            // lock hold as the pop, which is what makes it exact: bands
-            // drain by priority, so `pop_highest` returns an urgent
-            // entry exactly when an urgent bit is set.
-            let servable = match mode {
-                PopMode::Block => true,
-                PopMode::UrgentOnly => state.mru.band_occupancy() & URGENT_TIERS != 0,
+            // Recomputed each turn rather than carried across the wait:
+            // whatever woke this worker up may well be exactly this
+            // changing.
+            self.refresh_stand_aside(&state);
+            let floor = if Self::user_live_locked(&state) {
+                Tier::User
+            } else {
+                Tier::Prefetch
             };
-            if servable {
+            // The best part on offer. `max_by_key` keeps the *last*
+            // maximum, and queries are appended as they are activated,
+            // so a tie goes to the most recently started — the same
+            // most-recently-touched-first rule the queue itself follows.
+            let best_part = state
+                .active
+                .iter()
+                .enumerate()
+                .filter(|(_, q)| !q.pending.is_empty() && q.req.tier >= floor)
+                .max_by_key(|(_, q)| q.req.tier)
+                .map(|(i, q)| (i, q.req.tier));
+            let best_queued = Tier::highest_in(state.mru.band_occupancy()).filter(|t| *t >= floor);
+            let take_part = match (best_part, best_queued) {
+                (Some((_, part)), Some(queued)) => part >= queued,
+                (Some(_), None) => true,
+                (None, _) => false,
+            };
+            if let (true, Some((i, _))) = (take_part, best_part) {
+                let epoch = self.abort_epoch.load(Ordering::Relaxed);
+                let query = &mut state.active[i];
+                let part = query.pending.pop().expect("filtered on a non-empty stack");
+                query.outstanding += 1;
+                return Some(Task::Walk {
+                    start: query.start,
+                    part,
+                    req: query.req.clone(),
+                    epoch,
+                });
+            }
+            if best_queued.is_some() {
                 if let Some((key, entry)) = state.mru.pop_highest() {
                     self.publish_occupancy(&state);
                     // Spec 0252 S1: asked for a window that is gone, so
                     // nobody is looking at the row it would answer.
-                    // `User` is exempt — the cursor's own row and the
-                    // override pane are waited on whatever the window
-                    // did — and `Prefetch` has `start_new_wave`.
+                    // `User` is exempt — the override pane is waited on
+                    // whatever the window did — and `Prefetch` has
+                    // `start_new_wave`.
+                    //
+                    // No wakeup is owed for a discard, however many it
+                    // drains: nothing any worker waits on can be made
+                    // *more* servable by the queue getting shorter.
                     if entry.req.tier == Tier::Visible && entry.generation != state.generation {
-                        drained_stale = true;
                         continue;
                     }
                     if state.in_flight.iter().any(|(s, _)| *s == key) {
-                        // Dropped, so the urgent bit it was holding up
-                        // may have just cleared — and a parked worker
-                        // waiting for exactly that is asleep on the
-                        // condvar with nothing else due to wake it.
-                        self.condvar.notify_all();
                         continue;
                     }
                     state.in_flight.push((key, entry.req.tier));
                     self.publish_in_flight(&state);
-                    if drained_stale {
-                        self.condvar.notify_all();
-                    }
-                    return Some((key, entry.req));
+                    return Some(Task::Admit {
+                        start: key,
+                        req: entry.req,
+                    });
                 }
             }
-            if drained_stale {
-                self.condvar.notify_all();
-                drained_stale = false;
-            }
-            if mode == PopMode::UrgentOnly {
+            if !blocking {
                 return None;
             }
             if state.mru.discard_one_superseded() {
@@ -520,61 +686,10 @@ impl HeatRequestQueue {
         }
     }
 
-    /// Test-only shorthand for the mode the worker loop uses whenever it
-    /// has nothing of its own parked. Production code names the mode.
+    /// Test-only: the next task if there is one, without blocking.
     #[cfg(test)]
-    fn pop_blocking(&self) -> Option<(usize, HeatRequest)> {
-        self.pop(PopMode::Block)
-    }
-
-    /// Is somebody waiting on a sweep right now — queued or walking?
-    /// Spec 0250 S3's yield gate, and its handover gate too.
-    ///
-    /// Both halves are needed, and the *in-flight* half is the one that
-    /// is easy to miss. Yielding on the queued half alone would clear
-    /// the machine only until the urgent request was dequeued: the
-    /// moment some worker popped it, every parked worker would see an
-    /// empty queue, resume, and be back competing with the very sweep
-    /// they had just stepped aside for. Counting it while it walks is
-    /// what makes the handover last as long as the work does — which is
-    /// what S5's registry, built for an unrelated reason, happens to
-    /// make expressible without any new state.
-    ///
-    /// Two relaxed loads, no lock, because the walker polls it between
-    /// every part.
-    fn urgent_live(&self) -> bool {
-        let live = self.queued.load(Ordering::Relaxed) | self.in_flight.load(Ordering::Relaxed);
-        live & URGENT_TIERS != 0
-    }
-
-    /// Blocks a worker holding a parked sweep until the urgent work it
-    /// stepped aside for is over (spec 0250 S3).
-    ///
-    /// Without this the worker would spin: `walk_until_yield` returns
-    /// immediately while [`urgent_live`](Self::urgent_live) holds, and
-    /// `pop(UrgentOnly)` has already answered `None` — the urgent
-    /// request went to some *other* worker — so there would be nothing
-    /// to do but ask again as fast as the CPU allows, on a core the
-    /// urgent sweep wants.
-    ///
-    /// Returns on a stop too, so a shutdown never waits for quiet.
-    fn await_quiet(&self) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        while !state.stop && Self::urgent_live_locked(&state) {
-            state = self.condvar.wait(state).unwrap_or_else(|e| e.into_inner());
-        }
-    }
-
-    /// [`urgent_live`](Self::urgent_live) read off the state itself
-    /// rather than off its atomic mirrors — which is what a condvar
-    /// predicate must do, since the mirrors can be republished between
-    /// the test and the wait and the wakeup would then be lost.
-    fn urgent_live_locked(state: &HeatRequestQueueState) -> bool {
-        state.mru.band_occupancy() & URGENT_TIERS != 0
-            || state
-                .in_flight
-                .iter()
-                .any(|(_, t)| t.bit() & URGENT_TIERS != 0)
+    fn try_next_task(&self) -> Option<Task> {
+        self.next_task_inner(false)
     }
 
     /// Spec 0250 S8: has anyone asked for the whole candidate list of
@@ -587,9 +702,12 @@ impl HeatRequestQueue {
 
     fn signal_stop(&self) {
         // Before the lock: a worker mid-sweep does not hold it and is not
-        // waiting on the condvar, so raising the flag first is what lets
+        // waiting on the condvar, so raising the flags first is what lets
         // the walk start unwinding while this thread is still acquiring.
+        // Both of them, because a part below `User` tier is walked under
+        // `stand_aside` and would not see `stop_flag` at all.
         self.stop_flag.store(true, Ordering::Relaxed);
+        self.stand_aside.store(true, Ordering::Relaxed);
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.stop = true;
         self.condvar.notify_all();
@@ -954,25 +1072,12 @@ impl App {
     }
 }
 
-/// A speculative sweep set down at a part boundary, waiting for the
-/// machine to be free again (spec 0250 S3).
-///
-/// A worker holds at most one, which is a consequence of the loop's
-/// shape rather than a cap enforced anywhere: a worker with one parked
-/// accepts only urgent requests, and an urgent request is never parked.
-struct ParkedSweep {
-    start: usize,
-    req: HeatRequest,
-    sweep: crate::sweep::Resumable,
-}
-
 /// Everything learned from one completed sweep, written into the shared
 /// cache under one lock hold (spec 0152 G5).
 ///
-/// Factored out because the same writes follow both a sweep walked in
-/// one go and one that was put down and resumed several times — and a
-/// second copy of them is a second chance to pair `best_score` with the
-/// wrong `best_count`.
+/// Factored out because the same writes follow a sweep however its parts
+/// were shared out — and a second copy of them is a second chance to
+/// pair `best_score` with the wrong `best_count`.
 fn record_sweep(
     queue: &HeatRequestQueue,
     caches: &Mutex<HeatCaches>,
@@ -1011,11 +1116,6 @@ fn record_sweep(
     // and is served from `by_range`, and a prefetch that wrote here
     // would evict the answer the user is alternating between.
     //
-    // The tier cannot be the test: `Tier::User` is also the cursor row's
-    // own cue tier (`heat_tier_for`), so gating on it would let every
-    // arrow key record a 4 MB list for a row the cursor merely passed
-    // over — the same defect S7 exists to fix, from another source.
-    //
     // Asked *after* the walk, so this thread's own sweep can serve an
     // ask that arrived while it was walking.
     if wants_complete {
@@ -1023,184 +1123,138 @@ fn record_sweep(
     }
 }
 
-/// Worker loop body (spec 0152 G5): block until a request is
-/// available, pop the most-recently-touched one, lock the cache
-/// briefly to double-check it's still actually missing (cheap
-/// insurance against a request satisfied by something else between
-/// being queued and being popped — not the primary dedup mechanism,
-/// G3's merge-on-push is), then, if still missing, run the one real
-/// expensive call with no lock held, then re-lock briefly to write
-/// everything just learned into the shared cache, then notify the
-/// main thread before looping again.
+/// Worker loop body (spec 0152 G5, spec 0262 S2): take whatever the
+/// pool has for this thread and do it, until stop.
 ///
-/// Spec 0250 S1/S2/S3 add the one exception to "run it to completion":
-/// a `Prefetch` sweep is speculative, so it is walked one part at a
-/// time on this thread alone and **set down** the moment somebody starts
-/// waiting on something. The parts already walked are kept, the worker
-/// serves the urgent request, and the sweep is picked up again where it
-/// stopped once the machine is quiet.
+/// A task is one of two things. An **admission** is a request just off
+/// the queue: lock the cache briefly to double-check the answer is still
+/// actually missing (cheap insurance against a request satisfied by
+/// something else between being queued and being taken — not the primary
+/// dedup mechanism, G3's merge-on-push is), and if it is missing,
+/// register the query's parts for the whole pool to walk. A **part** is
+/// one of those: walk it with no lock held, hand the run back, and — if
+/// this was the query's last part — merge the runs, write everything
+/// learned into the shared cache and notify the main thread.
+///
+/// Nothing here owns a query, which is the point. A screenful is ~40
+/// queries of wildly unequal size, and one worker per query leaves the
+/// pool idle behind whichever query is the document root's.
 pub(super) fn heat_worker_loop(
     queue: Arc<HeatRequestQueue>,
     caches: Arc<Mutex<HeatCaches>>,
     graph: Arc<LoadedGraph>,
     blob: Arc<Blob>,
     progress: mpsc::Sender<AppEvent>,
-    jobs: usize,
+    partition: Arc<crate::sweep::Partition>,
 ) {
     // Spec 0180 S2: the worker owns a handle to the mapping rather than a
     // `&'static` copied out of one, so the borrow below cannot outlive it.
     let graph = graph.graph();
-    let mut parked: Option<ParkedSweep> = None;
-    loop {
-        // A worker holding a parked sweep asks only for work somebody is
-        // waiting on, and never blocks on the queue: it has its own work
-        // to get back to.
-        let mode = if parked.is_some() {
-            PopMode::UrgentOnly
-        } else {
-            PopMode::Block
-        };
-        let Some((start, req)) = queue.pop(mode) else {
-            if queue.stop_flag.load(Ordering::Relaxed) {
-                break;
+    while let Some(task) = queue.next_task() {
+        match task {
+            Task::Admit { start, req } => {
+                // Spec 0190 S3: `next_task` has already registered this
+                // request as in flight, so the activity dot shows a query
+                // the user is actually waiting on. The "already done" arm
+                // is inside that bracket too — it is short, but leaving
+                // it out would mean a stretch of work reported as idle.
+                let (covers_window, covers_current) = {
+                    let mut c = caches.lock().unwrap_or_else(|e| e.into_inner());
+                    // The same predicate the readers use, rather than a
+                    // restatement of half of it. This check used to probe
+                    // only `by_range`'s `top_n` and ignore the `complete`
+                    // slot, so a second request for the same range with a
+                    // larger `end` — exactly what
+                    // `upgrade_active_override_to_complete` issues after
+                    // `recompute_override_candidates` — reported "not
+                    // covered" and paid a whole second sweep for an
+                    // answer `complete` already held in full.
+                    let covers_window = c.window(start, req.start, req.end, req.tier).is_some();
+                    let covers_current = req
+                        .current_key
+                        .as_deref()
+                        .is_none_or(|k| c.peek_current(start, k, req.tier).is_some());
+                    (covers_window, covers_current)
+                };
+                match (covers_window, covers_current) {
+                    (true, true) => {} // already done
+                    (true, false) => {
+                        // Spec 0154 G2: the window is already cached —
+                        // only the current type's exact score is missing.
+                        // Fill just that, via the cheap `score_one`-backed
+                        // fast path, instead of a full sweep over every
+                        // root.
+                        let range_bytes = &blob[req.range.clone()];
+                        let key = req
+                            .current_key
+                            .as_deref()
+                            .expect("covers_current false implies current_key is Some");
+                        let score = override_pane::inferred_score(range_bytes, key, graph);
+                        let mut c = caches.lock().unwrap_or_else(|e| e.into_inner());
+                        c.current_score
+                            .upsert((start, key.to_string()), score, req.tier);
+                    }
+                    (false, _) => {
+                        // The one path that becomes work for the pool.
+                        // The range stays registered in flight until the
+                        // last of its parts is accounted for, so no
+                        // `end_sweep` here.
+                        #[cfg(test)]
+                        queue.note_sweep(start, req.tier);
+                        queue.activate(start, req, partition.parts());
+                        continue;
+                    }
+                }
+                queue.end_sweep(start);
+                // Spec 0164 G10: a `Prefetch`-tier completion writes its
+                // cache entry but never wakes the main thread — a large
+                // read-ahead burst would otherwise mean thousands of
+                // no-op redraws.
+                if req.tier != Tier::Prefetch {
+                    let _ = progress.send(AppEvent::HeatWorkerProgress);
+                }
             }
-            // Nothing urgent to serve. Either pick the parked sweep back
-            // up, or — if the machine is still busy with somebody else's
-            // urgent sweep — wait for it rather than spinning against it.
-            let Some(mut p) = parked.take() else { break };
-            if queue.urgent_live() {
-                queue.await_quiet();
-                parked = Some(p);
-                continue;
-            }
-            // Take the range back before walking it again — or give the
-            // sweep up, if somebody else has taken it on meanwhile.
-            if !queue.resume_sweep(p.start, p.req.tier) {
-                continue;
-            }
-            let done = p.sweep.walk_until_yield(
-                &blob[p.req.range.clone()],
-                graph,
-                Some(&queue.stop_flag),
-                || queue.urgent_live(),
-            );
-            if queue.stop_flag.load(Ordering::Relaxed) {
-                queue.end_sweep(p.start);
-                break;
-            }
-            if !done {
-                queue.park_sweep(p.start);
-                parked = Some(p);
-                continue;
-            }
-            record_sweep(&queue, &caches, p.start, &p.req, p.sweep.finish());
-            queue.end_sweep(p.start);
-            continue;
-        };
-        // Spec 0190 S3: `pop` has already registered this request as in
-        // flight, so the activity dot shows a `User` sweep the user is
-        // actually waiting on. The `(true, true)` "already done" arm is
-        // inside that bracket too — it is short, but leaving it out
-        // would mean a stretch of work reported as idle. Every path out
-        // of here ends with either `end_sweep(start)` or
-        // `park_sweep(start)`.
-        let (covers_window, covers_current) = {
-            let mut c = caches.lock().unwrap_or_else(|e| e.into_inner());
-            // The same predicate the readers use, rather than a
-            // restatement of half of it. This check used to probe only
-            // `by_range`'s `top_n` and ignore the `complete` slot, so a
-            // second request for the same range with a larger `end` —
-            // exactly what `upgrade_active_override_to_complete` issues
-            // after `recompute_override_candidates` — reported "not
-            // covered" and paid a whole second `score_all` for an
-            // answer `complete` already held in full.
-            let covers_window = c.window(start, req.start, req.end, req.tier).is_some();
-            let covers_current = req
-                .current_key
-                .as_deref()
-                .is_none_or(|k| c.peek_current(start, k, req.tier).is_some());
-            (covers_window, covers_current)
-        };
-        match (covers_window, covers_current) {
-            (true, true) => {} // already done
-            (true, false) => {
-                // Spec 0154 G2: the window is already cached — only the
-                // current type's exact score is missing. Fill just that,
-                // via the cheap `score_one`-backed fast path, instead of
-                // re-running a full `score_all` sweep over every root.
-                let range_bytes = &blob[req.range.clone()];
-                let key = req
-                    .current_key
-                    .as_deref()
-                    .expect("covers_current false implies current_key is Some");
-                let score = override_pane::inferred_score(range_bytes, key, graph);
-                let mut c = caches.lock().unwrap_or_else(|e| e.into_inner());
-                c.current_score
-                    .upsert((start, key.to_string()), score, req.tier);
-            }
-            (false, _) if req.tier == Tier::Prefetch => {
-                // Spec 0250 S1: speculative, so it takes one thread and
-                // walks its parts from its own cursor rather than
-                // spreading them over the machine. Nobody is waiting for
-                // it, and being interruptible is worth more to everyone
-                // else than being fast is to it.
-                #[cfg(test)]
-                queue.note_sweep(start, req.tier);
-                let mut sweep = crate::sweep::Resumable::new(graph, crate::sweep::SWEEP_PARTS);
-                let done = sweep.walk_until_yield(
-                    &blob[req.range.clone()],
-                    graph,
-                    Some(&queue.stop_flag),
-                    || queue.urgent_live(),
-                );
+            Task::Walk {
+                start,
+                part,
+                req,
+                epoch,
+            } => {
+                // Spec 0262 S8: a part below `User` tier is walked under
+                // `stand_aside`, so the override pane's arrival stops it
+                // mid-field rather than at the end of a part that can
+                // take 1.5 s. A `User` part steps aside for nobody and
+                // watches only the shutdown flag.
+                let cancel = if req.tier == Tier::User {
+                    &queue.stop_flag
+                } else {
+                    &queue.stand_aside
+                };
+                let run = partition.walk(part, &blob[req.range.clone()], graph, Some(cancel));
                 if queue.stop_flag.load(Ordering::Relaxed) {
                     queue.end_sweep(start);
                     break;
                 }
-                if !done {
-                    // Parked, and the range is released while it is —
-                    // see `park_sweep`. Holding it would drop every
-                    // request the user makes for a row inside it, for as
-                    // long as they keep scrolling.
-                    queue.park_sweep(start);
-                    parked = Some(ParkedSweep { start, req, sweep });
+                // A cancelled walk returns a partial ranking, which would
+                // be indistinguishable from a real one once written into
+                // the cache — and the cache outlives this thread. The
+                // epoch is what says whether this one was cancelled; see
+                // `HeatRequestQueue::abort_epoch` for why the flag itself
+                // cannot answer that.
+                if req.tier != Tier::User && queue.abort_epoch.load(Ordering::Relaxed) != epoch {
+                    queue.abandon_part(start, part);
                     continue;
                 }
-                record_sweep(&queue, &caches, start, &req, sweep.finish());
-            }
-            (false, _) => {
-                // Spec 0250 S2: somebody is waiting, so this one takes
-                // the whole machine — and takes it exclusively, or
-                // several workers would each spread `jobs` walkers over
-                // the same `jobs` cores. See `HeatRequestQueue::fanout`.
-                let range_bytes = &blob[req.range.clone()];
-                let _fanout = queue.fanout.lock().unwrap_or_else(|e| e.into_inner());
-                #[cfg(test)]
-                queue.note_sweep(start, req.tier);
-                let candidates = override_pane::inferred_candidates(
-                    range_bytes,
-                    graph,
-                    jobs,
-                    Some(&queue.stop_flag),
-                );
-                // A cancelled sweep returns a partial ranking, which would
-                // be indistinguishable from a real one once written into
-                // the cache — and the cache outlives this thread. Nothing
-                // is waiting for it either: the only thing that raises the
-                // flag is a shutdown.
-                if queue.stop_flag.load(Ordering::Relaxed) {
-                    queue.end_sweep(start);
-                    break;
+                let Some(runs) = queue.deposit_part(start, run) else {
+                    continue;
+                };
+                // Spec 0262 S4: the merge is the last part's own work.
+                record_sweep(&queue, &caches, start, &req, crate::sweep::merge(runs));
+                queue.end_sweep(start);
+                if req.tier != Tier::Prefetch {
+                    let _ = progress.send(AppEvent::HeatWorkerProgress);
                 }
-                record_sweep(&queue, &caches, start, &req, candidates);
             }
-        }
-        // Spec 0164 G10: a `Prefetch`-tier completion writes its cache
-        // entry but never wakes the main thread — a large read-ahead
-        // burst would otherwise mean thousands of no-op redraws.
-        queue.end_sweep(start);
-        if req.tier != Tier::Prefetch {
-            let _ = progress.send(AppEvent::HeatWorkerProgress);
         }
     }
 }
@@ -1216,16 +1270,13 @@ pub(super) struct HeatWorkerHandle {
 }
 
 impl HeatWorkerHandle {
-    /// Spawns `jobs` workers behind one queue.
+    /// Spawns `jobs` workers behind one queue and one partition.
     ///
-    /// The same number twice, deliberately (spec 0250 S1): `jobs` is the
-    /// core budget the heat subsystem has been given, and both readings
-    /// of it are that same budget. As a **thread count** it is how many
-    /// speculative queries may walk at once, each on its own thread and
-    /// each one core's worth of work. As a **fan-out width** it is how
-    /// wide a single urgent sweep spreads — and since
-    /// `HeatRequestQueue::fanout` allows only one of those at a time,
-    /// the two never add up.
+    /// `jobs` now has a single reading (spec 0262 S6): the number of
+    /// threads. It reaches the partition too, but only as
+    /// [`target_parts`](crate::sweep::target_parts)' input — how finely
+    /// a query is cut, not how widely any one of them spreads. Nothing
+    /// fans out any more, so nothing can multiply.
     pub(super) fn spawn(
         caches: Arc<Mutex<HeatCaches>>,
         graph: Arc<LoadedGraph>,
@@ -1234,6 +1285,10 @@ impl HeatWorkerHandle {
         jobs: usize,
     ) -> Self {
         let queue = Arc::new(HeatRequestQueue::new());
+        // Spec 0262 S1: once for the process, not once per query —
+        // `partition_roots` is 7.3 ms on googleapis against a median
+        // visible query of 5.4–10.4 ms.
+        let partition = Arc::new(crate::sweep::Partition::new(graph.graph(), jobs));
         let joins = (0..jobs.max(1))
             .map(|n| {
                 spawn_worker(
@@ -1243,7 +1298,7 @@ impl HeatWorkerHandle {
                     Arc::clone(&graph),
                     Arc::clone(&blob),
                     progress.clone(),
-                    jobs,
+                    Arc::clone(&partition),
                 )
             })
             .collect();
@@ -1297,6 +1352,13 @@ impl HeatWorkerHandle {
     #[cfg(test)]
     pub(super) fn queue_len(&self) -> usize {
         self.queue.len()
+    }
+
+    /// Test-only: the range the queue would hand out next, taken off
+    /// it — which is how a test asks "and which of these is first?".
+    #[cfg(test)]
+    pub(super) fn take_next_range(&self) -> Option<usize> {
+        self.queue.take_one().map(|(start, _)| start)
     }
 
     /// Test-only full-sweep count for *this* worker (see
@@ -1360,6 +1422,7 @@ impl HeatWorkerHandle {
         progress: mpsc::Sender<AppEvent>,
         jobs: usize,
     ) -> Self {
+        let partition = Arc::new(crate::sweep::Partition::new(graph.graph(), jobs));
         self.joins = (0..jobs.max(1))
             .map(|n| {
                 spawn_worker(
@@ -1369,7 +1432,7 @@ impl HeatWorkerHandle {
                     Arc::clone(&graph),
                     Arc::clone(&blob),
                     progress.clone(),
-                    jobs,
+                    Arc::clone(&partition),
                 )
             })
             .collect();
@@ -1387,12 +1450,12 @@ fn spawn_worker(
     graph: Arc<LoadedGraph>,
     blob: Arc<Blob>,
     progress: mpsc::Sender<AppEvent>,
-    jobs: usize,
+    partition: Arc<crate::sweep::Partition>,
 ) -> JoinHandle<()> {
     thread::Builder::new()
         .name(format!("heat-worker-{n}"))
         .stack_size(crate::sweep::SCORING_THREAD_STACK_SIZE)
-        .spawn(move || heat_worker_loop(queue, caches, graph, blob, progress, jobs))
+        .spawn(move || heat_worker_loop(queue, caches, graph, blob, progress, partition))
         .expect("spawn heat worker thread")
 }
 
@@ -1532,11 +1595,11 @@ mod tests {
 
     /// Spec 0189 S3: the worker reclaims superseded requests instead
     /// of returning them to be scored. With nothing live queued,
-    /// `pop_blocking` must drain the superseded wave and then block —
+    /// `next_task` must drain the superseded wave and then block —
     /// not hand any of it back — and must still serve a live request
     /// pushed afterwards.
     #[test]
-    fn pop_blocking_discards_a_superseded_wave_instead_of_serving_it() {
+    fn next_task_discards_a_superseded_wave_instead_of_serving_it() {
         let queue = Arc::new(HeatRequestQueue::new());
         queue.push(req_at(1, Tier::Prefetch), Tier::Prefetch);
         queue.push(req_at(2, Tier::Prefetch), Tier::Prefetch);
@@ -1544,7 +1607,7 @@ mod tests {
         assert_eq!(queue.len(), 2, "superseded, but still occupying slots");
 
         let worker_queue = Arc::clone(&queue);
-        let join = thread::spawn(move || worker_queue.pop_blocking());
+        let join = thread::spawn(move || worker_queue.admit_one());
 
         // The worker must consume the superseded wave without ever
         // returning it, then block on the condvar.
@@ -1581,7 +1644,7 @@ mod tests {
             "the entry asked for the current window is served"
         );
         assert!(
-            queue.pop(PopMode::UrgentOnly).is_none(),
+            queue.try_next_task().is_none(),
             "and the one asked for the window before it is discarded"
         );
         assert_eq!(queue.len(), 0, "discarded, not merely skipped over");
@@ -1615,9 +1678,10 @@ mod tests {
         );
     }
 
-    /// The drain happens inside one `pop`, not one discard per call. A
-    /// caller that had to ask 2048 times to reach the live entry would
-    /// be starved by exactly the backlog this rule exists to clear.
+    /// The drain happens inside one `next_task`, not one discard per
+    /// call. A caller that had to ask 2048 times to reach the live entry
+    /// would be starved by exactly the backlog this rule exists to
+    /// clear.
     #[test]
     fn a_stale_band_is_drained_in_one_pop() {
         let queue = HeatRequestQueue::new();
@@ -1634,59 +1698,31 @@ mod tests {
         assert_eq!(queue.take_one().map(|(key, _)| key), Some(100));
         assert_eq!(queue.len(), 64, "the stale band is still standing");
 
-        assert!(queue.pop(PopMode::UrgentOnly).is_none());
+        assert!(queue.try_next_task().is_none());
         assert_eq!(queue.len(), 0, "and one pop clears all of it");
     }
 
     /// G2, and the reason S1 is worth doing at all. A stale entry holds
-    /// `band_occupancy`'s visible bit high, which is `urgent_live`'s
-    /// input — so until it is drained every speculative worker yields
-    /// and parks for a row nobody is looking at.
+    /// `band_occupancy`'s visible bit high, so until it is drained the
+    /// machine reports itself busy on behalf of a row nobody is looking
+    /// at — and outranks the read-ahead that could be using the pool.
     #[test]
-    fn a_drained_stale_band_stops_counting_as_urgent() {
+    fn a_drained_stale_band_stops_counting_as_live() {
         let queue = HeatRequestQueue::new();
         queue.push(req_at(1, Tier::Visible), Tier::Visible);
         queue.new_window();
-        assert!(
-            queue.urgent_live(),
-            "a queued Visible entry counts as urgent however stale it is"
+        assert_eq!(
+            queue.activity(),
+            Some(Tier::Visible),
+            "a queued Visible entry counts as live however stale it is"
         );
 
-        assert!(queue.pop(PopMode::UrgentOnly).is_none());
-        assert!(
-            !queue.urgent_live(),
-            "draining it must republish the band as no longer urgent"
+        assert!(queue.try_next_task().is_none());
+        assert_eq!(
+            queue.activity(),
+            None,
+            "draining it must republish the band as empty"
         );
-    }
-
-    /// The wakeup that pairs with the rule above: the worker parked in
-    /// `await_quiet` is asleep on the condvar precisely because the
-    /// stale band said someone was waiting, so the drain that proves
-    /// otherwise is the only event that can release it.
-    #[test]
-    fn a_stale_drain_wakes_a_parked_worker() {
-        let queue = Arc::new(HeatRequestQueue::new());
-        queue.push(req_at(1, Tier::Visible), Tier::Visible);
-        queue.new_window();
-
-        let waiter = Arc::clone(&queue);
-        let join = thread::spawn(move || waiter.await_quiet());
-
-        // Give the waiter time to reach the condvar before the drain,
-        // so that the drain's `notify_all` is what releases it rather
-        // than the predicate simply being false on arrival.
-        thread::sleep(Duration::from_millis(20));
-        assert!(queue.pop(PopMode::UrgentOnly).is_none());
-
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while !join.is_finished() && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(5));
-        }
-        assert!(
-            join.is_finished(),
-            "the drain owes a notify_all: nothing else was going to wake it"
-        );
-        join.join().expect("waiter must not panic");
     }
 
     /// Spec 0190 S3: the in-flight tier is reported even though the
@@ -1698,7 +1734,7 @@ mod tests {
     fn a_popped_request_is_still_reported_as_activity_while_in_flight() {
         let queue = HeatRequestQueue::new();
         queue.push(req_at(1, Tier::User), Tier::User);
-        let (start, _) = queue.pop_blocking().unwrap();
+        let (start, _) = queue.admit_one().unwrap();
         assert_eq!(
             queue.activity(),
             Some(Tier::User),
@@ -1714,18 +1750,23 @@ mod tests {
     /// still walking. That was the single `store`'s silent failure —
     /// nothing crashes, no result is wrong, the busy indicator simply
     /// lies.
+    ///
+    /// `Visible` rather than `User` for the first of the two: spec 0262
+    /// S8 withholds every lower-tier task while a `User` sweep is in
+    /// flight, so a `User` request here would be the one thing that
+    /// stops the second sweep from starting at all.
     #[test]
     fn one_worker_finishing_does_not_clear_anothers_in_flight_tier() {
         let queue = HeatRequestQueue::new();
-        queue.push(req_at(1, Tier::User), Tier::User);
+        queue.push(req_at(1, Tier::Visible), Tier::Visible);
         queue.push(req_at(2, Tier::Prefetch), Tier::Prefetch);
-        let (first, _) = queue.pop_blocking().unwrap();
-        let (second, _) = queue.pop_blocking().unwrap();
-        assert_eq!(first, 1, "the User band drains first");
+        let (first, _) = queue.admit_one().unwrap();
+        let (second, _) = queue.admit_one().unwrap();
+        assert_eq!(first, 1, "the Visible band drains first");
         assert_eq!(second, 2);
         assert_eq!(
             queue.in_flight_ranges(),
-            vec![(1, Tier::User), (2, Tier::Prefetch)],
+            vec![(1, Tier::Visible), (2, Tier::Prefetch)],
             "both sweeps are live"
         );
 
@@ -1733,7 +1774,7 @@ mod tests {
         assert_eq!(
             queue.activity(),
             Some(Tier::Prefetch),
-            "the surviving sweep must still be reported"
+            "the surviving sweep must still be reported after the other ends"
         );
 
         queue.end_sweep(second);
@@ -1748,7 +1789,7 @@ mod tests {
     fn a_range_already_in_flight_is_not_popped_a_second_time() {
         let queue = HeatRequestQueue::new();
         queue.push(req_at(1, Tier::User), Tier::User);
-        let (start, _) = queue.pop_blocking().unwrap();
+        let (start, _) = queue.admit_one().unwrap();
         assert_eq!(start, 1);
 
         // Same range again, now that it is no longer *queued* and so
@@ -1758,7 +1799,7 @@ mod tests {
         queue.push(req_at(7, Tier::User), Tier::User);
         queue.push(req_at(1, Tier::User), Tier::User);
         assert_eq!(
-            queue.pop_blocking().unwrap().0,
+            queue.admit_one().unwrap().0,
             7,
             "the duplicate must be skipped over, not served"
         );
@@ -1768,7 +1809,7 @@ mod tests {
         // range is servable again.
         queue.end_sweep(1);
         queue.push(req_at(1, Tier::User), Tier::User);
-        assert_eq!(queue.pop_blocking().unwrap().0, 1);
+        assert_eq!(queue.admit_one().unwrap().0, 1);
     }
 
     /// Spec 0190 S4: the two sources are combined by priority, not by
@@ -1778,7 +1819,7 @@ mod tests {
     fn activity_takes_the_highest_tier_across_queued_and_in_flight() {
         let queue = HeatRequestQueue::new();
         queue.push(req_at(9, Tier::Prefetch), Tier::Prefetch);
-        queue.pop_blocking();
+        queue.admit_one();
         queue.push(req_at(1, Tier::User), Tier::User);
         assert_eq!(
             queue.activity(),
@@ -1786,7 +1827,7 @@ mod tests {
             "a queued User outranks an in-flight Prefetch"
         );
 
-        let (user, _) = queue.pop_blocking().unwrap();
+        let (user, _) = queue.admit_one().unwrap();
         queue.end_sweep(user);
         assert_eq!(
             queue.activity(),
@@ -1871,167 +1912,145 @@ mod tests {
             .is_some());
     }
 
-    /// `pop_blocking` on a spawned thread against an empty queue
+    /// `next_task` on a spawned thread against an empty queue
     /// blocks until `signal_stop()` (called from this test thread)
     /// wakes it, at which point it returns `None` and the thread joins
     /// promptly.
     #[test]
-    fn pop_blocking_returns_none_after_signal_stop() {
+    fn next_task_returns_none_after_signal_stop() {
         let queue = Arc::new(HeatRequestQueue::new());
         let worker_queue = Arc::clone(&queue);
-        let join = thread::spawn(move || worker_queue.pop_blocking());
+        let join = thread::spawn(move || worker_queue.admit_one());
         thread::sleep(Duration::from_millis(20)); // let the thread start blocking
         queue.signal_stop();
         let result = join.join().expect("worker thread must not panic");
         assert!(result.is_none());
     }
 
-    // ── Spec 0250 S3: parking and the handover gate ─────────────────
+    // ── Spec 0262: a shared pool of parts ───────────────────────────
 
-    /// A worker holding a parked sweep asks in `UrgentOnly`, and that
-    /// mode is what makes it possible for it to come back to its own
-    /// work: it answers `None` immediately against a queue holding
-    /// nothing but speculation, rather than serving it or blocking.
+    /// S2/S4: a query is as many tasks as the partition has parts, and
+    /// the last one back is handed every run to merge. Merging in a
+    /// worker rather than in a collector is what keeps it off the
+    /// critical path — serially it cost 2.5x the whole screenful.
     #[test]
-    fn an_urgent_only_pop_refuses_speculative_work_instead_of_blocking() {
+    fn the_last_part_of_a_query_is_handed_every_run() {
         let queue = HeatRequestQueue::new();
-        queue.push(req_at(5, Tier::Prefetch), Tier::Prefetch);
+        queue.activate(3, req_at(3, Tier::Visible), 2);
+
+        let mut parts = Vec::new();
+        while let Some(Task::Walk { start, part, .. }) = queue.try_next_task() {
+            assert_eq!(start, 3);
+            parts.push(part);
+        }
+        parts.sort_unstable();
+        assert_eq!(parts, vec![0, 1], "a two-part partition is two tasks");
+
         assert!(
-            queue.pop(PopMode::UrgentOnly).is_none(),
-            "a parked worker must not be handed read-ahead"
+            queue
+                .deposit_part(3, vec![("a.T".to_string(), 1)])
+                .is_none(),
+            "the first part back has nothing to merge yet"
         );
-        assert_eq!(
-            queue.len(),
-            1,
-            "and refusing it must leave it on the queue for whoever is free"
+        let runs = queue
+            .deposit_part(3, vec![("a.U".to_string(), 2)])
+            .expect("the last part back is handed the whole query");
+        assert_eq!(runs.len(), 2);
+    }
+
+    /// S8, the whole cycle: a `User` arrival takes the pool off
+    /// speculation, keeps it while the user's own sweep walks, and
+    /// hands it back at the end.
+    #[test]
+    fn a_user_arrival_takes_the_pool_off_speculation_and_gives_it_back() {
+        let queue = HeatRequestQueue::new();
+        queue.activate(5, req_at(5, Tier::Prefetch), 2);
+        let Some(Task::Walk { part, epoch, .. }) = queue.try_next_task() else {
+            panic!("an active query's parts are what is on offer");
+        };
+        assert!(!queue.stand_aside.load(Ordering::Relaxed));
+
+        queue.push(req_at(9, Tier::User), Tier::User);
+        assert!(
+            queue.stand_aside.load(Ordering::Relaxed),
+            "the walk in progress must be told to put its part down"
+        );
+        assert_ne!(
+            queue.abort_epoch.load(Ordering::Relaxed),
+            epoch,
+            "and the epoch must move with it: a flag raised and lowered \
+             again during the walk would otherwise let a truncated — and \
+             so simply wrong — ranking be cached as the answer"
         );
 
-        queue.push(req_at(6, Tier::Visible), Tier::Visible);
-        assert_eq!(
-            queue.pop(PopMode::UrgentOnly).map(|(s, _)| s),
-            Some(6),
-            "but work somebody is waiting on is exactly what it does take"
+        queue.abandon_part(5, part);
+        let Some(Task::Admit { start, .. }) = queue.try_next_task() else {
+            panic!("the user's request is the only thing servable now");
+        };
+        assert_eq!(start, 9);
+        assert!(
+            queue.stand_aside.load(Ordering::Relaxed),
+            "dequeued is not done — the pool stays the user's while it walks"
+        );
+        assert!(
+            queue.try_next_task().is_none(),
+            "so the abandoned part must not be handed straight back, or \
+             the worker that dropped it would pick it up and spin"
+        );
+
+        queue.end_sweep(9);
+        assert!(!queue.stand_aside.load(Ordering::Relaxed));
+        assert!(
+            matches!(queue.try_next_task(), Some(Task::Walk { start: 5, .. })),
+            "and the speculative query resumes from where it stood aside"
         );
     }
 
-    /// The yield gate counts the *walking* half as well as the queued
-    /// one. Without that, a parked worker would resume the instant some
-    /// other worker dequeued the urgent request — that is, at the start
-    /// of the very sweep it stepped aside for, not the end.
+    /// S8 is confined to one tier boundary. A scroll is a stream of
+    /// `Visible` requests, so aborting on those too would leave the
+    /// pool throwing away every part it had started — read-ahead would
+    /// make no progress at all for as long as the user kept moving.
     #[test]
-    fn the_yield_gate_stays_shut_while_an_urgent_sweep_is_still_walking() {
+    fn a_visible_arrival_does_not_abort_read_ahead() {
         let queue = HeatRequestQueue::new();
-        assert!(!queue.urgent_live(), "an idle queue holds nobody up");
+        queue.activate(5, req_at(5, Tier::Prefetch), 2);
+        let epoch = queue.abort_epoch.load(Ordering::Relaxed);
 
-        queue.push(req_at(3, Tier::Prefetch), Tier::Prefetch);
+        queue.push(req_at(9, Tier::Visible), Tier::Visible);
+        assert!(!queue.stand_aside.load(Ordering::Relaxed));
+        assert_eq!(queue.abort_epoch.load(Ordering::Relaxed), epoch);
         assert!(
-            !queue.urgent_live(),
-            "speculation is not something anybody waits on"
-        );
-
-        queue.push(req_at(4, Tier::User), Tier::User);
-        assert!(queue.urgent_live(), "queued and waiting");
-
-        let (start, _) = queue.pop_blocking().unwrap();
-        assert_eq!(start, 4);
-        assert!(
-            queue.urgent_live(),
-            "dequeued is not done — this is the case the queued half alone misses"
-        );
-
-        queue.end_sweep(4);
-        assert!(
-            !queue.urgent_live(),
-            "and only finishing it hands the machine back"
+            matches!(queue.try_next_task(), Some(Task::Admit { start: 9, .. })),
+            "outranking the speculative parts for the next free worker is \
+             all a Visible request is owed"
         );
     }
 
-    /// `await_quiet` is what stops a parked worker spinning between a
-    /// `walk_until_yield` that returns at once and an `UrgentOnly` pop
-    /// that has nothing for it. It must return when the urgent sweep
-    /// ends — which means `end_sweep` has to wake it, since by then
-    /// there is nothing left on the queue to do so.
+    /// The wakeup S8 rests on. A worker with nothing but speculation on
+    /// offer blocks rather than spinning, so the end of the user's own
+    /// sweep is the only event that can release it.
     #[test]
-    fn await_quiet_returns_when_the_urgent_sweep_it_waits_on_ends() {
+    fn ending_the_user_sweep_wakes_a_worker_holding_back_for_it() {
         let queue = Arc::new(HeatRequestQueue::new());
+        queue.activate(5, req_at(5, Tier::Prefetch), 1);
         queue.push(req_at(7, Tier::User), Tier::User);
-        let (start, _) = queue.pop_blocking().unwrap();
+        let (start, _) = queue.admit_one().unwrap();
+        assert_eq!(start, 7);
 
-        let parked = Arc::clone(&queue);
-        let join = thread::spawn(move || parked.await_quiet());
+        let waiting = Arc::clone(&queue);
+        let join = thread::spawn(move || waiting.next_task().is_some());
         thread::sleep(Duration::from_millis(20)); // let it reach the condvar
-        assert!(!join.is_finished(), "it must still be waiting");
+        assert!(!join.is_finished(), "it must not be handed the prefetch");
 
         queue.end_sweep(start);
-        join.join().expect("the parked worker must not panic");
-    }
-
-    /// Spec 0250 S3, regression: a **parked** sweep must not keep its
-    /// range registered, or it holds it hostage.
-    ///
-    /// A parked sweep is stalled for as long as the user keeps asking
-    /// for things, which while scrolling is indefinitely. S4's rule
-    /// drops a pop of a range already in flight — so a request for a row
-    /// inside that range is dropped every frame, forever, and its cue
-    /// never resolves. That is the `[?]` that never clears, and with one
-    /// parked sweep per worker it is a whole screenful of them.
-    #[test]
-    fn a_parked_sweep_does_not_hold_its_range_against_the_user() {
-        let queue = HeatRequestQueue::new();
-        queue.push(req_at(5, Tier::Prefetch), Tier::Prefetch);
-        let (start, _) = queue.pop_blocking().unwrap();
-        assert_eq!(start, 5);
-
-        // The worker walks a part, somebody starts waiting, it parks.
-        queue.park_sweep(5);
-
-        queue.push(req_at(5, Tier::Visible), Tier::Visible);
-        assert_eq!(
-            queue.pop(PopMode::UrgentOnly).map(|(s, _)| s),
-            Some(5),
-            "the user's request for a parked range must be served, not dropped"
-        );
-    }
-
-    /// The other half of the same rule: a parked sweep that is picked up
-    /// again while somebody else is sweeping its range is **dropped**.
-    /// The answer is being produced anyway, and walking it twice is the
-    /// waste S4 exists to remove.
-    #[test]
-    fn a_parked_sweep_is_abandoned_if_its_range_is_taken_over() {
-        let queue = HeatRequestQueue::new();
-        queue.push(req_at(6, Tier::Prefetch), Tier::Prefetch);
-        queue.pop_blocking().unwrap();
-        queue.park_sweep(6);
-
-        // Somebody else takes the range on.
-        queue.push(req_at(6, Tier::User), Tier::User);
-        assert_eq!(queue.pop_blocking().map(|(s, _)| s), Some(6));
-
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !join.is_finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
         assert!(
-            !queue.resume_sweep(6, Tier::Prefetch),
-            "the parked sweep must give up rather than duplicate the walk"
+            join.join().expect("the worker must not panic"),
+            "end_sweep owes a notify_all: nothing else was going to wake it"
         );
-        queue.end_sweep(6);
-        assert!(
-            queue.resume_sweep(6, Tier::Prefetch),
-            "and take it back once the range is free again"
-        );
-    }
-
-    /// And a stop wakes it too, or shutdown would hang on a worker
-    /// waiting for a handover that is never coming.
-    #[test]
-    fn await_quiet_returns_on_stop() {
-        let queue = Arc::new(HeatRequestQueue::new());
-        queue.push(req_at(8, Tier::User), Tier::User);
-        queue.pop_blocking().unwrap();
-
-        let parked = Arc::clone(&queue);
-        let join = thread::spawn(move || parked.await_quiet());
-        thread::sleep(Duration::from_millis(20));
-        queue.signal_stop();
-        join.join().expect("the parked worker must not panic");
     }
 
     // ── HeatCaches / worker round trip (spec 0152 test plan) ────────
@@ -2364,17 +2383,16 @@ messages:
         worker.shutdown();
     }
 
-    /// Spec 0250 S1: a speculative sweep walks its parts one at a time
-    /// on the worker's own thread instead of spreading them over the
-    /// machine — and that is a scheduling change only. What it writes
-    /// into the cache is what the fanned-out call would have written.
+    /// Spec 0262 S2: a sweep's parts are walked by whichever workers
+    /// happen to be free, in whatever order the pool hands them out —
+    /// and that is a scheduling change only. What it writes into the
+    /// cache is what a single whole-query call would have written.
     ///
-    /// The `Resumable` path's ranking is pinned against the ordinary one
-    /// under the most-interrupted schedule possible in
-    /// `sweep::tests::a_sweep_stopped_and_resumed_produces_the_uninterrupted_ranking`;
+    /// The part-by-part ranking is pinned against the whole-query one in
+    /// `sweep::tests::a_query_walked_part_by_part_produces_the_whole_sweeps_ranking`;
     /// this is the same claim made about the worker that uses it.
     #[test]
-    fn a_speculative_sweep_records_what_the_fanned_out_one_would_have() {
+    fn a_speculative_sweep_records_what_a_whole_query_would_have() {
         let graph = Arc::new(test_scoring_graph());
         let range_bytes = vec![0x08, 0x05];
         let blob = Arc::new(Blob::unwrapped(range_bytes.clone()));

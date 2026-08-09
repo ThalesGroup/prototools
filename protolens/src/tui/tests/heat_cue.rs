@@ -1113,70 +1113,79 @@ fn heat_cue_for_resolves_once_a_real_worker_populates_the_cache() {
 // Per-node request tier (spec 0208 S3 test plan)
 // ---------------------------------------------------------------------
 
-/// Spec 0208 test-plan item 6 (S3/G3). The node under the cursor asks
-/// at `Tier::User`; every other visible node asks at `Tier::Visible`.
+/// Spec 0262 S7, replacing spec 0208 S3's rule that the cursor's own
+/// node asks at `Tier::User`. Every main-pane row, the cursor's row
+/// included, asks at `Tier::Visible`; the cursor's precedence comes
+/// from being asked for *again* at the end of the frame, which moves
+/// it back to the head of its band (spec 0208 S4c).
 ///
-/// Observed through the queue's own `activity()` — the highest live
-/// tier — rather than by inspecting the argument at the call site, so
-/// what is pinned is what the worker will actually serve first. The
-/// ordinary line is resolved *before* the cursor's, since `activity()`
-/// reports a maximum and would hide a wrong answer taken the other way
-/// round.
+/// The cursor's row is deliberately asked for *first* in the row-by-row
+/// pass here, so that the head of the band is somebody else's until the
+/// re-ask; asked for last, this would pass with no re-ask at all.
 #[test]
-fn the_cursor_node_asks_at_user_tier_and_other_visible_nodes_do_not() {
+fn the_cursor_node_is_asked_for_again_and_so_is_served_first() {
     let (mut app, items) = repeated_message_fixture();
     app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
     let (under_cursor, elsewhere) = (items[0], items[1]);
     app.set_cursor(under_cursor);
 
-    app.heat_cue_for(app.absolute_start(elsewhere));
-    assert_eq!(
-        app.heat_worker.as_ref().unwrap().activity(),
-        Some(Tier::Visible),
-        "an ordinary visible line must not claim user attention"
-    );
-
     app.heat_cue_for(app.absolute_start(under_cursor));
+    app.heat_cue_for(app.absolute_start(elsewhere));
+    app.refresh_cursor_heat_cue();
+
+    let cursor_range = app.heat_scored_range(under_cursor).start;
+    let worker = app.heat_worker.as_ref().unwrap();
     assert_eq!(
-        app.heat_worker.as_ref().unwrap().activity(),
-        Some(Tier::User),
-        "the cursor's own node outranks the rest of the viewport"
+        worker.activity(),
+        Some(Tier::Visible),
+        "no main-pane row claims the whole pool for itself"
     );
     assert_eq!(
-        app.heat_worker.as_ref().unwrap().queue_len(),
+        worker.queue_len(),
         2,
-        "two distinct payload ranges, so two entries — not one merged"
+        "two distinct payload ranges; the re-ask merges rather than \
+         queuing a third entry"
+    );
+    assert_eq!(
+        worker.take_next_range(),
+        Some(cursor_range),
+        "and the re-ask is what puts the cursor's row at the head"
     );
 }
 
-/// Spec 0208 test-plan item 7 (S3). Moving the cursor moves the
-/// promotion with it. The node left behind is *not* demoted — a tier
-/// never moves down (spec 0164 G5) — it simply stops being re-asked at
-/// `User`, which is what makes the ladder stable under a moving cursor
-/// instead of oscillating.
+/// Spec 0262 S7, and the reason the re-ask is the whole mechanism:
+/// moving the cursor moves the head of the band with it, and the row it
+/// left keeps the place — and the tier — it already had. A tier never
+/// moves down (spec 0164 G5), so nothing is demoted; the row behind
+/// simply stops being asked for twice.
 #[test]
-fn moving_the_cursor_promotes_the_new_node_without_demoting_the_old() {
+fn moving_the_cursor_moves_the_head_of_the_band_with_it() {
     let (mut app, items) = repeated_message_fixture();
     app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
     let (first, second) = (items[0], items[1]);
 
     app.set_cursor(first);
     app.heat_cue_for(app.absolute_start(first));
-    app.set_cursor(second);
     app.heat_cue_for(app.absolute_start(second));
+    app.refresh_cursor_heat_cue();
 
-    // Both are `User` now, so both outrank anything else queued, and
-    // the most recently asked one is served first (S4a).
-    let queue = app.heat_worker.as_ref().unwrap();
-    assert_eq!(queue.activity(), Some(Tier::User));
-    assert_eq!(queue.queue_len(), 2);
+    app.set_cursor(second);
+    app.refresh_cursor_heat_cue();
 
-    // Re-asking for the node the cursor has left now happens at
-    // `Tier::Visible`, which must neither demote it nor re-rank it.
-    app.heat_cue_for(app.absolute_start(first));
-    assert_eq!(
-        app.heat_worker.as_ref().unwrap().activity(),
-        Some(Tier::User)
+    let (first_range, second_range) = (
+        app.heat_scored_range(first).start,
+        app.heat_scored_range(second).start,
     );
-    assert_eq!(app.heat_worker.as_ref().unwrap().queue_len(), 2);
+    let worker = app.heat_worker.as_ref().unwrap();
+    assert_eq!(worker.queue_len(), 2, "re-asked, not re-queued");
+    assert_eq!(
+        worker.take_next_range(),
+        Some(second_range),
+        "the row the cursor moved onto is served first"
+    );
+    assert_eq!(
+        worker.take_next_range(),
+        Some(first_range),
+        "and the one it left is still queued behind it"
+    );
 }
