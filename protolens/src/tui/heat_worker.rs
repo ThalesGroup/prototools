@@ -1361,6 +1361,15 @@ impl HeatWorkerHandle {
         self.queue.take_one().map(|(start, _)| start)
     }
 
+    /// Test-only: take the next range off the queue and leave it
+    /// *registered as in flight* — the state a worker is in for the
+    /// whole of a walk, and the one spec 0263 S3 is about. `activity()`
+    /// still reports it; a "the queue is empty" predicate would not.
+    #[cfg(test)]
+    pub(super) fn admit_next_range(&self) -> Option<usize> {
+        self.queue.admit_one().map(|(start, _)| start)
+    }
+
     /// Test-only full-sweep count for *this* worker (see
     /// `HeatRequestQueue::sweeps_performed`).
     #[cfg(test)]

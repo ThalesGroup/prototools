@@ -1871,6 +1871,7 @@ dependencies = [
  "serde",
  "serde_norway",
  "sha2",
+ "signal-hook",
  "terminal-light",
  "terminfo",
  "tree-sitter",

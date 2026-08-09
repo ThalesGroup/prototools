@@ -2,12 +2,12 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! `run_loop`'s dispatch pass (spec 0245 S1).
+//! `run_loop`'s dispatch pass (spec 0245 S1) and its sleep (spec 0263).
 
 use std::convert::Infallible;
 use std::io;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::{Backend, ClearType, TestBackend, WindowSize};
@@ -16,7 +16,9 @@ use ratatui::layout::{Position, Size};
 use ratatui::Terminal;
 
 use super::super::event::{AppEvent, InputPending};
-use super::super::terminal::run_loop;
+use super::super::heat_worker::{HeatRequest, HeatWorkerHandle};
+use super::super::terminal::{may_sleep_indefinitely, run_loop};
+use super::super::tiered::Tier;
 use super::super::App;
 use super::support::*;
 
@@ -182,6 +184,10 @@ fn a_progressing_bake_forces_a_repaint() {
         app.splash = false;
         run_idle(&mut app, idle)
     };
+    // Also spec 0263's "an event wakes the sleeping loop": drawing once
+    // and then returning only on the quit is what a loop blocked in
+    // `rx.recv()` does, and the only thing that can end that block is an
+    // event from another thread.
     assert_eq!(quiet, 1, "an idle loop with no bake draws once and waits");
 
     let (mut app, _) = repeated_message_fixture();
@@ -225,6 +231,107 @@ fn a_burst_of_queued_events_is_one_dispatch_pass_and_one_frame() {
     assert_eq!(draws, 1, "eight queued events must cost one frame");
     assert_eq!(left, 0, "and all of them must have been dispatched");
     assert_eq!(app.cursor, 5, "five `Down`s, dispatched in order");
+}
+
+/// Spec 0263 S2. Six inputs, and each one alone must veto the untimed
+/// receive — a term dropped by accident is invisible in every ordinary
+/// session and shows up only as a screen that stays wrong until the
+/// user touches something.
+#[test]
+fn may_sleep_indefinitely_only_when_nothing_is_owed() {
+    assert!(
+        may_sleep_indefinitely(None, false, false, false, false, true),
+        "with nothing owed the loop must be allowed to sleep"
+    );
+
+    let vetoes: [(&str, bool); 6] = [
+        ("a message or the splash is due to expire", {
+            let due = Some(Instant::now() + Duration::from_secs(1));
+            may_sleep_indefinitely(due, false, false, false, false, true)
+        }),
+        ("a heat completion is owed a repaint", {
+            may_sleep_indefinitely(None, true, false, false, false, true)
+        }),
+        ("the monochrome frame is owed its color back", {
+            may_sleep_indefinitely(None, false, true, false, false, true)
+        }),
+        ("a bake grew the document off screen", {
+            may_sleep_indefinitely(None, false, false, true, false, true)
+        }),
+        ("a bake changed a row on screen", {
+            may_sleep_indefinitely(None, false, false, false, true, true)
+        }),
+        ("the heat worker has not settled", {
+            may_sleep_indefinitely(None, false, false, false, false, false)
+        }),
+    ];
+    for (why, slept) in vetoes {
+        assert!(!slept, "the loop must stay on a timer while {why}");
+    }
+}
+
+/// Spec 0263 S3, and the reason the last term is `heat_activity()`
+/// rather than the far more obvious "the request queue is empty".
+///
+/// A worker that has taken a request off the queue and is walking it is
+/// in exactly this state, and its `Prefetch` completions deliberately
+/// send no event (spec 0164 G10) — so a loop that fell asleep here
+/// would strand every cue that walk resolves until the user touched
+/// something.
+#[test]
+fn a_worker_still_in_flight_keeps_the_loop_on_a_timer() {
+    let mut app = sibling_leaves_app(&["f0: 0", "f1: 1"]);
+    let worker = HeatWorkerHandle::stub_for_test();
+    worker.push(
+        HeatRequest {
+            range: 0..8,
+            current_key: None,
+            start: 0,
+            end: 8,
+            tier: Tier::Prefetch,
+        },
+        Tier::Prefetch,
+    );
+    let admitted = worker.admit_next_range();
+    app.heat_worker = Some(worker);
+
+    assert_eq!(admitted, Some(0), "the request must have been taken");
+    let worker = app.heat_worker.as_ref().unwrap();
+    assert_eq!(worker.queue_len(), 0, "and the queue left empty");
+    assert!(
+        app.heat_activity().is_some(),
+        "yet the walk it started is still live"
+    );
+
+    assert!(
+        !may_sleep_indefinitely(None, false, false, false, false, false),
+        "an in-flight walk must keep the loop on a timer"
+    );
+}
+
+/// Spec 0263 G2, and the regression this spec most plausibly causes: a
+/// message dismisses itself on a deadline that no event announces, so
+/// sleeping through it would leave a stale notice on screen for as long
+/// as the user left the terminal alone.
+///
+/// The deadline is planted directly, alongside the `last_message_seen`
+/// that stops the first `render` re-arming it, so the test waits a
+/// fraction of a second rather than the whole `MESSAGE_TIMEOUT`.
+#[test]
+fn an_expiring_message_still_dismisses_itself_with_no_events() {
+    let mut app = sibling_leaves_app(&["f0: 0", "f1: 1"]);
+    app.splash = false;
+    app.message = "waiting to expire".to_string();
+    app.last_message_seen = app.message.clone();
+    app.message_deadline = Some(Instant::now() + Duration::from_millis(200));
+
+    run_idle(&mut app, Duration::from_millis(700));
+
+    assert!(
+        app.message.is_empty(),
+        "the message must expire with no event to ask for it: {:?}",
+        app.message
+    );
 }
 
 /// Spec 0245 S1c. A control transfer ends the pass where it happens and

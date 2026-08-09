@@ -546,6 +546,42 @@ pub(super) fn dispatch_event(app: &mut App, ev: &event::AppEvent) -> Option<&'st
 /// channel. This is a correctness rule, not a tuning knob: dispatching
 /// a keystroke after the user asked to suspend would deliver it to a
 /// screen that is no longer ours.
+/// Spec 0263 S2: whether the loop may block until an event arrives
+/// instead of waking on `ACTIVITY_TICK` — that is, whether anything at
+/// all is still owed a frame that no event will ask for.
+///
+/// A free function over its inputs so that the rule can be tested
+/// without a running loop, which is the only practical way to cover a
+/// condition whose failure mode is a screen that stays wrong until the
+/// user touches something.
+///
+/// `activity_settled` is the caller's conjunction of the two activity
+/// windows, the value the dot was last *drawn* with, and a fresh probe
+/// of the worker. All four are needed: the first three say the dot on
+/// screen is dark and has been for two windows, and the fourth says the
+/// worker will not light it again on its own.
+///
+/// `bake_visible` cannot in fact be set at the one call site — the arm
+/// that raises it leaves the receive loop immediately, and the frame it
+/// forces clears it again. It is a term here anyway, because the
+/// argument for leaving it out is a property of a control flow three
+/// screens away and the cost of keeping it is one `&&`.
+pub(super) fn may_sleep_indefinitely(
+    ui_deadline: Option<Instant>,
+    heat_dirty: bool,
+    styles_stale: bool,
+    bake_dirty: bool,
+    bake_visible: bool,
+    activity_settled: bool,
+) -> bool {
+    ui_deadline.is_none()
+        && !heat_dirty
+        && !styles_stale
+        && !bake_dirty
+        && !bake_visible
+        && activity_settled
+}
+
 pub(super) fn control_transfer_pending(app: &App) -> bool {
     #[cfg(unix)]
     let editor = app.pending_editor_open.is_some();
@@ -685,11 +721,13 @@ where
             (None, None) => None,
         };
         // Spec 0190 S7: the activity tick is a third candidate deadline
-        // alongside those two. Because it is always present the receive
-        // below is always a `recv_timeout` and never a bare `rx.recv()`:
-        // the loop wakes four times a second forever rather than ever
-        // being genuinely idle. Each such wake costs two relaxed loads
-        // and a comparison, and no frame.
+        // alongside those two, and unlike them it is always present.
+        //
+        // It is still computed unconditionally, because the background
+        // steps below yield on it. What it no longer does is keep the
+        // loop awake forever: spec 0263 S1 makes the *sleep* itself
+        // untimed once nothing is owed, so `deadline` from here on is
+        // the schedule for work in progress rather than for idleness.
         let activity_deadline = Instant::now() + ACTIVITY_TICK;
         let mut deadline = ui_deadline.map_or(activity_deadline, |d| d.min(activity_deadline));
         // Spec 0192 S3: a deferred heat repaint is a fourth candidate
@@ -814,7 +852,39 @@ where
                         continue;
                     }
                     // Nothing left to do, so this is the one place the
-                    // loop genuinely sleeps.
+                    // loop genuinely sleeps — and therefore (spec 0263
+                    // S1) the one place that decides between sleeping on
+                    // a timer and sleeping until something happens.
+                    //
+                    // The decision is made *here* rather than where
+                    // `deadline` is computed so that the arms above keep
+                    // yielding on the tick. A search sweep in particular
+                    // owes a frame whenever its answer changes but sets
+                    // no dirty flag of its own; it gets that frame
+                    // because its arm breaks at the deadline. Reaching
+                    // this line means all four background steps reported
+                    // `Idle` in this pass, so there is no such work left
+                    // to yield from.
+                    let activity_settled = activity_prev_window.is_none()
+                        && activity_window.is_none()
+                        && app.activity_shown.is_none()
+                        && app.heat_activity().is_none();
+                    if may_sleep_indefinitely(
+                        ui_deadline,
+                        heat_dirty,
+                        styles_stale,
+                        bake_dirty,
+                        bake_visible,
+                        activity_settled,
+                    ) {
+                        // No timer anywhere in the process now: the heat
+                        // workers are on their condvar and the input
+                        // reader is in an untimed `poll`. A `RecvError`
+                        // is impossible while this loop holds `tx`, and
+                        // is diagnosed by the `try_recv` at the head of
+                        // the next iteration if it ever becomes so.
+                        break rx.recv().ok();
+                    }
                     let timeout = deadline.saturating_duration_since(Instant::now());
                     break rx.recv_timeout(timeout).ok(); // timeout elapsed => None
                 }
