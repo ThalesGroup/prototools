@@ -264,21 +264,30 @@ fn the_script_pane_is_tinted_across_its_whole_width() {
     terminal.draw(|frame| app.render(frame)).unwrap();
     let buffer = terminal.backend().buffer().clone();
 
-    let want = crate::theme::script_pane_style(app.theme).bg;
-    assert!(want.is_some(), "the test terminal must support RGB");
+    // Whatever the palette says, not whatever the terminal running the
+    // suite happens to be: on ANSI-16 there is no green dim enough to
+    // sit behind prose, so the pane carries no background at all and the
+    // separator alone cues it (`theme::script_pane_style`). A sandbox
+    // with no COLORTERM lands on exactly that branch.
+    // A cell the pane left alone still reports `Reset` rather than
+    // `None`, so both sides are read through the same lens.
+    let bg = |style: ratatui::style::Style| style.bg.unwrap_or(ratatui::style::Color::Reset);
+    let want = bg(crate::theme::script_pane_style(app.theme));
     // Row 0 is the pane's first row; the far right of it is past the
     // text, which is where a style applied to the spans rather than to
     // the area would stop.
     for x in [0u16, 30, 59] {
         assert_eq!(
-            buffer[(x, 0)].style().bg,
+            bg(buffer[(x, 0)].style()),
             want,
             "column {x} of the pane's first row must be tinted"
         );
     }
-    assert_ne!(
-        buffer[(0, 23)].style().bg,
-        want,
-        "and the tint must not reach the document"
-    );
+    if want != ratatui::style::Color::Reset {
+        assert_ne!(
+            bg(buffer[(0, 23)].style()),
+            want,
+            "and the tint must not reach the document"
+        );
+    }
 }
