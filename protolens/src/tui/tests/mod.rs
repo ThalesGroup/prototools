@@ -23,6 +23,7 @@ mod preview_truncate;
 mod profiling;
 mod prune;
 mod render;
+mod script;
 mod search;
 mod selection;
 mod structure;

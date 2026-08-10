@@ -1,0 +1,632 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
+//! Spec 0271: applying a script step to a live session.
+//!
+//! The format lives in `crate::script`; this is the half that touches
+//! `App`. The rule the whole module is built around is spec 0271 S6:
+//! **a step declares a view, it does not describe a change.** Applying
+//! step *n* resets the state a step can name and then re-derives all of
+//! it from the step and the current document, so re-applying a step
+//! always produces the same view and stepping backward needs no undo
+//! stack.
+//!
+//! The reset is what makes that true, so it is deliberately the first
+//! thing `apply` does and deliberately covers *everything* a step can
+//! set — a directive family that gains a new member and forgets to
+//! reset it is how this becomes a delta language by accident.
+
+use std::fmt::Write as _;
+
+use ratatui::layout::Rect;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::Frame;
+
+use super::pane_scroll::{AnchorLine, WireAnchor, WireSpan};
+use super::App;
+use crate::script::{Fold, Position, Script, Step, Wire};
+use crate::theme;
+
+/// Spec 0271 S4: the script pane's share of the terminal, and the two
+/// absolute bounds on it.
+///
+/// Below `MIN` there is no room for a sentence; above `MAX` the blob —
+/// the thing being explained — stops dominating the screen.
+const PANE_PERCENT: u16 = 25;
+const PANE_MIN: u16 = 3;
+const PANE_MAX: u16 = 12;
+
+/// A loaded script and where the session is in it.
+pub(crate) struct ScriptState {
+    pub(super) script: Script,
+    /// 0-based index into `script.steps`.
+    pub(super) current: usize,
+    /// Whether the Ctrl-arrows are overridden (spec 0271 S7). `space`
+    /// toggles it; it starts off.
+    pub(super) active: bool,
+    /// First line of the step's text drawn in the pane.
+    pub(super) scroll: u16,
+    /// What the last application of a step could not do (spec 0271 S13),
+    /// shown on the message row.
+    pub(super) diagnostics: Vec<String>,
+}
+
+impl App {
+    /// Attach `script` and apply its first step (spec 0271 S8).
+    pub(crate) fn set_script(&mut self, script: Script) {
+        self.script = Some(ScriptState {
+            script,
+            current: 0,
+            active: false,
+            scroll: 0,
+            diagnostics: Vec::new(),
+        });
+        self.script_apply();
+    }
+
+    pub(super) fn script_active(&self) -> bool {
+        self.script.as_ref().is_some_and(|s| s.active)
+    }
+
+    /// `space` — turn script navigation on or off.
+    ///
+    /// Turning it *on* re-applies the current step, so the gesture that
+    /// puts the session back under the script also puts the view back
+    /// where the script left it. Wandering off between steps is free
+    /// (spec 0271 G3); coming back is one key.
+    pub(super) fn script_toggle(&mut self) {
+        let Some(state) = self.script.as_mut() else {
+            return;
+        };
+        state.active = !state.active;
+        if state.active {
+            self.script_apply();
+        }
+    }
+
+    /// `Ctrl-Right` / `Ctrl-Left`.
+    pub(super) fn script_advance(&mut self, forward: bool) {
+        let Some(state) = self.script.as_mut() else {
+            return;
+        };
+        let last = state.script.steps.len() - 1;
+        let next = if forward {
+            state.current + 1
+        } else {
+            match state.current.checked_sub(1) {
+                Some(n) => n,
+                None => {
+                    self.message = "script: at the first step".to_string();
+                    return;
+                }
+            }
+        };
+        if next > last {
+            self.message = "script: at the last step".to_string();
+            return;
+        }
+        state.current = next;
+        self.script_apply();
+    }
+
+    /// `Ctrl-Down` / `Ctrl-Up` — scroll the pane, not the document.
+    pub(super) fn script_scroll_by(&mut self, down: bool) {
+        let Some(state) = self.script.as_mut() else {
+            return;
+        };
+        state.scroll = if down {
+            state.scroll.saturating_add(1)
+        } else {
+            state.scroll.saturating_sub(1)
+        };
+    }
+
+    /// Spec 0271 S6: put the session into the view the current step
+    /// declares.
+    pub(super) fn script_apply(&mut self) {
+        let Some(state) = self.script.as_ref() else {
+            return;
+        };
+        // Cloned so the rest of this borrows `self` mutably. A step is a
+        // handful of short strings; the alternative is threading an
+        // index through every helper below for no measurable gain.
+        let step: Step = state.script.steps[state.current].clone();
+
+        self.script_reset();
+        let mut errors = Vec::new();
+        self.script_apply_folds(&step, &mut errors);
+        self.script_apply_cursor(&step, &mut errors);
+        self.script_apply_wire(&step, &mut errors);
+        if let Some(prefill) = &step.prefill {
+            // Spec 0271 S11: typed, not run. The command line reports
+            // its own errors when the reader presses Enter.
+            self.open_command_line(super::CommandLineKind::Command, prefill.clone());
+        }
+
+        if let Some(state) = self.script.as_mut() {
+            state.scroll = 0;
+            state.diagnostics = errors;
+        }
+        let diagnostics = self
+            .script
+            .as_ref()
+            .map(|s| s.diagnostics.join("; "))
+            .unwrap_or_default();
+        if !diagnostics.is_empty() {
+            self.message = format!("script: {diagnostics}");
+        }
+    }
+
+    /// Everything a step can set, put back to its default.
+    ///
+    /// Not an undo: nothing here reads what the previous step did. That
+    /// is the whole of spec 0271 N1.
+    fn script_reset(&mut self) {
+        self.script_reset_folds();
+        // `set_wire_span(None, _)` clears whatever the probe row says —
+        // the toggle only ever chooses between `None` and the target,
+        // and the target is `None`.
+        if self.wire.is_some() {
+            self.set_wire_span(None, 0);
+        }
+        self.clear_selection();
+        if self.command_buffer.is_some() {
+            self.command_buffer = None;
+            self.command_cursor = 0;
+            self.cancel_search();
+        }
+    }
+
+    /// Drop every *user* fold, deepest-first.
+    ///
+    /// Deepest-first because `refresh_line_counts` climbs upward from
+    /// the node it is given and stops as soon as a level's difference is
+    /// zero — refreshing a parent before its children would propagate
+    /// counts that are about to move again. Level order (spec 0216) puts
+    /// a parent at a lower slot than its children, so descending slot
+    /// order *is* deepest-first.
+    ///
+    /// `auto_folded` is deliberately untouched: it is not a fold the
+    /// reader or the script chose, it is rendering that has not happened
+    /// yet, and the way to clear it is to bake (S12).
+    fn script_reset_folds(&mut self) {
+        if self.folded.is_empty() {
+            return;
+        }
+        let mut nodes: Vec<usize> = self.folded.iter().copied().collect();
+        nodes.sort_unstable();
+        for idx in nodes.into_iter().rev() {
+            self.folded.remove(&idx);
+            self.refresh_line_counts(idx);
+        }
+        self.folds_changed();
+    }
+
+    fn script_apply_folds(&mut self, step: &Step, errors: &mut Vec<String>) {
+        let mut changed = false;
+        match &step.fold {
+            Fold::None => {}
+            Fold::All => {
+                // Descending slot order for `script_reset_folds`'
+                // reason. `has_children` keeps leaves out of `folded`,
+                // where nothing would ever take them back out.
+                for idx in (0..self.tree.len()).rev() {
+                    if self.has_children(idx) && self.folded.insert(idx) {
+                        changed = true;
+                        self.refresh_line_counts(idx);
+                    }
+                }
+            }
+            Fold::These(positions) => {
+                for position in positions {
+                    match self.script_resolve(position) {
+                        Some(idx) if self.has_children(idx) => {
+                            if self.folded.insert(idx) {
+                                changed = true;
+                                self.refresh_line_counts(idx);
+                            }
+                        }
+                        Some(_) => {
+                            errors.push(format!("{} is not foldable", position.as_written()))
+                        }
+                        None => errors.push(unresolved(position)),
+                    }
+                }
+            }
+        }
+        if changed {
+            self.folds_changed();
+        }
+
+        for position in &step.unfold {
+            match self.script_resolve(position) {
+                Some(idx) => {
+                    self.unfold_ancestors(idx);
+                    if self.open(idx) {
+                        self.refresh_line_counts(idx);
+                        self.folds_changed();
+                    }
+                }
+                None => errors.push(unresolved(position)),
+            }
+        }
+
+        self.script_settle_cursor();
+    }
+
+    /// Move the cursor out of any region the step just folded.
+    ///
+    /// A `fold: all` with no `node:` would otherwise leave the cursor on
+    /// a node that is no longer drawn, and every viewport calculation
+    /// downstream is about a row the cursor has.
+    fn script_settle_cursor(&mut self) {
+        let mut target = self.cursor;
+        let mut cur = self.cursor;
+        while let Some(parent) = self.parent(cur) {
+            if self.is_folded(parent) {
+                target = parent;
+            }
+            cur = parent;
+        }
+        if target != self.cursor {
+            self.set_cursor(target);
+        }
+    }
+
+    fn script_apply_cursor(&mut self, step: &Step, errors: &mut Vec<String>) {
+        let Some(position) = &step.node else {
+            return;
+        };
+        match self.script_resolve(position) {
+            Some(idx) => {
+                self.unfold_ancestors(idx);
+                self.set_cursor(idx);
+            }
+            None => errors.push(unresolved(position)),
+        }
+    }
+
+    fn script_apply_wire(&mut self, step: &Step, errors: &mut Vec<String>) {
+        let Some(wire) = &step.wire else {
+            return;
+        };
+        match wire {
+            Wire::Line(position) => match self.script_resolve(position) {
+                Some(idx) => {
+                    let line = self.absolute_start(idx);
+                    match self.wire_span_of_lines(line, line) {
+                        Some(span) => self.show_wire_span(span),
+                        None => errors.push(format!("{} has no line", position.as_written())),
+                    }
+                }
+                None => errors.push(unresolved(position)),
+            },
+            Wire::Lines { from, to } => {
+                let (Some(a), Some(b)) = (self.script_resolve(from), self.script_resolve(to))
+                else {
+                    for position in [from, to] {
+                        if self.script_resolve(position).is_none() {
+                            errors.push(unresolved(position));
+                        }
+                    }
+                    return;
+                };
+                let (first, last) = (self.absolute_start(a), self.absolute_start(b));
+                if first > last {
+                    errors.push(format!(
+                        "wire-lines: {} comes after {}",
+                        from.as_written(),
+                        to.as_written()
+                    ));
+                    return;
+                }
+                match self.wire_span_of_lines(first, last) {
+                    Some(span) => self.show_wire_span(span),
+                    None => errors.push("wire-lines: no lines there".to_string()),
+                }
+            }
+            Wire::Node(position) => match self.script_resolve(position) {
+                Some(idx) => {
+                    let span = WireSpan {
+                        first: WireAnchor {
+                            node: idx,
+                            line: AnchorLine::FromStart(0),
+                        },
+                        last: WireAnchor {
+                            node: idx,
+                            line: AnchorLine::Footer,
+                        },
+                    };
+                    // The footer anchor is a row of the *subtree*, so
+                    // everything under `idx` has to have been rendered.
+                    self.bake_subtree(idx);
+                    self.show_wire_span(span);
+                }
+                None => errors.push(unresolved(position)),
+            },
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Resolving a position (spec 0271 S3), baking what it needs (S12)
+    // -----------------------------------------------------------------
+
+    fn script_resolve(&mut self, position: &Position) -> Option<usize> {
+        match position {
+            Position::Path(path) => self.script_resolve_path(path),
+            Position::Search(text) => {
+                self.script_bake_document();
+                self.script_find_text(text)
+            }
+        }
+    }
+
+    /// `App::resolve_path`, baking each level on the way down.
+    ///
+    /// The plain resolver cannot reach into unbaked territory:
+    /// `child_slots` reports no children for a node whose first child
+    /// slot was never rendered (spec 0216), which is exactly what a
+    /// bounded open leaves behind (spec 0257). So each level is expanded
+    /// before its children are counted.
+    ///
+    /// Holding `cur` across `expand_auto_fold` is sound because a splice
+    /// allocates, abandons and renumbers no slot (spec 0216 S12) — the
+    /// arena is a function of the bytes and does not move when the
+    /// interpretation changes.
+    fn script_resolve_path(&mut self, path: &str) -> Option<usize> {
+        let mut cur = self.first_node;
+        self.script_bake_node(cur);
+        if path == "/" {
+            return Some(cur);
+        }
+        for segment in path.trim_start_matches('/').split('/') {
+            let position: usize = segment.parse().ok()?;
+            cur = self.nth_child(cur, position.checked_sub(1)?)?;
+            self.script_bake_node(cur);
+        }
+        Some(cur)
+    }
+
+    fn script_bake_node(&mut self, idx: usize) {
+        if self.auto_folded.contains(&idx) {
+            self.expand_auto_fold(idx, usize::MAX);
+        }
+    }
+
+    /// Spec 0271 S12: a search reads rendered text, so there has to be
+    /// some.
+    ///
+    /// Charged once per session rather than once per step — the bake is
+    /// a debt against the whole document and paying it leaves nothing
+    /// owed. A script written entirely in positional paths never comes
+    /// here at all.
+    fn script_bake_document(&mut self) {
+        if self.auto_folded.is_empty() {
+            return;
+        }
+        let root = self.first_node;
+        self.bake_subtree(root);
+    }
+
+    /// The first node in document order whose own text contains `needle`.
+    ///
+    /// A plain substring test over each node's own lines, not the `/`
+    /// prompt's sweep: a script position wants an answer, not a
+    /// highlight, a history entry or a resumable cursor, and going
+    /// through the prompt's machinery would leave all three behind.
+    fn script_find_text(&self, needle: &str) -> Option<usize> {
+        let mut cur = Some(self.first_node);
+        while let Some(idx) = cur {
+            if self.node_text[idx]
+                .as_deref()
+                .is_some_and(|text| text.contains(needle))
+            {
+                return Some(idx);
+            }
+            cur = self.doc_next(idx);
+        }
+        None
+    }
+
+    // -----------------------------------------------------------------
+    // Drawing
+    // -----------------------------------------------------------------
+
+    /// Spec 0271 S4: how many rows the pane takes, excluding its
+    /// separator. Zero when no script is loaded.
+    pub(super) fn script_rows(&self, total: u16) -> u16 {
+        if self.script.is_none() {
+            return 0;
+        }
+        match self.script_height {
+            Some(rows) => rows.min(total.saturating_sub(2)),
+            None => (total * PANE_PERCENT / 100).clamp(PANE_MIN, PANE_MAX),
+        }
+    }
+
+    pub(super) fn render_script_pane(&mut self, frame: &mut Frame, area: Rect) {
+        let Some(state) = self.script.as_ref() else {
+            return;
+        };
+        let style = theme::script_pane_style(self.theme);
+        let text: Vec<Line> = state.script.steps[state.current]
+            .text
+            .lines()
+            .map(|l| Line::styled(l.to_string(), style))
+            .collect();
+        let pane = Paragraph::new(text)
+            .style(style)
+            .wrap(Wrap { trim: false })
+            .scroll((state.scroll, 0));
+        frame.render_widget(pane, area);
+    }
+
+    pub(super) fn render_script_separator(&self, frame: &mut Frame, area: Rect) {
+        let Some(state) = self.script.as_ref() else {
+            return;
+        };
+        let style = theme::script_rule_style(self.theme);
+        let width = area.width as usize;
+        let legend = script_legend(state, width);
+        let mut text = String::new();
+        if legend.is_empty() {
+            text.push_str(&"─".repeat(width));
+        } else {
+            // Two rule characters of lead-in, so the legend reads as
+            // sitting *on* the rule rather than replacing its start.
+            text.push_str("── ");
+            text.push_str(&legend);
+            text.push(' ');
+            let drawn = text.chars().count();
+            text.push_str(&"─".repeat(width.saturating_sub(drawn)));
+        }
+        frame.render_widget(Paragraph::new(Line::from(Span::styled(text, style))), area);
+    }
+
+    // -----------------------------------------------------------------
+    // Transcript (spec 0271 S14)
+    // -----------------------------------------------------------------
+
+    /// Apply every step in order and describe what each one produced.
+    ///
+    /// The test vehicle for a script: it needs no terminal, and it
+    /// reports the resolved outcome of each directive rather than the
+    /// directive itself, so a script that has drifted out of sync with
+    /// its blob shows up as a diff.
+    pub(crate) fn script_transcript(&mut self) -> String {
+        let mut out = String::new();
+        let Some(state) = self.script.as_ref() else {
+            return out;
+        };
+        let total = state.script.steps.len();
+        // The file name rather than the path: the transcript is a golden
+        // test's expected output, and where the fixture happens to sit is
+        // not part of what the script says.
+        if let Some(name) = state.script.path.file_name() {
+            let _ = writeln!(out, "script: {}", name.to_string_lossy());
+        }
+        if let Some(title) = &state.script.title {
+            let _ = writeln!(out, "title: {title}");
+        }
+        for index in 0..total {
+            if let Some(state) = self.script.as_mut() {
+                state.current = index;
+            }
+            self.script_apply();
+            let _ = writeln!(out, "step {}/{}", index + 1, total);
+            let _ = writeln!(out, "  node: {}", self.positional_path(self.cursor));
+            let _ = writeln!(out, "  folded: {}", self.folded.len());
+            match self.wire_rows() {
+                Some(rows) => {
+                    let _ = writeln!(out, "  wire: rows {}..{}", rows.start, rows.end);
+                }
+                None => {
+                    let _ = writeln!(out, "  wire: none");
+                }
+            }
+            if let Some(prefill) = &self.command_buffer {
+                let _ = writeln!(out, "  prefill: {prefill}");
+            }
+            let diagnostics = self
+                .script
+                .as_ref()
+                .map(|s| s.diagnostics.clone())
+                .unwrap_or_default();
+            for diagnostic in diagnostics {
+                let _ = writeln!(out, "  error: {diagnostic}");
+            }
+            let first = self
+                .script
+                .as_ref()
+                .and_then(|s| s.script.steps[index].text.lines().next())
+                .unwrap_or("");
+            let _ = writeln!(out, "  text: {first}");
+        }
+        out
+    }
+}
+
+fn unresolved(position: &Position) -> String {
+    match position {
+        Position::Path(path) => format!("no node at {path}"),
+        Position::Search(text) => format!("no match for {text:?}"),
+    }
+}
+
+/// Spec 0271 S5: the micro-help on the separator.
+///
+/// Three parts, dropped from the right as the terminal narrows. The step
+/// counter goes last because on a narrow terminal it is the only one
+/// worth the space — the key reminder can be learned once, but "where am
+/// I" changes every step.
+fn script_legend(state: &ScriptState, width: usize) -> String {
+    if !state.active {
+        return fit("press space", width);
+    }
+    let counter = format!(
+        "^←/^→ step {}/{}",
+        state.current + 1,
+        state.script.steps.len()
+    );
+    let parts = [counter.as_str(), "^↑/^↓ scroll", "space off"];
+    for take in (1..=parts.len()).rev() {
+        let candidate = parts[..take].join("  ");
+        if fits(&candidate, width) {
+            return candidate;
+        }
+    }
+    fit(&counter, width)
+}
+
+/// A legend needs the two rule characters, the two spaces around it, and
+/// at least one rule character after it.
+fn fits(legend: &str, width: usize) -> bool {
+    legend.chars().count() + 6 <= width
+}
+
+fn fit(legend: &str, width: usize) -> String {
+    if fits(legend, width) {
+        legend.to_string()
+    } else {
+        String::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(active: bool, current: usize, steps: usize) -> ScriptState {
+        let text = (0..steps)
+            .map(|i| format!("- text: step {i}\n"))
+            .collect::<String>();
+        ScriptState {
+            script: Script::parse(&format!("steps:\n{text}"), "t.script".into())
+                .expect("must parse"),
+            current,
+            active,
+            scroll: 0,
+            diagnostics: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_legend_is_just_the_toggle_while_navigation_is_off() {
+        assert_eq!(script_legend(&state(false, 0, 3), 80), "press space");
+    }
+
+    #[test]
+    fn the_legend_drops_parts_from_the_right_as_it_narrows() {
+        let state = state(true, 2, 23);
+        assert_eq!(
+            script_legend(&state, 80),
+            "^←/^→ step 3/23  ^↑/^↓ scroll  space off"
+        );
+        assert_eq!(script_legend(&state, 40), "^←/^→ step 3/23  ^↑/^↓ scroll");
+        assert_eq!(script_legend(&state, 26), "^←/^→ step 3/23");
+        // Narrower than the counter plus its rule: the rule alone.
+        assert_eq!(script_legend(&state, 8), "");
+    }
+}

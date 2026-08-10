@@ -1591,6 +1591,15 @@ pub struct App {
     /// handed-off Neovim is currently stopped in the background.
     #[cfg(unix)]
     pub(crate) editor_state: neovim::EditorState,
+
+    /// Spec 0271: the loaded script and where the session is in it,
+    /// `None` in an ordinary session. Set by `App::set_script` rather
+    /// than by `App::new`, because applying step 1 needs a fully built
+    /// `App` to apply it to.
+    script: Option<script_pane::ScriptState>,
+    /// `--script-height`'s value, overriding the computed share of the
+    /// terminal (spec 0271 S4).
+    pub script_height: Option<u16>,
 }
 
 impl App {
@@ -1789,6 +1798,8 @@ impl App {
             pending_editor_open: None,
             #[cfg(unix)]
             editor_state: neovim::EditorState::NotRunning,
+            script: None,
+            script_height: None,
         };
         // Spec 0257 S3: `build_tree` gave each stop the header-plus-footer
         // pair it actually emitted, but it cannot know the node is folded,
@@ -2023,6 +2034,7 @@ mod pane_scroll;
 mod prefetch;
 mod preview_truncate;
 mod render;
+mod script_pane;
 mod search;
 mod selection;
 mod structure;

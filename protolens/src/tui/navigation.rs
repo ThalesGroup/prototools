@@ -39,7 +39,7 @@ impl App {
     /// parent to `bytes`, leaving the anchored node with no row at all,
     /// and the honest answer to "which rows show their bytes" is then
     /// none.
-    fn wire_rows(&self) -> Option<std::ops::Range<usize>> {
+    pub(super) fn wire_rows(&self) -> Option<std::ops::Range<usize>> {
         let span = self.wire?;
         if let Some(cache) = self.wire_rows.borrow().as_ref() {
             if cache.version == self.structural_version {
@@ -345,6 +345,22 @@ impl App {
         // outside a pane that just got shorter in document lines.
         self.last_cursor_row = None;
         self.clamp_pan_offset();
+    }
+
+    /// Spec 0271 S10: show `span`, whatever is showing now.
+    ///
+    /// [`App::set_wire_span`] answers a *gesture*, and a gesture aimed
+    /// at a row that already shows its bytes means "off" — so a script
+    /// step, which declares a state rather than making one, cannot use
+    /// it directly. Clearing first makes the outcome a function of the
+    /// span alone. A step's own reset (spec 0271 S6) has normally
+    /// already done this; stating the dependency here is what keeps that
+    /// from being a silent premise.
+    pub(super) fn show_wire_span(&mut self, span: WireSpan) {
+        self.wire = None;
+        *self.wire_rows.borrow_mut() = None;
+        let probe = self.wire_anchor_row(span.first).unwrap_or(0);
+        self.set_wire_span(Some(span), probe);
     }
 
     /// Whether `idx` is drawn collapsed — because the user folded it,

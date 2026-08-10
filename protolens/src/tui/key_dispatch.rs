@@ -171,6 +171,16 @@ impl App {
             KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.override_pan_vertical(PAN_STEP, false)
             }
+            // Spec 0271 S7: a second spelling, because script navigation
+            // takes the Ctrl-arrows and this was the one pane gesture
+            // with no alternative left. Mirrors the horizontal pan
+            // above, which has had its `Alt` pair all along.
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.override_pan_vertical(PAN_STEP, true)
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.override_pan_vertical(PAN_STEP, false)
+            }
             KeyCode::Char('j') | KeyCode::Down => self.move_override_highlight(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_override_highlight(-1),
             // Spec 0236 S16: `f`/`b` page here exactly as they do in the
@@ -495,6 +505,48 @@ impl App {
         if key.code == KeyCode::Char('v') && !ctrl_or_alt(&key) {
             self.open_definition();
             return;
+        }
+        // Spec 0271 S7: the script keys, in the same tier as `F1`/`:`/`v`
+        // above. Below `command_buffer`'s early return, so `space` is
+        // still a literal space at the `:` prompt; above the two
+        // side-pane dispatches, so they work regardless of focus.
+        //
+        // `space` is stolen for the whole session whenever a script is
+        // loaded, because it is the toggle and so cannot be conditional
+        // on the state it toggles. Paging keeps `f`/`PageDown`, and
+        // `Shift-Space` is a different chord and is left alone. The
+        // Ctrl-arrows are taken only while navigation is on; every
+        // main-pane gesture they displace has a letter spelling
+        // (`Ctrl-h`/`Ctrl-l`/`Ctrl-j`/`Ctrl-k`) already.
+        if self.script.is_some() {
+            if key.code == KeyCode::Char(' ')
+                && !ctrl_or_alt(&key)
+                && !key.modifiers.contains(KeyModifiers::SHIFT)
+            {
+                self.script_toggle();
+                return;
+            }
+            if self.script_active() && key.modifiers.contains(KeyModifiers::CONTROL) {
+                match key.code {
+                    KeyCode::Left => {
+                        self.script_advance(false);
+                        return;
+                    }
+                    KeyCode::Right => {
+                        self.script_advance(true);
+                        return;
+                    }
+                    KeyCode::Up => {
+                        self.script_scroll_by(false);
+                        return;
+                    }
+                    KeyCode::Down => {
+                        self.script_scroll_by(true);
+                        return;
+                    }
+                    _ => {}
+                }
+            }
         }
         if self.override_focus {
             self.handle_override_key(key);

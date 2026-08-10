@@ -1139,13 +1139,25 @@ impl App {
         self.track_splash_timeout();
         let area = frame.area();
         self.term_width = area.width;
+        // Spec 0271 S4: the script pane and its separator sit above
+        // everything, terminal width, and are `Length(0)` when no script
+        // is loaded — which is what keeps an ordinary session's geometry
+        // byte-for-byte what it was.
+        let script_rows = self.script_rows(area.height);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Min(0),    // main pane + side pane, each with its own local statusline
+                Constraint::Length(script_rows), // script commentary (spec 0271 S4)
+                Constraint::Length(u16::from(script_rows > 0)), // its separator (S5)
+                Constraint::Min(0), // main pane + side pane, each with its own local statusline
                 Constraint::Length(1), // global command/message row (spec 0147 G4)
             ])
             .split(area);
+        if script_rows > 0 {
+            self.render_script_pane(frame, chunks[0]);
+            self.render_script_separator(frame, chunks[1]);
+        }
+        let chunks = [chunks[2], chunks[3]];
 
         // Ephemeral right-hand split (spec 0114 §2, extended by spec 0117
         // §3 to the management pane) when either the override selection

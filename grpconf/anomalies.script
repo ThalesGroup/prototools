@@ -1,0 +1,191 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+title: Every anomaly in one blob
+
+steps:
+  - text: |
+      anomalies.pb carries one example of every annotation prototext can
+      emit. Read top to bottom it goes from bytes every parser accepts,
+      through bytes that disagree with the schema, to bytes no parser can
+      make sense of at all.
+
+      Press space to hand navigation to this pane, then ^-> to step.
+      Press w at any time to show the wire bytes under each line.
+
+  - text: |
+      1. Legal, not canonical.
+
+      A varint may carry leading padding, and a field tag is a varint.
+      This tag is written in three bytes where one would do. Every parser
+      accepts it; no canonical writer produces it.
+    fold: all
+    node: /1
+    wire-line: /1
+
+  - text: |
+      A length prefix is a varint too, and can be padded the same way.
+      The four bytes of length below describe a string that needs one.
+    fold: all
+    node: /2
+    wire-line: /2
+
+  - text: |
+      And so can a value. `number: 5` is one byte of information written
+      in four.
+    fold: all
+    unfold: [/3]
+    node: /3/2/2
+    wire-line: /3/2/2
+
+  - text: |
+      2. Values that survive a round trip but not a re-encode.
+
+      -1 as an int32 is specified to occupy ten bytes. This producer
+      wrote five. It reads back as -1 everywhere — and re-encoding it
+      gives different bytes than it arrived as.
+    fold: all
+    unfold: [/4]
+    node: /4/2/2
+    wire-line: /4/2/2
+
+  - text: |
+      There is one canonical NaN and 2^52 - 1 other ones. This is one of
+      the others. Every arithmetic unit agrees it is NaN; no two of them
+      agree on which.
+    fold: all
+    unfold: [/5]
+    node: /5/1/2
+    wire-line: /5/1/2
+
+  - text: |
+      3. A newer producer against an older schema.
+
+      The wire carries enum value 99. The schema this session was opened
+      with has no name for it, so the number is all there is to show.
+    fold: all
+    unfold: [/6]
+    node: /6/2/2
+
+  - text: |
+      The same disagreement, one step further: four fields the schema
+      does not declare at all. Nothing is lost — the wire type is in the
+      tag, so each one is still read, named by shape rather than by name.
+    fold: all
+    unfold: [/7]
+    node: /7/2
+    wire-lines:
+      from: /7/2
+      to: /7/5
+
+  - text: |
+      4. A packed run.
+
+      Three text lines. One wire record. The w row is what makes that
+      visible: the bytes belong to the run, not to any one line of it.
+    fold: all
+    unfold: [/8]
+    node: /8/1/2
+    wire-node: /8/1/2
+
+  - text: |
+      5. The blob and the schema disagree.
+
+      The schema says field 1 here is a string. The tag says varint. The
+      tag wins — it is what the bytes actually are — and the field is
+      shown by wire type instead.
+    fold: all
+    unfold: [/9]
+    node: /9/2
+
+  - text: |
+      Declared a string, and it is a LEN record, so the shape is right.
+      The payload is not valid UTF-8. The bytes are shown as they are.
+    fold: all
+    unfold: [/10]
+    node: /10/2
+    wire-line: /10/2
+
+  - text: |
+      Declared a packed int32 field, and the payload does not decode as
+      one. The record is kept whole rather than guessed at.
+    fold: all
+    unfold: [/11]
+    node: /11/1/2
+    wire-line: /11/1/2
+
+  - text: |
+      6. Malformed wire bytes.
+
+      From here on the bytes are not merely unexpected, they are
+      unreadable — and each one takes the rest of its enclosing region
+      with it. That is why every one of them sits alone in its own
+      submessage: the length prefix is what bounds the damage.
+
+      A length prefix claiming more bytes than the record has.
+    fold: all
+    unfold: [/12]
+    node: /12/2
+    wire-line: /12/2
+
+  - text: |
+      A varint with no terminating byte. There is no way to know where
+      the next tag would have started.
+    fold: all
+    unfold: [/13]
+    node: /13/2
+    wire-line: /13/2
+
+  - text: |
+      A length prefix that is itself an unterminated varint, a 64-bit
+      field with three bytes behind it, and a 32-bit field with two.
+      Different fields, one failure: the record runs off its own end.
+    fold: all
+    unfold: [/14, /15, /16]
+    node: /14/2
+
+  - text: |
+      Wire type 6 does not exist. Field number 0 is out of range. Both
+      are tags that cannot be interpreted at all, which means nothing
+      after them can be found either.
+    fold: all
+    unfold: [/17, /18]
+    node: /17/2
+
+  - text: |
+      7. Groups.
+
+      A group is opened by a tag and closed by a tag, with no length
+      prefix anywhere. Nothing in this schema declares one, so all of
+      these arrive as undeclared fields.
+    fold: all
+    unfold: [/19, /19/2]
+    node: /19/2
+    wire-node: /19/2
+
+  - text: |
+      The same group, whose closing tag is padded — the tag_ohb of the
+      first step, on the other end of the group.
+    fold: all
+    unfold: [/20]
+    node: /20/2
+
+  - text: |
+      Opened as field 102 and closed as field 103; closed with a field
+      number no field may have; and never closed at all. A group's two
+      ends have to agree, and nothing on the wire enforces it.
+    fold: all
+    unfold: [/21, /22, /23]
+    node: /21/2
+
+  - text: |
+      And last, an END_GROUP tag closing a group that was never opened.
+
+      That is the whole vocabulary. Press space to take navigation back
+      and explore on your own — the script does not constrain anything,
+      so stepping back to any point picks up exactly where it left off.
+    fold: all
+    unfold: [/24]
+    node: /24/2
+    wire-line: /24/2

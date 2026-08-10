@@ -67,11 +67,14 @@ let
   };
 
   # fixtureFilter — admits only files the Rust tests actually need from fixture
-  # directories: .pb, .proto, .yaml, .license, Cargo.lock.  Excludes .md, .py,
-  # .pyc, .gitignore, __pycache__ and other non-Rust artefacts that would
-  # otherwise pollute the hash.
+  # directories: .pb, .proto, .yaml, .script, .license, Cargo.lock.  Excludes
+  # .md, .py, .pyc, .gitignore, __pycache__ and other non-Rust artefacts that
+  # would otherwise pollute the hash.  .script is spec 0271's guided walk —
+  # `protolens/tests/batch_script.rs` runs grpconf/anomalies.script over
+  # grpconf/anomalies.pb, so the test cannot pass without it.
   fixtureFilter = dir: pkgs.lib.fileset.fileFilter
-    (f: f.hasExt "pb" || f.hasExt "proto" || f.hasExt "yaml" || f.hasExt "license")
+    (f: f.hasExt "pb" || f.hasExt "proto" || f.hasExt "yaml"
+        || f.hasExt "script" || f.hasExt "license")
     dir;
 
   # workspaceSrc — all workspace crate sources + filtered fixture dirs, minus

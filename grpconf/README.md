@@ -22,6 +22,14 @@ Press <kbd>w</kbd> to show the wire bytes under each line. The three severity
 tiers — landmark, non-canonical, invalid — are then visible on both rows at
 once, which is what the fixture exists for.
 
+`anomalies.script` sits beside the blob and is picked up automatically, so the
+session opens with a commentary pane at the top walking the sections below in
+order. Press <kbd>space</kbd> to hand it the arrow keys, then
+<kbd>Ctrl-→</kbd>/<kbd>Ctrl-←</kbd> to step; <kbd>space</kbd> again gives the
+keys back and you can explore from wherever the step left you. `--no-script`
+opens the blob without it. Specified in
+`docs/specs/0271-a-script-walks-the-reader-through-the-blob.md`.
+
 `--descriptor-set` is not optional. Half the anomalies are *terminal*: once a
 varint has no terminator or a wire type has no meaning, the decoder cannot find
 the next tag and gives up on the rest of the enclosing region. Each one is

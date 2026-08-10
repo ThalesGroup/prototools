@@ -15,6 +15,7 @@ mod node_status;
 mod override_pane;
 mod provenance;
 mod render_cache;
+mod script;
 mod sweep;
 mod theme;
 mod tui;
@@ -162,6 +163,26 @@ struct Cli {
     #[arg(long = "eager-read")]
     eager_read: bool,
 
+    /// Guided walk through the blob to load (spec 0271). A missing or
+    /// malformed file is a hard error.
+    ///
+    /// With no `--script`, the blob path with its extension replaced by
+    /// `.script` is loaded if it exists.
+    #[arg(
+        long = "script",
+        add = ArgValueCompleter::new(complete::complete_any_path),
+    )]
+    script: Option<PathBuf>,
+
+    /// Do not look for a script beside the blob (spec 0271 S1).
+    #[arg(long = "no-script", conflicts_with = "script")]
+    no_script: bool,
+
+    /// Rows for the script pane, overriding its computed share of the
+    /// terminal (spec 0271 S4).
+    #[arg(long = "script-height", value_parser = clap::value_parser!(u16).range(1..))]
+    script_height: Option<u16>,
+
     /// Binary protobuf to decode.
     #[arg(add = ArgValueCompleter::new(complete::complete_any_path))]
     blob: PathBuf,
@@ -211,6 +232,18 @@ enum Command {
     ///
     /// Named `quit` to match the TUI's own `:quit` (spec 0236 S21).
     Quit,
+
+    /// Apply every step of the loaded script and write what each one
+    /// produced, without entering the interactive TUI (spec 0271 S14).
+    ///
+    /// Which script is loaded is the root command's `--script` (or the
+    /// one found beside the blob), so this subcommand has no script
+    /// argument of its own.
+    Script {
+        /// Write to this file instead of stdout.
+        #[arg(short = 'o', long = "output")]
+        output: Option<PathBuf>,
+    },
 }
 
 /// Mirrors the TUI's `:export` flags (spec 0156 G2/G8) — a separate
@@ -318,7 +351,10 @@ fn startup_row_budget(command: &Option<Command>) -> Option<usize> {
             let pane = rows.saturating_sub(CHROME_ROWS);
             Some((pane + 1).max(tui::App::MIN_EXPAND_ROWS))
         }
-        Some(Command::Export { .. }) => None,
+        // Both walk the document rather than a screenful, and neither
+        // is a startup measurement, so neither pays for a budget it
+        // would only have to bake back.
+        Some(Command::Export { .. } | Command::Script { .. }) => None,
     }
 }
 
@@ -404,6 +440,34 @@ fn main() -> ExitCode {
                 "error: --format=descriptor-binary/descriptor-prototext requires \
                  --load-overrides (batch mode has no interactive type-inference loop)"
             );
+            return ExitCode::FAILURE;
+        }
+    }
+
+    // Spec 0271 S1. Loaded here, before the descriptor set: a script
+    // that does not parse is a typo in a file the user just wrote, and
+    // they should not wait through startup to hear about it. The
+    // implicit script is as hard an error as the explicit one — a
+    // malformed file that is silently ignored is indistinguishable from
+    // one that was never found.
+    let script_path = match (&cli.script, cli.no_script) {
+        (Some(p), _) => Some(p.clone()),
+        (None, true) => None,
+        (None, false) => script::Script::beside(&cli.blob),
+    };
+    let script = match script_path {
+        Some(path) => match script::Script::load(&path) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => None,
+    };
+    if script.is_none() {
+        if let Some(Command::Script { .. }) = &cli.command {
+            eprintln!("error: the `script` subcommand needs a script — none was given or found");
             return ExitCode::FAILURE;
         }
     }
@@ -613,11 +677,21 @@ fn main() -> ExitCode {
     );
     app.override_preview_byte_budget = cli.override_preview_byte_budget;
     app.sweep_jobs = jobs;
+    app.script_height = cli.script_height;
+    // Spec 0271 S8: the pane is on screen from the first frame, with
+    // navigation off and step 1 already applied. `export` is left out —
+    // its output is a view of the document, and a step folds.
+    if let (Some(script), None | Some(Command::Script { .. })) = (script, &cli.command) {
+        app.set_script(script);
+    }
 
     match cli.command {
         // Spec 0198 S1: every startup phase has already run above; this
         // arm is the whole subcommand.
         Some(Command::Quit) => ExitCode::SUCCESS,
+        Some(Command::Script { output }) => {
+            write_output(app.script_transcript().as_bytes(), output.as_deref())
+        }
         Some(Command::Export {
             path,
             load_overrides,

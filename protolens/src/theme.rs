@@ -959,6 +959,49 @@ mod caret_rgb {
     pub const DARK_SELECTION: Color = Color::Rgb(0x26, 0x4F, 0x78);
     /// Light theme, the selection.
     pub const LIGHT_SELECTION: Color = Color::Rgb(0xAD, 0xD6, 0xFF);
+
+    /// Spec 0271 S15, dark theme: the script pane's background. A green
+    /// of about `DARK_ROW`'s lightness, so the pane reads as a distinct
+    /// region without becoming the brightest thing on the screen — the
+    /// document below it is what the reader is meant to be looking at.
+    pub const DARK_SCRIPT_BG: Color = Color::Rgb(0x14, 0x2A, 0x1C);
+    /// Dark theme: the separator rule and its legend — the same hue well
+    /// clear of the pane it borders, since it carries text.
+    pub const DARK_SCRIPT_RULE: Color = Color::Rgb(0x5E, 0xB0, 0x76);
+    /// Light theme: the script pane's background.
+    pub const LIGHT_SCRIPT_BG: Color = Color::Rgb(0xE4, 0xF3, 0xE8);
+    /// Light theme: the separator rule and its legend.
+    pub const LIGHT_SCRIPT_RULE: Color = Color::Rgb(0x2F, 0x7D, 0x46);
+}
+
+/// Spec 0271 S15: the script pane's background.
+///
+/// A background only — the commentary keeps the terminal's own
+/// foreground, since it is prose and has no syntax to color. On ANSI-16
+/// there is no green dim enough to sit behind text without fighting it,
+/// so the pane falls back to no background at all and the separator
+/// alone carries the cue.
+pub fn script_pane_style(theme: ThemeKind) -> Style {
+    match pick(
+        theme,
+        supports_rgb(),
+        (Some(caret_rgb::DARK_SCRIPT_BG), None),
+        (Some(caret_rgb::LIGHT_SCRIPT_BG), None),
+    ) {
+        Some(bg) => Style::default().bg(bg),
+        None => Style::default(),
+    }
+}
+
+/// Spec 0271 S15: the separator rule under the script pane, and the
+/// micro-help legend written on it.
+pub fn script_rule_style(theme: ThemeKind) -> Style {
+    Style::default().fg(pick(
+        theme,
+        supports_rgb(),
+        (caret_rgb::DARK_SCRIPT_RULE, Color::Green),
+        (caret_rgb::LIGHT_SCRIPT_RULE, Color::Green),
+    ))
 }
 
 /// Spec 0194 S2: the caret itself — one character drawn inside out,
