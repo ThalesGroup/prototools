@@ -840,7 +840,7 @@ fn fresh_click_replaces_selection_esc_clears_it() {
     assert_eq!(app.select_anchor, None, "Esc clears the selection");
 }
 
-/// Regression test: clicking a foldable node's `▸`/`▾` marker must
+/// Regression test: clicking a foldable node's `⏵`/`⏷` marker must
 /// still toggle its fold now that the heat-cue gutter (spec 0138 N1)
 /// permanently occupies column 0 of `main_area`, shifting every line's
 /// own text (and its marker) one column to the right.

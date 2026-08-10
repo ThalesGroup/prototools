@@ -31,13 +31,41 @@ pub(super) const ACTIVITY_GLYPH: &str = "●";
 
 /// Spec 0193 S1: the fold marker's glyphs, open (children shown) and
 /// closed (children collapsed into `{ ... }`).
-pub(super) const FOLD_GLYPH_OPEN: char = '▾';
-const FOLD_GLYPH_CLOSED: char = '▸';
+///
+/// **Enlarged 2026-08-10.** These were `▾`/`▸`, U+25BE and U+25B8 —
+/// whose Unicode names say `SMALL TRIANGLE`, and they are. The marker
+/// carries a *color* (spec 0260's five-state margin), and a glyph with
+/// that little ink is where two of those colors stop being tellable
+/// apart, so the mark that most has to be read was the one drawn
+/// smallest.
+///
+/// `MEDIUM`, U+23F7 and U+23F5, under two constraints — and the obvious
+/// `▼`/`▶` fails both, one each:
+///
+/// - **One column.** `FOLD_FIELD_WIDTH` is two and the second column is
+///   the separating space, so a marker the terminal draws double-width
+///   would shift every foldable row's text out of line with every
+///   non-foldable one. These two are East Asian *Neutral*, narrow
+///   everywhere, exactly as the small pair they replace was. `▼`
+///   (U+25BC) and `▶` (U+25B6) are *Ambiguous* and go double-width
+///   under a CJK locale.
+/// - **Not an emoji.** `▶` (U+25B6) is the ▶️ play button in
+///   `emoji-data.txt`. A terminal that reaches for an emoji font draws
+///   it colored *and* double-width — and a glyph that supplies its own
+///   color destroys the only thing this marker is for. U+23F4..U+23F7
+///   are the media block's plain triangles and carry no emoji property;
+///   that block's emoji are U+23E9..U+23EF and U+23F8..U+23FA.
+///
+/// The residual risk is font coverage — these arrived in Unicode 7.0
+/// (2014), and a font without them draws tofu. That is a one-line
+/// revert, and the pair to revert *to* is the small one named above.
+pub(super) const FOLD_GLYPH_OPEN: char = '⏷';
+const FOLD_GLYPH_CLOSED: char = '⏵';
 
 /// Spec 0193 S1: how many columns the fold field reserves left of the
 /// row's own text. Two, because that is the marker plus the space that
-/// keeps it from reading as part of the identifier beside it (`▾options`
-/// is one token to the eye; `▾ options` is not).
+/// keeps it from reading as part of the identifier beside it (`⏷options`
+/// is one token to the eye; `⏷ options` is not).
 ///
 /// The field is reserved unconditionally, exactly as spec 0138 N1's
 /// heat-cue column is: a field that appeared and vanished with the
@@ -623,7 +651,7 @@ impl App {
     /// and neither of which is chrome.
     ///
     /// This is what a clipboard copy wants (`selected_text`): the margin
-    /// and its `▾`/`▸` are gutter furniture, and pasting them back into
+    /// and its `⏷`/`⏵` are gutter furniture, and pasting them back into
     /// a `.textproto` would not parse.
     pub(super) fn row_text(&self, row: DisplayRow) -> String {
         self.row_text_of(row, self.display_row_source(row).1)

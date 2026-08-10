@@ -148,6 +148,20 @@ indicator — `Top` / `Bot` / `All` / `45%` — rather than replacing it.
 
 ### S1. The fold marker occupies two reserved columns, and never inserts
 
+> **Amended 2026-08-10 — the glyphs are `⏷`/`⏵`, not `▾`/`▸`.** This
+> section and the diagrams throughout this spec were written against
+> U+25BE and U+25B8, whose Unicode names say `SMALL TRIANGLE` and which
+> are. Spec 0260 later made the marker carry a five-color status, and a
+> glyph with that little ink is where two of those colors stop being
+> distinguishable. The replacements are U+23F7 and U+23F5, `MEDIUM`, and
+> are still one column: both are East Asian Neutral, as the small pair
+> was. The obvious `▼`/`▶` was rejected — both are East Asian Ambiguous
+> and go double-width under a CJK locale, and `▶` (U+25B6) is in
+> addition the ▶️ play button in `emoji-data.txt`, which an emoji font
+> draws in a color of its own and so takes away the one thing this
+> marker exists to carry. Everything below about *widths and columns* is
+> unchanged and still governs; only the two characters differ.
+
 Every main-pane row gains a **two-column fold field** prepended to its
 content, in both `row_content` and `row_spans`. The field is:
 

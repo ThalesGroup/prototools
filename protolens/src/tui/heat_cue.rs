@@ -18,7 +18,7 @@ pub(super) const HEAT_CUE_PREVIEW: usize = 8;
 
 /// Leading gutter glyph (spec 0138 N1) — a filled circle reads clearly at
 /// a single terminal cell width in both light and dark themes, and is
-/// distinct from the fold marker (`▸`/`▾`) and every other glyph this
+/// distinct from the fold marker (`⏵`/`⏷`) and every other glyph this
 /// crate already uses.
 ///
 /// A `&'static str` rather than a `char` (spec 0190 S9): a `char`

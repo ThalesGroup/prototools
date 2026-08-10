@@ -547,21 +547,39 @@ fn status_color_in(status: Status, theme: ThemeKind, rgb: bool) -> Option<Color>
             (Color::Rgb(0x00, 0x70, 0xC1), Color::Blue),
         ),
         // The tier's amber moved to yellow, for the margin only. Hue
-        // 55°, five degrees short of pure: far enough from `Invalid` at
+        // 54°, six degrees short of pure: far enough from `Invalid` at
         // 0° that the two cannot be confused at one glyph, and short of
         // 60° so it is still a warm color rather than a green-yellow.
         //
-        // Dark keeps the saturation its neighbors carry (0.70, as
-        // `status_unbaked`), which is what separates it from the default
-        // foreground — see `every_status_color_is_a_hue_and_not_a_tint`.
-        // Light instead matches the *lightness* the light tier was
-        // deepened to, since on white a full-value yellow is the one
-        // mark that disappears: #827700 is `tier_non_canonical`'s luma
+        // Dark was #FFF14D — the saturation its neighbors carry (0.70)
+        // — and was reported as too close to white. Saturation is the
+        // wrong axis *for yellow* and only for yellow: it is the one hue
+        // whose fully saturated form is already near white in luminance,
+        // so #FFF14D sat 23 points below pure white while violet, red
+        // and blue sat 82 to 137 below at the same saturation.
+        //
+        // Corrected 2026-08-10 by taking blue to zero and pulling red
+        // and green down with it. #E8D200 (luma 200) was the first
+        // attempt and was still read as white, so this is the second:
+        // luma 166, which puts it *below* `Status::Unknown`'s blue at
+        // 173 — inside the range the other three occupy rather than
+        // above all of them. What is spent doing that is hue margin:
+        // 53.8° against the 50° floor the pairwise test enforces, which
+        // is about as dark as a yellow can go before it has to start
+        // turning green to stay clear of the red.
+        //
+        // The luma ceiling in `every_status_color_is_a_hue_and_not_a_tint`
+        // is set so neither rejected value can pass again.
+        //
+        // Light already answered the same question from the other side,
+        // and is unchanged: it matches the *lightness* the light tier
+        // was deepened to, since on white a full-value yellow is the one
+        // mark that disappears. #827800 is `tier_non_canonical`'s luma
         // to within a point, at 55° instead of 41°.
         Status::NonCanonical => pick(
             theme,
             rgb,
-            (Color::Rgb(0xFF, 0xF1, 0x4D), Color::Yellow),
+            (Color::Rgb(0xC2, 0xAE, 0x00), Color::Yellow),
             (Color::Rgb(0x82, 0x78, 0x00), Color::Yellow),
         ),
         Status::Invalid => tier_color(Tier::Invalid, theme, rgb),
@@ -1632,17 +1650,35 @@ mod tests {
     }
 
     /// Spec 0260 S1: every color the fold margin can wear is saturated
-    /// enough to read as a hue rather than as a tint of the foreground.
+    /// enough to read as a hue rather than as a tint of the foreground,
+    /// **and** dark enough not to read as white.
     ///
     /// The margin wears these *unleveled* — prominence is the column's
-    /// whole job — so saturation is all that separates one from white on
-    /// a dark theme, or from black on a light one. `Tier::Landmark` used
-    /// to sit at 0.318 against the others' 0.667 and up, and was
-    /// reported as too close to the default foreground.
+    /// whole job — so nothing but the color itself separates one from
+    /// white on a dark theme, or from black on a light one.
+    /// `Tier::Landmark` used to sit at 0.318 saturation against the
+    /// others' 0.667 and up, and was reported as too close to the
+    /// default foreground.
     ///
-    /// The floor is stated rather than the values: this exists to hand
-    /// the constraint to the next person choosing one of these colors,
-    /// not to pin the four they inherited.
+    /// The luma ceiling was added 2026-08-10, after the saturation floor
+    /// alone passed a yellow that was still reported as white. Both are
+    /// needed and neither implies the other: yellow is the one hue whose
+    /// fully saturated form is already near white in luminance, so
+    /// raising its saturation — which is what fixed the violet — moves
+    /// it no further away.
+    ///
+    /// 185 is where the ceiling ended up, and it is deliberately snug:
+    /// two successive yellows were rejected by eye, at luma 232 and then
+    /// at 200, so a ceiling that either could have passed would not have
+    /// been carrying the constraint that was actually learned. It leaves
+    /// `Status::Unknown`'s blue — the brightest of the four that survive,
+    /// at 173 — twelve points of room, and everything else far more.
+    /// A future color that has to sit above 185 needs a reason on the
+    /// record, not a raised number.
+    ///
+    /// Floor and ceiling are stated rather than the values: this exists
+    /// to hand the constraint to the next person choosing one of these
+    /// colors, not to pin the four they inherited.
     #[test]
     fn every_status_color_is_a_hue_and_not_a_tint() {
         let statuses = [
@@ -1662,6 +1698,12 @@ mod tests {
                     saturation >= 0.6,
                     "{status:?} on {theme:?} is a tint, not a hue: \
                      #{r:02X}{g:02X}{b:02X}, saturation {saturation:.3}",
+                );
+                let luma = 0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b);
+                assert!(
+                    luma <= 185.0,
+                    "{status:?} on {theme:?} is bright enough to read as white: \
+                     #{r:02X}{g:02X}{b:02X}, luma {luma:.0} of 255",
                 );
             }
         }

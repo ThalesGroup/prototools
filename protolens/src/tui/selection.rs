@@ -210,7 +210,7 @@ impl App {
     /// exactly the case.
     ///
     /// `row_text_of`, not `row_content`: spec 0193 S1's fold margin is
-    /// gutter furniture, and a `▾` (or the two blank columns that stand
+    /// gutter furniture, and a `⏷` (or the two blank columns that stand
     /// in for one) pasted into a `.textproto` would not parse.
     ///
     /// One descent to enter the document and then a step per row (spec

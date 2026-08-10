@@ -1525,9 +1525,10 @@ fn a_defect_tints_the_fold_marker_of_every_node_above_it() {
         .filter(|(_, sym)| sym != " ")
         .collect();
     // The root and `inner {` — every foldable node on the path.
+    let glyph = render::FOLD_GLYPH_OPEN.to_string();
     assert_eq!(
         tinted,
-        vec![(0, "\u{25be}".to_string()), (1, "\u{25be}".to_string())],
+        vec![(0, glyph.clone()), (1, glyph)],
         "the status color must reach the marker of every node above the defect"
     );
 
@@ -1572,7 +1573,7 @@ fn the_fold_marker_does_not_displace_the_row_it_marks() {
     let root = app.row_content(app.committed_row(0).unwrap());
     for (content, token) in [(&foldable, "value"), (&root, "1 {")] {
         assert_eq!(
-            column_of(content, "\u{25be}") + render::FOLD_FIELD_WIDTH,
+            column_of(content, &render::FOLD_GLYPH_OPEN.to_string()) + render::FOLD_FIELD_WIDTH,
             column_of(content, token),
             "the marker must sit immediately left of the token: {content:?}"
         );
@@ -1619,7 +1620,7 @@ fn marker_column_agrees_with_what_is_drawn_at_every_indent_width() {
                 .iter()
                 .map(|s| s.content.to_string())
                 .collect();
-            let Some(marker) = drawn.chars().position(|c| c == '\u{25be}') else {
+            let Some(marker) = drawn.chars().position(|c| c == render::FOLD_GLYPH_OPEN) else {
                 continue;
             };
             let line = committed.line;
