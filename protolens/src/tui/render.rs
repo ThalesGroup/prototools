@@ -1178,21 +1178,29 @@ impl App {
         let area = frame.area();
         self.term_width = area.width;
         // Spec 0271 S4: the script pane and its separator sit above
-        // everything, terminal width, and are `Length(0)` when no script
-        // is loaded — which is what keeps an ordinary session's geometry
-        // byte-for-byte what it was.
+        // everything, terminal width, and are both `Length(0)` when no
+        // script is loaded — which is what keeps an ordinary session's
+        // geometry byte-for-byte what it was.
+        //
+        // The two heights are asked for separately. While navigation is
+        // off the commentary is zero rows and the separator is still
+        // one, so the rule is the only thing left saying a script is
+        // attached.
         let script_rows = self.script_rows(area.height);
+        let separator_rows = self.script_separator_rows();
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(script_rows), // script commentary (spec 0271 S4)
-                Constraint::Length(u16::from(script_rows > 0)), // its separator (S5)
+                Constraint::Length(separator_rows), // its separator (S5)
                 Constraint::Min(0), // main pane + side pane, each with its own local statusline
                 Constraint::Length(1), // global command/message row (spec 0147 G4)
             ])
             .split(area);
         if script_rows > 0 {
             self.render_script_pane(frame, chunks[0]);
+        }
+        if separator_rows > 0 {
             self.render_script_separator(frame, chunks[1]);
         }
         let chunks = [chunks[2], chunks[3]];

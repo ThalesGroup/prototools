@@ -44,7 +44,13 @@ pub(crate) struct ScriptState {
     /// 0-based index into `script.steps`.
     pub(super) current: usize,
     /// Whether the Ctrl-arrows are overridden (spec 0271 S7). `space`
-    /// toggles it; it starts off.
+    /// toggles it.
+    ///
+    /// Starts **on** (amended 2026-08-10). S8 had it start off because
+    /// the pane "arrives unasked for", which stopped being true: a
+    /// script is on screen only because `--script` named one, and a
+    /// reader who asked for a walkthrough should not have to find a key
+    /// before the walkthrough answers to anything.
     pub(super) active: bool,
     /// First line of the step's text drawn in the pane.
     pub(super) scroll: u16,
@@ -59,7 +65,7 @@ impl App {
         self.script = Some(ScriptState {
             script,
             current: 0,
-            active: false,
+            active: true,
             scroll: 0,
             diagnostics: Vec::new(),
         });
@@ -434,16 +440,36 @@ impl App {
     // Drawing
     // -----------------------------------------------------------------
 
-    /// Spec 0271 S4: how many rows the pane takes, excluding its
-    /// separator. Zero when no script is loaded.
+    /// Spec 0271 S4: how many rows the commentary takes, excluding its
+    /// separator.
+    ///
+    /// Zero when no script is loaded, and zero while navigation is off
+    /// (amended 2026-08-10): commentary the reader has stepped out of is
+    /// a quarter of the screen spent on a paragraph about wherever the
+    /// script last was, which is not where the reader now is. The
+    /// separator stays — see [`Self::script_separator_rows`] — so the
+    /// script is still visibly there, and `space` brings the text back.
     pub(super) fn script_rows(&self, total: u16) -> u16 {
-        if self.script.is_none() {
+        if !self.script_active() {
             return 0;
         }
         match self.script_height {
             Some(rows) => rows.min(total.saturating_sub(2)),
             None => (total * PANE_PERCENT / 100).clamp(PANE_MIN, PANE_MAX),
         }
+    }
+
+    /// The separator's own height, which is *not* a function of the
+    /// pane's.
+    ///
+    /// One row for as long as a script is loaded, whether or not
+    /// navigation is on. With the commentary at zero rows this rule and
+    /// its legend are the whole of what says a script is attached and
+    /// how to get back into it, so deriving it from `script_rows` — as
+    /// the layout did until 2026-08-10 — hides exactly the row that has
+    /// to survive.
+    pub(super) fn script_separator_rows(&self) -> u16 {
+        u16::from(self.script.is_some())
     }
 
     pub(super) fn render_script_pane(&mut self, frame: &mut Frame, area: Rect) {
@@ -564,13 +590,19 @@ fn unresolved(position: &Position) -> String {
 /// counter goes last because on a narrow terminal it is the only one
 /// worth the space — the key reminder can be learned once, but "where am
 /// I" changes every step.
+///
+/// The toggle is named by what it *does*, in the word the rest of spec
+/// 0271 uses: navigation, not "mode", which protolens spends on other
+/// things. It has a short spelling as well as a long one because
+/// dropping it is much worse than shortening it — the counter and the
+/// scroll keys are legible from the pane itself, while nothing else on
+/// screen says that `space` is what gets the reader in or out. Without
+/// the short form the hint would be gone from 67 columns all the way
+/// down to 35 — an ordinary half-screen terminal — and never mentioned
+/// again.
 fn script_legend(state: &ScriptState, width: usize) -> String {
     if !state.active {
-        // What the key *does*, not just which key it is. The pane
-        // arrives unasked for and offers one gesture; a bare "press
-        // space" tells the reader that a key exists and nothing about
-        // why they would press it.
-        for candidate in ["press space to enter script mode", "press space"] {
+        for candidate in ["space to enter script navigation", "space to enter"] {
             if fits(candidate, width) {
                 return candidate.to_string();
             }
@@ -582,28 +614,28 @@ fn script_legend(state: &ScriptState, width: usize) -> String {
         state.current + 1,
         state.script.steps.len()
     );
-    let parts = [counter.as_str(), "^↑/^↓ scroll", "space off"];
-    for take in (1..=parts.len()).rev() {
-        let candidate = parts[..take].join("  ");
+    // Written out rather than folded into two nested loops: shortening
+    // the toggle has to be tried *before* dropping the scroll keys, and
+    // a loop over parts and a loop over spellings cannot express that
+    // without the outer one deciding wrongly.
+    let ladder = [
+        format!("{counter}  ^↑/^↓ scroll  space to quit script navigation"),
+        format!("{counter}  ^↑/^↓ scroll  space to quit"),
+        format!("{counter}  ^↑/^↓ scroll"),
+        counter,
+    ];
+    for candidate in ladder {
         if fits(&candidate, width) {
             return candidate;
         }
     }
-    fit(&counter, width)
+    String::new()
 }
 
 /// A legend needs the two rule characters, the two spaces around it, and
 /// at least one rule character after it.
 fn fits(legend: &str, width: usize) -> bool {
     legend.chars().count() + 6 <= width
-}
-
-fn fit(legend: &str, width: usize) -> String {
-    if fits(legend, width) {
-        legend.to_string()
-    } else {
-        String::new()
-    }
 }
 
 #[cfg(test)]
@@ -629,24 +661,62 @@ mod tests {
         let state = state(false, 0, 3);
         assert_eq!(
             script_legend(&state, 80),
-            "press space to enter script mode"
+            "space to enter script navigation"
         );
-        // Too narrow for the sentence: the key alone, which is still
-        // better than nothing on the rule.
-        assert_eq!(script_legend(&state, 30), "press space");
+        // Too narrow for the sentence: the short spelling, which still
+        // says what the key is for.
+        assert_eq!(script_legend(&state, 30), "space to enter");
         assert_eq!(script_legend(&state, 12), "");
     }
 
+    /// The toggle is *shortened* before either of the other two parts is
+    /// dropped, and dropped only after that. A ladder that took whole
+    /// parts off the right lost the toggle at 68 columns and did not
+    /// mention it again — 40 below is the width that caught it.
     #[test]
-    fn the_legend_drops_parts_from_the_right_as_it_narrows() {
+    fn the_legend_shortens_the_toggle_before_it_drops_anything() {
         let state = state(true, 2, 23);
         assert_eq!(
             script_legend(&state, 80),
-            "^←/^→ step 3/23  ^↑/^↓ scroll  space off"
+            "^←/^→ step 3/23  ^↑/^↓ scroll  space to quit script navigation"
+        );
+        assert_eq!(
+            script_legend(&state, 60),
+            "^←/^→ step 3/23  ^↑/^↓ scroll  space to quit"
         );
         assert_eq!(script_legend(&state, 40), "^←/^→ step 3/23  ^↑/^↓ scroll");
         assert_eq!(script_legend(&state, 26), "^←/^→ step 3/23");
         // Narrower than the counter plus its rule: the rule alone.
         assert_eq!(script_legend(&state, 8), "");
+    }
+
+    /// Each rung is claimed to need a particular width, and `fits`
+    /// charges six columns of rule on top of the text. Asserted as a
+    /// boundary pair so a change to either the wording or the six shows
+    /// up here rather than as a legend that silently stopped appearing.
+    #[test]
+    fn each_rung_appears_at_exactly_the_width_it_needs() {
+        let on = state(true, 2, 23);
+        let off = state(false, 0, 3);
+        for (state, legend, width) in [
+            (
+                &on,
+                "^←/^→ step 3/23  ^↑/^↓ scroll  space to quit script navigation",
+                68,
+            ),
+            (&on, "^←/^→ step 3/23  ^↑/^↓ scroll  space to quit", 50),
+            (&on, "^←/^→ step 3/23  ^↑/^↓ scroll", 35),
+            (&on, "^←/^→ step 3/23", 21),
+            (&off, "space to enter script navigation", 38),
+            (&off, "space to enter", 20),
+        ] {
+            assert_eq!(script_legend(state, width), legend, "at {width} columns");
+            assert_ne!(
+                script_legend(state, width - 1),
+                legend,
+                "at {} columns it must have given way to the next rung",
+                width - 1
+            );
+        }
     }
 }

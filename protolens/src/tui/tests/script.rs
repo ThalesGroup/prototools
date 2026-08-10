@@ -105,19 +105,10 @@ fn a_step_is_a_function_of_the_script() {
 fn space_toggles_and_ctrl_arrows_are_conditional() {
     let (mut app, items) = repeated_message_fixture();
     app.set_script(script_of(THREE_STEPS));
-    assert!(!app.script_active(), "spec 0271 S8: navigation starts off");
+    assert!(app.script_active(), "spec 0271 S8: navigation starts on");
 
-    // Off: Ctrl-Down is still the sibling move it has always been, and
-    // the step does not change.
-    app.set_cursor(items[0]);
-    app.handle_key(key(KeyCode::Down, KeyModifiers::CONTROL));
-    assert_eq!(app.cursor, items[1], "Ctrl-Down still skips siblings");
-    assert_eq!(app.positional_path(app.cursor), "/2");
-
-    app.handle_key(key(KeyCode::Char(' '), KeyModifiers::NONE));
-    assert!(app.script_active(), "space turns navigation on");
-
-    // On: the same key is the script's, and the document does not move.
+    // On: the Ctrl-arrows are the script's, and the document does not
+    // move on its own.
     let before = app.cursor;
     app.handle_key(key(KeyCode::Right, KeyModifiers::CONTROL));
     assert_ne!(app.cursor, before, "step 2 moves the cursor itself");
@@ -125,10 +116,22 @@ fn space_toggles_and_ctrl_arrows_are_conditional() {
     assert_eq!(step, 1, "Ctrl-Right advances the step");
 
     app.handle_key(key(KeyCode::Char(' '), KeyModifiers::NONE));
-    assert!(!app.script_active(), "space turns it back off");
+    assert!(!app.script_active(), "space turns navigation off");
+
+    // Off: Ctrl-Down is the sibling move it has always been, and the
+    // step does not change.
     app.set_cursor(items[0]);
     app.handle_key(key(KeyCode::Down, KeyModifiers::CONTROL));
-    assert_eq!(app.cursor, items[1], "and the sibling move is back");
+    assert_eq!(app.cursor, items[1], "Ctrl-Down skips siblings again");
+    assert_eq!(app.positional_path(app.cursor), "/2");
+    let step = app.script.as_ref().expect("a script is loaded").current;
+    assert_eq!(step, 1, "and the step stayed where it was");
+
+    app.handle_key(key(KeyCode::Char(' '), KeyModifiers::NONE));
+    assert!(app.script_active(), "space turns it back on");
+    app.handle_key(key(KeyCode::Right, KeyModifiers::CONTROL));
+    let step = app.script.as_ref().expect("a script is loaded").current;
+    assert_eq!(step, 2, "and the script has the arrows back");
 }
 
 /// Spec 0271 test-plan item 5 / S12. Opened under a row budget, the
@@ -235,11 +238,14 @@ fn the_separator_legend_is_flushed_right() {
     };
     let separator = (0..24u16)
         .map(row)
-        .find(|line| line.contains("press space"))
+        .find(|line| line.contains("space to quit"))
         .expect("the separator carries the legend");
 
+    // 60 columns is one rung down the ladder: the full sentence needs
+    // 67, so the toggle is spelled short while the step counter and the
+    // scroll keys both stay.
     assert!(
-        separator.ends_with("press space to enter script mode ──"),
+        separator.ends_with("^←/^→ step 1/3  ^↑/^↓ scroll  space to quit ──"),
         "the legend must sit at the right edge: {separator:?}"
     );
     assert!(

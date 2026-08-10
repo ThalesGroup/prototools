@@ -679,7 +679,7 @@ fn main() -> ExitCode {
     app.sweep_jobs = jobs;
     app.script_height = cli.script_height;
     // Spec 0271 S8: the pane is on screen from the first frame, with
-    // navigation off and step 1 already applied. `export` is left out —
+    // navigation on and step 1 already applied. `export` is left out —
     // its output is a view of the document, and a step folds.
     if let (Some(script), None | Some(Command::Script { .. })) = (script, &cli.command) {
         app.set_script(script);

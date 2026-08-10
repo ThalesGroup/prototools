@@ -173,6 +173,21 @@ The pane shows the current step's `text`, word-wrapped to the pane
 width, scrolled by `script_scroll` lines. `script_scroll` resets to 0
 on every step change.
 
+**Amended 2026-08-10: the pane is zero rows while navigation is off.**
+Only the commentary collapses; the separator stays at one row (S5).
+Commentary the reader has stepped out of is a quarter of the screen
+spent on a paragraph about wherever the script last was, which is not
+where the reader now is — and stepping out is precisely the gesture for
+going somewhere else. The two heights are therefore independent, and
+the layout asks for them separately: deriving the separator's from the
+pane's, as it did until this amendment, deleted the one row that has to
+survive. `space` brings the text back.
+
+A consequence, and the reason S9's anchoring matters here: toggling
+moves the content pane's top edge by 3 to 12 rows mid-session. Which
+line stays put is spec 0259's answer — the node owning the pane's top
+row — not a special case for this pane.
+
 ### S5 — The separator line
 
 One row, full width, filled with a horizontal rule character, carrying
@@ -180,20 +195,40 @@ a micro-help legend **flushed to the right edge**, with two rule
 characters of run-out past it so it reads as sitting on the rule rather
 than ending it. Two states:
 
-- **navigation off:** `press space to enter script mode`, falling back
-  to `press space` when the row is too narrow for the sentence.
+- **navigation off:** `space to enter script navigation`, falling back
+  to `space to enter`.
 - **navigation on:** `^←/^→ step 3/23`, then `^↑/^↓ scroll`, then
-  `space off`, each dropped from the right as the terminal narrows.
-  The step counter is the last thing to go — on a narrow terminal it is
-  the only thing worth the space.
+  `space to quit script navigation`, falling back to `space to quit`,
+  then dropped from the right as the terminal narrows. The step counter
+  is the last thing to go — on a narrow terminal it is the only thing
+  worth the space.
 
-Both details are corrections. The legend was first written left-aligned
-and it began in the same column the document's first line begins in one
-row below, in a green close to the document's own palette; at a glance
-it read as a line of the blob, which is the one confusion the separator
-exists to prevent. And a bare `press space` names a key without naming
-what pressing it does — the pane arrives unasked for and offers exactly
-one gesture, so the legend is where that gesture gets its name.
+Amended 2026-08-10. Both details are corrections. The legend was first
+written left-aligned and it began in the same column the document's
+first line begins in one row below, in a green close to the document's
+own palette; at a glance it read as a line of the blob, which is the one
+confusion the separator exists to prevent. And a bare `press space`
+names a key without naming what pressing it does, so the legend is where
+that gesture gets its name — in the word this spec uses for it,
+*navigation*, rather than "mode", which protolens spends elsewhere.
+
+The toggle has two spellings rather than being dropped whole, which is
+what the other two parts do. It is the part with no other source: the
+step counter and the scroll keys describe a pane the reader can see,
+while nothing else on screen says that `space` is the way in or out. On
+one ladder of whole parts the hint was gone from 67 columns down to 35 —
+an ordinary half-screen terminal — and shortening it before dropping it
+costs one rung. Widths include the six columns of rule `fits` charges
+around a legend:
+
+| legend | columns |
+|---|---|
+| `^←/^→ step 3/23  ^↑/^↓ scroll  space to quit script navigation` | 68 |
+| `^←/^→ step 3/23  ^↑/^↓ scroll  space to quit` | 50 |
+| `^←/^→ step 3/23  ^↑/^↓ scroll` | 35 |
+| `^←/^→ step 3/23` | 21 |
+| `space to enter script navigation` | 38 |
+| `space to enter` | 20 |
 
 ### S6 — A step declares a view, not a change
 
@@ -259,10 +294,18 @@ mirroring the horizontal pair that already has one.
 
 ### S8 — On load
 
-The pane is visible immediately, showing step 1, with navigation off and
-the separator reading `press space`. Step 1 is applied unconditionally
-at startup — which is cheap, because a well-written step 1 sets the
-scene in prose and touches little else.
+The pane is visible immediately, showing step 1, with navigation **on**.
+Step 1 is applied unconditionally at startup — which is cheap, because a
+well-written step 1 sets the scene in prose and touches little else.
+
+Amended 2026-08-10: navigation used to start off, on the grounds that
+the pane arrives unasked for and a session should not silently rebind
+four keys. That was written when a script could plausibly be picked up
+from beside the blob; it is not how this shipped. The pane is on screen
+only because `--script` named a file, and a reader who asked for a
+walkthrough should not have to find a key before the walkthrough answers
+to anything. Off remains one keystroke away, and is now also visible in
+the layout — S4's zero-row pane.
 
 ### S9 — Fold directives
 
