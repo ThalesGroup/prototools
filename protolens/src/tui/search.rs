@@ -152,7 +152,30 @@ pub(super) struct SearchSweep {
     /// (spec 0246 S1). `None` once the walk has finished, either by
     /// finding a match or by seeing the whole document.
     at: Option<(SweepCursor, RowBound)>,
+    /// Where `at`'s line begins in its owner's text — spec 0222 S4's
+    /// byte cursor, carried rather than re-derived.
+    ///
+    /// A packed run's elements are all lines of *one* node (spec 0216
+    /// S22), and `line_offset` counts newlines from that node's start,
+    /// so asking it per candidate makes a walk across a run quadratic
+    /// in the run's length: a 32 000-element run took 9.2 s to sweep
+    /// and a 300 000-element one would have taken a quarter of an hour,
+    /// which is a prompt that never answers rather than a slow one.
+    /// Stepping to the neighboring newline instead is linear, and the
+    /// draw path has been doing it since 0222.
+    ///
+    /// Zero and unread for the two side panes, whose candidates are
+    /// list entries rather than lines.
+    offset: usize,
     pub(super) found: Option<SweepHit>,
+    /// Whether the walk ran out while the bake still owed the document
+    /// text, which makes its miss provisional rather than an answer.
+    ///
+    /// Recorded when the walk ends rather than derived on demand: once
+    /// the bake finishes, "is the document complete *now*" can no
+    /// longer tell a miss that was always final from one that was taken
+    /// too early, and only the second is worth asking again.
+    provisional: bool,
     /// Candidates left before the whole document has been seen — the
     /// wrap budget, decremented per candidate.
     remaining: usize,
@@ -295,7 +318,12 @@ impl App {
             dir,
             origin,
             at: Some((origin.at, origin_bound(origin, dir, Visit::Out))),
+            offset: match origin.at {
+                SweepCursor::Line(pos) => self.line_offset(pos),
+                SweepCursor::Index(_) => 0,
+            },
             found: None,
+            provisional: false,
             remaining: n + 1,
             path: PathScratch::default(),
         })
@@ -324,7 +352,7 @@ impl App {
                 if self.is_footer(pos) {
                     return None;
                 }
-                let text = self.line_text(pos);
+                let text = self.line_text_at(pos, sweep.offset);
                 // The row's first non-blank — where a path match lands
                 // (S20), and the floor every stop's position is measured
                 // against (spec 0246 S3a).
@@ -422,6 +450,9 @@ impl App {
             // that takes the closing half of the split.
             let origin_at = sweep.origin.at;
             let closing = origin_bound(sweep.origin, sweep.dir, Visit::Back);
+            if let (SweepCursor::Line(from), Some(SweepCursor::Line(to))) = (at, next) {
+                sweep.offset = self.stepped_offset(from, sweep.offset, to);
+            }
             sweep.at = next.map(|next| {
                 let bound = if next == origin_at {
                     closing
@@ -431,6 +462,38 @@ impl App {
                 (next, bound)
             });
         }
+    }
+
+    /// Where `to`'s line begins in its owner's text, given that `from`'s
+    /// began at `offset`.
+    ///
+    /// The walk's common case is the next or previous line of the same
+    /// node, and that is the case worth having: both are one newline
+    /// away, so both are found by scanning from `offset` rather than
+    /// from the node's start. Every other step lands on a line 0 or on
+    /// a wrap, where `line_offset` is already O(1) or is paid once.
+    fn stepped_offset(&self, from: LinePos, offset: usize, to: LinePos) -> usize {
+        // A bracketed node's only other line is its derived closing
+        // brace, which is not in the text at all (spec 0222 S2).
+        if to.node != from.node || self.tree[from.node].is_bracketed() {
+            return self.line_offset(to);
+        }
+        let Some(text) = self.node_text[from.node].as_deref() else {
+            return 0;
+        };
+        if to.line_in_node == from.line_in_node + 1 {
+            return match text[offset..].find('\n') {
+                Some(at) => offset + at + 1,
+                None => text.len(),
+            };
+        }
+        if to.line_in_node + 1 == from.line_in_node {
+            // `from` is not line 0, so `offset` is one past the newline
+            // that ended `to` — and the newline before *that* one, if
+            // there is one, ends the line before `to`.
+            return text[..offset - 1].rfind('\n').map_or(0, |at| at + 1);
+        }
+        self.line_offset(to)
     }
 
     /// Spec 0235 S2/S3: move the live sweep on by one slice.
@@ -443,7 +506,20 @@ impl App {
             return SweepStep::Idle;
         };
         if sweep.is_finished() {
+            // A miss taken before the bake had finished was never an
+            // answer, and nothing else would ever revise it — the
+            // sweep is kept, not dropped, so without this the prompt
+            // would still be reporting the smaller document long after
+            // the rest of it had arrived. The bake runs only while
+            // this returns `Idle` (spec 0255 S5's ordering), so the
+            // question is asked again exactly once, at the first step
+            // after the last subtree lands.
+            let stale = sweep.provisional && self.search_miss_is_conclusive(sweep.origin.scope);
             self.search_sweep = Some(sweep);
+            if stale {
+                self.restart_search_sweep();
+                return SweepStep::Progressed;
+            }
             return SweepStep::Idle;
         }
         let before = sweep.found;
@@ -453,6 +529,9 @@ impl App {
         // change to the result — it is what turns "still looking" into
         // "not there", which S10 draws.
         let exhausted = sweep.is_finished() && sweep.found.is_none();
+        if exhausted {
+            sweep.provisional = !self.search_miss_is_conclusive(sweep.origin.scope);
+        }
         let hit = sweep.found;
         self.search_sweep = Some(sweep);
         if found_changed {
@@ -667,6 +746,21 @@ impl App {
         }
     }
 
+    /// Whether a miss is entitled to be reported as one.
+    ///
+    /// A folded region has no text, so the sweep never looked at it —
+    /// while the bake still owes bodies, "not found" is a claim about
+    /// the document the search was allowed to see and not about the
+    /// document. The two side panes search lists that have nothing to
+    /// do with the blob and are never qualified.
+    ///
+    /// One predicate for both halves of the report: the message
+    /// [`App::not_found`] writes at `Enter`, and the color the prompt
+    /// tints the pattern while it is still open.
+    pub(super) fn search_miss_is_conclusive(&self, scope: SearchScope) -> bool {
+        scope != SearchScope::Main || self.auto_folded.is_empty()
+    }
+
     /// Spec 0249 S13: "not found" is a claim about the whole document,
     /// and during a bake it is not one the search can make.
     ///
@@ -680,9 +774,9 @@ impl App {
     /// how many rows it stands for. Only the main pane is qualified;
     /// the two side panes search lists that have nothing to do with the
     /// document.
-    fn not_found(&self, pattern: &str, scope: SearchScope) -> String {
+    pub(super) fn not_found(&self, pattern: &str, scope: SearchScope) -> String {
         let base = format!("pattern not found: {pattern}");
-        if scope != SearchScope::Main || self.auto_folded.is_empty() {
+        if self.search_miss_is_conclusive(scope) {
             return base;
         }
         let n = self.auto_folded.len();
@@ -845,6 +939,13 @@ impl App {
     /// a second and would draw as often.
     pub(super) fn take_search_dirty(&mut self) -> bool {
         std::mem::take(&mut self.search_dirty)
+    }
+
+    /// [`Self::take_search_dirty`] without taking it — what `run_loop`
+    /// asks before it decides to sleep, since a frame already owed is a
+    /// reason not to.
+    pub(super) fn search_frame_owed(&self) -> bool {
+        self.search_dirty
     }
 }
 

@@ -952,6 +952,22 @@ mod caret_rgb {
     /// Light theme, the other matches on screen.
     pub const LIGHT_SEARCH_OTHER: Color = Color::Rgb(0xFF, 0xEE, 0xC2);
 
+    /// Dark theme, the typed pattern while the sweep is still running.
+    ///
+    /// Hue 60°, pure yellow, at the loud colors' saturation of 0.70.
+    /// It used to borrow `tier_non_canonical`, which is 36° — an amber
+    /// whose own comment calls it "Yellow Orange" — and it was read as
+    /// orange, which is what it is. Nothing on the command row is
+    /// leveled or sits beside an anomaly, so this hue has only the
+    /// other two prompt colors to stay clear of, and red and violet are
+    /// both a long way from 60°.
+    pub const DARK_SEARCH_RUNNING: Color = Color::Rgb(0xFF, 0xFF, 0x4D);
+    /// Light theme, the typed pattern while the sweep is still running
+    /// — the same hue taken down to luma 108, which is where
+    /// `tier_non_canonical` sits on white and about as deep as a yellow
+    /// can go before it stops being one.
+    pub const LIGHT_SEARCH_RUNNING: Color = Color::Rgb(0x7A, 0x7A, 0x00);
+
     /// Dark theme, the selection — VSCode dark's own
     /// `editor.selectionBackground`. Well clear of `DARK_ROW`, since a
     /// selection on the caret's own row is the common case, and of
@@ -1102,21 +1118,44 @@ pub fn search_unmatched_style(theme: ThemeKind) -> Style {
     ))
 }
 
+/// The typed pattern when the sweep has finished with no match but the
+/// bake still owes the document text — "not in what has been read",
+/// which is not the claim `search_unmatched_style` makes.
+///
+/// Spec 0249 S12's `Status::Unbaked` violet rather than a fourth hue,
+/// and here the reuse is not economy: the fold margin is already drawing
+/// that color against the very subtrees this answer is missing, and the
+/// activity dot is already drawing it for the bake as a whole. The
+/// prompt is reporting the same fact they are, so it says it in the
+/// same word.
+pub fn search_unbaked_style(theme: ThemeKind) -> Style {
+    Style::default().fg(pick(
+        theme,
+        supports_rgb(),
+        (DARK_RGB.status_unbaked, Color::LightMagenta),
+        (LIGHT_RGB.status_unbaked, Color::Magenta),
+    ))
+}
+
 /// Spec 0237 S11/S12: the typed pattern while the sweep is still
 /// running and has not found anything *yet*. Distinct from
 /// `search_unmatched_style` so that a slow sweep does not read as a
 /// failed one.
 ///
-/// The palette's existing `Tier::NonCanonical` hue rather than a fourth
-/// severity color: "no verdict yet" sits in the same register as
-/// "suspicious but not wrong", and a second orange would only compete
-/// with it.
+/// Its own yellow rather than the `Tier::NonCanonical` amber it started
+/// out borrowing. That borrowing was argued as economy — "no verdict
+/// yet" sitting in the same register as "suspicious but not wrong" — but
+/// the tier is an *orange*, chosen at 36° precisely so that it could not
+/// be mistaken for the yellow next to it in the document, and on the
+/// command row it simply read as orange. The three prompt states are
+/// their own scale, and they are the whole of what this color has to be
+/// legible against.
 pub fn search_running_style(theme: ThemeKind) -> Style {
     Style::default().fg(pick(
         theme,
         supports_rgb(),
-        (DARK_RGB.tier_non_canonical, Color::Yellow),
-        (LIGHT_RGB.tier_non_canonical, Color::Yellow),
+        (caret_rgb::DARK_SEARCH_RUNNING, Color::Yellow),
+        (caret_rgb::LIGHT_SEARCH_RUNNING, Color::Yellow),
     ))
 }
 

@@ -1845,15 +1845,27 @@ impl App {
             // large enough for the sweep to be visible at all they are
             // not, and a red that is about to turn out fine teaches the
             // user to ignore red.
+            //
+            // A miss is drawn in two colors, on the same rule
+            // `App::not_found` qualifies its message by: while the bake
+            // still owes subtrees the sweep never saw their text, so
+            // "not there" is not yet a claim the search is entitled to
+            // make. Violet until it is, and the fold margin beside it
+            // is already drawing that same color against the very
+            // subtrees the answer is missing.
             let searching = matches!(self.command_kind, CommandLineKind::Search(_))
                 && self.command_buffer.as_ref().is_some_and(|b| !b.is_empty());
+            let miss = || match self.search_miss_is_conclusive(self.search_scope()) {
+                true => theme::search_unmatched_style(self.theme),
+                false => theme::search_unbaked_style(self.theme),
+            };
             let pattern_style = searching
                 .then(|| match &self.search_sweep {
                     // No sweep at all: an empty pane, nothing left to
                     // look in — a finished miss by another name.
-                    None => Some(theme::search_unmatched_style(self.theme)),
+                    None => Some(miss()),
                     Some(s) if s.found.is_some() => None,
-                    Some(s) if s.is_finished() => Some(theme::search_unmatched_style(self.theme)),
+                    Some(s) if s.is_finished() => Some(miss()),
                     Some(_) => Some(theme::search_running_style(self.theme)),
                 })
                 .flatten();

@@ -9,6 +9,7 @@
 //! they share `jump_to_match`'s casing rules, and the smartcase tests
 //! only convince side by side.
 
+use super::super::search::SweepCursor;
 use super::super::*;
 use super::support::*;
 
@@ -464,6 +465,115 @@ fn pane() -> Rect {
     Rect::new(0, 0, 40, 10)
 }
 
+/// `Outer { repeated int32 vals = 1; }` carrying a packed run of `n`
+/// elements, the k-th holding `k % 128` — one byte each, so the run's
+/// length in the blob is `n`.
+///
+/// Spec 0216 S22 collapses the whole run into a *single* arena node, so
+/// all `n` of those lines live in one node's text. That is the shape
+/// `stepped_offset` exists for, and the only one in which a line's
+/// position inside its owner is expensive to name.
+fn packed_run_app(n: usize) -> App {
+    use prost_types::field_descriptor_proto::{Label, Type};
+    use prototext_core::helpers::WT_LEN;
+
+    let fds = proto3_fds(
+        "packed_run.proto",
+        vec![message(
+            "Outer",
+            vec![field("vals", 1, Label::Repeated, Type::Int32)],
+        )],
+    );
+    let mut blob = vec![((1u32 << 3) | WT_LEN) as u8];
+    let mut len = n;
+    while len >= 0x80 {
+        blob.push((len as u8 & 0x7F) | 0x80);
+        len >>= 7;
+    }
+    blob.push(len as u8);
+    blob.extend((0..n).map(|k| (k % 128) as u8));
+
+    let mut app = fixture_under("packed-run", &fds, "test.Outer", &blob);
+    app.splash = false;
+    app.term_width = 120;
+    app.message.clear();
+    app
+}
+
+/// Spec 0272 S1. The run's elements are lines of one node, and
+/// `line_offset` names one by counting newlines from that node's start
+/// — so asking it per candidate makes a walk across the run quadratic
+/// in the run's length. `SearchSweep::offset` carries the answer
+/// instead.
+///
+/// The bound is deliberately coarse. Carrying the cursor, this walk
+/// measures 7.5 ms in release; re-deriving it, the same walk measured
+/// 9.2 s, and a 128 000-element run — a size googleapis reaches — would
+/// have taken minutes. Anything between those is a bug, and two seconds
+/// is far enough from both to survive a debug build and a loaded
+/// machine.
+#[test]
+fn a_sweep_across_a_packed_run_is_linear_in_its_length() {
+    let mut app = packed_run_app(32_000);
+
+    let started = std::time::Instant::now();
+    type_keys(&mut app, "/zzzz");
+    let slices = settle_sweep(&mut app);
+    let elapsed = started.elapsed();
+
+    assert_eq!(slices, 33, "32 002 candidates at 1 000 a slice");
+    assert!(
+        app.search_sweep.as_ref().unwrap().found.is_none(),
+        "`zzzz` is in no line of a run of integers"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "the walk must not rescan the run per line: {elapsed:?}"
+    );
+}
+
+/// Spec 0272 S1, the other half: carrying the cursor has to arrive at
+/// the same lines re-deriving it did.
+///
+/// Both directions, because they step it differently — forward scans to
+/// the next newline, backward looks for the one before the current
+/// line. A cursor that drifted by even a byte would slice the text at
+/// the wrong place and the pattern would match nothing at all, so the
+/// hit's own line index is the whole assertion.
+#[test]
+fn a_sweep_reaches_the_right_line_of_a_packed_run_both_ways() {
+    for (dir, target, expected) in [('/', "vals: 77", 77u32), ('?', "vals: 12", 12)] {
+        let mut app = packed_run_app(120);
+        // Start in the middle, so a forward walk climbs through the run
+        // and a backward one descends through it.
+        app.cursor_line_in_node = 50;
+
+        type_keys(&mut app, &format!("{dir}{target}"));
+        settle_sweep(&mut app);
+
+        let hit = app
+            .search_sweep
+            .as_ref()
+            .and_then(|s| s.found)
+            .unwrap_or_else(|| panic!("`{target}` is element {expected} of the run"));
+        let SweepCursor::Line(pos) = hit.at else {
+            panic!("the main pane's candidates are lines")
+        };
+        assert_eq!(
+            pos.line_in_node, expected,
+            "`{dir}{target}` must land on the run's own element {expected}"
+        );
+        // `contains` rather than equality: an element line is indented
+        // and carries the run's `#@ repeated int32 [packed=true]`
+        // annotation, and neither is what this is about.
+        let text = app.line_text(pos);
+        assert!(
+            text.contains(target),
+            "and that line must be the one the pattern matched: {text:?}"
+        );
+    }
+}
+
 /// A long document whose only occurrence of `target` is on `line`,
 /// prefixed by `indent` spaces and followed by enough filler for the
 /// horizontal centering to have somewhere to put it.
@@ -792,12 +902,12 @@ fn ctrl_d_forward_deletes_in_the_command_line() {
 }
 
 /// Spec 0237 S11/S12. The prompt's pattern has three states, not two:
-/// orange while the sweep is still running, default once it has a hit,
+/// yellow while the sweep is still running, default once it has a hit,
 /// red only once it has finished with nothing. Spec 0235 tinted the
 /// first and the third alike, which trained the user to ignore red on
 /// any document big enough for the sweep to be visible.
 #[test]
-fn search_prompt_is_orange_while_sweeping_and_red_when_finished() {
+fn search_prompt_is_yellow_while_sweeping_and_red_when_finished() {
     let mut app = target_at(2500, 2000, 0);
     app.splash = false;
     app.term_width = 120;
@@ -832,6 +942,52 @@ fn search_prompt_is_orange_while_sweeping_and_red_when_finished() {
         pattern_style(&mut app),
         theme::search_unmatched_style(app.theme).fg,
         "finished with nothing is the only red"
+    );
+}
+
+/// Spec 0272 S2. A miss taken while the bake still owes subtrees is not
+/// the claim red makes — the sweep never saw those bodies. It draws in
+/// the same violet the fold margin is using against those very
+/// subtrees, and turns red only once there is nothing left unread.
+///
+/// The prompt and `App::not_found`'s message answer to one predicate,
+/// so both halves of the report are asserted here together.
+#[test]
+fn an_unbaked_document_tints_a_miss_violet_rather_than_red() {
+    let mut app = target_at(2500, 2000, 0);
+    app.splash = false;
+    app.term_width = 120;
+
+    let pattern_style = |app: &mut App| {
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let area = app.cmd_area.expect("the prompt must be on screen");
+        terminal.backend().buffer()[(area.x + 1, area.y)].style().fg
+    };
+
+    // A subtree the bake has not reached. `target_at`'s nodes are
+    // leaves, so the set is what is asked about and not what is folded.
+    app.auto_folded.insert(app.first_node);
+
+    type_keys(&mut app, "/zzz");
+    settle_sweep(&mut app);
+    assert!(app.search_sweep.as_ref().unwrap().is_finished());
+    assert_eq!(
+        pattern_style(&mut app),
+        theme::search_unbaked_style(app.theme).fg,
+        "the sweep never read the folded bodies, so `not there` is not yet an answer"
+    );
+    assert!(
+        app.not_found("zzz", SearchScope::Main)
+            .contains("not yet baked"),
+        "and the message says the same thing in words"
+    );
+
+    app.auto_folded.clear();
+    assert_eq!(
+        pattern_style(&mut app),
+        theme::search_unmatched_style(app.theme).fg,
+        "with the whole document read, the same miss is red"
     );
 }
 

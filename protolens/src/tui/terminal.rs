@@ -858,13 +858,27 @@ where
                     //
                     // The decision is made *here* rather than where
                     // `deadline` is computed so that the arms above keep
-                    // yielding on the tick. A search sweep in particular
-                    // owes a frame whenever its answer changes but sets
-                    // no dirty flag of its own; it gets that frame
-                    // because its arm breaks at the deadline. Reaching
-                    // this line means all four background steps reported
-                    // `Idle` in this pass, so there is no such work left
-                    // to yield from.
+                    // yielding on the tick. Reaching this line means all
+                    // four background steps reported `Idle` in this
+                    // pass, so there is no such work left to yield from.
+                    //
+                    // Spec 0235 S5's frame is owed before any of that is
+                    // considered. The step that settles a sweep's answer
+                    // sets `search_dirty` and still reports
+                    // `Progressed`, so the *next* pass is the first to
+                    // arrive here — and until spec 0263 made this sleep
+                    // untimed, the activity tick happened to deliver
+                    // that frame within 250 ms. It no longer does: the
+                    // prompt would sit yellow on a pattern the sweep had
+                    // already ruled out until some unrelated event woke
+                    // the loop, which in practice meant until the user
+                    // pressed a key to ask why. Breaking rather than
+                    // shortening `deadline`, because there is nothing
+                    // left to wait for. `take_search_dirty` past the
+                    // loop is what clears it, so this fires once.
+                    if app.search_frame_owed() {
+                        break None;
+                    }
                     let activity_settled = activity_prev_window.is_none()
                         && activity_window.is_none()
                         && app.activity_shown.is_none()

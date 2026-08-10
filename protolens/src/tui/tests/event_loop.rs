@@ -143,12 +143,21 @@ fn run_over(app: &mut App, events: Vec<AppEvent>) -> (usize, usize) {
 /// the path spec 0255 S6 defers, and the one a missing `bake_forces`
 /// silences.
 fn run_idle(app: &mut App, idle: Duration) -> usize {
+    run_idle_after(app, idle, Vec::new())
+}
+
+/// [`run_idle`], with `prefix` sent ahead of the quit.
+///
+/// A test that leaves the search prompt open needs it: `quit_keys`
+/// opens with `:`, which an open prompt takes as a character rather
+/// than as a command, and the loop would then never return.
+fn run_idle_after(app: &mut App, idle: Duration, prefix: Vec<AppEvent>) -> usize {
     let (tx, rx) = mpsc::channel();
     let quitter = {
         let tx = tx.clone();
         std::thread::spawn(move || {
             std::thread::sleep(idle);
-            for ev in quit_keys() {
+            for ev in prefix.into_iter().chain(quit_keys()) {
                 let _ = tx.send(ev);
             }
         })
@@ -331,6 +340,48 @@ fn an_expiring_message_still_dismisses_itself_with_no_events() {
         app.message.is_empty(),
         "the message must expire with no event to ask for it: {:?}",
         app.message
+    );
+}
+
+/// Spec 0272 S3. A sweep's answer is owed a frame, and until spec 0263
+/// the activity tick delivered it by accident: `may_sleep_indefinitely`
+/// has no search term, so once the sleep became untimed the loop parked
+/// with `search_dirty` set and the prompt kept the color of a question
+/// the sweep had already answered. What the user saw was a pattern that
+/// stayed yellow until they pressed a key to ask why.
+///
+/// Asserted against a control that types nothing and waits the same
+/// time, so it cannot pass on a frame some other term happened to owe.
+/// Both runs get the same `Esc`, which the searching one needs to close
+/// its prompt before `quit_keys` can be read as a command.
+#[test]
+fn a_settled_search_forces_a_repaint_with_no_events() {
+    let idle = Duration::from_millis(700);
+    let texts: Vec<String> = (0..40).map(|i| format!("f{i}: 0")).collect();
+    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let prefix = || vec![key(KeyCode::Esc)];
+
+    let quiet = {
+        let mut app = sibling_leaves_app(&refs);
+        app.splash = false;
+        run_idle_after(&mut app, idle, prefix())
+    };
+
+    let mut app = sibling_leaves_app(&refs);
+    app.splash = false;
+    for c in "/zzz".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    assert!(
+        app.search_sweep.is_some(),
+        "typing a pattern must leave a sweep for the loop to run"
+    );
+
+    let draws = run_idle_after(&mut app, idle, prefix());
+
+    assert!(
+        draws > quiet,
+        "the settled miss must buy a frame the quiet loop does not: {draws} vs {quiet}"
     );
 }
 
