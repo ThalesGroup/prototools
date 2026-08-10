@@ -69,9 +69,22 @@ impl App {
     }
 
     /// Spec 0268 S4: how tall each of the main pane's rows is.
+    ///
+    /// `wire_rows` answers in *committed* rows. Every consumer of this
+    /// counts *display* rows — the render loop indexes the composed
+    /// window, and so do the viewport arithmetic, the mouse hit test
+    /// and the cursor's own row — and the two differ by whatever the
+    /// preview overlay adds or removes. Left unmapped, browsing types
+    /// in the override pane slid the shown run down the screen by that
+    /// difference, which changes with every candidate.
+    ///
+    /// Mapped here rather than inside `wire_rows` so that its cache
+    /// stays keyed on `structural_version` alone: a preview is display
+    /// data that never enters the arena (spec 0185 N6), so it never
+    /// bumps that version and would never invalidate the entry.
     pub(super) fn row_heights(&self) -> RowHeights {
         match self.wire_rows() {
-            Some(rows) => RowHeights::new(rows),
+            Some(rows) => RowHeights::new(self.display_rows_of(rows)),
             None => FLAT_ROWS,
         }
     }

@@ -319,6 +319,44 @@ impl App {
         }
     }
 
+    /// `committed_row_of`'s inverse, for a whole run: the display rows
+    /// that draw committed rows `rows`.
+    ///
+    /// The overlay's rows are **atomic** — a run reaching any part of
+    /// the block they stand in for reaches all of them. That is the
+    /// only rule available. An overlay row has no node (spec 0185 N6),
+    /// so it cannot be named by line; and its spans index the preview's
+    /// own byte buffer, which a truncated interior (spec 0174) makes
+    /// not a sub-slice of the blob, so it cannot be named by byte
+    /// either. What is left is the substitution itself: those rows
+    /// stand in for that block, so they answer whatever the block
+    /// answered.
+    pub(super) fn display_rows_of(&self, rows: std::ops::Range<usize>) -> std::ops::Range<usize> {
+        let Some(o) = &self.preview_overlay else {
+            return rows;
+        };
+        let (first, covered) = (o.first_row, o.covered_rows);
+        // Past the block, a row is displaced by however many rows the
+        // overlay added or removed. `rows.start >= first + covered`
+        // there, so the subtraction cannot underflow.
+        let past = |c: usize| (c - covered) + o.lines.len();
+        let start = if rows.start < first {
+            rows.start
+        } else if rows.start < first + covered {
+            first
+        } else {
+            past(rows.start)
+        };
+        let end = if rows.end <= first {
+            rows.end
+        } else if rows.end <= first + covered {
+            first + o.lines.len()
+        } else {
+            past(rows.end)
+        };
+        start..end
+    }
+
     /// Spec 0185 S2: resolve a display row to the line it draws. `None`
     /// past the last row.
     ///

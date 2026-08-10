@@ -296,6 +296,83 @@ fn drawn_wire_rows(app: &mut App) -> Vec<String> {
         .collect()
 }
 
+/// Spec 0268 S4 × spec 0185 S2: the shown run is resolved in committed
+/// rows and read in display rows, so a preview overlay standing in for
+/// a block of a different height has to displace it.
+///
+/// The regression this catches is visible: with a span on, opening the
+/// override pane and arrowing down the candidate list moved the bytes
+/// off the rows they belonged to and onto whatever now sat that far
+/// down, differently for each candidate, because the overlay's height
+/// changes with the type being proposed.
+///
+/// Ten one-line leaves, so committed row `r` is line `r` and the map is
+/// the only thing an assertion can be reading. The overlay covers rows
+/// 2..5 and is tried shorter than, equal to and longer than them.
+#[test]
+fn a_preview_overlay_displaces_the_shown_run() {
+    let texts: Vec<String> = (0..10).map(|i| format!("f{i}: 0")).collect();
+    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+
+    // (span lines, expected shown display rows as a function of the
+    // overlay's own height) — below the block, above it, and across it.
+    let cases: [(usize, usize, fn(usize) -> Vec<usize>); 3] = [
+        (6, 7, |len| vec![3 + len, 4 + len]),
+        (0, 1, |_| vec![0, 1]),
+        (3, 6, |len| (2..=3 + len).collect()),
+    ];
+
+    for (first, last, expected) in cases {
+        for overlay_len in [1usize, 3, 6] {
+            let mut app = sibling_leaves_app(&refs);
+            let span = app.wire_span_of_lines(first, last);
+            app.set_wire_span(span, first);
+            app.preview_overlay = Some(PreviewOverlay {
+                first_row: 2,
+                covered_rows: 3,
+                lines: vec!["x".to_string(); overlay_len],
+                spans: Vec::new(),
+                bytes: Vec::new(),
+            });
+
+            assert_eq!(
+                shown_rows(&app),
+                expected(overlay_len),
+                "lines {first}..={last} under an overlay of {overlay_len} row(s)"
+            );
+        }
+    }
+}
+
+/// Spec 0185 S2: the overlay's rows are atomic. A run reaching into the
+/// block they stand in for shows bytes under *every* one of them — they
+/// have no node to be named by, and their spans index the preview's own
+/// possibly-truncated buffer rather than the blob, so there is nothing
+/// finer to divide them on.
+#[test]
+fn an_overlay_row_is_in_the_run_or_out_of_it_with_the_rest() {
+    let texts: Vec<String> = (0..10).map(|i| format!("f{i}: 0")).collect();
+    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let mut app = sibling_leaves_app(&refs);
+
+    // A single committed row — the first the overlay covers — is enough
+    // to put all four of the overlay's rows in the run.
+    let span = app.wire_span_of_lines(2, 2);
+    app.set_wire_span(span, 2);
+    app.preview_overlay = Some(PreviewOverlay {
+        first_row: 2,
+        covered_rows: 3,
+        lines: vec!["x".to_string(); 4],
+        spans: Vec::new(),
+        bytes: Vec::new(),
+    });
+
+    assert_eq!(shown_rows(&app), vec![2, 3, 4, 5]);
+    // And the committed row after the block is not in it: the run ended
+    // at line 2, and widening it to the overlay must not widen it past.
+    assert_eq!(app.composed_row_count(), 11);
+}
+
 /// Anchor on `first`, caret at the end of `last` — spec 0242's
 /// selection, left the way a drag across those rows leaves it.
 fn select_lines(app: &mut App, first: usize, last: usize) {
