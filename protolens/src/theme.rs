@@ -501,14 +501,25 @@ fn tier_band_in(tier: Tier, theme: ThemeKind, rgb: bool) -> Style {
 /// unstyled rather than painting it a "fine" color, so that a colored
 /// toggle is the only thing on the row that changed.
 ///
-/// The two anomaly rungs borrow the tier colors outright rather than
-/// approximating them: the toggle and the annotation it is summarizing
-/// are two readings of one fact (the same argument `tier_band` makes for
-/// the wire row), and a second copy is how they would drift.
+/// `Status::Invalid` borrows its tier color outright rather than
+/// approximating it: the toggle and the annotation it is summarizing are
+/// two readings of one fact (the same argument `tier_band` makes for the
+/// wire row), and a second copy is how they would drift.
 /// `Status::Unknown` and `Status::Unbaked` have no tier to borrow from
 /// — neither is an anomaly, one being a schema with nothing to say and
-/// the other a subtree nobody has looked at — so each gets a palette
-/// entry of its own.
+/// the other a subtree nobody has looked at — so each gets a color of
+/// its own.
+///
+/// `Status::NonCanonical` is the exception, and it is one on purpose
+/// (2026-08-10). Its tier is an amber at 36°, chosen against the *other
+/// document colors* (see `DARK_RGB::tier_non_canonical`); in the margin
+/// the only colors it is ever seen against are the four here, and 36°
+/// against `Invalid`'s 0° was reported as too close to read apart. The
+/// margin is one glyph wide, which is the hardest place in the app to
+/// judge a hue, so it gets its own scale — white, violet, blue, yellow,
+/// red — held apart by `no_two_fold_margin_colors_share_a_neighborhood`.
+/// Sharing the amber would keep one invariant at the cost of the one the
+/// column exists for.
 pub fn status_color(status: Status, theme: ThemeKind) -> Option<Color> {
     status_color_in(status, theme, supports_rgb())
 }
@@ -535,7 +546,24 @@ fn status_color_in(status: Status, theme: ThemeKind, rgb: bool) -> Option<Color>
             (Color::Rgb(0x4F, 0xC1, 0xFF), Color::LightBlue),
             (Color::Rgb(0x00, 0x70, 0xC1), Color::Blue),
         ),
-        Status::NonCanonical => tier_color(Tier::NonCanonical, theme, rgb),
+        // The tier's amber moved to yellow, for the margin only. Hue
+        // 55°, five degrees short of pure: far enough from `Invalid` at
+        // 0° that the two cannot be confused at one glyph, and short of
+        // 60° so it is still a warm color rather than a green-yellow.
+        //
+        // Dark keeps the saturation its neighbors carry (0.70, as
+        // `status_unbaked`), which is what separates it from the default
+        // foreground — see `every_status_color_is_a_hue_and_not_a_tint`.
+        // Light instead matches the *lightness* the light tier was
+        // deepened to, since on white a full-value yellow is the one
+        // mark that disappears: #827700 is `tier_non_canonical`'s luma
+        // to within a point, at 55° instead of 41°.
+        Status::NonCanonical => pick(
+            theme,
+            rgb,
+            (Color::Rgb(0xFF, 0xF1, 0x4D), Color::Yellow),
+            (Color::Rgb(0x82, 0x78, 0x00), Color::Yellow),
+        ),
         Status::Invalid => tier_color(Tier::Invalid, theme, rgb),
     })
 }
@@ -1635,6 +1663,71 @@ mod tests {
                     "{status:?} on {theme:?} is a tint, not a hue: \
                      #{r:02X}{g:02X}{b:02X}, saturation {saturation:.3}",
                 );
+            }
+        }
+    }
+
+    /// The fold margin is a five-color scale — unstyled, violet, blue,
+    /// yellow, red — and the four that carry a hue have to be told apart
+    /// in a single glyph, with no second cue and nothing beside them.
+    ///
+    /// `NonCanonical` sat 36° from `Invalid` until 2026-08-10 and was
+    /// reported as reading as a red. The floor is what the fix bought,
+    /// not a claim that one degree less would fail: 55° on `Dark`, and
+    /// 50° is stated because `Light` cannot do better — its `Invalid` is
+    /// at 5° rather than 0°, and a yellow cannot answer by climbing past
+    /// 60° without becoming a green. The two are further apart there
+    /// than the hues alone say, the light yellow being half the
+    /// scarlet's lightness.
+    ///
+    /// A color moved into this column has to clear the floor against all
+    /// three others, which is the part that is easy to forget.
+    #[test]
+    fn no_two_fold_margin_colors_share_a_neighborhood() {
+        /// Hue in degrees, or `None` for a gray, which has none.
+        fn hue(color: Color) -> Option<f32> {
+            let Color::Rgb(r, g, b) = color else {
+                panic!("{color:?} is not a truecolor entry");
+            };
+            let (r, g, b) = (f32::from(r), f32::from(g), f32::from(b));
+            let (hi, lo) = (r.max(g).max(b), r.min(g).min(b));
+            let span = hi - lo;
+            if span == 0.0 {
+                return None;
+            }
+            let h = if hi == r {
+                (g - b) / span
+            } else if hi == g {
+                2.0 + (b - r) / span
+            } else {
+                4.0 + (r - g) / span
+            };
+            Some((h * 60.0).rem_euclid(360.0))
+        }
+
+        let statuses = [
+            Status::Unbaked,
+            Status::Unknown,
+            Status::NonCanonical,
+            Status::Invalid,
+        ];
+        for theme in [ThemeKind::Dark, ThemeKind::Light] {
+            let hues: Vec<(Status, f32)> = statuses
+                .iter()
+                .map(|&s| {
+                    let color = status_color_in(s, theme, true).expect("a margin color");
+                    (s, hue(color).expect("a margin color is never a gray"))
+                })
+                .collect();
+            for (i, &(a, ha)) in hues.iter().enumerate() {
+                for &(b, hb) in &hues[i + 1..] {
+                    let apart = (ha - hb).abs().min(360.0 - (ha - hb).abs());
+                    assert!(
+                        apart >= 50.0,
+                        "{a:?} ({ha:.0}°) and {b:?} ({hb:.0}°) are {apart:.0}° apart \
+                         on {theme:?} — too close to tell apart in one glyph",
+                    );
+                }
             }
         }
     }
