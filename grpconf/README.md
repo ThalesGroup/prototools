@@ -38,6 +38,15 @@ bounds the damage — and the decoder only descends into a submessage when the
 schema says it is one. Under `--raw` those submessages stay opaque strings and
 the anomalies inside them are never seen.
 
+Every *other* example is wrapped the same way, though nothing forces it to be:
+folding the whole document then leaves one even column of `message_type { ... }`
+rows rather than a mixture of subtrees and loose scalars, which is what a reader
+meeting the file for the first time should see. And wherever an anomaly has an
+ordinary counterpart, the two are written side by side inside that submessage —
+the padded tag above, the same string with a one-byte tag below; the five-byte
+`-1` above, the specified ten-byte one below. The text of the two lines is
+identical and the <kbd>w</kbd> rows are not, which is the whole point.
+
 Any descriptor set containing `descriptor.proto` works;
 `prototext-core/fixtures/descriptor.pb` is used above because it is in the
 repo. `prototext` needs none at all — it resolves `google.protobuf.*` on its
@@ -58,7 +67,7 @@ second artifact to go stale.
 Two consequences worth knowing:
 
 - The `(N bytes)` protolens prints at startup is the size of the file **on
-  disk**, not of the payload it encodes to. The 10 KB here becomes about 1.6 KB
+  disk**, not of the payload it encodes to. The 12 KB here becomes about 1.8 KB
   of wire bytes.
 - The SPDX header lives in `anomalies.pb.license` rather than in the file: the
   format detection is a `starts_with`, so the first bytes must be
@@ -78,12 +87,13 @@ audience gets the most from rather than by severity:
    fields the schema does not declare at all, rendered by wire type
    (`varint`, `fixed64`, `fixed32`, `bytes`).
 4. **A packed run** — `pack_size`, `ohb`, `neg`. Three text lines, one wire
-   record; the place where the <kbd>w</kbd> row earns its keep.
+   record; the place where the <kbd>w</kbd> row earns its keep. A second run
+   beside it holds the same three numbers without the padding.
 5. **Blob and schema disagreeing** — `TYPE_MISMATCH`, `INVALID_STRING`,
    `INVALID_PACKED_RECORDS`. Still parseable; the scan continues.
 6. **Malformed wire bytes** — `TRUNCATED_BYTES`/`MISSING`, `INVALID_VARINT`,
    `INVALID_LEN`, `INVALID_FIXED64`, `INVALID_FIXED32`, `INVALID_TAG_TYPE`,
-   `TAG_OOR`. One submessage each, for the reason given above.
+   `TAG_OOR`. One submessage each, and nothing may follow them inside it.
 7. **Groups** — `group`, `etag_ohb`, `END_MISMATCH`, `ETAG_OOR`, `OPEN_GROUP`,
    `INVALID_GROUP_END`. Last, because proto2 groups are history to most of the
    audience and nothing here declares one, so they all arrive as undeclared

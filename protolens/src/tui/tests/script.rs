@@ -206,3 +206,79 @@ fn a_search_position_resolves_against_the_rendered_text() {
         "`v: 7` is the third item's only field"
     );
 }
+
+/// Spec 0271 S5, amended: the legend is flushed to the *right* edge of
+/// the rule.
+///
+/// Left-aligned it started in the same column the document's first line
+/// starts in one row below, in a green close to the document's own
+/// palette, and it was read as a line of the blob — the one confusion
+/// the separator exists to prevent. Two rule characters of run-out keep
+/// it sitting on the rule rather than ending it.
+#[test]
+fn the_separator_legend_is_flushed_right() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let (mut app, _) = repeated_message_fixture();
+    app.splash = false;
+    app.set_script(script_of(THREE_STEPS));
+
+    let mut terminal = Terminal::new(TestBackend::new(60, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+
+    let row = |y: u16| -> String {
+        (0..60u16)
+            .map(|x| buffer[(x, y)].symbol().to_string())
+            .collect()
+    };
+    let separator = (0..24u16)
+        .map(row)
+        .find(|line| line.contains("press space"))
+        .expect("the separator carries the legend");
+
+    assert!(
+        separator.ends_with("press space to enter script mode ──"),
+        "the legend must sit at the right edge: {separator:?}"
+    );
+    assert!(
+        separator.starts_with("──────"),
+        "and the rule must run up to it: {separator:?}"
+    );
+}
+
+/// Spec 0271 S15, amended: the pane's whole area carries the tint, and
+/// it is the separator's own hue — the two are one region, and a reader
+/// who cannot see where the commentary ends has no separator at all.
+#[test]
+fn the_script_pane_is_tinted_across_its_whole_width() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let (mut app, _) = repeated_message_fixture();
+    app.splash = false;
+    app.set_script(script_of(THREE_STEPS));
+
+    let mut terminal = Terminal::new(TestBackend::new(60, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+
+    let want = crate::theme::script_pane_style(app.theme).bg;
+    assert!(want.is_some(), "the test terminal must support RGB");
+    // Row 0 is the pane's first row; the far right of it is past the
+    // text, which is where a style applied to the spans rather than to
+    // the area would stop.
+    for x in [0u16, 30, 59] {
+        assert_eq!(
+            buffer[(x, 0)].style().bg,
+            want,
+            "column {x} of the pane's first row must be tinted"
+        );
+    }
+    assert_ne!(
+        buffer[(0, 23)].style().bg,
+        want,
+        "and the tint must not reach the document"
+    );
+}

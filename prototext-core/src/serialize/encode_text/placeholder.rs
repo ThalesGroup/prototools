@@ -107,12 +107,6 @@ pub(super) fn compact(out: &mut Vec<u8>, first_placeholder: usize, base: usize) 
     let mut write_pos = base;
     let mut cursor = first_placeholder;
 
-    #[cfg(debug_assertions)]
-    eprintln!(
-        "[encode_text] compact: total_len={} first_placeholder={}",
-        total_len, first_placeholder
-    );
-
     loop {
         // Copy real data that sits before this placeholder.
         if cursor > read_pos {
@@ -142,11 +136,4 @@ pub(super) fn compact(out: &mut Vec<u8>, first_placeholder: usize, base: usize) 
     }
 
     out.truncate(write_pos);
-
-    #[cfg(debug_assertions)]
-    eprintln!(
-        "[encode_text] compact done: final_len={} (saved {} bytes)",
-        write_pos,
-        total_len - write_pos
-    );
 }

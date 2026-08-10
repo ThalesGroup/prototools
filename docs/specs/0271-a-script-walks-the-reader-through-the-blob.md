@@ -176,13 +176,24 @@ on every step change.
 ### S5 — The separator line
 
 One row, full width, filled with a horizontal rule character, carrying
-a micro-help legend. Two states:
+a micro-help legend **flushed to the right edge**, with two rule
+characters of run-out past it so it reads as sitting on the rule rather
+than ending it. Two states:
 
-- **navigation off:** `press space`.
+- **navigation off:** `press space to enter script mode`, falling back
+  to `press space` when the row is too narrow for the sentence.
 - **navigation on:** `^←/^→ step 3/23`, then `^↑/^↓ scroll`, then
   `space off`, each dropped from the right as the terminal narrows.
   The step counter is the last thing to go — on a narrow terminal it is
   the only thing worth the space.
+
+Both details are corrections. The legend was first written left-aligned
+and it began in the same column the document's first line begins in one
+row below, in a green close to the document's own palette; at a glance
+it read as a line of the blob, which is the one confusion the separator
+exists to prevent. And a bare `press space` names a key without naming
+what pressing it does — the pane arrives unasked for and offers exactly
+one gesture, so the legend is where that gesture gets its name.
 
 ### S6 — A step declares a view, not a change
 
@@ -337,6 +348,15 @@ Green, dim for the pane background, brighter for the separator rule and
 its legend. The entries are added to the existing theme struct with dark
 and light variants and resolved the way every other color already is —
 no literal color anywhere outside `theme.rs`.
+
+The background is the rule's **own hue and saturation**, taken to
+lightness 0.22 (dark) or 0.88 (light): the pane and the rule that
+borders it have to read as one region. It began at half that lightness,
+below the document row's own, on the argument that the blob must
+dominate. On a projector it did not read as green at all, and a
+commentary pane whose edges nobody can see is not a pane. The document
+is a whole screen and the pane is at most twelve rows, so what dominates
+here is decided by area, not by tint.
 
 ## Alternatives considered
 

@@ -389,19 +389,6 @@ pub fn encode_text_to_binary_into(text: &[u8], out: &mut Vec<u8>) {
     if let Some(first_ph) = first_placeholder {
         compact(out, first_ph, base);
     }
-
-    // Development instrumentation — size ratio
-    #[cfg(debug_assertions)]
-    {
-        let written = out.len() - base;
-        let ratio = written as f64 / text.len().max(1) as f64;
-        eprintln!(
-            "[encode_text] input_len={} output_len={} ratio={:.2}",
-            text.len(),
-            written,
-            ratio
-        );
-    }
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────

@@ -18,13 +18,26 @@
 #
 # Read top to bottom: the legal-but-unusual encodings come first, the outright
 # malformed bytes last.
+#
+# TWO RULES SHAPE THE LAYOUT.
+#
+# Every example is embedded in its own submessage, so that a reader who folds
+# the whole document is left with one neat column of `message_type { ... }`
+# rows rather than a mixture of subtrees and dangling scalars.  Section 6 has
+# to do this anyway -- a malformed byte consumes the rest of its enclosing
+# region -- and the rest of the document simply follows suit.
+#
+# And wherever an anomaly has a canonical counterpart, the two are written side
+# by side in the same submessage: the padded line above, the same value spelled
+# the ordinary way below.  Press `w` on either and the difference is in the
+# bytes, not in the text.
 # ============================================================================
 
 
 # ---------------------------------------------------------------------------
 # 1. Legal bytes that no canonical writer would produce.
 #
-# Every parser in the world accepts these three fields and recovers exactly the
+# Every parser in the world accepts these fields and recovers exactly the
 # values they claim.  What is unusual is how the bytes spell them: a varint may
 # carry trailing 0x80 padding bytes and still decode to the same number, so a
 # tag, a length prefix and a value can each be written longer than they need to
@@ -32,14 +45,27 @@
 # ("overhang bytes") and colors it as non-canonical rather than invalid.
 # ---------------------------------------------------------------------------
 
-name: "1. Legal, not canonical: this field's TAG is padded to 3 bytes."  #@ string = 1; tag_ohb: 2
-package: "1. Legal, not canonical: this field's LENGTH prefix is padded to 4 bytes."  #@ string = 2; len_ohb: 3
+message_type {  #@ repeated DescriptorProto = 4
+  name: "1a. Legal, not canonical: a TAG padded to 3 bytes."  #@ string = 1
+  reserved_name: "this line's tag is padded"  #@ repeated string = 10; tag_ohb: 2
+  reserved_name: "this line's tag is not"  #@ repeated string = 10
+}
 
 message_type {  #@ repeated DescriptorProto = 4
-  name: "1. Legal, not canonical: the field number below is a padded varint."  #@ string = 1
+  name: "1b. Legal, not canonical: a LENGTH prefix padded to 4 bytes."  #@ string = 1
+  reserved_name: "this line's length prefix is padded"  #@ repeated string = 10; len_ohb: 3
+  reserved_name: "this line's length prefix is not"  #@ repeated string = 10
+}
+
+message_type {  #@ repeated DescriptorProto = 4
+  name: "1c. Legal, not canonical: a VALUE padded to 5 bytes."  #@ string = 1
   field {  #@ repeated FieldDescriptorProto = 2
-    name: "id"  #@ string = 1
+    name: "padded"  #@ string = 1
     number: 5  #@ int32 = 3; val_ohb: 4
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+    name: "canonical"  #@ string = 1
+    number: 5  #@ int32 = 3
   }
 }
 
@@ -55,17 +81,25 @@ message_type {  #@ repeated DescriptorProto = 4
 # ---------------------------------------------------------------------------
 
 message_type {  #@ repeated DescriptorProto = 4
-  name: "2. -1 written in five bytes instead of the specified ten."  #@ string = 1
+  name: "2a. -1 written in five bytes instead of the specified ten."  #@ string = 1
   field {  #@ repeated FieldDescriptorProto = 2
-    name: "delta"  #@ string = 1
+    name: "truncated"  #@ string = 1
     number: -1  #@ int32 = 3; truncated_neg
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+    name: "canonical"  #@ string = 1
+    number: -1  #@ int32 = 3
   }
 }
 
 options {  #@ FileOptions = 8
   uninterpreted_option {  #@ repeated UninterpretedOption = 999
-    identifier_value: "2. A NaN whose payload bits are not the canonical NaN's."  #@ string = 3
+    identifier_value: "2b. A NaN whose payload bits are not the canonical NaN's."  #@ string = 3
     double_value: nan  #@ double = 6; nan_bits: 0x7ff8000000000001
+  }
+  uninterpreted_option {  #@ repeated UninterpretedOption = 999
+    identifier_value: "2b. The same nan, with the payload a re-encode would write."  #@ string = 3
+    double_value: nan  #@ double = 6
   }
 }
 
@@ -80,15 +114,19 @@ options {  #@ FileOptions = 8
 # ---------------------------------------------------------------------------
 
 message_type {  #@ repeated DescriptorProto = 4
-  name: "3. An enum value this schema has no name for."  #@ string = 1
+  name: "3a. An enum value this schema has no name for."  #@ string = 1
   field {  #@ repeated FieldDescriptorProto = 2
-    name: "shape"  #@ string = 1
+    name: "unnamed"  #@ string = 1
     label: 99  #@ Label(99) = 4
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+    name: "named"  #@ string = 1
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
   }
 }
 
 message_type {  #@ repeated DescriptorProto = 4
-  name: "3. Below: four fields this schema does not declare, by wire type."  #@ string = 1
+  name: "3b. Below: four fields this schema does not declare, by wire type."  #@ string = 1
   200: 42  #@ varint
   201: 0x400921fb54442d18  #@ fixed64
   202: 0x40490fdb  #@ fixed32
@@ -105,6 +143,9 @@ message_type {  #@ repeated DescriptorProto = 4
 # protolens to see the single run of bytes underneath.  The per-element
 # anomalies are spelled `ohb` and `neg`, the packed-run equivalents of
 # `val_ohb` and `truncated_neg` above.
+#
+# `span` is a second packed int32 field, and carries the same three values
+# canonically: one run of bytes against the other, same numbers, fewer bytes.
 # ---------------------------------------------------------------------------
 
 source_code_info {  #@ SourceCodeInfo = 9
@@ -113,6 +154,9 @@ source_code_info {  #@ SourceCodeInfo = 9
     path: 4  #@ repeated int32 [packed=true] = 1; pack_size: 3
     path: 0  #@ repeated int32 [packed=true] = 1; ohb: 2
     path: -1  #@ repeated int32 [packed=true] = 1; neg
+    span: 4  #@ repeated int32 [packed=true] = 2; pack_size: 3
+    span: 0  #@ repeated int32 [packed=true] = 2
+    span: -1  #@ repeated int32 [packed=true] = 2
   }
 }
 
@@ -126,18 +170,18 @@ source_code_info {  #@ SourceCodeInfo = 9
 # ---------------------------------------------------------------------------
 
 message_type {  #@ repeated DescriptorProto = 4
-  name: "5. The schema says this field is a string; the wire says varint."  #@ string = 1
+  name: "5a. The schema says this field is a string; the wire says varint."  #@ string = 1
   1: 7  #@ varint; TYPE_MISMATCH
 }
 
 message_type {  #@ repeated DescriptorProto = 4
-  name: "5. Declared a string, but the payload is not valid UTF-8."  #@ string = 1
+  name: "5b. Declared a string, but the payload is not valid UTF-8."  #@ string = 1
   10: "\377\376"  #@ INVALID_STRING
 }
 
 source_code_info {  #@ SourceCodeInfo = 9
   location {  #@ repeated Location = 1
-    leading_comments: "5. Declared packed int32, but the payload does not decode."  #@ string = 3
+    leading_comments: "5c. Declared packed int32, but the payload does not decode."  #@ string = 3
     1: "\001\002\200"  #@ INVALID_PACKED_RECORDS
   }
 }
@@ -148,47 +192,47 @@ source_code_info {  #@ SourceCodeInfo = 9
 #
 # Each of these stops the scan dead: once a varint has no terminator or a wire
 # type has no meaning, there is no way to find the next tag.  The decoder gives
-# up on the REST OF THE ENCLOSING REGION -- which is why every one of them is
-# wrapped in its own `message_type` submessage.  A length prefix bounds the
-# damage, so the parent's scan resumes at the next tag and the document can
-# hold as many of these as it likes.
+# up on the REST OF THE ENCLOSING REGION -- which is why each of them gets a
+# `message_type` submessage to itself and nothing may follow it there.  A
+# length prefix bounds the damage, so the parent's scan resumes at the next tag
+# and the document can hold as many of these as it likes.
 #
 # `MISSING: 3` is not a number chosen here; it is computed against what was
 # actually left in the buffer.
 # ---------------------------------------------------------------------------
 
 message_type {  #@ repeated DescriptorProto = 4
-  name: "6. A length prefix that claims more bytes than are there."  #@ string = 1
+  name: "6a. A length prefix that claims more bytes than are there."  #@ string = 1
   2: "\001\002\030\t"  #@ TRUNCATED_BYTES; MISSING: 3
 }
 
 message_type {  #@ repeated DescriptorProto = 4
-  name: "6. A varint with no terminating byte."  #@ string = 1
+  name: "6b. A varint with no terminating byte."  #@ string = 1
   3: "\200\200"  #@ INVALID_VARINT
 }
 
 message_type {  #@ repeated DescriptorProto = 4
-  name: "6. A length prefix that is itself an unterminated varint."  #@ string = 1
+  name: "6c. A length prefix that is itself an unterminated varint."  #@ string = 1
   4: "\377\377\377\377\377\377\377\377\377\377"  #@ INVALID_LEN
 }
 
 message_type {  #@ repeated DescriptorProto = 4
-  name: "6. A 64-bit field with only three bytes behind it."  #@ string = 1
+  name: "6d. A 64-bit field with only three bytes behind it."  #@ string = 1
   5: "\001\002\003"  #@ INVALID_FIXED64
 }
 
 message_type {  #@ repeated DescriptorProto = 4
-  name: "6. A 32-bit field with only two bytes behind it."  #@ string = 1
+  name: "6e. A 32-bit field with only two bytes behind it."  #@ string = 1
   6: "\001\002"  #@ INVALID_FIXED32
 }
 
 message_type {  #@ repeated DescriptorProto = 4
-  name: "6. Wire type 6: no such thing. Nothing after it can be found."  #@ string = 1
+  name: "6f. Wire type 6: no such thing. Nothing after it can be found."  #@ string = 1
   0: "&\030\t"  #@ INVALID_TAG_TYPE
 }
 
 message_type {  #@ repeated DescriptorProto = 4
-  name: "6. Field number 0 is out of range: field numbers start at 1."  #@ string = 1
+  name: "6g. Field number 0 is out of range: field numbers start at 1."  #@ string = 1
   0: 5  #@ varint; TAG_OOR
 }
 
@@ -210,41 +254,37 @@ message_type {  #@ repeated DescriptorProto = 4
 # ---------------------------------------------------------------------------
 
 message_type {  #@ repeated DescriptorProto = 4
-  name: "7. A group: opened by a tag, closed by a tag, no length prefix."  #@ string = 1
+  name: "7a. A group closed canonically, then one closed with a padded tag."  #@ string = 1
   100 {  #@ group
+    1: 5  #@ varint
+  }
+  101 {  #@ group; etag_ohb: 2
     1: 5  #@ varint
   }
 }
 
 message_type {  #@ repeated DescriptorProto = 4
-  name: "7. The same group, whose CLOSING tag is padded to 3 bytes."  #@ string = 1
-  101 {  #@ group; etag_ohb: 2
-    1: 6  #@ varint
-  }
-}
-
-message_type {  #@ repeated DescriptorProto = 4
-  name: "7. Opened as field 102, closed as field 103."  #@ string = 1
+  name: "7b. Opened as field 102, closed as field 103."  #@ string = 1
   102 {  #@ group; END_MISMATCH: 103
     1: 7  #@ varint
   }
 }
 
 message_type {  #@ repeated DescriptorProto = 4
-  name: "7. Closed with a field number no field may have."  #@ string = 1
+  name: "7c. Closed with a field number no field may have."  #@ string = 1
   104 {  #@ group; END_MISMATCH: 536870912
     1: 8  #@ varint
   }
 }
 
 message_type {  #@ repeated DescriptorProto = 4
-  name: "7. A group that is never closed."  #@ string = 1
+  name: "7d. A group that is never closed."  #@ string = 1
   105 {  #@ group; OPEN_GROUP
     1: 9  #@ varint
   }
 }
 
 message_type {  #@ repeated DescriptorProto = 4
-  name: "7. An END_GROUP tag that closes nothing."  #@ string = 1
+  name: "7e. An END_GROUP tag that closes nothing."  #@ string = 1
   106: "\010\001"  #@ INVALID_GROUP_END
 }

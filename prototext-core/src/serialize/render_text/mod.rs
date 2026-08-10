@@ -433,24 +433,7 @@ pub fn decode_and_render(
 
     render_message(buf, 0, None, root_desc, schema_present, &mut sink);
 
-    let out = sink.into_inner();
-
-    // Development instrumentation — truncate event
-    #[cfg(debug_assertions)]
-    {
-        let actual = out.len();
-        if actual < capacity {
-            eprintln!(
-                "[render_text] truncate: input_len={} capacity={} actual={} ratio={:.2}x",
-                buf.len(),
-                capacity,
-                actual,
-                actual as f64 / buf.len().max(1) as f64
-            );
-        }
-    }
-
-    out
+    sink.into_inner()
 }
 
 /// The output of [`decode_and_render_indexed`].

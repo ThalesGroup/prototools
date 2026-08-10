@@ -976,16 +976,25 @@ mod caret_rgb {
     /// Light theme, the selection.
     pub const LIGHT_SELECTION: Color = Color::Rgb(0xAD, 0xD6, 0xFF);
 
-    /// Spec 0271 S15, dark theme: the script pane's background. A green
-    /// of about `DARK_ROW`'s lightness, so the pane reads as a distinct
-    /// region without becoming the brightest thing on the screen — the
-    /// document below it is what the reader is meant to be looking at.
-    pub const DARK_SCRIPT_BG: Color = Color::Rgb(0x14, 0x2A, 0x1C);
+    /// Spec 0271 S15, dark theme: the script pane's background — the
+    /// rule's own hue and saturation taken down to lightness 0.22, so
+    /// the pane and the rule that borders it are recognizably one
+    /// region and the pane still sits below the document in weight.
+    ///
+    /// It began at `#142A1C`, half this lightness and below `DARK_ROW`'s,
+    /// on the argument that the blob must dominate. On a projector it
+    /// simply did not read as green at all, and a commentary pane nobody
+    /// can see the edges of is not a pane. The document is a whole
+    /// screen and the pane is at most twelve rows (`PANE_MAX`), so what
+    /// dominates is decided by area, not by tint.
+    pub const DARK_SCRIPT_BG: Color = Color::Rgb(0x25, 0x4B, 0x30);
     /// Dark theme: the separator rule and its legend — the same hue well
     /// clear of the pane it borders, since it carries text.
     pub const DARK_SCRIPT_RULE: Color = Color::Rgb(0x5E, 0xB0, 0x76);
-    /// Light theme: the script pane's background.
-    pub const LIGHT_SCRIPT_BG: Color = Color::Rgb(0xE4, 0xF3, 0xE8);
+    /// Light theme: the script pane's background — `LIGHT_SCRIPT_RULE`'s
+    /// hue and saturation at lightness 0.88, for `DARK_SCRIPT_BG`'s
+    /// reason.
+    pub const LIGHT_SCRIPT_BG: Color = Color::Rgb(0xD3, 0xEE, 0xDB);
     /// Light theme: the separator rule and its legend.
     pub const LIGHT_SCRIPT_RULE: Color = Color::Rgb(0x2F, 0x7D, 0x46);
 }

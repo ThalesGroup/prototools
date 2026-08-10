@@ -171,6 +171,15 @@ same three-submessage blob decodes to three uninformative `string` lines
 under `--raw`. The demo therefore always runs with a descriptor set (S7
 says which).
 
+**Amended 2026-08-10: every *other* example is nested too**, though
+nothing forces it to be. A folded node renders as `message_type { ... }`
+with no preview of what is inside, so a document mixing submessages with
+top-level scalars folds down to a ragged list — some rows a shape, some
+rows a value. Wrapping every example makes a fold-all one even column,
+which is what a reader meeting the file for the first time should be
+given. The cost is one `name:` line per wrapper, which is where that
+example's caption lives anyway (S5).
+
 ### S4 — one fixture, committed, named `.pb`
 
 ```
@@ -302,6 +311,28 @@ gets a name.
 
 Captions are used where they earn their place, not on every line: a
 `pack_size` run wants one sentence, not one per element.
+
+**Amended 2026-08-10: the canonical twin.** Wherever an anomaly has an
+ordinary counterpart, the two are written side by side inside the same
+wrapper — the padded tag above and the same string with a one-byte tag
+below, the five-byte `-1` above and the specified ten-byte one below, a
+`nan` with an odd payload above and the payload a re-encode would write
+below. The text of the two lines is identical and the `w` rows are not,
+which is the entire claim of section 1 of S5's order made visible in one
+screenful rather than asserted in a caption.
+
+Two vehicles make this cheap without duplicating optional fields:
+`DescriptorProto.reserved_name` is `repeated string`, so a tag and a
+length prefix can each be shown padded and plain; and
+`SourceCodeInfo.Location.span` is a second `repeated int32 [packed]`
+beside `path`, so a packed run with `ohb` and `neg` in it can sit above a
+canonical run holding the same three numbers.
+
+It is *not* done everywhere. The four undeclared fields of section 3 have
+no counterpart — an undeclared field is not a spelling of a declared one
+— and none of the malformed bytes of section 6 do either, since a broken
+record's counterpart is simply an unbroken one and the surrounding
+document is already full of those.
 
 ### S6 — the coverage test
 

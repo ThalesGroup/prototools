@@ -474,13 +474,16 @@ impl App {
         if legend.is_empty() {
             text.push_str(&"─".repeat(width));
         } else {
-            // Two rule characters of lead-in, so the legend reads as
-            // sitting *on* the rule rather than replacing its start.
-            text.push_str("── ");
-            text.push_str(&legend);
-            text.push(' ');
-            let drawn = text.chars().count();
-            text.push_str(&"─".repeat(width.saturating_sub(drawn)));
+            // Flushed right, with two rule characters of run-out so the
+            // legend reads as sitting *on* the rule rather than ending
+            // it. Left-aligned it began in the same column the document
+            // starts in one row below, and at a glance it read as a line
+            // of the blob — which is the one thing the separator exists
+            // to rule out.
+            let tail = format!(" {legend} ──");
+            let lead = width.saturating_sub(tail.chars().count());
+            text.push_str(&"─".repeat(lead));
+            text.push_str(&tail);
         }
         frame.render_widget(Paragraph::new(Line::from(Span::styled(text, style))), area);
     }
@@ -563,7 +566,16 @@ fn unresolved(position: &Position) -> String {
 /// I" changes every step.
 fn script_legend(state: &ScriptState, width: usize) -> String {
     if !state.active {
-        return fit("press space", width);
+        // What the key *does*, not just which key it is. The pane
+        // arrives unasked for and offers one gesture; a bare "press
+        // space" tells the reader that a key exists and nothing about
+        // why they would press it.
+        for candidate in ["press space to enter script mode", "press space"] {
+            if fits(candidate, width) {
+                return candidate.to_string();
+            }
+        }
+        return String::new();
     }
     let counter = format!(
         "^←/^→ step {}/{}",
@@ -613,8 +625,16 @@ mod tests {
     }
 
     #[test]
-    fn the_legend_is_just_the_toggle_while_navigation_is_off() {
-        assert_eq!(script_legend(&state(false, 0, 3), 80), "press space");
+    fn the_legend_names_what_the_toggle_does_while_navigation_is_off() {
+        let state = state(false, 0, 3);
+        assert_eq!(
+            script_legend(&state, 80),
+            "press space to enter script mode"
+        );
+        // Too narrow for the sentence: the key alone, which is still
+        // better than nothing on the rule.
+        assert_eq!(script_legend(&state, 30), "press space");
+        assert_eq!(script_legend(&state, 12), "");
     }
 
     #[test]
