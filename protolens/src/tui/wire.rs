@@ -1231,21 +1231,29 @@ impl Painter<'_> {
         self.need_space = false;
     }
 
-    /// The single glyph that says the bytes ran out. It replaces
+    /// The empty byte slot that says the bytes ran out. It replaces
     /// whatever would have come next, so *where* it sits is what
     /// distinguishes a truncated payload from a truncated varint and a
     /// second glyph would be redundant.
+    ///
+    /// Two columns wide and spaced like a hex pair, because that is what
+    /// it stands in for: the row is a hex dump, `??` is what a hex dump
+    /// writes for a byte that is not there, and a mark occupying the
+    /// slot reads as an absence where a one-column `!` glued to the
+    /// previous pair read as an accusation against *it*.
     ///
     /// Colored like the bytes it stands in for: this is a defect of the
     /// message, not of the display, and the row flags every one of those
     /// the same way.
     fn cut(&mut self) {
-        self.spans.push(Span::styled("!".to_string(), self.alarm()));
+        let style = self.alarm();
+        self.separate(style);
+        self.spans.push(Span::styled("??".to_string(), style));
         self.need_space = false;
     }
 
     /// How many bytes the record promised and did not deliver, glued to
-    /// the `!` that says it ran out: `!×4` (spec 0225 S11). The count is
+    /// the `??` that says it ran out: `??×4` (spec 0225 S11). The count is
     /// the one fact the row cannot show, since the bytes it counts are
     /// precisely the ones absent from it — and `×N` reads as "N of
     /// these", the same as it does after the elision.
@@ -1447,16 +1455,17 @@ mod tests {
     #[test]
     fn a_truncation_counts_the_bytes_it_cannot_show() {
         // Declared five payload bytes, one present. Spec 0225 S11: the
-        // count of what is absent, glued to the `!` that says so.
+        // count of what is absent, glued to the `??` that says so — and
+        // the `??` itself spaced off `48`, which is a byte that arrived.
         let row = draw(&[0x0A, 0x05, 0x48], Framing::Tagged, 1);
-        assert_eq!(text(&row), "2|08:05[48!×4");
+        assert_eq!(text(&row), "2|08:05[48 ??×4");
         assert_eq!(row.flags, ["TRUNCATED_BYTES"]);
         // Both glyphs wear the `Invalid` tier, and they are one
         // accusation: the bytes are missing from the *message*, not from
         // the row.
         for span in row.spans.iter().filter(|s| {
             let c = s.content.as_ref();
-            c == "!" || c == "×4"
+            c == "??" || c == "×4"
         }) {
             assert_eq!(
                 span.style.bg,
@@ -1468,7 +1477,7 @@ mod tests {
         // A tag varint that never terminates. Not `FF FF FF`, which is
         // wire type 7 and so fails earlier, on the type bits.
         let row = draw(&[0x82, 0x80, 0x80], Framing::Tagged, 1);
-        assert_eq!(text(&row), "82 80 80!");
+        assert_eq!(text(&row), "82 80 80 ??");
         assert_eq!(row.flags, ["INVALID_VARINT"]);
     }
 
@@ -1521,12 +1530,13 @@ mod tests {
         assert_eq!(row.spans[0].style.bg, Some(TYPE_HUE));
     }
 
-    /// Spec 0225 S11: the missing END tag is a missing byte, and `!` is
-    /// already what this row says about one.
+    /// Spec 0225 S11: the missing END tag is a missing byte, and `??` is
+    /// already what this row says about one. Nothing precedes it here,
+    /// so the slot opens the row rather than being spaced off anything.
     #[test]
-    fn an_open_group_footer_row_is_a_bare_bang() {
+    fn an_open_group_footer_row_is_a_bare_empty_slot() {
         let row = draw_of(&[], 0..0, 0, Framing::Closing, 3);
-        assert_eq!(text(&row), "!");
+        assert_eq!(text(&row), "??");
         assert_eq!(row.flags, ["OPEN_GROUP"]);
     }
 
@@ -1738,17 +1748,19 @@ mod tests {
     fn a_payload_that_ran_out_wears_the_band_it_earned() {
         // field 5, fixed64, three of the eight bytes present.
         let row = draw(&[0x29, 0x01, 0x02, 0x03], Framing::Tagged, 5);
-        assert_eq!(text(&row), "1|28[01 02 03!");
-        //                                       1|28[01 02 03!
-        assert_eq!(accused(&row, Tier::Invalid), "     ^^^^^^^^^");
+        assert_eq!(text(&row), "1|28[01 02 03 ??");
+        // The space before the empty slot is inside the band too: the
+        // bytes that came and the slot that did not are one accusation.
+        //                                       1|28[01 02 03 ??
+        assert_eq!(accused(&row, Tier::Invalid), "     ^^^^^^^^^^^");
         // field 5, fixed32, one of the four.
         let row = draw(&[0x2D, 0x01], Framing::Tagged, 5);
-        assert_eq!(text(&row), "5|28[01!");
-        assert_eq!(accused(&row, Tier::Invalid), "     ^^^");
+        assert_eq!(text(&row), "5|28[01 ??");
+        assert_eq!(accused(&row, Tier::Invalid), "     ^^^^^");
         // field 1, LEN, five bytes promised and two delivered.
         let row = draw(&[0x0A, 0x05, 0x48, 0x45], Framing::Tagged, 1);
-        assert_eq!(text(&row), "2|08:05[48 45!×3");
-        assert_eq!(accused(&row, Tier::Invalid), "        ^^^^^^^^");
+        assert_eq!(text(&row), "2|08:05[48 45 ??×3");
+        assert_eq!(accused(&row, Tier::Invalid), "        ^^^^^^^^^^");
     }
 
     /// Spec 0232: the two accusations the document row makes about a

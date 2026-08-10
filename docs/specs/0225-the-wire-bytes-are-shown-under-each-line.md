@@ -241,7 +241,7 @@ Spec 0223 drops the document rows to monochrome while terminal events
 are still queued, by *clearing* `window_styles`. The wire row's hues are
 borrowed from exactly that vector (S11), so it resolves nothing and the
 whole row falls to the subdued default — including its anomaly tiers and
-its `!`.
+its `??`.
 
 The tiers going grey too is the point, not a side effect. A tier is
 decided in Rust and would happily survive the input-pending frame; but
@@ -372,19 +372,29 @@ line directly above it.
 4|18                      field 3, group end — all a footer row has
 ```
 
-One glyph, `!`, says the bytes ran out. It replaces whatever would have
+One mark, `??`, says the bytes ran out. It replaces whatever would have
 come next — a closing `]`, or the rest of a varint:
 
 ```
-2|08:05[48!             declared 5 payload bytes, one is present
-7|f8 ff ff!             a tag varint that never terminates
+2|08:05[48 ??          declared 5 payload bytes, one is present
+7|f8 ff ff ??          a tag varint that never terminates
 ```
 
 Punctuation carries truncation rather than color because a truncation is
-an *absence*: there is no byte to color. One glyph rather than two
+an *absence*: there is no byte to color. One mark rather than two
 because the distinction between "payload ran out" and "varint ran out"
-is already told by *where* the `!` sits, so a second glyph would encode
+is already told by *where* the `??` sits, so a second mark would encode
 what the reader can already see.
+
+**Amended 2026-08-10.** The mark was a one-column `!` written flush
+against the preceding hex pair. It is now two columns and spaced like
+one, for two reasons. It stands in a byte *slot* — glued to the pair
+before it, it read as an accusation against that byte, which is the one
+byte on the row known to have arrived. And the row is a hex dump, where
+`??` is already the conventional spelling of a byte that is not there.
+The word for what happened is on the annotation row directly above
+(`TRUNCATED_BYTES; MISSING: 3`), so the wire row's job is to show
+*where*, and the `Invalid` band it wears is what raises the alarm.
 
 `:`, `[`, `]` and the `…×N` elision take no foreground and
 `Modifier::DIM`. The `|` between the tag's two halves is the one piece
@@ -640,7 +650,7 @@ a ribbon broken every third column reads as several.
 
 A band means the row has something to say about those bytes; a *tier*
 band is what says a defect of the **message**. That is the line between
-`!×N` below and the `…×N` elision of S5: the elision has neither, because
+`??×N` below and the `…×N` elision of S5: the elision has neither, because
 the row ran out of columns and the message did not run out of bytes. A
 screen full of `…` must never read as a screen full of alarms.
 
@@ -655,23 +665,23 @@ screen full of `…` must never read as a screen full of alarms.
 | `TAG_OOR` | the field portion of the tag red |
 | `ETAG_OOR` | the same, on the footer row |
 | `INVALID_TAG_TYPE` | the wire-type digit red |
-| `INVALID_VARINT` | the varint's present bytes red, closed by `!` |
-| `INVALID_LEN` | the length's present bytes red, closed by `!` |
-| `TRUNCATED_BYTES` | the payload's present bytes red, closed by `!×N` |
-| `INVALID_FIXED64` / `INVALID_FIXED32` | the payload's present bytes red, closed by `!` |
+| `INVALID_VARINT` | the varint's present bytes red, closed by `??` |
+| `INVALID_LEN` | the length's present bytes red, closed by `??` |
+| `TRUNCATED_BYTES` | the payload's present bytes red, closed by `??×N` |
+| `INVALID_FIXED64` / `INVALID_FIXED32` | the payload's present bytes red, closed by `??` |
 | `INVALID_GROUP_END` | the whole row red, except the wire-type digit |
 | `END_MISMATCH: N` | the END tag's field portion red |
-| `OPEN_GROUP` | the footer row is a bare `!` |
+| `OPEN_GROUP` | the footer row is a bare `??` |
 | `INVALID_STRING` | the payload's ill-formed UTF-8 sequences red |
 | `INVALID_PACKED_RECORDS` | the payload's undecodable tail red |
 
 The last two are spec 0232's, and are the two entries the row is *told*
 rather than finding for itself; the rest of this table it derives. A
-truncated payload's present bytes are red with the `!` that closes them
+truncated payload's present bytes are red with the `??` that closes them
 (spec 0232 S3): they are the bytes a reader inspects, and leaving them
-plain put the only mark on the one glyph that stands for nothing.
+plain put the only mark on the one slot that stands for nothing.
 
-`OPEN_GROUP` and `END_MISMATCH` are shown rather than spelled. `!`
+`OPEN_GROUP` and `END_MISMATCH` are shown rather than spelled. `??`
 already means *the byte that should be here is not*, and an unterminated
 group is precisely that one level up: the END tag is the missing byte.
 A mismatched END tag's field number is wrong and is right there in the
@@ -706,8 +716,8 @@ and the reader can count them by position.
 #### The one trailing marker
 
 `TRUNCATED_BYTES` is the only anomaly with anything after its bytes:
-`!×N`, glued to the `!` and wearing the `Invalid` tier with it, so
-`0a:05[48!×4` is one accusation. `×N` reads as "N of these", the same as
+`??×N`, glued to the `??` and wearing the `Invalid` tier with it, so
+`0a:05[48 ??×4` is one accusation. `×N` reads as "N of these", the same as
 it does after S5's elision; the tier color is what tells the two apart.
 
 Everything else in the table is fully expressed by the bytes themselves
@@ -1115,12 +1125,12 @@ annotation share `tier_of` rather than agreeing by coincidence.
 18. `the_wire_type_is_styled_apart_from_the_field_number` — on a wire
     type 7 tag: the wire-type digit takes the `Invalid` band, the field
     number keeps its own.
-19. `an_open_group_footer_row_is_a_bare_bang` — the row is `!`, and the
-    painter's flag list still contains `OPEN_GROUP`.
+19. `an_open_group_footer_row_is_a_bare_empty_slot` — the row is `??`,
+    and the painter's flag list still contains `OPEN_GROUP`.
 20. `a_group_footer_names_the_group_it_closes` — on a mismatch the
     field-number half of byte 0 takes the `Invalid` band, the wire-type
     digit keeps the type band, and no marker text follows.
-21. `a_truncation_counts_the_bytes_it_cannot_show` — the row ends `!×4`,
+21. `a_truncation_counts_the_bytes_it_cannot_show` — the row ends `??×4`,
     and both glyphs wear the `Invalid` band.
 22. `an_accusation_marks_the_bytes_it_names` — the two cases above,
     asserted as a caret mask over the drawn row: a run of accused bytes
