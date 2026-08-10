@@ -52,7 +52,7 @@ struct Cli {
     /// whole toolset.
     #[arg(
         long = "descriptor-set",
-        env = "PROTOTEXT_DESCRIPTOR_SET",
+        env = complete::DESCRIPTOR_SET_ENV,
         add = ArgValueCompleter::new(complete::complete_any_path),
     )]
     descriptor_set: Option<PathBuf>,

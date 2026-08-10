@@ -353,6 +353,41 @@ without announcing it, which is acceptable: the user asked for names,
 not for a schema, and the same descriptor produces the same warning on
 the next real launch.
 
+**Amended 2026-08-10: which descriptor set a completion resolves
+against.** The silence above is also what hid two ways of finding none,
+both reported as "`--type` completion does not work":
+
+- **The words are unexpanded.** A completion subprocess is handed
+  `COMP_WORDS`, which is the command line as *typed*. Verified against an
+  interactive bash 5.2 under a pty: with
+  `probecmd --descriptor-set $PROTOTEXT_WKT_SET --type google.proto<TAB>`,
+  the function sees `WORD=[$PROTOTEXT_WKT_SET]` and
+  `COMP_LINE` is the raw line. So the value has to be expanded here or it
+  names no file. `expand_shell_word` handles `$NAME`, `${NAME}` and a
+  leading `~`, and deliberately nothing else — quoting, command
+  substitution and globbing belong to the shell.
+- **The env var is invisible to a completer.** `--descriptor-set`
+  declares `env = DESCRIPTOR_SET_ENV` (`PROTOTEXT_DESCRIPTOR_SET`), which
+  clap applies while *parsing* — a step the completion path never
+  reaches. A session set up entirely through the env var, which is how
+  the nix shell sets protolens up, therefore had a working `--type` at
+  launch and an empty one at TAB. `descriptor_set_for_completion` reads
+  the same variable, and the const is what keeps the two spellings from
+  drifting.
+
+A `--descriptor-set` that *was* typed wins even when it turns out to be
+unreadable. The user named a file; quietly completing against a
+different one would be worse than completing against nothing.
+
+`prototext/src/complete.rs` had both, and a third of its own: it fell
+back to the deprecated `PROTOTEXT_DEFAULT_DESCRIPTOR` and never to the
+`PROTOTEXT_DESCRIPTOR_SET` its own flag declares. That one did not fail
+silently — it succeeded wrongly, completing against the embedded
+`google.protobuf.*` descriptor while the session pointed at googleapis.
+Both files now expand their argv values and read the resolution order
+`run.rs` uses. They stay near-duplicates on purpose; a shared helper
+crate for forty lines would be a workspace-wide dependency edge.
+
 `export_descriptor::locate_file_descriptor_set_type`
 (`command_line.rs:635`) is not a namespace query in disguise; it wants
 one specific message. On the lazy path, JIT-load

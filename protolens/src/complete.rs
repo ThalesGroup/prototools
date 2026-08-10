@@ -9,6 +9,16 @@
 //! `--descriptor-set`, reads that descriptor file, and lists its message
 //! type names filtered by the prefix typed so far.
 //!
+//! Two things about that scan are easy to get wrong, and both were. The
+//! words the shell hands a completer are **unexpanded** — the value of
+//! `--descriptor-set $PROTOTEXT_WKT_SET` arrives as those nineteen
+//! literal characters — so a value has to go through `expand_shell_word`
+//! before it names a file. And `--descriptor-set` may not be on the line
+//! at all: it carries `env = DESCRIPTOR_SET_ENV`, which clap applies at
+//! parse time and a completer sees nothing of, so the env var has to be
+//! consulted here too or a session set up entirely through it completes
+//! `--type` to nothing.
+//!
 //! `complete_path_under` (and its thin wrappers) provide path completion
 //! for `--descriptor-set`, `--proto-root`, and the positional `blob`
 //! argument, in place of clap_complete's built-in default path completer.
@@ -26,6 +36,11 @@ use prototext_core::decode_pool;
 use prototext_graph::score::load::load_graph;
 
 use crate::decode::read_descriptor_file;
+
+/// The env var `--descriptor-set` falls back to, named once so the flag
+/// declaration in `main.rs` and the completer below cannot drift apart.
+/// Shared with `prototext`/`reproto` (spec 0090).
+pub const DESCRIPTOR_SET_ENV: &str = "PROTOTEXT_DESCRIPTOR_SET";
 
 // ── Partial-args scanner ──────────────────────────────────────────────────────
 
@@ -60,9 +75,88 @@ fn flag_value_from_args(long: &str) -> Option<OsString> {
     found
 }
 
+/// Expand the shell forms a completion argv can still contain: `$NAME`,
+/// `${NAME}`, and a leading `~`.
+///
+/// The words a completer is handed are `COMP_WORDS`, which are the words
+/// as *typed*. Nothing downstream expands them, so a value naming a
+/// variable has to be resolved here or the file simply cannot be opened —
+/// and since a completer that finds nothing looks exactly like one that
+/// is not installed, this failed silently.
+///
+/// Quoting, command substitution and globbing are deliberately left
+/// alone. They are the shell's, and guessing at them would be wrong in
+/// ways nobody could see either. An unset variable expands to nothing,
+/// which is what the shell does.
+fn expand_shell_word(raw: &OsStr) -> OsString {
+    let s = raw.to_string_lossy();
+    if !s.starts_with('~') && !s.contains('$') {
+        return raw.to_os_string();
+    }
+
+    let mut out = String::new();
+    let mut rest = &s[..];
+    if let Some(tail) = rest.strip_prefix('~') {
+        if tail.is_empty() || tail.starts_with('/') {
+            if let Some(home) = std::env::var_os("HOME") {
+                out.push_str(&home.to_string_lossy());
+                rest = tail;
+            }
+        }
+    }
+
+    let mut chars = rest.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '$' {
+            out.push(c);
+            continue;
+        }
+        let braced = chars.peek() == Some(&'{');
+        if braced {
+            chars.next();
+        }
+        let mut name = String::new();
+        while let Some(&n) = chars.peek() {
+            if n.is_ascii_alphanumeric() || n == '_' {
+                name.push(n);
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        if braced && chars.peek() == Some(&'}') {
+            chars.next();
+        }
+        if name.is_empty() && !braced {
+            // A bare `$`, which the shell leaves alone.
+            out.push('$');
+            continue;
+        }
+        if let Ok(value) = std::env::var(&name) {
+            out.push_str(&value);
+        }
+    }
+
+    OsString::from(out)
+}
+
+/// The descriptor set a `--type` completion resolves against: whichever
+/// `--descriptor-set` is already on the partial command line, else
+/// [`DESCRIPTOR_SET_ENV`].
+///
+/// A typed flag wins even when it turns out to be unreadable — the user
+/// named a file, and quietly completing against a different one would be
+/// worse than completing against nothing.
+fn descriptor_set_for_completion() -> Option<PathBuf> {
+    flag_value_from_args("--descriptor-set")
+        .map(|v| expand_shell_word(&v))
+        .or_else(|| std::env::var_os(DESCRIPTOR_SET_ENV))
+        .map(PathBuf::from)
+}
+
 /// Complete message type names for `--type`, reading whichever
-/// `--descriptor-set` was already typed on the partial command line.
-/// Empty if `--descriptor-set` is missing, unreadable, or invalid.
+/// `--descriptor-set` is in effect (see `descriptor_set_for_completion`).
+/// Empty if there is none, or it is unreadable, or invalid.
 ///
 /// Prefers the `hopcroft.rkyv` sidecar, whose root list is exactly the
 /// descriptor set's message types — the set `--type` accepts, enums
@@ -72,10 +166,10 @@ fn flag_value_from_args(long: &str) -> Option<OsString> {
 /// reads and no `App` to hold a message, and the same descriptor set
 /// produces the ordinary warning on the next real launch.
 pub fn complete_type_names(incomplete: &OsStr) -> Vec<CompletionCandidate> {
-    let Some(path) = flag_value_from_args("--descriptor-set") else {
+    let Some(path) = descriptor_set_for_completion() else {
         return vec![];
     };
-    type_names_from_descriptor(Path::new(&path), &incomplete.to_string_lossy())
+    type_names_from_descriptor(&path, &incomplete.to_string_lossy())
         .into_iter()
         .map(CompletionCandidate::new)
         .collect()
@@ -229,5 +323,72 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The reported bug: `--descriptor-set $PROTOTEXT_WKT_SET --type
+    /// google.proto<TAB>` completed to nothing.
+    ///
+    /// The shell hands a completer `COMP_WORDS` — the words as typed, not
+    /// as expanded — so the value arrived as the literal `$PROTOTEXT_WKT_SET`
+    /// and `read_descriptor_file` was being asked for a file of that name.
+    ///
+    /// Asserted against `HOME` and `PATH`, which any environment running
+    /// this test has, so nothing here mutates the process environment.
+    #[test]
+    fn a_completion_argv_value_is_expanded_before_it_names_a_file() {
+        let home = std::env::var("HOME").expect("a test environment has HOME");
+        let path = std::env::var("PATH").expect("a test environment has PATH");
+
+        let expand = |s: &str| {
+            expand_shell_word(OsStr::new(s))
+                .to_string_lossy()
+                .into_owned()
+        };
+
+        assert_eq!(expand("$HOME"), home);
+        assert_eq!(expand("${HOME}"), home);
+        assert_eq!(expand("$HOME/wkt.desc"), format!("{home}/wkt.desc"));
+        assert_eq!(
+            expand("${HOME}x"),
+            format!("{home}x"),
+            "a brace ends the name"
+        );
+        assert_eq!(expand("~/wkt.desc"), format!("{home}/wkt.desc"));
+        assert_eq!(expand("$PATH"), path);
+
+        // Left alone: an ordinary path, a `~` that is not the whole first
+        // component, and a bare `$`.
+        assert_eq!(expand("/nix/store/abc/wkt.desc"), "/nix/store/abc/wkt.desc");
+        assert_eq!(expand("~notauser/x"), "~notauser/x");
+        assert_eq!(expand("a$b"), "a");
+        assert_eq!(expand("costs $"), "costs $");
+
+        // An unset variable expands to nothing, as in the shell.
+        assert_eq!(expand("$PROTOLENS_NO_SUCH_VAR_0197/x"), "/x");
+    }
+
+    /// The other half of the same report: `protolens --type
+    /// google.proto<TAB>`, with no `--descriptor-set` typed at all,
+    /// completed to nothing even though `PROTOTEXT_DESCRIPTOR_SET` was set
+    /// and the very same launch would have opened a blob happily.
+    ///
+    /// clap applies `env` at parse time, which a completion subprocess
+    /// never reaches. The const is what keeps the flag and the completer
+    /// naming one variable.
+    #[test]
+    fn the_completer_falls_back_to_the_same_env_var_the_flag_declares() {
+        use clap::CommandFactory;
+
+        let cmd = crate::Cli::command();
+        let arg = cmd
+            .get_arguments()
+            .find(|a| a.get_long() == Some("descriptor-set"))
+            .expect("--descriptor-set exists");
+
+        assert_eq!(
+            arg.get_env().map(|e| e.to_string_lossy().into_owned()),
+            Some(DESCRIPTOR_SET_ENV.to_string()),
+            "the flag's env var must be the one the completer reads"
+        );
     }
 }
