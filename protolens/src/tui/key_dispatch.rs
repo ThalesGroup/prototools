@@ -216,10 +216,10 @@ impl App {
             // `Enter` arm dispatches to `jump_to_override_match` while
             // `override_focus` is set).
             KeyCode::Char('/') => {
-                self.open_command_line(CommandLineKind::Search(SearchDir::Forward), String::new())
+                self.open_command_line(CommandLineKind::search(SearchDir::Forward), String::new())
             }
             KeyCode::Char('?') => {
-                self.open_command_line(CommandLineKind::Search(SearchDir::Backward), String::new())
+                self.open_command_line(CommandLineKind::search(SearchDir::Backward), String::new())
             }
             KeyCode::Char('n') => {
                 if let Some((dir, pattern)) = self.last_override_search.clone() {
@@ -231,6 +231,11 @@ impl App {
                     self.jump_to_override_match(dir.reverse(), &pattern);
                 }
             }
+            // Spec 0276 S2: the find prompt — this pane's last pattern
+            // pre-filled, `Enter` stepping to the next match and `Esc`
+            // accepting the one on screen.
+            KeyCode::Char('F') => self.open_find(SearchDir::Forward),
+            KeyCode::Char('B') => self.open_find(SearchDir::Backward),
             // Spec 0236 S15: edit the target node's override — type,
             // origin and display name at once — as a pre-filled
             // `:override`. The pane picks a type from a list; `o` is
@@ -873,10 +878,10 @@ impl App {
             // earlier in `handle_key`, and the override pane has its own
             // `/`/`?`/`n` in `handle_override_key`.
             KeyCode::Char('/') => {
-                self.open_command_line(CommandLineKind::Search(SearchDir::Forward), String::new())
+                self.open_command_line(CommandLineKind::search(SearchDir::Forward), String::new())
             }
             KeyCode::Char('?') => {
-                self.open_command_line(CommandLineKind::Search(SearchDir::Backward), String::new())
+                self.open_command_line(CommandLineKind::search(SearchDir::Backward), String::new())
             }
             KeyCode::Char('n') => {
                 if let Some((dir, pattern)) = self.last_search.clone() {
@@ -888,6 +893,11 @@ impl App {
                     self.jump_to_match(dir.reverse(), &pattern);
                 }
             }
+            // Spec 0276 S2: the find prompt — the last pattern
+            // pre-filled, `Enter` stepping to the next match and `Esc`
+            // accepting the one on screen, caret on its last character.
+            KeyCode::Char('F') => self.open_find(SearchDir::Forward),
+            KeyCode::Char('B') => self.open_find(SearchDir::Backward),
 
             // Override pane (spec 0114 §1/§2): `t` opens it; `Esc`
             // closes it (focus is the main pane here, since

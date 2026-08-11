@@ -1884,10 +1884,20 @@ impl App {
     fn render_command_row(&mut self, frame: &mut Frame, area: Rect) {
         let cmd_text = match &self.command_buffer {
             Some(buf) => {
+                // Spec 0276 S3: a find gets its own prefix, since it
+                // answers `Enter` and `Esc` differently from the `/`
+                // prompt it otherwise looks exactly like. Punctuation
+                // rather than the `F`/`B` that opened it: the buffer
+                // arrives pre-filled, so a letter prefix would render
+                // `Ffoo` and read as a typo.
                 let prefix = match self.command_kind {
                     CommandLineKind::Command => ':',
-                    CommandLineKind::Search(SearchDir::Forward) => '/',
-                    CommandLineKind::Search(SearchDir::Backward) => '?',
+                    CommandLineKind::Search { dir, find } => match (dir, find) {
+                        (SearchDir::Forward, false) => '/',
+                        (SearchDir::Backward, false) => '?',
+                        (SearchDir::Forward, true) => '>',
+                        (SearchDir::Backward, true) => '<',
+                    },
                 };
                 format!("{prefix}{buf}")
             }
@@ -1951,7 +1961,7 @@ impl App {
             // make. Violet until it is, and the fold margin beside it
             // is already drawing that same color against the very
             // subtrees the answer is missing.
-            let searching = matches!(self.command_kind, CommandLineKind::Search(_))
+            let searching = matches!(self.command_kind, CommandLineKind::Search { .. })
                 && self.command_buffer.as_ref().is_some_and(|b| !b.is_empty());
             let miss = || match self.search_miss_is_conclusive(self.search_scope()) {
                 true => theme::search_unmatched_style(self.theme),

@@ -825,8 +825,18 @@ impl App {
     /// into view; it does not move the cursor, and so records no
     /// jumplist entry.
     fn show_sweep_hit(&mut self, hit: SweepHit) {
-        if let SweepCursor::Line(pos) = hit.at {
-            self.unfold_ancestors(pos.node);
+        match hit.at {
+            SweepCursor::Line(pos) => self.unfold_ancestors(pos.node),
+            // Spec 0276 S9: a side pane tints nothing, so its current
+            // match is shown by the highlight or not at all — leave it
+            // where it is and a find's `Enter` steps something invisible.
+            // Only a find previews: a `/` prompt there can still be
+            // abandoned, and this move is not undone.
+            SweepCursor::Index(_) => {
+                if let CommandLineKind::Search { find: true, .. } = self.command_kind {
+                    self.apply_sweep_hit(self.search_scope(), hit);
+                }
+            }
         }
         self.search_center = true;
     }
@@ -910,6 +920,112 @@ impl App {
             column: column.saturating_sub(1),
         });
         self.select_engaged = true;
+    }
+
+    /// The pane's own last committed `(direction, pattern)`.
+    fn last_search_for(&self, scope: SearchScope) -> Option<&(SearchDir, String)> {
+        match scope {
+            SearchScope::Main => self.last_search.as_ref(),
+            SearchScope::Override => self.last_override_search.as_ref(),
+            SearchScope::Manage => self.last_manage_search.as_ref(),
+        }
+    }
+
+    fn set_last_search_for(&mut self, scope: SearchScope, last: (SearchDir, String)) {
+        *match scope {
+            SearchScope::Main => &mut self.last_search,
+            SearchScope::Override => &mut self.last_override_search,
+            SearchScope::Manage => &mut self.last_manage_search,
+        } = Some(last);
+    }
+
+    /// Spec 0276 S2: `F`/`B` — a search prompt that steps rather than
+    /// commits, pre-filled with the focused pane's last pattern.
+    ///
+    /// The sweep starts here rather than at the first edit, which is the
+    /// one thing `open_command_line` cannot do for it: `/` opens on an
+    /// empty buffer and has nothing to look for, while a find opens
+    /// already owing an answer.
+    pub(super) fn open_find(&mut self, dir: SearchDir) {
+        let prefill = self
+            .last_search_for(self.search_scope())
+            .map(|(_, pattern)| pattern.clone())
+            .unwrap_or_default();
+        self.open_command_line(CommandLineKind::Search { dir, find: true }, prefill);
+        self.restart_search_sweep();
+    }
+
+    /// Spec 0276 S5: `Esc` at a find prompt accepts the match on screen.
+    ///
+    /// The displayed hit is applied, rather than the pattern being
+    /// searched again: `Enter` may have rotated several matches past the
+    /// first, and a fresh sweep from the prompt's origin would land back
+    /// on that first one.
+    ///
+    /// Nothing displayed is nothing to accept (S7) — that is `/`'s `Esc`
+    /// unchanged, view restored and position untouched.
+    pub(super) fn accept_find(&mut self, dir: SearchDir) {
+        let pattern = self.command_buffer.take().unwrap_or_default();
+        self.command_cursor = 0;
+        self.search_browse = None;
+        let scope = self
+            .search_origin
+            .map_or_else(|| self.search_scope(), |origin| origin.scope);
+        let Some(hit) = self.search_sweep.as_ref().and_then(|sweep| sweep.found) else {
+            self.cancel_search();
+            return;
+        };
+        // Accepted, so the origin is not restored — but it must still be
+        // dropped, or the next `Esc` would put this view back.
+        self.search_origin = None;
+        // Spec 0276 S6: an accepted find is a committed search.
+        self.push_search_history(&pattern);
+        self.set_last_search_for(scope, (dir, pattern));
+        self.apply_sweep_hit(scope, hit);
+        if scope == SearchScope::Main {
+            self.caret_to_match_end(hit);
+        }
+    }
+
+    /// Spec 0276 S5: move the caret from the match's first character,
+    /// where `apply_sweep_hit` has just put it, to its last.
+    ///
+    /// The *last* character and not the cell after it, because the caret
+    /// is a block that rests on a cell (spec 0242 S1) and at the end of
+    /// a row the cell after the match does not exist.
+    ///
+    /// No second `record_jump`: `apply_sweep_hit` has already recorded
+    /// the one this gesture is worth.
+    fn caret_to_match_end(&mut self, hit: SweepHit) {
+        // Spec 0235 S20: a path match is not on screen, so it has no
+        // last character to land on — the row it names is the whole of
+        // the answer, and `apply_sweep_hit` has already named it.
+        if hit.on_path {
+            return;
+        }
+        let column = match hit.end {
+            // Spec 0274 S11: the match ends on another row, at a column
+            // recorded one past its last character.
+            Some((pos, column)) => {
+                if pos.node != self.cursor {
+                    self.set_cursor(pos.node);
+                    self.unfold_ancestors(pos.node);
+                }
+                self.cursor_line_in_node = pos.line_in_node;
+                column.saturating_sub(1)
+            }
+            None => hit.column + hit.width.saturating_sub(1),
+        };
+        self.cursor_column = column;
+        self.clamp_caret_column();
+        self.desired_column = self.cursor_column;
+        // Spec 0199 S10, as for any other landing: a match at an end of
+        // the row is a coincidence and must arm nothing.
+        self.caret_anchor = CaretAnchor::Free;
+        // Spec 0276 N3: the highlight already shows the match's extent,
+        // so the selection spec 0274 S12 leaves behind for a `/` commit
+        // would be a cue nobody asked for here.
+        self.clear_selection();
     }
 
     /// Spec 0235 S6: open a `/`/`?` prompt's search state — the origin
@@ -1023,7 +1139,8 @@ impl App {
         // Spec 0246 S16: the one place the browse ends, and it is on the
         // path of every editing key — so any edit ends it.
         self.search_browse = None;
-        let (Some(origin), CommandLineKind::Search(dir)) = (self.search_origin, self.command_kind)
+        let (Some(origin), CommandLineKind::Search { dir, .. }) =
+            (self.search_origin, self.command_kind)
         else {
             return;
         };
@@ -1177,7 +1294,9 @@ impl App {
         if !self.search_highlight {
             return None;
         }
-        if let (Some(buf), CommandLineKind::Search(_)) = (&self.command_buffer, self.command_kind) {
+        if let (Some(buf), CommandLineKind::Search { .. }) =
+            (&self.command_buffer, self.command_kind)
+        {
             return (!buf.is_empty())
                 .then(|| self.compiled_pattern(buf))
                 .flatten();

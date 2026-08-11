@@ -1783,7 +1783,7 @@ fn ctrl_left_rotates_backward_in_a_forward_prompt() {
     assert_eq!(app.search_current_cell(), Some((0, 0, 2, false)));
     assert_eq!(
         app.command_kind,
-        CommandLineKind::Search(SearchDir::Forward)
+        CommandLineKind::search(SearchDir::Forward)
     );
 }
 
@@ -1976,4 +1976,208 @@ fn the_prefilter_preserves_smartcase() {
     // second, which is the guard a first-character test alone misses.
     let k = SearchPattern::new("k").expect("compiles");
     assert!(k.find_range("\u{212A}elvin: 1").is_some());
+}
+
+// ---------------------------------------------------------------------
+// Spec 0276: the find prompt — `F`/`B`, `Enter` steps, `Esc` accepts.
+// ---------------------------------------------------------------------
+
+/// Open a find prompt and type `pattern` into it, one keystroke at a
+/// time, then run the sweep out.
+fn find_by_key(app: &mut App, key: char, pattern: &str) {
+    press(app, KeyCode::Char(key));
+    type_keys(app, pattern);
+    settle_sweep(app);
+}
+
+/// Spec 0276 test-plan item 1 (G1, S2). `F` opens pre-filled with the
+/// pane's last pattern and with a sweep already running — the one thing
+/// `/` cannot do, having nothing yet to look for.
+#[test]
+fn f_opens_a_find_prompt_prefilled_with_the_last_pattern() {
+    let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "gamma: 3", "beta2: 4"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    commit_search_by_key(&mut app, "beta");
+    assert_eq!(app.cursor, 1);
+
+    press(&mut app, KeyCode::Char('F'));
+    assert_eq!(app.command_buffer.as_deref(), Some("beta"));
+    assert_eq!(
+        app.command_kind,
+        CommandLineKind::Search {
+            dir: SearchDir::Forward,
+            find: true,
+        }
+    );
+    settle_sweep(&mut app);
+    // The next occurrence after the caret, which is `beta2`'s row.
+    assert_eq!(app.search_current_cell(), Some((3, 0, 4, false)));
+}
+
+/// Spec 0276 test-plan item 2 (G2, S4). `Enter` steps the current match
+/// and leaves everything else alone — the buffer, the caret in it and
+/// the prompt itself all stay.
+#[test]
+fn enter_in_a_find_prompt_steps_to_the_next_match() {
+    let mut app = sibling_leaves_app(&["beta: 1", "x: 2", "beta: 3", "beta: 4"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    find_by_key(&mut app, 'F', "beta");
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(2));
+
+    press(&mut app, KeyCode::Enter);
+    settle_sweep(&mut app);
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(3));
+    assert_eq!(
+        app.command_buffer.as_deref(),
+        Some("beta"),
+        "the prompt stays open"
+    );
+
+    // And round, since the rotation cycles rather than reporting a miss.
+    press(&mut app, KeyCode::Enter);
+    settle_sweep(&mut app);
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(0));
+
+    // `B` steps the other way from where the caret still is.
+    press(&mut app, KeyCode::Esc);
+    let mut app = sibling_leaves_app(&["beta: 1", "x: 2", "beta: 3", "beta: 4"]);
+    app.splash = false;
+    app.term_width = 120;
+    app.cursor = 3;
+
+    find_by_key(&mut app, 'B', "beta");
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(2));
+    press(&mut app, KeyCode::Enter);
+    settle_sweep(&mut app);
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(0));
+}
+
+/// Spec 0276 test-plan item 3 (G3, S5). `Esc` accepts, and the caret
+/// lands on the match's **last** character rather than on its first —
+/// which is the one place a find differs from a `/` commit.
+#[test]
+fn esc_accepts_a_find_at_the_end_of_the_match() {
+    let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "gamma: 3"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    find_by_key(&mut app, 'F', "beta");
+    press(&mut app, KeyCode::Esc);
+
+    assert!(app.command_buffer.is_none(), "the prompt closes");
+    assert_eq!(app.cursor, 1);
+    // `beta` starts at column 0 and is four columns wide, so its last
+    // character is column 3 — not 4, which is the cell after it.
+    assert_eq!(app.cursor_column, 3);
+    assert_eq!(app.caret_anchor, CaretAnchor::Free);
+}
+
+/// Spec 0276 test-plan item 4 (S5's second bullet, and N3). A hit that
+/// crosses a row accepts on the row it *ends* on — and leaves no
+/// selection behind, unlike spec 0274 S12's `/` commit: the find's
+/// highlight already shows the extent.
+#[test]
+fn esc_accepts_a_cross_row_find_on_its_last_row() {
+    let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "gamma: 3"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    find_by_key(&mut app, 'F', r"1\nbeta");
+    press(&mut app, KeyCode::Esc);
+
+    // The match runs from `alpha: 1`'s column 7 to `beta: 2`'s column 4,
+    // that end exclusive — so its last character is node 1, column 3.
+    assert_eq!(app.cursor, 1);
+    assert_eq!(app.cursor_column, 3);
+    assert_eq!(app.select_anchor, None);
+    assert!(!app.select_engaged);
+}
+
+/// Spec 0276 test-plan item 5 (G4, S6). An accepted find is a search
+/// like any other: `n` repeats it, and `Up` at a later prompt recalls
+/// it.
+#[test]
+fn an_accepted_find_is_repeatable_with_n() {
+    let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "gamma: 3", "beta2: 4"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    find_by_key(&mut app, 'F', "beta");
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.cursor, 1);
+    assert_eq!(
+        app.last_search,
+        Some((SearchDir::Forward, "beta".to_string()))
+    );
+
+    press(&mut app, KeyCode::Char('n'));
+    assert_eq!(app.cursor, 3, "{}", app.message);
+
+    press(&mut app, KeyCode::Char('/'));
+    press(&mut app, KeyCode::Up);
+    assert_eq!(app.command_buffer.as_deref(), Some("beta"));
+}
+
+/// Spec 0276 test-plan item 6 (S7). A find showing no match has nothing
+/// to accept, so its `Esc` is `/`'s unchanged: the view the prompt was
+/// opened from comes back and the position is left alone.
+#[test]
+fn esc_on_a_find_with_no_match_restores_the_view() {
+    let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "gamma: 3"]);
+    app.splash = false;
+    app.term_width = 120;
+    app.cursor = 1;
+    app.cursor_column = 2;
+
+    find_by_key(&mut app, 'F', "nope");
+    assert_eq!(app.search_current_cell(), None);
+
+    press(&mut app, KeyCode::Esc);
+    assert!(app.command_buffer.is_none());
+    assert_eq!(app.cursor, 1);
+    assert_eq!(app.cursor_column, 2);
+    assert!(app.search_sweep.is_none());
+    assert_eq!(app.last_search, None, "nothing was accepted");
+}
+
+/// Spec 0276 test-plan item 7 (S8, S9, G1). The same gesture in a side
+/// pane, where a match is a whole entry: the highlight previews the
+/// current match and `Enter` steps it — a side pane tints nothing, so
+/// this is the only way the step shows — and `Esc` accepts by leaving
+/// the highlight where it is.
+#[test]
+fn f_finds_in_the_manage_pane() {
+    let (mut app, items) = repeated_message_fixture();
+    app.manage_focus = true;
+    app.manage_open = true;
+    app.term_width = 120;
+
+    for (item, ty) in items.iter().zip(["pkg.zz1", "pkg.zz2", "pkg.zz3"]) {
+        let origin = OverrideOrigin::Path {
+            path: app.positional_path(*item),
+        };
+        app.overrides.activate(origin, Some(ty.to_string()));
+    }
+    // Entry 0 is the auto-derived root, which carries no `z`; the three
+    // activated ones are 1, 2 and 3.
+    app.manage_highlight = 0;
+
+    find_by_key(&mut app, 'F', "zz");
+    assert_eq!(app.manage_highlight, 1, "{}", app.message);
+
+    press(&mut app, KeyCode::Enter);
+    settle_sweep(&mut app);
+    assert_eq!(app.manage_highlight, 2);
+
+    press(&mut app, KeyCode::Esc);
+    assert!(app.command_buffer.is_none());
+    assert_eq!(app.manage_highlight, 2);
+    assert_eq!(
+        app.last_manage_search,
+        Some((SearchDir::Forward, "zz".to_string()))
+    );
 }

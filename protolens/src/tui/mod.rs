@@ -924,10 +924,28 @@ enum ManageRow {
 /// a confirmed `Search` pattern actually runs against is determined at
 /// `Enter`-time from `self.override_focus`/`self.manage_focus`, not
 /// carried in this enum.
+///
+/// Spec 0276 S1: `find` tells a `/`/`?` prompt from an `F`/`B` one. The
+/// two differ in two keys — `Enter` steps to the next match instead of
+/// committing, `Esc` accepts instead of cancelling — and in nothing
+/// else, so it rides here as a field rather than as a fourth variant:
+/// a variant would leave every existing `matches!(…, Search(_))` test
+/// (the history browse, the incremental restart, the pattern tint)
+/// quietly answering "no" for the new prompt, while widening this one
+/// makes the compiler name every site. `command_kind` is set by
+/// `open_command_line` on every prompt, so the mode cannot leak from
+/// one to the next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CommandLineKind {
     Command,
-    Search(SearchDir),
+    Search { dir: SearchDir, find: bool },
+}
+
+impl CommandLineKind {
+    /// A `/`/`?` prompt — the committing one.
+    fn search(dir: SearchDir) -> Self {
+        Self::Search { dir, find: false }
+    }
 }
 
 /// Export-chord leader state (spec 0156 G3): `None` (no chord armed),

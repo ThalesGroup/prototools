@@ -92,7 +92,7 @@ impl App {
         self.command_buffer = Some(prefill);
         // Spec 0235 S6: a `/`/`?` prompt remembers where it was opened
         // from before the first keystroke can move the view.
-        if matches!(kind, CommandLineKind::Search(_)) {
+        if matches!(kind, CommandLineKind::Search { .. }) {
             self.start_search_prompt();
         }
     }
@@ -169,6 +169,14 @@ impl App {
                 self.handle_tab_key(false)
             }
             KeyCode::Enter => {
+                // Spec 0276 S4: a find's `Enter` steps to the next match
+                // and leaves everything else exactly where it is — the
+                // buffer, the caret in it, the origin and the highlight.
+                // It never reaches the commit below.
+                if let CommandLineKind::Search { dir, find: true } = self.command_kind {
+                    self.rotate_search_match(dir);
+                    return;
+                }
                 let buf = self.command_buffer.take().unwrap_or_default();
                 self.command_cursor = 0;
                 match self.command_kind {
@@ -184,7 +192,7 @@ impl App {
                     // `manage_focus` are untouched by typing into
                     // `command_buffer`. All three panes share the main
                     // pane's bar (spec 0114 §4/0117 §3).
-                    CommandLineKind::Search(dir) if self.override_focus => {
+                    CommandLineKind::Search { dir, .. } if self.override_focus => {
                         let pattern = if buf.is_empty() {
                             self.last_override_search
                                 .as_ref()
@@ -196,7 +204,9 @@ impl App {
                         self.last_override_search = Some((dir, pattern.clone()));
                         self.commit_search(dir, &pattern);
                     }
-                    CommandLineKind::Search(dir) if self.manage_open && self.manage_focus => {
+                    CommandLineKind::Search { dir, .. }
+                        if self.manage_open && self.manage_focus =>
+                    {
                         let pattern = if buf.is_empty() {
                             self.last_manage_search
                                 .as_ref()
@@ -208,7 +218,7 @@ impl App {
                         self.last_manage_search = Some((dir, pattern.clone()));
                         self.commit_search(dir, &pattern);
                     }
-                    CommandLineKind::Search(dir) => {
+                    CommandLineKind::Search { dir, .. } => {
                         let pattern = if buf.is_empty() {
                             self.last_search
                                 .as_ref()
@@ -223,6 +233,12 @@ impl App {
                 }
             }
             KeyCode::Esc => {
+                // Spec 0276 S5: at a find prompt `Esc` is the accept,
+                // not the cancel — the gesture's one exit (N1).
+                if let CommandLineKind::Search { dir, find: true } = self.command_kind {
+                    self.accept_find(dir);
+                    return;
+                }
                 self.command_buffer = None;
                 self.command_cursor = 0;
                 self.cancel_search();
@@ -245,21 +261,21 @@ impl App {
             // prompt they are swallowed rather than passed on, which is
             // what keeps that from being a surprise later (N1).
             KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if matches!(self.command_kind, CommandLineKind::Search(_)) {
+                if matches!(self.command_kind, CommandLineKind::Search { .. }) {
                     self.rotate_search_match(SearchDir::Forward);
                 }
             }
             KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if matches!(self.command_kind, CommandLineKind::Search(_)) {
+                if matches!(self.command_kind, CommandLineKind::Search { .. }) {
                     self.rotate_search_match(SearchDir::Backward);
                 }
             }
             // Spec 0246 S14: the search history. Unbound at a `:` prompt
             // (N1), where these fall through to the catch-all below.
-            KeyCode::Up if matches!(self.command_kind, CommandLineKind::Search(_)) => {
+            KeyCode::Up if matches!(self.command_kind, CommandLineKind::Search { .. }) => {
                 self.browse_search_history(true)
             }
-            KeyCode::Down if matches!(self.command_kind, CommandLineKind::Search(_)) => {
+            KeyCode::Down if matches!(self.command_kind, CommandLineKind::Search { .. }) => {
                 self.browse_search_history(false)
             }
             KeyCode::Left => self.command_cursor = self.command_cursor.saturating_sub(1),

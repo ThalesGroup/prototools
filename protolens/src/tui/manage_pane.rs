@@ -436,10 +436,10 @@ impl App {
             // `Enter` arm dispatches to `jump_to_manage_match` while
             // `manage_open && manage_focus`).
             KeyCode::Char('/') => {
-                self.open_command_line(CommandLineKind::Search(SearchDir::Forward), String::new())
+                self.open_command_line(CommandLineKind::search(SearchDir::Forward), String::new())
             }
             KeyCode::Char('?') => {
-                self.open_command_line(CommandLineKind::Search(SearchDir::Backward), String::new())
+                self.open_command_line(CommandLineKind::search(SearchDir::Backward), String::new())
             }
             KeyCode::Char('n') => {
                 if let Some((dir, pattern)) = self.last_manage_search.clone() {
@@ -451,6 +451,11 @@ impl App {
                     self.jump_to_manage_match(dir.reverse(), &pattern);
                 }
             }
+            // Spec 0276 S2/S8: the find prompt — this pane's last
+            // pattern pre-filled, `Enter` stepping to the next match and
+            // `Esc` accepting the one highlighted.
+            KeyCode::Char('F') => self.open_find(SearchDir::Forward),
+            KeyCode::Char('B') => self.open_find(SearchDir::Backward),
             // Spec 0236 S15: edit the highlighted entry — type, origin
             // and display name at once — as a pre-filled
             // `:override`. This replaces spec 0119 §G4's bespoke
