@@ -87,8 +87,9 @@ fn backtracking_retraces_the_walk() {
     assert_eq!(forward, backward);
 }
 
-/// Spec 0274 test-plan item 3 (G1, S1). `id\nvalue` compiles — 0273
-/// refused it — and lands on the row the match *starts* on.
+/// Spec 0274 test-plan item 3 (G1, S1) and S12. `id\nvalue` compiles —
+/// 0273 refused it — and comes back selected from the row it starts on
+/// to the row it ends on.
 #[test]
 fn a_match_across_two_rows_is_found_at_the_right_place() {
     let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "gamma: 3"]);
@@ -97,18 +98,68 @@ fn a_match_across_two_rows_is_found_at_the_right_place() {
 
     app.run_search(SearchScope::Main, SearchDir::Forward, r"1\nbeta");
     assert!(app.message.is_empty(), "{}", app.message);
-    assert_eq!(app.cursor, 0, "the match starts on alpha's row");
-    // `alpha: 1` — the `1` is column 7.
-    assert_eq!(app.cursor_column, 7);
+    // `alpha: 1` — the `1` is column 7, and that is where the match
+    // starts and so where the anchor goes.
+    let anchor = app.select_anchor.expect("a match over two rows selects");
+    assert_eq!((anchor.node, anchor.column), (0, 7));
+    assert!(app.select_engaged);
+    // The caret is the selection's moving end (spec 0242), so it rests
+    // on the match's last character — the `a` of `beta`.
+    assert_eq!(app.cursor, 1, "the match ends on beta's row");
+    assert_eq!(app.cursor_column, 3);
 
     // The same pattern with a `\n` the rows do not have finds nothing.
     app.run_search(SearchScope::Main, SearchDir::Forward, r"1\ngamma");
     assert!(app.message.contains("not found"), "{}", app.message);
 }
 
+/// Spec 0274 test-plan item 7 (S12). The multi-row result the request
+/// was about: `Enter` leaves the match selected, expressed as spec
+/// 0242's ordinary selection — so `selected_text` gives back exactly
+/// the bytes the pattern matched, and `Ctrl-c` learns nothing.
+#[test]
+fn a_multi_row_hit_becomes_a_selection() {
+    let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "gamma: 3"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    open_search(&mut app, r"1\nbeta");
+    settle(&mut app);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    // `alpha: 1` from column 7 to `beta: 2` up to column 4, the end
+    // exclusive — the whole of the match and nothing besides.
+    assert_eq!(app.selection_span(), Some((0, 7, 1, 4)));
+    assert_eq!(app.selected_text(), Some((2, "1\nbeta".to_string())));
+}
+
+/// Spec 0274 test-plan item 8 (S12's second half). A hit inside one row
+/// selects nothing, whichever engine found it — a selection there would
+/// be a cue the reader did not ask for, over text one glance takes in.
+#[test]
+fn a_single_row_hit_still_sets_no_selection() {
+    // `b\s*eta` admits a `\n` and so routes to the cross-row engine,
+    // while `beta` does not: the two paths must agree about this.
+    // Deliberately not `\s*beta`, which is *not* a single-row match —
+    // `\s*` is greedy and eats the newline the previous row ends with.
+    for pattern in [r"b\s*eta", "beta"] {
+        let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "gamma: 3"]);
+        app.splash = false;
+        app.term_width = 120;
+
+        open_search(&mut app, pattern);
+        settle(&mut app);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(app.cursor, 1, "{pattern}");
+        assert_eq!(app.select_anchor, None, "{pattern}");
+        assert_eq!(app.selection_span(), None, "{pattern}");
+    }
+}
+
 /// Spec 0274 S2 as a *semantics* rather than a routing rule: a pattern
 /// that admits no newline takes the per-row walk and must agree with the
-/// one that does. `beta` and `\s*beta` are the same search.
+/// one that does. `beta` and `b\s*eta` are the same search.
 #[test]
 fn the_two_engines_agree_where_the_pattern_admits_no_newline() {
     let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "gamma: 3"]);

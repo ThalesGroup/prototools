@@ -1500,6 +1500,9 @@ impl App {
         // costs less than the bookkeeping would.
         let search_pattern = self.search_highlight_pattern();
         let search_current = self.search_current_cell();
+        // Spec 0274 S13: hoisted out of the per-row closure because
+        // resolving a hit's rows to absolute lines is a descent apiece.
+        let search_hit = self.search_hit_span();
         let search_styles = search_pattern.as_ref().map(|_| {
             (
                 theme::search_current_style(self.theme),
@@ -1599,57 +1602,86 @@ impl App {
                 if let (Some(pattern), Some((current, other))) = (&search_pattern, search_styles) {
                     let text = self.row_text(display_row);
                     let width = inner.width as usize;
-                    // Spec 0235 S22: a path match has nothing visible to
-                    // mark, so it gets one cell rather than a range —
-                    // exactly the cell the caret will land on at
-                    // `Enter`.
-                    let path_cell = search_current
-                        .filter(|&(line, _, _, on_path)| on_path && Some(line) == line_idx);
-                    if let Some((_, column, _, _)) = path_cell {
-                        if let Some(index) =
-                            (FOLD_FIELD_WIDTH + column).checked_sub(self.pan_offset)
-                        {
-                            if index + 1 < width {
-                                restyle_range(&mut spans, index + 1..index + 2, |style| {
-                                    style.patch(current)
-                                });
+                    // Spec 0274 S13: a pattern that may cross a row
+                    // tints the current hit and nothing else. Finding
+                    // the other occurrences would mean running the
+                    // cross-row engine over the whole window every
+                    // frame, and the per-frame budget is what spec 0272
+                    // exists to defend. The loop below is a single-row
+                    // construction either way.
+                    if matches!(**pattern, SearchPattern::Multi(_)) {
+                        if let (Some(span), Some(line)) = (search_hit, line_idx) {
+                            let chars = text.chars().count();
+                            if let Some(cols) = self.selected_columns(span, line, chars) {
+                                // Clamped to the pan rather than
+                                // dropped past it: a row in the middle
+                                // of a multi-row hit is tinted from its
+                                // column 0, which is off to the left of
+                                // any pan at all.
+                                let lo = cols.start.max(self.pan_offset) - self.pan_offset;
+                                let hi = cols.end.max(self.pan_offset) - self.pan_offset;
+                                let lo = FOLD_FIELD_WIDTH + lo + 1;
+                                let hi = (FOLD_FIELD_WIDTH + hi + 1).min(width);
+                                if lo < hi {
+                                    restyle_range(&mut spans, lo..hi, |s| s.patch(current));
+                                }
                             }
                         }
-                    }
-                    let mut at = 0;
-                    // `find_range_from` rather than a slice: spec 0273
-                    // S6 makes `^` and `\b` depend on what precedes
-                    // `at`, which a slice would hide. The loop is
-                    // bounded by the text as well as by the matches
-                    // because a regex may match nothing at all, and an
-                    // empty match at the end would otherwise be
-                    // re-found forever.
-                    while at <= text.len() {
-                        let Some(found) = pattern.find_range_from(&text, at) else {
-                            break;
-                        };
-                        let start = char_column(&text, found.start);
-                        let chars = text[found.clone()].chars().count();
-                        // Stepping past the match's *start* rather than
-                        // its end is what keeps overlapping occurrences
-                        // honest.
-                        at = found.start
-                            + text[found.start..].chars().next().map_or(1, char::len_utf8);
-                        let style = if search_current.is_some_and(|(line, column, _, on_path)| {
-                            !on_path && Some(line) == line_idx && column == start
-                        }) {
-                            current
-                        } else {
-                            other
-                        };
-                        let Some(index) = (FOLD_FIELD_WIDTH + start).checked_sub(self.pan_offset)
-                        else {
-                            continue;
-                        };
-                        let lo = index + 1;
-                        let hi = (lo + chars).min(width);
-                        if lo < hi {
-                            restyle_range(&mut spans, lo..hi, |s| s.patch(style));
+                    } else {
+                        // Spec 0235 S22: a path match has nothing visible to
+                        // mark, so it gets one cell rather than a range —
+                        // exactly the cell the caret will land on at
+                        // `Enter`.
+                        let path_cell = search_current
+                            .filter(|&(line, _, _, on_path)| on_path && Some(line) == line_idx);
+                        if let Some((_, column, _, _)) = path_cell {
+                            if let Some(index) =
+                                (FOLD_FIELD_WIDTH + column).checked_sub(self.pan_offset)
+                            {
+                                if index + 1 < width {
+                                    restyle_range(&mut spans, index + 1..index + 2, |style| {
+                                        style.patch(current)
+                                    });
+                                }
+                            }
+                        }
+                        let mut at = 0;
+                        // `find_range_from` rather than a slice: spec 0273
+                        // S6 makes `^` and `\b` depend on what precedes
+                        // `at`, which a slice would hide. The loop is
+                        // bounded by the text as well as by the matches
+                        // because a regex may match nothing at all, and an
+                        // empty match at the end would otherwise be
+                        // re-found forever.
+                        while at <= text.len() {
+                            let Some(found) = pattern.find_range_from(&text, at) else {
+                                break;
+                            };
+                            let start = char_column(&text, found.start);
+                            let chars = text[found.clone()].chars().count();
+                            // Stepping past the match's *start* rather than
+                            // its end is what keeps overlapping occurrences
+                            // honest.
+                            at = found.start
+                                + text[found.start..].chars().next().map_or(1, char::len_utf8);
+                            let style =
+                                if search_current.is_some_and(|(line, column, _, on_path)| {
+                                    !on_path && Some(line) == line_idx && column == start
+                                }) {
+                                    current
+                                } else {
+                                    other
+                                };
+                            let Some(index) =
+                                (FOLD_FIELD_WIDTH + start).checked_sub(self.pan_offset)
+                            else {
+                                continue;
+                            };
+                            let lo = index + 1;
+                            let hi = (lo + chars).min(width);
+                            if lo < hi {
+                                restyle_range(&mut spans, lo..hi, |s| s.patch(style));
+                            }
                         }
                     }
                 }

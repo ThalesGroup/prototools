@@ -2310,6 +2310,32 @@ fn every_visible_match_is_tinted_and_the_current_one_differently() {
     );
 }
 
+/// Spec 0274 S13. A pattern that may cross a row tints the current hit
+/// over its whole extent — across the row boundary, the tail of one row
+/// and the head of the next — and tints nothing else.
+///
+/// Both halves matter. The extent is the result the request asked to
+/// see; the silence about the other occurrence is the per-frame budget
+/// spec 0272 defends, since finding it would mean running the cross-row
+/// engine over the whole window every frame.
+#[test]
+fn a_cross_row_match_is_tinted_over_both_rows_and_nothing_else() {
+    let mut app = sibling_leaves_app(&["ab", "cd", "ab", "cd"]);
+    search_by_key(&mut app, r"b\nc");
+
+    let terminal = drawn_frame(&mut app, 40, 8);
+    assert_eq!(
+        search_current_cells(&app, &terminal),
+        vec![(0, "b".to_string()), (1, "c".to_string())],
+        "the tail of the first row and the head of the second"
+    );
+    assert_eq!(
+        search_match_cells(&app, &terminal),
+        Vec::new(),
+        "and the identical pair on rows 2 and 3 is left alone"
+    );
+}
+
 /// Spec 0235 test-plan item 14 (G5, S15). The highlight is not the
 /// prompt's — it outlives the commit, and `n` moves which occurrence
 /// wears the strong tint without turning the rest off.

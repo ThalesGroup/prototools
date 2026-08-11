@@ -23,6 +23,7 @@ use std::collections::VecDeque;
 
 use super::navigation::PathScratch;
 use super::search_cursor::{Segment, SegmentScan};
+use super::selection::SelectionSpan;
 use super::*;
 
 /// Spec 0235 S4: how many candidates one `search_sweep_step` visits.
@@ -135,6 +136,16 @@ pub(super) struct SweepHit {
     /// Spec 0235 S22: the pattern matched the row's positional path,
     /// which is not on screen, rather than its text.
     pub(super) on_path: bool,
+    /// Spec 0274 S11: the match's other end — the row it stops on and
+    /// the column one past its last character — when that is not this
+    /// row.
+    ///
+    /// `None` is the single-row case, which is every hit a pattern that
+    /// cannot match a `\n` can produce and which `width` already
+    /// describes. `width` keeps its meaning either way: it is what the
+    /// match covers of *this* row, so the centering and the first row's
+    /// tint read it unchanged.
+    pub(super) end: Option<(LinePos, usize)>,
 }
 
 /// Spec 0235 S6: where a `/`/`?` prompt was opened from — what every
@@ -461,6 +472,7 @@ impl App {
                             column: indent,
                             width: 1,
                             on_path: true,
+                            end: None,
                         });
                 }
                 let text = self.line_text_at(pos, sweep.offset);
@@ -474,6 +486,7 @@ impl App {
                     column: text[..range.start].chars().count(),
                     width: text[range].chars().count(),
                     on_path: false,
+                    end: None,
                 });
             }
             // Spec 0235 S23: the side panes list FQDNs, not nodes, so
@@ -501,6 +514,7 @@ impl App {
             column: haystack[..range.start].chars().count(),
             width: haystack[range].chars().count(),
             on_path: false,
+            end: None,
         })
     }
 
@@ -659,13 +673,18 @@ impl App {
 
     /// A byte span inside `seg`, read as a stop.
     ///
-    /// Spec 0274 S11's extent lands in a later stage; for now the hit is
-    /// reported over the part of its first row that it covers, which is
-    /// the whole of it whenever the match does not cross a row.
+    /// Spec 0274 S11: two positions rather than a row and a width. The
+    /// stop itself is still the row the match *starts* on — that is
+    /// where the sweep is, where the view centers and where a rotation
+    /// resumes — and the second position says how far past it the match
+    /// runs.
     fn hit_from_span(&self, seg: Segment, span: Range<usize>) -> Option<SweepHit> {
         let (pos, row) = self.locate_in_segment(seg, span.start)?;
         let text = self.line_text(pos);
         let start = span.start - row.start;
+        // Its own row's share of the match, which is all of it when the
+        // two ends are on the same row and the rest of the row when
+        // they are not.
         let end = span.end.min(row.end) - row.start;
         // The row's first non-blank, which spec 0246 S3a makes the floor
         // every stop's position is measured against.
@@ -676,7 +695,29 @@ impl App {
             column: text[..start].chars().count(),
             width: text[start..end].chars().count(),
             on_path: false,
+            end: self.span_end_position(seg, span.end, pos),
         })
+    }
+
+    /// Spec 0274 S11's second position — the row byte `at` falls on and
+    /// the column one past it — or `None` when that is `from`'s own row
+    /// and the hit is the single-row one every other caller expects.
+    ///
+    /// Located rather than carried along: `locate_in_segment` is a walk
+    /// from the segment's start, and paying for it twice happens once
+    /// per *found* match rather than once per candidate.
+    fn span_end_position(
+        &self,
+        seg: Segment,
+        at: usize,
+        from: LinePos,
+    ) -> Option<(LinePos, usize)> {
+        let (pos, row) = self.locate_in_segment(seg, at)?;
+        if pos == from {
+            return None;
+        }
+        let text = self.line_text(pos);
+        Some((pos, text[..at - row.start].chars().count()))
     }
 
     /// Where `to`'s line begins in its owner's text, given that `from`'s
@@ -810,6 +851,7 @@ impl App {
                     // is a coincidence, so it must not arm `h`'s fold or
                     // `l`'s descent.
                     self.caret_anchor = CaretAnchor::Free;
+                    self.select_sweep_hit(hit);
                 }
             }
             (SearchScope::Override, SweepCursor::Index(i)) => {
@@ -820,6 +862,43 @@ impl App {
             (SearchScope::Manage, SweepCursor::Index(i)) => self.set_manage_highlight(i),
             _ => {}
         }
+    }
+
+    /// Spec 0274 S12: leave a match that crosses a row selected.
+    ///
+    /// The caret has just landed on the match's first character, so the
+    /// anchor goes there and the caret walks on to its last — spec 0242
+    /// makes the caret the selection's moving end, and this is that
+    /// model used rather than worked around. The renderer, `Ctrl-c` and
+    /// `selected_columns` therefore learn nothing.
+    ///
+    /// **The caret ends on the last character, not one past it**: 0242
+    /// S1's block caret rests *on* a cell, and a span whose end column
+    /// is exclusive is one past the cell the reader can see.
+    ///
+    /// A single-row hit selects nothing. Its behavior is spec 0246's and
+    /// does not change; a selection there would be a cue the reader did
+    /// not ask for, over text one glance already takes in.
+    fn select_sweep_hit(&mut self, hit: SweepHit) {
+        let (Some((end, column)), SweepCursor::Line(pos)) = (hit.end, hit.at) else {
+            return;
+        };
+        self.select_anchor = Some(CursorPos {
+            node: pos.node,
+            line_in_node: pos.line_in_node,
+            column: hit.column,
+        });
+        if end.node != self.cursor {
+            self.set_cursor(end.node);
+            // As the landing did: the match's end may be under a fold of
+            // its own even when its start was not.
+            self.unfold_ancestors(end.node);
+        }
+        self.cursor_line_in_node = end.line_in_node;
+        self.cursor_column = column.saturating_sub(1);
+        self.clamp_caret_column();
+        self.desired_column = self.cursor_column;
+        self.select_engaged = true;
     }
 
     /// Spec 0235 S6: open a `/`/`?` prompt's search state — the origin
@@ -1133,6 +1212,33 @@ impl App {
         };
         let line = self.absolute_start(pos.node) + pos.line_in_node as usize;
         Some((line, hit.column, hit.width, hit.on_path))
+    }
+
+    /// Spec 0274 S13: the current hit's whole extent, shaped as a
+    /// selection is — two absolute lines and two columns, the end
+    /// exclusive — so that `selected_columns` cuts it per row.
+    ///
+    /// This is what a pattern that may cross a row tints *instead of*
+    /// `render`'s occurrence loop, not as well: the loop is a per-row
+    /// construction, and running the cross-row engine over the window
+    /// every frame is the cost spec 0272 exists to refuse. So a
+    /// single-row hit of such a pattern comes back here too — it is
+    /// still the only occurrence anything will draw.
+    pub(super) fn search_hit_span(&self) -> Option<SelectionSpan> {
+        let hit = self.search_sweep.as_ref()?.found?;
+        let SweepCursor::Line(pos) = hit.at else {
+            return None;
+        };
+        let lo = self.absolute_start(pos.node) + pos.line_in_node as usize;
+        match hit.end {
+            Some((end, column)) => Some((
+                lo,
+                hit.column,
+                self.absolute_start(end.node) + end.line_in_node as usize,
+                column,
+            )),
+            None => Some((lo, hit.column, lo, hit.column + hit.width)),
+        }
     }
 
     /// Spec 0235 S12/S13: bring the live sweep's match into view, once,

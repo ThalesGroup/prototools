@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0274 — a match may cross a line
 
-Status: draft
+Status: implemented
+Implemented in: 2026-08-11
 App: protolens
 Refs:
 - docs/specs/0273-a-pattern-is-a-path-or-a-regex.md — the path/regex
@@ -323,6 +324,13 @@ engine.
   single-row hit is the case where the two rows are equal, and every
   existing caller reads it exactly as it reads a `SweepHit` today.
 
+  The second position is spelled `end: Option<(LinePos, usize)>` and is
+  `None` in exactly that case, which is what makes "every existing
+  caller reads it as it does today" true rather than merely intended:
+  `width` keeps its old meaning of what the match covers of the row it
+  *starts* on, so the centering and the first row's tint are unchanged
+  and the three single-row constructors gain one `None`.
+
   Converting the engine's byte span to those positions is done by the
   cursor, which knows which node it handed out and at what offset. This
   is why S6's offsets need be self-consistent only within a segment, and
@@ -554,6 +562,21 @@ whether the document has rows in it. G2 is worth the larger change.
     and it is the item most likely to send the spec back.
 
 ## Measured outcome
+
+**Test-plan item 17 — what the routing change costs.** 0273's harness
+(`/tmp/search_time.py`) on the same corpus, timing the synchronous sweep
+a committed `Enter` runs over the fully baked document:
+
+| pattern | engine | `key Enter` |
+|---|---|---|
+| `zzqqxx` | single-row (0273) | 708 ms |
+| `zzqqxx\nqq` | cross-row | 908 ms |
+
+**G5 holds**: the single-row path is 0273's 700 ms unchanged, so a
+pattern that cannot match a `\n` pays nothing for this spec. The
+cross-row engine over the same bytes is 1.28x that — the price of
+reading the document as one string rather than as rows, paid only by the
+patterns that asked for it.
 
 **Test-plan item 18 — the bake under a live multi-line miss.** protolens
 driven over a 50x200 pty on `googleapis.desc` (25.6 MB, as both schema and
