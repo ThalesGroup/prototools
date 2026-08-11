@@ -40,6 +40,18 @@ use super::*;
 /// noise.
 pub(super) const SEARCH_SWEEP_SLICE: usize = 1000;
 
+/// Spec 0274 S13: how far above the window `multi_row_occurrences`
+/// looks for a match that reaches down into it.
+///
+/// A match may begin anywhere at all, but a highlight pass that scanned
+/// back to wherever that is would stop being bounded by the pane. This
+/// bounds it: a cross-row match starting up to this many rows above the
+/// top of the window still tints the part of itself that is on screen,
+/// and one starting further up does not. Fifty rows is about a
+/// screenful, so the answer settles as soon as the row the match starts
+/// on is within a page of being visible.
+const SEARCH_HIGHLIGHT_LEAD: usize = 50;
+
 /// What one `search_sweep_step` did — `Progressed` and `Idle` are
 /// `PrefetchStep`'s, since `run_loop` treats the two the same way:
 /// `Progressed` means do not sleep yet, `Idle` means there is nothing
@@ -866,13 +878,22 @@ impl App {
 
     /// Spec 0274 S12: leave a match that crosses a row selected.
     ///
-    /// The caret has just landed on the match's first character, so the
-    /// anchor goes there and the caret walks on to its last — spec 0242
-    /// makes the caret the selection's moving end, and this is that
-    /// model used rather than worked around. The renderer, `Ctrl-c` and
-    /// `selected_columns` therefore learn nothing.
+    /// The caret has just landed on the match's first character and
+    /// **stays there**; the anchor goes to its last. Spec 0242 makes the
+    /// caret the selection's moving end, so this is the model used
+    /// rather than worked around — the renderer, `Ctrl-c` and
+    /// `selected_columns` learn nothing, and `selection_span` orders the
+    /// two ends for itself.
     ///
-    /// **The caret ends on the last character, not one past it**: 0242
+    /// Which end holds the caret is not a free choice, though, and the
+    /// obvious one is wrong. A search leaves the caret **where the match
+    /// begins**, whatever engine found it, because spec 0246 S3 splits
+    /// the origin at the caret and takes the two halves to partition it:
+    /// park the caret at the match's *end* and the match the reader is
+    /// standing on still starts before the split, so a backward search
+    /// finds it again, and `N` after `/` never moves.
+    ///
+    /// **The anchor sits on the last character, not one past it**: 0242
     /// S1's block caret rests *on* a cell, and a span whose end column
     /// is exclusive is one past the cell the reader can see.
     ///
@@ -880,24 +901,14 @@ impl App {
     /// does not change; a selection there would be a cue the reader did
     /// not ask for, over text one glance already takes in.
     fn select_sweep_hit(&mut self, hit: SweepHit) {
-        let (Some((end, column)), SweepCursor::Line(pos)) = (hit.end, hit.at) else {
+        let Some((end, column)) = hit.end else {
             return;
         };
         self.select_anchor = Some(CursorPos {
-            node: pos.node,
-            line_in_node: pos.line_in_node,
-            column: hit.column,
+            node: end.node,
+            line_in_node: end.line_in_node,
+            column: column.saturating_sub(1),
         });
-        if end.node != self.cursor {
-            self.set_cursor(end.node);
-            // As the landing did: the match's end may be under a fold of
-            // its own even when its start was not.
-            self.unfold_ancestors(end.node);
-        }
-        self.cursor_line_in_node = end.line_in_node;
-        self.cursor_column = column.saturating_sub(1);
-        self.clamp_caret_column();
-        self.desired_column = self.cursor_column;
         self.select_engaged = true;
     }
 
@@ -1218,12 +1229,13 @@ impl App {
     /// selection is — two absolute lines and two columns, the end
     /// exclusive — so that `selected_columns` cuts it per row.
     ///
-    /// This is what a pattern that may cross a row tints *instead of*
-    /// `render`'s occurrence loop, not as well: the loop is a per-row
-    /// construction, and running the cross-row engine over the window
-    /// every frame is the cost spec 0272 exists to refuse. So a
-    /// single-row hit of such a pattern comes back here too — it is
-    /// still the only occurrence anything will draw.
+    /// This is what a pattern that may cross a row tints in
+    /// `search_current_style`, in place of `render`'s occurrence loop —
+    /// that loop is a per-row construction, and it cannot describe a
+    /// hit two rows tall. A single-row hit of such a pattern comes back
+    /// here too, so the current hit is drawn by one rule either way.
+    ///
+    /// The *other* occurrences are `multi_row_occurrences`'s answer.
     pub(super) fn search_hit_span(&self) -> Option<SelectionSpan> {
         let hit = self.search_sweep.as_ref()?.found?;
         let SweepCursor::Line(pos) = hit.at else {
@@ -1238,6 +1250,121 @@ impl App {
                 column,
             )),
             None => Some((lo, hit.column, lo, hit.column + hit.width)),
+        }
+    }
+
+    /// Spec 0274 S13: every occurrence of a cross-row pattern the drawn
+    /// window can be shown to hold, as character columns per window
+    /// row.
+    ///
+    /// Single-row search tints every occurrence on screen, not only the
+    /// one the caret is on, and a cross-row pattern has no reason to
+    /// behave differently. It cannot use `render`'s per-row loop,
+    /// though: a match two rows tall is not a range of any one row's
+    /// text.
+    ///
+    /// The window is not one haystack either. Two rows drawn one above
+    /// the other are a `\n` apart in the document only when they are
+    /// consecutive there as well, so the window is cut into runs of
+    /// document-adjacent rows and each run is matched on its own. That
+    /// is the same cut the sweep makes into segments, reached from the
+    /// drawn side.
+    ///
+    /// The first run reaches `SEARCH_HIGHLIGHT_LEAD` rows above the
+    /// window, so that a match beginning just off the top still tints
+    /// the part of itself that is on screen. Those extra rows carry no
+    /// tint of their own and are dropped before returning. A match
+    /// beginning further up than that is still missed — bounding the
+    /// scan is what keeps it a per-frame cost at all (spec 0272).
+    pub(super) fn multi_row_occurrences(
+        &self,
+        pattern: &SearchPattern,
+        first_row: usize,
+        window: &[DisplayRow],
+    ) -> Vec<Vec<Range<usize>>> {
+        let lead = first_row.min(SEARCH_HIGHLIGHT_LEAD);
+        let mut rows = self.build_window(first_row - lead, lead);
+        rows.extend_from_slice(window);
+        let mut out = vec![Vec::new(); rows.len()];
+        let mut start = 0;
+        while start < rows.len() {
+            let mut end = start + 1;
+            while end < rows.len() && self.rows_are_adjacent(rows[end - 1], rows[end]) {
+                end += 1;
+            }
+            self.scan_row_run(pattern, &rows[start..end], &mut out[start..end]);
+            start = end;
+        }
+        out.drain(..lead);
+        out
+    }
+
+    /// Whether two rows drawn one above the other are also one line
+    /// apart in the document, so that the `\n` between them is one a
+    /// pattern may match.
+    ///
+    /// A user fold shows up as a gap in the numbering all by itself,
+    /// since an absolute line counts the rows a fold hides. An unbaked
+    /// stop does not: it draws its header and its footer on consecutive
+    /// lines with its whole subtree still missing between them, so that
+    /// seam has to be named. It is the seam the sweep starts a new
+    /// segment at.
+    fn rows_are_adjacent(&self, prev: DisplayRow, next: DisplayRow) -> bool {
+        let (DisplayRow::Committed(prev), DisplayRow::Committed(next)) = (prev, next) else {
+            return false;
+        };
+        if next.line != prev.line + 1 {
+            return false;
+        }
+        // `prev` is an unbaked stop's header: its subtree is missing
+        // between it and the footer drawn underneath it.
+        !self.auto_folded.contains(&prev.pos.node) || self.is_footer(prev.pos)
+    }
+
+    /// One run of document-adjacent rows, joined by the `\n` that
+    /// separates them, matched, and each match cut back into the rows it
+    /// covers.
+    fn scan_row_run(
+        &self,
+        pattern: &SearchPattern,
+        rows: &[DisplayRow],
+        out: &mut [Vec<Range<usize>>],
+    ) {
+        let mut haystack = String::new();
+        let mut starts: Vec<usize> = Vec::with_capacity(rows.len());
+        for &row in rows {
+            if !starts.is_empty() {
+                haystack.push('\n');
+            }
+            starts.push(haystack.len());
+            haystack.push_str(&self.row_text(row));
+        }
+        let mut at = 0;
+        while at <= haystack.len() {
+            let Some(found) = pattern.find_range_from(&haystack, at) else {
+                break;
+            };
+            // Stepping past the match's *start* rather than its end,
+            // as the single-row loop does, is what keeps overlapping
+            // occurrences honest.
+            at = found.start
+                + haystack[found.start..]
+                    .chars()
+                    .next()
+                    .map_or(1, char::len_utf8);
+            for (i, &row_start) in starts.iter().enumerate() {
+                // One before the next row's start is that row's `\n`.
+                let row_end = starts.get(i + 1).map_or(haystack.len(), |&next| next - 1);
+                let lo = found.start.max(row_start);
+                let hi = found.end.min(row_end);
+                if lo >= hi {
+                    continue;
+                }
+                let text = &haystack[row_start..row_end];
+                out[i].push(
+                    text[..lo - row_start].chars().count()..text[..hi - row_start].chars().count(),
+                );
+            }
         }
     }
 

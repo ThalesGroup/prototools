@@ -98,15 +98,15 @@ fn a_match_across_two_rows_is_found_at_the_right_place() {
 
     app.run_search(SearchScope::Main, SearchDir::Forward, r"1\nbeta");
     assert!(app.message.is_empty(), "{}", app.message);
-    // `alpha: 1` — the `1` is column 7, and that is where the match
-    // starts and so where the anchor goes.
+    // `alpha: 1` — the `1` is column 7, and a search leaves the caret
+    // where the match begins, so that is where the caret rests.
+    assert_eq!(app.cursor, 0, "the match starts on alpha's row");
+    assert_eq!(app.cursor_column, 7);
+    // The anchor is the fixed end, on the match's last character — the
+    // `a` of `beta`.
     let anchor = app.select_anchor.expect("a match over two rows selects");
-    assert_eq!((anchor.node, anchor.column), (0, 7));
+    assert_eq!((anchor.node, anchor.column), (1, 3));
     assert!(app.select_engaged);
-    // The caret is the selection's moving end (spec 0242), so it rests
-    // on the match's last character — the `a` of `beta`.
-    assert_eq!(app.cursor, 1, "the match ends on beta's row");
-    assert_eq!(app.cursor_column, 3);
 
     // The same pattern with a `\n` the rows do not have finds nothing.
     app.run_search(SearchScope::Main, SearchDir::Forward, r"1\ngamma");
@@ -155,6 +155,33 @@ fn a_single_row_hit_still_sets_no_selection() {
         assert_eq!(app.select_anchor, None, "{pattern}");
         assert_eq!(app.selection_span(), None, "{pattern}");
     }
+}
+
+/// Spec 0274 S12. `N` after `/` steps *off* the cross-row match it is
+/// standing on, and does not find it again.
+///
+/// The rule this pins is where a search leaves the caret. Spec 0246 S3
+/// splits the origin at the caret and relies on the two halves to
+/// partition it; a caret parked at the match's *end* leaves the match's
+/// own start inside the backward half, so `N` re-finds it and the reader
+/// sees a key that does nothing. Single-row search never had the problem
+/// because its caret lands on the match's first character — this is the
+/// cross-row engine keeping the same invariant.
+#[test]
+fn a_backward_search_steps_off_the_cross_row_match_it_is_on() {
+    let mut app = sibling_leaves_app(&["a: 1", "b: 2", "a: 1", "b: 2", "c: 3"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    // Forward twice, to the second occurrence: node 2's row into node
+    // 3's.
+    app.jump_to_match(SearchDir::Forward, r"1\nb");
+    app.jump_to_match(SearchDir::Forward, r"1\nb");
+    assert_eq!(app.cursor, 2, "{}", app.message);
+
+    // And back to the first, on node 0 — not round to itself.
+    app.jump_to_match(SearchDir::Backward, r"1\nb");
+    assert_eq!(app.cursor, 0, "{}", app.message);
 }
 
 /// Spec 0274 S2 as a *semantics* rather than a routing rule: a pattern
@@ -229,6 +256,54 @@ fn a_match_does_not_cross_a_bake_hole_but_survives_it() {
         &format!(r"{}\s*", regex_quote(&far)),
     );
     assert!(app.message.is_empty(), "{}", app.message);
+}
+
+/// Spec 0274 S13. The window-wide highlight pass is cut where the drawn
+/// rows are not document-adjacent, so it agrees with the sweep about
+/// which `\n` a pattern may match.
+///
+/// A bake hole is the case the line numbers cannot catch on their own:
+/// an unbaked stop draws its header and its footer on *consecutive*
+/// absolute lines with its whole subtree still missing between them. Get
+/// this wrong and the reader is shown a match that is not there — and
+/// pressing `n` for it finds nothing, since the sweep does not believe
+/// in it either.
+#[test]
+fn the_window_highlight_does_not_join_rows_across_a_bake_hole() {
+    let (mut app, _) = bounded_repeated_message_fixture(2);
+    app.splash = false;
+    app.term_width = 120;
+
+    // The document opens `1 {` and then draws one folded `items` stop
+    // per row: row 0 is ordinary, rows 1 and 2 are both stop headers.
+    let window = app.build_window(0, 4);
+    // The rows as *drawn*, which is the haystack the highlight uses and
+    // is not `line_text`: a folded stop's header is drawn `{ ... }`.
+    let drawn: Vec<String> = window.iter().map(|&row| app.row_text(row)).collect();
+    let stop_at = |row| match window[row] {
+        DisplayRow::Committed(c) => app.auto_folded.contains(&c.pos.node) && !app.is_footer(c.pos),
+        DisplayRow::Overlay(_) => false,
+    };
+    assert!(!stop_at(0) && stop_at(1) && stop_at(2), "{drawn:?}");
+
+    let occurrences = |pair: String| {
+        let pattern = SearchPattern::new(&regex_quote(&pair)).expect("a literal pair compiles");
+        app.multi_row_occurrences(&pattern, 0, &window)
+            .into_iter()
+            .filter(|row| !row.is_empty())
+            .count()
+    };
+
+    // The control: two rows that really are adjacent are found, so the
+    // negative below cannot pass by finding nothing at all.
+    let inside = format!("{}\n{}", drawn[0], drawn[1]);
+    assert_eq!(occurrences(inside), 2, "an adjacency is a match");
+
+    // The seam: two rows drawn one above the other, on *consecutive*
+    // absolute lines — the stop's unrendered body is what stands between
+    // them, and the line numbers do not show it.
+    let seam = format!("{}\n{}", drawn[1], drawn[2]);
+    assert_eq!(occurrences(seam), 0, "a hole is not a newline");
 }
 
 /// Open a `/` prompt and type `pattern` into it, which is what arms a

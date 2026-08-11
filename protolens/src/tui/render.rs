@@ -212,6 +212,28 @@ fn restyle_range(
     *spans = out;
 }
 
+/// Spec 0274 S13: `restyle_range` over a range of a *row's text*, which
+/// the fold margin offsets and the pan and the pane's right edge then
+/// cut down to what is drawn.
+///
+/// Clamped to the pan rather than dropped past it, unlike the
+/// single-row loop's `checked_sub`: every row of a multi-row match but
+/// the first is tinted from its column 0, which is off to the left of
+/// any pan at all.
+fn tint_columns(
+    spans: &mut Vec<Span<'static>>,
+    columns: Range<usize>,
+    pan: usize,
+    width: usize,
+    style: Style,
+) {
+    let lo = FOLD_FIELD_WIDTH + columns.start.max(pan) - pan + 1;
+    let hi = (FOLD_FIELD_WIDTH + columns.end.max(pan) - pan + 1).min(width);
+    if lo < hi {
+        restyle_range(spans, lo..hi, |s| s.patch(style));
+    }
+}
+
 /// The byte offset of `text`'s `n`-th character, or its length when it
 /// has fewer than `n`.
 fn byte_of_char(text: &str, n: usize) -> usize {
@@ -1503,6 +1525,13 @@ impl App {
         // Spec 0274 S13: hoisted out of the per-row closure because
         // resolving a hit's rows to absolute lines is a descent apiece.
         let search_hit = self.search_hit_span();
+        // Spec 0274 S13: and the other occurrences, which a cross-row
+        // pattern cannot find one row at a time. Resolved for the whole
+        // window at once, since the runs it matches over span rows.
+        let search_occurrences = search_pattern
+            .as_ref()
+            .filter(|pattern| matches!(***pattern, SearchPattern::Multi(_)))
+            .map(|pattern| self.multi_row_occurrences(pattern, first_row, &window));
         let search_styles = search_pattern.as_ref().map(|_| {
             (
                 theme::search_current_style(self.theme),
@@ -1603,28 +1632,23 @@ impl App {
                     let text = self.row_text(display_row);
                     let width = inner.width as usize;
                     // Spec 0274 S13: a pattern that may cross a row
-                    // tints the current hit and nothing else. Finding
-                    // the other occurrences would mean running the
-                    // cross-row engine over the whole window every
-                    // frame, and the per-frame budget is what spec 0272
-                    // exists to defend. The loop below is a single-row
-                    // construction either way.
+                    // takes its ranges from the window-wide pass above
+                    // rather than from the single-row loop below, which
+                    // cannot describe a match two rows tall. Every
+                    // occurrence is tinted, as it is for a single-row
+                    // pattern; the current hit goes on last, so it wins
+                    // the cells the two share.
                     if matches!(**pattern, SearchPattern::Multi(_)) {
+                        let pan = self.pan_offset;
+                        if let Some(occurrences) = &search_occurrences {
+                            for columns in &occurrences[row] {
+                                tint_columns(&mut spans, columns.clone(), pan, width, other);
+                            }
+                        }
                         if let (Some(span), Some(line)) = (search_hit, line_idx) {
                             let chars = text.chars().count();
-                            if let Some(cols) = self.selected_columns(span, line, chars) {
-                                // Clamped to the pan rather than
-                                // dropped past it: a row in the middle
-                                // of a multi-row hit is tinted from its
-                                // column 0, which is off to the left of
-                                // any pan at all.
-                                let lo = cols.start.max(self.pan_offset) - self.pan_offset;
-                                let hi = cols.end.max(self.pan_offset) - self.pan_offset;
-                                let lo = FOLD_FIELD_WIDTH + lo + 1;
-                                let hi = (FOLD_FIELD_WIDTH + hi + 1).min(width);
-                                if lo < hi {
-                                    restyle_range(&mut spans, lo..hi, |s| s.patch(current));
-                                }
+                            if let Some(columns) = self.selected_columns(span, line, chars) {
+                                tint_columns(&mut spans, columns, pan, width, current);
                             }
                         }
                     } else {

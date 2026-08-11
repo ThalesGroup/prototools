@@ -2312,14 +2312,17 @@ fn every_visible_match_is_tinted_and_the_current_one_differently() {
 
 /// Spec 0274 S13. A pattern that may cross a row tints the current hit
 /// over its whole extent — across the row boundary, the tail of one row
-/// and the head of the next — and tints nothing else.
+/// and the head of the next — *and* every other occurrence on screen,
+/// exactly as a single-row pattern does.
 ///
 /// Both halves matter. The extent is the result the request asked to
-/// see; the silence about the other occurrence is the per-frame budget
-/// spec 0272 defends, since finding it would mean running the cross-row
-/// engine over the whole window every frame.
+/// see; the other occurrence is the parity with single-row search that
+/// the reader has no reason to expect to lose just because the pattern
+/// grew a `\n`. It is affordable because the scan is bounded by the
+/// window rather than by the document: one pass over the drawn rows,
+/// cut where they are not document-adjacent.
 #[test]
-fn a_cross_row_match_is_tinted_over_both_rows_and_nothing_else() {
+fn a_cross_row_match_is_tinted_over_both_rows_and_over_every_occurrence() {
     let mut app = sibling_leaves_app(&["ab", "cd", "ab", "cd"]);
     search_by_key(&mut app, r"b\nc");
 
@@ -2331,8 +2334,8 @@ fn a_cross_row_match_is_tinted_over_both_rows_and_nothing_else() {
     );
     assert_eq!(
         search_match_cells(&app, &terminal),
-        Vec::new(),
-        "and the identical pair on rows 2 and 3 is left alone"
+        vec![(2, "b".to_string()), (3, "c".to_string())],
+        "and the identical pair on rows 2 and 3, in the other style"
     );
 }
 

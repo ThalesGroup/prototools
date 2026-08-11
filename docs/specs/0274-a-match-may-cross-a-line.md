@@ -102,8 +102,13 @@ engine.
   intact and gets stronger: the haystack is now a *segment*, so those
   anchors would bind to a boundary the reader cannot see and that moves
   as the bake progresses. `^` and `$` mean what they say.
-- **N6. Non-current matches are not tinted for a worker pattern.**
-  See S11.
+- **N6. ~~Non-current matches are not tinted for a worker pattern.~~**
+  **Withdrawn 2026-08-11**, on the reader's report: single-row search
+  tints every occurrence on screen, and losing that just because the
+  pattern grew a `\n` reads as a bug rather than as a budget. What made
+  it look unaffordable was the assumption that the pass would have to
+  reach back to wherever a match might begin. It does not: the scan is
+  bounded by the drawn window plus a fixed lead above it. See S13.
 - **N7. Side panes keep the single-row path unconditionally.** The
   override and manage panes list FQDNs and entries, not a document.
   There is no row-joining semantics for them to be faithful to, and no
@@ -338,24 +343,56 @@ engine.
   still want a scan of that node's text, and the coarse half is free.
 
 - **S12.** **`Enter` on a hit that spans more than one row leaves it
-  selected** — `select_anchor` at the match's start, the caret on its
-  last character, `select_engaged` set. That is the multi-row result the
+  selected** — the caret on the match's first character, `select_anchor`
+  on its last, `select_engaged` set. That is the multi-row result the
   request asked for, and spec 0242's renderer, `Ctrl-c` and
-  `selected_columns` need to learn nothing. Spec 0242 S3 clears the
-  selection *before* dispatch, so `apply_sweep_hit` sets it afterwards
-  and the ordering already holds.
+  `selected_columns` need to learn nothing: `selection_span` orders the
+  two ends for itself. Spec 0242 S3 clears the selection *before*
+  dispatch, so `apply_sweep_hit` sets it afterwards and the ordering
+  already holds.
+
+  **Which end holds the caret is not a free choice.** *Amended
+  2026-08-11; the original had it the other way round and it was wrong.*
+  A search leaves the caret **where the match begins**, whichever engine
+  found it, because 0246 S3 splits the origin at the caret and takes the
+  two halves to partition it. Park the caret at the match's *end* and the
+  match the reader is standing on still starts before the split, so the
+  backward half admits it and the search lands on it again: after `/`,
+  `N` never moves; after `?`, `n` never moves. Single-row search never
+  had the problem because its caret lands on the match's first character.
 
   A single-row hit sets no selection. Its behavior is settled by 0246 and
   does not change.
 
-- **S13.** While the prompt is open, a worker pattern tints **only the
-  current hit**, over its whole extent, using S11's two positions and the
-  same per-row column arithmetic `selected_columns` does. Other
-  occurrences on screen are not tinted (N6): finding them means running
-  the multi-line engine over the visible window every frame, and the
-  per-frame budget is the thing spec 0272 exists to defend.
-  `render.rs`'s `find_range_from` loop is a single-row construction and
-  stays on 0273's patterns only.
+- **S13.** *Rewritten 2026-08-11, withdrawing N6.* A worker pattern tints
+  **the current hit and every other occurrence the drawn window holds**,
+  which is the parity with single-row search the reader expects. Two
+  passes, in this order:
+
+  1. Every occurrence, in `search_match_style`. The window cannot be one
+     haystack: two rows drawn one above the other are a `\n` apart in the
+     document only when they are consecutive there too. So the drawn rows
+     are cut into **runs of document-adjacent rows** and each run is
+     matched on its own — the same cut the sweep makes into segments,
+     reached from the drawn side. A user fold shows up as a gap in the
+     absolute numbering by itself; a bake stop does not, since it draws
+     its header and its footer on consecutive lines with its subtree
+     missing between them, so that seam is named explicitly.
+  2. The current hit on top, in `search_current_style`, over its whole
+     extent, using S11's two positions and the same per-row column
+     arithmetic `selected_columns` does. It goes last so that it wins the
+     cells the two passes share, and it is a separate pass because it is
+     the one the sweep vouches for — it is correct even when the hit
+     starts above the window.
+
+  The first run reaches a fixed number of rows above the window so that a
+  match beginning just off the top still tints its visible tail. **That
+  bound is what keeps this a per-frame cost at all**, which is the budget
+  spec 0272 exists to defend: a match beginning further up than the lead
+  is not tinted, and that is the accepted limitation. `render.rs`'s
+  `find_range_from` loop stays a single-row construction on 0273's
+  patterns only — a match two rows tall is not a range of any one row's
+  text.
 
 - **S14.** Direction, origin and wrap keep 0246's shape, expressed in
   bytes. The forward walk covers the origin's segment from the caret's
@@ -560,6 +597,19 @@ whether the document has rows in it. G2 is worth the larger change.
     the same bake with no search running. S9's one-step-per-segment
     yield is a guess; this is the number that says whether it stands,
     and it is the item most likely to send the spec back.
+
+*Added 2026-08-11, with S12's amendment and S13's rewrite:*
+
+19. `a_backward_search_steps_off_the_cross_row_match_it_is_on` — S12's
+    caret rule, which is only observable through the walk: two forward
+    jumps to the second occurrence, then one backward jump, which must
+    land on the first and not on the one it started from.
+20. `a_cross_row_match_is_tinted_over_both_rows_and_over_every_occurrence`
+    — S13's two passes over a frame, in their two styles.
+21. `the_window_highlight_does_not_join_rows_across_a_bake_hole` — S13's
+    run cut, on the seam the absolute line numbers cannot show, with a
+    genuinely adjacent pair as the control so the negative cannot pass
+    vacuously.
 
 ## Measured outcome
 
