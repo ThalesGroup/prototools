@@ -229,6 +229,17 @@ pub(super) struct SearchSweep {
     scan: Option<SegmentScan>,
     /// Spec 0235 S21.
     path: PathScratch,
+    /// Spec 0277 S6: the place, in the tally's numbering, of the match
+    /// this sweep is *leaving*.
+    ///
+    /// Decided at departure rather than reconstructed at arrival: at
+    /// the moment of departure the displayed hit is still the displayed
+    /// one and the caret has not moved yet, so "am I leaving match *k*"
+    /// is a question about the state the reader is looking at rather
+    /// than a guess about where they ended up. `None` when the search
+    /// did not start from the match the ordinal describes, which is
+    /// what sends the tally to S7's prefix walk.
+    from_ordinal: Option<usize>,
 }
 
 impl SearchSweep {
@@ -238,6 +249,74 @@ impl SearchSweep {
     pub(super) fn is_finished(&self) -> bool {
         self.at.is_none() && self.segments.is_empty() && self.scan.is_none()
     }
+}
+
+/// Spec 0277 S1: how many matches the document holds, and which of them
+/// the reader is on.
+///
+/// **Two scalars, not a list of positions.** `total` and `ordinal` are
+/// facts with two different lifetimes, and keeping them apart is what
+/// makes the rest of this small: the total survives every movement of
+/// the reader, and only the ordinal has to keep up with it. Remembering
+/// every match's position instead would make the ordinal a lookup, at
+/// the price of a cap — a one-character pattern over a five-million-row
+/// document asks for hundreds of megabytes — and the cap would land on
+/// exactly the documents the feature exists for.
+pub(super) struct SearchTally {
+    /// Spec 0277 S11: what the two answers are about. Any of the three
+    /// changing drops both and starts a new walk; a change in the
+    /// *displayed hit* touches only the ordinal.
+    scope: SearchScope,
+    text: String,
+    version: u64,
+    /// `text` compiled, shared with `render`'s own cache — after spec
+    /// 0273 a compile is a real cost.
+    pattern: Rc<SearchPattern>,
+    /// The walk in flight, or `None` once it has closed.
+    walk: Option<TallyWalk>,
+    /// Spec 0277 S5: published together, when the walk closes. An
+    /// ordinal without a total cannot wrap and has nothing to be drawn
+    /// beside, so there is no state in which one of the two is useful
+    /// alone.
+    total: Option<usize>,
+    ordinal: Option<usize>,
+    /// The hit `ordinal` describes. Spec 0277 S6 re-points this as the
+    /// reader steps, rather than deriving the ordinal afresh.
+    of: Option<(SweepCursor, usize)>,
+}
+
+/// One counting pass over the document's candidates.
+///
+/// The sweep's own walk with the early exit removed and every match of a
+/// candidate taken instead of the first: same candidates, same
+/// enumeration, and `RowBound::Whole` throughout, since a tally has no
+/// origin to split (spec 0277 S4). That reuse is the invariant the pair
+/// rests on — the tally counts exactly the stops of one full cycle of
+/// `n`, and a folded subtree contributes candidates to neither walk.
+struct TallyWalk {
+    /// The next candidate, `None` once the walk has closed.
+    at: Option<SweepCursor>,
+    /// Where `at`'s line begins in its owner's text — spec 0272's
+    /// carried byte cursor, for the same reason: asking per candidate
+    /// makes a walk across a packed run quadratic in the run's length.
+    offset: usize,
+    /// Candidates left before the whole document has been seen. One per
+    /// candidate and no `+ 1`: a tally starts at the document's first
+    /// candidate rather than at an origin, so nothing is visited twice.
+    remaining: usize,
+    /// Matches counted so far.
+    count: usize,
+    /// The displayed hit the ordinal is being derived for, as the
+    /// candidate it sits in and the byte its stop is placed at.
+    target: (SweepCursor, usize),
+    /// Its place, once the walk has reached it.
+    ordinal: Option<usize>,
+    /// Spec 0277 S7: stop at `target` rather than at the end of the
+    /// document. The total is still valid, so the only missing fact is
+    /// how many matches lie before the displayed hit.
+    prefix: bool,
+    /// Spec 0235 S21.
+    path: PathScratch,
 }
 
 impl App {
@@ -389,6 +468,7 @@ impl App {
             segments,
             scan: None,
             path: PathScratch::default(),
+            from_ordinal: None,
         })
     }
 
@@ -812,12 +892,424 @@ impl App {
         let hit = sweep.found;
         self.search_sweep = Some(sweep);
         if found_changed {
+            self.track_search_tally();
             if let Some(hit) = hit {
                 self.show_sweep_hit(hit);
             }
         }
         self.search_dirty |= found_changed || exhausted;
         step
+    }
+
+    /// Spec 0277: what a tally would be about — the pane, the pattern,
+    /// the pattern compiled, and the hit whose place the ordinal names —
+    /// or `None` when there is nothing to count.
+    ///
+    /// Four of the spec's limits live here, because all four are the
+    /// same question asked once a step:
+    ///
+    /// - S12, the tally exists only while the matches are tinted;
+    /// - N3, no `0 of 0` — a miss is already reported on this row by
+    ///   the pattern's own color, and a sweep still walking has no hit
+    ///   for the ordinal to be about;
+    /// - N2, no total over a document the bake is still growing;
+    /// - N1, no count for a cross-row pattern, whose unit of work is a
+    ///   segment on a worker thread rather than a row on this one.
+    fn tally_subject(&self) -> Option<(SearchScope, String, Rc<SearchPattern>, SweepHit)> {
+        if !self.search_highlight {
+            return None;
+        }
+        let sweep = self.search_sweep.as_ref()?;
+        let hit = sweep.found?;
+        let scope = sweep.origin.scope;
+        if !self.search_miss_is_conclusive(scope) {
+            return None;
+        }
+        let text = self.tally_pattern_text(scope)?;
+        let pattern = self.compiled_pattern(&text)?;
+        if matches!(*pattern, SearchPattern::Multi(_)) {
+            return None;
+        }
+        Some((scope, text, pattern, hit))
+    }
+
+    /// The *sweep's* pattern, read the way spec 0235 S15's highlight
+    /// reads it but keyed on the sweep's own scope rather than on
+    /// whichever pane happens to have focus now.
+    fn tally_pattern_text(&self, scope: SearchScope) -> Option<String> {
+        match &self.command_buffer {
+            Some(buf)
+                if matches!(self.command_kind, CommandLineKind::Search { .. })
+                    && !buf.is_empty() =>
+            {
+                Some(buf.clone())
+            }
+            _ => self.last_search_for(scope).map(|(_, p)| p.clone()),
+        }
+    }
+
+    /// Spec 0277 S3: a walk forward from the document's first candidate,
+    /// whatever the search's direction.
+    ///
+    /// "Counting from the beginning of the document" is the whole
+    /// meaning of the first number, so a backward search's `n`
+    /// *decrements* it.
+    fn begin_tally_walk(
+        &self,
+        scope: SearchScope,
+        target: (SweepCursor, usize),
+        prefix: bool,
+    ) -> TallyWalk {
+        let at = match scope {
+            SearchScope::Main => self.first_line().map(SweepCursor::Line),
+            _ => (self.search_candidate_count(scope) > 0).then_some(SweepCursor::Index(0)),
+        };
+        TallyWalk {
+            offset: match at {
+                Some(SweepCursor::Line(pos)) => self.line_offset(pos),
+                _ => 0,
+            },
+            at,
+            remaining: self.search_candidate_count(scope),
+            count: 0,
+            target,
+            ordinal: None,
+            prefix,
+            path: PathScratch::default(),
+        }
+    }
+
+    /// Spec 0277 S2: visit at most `budget` candidates, counting.
+    ///
+    /// The walk is uncapped and exact. `SEARCH_SWEEP_SLICE`'s doc
+    /// comment records a full sweep of googleapis.desc's 5 281 124
+    /// lines at 647–961 ms, converged one slice at a time, and this is
+    /// that same candidate walk; roughly a second on the largest corpus
+    /// in the project, for a job nothing is waiting on.
+    fn advance_tally(&self, tally: &mut SearchTally, budget: usize) {
+        let scope = tally.scope;
+        let pattern = &*tally.pattern;
+        let Some(walk) = tally.walk.as_mut() else {
+            return;
+        };
+        let n = self.search_candidate_count(scope);
+        for _ in 0..budget {
+            let Some(at) = walk.at else { return };
+            let (stops, place) =
+                self.count_stops(&mut walk.path, pattern, scope, at, walk.offset, walk.target);
+            if let Some(k) = place {
+                // Spec 0277 S5: the ordinal comes out of the same walk,
+                // so the first `27 of 42` costs no more than the `42`.
+                walk.ordinal = Some(walk.count + k);
+                // Spec 0277 S7: a prefix walk wanted exactly this and
+                // has no total left to finish.
+                if walk.prefix {
+                    walk.at = None;
+                    return;
+                }
+            }
+            walk.count += stops;
+            walk.remaining -= 1;
+            let next = (walk.remaining > 0)
+                .then(|| self.next_candidate(at, SearchDir::Forward, n))
+                .flatten();
+            if let (SweepCursor::Line(from), Some(SweepCursor::Line(to))) = (at, next) {
+                walk.offset = self.stepped_offset(from, walk.offset, to);
+            }
+            walk.at = next;
+        }
+    }
+
+    /// Spec 0277 S4: how many stops one candidate holds, and — when the
+    /// walk's target is among them — which of them it is.
+    ///
+    /// Exactly [`App::sweep_test`]'s haystack choice, with
+    /// [`pick_match`]'s single answer widened to the whole set. Reusing
+    /// the choice rather than writing a second matching rule beside the
+    /// first is what makes the count *be* the number of stops in one
+    /// full cycle of `n`: every match in every candidate, one stop for
+    /// a row the pattern matched on its path (spec 0273 S5), and
+    /// nothing for a footer row.
+    fn count_stops(
+        &self,
+        path: &mut PathScratch,
+        pattern: &SearchPattern,
+        scope: SearchScope,
+        at: SweepCursor,
+        offset: usize,
+        target: (SweepCursor, usize),
+    ) -> (usize, Option<usize>) {
+        // The target is somewhere else entirely unless it is here.
+        let here = |k: usize| (target.0 == at).then_some(k);
+        let haystack: Cow<'_, str> = match (scope, at) {
+            (SearchScope::Main, SweepCursor::Line(pos)) => {
+                // A closing `}` draws no content of its own, and a
+                // search has never matched one.
+                if self.is_footer(pos) {
+                    return (0, None);
+                }
+                if pattern.is_path() {
+                    // Spec 0273 S4: a node's own lines all carry the
+                    // same path, so only the first of them is a
+                    // candidate.
+                    if pos.line_in_node != 0 {
+                        return (0, None);
+                    }
+                    self.write_path_segments(path, pos.node);
+                    if !pattern.matches_path(path.segments()) {
+                        return (0, None);
+                    }
+                    // Spec 0246 S9: one stop, at the row's start.
+                    return (1, here(1));
+                }
+                let text = self.line_text_at(pos, offset);
+                // The row's first non-blank — the floor every stop's
+                // position is measured against (spec 0246 S3a).
+                let indent = text.len() - text.trim_start().len();
+                let mut count = 0;
+                let mut place = None;
+                let mut last = None;
+                let mut from = 0;
+                while from <= text.len() {
+                    let Some(range) = pattern.find_range_from(&text, from) else {
+                        break;
+                    };
+                    // Spec 0246 S5: one character past the match's
+                    // *start*, not its end, so overlapping matches are
+                    // separate stops — and so an empty match (`^`,
+                    // `x*`) terminates the scan.
+                    from =
+                        range.start + text[range.start..].chars().next().map_or(1, char::len_utf8);
+                    let start = range.start.max(indent);
+                    // Spec 0246 S3a again: several matches inside one
+                    // indentation are the single stop the caret
+                    // collapses them to, and counting them separately
+                    // would make a total `n` could never walk.
+                    if last == Some(start) {
+                        continue;
+                    }
+                    last = Some(start);
+                    count += 1;
+                    if target.1 == start {
+                        place = here(count);
+                    }
+                }
+                return (count, place);
+            }
+            // Spec 0235 S23: the side panes list FQDNs, not nodes, so
+            // they have one haystack and no path rule.
+            (SearchScope::Override, SweepCursor::Index(i)) => {
+                Cow::Borrowed(self.override_candidates[i].0.as_str())
+            }
+            (SearchScope::Manage, SweepCursor::Index(i)) => Cow::Owned(self.manage_search_text(i)),
+            // A scope picks its cursor shape, so the remaining pairs do
+            // not occur.
+            _ => return (0, None),
+        };
+        // Spec 0246 N4: a side pane's entry is a whole-row highlight, so
+        // it is one stop however many times the pattern occurs in it.
+        match pattern.find_range(&haystack) {
+            Some(_) => (1, here(1)),
+            None => (0, None),
+        }
+    }
+
+    /// Spec 0277 S9: one slice of the tally's walk.
+    ///
+    /// Its own step in `run_loop`'s idle arm, and it runs **last** —
+    /// after the sweep, the discard, the bake and the read-ahead. It is
+    /// the only one of the five jobs there that nothing on screen is
+    /// waiting for. The slice is `SEARCH_SWEEP_SLICE` candidates, like
+    /// the sweep's, for the same reason and with the same effect on key
+    /// latency.
+    pub(super) fn search_tally_step(&mut self) -> SweepStep {
+        let Some((scope, text, pattern, hit)) = self.tally_subject() else {
+            self.drop_tally();
+            return SweepStep::Idle;
+        };
+        let version = self.structural_version;
+        let stale = match &self.search_tally {
+            Some(tally) => tally.scope != scope || tally.text != text || tally.version != version,
+            None => true,
+        };
+        if stale {
+            // Spec 0277 S11: a new key is a new tally, both facts
+            // dropped.
+            self.drop_tally();
+            let walk = self.begin_tally_walk(scope, (hit.at, hit.start), false);
+            self.search_tally = Some(SearchTally {
+                scope,
+                text,
+                version,
+                pattern,
+                walk: Some(walk),
+                total: None,
+                ordinal: None,
+                of: None,
+            });
+            return SweepStep::Progressed;
+        }
+        let mut tally = self.search_tally.take().expect("not stale, so present");
+        self.follow_tally_hit(&mut tally, hit);
+        if tally.walk.is_none() {
+            self.search_tally = Some(tally);
+            return SweepStep::Idle;
+        }
+        self.advance_tally(&mut tally, SEARCH_SWEEP_SLICE);
+        if tally.walk.as_ref().is_some_and(|walk| walk.at.is_none()) {
+            let walk = tally.walk.take().expect("just tested");
+            // Spec 0277 S5: both facts published together. A prefix
+            // walk (S7) saw only part of the document and so revises
+            // only the ordinal.
+            if !walk.prefix {
+                tally.total = Some(walk.count);
+            }
+            tally.ordinal = walk.ordinal;
+            tally.of = Some(walk.target);
+            // Spec 0277 S10: a finished walk owes exactly one repaint.
+            // `may_sleep_indefinitely` has no tally term and must not
+            // grow one — without this the number would first appear on
+            // the reader's next keystroke.
+            self.search_dirty = true;
+        }
+        self.search_tally = Some(tally);
+        SweepStep::Progressed
+    }
+
+    /// Spec 0277 S6: the displayed hit has just changed, so the ordinal
+    /// must too.
+    ///
+    /// Called where the change happens rather than only from
+    /// [`App::search_tally_step`], because the frame drawing the new
+    /// match goes out before `run_loop` next reaches its idle arm — an
+    /// ordinal that caught up a frame later would be a number the
+    /// reader watches lag behind the match it counts.
+    pub(super) fn track_search_tally(&mut self) {
+        let Some(mut tally) = self.search_tally.take() else {
+            return;
+        };
+        if let Some(hit) = self.search_sweep.as_ref().and_then(|sweep| sweep.found) {
+            self.follow_tally_hit(&mut tally, hit);
+        }
+        self.search_tally = Some(tally);
+    }
+
+    /// Forget the tally, and owe the frame that erases a number the
+    /// reader can see.
+    fn drop_tally(&mut self) {
+        if let Some(old) = self.search_tally.take() {
+            self.search_dirty |= old.total.is_some();
+        }
+    }
+
+    /// Spec 0277 S6/S7: keep the ordinal on the hit that is displayed.
+    ///
+    /// The sweep that landed carries the ordinal of the match it left,
+    /// so stepping it is `± 1` and a wrap at `total`. A sweep that
+    /// carried none — the reader moved off the match, then pressed `n`
+    /// — leaves the ordinal unknown and starts S7's prefix walk, which
+    /// stops at the hit rather than running to the end: the total is
+    /// still valid, so the only missing fact is how many matches lie
+    /// before it.
+    fn follow_tally_hit(&self, tally: &mut SearchTally, hit: SweepHit) {
+        let now = (hit.at, hit.start);
+        if let Some(walk) = &tally.walk {
+            // A walk in flight is already looking for a hit; if that is
+            // no longer the one on screen it is looking for the wrong
+            // one, and there is no ordinal yet to step from.
+            if walk.target != now {
+                let prefix = tally.total.is_some();
+                tally.walk = Some(self.begin_tally_walk(tally.scope, now, prefix));
+            }
+            return;
+        }
+        if tally.of == Some(now) {
+            return;
+        }
+        tally.of = Some(now);
+        let sweep = self.search_sweep.as_ref();
+        match (sweep.and_then(|sweep| sweep.from_ordinal), tally.total) {
+            (Some(from), Some(total)) if total > 0 => {
+                let dir = sweep.map_or(SearchDir::Forward, |sweep| sweep.dir);
+                tally.ordinal = Some(match dir {
+                    SearchDir::Forward => from % total + 1,
+                    SearchDir::Backward => (from + total - 2) % total + 1,
+                });
+            }
+            _ => {
+                tally.ordinal = None;
+                tally.walk = Some(self.begin_tally_walk(tally.scope, now, true));
+            }
+        }
+    }
+
+    /// Spec 0277 S6: the ordinal a departing sweep carries — the place
+    /// of the match it is leaving, and only when the tally is in fact
+    /// describing that match.
+    fn departing_ordinal(&self, from: SweepCursor, start: usize) -> Option<usize> {
+        let tally = self.search_tally.as_ref()?;
+        (tally.of == Some((from, start)))
+            .then_some(tally.ordinal)
+            .flatten()
+    }
+
+    /// Spec 0277 S6: the ordinal `n`/`N` carries out — the displayed
+    /// hit's, when the origin lies **within its extent**.
+    ///
+    /// Not `origin.column == hit.start`: spec 0246 S3 leaves the caret
+    /// on the match's first character but spec 0276 S5 deliberately
+    /// leaves it on the *last*, and an equality test would make an `n`
+    /// straight after an `Esc`-accepted find look like a jump. The
+    /// extent covers both landings, and every caret nudge inside the
+    /// match besides.
+    fn caret_ordinal(&self, scope: SearchScope) -> Option<usize> {
+        let hit = self.search_sweep.as_ref()?.found?;
+        let inside = match (scope, hit.at) {
+            (SearchScope::Main, SweepCursor::Line(pos)) => {
+                pos.node == self.cursor
+                    && pos.line_in_node == self.cursor_line_in_node
+                    && self.cursor_column >= hit.column
+                    && self.cursor_column < hit.column + hit.width.max(1)
+            }
+            // A side pane's stop is its whole entry, so standing on the
+            // entry is standing in the match.
+            (SearchScope::Override, SweepCursor::Index(i)) => i == self.override_highlight,
+            (SearchScope::Manage, SweepCursor::Index(i)) => i == self.manage_highlight,
+            _ => false,
+        };
+        inside
+            .then(|| self.departing_ordinal(hit.at, hit.start))
+            .flatten()
+    }
+
+    /// Spec 0277 S8: `27 of 42`, or `? of 42` while S7's walk is
+    /// running. `None` — nothing drawn at all — until the total is
+    /// known.
+    ///
+    /// The placeholder rather than dropping the whole field: the field
+    /// keeps its width, so a reader stepping matches on a large
+    /// document does not watch it appear and vanish, and the `?` says
+    /// which of the two facts is the missing one.
+    ///
+    /// S11's key is re-checked here rather than trusted, because the
+    /// walk that re-keys it is the idle arm's last job (S9) and the
+    /// frame is drawn long before the loop reaches it. Without this, the
+    /// keystroke that changes the pattern would draw one frame of the
+    /// old pattern's total.
+    pub(super) fn search_tally_text(&self) -> Option<String> {
+        let tally = self.search_tally.as_ref()?;
+        let total = tally.total?;
+        let scope = self.search_sweep.as_ref()?.origin.scope;
+        if scope != tally.scope
+            || self.structural_version != tally.version
+            || self.tally_pattern_text(scope).as_deref() != Some(tally.text.as_str())
+        {
+            return None;
+        }
+        Some(match tally.ordinal {
+            Some(ordinal) => format!("{ordinal} of {total}"),
+            None => format!("? of {total}"),
+        })
     }
 
     /// Spec 0235 S8: the whole of a sweep's effect on the pane. It
@@ -1062,21 +1554,29 @@ impl App {
         // document as it stands now. It rotates from `search_origin`,
         // there being no displayed match to step off. A *conclusive*
         // miss and a still-walking sweep are still no-ops.
-        let from = match self.search_sweep.as_ref().map(|s| (s.found, s.provisional)) {
-            Some((Some(hit), _)) => SearchOrigin {
-                at: hit.at,
-                column: hit.start,
-                ..origin
-            },
+        // Spec 0277 S6: a rotation is built from the displayed hit by
+        // construction, so it carries that hit's ordinal whenever there
+        // is one. This is the find prompt's `Enter` (spec 0276 S4) and
+        // `Ctrl-←`/`Ctrl-→`.
+        let (from, ordinal) = match self.search_sweep.as_ref().map(|s| (s.found, s.provisional)) {
+            Some((Some(hit), _)) => (
+                SearchOrigin {
+                    at: hit.at,
+                    column: hit.start,
+                    ..origin
+                },
+                self.departing_ordinal(hit.at, hit.start),
+            ),
             // `provisional` is set only where the walk ran out, so this
             // arm cannot catch a sweep that is still going.
-            Some((None, true)) => origin,
+            Some((None, true)) => (origin, None),
             _ => return,
         };
         let pattern = self.command_buffer.clone().unwrap_or_default();
-        let Some(sweep) = self.begin_search_sweep(&pattern, dir, from) else {
+        let Some(mut sweep) = self.begin_search_sweep(&pattern, dir, from) else {
             return;
         };
+        sweep.from_ordinal = ordinal;
         // Spec 0246 S22: walked by `run_loop`'s idle arm like any other,
         // so a rotation over a large document does not block the key.
         self.search_sweep = Some(sweep);
@@ -1183,6 +1683,7 @@ impl App {
         // prompt, and `found` is what tells the strong tint from the
         // muted one.
         self.search_sweep = Some(sweep);
+        self.track_search_tally();
         match found {
             Some(hit) => self.apply_sweep_hit(origin.scope, hit),
             // Spec 0235 S10: the message returns at `Enter`, and only
@@ -1247,17 +1748,23 @@ impl App {
     /// run to the end, applied.
     pub(super) fn run_search(&mut self, scope: SearchScope, dir: SearchDir, pattern: &str) {
         let origin = self.search_origin_for(scope);
+        // Spec 0277 S6: `n`/`N` sweep from the caret, so they leave the
+        // displayed match exactly when the caret is standing in it —
+        // read before the sweep that displayed it is dropped.
+        let ordinal = self.caret_ordinal(scope);
         self.search_origin = None;
         self.search_sweep = None;
         let Some(mut sweep) = self.begin_search_sweep(pattern, dir, origin) else {
             self.report_bad_pattern(pattern);
             return;
         };
+        sweep.from_ordinal = ordinal;
         self.drain_sweep(&mut sweep);
         self.search_dirty = true;
         self.search_highlight = true;
         let found = sweep.found;
         self.search_sweep = Some(sweep);
+        self.track_search_tally();
         match found {
             Some(hit) => self.apply_sweep_hit(scope, hit),
             None => self.message = self.not_found(pattern, scope),
@@ -1282,6 +1789,9 @@ impl App {
         self.search_sweep = None;
         self.search_highlight = false;
         self.search_dirty = true;
+        // Spec 0277 S12: a tally exists only while the matches are
+        // tinted, and this is where they stop being.
+        self.search_tally = None;
     }
 
     /// Spec 0235 S15: the pattern this frame tints, or `None` when

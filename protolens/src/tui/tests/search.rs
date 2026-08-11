@@ -2181,3 +2181,277 @@ fn f_finds_in_the_manage_pane() {
         Some((SearchDir::Forward, "zz".to_string()))
     );
 }
+
+// ---------------------------------------------------------------------
+// Spec 0277: a search says which match you are on.
+// ---------------------------------------------------------------------
+
+/// Run the tally's walk to the end, the way `run_loop`'s idle arm does.
+fn settle_tally(app: &mut App) {
+    for _ in 0..10_000 {
+        if app.search_tally_step() == SweepStep::Idle {
+            return;
+        }
+    }
+    panic!("a tally must converge");
+}
+
+/// Commit `/pattern`, then settle both the sweep and the tally.
+fn counted_search(app: &mut App, pattern: &str) {
+    commit_search_by_key(app, pattern);
+    settle_tally(app);
+}
+
+/// Spec 0277 test-plan item 1 (S4). The tally counts every match in the
+/// document, which is neither what the sweep visits nor what one row
+/// holds: `betabeta` is two stops on one row, and the match on the
+/// origin's own row is one the sweep skipped on its way out.
+#[test]
+fn a_tally_counts_every_match_in_the_document() {
+    let mut app = sibling_leaves_app(&["beta: 1", "x: 2", "betabeta: 3"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    counted_search(&mut app, "beta");
+    // The sweep landed on `betabeta`'s first match, having skipped the
+    // one under the caret — which the tally still counts, as the first
+    // of the three.
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(2));
+    assert_eq!(app.search_tally_text().as_deref(), Some("2 of 3"));
+}
+
+/// Spec 0277 test-plan item 2 (G1, S3, S5). The ordinal counts from the
+/// start of the *document*, not from where the search began — so a
+/// search started in the middle reports the place its match holds in the
+/// document rather than the place it holds in the sweep.
+#[test]
+fn the_ordinal_counts_from_the_start_of_the_document() {
+    let mut app = sibling_leaves_app(&["beta: 1", "beta: 2", "beta: 3", "beta: 4"]);
+    app.splash = false;
+    app.term_width = 120;
+    app.cursor = 2;
+
+    counted_search(&mut app, "beta");
+    // Sweep order made this the *first* match found; document order
+    // makes it the last.
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(3));
+    assert_eq!(app.search_tally_text().as_deref(), Some("4 of 4"));
+}
+
+/// Spec 0277 test-plan item 3 (S6). `n` steps the ordinal on the way
+/// out, so the new number is right *before* the tally has taken a step —
+/// a walk would have shown `? of 4` here.
+#[test]
+fn n_steps_the_ordinal_without_walking_again() {
+    let mut app = sibling_leaves_app(&["beta: 1", "beta: 2", "beta: 3", "beta: 4"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    counted_search(&mut app, "beta");
+    assert_eq!(app.search_tally_text().as_deref(), Some("2 of 4"));
+
+    press(&mut app, KeyCode::Char('n'));
+    assert_eq!(app.search_tally_text().as_deref(), Some("3 of 4"));
+    press(&mut app, KeyCode::Char('n'));
+    assert_eq!(app.search_tally_text().as_deref(), Some("4 of 4"));
+}
+
+/// Spec 0277 test-plan item 4 (G3). The pair means what the reader
+/// assumes: one more `n` past the last match is `1 of 4` again.
+#[test]
+fn n_wraps_the_ordinal_at_the_last_match() {
+    let mut app = sibling_leaves_app(&["beta: 1", "beta: 2", "beta: 3", "beta: 4"]);
+    app.splash = false;
+    app.term_width = 120;
+    app.cursor = 2;
+
+    counted_search(&mut app, "beta");
+    assert_eq!(app.search_tally_text().as_deref(), Some("4 of 4"));
+
+    press(&mut app, KeyCode::Char('n'));
+    assert_eq!(app.cursor, 0);
+    assert_eq!(app.search_tally_text().as_deref(), Some("1 of 4"));
+}
+
+/// Spec 0277 test-plan item 5 (S3, S6). The first number counts forward
+/// from the document's start whichever way the search runs, so a
+/// backward step *decrements* it — and wraps the other way.
+#[test]
+fn a_backward_search_decrements_the_ordinal() {
+    let mut app = sibling_leaves_app(&["beta: 1", "beta: 2", "beta: 3", "beta: 4"]);
+    app.splash = false;
+    app.term_width = 120;
+    app.cursor = 2;
+
+    type_keys(&mut app, "?");
+    type_keys(&mut app, "beta");
+    press(&mut app, KeyCode::Enter);
+    settle_tally(&mut app);
+    assert_eq!(app.cursor, 1);
+    assert_eq!(app.search_tally_text().as_deref(), Some("2 of 4"));
+
+    press(&mut app, KeyCode::Char('n'));
+    assert_eq!(app.cursor, 0);
+    assert_eq!(app.search_tally_text().as_deref(), Some("1 of 4"));
+
+    // And round: below the first match is the last one.
+    press(&mut app, KeyCode::Char('n'));
+    assert_eq!(app.cursor, 3);
+    assert_eq!(app.search_tally_text().as_deref(), Some("4 of 4"));
+}
+
+/// Spec 0277 test-plan item 6 (S6's second bullet). An accepted find
+/// leaves the caret on the match's *last* character (spec 0276 S5), so
+/// an `origin.column == hit.start` test would read the following `n` as
+/// a jump. The extent covers both landings, and the ordinal steps.
+#[test]
+fn n_after_an_accepted_find_still_steps() {
+    let mut app = sibling_leaves_app(&["beta: 1", "beta: 2", "beta: 3", "beta: 4"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    find_by_key(&mut app, 'F', "beta");
+    press(&mut app, KeyCode::Esc);
+    settle_tally(&mut app);
+    // Spec 0276 S5's landing, which is not `hit.start`.
+    assert_eq!(app.cursor, 1);
+    assert_eq!(app.cursor_column, 3);
+    assert_eq!(app.search_tally_text().as_deref(), Some("2 of 4"));
+
+    press(&mut app, KeyCode::Char('n'));
+    assert_eq!(app.search_tally_text().as_deref(), Some("3 of 4"));
+}
+
+/// Spec 0277 test-plan item 7 (S6, S7). A departure that carries no
+/// ordinal — the reader walked off the match first — leaves the ordinal
+/// unknown, and S7's prefix walk recovers it. The total survives
+/// untouched, which is what the `?` says.
+#[test]
+fn moving_the_caret_off_the_match_then_pressing_n_re_derives() {
+    let mut app = sibling_leaves_app(&["beta: 1", "beta: 2", "beta: 3", "beta: 4"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    counted_search(&mut app, "beta");
+    assert_eq!(app.search_tally_text().as_deref(), Some("2 of 4"));
+
+    // Off the match, and off its row.
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Char('n'));
+    assert_eq!(app.cursor, 3);
+    assert_eq!(
+        app.search_tally_text().as_deref(),
+        Some("? of 4"),
+        "the total survives the ordinal"
+    );
+
+    settle_tally(&mut app);
+    assert_eq!(app.search_tally_text().as_deref(), Some("4 of 4"));
+}
+
+/// Spec 0277 test-plan item 8 (G2, S8). Nothing is drawn until the total
+/// exists — no keystroke and no sweep waits on the counting, and a
+/// half-counted total is not shown at all.
+#[test]
+fn no_indication_while_the_total_is_still_walking() {
+    let mut app = sibling_leaves_app(&["beta: 1", "beta: 2", "beta: 3", "beta: 4"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    commit_search_by_key(&mut app, "beta");
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(1));
+    assert_eq!(
+        app.search_tally_text(),
+        None,
+        "the answer arrived without the count"
+    );
+
+    // The step that starts the walk has still counted nothing.
+    assert_eq!(app.search_tally_step(), SweepStep::Progressed);
+    assert_eq!(app.search_tally_text(), None);
+
+    settle_tally(&mut app);
+    assert_eq!(app.search_tally_text().as_deref(), Some("2 of 4"));
+}
+
+/// Spec 0277 test-plan item 9 (S11). The tally is keyed on the pattern,
+/// so a keystroke drops both facts and starts a new walk rather than
+/// leaving the previous pattern's total on the row.
+#[test]
+fn a_keystroke_restarts_the_tally() {
+    let mut app = sibling_leaves_app(&["beta: 1", "beta2: 2", "beta: 3", "beta2: 4"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    type_keys(&mut app, "/");
+    type_keys(&mut app, "beta");
+    settle_sweep(&mut app);
+    settle_tally(&mut app);
+    assert_eq!(app.search_tally_text().as_deref(), Some("2 of 4"));
+
+    type_keys(&mut app, "2");
+    settle_sweep(&mut app);
+    assert_eq!(app.search_tally_text(), None, "the old total is not kept");
+
+    settle_tally(&mut app);
+    assert_eq!(app.search_tally_text().as_deref(), Some("1 of 2"));
+}
+
+/// Spec 0277 test-plan item 10 (N1). A cross-row pattern's unit of work
+/// is a segment scanned on a worker thread, and a tally queueing
+/// segments would compete for that worker with the sweep the reader is
+/// waiting on. An absent count, not a wrong one.
+#[test]
+fn a_cross_row_pattern_reports_no_count() {
+    let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "gamma: 3"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    counted_search(&mut app, r"1\nbeta");
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(0));
+    assert_eq!(app.search_tally_text(), None);
+}
+
+/// Spec 0277 test-plan item 11 (N3). There is no `0 of 0`: a miss is
+/// already reported on this same row by the pattern's own color and by
+/// the message. One home per fact.
+#[test]
+fn a_miss_reports_no_count() {
+    let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "gamma: 3"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    counted_search(&mut app, "nope");
+    assert!(app.message.contains("not found"));
+    assert_eq!(app.search_tally_text(), None);
+}
+
+/// Spec 0277 test-plan item 12 (S4). A side pane counts too, and there a
+/// stop is a whole entry — spec 0246 N4 — however many times the pattern
+/// occurs inside it.
+#[test]
+fn the_tally_counts_in_the_manage_pane() {
+    let (mut app, items) = repeated_message_fixture();
+    app.manage_focus = true;
+    app.manage_open = true;
+    app.term_width = 120;
+
+    for (item, ty) in items.iter().zip(["pkg.zz1", "pkg.zzzz2", "pkg.zz3"]) {
+        let origin = OverrideOrigin::Path {
+            path: app.positional_path(*item),
+        };
+        app.overrides.activate(origin, Some(ty.to_string()));
+    }
+    // Entry 0 is the auto-derived root, which carries no `z`.
+    app.manage_highlight = 0;
+
+    counted_search(&mut app, "zz");
+    // Three entries match; the second holds two occurrences and is still
+    // one stop.
+    assert_eq!(app.manage_highlight, 1);
+    assert_eq!(app.search_tally_text().as_deref(), Some("1 of 3"));
+
+    press(&mut app, KeyCode::Char('n'));
+    assert_eq!(app.manage_highlight, 2);
+    assert_eq!(app.search_tally_text().as_deref(), Some("2 of 3"));
+}

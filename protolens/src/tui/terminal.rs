@@ -890,6 +890,17 @@ where
                             if app.search_segment_pending() {
                                 continue;
                             }
+                            // Spec 0277 S9: fifth and last, because it
+                            // is the only one of the five that nothing
+                            // on screen is waiting for — the sweep has
+                            // already said *where* the match is, and
+                            // this only says how many there are.
+                            if matches!(app.search_tally_step(), SweepStep::Progressed) {
+                                if Instant::now() >= deadline {
+                                    break None;
+                                }
+                                continue;
+                            }
                         }
                     }
                     // Nothing left to do, so this is the one place the

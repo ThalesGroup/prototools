@@ -1791,6 +1791,10 @@ pub struct App {
     /// Spec 0235 S2: the search in flight, or the finished one whose
     /// answer the prompt is still showing. `None` outside a search.
     search_sweep: Option<search::SearchSweep>,
+    /// Spec 0277 S1: how many matches the live pattern has in the whole
+    /// document, and which of them is on screen. `None` outside a
+    /// search, and while there is nothing to count (S12, N1–N3).
+    search_tally: Option<search::SearchTally>,
     /// Spec 0235 S6: where the open `/`/`?` prompt was opened from —
     /// what each keystroke searches again from, and what `Esc` restores.
     /// Spec 0246 S19: a rotation does *not* move it.
@@ -2137,6 +2141,7 @@ impl App {
             command_cursor: 0,
             last_search: None,
             search_sweep: None,
+            search_tally: None,
             search_origin: None,
             search_history: Vec::new(),
             search_browse: None,

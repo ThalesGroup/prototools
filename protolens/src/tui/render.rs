@@ -1914,7 +1914,40 @@ impl App {
             .constraints([Constraint::Length(1), Constraint::Min(0)])
             .split(area);
         self.render_activity_dot(frame, global_row[0]);
-        let cmd_row = global_row[1];
+        // Spec 0277 S8: `27 of 42`, right-aligned, in a field the
+        // command text is not given. Its own slice of the row rather
+        // than a span appended to `cmd_text`, because the two belong to
+        // different things: the text pans under the reader's cursor and
+        // may be empty, while the count is a fact about the search that
+        // holds whether or not a prompt is open.
+        let tally = self.search_tally_text();
+        let (cmd_row, tally_row) = match &tally {
+            Some(text) if global_row[1].width as usize > text.len() + 1 => {
+                let field = text.len() as u16 + 1;
+                (
+                    Rect {
+                        width: global_row[1].width - field,
+                        ..global_row[1]
+                    },
+                    Some(Rect {
+                        x: global_row[1].x + global_row[1].width - field,
+                        width: field,
+                        ..global_row[1]
+                    }),
+                )
+            }
+            _ => (global_row[1], None),
+        };
+        if let (Some(area), Some(text)) = (tally_row, &tally) {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    text.clone(),
+                    Style::default().add_modifier(Modifier::DIM),
+                ))
+                .alignment(Alignment::Right),
+                area,
+            );
+        }
         if cmd_text.is_empty() {
             self.cmd_area = None;
             frame.render_widget(Paragraph::new(""), cmd_row);
