@@ -273,6 +273,102 @@ fn long_command_buffer_is_pannable_and_keeps_cursor_visible() {
     );
 }
 
+/// Draw one frame so that `cmd_area` is set, then left-click the
+/// command row at `col` columns from its left edge.
+fn click_command_row(app: &mut App, col: u16) {
+    let backend = TestBackend::new(60, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let area = app.cmd_area.expect("the command row must be on screen");
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: area.x + col,
+        row: area.y,
+        modifiers: KeyModifiers::NONE,
+    });
+}
+
+/// Spec 0275 S2/S4. A click on the command line puts the caret on the
+/// character under the pointer.
+///
+/// The off-by-one that this pins is the prefix: `:` is drawn as part of
+/// the row but is not part of the buffer, so the caret lands one to the
+/// left of the character index the column names — and a click on the
+/// prefix itself is the buffer's start, not a negative index.
+#[test]
+fn a_click_on_the_command_line_moves_the_caret_there() {
+    let (mut app, _items) = repeated_message_fixture();
+    app.splash = false;
+    app.command_buffer = Some("export foo".to_string());
+    app.command_kind = CommandLineKind::Command;
+    app.command_cursor = 0;
+
+    // The row reads `:export foo`. Column 5 is the `r` of `export`,
+    // which is buffer character 4 — the caret goes before it.
+    click_command_row(&mut app, 5);
+    assert_eq!(app.command_cursor, 4);
+
+    // The prefix is not a buffer position.
+    click_command_row(&mut app, 0);
+    assert_eq!(app.command_cursor, 0);
+}
+
+/// Spec 0275 S3. On a panned command line the click names the character
+/// the reader can *see* at that column, not the character with that
+/// index.
+///
+/// This is the case the arithmetic exists for: without the
+/// `command_pan_offset` term every click on a long buffer would land
+/// near its start, which is precisely where the reader is not looking.
+#[test]
+fn a_click_on_a_panned_command_line_accounts_for_the_pan() {
+    let (mut app, _items) = repeated_message_fixture();
+    app.splash = false;
+    app.command_buffer = Some("a".repeat(80));
+    app.command_kind = CommandLineKind::Command;
+    app.command_cursor = 80;
+
+    // Rendering auto-follows the caret to the end, panning the row.
+    click_command_row(&mut app, 0);
+    assert!(app.command_pan_offset > 0, "the row must have panned");
+    // The leftmost visible column shows `cmd_text[pan]`, whose buffer
+    // index is one less.
+    assert_eq!(app.command_cursor, app.command_pan_offset - 1);
+}
+
+/// Spec 0275 S4. A click past the end of the text clamps to the end of
+/// the buffer.
+///
+/// A click that named no character could equally have been refused;
+/// clamping is what a line editor does, and a click that visibly does
+/// nothing reads as a lost click.
+#[test]
+fn a_click_past_the_end_of_the_command_line_goes_to_the_end() {
+    let (mut app, _items) = repeated_message_fixture();
+    app.splash = false;
+    app.command_buffer = Some("ab".to_string());
+    app.command_kind = CommandLineKind::Command;
+    app.command_cursor = 0;
+
+    click_command_row(&mut app, 40);
+    assert_eq!(app.command_cursor, 2);
+}
+
+/// Spec 0275 N2. The same row showing a status message is output, not a
+/// field: a click on it places no caret.
+#[test]
+fn a_click_on_a_status_message_places_no_caret() {
+    let (mut app, _items) = repeated_message_fixture();
+    app.splash = false;
+    app.command_buffer = None;
+    app.command_cursor = 7;
+    app.message = "something happened".to_string();
+
+    click_command_row(&mut app, 5);
+    assert_eq!(app.command_buffer, None);
+    assert_eq!(app.command_cursor, 7, "no caret to place");
+}
+
 /// Regression test for a bug found while implementing spec 0123's
 /// test plan: `load_overrides` (`:restore`/batch
 /// `--load-overrides`) wholesale-replaces `self.overrides` (spec

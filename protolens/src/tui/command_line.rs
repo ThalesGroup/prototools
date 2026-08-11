@@ -285,6 +285,40 @@ impl App {
         }
     }
 
+    /// Spec 0275 S2: put the caret on the character the reader clicked.
+    ///
+    /// This is `render_command_row`'s mapping read backwards, and the
+    /// two have to move together: that mapping draws character `pos` of
+    /// `cmd_text` — the prefix (`:`, `/`, `?`) followed by the buffer —
+    /// at `cmd_area.x + (pos - command_pan_offset)`, so a click at
+    /// `col` names `pos = (col - cmd_area.x) + command_pan_offset`, and
+    /// the `- 1` below drops the prefix to get back to a buffer index.
+    ///
+    /// The pan is carried by that one added term and nothing else. Both
+    /// it and the caret are counted in *characters* — `pan_spans` skips
+    /// characters and `set_cursor_position` advances one column per
+    /// character — so this inverts exactly rather than approximately.
+    ///
+    /// Clamped at both ends rather than rejected (S4): a click on the
+    /// prefix means the start, a click past the text means the end, and
+    /// a click that visibly did nothing would read as a lost one.
+    ///
+    /// No pan follows. `render_command_row` re-pans only when the caret
+    /// is outside the visible window, and a caret derived from a
+    /// visible column is inside it.
+    pub(super) fn command_click(&mut self, col: u16) {
+        let Some(area) = self.cmd_area else {
+            return;
+        };
+        // Spec 0275 N2: a status message shares this row but is output,
+        // not a field — there is no caret to place.
+        if self.command_buffer.is_none() {
+            return;
+        }
+        let pos = (col.saturating_sub(area.x)) as usize + self.command_pan_offset;
+        self.command_cursor = pos.saturating_sub(1).min(self.command_buffer_char_len());
+    }
+
     /// `Ctrl-v`: insert the OS clipboard's text at the cursor.
     ///
     /// A failed read is reported through `self.message`, which the open

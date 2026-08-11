@@ -206,6 +206,16 @@ impl App {
                     self.override_focus = true;
                     self.handle_override_click(event.column, event.row);
                 }
+            } else if over_cmd {
+                // Spec 0275 S1: the command line answers a click like
+                // every other text with a caret in it. Last in the
+                // chain, and safely so — the three areas are disjoint.
+                //
+                // No focus claim, unlike the two arms above: while a
+                // command line is open `handle_key` routes to it ahead
+                // of any focus-specific dispatch, so it is modal rather
+                // than focused and there is nothing to claim (N3).
+                self.command_click(event.column);
             }
             return;
         }
