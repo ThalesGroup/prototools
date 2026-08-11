@@ -29,6 +29,9 @@ impl App {
         self.splash = false;
 
         self.message.clear();
+        // Spec 0278 S3: a wheel scroll dismisses the search echo — and
+        // spec 0277's count with it — exactly as a keypress does.
+        self.search_echo = None;
 
         // While the `F1` help overlay is open, mouse wheel/Shift-wheel
         // hovering over it scrolls its own text instead of leaking

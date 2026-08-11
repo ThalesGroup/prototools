@@ -1867,6 +1867,16 @@ pub struct App {
     /// pan the same way `main_area`/`side_area` do.
     cmd_area: Option<Rect>,
     pub message: String,
+    /// Spec 0278 S1: the pattern a committed search leaves echoed on the
+    /// command row, as `(direction, pattern)`.
+    ///
+    /// Not a `message`: a message auto-dismisses after `MESSAGE_TIMEOUT`
+    /// (spec 0147 G6), and an echo that expired on a timer would take
+    /// spec 0277's count with it while the reader was still reading the
+    /// match. It is dismissed by input instead — the same keypress and
+    /// mouse-event clears `message` gets — so the pattern and its count
+    /// arrive together and leave together.
+    search_echo: Option<(SearchDir, String)>,
     /// Every override still refused when `render_overrides`' most recent
     /// pass ended, as `(node, description)` in visit order (spec 0221
     /// S1). Emptied at the start of each outermost pass, so it always
@@ -2160,6 +2170,7 @@ impl App {
             side_area: Rect::default(),
             cmd_area: None,
             message: fallback_warning,
+            search_echo: None,
             refusals: Vec::new(),
             silent_refusals: false,
             last_message_seen: String::new(),

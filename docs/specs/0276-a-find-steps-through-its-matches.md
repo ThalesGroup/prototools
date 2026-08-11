@@ -42,7 +42,9 @@ to the commit, and starts from the last pattern rather than from nothing.
 - **G2.** `Enter` steps the current match forward (`F`) or backward (`B`)
   and leaves the prompt open, bringing the new match into view.
 - **G3.** `Esc` accepts: it closes the prompt and puts the caret on the
-  end of the match currently shown.
+  end of the match currently shown. *(Amended 2026-08-11 by spec 0278
+  S5: on the **start** of the match, as every other search landing
+  does.)*
 - **G4.** An accepted find is a search like any other — it feeds the
   pattern history and the pane's last pattern, so `n`/`N` continue it.
 
@@ -111,6 +113,16 @@ to the commit, and starts from the last pattern rather than from nothing.
   caret is a block that rests *on* a cell (spec 0242 S1) — and at the
   end of a row the cell after the match does not exist.
 
+  **Amended 2026-08-11 (spec 0278 S5).** The caret lands on the match's
+  **first** character instead, which is where `apply_sweep_hit` puts
+  every other search landing, and `caret_to_match_end` is deleted. The
+  three bullets above and this paragraph are void; the block-caret
+  argument in them survives only as the reason the *old* landing was the
+  last character rather than the cell after it, and a block caret
+  resting on a cell never delivered the trailing-insertion-point benefit
+  the rule was reaching for. What survives of S5 is the sentence before
+  the colon, plus N3's "no selection is left behind".
+
 - **S6.** An accepted find pushes its pattern to the shared history and
   sets the focused pane's `last_*_search` to `(dir, pattern)`, exactly
   as `Enter` at a `/` prompt does. `n`/`N` afterwards repeat it, and a
@@ -165,9 +177,13 @@ asked for a gesture that ends with the caret on the match.
 2. `enter_in_a_find_prompt_steps_to_the_next_match` — G2/S4: the prompt
    stays open and the displayed hit advances; `B` steps the other way.
 3. `esc_accepts_a_find_at_the_end_of_the_match` — G3/S5: the caret lands
-   on the match's last character, not its first.
+   on the match's last character, not its first. *(Amended 2026-08-11:
+   renamed `esc_accepts_a_find_at_the_start_of_the_match`, and it now
+   asserts the other landing — spec 0278 test-plan item 7.)*
 4. `esc_accepts_a_cross_row_find_on_its_last_row` — S5's second bullet,
-   and N3: no selection is left engaged.
+   and N3: no selection is left engaged. *(Amended 2026-08-11: renamed
+   `esc_accepts_a_cross_row_find_on_its_first_row`; only the N3 half of
+   what it covers survives — spec 0278 test-plan item 8.)*
 5. `an_accepted_find_is_repeatable_with_n` — G4/S6.
 6. `esc_on_a_find_with_no_match_restores_the_view` — S7.
 7. `f_finds_in_the_manage_pane` — S8/S9/G1 for a side pane: the

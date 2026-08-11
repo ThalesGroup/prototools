@@ -2056,11 +2056,12 @@ fn enter_in_a_find_prompt_steps_to_the_next_match() {
     assert_eq!(app.search_current_cell().map(|c| c.0), Some(0));
 }
 
-/// Spec 0276 test-plan item 3 (G3, S5). `Esc` accepts, and the caret
-/// lands on the match's **last** character rather than on its first —
-/// which is the one place a find differs from a `/` commit.
+/// Spec 0276 test-plan item 3 (G3, S5 as amended 2026-08-11). `Esc`
+/// accepts, and the caret lands on the match's **first** character —
+/// the same landing a `/` commit makes, which is what makes the two
+/// gestures interchangeable.
 #[test]
-fn esc_accepts_a_find_at_the_end_of_the_match() {
+fn esc_accepts_a_find_at_the_start_of_the_match() {
     let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "gamma: 3"]);
     app.splash = false;
     app.term_width = 120;
@@ -2070,18 +2071,16 @@ fn esc_accepts_a_find_at_the_end_of_the_match() {
 
     assert!(app.command_buffer.is_none(), "the prompt closes");
     assert_eq!(app.cursor, 1);
-    // `beta` starts at column 0 and is four columns wide, so its last
-    // character is column 3 — not 4, which is the cell after it.
-    assert_eq!(app.cursor_column, 3);
+    assert_eq!(app.cursor_column, 0);
     assert_eq!(app.caret_anchor, CaretAnchor::Free);
 }
 
 /// Spec 0276 test-plan item 4 (S5's second bullet, and N3). A hit that
-/// crosses a row accepts on the row it *ends* on — and leaves no
-/// selection behind, unlike spec 0274 S12's `/` commit: the find's
-/// highlight already shows the extent.
+/// crosses a row accepts on the row it *starts* on, like any other
+/// search landing — and leaves no selection behind, unlike spec 0274
+/// S12's `/` commit: the find's highlight already shows the extent.
 #[test]
-fn esc_accepts_a_cross_row_find_on_its_last_row() {
+fn esc_accepts_a_cross_row_find_on_its_first_row() {
     let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "gamma: 3"]);
     app.splash = false;
     app.term_width = 120;
@@ -2089,10 +2088,9 @@ fn esc_accepts_a_cross_row_find_on_its_last_row() {
     find_by_key(&mut app, 'F', r"1\nbeta");
     press(&mut app, KeyCode::Esc);
 
-    // The match runs from `alpha: 1`'s column 7 to `beta: 2`'s column 4,
-    // that end exclusive — so its last character is node 1, column 3.
-    assert_eq!(app.cursor, 1);
-    assert_eq!(app.cursor_column, 3);
+    // The match runs from `alpha: 1`'s column 7 to `beta: 2`'s column 4.
+    assert_eq!(app.cursor, 0);
+    assert_eq!(app.cursor_column, 7);
     assert_eq!(app.select_anchor, None);
     assert!(!app.select_engaged);
 }
@@ -2300,10 +2298,10 @@ fn a_backward_search_decrements_the_ordinal() {
     assert_eq!(app.search_tally_text().as_deref(), Some("4 of 4"));
 }
 
-/// Spec 0277 test-plan item 6 (S6's second bullet). An accepted find
-/// leaves the caret on the match's *last* character (spec 0276 S5), so
-/// an `origin.column == hit.start` test would read the following `n` as
-/// a jump. The extent covers both landings, and the ordinal steps.
+/// Spec 0277 test-plan item 6 (S6's second bullet). An accepted find is
+/// a departure like a `/` commit's — since spec 0276 S5's amendment the
+/// two land identically — and the ordinal steps rather than being
+/// re-derived.
 #[test]
 fn n_after_an_accepted_find_still_steps() {
     let mut app = sibling_leaves_app(&["beta: 1", "beta: 2", "beta: 3", "beta: 4"]);
@@ -2313,9 +2311,8 @@ fn n_after_an_accepted_find_still_steps() {
     find_by_key(&mut app, 'F', "beta");
     press(&mut app, KeyCode::Esc);
     settle_tally(&mut app);
-    // Spec 0276 S5's landing, which is not `hit.start`.
     assert_eq!(app.cursor, 1);
-    assert_eq!(app.cursor_column, 3);
+    assert_eq!(app.cursor_column, 0);
     assert_eq!(app.search_tally_text().as_deref(), Some("2 of 4"));
 
     press(&mut app, KeyCode::Char('n'));
@@ -2454,4 +2451,124 @@ fn the_tally_counts_in_the_manage_pane() {
     press(&mut app, KeyCode::Char('n'));
     assert_eq!(app.manage_highlight, 2);
     assert_eq!(app.search_tally_text().as_deref(), Some("2 of 3"));
+}
+
+// ---------------------------------------------------------------------
+// Spec 0278: a committed search leaves its pattern on the row, and the
+// count lives beside it.
+// ---------------------------------------------------------------------
+
+/// Spec 0278 test-plan item 1 (G1, S1). `Enter` closes the prompt but
+/// leaves the pattern on the row, spelled the way the prompt had it.
+#[test]
+fn a_committed_search_echoes_its_pattern() {
+    let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    counted_search(&mut app, "beta");
+
+    assert!(app.command_buffer.is_none(), "the prompt closed");
+    assert_eq!(app.search_row_text().as_deref(), Some("/beta"));
+    assert_eq!(app.search_tally_text().as_deref(), Some("1 of 1"));
+
+    // And on the row itself, not merely in the predicate: the pattern at
+    // the left, the count right-aligned beside it.
+    let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let area = app.cmd_area.expect("the command row must be on screen");
+    let buffer = terminal.backend().buffer();
+    // The whole row, not `cmd_area`: spec 0277 S8 gives the count a field
+    // of its own, which `cmd_area` deliberately excludes.
+    let row: String = (0..120).map(|x| buffer[(x, area.y)].symbol()).collect();
+    assert!(row.trim_start().starts_with("/beta"), "{row:?}");
+    assert!(row.trim_end().ends_with("1 of 1"), "{row:?}");
+}
+
+/// Spec 0278 test-plan item 2 (G2, G3, S3). The pattern and the count
+/// are one object: the first movement key takes both, and the tally
+/// itself is untouched — it is the *row* that moved on, not the search.
+#[test]
+fn the_echo_and_the_count_leave_together() {
+    let mut app = sibling_leaves_app(&["beta: 1", "beta: 2", "beta: 3"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    counted_search(&mut app, "beta");
+    assert!(app.search_row_text().is_some());
+    assert!(app.search_tally_text().is_some());
+
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.search_row_text(), None);
+    assert_eq!(app.search_tally_text(), None);
+    assert!(
+        app.search_highlight,
+        "the tint outlives the row (spec 0235 S15)"
+    );
+}
+
+/// Spec 0278 test-plan item 3 (S3's second half). `n` clears the echo
+/// with every other keypress and then sets it again, so repeating a
+/// search reprints the pattern rather than blanking the row.
+#[test]
+fn n_reprints_the_pattern() {
+    let mut app = sibling_leaves_app(&["beta: 1", "beta: 2", "beta: 3"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    counted_search(&mut app, "beta");
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.search_row_text(), None);
+
+    press(&mut app, KeyCode::Char('n'));
+    assert_eq!(app.search_row_text().as_deref(), Some("/beta"));
+}
+
+/// Spec 0278 test-plan item 4 (S4). A find prompt shows its own prefix
+/// while it is open (spec 0276 S3), but what it leaves behind is a
+/// committed search and is spelled as one.
+#[test]
+fn an_accepted_find_echoes_a_committed_search() {
+    let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "gamma: 3"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    find_by_key(&mut app, 'F', "beta");
+    assert_eq!(app.search_row_text().as_deref(), Some(">beta"));
+
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.search_row_text().as_deref(), Some("/beta"));
+}
+
+/// Spec 0278 test-plan item 5 (N3). A miss has `not_found` to say, and
+/// the message outranks the echo that is not there.
+#[test]
+fn a_miss_echoes_nothing() {
+    let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    commit_search_by_key(&mut app, "nope");
+
+    assert_eq!(app.search_row_text(), None);
+    assert!(app.message.contains("not found"), "{}", app.message);
+}
+
+/// Spec 0278 test-plan item 6 (N1). The echo is not a message and does
+/// not expire: an expired `message_deadline` sweeps the message row and
+/// leaves the pattern and its count standing.
+#[test]
+fn the_echo_outlives_the_message_timeout() {
+    let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    counted_search(&mut app, "beta");
+    app.message_deadline = Some(Instant::now() - Duration::from_millis(1));
+    let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    assert_eq!(app.message_deadline, None, "the message row was swept");
+    assert_eq!(app.search_row_text().as_deref(), Some("/beta"));
+    assert_eq!(app.search_tally_text().as_deref(), Some("1 of 1"));
 }

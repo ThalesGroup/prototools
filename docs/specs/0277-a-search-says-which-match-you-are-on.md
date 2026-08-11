@@ -166,6 +166,12 @@ The pieces are close but none of them is it:
     after an `Esc`-accepted find look like a jump. The extent covers
     both landings, and every caret nudge inside the match besides.
 
+    **Amended 2026-08-11 (spec 0278 S5).** There is one landing again —
+    an accepted find lands on the match's first character like every
+    other search — so the two-landings clause is void and the extent
+    test is no longer load-bearing. It is kept as written because it
+    costs nothing and still covers a caret nudged inside the match.
+
   `accept_find` (spec 0276 S5) applies the hit already displayed
   without re-searching, so it moves no match and steps nothing.
 
@@ -183,6 +189,10 @@ The pieces are close but none of them is it:
   document does not watch it appear and vanish, and the `?` says which
   of the two facts is the missing one. Nothing at all is drawn until
   `total` is known.
+
+  **Amended 2026-08-11 (spec 0278 S2).** The field is drawn only where
+  the row is also showing the pattern it counts — an open prompt's
+  buffer or spec 0278's echo. The count is never alone on the row.
 
 - **S9.** The tally is its own step in `run_loop`'s idle arm, and it
   runs **last** — after the sweep, the discard, the bake and the
@@ -206,6 +216,11 @@ The pieces are close but none of them is it:
   prompt is open, or `search_highlight` is set. That is the same
   condition spec 0235 S15 draws the highlight under, and
   `clear_search_highlight` drops the tally with it.
+
+  **Amended 2026-08-11 (spec 0278 S2).** The tally still *lives* under
+  this condition; it is *drawn* under the narrower one above. The tint
+  outlives the row, so a `27 of 42` hidden by a movement key comes back
+  the moment `n` reprints the pattern.
 
 ## Alternatives considered
 

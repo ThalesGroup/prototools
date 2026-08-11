@@ -461,6 +461,11 @@ impl App {
         // top of every mouse event. Placed ahead of every dispatch branch
         // below, so a handler that sets a message of its own still wins.
         self.message.clear();
+        // Spec 0278 S3: the search echo goes the same way and at the
+        // same moment, so the pattern and spec 0277's count are never
+        // on the row without each other. A handler that re-echoes —
+        // `n`, `N`, a commit, an accepted find — sets it again below.
+        self.search_echo = None;
 
         // `Ctrl-Z` suspends the process (spec 0113 D31, Unix only) —
         // checked centrally here, ahead of every other dispatch, so it

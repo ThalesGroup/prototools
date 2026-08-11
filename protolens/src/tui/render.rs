@@ -1882,26 +1882,15 @@ impl App {
     /// none of `render`'s locals: it takes its area and is otherwise a
     /// function of the command/message state alone.
     fn render_command_row(&mut self, frame: &mut Frame, area: Rect) {
-        let cmd_text = match &self.command_buffer {
-            Some(buf) => {
-                // Spec 0276 S3: a find gets its own prefix, since it
-                // answers `Enter` and `Esc` differently from the `/`
-                // prompt it otherwise looks exactly like. Punctuation
-                // rather than the `F`/`B` that opened it: the buffer
-                // arrives pre-filled, so a letter prefix would render
-                // `Ffoo` and read as a typo.
-                let prefix = match self.command_kind {
-                    CommandLineKind::Command => ':',
-                    CommandLineKind::Search { dir, find } => match (dir, find) {
-                        (SearchDir::Forward, false) => '/',
-                        (SearchDir::Backward, false) => '?',
-                        (SearchDir::Forward, true) => '>',
-                        (SearchDir::Backward, true) => '<',
-                    },
-                };
-                format!("{prefix}{buf}")
-            }
-            None => self.message.clone(),
+        // Spec 0278 S2: a search prompt's buffer and the echo a
+        // committed search leaves behind are the same text on the same
+        // row, and `search_row_text` is the one place that decides
+        // which of them — if either — the row is showing. A find's own
+        // prefix (spec 0276 S3) is chosen there too.
+        let cmd_text = match (&self.command_buffer, self.search_row_text()) {
+            (_, Some(text)) => text,
+            (Some(buf), None) => format!(":{buf}"),
+            (None, None) => self.message.clone(),
         };
         // Spec 0190 S5: column 0 of the global row is reserved for the
         // activity dot, unconditionally — so the command row's geometry

@@ -1296,7 +1296,40 @@ impl App {
     /// frame is drawn long before the loop reaches it. Without this, the
     /// keystroke that changes the pattern would draw one frame of the
     /// old pattern's total.
+    ///
+    /// Spec 0278 S2: the search text the command row is showing — an
+    /// open search prompt's buffer, or the echo a committed search left
+    /// behind — with the prefix character that names it.
+    ///
+    /// One predicate serving two readers: `render_command_row` draws
+    /// what this returns, and spec 0277's count is drawn only where it
+    /// returns something. That is the whole of "the pattern and its
+    /// count arrive together and leave together".
+    ///
+    /// A message outranks the echo. A message is news and an echo is a
+    /// reminder, and the row is not wide enough for both to matter.
+    pub(super) fn search_row_text(&self) -> Option<String> {
+        if let Some(buf) = &self.command_buffer {
+            let CommandLineKind::Search { dir, find } = self.command_kind else {
+                return None;
+            };
+            return Some(format!("{}{buf}", search_prefix(dir, find)));
+        }
+        if !self.message.is_empty() {
+            return None;
+        }
+        let (dir, pattern) = self.search_echo.as_ref()?;
+        // Not `find`: an accepted find is a committed search like any
+        // other (spec 0276 S6), so what it leaves behind is spelled the
+        // way `n`/`N` will repeat it.
+        Some(format!("{}{pattern}", search_prefix(*dir, false)))
+    }
+
     pub(super) fn search_tally_text(&self) -> Option<String> {
+        // Spec 0278 S2: the count is a satellite of the pattern, not of
+        // the highlight — it is drawn beside the search text and never
+        // left alone on a row that has moved on to something else.
+        self.search_row_text()?;
         let tally = self.search_tally.as_ref()?;
         let total = tally.total?;
         let scope = self.search_sweep.as_ref()?.origin.scope;
@@ -1472,52 +1505,19 @@ impl App {
         self.search_origin = None;
         // Spec 0276 S6: an accepted find is a committed search.
         self.push_search_history(&pattern);
+        self.echo_search(dir, &pattern);
         self.set_last_search_for(scope, (dir, pattern));
         self.apply_sweep_hit(scope, hit);
+        // Spec 0276 N3, amended: `apply_sweep_hit` has left the caret on
+        // the match's first character, which is where an accepted find
+        // now leaves it — the same landing a `/` commit makes. All that
+        // remains of S5's second half is refusing the selection spec
+        // 0274 S12 leaves behind for that commit: a find keeps its
+        // highlight, so the match's extent is already on screen and a
+        // selection would be a cue nobody asked for.
         if scope == SearchScope::Main {
-            self.caret_to_match_end(hit);
+            self.clear_selection();
         }
-    }
-
-    /// Spec 0276 S5: move the caret from the match's first character,
-    /// where `apply_sweep_hit` has just put it, to its last.
-    ///
-    /// The *last* character and not the cell after it, because the caret
-    /// is a block that rests on a cell (spec 0242 S1) and at the end of
-    /// a row the cell after the match does not exist.
-    ///
-    /// No second `record_jump`: `apply_sweep_hit` has already recorded
-    /// the one this gesture is worth.
-    fn caret_to_match_end(&mut self, hit: SweepHit) {
-        // Spec 0235 S20: a path match is not on screen, so it has no
-        // last character to land on — the row it names is the whole of
-        // the answer, and `apply_sweep_hit` has already named it.
-        if hit.on_path {
-            return;
-        }
-        let column = match hit.end {
-            // Spec 0274 S11: the match ends on another row, at a column
-            // recorded one past its last character.
-            Some((pos, column)) => {
-                if pos.node != self.cursor {
-                    self.set_cursor(pos.node);
-                    self.unfold_ancestors(pos.node);
-                }
-                self.cursor_line_in_node = pos.line_in_node;
-                column.saturating_sub(1)
-            }
-            None => hit.column + hit.width.saturating_sub(1),
-        };
-        self.cursor_column = column;
-        self.clamp_caret_column();
-        self.desired_column = self.cursor_column;
-        // Spec 0199 S10, as for any other landing: a match at an end of
-        // the row is a coincidence and must arm nothing.
-        self.caret_anchor = CaretAnchor::Free;
-        // Spec 0276 N3: the highlight already shows the match's extent,
-        // so the selection spec 0274 S12 leaves behind for a `/` commit
-        // would be a cue nobody asked for here.
-        self.clear_selection();
     }
 
     /// Spec 0235 S6: open a `/`/`?` prompt's search state — the origin
@@ -1685,10 +1685,25 @@ impl App {
         self.search_sweep = Some(sweep);
         self.track_search_tally();
         match found {
-            Some(hit) => self.apply_sweep_hit(origin.scope, hit),
+            Some(hit) => {
+                self.apply_sweep_hit(origin.scope, hit);
+                self.echo_search(dir, pattern);
+            }
             // Spec 0235 S10: the message returns at `Enter`, and only
             // here — while the prompt was open it shared that row.
             None => self.message = self.not_found(pattern, origin.scope),
+        }
+    }
+
+    /// Spec 0278 S1: leave the pattern on the command row, the way the
+    /// prompt that was just closed had it.
+    ///
+    /// A hit only. A miss has `not_found` to say, which is the same
+    /// fact told at more length, and spec 0277 N3 already refuses the
+    /// count that would sit beside it.
+    fn echo_search(&mut self, dir: SearchDir, pattern: &str) {
+        if !pattern.is_empty() {
+            self.search_echo = Some((dir, pattern.to_string()));
         }
     }
 
@@ -1766,7 +1781,10 @@ impl App {
         self.search_sweep = Some(sweep);
         self.track_search_tally();
         match found {
-            Some(hit) => self.apply_sweep_hit(scope, hit),
+            Some(hit) => {
+                self.apply_sweep_hit(scope, hit);
+                self.echo_search(dir, pattern);
+            }
             None => self.message = self.not_found(pattern, scope),
         }
     }
@@ -2094,6 +2112,20 @@ enum Visit {
     Out,
     /// The last one, after the wrap.
     Back,
+}
+
+/// Spec 0276 S3: the character that names a search on the command row.
+///
+/// Punctuation rather than the `F`/`B` that opened a find: the buffer
+/// arrives pre-filled, so a letter prefix would render `Ffoo` and read
+/// as a typo.
+fn search_prefix(dir: SearchDir, find: bool) -> char {
+    match (dir, find) {
+        (SearchDir::Forward, false) => '/',
+        (SearchDir::Backward, false) => '?',
+        (SearchDir::Forward, true) => '>',
+        (SearchDir::Backward, true) => '<',
+    }
 }
 
 /// Spec 0246 S3: the origin row's half, split at the caret.
