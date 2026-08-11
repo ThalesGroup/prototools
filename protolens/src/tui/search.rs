@@ -22,7 +22,7 @@ use std::borrow::Cow;
 use std::collections::VecDeque;
 
 use super::navigation::PathScratch;
-use super::search_cursor::Segment;
+use super::search_cursor::{Segment, SegmentScan};
 use super::*;
 
 /// Spec 0235 S4: how many candidates one `search_sweep_step` visits.
@@ -39,13 +39,19 @@ use super::*;
 /// noise.
 pub(super) const SEARCH_SWEEP_SLICE: usize = 1000;
 
-/// What one `search_sweep_step` did — deliberately the same shape as
-/// `PrefetchStep`, since `run_loop` treats the two the same way:
+/// What one `search_sweep_step` did — `Progressed` and `Idle` are
+/// `PrefetchStep`'s, since `run_loop` treats the two the same way:
 /// `Progressed` means do not sleep yet, `Idle` means there is nothing
 /// left to do here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SweepStep {
     Progressed,
+    /// Spec 0274 S10: a segment scan is in flight on a worker thread.
+    /// The other three idle-arm jobs are skipped — they rewrite the
+    /// document the scan is reading — and the loop sleeps anyway,
+    /// because a scan can run for seconds and the drawing core is
+    /// reserved (0265) precisely so that it is free.
+    Waiting,
     Idle,
 }
 
@@ -79,7 +85,7 @@ pub(super) enum SweepCursor {
 /// granularity rides alongside it as this bound, which is `Whole` for
 /// every row but the origin's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RowBound {
+pub(super) enum RowBound {
     /// Every match in the candidate is a stop.
     Whole,
     /// No stop here — spec 0246 N4: a side pane's origin entry on the
@@ -193,6 +199,11 @@ pub(super) struct SearchSweep {
     /// few tens of milliseconds. S15's second pass is what covers the
     /// material a join makes reachable.
     segments: VecDeque<(Segment, RowBound)>,
+    /// Spec 0274 S9: the segment a worker thread is scanning right now.
+    ///
+    /// Dropping it aborts and joins, so a sweep that is replaced or
+    /// abandoned needs no shutdown of its own.
+    scan: Option<SegmentScan>,
     /// Spec 0235 S21.
     path: PathScratch,
 }
@@ -202,7 +213,7 @@ impl SearchSweep {
     /// dropped: the prompt still has to draw its answer, and `Enter`
     /// still has to commit it.
     pub(super) fn is_finished(&self) -> bool {
-        self.at.is_none() && self.segments.is_empty()
+        self.at.is_none() && self.segments.is_empty() && self.scan.is_none()
     }
 }
 
@@ -353,6 +364,7 @@ impl App {
             provisional: false,
             remaining: n + 1,
             segments,
+            scan: None,
             path: PathScratch::default(),
         })
     }
@@ -495,10 +507,6 @@ impl App {
     /// Visit at most `budget` candidates, stopping early on a match or
     /// at the end of the walk.
     fn advance_sweep(&self, sweep: &mut SearchSweep, budget: usize) {
-        if !sweep.segments.is_empty() {
-            self.advance_segment_sweep(sweep);
-            return;
-        }
         let n = self.search_candidate_count(sweep.origin.scope);
         for _ in 0..budget {
             let Some((at, bound)) = sweep.at else { return };
@@ -531,47 +539,122 @@ impl App {
         }
     }
 
-    /// Spec 0274 S9: scan one segment of a multi-line sweep.
+    /// Spec 0274 S9/S10: one step of a multi-line sweep — collect the
+    /// segment a worker has finished, or hand out the next one.
     ///
     /// **The segment is the unit of work**, not the slice `budget` the
     /// per-row walk counts: a cross-row engine's state is its own, so
     /// there is nowhere to stop in the middle of one. The queue is what
     /// bounds the stall instead, and it is self-limiting — segments are
     /// many and small exactly while the bake still has the most to do.
-    fn advance_segment_sweep(&self, sweep: &mut SearchSweep) {
+    ///
+    /// `offload` is false for the callers that must answer before they
+    /// return; they scan on this thread, where a worker's report would
+    /// have nobody listening for it.
+    fn advance_segment_sweep(&self, sweep: &mut SearchSweep, offload: bool) -> SweepStep {
+        if let Some(scan) = sweep.scan.take() {
+            let Some(found) = scan.collect() else {
+                sweep.scan = Some(scan);
+                return SweepStep::Waiting;
+            };
+            let seg = scan.seg;
+            // Dropped here: the thread is already done, so the join in
+            // `SegmentScan`'s destructor returns at once.
+            drop(scan);
+            if let Some(span) = found {
+                self.take_segment_hit(sweep, seg, span);
+            }
+            // Spec 0274 S10: the yield, and it has to be `Idle` rather
+            // than `Progressed` — `Progressed` `continue`s past
+            // discard, bake and read-ahead, so this is the pass that
+            // lets each of those three take one step.
+            return SweepStep::Idle;
+        }
         let Some((seg, bound)) = sweep.segments.pop_front() else {
-            return;
+            return SweepStep::Idle;
         };
-        let Some(hit) = self.scan_segment(sweep, seg, bound) else {
-            return;
+        let (SearchPattern::Multi(re), Some((lo, hi))) = (&sweep.pattern, bound_span(bound)) else {
+            return SweepStep::Progressed;
         };
-        sweep.found = Some(hit);
-        sweep.segments.clear();
+        if offload {
+            if let Some(scan) = self.spawn_segment_scan(re, seg, bound, sweep.dir, (lo, hi)) {
+                sweep.scan = Some(scan);
+                return SweepStep::Waiting;
+            }
+        }
+        // Nowhere to report to, so the scan runs here. Slower for the
+        // reader, but it is what a headless session and the tests get,
+        // and it is the walk stage 2 shipped.
+        if let Some(span) = self.scan_segment_inline(re, seg, sweep.dir, lo, hi) {
+            self.take_segment_hit(sweep, seg, span);
+        }
+        SweepStep::Progressed
     }
 
-    /// The stop `sweep`'s pattern makes in `seg`, if any.
-    fn scan_segment(&self, sweep: &SearchSweep, seg: Segment, bound: RowBound) -> Option<SweepHit> {
-        let SearchPattern::Multi(re) = &sweep.pattern else {
-            return None;
+    /// A segment's answer, read as the sweep's. A hit ends the walk:
+    /// the queue is in S14's order, so the first segment to answer is
+    /// the nearest one.
+    fn take_segment_hit(&self, sweep: &mut SearchSweep, seg: Segment, span: Range<usize>) {
+        if let Some(hit) = self.hit_from_span(seg, span) {
+            sweep.found = Some(hit);
+            sweep.segments.clear();
+        }
+    }
+
+    /// Spec 0274 S9: run a sweep to its end on this thread.
+    ///
+    /// The two non-incremental callers — `n`/`N` and a committed
+    /// prompt — have no loop to interleave with and have already told
+    /// the reader the wait is the answer's cost, so a multi-line sweep
+    /// scans its segments here rather than handing them out.
+    fn drain_sweep(&self, sweep: &mut SearchSweep) {
+        // A scan the prompt had already handed out is recalled rather
+        // than waited on: dropping it aborts and joins (S7), and its
+        // segment goes back at the head of the queue to be redone here.
+        // Spinning on `collect` instead would burn the very core the
+        // scan is running on.
+        if let Some(scan) = sweep.scan.take() {
+            sweep.segments.push_front((scan.seg, scan.bound));
+        }
+        while !sweep.is_finished() {
+            if sweep.segments.is_empty() {
+                self.advance_sweep(sweep, usize::MAX);
+            } else {
+                self.advance_segment_sweep(sweep, false);
+            }
+        }
+    }
+
+    /// Spec 0274 S8: end any segment scan in flight so that the caller
+    /// may write the document.
+    ///
+    /// The segment goes back at the head of the queue: a sweep that
+    /// silently dropped one would report a miss over bytes it never
+    /// looked at. By S5 a bake step cannot have changed the interior of
+    /// a segment, so redoing one is redoing the same work.
+    ///
+    /// Called from [`App::tree_mut`] and [`App::node_text_mut`] rather
+    /// than from the writers themselves, which is what makes it
+    /// impossible to forget.
+    pub(super) fn halt_search_scan(&mut self) {
+        let Some(sweep) = self.search_sweep.as_mut() else {
+            return;
         };
-        let (lo, hi) = match bound {
-            RowBound::Nothing => return None,
-            RowBound::Whole => (0, usize::MAX),
-            RowBound::Starts { lo, hi } => (lo, hi),
-        };
-        // Spec 0246 S4: the first eligible start going forward, the last
-        // going backward. Unlike `pick_match` the bounds are compared
-        // against the match's true offset rather than against 0246 S3a's
-        // floored one — the floor is a row's, and a segment holds many.
-        // The two halves still partition the segment, which is the only
-        // property the wrap rests on.
-        let range = match sweep.dir {
-            SearchDir::Forward => self
-                .find_in_segment(re, seg, lo, None)
-                .filter(|r| r.start < hi)?,
-            SearchDir::Backward => self.find_last_in_segment(re, seg, lo, hi, None)?,
-        };
-        self.hit_from_span(seg, range)
+        if let Some(scan) = sweep.scan.take() {
+            sweep.segments.push_front((scan.seg, scan.bound));
+        }
+    }
+
+    /// Spec 0274 S10: whether the frozen queue still owes a segment.
+    ///
+    /// `search_sweep_step` reports `Idle` when it collects a verdict, so
+    /// that discard, bake and read-ahead each get a step. That is a
+    /// yield and not an answer, and `run_loop` reads this to tell the
+    /// two apart before it decides to sleep.
+    pub(super) fn search_segment_pending(&self) -> bool {
+        self.search_sweep
+            .as_ref()
+            .is_some_and(|sweep| !sweep.segments.is_empty())
     }
 
     /// A byte span inside `seg`, read as a stop.
@@ -655,7 +738,16 @@ impl App {
             return SweepStep::Idle;
         }
         let before = sweep.found;
-        self.advance_sweep(&mut sweep, SEARCH_SWEEP_SLICE);
+        // Spec 0274 S10: a multi-line sweep walks segments instead of
+        // rows, and one segment is one worker's task, so its step
+        // reports for itself whether it handed work out, waited or
+        // yielded.
+        let step = if sweep.segments.is_empty() && sweep.scan.is_none() {
+            self.advance_sweep(&mut sweep, SEARCH_SWEEP_SLICE);
+            SweepStep::Progressed
+        } else {
+            self.advance_segment_sweep(&mut sweep, true)
+        };
         let found_changed = sweep.found != before;
         // Spec 0235 S5: the walk finishing with nothing is the *other*
         // change to the result — it is what turns "still looking" into
@@ -672,7 +764,7 @@ impl App {
             }
         }
         self.search_dirty |= found_changed || exhausted;
-        SweepStep::Progressed
+        step
     }
 
     /// Spec 0235 S8: the whole of a sweep's effect on the pane. It
@@ -756,15 +848,26 @@ impl App {
         };
         // Spec 0246 S21: nothing displayed — the sweep is still walking,
         // or it finished having missed — is nothing to rotate from.
-        let Some(hit) = self.search_sweep.as_ref().and_then(|s| s.found) else {
-            return;
+        //
+        // Spec 0274 S16 relaxes the second half of that. A *provisional*
+        // miss is precisely the state in which asking again is the point:
+        // the frozen queue saw the document the bake had managed at the
+        // time, and the reader pressing the key is asking about the
+        // document as it stands now. It rotates from `search_origin`,
+        // there being no displayed match to step off. A *conclusive*
+        // miss and a still-walking sweep are still no-ops.
+        let from = match self.search_sweep.as_ref().map(|s| (s.found, s.provisional)) {
+            Some((Some(hit), _)) => SearchOrigin {
+                at: hit.at,
+                column: hit.start,
+                ..origin
+            },
+            // `provisional` is set only where the walk ran out, so this
+            // arm cannot catch a sweep that is still going.
+            Some((None, true)) => origin,
+            _ => return,
         };
         let pattern = self.command_buffer.clone().unwrap_or_default();
-        let from = SearchOrigin {
-            at: hit.at,
-            column: hit.start,
-            ..origin
-        };
         let Some(sweep) = self.begin_search_sweep(&pattern, dir, from) else {
             return;
         };
@@ -866,12 +969,7 @@ impl App {
             self.report_bad_pattern(pattern);
             return;
         };
-        // An unbounded budget drains the per-row walk in one call, but
-        // spec 0274 S9 makes a segment the unit of work rather than the
-        // slice, so a multi-line sweep takes one call per segment.
-        while !sweep.is_finished() {
-            self.advance_sweep(&mut sweep, usize::MAX);
-        }
+        self.drain_sweep(&mut sweep);
         self.search_dirty = true;
         let found = sweep.found;
         // Kept rather than dropped: S15's highlight outlives the
@@ -948,12 +1046,7 @@ impl App {
             self.report_bad_pattern(pattern);
             return;
         };
-        // An unbounded budget drains the per-row walk in one call, but
-        // spec 0274 S9 makes a segment the unit of work rather than the
-        // slice, so a multi-line sweep takes one call per segment.
-        while !sweep.is_finished() {
-            self.advance_sweep(&mut sweep, usize::MAX);
-        }
+        self.drain_sweep(&mut sweep);
         self.search_dirty = true;
         self.search_highlight = true;
         let found = sweep.found;
@@ -1176,6 +1269,22 @@ fn split_at(c: usize, dir: SearchDir, visit: Visit) -> RowBound {
             lo: c,
             hi: usize::MAX,
         },
+    }
+}
+
+/// The byte window a [`RowBound`] names inside a segment, or `None` for
+/// the bound that admits nothing.
+///
+/// Spec 0246 S4's two halves, read over a segment rather than a row.
+/// Unlike `pick_match` the comparison is against the match's *true*
+/// offset rather than 0246 S3a's floored one — the floor is a row's, and
+/// a segment holds many. The two halves still partition the segment,
+/// which is the only property the wrap rests on.
+fn bound_span(bound: RowBound) -> Option<(usize, usize)> {
+    match bound {
+        RowBound::Nothing => None,
+        RowBound::Whole => Some((0, usize::MAX)),
+        RowBound::Starts { lo, hi } => Some((lo, hi)),
     }
 }
 

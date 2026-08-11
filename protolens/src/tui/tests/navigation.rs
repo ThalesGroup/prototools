@@ -801,7 +801,7 @@ fn move_down_and_up_step_over_display_only_lines() {
     // no chains left to unlink it from, and `first_child` reads the
     // vacancy straight back.
     let orphaned = app.first_child(items[0]).expect("items[0] has a child");
-    app.tree[orphaned] = TreeNode::vacant();
+    app.tree_mut()[orphaned] = TreeNode::vacant();
     assert_eq!(app.tree[items[0]].lines_total, 3);
 
     let header = app.absolute_start(items[0]);

@@ -387,7 +387,7 @@ fn a_confirm_is_unbounded_without_an_event_loop() {
     // provenance reset is what makes the pass do work at all; a settled
     // node is skipped.
     let root = app.first_node;
-    app.tree[root].rendered_as = crate::provenance::NOT_RENDERED;
+    app.tree_mut()[root].rendered_as = crate::provenance::NOT_RENDERED;
     app.render_overrides(root);
 
     assert!(
@@ -1310,7 +1310,7 @@ fn a_refused_expansion_refuses_the_export() {
     let bogus = app
         .provenance
         .intern(&(Some(Some("no.such.Type".to_string())), "items".to_string()));
-    app.tree[stop].rendered_as = bogus;
+    app.tree_mut()[stop].rendered_as = bogus;
     app.set_cursor(stop);
 
     assert!(
@@ -1336,7 +1336,7 @@ fn bake_subtree_attempts_each_node_once() {
     let bogus = app
         .provenance
         .intern(&(Some(Some("no.such.Type".to_string())), "items".to_string()));
-    app.tree[stop].rendered_as = bogus;
+    app.tree_mut()[stop].rendered_as = bogus;
 
     let others: Vec<usize> = app
         .auto_folded

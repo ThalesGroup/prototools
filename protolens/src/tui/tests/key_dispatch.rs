@@ -1289,7 +1289,7 @@ fn ctrl_o_restores_the_whole_caret_position() {
     let wide = app.cursor_column;
     app.record_jump();
     app.set_cursor(items[2]);
-    app.node_text[items[0]] = Some(Box::from("x"));
+    app.node_text_mut()[items[0]] = Some(Box::from("x"));
 
     app.handle_key(ctrl_o);
     assert_eq!(app.cursor, items[0]);

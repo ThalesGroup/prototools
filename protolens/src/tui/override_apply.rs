@@ -104,7 +104,7 @@ impl App {
             };
             match self.splice_override(idx, effective, self.confirm_row_budget()) {
                 Ok(()) => {
-                    self.tree[idx].rendered_as = current;
+                    self.tree_mut()[idx].rendered_as = current;
                     // Spec 0221 S1: this node is settled after all, so
                     // an earlier refusal of it in this same pass was not
                     // final and must not be reported. The guard keeps
@@ -221,7 +221,7 @@ impl App {
     /// spec 0255 rule 2 records for the row budget, and deliberately the
     /// same switch).
     fn discard_text(&mut self, idx: usize) {
-        match self.node_text[idx].take() {
+        match self.node_text_mut()[idx].take() {
             Some(text) if self.bounded_confirms => self.discarded_text.push(text),
             _ => {}
         }
@@ -1141,7 +1141,7 @@ impl App {
         self.collect_descendants(idx, &mut old_descendants);
         self.scrub_folds_under(idx, &old_descendants);
         for &d in &old_descendants {
-            self.tree[d] = decode::TreeNode::vacant();
+            self.tree_mut()[d] = decode::TreeNode::vacant();
             self.discard_text(d);
             // The cue answered a question about a node this rendering no
             // longer has; if the slot comes back it must be asked again.
@@ -1181,7 +1181,7 @@ impl App {
         // to place a patch in. `new_spans`' `text_range` is 0-based
         // against `new_lines`, which is exactly what `overlay_spans`
         // expects.
-        self.tree[idx] = decode::TreeNode::vacant();
+        self.tree_mut()[idx] = decode::TreeNode::vacant();
         self.discard_text(idx);
         // Spec 0249 S3: `auto_folded` means "this node's body has not
         // been rendered", and the render just above rendered it. A
@@ -1189,15 +1189,25 @@ impl App {
         // the reason the entry has to go, and `idx`'s *user* fold is
         // untouched either way.
         self.auto_folded.remove(&idx);
+        // Spec 0274 S8: the structure and the text are wanted mutably at
+        // the same time, and each accessor borrows the whole `App`.
+        // Moved out and put back rather than reached for twice — the
+        // empty `Arc` each `take` leaves behind is one word-sized
+        // allocation, against a call that renders a subtree.
+        self.halt_search_scan();
+        let mut tree = std::mem::take(&mut self.tree);
+        let mut text = std::mem::take(&mut self.node_text);
         let stopped = decode::overlay_spans(
-            &mut self.tree,
-            &mut self.node_text,
+            Arc::get_mut(&mut tree).expect("the halt above leaves the tree unshared"),
+            Arc::get_mut(&mut text).expect("the halt above leaves the text unshared"),
             new_spans,
             &new_lines,
             &self.arena,
             idx,
             &undescended,
         );
+        self.tree = tree;
+        self.node_text = text;
         // Spec 0249 S1/S3: the budget stopped here, so these nodes have
         // a header and a footer and nothing between. Folding them is
         // what makes each one a single row instead of an empty pair of
@@ -1233,7 +1243,7 @@ impl App {
         // line whatever is beneath it. `overlay_spans` cannot know that,
         // so it set both counts to the full size.
         if self.is_folded(idx) {
-            self.tree[idx].lines_visible = 1;
+            self.tree_mut()[idx].lines_visible = 1;
         }
 
         // Spec 0210 S3: the ancestors' sizes, and nothing else. It

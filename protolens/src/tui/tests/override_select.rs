@@ -1103,7 +1103,7 @@ fn override_pane_auto_completes_from_polling_alone_without_scrolling() {
     // it too, so the cursor node is genuinely typeless as well as
     // override-less, exercising `open_override_on_default` in
     // isolation.
-    app.tree[0].span.type_fqdn = NO_FQDN;
+    app.tree_mut()[0].span.type_fqdn = NO_FQDN;
     // Four repeated, structurally valid field-1 varint encodings — an
     // all-zero payload's leading tag byte (field number 0) is
     // structurally invalid and would veto every candidate.

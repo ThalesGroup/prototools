@@ -15,6 +15,8 @@ use super::super::*;
 use super::support::*;
 use regex_cursor::Cursor;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
+use std::time::Duration;
 
 /// The rows the line walk draws, joined — the string spec 0274 S1 says
 /// a non-path pattern searches, built the slow and obvious way so that
@@ -176,6 +178,208 @@ fn a_match_does_not_cross_a_bake_hole_but_survives_it() {
         &format!(r"{}\s*", regex_quote(&far)),
     );
     assert!(app.message.is_empty(), "{}", app.message);
+}
+
+/// Open a `/` prompt and type `pattern` into it, which is what arms a
+/// live sweep — `run_search` drains one instead, and the states this
+/// file is about are the ones a sweep passes through.
+fn open_search(app: &mut App, pattern: &str) {
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+    for c in pattern.chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+}
+
+/// Step the live sweep the way `run_loop`'s idle arm does, until it has
+/// nothing left to say.
+///
+/// Sound only where `search_progress` is `None`: with a worker in play
+/// an `Idle` is a yield rather than an ending, which is what
+/// [`a_segment_scan_waits_for_its_worker_and_then_yields`] is about.
+fn settle(app: &mut App) {
+    for _ in 0..10_000 {
+        if app.search_sweep_step() == SweepStep::Idle {
+            return;
+        }
+    }
+    panic!("a sweep must converge");
+}
+
+/// Run the bake to exhaustion, as `tests::bake::drain` does.
+fn bake(app: &mut App) {
+    for _ in 0..10_000 {
+        if app.bake_step() == BakeStep::Idle {
+            return;
+        }
+    }
+    panic!("a bake must terminate");
+}
+
+/// Spec 0274 test-plan items 11 and 12 (S9, S10). The two halves of the
+/// worker's contract with `run_loop`'s idle arm, which are only
+/// meaningful together.
+///
+/// While a segment is out with a worker the step reports `Waiting`, and
+/// the idle arm reads that as "skip discard, bake and read-ahead" — a
+/// bake step would have to stop the scan to write the document, and the
+/// two heat jobs would take the core it is running on. But the step that
+/// *collects* a verdict reports `Idle`, and that is the pass on which
+/// those three each get their turn. Report `Progressed` there instead
+/// and the arm `continue`s past all of them for the length of the
+/// search, which is the regression this pins.
+#[test]
+fn a_segment_scan_waits_for_its_worker_and_then_yields() {
+    let (mut app, _) = bounded_repeated_message_fixture(2);
+    app.splash = false;
+    app.term_width = 120;
+    let (segments, _) = app.search_segments();
+    assert!(segments.len() > 1, "the fixture must have several segments");
+
+    // Spec 0274 S9: a sender is what makes a scan offloadable, so this
+    // stands in for `run()` having a loop to report to.
+    let (tx, rx) = mpsc::channel();
+    app.search_progress = Some(tx);
+    open_search(&mut app, r"zzqq\nxxww");
+
+    let mut handed_out = 0usize;
+    let mut yields_with_work_left = 0usize;
+    for _ in 0..10_000 {
+        match app.search_sweep_step() {
+            SweepStep::Waiting => {
+                handed_out += 1;
+                // The wake-up the idle arm would have slept on. It
+                // arrives *after* the answer, so the next step collects
+                // rather than waiting again.
+                rx.recv_timeout(Duration::from_secs(10))
+                    .expect("a scan must report");
+            }
+            SweepStep::Idle if app.search_segment_pending() => yields_with_work_left += 1,
+            SweepStep::Idle => break,
+            SweepStep::Progressed => panic!("an offloaded segment must not be scanned inline"),
+        }
+    }
+    // One task per queue entry, and S14's queue is one longer than the
+    // segmentation: 0246 S2's two visits to the origin's own segment,
+    // split at the caret.
+    assert_eq!(
+        handed_out,
+        segments.len() + 1,
+        "one worker per queued segment, and no segment skipped"
+    );
+    assert_eq!(
+        yields_with_work_left,
+        segments.len(),
+        "every collect but the last must let the other three jobs run"
+    );
+    assert!(
+        app.search_sweep.as_ref().expect("a sweep").found.is_none(),
+        "the pattern is not in the fixture"
+    );
+}
+
+/// Spec 0274 test-plan item 13 (S9, S15), and item 6 with it. The queue
+/// is frozen at search start, so a segment the bake creates does not
+/// join the walk in progress — the answer is a *provisional* miss, and
+/// the second pass is what revises it.
+///
+/// The alternative the user rejected is what this forbids: honoring a
+/// join means rescanning both sides of it, a join lands every ~22 ms,
+/// and each is larger than the last.
+#[test]
+fn a_segment_the_bake_creates_does_not_join_the_queue() {
+    // The row pair to look for is taken from a finished copy of the same
+    // fixture: two rows that are adjacent only once the bake has
+    // rendered the stop's body, so nothing in the document as it stands
+    // can match.
+    let mut finished = bounded_repeated_message_fixture(2).0;
+    bake(&mut finished);
+    let whole = document(&finished);
+    let rows: Vec<&str> = whole.lines().collect();
+
+    let (mut app, _) = bounded_repeated_message_fixture(2);
+    app.splash = false;
+    app.term_width = 120;
+    let started_as = document(&app);
+    let target = rows
+        .windows(2)
+        .map(|w| format!("{}\n{}", w[0], w[1]))
+        .find(|pair| !started_as.contains(pair.as_str()))
+        .expect("the bake must add an adjacency");
+    let pattern = regex_quote(&target);
+
+    // Pass one, over the document as it stands. A miss, and the report
+    // says it is not an answer yet.
+    open_search(&mut app, &pattern);
+    settle(&mut app);
+    assert!(app.search_sweep.as_ref().expect("a sweep").found.is_none());
+    assert!(
+        app.not_found(&pattern, SearchScope::Main)
+            .contains("not yet baked"),
+        "{}",
+        app.not_found(&pattern, SearchScope::Main)
+    );
+
+    // The bake finishes the document underneath the finished sweep. A
+    // frozen queue means it grew by nothing.
+    bake(&mut app);
+    assert!(app.auto_folded.is_empty());
+    assert!(
+        app.search_sweep.as_ref().expect("a sweep").found.is_none(),
+        "a bake step must not make a finished sweep find anything"
+    );
+
+    // Pass two: the first step after the last subtree landed asks the
+    // question again, and this time the adjacency is there.
+    assert_eq!(app.search_sweep_step(), SweepStep::Progressed);
+    settle(&mut app);
+    assert!(
+        app.search_sweep.as_ref().expect("a sweep").found.is_some(),
+        "the second pass must find what the first could not reach"
+    );
+}
+
+/// Spec 0274 test-plan item 14 (S16). `Ctrl-Right` on a *provisional*
+/// miss begins a fresh sweep; on a conclusive one it stays 0246 S21's
+/// no-op.
+///
+/// Without the first half the reader is stuck at exactly the moment the
+/// gesture is for: the prompt says "not there yet" and the key that
+/// means "ask again" does nothing. Without the second, a search that has
+/// genuinely failed would re-walk the whole document on every press.
+#[test]
+fn a_provisional_miss_rotates_and_a_conclusive_one_does_not() {
+    let (mut app, _) = bounded_repeated_message_fixture(2);
+    app.splash = false;
+    app.term_width = 120;
+    open_search(&mut app, r"zzqq\nxxww");
+    settle(&mut app);
+    assert!(app.search_sweep.as_ref().expect("a sweep").is_finished());
+    assert!(app
+        .not_found("zzqq", SearchScope::Main)
+        .contains("not yet baked"));
+
+    app.rotate_search_match(SearchDir::Forward);
+    assert!(
+        !app.search_sweep.as_ref().expect("a sweep").is_finished(),
+        "a provisional miss must re-segment and walk again"
+    );
+
+    // The same pattern over a document with nothing left unread.
+    let (mut app, _) = bounded_repeated_message_fixture(2);
+    app.splash = false;
+    app.term_width = 120;
+    bake(&mut app);
+    open_search(&mut app, r"zzqq\nxxww");
+    settle(&mut app);
+    assert!(app
+        .not_found("zzqq", SearchScope::Main)
+        .contains("not found"));
+
+    app.rotate_search_match(SearchDir::Forward);
+    assert!(
+        app.search_sweep.as_ref().expect("a sweep").is_finished(),
+        "there is nothing left to ask, so the key does nothing"
+    );
 }
 
 /// Escape a rendered row so it can be used as a literal inside a

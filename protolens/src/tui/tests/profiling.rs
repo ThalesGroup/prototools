@@ -780,7 +780,7 @@ fn repro_crash_forced_resplice_on_pdb() {
     // Mimic exactly what `preview_override_highlight` does after its own
     // (budget-capped) preview splice at pane-open time: force `rendered_as`
     // back to `None` so the node is treated as needing a real re-splice.
-    app.tree[cursor].rendered_as = NOT_RENDERED;
+    app.tree_mut()[cursor].rendered_as = NOT_RENDERED;
 
     eprintln!(
         "about to force-resplice from root -- tree.len()={}",
@@ -843,7 +843,7 @@ fn repro_crash_activate_then_close_on_pdb() {
     // Mimic `toggle_override`'s preview splice + forced rendered_as reset
     // (attempt #3 already showed this alone doesn't crash, but keep it
     // for fidelity -- it's what real `t` always does before Enter).
-    app.tree[cursor].rendered_as = NOT_RENDERED;
+    app.tree_mut()[cursor].rendered_as = NOT_RENDERED;
 
     // Mimic `handle_override_key`'s `Enter` arm exactly.
     let origin = app
@@ -1597,7 +1597,7 @@ fn profile_nested_commit_on_pdb() {
 
     // Force a real re-splice, exactly as `toggle_override` does before
     // every confirm.
-    app.tree[target].rendered_as = NOT_RENDERED;
+    app.tree_mut()[target].rendered_as = NOT_RENDERED;
     let origin = app
         .override_origin_for_kind(target)
         .expect("origin for target");

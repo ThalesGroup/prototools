@@ -31,6 +31,10 @@ const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(200);
 pub(super) enum AppEvent {
     Term(event::Event),
     HeatWorkerProgress,
+    /// Spec 0274 S9: a segment scan has an answer waiting. Uncounted by
+    /// `InputPending` for the same reason the heat worker's is — it is
+    /// the app talking to itself, not the user typing.
+    SearchWorkerProgress,
 }
 
 /// Spec 0223 S1: how many terminal events the reader has sent that
@@ -617,7 +621,7 @@ mod tests {
             }
             match rx.recv_timeout(left) {
                 Ok(AppEvent::Term(_)) => seen += 1,
-                Ok(AppEvent::HeatWorkerProgress) => {}
+                Ok(AppEvent::HeatWorkerProgress | AppEvent::SearchWorkerProgress) => {}
                 Err(_) => break,
             }
         }

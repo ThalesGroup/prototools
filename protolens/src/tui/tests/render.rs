@@ -267,9 +267,9 @@ fn a_frame_costs_the_same_at_the_end_of_a_wide_document_as_at_the_start() {
 fn long_packed_run_app(n: usize) -> App {
     let mut app = wide_sibling_scalars_app(1);
     let text: Vec<String> = (0..n).map(|i| format!("  {i}")).collect();
-    app.node_text[0] = Some(text.join("\n").into_boxed_str());
-    app.tree[0].lines_total = n as u32;
-    app.tree[0].lines_visible = n as u32;
+    app.node_text_mut()[0] = Some(text.join("\n").into_boxed_str());
+    app.tree_mut()[0].lines_total = n as u32;
+    app.tree_mut()[0].lines_visible = n as u32;
     app
 }
 
@@ -1307,7 +1307,7 @@ fn a_truncation_marker_does_not_decolor_the_rows_beneath_it() {
 fn hiding_annotations_respects_a_hash_at_inside_a_string_value() {
     let line = "  name: \"a  #@ b\"  #@ string = 2".to_string();
     let mut app = sibling_leaves_app(&["x"]);
-    app.node_text[0] = Some(Box::from(line.as_str()));
+    app.node_text_mut()[0] = Some(Box::from(line.as_str()));
     app.annotations = false;
     // Spec 0193 S1's blank fold field accounts for the two extra columns.
     assert_eq!(
@@ -1335,7 +1335,7 @@ fn hiding_annotations_respects_a_hash_at_inside_a_string_value() {
 #[test]
 fn an_empty_packed_record_row_hides_to_nothing() {
     let mut app = sibling_leaves_app(&["x"]);
-    app.node_text[0] = Some(Box::from("  #@ = 7 pack_size: 0"));
+    app.node_text_mut()[0] = Some(Box::from("  #@ = 7 pack_size: 0"));
     app.annotations = false;
     assert_eq!(app.row_content(app.committed_row(0).unwrap()), "");
 }
@@ -1596,7 +1596,7 @@ fn marker_column_agrees_with_what_is_drawn_at_every_indent_width() {
         // Spec 0222 S1: the text is the nodes', so the re-indent is
         // per node. A closing `}` needs no touching — it is derived
         // from its header, so it follows the header's new indent.
-        for text in app.node_text.iter_mut().flatten() {
+        for text in app.node_text_mut().iter_mut().flatten() {
             let reindented: Vec<String> = text
                 .split('\n')
                 .map(|l| {
@@ -1862,7 +1862,7 @@ fn a_folded_node_pairs_its_synthetic_closing_brace_on_the_same_row() {
 fn text_rows_app(texts: &[&str]) -> App {
     let mut app = wide_sibling_scalars_app(texts.len());
     for (slot, text) in texts.iter().enumerate() {
-        app.node_text[slot] = Some(Box::from(*text));
+        app.node_text_mut()[slot] = Some(Box::from(*text));
     }
     app
 }

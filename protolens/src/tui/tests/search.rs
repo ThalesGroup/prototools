@@ -172,7 +172,7 @@ fn main_pane_search_matches_the_current_not_original_rendering() {
 
     // Simulate an already-applied override splice (spec 0114 §5):
     // node 1's rendered line no longer contains "beta" at all.
-    app.node_text[1] = Some(Box::from("pkg.Overridden { x: 1 }"));
+    app.node_text_mut()[1] = Some(Box::from("pkg.Overridden { x: 1 }"));
 
     app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
     for c in "beta".chars() {
@@ -784,7 +784,7 @@ fn a_sweep_reaches_the_right_line_of_a_packed_run_both_ways() {
 /// horizontal centering to have somewhere to put it.
 fn target_at(n: usize, line: usize, indent: usize) -> App {
     let mut app = wide_sibling_scalars_app(n);
-    app.node_text[line] = Some(Box::from(
+    app.node_text_mut()[line] = Some(Box::from(
         format!("{}target: 0{}", " ".repeat(indent), "x".repeat(indent)).as_str(),
     ));
     app.splash = false;
@@ -905,8 +905,8 @@ fn a_sweep_forces_a_frame_only_when_its_result_changes() {
 #[test]
 fn backspace_undoes_the_keystroke_before_it() {
     let mut app = wide_sibling_scalars_app(200);
-    app.node_text[50] = Some(Box::from("fo: 0"));
-    app.node_text[150] = Some(Box::from("foo: 0"));
+    app.node_text_mut()[50] = Some(Box::from("fo: 0"));
+    app.node_text_mut()[150] = Some(Box::from("foo: 0"));
     app.splash = false;
     app.term_width = 120;
 
@@ -1221,7 +1221,7 @@ fn a_pattern_of_digits_and_slashes_searches_paths_only() {
     // Now a second line carries the same pattern in its *text*. It is
     // not a stop, so the next `n` wraps back onto the one node whose
     // path the pattern spells.
-    app.node_text[a] = Some(Box::from("  a: \"/2/1\""));
+    app.node_text_mut()[a] = Some(Box::from("  a: \"/2/1\""));
     app.set_cursor(app.first_node);
     app.jump_to_match(SearchDir::Forward, "/2/1");
     assert_eq!(app.cursor, id);
@@ -1376,7 +1376,7 @@ fn a_path_match_lands_on_the_home_anchor() {
     assert_eq!(app.cursor_column, 2);
 
     // `a`'s path is `/3` and its text now holds `/3` too.
-    app.node_text[a] = Some(Box::from("  a: \"/3\""));
+    app.node_text_mut()[a] = Some(Box::from("  a: \"/3\""));
     app.set_cursor(app.first_node);
     app.jump_to_match(SearchDir::Forward, "/3");
     assert_eq!(app.cursor, a);
@@ -1892,8 +1892,8 @@ fn typing_after_a_rotation_searches_from_the_prompts_origin() {
 #[test]
 fn esc_after_a_rotation_restores_the_opening_view() {
     let mut app = wide_sibling_scalars_app(400);
-    app.node_text[100] = Some(Box::from("target: 0"));
-    app.node_text[300] = Some(Box::from("target: 0"));
+    app.node_text_mut()[100] = Some(Box::from("target: 0"));
+    app.node_text_mut()[300] = Some(Box::from("target: 0"));
     app.splash = false;
     app.term_width = 120;
     app.message.clear();

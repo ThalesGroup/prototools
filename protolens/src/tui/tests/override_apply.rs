@@ -551,7 +551,11 @@ fn a_commit_touches_only_the_spliced_subtree() {
             .collect()
     };
 
-    let before = app.node_text.clone();
+    // `to_vec`, not `clone`: spec 0274 S8 made the field an `Arc`, and
+    // cloning that would take a second owner of the very vector the
+    // splice is about to write, rather than a snapshot to compare it
+    // against.
+    let before = app.node_text.to_vec();
     app.splice_override(inner_idx, Some("string".to_string()), None)
         .expect("overriding a submessage field as string must succeed");
 

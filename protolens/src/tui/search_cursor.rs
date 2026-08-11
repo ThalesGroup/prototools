@@ -17,10 +17,13 @@
 //! S1), so the rows on either side of it are not neighbors and a match
 //! must not be allowed to join them.
 
+use super::search::RowBound;
 use super::structure::Structure;
 use super::*;
 use regex_cursor::Cursor;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
+use std::thread;
 
 /// One chunk's worth of the document: a node's own text entry, or the
 /// closing brace a bracketed node derives rather than stores (0222 S2).
@@ -432,48 +435,180 @@ impl App {
         text.len()
     }
 
-    /// Where `re` first matches inside `seg`, in bytes from the
-    /// segment's first row, searching from `from`.
+    /// Spec 0274 S9: hand one segment to a thread of its own.
     ///
-    /// `None` for a miss and for an abort alike: the caller knows which
-    /// it asked for, and S7 makes the two indistinguishable here on
-    /// purpose.
-    pub(super) fn find_in_segment(
+    /// `None` when there is nowhere to report a result to — a headless
+    /// export, or a test driving `search_sweep_step` by hand — and the
+    /// caller then scans on this thread instead. The same fallback the
+    /// heat worker has when no scoring graph was loaded.
+    pub(super) fn spawn_segment_scan(
         &self,
-        re: &CursorRegex,
+        re: &Arc<CursorRegex>,
         seg: Segment,
-        from: usize,
-        abort: Option<(&AtomicU64, u64)>,
-    ) -> Option<Range<usize>> {
-        let mut cursor = DocCursor::new(self.structure(), &self.node_text, seg, abort);
-        let mut input = CursorInput::new(&mut cursor);
-        input.set_start(from);
-        re.find(input).map(|m| m.range())
+        bound: RowBound,
+        dir: SearchDir,
+        span: (usize, usize),
+    ) -> Option<SegmentScan> {
+        let progress = self.search_progress.clone()?;
+        // Spec 0274 S8: three refcount bumps, and the whole of what the
+        // scan is allowed to touch. Nothing here is copied, and nothing
+        // the main thread does can move it while the scan holds it —
+        // `tree_mut` and `node_text_mut` both end the scan first.
+        let tree = Arc::clone(&self.tree);
+        let arena = Arc::clone(&self.arena);
+        let text = Arc::clone(&self.node_text);
+        let re = Arc::clone(re);
+        let epoch = Arc::new(AtomicU64::new(SCAN_LIVE));
+        let held = Arc::clone(&epoch);
+        let (tx, result) = mpsc::channel();
+        let (lo, hi) = span;
+        let join = thread::spawn(move || {
+            // Spec 0264: a CPU mask is inherited across `clone(2)`, so
+            // a thread that does not widen would run on the one core
+            // the main loop reserved for drawing.
+            crate::affinity::widen();
+            let st = Structure {
+                tree: tree.as_slice(),
+                arena: &arena,
+            };
+            let abort = Some((&*held, SCAN_LIVE));
+            let found = match dir {
+                SearchDir::Forward => {
+                    find_in_segment(st, &text, &re, seg, lo, abort).filter(|r| r.start < hi)
+                }
+                SearchDir::Backward => find_last_in_segment(st, &text, &re, seg, lo, hi, abort),
+            };
+            // The answer goes out *before* the wake-up, so the main
+            // thread's `try_recv` on this channel cannot see the event
+            // and miss the result behind it.
+            let _ = tx.send(found);
+            let _ = progress.send(event::AppEvent::SearchWorkerProgress);
+        });
+        Some(SegmentScan {
+            seg,
+            bound,
+            join: Some(join),
+            result,
+            epoch,
+        })
     }
 
-    /// The **last** match in `seg` whose start lies below `before` — a
-    /// backward search's stop (spec 0246 S4).
-    ///
-    /// There is no reverse engine in the cursor meta API, so this reads
-    /// the prefix forwards and keeps the last (S14).
-    pub(super) fn find_last_in_segment(
+    /// The same scan run here rather than handed out — the two
+    /// non-incremental callers (`n`, `N`, a committed prompt), which
+    /// have no loop to interleave with.
+    pub(super) fn scan_segment_inline(
         &self,
         re: &CursorRegex,
         seg: Segment,
-        from: usize,
-        before: usize,
-        abort: Option<(&AtomicU64, u64)>,
+        dir: SearchDir,
+        lo: usize,
+        hi: usize,
     ) -> Option<Range<usize>> {
-        let mut cursor = DocCursor::new(self.structure(), &self.node_text, seg, abort);
-        let mut input = CursorInput::new(&mut cursor);
-        input.set_start(from);
-        let mut last = None;
-        for m in re.find_iter(input) {
-            if m.start() >= before {
-                break;
+        let st = self.structure();
+        match dir {
+            SearchDir::Forward => {
+                find_in_segment(st, &self.node_text, re, seg, lo, None).filter(|r| r.start < hi)
             }
-            last = Some(m.range());
+            SearchDir::Backward => find_last_in_segment(st, &self.node_text, re, seg, lo, hi, None),
         }
-        last
     }
+}
+
+/// Spec 0274 S7: the value a scan's epoch cell holds while its answer
+/// is still wanted. Anything else ends the walk at the next chunk
+/// boundary, which is how a superseded search stops without a
+/// cancellation protocol.
+const SCAN_LIVE: u64 = 0;
+const SCAN_ABORTED: u64 = 1;
+
+/// Spec 0274 S9: one segment being scanned on a thread of its own.
+pub(super) struct SegmentScan {
+    /// What was handed out, so that a scan cut short by a document
+    /// write can be put back on the queue rather than silently counting
+    /// as a miss.
+    pub(super) seg: Segment,
+    pub(super) bound: RowBound,
+    /// `Option` only so that [`Drop`] can take it; alive for the whole
+    /// of the scan.
+    join: Option<thread::JoinHandle<()>>,
+    result: mpsc::Receiver<Option<Range<usize>>>,
+    epoch: Arc<AtomicU64>,
+}
+
+impl SegmentScan {
+    /// The scan's answer, or `None` while it is still walking.
+    ///
+    /// A disconnected channel is a worker that panicked. The hook in
+    /// `tui::run` has already recorded that; here it reads as a miss
+    /// for this segment, which is the answer that loses the least.
+    pub(super) fn collect(&self) -> Option<Option<Range<usize>>> {
+        match self.result.try_recv() {
+            Ok(found) => Some(found),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => Some(None),
+        }
+    }
+}
+
+impl Drop for SegmentScan {
+    /// Abort, then join. Spec 0274 S8's refcount argument *is* this
+    /// destructor: a scan holds clones of the tree, the arena and the
+    /// text, so a superseded sweep that merely dropped its handle would
+    /// leave a thread running and turn the next `Arc::make_mut` into a
+    /// copy of the whole document.
+    fn drop(&mut self) {
+        self.epoch.store(SCAN_ABORTED, Ordering::Relaxed);
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+/// Where `re` first matches inside `seg`, in bytes from the segment's
+/// first row, searching from `from`.
+///
+/// `None` for a miss and for an abort alike: the caller knows which it
+/// asked for, and S7 makes the two indistinguishable here on purpose.
+///
+/// A free function over the pieces rather than a method, because the
+/// worker holds those pieces through `Arc`s and has no `&App` (S8).
+pub(super) fn find_in_segment(
+    st: Structure<'_>,
+    text: &[Option<Box<str>>],
+    re: &CursorRegex,
+    seg: Segment,
+    from: usize,
+    abort: Option<(&AtomicU64, u64)>,
+) -> Option<Range<usize>> {
+    let mut cursor = DocCursor::new(st, text, seg, abort);
+    let mut input = CursorInput::new(&mut cursor);
+    input.set_start(from);
+    re.find(input).map(|m| m.range())
+}
+
+/// The **last** match in `seg` whose start lies below `before` — a
+/// backward search's stop (spec 0246 S4).
+///
+/// There is no reverse engine in the cursor meta API, so this reads the
+/// prefix forwards and keeps the last (S14).
+pub(super) fn find_last_in_segment(
+    st: Structure<'_>,
+    text: &[Option<Box<str>>],
+    re: &CursorRegex,
+    seg: Segment,
+    from: usize,
+    before: usize,
+    abort: Option<(&AtomicU64, u64)>,
+) -> Option<Range<usize>> {
+    let mut cursor = DocCursor::new(st, text, seg, abort);
+    let mut input = CursorInput::new(&mut cursor);
+    input.set_start(from);
+    let mut last = None;
+    for m in re.find_iter(input) {
+        if m.start() >= before {
+            break;
+        }
+        last = Some(m.range());
+    }
+    last
 }

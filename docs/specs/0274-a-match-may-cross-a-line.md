@@ -229,12 +229,23 @@ engine.
 
 ### Ownership
 
-- **S8.** `App::node_text` becomes `Arc<Vec<Option<Box<str>>>>`. The
-  worker holds a clone for the length of **one segment scan**. Every
+- **S8.** `App::node_text` becomes `Arc<Vec<Option<Box<str>>>>`, and
+  `App::tree` with it — a segment scan reads a node's line count and
+  fold state as well as its text, so the two travel together. (`App::arena`
+  is already an `Arc`, and is never written after the build.) The worker
+  holds a clone of each for the length of **one segment scan**. Every
   main-thread writer — `splice_override`, a bake step — aborts the
-  worker and joins it first, so `Arc::make_mut` always sees a refcount
-  of 1 and copies nothing. Memory cost: one refcount pair for the whole
-  vector.
+  worker and joins it first, so the write always sees a refcount of 1 and
+  copies nothing. Memory cost: one refcount pair per vector.
+
+  The write goes through one accessor per field (`tree_mut`,
+  `node_text_mut`) whose first act is the abort, so there is no way to
+  write either field without halting the scan and nothing to remember at
+  the call sites. The accessor is `Arc::get_mut(..).expect(..)`, not
+  `Arc::make_mut`: `make_mut` needs `TreeNode: Clone`, and the copy it
+  would silently reach for on a missed abort is the whole 200 MB
+  document. `get_mut` asserts the invariant the line above establishes
+  instead of papering over its absence.
 
   The idle-arm ordering already makes the race impossible (S10 keeps
   discard, bake and read-ahead from running while a segment is in
@@ -544,4 +555,24 @@ whether the document has rows in it. G2 is worth the larger change.
 
 ## Measured outcome
 
-Filled in at implementation.
+**Test-plan item 18 — the bake under a live multi-line miss.** protolens
+driven over a 50x200 pty on `googleapis.desc` (25.6 MB, as both schema and
+blob), pinned to `taskset -c 4-11`, timing the bake from the first trace
+line to `auto_folded.is_empty()`. Three runs each:
+
+| | bake converged |
+|---|---|
+| no search | 8.55, 8.53, 8.53 s |
+| `/zzqq\nxxww` (a miss) held live | 10.82, 11.31, 11.12 s |
+
+**S9's yield stands.** The bake is slowed by about 30% and is not
+starved: it finishes while the sweep is still walking. The sweep hands
+out 7 248 segments between t=2.64 s and t=10.40 s — more than the 6 879
+the document starts with, because S15 restarts it each time the bake
+changes the document underneath it, and it is still cheaper to restart
+than to hold the reader's answer back.
+
+The two costs are not additive in the way the naive reading of S10
+suggests: a segment scan runs on a worker while the main thread sleeps in
+`poll(2)`, so the +2.5 s is the collect-and-hand-out passes and the
+restarts, not the scanning.

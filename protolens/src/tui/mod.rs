@@ -271,7 +271,11 @@ pub(super) enum SearchPattern {
     /// 0222 leaves the document with no contiguous haystack to hand a
     /// `&str` matcher. A pattern compiles into exactly one variant, so
     /// the two engines never both hold it.
-    Multi(Box<CursorRegex>),
+    ///
+    /// `Arc` rather than `Box` because spec 0274 S9 runs this engine on
+    /// a worker thread; a compiled `Regex` is immutable and its cache
+    /// pool is internally synchronized, so sharing it costs a refcount.
+    Multi(Arc<CursorRegex>),
 }
 
 /// Spec 0273 S6: a pattern that needs more than this to compile is
@@ -323,7 +327,7 @@ impl SearchPattern {
                 // it.
                 .configure(CursorConfig::new().nfa_size_limit(Some(PATTERN_SIZE_LIMIT)))
                 .build(pattern)
-                .map(|re| Self::Multi(Box::new(re)))
+                .map(|re| Self::Multi(Arc::new(re)))
                 .map_err(|e| e.to_string());
         }
         if let Some(text) = hir_literal(&hir) {
@@ -1124,7 +1128,11 @@ pub struct App {
     /// every commit paid to keep absolute line numbers meaning
     /// something. Nothing here is positional, so a splice writes the
     /// slots it re-rendered and stops.
-    node_text: Vec<Option<Box<str>>>,
+    ///
+    /// Spec 0274 S8: shared rather than owned, because a segment scan
+    /// reads it from a worker thread. Written through
+    /// [`App::node_text_mut`], never directly.
+    node_text: Arc<Vec<Option<Box<str>>>>,
     /// Spec 0187 S3: syntax hints for the rows drawn by the *current*
     /// frame's `window`, in window order — recomputed each `render()`,
     /// never retained across frames, never document-sized. Index `i` is
@@ -1147,12 +1155,18 @@ pub struct App {
     /// Resolved color theme (spec 0116 §9) — fixed for the session, never
     /// `ThemeKind::System` (resolved once in `main.rs` before `App::new`).
     theme: ThemeKind,
-    tree: Vec<TreeNode>,
+    /// Spec 0274 S8: shared for the same reason `node_text` is — the
+    /// scan walks the rendered shape as well as reading the text — and
+    /// written through [`App::tree_mut`], never directly.
+    tree: Arc<Vec<TreeNode>>,
     /// The blob's structural decomposition (spec 0216 S1), built once at
     /// load and never rebuilt: it is a function of the bytes, and the
     /// bytes do not change. Every interpretation's `tree` is a pruning of
     /// it, which is what lets it be immutable while `tree` is not.
-    arena: Arena,
+    ///
+    /// Shared with a segment scan too, and needing no `make_mut` twin:
+    /// there is no writer at all.
+    arena: Arc<Arena>,
     /// Spec 0212 S4: the type names every `span.type_fqdn` in `tree`
     /// indexes into, moved out of `Decoded` at construction and shared by
     /// every sub-render of this document for the session's whole life.
@@ -1781,6 +1795,16 @@ pub struct App {
     /// sweep, cleared by the `render` pass that centers it — the pane's
     /// height and width are known nowhere else.
     search_center: bool,
+    /// Spec 0274 S9: how a segment scan wakes the loop that is waiting
+    /// for it — `run()`'s own event channel, handed over once the loop
+    /// exists to drain it.
+    ///
+    /// `None` before that and in every headless session, and it is the
+    /// gate as well as the channel: with nobody listening a report
+    /// would never be collected, so a sweep with no sender scans its
+    /// segments on this thread instead. Same shape as
+    /// `heat_worker.is_some()`.
+    search_progress: Option<mpsc::Sender<event::AppEvent>>,
     /// Active Tab-completion cycle state (spec 0113 D26); `None` when not
     /// currently cycling.
     completion: Option<CompletionState>,
@@ -1903,6 +1927,30 @@ pub struct App {
 }
 
 impl App {
+    /// The rendered tree, for writing (spec 0274 S8).
+    ///
+    /// Taking the `&mut` is what ends a segment scan: the scan holds a
+    /// clone of this `Arc`, and an answer about a document that no
+    /// longer exists is not an answer. Putting the halt here rather
+    /// than at the writers is what makes it impossible to forget —
+    /// there is no other way to write the tree.
+    ///
+    /// `get_mut` rather than the spec's `make_mut`: `make_mut` would
+    /// need `TreeNode: Clone`, and the clone it would then reach for is
+    /// a silent copy of 200 MB. Halting above is what makes the sole
+    /// owner, so failing here is a bug and not a slow path.
+    pub(super) fn tree_mut(&mut self) -> &mut Vec<TreeNode> {
+        self.halt_search_scan();
+        Arc::get_mut(&mut self.tree).expect("the halt above leaves the tree unshared")
+    }
+
+    /// The per-node text, for writing — spec 0274 S8, exactly as
+    /// [`App::tree_mut`].
+    pub(super) fn node_text_mut(&mut self) -> &mut Vec<Option<Box<str>>> {
+        self.halt_search_scan();
+        Arc::get_mut(&mut self.node_text).expect("the halt above leaves the text unshared")
+    }
+
     pub fn new(
         mut decoded: Decoded,
         blob_label: &str,
@@ -1967,12 +2015,12 @@ impl App {
             wire_rows: std::cell::RefCell::new(None),
             search_compiled: std::cell::RefCell::new(None),
             indent_size,
-            node_text: decoded.node_text,
+            node_text: Arc::new(decoded.node_text),
             window_styles: Vec::new(),
             window_styles_key: None,
             theme,
-            tree: decoded.tree,
-            arena: decoded.arena,
+            tree: Arc::new(decoded.tree),
+            arena: Arc::new(decoded.arena),
             fqdns: decoded.fqdns,
             provenance: ProvenanceTable::new(),
             override_batch_depth: 0,
@@ -2077,6 +2125,7 @@ impl App {
             search_highlight: false,
             search_dirty: false,
             search_center: false,
+            search_progress: None,
             completion: None,
             splash: true,
             splash_deadline: Instant::now() + SPLASH_TIMEOUT,
@@ -2141,7 +2190,7 @@ impl App {
             let root_provenance = app
                 .provenance
                 .intern(&(root_override_type.clone().map(Some), "1".to_string()));
-            app.tree[cursor].rendered_as = root_provenance;
+            app.tree_mut()[cursor].rendered_as = root_provenance;
         }
         // Spec 0120: Any/MessageSet auto-expansion is computed by
         // `render_overrides` itself (`auto_expand_type`), not by

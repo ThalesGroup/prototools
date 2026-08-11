@@ -167,21 +167,24 @@ impl App {
         };
         let d_total = i64::from(want_total) - i64::from(self.tree[idx].lines_total);
         let mut d_visible = i64::from(want_visible) - i64::from(self.tree[idx].lines_visible);
-        self.tree[idx].lines_total = want_total;
-        self.tree[idx].lines_visible = want_visible;
+        let node = &mut self.tree_mut()[idx];
+        node.lines_total = want_total;
+        node.lines_visible = want_visible;
 
         let mut cur = self.parent(idx);
         while let Some(n) = cur {
             if d_total == 0 && d_visible == 0 {
                 return;
             }
-            self.tree[n].lines_total = adjust(self.tree[n].lines_total, d_total);
+            let total = adjust(self.tree[n].lines_total, d_total);
+            self.tree_mut()[n].lines_total = total;
             if self.is_folded(n) {
                 // One row whatever is beneath it, so its own visible
                 // count did not move and nothing above it can have.
                 d_visible = 0;
             } else {
-                self.tree[n].lines_visible = adjust(self.tree[n].lines_visible, d_visible);
+                let visible = adjust(self.tree[n].lines_visible, d_visible);
+                self.tree_mut()[n].lines_visible = visible;
             }
             cur = self.parent(n);
         }

@@ -404,6 +404,12 @@ pub fn run(app: &mut App) -> io::Result<()> {
             ));
         }
 
+        // Spec 0274 S9: from here on there is a loop draining `rx`, so a
+        // segment scan has somewhere to report to and may run off the
+        // main thread. Unconditional — unlike the heat worker it needs
+        // no graph, only a listener.
+        app.search_progress = Some(tx.clone());
+
         warm_up_heat_cues(&mut terminal, app)?;
 
         run_loop(
@@ -536,6 +542,12 @@ pub(super) fn dispatch_event(app: &mut App, ev: &event::AppEvent) -> Option<&'st
             app.poll_pending_override_work();
             None
         }
+        // Spec 0274 S9: the wake-up alone. The answer is collected by
+        // the idle arm's `search_sweep_step`, which is where every other
+        // step of a sweep happens too — doing it here would put a
+        // sweep's progress in two places and give the drain a reason to
+        // stop.
+        event::AppEvent::SearchWorkerProgress => None,
     }
 }
 
@@ -792,64 +804,93 @@ where
                     // while a pattern is being typed and the user is
                     // waiting on its answer. The other two are not
                     // waited on by anyone.
-                    if matches!(app.search_sweep_step(), SweepStep::Progressed) {
-                        if Instant::now() >= deadline {
-                            break None;
-                        }
-                        continue;
-                    }
-                    // Spec 0256 S2: second, and ahead of the bake
-                    // because the bake is what grows the replacement
-                    // document. Draining after it would hold the old
-                    // document's text alive next to the new one and
-                    // raise peak memory; draining first keeps peak
-                    // where it was. Sets no dirty flag and breaks with
-                    // no event: nothing on screen depends on it, so
-                    // unlike the bake it does not even owe a deferred
-                    // repaint.
-                    if app.discard_step() {
-                        if Instant::now() >= deadline {
-                            break None;
-                        }
-                        continue;
-                    }
-                    // Spec 0255 S5: third — ahead of read-ahead, and
-                    // not because it is the more deserving of the two.
-                    // Read-ahead cannot make progress between two bake
-                    // steps at all: each splice bumps
-                    // `structural_version`, which supersedes the
-                    // read-ahead wave, so interleaving them buys a full
-                    // re-walk and three lock acquisitions per bake step
-                    // and issues heat requests for rows the next bake
-                    // step will move — spec 0252's waste, reintroduced.
-                    // The queue is finite, so this defers read-ahead
-                    // until the structure holds still, which is the only
-                    // state it can work in.
-                    match app.bake_step() {
-                        // Spec 0249 S8: the rows on screen just changed
-                        // under the reader, so this one does not wait
-                        // for `BAKE_REPAINT_INTERVAL` or for anything
-                        // else. Leaving with no event is the timeout
-                        // case, and the draw at the head of the next
-                        // iteration is the point.
-                        BakeStep::Visible => {
-                            bake_visible = true;
-                            break None;
-                        }
-                        BakeStep::Progressed => {
-                            bake_dirty = true;
+                    match app.search_sweep_step() {
+                        SweepStep::Progressed => {
                             if Instant::now() >= deadline {
                                 break None;
                             }
                             continue;
                         }
-                        BakeStep::Idle => {}
-                    }
-                    if matches!(app.prefetch_step(), PrefetchStep::Progressed) {
-                        if Instant::now() >= deadline {
-                            break None;
+                        // Spec 0274 S10: a segment scan is in flight on
+                        // a worker thread. The other three jobs stand
+                        // aside for it — the bake would have to stop it
+                        // to write the document, and the two heat jobs
+                        // would take the core it is running on — and
+                        // this pass falls through to the sleep, which
+                        // its report will end.
+                        SweepStep::Waiting => {}
+                        SweepStep::Idle => {
+                            // Spec 0256 S2: second, and ahead of the
+                            // bake because the bake is what grows the
+                            // replacement document. Draining after it
+                            // would hold the old document's text alive
+                            // next to the new one and raise peak
+                            // memory; draining first keeps peak where
+                            // it was. Sets no dirty flag and breaks
+                            // with no event: nothing on screen depends
+                            // on it, so unlike the bake it does not
+                            // even owe a deferred repaint.
+                            if app.discard_step() {
+                                if Instant::now() >= deadline {
+                                    break None;
+                                }
+                                continue;
+                            }
+                            // Spec 0255 S5: third — ahead of read-ahead,
+                            // and not because it is the more deserving
+                            // of the two. Read-ahead cannot make
+                            // progress between two bake steps at all:
+                            // each splice bumps `structural_version`,
+                            // which supersedes the read-ahead wave, so
+                            // interleaving them buys a full re-walk and
+                            // three lock acquisitions per bake step and
+                            // issues heat requests for rows the next
+                            // bake step will move — spec 0252's waste,
+                            // reintroduced. The queue is finite, so this
+                            // defers read-ahead until the structure
+                            // holds still, which is the only state it
+                            // can work in.
+                            match app.bake_step() {
+                                // Spec 0249 S8: the rows on screen just
+                                // changed under the reader, so this one
+                                // does not wait for
+                                // `BAKE_REPAINT_INTERVAL` or for
+                                // anything else. Leaving with no event
+                                // is the timeout case, and the draw at
+                                // the head of the next iteration is the
+                                // point.
+                                BakeStep::Visible => {
+                                    bake_visible = true;
+                                    break None;
+                                }
+                                BakeStep::Progressed => {
+                                    bake_dirty = true;
+                                    if Instant::now() >= deadline {
+                                        break None;
+                                    }
+                                    continue;
+                                }
+                                BakeStep::Idle => {}
+                            }
+                            if matches!(app.prefetch_step(), PrefetchStep::Progressed) {
+                                if Instant::now() >= deadline {
+                                    break None;
+                                }
+                                continue;
+                            }
+                            // Spec 0274 S10: collecting a verdict
+                            // reports `Idle` so that the three jobs
+                            // above each get their step — but it is a
+                            // yield, not an answer, and the frozen
+                            // queue still owes segments that nothing
+                            // else will ever wake this loop to hand
+                            // out. Placed after them so that the yield
+                            // is honored and before the sleep so that
+                            // it cannot become an untimed one.
+                            if app.search_segment_pending() {
+                                continue;
+                            }
                         }
-                        continue;
                     }
                     // Nothing left to do, so this is the one place the
                     // loop genuinely sleeps — and therefore (spec 0263
