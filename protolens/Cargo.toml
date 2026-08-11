@@ -28,6 +28,10 @@ ratatui               = "0.30"
 # lockfile via tree-sitter and tree-sitter-highlight, so this costs no
 # new compilation.
 regex                 = "1.12"
+# Spec 0274 S17: the multi-line engine, which searches through a chunked
+# `Cursor` rather than a contiguous haystack. `default-features = false`
+# drops its `ropey` adapter, which is for a rope we do not have.
+regex-cursor          = { version = "0.1.5", default-features = false, features = ["perf-inline"] }
 regex-syntax          = "0.8"
 crossterm             = "0.29"
 serde                 = { version = "1.0", features = ["derive"] }

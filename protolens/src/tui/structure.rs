@@ -26,7 +26,19 @@
 
 use super::*;
 
-impl App {
+/// The rendered tree's shape, as the two arrays that define it.
+///
+/// [`App`]'s accessors below are this view's, one line each. It exists
+/// because spec 0274's document cursor walks the same links from a
+/// worker thread, where there is no `&App` to borrow — only the pieces
+/// the scan was handed.
+#[derive(Clone, Copy)]
+pub(super) struct Structure<'a> {
+    pub(super) tree: &'a [TreeNode],
+    pub(super) arena: &'a Arena,
+}
+
+impl<'a> Structure<'a> {
     /// `idx`'s enclosing node, or `None` for a root.
     ///
     /// A root is its own arena parent, which is what terminates the climb
@@ -46,7 +58,7 @@ impl App {
     /// Level order puts the roots first, so a root's block is the whole
     /// of level 0 — `0..` the first slot that has a parent.
     #[inline]
-    fn sibling_block(&self, idx: usize) -> Range<usize> {
+    pub(super) fn sibling_block(&self, idx: usize) -> Range<usize> {
         match self.parent(idx) {
             Some(parent) => {
                 let first_child = self.arena.first_child();
@@ -77,22 +89,6 @@ impl App {
             return 0..0;
         }
         block
-    }
-
-    /// How many children `idx` shows.
-    #[inline]
-    pub(super) fn child_count(&self, idx: usize) -> usize {
-        self.child_slots(idx).len()
-    }
-
-    /// `idx`'s `k`-th child, counting from 0.
-    ///
-    /// The whole of spec 0216 S17's path descent: one add and a bounds
-    /// check per level, no hash and no allocation.
-    #[inline]
-    pub(super) fn nth_child(&self, idx: usize, k: usize) -> Option<usize> {
-        let block = self.child_slots(idx);
-        (k < block.len()).then_some(block.start + k)
     }
 
     #[inline]
@@ -129,6 +125,69 @@ impl App {
         (idx > block.start).then(|| idx - 1)
     }
 
+    #[inline]
+    pub(super) fn is_bracketed(&self, idx: usize) -> bool {
+        self.tree[idx].is_bracketed()
+    }
+}
+
+impl App {
+    /// The shape accessors' one source, borrowed for as long as the
+    /// caller needs it.
+    #[inline]
+    pub(super) fn structure(&self) -> Structure<'_> {
+        Structure {
+            tree: &self.tree,
+            arena: &self.arena,
+        }
+    }
+
+    #[inline]
+    pub(super) fn parent(&self, idx: usize) -> Option<usize> {
+        self.structure().parent(idx)
+    }
+
+    #[inline]
+    pub(super) fn child_slots(&self, idx: usize) -> Range<usize> {
+        self.structure().child_slots(idx)
+    }
+
+    /// How many children `idx` shows.
+    #[inline]
+    pub(super) fn child_count(&self, idx: usize) -> usize {
+        self.child_slots(idx).len()
+    }
+
+    /// `idx`'s `k`-th child, counting from 0.
+    ///
+    /// The whole of spec 0216 S17's path descent: one add and a bounds
+    /// check per level, no hash and no allocation.
+    #[inline]
+    pub(super) fn nth_child(&self, idx: usize, k: usize) -> Option<usize> {
+        let block = self.child_slots(idx);
+        (k < block.len()).then_some(block.start + k)
+    }
+
+    #[inline]
+    pub(super) fn first_child(&self, idx: usize) -> Option<usize> {
+        self.structure().first_child(idx)
+    }
+
+    #[inline]
+    pub(super) fn last_child(&self, idx: usize) -> Option<usize> {
+        self.structure().last_child(idx)
+    }
+
+    #[inline]
+    pub(super) fn next_sibling(&self, idx: usize) -> Option<usize> {
+        self.structure().next_sibling(idx)
+    }
+
+    #[inline]
+    pub(super) fn prev_sibling(&self, idx: usize) -> Option<usize> {
+        self.structure().prev_sibling(idx)
+    }
+
     /// `parent`'s children bearing `field`, in document order.
     ///
     /// A filter over the child block rather than a `next_sibling` walk:
@@ -152,7 +211,7 @@ impl App {
     /// spans share one ordinal is arithmetic rather than a rule.
     #[inline]
     pub(super) fn sibling_position(&self, idx: usize) -> usize {
-        idx - self.sibling_block(idx).start + 1
+        idx - self.structure().sibling_block(idx).start + 1
     }
 
     /// The node after `idx` in document order (spec 0216 S27).

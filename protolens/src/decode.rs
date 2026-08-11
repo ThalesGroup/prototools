@@ -944,13 +944,21 @@ pub(crate) fn build_tree(
 /// of a footer it no longer stores. Two copies would let the assertion
 /// pass while the drawing was wrong.
 pub(crate) fn derived_close(header: &str) -> String {
+    let mut out = String::new();
+    write_derived_close(header, &mut out);
+    out
+}
+
+/// [`derived_close`] appended to a buffer the caller owns — spec 0274's
+/// cursor hands out a borrow of one and re-fills it once per node, so
+/// the footer it draws must cost no allocation.
+pub(crate) fn write_derived_close(header: &str, out: &mut String) {
     let indent = header.len() - header.trim_start_matches(' ').len();
-    let mut out = String::with_capacity(indent + 1);
+    out.reserve(indent + 1);
     for _ in 0..indent {
         out.push(' ');
     }
     out.push('}');
-    out
 }
 
 /// The lines `idx`'s subtree draws, in document order — spec 0222 S1's

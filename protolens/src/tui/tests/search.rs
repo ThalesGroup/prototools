@@ -268,29 +268,133 @@ fn smartcase_reads_literals_and_yields_to_an_inline_flag() {
     assert!(forced.find_range("  ID: 7").is_none());
 }
 
-/// Spec 0273 test-plan item 13 (S11, S12). A pattern that cannot match
-/// anything on a one-row haystack is refused rather than left to find
-/// nothing, and `\A`/`\z` are refused because a successor would give
-/// them a meaning this release cannot.
+/// Spec 0274 test-plan item 16 (N5). `\A` and `\z` stay refused, and
+/// the reason has got stronger rather than weaker: the haystack is now a
+/// segment, so they would bind to a boundary the reader cannot see and
+/// that moves as the bake progresses.
+///
+/// Spec 0273's other refusal is gone. `id\nvalue` is the pattern this
+/// spec exists for, and it now compiles.
 #[test]
-fn a_multi_line_or_haystack_anchored_pattern_is_refused() {
-    for pattern in [r"id\nvalue", r"\n+", r"a(\n|\r\n)b"] {
-        let why = SearchPattern::new(pattern).expect_err(pattern);
-        assert!(why.contains("multi-line"), "{pattern}: {why}");
-    }
-    // S11 asks what a pattern *requires*, not what it admits. All three
-    // of these can match a newline and none of them has to, so refusing
-    // them would refuse most of the regex vocabulary over nothing.
-    for pattern in ["(?s)a.b", "[^a]", r"\s*id", r"a\n?b"] {
-        assert!(SearchPattern::new(pattern).is_ok(), "{pattern}");
-    }
+fn a_haystack_anchor_is_still_refused() {
     for pattern in [r"\Aid", r"id\z"] {
         let why = SearchPattern::new(pattern).expect_err(pattern);
         assert!(why.contains("^ and $"), "{pattern}: {why}");
     }
-    // The line anchors themselves stay available, and say the same
-    // thing on a one-row haystack.
+    // The line anchors themselves stay available, and mean what they
+    // say now that the document has rows in it.
     assert!(SearchPattern::new("^id$").is_ok());
+    for pattern in [r"id\nvalue", r"\n+", r"a(\n|\r\n)b"] {
+        assert!(SearchPattern::new(pattern).is_ok(), "{pattern}");
+    }
+}
+
+/// Spec 0274 test-plan items 1 and 2 (S2). Which engine a pattern
+/// compiles to is decided by whether *some* string it matches contains a
+/// newline, not by whether every one does.
+///
+/// The two questions disagree on exactly the patterns this routing
+/// exists for: `a(\n|\r\n)b` needs a newline and `a\s*b` does not, yet
+/// both can cross a row, and a reader cannot be asked to hold that
+/// distinction.
+#[test]
+fn a_pattern_that_can_match_a_newline_takes_the_cursor_engine() {
+    for pattern in [
+        r"\s*id",
+        "[^a]",
+        "(?s)a.b",
+        r"a\n?b",
+        "(?s).*",
+        r"[\x00-\xff]",
+    ] {
+        let compiled = SearchPattern::new(pattern).expect(pattern);
+        assert!(
+            matches!(compiled, SearchPattern::Multi(_)),
+            "{pattern} admits a newline"
+        );
+    }
+    // Nothing here can produce a `\n`, so reading the document a row at
+    // a time cannot change the answer and 0273's path is kept.
+    //
+    // `.*` belongs here: `dot_matches_new_line(false)` (0273 S6) makes
+    // `.` mean `[^\n]`, so only an explicit `(?s)` above lets it cross.
+    for pattern in ["id", "[0-9]+", "(id|name):", r"a\.b", "^id$", r"\bid", ".*"] {
+        let compiled = SearchPattern::new(pattern).expect(pattern);
+        assert!(
+            !matches!(compiled, SearchPattern::Multi(_)),
+            "{pattern} admits no newline"
+        );
+    }
+}
+
+/// Spec 0274 S2: `hir_admits_newline` is an *any*-node question, but it
+/// still cannot be `fold_hir` — a repetition that cannot repeat does not
+/// admit what its sub-expression would.
+///
+/// The pattern is degenerate; the reason to pin it is that `fold_hir`
+/// would descend into the sub-expression without asking, and the
+/// resulting misroute is invisible in every other test.
+#[test]
+fn a_repetition_that_cannot_repeat_admits_nothing() {
+    let never = SearchPattern::new(r"a\n{0}b").expect("compiles");
+    assert!(
+        !matches!(never, SearchPattern::Multi(_)),
+        "`\\n{{0}}` matches only the empty string"
+    );
+}
+
+/// Spec 0274 test-plan item 9 (S2, G2). The cursor engine is an
+/// *optimization boundary*, not a second semantics: on a haystack with
+/// no newline in it, both engines report the same first match.
+///
+/// This is what makes routing on `admits` safe. If it ever failed, the
+/// reader's answer would depend on which engine their pattern happened
+/// to reach.
+#[test]
+fn the_two_engines_agree_on_a_row_shaped_haystack() {
+    let rows = [
+        "  id: 7",
+        "    name: \"alpha\"",
+        "",
+        "message {",
+        "  x: a.b",
+        "\ttabbed: 1",
+    ];
+    // Each pair is (cursor-engine pattern, an equivalent that stays on
+    // 0273's path) — equivalent on a haystack that holds no newline.
+    for (multi, plain) in [
+        (r"\s*id", "[ \t]*id"),
+        (r"[^a]", "[^a\n]"),
+        (r"(?s)a.b", "a.b"),
+        (r"a\n?b", "ab"),
+    ] {
+        let multi = SearchPattern::new(multi).expect("compiles");
+        let plain = SearchPattern::new(plain).expect("compiles");
+        assert!(matches!(multi, SearchPattern::Multi(_)));
+        assert!(!matches!(plain, SearchPattern::Multi(_)));
+        for row in rows {
+            assert_eq!(
+                multi.find_range(row),
+                plain.find_range(row),
+                "{row:?} disagreed"
+            );
+        }
+    }
+}
+
+/// Spec 0274 S3: the cursor engine resumes with `set_start`, which is
+/// this engine's `find_at`. Narrowing where a search may *begin* is not
+/// the same as slicing the haystack — a slice would move `^` to the
+/// resume point and silently change what the pattern means.
+#[test]
+fn the_cursor_engine_resumes_without_moving_the_anchors() {
+    let anchored = SearchPattern::new(r"^\s*id").expect("compiles");
+    assert!(matches!(anchored, SearchPattern::Multi(_)));
+    assert!(anchored.find_range("  id: 7").is_some());
+    // Position 2 is not a line start, so `^` cannot bind there — which
+    // is only true because the engine can still see the two bytes
+    // before it.
+    assert_eq!(anchored.find_range_from("  id: 7", 2), None);
 }
 
 /// Spec 0195 S2: the case fold runs per `char` and streams, because a

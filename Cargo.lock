@@ -1869,6 +1869,7 @@ dependencies = [
  "prototext-schema",
  "ratatui",
  "regex",
+ "regex-cursor",
  "regex-syntax",
  "serde",
  "serde_norway",
@@ -2304,6 +2305,18 @@ checksum = "6e1dd4122fc1595e8162618945476892eefca7b88c52820e74af6262213cae8f"
 dependencies = [
  "aho-corasick",
  "memchr",
+ "regex-syntax",
+]
+
+[[package]]
+name = "regex-cursor"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0497c781d2f982ae8284d2932aee6a877e58a4541daa5e8fadc18cc75c23a61d"
+dependencies = [
+ "log",
+ "memchr",
+ "regex-automata",
  "regex-syntax",
 ]
 

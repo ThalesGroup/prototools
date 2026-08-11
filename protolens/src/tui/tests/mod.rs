@@ -25,6 +25,7 @@ mod prune;
 mod render;
 mod script;
 mod search;
+mod search_cursor;
 mod selection;
 mod structure;
 mod support;

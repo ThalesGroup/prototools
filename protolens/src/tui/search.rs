@@ -19,8 +19,10 @@
 //! and apply the result. One walk, one matching rule, three callers.
 
 use std::borrow::Cow;
+use std::collections::VecDeque;
 
 use super::navigation::PathScratch;
+use super::search_cursor::Segment;
 use super::*;
 
 /// Spec 0235 S4: how many candidates one `search_sweep_step` visits.
@@ -179,6 +181,18 @@ pub(super) struct SearchSweep {
     /// Candidates left before the whole document has been seen — the
     /// wrap budget, decremented per candidate.
     remaining: usize,
+    /// Spec 0274 S9: the segments a multi-line pattern still has to
+    /// scan, with the half of each that counts, in S14's order. Empty
+    /// for every pattern that takes 0273's per-row walk, which uses
+    /// `at` instead.
+    ///
+    /// **Frozen at construction.** It is the segmentation as it stood
+    /// when the search began; segments the bake creates or joins
+    /// afterwards do not enter it, because scanning a joined segment
+    /// means scanning both its sides again and the bake joins one every
+    /// few tens of milliseconds. S15's second pass is what covers the
+    /// material a join makes reachable.
+    segments: VecDeque<(Segment, RowBound)>,
     /// Spec 0235 S21.
     path: PathScratch,
 }
@@ -188,7 +202,7 @@ impl SearchSweep {
     /// dropped: the prompt still has to draw its answer, and `Enter`
     /// still has to commit it.
     pub(super) fn is_finished(&self) -> bool {
-        self.at.is_none()
+        self.at.is_none() && self.segments.is_empty()
     }
 }
 
@@ -313,14 +327,24 @@ impl App {
         if pattern.is_empty() || n == 0 {
             return None;
         }
+        // Spec 0273 S8: a pattern that does not compile is not a
+        // search. `foo(` is what `foo(bar)` looks like halfway through
+        // typing it.
+        let pattern = SearchPattern::new(pattern).ok()?;
+        // Spec 0274 S1: a pattern that can match a `\n` searches the
+        // rows joined, which is a different walk over a different
+        // haystack. Everything else keeps 0273's row-at-a-time one.
+        let segments = match pattern {
+            SearchPattern::Multi(_) => self.segment_queue(origin, dir),
+            _ => VecDeque::new(),
+        };
         Some(SearchSweep {
-            // Spec 0273 S8: a pattern that does not compile is not a
-            // search. `foo(` is what `foo(bar)` looks like halfway
-            // through typing it.
-            pattern: SearchPattern::new(pattern).ok()?,
+            pattern,
             dir,
             origin,
-            at: Some((origin.at, origin_bound(origin, dir, Visit::Out))),
+            at: segments
+                .is_empty()
+                .then(|| (origin.at, origin_bound(origin, dir, Visit::Out))),
             offset: match origin.at {
                 SweepCursor::Line(pos) => self.line_offset(pos),
                 SweepCursor::Index(_) => 0,
@@ -328,8 +352,50 @@ impl App {
             found: None,
             provisional: false,
             remaining: n + 1,
+            segments,
             path: PathScratch::default(),
         })
+    }
+
+    /// Spec 0274 S14: the segments a multi-line sweep will scan, in the
+    /// order it will scan them.
+    ///
+    /// The forward walk takes the origin's segment from the caret to its
+    /// end, then every following segment whole, wraps, then every
+    /// preceding one whole, and closes on the head of the origin's up to
+    /// and including the caret. Backward is the mirror. That is 0246
+    /// S2's two-visit partition of the origin, stated over segment bytes
+    /// rather than row bytes, so a full cycle still visits every match
+    /// exactly once and lands back where it started.
+    ///
+    /// Empty for a scope that has no document — a side pane keeps the
+    /// per-row walk unconditionally (N7).
+    fn segment_queue(&self, origin: SearchOrigin, dir: SearchDir) -> VecDeque<(Segment, RowBound)> {
+        let SweepCursor::Line(pos) = origin.at else {
+            return VecDeque::new();
+        };
+        let (segments, stops) = self.search_segments();
+        let Some(last) = segments.len().checked_sub(1) else {
+            return VecDeque::new();
+        };
+        let place = self.place_of(pos);
+        let k = self.segment_index_of(place, &stops).min(last);
+        // The caret's byte in its segment: where its chunk begins, plus
+        // where its row begins in that chunk — nonzero only inside a
+        // packed run — plus the caret's own byte column.
+        let caret = self.segment_byte_of(segments[k], place).unwrap_or(0)
+            + self.line_offset(pos)
+            + origin.column;
+
+        let mut queue = VecDeque::with_capacity(segments.len() + 1);
+        queue.push_back((segments[k], split_at(caret, dir, Visit::Out)));
+        let rest: Vec<usize> = match dir {
+            SearchDir::Forward => (k + 1..segments.len()).chain(0..k).collect(),
+            SearchDir::Backward => (0..k).rev().chain((k + 1..segments.len()).rev()).collect(),
+        };
+        queue.extend(rest.into_iter().map(|i| (segments[i], RowBound::Whole)));
+        queue.push_back((segments[k], split_at(caret, dir, Visit::Back)));
+        queue
     }
 
     /// Whether one candidate matches, and where.
@@ -429,6 +495,10 @@ impl App {
     /// Visit at most `budget` candidates, stopping early on a match or
     /// at the end of the walk.
     fn advance_sweep(&self, sweep: &mut SearchSweep, budget: usize) {
+        if !sweep.segments.is_empty() {
+            self.advance_segment_sweep(sweep);
+            return;
+        }
         let n = self.search_candidate_count(sweep.origin.scope);
         for _ in 0..budget {
             let Some((at, bound)) = sweep.at else { return };
@@ -459,6 +529,71 @@ impl App {
                 (next, bound)
             });
         }
+    }
+
+    /// Spec 0274 S9: scan one segment of a multi-line sweep.
+    ///
+    /// **The segment is the unit of work**, not the slice `budget` the
+    /// per-row walk counts: a cross-row engine's state is its own, so
+    /// there is nowhere to stop in the middle of one. The queue is what
+    /// bounds the stall instead, and it is self-limiting — segments are
+    /// many and small exactly while the bake still has the most to do.
+    fn advance_segment_sweep(&self, sweep: &mut SearchSweep) {
+        let Some((seg, bound)) = sweep.segments.pop_front() else {
+            return;
+        };
+        let Some(hit) = self.scan_segment(sweep, seg, bound) else {
+            return;
+        };
+        sweep.found = Some(hit);
+        sweep.segments.clear();
+    }
+
+    /// The stop `sweep`'s pattern makes in `seg`, if any.
+    fn scan_segment(&self, sweep: &SearchSweep, seg: Segment, bound: RowBound) -> Option<SweepHit> {
+        let SearchPattern::Multi(re) = &sweep.pattern else {
+            return None;
+        };
+        let (lo, hi) = match bound {
+            RowBound::Nothing => return None,
+            RowBound::Whole => (0, usize::MAX),
+            RowBound::Starts { lo, hi } => (lo, hi),
+        };
+        // Spec 0246 S4: the first eligible start going forward, the last
+        // going backward. Unlike `pick_match` the bounds are compared
+        // against the match's true offset rather than against 0246 S3a's
+        // floored one — the floor is a row's, and a segment holds many.
+        // The two halves still partition the segment, which is the only
+        // property the wrap rests on.
+        let range = match sweep.dir {
+            SearchDir::Forward => self
+                .find_in_segment(re, seg, lo, None)
+                .filter(|r| r.start < hi)?,
+            SearchDir::Backward => self.find_last_in_segment(re, seg, lo, hi, None)?,
+        };
+        self.hit_from_span(seg, range)
+    }
+
+    /// A byte span inside `seg`, read as a stop.
+    ///
+    /// Spec 0274 S11's extent lands in a later stage; for now the hit is
+    /// reported over the part of its first row that it covers, which is
+    /// the whole of it whenever the match does not cross a row.
+    fn hit_from_span(&self, seg: Segment, span: Range<usize>) -> Option<SweepHit> {
+        let (pos, row) = self.locate_in_segment(seg, span.start)?;
+        let text = self.line_text(pos);
+        let start = span.start - row.start;
+        let end = span.end.min(row.end) - row.start;
+        // The row's first non-blank, which spec 0246 S3a makes the floor
+        // every stop's position is measured against.
+        let indent = text.len() - text.trim_start().len();
+        Some(SweepHit {
+            at: SweepCursor::Line(pos),
+            start: start.max(indent),
+            column: text[..start].chars().count(),
+            width: text[start..end].chars().count(),
+            on_path: false,
+        })
     }
 
     /// Where `to`'s line begins in its owner's text, given that `from`'s
@@ -731,7 +866,12 @@ impl App {
             self.report_bad_pattern(pattern);
             return;
         };
-        self.advance_sweep(&mut sweep, usize::MAX);
+        // An unbounded budget drains the per-row walk in one call, but
+        // spec 0274 S9 makes a segment the unit of work rather than the
+        // slice, so a multi-line sweep takes one call per segment.
+        while !sweep.is_finished() {
+            self.advance_sweep(&mut sweep, usize::MAX);
+        }
         self.search_dirty = true;
         let found = sweep.found;
         // Kept rather than dropped: S15's highlight outlives the
@@ -808,7 +948,12 @@ impl App {
             self.report_bad_pattern(pattern);
             return;
         };
-        self.advance_sweep(&mut sweep, usize::MAX);
+        // An unbounded budget drains the per-row walk in one call, but
+        // spec 0274 S9 makes a segment the unit of work rather than the
+        // slice, so a multi-line sweep takes one call per segment.
+        while !sweep.is_finished() {
+            self.advance_sweep(&mut sweep, usize::MAX);
+        }
         self.search_dirty = true;
         self.search_highlight = true;
         let found = sweep.found;
@@ -1008,18 +1153,26 @@ enum Visit {
 /// c + 1` is `start > c` and `start < c + 1` is `start <= c`, and
 /// `find_range_from` rounds a mid-character `lo` up for itself.
 fn origin_bound(origin: SearchOrigin, dir: SearchDir, visit: Visit) -> RowBound {
-    let c = origin.column;
     match (origin.at, dir, visit) {
         // Spec 0246 N4: a side pane counts entries, not matches.
         (SweepCursor::Index(_), _, Visit::Out) => RowBound::Nothing,
         (SweepCursor::Index(_), _, Visit::Back) => RowBound::Whole,
-        (_, SearchDir::Forward, Visit::Out) => RowBound::Starts {
+        _ => split_at(origin.column, dir, visit),
+    }
+}
+
+/// The two complementary halves of a haystack split at `c`, which spec
+/// 0274 S14 asks for over a segment's bytes in exactly the shape 0246
+/// S3 asks for over a row's.
+fn split_at(c: usize, dir: SearchDir, visit: Visit) -> RowBound {
+    match (dir, visit) {
+        (SearchDir::Forward, Visit::Out) => RowBound::Starts {
             lo: c + 1,
             hi: usize::MAX,
         },
-        (_, SearchDir::Forward, Visit::Back) => RowBound::Starts { lo: 0, hi: c + 1 },
-        (_, SearchDir::Backward, Visit::Out) => RowBound::Starts { lo: 0, hi: c },
-        (_, SearchDir::Backward, Visit::Back) => RowBound::Starts {
+        (SearchDir::Forward, Visit::Back) => RowBound::Starts { lo: 0, hi: c + 1 },
+        (SearchDir::Backward, Visit::Out) => RowBound::Starts { lo: 0, hi: c },
+        (SearchDir::Backward, Visit::Back) => RowBound::Starts {
             lo: c,
             hi: usize::MAX,
         },

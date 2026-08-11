@@ -37,6 +37,11 @@ use crossterm::terminal::{
     LeaveAlternateScreen,
 };
 use regex::{Regex, RegexBuilder};
+use regex_cursor::engines::meta::{
+    Builder as CursorBuilder, Config as CursorConfig, Regex as CursorRegex,
+};
+use regex_cursor::regex_automata::util::syntax::Config as CursorSyntax;
+use regex_cursor::Input as CursorInput;
 use regex_syntax::hir::{Class, Hir, HirKind, Look};
 
 use ratatui::backend::{Backend, CrosstermBackend};
@@ -258,6 +263,15 @@ pub(super) enum SearchPattern {
     /// Spec 0273 S6. Boxed because a `Regex` carries its own cache pool
     /// and would otherwise set this enum's size for every variant.
     Regex(Box<Regex>),
+    /// Spec 0274 S3: a pattern that can match a `\n`, and so has to read
+    /// the document as the rendered rows joined by one.
+    ///
+    /// A different engine rather than a flag on `Regex`: this one
+    /// searches through a chunked [`regex_cursor::Cursor`], because spec
+    /// 0222 leaves the document with no contiguous haystack to hand a
+    /// `&str` matcher. A pattern compiles into exactly one variant, so
+    /// the two engines never both hold it.
+    Multi(Box<CursorRegex>),
 }
 
 /// Spec 0273 S6: a pattern that needs more than this to compile is
@@ -289,14 +303,29 @@ impl SearchPattern {
                         document; use ^ and $"
                 .to_string());
         }
-        // Spec 0273 S11: the haystack is one rendered row, so such a
-        // pattern would match nothing at all. Saying so beats finding
-        // nothing.
-        if hir_needs_newline(&hir) {
-            return Err("multi-line patterns are not supported".to_string());
-        }
         let case_sensitive =
             hir_has_uppercase_literal(&hir) || pattern_settles_its_own_case(pattern, &hir);
+        // Spec 0274 S2: a pattern that can match a `\n` reads the
+        // document as one string, so it takes the cursor engine — and
+        // takes it whether or not it *has* to, because a reader cannot
+        // be asked to know that `a(\n|\r\n)b` crosses a row while
+        // `a\s*b` does not.
+        if hir_admits_newline(&hir) {
+            return CursorBuilder::new()
+                .syntax(
+                    CursorSyntax::new()
+                        .multi_line(true)
+                        .dot_matches_new_line(false)
+                        .case_insensitive(!case_sensitive),
+                )
+                // Spec 0274 S3: the same bound the `regex` builder is
+                // given below, under the name regex-automata uses for
+                // it.
+                .configure(CursorConfig::new().nfa_size_limit(Some(PATTERN_SIZE_LIMIT)))
+                .build(pattern)
+                .map(|re| Self::Multi(Box::new(re)))
+                .map_err(|e| e.to_string());
+        }
         if let Some(text) = hir_literal(&hir) {
             let needle = if case_sensitive {
                 text
@@ -374,6 +403,15 @@ impl SearchPattern {
         match self {
             Self::Path(_) => None,
             Self::Regex(re) => re.find_at(haystack, from).map(|m| m.range()),
+            // Spec 0274 S3: `set_start` is this engine's `find_at`. It
+            // narrows where the search may begin without narrowing what
+            // the look-around can see, which is the whole reason 0273
+            // refused to slice.
+            Self::Multi(re) => {
+                let mut input = CursorInput::new(haystack);
+                input.set_start(from);
+                re.find(input).map(|m| m.range())
+            }
             Self::Literal { .. } => self
                 .find_range(&haystack[from..])
                 .map(|r| from + r.start..from + r.end),
@@ -407,6 +445,7 @@ impl SearchPattern {
             // Spec 0273 S5: a path pattern has no text haystack.
             Self::Path(_) => return None,
             Self::Regex(re) => return re.find(haystack).map(|m| m.range()),
+            Self::Multi(re) => return re.find(CursorInput::new(haystack)).map(|m| m.range()),
             Self::Literal {
                 needle,
                 case_sensitive,
@@ -471,42 +510,39 @@ fn hir_has_uppercase_literal(hir: &Hir) -> bool {
     })
 }
 
-/// Spec 0273 S11: whether every string the pattern matches contains a
-/// newline — which, on a haystack that is one rendered row, is the same
-/// as the pattern matching nothing at all.
+/// Spec 0274 S2: whether *some* string the pattern matches contains a
+/// newline — which is when reading the document one row at a time could
+/// give a different answer from reading it whole.
 ///
-/// The question is what the pattern *requires*, not what it admits.
-/// `\s`, `[^a]` and `(?s).` all admit a newline and all match plenty of
-/// rows; refusing them would refuse most of the regex vocabulary. Only a
-/// pattern with no newline-free string left — `id\nvalue` — is refused.
+/// The question is about *some* string in the language, not about every
+/// one — `\s*id` admits a newline without ever requiring one, and
+/// `[0-9]+` neither admits nor requires. Routing on what a pattern
+/// *requires* would leave `a(\n|\r\n)b` crossing a row while `a\s*b` did
+/// not, which is a distinction no reader can be asked to hold.
 ///
-/// The recursion is sound rather than exact: a `true` answer is always
-/// right, and the shapes it declines to prove are ones that match.
-fn hir_needs_newline(hir: &Hir) -> bool {
+/// The recursion is exact rather than merely sound, and it cannot be
+/// [`fold_hir`] even though it is an *any*-node question: a repetition
+/// of `\n` admits one only when it may repeat at all, and `fold_hir`
+/// descends into `{0}`'s sub-expression without asking.
+///
+/// Case folding cannot change the answer, since `\n` has no case
+/// variants — so reading the un-folded HIR is enough.
+fn hir_admits_newline(hir: &Hir) -> bool {
     match hir.kind() {
         HirKind::Literal(lit) => lit.0.contains(&b'\n'),
-        // A class needs a newline only when `\n` is all it holds. An
-        // *empty* class matches nothing, which is a different complaint
-        // and not one to make in this message.
-        HirKind::Class(Class::Unicode(cls)) => {
-            !cls.ranges().is_empty()
-                && cls
-                    .ranges()
-                    .iter()
-                    .all(|r| r.start() == '\n' && r.end() == '\n')
+        HirKind::Class(Class::Unicode(cls)) => cls
+            .ranges()
+            .iter()
+            .any(|r| r.start() <= '\n' && '\n' <= r.end()),
+        HirKind::Class(Class::Bytes(cls)) => cls
+            .ranges()
+            .iter()
+            .any(|r| r.start() <= b'\n' && b'\n' <= r.end()),
+        HirKind::Repetition(rep) => rep.max != Some(0) && hir_admits_newline(&rep.sub),
+        HirKind::Capture(cap) => hir_admits_newline(&cap.sub),
+        HirKind::Concat(parts) | HirKind::Alternation(parts) => {
+            parts.iter().any(hir_admits_newline)
         }
-        HirKind::Class(Class::Bytes(cls)) => {
-            !cls.ranges().is_empty()
-                && cls
-                    .ranges()
-                    .iter()
-                    .all(|r| r.start() == b'\n' && r.end() == b'\n')
-        }
-        // `\n?` and `\n*` both have the empty string in them.
-        HirKind::Repetition(rep) => rep.min >= 1 && hir_needs_newline(&rep.sub),
-        HirKind::Capture(cap) => hir_needs_newline(&cap.sub),
-        HirKind::Concat(parts) => parts.iter().any(hir_needs_newline),
-        HirKind::Alternation(parts) => parts.iter().all(hir_needs_newline),
         HirKind::Empty | HirKind::Look(_) => false,
     }
 }
@@ -579,9 +615,9 @@ fn collect_literal(hir: &Hir, out: &mut Vec<u8>) -> Option<()> {
 ///
 /// Two predicates walk this HIR — smartcase and the anchor test — and
 /// each of them is a question about *some* node, so the recursion is
-/// written once. The newline test is not one of them: it asks about
-/// *every* string the pattern matches, so its recursion has to
-/// distinguish a concatenation from an alternation.
+/// written once. [`hir_admits_newline`] is not one of them: it too asks
+/// about some node, but it has to refuse to descend into a repetition
+/// that cannot repeat.
 fn fold_hir(hir: &Hir, pred: &mut impl FnMut(&HirKind) -> bool) -> bool {
     if pred(hir.kind()) {
         return true;
@@ -2301,6 +2337,7 @@ mod preview_truncate;
 mod render;
 mod script_pane;
 mod search;
+mod search_cursor;
 mod selection;
 mod structure;
 mod terminal;
