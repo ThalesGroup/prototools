@@ -5,18 +5,24 @@
 use super::command_line::{next_word_boundary, prev_word_boundary};
 use super::*;
 
-/// Spec 0235 S21: the two buffers `write_positional_path` reuses across
-/// a whole sweep — the formatted path and the leaf-to-root segment list
-/// it is built from.
+/// Spec 0235 S21: the buffer `write_path_segments` reuses across a whole
+/// sweep — the leaf-to-root segment list a positional path is built
+/// from.
+///
+/// Spec 0273 S3 took the formatted string out of it: a path pattern is
+/// compared segment-wise, so a sweep across the reference corpus's
+/// 4.7 M nodes formats nothing.
 #[derive(Default)]
 pub(super) struct PathScratch {
-    text: String,
     segments: Vec<usize>,
 }
 
 impl PathScratch {
-    pub(super) fn as_str(&self) -> &str {
-        &self.text
+    /// The path's segments, **leaf-first** — the order
+    /// [`App::write_path_segments`] builds them in, and the order spec
+    /// 0273 S3 compares a path pattern against.
+    pub(super) fn segments(&self) -> &[usize] {
+        &self.segments
     }
 }
 
@@ -1316,20 +1322,32 @@ impl App {
     /// here, so the wrapper stays invisible in displayed paths; the
     /// wrapper's own node (internal path `/1`) displays as bare `/`.
     pub(super) fn positional_path(&self, idx: usize) -> String {
-        let mut scratch = PathScratch::default();
-        self.write_positional_path(&mut scratch, idx);
-        scratch.text
-    }
-
-    /// `positional_path` into a caller-owned buffer (spec 0235 S21).
-    ///
-    /// A sweep tests the path of every candidate line, so at the
-    /// reference corpus's 5.28 M lines a `String` and a `Vec` allocated
-    /// per candidate would cost more than the matching they exist to
-    /// serve. Both are cleared and rewritten instead.
-    pub(super) fn write_positional_path(&self, out: &mut PathScratch, idx: usize) {
         use std::fmt::Write as _;
 
+        let mut scratch = PathScratch::default();
+        self.write_path_segments(&mut scratch, idx);
+        let mut text = String::from("/");
+        for (i, seg) in scratch.segments().iter().rev().enumerate() {
+            if i > 0 {
+                text.push('/');
+            }
+            let _ = write!(text, "{seg}");
+        }
+        text
+    }
+
+    /// `positional_path`'s segments into a caller-owned buffer, leaf-first
+    /// (spec 0235 S21).
+    ///
+    /// A sweep tests the path of every candidate node, so at the
+    /// reference corpus's 4.7 M of them a `Vec` allocated per candidate
+    /// would cost more than the matching it exists to serve. The buffer
+    /// is cleared and rewritten instead.
+    ///
+    /// Spec 0273 S3: a path pattern is compared against these segments
+    /// rather than against the formatted string, so the sweep never
+    /// builds one.
+    pub(super) fn write_path_segments(&self, out: &mut PathScratch, idx: usize) {
         out.segments.clear();
         let mut cur = Some(idx);
         while let Some(i) = cur {
@@ -1339,14 +1357,6 @@ impl App {
         // The segments run leaf-to-root, so the *last* of them is the
         // virtual encompassing wrapper's own leg — the one this drops.
         out.segments.pop();
-        out.text.clear();
-        out.text.push('/');
-        for (i, seg) in out.segments.iter().rev().enumerate() {
-            if i > 0 {
-                out.text.push('/');
-            }
-            let _ = write!(out.text, "{seg}");
-        }
     }
 
     /// Node `idx`'s displayed byte range, half-open `[start, end)`, in the

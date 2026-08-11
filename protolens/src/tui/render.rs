@@ -1617,18 +1617,24 @@ impl App {
                         }
                     }
                     let mut at = 0;
-                    while let Some(found) = pattern.find_range(&text[at..]) {
-                        let start = char_column(&text, at + found.start);
-                        let chars = text[at + found.start..at + found.end].chars().count();
-                        // A zero-width match cannot happen — an empty
-                        // pattern never reaches here — but stepping past
-                        // the match's *start* rather than its end is
-                        // what keeps overlapping occurrences honest.
-                        at += found.start
-                            + text[at + found.start..]
-                                .chars()
-                                .next()
-                                .map_or(1, char::len_utf8);
+                    // `find_range_from` rather than a slice: spec 0273
+                    // S6 makes `^` and `\b` depend on what precedes
+                    // `at`, which a slice would hide. The loop is
+                    // bounded by the text as well as by the matches
+                    // because a regex may match nothing at all, and an
+                    // empty match at the end would otherwise be
+                    // re-found forever.
+                    while at <= text.len() {
+                        let Some(found) = pattern.find_range_from(&text, at) else {
+                            break;
+                        };
+                        let start = char_column(&text, found.start);
+                        let chars = text[found.clone()].chars().count();
+                        // Stepping past the match's *start* rather than
+                        // its end is what keeps overlapping occurrences
+                        // honest.
+                        at = found.start
+                            + text[found.start..].chars().next().map_or(1, char::len_utf8);
                         let style = if search_current.is_some_and(|(line, column, _, on_path)| {
                             !on_path && Some(line) == line_idx && column == start
                         }) {

@@ -314,7 +314,10 @@ impl App {
             return None;
         }
         Some(SearchSweep {
-            pattern: SearchPattern::new(pattern),
+            // Spec 0273 S8: a pattern that does not compile is not a
+            // search. `foo(` is what `foo(bar)` looks like halfway
+            // through typing it.
+            pattern: SearchPattern::new(pattern).ok()?,
             dir,
             origin,
             at: Some((origin.at, origin_bound(origin, dir, Visit::Out))),
@@ -331,11 +334,12 @@ impl App {
 
     /// Whether one candidate matches, and where.
     ///
-    /// Spec 0235 S19: a main-pane line offers *two* haystacks to the
-    /// same pattern — its rendered text and its owning node's positional
-    /// path — with no shape test and no reserved syntax. The text is
-    /// tried first, so that a line matching both ways lands on the
-    /// column the user can see (S20).
+    /// Spec 0273 S5: a main-pane line has *one* haystack, chosen by the
+    /// pattern's shape — the owning node's positional path when the
+    /// pattern looks like one, and the rendered row text otherwise.
+    /// Never both, which is what deletes spec 0246 S9's "the path is the
+    /// row's stop only when its text has no match at all" guard and the
+    /// extra scan that went with it.
     ///
     /// Spec 0246 S1: `bound` says which of the candidate's matches are
     /// stops — everything but the origin's own row passes `Whole`.
@@ -352,54 +356,47 @@ impl App {
                 if self.is_footer(pos) {
                     return None;
                 }
+                if sweep.pattern.is_path() {
+                    // Spec 0273 S4: a node's own lines all carry the
+                    // same path, so only the first of them is a
+                    // candidate — otherwise a three-line node is three
+                    // consecutive stops on one answer.
+                    if pos.line_in_node != 0 {
+                        return None;
+                    }
+                    let text = self.line_text_at(pos, sweep.offset);
+                    let indent = text.len() - text.trim_start().len();
+                    drop(text);
+                    // The stop sits where its caret lands, so a bound
+                    // that has already passed that offset excludes it
+                    // and a full cycle still visits it once.
+                    if !bound.admits(indent) {
+                        return None;
+                    }
+                    self.write_path_segments(&mut sweep.path, pos.node);
+                    return sweep
+                        .pattern
+                        .matches_path(sweep.path.segments())
+                        .then_some(SweepHit {
+                            at,
+                            start: indent,
+                            column: indent,
+                            width: 1,
+                            on_path: true,
+                        });
+                }
                 let text = self.line_text_at(pos, sweep.offset);
-                // The row's first non-blank — where a path match lands
-                // (S20), and the floor every stop's position is measured
-                // against (spec 0246 S3a).
+                // The row's first non-blank — the floor every stop's
+                // position is measured against (spec 0246 S3a).
                 let indent = text.len() - text.trim_start().len();
-                if let Some(range) = pick_match(&sweep.pattern, &text, indent, sweep.dir, bound) {
-                    return Some(SweepHit {
-                        at,
-                        start: range.start.max(indent),
-                        column: text[..range.start].chars().count(),
-                        width: text[range].chars().count(),
-                        on_path: false,
-                    });
-                }
-                // Spec 0246 S9: the path is the row's stop only when the
-                // row's *text* has no match at all. A text match the
-                // bound merely excluded still means the row belongs to
-                // its text — without this test the origin row would
-                // offer its text matches and then a path stop as well,
-                // and the walk would visit it twice per cycle.
-                //
-                // The extra scan falls only on a bounded row, and the
-                // origin is the only row a sweep ever bounds.
-                if bound != RowBound::Whole && sweep.pattern.find_range(&text).is_some() {
-                    return None;
-                }
-                // The stop sits where its caret lands, so a bound that
-                // has already passed that offset excludes it and a full
-                // cycle still visits it once.
-                if !bound.admits(indent) {
-                    return None;
-                }
-                drop(text);
-                self.write_positional_path(&mut sweep.path, pos.node);
-                // Spec 0235 S19 as amended: the path is matched
-                // *anchored*, as if the pattern were `^/a/b`. A path is
-                // read from the root down, so an unanchored match on one
-                // is nearly always an accident.
-                return sweep
-                    .pattern
-                    .starts_with(sweep.path.as_str())
-                    .then_some(SweepHit {
-                        at,
-                        start: indent,
-                        column: indent,
-                        width: 1,
-                        on_path: true,
-                    });
+                let range = pick_match(&sweep.pattern, &text, indent, sweep.dir, bound)?;
+                return Some(SweepHit {
+                    at,
+                    start: range.start.max(indent),
+                    column: text[..range.start].chars().count(),
+                    width: text[range].chars().count(),
+                    on_path: false,
+                });
             }
             // Spec 0235 S23: the side panes list FQDNs, not nodes, so
             // they have one haystack and no path rule.
@@ -730,7 +727,10 @@ impl App {
             Some(sweep) => Some(sweep),
             None => self.begin_search_sweep(pattern, dir, origin),
         };
-        let Some(mut sweep) = sweep else { return };
+        let Some(mut sweep) = sweep else {
+            self.report_bad_pattern(pattern);
+            return;
+        };
         self.advance_sweep(&mut sweep, usize::MAX);
         self.search_dirty = true;
         let found = sweep.found;
@@ -743,6 +743,20 @@ impl App {
             // Spec 0235 S10: the message returns at `Enter`, and only
             // here — while the prompt was open it shared that row.
             None => self.message = self.not_found(pattern, origin.scope),
+        }
+    }
+
+    /// Spec 0273 S8: why a committed pattern started no sweep, when the
+    /// reason is the pattern itself.
+    ///
+    /// Only here and at the other non-incremental caller — while the
+    /// prompt is open the reader is mid-word, and a diagnostic per
+    /// keystroke would be shouting at a half-typed `foo(`. An empty
+    /// pattern and an empty pane also reach this, and both compile, so
+    /// both stay silent.
+    fn report_bad_pattern(&mut self, pattern: &str) {
+        if let Err(why) = SearchPattern::new(pattern) {
+            self.message = format!("bad pattern: {why}");
         }
     }
 
@@ -791,6 +805,7 @@ impl App {
         self.search_origin = None;
         self.search_sweep = None;
         let Some(mut sweep) = self.begin_search_sweep(pattern, dir, origin) else {
+            self.report_bad_pattern(pattern);
             return;
         };
         self.advance_sweep(&mut sweep, usize::MAX);
@@ -830,19 +845,42 @@ impl App {
     /// The live `command_buffer` while a `/`/`?` prompt is open — that
     /// is what makes the highlight track the typing — and the focused
     /// pane's `last_*_search` once it has closed.
-    pub(super) fn search_highlight_pattern(&self) -> Option<SearchPattern> {
+    pub(super) fn search_highlight_pattern(&self) -> Option<Rc<SearchPattern>> {
         if !self.search_highlight {
             return None;
         }
         if let (Some(buf), CommandLineKind::Search(_)) = (&self.command_buffer, self.command_kind) {
-            return (!buf.is_empty()).then(|| SearchPattern::new(buf));
+            return (!buf.is_empty())
+                .then(|| self.compiled_pattern(buf))
+                .flatten();
         }
         let last = match self.search_scope() {
             SearchScope::Main => &self.last_search,
             SearchScope::Override => &self.last_override_search,
             SearchScope::Manage => &self.last_manage_search,
         };
-        last.as_ref().map(|(_, p)| SearchPattern::new(p))
+        let pattern = last.as_ref().map(|(_, p)| p.clone())?;
+        self.compiled_pattern(&pattern)
+    }
+
+    /// Spec 0273 S10: `text` compiled, reusing the last compile when the
+    /// text has not changed.
+    ///
+    /// The caller is `render`, once a frame, asking about the same
+    /// pattern until the reader types — and after spec 0273 a compile is
+    /// a real cost rather than a `String` clone. `None` for a pattern
+    /// that does not compile, which S8 makes silent while the prompt is
+    /// open.
+    fn compiled_pattern(&self, text: &str) -> Option<Rc<SearchPattern>> {
+        let mut slot = self.search_compiled.borrow_mut();
+        if let Some((cached, pattern)) = slot.as_ref() {
+            if cached == text {
+                return Some(Rc::clone(pattern));
+            }
+        }
+        let pattern = Rc::new(SearchPattern::new(text).ok()?);
+        *slot = Some((text.to_string(), Rc::clone(&pattern)));
+        Some(pattern)
     }
 
     /// Spec 0235 S14/S22: the one match drawn in `search_current_style`,
@@ -1032,7 +1070,15 @@ fn pick_match(
     }
     let mut best = None;
     let mut from = from;
-    while let Some(range) = pattern.find_range_from(haystack, from) {
+    // Spec 0273 S6 lets a pattern match nothing at all (`^`, `x*`), so
+    // the scan is bounded by the haystack as well as by the matches:
+    // `from` steps past a match's start by at least one byte, and an
+    // empty match at the end would otherwise be re-found forever —
+    // `find_range_from` clamps `from` back down to the length.
+    while from <= haystack.len() {
+        let Some(range) = pattern.find_range_from(haystack, from) else {
+            break;
+        };
         if range.start.max(floor) >= hi {
             break;
         }

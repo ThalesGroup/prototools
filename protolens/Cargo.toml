@@ -24,6 +24,11 @@ clap_complete         = { version = "4.5", features = ["unstable-dynamic"] }
 clap_mangen           = "0.2"
 memchr                = "2"
 ratatui               = "0.30"
+# Spec 0273 S16: the search pattern is an RE2 regex. Already in the
+# lockfile via tree-sitter and tree-sitter-highlight, so this costs no
+# new compilation.
+regex                 = "1.12"
+regex-syntax          = "0.8"
 crossterm             = "0.29"
 serde                 = { version = "1.0", features = ["derive"] }
 serde_norway          = "0.9"

@@ -198,20 +198,99 @@ fn main_pane_search_matches_the_current_not_original_rendering() {
 /// luck and a mixed-case test would get wrong.
 #[test]
 fn smartcase_folds_only_an_all_lowercase_pattern() {
-    let lower = SearchPattern::new("beta");
+    let lower = SearchPattern::new("beta").expect("compiles");
     assert!(lower.find_range("beta: 1").is_some());
     assert!(lower.find_range("Beta: 1").is_some());
     assert!(lower.find_range("BETA: 1").is_some());
 
-    let mixed = SearchPattern::new("Beta");
+    let mixed = SearchPattern::new("Beta").expect("compiles");
     assert!(mixed.find_range("Beta: 1").is_some());
     assert!(mixed.find_range("beta: 1").is_none());
     assert!(mixed.find_range("BETA: 1").is_none());
 
-    let upper = SearchPattern::new("BETA");
+    let upper = SearchPattern::new("BETA").expect("compiles");
     assert!(upper.find_range("BETA: 1").is_some());
     assert!(upper.find_range("beta: 1").is_none());
     assert!(upper.find_range("Beta: 1").is_none());
+}
+
+/// Spec 0273 test-plan items 6 and 7 (S6). Every non-path pattern is an
+/// RE2 regex, so alternation, classes and anchors mean what they say —
+/// and `^`/`$` are the *row's* ends, which is what `multi_line(true)`
+/// buys on a haystack that will one day be wider than a row.
+#[test]
+fn a_regex_pattern_matches_by_its_syntax() {
+    let alt = SearchPattern::new("(id|name):").expect("compiles");
+    assert!(alt.find_range("  id: 7").is_some());
+    assert!(alt.find_range("  name: x").is_some());
+    assert!(alt.find_range("  other: 3").is_none());
+
+    let anchored = SearchPattern::new(r"^\s*id").expect("compiles");
+    assert!(anchored.find_range("  id: 7").is_some());
+    assert!(anchored.find_range("  xid: 7").is_none());
+
+    // `find_range_from` resumes with `find_at`, not on a slice, so the
+    // anchor still knows the row began before `from`.
+    assert_eq!(anchored.find_range_from("  id: 7", 2), None);
+}
+
+/// Spec 0273 test-plan item 8 (S7). The literal tier's needle comes from
+/// the parsed HIR, not from the raw pattern text, so an escaped
+/// metacharacter is the character — which is a thing a plain substring
+/// search could not say at all.
+#[test]
+fn an_escaped_metacharacter_is_a_literal() {
+    let dotted = SearchPattern::new(r"a\.b").expect("compiles");
+    let SearchPattern::Literal { needle, .. } = &dotted else {
+        panic!("an escaped literal stays on the literal tier");
+    };
+    assert_eq!(needle, "a.b");
+    assert!(dotted.find_range("  x: a.b").is_some());
+    assert!(dotted.find_range("  x: axb").is_none());
+}
+
+/// Spec 0273 test-plan items 10 and 11 (S9). Smartcase reads the parsed
+/// pattern's *literals*, so a class escape — which is spelled with an
+/// uppercase letter and contains no literal at all — does not make the
+/// pattern case-sensitive. `(?-i)` is the escape hatch that takes case
+/// back, which is what makes smartcase a default rather than a
+/// restriction; vim spells the same thing `\C`.
+#[test]
+fn smartcase_reads_literals_and_yields_to_an_inline_flag() {
+    let class = SearchPattern::new(r"\bid").expect("compiles");
+    assert!(
+        class.find_range("  ID: 7").is_some(),
+        "the uppercase D of \\b..\\b is not a literal"
+    );
+
+    let forced = SearchPattern::new("(?-i)id").expect("compiles");
+    assert!(forced.find_range("  id: 7").is_some());
+    assert!(forced.find_range("  ID: 7").is_none());
+}
+
+/// Spec 0273 test-plan item 13 (S11, S12). A pattern that cannot match
+/// anything on a one-row haystack is refused rather than left to find
+/// nothing, and `\A`/`\z` are refused because a successor would give
+/// them a meaning this release cannot.
+#[test]
+fn a_multi_line_or_haystack_anchored_pattern_is_refused() {
+    for pattern in [r"id\nvalue", r"\n+", r"a(\n|\r\n)b"] {
+        let why = SearchPattern::new(pattern).expect_err(pattern);
+        assert!(why.contains("multi-line"), "{pattern}: {why}");
+    }
+    // S11 asks what a pattern *requires*, not what it admits. All three
+    // of these can match a newline and none of them has to, so refusing
+    // them would refuse most of the regex vocabulary over nothing.
+    for pattern in ["(?s)a.b", "[^a]", r"\s*id", r"a\n?b"] {
+        assert!(SearchPattern::new(pattern).is_ok(), "{pattern}");
+    }
+    for pattern in [r"\Aid", r"id\z"] {
+        let why = SearchPattern::new(pattern).expect_err(pattern);
+        assert!(why.contains("^ and $"), "{pattern}: {why}");
+    }
+    // The line anchors themselves stay available, and say the same
+    // thing on a one-row haystack.
+    assert!(SearchPattern::new("^id$").is_ok());
 }
 
 /// Spec 0195 S2: the case fold runs per `char` and streams, because a
@@ -220,7 +299,7 @@ fn smartcase_folds_only_an_all_lowercase_pattern() {
 /// that character onwards rather than merely missing this match.
 #[test]
 fn the_case_fold_handles_a_multi_character_lowercase_mapping() {
-    let dotted = SearchPattern::new("i\u{307}d");
+    let dotted = SearchPattern::new("i\u{307}d").expect("compiles");
     assert!(dotted.find_range("\u{130}d: 7").is_some());
 }
 
@@ -230,7 +309,7 @@ fn the_case_fold_handles_a_multi_character_lowercase_mapping() {
 /// though the space were dropped; it is not, and this pins that.
 #[test]
 fn a_leading_space_is_part_of_the_pattern() {
-    let spaced = SearchPattern::new(" id");
+    let spaced = SearchPattern::new(" id").expect("compiles");
     assert!(spaced.find_range("  id: 7").is_some());
     assert!(spaced.find_range("id: 7").is_none());
 }
@@ -306,13 +385,14 @@ fn caret_byte_offset(app: &App) -> usize {
 /// it is the one line whose characters the nodes do not store, and the
 /// search has never matched one.
 ///
-/// Spec 0235 S19/0246 S9: a line's owning node's positional path is a
-/// second haystack, tried only when the text offered nothing, worth
-/// exactly one stop, and matched *anchored* — a pattern not starting
-/// with `/` never reaches it.
+/// Spec 0273 S5: a line has *one* haystack, chosen by the pattern's
+/// shape. A path pattern stops once per node, on its first own line
+/// (S4), and is compared segment-wise (S3) — spelled out here over the
+/// rendered path string, so that the walk's `Vec<usize>` comparison is
+/// held against something other than itself.
 fn every_match_in_text_order(app: &App, pattern: &str) -> Vec<(usize, usize)> {
     let lines = app.document_lines();
-    let needle = SearchPattern::new(pattern);
+    let needle = SearchPattern::new(pattern).expect("a test pattern compiles");
     let mut out = Vec::new();
     for (line, text) in lines.iter().enumerate() {
         let Some(pos) = app.line_pos(line) else {
@@ -324,18 +404,36 @@ fn every_match_in_text_order(app: &App, pattern: &str) -> Vec<(usize, usize)> {
         // Spec 0246 S3a: a stop sits at the column its caret lands on,
         // never left of the row's first non-blank.
         let indent = text.len() - text.trim_start().len();
-        let before = out.len();
+        if needle.is_path() {
+            if pos.line_in_node == 0 && path_has_prefix(&app.positional_path(pos.node), pattern) {
+                out.push((line, indent));
+            }
+            continue;
+        }
         let mut from = 0;
         while let Some(range) = needle.find_range_from(text, from) {
             out.push((line, range.start.max(indent)));
             from = range.start + text[range.start..].chars().next().map_or(1, char::len_utf8);
         }
         out.dedup();
-        if out.len() == before && needle.starts_with(&app.positional_path(pos.node)) {
-            out.push((line, indent));
-        }
     }
     out
+}
+
+/// Whether `path` — a rendered `/1/2/3` — begins with `pattern`'s
+/// segments. Spec 0273 S3, by splitting rather than by comparing the
+/// walk's own segment vectors.
+fn path_has_prefix(path: &str, pattern: &str) -> bool {
+    let split = |s: &str| {
+        s.trim_end_matches('/')
+            .split('/')
+            .skip(1)
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    let wanted = split(pattern);
+    let have = split(path);
+    wanted.len() <= have.len() && wanted.iter().zip(&have).all(|(a, b)| a == b)
 }
 
 /// Spec 0222, test-plan item 7: the walk-based search visits the
@@ -367,7 +465,10 @@ fn search_finds_the_same_hits_in_the_same_order() {
         // `:` is on every scalar row, `{` on every message header, and
         // `1` lands inside a packed run's elements — between them the
         // patterns reach all three of the shapes a step has to handle.
-        for pattern in [":", "{", "1"] {
+        // Spec 0273 S6 makes a bare `{` a repetition operator with
+        // nothing to repeat, so the brace is escaped; S7 then folds it
+        // back into the same literal search it always was.
+        for pattern in [":", r"\{", "1"] {
             for dir in [SearchDir::Forward, SearchDir::Backward] {
                 app.set_cursor(app.first_node);
                 let all = every_match_in_text_order(&app, pattern);
@@ -631,7 +732,10 @@ fn a_keystroke_abandons_the_sweep_in_flight() {
         .search_sweep
         .as_ref()
         .expect("the keystroke must leave a sweep behind");
-    assert_eq!(sweep.pattern.needle, "zzz");
+    let SearchPattern::Literal { needle, .. } = &sweep.pattern else {
+        panic!("spec 0273 S7: a bare word is the literal tier");
+    };
+    assert_eq!(needle, "zzz");
     assert_eq!(
         settle_sweep(&mut app),
         3,
@@ -991,12 +1095,13 @@ fn an_unbaked_document_tints_a_miss_violet_rather_than_red() {
     );
 }
 
-/// Spec 0235 test-plan item 19 (G8, S19). A line offers two haystacks
-/// with no shape test: its own text and its owning node's positional
-/// path. The path reaches a node no line's text names, and a document
-/// carrying the pattern both ways yields both lines in document order.
+/// Spec 0273 test-plan item 1 (G1, S2, S5). A pattern of `/` and digits
+/// searches paths and *only* paths. The path reaches a node no line's
+/// text names, and a line whose text spells the same thing is not a stop
+/// — which is the whole of what the shape test buys, and what spec 0235
+/// S19's both-haystacks rule got wrong.
 #[test]
-fn a_pattern_is_tried_against_the_path_and_the_text() {
+fn a_pattern_of_digits_and_slashes_searches_paths_only() {
     let (mut app, _run, tail, a, _b) = packed_run_with_tail_fixture();
     let id = app.nth_child(tail, 0).expect("tail has one child");
     assert_eq!(app.positional_path(id), "/2/1");
@@ -1009,13 +1114,107 @@ fn a_pattern_is_tried_against_the_path_and_the_text() {
     app.jump_to_match(SearchDir::Forward, "/2/1");
     assert_eq!(app.cursor, id);
 
-    // Now a second line carries the same pattern in its *text*.
+    // Now a second line carries the same pattern in its *text*. It is
+    // not a stop, so the next `n` wraps back onto the one node whose
+    // path the pattern spells.
     app.node_text[a] = Some(Box::from("  a: \"/2/1\""));
     app.set_cursor(app.first_node);
     app.jump_to_match(SearchDir::Forward, "/2/1");
-    assert_eq!(app.cursor, id, "the path match comes first in the document");
+    assert_eq!(app.cursor, id);
     app.jump_to_match(SearchDir::Forward, "/2/1");
-    assert_eq!(app.cursor, a);
+    assert_eq!(app.cursor, id, "the text spelling the path is not a stop");
+}
+
+/// Spec 0273 test-plan item 5 (S5), the converse. A word pattern never
+/// reaches the path haystack, so a node whose *path* would match a
+/// regex is not a stop for it.
+#[test]
+fn a_word_pattern_never_stops_on_a_path() {
+    let (mut app, _run, tail, _a, _b) = packed_run_with_tail_fixture();
+    let id = app.nth_child(tail, 0).expect("tail has one child");
+    assert_eq!(app.positional_path(id), "/2/1");
+
+    app.set_cursor(app.first_node);
+    // A regex that matches `/2/1` the string, typed without the shape
+    // that would make it a path pattern.
+    app.jump_to_match(SearchDir::Forward, "2.1");
+    assert_ne!(app.cursor, id);
+    assert!(app.message.contains("not found"));
+}
+
+/// Spec 0273 test-plan item 2 (S3), at the comparison itself. A path
+/// prefix is compared segment by segment, so `/1` reaches `/1/23` and
+/// neither `/12` nor `/2/1`. The old rule was a raw `str::starts_with`,
+/// under which `/1` matched `/12`.
+///
+/// Stated against the segment vectors because their *direction* is the
+/// trap: the pattern's run root-first and `PathScratch`'s leaf-first.
+#[test]
+fn a_path_prefix_is_compared_by_segment() {
+    let one = SearchPattern::new("/1").expect("compiles");
+    assert!(one.is_path());
+    assert!(one.matches_path(&[1]), "/1");
+    assert!(one.matches_path(&[23, 1]), "/1/23");
+    assert!(!one.matches_path(&[12]), "/12 is not an extension of /1");
+    assert!(!one.matches_path(&[1, 2]), "/2/1 is not one either");
+    assert!(!one.matches_path(&[]), "the root is shorter than /1");
+
+    // Spec 0273 S2: the shape test, whose whole job is telling these
+    // apart by eye.
+    for text in ["/", "/1", "/1/2", "/1/2/"] {
+        assert!(
+            SearchPattern::new(text).expect("compiles").is_path(),
+            "{text} is a path pattern"
+        );
+    }
+    for text in ["/1/a", "1/2", "//2", "/1 ", "/1|2"] {
+        assert!(
+            !SearchPattern::new(text).expect("compiles").is_path(),
+            "{text} is not a path pattern"
+        );
+    }
+}
+
+/// Spec 0273 test-plan item 4 (S4). A node's own lines all carry the
+/// same path, so a path pattern stops on it once — on its first line —
+/// rather than turning a three-line node into three stops on one answer.
+#[test]
+fn a_path_stops_once_per_node() {
+    let (mut app, run, ..) = packed_run_with_tail_fixture();
+    assert_eq!(app.positional_path(run), "/1");
+    assert!(
+        app.tree[run].lines_visible > 1,
+        "the packed run must own several lines for this to say anything"
+    );
+
+    app.set_cursor(app.first_node);
+    for _ in 0..2 {
+        app.jump_to_match(SearchDir::Forward, "/1");
+        assert_eq!(app.cursor, run);
+        assert_eq!(
+            app.cursor_line_in_node, 0,
+            "the run's later elements are not stops of their own"
+        );
+    }
+}
+
+/// Spec 0273 test-plan item 3 (S3). A bare `/` has no segments, so it is
+/// a prefix of every path and walks every node. Useless and consistent;
+/// consistency wins, and it costs the shape test no special case.
+#[test]
+fn a_bare_slash_walks_every_node() {
+    let (mut app, run, tail, a, b) = packed_run_with_tail_fixture();
+    let id = app.nth_child(tail, 0).expect("tail has one child");
+
+    app.set_cursor(app.first_node);
+    let mut seen = std::collections::HashSet::from([app.cursor]);
+    for _ in 0..8 {
+        app.jump_to_match(SearchDir::Forward, "/");
+        seen.insert(app.cursor);
+    }
+    for node in [run, tail, a, b, id] {
+        assert!(seen.contains(&node), "`/` must stop on every node");
+    }
 }
 
 /// Spec 0235 S19 as amended. The path haystack is matched *anchored*:
@@ -1050,8 +1249,12 @@ fn a_path_matches_only_from_its_start() {
 
 /// Spec 0235 test-plan item 20 (S20). A path is not on screen, so a path
 /// match has no column of its own: it lands on the row's Home anchor. A
-/// text match keeps the matched character and `Free`, and a line
-/// matching both ways takes the text column.
+/// text match keeps the matched character and `Free`.
+///
+/// Spec 0273 S5 amended the third case: a line whose text spells its own
+/// path used to take the text column, because both haystacks were tried.
+/// Now the pattern's shape decides, and a path pattern lands on Home
+/// whatever the row happens to say.
 #[test]
 fn a_path_match_lands_on_the_home_anchor() {
     let (mut app, _run, tail, a, _b) = packed_run_with_tail_fixture();
@@ -1073,8 +1276,8 @@ fn a_path_match_lands_on_the_home_anchor() {
     app.set_cursor(app.first_node);
     app.jump_to_match(SearchDir::Forward, "/3");
     assert_eq!(app.cursor, a);
-    assert_eq!(app.caret_anchor, CaretAnchor::Free);
-    assert_eq!(app.cursor_column, 6, "the column the user can see");
+    assert_eq!(app.caret_anchor, CaretAnchor::Home);
+    assert_eq!(app.cursor_column, app.caret_bounds().0);
 }
 
 /// Spec 0235 test-plan item 22 (S23). The side panes list FQDNs, not
@@ -1119,6 +1322,63 @@ fn commit_search_by_key(app: &mut App, pattern: &str) {
     type_keys(app, "/");
     type_keys(app, pattern);
     press(app, KeyCode::Enter);
+}
+
+/// Spec 0273 test-plan item 9 (S8). A pattern that does not compile is
+/// not an error and not a search — `foo(` is what `foo(bar)` looks like
+/// halfway through typing it, and spec 0272 rebuilds the pattern on
+/// every keystroke. The diagnostic arrives at `Enter` and not before.
+#[test]
+fn an_uncompilable_pattern_leaves_the_view_alone() {
+    let mut app = sibling_leaves_app(&["foo(bar): 1", "zz: 2"]);
+    app.splash = false;
+    app.term_width = 120;
+    let before = app.cursor;
+
+    type_keys(&mut app, "/foo(");
+    assert!(app.search_sweep.is_none(), "no sweep to run");
+    assert!(app.search_highlight_pattern().is_none(), "nothing tinted");
+    assert_eq!(app.cursor, before, "and the view has not moved");
+    assert!(app.message.is_empty(), "silence while the reader is typing");
+
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        app.message.starts_with("bad pattern:"),
+        "the diagnostic arrives at Enter: {}",
+        app.message
+    );
+
+    // Finishing the pattern searches for what it now says.
+    app.message.clear();
+    commit_search_by_key(&mut app, r"foo\(bar");
+    assert_eq!(app.cursor, 0);
+    assert!(app.message.is_empty());
+}
+
+/// Spec 0273 test-plan item 12 (S10). `search_highlight_pattern` is
+/// called from `render` on every frame, and after spec 0273 building a
+/// `SearchPattern` is a regex compile. Two frames over an unchanged
+/// pattern must compile once — pointer equality is the only honest way
+/// to say so.
+#[test]
+fn the_compiled_pattern_survives_a_frame() {
+    let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2"]);
+    app.splash = false;
+    app.term_width = 120;
+    commit_search_by_key(&mut app, "(al|be)pha");
+
+    let first = app.search_highlight_pattern().expect("a live highlight");
+    let second = app.search_highlight_pattern().expect("a live highlight");
+    assert!(
+        std::rc::Rc::ptr_eq(&first, &second),
+        "the second frame reused the first frame's compile"
+    );
+
+    // A different pattern is a different compile, or the cache would be
+    // wrong rather than merely absent.
+    app.last_search = Some((SearchDir::Forward, "beta".to_string()));
+    let third = app.search_highlight_pattern().expect("a live highlight");
+    assert!(!std::rc::Rc::ptr_eq(&first, &third));
 }
 
 /// Spec 0246 test-plan item 1 (G5, S2, S3). `n` over a row carrying
@@ -1599,17 +1859,17 @@ fn up_at_a_colon_prompt_is_still_inert() {
 #[test]
 fn the_prefilter_preserves_smartcase() {
     // The prefilter's own case, which is the overwhelming majority.
-    let ascii = SearchPattern::new("beta");
+    let ascii = SearchPattern::new("beta").expect("compiles");
     assert!(ascii.find_range("BETA: 1").is_some());
     assert_eq!(ascii.find_range("x beta").map(|r| r.start), Some(2));
 
     // A non-ASCII needle skips it on the first guard.
-    let accented = SearchPattern::new("é");
+    let accented = SearchPattern::new("é").expect("compiles");
     assert!(accented.find_range("café: 1").is_some());
     assert!(accented.find_range("CAFÉ: 1").is_some());
 
     // An ASCII needle against a non-ASCII haystack skips it on the
     // second, which is the guard a first-character test alone misses.
-    let k = SearchPattern::new("k");
+    let k = SearchPattern::new("k").expect("compiles");
     assert!(k.find_range("\u{212A}elvin: 1").is_some());
 }

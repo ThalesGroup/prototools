@@ -1868,6 +1868,8 @@ dependencies = [
  "prototext-graph",
  "prototext-schema",
  "ratatui",
+ "regex",
+ "regex-syntax",
  "serde",
  "serde_norway",
  "sha2",

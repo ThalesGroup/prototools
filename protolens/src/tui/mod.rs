@@ -20,6 +20,7 @@ use std::collections::VecDeque;
 use std::io;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -35,6 +36,9 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement, EnterAlternateScreen,
     LeaveAlternateScreen,
 };
+use regex::{Regex, RegexBuilder};
+use regex_syntax::hir::{Class, Hir, HirKind, Look};
+
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -227,56 +231,124 @@ fn longest_common_prefix(items: &[&str]) -> String {
     first[..end].to_string()
 }
 
-/// Spec 0195 S2: the pattern behind every pane's `/`/`?`/`n`, carrying
-/// vim's `smartcase` rule — an all-lowercase pattern matches
-/// case-insensitively, a pattern containing any uppercase character
-/// matches exactly.
+/// Spec 0273 S1: what a `/`/`?`/`n` pattern is — a positional path, or
+/// a regular expression, decided by the pattern's shape and never by
+/// both at once.
 ///
-/// The rule is decided once, at construction, rather than per candidate:
-/// the three searches this replaces each lowercased *both* sides inside
-/// their walk, which is how they came to allocate two `String`s per node
-/// on the one hot path spec 0195 S1 is about.
-pub(super) struct SearchPattern {
-    /// Already lowercased when the search is case-insensitive, so the
-    /// per-candidate comparison only has to fold the haystack.
-    needle: String,
-    case_sensitive: bool,
+/// Spec 0195 S2's `smartcase` rule survives in both matching variants:
+/// an all-lowercase pattern matches case-insensitively, a pattern
+/// carrying any uppercase *literal* matches exactly. The rule is decided
+/// once, at construction, rather than per candidate.
+#[derive(Debug)]
+pub(super) enum SearchPattern {
+    /// Spec 0273 S2/S3: a pattern of `/` and ASCII digits searches
+    /// positional paths, and nothing else. Segments run **root-first**,
+    /// which is the reverse of [`PathScratch::segments`].
+    Path(Vec<usize>),
+    /// Spec 0273 S7: a regex whose parse is a plain literal runs the
+    /// pre-folded needle and the `memchr2` prefilter spec 0235 measured
+    /// at six times the every-position walk, rather than the general
+    /// engine.
+    Literal {
+        /// Already lowercased when the search is case-insensitive, so
+        /// the per-candidate comparison only has to fold the haystack.
+        needle: String,
+        case_sensitive: bool,
+    },
+    /// Spec 0273 S6. Boxed because a `Regex` carries its own cache pool
+    /// and would otherwise set this enum's size for every variant.
+    Regex(Box<Regex>),
 }
 
+/// Spec 0273 S6: a pattern that needs more than this to compile is
+/// refused. The `regex` crate's own default is ten times larger; the
+/// tighter bound is spec 0272's, which recompiles on every keystroke and
+/// cannot afford a pattern that takes visible time to build.
+const PATTERN_SIZE_LIMIT: usize = 1 << 20;
+
 impl SearchPattern {
-    pub(super) fn new(pattern: &str) -> Self {
-        let case_sensitive = pattern.chars().any(char::is_uppercase);
-        let needle = if case_sensitive {
-            pattern.to_string()
-        } else {
-            pattern.to_lowercase()
-        };
-        Self {
-            needle,
-            case_sensitive,
+    /// Spec 0273 S8: `Err` is a pattern the reader is still typing as
+    /// much as it is a mistake, so the caller decides whether to say
+    /// anything. The string is the compile diagnostic, for `Enter`.
+    pub(super) fn new(pattern: &str) -> Result<Self, String> {
+        if let Some(segments) = path_segments(pattern) {
+            return Ok(Self::Path(segments));
         }
+        // Parsed with the same two flags the builder below is given, so
+        // that `^` reads as `Look::StartLM` here and `\A` — which S12
+        // refuses — stays distinguishable from it. Case folding is left
+        // *off*: S9 reads this HIR's literals to decide it.
+        let hir = regex_syntax::ParserBuilder::new()
+            .multi_line(true)
+            .dot_matches_new_line(false)
+            .build()
+            .parse(pattern)
+            .map_err(|e| e.to_string())?;
+        if hir_has_haystack_anchor(&hir) {
+            return Err("\\A and \\z anchor to the search window, not the \
+                        document; use ^ and $"
+                .to_string());
+        }
+        // Spec 0273 S11: the haystack is one rendered row, so such a
+        // pattern would match nothing at all. Saying so beats finding
+        // nothing.
+        if hir_needs_newline(&hir) {
+            return Err("multi-line patterns are not supported".to_string());
+        }
+        let case_sensitive =
+            hir_has_uppercase_literal(&hir) || pattern_settles_its_own_case(pattern, &hir);
+        if let Some(text) = hir_literal(&hir) {
+            let needle = if case_sensitive {
+                text
+            } else {
+                text.to_lowercase()
+            };
+            return Ok(Self::Literal {
+                needle,
+                case_sensitive,
+            });
+        }
+        RegexBuilder::new(pattern)
+            .multi_line(true)
+            .dot_matches_new_line(false)
+            // Spec 0273 S9: a *default*, not a restriction — an inline
+            // `(?-i)` overrides it, which is vim's `\C`.
+            .case_insensitive(!case_sensitive)
+            .size_limit(PATTERN_SIZE_LIMIT)
+            .build()
+            .map(|re| Self::Regex(Box::new(re)))
+            .map_err(|e| e.to_string())
     }
 
-    /// Whether `haystack` *begins* with the pattern — `^pattern`, not
-    /// `pattern`.
+    /// Spec 0273 S5: which of the two haystacks this pattern is for. A
+    /// path pattern is never matched against row text, and a regex is
+    /// never matched against a path.
+    pub(super) fn is_path(&self) -> bool {
+        matches!(self, Self::Path(_))
+    }
+
+    /// Spec 0273 S3: whether the pattern is a **segment-wise** prefix of
+    /// the path whose segments are `leaf_first` — so `/1` matches `/1`
+    /// and `/1/23`, and matches neither `/12` nor `/2/1`.
     ///
-    /// Spec 0235 S19 as amended: the positional-path haystack is matched
-    /// this way. A path is read from the root down, so the part of it a
-    /// user knows is its head, and an unanchored match on a path is
-    /// almost always an accident — `/2` occurs somewhere inside most of
-    /// a large document's paths. Anchoring also means a pattern that
-    /// does not start with `/` never matches a path at all, which is
-    /// what keeps an ordinary word search out of the second haystack.
+    /// A path is read from the root down, so the part of it a reader
+    /// knows is its head; an unanchored match on a path is almost always
+    /// an accident, since `/2` occurs somewhere inside most of a large
+    /// document's paths.
     ///
-    /// Folded rather than `starts_with` on the insensitive arm, for the
-    /// reason [`folded_prefix_len`] exists: the needle's length and the
-    /// haystack's differ wherever a character's lowercase is not one
-    /// character.
-    pub(super) fn starts_with(&self, haystack: &str) -> bool {
-        if self.case_sensitive {
-            return haystack.starts_with(&self.needle);
-        }
-        folded_prefix_len(haystack, &self.needle).is_some()
+    /// `leaf_first` is [`PathScratch::segments`] as
+    /// `write_path_segments` leaves it, and comparing against it rather
+    /// than against the rendered text is what makes a path candidate
+    /// cost no string at all.
+    pub(super) fn matches_path(&self, leaf_first: &[usize]) -> bool {
+        let Self::Path(wanted) = self else {
+            return false;
+        };
+        wanted.len() <= leaf_first.len()
+            && wanted
+                .iter()
+                .zip(leaf_first.iter().rev())
+                .all(|(a, b)| a == b)
     }
 
     /// The first match's byte range at or after `from`. Spec 0246 S6:
@@ -290,13 +362,22 @@ impl SearchPattern {
     /// rounding up cannot skip one. That totality is what lets a caller
     /// pass "one byte past the caret" without first asking how wide the
     /// character under it was.
+    ///
+    /// The regex arm goes through `find_at` rather than searching a
+    /// slice, because `^` and `\b` are decided by what precedes `from`
+    /// and a slice would hide it.
     pub(super) fn find_range_from(&self, haystack: &str, from: usize) -> Option<Range<usize>> {
         let mut from = from.min(haystack.len());
         while !haystack.is_char_boundary(from) {
             from += 1;
         }
-        self.find_range(&haystack[from..])
-            .map(|r| from + r.start..from + r.end)
+        match self {
+            Self::Path(_) => None,
+            Self::Regex(re) => re.find_at(haystack, from).map(|m| m.range()),
+            Self::Literal { .. } => self
+                .find_range(&haystack[from..])
+                .map(|r| from + r.start..from + r.end),
+        }
     }
 
     /// The first match's byte range. Spec 0235 S14 tints a match over
@@ -322,21 +403,196 @@ impl SearchPattern {
     /// textproto is ASCII on all but a handful of string values, so the
     /// fallback is rare and exact.
     pub(super) fn find_range(&self, haystack: &str) -> Option<Range<usize>> {
-        if self.case_sensitive {
-            let at = haystack.find(&self.needle)?;
-            return Some(at..at + self.needle.len());
+        let (needle, case_sensitive) = match self {
+            // Spec 0273 S5: a path pattern has no text haystack.
+            Self::Path(_) => return None,
+            Self::Regex(re) => return re.find(haystack).map(|m| m.range()),
+            Self::Literal {
+                needle,
+                case_sensitive,
+            } => (needle, *case_sensitive),
+        };
+        if case_sensitive {
+            let at = haystack.find(needle)?;
+            return Some(at..at + needle.len());
         }
-        if let Some(first) = self.needle.as_bytes().first().copied() {
+        if let Some(first) = needle.as_bytes().first().copied() {
             if first.is_ascii() && haystack.is_ascii() {
                 let upper = first.to_ascii_uppercase();
-                return memchr::memchr2_iter(first, upper, haystack.as_bytes()).find_map(|i| {
-                    folded_prefix_len(&haystack[i..], &self.needle).map(|n| i..i + n)
-                });
+                return memchr::memchr2_iter(first, upper, haystack.as_bytes())
+                    .find_map(|i| folded_prefix_len(&haystack[i..], needle).map(|n| i..i + n));
             }
         }
         haystack
             .char_indices()
-            .find_map(|(i, _)| folded_prefix_len(&haystack[i..], &self.needle).map(|n| i..i + n))
+            .find_map(|(i, _)| folded_prefix_len(&haystack[i..], needle).map(|n| i..i + n))
+    }
+}
+
+/// Spec 0273 S2: the pattern's segments when it is a **path pattern** —
+/// `/` and ASCII digits, starting with `/`, with no empty segment other
+/// than a single trailing `/`.
+///
+/// So `/`, `/1`, `/1/2` and `/1/2/` are paths, while `/1/a`, `1/2`,
+/// `//2` and `/1 ` are not. The shape test is the whole of the dispatch
+/// rule (spec 0273 N4): there is no `path:` prefix to learn, and it is
+/// decidable by eye.
+///
+/// A bare `/` yields no segments and is therefore a prefix of every
+/// path, so it walks every node. Useless and consistent; consistency
+/// wins, and it costs the shape test no special case.
+fn path_segments(pattern: &str) -> Option<Vec<usize>> {
+    let body = pattern.strip_prefix('/')?;
+    let body = body.strip_suffix('/').unwrap_or(body);
+    if body.is_empty() {
+        return Some(Vec::new());
+    }
+    body.split('/')
+        .map(|seg| {
+            (!seg.is_empty() && seg.bytes().all(|b| b.is_ascii_digit()))
+                .then(|| seg.parse().ok())
+                .flatten()
+        })
+        .collect()
+}
+
+/// Spec 0273 S9: whether any *literal* character of the parsed pattern
+/// is uppercase — which is what smartcase is about.
+///
+/// The raw pattern text would be the wrong thing to read: it would make
+/// `\D`, `\W` and `\S` case-sensitive patterns, which is not what the
+/// reader typing them meant.
+fn hir_has_uppercase_literal(hir: &Hir) -> bool {
+    fold_hir(hir, &mut |kind| match kind {
+        HirKind::Literal(lit) => {
+            std::str::from_utf8(&lit.0).is_ok_and(|s| s.chars().any(char::is_uppercase))
+        }
+        _ => false,
+    })
+}
+
+/// Spec 0273 S11: whether every string the pattern matches contains a
+/// newline — which, on a haystack that is one rendered row, is the same
+/// as the pattern matching nothing at all.
+///
+/// The question is what the pattern *requires*, not what it admits.
+/// `\s`, `[^a]` and `(?s).` all admit a newline and all match plenty of
+/// rows; refusing them would refuse most of the regex vocabulary. Only a
+/// pattern with no newline-free string left — `id\nvalue` — is refused.
+///
+/// The recursion is sound rather than exact: a `true` answer is always
+/// right, and the shapes it declines to prove are ones that match.
+fn hir_needs_newline(hir: &Hir) -> bool {
+    match hir.kind() {
+        HirKind::Literal(lit) => lit.0.contains(&b'\n'),
+        // A class needs a newline only when `\n` is all it holds. An
+        // *empty* class matches nothing, which is a different complaint
+        // and not one to make in this message.
+        HirKind::Class(Class::Unicode(cls)) => {
+            !cls.ranges().is_empty()
+                && cls
+                    .ranges()
+                    .iter()
+                    .all(|r| r.start() == '\n' && r.end() == '\n')
+        }
+        HirKind::Class(Class::Bytes(cls)) => {
+            !cls.ranges().is_empty()
+                && cls
+                    .ranges()
+                    .iter()
+                    .all(|r| r.start() == b'\n' && r.end() == b'\n')
+        }
+        // `\n?` and `\n*` both have the empty string in them.
+        HirKind::Repetition(rep) => rep.min >= 1 && hir_needs_newline(&rep.sub),
+        HirKind::Capture(cap) => hir_needs_newline(&cap.sub),
+        HirKind::Concat(parts) => parts.iter().any(hir_needs_newline),
+        HirKind::Alternation(parts) => parts.iter().all(hir_needs_newline),
+        HirKind::Empty | HirKind::Look(_) => false,
+    }
+}
+
+/// Spec 0273 S9's escape hatch: whether the pattern has already decided
+/// its own case, and so must not be handed smartcase's default.
+///
+/// Asking the parser to fold case and getting the same tree back means
+/// there was nothing for the fold to do — either the pattern carries no
+/// case-foldable literal (`\d+`, `\{`), or it says `(?-i)` and took the
+/// decision itself. Reading the raw text for `(?-i)` would instead find
+/// it inside `\Q(?-i)\E` and inside a character class.
+fn pattern_settles_its_own_case(pattern: &str, hir: &Hir) -> bool {
+    regex_syntax::ParserBuilder::new()
+        .multi_line(true)
+        .dot_matches_new_line(false)
+        .case_insensitive(true)
+        .build()
+        .parse(pattern)
+        .is_ok_and(|folded| folded == *hir)
+}
+
+/// Spec 0273 S12: whether the pattern anchors to the haystack rather
+/// than to a line.
+///
+/// On a single-row haystack `\A` and `\z` are merely synonyms for `^`
+/// and `$`, so refusing them costs the reader nothing today. Under a
+/// successor whose haystack is a window they would come to mean its
+/// arbitrary edges, and rejecting them now means that successor changes
+/// no pattern's meaning.
+///
+/// The HIR was parsed with `multi_line(true)`, which is what keeps
+/// `Look::Start` (`\A`) distinct from `Look::StartLF` (`^`).
+fn hir_has_haystack_anchor(hir: &Hir) -> bool {
+    fold_hir(hir, &mut |kind| {
+        matches!(kind, HirKind::Look(Look::Start | Look::End))
+    })
+}
+
+/// The literal text a pattern is, when it is one — spec 0273 S7's tier
+/// test.
+///
+/// Taken from the HIR rather than from the raw pattern text, so that
+/// `a\.b` searches for `a.b`: escapes work, which they do not today.
+fn hir_literal(hir: &Hir) -> Option<String> {
+    if !hir.properties().is_literal() {
+        return None;
+    }
+    let mut out = Vec::new();
+    collect_literal(hir, &mut out)?;
+    String::from_utf8(out).ok()
+}
+
+fn collect_literal(hir: &Hir, out: &mut Vec<u8>) -> Option<()> {
+    match hir.kind() {
+        HirKind::Empty => Some(()),
+        HirKind::Literal(lit) => {
+            out.extend_from_slice(&lit.0);
+            Some(())
+        }
+        HirKind::Concat(parts) => parts.iter().try_for_each(|p| collect_literal(p, out)),
+        // `is_literal()` admits nothing else, so this is unreachable
+        // rather than a fallback — but a future HIR shape reaching it
+        // must fall out of the tier, not into a wrong needle.
+        _ => None,
+    }
+}
+
+/// Whether `pred` holds anywhere in the pattern's tree.
+///
+/// Two predicates walk this HIR — smartcase and the anchor test — and
+/// each of them is a question about *some* node, so the recursion is
+/// written once. The newline test is not one of them: it asks about
+/// *every* string the pattern matches, so its recursion has to
+/// distinguish a concatenation from an alternation.
+fn fold_hir(hir: &Hir, pred: &mut impl FnMut(&HirKind) -> bool) -> bool {
+    if pred(hir.kind()) {
+        return true;
+    }
+    match hir.kind() {
+        HirKind::Repetition(rep) => fold_hir(&rep.sub, pred),
+        HirKind::Capture(cap) => fold_hir(&cap.sub, pred),
+        HirKind::Concat(parts) | HirKind::Alternation(parts) => {
+            parts.iter().any(|p| fold_hir(p, pred))
+        }
+        _ => false,
     }
 }
 
@@ -804,6 +1060,14 @@ pub struct App {
     /// answer. `RefCell` rather than `Cell` because a `Range` is not
     /// `Copy`; neither borrow is held across a call.
     wire_rows: std::cell::RefCell<Option<WireRowCache>>,
+    /// Spec 0273 S10: the last pattern text compiled, and what it
+    /// compiled to.
+    ///
+    /// `search_highlight_pattern` is called from `render` on every
+    /// frame, and after spec 0273 building a `SearchPattern` is a regex
+    /// compile rather than a `String` clone. One entry is enough — the
+    /// caller asks about one pattern, over and over.
+    search_compiled: std::cell::RefCell<Option<(String, Rc<SearchPattern>)>>,
     /// Indentation step (spaces per nesting level) this session was decoded
     /// with — reused by `apply_override` (spec 0114 §5) so a splice
     /// re-render matches the rest of the document's own indentation.
@@ -1665,6 +1929,7 @@ impl App {
             // Spec 0225 S1: off until the `w` key asks for it.
             wire: None,
             wire_rows: std::cell::RefCell::new(None),
+            search_compiled: std::cell::RefCell::new(None),
             indent_size,
             node_text: decoded.node_text,
             window_styles: Vec::new(),
