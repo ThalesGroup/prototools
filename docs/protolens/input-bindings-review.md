@@ -41,16 +41,21 @@ The system's weaknesses are not in the dispatcher. They are:
   not that what is written about it is true (§7);
 - **`Tab` does not mean one thing** — it is completion, focus toggle,
   focus-lock complaint, and unbound, depending on where you are (§5.1);
-- **`Esc` is overloaded four ways** and its meaning at a find prompt is
-  "accept", which is the opposite of its meaning everywhere else (§5.2);
+- **there is no cancel at a find prompt.** `Esc` is consistent (it
+  leaves the innermost open thing, and the find prompt is one), but
+  every keystroke of a pattern has already moved the caret and nothing
+  puts it back (§5.2);
 - **the modifier algebra has one genuine collision**: `Alt` means "pan
-  the main pane" *and* "move by word", and both are live at once (§5.3);
-- **four letters (`a`, `i`, `o`, `z`) mean different things in
-  different panes** with no mnemonic linking the meanings (§5.4);
-- there is **no way to quit that is a key** (§5.5);
-- two arms in the override pane are **provably unreachable** (§8).
+  the main pane" *and* "move by word", and both are live at once. The
+  word motion is the correct one, so the pan is what has to move (§5.3);
+- **`z` means different things in different panes** with nothing linking
+  them; `a`, `i` and `o` are milder cases of the same (§5.4);
+- there is **no way to quit that is a key**, and the help buries the
+  answer (§5.5);
+- two arms in the override pane are **provably unreachable** (§8) —
+  worth reviving rather than deleting.
 
-Fourteen proposals follow, ranked, in §9.
+Twenty proposals follow, ranked, in §9.
 
 ---
 
@@ -253,33 +258,61 @@ open and gets silence. Neither is wrong in isolation; together they mean
 `Tab` teaches nothing.
 
 The help text asserts row 3 does the opposite of what it does — see §7.
+C5 removes row 3 by giving `Tab` a job in the override pane.
 
-### 5.2 `Esc` has four meanings, one of which is inverted
+### 5.2 `Esc` has four meanings, and no find prompt has a cancel
 
-`Esc` is: close the help; discard the command line; **accept** a find;
-close the override pane; close the manage pane; clear the selection;
-and (main pane, nothing else pending) clear the message.
+`Esc` is: close the help; discard the command line; leave the `F`/`B`
+find prompt; close the override pane; close the manage pane; clear the
+selection; and (main pane, nothing else pending) clear the message.
 
-The find-prompt arm is the outlier. Everywhere else in the app and in
-essentially every program ever written, `Esc` means *cancel*. At a find
-prompt it commits the current match and lands the caret on it (spec
-0278). It is a *good* interaction — it is how a find-as-you-type should
-work — but it is the wrong key for it. There is no cancel at a find
-prompt at all.
+Read as "leave this mode", the find arm is **not** an outlier: every one
+of those seven is a dismissal of the innermost thing that is open. The
+find prompt is a sticky mode (§1.4), so leaving it is exactly what `Esc`
+should do, and the caret staying on the previewed match (spec 0278) is
+the find-as-you-type behavior a reader wants.
+
+What is genuinely missing is the other direction. Because `Esc` leaves
+the mode *keeping* what it previewed, and `Enter` steps to the next
+match, **there is no way to back out of a find without moving the
+caret.** Every keystroke of the pattern has already moved it. That is a
+gap in the vocabulary, not an inversion of `Esc` — so the fix is to
+*add* a cancel rather than to reassign the commit (C4).
 
 ### 5.3 `Alt` means two things simultaneously
 
 `Alt-Up`/`Alt-Down` pan the main pane. `Alt-Left`/`Alt-Right` move by
 word. These are not variants of one idea; they are two ideas sharing a
-modifier along one axis each. A user who learns "Alt pans" will press
-`Alt-Left` expecting a horizontal pan and get word motion — and the
-horizontal pan is on `Shift-Alt-Up`/`Shift-Alt-Down`, i.e. the
-*vertical* arrows.
+modifier along one axis each.
 
-That last part is the sharpest edge in the whole system: **the
-horizontal pan is bound to vertical arrow keys.** It reads as a
-historical accident (the horizontal arrows were already taken by word
-motion), not a decision.
+Of the two, **the word motion is the one that is right**:
+`Alt-Left`/`Alt-Right` and `Alt-b`/`Alt-f` are readline's own
+`backward-word`/`forward-word`, and the app spells readline correctly
+everywhere else (§3). So the collision has to be resolved by moving
+*the pan*, not the word motion.
+
+That also explains the shape of the current bindings, and one of them is
+better than it looks. `Shift-Alt-Up`/`Shift-Alt-Down` pan
+**horizontally**, on the vertical arrows, which reads at first as pure
+accident — the horizontal arrows were taken. But it is the same
+convention as `Shift`+wheel: across essentially every GUI and terminal,
+adding `Shift` to a vertical gesture turns it horizontal, and the app
+already documents exactly that for the mouse. On that reading the
+binding is principled rather than accidental — it is a keyboard spelling
+of `Shift`+wheel.
+
+It survives only as long as the horizontal arrows are unavailable,
+though. The moment `Shift-Alt-Left`/`Shift-Alt-Right` are free, "the
+arrow points where it pans" beats any analogy, and the analogy stops
+being needed.
+
+The residual problem is that `Alt` is doing two jobs, and that only the
+main pane has a pan on it at all — the side panes pan on `Ctrl`-arrows
+(§4), and the override pane's `Alt` arms are dead (§8). There is no
+single modifier that means "pan" app-wide. The proposal is to make one:
+`Shift-Alt`+arrows, all four directions, every pane (C6). That leaves
+`Alt` to readline alone, keeps `Ctrl` for scope-widening, and gives §8's
+dead arms a reason to exist.
 
 ### 5.4 Four letters are homonyms across panes
 
@@ -291,15 +324,32 @@ motion), not a decision.
 | `z` | toggle fold | — | rotate origin kind |
 
 `o` is defensible (all three are "override-ish"). `a` is a stretch
-("annotations" vs. "active"). `i` and `z` are pure collisions — `i` is
-"inferred sort" in one pane and "heat cues" in another, and `z` is vim's
-fold letter in one pane and a rotation in another.
+("annotations" vs. "active").
 
-This is only a problem because the panes look alike. Since a side pane
-is on screen next to the main pane, the same physical key doing
-different things depending on an invisible focus flag is a real
-hazard — and unlike a mode line, protolens shows focus only through
-highlight styling.
+`i` is more defensible than it first looks: the heat cues *are* derived
+from the same inferred-type ranking the override pane sorts by, so one
+letter for "the inference" is a real link, not a coincidence. It is
+still an indirect one, and `c` — "cues" — is free in the main pane and
+says the thing directly (C11).
+
+`z` is the one genuine collision. It is vim's fold letter in the main
+pane and a rotation through origin kinds in the manage pane, and there
+is no reading under which those are the same idea. The letter to move is
+the rotation, since the fold binding is the one with an external
+convention behind it. **`t`/`T` is the proposal**: the manage entry's
+origin kind is what the override *targets*, `t` is already the main
+pane's "open the override pane" key so the letter is associated with the
+same subject, and `t`/`T` are both unbound in the manage pane today —
+so the rotation keeps its forward/backward pair (C13).
+
+This class of problem exists only because the panes look alike, and it
+is bounded by how legible focus is. **Focus is not invisible**: every
+pane carries its own status line (spec 0147 G2), and the focused one is
+drawn white + bold + reversed against gray + reversed for the others
+(`pane_focus_style`, `theme::focus_style`). The complaint is that this
+is *too subtle* — the difference between the two is brightness alone, on
+a one-row bar, and brightness is exactly the channel a low-contrast
+terminal theme flattens. B2 proposes adding hue to it.
 
 ### 5.5 There is no quit key
 
@@ -310,21 +360,40 @@ reflexes a user has for leaving a program are one silently-nothing and
 one silently-copies. The `Ctrl-Z`-then-`kill` escape hatch is the actual
 fallback, which is not a good answer.
 
+The right answer is not a new key. It is that `F1` works from anywhere,
+including a locked pane (tier 2 of the ladder), so a lost user always
+has one reachable surface — and that surface should answer the question
+they actually have. **`:quit` should be the first line of `HELP_TEXT`**
+(A5). Today it is far down, under the command section, which is where a
+reader looks last.
+
 ### 5.6 Smaller inconsistencies
 
 - **`Enter` in the manage pane closes the pane**; `Enter` in the
   override pane *applies and closes*. Same key, one is a commit and one
-  is a dismiss.
-- **The manage pane's `Left`/`Right` move the main pane's cursor**, not
-  anything in the manage pane. It is the only binding in the app where a
-  focused pane's arrows drive a different pane.
+  is a dismiss. The two panes are consecutive steps of one workflow —
+  choose a type, then refine what it applies to — so a single rule can
+  cover both: `Enter` commits, `Tab` advances to the next step, `Esc`
+  leaves. See C5, which is a redesign rather than a rename.
+- **The manage pane's `Left`/`Right` move the main pane's cursor.** It
+  is the only binding in the app where a focused pane's arrows drive a
+  different pane — but the thing they drive is *this entry's* affected
+  fields, circulated one at a time. That is a property of the selected
+  manage row, displayed where it is legible, so the pane is not really
+  reaching outside itself. Withdrawn as an inconsistency: it is a
+  deliberate coupling and it is the only way to answer "what does this
+  entry actually touch?" without leaving the pane.
 - **`f`/`b` page in every pane but the help overlay pages by ±10 lines**
   rather than by a screenful, so the same key has a different stride.
+  The overlay should page by a screenful like everything else (C14).
 - **`d`/`Delete`/`Backspace` all delete in the manage pane**, but
   `Backspace` is *caret motion* in the main pane. A user who has learned
-  main-pane `Backspace` will delete an entry with it.
-- **`i` in the main pane hides heat cues** — a *negative* toggle named
-  with a letter that suggests "info". `heat_cues_hidden` is the field.
+  main-pane `Backspace` will delete an entry with it. Drop it from the
+  manage pane (C12).
+- **`i` in the main pane is documented nowhere** (§7), and the field
+  behind it is named negatively (`heat_cues_hidden`) even though the
+  binding itself is a plain toggle. The binding is fine; the field name
+  and the missing help line are what to fix.
 
 ---
 
@@ -355,22 +424,122 @@ because terminals eat `Shift`.
 
 **What is missing or asymmetric**:
 
-- **No right-click anywhere.** A context menu is not a TUI idiom, but a
-  right-click could very cheaply be "open the override pane for the node
-  under the pointer", which is currently a two-step (`click`, then `t`).
-- **No middle-click.** X11 users expect middle-click paste on the
-  command line; `Ctrl-v` is the only paste.
+- **No right-click anywhere.** This is the one real gap, and the answer
+  is a small **context menu** rather than a shortcut: a right-click puts
+  a short list next to the pointer, and the entries are the things the
+  reader would otherwise have to know a letter for — over a main-pane
+  node, "override this node", "fold / unfold", "show wire bytes",
+  "go to definition"; over a manage row, "activate", "activate with
+  children", "duplicate", "delete". It is the only discoverability
+  surface that appears *at* the thing it describes, and every entry it
+  lists is already a bound key — so it documents the keyboard instead of
+  competing with it (C9).
 - **The wheel does not pan the script pane.** Every other surface
   scrolls under the pointer; the script pane scrolls only via `Up`/`Down`
-  with navigation on.
-- **`Ctrl`+wheel is unbound.** In a viewer this is conventionally zoom;
-  protolens has a natural analogue — fold depth — which is currently
-  only reachable per-node.
-- **No drag in the side panes.** Click selects an entry, but you cannot
-  drag to reorder in the manage pane, where `Shift-Up`/`Shift-Down`
-  already implement a move.
+  with navigation on (C10).
+- **`Ctrl`+wheel is unbound.** In a viewer this is conventionally zoom,
+  and protolens has an exact analogue in fold depth. Concretely:
+  `Ctrl`+wheel-down folds one level *under the node the pointer is over*
+  — the deepest currently-unfolded generation of its subtree closes —
+  and `Ctrl`+wheel-up reopens one generation. That is `Z`'s
+  whole-subtree semantics applied one level at a time, so no new state
+  is needed beyond the depth the node is already at, and it composes
+  with the existing hover routing for free (C8).
 - **Double-click means two different things**: "select this line" in the
-  main pane, "cascade this entry" in the manage pane.
+  main pane, "cascade this entry" in the manage pane. The cascade is the
+  weaker claim on the gesture — nothing about a double-click says
+  "include the children" — and with a context menu in place it has a
+  better home as a menu entry.
+
+Two asymmetries that are *not* worth closing:
+
+- **Middle-click paste.** X11 users expect it on the command line, but
+  many current mice have no usable middle button and `Ctrl-v` already
+  works. Not proposed.
+- **No drag in the side panes.** The manage pane's `Shift-Up`/
+  `Shift-Down` look like a move-the-entry pair, which would want a drag
+  analogue, but they are not: they navigate to the neighboring entry and
+  activate it. There is no ordering operation to drag.
+
+### 6.1 Is right-click a TUI idiom at all?
+
+It is a minority binding, but not an exotic one, and it has been
+mechanically available since xterm's original X10 mouse protocol — the
+right button is 2 in the encoding (0 left, 1 middle, 2 right), and SGR
+1006 made press and release unambiguous. crossterm surfaces it as
+`MouseEventKind::Down(MouseButton::Right)`. protolens already enables
+the reporting it needs for the wheel and for left-click, so the event is
+being delivered and discarded today.
+
+Where it *is* bound, there are two traditions:
+
+1. **A second selection verb** — the orthodox file managers. In Midnight
+   Commander and FAR/far2l, left-click moves the cursor and right-click
+   *marks* the item under the pointer, with right-drag marking a range.
+   No menu. Marking is the most frequent operation in a two-panel
+   manager, so it earns its own button.
+2. **A context menu** — and this is the reading that has spread, in the
+   last few years, into exactly the tools this app's readers already
+   run. **tmux 3.0+** binds `MouseDown3Pane`, `MouseDown3Status` and
+   `MouseDown3StatusLeft` to `display-menu` by default. **Neovim** made
+   `'mousemodel'` default to `popup_setpos` in 0.9, with a stock `PopUp`
+   menu whose entries include "Go to definition" — the same entry
+   proposed here. **Emacs `context-menu-mode`** (28+) works under
+   `xterm-mouse-mode`, i.e. in a plain terminal.
+
+So a menu is the meaning a user is most likely to arrive with, and the
+usual mechanics are settled: the application draws the box itself,
+anchored at the click and flipped left or up if it would run off an
+edge; while open it is modal — arrows or `j`/`k` plus `Enter`, `Esc` or
+a click outside to dismiss; and each row carries its keyboard equivalent
+on the right, which is the whole point of the widget.
+
+### 6.2 Terminals that keep the right button
+
+A terminal implementing mouse reporting is supposed to hand button 3 to
+the application once the app has enabled reporting, and to keep its own
+behavior only when **`Shift`** is held — the same xterm bypass the app
+already documents for `Shift`-click. kitty states the model most
+explicitly: its `mouse_map` entries are qualified `grabbed` /
+`ungrabbed`, where "grabbed" means the application asked for the mouse.
+
+- **Alacritty** — the easy case. It has no context menu at all, by
+  design, so there is nothing for right-click to be stolen by. It
+  implements the reporting and the `Shift` bypass; the button arrives.
+- **GNOME Console (`kgx`)** — one of a family. It, GNOME Terminal,
+  Tilix, Terminator and Ptyxis are all the *same widget*, VTE, so they
+  behave alike, and VTE does have its own right-click menu. The
+  available evidence says VTE gates that menu on mouse-tracking state
+  and forwards the button while reporting is on: mc's right-click
+  marking and tmux's right-click menus both work under GNOME Terminal,
+  which they could not otherwise. **Treat this as unverified** — see the
+  probe below.
+- **Windows Terminal** — the real problem child: right-click has
+  historically been paste, inherited from conhost, and users keep that
+  setting deliberately. Relevant for anyone reaching protolens over SSH
+  from Windows.
+- **macOS** (iTerm2, Terminal.app) — both have their own right-click
+  menus; whether they gate on reporting is unverified here.
+
+The ten-second probe, worth running in any terminal before believing
+a claim about it:
+
+```sh
+printf '\e[?1000h\e[?1006h'; cat -v      # right-click in the window
+# Ctrl-C, then:
+printf '\e[?1000l\e[?1006l'
+```
+
+A forwarded right-click prints `^[[<2;COL;ROWM` on press and `…m` on
+release. Nothing, or a menu appearing, means that terminal keeps it.
+
+**The design consequence is that the menu must be a progressive
+enhancement.** Two requirements follow, and both are in C9: every entry
+is an action that already has a key binding, so nothing is reachable
+*only* by menu; and the same menu opens from the keyboard at the caret,
+which removes the terminal dependency altogether and serves keyboard
+users besides. The `Shift` bypass should be documented next to it, so a
+user whose terminal eats the button knows the app is not broken.
 
 ---
 
@@ -417,15 +586,27 @@ Also: **`i` in the main pane (heat cues) is not described anywhere.**
 The help documents `i` only as the override pane's sort toggle; the test
 passes on the mention.
 
+All four drifts plus the missing `i` line are A1.
+
 ---
 
-## 8. Dead code in the dispatcher
+## 8. Two unreachable arms, and what to do with them
 
 `key_dispatch.rs:182-187` binds `Alt-Up`/`Alt-Down` in the override pane
 to a vertical pan. Those arms are **unreachable**: the main pane's own
 `Alt-Up`/`Alt-Down` arms at `:146`/`:147` match first. They were added
 by spec 0271 for a reason that the 2026-08-12 bare-arrow amendment
-retired. They should be deleted along with `help_text.rs:162-164`.
+retired.
+
+Deleting them is the smaller answer. The better one is to **give them a
+reachable spelling**, because the underlying feature — panning a side
+pane vertically — is real and the modifier is the only thing wrong with
+it. Under C6's `Shift-Alt`+arrows rule the override pane gets all four
+pan directions on a modifier that no other tier claims, the arms become
+live, and `Alt` goes back to meaning readline and nothing else. A2 is
+therefore a *re-binding*, not a deletion; `help_text.rs:162-164`'s
+rationale still has to go, since it explains them by a script
+convention that no longer exists.
 
 ---
 
@@ -438,33 +619,79 @@ Ranked by (value ÷ disruption). Nothing here is implemented.
 **A1. Fix the four help drifts** (§7) and document main-pane `i`.
 Cheap, and the help is the app's only discoverability surface.
 
-**A2. Delete the unreachable `Alt-Up`/`Alt-Down` override arms** (§8).
+**A2. Re-bind the override pane's unreachable `Alt-Up`/`Alt-Down`**
+(§8) under C6, and delete the stale rationale at `help_text.rs:162-164`.
 
-**A3. Make `mentioned_as_a_key` case-*sensitive* for the bare-letter
-scan.** The current case-insensitivity exists so `Ctrl-E` (reported as
-`Char('e')`) matches the help's `Ctrl-E`. Split the scan: modified
-literals keep the case-insensitive match, **unmodified** ones become
-case-sensitive. That immediately catches `W`, and every future capital.
+**A3. Make the help scan case-*sensitive* for unmodified letters.**
+To be clear about where the case-insensitivity lives: **the bindings
+are already case-sensitive** — `z` and `Z` reach different arms, and
+crossterm reports the shift state faithfully. The insensitivity is in
+`mentioned_as_a_key`, a helper in the *test* that asks whether the help
+prose mentions a letter. It exists so that `Ctrl-E`, which crossterm
+reports as `Char('e')` plus a modifier, still matches the help's
+`Ctrl-E`. The fix is to split the scan by modifier: a literal that was
+found next to `CONTROL` or `ALT` keeps the case-insensitive match, a
+bare one becomes case-sensitive. That immediately catches the
+undocumented `W` and every future capital. No app behavior changes.
 
-**A4. Extend the scan to non-character keys.** Parse
-`KeyCode::{Tab, Enter, Esc, Home, End, PageUp, PageDown, Delete,
-Backspace, Left, Right, Up, Down}` per *file*, and require each to be
-named in the help section for that pane. This needs `HELP_TEXT` to be
-sectioned rather than flat — see B1.
+**A4. Extend the scan to non-character keys.** `bound_chars` looks only
+for the literal string `KeyCode::Char('`, so a binding written
+`KeyCode::Tab` or `KeyCode::Esc` is never checked against the help at
+all — which is how §7's drift 3 (`Tab` documented as doing the opposite
+of what it does) survived. The extension is mechanical: scan each
+dispatcher source for `KeyCode::Tab`, `::Enter`, `::Esc`, `::Home`,
+`::End`, `::PageUp`, `::PageDown`, `::Delete`, `::Backspace`, `::Left`,
+`::Right`, `::Up`, `::Down`, and require the corresponding word to
+appear in the help.
+
+The catch is *where* it must appear. `Tab` is mentioned in the help
+today — so a flat "is this word anywhere in `HELP_TEXT`?" check passes
+while the override pane's `Tab` stays undocumented. The requirement has
+to be per-pane: a key bound in `override_select.rs` must be named in the
+help's override-pane section. That is why A4 needs B1 — the test needs
+to know which lines of the help belong to which pane, and today nothing
+in the data says so.
+
+**A5. Put `:quit` at the top of the help.** §5.5's real problem is not
+the missing key but that the answer is buried under the command section.
+`F1` reaches the help from anywhere, including a locked pane, so it is
+the one surface a lost reader can always get to — and the first line
+they see should be how to leave.
 
 ### Tier B — structure
 
-**B1. Give `HELP_TEXT` sections as data.** Today it is a flat
-`&[&str]`; there is no machine-readable link between "Override pane"
-and `key_dispatch.rs`'s `handle_override_key`. A
-`&[(Pane, &[&str])]` costs nothing at runtime, keeps the prose
-hand-written, and makes A4 and a per-pane help possible.
+**B1. Give `HELP_TEXT` sections as data.** Today `HELP_TEXT` is a flat
+`&[&str]` — a list of rendered lines, where a heading is just a line
+that happens to read like one. Nothing distinguishes a heading from a
+body line, so no code can ask "which lines describe the override pane?"
+The proposal is to make the grouping a value instead of a typographic
+convention:
 
-**B2. Show which pane has focus, in text.** Focus is currently
-communicated only by highlight styling, and §5.4's homonyms are only
-dangerous because of that. One word in the status/command row —
-`[main]` / `[override]` / `[manage]` — removes the whole class of
-problem for a one-cell cost.
+```rust
+pub(super) enum Section { Motion, Folds, Search, Overrides, Manage, Commands }
+pub(super) const HELP: &[(Section, &str, &[&str])] = &[
+    (Section::Overrides, "Override pane", &[ "Enter  apply and close", ... ]),
+    ...
+];
+```
+
+The prose stays hand-written and the rendered output can stay
+byte-identical (walk the slice, print the title, print the lines). What
+it buys: the help-text test can map a dispatcher file to a section and
+check membership (A4); `F1` can open at the section for the focused pane
+(B3); a future per-pane help footer has something to read. The cost is
+one flattening loop in the renderer and no runtime cost at all.
+
+**B2. Give the focused pane's status line its own hue.** Focus *is*
+shown (§5.4) — the focused pane's status bar is white + bold + reversed,
+the others gray + reversed — but the two differ only in brightness, on
+one row, which is the channel a low-contrast terminal theme erases.
+Adding hue costs one line: because `REVERSED` is set, the `.fg()` color
+is what paints the visible bar background, so `focus_style` setting a
+theme accent instead of `Color::White` recolors the whole bar while
+`unfocused_pane_style` stays neutral gray. Brightness and hue then both
+carry the signal, and a reader scanning three panes sees which one is
+live without reading a word.
 
 **B3. Make the help context-aware.** With B1, `F1` could open at the
 section for the focused pane (still scrollable to the rest). This is the
@@ -472,65 +699,194 @@ single largest discoverability win available.
 
 ### Tier C — binding changes, ordered least to most disruptive
 
-**C4. Give the find prompt a cancel.** Keep `Esc` = accept (it is good),
-but add `Ctrl-g` (readline's abort, which the app does not use) or
-`Ctrl-c` = cancel the find and restore the pre-find caret. Currently
-there is no way to back out of a find without moving the caret.
+**C4. Give the find prompt a cancel.** Keep `Esc` = leave the mode
+keeping the match (§5.2); add a second key that leaves it and restores
+the pre-find caret.
 
-**C5. Make `Tab` mean one thing: "cycle focus".** Concretely: in the
-main pane with no side pane open, `Tab` does nothing *visibly* today —
-make it open nothing but say nothing either (fine); in the override
-pane, replace the focus-lock complaint with an actual message that names
-the two keys that *do* work (`Esc` to cancel, `Enter` to apply). The
-complaint should teach the way out, not merely refuse.
+`Ctrl-g` is the recommendation, and yes, it really is the conventional
+abort: it is bound to `abort` in readline's default keymap (it is what
+GNU's own docs call the abort command, and what emacs binds to
+`keyboard-quit`), which is why `Ctrl-g` in `bash` at an incremental
+search returns you to where the search started — precisely the
+interaction wanted here. The app does not bind it anywhere today.
 
-**C6. Move the horizontal pan onto horizontal keys.** `Shift-Alt-Up` /
-`Shift-Alt-Down` for *left* / *right* (§5.3) is the least defensible
-binding in the app. `Shift-Alt-Left` / `Shift-Alt-Right` are free and
-obvious. Keep the old pair as aliases for one release if muscle memory
-matters.
+`Ctrl-c` is ruled out: it is copy in the main pane (§5.5), and giving it
+a second meaning inside a prompt is the kind of context-dependence this
+review is otherwise arguing against. Other options, if `Ctrl-g` is felt
+to be too emacs: `Esc Esc` (a second `Esc` within the prompt undoes the
+first — cheap, but a timing-sensitive double-tap is not a good TUI
+idiom), or `Ctrl-[`, which most terminals send *as* `Esc` and so is not
+actually a distinct key. `Ctrl-g` is the only clean answer.
 
-**C7. Alias `W` and document it as "wire, whole subtree".** No change
-needed — just the doc (A1) — but consider also `Ctrl-w` as a "clear all
-wire spans", which currently has no spelling at all.
+**C5. One rule for `Enter` / `Tab` / `Esc` across the two side panes.**
+The two panes are consecutive steps of one workflow — pick a type in the
+override pane, refine what it applies to in the manage pane — so give
+the three keys one meaning each, in both:
 
-**C8. Add `Ctrl`+wheel = fold depth.** A viewer's zoom, mapped onto the
-one thing protolens can zoom. It composes with the existing hover
-routing for free and needs no new state.
+| Key | Override pane | Manage pane |
+|-----|---------------|-------------|
+| `Enter` | **commit** the override and return to the main pane | **activate** the targeted override, *staying in the pane* |
+| `Tab` | pre-commit and **advance** to the manage pane for refining | back to the main pane (unchanged) |
+| `Esc` | leave, discarding | leave, keeping what was activated |
 
-**C9. Add right-click = "override the node under the pointer"**, i.e.
-`handle_click` followed by `t`. Zero new concepts, removes a two-step.
+This resolves three separate complaints at once. §5.1's worst row — the
+override pane answering `Tab` with a complaint about focus being locked
+— disappears, because `Tab` now has the job it was reached for.
+§5.6's first bullet disappears, because `Enter` stops being a commit in
+one pane and a dismiss in the other: it commits in one and activates in
+the other, and *returning to the main pane* becomes `Esc`'s job
+exclusively. And the focus-lock message stops being needed at all in the
+one place a user actually pressed `Tab`.
+
+It is the most disruptive proposal in tier C — it changes what `Enter`
+does in a pane where readers already have muscle memory — so it wants a
+release note, not a silent change.
+
+**C6. Make `Shift-Alt`+arrows the pan, in all four directions and in
+every pane.** Today: the main pane pans vertically on `Alt-Up`/
+`Alt-Down` and horizontally on `Shift-Alt-Up`/`Shift-Alt-Down`; the side
+panes pan on `Ctrl`-arrows; the override pane's `Alt` arms are dead
+(§8). Proposed: `Shift-Alt-Left`/`Right`/`Up`/`Down` pan the focused
+pane in the direction the arrow points, everywhere. That gives the app
+one modifier that means "pan", frees `Alt` for readline word motion
+alone (§5.3), keeps `Ctrl`-arrows as the side panes' existing spelling
+(they can stay as aliases), and makes §8's arms reachable. Keep
+`Shift-Alt-Up`/`Down`'s old horizontal meaning as a deprecated alias for
+one release if muscle memory matters.
+
+**C7. Document `W` accurately, and add `Ctrl-w` = clear all wire
+spans.** `W` is close to "the whole subtree" but not that:
+`wire_subtree()` (`navigation.rs:226`) shows the wire bytes of the
+smallest subtree containing the caret's line, or the whole selection if
+there is one — with a special case where the caret sits inside a packed
+run, in which case a single line falls back to `w`'s behavior and a
+selection is widened to the run's parent. The help line should say
+"wire bytes for the caret's subtree, or for the selection" and leave the
+packed-run detail to the wire-row documentation. Separately, `Ctrl-w` is
+free and "clear every wire span" currently has no spelling at all.
+
+**C8. Add `Ctrl`+wheel = fold depth under the pointer**, as spelled out
+in §6: wheel-down closes the deepest open generation beneath the hovered
+node, wheel-up reopens one. A viewer's zoom, mapped onto the one thing
+protolens can zoom, composing with the existing hover routing for free.
+
+**C9. Add a context menu, on right-click and on a key** (§6, §6.1,
+§6.2). A short list at the pointer whose entries are actions that
+already have key bindings — "override this node", "fold / unfold",
+"show wire bytes", "go to definition" over the main pane; "activate",
+"activate with children", "duplicate", "delete" over a manage row. Each
+row shows its key on the right, so the menu teaches the keyboard rather
+than competing with it, and the manage pane's double-click cascade gets
+a home a user might actually guess.
+
+Two constraints from §6.2 shape it. **Nothing is reachable only by
+menu** — every entry dispatches an existing binding. And it **opens
+from the keyboard too**, at the caret, because a terminal may keep the
+right button and because the discoverability payoff does not need a
+mouse.
+
+Implementation steps, each one independently committable and testable:
+
+1. **The menu as data and state.** A `MenuItem { label, key_hint,
+   action }` and a `Menu { items, anchor: (u16, u16), selected: usize,
+   area: Rect }`, with `menu: Option<Menu>` on `App`. `action` is an
+   enum, not a closure — it has to be comparable in a test. `area` is
+   filled in at render time and read by the hit test, exactly as
+   `help_area` already is (`render.rs:2166`).
+2. **Build the item list for a target.** One function per surface:
+   given a main-pane node index, or a manage-pane entry index, return
+   the applicable items. This is where "override this node" is omitted
+   for a node that cannot carry one, so the menu never offers a no-op.
+3. **Render it.** An *anchored* sibling to `popup_frame`
+   (`render.rs:2215`) — same `Clear` + rounded `Block`, but placed at
+   the anchor and flipped left/up when it would cross `area`'s right or
+   bottom edge. Drawn last in `render` (`render.rs:1303`), after the
+   splash/help branch, since it can legitimately stand over the help.
+4. **Keyboard while it is open.** A new tier in `handle_key`'s ladder,
+   directly *above* the help branch at `key_dispatch.rs:496` — a menu
+   raised over the help must answer first. `j`/`k`/arrows/`Ctrl-n`/
+   `Ctrl-p` move, `Enter` activates, `Esc` dismisses, and the per-row
+   hotkey letter activates directly.
+5. **Open it from the mouse.** A `Down(MouseButton::Right)` arm in
+   `handle_mouse`, beside the existing `Down(Left)` arm at
+   `mouse.rs:147`, routed by the same `over_main` / `over_side` hit
+   tests. It respects `main_interactive`: while the override pane locks
+   focus, a right-click gets the lock message like a left-click does.
+6. **Mouse while it is open.** Click inside → activate that row; click
+   outside → dismiss without acting; wheel → move the selection. Same
+   early-return shape as the `help_open` block at `mouse.rs:48`.
+7. **Open it from the keyboard**, at the caret rather than the pointer.
+   Needs a free key — the `Menu` key itself if crossterm reports it,
+   with a `Char` fallback.
+8. **Documentation.** A `HELP_TEXT` entry for the menu and for the
+   `Shift`-bypass caveat (§6.2), plus the mention the help-text test
+   will now demand for whatever key step 7 picks.
+
+Steps 1-4 are useful on their own: they give a working keyboard-only
+menu. Steps 5-6 add the mouse. Step 7 closes the terminal dependency.
 
 **C10. Give the script pane the wheel** when the pointer is over it.
 Every other surface scrolls under the pointer; this is the exception,
 and it is the surface a *presenter* uses under time pressure.
 
-**C11. Reconsider `i`.** As a main-pane binding it names a *hiding*
-toggle with an "info" letter, and it collides with the override pane's
-sort. If a rename is acceptable: `i` = "inferred sort" everywhere
-(it already is, in the override pane), and heat cues move to something
-mnemonic — `c` is free in the main pane and reads as "cues".
+**C11. Move the heat-cue toggle from `i` to `c`.** Sloppy wording in an
+earlier draft claimed "`i` = inferred sort everywhere"; there is only
+one sort in the app, so "everywhere" was meaningless. What is meant is
+narrower: **`i` keeps its one meaning — the override pane's
+inferred-type sort — and is not reused in the main pane.** The heat cues
+move to `c` ("cues"), which is free there. The `i`/heat-cue link is real
+(the cues rank by the same inference the sort orders by), so this is a
+clarity change, not a correction.
 
-**C12. Reconsider `Backspace` in the manage pane.** It deletes an entry
+**C12. Drop `Backspace` from the manage pane.** It deletes an entry
 there and moves the caret in the main pane (§5.6). `d` and `Delete`
-already cover deletion; dropping `Backspace` from the manage pane
-removes a genuine footgun at the cost of nothing.
+already cover deletion; dropping it removes a genuine footgun at the
+cost of nothing.
+
+**C13. Move the manage pane's origin-kind rotation off `z`.** `z` is
+vim's fold letter in the main pane and a rotation in the manage pane,
+with no reading that unifies them (§5.4). The fold binding is the one
+with an external convention behind it, so the rotation moves.
+**`t`/`T`** is the proposal: the origin kind is what the override
+*targets*; `t` is already the main pane's "open the override pane" key,
+so the letter is associated with the same subject rather than a new one;
+and both cases are unbound in the manage pane today, so the
+forward/backward pair survives intact.
+
+**C14. Make the help overlay page by a screenful.** `f`/`b`/`PageUp`/
+`PageDown` move ±10 lines there and a screenful everywhere else (§5.6).
+Same key, same word in the help, different stride — for no reason.
 
 ### Tier D — alternates worth considering, not recommended outright
 
-**D13. A leader key.** protolens already has one chord machine (`x`) and
-one focus-locking pane. A `,`- or `<space>`-style leader would let
-pane-specific actions live under a namespace (`,o` for override, `,m`
-for manage) and would dissolve §5.4's homonyms entirely. It is also a
-large break with the vim-plus-less idiom the app has committed to, and
-`space` is already the script toggle. **Recommend against**, but it is
-the principled answer to the homonym problem if the binding count keeps
-growing.
+**D15. A leader key.** A "leader" is a prefix key that opens a namespace
+instead of doing something itself: press it, and the *next* key is
+looked up in a small private table rather than the global one. vim's is
+`\`, and plugins hang whole vocabularies off it (`\ff` for find-file,
+`\gs` for git-status) precisely so they never have to claim a bare
+letter.
 
-**D14. A user-configurable keymap.** The natural next request after this
-review, and the wrong one to satisfy: the help text is hand-written
-prose, so a remappable keymap would make the one discoverability surface
-unmaintainable. If it is ever wanted, B1 is the prerequisite.
+protolens already has the machinery — `ExportChord` is exactly this,
+with `x` as the leader — so extending it is not new work. The payoff
+would be §5.4's homonyms: instead of `z` meaning fold here and rotate
+there, pane actions would live under a prefix (`,o` override, `,m`
+manage, `,z` rotate) and bare letters would keep one meaning app-wide,
+permanently.
+
+The cost is that it is a real break with the vim-plus-less idiom the app
+has committed to — in vim, bare letters *are* the vocabulary — and it
+makes every action one keystroke longer. `,` is free but `space` is not
+(it is the script toggle), so the two most conventional leaders are down
+to one. **Recommend against for now**: with fourteen proposals'-worth of
+smaller fixes available, the homonym problem does not yet need a
+structural answer. It becomes the right answer if the binding count
+keeps growing.
+
+**D16. A user-configurable keymap.** The natural next request after this
+review. **Deferred until a concrete need appears** — and worth recording
+why: the help text is hand-written prose, so a remappable keymap would
+either make the app's one discoverability surface wrong or make it
+unmaintainable. B1 is the prerequisite if it is ever wanted.
 
 ---
 
@@ -539,20 +895,23 @@ unmaintainable. If it is ever wanted, B1 is the prerequisite.
 | # | Proposal | Cost | Value |
 |---|----------|------|-------|
 | A1 | Fix four help drifts, document main-pane `i` | trivial | high |
-| A2 | Delete unreachable override `Alt-Up`/`Alt-Down` | trivial | low |
-| A3 | Case-sensitive scan for unmodified letters | small | high |
-| A4 | Scan non-character keys too | medium | high |
+| A2 | Re-bind the override pane's dead `Alt-Up`/`Alt-Down` (with C6) | trivial | low |
+| A3 | Case-sensitive help scan for unmodified letters | small | high |
+| A4 | Scan non-character keys too (needs B1) | medium | high |
+| A5 | `:quit` as the help's first line | trivial | high |
 | B1 | Section `HELP_TEXT` as data | small | enabling |
-| B2 | Name the focused pane on screen | small | high |
+| B2 | A distinct hue for the focused pane's status line | small | high |
 | B3 | Context-aware `F1` | medium | high |
-| C4 | A cancel at the find prompt | small | medium |
-| C5 | Make the focus-lock message teach the way out | trivial | medium |
-| C6 | Horizontal pan onto horizontal keys | small | medium |
-| C7 | Document `W`; consider `Ctrl-w` clear-all | trivial | medium |
-| C8 | `Ctrl`+wheel = fold depth | small | medium |
-| C9 | Right-click = override here | small | medium |
+| C4 | `Ctrl-g` = cancel at the find prompt | small | medium |
+| C5 | One rule for `Enter`/`Tab`/`Esc` in both side panes | medium | high |
+| C6 | `Shift-Alt`+arrows = pan, four directions, every pane | small | medium |
+| C7 | Document `W` accurately; `Ctrl-w` = clear all wire spans | trivial | medium |
+| C8 | `Ctrl`+wheel = fold depth under the pointer | small | medium |
+| C9 | Context menu, on right-click and on a key (8 steps) | medium | medium |
 | C10 | Wheel over the script pane | small | medium |
-| C11 | Rename the heat-cue toggle off `i` | small | low |
+| C11 | Heat cues move to `c`; `i` stays the sort | small | low |
 | C12 | Drop `Backspace` from the manage pane | trivial | low |
-| D13 | A leader key | large | — (not recommended) |
-| D14 | Configurable keymap | large | — (not recommended) |
+| C13 | Origin-kind rotation moves from `z` to `t`/`T` | trivial | medium |
+| C14 | Help overlay pages by a screenful | trivial | low |
+| D15 | A leader key | large | — (not recommended) |
+| D16 | Configurable keymap | large | — (deferred) |
