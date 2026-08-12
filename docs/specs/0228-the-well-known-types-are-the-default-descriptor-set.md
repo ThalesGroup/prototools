@@ -104,6 +104,15 @@ generator for it at all — so `man/man1/` holds three pages and
   explicitly allows an immediate `proto` child there (`cli.py:754-770`),
   which is precisely this path.
 
+  **Amended 2026-08-12.** The invocation also passes `--emit-descriptor`.
+  reproto suppresses `google/protobuf/descriptor.proto` from `-O` by
+  default (spec 0150 N1), which left the one gap in G4: the file is
+  compiled into `wkt.desc` like every other WKT, so `v` on a
+  `--type google.protobuf.FileDescriptorProto` session resolved the
+  declaration and then failed the last check with "proto source not
+  found". `googleapisDb` and `customDb` already passed the flag for this
+  reason; `wktRkyv` did not.
+
   The stub is named `wkt-db`, not `wkt`, because `$out/wkt.desc` is
   already taken by the raw `protoc` output that `reproto` consumes, and
   `-I "$out"` hands `reproto` that whole directory.

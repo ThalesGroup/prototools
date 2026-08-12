@@ -475,25 +475,60 @@ fn tier_color_light_ansi16(tier: Tier) -> Color {
 /// text on a screen already full of colored text; a band swap at full
 /// strength does not.
 ///
-/// The hex on top of it is drawn in the page's own background — black
-/// on `Dark`, white on `Light` — which is the far end of the palette
-/// from where the tier colors were chosen to sit, so the contrast comes
-/// out of the same choice that made them loud. In sixteen colors it is
-/// black on both themes: those six are all mid-brightness whatever the
-/// terminal renders them as, and black is the safer end against all of
-/// them.
+/// The hex on top of it is [`band_text`]: the contrast comes out of the
+/// same choice that made these colors loud.
 pub fn tier_band(tier: Tier, theme: ThemeKind) -> Style {
     tier_band_in(tier, theme, supports_rgb())
 }
 
 fn tier_band_in(tier: Tier, theme: ThemeKind, rgb: bool) -> Style {
-    let text = pick(
+    Style::default()
+        .bg(tier_color(tier, theme, rgb))
+        .fg(band_text(theme, rgb))
+}
+
+/// The band a wire row draws on the bytes of a field no schema declares
+/// (spec 0279's 2026-08-12 amendment).
+///
+/// Not a tier, and deliberately not shaped like one: nothing is wrong
+/// with these bytes, and `annotation::tier_of` emits no keyword for
+/// them. It borrows the fold margin's own [`Status::Unknown`] blue, so
+/// that the toggle summarizing a subtree and the bytes inside it are one
+/// fact read twice — the same argument `tier_band` makes for the tiers.
+pub fn unknown_band(theme: ThemeKind) -> Style {
+    unknown_band_in(theme, supports_rgb())
+}
+
+fn unknown_band_in(theme: ThemeKind, rgb: bool) -> Style {
+    Style::default()
+        .bg(unknown_color(theme, rgb))
+        .fg(band_text(theme, rgb))
+}
+
+/// VSCode's `constant.other` blue on each side: light against black,
+/// deep against white, mirroring how the tiers are chosen. Unleveled
+/// like them — in the fold margin prominence is the whole job, and on a
+/// wire row a band has to outrank the hue the region borrowed.
+fn unknown_color(theme: ThemeKind, rgb: bool) -> Color {
+    pick(
+        theme,
+        rgb,
+        (Color::Rgb(0x4F, 0xC1, 0xFF), Color::LightBlue),
+        (Color::Rgb(0x00, 0x70, 0xC1), Color::Blue),
+    )
+}
+
+/// The hex drawn on top of a band: the page's own background, which is
+/// the far end of the palette from where these colors were chosen to
+/// sit. In sixteen colors it is black on both themes, those being all
+/// mid-brightness whatever the terminal renders them as.
+fn band_text(theme: ThemeKind, rgb: bool) -> Color {
+    pick(
         theme,
         rgb,
         (Color::Black, Color::Black),
         (Color::White, Color::Black),
-    );
-    Style::default().bg(tier_color(tier, theme, rgb)).fg(text)
+    )
 }
 
 /// Spec 0247 S10: the color a fold toggle wears for the worst thing in
@@ -536,16 +571,7 @@ fn status_color_in(status: Status, theme: ThemeKind, rgb: bool) -> Option<Color>
             (DARK_RGB.status_unbaked, Color::LightMagenta),
             (LIGHT_RGB.status_unbaked, Color::Magenta),
         ),
-        Status::Unknown => pick(
-            theme,
-            rgb,
-            // VSCode's `constant.other` blue on each side: light against
-            // black, deep against white, mirroring how the tiers are
-            // chosen. Unleveled like them — the margin is its own column
-            // and prominence is the whole job.
-            (Color::Rgb(0x4F, 0xC1, 0xFF), Color::LightBlue),
-            (Color::Rgb(0x00, 0x70, 0xC1), Color::Blue),
-        ),
+        Status::Unknown => unknown_color(theme, rgb),
         // The tier's amber moved to yellow, for the margin only. Hue
         // 54°, six degrees short of pure: far enough from `Invalid` at
         // 0° that the two cannot be confused at one glyph, and short of

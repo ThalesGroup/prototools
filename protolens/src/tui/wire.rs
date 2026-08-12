@@ -26,6 +26,7 @@
 
 use super::*;
 use crate::annotation::{self, Tier};
+use crate::node_status::row_status;
 use prototext_core::helpers::{
     parse_varint, parse_wiretag, WT_END_GROUP, WT_I32, WT_I64, WT_LEN, WT_START_GROUP, WT_VARINT,
 };
@@ -122,6 +123,30 @@ pub(super) enum SchemaFlaw {
     /// `TYPE_MISMATCH`: the tag's wire type contradicts the declared
     /// proto type.
     TypeMismatch,
+    /// No schema declares this field, so the row above shows a field
+    /// *number*. The one flaw with no keyword behind it — see
+    /// [`schema_flaw`].
+    Undeclared,
+}
+
+/// What a byte's band says.
+///
+/// Almost always a severity, decided by `annotation::tier_of` off the
+/// keyword this module named for the byte. [`Band::Unknown`] is the one
+/// that is not a severity at all: a field the schema does not declare is
+/// not an anomaly — the bytes are well formed and mean exactly what the
+/// tag says — so it wears the fold margin's own blue rather than a tier
+/// color, and the two columns agree because they read one classifier.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Band {
+    Tier(Tier),
+    Unknown,
+}
+
+impl From<Tier> for Band {
+    fn from(tier: Tier) -> Self {
+        Band::Tier(tier)
+    }
 }
 
 #[cfg(test)]
@@ -484,19 +509,28 @@ fn type_offset(text: &str) -> Option<usize> {
 /// Read from the text rather than from the styles: the keyword is the
 /// fact, and two keywords out of the fifteen in `annotation::INVALID`
 /// share the one tier color.
+///
+/// [`SchemaFlaw::Undeclared`] is the one that has no keyword — an
+/// undeclared field is not an anomaly and prototext-core emits nothing
+/// for it, so what says so is the *absence* of a name. `row_status` is
+/// the one classifier for that (spec 0247 S3), and it already ranks
+/// every anomaly keyword above `Unknown`, so this arm answers only for a
+/// row that accused nothing.
 fn schema_flaw(text: &str) -> Option<SchemaFlaw> {
-    let at = type_offset(text)?;
-    text[at..]
-        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-        .find_map(|word| match word {
-            "INVALID_STRING" => Some(SchemaFlaw::Utf8),
-            "INVALID_PACKED_RECORDS" => Some(SchemaFlaw::PackedElements),
-            "ENUM_UNKNOWN" => Some(SchemaFlaw::EnumUnknown),
-            "nan_bits" => Some(SchemaFlaw::NanBits),
-            "neg" => Some(SchemaFlaw::Neg),
-            "TYPE_MISMATCH" => Some(SchemaFlaw::TypeMismatch),
-            _ => None,
-        })
+    let keyword = type_offset(text).and_then(|at| {
+        text[at..]
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .find_map(|word| match word {
+                "INVALID_STRING" => Some(SchemaFlaw::Utf8),
+                "INVALID_PACKED_RECORDS" => Some(SchemaFlaw::PackedElements),
+                "ENUM_UNKNOWN" => Some(SchemaFlaw::EnumUnknown),
+                "nan_bits" => Some(SchemaFlaw::NanBits),
+                "neg" => Some(SchemaFlaw::Neg),
+                "TYPE_MISMATCH" => Some(SchemaFlaw::TypeMismatch),
+                _ => None,
+            })
+    });
+    keyword.or_else(|| (row_status(text) == Status::Unknown).then_some(SchemaFlaw::Undeclared))
 }
 
 /// Whether the role `type_offset` landed on really names a type.
@@ -984,20 +1018,27 @@ fn draw_tag(painter: &mut Painter, closing: bool) -> (usize, Option<u32>) {
     // payload is what the tag says it is; what contradicts the schema
     // is the type the tag declares, and nothing else on the row.
     let mismatch = painter.told(SchemaFlaw::TypeMismatch, "TYPE_MISMATCH");
+    // Spec 0279's 2026-08-12 amendment: when no schema declares the
+    // field, its number is what the reader has instead of a name, so the
+    // whole field-number half wears the fold margin's blue. `TAG_OOR`
+    // outranks it — a number out of range is a defect, not a gap in the
+    // schema — and the padding of an overlong tag keeps its own band the
+    // same way a padded value's does.
+    let unknown = painter.undeclared();
     // The field portion goes red, the wire type stays whatever it was:
     // an out-of-range field number says nothing about the type bits.
-    painter.tag_head(0, oor, mismatch);
+    painter.tag_head(0, oor.or(unknown), mismatch);
     for i in 1..end {
-        let tier = if out_of_range {
+        let band = if out_of_range {
             oor
         } else if i + overhang >= end {
             // A varint is little-endian, so the padding of an overlong
             // one is its trailing `0x80`…`0x00` run.
             ohb
         } else {
-            None
+            unknown
         };
-        painter.byte(i, tier);
+        painter.byte(i, band);
     }
     (end, tag.wtype)
 }
@@ -1065,8 +1106,8 @@ fn draw_payload(painter: &mut Painter, range: Range<usize>) {
 /// Neither constant is schema knowledge (spec 0279 N1): *that* these
 /// bytes are a float is what the `nan_bits` keyword carries, and which
 /// float is the payload's own width.
-fn draw_fixed(painter: &mut Painter, range: Range<usize>, nan: Option<Tier>) {
-    let Some(tier) = nan else {
+fn draw_fixed(painter: &mut Painter, range: Range<usize>, nan: Option<Band>) {
+    let Some(band) = nan else {
         painter.bytes(range, None);
         return;
     };
@@ -1082,7 +1123,7 @@ fn draw_fixed(painter: &mut Painter, range: Range<usize>, nan: Option<Tier>) {
         let same = canonical
             .get(i - range.start)
             .is_some_and(|&b| b == painter.rec[i]);
-        painter.byte(i, (!same).then_some(tier));
+        painter.byte(i, (!same).then_some(band));
     }
 }
 
@@ -1147,7 +1188,7 @@ fn draw_varint(
     at: usize,
     overhang_flag: &'static str,
     invalid_flag: &'static str,
-    whole: Option<Tier>,
+    whole: Option<Band>,
 ) -> (Option<u64>, usize) {
     if at >= painter.rec.len() {
         painter.accuse(invalid_flag);
@@ -1214,27 +1255,29 @@ impl Painter<'_> {
     /// color as a filled band.
     ///
     /// The background says two things, in that order of precedence.
-    /// Absent a tier it says what the byte is *for*, in the hue its
-    /// region borrowed from the document row above. A tier says the
-    /// byte is wrong, and takes the band over at full strength: what a
-    /// byte is for stops mattering once it is malformed, and a band
+    /// Absent a [`Band`] it says what the byte is *for*, in the hue its
+    /// region borrowed from the document row above. A band says the
+    /// byte is not ordinary, and takes the background over at full
+    /// strength: what a byte is for stops mattering once it is
+    /// malformed — or once nothing knows what it is for — and a band
     /// swap is the loudest thing the row can do without changing shape.
     ///
-    /// With no palette the whole row is subdued, tiers included (S7):
+    /// With no palette the whole row is subdued, bands included (S7):
     /// the `#@` tokens the tiers echo have gone gray too, and one row
     /// cannot claim a severity the other has stopped showing. Bytes no
     /// framing claimed keep the same subdued text, since a band would
     /// be a claim about them.
-    fn style(&self, tier: Option<Tier>) -> Style {
-        self.style_in(self.region, tier)
+    fn style(&self, band: Option<Band>) -> Style {
+        self.style_in(self.region, band)
     }
 
-    fn style_in(&self, region: Region, tier: Option<Tier>) -> Style {
+    fn style_in(&self, region: Region, band: Option<Band>) -> Style {
         let Some(palette) = self.palette else {
             return subdued();
         };
-        match tier {
-            Some(tier) => theme::tier_band(tier, self.theme),
+        match band {
+            Some(Band::Tier(tier)) => theme::tier_band(tier, self.theme),
+            Some(Band::Unknown) => theme::unknown_band(self.theme),
             None => match region {
                 Region::Tag => palette.tag,
                 Region::Type => palette.ty,
@@ -1263,7 +1306,7 @@ impl Painter<'_> {
         self.need_space = true;
     }
 
-    fn byte(&mut self, i: usize, tier: Option<Tier>) {
+    fn byte(&mut self, i: usize, band: Option<Band>) {
         if i >= self.limit || i >= self.rec.len() {
             return;
         }
@@ -1271,7 +1314,7 @@ impl Painter<'_> {
             self.dropped += 1;
             return;
         }
-        let style = self.style(tier);
+        let style = self.style(band);
         self.separate(style);
         self.spans
             .push(Span::styled(format!("{:02x}", self.rec[i]), style));
@@ -1279,7 +1322,7 @@ impl Painter<'_> {
         self.drawn += 1;
     }
 
-    fn bytes(&mut self, range: Range<usize>, tier: Option<Tier>) {
+    fn bytes(&mut self, range: Range<usize>, band: Option<Band>) {
         let end = range.end.min(self.limit).min(self.rec.len());
         let mut i = range.start;
         while i < end {
@@ -1289,7 +1332,7 @@ impl Painter<'_> {
                 self.dropped += end - i;
                 return;
             }
-            self.byte(i, tier);
+            self.byte(i, band);
             i += 1;
         }
     }
@@ -1309,9 +1352,9 @@ impl Painter<'_> {
     ///
     /// The two halves are two different facts — the field number and the
     /// wire type — so they take two different borrowed hues, not only
-    /// two different tiers. This is the only byte on the row that is
+    /// two different bands. This is the only byte on the row that is
     /// ever split, and it is always a tag's first.
-    fn tag_head(&mut self, i: usize, number: Option<Tier>, wtype: Option<Tier>) {
+    fn tag_head(&mut self, i: usize, number: Option<Band>, wtype: Option<Band>) {
         if i >= self.limit || i >= self.rec.len() || self.drawn >= WIRE_ROW_MAX_BYTES {
             return;
         }
@@ -1382,7 +1425,7 @@ impl Painter<'_> {
     /// glyph stands in for — the `Invalid` band, and subdued with the
     /// rest of the row when there is no palette to carry one (S7).
     fn alarm(&self) -> Style {
-        self.style(Some(Tier::Invalid))
+        self.style(Some(Band::Tier(Tier::Invalid)))
     }
 
     /// Name the annotation keyword prototext-core would have emitted for
@@ -1393,10 +1436,10 @@ impl Painter<'_> {
     /// `annotation::tier_of` — the same table `highlights.scm` mirrors
     /// for the `#@` row — decides. The keyword is kept so a test can
     /// cross-check this row's findings against the annotation above it.
-    fn accuse(&mut self, keyword: &'static str) -> Option<Tier> {
+    fn accuse(&mut self, keyword: &'static str) -> Option<Band> {
         #[cfg(test)]
         self.flags.push(keyword);
-        annotation::tier_of(keyword)
+        annotation::tier_of(keyword).map(Band::from)
     }
 
     /// The tier for `keyword` when the document row above accused
@@ -1406,11 +1449,22 @@ impl Painter<'_> {
     /// rather than in a table, because the site is where the *bytes*
     /// the keyword is about are known — which is the whole of what this
     /// module contributes.
-    fn told(&mut self, flaw: SchemaFlaw, keyword: &'static str) -> Option<Tier> {
+    fn told(&mut self, flaw: SchemaFlaw, keyword: &'static str) -> Option<Band> {
         if self.palette.and_then(|p| p.flaw) != Some(flaw) {
             return None;
         }
         self.accuse(keyword)
+    }
+
+    /// [`Band::Unknown`] on a row the document half said no schema
+    /// declares, and `None` on every other row.
+    ///
+    /// The one band that does not go through [`Painter::accuse`],
+    /// because there is no keyword to accuse with: prototext-core emits
+    /// none for an undeclared field — a numeric key is the whole of what
+    /// it says — and `tier_of` would have nothing to answer.
+    fn undeclared(&self) -> Option<Band> {
+        (self.palette.and_then(|p| p.flaw) == Some(SchemaFlaw::Undeclared)).then_some(Band::Unknown)
     }
 
     /// Closes the row, adding `…×N` if the byte budget cut it short.
@@ -1470,21 +1524,28 @@ mod tests {
     /// The band a tier takes over with — what an accused byte's
     /// background is, instead of the hue its region borrowed.
     fn tier_hue(tier: Tier) -> Color {
-        theme::tier_band(tier, ThemeKind::Dark)
-            .bg
-            .expect("a tier is a band")
+        band_hue(Band::Tier(tier))
+    }
+
+    fn band_hue(band: Band) -> Color {
+        match band {
+            Band::Tier(tier) => theme::tier_band(tier, ThemeKind::Dark),
+            Band::Unknown => theme::unknown_band(ThemeKind::Dark),
+        }
+        .bg
+        .expect("a band is a background")
     }
 
     fn text(row: &WireRow) -> String {
         row.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
-    /// A `^` under every column `tier` claimed, aligned with `text`.
+    /// A `^` under every column `band` claimed, aligned with `text`.
     ///
-    /// Reads the *background*, which is where a tier goes and where
+    /// Reads the *background*, which is where a band goes and where
     /// `separate`'s run-joining is decided.
-    fn accused(row: &WireRow, tier: Tier) -> String {
-        let hue = tier_hue(tier);
+    fn accused(row: &WireRow, band: impl Into<Band>) -> String {
+        let hue = band_hue(band.into());
         row.spans
             .iter()
             .flat_map(|s| {
@@ -1987,6 +2048,65 @@ mod tests {
         assert_eq!(accused(&row, Tier::Invalid), "^       ");
         assert_eq!(row.spans[2].content.as_ref(), "08");
         assert_eq!(row.spans[2].style.bg, Some(TAG_HUE));
+    }
+
+    /// Spec 0279's 2026-08-12 amendment: when no schema declares the
+    /// field, its number is what the reader has instead of a name, and
+    /// the bytes carrying it say so in the fold margin's own blue.
+    #[test]
+    fn an_undeclared_fields_number_wears_the_fold_margins_blue() {
+        // field 200, varint, 42. The tag is two bytes; both are field
+        // number, and the wire-type digit in front of them is not.
+        let row = told(
+            &[0xC0, 0x0C, 0x2A],
+            SchemaFlaw::Undeclared,
+            Framing::Tagged,
+            200,
+        );
+        assert_eq!(text(&row), "0|c0 0c[2a]");
+        //                                     0|c0 0c[2a]
+        assert_eq!(accused(&row, Band::Unknown), "  ^^^^^    ");
+        // Not a tier: the bytes are well formed and the row accuses
+        // nothing, so neither anomaly color appears anywhere on it.
+        assert_eq!(accused(&row, Tier::NonCanonical), " ".repeat(11));
+        assert_eq!(accused(&row, Tier::Invalid), " ".repeat(11));
+        assert!(row.flags.is_empty(), "no keyword says this");
+        // The wire type keeps its own borrowed hue, and so does the
+        // payload: what is unknown is which field these bytes are for,
+        // not what they are.
+        assert_eq!(row.spans[0].content.as_ref(), "0");
+        assert_eq!(row.spans[0].style.bg, Some(TYPE_HUE));
+        assert_eq!(row.spans[6].content.as_ref(), "2a");
+        assert_eq!(row.spans[6].style.bg, Some(PAYLOAD_HUE));
+    }
+
+    /// The same row read end to end by [`schema_flaw`], which is where
+    /// the absence of a keyword becomes [`SchemaFlaw::Undeclared`].
+    #[test]
+    fn a_row_with_a_numeric_key_and_no_keyword_is_undeclared() {
+        assert_eq!(
+            schema_flaw("  200: 42  #@ varint"),
+            Some(SchemaFlaw::Undeclared)
+        );
+        assert_eq!(
+            schema_flaw("  203 {  #@ group"),
+            Some(SchemaFlaw::Undeclared)
+        );
+        // A *declared* field whose tag disagrees with it also renders a
+        // numeric key, and it is not this: `row_status` ranks the
+        // keyword above `Unknown`, so the keyword still wins.
+        assert_eq!(
+            schema_flaw("  1: 7  #@ varint; TYPE_MISMATCH"),
+            Some(SchemaFlaw::TypeMismatch)
+        );
+        // So does a malformed record, whose field *is* declared.
+        assert_eq!(
+            schema_flaw(r#"  2: "\001\002"  #@ TRUNCATED_BYTES; MISSING: 3"#),
+            None
+        );
+        // And a declared field of the same proto type is untouched: the
+        // `= N` is what says the schema had something to say.
+        assert_eq!(schema_flaw(r#"  name: "x"  #@ string = 1"#), None);
     }
 
     /// Spec 0279 S4. One failure, one rendering: the bytes before the

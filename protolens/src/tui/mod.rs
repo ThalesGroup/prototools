@@ -1866,6 +1866,11 @@ pub struct App {
     /// used to hit-test mouse hover for Shift+wheel/native horizontal
     /// pan the same way `main_area`/`side_area` do.
     cmd_area: Option<Rect>,
+    /// The script pane's content `Rect` as of the last `render()` call —
+    /// what bounds `Up`/`Down` scrolling to the step's own text, since
+    /// how far a step reaches is a fact about the wrapped paragraph and
+    /// the width it was wrapped at.
+    script_area: Rect,
     pub message: String,
     /// Spec 0278 S1: the pattern a committed search leaves echoed on the
     /// command row, as `(direction, pattern)`.
@@ -2169,6 +2174,7 @@ impl App {
             main_area: Rect::default(),
             side_area: Rect::default(),
             cmd_area: None,
+            script_area: Rect::default(),
             message: fallback_warning,
             search_echo: None,
             refusals: Vec::new(),

@@ -98,40 +98,77 @@ fn a_step_is_a_function_of_the_script() {
     assert_eq!(view(&app), want, "step 2 must reproduce step 2's view");
 }
 
-/// Spec 0271 test-plan item 4. `space` toggles in both states; the
-/// Ctrl-arrows only belong to the script while navigation is on, and go
-/// back to moving between siblings the moment it is off.
+/// Spec 0271 test-plan item 4. `space` toggles in both states; the bare
+/// arrows only belong to the script while navigation is on, and go back
+/// to moving the caret the moment it is off. A *modified* arrow is never
+/// the script's, on or off.
 #[test]
-fn space_toggles_and_ctrl_arrows_are_conditional() {
+fn space_toggles_and_bare_arrows_are_conditional() {
     let (mut app, items) = repeated_message_fixture();
     app.set_script(script_of(THREE_STEPS));
     assert!(app.script_active(), "spec 0271 S8: navigation starts on");
 
-    // On: the Ctrl-arrows are the script's, and the document does not
+    // On: the bare arrows are the script's, and the document does not
     // move on its own.
     let before = app.cursor;
-    app.handle_key(key(KeyCode::Right, KeyModifiers::CONTROL));
+    app.handle_key(key(KeyCode::Right, KeyModifiers::NONE));
     assert_ne!(app.cursor, before, "step 2 moves the cursor itself");
     let step = app.script.as_ref().expect("a script is loaded").current;
-    assert_eq!(step, 1, "Ctrl-Right advances the step");
+    assert_eq!(step, 1, "Right advances the step");
+
+    // Still on: Ctrl-Down is the sibling move it has always been.
+    app.set_cursor(items[0]);
+    app.handle_key(key(KeyCode::Down, KeyModifiers::CONTROL));
+    assert_eq!(app.cursor, items[1], "Ctrl-Down skips siblings even so");
+    let step = app.script.as_ref().expect("a script is loaded").current;
+    assert_eq!(step, 1, "and a modified arrow never steps the script");
 
     app.handle_key(key(KeyCode::Char(' '), KeyModifiers::NONE));
     assert!(!app.script_active(), "space turns navigation off");
 
-    // Off: Ctrl-Down is the sibling move it has always been, and the
-    // step does not change.
+    // Off: the bare arrow is the document's again, and the step does not
+    // change.
     app.set_cursor(items[0]);
-    app.handle_key(key(KeyCode::Down, KeyModifiers::CONTROL));
-    assert_eq!(app.cursor, items[1], "Ctrl-Down skips siblings again");
-    assert_eq!(app.positional_path(app.cursor), "/2");
+    app.handle_key(key(KeyCode::Right, KeyModifiers::NONE));
     let step = app.script.as_ref().expect("a script is loaded").current;
     assert_eq!(step, 1, "and the step stayed where it was");
 
     app.handle_key(key(KeyCode::Char(' '), KeyModifiers::NONE));
     assert!(app.script_active(), "space turns it back on");
-    app.handle_key(key(KeyCode::Right, KeyModifiers::CONTROL));
+    app.handle_key(key(KeyCode::Right, KeyModifiers::NONE));
     let step = app.script.as_ref().expect("a script is loaded").current;
     assert_eq!(step, 2, "and the script has the arrows back");
+}
+
+/// Amending spec 0271 S5 (2026-08-12): a step is a paragraph, so
+/// `Up`/`Down` stop at both of its ends rather than panning off into
+/// blank rows.
+#[test]
+fn scrolling_the_pane_stops_at_the_steps_own_text() {
+    let (mut app, _) = repeated_message_fixture();
+    // Six lines of commentary over a four-row pane, wide enough that
+    // nothing wraps: two rows of slack, and no more.
+    app.script_area = Rect::new(0, 0, 40, 4);
+    app.set_script(script_of(
+        "steps:\n- text: |\n    one\n    two\n    three\n    four\n    five\n    six\n",
+    ));
+
+    let scroll = |app: &App| app.script.as_ref().expect("a script").scroll;
+    assert_eq!(scroll(&app), 0);
+    app.script_scroll_by(false);
+    assert_eq!(scroll(&app), 0, "the top is the top");
+    for _ in 0..5 {
+        app.script_scroll_by(true);
+    }
+    assert_eq!(scroll(&app), 2, "the last row of the step ends the pane");
+
+    // Half the width, so the same six lines wrap to more rows and the
+    // bound moves with them rather than with the line count.
+    app.script_area = Rect::new(0, 0, 4, 4);
+    for _ in 0..20 {
+        app.script_scroll_by(true);
+    }
+    assert_eq!(scroll(&app), 3, "`three` is the one word that takes two");
 }
 
 /// Spec 0271 test-plan item 5 / S12. Opened under a row budget, the
@@ -194,6 +231,47 @@ fn a_step_leaves_room_below_its_node() {
     assert!(
         app.terminal_row_of(top + rows) <= app.main_area.height as isize,
         "and ends inside it"
+    );
+}
+
+/// Spec 0279 S5, amended 2026-08-12. A caption need not be an ancestor:
+/// in `grpconf/anomalies.pb` it is the top-level `name` line *beside*
+/// the wrapper, so that folding the document leaves the headings
+/// readable. The climb alone puts the wrapper's first row at the top of
+/// the pane and the row naming it just above the fold, so the view
+/// reaches back over the fitting ancestor's previous sibling whenever
+/// the two still fit together.
+#[test]
+fn a_step_keeps_the_row_above_its_subtree() {
+    let (mut app, _) = repeated_message_fixture();
+    // Room for two items' three lines each, and one row to spare.
+    app.main_area = Rect::new(0, 0, 40, 7);
+    app.set_script(script_of(
+        "steps:\n- text: the first item\n  node: /1\n\
+         - text: the last item's value\n  node: /3/1\n",
+    ));
+
+    app.script_advance(true);
+    assert_eq!(app.positional_path(app.cursor), "/3/1");
+
+    let item = app.parent(app.cursor).expect("/3/1 has a parent");
+    let before = app.prev_sibling(item).expect("/3 has a sibling above it");
+    let top = app
+        .visible_row_of_line(app.absolute_start(before))
+        .expect("the sibling is on screen");
+    assert_eq!(
+        app.terminal_row_of(top),
+        0,
+        "the row above the subtree opens the pane"
+    );
+    let rows = app.tree[item].lines_visible as usize;
+    let end = app
+        .visible_row_of_line(app.absolute_start(item))
+        .expect("the item is on screen")
+        + rows;
+    assert!(
+        app.terminal_row_of(end) <= app.main_area.height as isize,
+        "and the subtree still ends inside it"
     );
 }
 
@@ -274,10 +352,10 @@ fn the_separator_legend_is_flushed_right() {
         .expect("the separator carries the legend");
 
     // 60 columns is one rung down the ladder: the full sentence needs
-    // 67, so the toggle is spelled short while the step counter and the
+    // 64, so the toggle is spelled short while the step counter and the
     // scroll keys both stay.
     assert!(
-        separator.ends_with("^←/^→ step 1/3  ^↑/^↓ scroll  space to quit ──"),
+        separator.ends_with("←/→ step 1/3  ↑/↓ scroll  space to quit ──"),
         "the legend must sit at the right edge: {separator:?}"
     );
     assert!(

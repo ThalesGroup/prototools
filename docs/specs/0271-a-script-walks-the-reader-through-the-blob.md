@@ -14,8 +14,8 @@ Refs: docs/specs/0123-protolens-batch-mode.md (the batch subcommand this
       (the `handle_key` tier the script keys join),
       docs/specs/0147-protolens-status-message-command-line-split.md (the
       command/message row a step prefills),
-      docs/specs/0242-the-selection-is-a-span-of-characters.md (the
-      Ctrl-arrow bindings this displaces),
+      docs/specs/0199-the-arrow-keys-fold-before-they-leave-the-node.md
+      (the bare-arrow bindings this displaces while navigation is on),
       docs/specs/0257-the-first-pane-does-not-wait-for-the-last-line.md
       (why a step may name a node whose lines do not exist yet),
       docs/specs/0261-an-export-waits-for-the-lines-it-names.md (the
@@ -282,12 +282,40 @@ character at the `:` prompt.
   current step, so the gesture that puts the session back under the
   script also puts the view back where the script left it: wandering off
   between steps is free (G3), and coming back is one key.
-- **while navigation is on:** `Ctrl-Left` previous step, `Ctrl-Right`
-  next step, `Ctrl-Up`/`Ctrl-Down` scroll the script pane by one line.
-- **while navigation is off:** the Ctrl-arrows are not touched.
+- **while navigation is on:** `Left` previous step, `Right` next step,
+  `Up`/`Down` scroll the script pane by one line.
+- **while navigation is off:** the arrows are not touched.
 
-`Ctrl-Left`/`Ctrl-Right` at the ends of the script are a no-op with a
-message; they do not wrap.
+`Left`/`Right` at the ends of the script are a no-op with a message;
+they do not wrap.
+
+**Amended 2026-08-12: `Up`/`Down` stop at both ends of the step's own
+text.** A step is a paragraph, not a document — scrolling past either
+end shows blank rows and loses the only thing the pane is for, and the
+ends of a step are exactly where `Left`/`Right` take over. The floor is
+0 and the ceiling is the step's wrapped height less the pane's, which is
+0 whenever the step already fits.
+
+That height comes from `Paragraph::line_count` on the paragraph the pane
+will actually draw, which is why the pane and the bound now share one
+`script_paragraph` constructor and why `protolens` enables ratatui's
+`unstable-rendered-line-info`. A word-wrapper of our own would be a
+second answer to a question the widget already answers, and the two
+would disagree the moment either changed. The width to wrap at is the
+pane's, so `render_script_pane` records its `Rect` in `App::script_area`
+before its early return — the same way `help_area`, `cmd_area` and
+`main_area` are recorded — and the clamp is applied on the keypress
+rather than a frame later.
+
+**Amended 2026-08-12: the bare arrows, not the Ctrl-arrows.** Handing
+navigation to the pane should hand it *navigation* — the keys a reader
+already reaches for — and a walkthrough is read with the same four keys
+as a slide deck. A modifier on an arrow is never the script's, on or
+off, so the selection (`Shift`), the pan and the word motion (`Alt`) and
+the sibling-level fold (`Ctrl`) all still reach the main pane while a
+step is on screen. The table below is therefore a table of what a *bare*
+arrow displaces, and every entry in it is displaced only while
+navigation is on.
 
 What this costs, and what covers it:
 
@@ -295,14 +323,16 @@ What this costs, and what covers it:
 | --- | --- | --- |
 | page down | `space`, `:733` | `f`, `PageDown` |
 | page up | `Shift-Space`, `:730` | `b`, `PageUp` (`Shift-Space` also still works) |
-| sibling skip | main `Ctrl-Up`/`Down`, `:693`/`:696` | `Ctrl-k`/`Ctrl-j`, `:583`/`:584` |
-| fold/unfold all siblings | main `Ctrl-Left`/`Right`, `:740`/`:743` | `Ctrl-h`/`Ctrl-l`, `:581`/`:582` |
-| override-pane horizontal pan | `Ctrl-Left`/`Right`, `:156`/`:159` | `Alt-Left`/`Alt-Right`, `:148`/`:149` |
-| override-pane vertical pan | `Ctrl-Up`/`Down`, `:168`/`:171` | **nothing** |
+| caret motion | main `Left`/`Right`/`Up`/`Down` | `h`/`l`/`k`/`j` |
+| override-pane highlight | `Up`/`Down`, `:184`/`:185` | `j`/`k` |
+| manage-pane highlight | `Up`/`Down` | `j`/`k` |
 
-The last row is the only real loss, so this spec adds `Alt-Up`/
-`Alt-Down` as a second spelling of the override pane's vertical pan,
-mirroring the horizontal pair that already has one.
+Every displaced gesture has a letter spelling that is not displaced, so
+nothing is lost. The 2026-08-12 amendment above also *returns* the four
+Ctrl-arrow gestures the first draft had taken — the sibling skip, the
+sibling-level fold and the override pane's two pans — which is why this
+spec's `Alt-Up`/`Alt-Down` addition to the override pane is no longer
+load-bearing.
 
 ### S8 — On load
 
@@ -435,10 +465,11 @@ the script out of the pane's internals.
 
 The keys this spec takes are all bound. But the chords still free are
 the ones nobody can find under stage lighting. `space` for
-forward/toggle is the pager idiom, and Ctrl-arrows for step/scroll are
-what a slide deck trains people to expect. The displaced bindings all
-have letter spellings already (S7), except one, which this spec gives
-one.
+forward/toggle is the pager idiom, and the bare arrows for step/scroll
+are what a slide deck trains people to expect — and, as of the
+2026-08-12 amendment to S7, what "hand navigation to the pane" ought to
+mean literally. The displaced bindings all have letter spellings
+already (S7).
 
 ### Record a keystroke macro instead of a declarative script
 
@@ -480,7 +511,11 @@ ones.
    transcript: the row ranges in it move with any change to how a line is
    rendered, which would make it a test of the renderer rather than of
    the script.
-8. `reuse lint` passes.
+8. `scrolling_the_pane_stops_at_the_steps_own_text` — the 2026-08-12
+   amendment: `Up` at the top is a no-op, `Down` stops one paneful short
+   of the step's end, and halving the pane's width moves that stop,
+   since the bound is the *wrapped* height and not the line count.
+9. `reuse lint` passes.
 
 ## Measured outcome
 

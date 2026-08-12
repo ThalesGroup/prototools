@@ -338,6 +338,23 @@ above. And each anomaly carries its own letter in the string values —
 `1.a.`, `1.b.`, … — so that `anomalies.script` can name one anomaly per
 step and the audience can hear the number it is looking at.
 
+**Amended 2026-08-12: the caption sits beside the wrapper, not inside
+it.** A folded node renders as `message_type { ... }` with no preview of
+its contents, so a caption written *inside* the wrapper folds away with
+everything else and the overview a reader gets from folding the whole
+document is twenty-three indistinguishable rows. Each caption is
+therefore a top-level `name` line placed immediately above its wrapper:
+`name` is `FileDescriptorProto`'s own field 1, and although it is
+singular, a singular field repeated on the wire is rendered once per
+occurrence — so twenty-three of them cost nothing but their bytes and
+round trip unchanged.
+
+The consequence for the top level is deliberate and is a partial
+reversal of S3's layout rule: it now alternates a scalar and a
+submessage rather than being one even column of submessages. That column
+existed for the reader who folds everything, and a column of unlabeled
+wrappers serves that reader worse than a labeled ragged one does.
+
 It is *not* done everywhere. The four undeclared fields of section 3 have
 no counterpart — an undeclared field is not a spelling of a declared one
 — and none of the malformed bytes of section 6 do either, since a broken

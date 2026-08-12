@@ -20,6 +20,7 @@
 use std::fmt::Write as _;
 
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
@@ -43,7 +44,7 @@ pub(crate) struct ScriptState {
     pub(super) script: Script,
     /// 0-based index into `script.steps`.
     pub(super) current: usize,
-    /// Whether the Ctrl-arrows are overridden (spec 0271 S7). `space`
+    /// Whether the bare arrows are overridden (spec 0271 S7). `space`
     /// toggles it.
     ///
     /// Starts **on** (amended 2026-08-10). S8 had it start off because
@@ -92,7 +93,7 @@ impl App {
         }
     }
 
-    /// `Ctrl-Right` / `Ctrl-Left`.
+    /// `Right` / `Left`, while navigation is on.
     pub(super) fn script_advance(&mut self, forward: bool) {
         let Some(state) = self.script.as_mut() else {
             return;
@@ -117,16 +118,40 @@ impl App {
         self.script_apply();
     }
 
-    /// `Ctrl-Down` / `Ctrl-Up` — scroll the pane, not the document.
+    /// `Down` / `Up` — scroll the pane, not the document.
     pub(super) fn script_scroll_by(&mut self, down: bool) {
+        let max = self.script_max_scroll();
         let Some(state) = self.script.as_mut() else {
             return;
         };
         state.scroll = if down {
-            state.scroll.saturating_add(1)
+            state.scroll.saturating_add(1).min(max)
         } else {
             state.scroll.saturating_sub(1)
         };
+    }
+
+    /// The last row the commentary may be scrolled to: one paneful short
+    /// of the step's wrapped end, and zero when the step already fits
+    /// (2026-08-12).
+    ///
+    /// A step is a paragraph, not a document — panning past either end
+    /// of it shows blank rows and loses the only thing the pane is for.
+    ///
+    /// The count comes from the `Paragraph` the pane will actually draw,
+    /// through ratatui's own `line_count`. A word-wrapper of our own
+    /// would be a second answer to a question the widget already
+    /// answers, and the two would disagree the moment either changed.
+    fn script_max_scroll(&self) -> u16 {
+        let area = self.script_area;
+        let Some(state) = self.script.as_ref() else {
+            return 0;
+        };
+        let rows = script_paragraph(state, theme::script_pane_style(self.theme))
+            .line_count(area.width)
+            .try_into()
+            .unwrap_or(u16::MAX);
+        rows.saturating_sub(area.height)
     }
 
     /// Spec 0271 S6: put the session into the view the current step
@@ -314,6 +339,25 @@ impl App {
     /// the same view, which is what makes an anomaly and its canonical
     /// twin comparable across a keypress.
     ///
+    /// **Amended 2026-08-12: the preceding sibling comes too, if it
+    /// fits.** A caption need not be an ancestor of what it captions. In
+    /// `grpconf/anomalies.pb` it is the opposite — the heading is a
+    /// top-level `name` line and the example is the submessage *beside*
+    /// it, precisely so that the heading survives folding, which a
+    /// caption written inside the wrapper does not. The climb alone then
+    /// puts the wrapper's own first row at the top of the pane and
+    /// leaves the row that names the section one row above it, off
+    /// screen. So after the climb the view reaches back over the fitting
+    /// ancestor's previous sibling as well, on the one condition that
+    /// the two together still fit.
+    ///
+    /// This is structural rather than a margin: a fixed number of
+    /// context rows was tried and is wrong, because it moves the same
+    /// subtree to a different place depending on what happens to sit
+    /// above it, and two steps aimed at the twin halves of one anomaly
+    /// must land on the same view. A sibling is the same sibling for
+    /// both of them.
+    ///
     /// Runs after the wire span is set, because a wire row makes its
     /// document row two terminal rows tall and every extent here is in
     /// terminal rows.
@@ -333,19 +377,31 @@ impl App {
             let rows = app.tree[idx].lines_visible as usize;
             Some((row, heights.offset(row + rows) - heights.offset(row)))
         };
-        let mut top = match extent(self, self.cursor) {
+        let mut node = self.cursor;
+        let mut top = match extent(self, node) {
             Some((row, _)) => row,
             None => return,
         };
-        let mut node = self.cursor;
+        let mut bottom = top + self.tree[node].lines_visible as usize;
         while let Some(parent) = self.parent(node) {
             match extent(self, parent) {
-                Some((row, height)) if height <= pane => top = row,
+                Some((row, height)) if height <= pane => {
+                    top = row;
+                    bottom = row + self.tree[parent].lines_visible as usize;
+                }
                 // Too tall, or not drawn: nothing above it is shorter,
                 // so this is as far out as the view can open.
                 _ => break,
             }
             node = parent;
+        }
+        // The caption, when there is one, is the sibling above.
+        if let Some(prev) = self.prev_sibling(node) {
+            if let Some((row, _)) = extent(self, prev) {
+                if heights.offset(bottom) - heights.offset(row) <= pane {
+                    top = row;
+                }
+            }
         }
         self.set_scroll_top(heights.offset(top) as isize);
     }
@@ -529,19 +585,14 @@ impl App {
     }
 
     pub(super) fn render_script_pane(&mut self, frame: &mut Frame, area: Rect) {
+        // Recorded before the early return so that `script_max_scroll`
+        // is answering about the pane as it was last drawn.
+        self.script_area = area;
         let Some(state) = self.script.as_ref() else {
             return;
         };
-        let style = theme::script_pane_style(self.theme);
-        let text: Vec<Line> = state.script.steps[state.current]
-            .text
-            .lines()
-            .map(|l| Line::styled(l.to_string(), style))
-            .collect();
-        let pane = Paragraph::new(text)
-            .style(style)
-            .wrap(Wrap { trim: false })
-            .scroll((state.scroll, 0));
+        let pane =
+            script_paragraph(state, theme::script_pane_style(self.theme)).scroll((state.scroll, 0));
         frame.render_widget(pane, area);
     }
 
@@ -640,6 +691,20 @@ fn unresolved(position: &Position) -> String {
     }
 }
 
+/// The current step's commentary, wrapped the way the pane draws it.
+///
+/// One construction shared by the renderer and [`App::script_max_scroll`]
+/// — the scroll bound is a fact about this exact paragraph, so deriving
+/// it from a differently-built one would be how the two drift apart.
+fn script_paragraph(state: &ScriptState, style: Style) -> Paragraph<'static> {
+    let text: Vec<Line> = state.script.steps[state.current]
+        .text
+        .lines()
+        .map(|l| Line::styled(l.to_string(), style))
+        .collect();
+    Paragraph::new(text).style(style).wrap(Wrap { trim: false })
+}
+
 /// Spec 0271 S5: the micro-help on the separator.
 ///
 /// Three parts, dropped from the right as the terminal narrows. The step
@@ -666,7 +731,7 @@ fn script_legend(state: &ScriptState, width: usize) -> String {
         return String::new();
     }
     let counter = format!(
-        "^←/^→ step {}/{}",
+        "←/→ step {}/{}",
         state.current + 1,
         state.script.steps.len()
     );
@@ -675,9 +740,9 @@ fn script_legend(state: &ScriptState, width: usize) -> String {
     // a loop over parts and a loop over spellings cannot express that
     // without the outer one deciding wrongly.
     let ladder = [
-        format!("{counter}  ^↑/^↓ scroll  space to quit script navigation"),
-        format!("{counter}  ^↑/^↓ scroll  space to quit"),
-        format!("{counter}  ^↑/^↓ scroll"),
+        format!("{counter}  ↑/↓ scroll  space to quit script navigation"),
+        format!("{counter}  ↑/↓ scroll  space to quit"),
+        format!("{counter}  ↑/↓ scroll"),
         counter,
     ];
     for candidate in ladder {
@@ -734,14 +799,14 @@ mod tests {
         let state = state(true, 2, 23);
         assert_eq!(
             script_legend(&state, 80),
-            "^←/^→ step 3/23  ^↑/^↓ scroll  space to quit script navigation"
+            "←/→ step 3/23  ↑/↓ scroll  space to quit script navigation"
         );
         assert_eq!(
             script_legend(&state, 60),
-            "^←/^→ step 3/23  ^↑/^↓ scroll  space to quit"
+            "←/→ step 3/23  ↑/↓ scroll  space to quit"
         );
-        assert_eq!(script_legend(&state, 40), "^←/^→ step 3/23  ^↑/^↓ scroll");
-        assert_eq!(script_legend(&state, 26), "^←/^→ step 3/23");
+        assert_eq!(script_legend(&state, 40), "←/→ step 3/23  ↑/↓ scroll");
+        assert_eq!(script_legend(&state, 26), "←/→ step 3/23");
         // Narrower than the counter plus its rule: the rule alone.
         assert_eq!(script_legend(&state, 8), "");
     }
@@ -757,12 +822,12 @@ mod tests {
         for (state, legend, width) in [
             (
                 &on,
-                "^←/^→ step 3/23  ^↑/^↓ scroll  space to quit script navigation",
-                68,
+                "←/→ step 3/23  ↑/↓ scroll  space to quit script navigation",
+                64,
             ),
-            (&on, "^←/^→ step 3/23  ^↑/^↓ scroll  space to quit", 50),
-            (&on, "^←/^→ step 3/23  ^↑/^↓ scroll", 35),
-            (&on, "^←/^→ step 3/23", 21),
+            (&on, "←/→ step 3/23  ↑/↓ scroll  space to quit", 46),
+            (&on, "←/→ step 3/23  ↑/↓ scroll", 31),
+            (&on, "←/→ step 3/23", 19),
             (&off, "space to enter script navigation", 38),
             (&off, "space to enter", 20),
         ] {

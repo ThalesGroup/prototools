@@ -13,10 +13,11 @@ non-canonical modifiers and the fifteen invalid ones.
 ## Running it
 
 ```
-protolens --descriptor-set prototext-core/fixtures/descriptor.pb \
-          --type google.protobuf.FileDescriptorProto \
-          grpconf/anomalies.pb
+protolens --type google.protobuf.FileDescriptorProto grpconf/anomalies.pb
 ```
+
+No `--descriptor-set` is needed: `google.protobuf.FileDescriptorProto` is one
+of the well-known types protolens ships with (spec 0228).
 
 Press <kbd>w</kbd> to show the wire bytes under each line. The three severity
 tiers — landmark, non-canonical, invalid — are then visible on both rows at
@@ -25,32 +26,34 @@ once, which is what the fixture exists for.
 `anomalies.script` sits beside the blob and is picked up automatically, so the
 session opens with a commentary pane at the top walking the sections below in
 order. Press <kbd>space</kbd> to hand it the arrow keys, then
-<kbd>Ctrl-→</kbd>/<kbd>Ctrl-←</kbd> to step; <kbd>space</kbd> again gives the
+<kbd>→</kbd>/<kbd>←</kbd> to step; <kbd>space</kbd> again gives the
 keys back and you can explore from wherever the step left you. `--no-script`
 opens the blob without it. Specified in
 `docs/specs/0271-a-script-walks-the-reader-through-the-blob.md`.
 
-`--descriptor-set` is not optional. Half the anomalies are *terminal*: once a
-varint has no terminator or a wire type has no meaning, the decoder cannot find
-the next tag and gives up on the rest of the enclosing region. Each one is
-therefore wrapped in its own `message_type` submessage, whose length prefix
-bounds the damage — and the decoder only descends into a submessage when the
-schema says it is one. Under `--raw` those submessages stay opaque strings and
-the anomalies inside them are never seen.
+A schema *is* required, though — `--raw` will not do. Half the anomalies are
+*terminal*: once a varint has no terminator or a wire type has no meaning, the
+decoder cannot find the next tag and gives up on the rest of the enclosing
+region. Each one is therefore wrapped in its own `message_type` submessage,
+whose length prefix bounds the damage — and the decoder only descends into a
+submessage when the schema says it is one. Under `--raw` those submessages stay
+opaque strings and the anomalies inside them are never seen.
 
-Every *other* example is wrapped the same way, though nothing forces it to be:
-folding the whole document then leaves one even column of `message_type { ... }`
-rows rather than a mixture of subtrees and loose scalars, which is what a reader
-meeting the file for the first time should see. And wherever an anomaly has an
+Every *other* example is wrapped the same way, though nothing forces it to be,
+and each wrapper is introduced by a top-level `name` line carrying its heading.
+A folded node shows no preview of its contents, so a heading written inside the
+wrapper folds away with it; written beside it, the whole document folds down to
+twenty-three readable headings. `name` is `FileDescriptorProto`'s own field 1 —
+singular, but a singular field repeated on the wire renders once per occurrence.
+And wherever an anomaly has an
 ordinary counterpart, the two are written side by side inside that submessage —
 the padded tag above, the same string with a one-byte tag below; the five-byte
 `-1` above, the specified ten-byte one below. The text of the two lines is
 identical and the <kbd>w</kbd> rows are not, which is the whole point.
 
-Any descriptor set containing `descriptor.proto` works;
-`prototext-core/fixtures/descriptor.pb` is used above because it is in the
-repo. `prototext` needs none at all — it resolves `google.protobuf.*` on its
-own:
+Any descriptor set containing `descriptor.proto` also works, passed with
+`--descriptor-set`; `prototext-core/fixtures/descriptor.pb` is one that is in
+the repo. `prototext` resolves `google.protobuf.*` on its own too:
 
 ```
 prototext decode -t google.protobuf.FileDescriptorProto grpconf/anomalies.pb
@@ -77,8 +80,8 @@ Two consequences worth knowing:
 
 The file is read top to bottom during a talk, so it is ordered by what an
 audience gets the most from rather than by severity. Each anomaly within a
-section carries its own letter — `1.a.`, `1.b.`, … — spelled out in the string
-values, and `anomalies.script` walks them one anomaly per step in that order:
+section carries its own letter — `1.a.`, `1.b.`, … — spelled out in the heading
+above it, and `anomalies.script` walks them one anomaly per step in that order:
 
 1. **Legal bytes no canonical writer produces** — `tag_ohb`, `len_ohb`,
    `val_ohb`. Varints may carry padding, so a tag, a length prefix and a value
@@ -90,7 +93,8 @@ values, and `anomalies.script` walks them one anomaly per step in that order:
    (`varint`, `fixed64`, `fixed32`, `bytes`).
 4. **A packed run** — `pack_size`, `ohb`, `neg`. Three text lines, one wire
    record; the place where the <kbd>w</kbd> row earns its keep. A second run
-   beside it holds the same three numbers without the padding.
+   beside it holds the same three numbers canonically, and is the longer of
+   the two.
 5. **Blob and schema disagreeing** — `TYPE_MISMATCH`, `INVALID_STRING`,
    `INVALID_PACKED_RECORDS`. Still parseable; the scan continues.
 6. **Malformed wire bytes** — `TRUNCATED_BYTES`/`MISSING`, `INVALID_VARINT`,
@@ -102,9 +106,9 @@ values, and `anomalies.script` walks them one anomaly per step in that order:
    fields.
 
 Each anomaly is explained twice: by a `#` comment for a reader with the file
-open in an editor, and by a **string field value** for the audience looking at
-protolens. The comments are dropped by the encoder and never reach the wire;
-the string values are the wire.
+open in an editor, and by a **string field value** — the `name` heading above
+its wrapper — for the audience looking at protolens. The comments are dropped
+by the encoder and never reach the wire; the string values are the wire.
 
 ## Keeping it honest
 

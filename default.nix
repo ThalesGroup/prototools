@@ -370,9 +370,18 @@ let
     #
     # The stub is `wkt-db`, not `wkt`: $out/wkt.desc is already the raw
     # protoc output above, and -I hands reproto that whole directory.
+    #
+    # --emit-descriptor: reproto suppresses google/protobuf/descriptor.proto
+    # from -O by default (spec 0150 N1), but it is compiled into wkt.desc
+    # like every other WKT and it is the one whose types you see first when
+    # protolens opens a descriptor set — without it, `v` on any node of a
+    # `--type google.protobuf.FileDescriptorProto` session reports "proto
+    # source not found". googleapisDb and customDb pass it for the same
+    # reason.
     python -m reproto.cli \
       --schema-db-out="$out/wkt-db.desc" \
       --emit-extension-ranges \
+      --emit-descriptor \
       -I "$out" \
       -O "$out/wkt-db/proto" \
       wkt.desc

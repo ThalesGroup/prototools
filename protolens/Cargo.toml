@@ -23,7 +23,11 @@ clap                  = { version = "4.5", features = ["derive", "env"] }
 clap_complete         = { version = "4.5", features = ["unstable-dynamic"] }
 clap_mangen           = "0.2"
 memchr                = "2"
-ratatui               = "0.30"
+# `unstable-rendered-line-info` is `Paragraph::line_count`, which is how
+# the script pane bounds its own scrolling: the pane wraps at render
+# time, and a second word-wrapper of our own would disagree with
+# ratatui's the moment either changed.
+ratatui               = { version = "0.30", features = ["unstable-rendered-line-info"] }
 # Spec 0273 S16: the search pattern is an RE2 regex. Already in the
 # lockfile via tree-sitter and tree-sitter-highlight, so this costs no
 # new compilation.
