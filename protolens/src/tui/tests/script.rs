@@ -165,6 +165,38 @@ fn a_step_waits_for_its_lines() {
     );
 }
 
+/// Spec 0279 S5, amending spec 0271 S6. A step declares a view, so it
+/// places its node where the subtree it is about can be read.
+/// `clamp_scroll_to_cursor` — the reader's rule, which only ever moves
+/// far enough to bring a row on screen — would land it on the pane's
+/// last row whenever the step before it was higher up, putting
+/// everything the step is about off the bottom.
+#[test]
+fn a_step_leaves_room_below_its_node() {
+    let (mut app, _) = repeated_message_fixture();
+    // Room for one item's three lines and one row to spare.
+    app.main_area = Rect::new(0, 0, 40, 4);
+    app.set_script(script_of(
+        "steps:\n- text: the first item\n  node: /1\n\
+         - text: the last item's value\n  node: /3/1\n",
+    ));
+
+    app.script_advance(true);
+    assert_eq!(app.positional_path(app.cursor), "/3/1");
+
+    // The enclosing item, whole: its header, `v: 7`, and its footer.
+    let item = app.parent(app.cursor).expect("/3/1 has a parent");
+    let top = app
+        .visible_row_of_line(app.absolute_start(item))
+        .expect("the item is on screen");
+    let rows = app.tree[item].lines_visible as usize;
+    assert_eq!(app.terminal_row_of(top), 0, "the subtree opens the pane");
+    assert!(
+        app.terminal_row_of(top + rows) <= app.main_area.height as isize,
+        "and ends inside it"
+    );
+}
+
 /// Spec 0271 test-plan item 6 / S13. A position that resolves to nothing
 /// is reported, and everything else about the step still happens — the
 /// text above all, which is what makes a drifted script degrade into a

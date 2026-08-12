@@ -328,6 +328,16 @@ length prefix can each be shown padded and plain; and
 beside `path`, so a packed run with `ohb` and `neg` in it can sit above a
 canonical run holding the same three numbers.
 
+**Amended 2026-08-12: the order is invariant, and every anomaly is
+lettered.** The twin is always written *anomaly first, canonical
+second*, everywhere it appears — section 7's padded group end used to be
+written the other way round, and against a padded closing tag with an
+unrelated field number, which read as two different groups rather than
+as one group written twice. Both are now field 100, the padded one
+above. And each anomaly carries its own letter in the string values —
+`1.a.`, `1.b.`, … — so that `anomalies.script` can name one anomaly per
+step and the audience can hear the number it is looking at.
+
 It is *not* done everywhere. The four undeclared fields of section 3 have
 no counterpart — an undeclared field is not a spelling of a declared one
 — and none of the malformed bytes of section 6 do either, since a broken

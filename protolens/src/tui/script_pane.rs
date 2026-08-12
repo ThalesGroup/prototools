@@ -145,6 +145,7 @@ impl App {
         self.script_apply_folds(&step, &mut errors);
         self.script_apply_cursor(&step, &mut errors);
         self.script_apply_wire(&step, &mut errors);
+        self.script_focus(&step);
         if let Some(prefill) = &step.prefill {
             // Spec 0271 S11: typed, not run. The command line reports
             // its own errors when the reader presses Enter.
@@ -292,6 +293,61 @@ impl App {
             }
             None => errors.push(unresolved(position)),
         }
+    }
+
+    /// Spec 0279 S5: start the view at the outermost thing enclosing the
+    /// step's node that still fits in the pane.
+    ///
+    /// Not `clamp_scroll_to_cursor`, which is the *reader's* rule: it
+    /// moves only far enough to bring a row on screen, so a step whose
+    /// node is below the previous step's view lands it on the pane's
+    /// **last** row — with everything the step is about, its subtree and
+    /// its wire rows, off the bottom. A step declares a view (spec 0271
+    /// S6), and where the view starts is part of it.
+    ///
+    /// The climb is what makes the rule useful rather than merely
+    /// correct. A step's node is a field inside a submessage inside a
+    /// section, and under `fold: all` the section is a dozen rows: the
+    /// view then opens on the section's own header, so the row that
+    /// *names* the anomaly is on screen with it. It also holds two
+    /// consecutive steps aimed at neighboring fields of one section on
+    /// the same view, which is what makes an anomaly and its canonical
+    /// twin comparable across a keypress.
+    ///
+    /// Runs after the wire span is set, because a wire row makes its
+    /// document row two terminal rows tall and every extent here is in
+    /// terminal rows.
+    fn script_focus(&mut self, step: &Step) {
+        if step.node.is_none() || self.tree.is_empty() {
+            return;
+        }
+        let pane = self.main_area.height as usize;
+        if pane == 0 {
+            return;
+        }
+        let heights = self.row_heights();
+        // `extent` is `None` for a node drawn nowhere — a folded-away
+        // ancestor cannot be aimed at, and the climb stops below it.
+        let extent = |app: &Self, idx: usize| {
+            let row = app.visible_row_of_line(app.absolute_start(idx))?;
+            let rows = app.tree[idx].lines_visible as usize;
+            Some((row, heights.offset(row + rows) - heights.offset(row)))
+        };
+        let mut top = match extent(self, self.cursor) {
+            Some((row, _)) => row,
+            None => return,
+        };
+        let mut node = self.cursor;
+        while let Some(parent) = self.parent(node) {
+            match extent(self, parent) {
+                Some((row, height)) if height <= pane => top = row,
+                // Too tall, or not drawn: nothing above it is shorter,
+                // so this is as far out as the view can open.
+                _ => break,
+            }
+            node = parent;
+        }
+        self.set_scroll_top(heights.offset(top) as isize);
     }
 
     fn script_apply_wire(&mut self, step: &Step, errors: &mut Vec<String>) {

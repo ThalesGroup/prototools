@@ -91,26 +91,37 @@ pub(super) struct WirePalette {
     pub(super) len: Style,
     pub(super) payload: Style,
     /// The one thing this row borrows from the document row that is not
-    /// a color (spec 0232). See [`PayloadFlaw`].
-    pub(super) flaw: Option<PayloadFlaw>,
+    /// a color (spec 0232). See [`SchemaFlaw`].
+    pub(super) flaw: Option<SchemaFlaw>,
 }
 
-/// An accusation the document row made about a payload that the wire
-/// row can point at, but could never have found on its own.
+/// An accusation the document row made that the wire row can point at,
+/// but could never have found on its own.
 ///
-/// Both cases are schema questions — whether these bytes are a `string`
-/// or a `bytes`, whether this packed record's elements are varints or
-/// eight bytes wide — and this module is deliberately schema-free (spec
-/// 0225 S11, "one classifier, two rows"). The document row's classifier
-/// has already answered; what is left is *where*, which is the one
-/// question the hex is in a position to answer.
+/// Every case is a schema question — whether these bytes are a `string`
+/// or a `bytes`, whether this eight-byte payload is a `double`, whether
+/// the schema declares this field at all — and this module is
+/// deliberately schema-free (spec 0225 S11, "one classifier, two rows").
+/// The document row's classifier has already answered; what is left is
+/// *where*, which is the one question the hex is in a position to
+/// answer.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum PayloadFlaw {
+pub(super) enum SchemaFlaw {
     /// `INVALID_STRING`: the payload is not valid UTF-8.
     Utf8,
     /// `INVALID_PACKED_RECORDS`: the payload does not divide into whole
     /// elements.
     PackedElements,
+    /// `ENUM_UNKNOWN`: the schema has no name for this enum value.
+    EnumUnknown,
+    /// `nan_bits`: a NaN whose payload bits are not the ones a re-encode
+    /// would write.
+    NanBits,
+    /// `neg`: a negative packed element, sign-extended to ten bytes.
+    Neg,
+    /// `TYPE_MISMATCH`: the tag's wire type contradicts the declared
+    /// proto type.
+    TypeMismatch,
 }
 
 #[cfg(test)]
@@ -136,7 +147,7 @@ impl WirePalette {
     }
 
     /// The same four hues, with the document row's accusation attached.
-    pub(super) fn accusing(flaw: PayloadFlaw) -> Self {
+    pub(super) fn accusing(flaw: SchemaFlaw) -> Self {
         WirePalette {
             flaw: Some(flaw),
             ..WirePalette::for_test()
@@ -418,7 +429,7 @@ impl App {
                 value_offset(text).and_then(role_at),
                 self.theme,
             ),
-            flaw: payload_flaw(text),
+            flaw: schema_flaw(text),
         })
     }
 
@@ -462,20 +473,30 @@ fn type_offset(text: &str) -> Option<usize> {
     (at < text.len()).then_some(at)
 }
 
-/// The accusation the row's annotation opens with, when it is one this
-/// module can localize (spec 0232).
+/// The first accusation in the row's annotation that this module can
+/// localize (spec 0232, widened by spec 0279 S2).
+///
+/// Every token, not only the first: two of these keywords *open* an
+/// annotation (`INVALID_STRING`, `INVALID_PACKED_RECORDS`) and the rest
+/// follow a type token (`#@ double = 6; nan_bits: …`), so reading the
+/// first word alone finds half of them.
 ///
 /// Read from the text rather than from the styles: the keyword is the
 /// fact, and two keywords out of the fifteen in `annotation::INVALID`
 /// share the one tier color.
-fn payload_flaw(text: &str) -> Option<PayloadFlaw> {
+fn schema_flaw(text: &str) -> Option<SchemaFlaw> {
     let at = type_offset(text)?;
-    let mut words = text[at..].split(|c: char| !c.is_ascii_alphanumeric() && c != '_');
-    match words.next()? {
-        "INVALID_STRING" => Some(PayloadFlaw::Utf8),
-        "INVALID_PACKED_RECORDS" => Some(PayloadFlaw::PackedElements),
-        _ => None,
-    }
+    text[at..]
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .find_map(|word| match word {
+            "INVALID_STRING" => Some(SchemaFlaw::Utf8),
+            "INVALID_PACKED_RECORDS" => Some(SchemaFlaw::PackedElements),
+            "ENUM_UNKNOWN" => Some(SchemaFlaw::EnumUnknown),
+            "nan_bits" => Some(SchemaFlaw::NanBits),
+            "neg" => Some(SchemaFlaw::Neg),
+            "TYPE_MISMATCH" => Some(SchemaFlaw::TypeMismatch),
+            _ => None,
+        })
 }
 
 /// Whether the role `type_offset` landed on really names a type.
@@ -718,7 +739,7 @@ fn draw_tagged(painter: &mut Painter) -> usize {
         WT_LEN => {
             painter.punct(":");
             painter.region = Region::Len;
-            let (declared, next) = draw_varint(painter, at, "len_ohb", "INVALID_LEN");
+            let (declared, next) = draw_varint(painter, at, "len_ohb", "INVALID_LEN", None);
             at = next;
             let Some(declared) = declared else {
                 return at;
@@ -765,10 +786,12 @@ fn draw_tagged(painter: &mut Painter) -> usize {
                     })
                 })
                 .flatten();
-            painter.bytes(at..at + shown, tier);
             if short {
+                painter.bytes(at..at + shown, tier);
                 painter.cut();
             } else {
+                let nan = painter.told(SchemaFlaw::NanBits, "nan_bits");
+                draw_fixed(painter, at..at + shown, nan);
                 painter.punct("]");
             }
             at + shown
@@ -776,7 +799,11 @@ fn draw_tagged(painter: &mut Painter) -> usize {
         WT_VARINT => {
             painter.punct("[");
             painter.region = Region::Payload;
-            let (value, next) = draw_varint(painter, at, "val_ohb", "INVALID_VARINT");
+            // Spec 0279 S3: an enum value the schema has no name for is
+            // accused as a whole. The number *is* the accusation, and
+            // every byte of the varint carries part of it.
+            let unknown = painter.told(SchemaFlaw::EnumUnknown, "ENUM_UNKNOWN");
+            let (value, next) = draw_varint(painter, at, "val_ohb", "INVALID_VARINT", unknown);
             if value.is_some() {
                 painter.punct("]");
             }
@@ -844,7 +871,7 @@ fn draw_packed_head(painter: &mut Painter, varint: bool, close: bool) -> usize {
     }
     painter.punct(":");
     painter.region = Region::Len;
-    let (_, next) = draw_varint(painter, at, "len_ohb", "INVALID_LEN");
+    let (_, next) = draw_varint(painter, at, "len_ohb", "INVALID_LEN", None);
     at = next;
     painter.punct("[");
     painter.region = Region::Payload;
@@ -856,12 +883,23 @@ fn draw_packed_head(painter: &mut Painter, varint: bool, close: bool) -> usize {
 }
 
 /// One packed element, from `at` to the end of the row.
+///
+/// The palette is the *element's* own document row's, so the two
+/// accusations a single element can carry (spec 0279 S3) land on that
+/// element and not on its neighbors in the run.
 fn draw_element(painter: &mut Painter, at: usize, varint: bool) -> usize {
     painter.region = Region::Payload;
     if varint {
-        draw_varint(painter, at, "val_ohb", "INVALID_VARINT").1
+        // A negative element is sign-extended to ten bytes and an
+        // unnamed enum value is however many its number needs: in both
+        // cases the whole varint is what the row above is about.
+        let whole = painter
+            .told(SchemaFlaw::Neg, "neg")
+            .or_else(|| painter.told(SchemaFlaw::EnumUnknown, "ENUM_UNKNOWN"));
+        draw_varint(painter, at, "val_ohb", "INVALID_VARINT", whole).1
     } else {
-        painter.bytes(at..painter.limit, None);
+        let nan = painter.told(SchemaFlaw::NanBits, "nan_bits");
+        draw_fixed(painter, at..painter.limit, nan);
         painter.limit
     }
 }
@@ -919,14 +957,18 @@ fn draw_tag(painter: &mut Painter, closing: bool) -> (usize, Option<u32>) {
     }
     let tag = parse_wiretag(painter.rec, 0);
     if tag.wtag_gar.is_some() {
+        // Spec 0279 S4: the last byte is the one whose continuation bit
+        // is not honored; the ones before it are a prefix that decoded.
         let tier = painter.accuse(if closing {
             "INVALID_GROUP_END"
         } else {
             "INVALID_VARINT"
         });
-        painter.bytes(0..painter.rec.len(), tier);
+        let end = painter.rec.len();
+        painter.bytes(0..end.saturating_sub(1), None);
+        painter.bytes(end.saturating_sub(1)..end, tier);
         painter.cut();
-        return (painter.rec.len(), None);
+        return (end, None);
     }
     let end = tag.next_pos;
     let out_of_range = tag.wfield_oor.is_some();
@@ -937,9 +979,14 @@ fn draw_tag(painter: &mut Painter, closing: bool) -> (usize, Option<u32>) {
     let ohb = (!out_of_range && overhang > 0)
         .then(|| painter.accuse(if closing { "etag_ohb" } else { "tag_ohb" }))
         .flatten();
+    // Spec 0279 S3: the three type bits are the whole of a
+    // `TYPE_MISMATCH`. The field number found its declaration and the
+    // payload is what the tag says it is; what contradicts the schema
+    // is the type the tag declares, and nothing else on the row.
+    let mismatch = painter.told(SchemaFlaw::TypeMismatch, "TYPE_MISMATCH");
     // The field portion goes red, the wire type stays whatever it was:
     // an out-of-range field number says nothing about the type bits.
-    painter.tag_head(0, oor, None);
+    painter.tag_head(0, oor, mismatch);
     for i in 1..end {
         let tier = if out_of_range {
             oor
@@ -974,13 +1021,23 @@ fn draw_payload(painter: &mut Painter, range: Range<usize>) {
         .min(range.start + WIRE_ROW_MAX_BYTES)
         .max(range.start);
     let payload = &painter.rec[range.start..end];
-    let bad = match flaw {
-        PayloadFlaw::Utf8 => utf8_flaws(payload),
-        PayloadFlaw::PackedElements => vec![packed_flaw(payload)],
+    let (bad, open) = match flaw {
+        SchemaFlaw::Utf8 => (utf8_flaws(payload), false),
+        SchemaFlaw::PackedElements => {
+            let (span, open) = packed_flaw(payload);
+            (vec![span], open)
+        }
+        // The other flaws are not about a LEN payload's contents; they
+        // reach the row through `draw_varint`, `draw_fixed` and
+        // `draw_tag` instead (spec 0279 S3).
+        _ => {
+            painter.bytes(range, None);
+            return;
+        }
     };
     let tier = painter.accuse(match flaw {
-        PayloadFlaw::Utf8 => "INVALID_STRING",
-        PayloadFlaw::PackedElements => "INVALID_PACKED_RECORDS",
+        SchemaFlaw::Utf8 => "INVALID_STRING",
+        _ => "INVALID_PACKED_RECORDS",
     });
     let mut at = 0;
     for span in bad {
@@ -989,6 +1046,44 @@ fn draw_payload(painter: &mut Painter, range: Range<usize>) {
         at = span.end;
     }
     painter.bytes(range.start + at..range.end, None);
+    if open {
+        // Spec 0279 S4: the same failure as a bare `INVALID_VARINT`, so
+        // the same rendering — the byte whose continuation bit was not
+        // honored, then the slot that byte promised.
+        painter.cut();
+    }
+}
+
+/// A whole, present fixed-width payload (spec 0279 S3).
+///
+/// `nan` bands the bytes that differ from the NaN a re-encode would
+/// write — `f64::NAN` for eight, `f32::NAN` for four — which is exactly
+/// "what would change", said in the one place it can be seen. Plain
+/// everywhere else, which is every payload the row above said nothing
+/// about.
+///
+/// Neither constant is schema knowledge (spec 0279 N1): *that* these
+/// bytes are a float is what the `nan_bits` keyword carries, and which
+/// float is the payload's own width.
+fn draw_fixed(painter: &mut Painter, range: Range<usize>, nan: Option<Tier>) {
+    let Some(tier) = nan else {
+        painter.bytes(range, None);
+        return;
+    };
+    let eight = f64::NAN.to_bits().to_le_bytes();
+    let four = f32::NAN.to_bits().to_le_bytes();
+    let canonical: &[u8] = match range.len() {
+        8 => &eight,
+        4 => &four,
+        _ => &[],
+    };
+    let end = range.end.min(painter.rec.len());
+    for i in range.start..end {
+        let same = canonical
+            .get(i - range.start)
+            .is_some_and(|&b| b == painter.rec[i]);
+        painter.byte(i, (!same).then_some(tier));
+    }
 }
 
 /// The sub-ranges of `payload` that make it invalid UTF-8 — every
@@ -1012,37 +1107,47 @@ fn utf8_flaws(payload: &[u8]) -> Vec<Range<usize>> {
     out
 }
 
-/// The bytes of `payload` that do not complete a packed element.
+/// The bytes of `payload` that do not complete a packed element, and
+/// whether the payload ends inside a varint.
 ///
 /// The row has no schema, so it reads the payload as the one packed
 /// encoding that delimits itself: a stream of varints. A varint left
-/// open at the end is the case the document reports, and the run from
-/// its first byte to the payload's end is exactly what does not decode.
+/// open at the end is the case the document reports, and spec 0279 S4
+/// names its **last** byte: the ones before it decoded, and what is
+/// wrong is a continuation bit promising a byte the payload does not
+/// have. The caller draws the `??` that stands where that byte would.
 ///
 /// When every varint does close, the record is a fixed-width one whose
 /// length is not a multiple of its element size — and the size is
 /// precisely what this row cannot know, four and eight being equally
 /// consistent with the bytes. The whole payload is named, which is the
-/// most that is true.
-fn packed_flaw(payload: &[u8]) -> Range<usize> {
+/// most that is true, and nothing is missing from it.
+fn packed_flaw(payload: &[u8]) -> (Range<usize>, bool) {
     let mut at = 0;
     while at < payload.len() {
         let parsed = parse_varint(payload, at);
         if parsed.varint_gar.is_some() {
-            return at..payload.len();
+            return (payload.len() - 1..payload.len(), true);
         }
         at = parsed.next_pos;
     }
-    0..payload.len()
+    (0..payload.len(), false)
 }
 
 /// A length or value varint at `at`, with its overlong padding in
-/// yellow and its truncation closed by `!`.
+/// yellow and its truncation closed by `??`.
+///
+/// `whole` bands every byte the varint really has, for the accusations
+/// that are about the value rather than about one of its bytes (spec
+/// 0279 S3). Its padding still takes `overhang_flag`'s tier instead: a
+/// second fact about a specific run of bytes outranks a fact about all
+/// of them.
 fn draw_varint(
     painter: &mut Painter,
     at: usize,
     overhang_flag: &'static str,
     invalid_flag: &'static str,
+    whole: Option<Tier>,
 ) -> (Option<u64>, usize) {
     if at >= painter.rec.len() {
         painter.accuse(invalid_flag);
@@ -1051,14 +1156,21 @@ fn draw_varint(
     }
     let parsed = parse_varint(painter.rec, at);
     if parsed.varint_gar.is_some() {
+        // Spec 0279 S4: the bytes before the last one decoded. What is
+        // wrong is the continuation bit of the last, which promises a
+        // byte the record does not have — so that byte is banded and
+        // the `??` stands where the byte it promised would be.
         let tier = painter.accuse(invalid_flag);
-        painter.bytes(at..painter.rec.len(), tier);
+        let end = painter.rec.len();
+        let last = end.saturating_sub(1).max(at);
+        painter.bytes(at..last, None);
+        painter.bytes(last..end, tier);
         painter.cut();
-        return (None, painter.rec.len());
+        return (None, end);
     }
     let end = parsed.next_pos;
     let overhang = parsed.varint_ohb.unwrap_or(0) as usize;
-    painter.bytes(at..end - overhang, None);
+    painter.bytes(at..end - overhang, whole);
     if overhang > 0 {
         let tier = painter.accuse(overhang_flag);
         painter.bytes(end - overhang..end, tier);
@@ -1285,6 +1397,20 @@ impl Painter<'_> {
         #[cfg(test)]
         self.flags.push(keyword);
         annotation::tier_of(keyword)
+    }
+
+    /// The tier for `keyword` when the document row above accused
+    /// exactly `flaw`, and `None` on every other row (spec 0279 S3).
+    ///
+    /// The pairing of flaw and keyword is spelled at each call site
+    /// rather than in a table, because the site is where the *bytes*
+    /// the keyword is about are known — which is the whole of what this
+    /// module contributes.
+    fn told(&mut self, flaw: SchemaFlaw, keyword: &'static str) -> Option<Tier> {
+        if self.palette.and_then(|p| p.flaw) != Some(flaw) {
+            return None;
+        }
+        self.accuse(keyword)
     }
 
     /// Closes the row, adding `…×N` if the byte budget cut it short.
@@ -1763,38 +1889,176 @@ mod tests {
         assert_eq!(accused(&row, Tier::Invalid), "        ^^^^^^^^^^");
     }
 
-    /// Spec 0232: the two accusations the document row makes about a
-    /// payload that this row can point at, having been told.
+    /// A blob drawn with the document row's accusation attached, so the
+    /// row is told what it could not have found on its own.
+    fn told(blob: &[u8], flaw: SchemaFlaw, framing: Framing, field_number: u32) -> WireRow {
+        told_of(blob, 0..blob.len(), blob.len(), flaw, framing, field_number)
+    }
+
+    fn told_of(
+        blob: &[u8],
+        bytes: Range<usize>,
+        record_end: usize,
+        flaw: SchemaFlaw,
+        framing: Framing,
+        field_number: u32,
+    ) -> WireRow {
+        wire_spans(
+            blob,
+            &WireSlice {
+                bytes,
+                record_end,
+                framing,
+                field_number,
+            },
+            ThemeKind::Dark,
+            Some(&WirePalette::accusing(flaw)),
+        )
+    }
+
+    /// Specs 0232 and 0279 S3: every accusation the document row makes
+    /// about a named byte, put on that byte and on no other.
     #[test]
     fn an_accusation_about_a_payload_is_pointed_at_its_bytes() {
-        let accusing = |blob: &[u8], flaw: PayloadFlaw| {
-            let palette = WirePalette::accusing(flaw);
-            wire_spans(
-                blob,
-                &WireSlice {
-                    bytes: 0..blob.len(),
-                    record_end: blob.len(),
-                    framing: Framing::Tagged,
-                    field_number: 1,
-                },
-                ThemeKind::Dark,
-                Some(&palette),
-            )
-        };
         // field 1, LEN: "A" then the two bytes of a UTF-16 BOM, which is
         // not UTF-8 at all, then "B". Only the middle two are named.
-        let row = accusing(&[0x0A, 0x04, 0x41, 0xFF, 0xFE, 0x42], PayloadFlaw::Utf8);
+        let row = told(
+            &[0x0A, 0x04, 0x41, 0xFF, 0xFE, 0x42],
+            SchemaFlaw::Utf8,
+            Framing::Tagged,
+            1,
+        );
         assert_eq!(text(&row), "2|08:04[41 ff fe 42]");
         //                                        2|08:04[41 ff fe 42]
         assert_eq!(accused(&row, Tier::Invalid), "           ^^^^^    ");
         assert_eq!(row.flags, ["INVALID_STRING"]);
-        // field 1, LEN: two whole varints and a third left open by its
-        // continuation bit. The run from that byte to the end is what
-        // does not decode; the two before it are whole and stay plain.
-        let row = accusing(&[0x0A, 0x03, 0x01, 0x02, 0x80], PayloadFlaw::PackedElements);
-        assert_eq!(text(&row), "2|08:03[01 02 80]");
-        //                                        2|08:03[01 02 80]
-        assert_eq!(accused(&row, Tier::Invalid), "              ^^ ");
+        // field 4, varint: an enum value the schema has no name for. The
+        // number is the accusation, so every byte of it is banded — and
+        // the tag before it is not: the field is declared, and declared
+        // an enum.
+        let row = told(&[0x20, 0x63], SchemaFlaw::EnumUnknown, Framing::Tagged, 4);
+        assert_eq!(text(&row), "0|20[63]");
+        //                                             0|20[63]
+        assert_eq!(accused(&row, Tier::NonCanonical), "     ^^ ");
+        // field 6, fixed64: a NaN whose payload bits are not the
+        // canonical NaN's. What a re-encode would change is one byte,
+        // and one byte is what the row marks.
+        let row = told(
+            &[0x31, 0x01, 0, 0, 0, 0, 0, 0xF8, 0x7F],
+            SchemaFlaw::NanBits,
+            Framing::Tagged,
+            6,
+        );
+        assert_eq!(text(&row), "1|30[01 00 00 00 00 00 f8 7f]");
+        //                                             1|30[01 00 00 00 00 00 f8 7f]
+        assert_eq!(
+            accused(&row, Tier::NonCanonical),
+            "     ^^                      "
+        );
+        // A packed element holding -1 sign-extended to ten bytes. The
+        // ten bytes are the anomaly, which is what makes the run's shape
+        // legible beside its one-byte neighbors.
+        let blob = [
+            0x0A, 0x0A, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01,
+        ];
+        let row = told_of(
+            &blob,
+            2..12,
+            12,
+            SchemaFlaw::Neg,
+            Framing::Element {
+                varint: true,
+                close: true,
+            },
+            1,
+        );
+        assert_eq!(text(&row), "ff ff ff ff ff ff ff ff ff 01]");
+        //                                             ff ff ff ff ff ff ff ff ff 01]
+        assert_eq!(
+            accused(&row, Tier::NonCanonical),
+            "^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ "
+        );
+        // field 1, varint, where the schema declares a string. The tag
+        // wins; the three bits that contradict the schema are the whole
+        // of it, and the field number beside them is right.
+        let row = told(&[0x08, 0x07], SchemaFlaw::TypeMismatch, Framing::Tagged, 1);
+        assert_eq!(text(&row), "0|08[07]");
+        //                                        0|08[07]
+        assert_eq!(accused(&row, Tier::Invalid), "^       ");
+        assert_eq!(row.spans[2].content.as_ref(), "08");
+        assert_eq!(row.spans[2].style.bg, Some(TAG_HUE));
+    }
+
+    /// Spec 0279 S4. One failure, one rendering: the bytes before the
+    /// last one decoded, so only the byte that promised another is
+    /// accused, and the `??` is what says the fault is an absence.
+    #[test]
+    fn an_open_varint_accuses_its_last_byte() {
+        // A tag varint that never terminates.
+        let row = draw(&[0x82, 0x80, 0x80], Framing::Tagged, 1);
+        assert_eq!(text(&row), "82 80 80 ??");
+        assert_eq!(row.flags, ["INVALID_VARINT"]);
+        //                                        82 80 80 ??
+        assert_eq!(accused(&row, Tier::Invalid), "      ^^^^^");
+        // The same failure in a value varint.
+        let row = draw(&[0x10, 0x80, 0x80], Framing::Tagged, 2);
+        assert_eq!(text(&row), "0|10[80 80 ??");
+        assert_eq!(row.flags, ["INVALID_VARINT"]);
+        //                                        0|10[80 80 ??
+        assert_eq!(accused(&row, Tier::Invalid), "        ^^^^^");
+        // And in a packed payload, which spec 0232 drew a third way:
+        // the open run banded and no `??` at all.
+        let row = told(
+            &[0x0A, 0x03, 0x01, 0x02, 0x80],
+            SchemaFlaw::PackedElements,
+            Framing::Tagged,
+            1,
+        );
+        assert_eq!(text(&row), "2|08:03[01 02 80 ??]");
+        //                                        2|08:03[01 02 80 ??]
+        assert_eq!(accused(&row, Tier::Invalid), "              ^^^^^ ");
         assert_eq!(row.flags, ["INVALID_PACKED_RECORDS"]);
+    }
+
+    /// Spec 0279 S2. Two of the six keywords open an annotation and four
+    /// follow a type token, so reading only the first word finds none of
+    /// the latter.
+    #[test]
+    fn a_flaw_is_read_from_any_token_of_the_annotation() {
+        // The two that open an annotation.
+        assert_eq!(
+            schema_flaw(r#"  10: "\377\376"  #@ INVALID_STRING"#),
+            Some(SchemaFlaw::Utf8)
+        );
+        // And the four that follow a type token.
+        assert_eq!(
+            schema_flaw("  double_value: nan  #@ double = 6; nan_bits: 0x7ff8000000000001"),
+            Some(SchemaFlaw::NanBits)
+        );
+        assert_eq!(
+            schema_flaw("  label: 99  #@ Label(99) = 4; ENUM_UNKNOWN"),
+            Some(SchemaFlaw::EnumUnknown)
+        );
+        assert_eq!(
+            schema_flaw("  path: -1  #@ repeated int32 [packed=true] = 1; neg"),
+            Some(SchemaFlaw::Neg)
+        );
+        assert_eq!(
+            schema_flaw("  1: 7  #@ varint; TYPE_MISMATCH"),
+            Some(SchemaFlaw::TypeMismatch)
+        );
+        // `truncated_neg` is a different keyword about a different fact
+        // — five bytes that all decode — and splitting on `_` would have
+        // read it as `neg`.
+        assert_eq!(
+            schema_flaw("  number: -1  #@ int32 = 3; truncated_neg"),
+            None
+        );
+        // Only the annotation is read. A value that spells a keyword is
+        // a value.
+        assert_eq!(
+            schema_flaw(r#"  reserved_name: "neg"  #@ repeated string = 10"#),
+            None
+        );
     }
 }

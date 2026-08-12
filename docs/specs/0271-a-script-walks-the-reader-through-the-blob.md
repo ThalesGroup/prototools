@@ -245,6 +245,18 @@ Applying a step performs, in order:
 5. **Override prefill** (S11).
 6. **Text.** Render `text`, scrolled to the top.
 
+**Amended 2026-08-12 by spec 0279 S5: step 3 places the node, it does
+not merely bring it on screen.** "Scroll it into view" was
+`clamp_scroll_to_cursor`, the *reader's* rule — it moves only far
+enough to make a row visible, so it lands the node on the pane's last
+row whenever the previous step was above it, and the subtree the step
+is about ends up entirely off the bottom. A step declares a view (N1),
+so it now scrolls to the top of the highest ancestor of the node whose
+subtree still fits the pane, and falls back to the node's own row when
+none does. Both halves of a split step — the anomalous line and its
+canonical twin, which share a parent — therefore get the same view, and
+the comparison the split exists for reads without a keypress.
+
 Every one of those is derived from the step and the current document.
 Nothing is remembered from the step before. That is what makes G4 true
 without an undo stack: `Ctrl-Left` re-applies step *n−1* from scratch

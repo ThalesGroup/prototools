@@ -76,7 +76,9 @@ Two consequences worth knowing:
 ## What it shows, in order
 
 The file is read top to bottom during a talk, so it is ordered by what an
-audience gets the most from rather than by severity:
+audience gets the most from rather than by severity. Each anomaly within a
+section carries its own letter — `1.a.`, `1.b.`, … — spelled out in the string
+values, and `anomalies.script` walks them one anomaly per step in that order:
 
 1. **Legal bytes no canonical writer produces** — `tag_ohb`, `len_ohb`,
    `val_ohb`. Varints may carry padding, so a tag, a length prefix and a value
