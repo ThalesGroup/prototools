@@ -34,6 +34,7 @@ const DISPATCHER_SOURCES: &[(&str, &str)] = &[
     ("override_select.rs", include_str!("../override_select.rs")),
     ("navigation.rs", include_str!("../navigation.rs")),
     ("mouse.rs", include_str!("../mouse.rs")),
+    ("menu.rs", include_str!("../menu.rs")),
 ];
 
 /// Characters that are documented as part of a chord rather than on their

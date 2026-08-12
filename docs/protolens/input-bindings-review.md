@@ -825,6 +825,36 @@ Implementation steps, each one independently committable and testable:
 Steps 1-4 are useful on their own: they give a working keyboard-only
 menu. Steps 5-6 add the mouse. Step 7 closes the terminal dependency.
 
+**Implemented 2026-08-12** (`protolens/src/tui/menu.rs`, plus the tier in
+`key_dispatch.rs`, the arm in `mouse.rs` and `render_menu`). Three
+departures from the plan above, each one a simplification the writing
+found:
+
+- **Step 1's `action` enum does not exist.** A `MenuItem` carries the
+  `KeyEvent` it stands for, and activating a row closes the menu and
+  replays that event through `handle_key`. That is comparable in a test
+  just as an enum would be, and it buys three things an enum would not:
+  a row cannot drift from the binding it advertises because it *is* the
+  binding; the manage pane's long inline `z`/`d` match arms are not
+  duplicated into a second dispatcher; and the per-row hotkey of step 4
+  falls out rather than being wired.
+- **Step 7's key is `m`**, with `KeyCode::Menu` accepted beside it. The
+  `Menu` key alone would not do: crossterm only ever reports it under
+  the kitty keyboard protocol, and most keyboards no longer have one.
+- **A third surface was added** that the proposal did not have: a
+  right-click past the end of the document names no node, and that is a
+  surface rather than a miss. It gets the *view's* settings — hide/show
+  annotations (`a`), hide/show heat cues (`i`) — which are exactly the
+  bindings the node menu has no business offering. The desktop idiom:
+  right-clicking a file offers what you can do to the file,
+  right-clicking the desktop offers what you can do to the desktop. The
+  two toggles name the state they would move *to*, so the row does not
+  leave the reader guessing which way it goes.
+- **The steps are not independently committable**, as the list claimed.
+  The clippy gate is `-D warnings`, so steps 1-3 each leave the menu
+  written and unreachable, which is dead code and fails the gate. They
+  are separately *testable*, which is the half that mattered.
+
 **C10. Give the script pane the wheel** when the pointer is over it.
 Every other surface scrolls under the pointer; this is the exception,
 and it is the surface a *presenter* uses under time pressure.
@@ -907,7 +937,7 @@ unmaintainable. B1 is the prerequisite if it is ever wanted.
 | C6 | `Shift-Alt`+arrows = pan, four directions, every pane | small | medium |
 | C7 | Document `W` accurately; `Ctrl-w` = clear all wire spans | trivial | medium |
 | C8 | `Ctrl`+wheel = fold depth under the pointer | small | medium |
-| C9 | Context menu, on right-click and on a key (8 steps) | medium | medium |
+| C9 | Context menu, on right-click and on a key | **done 2026-08-12** | medium |
 | C10 | Wheel over the script pane | small | medium |
 | C11 | Heat cues move to `c`; `i` stays the sort | small | low |
 | C12 | Drop `Backspace` from the manage pane | trivial | low |

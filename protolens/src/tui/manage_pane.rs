@@ -704,24 +704,36 @@ impl App {
         self.render_overrides(self.first_node);
     }
 
-    pub(super) fn handle_manage_click(&mut self, col: u16, row: u16, shift: bool) {
+    /// The entry a point names, or `None` for a point that names none —
+    /// outside the pane, past its last row, or on one of the blank rows
+    /// an over-panned pane draws above its first entry (spec 0244 S9).
+    ///
+    /// Split out of `handle_manage_click` because a right-click has to
+    /// find the entry *without* acting on it: the click that opens a
+    /// context menu must not also toggle the radio marker it landed on.
+    pub(super) fn manage_row_at(&self, col: u16, row: u16) -> Option<usize> {
         let area = self.side_area;
         if !Self::rect_contains(area, col, row) {
-            return;
+            return None;
         }
         let rel_row = (row - area.y) as usize;
         if rel_row >= self.manage_list_height {
-            return;
+            return None;
         }
-        // Spec 0244 S9: an over-panned pane draws blank rows above its
-        // first entry, and a click on one of those names no entry.
         let rel_row = rel_row as isize + self.manage_scroll.skip;
         if rel_row < 0 {
-            return;
+            return None;
         }
         let absolute_row = self.manage_scroll.index + rel_row as usize;
-        let rows = self.manage_display_rows();
-        if let Some(&ManageRow::Entry(idx)) = rows.get(absolute_row) {
+        match self.manage_display_rows().get(absolute_row) {
+            Some(&ManageRow::Entry(idx)) => Some(idx),
+            _ => None,
+        }
+    }
+
+    pub(super) fn handle_manage_click(&mut self, col: u16, row: u16, shift: bool) {
+        let area = self.side_area;
+        if let Some(idx) = self.manage_row_at(col, row) {
             let was_current = idx == self.manage_highlight;
             self.set_manage_highlight(idx);
             // Content-space column the click landed on, undoing the

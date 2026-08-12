@@ -11,6 +11,7 @@ mod help_text;
 mod key_dispatch;
 mod lines;
 mod manage_pane;
+mod menu;
 mod mouse;
 mod navigation;
 mod node_status;

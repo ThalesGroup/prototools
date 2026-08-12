@@ -1305,6 +1305,12 @@ impl App {
         } else if self.help_open {
             self.render_help(frame, area);
         }
+
+        // Last, and outside the splash/help alternative: a context menu
+        // is the innermost modal there is, so it draws over the help
+        // rather than instead of it — the help can legitimately be open
+        // underneath, and `handle_key` answers the menu first to match.
+        self.render_menu(frame, area);
     }
 
     /// The text area and its local statusline — everything `render`
@@ -2174,6 +2180,75 @@ impl App {
             .map(|&l| Line::from(l))
             .collect();
         frame.render_widget(Paragraph::new(lines), inner);
+    }
+
+    /// The context menu, drawn at its anchor rather than centered.
+    ///
+    /// Records the box's outer `Rect` on the `Menu` for the hit tests in
+    /// `handle_mouse`, exactly as `render_help` records `help_area`.
+    pub(super) fn render_menu(&mut self, frame: &mut Frame, area: Rect) {
+        let Some(menu) = &self.menu else { return };
+
+        // Sized to its content, then clamped to the screen: a menu is
+        // the one popup whose width is a fact about the strings in it.
+        let inner_width = menu.content_width().max(1);
+        let width = (inner_width + 2).min(area.width.max(1));
+        let height = (menu.items.len() as u16 + 2).min(area.height.max(1));
+
+        // Anchored below-right of the click, flipped when that would
+        // cross an edge — the standard behavior, and the reason the
+        // anchor is a request rather than a position. `saturating_sub`
+        // handles the degenerate case of a menu taller than the screen
+        // by pinning it to the top-left; it is clamped to `area` either
+        // way.
+        let (ax, ay) = menu.anchor;
+        let x = if ax + width <= area.right() {
+            ax
+        } else {
+            area.right().saturating_sub(width)
+        };
+        let y = if ay + 1 + height <= area.bottom() {
+            ay + 1
+        } else {
+            ay.saturating_sub(height).max(area.y)
+        };
+        let rect = Rect {
+            x: x.max(area.x),
+            y: y.max(area.y),
+            width,
+            height,
+        };
+
+        let lines: Vec<Line> = menu
+            .items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| {
+                let hint = key_label(&item.key);
+                // The label and its key hint are justified to the two
+                // edges of the box, which is what makes the column of
+                // hints readable as a column.
+                let pad = (inner_width as usize)
+                    .saturating_sub(item.label.chars().count() + hint.chars().count())
+                    .max(1);
+                let text = format!("{}{}{}", item.label, " ".repeat(pad), hint);
+                if i == menu.selected {
+                    Line::styled(text, theme::focus_style(self.theme))
+                } else {
+                    Line::from(text)
+                }
+            })
+            .collect();
+
+        frame.render_widget(Clear, rect);
+        let block = Block::bordered().border_type(BorderType::Rounded);
+        let inner = block.inner(rect);
+        frame.render_widget(block, rect);
+        frame.render_widget(Paragraph::new(lines), inner);
+
+        if let Some(menu) = &mut self.menu {
+            menu.area = rect;
+        }
     }
 
     /// Startup splash — dismissed by any key/mouse event or after

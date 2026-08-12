@@ -481,6 +481,16 @@ impl App {
             return;
         }
 
+        // A context menu is the innermost modal the app has, so it
+        // answers ahead of every other tier — including `F1` and the
+        // help overlay below, which a menu may be drawn over. Only
+        // `Ctrl-Z` outranks it, being a process-level concern rather
+        // than an app one.
+        if self.menu.is_some() {
+            self.handle_menu_key(key);
+            return;
+        }
+
         // `F1` opens the help overlay regardless of current focus (spec
         // 0126 G1) — checked centrally here, same tier as `Ctrl-Z`
         // above, ahead of every focus-specific dispatch.
@@ -518,6 +528,22 @@ impl App {
         #[cfg(unix)]
         if key.code == KeyCode::Char('v') && !ctrl_or_alt(&key) {
             self.open_definition();
+            return;
+        }
+        // `input-bindings-review.md` C9: `m` (or the dedicated `Menu`
+        // key, on the terminals that report one) opens the context menu
+        // at the caret, in the same central tier as `F1`/`:`/`v` above
+        // and routed by focus rather than by geometry.
+        //
+        // A keyboard opener is not a convenience here: §6.2 records that
+        // a handful of terminals keep the right button for themselves,
+        // and on those this is the only way in. The `Menu` key alone
+        // would not do — it only ever arrives under the kitty keyboard
+        // protocol (crossterm reports it only with
+        // `DISAMBIGUATE_ESCAPE_CODES`, which `terminal.rs` does push),
+        // and most keyboards no longer have one.
+        if (key.code == KeyCode::Char('m') && !ctrl_or_alt(&key)) || key.code == KeyCode::Menu {
+            self.open_menu_at_caret();
             return;
         }
         // Spec 0271 S7: the script keys, in the same tier as `F1`/`:`/`v`
@@ -982,7 +1008,7 @@ impl App {
     /// already shows as "type: ...". A primitive-keyword result has no
     /// declaration to jump to either.
     #[cfg(unix)]
-    fn fqdn_under_focus(&self) -> Option<String> {
+    pub(super) fn fqdn_under_focus(&self) -> Option<String> {
         if self.override_focus {
             let (fqdn, _) = self.override_candidates.get(self.override_highlight)?;
             if fqdn == "protolens_internal.None"

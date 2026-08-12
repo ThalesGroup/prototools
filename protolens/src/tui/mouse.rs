@@ -33,6 +33,31 @@ impl App {
         // spec 0277's count with it — exactly as a keypress does.
         self.search_echo = None;
 
+        // An open context menu takes the mouse before anything else,
+        // for the same reason it takes the keyboard: it is the innermost
+        // modal, and the panes below it have no idea it exists. A click
+        // inside picks a row, a click anywhere else dismisses without
+        // acting — the universal behavior for a menu, and the one that
+        // makes an accidental right-click cost nothing.
+        if self.menu.is_some() {
+            match event.kind {
+                MouseEventKind::ScrollDown => self.move_menu_selection(1),
+                MouseEventKind::ScrollUp => self.move_menu_selection(-1),
+                MouseEventKind::Down(_) => {
+                    let hit = self
+                        .menu
+                        .as_ref()
+                        .and_then(|m| m.item_at(event.column, event.row));
+                    match hit {
+                        Some(idx) => self.activate_menu_item(idx),
+                        None => self.menu = None,
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // While the `F1` help overlay is open, mouse wheel/Shift-wheel
         // hovering over it scrolls its own text instead of leaking
         // through to whichever pane happens to be drawn underneath —
@@ -143,6 +168,46 @@ impl App {
         // `Shift`-click. The `Shift` arm is kept for the terminals that
         // do forward it.
         let extend_click = shift || event.modifiers.contains(KeyModifiers::CONTROL);
+
+        // `input-bindings-review.md` C9: right-click opens the context
+        // menu for whatever is under the pointer. Placed beside the
+        // `Down(Left)` arm and routed by the same hit tests, including
+        // `main_interactive` — while the override pane locks focus, a
+        // right-click is refused and named exactly as a left-click is.
+        if let MouseEventKind::Down(MouseButton::Right) = event.kind {
+            let anchor = (event.column, event.row);
+            if main_interactive {
+                // The focus claim is unconditional, unlike the caret
+                // move it used to be nested in: every row of either menu
+                // acts on the main pane, so the pane has to have the
+                // keyboard by the time one runs.
+                self.override_focus = false;
+                self.manage_focus = false;
+                // A click past the end of the document names no node, and
+                // that is a surface in its own right rather than a miss:
+                // it is the pane, so it gets the pane's own settings.
+                let items = if self.caret_to_point(event.column, event.row) {
+                    self.main_menu_items()
+                } else {
+                    self.pane_menu_items()
+                };
+                self.open_menu(items, anchor);
+            } else if over_main {
+                self.message = OVERRIDE_FOCUS_LOCK_MESSAGE.to_string();
+            } else if over_side && self.manage_open {
+                // The override selection pane has no per-candidate
+                // actions to offer — `Enter` applies and `Esc` closes,
+                // and both are already on the pane's own statusline — so
+                // only the manage pane answers a right-click.
+                if let Some(idx) = self.manage_row_at(event.column, event.row) {
+                    self.manage_focus = true;
+                    self.set_manage_highlight(idx);
+                    let items = self.manage_menu_items();
+                    self.open_menu(items, anchor);
+                }
+            }
+            return;
+        }
 
         if let MouseEventKind::Down(MouseButton::Left) = event.kind {
             if main_interactive && extend_click {
@@ -479,17 +544,29 @@ impl App {
     /// and back is how the mouse asks for a single character, the
     /// counterpart of `Shift-Right` `Shift-Left`.
     fn drag_caret_to(&mut self, col: u16, row: u16) {
+        self.select_engaged = self.select_anchor.is_some();
+        self.caret_to_point(col, row);
+    }
+
+    /// Moves the caret to the character under a point, and does nothing
+    /// else — no fold toggle, no selection, no focus claim.
+    ///
+    /// This is what a right-click needs: the menu it opens is about the
+    /// node under the pointer, so the caret has to go there first (every
+    /// binding the menu replays reads the caret), but the click itself
+    /// must not be an edit.
+    fn caret_to_point(&mut self, col: u16, row: u16) -> bool {
         let Some(line_idx) = self.main_pane_line_idx(col, row) else {
-            return;
+            return false;
         };
         let Some(pos) = self.line_pos(line_idx) else {
-            return;
+            return false;
         };
-        self.select_engaged = self.select_anchor.is_some();
         self.cursor = pos.node;
         self.cursor_line_in_node = pos.line_in_node;
         self.cursor_moves += 1;
         self.set_caret_from_click(col, line_idx, pos);
+        true
     }
 
     /// Spec 0242 S10: `Shift`-click extends the selection to the clicked

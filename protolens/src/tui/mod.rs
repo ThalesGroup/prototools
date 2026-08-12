@@ -77,6 +77,7 @@ use crate::render_cache::RenderCache;
 use crate::theme::{self, ThemeKind};
 use bake::BakeStep;
 use help_text::HELP_TEXT;
+use menu::{key_label, Menu};
 use pane_scroll::{
     AnchorLine, PaneScroll, RowHeights, WireAnchor, WireRowCache, WireSpan, FLAT_ROWS,
 };
@@ -1848,6 +1849,10 @@ pub struct App {
     /// to whichever pane it happens to be drawn on top of. Only
     /// meaningful while `help_open`.
     help_area: Rect,
+    /// The open context menu, `None` when there is none. Drawn over
+    /// everything including the help overlay, and answered ahead of
+    /// every other key tier, so it is the innermost modal the app has.
+    menu: Option<Menu>,
     header: String,
     /// Main pane's content `Rect` (the `Min(0)` split above its own
     /// `Length(1)` local statusline row, spec 0147 G1) as of the last
@@ -2169,6 +2174,7 @@ impl App {
             splash_deadline: Instant::now() + SPLASH_TIMEOUT,
             help_open: false,
             help_scroll: 0,
+            menu: None,
             help_area: Rect::default(),
             header,
             main_area: Rect::default(),
@@ -2409,6 +2415,7 @@ mod help_text;
 mod key_dispatch;
 mod lines;
 mod manage_pane;
+mod menu;
 mod mouse;
 mod navigation;
 #[cfg(unix)]
