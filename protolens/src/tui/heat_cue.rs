@@ -16,6 +16,13 @@ use super::*;
 /// page too (see spec 0152's "plain terms" note).
 pub(super) const HEAT_CUE_PREVIEW: usize = 8;
 
+/// It is a *width*: at zero the worker would be asked for no candidates
+/// at all, `heat_cue_from_stats` would have nothing to gate on, and every
+/// cue would silently disappear. Checked at compile time, where a wrong
+/// value cannot get past the build — a runtime `assert!` on a constant is
+/// folded away and proves nothing.
+const _: () = assert!(HEAT_CUE_PREVIEW > 0);
+
 /// Leading gutter glyph (spec 0138 N1) — a filled circle reads clearly at
 /// a single terminal cell width in both light and dark themes, and is
 /// distinct from the fold marker (`⏵`/`⏷`) and every other glyph this

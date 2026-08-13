@@ -114,6 +114,16 @@ impl App {
         }
         items.push(MenuItem::plain("Wire bytes for this line", 'w'));
         items.push(MenuItem::plain("Wire bytes for this subtree", 'W'));
+        // Spec 0280 S19: offered only where there is a number to
+        // explain. Asked of the node's own header line, because that is
+        // the line a cue is drawn on however far down a packed run the
+        // caret happens to sit.
+        if !matches!(
+            self.heat_cue_at(LinePos::header(self.cursor)),
+            heat_cue::HeatDisplay::None
+        ) {
+            items.push(MenuItem::plain("What this score is made of", 's'));
+        }
         // `v` is Unix-only (it hands off to a Neovim), and it needs a
         // name under the caret to jump to — the same test `v` itself
         // makes before it reports "no declaration to jump to here".

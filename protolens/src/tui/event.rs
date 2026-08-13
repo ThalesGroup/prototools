@@ -61,8 +61,13 @@ impl InputPending {
     /// whichever of its receive paths produced it. Decrementing on a
     /// `HeatWorkerProgress` — which was never counted — would drive the
     /// counter below zero and wrap.
+    ///
+    /// Spec 0280 S7: the same holds for a bare `Moved`, which since that
+    /// spec is forwarded but not counted. Send and receive therefore
+    /// share `carries_intent` as one predicate rather than each having
+    /// its own idea of what a countable event is.
     pub(super) fn note_received(&self, ev: &AppEvent) {
-        if matches!(ev, AppEvent::Term(_)) {
+        if matches!(ev, AppEvent::Term(e) if carries_intent(e)) {
             self.0.fetch_sub(1, Ordering::Relaxed);
         }
     }
@@ -74,8 +79,14 @@ impl InputPending {
 
 /// Spec 0223 S2: a bare pointer move carries no user intent, and
 /// `EnableMouseCapture` makes the terminal send one on essentially every
-/// pixel the pointer crosses. Dropped here, before the channel, so a
-/// hovering mouse cannot make the counter above look like a scroll.
+/// pixel the pointer crosses. So a hovering mouse must not make the
+/// counter above look like a scroll.
+///
+/// Spec 0280 S6 turned this from a *filter* into that *counting*
+/// predicate: a `Moved` is now forwarded, because a hover is made of
+/// nothing else, and it is `InputPending` that must not see it. Both
+/// `note_sent` and `note_received` ask here, which is what keeps the
+/// counter paired (S7).
 ///
 /// Wheel (`ScrollUp`/`ScrollDown`) and `Drag` are deliberately not
 /// filtered: a rolling wheel is precisely the flow this exists for, and
@@ -289,14 +300,15 @@ fn drain_parsed(pending: &InputPending, tx: &mpsc::Sender<AppEvent>) -> Drained 
         let Ok(ev) = event::read() else {
             return Drained::Failed;
         };
-        if !carries_intent(&ev) {
-            continue;
+        // Spec 0280 S6: every event is forwarded — a bare `Moved` is
+        // what a hover *is* — but only those carrying intent are
+        // counted. Counted *before* the send: the receiver may take it
+        // off the channel on another thread the instant it lands, and
+        // an increment that lost that race would underflow on the
+        // matching decrement.
+        if carries_intent(&ev) {
+            pending.note_sent();
         }
-        // Counted *before* the send: the receiver may take it off the
-        // channel on another thread the instant it lands, and an
-        // increment that lost that race would underflow on the matching
-        // decrement.
-        pending.note_sent();
         if tx.send(AppEvent::Term(ev)).is_err() {
             return Drained::ChannelGone; // run_loop already exited
         }
@@ -493,11 +505,17 @@ mod tests {
         assert!(!pending.is_pending());
     }
 
-    /// Spec 0223 S2. `carries_intent` is the reader thread's filter;
+    /// Spec 0223 S2, as amended by spec 0280 S6/S7. `carries_intent` is
+    /// no longer the reader's *filter* — a `Moved` is forwarded, because
+    /// a hover is made of nothing else — but it is still what decides
+    /// whether an event is counted, on both sides of the channel.
+    ///
     /// `event::read()` cannot be driven from a test, so the predicate is
-    /// exercised directly.
+    /// exercised directly, and then the pairing it exists to keep is
+    /// asserted through `InputPending` itself: S7's underflow is the
+    /// failure this would otherwise ship.
     #[test]
-    fn mouse_motion_never_enters_the_channel() {
+    fn motion_is_forwarded_but_not_counted() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent};
 
         let mouse = |kind| {
@@ -525,6 +543,18 @@ mod tests {
             KeyCode::Char('j'),
             KeyModifiers::NONE
         ))));
+
+        // Spec 0280 S7: the reader forwards this one without counting
+        // it, so `note_received` must decline it too. A `note_received`
+        // that still keyed on `AppEvent::Term(_)` alone would drive the
+        // unsigned counter below zero here and wrap it to `usize::MAX`,
+        // pinning the display monochrome for the rest of the session.
+        let pending = InputPending::default();
+        pending.note_received(&AppEvent::Term(mouse(MouseEventKind::Moved)));
+        assert!(
+            !pending.is_pending(),
+            "an uncounted move must not decrement the counter"
+        );
     }
 
     /// Spec 0263 S7's direct evidence, and S5's: a burst written to the

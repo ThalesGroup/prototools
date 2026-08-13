@@ -454,6 +454,13 @@ impl App {
     /// Handle one key event, mutating cursor/fold/scroll/jumplist state.
     /// No `ratatui` rendering happens here — see spec 0111 §4.
     pub fn handle_key(&mut self, key: KeyEvent) {
+        // Spec 0280 S16: any key at all takes the score box down, and a
+        // pending dwell with it — a box that was *about* to open is as
+        // unwanted as one already open once the reader has done
+        // something else. `s` re-opens it below, after its own handler
+        // has decided the box is warranted.
+        self.dismiss_score_popup();
+
         // Dismiss the splash screen transparently: the key that dismisses
         // it is also processed as a real command, same as if there had
         // been no splash screen at all (spec 0113 D22 amendment).
@@ -912,6 +919,13 @@ impl App {
             // and unreachable here. `Ctrl-i` (jumplist "forward") is in
             // the Ctrl/Alt gate above.
             KeyCode::Char('i') => self.heat_cues_hidden = !self.heat_cues_hidden,
+
+            // Spec 0280 S18: what the cue's number is made of, for the
+            // node the caret is on. The same box the pointer earns by
+            // resting on the cue — a key as well, because motion
+            // reporting is not universal and `Shift` bypasses it
+            // everywhere.
+            KeyCode::Char('s') => self.open_score_popup_at_caret(),
 
             // In-pane search (spec 0114 §4, extended to the main pane):
             // reuses the command-line row as the search prompt. Only

@@ -24,6 +24,7 @@ mod preview_truncate;
 mod profiling;
 mod prune;
 mod render;
+mod score_popup;
 mod script;
 mod search;
 mod search_cursor;

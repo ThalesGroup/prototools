@@ -726,12 +726,19 @@ where
         // pair and forwards through `rx` alongside the worker thread's
         // own progress notifications, so this loop sleeps until there's
         // a reason to wake instead of polling on a fixed schedule.
+        //
+        // Spec 0280 S11 adds a third of exactly the same shape: a
+        // pointer resting on an annotated type name has earned its score
+        // box at `hover_deadline`, and `track_hover_dwell` — like
+        // `track_message_timeout` — is a `render()` step, so the frame
+        // that opens the box is the frame this deadline buys. Nothing
+        // arms it but the pointer landing on such a name, so an untouched
+        // mouse leaves spec 0263's idle guarantee exactly as measured.
         let splash_deadline = app.splash.then_some(app.splash_deadline);
-        let ui_deadline = match (app.message_deadline, splash_deadline) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (Some(d), None) | (None, Some(d)) => Some(d),
-            (None, None) => None,
-        };
+        let ui_deadline = [app.message_deadline, splash_deadline, app.hover_deadline]
+            .into_iter()
+            .flatten()
+            .min();
         // Spec 0190 S7: the activity tick is a third candidate deadline
         // alongside those two, and unlike them it is always present.
         //

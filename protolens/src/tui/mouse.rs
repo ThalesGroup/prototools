@@ -14,14 +14,27 @@ impl App {
         // tracking noise, not user input — `EnableMouseCapture` turns on
         // any-motion reporting, so the terminal sends one of these on
         // essentially every pixel the mouse crosses, with no click at
-        // all. Nothing below acts on `Moved` itself; without this guard
-        // the side effects further down (splash dismissal in particular)
-        // fire on the first stray cursor twitch after startup, before
-        // the user has even seen the splash screen, and status messages
-        // vanish while the mouse merely hovers over the terminal.
+        // all. It is answered here and returns immediately; without this
+        // guard the side effects further down (splash dismissal in
+        // particular) fire on the first stray cursor twitch after
+        // startup, before the user has even seen the splash screen, and
+        // status messages vanish while the mouse merely hovers over the
+        // terminal. Spec 0280 S8 keeps the arm exactly where spec 0223
+        // put it, for exactly that reason.
         if event.kind == MouseEventKind::Moved {
+            // Spec 0280 S9: arming a dwell is not a visible change, and
+            // the frame the dwell eventually needs is bought by
+            // `hover_deadline` through `ui_deadline`. Only tearing down
+            // a box already on screen owes this event a frame — which is
+            // what keeps a pointer crossing the pane from redrawing at
+            // motion rate (G5).
+            self.event_changed_nothing = !self.handle_hover(event.column, event.row);
             return;
         }
+
+        // Spec 0280 S16: anything that is not the pointer holding still
+        // takes the box down, so there is no dismiss binding to learn.
+        self.dismiss_score_popup();
 
         // Dismiss the splash screen transparently, same as `handle_key`
         // (spec 0113 D22/D28): the mouse event that dismisses it is also

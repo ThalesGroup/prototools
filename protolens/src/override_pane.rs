@@ -91,6 +91,62 @@ pub fn inferred_score(
     }
 }
 
+/// One candidate's score with its terms kept (spec 0280 S1) — what
+/// `inferred_score` computes and then throws away.
+///
+/// Owned, and `Copy`: `EntryScore<'g>` borrows the archived graph
+/// through its `fqdn`, and this outlives the call that produced it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ScoreBreakdown {
+    pub matches: u64,
+    pub unknowns: u64,
+    pub out_of_range: u64,
+    pub non_canonical: u64,
+    /// A `required` field the schema declares and the blob omits — not
+    /// a wire-type mismatch, which vetoes instead (see `EntryScore`).
+    pub mismatches: u64,
+    /// Spec 0280 S3: when set, **every count above is meaningless**. A
+    /// veto fires part-way through a field, so the counters hold
+    /// whatever had accumulated by then, which is a fact about where
+    /// the walk stopped rather than about the payload.
+    pub vetoed: bool,
+}
+
+impl ScoreBreakdown {
+    /// The number the cue shows, recomputed from the terms — so a test
+    /// can assert the decomposition really does decompose it.
+    pub fn score(&self) -> i64 {
+        self.matches as i64
+            - 10 * self.unknowns as i64
+            - 15 * self.out_of_range as i64
+            - 20 * self.non_canonical as i64
+            - 30 * self.mismatches as i64
+    }
+}
+
+/// A single candidate's score with its terms (spec 0280 S1) — the same
+/// `score_one` call `inferred_score` makes, reading the whole struct
+/// instead of just the total. A sibling rather than a rewrite of that
+/// function: keeping both here is what stops the two from coming to
+/// disagree about what a veto means.
+///
+/// `None` when `fqdn` is not a known root type, exactly as above.
+pub fn inferred_breakdown(
+    range_bytes: &[u8],
+    fqdn: &str,
+    graph: &ArchivedCompiledGraph,
+) -> Option<ScoreBreakdown> {
+    let r = score_one(range_bytes, fqdn, graph, &ScoringOpts::default())?;
+    Some(ScoreBreakdown {
+        matches: r.matches,
+        unknowns: r.unknowns,
+        out_of_range: r.out_of_range,
+        non_canonical: r.non_canonical,
+        mismatches: r.mismatches,
+        vetoed: r.vetoed,
+    })
+}
+
 // ── Override collection (spec 0117) ─────────────────────────────────────────
 
 /// One of the three override scopes (spec 0117 §1), in increasing-priority

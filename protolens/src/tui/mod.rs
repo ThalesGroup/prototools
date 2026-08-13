@@ -82,6 +82,7 @@ use pane_scroll::{
     AnchorLine, PaneScroll, RowHeights, WireAnchor, WireRowCache, WireSpan, FLAT_ROWS,
 };
 use prefetch::{PrefetchStep, PrefetchTrace, PrefetchWalk};
+use score_popup::{Breakdown, Hover, ScorePopup};
 use search::{SearchScope, SweepStep};
 pub use terminal::run;
 
@@ -1853,6 +1854,26 @@ pub struct App {
     /// everything including the help overlay, and answered ahead of
     /// every other key tier, so it is the innermost modal the app has.
     menu: Option<Menu>,
+    /// The open score box, `None` when there is none (spec 0280 S14).
+    /// Drawn last, after the menu, and refused while the menu is open —
+    /// the menu stays the innermost modal.
+    score_popup: Option<ScorePopup>,
+    /// The annotated type name the pointer is resting on, `None` when it
+    /// is on none. Not itself visible: it is what `track_hover_dwell`
+    /// opens the box for once `hover_deadline` expires.
+    hover: Option<Hover>,
+    /// When the resting pointer has earned its box (spec 0280 S11).
+    /// Joins `message_deadline` and `splash_deadline` in `run_loop`'s
+    /// `ui_deadline`, so an untouched mouse arms nothing and spec 0263's
+    /// idle guarantee is untouched.
+    hover_deadline: Option<Instant>,
+    /// The last breakdown computed, with the `(range start, type key)`
+    /// it was computed for (spec 0280 S5).
+    ///
+    /// One entry rather than a map: only one box can be open, so a keyed
+    /// cache would have a single reader and an eviction policy nobody
+    /// needs.
+    breakdown_memo: Option<((usize, String), Breakdown)>,
     header: String,
     /// Main pane's content `Rect` (the `Min(0)` split above its own
     /// `Length(1)` local statusline row, spec 0147 G1) as of the last
@@ -2175,6 +2196,10 @@ impl App {
             help_open: false,
             help_scroll: 0,
             menu: None,
+            score_popup: None,
+            hover: None,
+            hover_deadline: None,
+            breakdown_memo: None,
             help_area: Rect::default(),
             header,
             main_area: Rect::default(),
@@ -2431,6 +2456,7 @@ mod pane_scroll;
 mod prefetch;
 mod preview_truncate;
 mod render;
+mod score_popup;
 mod script_pane;
 mod search;
 mod search_cursor;

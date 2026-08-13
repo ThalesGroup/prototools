@@ -1225,6 +1225,7 @@ impl App {
     pub fn render(&mut self, frame: &mut Frame) {
         self.track_message_timeout();
         self.track_splash_timeout();
+        self.track_hover_dwell();
         let area = frame.area();
         self.term_width = area.width;
         // Spec 0271 S4: the script pane and its separator sit above
@@ -1311,6 +1312,11 @@ impl App {
         // rather than instead of it — the help can legitimately be open
         // underneath, and `handle_key` answers the menu first to match.
         self.render_menu(frame, area);
+        // Spec 0280 S14/S17: after the menu, not before it — the box is
+        // refused while a menu is open, so the two never overlap, and
+        // drawing it here keeps the menu the last thing on screen if
+        // that guarantee were ever weakened.
+        self.render_score_popup(frame, area);
     }
 
     /// The text area and its local statusline — everything `render`
@@ -2195,29 +2201,7 @@ impl App {
         let width = (inner_width + 2).min(area.width.max(1));
         let height = (menu.items.len() as u16 + 2).min(area.height.max(1));
 
-        // Anchored below-right of the click, flipped when that would
-        // cross an edge — the standard behavior, and the reason the
-        // anchor is a request rather than a position. `saturating_sub`
-        // handles the degenerate case of a menu taller than the screen
-        // by pinning it to the top-left; it is clamped to `area` either
-        // way.
-        let (ax, ay) = menu.anchor;
-        let x = if ax + width <= area.right() {
-            ax
-        } else {
-            area.right().saturating_sub(width)
-        };
-        let y = if ay + 1 + height <= area.bottom() {
-            ay + 1
-        } else {
-            ay.saturating_sub(height).max(area.y)
-        };
-        let rect = Rect {
-            x: x.max(area.x),
-            y: y.max(area.y),
-            width,
-            height,
-        };
+        let rect = anchored_rect(menu.anchor, width, height, area);
 
         let lines: Vec<Line> = menu
             .items
@@ -2277,6 +2261,38 @@ impl App {
                 .wrap(Wrap { trim: true }),
             inner,
         );
+    }
+}
+
+/// A `width`×`height` box put where `anchor` asked for it, without
+/// leaving `area` (spec 0280 S14).
+///
+/// Anchored below-right of the anchor, flipped when that would cross an
+/// edge — the standard behavior, and the reason an anchor is a request
+/// rather than a position. `saturating_sub` handles the degenerate case
+/// of a box taller than the screen by pinning it to the top-left; it is
+/// clamped to `area` either way.
+///
+/// Shared by the context menu and the score box because there is
+/// exactly one right answer to "put a box at a point without leaving
+/// the screen", and two copies of it would be two chances to drift.
+pub(super) fn anchored_rect(anchor: (u16, u16), width: u16, height: u16, area: Rect) -> Rect {
+    let (ax, ay) = anchor;
+    let x = if ax + width <= area.right() {
+        ax
+    } else {
+        area.right().saturating_sub(width)
+    };
+    let y = if ay + 1 + height <= area.bottom() {
+        ay + 1
+    } else {
+        ay.saturating_sub(height).max(area.y)
+    };
+    Rect {
+        x: x.max(area.x),
+        y: y.max(area.y),
+        width,
+        height,
     }
 }
 
