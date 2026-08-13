@@ -32,6 +32,10 @@ use crate::build_scoring_graph::{
     serial,
 };
 use crate::score::{load as score_load, walk};
+// Only `max_depth_walk_fits_in_a_default_thread_stack` reads it, and that
+// test is release-only, so in a debug build this is dead — as is
+// `build_recursive_graph`, its other exclusive dependency.
+#[cfg(not(debug_assertions))]
 use prototext_core::helpers::MAX_WIRE_DEPTH;
 
 /// Score `pb` against the graph and return the result for entry `fqdn`.
@@ -1485,6 +1489,9 @@ fn blind_group_walk_does_not_overflow_the_stack() {
 /// `message Node { optional Node child = 1; }` — self-recursive, so a nest of
 /// LEN fields on field 1 keeps matching all the way down and the walk really
 /// recurses instead of vetoing at the first tag.
+///
+/// Gated with its one caller below, which is release-only.
+#[cfg(not(debug_assertions))]
 fn build_recursive_graph() -> score_load::LoadedGraph {
     let merged = Merged {
         states: {

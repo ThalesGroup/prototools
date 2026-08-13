@@ -316,7 +316,10 @@ fn a_preview_overlay_displaces_the_shown_run() {
 
     // (span lines, expected shown display rows as a function of the
     // overlay's own height) — below the block, above it, and across it.
-    let cases: [(usize, usize, fn(usize) -> Vec<usize>); 3] = [
+    /// The span's first and last *line*, and what display rows it must
+    /// show for an overlay of a given height.
+    type Case = (usize, usize, fn(usize) -> Vec<usize>);
+    let cases: [Case; 3] = [
         (6, 7, |len| vec![3 + len, 4 + len]),
         (0, 1, |_| vec![0, 1]),
         (3, 6, |len| (2..=3 + len).collect()),
