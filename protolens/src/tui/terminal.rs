@@ -491,6 +491,20 @@ where
     Ok(())
 }
 
+/// Spec 0286 S6: called after each dispatched *input* event, because an
+/// input that was not a pan ends the gesture the wall's cue reports.
+///
+/// Only key and mouse events, deliberately: a heat result or a resize is
+/// not the reader doing something else. Putting a lit cue out is a
+/// change on screen, so it takes back spec 0245 S2's "nothing happened"
+/// verdict — which the handler above reached without knowing this was
+/// coming.
+fn settle_edge_resistance(app: &mut App) {
+    if app.scroll_resistance.settle() {
+        app.event_changed_nothing = false;
+    }
+}
+
 /// Dispatch one received event.
 ///
 /// Returns the `redraw_why` tag for an event that asks for a frame, or
@@ -512,6 +526,7 @@ pub(super) fn dispatch_event(app: &mut App, ev: &event::AppEvent) -> Option<&'st
             if key.kind != KeyEventKind::Release {
                 let dispatched_at = Instant::now();
                 app.handle_key(*key);
+                settle_edge_resistance(app);
                 trace::trace!(
                     "key {:?} us={}",
                     key.code,
@@ -523,6 +538,7 @@ pub(super) fn dispatch_event(app: &mut App, ev: &event::AppEvent) -> Option<&'st
         event::AppEvent::Term(Event::Mouse(mouse)) => {
             let dispatched_at = Instant::now();
             app.handle_mouse(*mouse);
+            settle_edge_resistance(app);
             trace::trace!(
                 "mouse {:?} col={} row={} mods={:?} us={}",
                 mouse.kind,

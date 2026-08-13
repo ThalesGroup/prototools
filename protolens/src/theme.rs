@@ -1273,6 +1273,23 @@ pub fn focus_style(theme: ThemeKind) -> Style {
     }
 }
 
+/// Spec 0286 S6: the accent the viewport label wears while the end of
+/// the content is being pushed against.
+///
+/// A **named** ANSI color, with no `supports_rgb` dispatch: it is
+/// painted onto a statusline that is already `REVERSED`, so it becomes
+/// that span's visible background and has to read as a solid block
+/// against both `focus_style`'s white and `unfocused_pane_style`'s gray
+/// on a 16-color terminal as well as a true-color one. Yellow is the
+/// conventional "held, not stuck", and is the one bright ANSI color
+/// neither bar already uses.
+///
+/// Theme-independent for the same reason `focus_style` is: it names a
+/// state of the application, not a role in the document.
+pub fn edge_resistance_color() -> Color {
+    Color::Yellow
+}
+
 /// Unfocused-pane local-statusline style, paired with `focus_style`
 /// above — plain gray, also reversed, so both statuslines read as solid
 /// bars (vim-style) while the focused pane's brighter white still

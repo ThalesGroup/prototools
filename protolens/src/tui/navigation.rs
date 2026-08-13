@@ -1000,6 +1000,11 @@ impl App {
     /// and says so — a held wheel at the top of the document is the
     /// commonest way to fill the event queue with no-ops.
     fn pan_vertical(&mut self, step: usize, up: bool) {
+        // Spec 0286 S3: what this pan *is*, taken before `step` is
+        // rewritten below into the terminal rows it crosses — which
+        // varies with where the viewport happens to be and so would
+        // make every notch of one wheel roll a different gesture.
+        let gesture = (step, up);
         let heights = self.row_heights();
         let content_rows = heights.offset(self.composed_row_count());
         let (min_top, max_top) = pan_top_bounds(content_rows, self.main_area.height as usize);
@@ -1020,8 +1025,23 @@ impl App {
         } as isize;
         let top = self.scroll_top();
         let moved = if up { top - step } else { top + step };
-        let landed = moved.clamp(min_top, max_top);
-        self.event_changed_nothing = landed == top;
+        // Spec 0286: the natural bounds get the first say and the hard
+        // ones are only reached by pushing. Spec 0286 S7: a refused pan
+        // still owes a frame if it was the one that lit the cue, so the
+        // no-op test is "the edge did not move *and* the cue did not
+        // change" rather than the position alone.
+        let natural = natural_top_bounds(content_rows, self.main_area.height as usize);
+        let was_pushing = self.scroll_resistance.pushing();
+        let landed = self.scroll_resistance.land(
+            gesture,
+            top,
+            moved,
+            natural,
+            (min_top, max_top),
+            Instant::now(),
+        );
+        self.event_changed_nothing =
+            landed == top && was_pushing == self.scroll_resistance.pushing();
         self.set_scroll_top(landed);
     }
 

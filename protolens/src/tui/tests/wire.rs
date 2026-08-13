@@ -737,10 +737,9 @@ fn wire_mode_bounds_are_terminal_rows() {
     wire_everything(&mut app);
 
     // 40 lines two rows thick, so the bottom bound is row 79 — odd, and
-    // the pane's first row is line 39's wire row alone.
-    for _ in 0..8 {
-        app.pan_vertical_down();
-    }
+    // the pane's first row is line 39's wire row alone. Spec 0286 makes
+    // it a bound to be pushed through rather than panned to.
+    pan_to_the_bound(&mut app, true);
     assert_eq!(app.scroll_top(), 40 * 2 - 1);
     assert_eq!((app.scroll.index, app.scroll.skip), (39, 1));
     assert_eq!(app.main_pane_line_idx(0, 0), Some(39));
@@ -749,7 +748,7 @@ fn wire_mode_bounds_are_terminal_rows() {
     // nine blank rows, then line 0's document row with its wire row
     // already off the bottom.
     app.set_scroll_top(0);
-    app.pan_vertical_up();
+    pan_to_the_bound(&mut app, false);
     assert_eq!(app.scroll_top(), 1 - 10);
     assert_eq!((app.scroll.index, app.scroll.skip), (0, -9));
     assert_eq!(app.main_pane_line_idx(0, 8), None, "a blank row is no line");

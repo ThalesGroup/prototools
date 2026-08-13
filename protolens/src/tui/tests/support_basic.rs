@@ -4,9 +4,11 @@
 
 //! `App` builders with no fixture bytes to speak of: an empty one, a
 //! one-message one, and the sibling-leaf generators that navigation and
-//! rendering tests count rows against.
+//! rendering tests count rows against — plus the pan driver those tests
+//! share.
 
 use super::super::heat_cue::HEAT_CUE_PREVIEW;
+use super::super::pane_scroll::{EDGE_HOLD, EDGE_PUSHES};
 use super::super::*;
 use super::support_build::app_named;
 use prototext_core::helpers::{WT_LEN, WT_VARINT};
@@ -238,4 +240,34 @@ pub(super) fn wide_sibling_scalars_app(n: usize) -> App {
         fqdns: FqdnTable::new(),
     };
     app_named(decoded, DescriptorContext::empty_for_test(), "test.pb")
+}
+
+/// Pans the main pane until it will not move again, leaning on spec
+/// 0286's wall as often as it stands back up.
+///
+/// Spec 0244's over-pan lies *past* that wall, so a test about the
+/// over-pan bounds has to lean on it rather than expect to arrive in one
+/// step. Each refused pan is back-dated by the hold rather than slept
+/// through, which is what keeps this instant. Terminates: once outside a
+/// natural bound a pan is free again and counts no push, so a run of
+/// refusals there is a run of real refusals.
+pub(super) fn pan_to_the_bound(app: &mut App, down: bool) {
+    let mut refused = 0;
+    while refused <= EDGE_PUSHES {
+        let before = app.scroll_top();
+        if down {
+            app.pan_vertical_down();
+        } else {
+            app.pan_vertical_up();
+        }
+        if app.scroll_top() != before {
+            refused = 0;
+            continue;
+        }
+        refused += 1;
+        // Refused by either the wall — which holding against it gets
+        // through — or spec 0244's own bound, where nothing is pushing
+        // and this is a no-op.
+        app.scroll_resistance.backdate(EDGE_HOLD);
+    }
 }

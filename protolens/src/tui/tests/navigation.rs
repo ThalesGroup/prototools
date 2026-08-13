@@ -180,6 +180,10 @@ fn pan_right_reaches_the_true_end_of_the_longest_visible_line() {
 /// `total - height`. Each end leaves exactly one terminal row of content
 /// on screen, so the top edge runs from `1 - height` to `total - 1`.
 /// 24 sibling leaf lines, a 5-row pane.
+///
+/// Spec 0286 puts a wall on the way there: an ordinary pan settles on the
+/// content's own last line, and the over-pan asserted here is what
+/// pushing on past it buys.
 #[test]
 fn ctrl_up_down_pan_the_main_pane_without_moving_the_cursor() {
     let lines: Vec<String> = (0..24).map(|i| i.to_string()).collect();
@@ -191,14 +195,15 @@ fn ctrl_up_down_pan_the_main_pane_without_moving_the_cursor() {
     app.scroll.index = 15;
     let max_top = 24 - 1;
     let min_top = 1 - 5;
+    let natural_max = 24 - 5;
 
     app.pan_vertical_down();
     assert_eq!(
         app.scroll_top(),
-        (15 + PAN_STEP as isize).min(max_top),
-        "must scroll by PAN_STEP, clamped at the content's own bottom edge"
+        (15 + PAN_STEP as isize).min(natural_max),
+        "must scroll by PAN_STEP, clamped at the content's own last line"
     );
-    app.pan_vertical_down();
+    pan_to_the_bound(&mut app, true);
     assert_eq!(
         app.scroll_top(),
         max_top,
@@ -210,7 +215,7 @@ fn ctrl_up_down_pan_the_main_pane_without_moving_the_cursor() {
     assert_eq!(app.scroll_top(), max_top - PAN_STEP as isize);
 
     app.set_scroll_top(0);
-    app.pan_vertical_up();
+    pan_to_the_bound(&mut app, false);
     assert_eq!(
         app.scroll_top(),
         min_top,
@@ -233,10 +238,12 @@ fn pan_up_may_leave_blank_rows_above_the_first_line() {
     terminal.draw(|f| app.render(f)).unwrap();
     assert_eq!(app.scroll_top(), 0, "the document starts at its own top");
 
-    app.pan_vertical_up();
+    // Spec 0286: the first line is a wall now, so this pushes through it.
+    // The blank rows past it are still there — they cost a shove.
+    pan_to_the_bound(&mut app, false);
     assert!(
         app.scroll_top() < 0,
-        "Ctrl-Up from the top must leave the document's first line, \
+        "pushing on past the top must leave the document's first line, \
          not refuse to move: {}",
         app.scroll_top()
     );

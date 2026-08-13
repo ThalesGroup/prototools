@@ -79,7 +79,8 @@ use bake::BakeStep;
 use help_text::HELP_TEXT;
 use menu::{key_label, Menu};
 use pane_scroll::{
-    AnchorLine, PaneScroll, RowHeights, WireAnchor, WireRowCache, WireSpan, FLAT_ROWS,
+    AnchorLine, EdgeResistance, PaneScroll, RowHeights, WireAnchor, WireRowCache, WireSpan,
+    FLAT_ROWS,
 };
 use popup::{BoxLine, Breakdown, Hover, Popup, PopupBody, WireBox};
 use prefetch::{PrefetchStep, PrefetchTrace, PrefetchWalk};
@@ -732,6 +733,24 @@ fn pan_top_bounds(content_rows: usize, pane_height: usize) -> (isize, isize) {
     (min_top, max_top)
 }
 
+/// Spec 0286 S1: how far a vertical pan may go before it meets the wall,
+/// in the same terminal rows as [`pan_top_bounds`].
+///
+/// The range within which every row the pane draws is content: the lower
+/// bound puts the content's first row on the pane's first, the upper
+/// bound its last row on the pane's last. `pan_top_bounds` is where a
+/// pan may end up *after* pushing through this.
+///
+/// A document shorter than the pane collapses this to `0..=0`, which is
+/// right — such a document has nothing to scroll, so every pan of it is
+/// an over-pan and every one of them meets the wall.
+///
+/// Clamped against `0` at both ends like its sibling, so `min <= max`
+/// always holds and no caller's `.clamp()` can panic.
+fn natural_top_bounds(content_rows: usize, pane_height: usize) -> (isize, isize) {
+    (0, content_rows.saturating_sub(pane_height) as isize)
+}
+
 /// Shared pan-by-`step` arithmetic behind the command bar's Shift+wheel/
 /// native ScrollLeft/ScrollRight handling in `handle_mouse` — moves
 /// `*offset` by `step`, saturating at `0`. `step` is `WHEEL_PAN_STEP`
@@ -818,6 +837,40 @@ fn statusline_text(left: &str, right: Option<&str>, width: usize) -> String {
         line.extend(left_chars.into_iter().skip(dropped));
         line.push_str(&right);
         line
+    }
+}
+
+/// Spec 0286 S6: a composed statusline as a drawable line, with its
+/// viewport label picked out in the edge-resistance accent while the end
+/// of the content is being pushed against.
+///
+/// The label is matched as a **suffix** rather than searched for. It is
+/// the last thing in the ruler, which is the last thing in the right
+/// half, in every branch `statusline_text` can take — including both of
+/// its truncating ones. A label that is not there was truncated away
+/// with the rest of the ruler, and there is nothing left to color.
+///
+/// The bar is `REVERSED` (`theme::focus_style`), so the accent given as
+/// a foreground is what paints the span's visible *background*: the
+/// label becomes a colored block rather than colored glyphs.
+fn statusline_line(
+    text: String,
+    label: Option<&str>,
+    style: Style,
+    pushing: bool,
+) -> Line<'static> {
+    let accented = match (pushing, label) {
+        (true, Some(label)) => text
+            .strip_suffix(label)
+            .map(|head| (head.to_string(), label)),
+        _ => None,
+    };
+    match accented {
+        Some((head, label)) => Line::from(vec![
+            Span::styled(head, style),
+            Span::styled(label.to_string(), style.fg(theme::edge_resistance_color())),
+        ]),
+        None => Line::styled(text, style),
     }
 }
 
@@ -1460,6 +1513,10 @@ pub struct App {
     /// lets a `w` toggle hold a row still. `scroll.index` counts document
     /// lines, which in wire mode are two terminal rows thick.
     scroll: PaneScroll,
+    /// Spec 0286: the wall at either end of the content that `scroll`
+    /// must be pushed through to over-pan. One per pannable pane; the
+    /// side panes have none yet (0286 N3).
+    scroll_resistance: EdgeResistance,
     /// Spec 0259 S1: `scroll`, as of the last frame, said in nodes
     /// instead of in row numbers — so that a splice, which renumbers
     /// every row below it, can put the top of the pane back where the
@@ -2140,6 +2197,7 @@ impl App {
             bounded_confirms,
             discarded_text: Vec::new(),
             scroll: PaneScroll::default(),
+            scroll_resistance: EdgeResistance::default(),
             scroll_anchor: None,
             last_cursor_row: None,
             pan_offset: 0,

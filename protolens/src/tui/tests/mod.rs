@@ -4,6 +4,7 @@
 
 mod bake;
 mod command_line;
+mod edge_resistance;
 mod event_loop;
 mod export_fields;
 mod heat_cue;

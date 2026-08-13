@@ -1809,9 +1809,13 @@ impl App {
         // since the main pane is only half-width then and there's rarely
         // enough room for it too — the line number stays either way.
         let path_label = self.blob_path.display();
-        let (main_left, main_right) = if self.tree.is_empty() {
+        // Spec 0286 S6 wants the viewport label picked out of the
+        // composed row, so it is carried out of the match beside the two
+        // halves rather than left inside the `format!` that built it.
+        let (main_left, main_right, viewport) = if self.tree.is_empty() {
             (
                 format!("{path_label} (empty — decoded to zero fields)"),
+                None,
                 None,
             )
         } else {
@@ -1854,18 +1858,18 @@ impl App {
             // viewport label answers "where is the window" — panning
             // (`z`/`x`, the wheel) moves the second without moving the
             // first, which is what made a lone cursor ruler look stuck.
+            // Spec 0244 S10: in terminal rows, the unit the signed top is
+            // counted in — `total_rows` is document lines, and the ones
+            // showing their bytes are two rows thick.
+            let viewport = viewport_label(
+                self.scroll_top(),
+                inner.height as usize,
+                heights.offset(total_rows),
+            );
             let line_ruler = format!(
-                "L{}/{}  {}",
+                "L{}/{}  {viewport}",
                 self.cursor_line() + 1,
-                self.total_lines(),
-                // Spec 0244 S10: in terminal rows, the unit the signed
-                // top is counted in — `total_rows` is document lines,
-                // and the ones showing their bytes are two rows thick.
-                viewport_label(
-                    self.scroll_top(),
-                    inner.height as usize,
-                    heights.offset(total_rows),
-                ),
+                self.total_lines()
             );
             let right = if half_width {
                 line_ruler
@@ -1873,7 +1877,7 @@ impl App {
                 let range = self.display_range(self.cursor);
                 format!("[{}..{})  {line_ruler}", range.start, range.end)
             };
-            (left, Some(right))
+            (left, Some(right), Some(viewport))
         };
         let main_statusline = main_split[1];
         let main_text = statusline_text(
@@ -1882,7 +1886,12 @@ impl App {
             main_statusline.width as usize,
         );
         frame.render_widget(
-            Paragraph::new(Line::styled(main_text, main_style)),
+            Paragraph::new(statusline_line(
+                main_text,
+                viewport.as_deref(),
+                main_style,
+                self.scroll_resistance.pushing(),
+            )),
             main_statusline,
         );
     }
