@@ -1046,8 +1046,9 @@ impl App {
     /// Spec 0194 S1 makes the suffix's *length* the second zone of the
     /// caret track, which is why this is a function `render` can call
     /// twice — once to draw, once to measure — rather than an inline
-    /// `match`.
-    fn heat_chrome(
+    /// `match`. Spec 0284 S1 adds a third caller: `heat_cue_at_point`,
+    /// which measures the suffix to hit-test it.
+    pub(super) fn heat_chrome(
         &self,
         display: &heat_cue::HeatDisplay,
     ) -> (Span<'static>, Option<Span<'static>>) {

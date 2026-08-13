@@ -1375,23 +1375,34 @@ pub struct App {
     /// `Shift-Left` is how the keyboard spells it); it is only the
     /// *unengaged* click that must select nothing.
     select_engaged: bool,
-    /// Timestamp + `line_idx` of the most recent main-pane left-click
-    /// `Down` event that landed on a line's *text* — compared against on
-    /// the next such `Down` to recognize a double-click (same line,
-    /// within `DOUBLE_CLICK_THRESHOLD`), which selects that whole line.
-    /// `None` before the first click.
+    /// Timestamp + `(line_idx, zone)` of the most recent main-pane
+    /// left-click `Down` event that landed on a line — compared against
+    /// on the next such `Down` to recognize a double-click (same line
+    /// *and* same zone, within `DOUBLE_CLICK_THRESHOLD`). `None` before
+    /// the first click.
+    ///
+    /// The zone is part of the key (spec 0284 S6) because the two zones'
+    /// double-clicks do different things: a click on the text followed
+    /// by a click on the heat cue beside it is two single clicks, not a
+    /// pair that has to choose between them.
     ///
     /// A click on the fold field is deliberately not tracked here and
     /// clears it: the fold toggle is a control, and a control must act
     /// on every click that reaches it, never differently for being the
-    /// n-th of a fast run.
-    last_click: Option<(Instant, usize)>,
-    /// Whether the click currently in progress (`Down` already handled,
-    /// matching `Up` not yet seen) was recognized as the second click of
-    /// a double-click — consulted by the `Up` handler to decide whether a
-    /// plain (non-dragged) click should deselect (`false`, the default)
-    /// or select the whole line (`true`).
-    pending_double_click: bool,
+    /// n-th of a fast run. The heat cue is a control too but acts only
+    /// on the *second* of a pair, so it pairs normally (0284 S7).
+    last_click: Option<(Instant, (usize, ClickZone))>,
+    /// The zone of the click currently in progress (`Down` already
+    /// handled, matching `Up` not yet seen) when it was recognized as
+    /// the second click of a double-click — consulted by the `Up`
+    /// handler to decide what the gesture meant. `None` for a plain
+    /// (non-dragged) click, which deselects.
+    ///
+    /// Recorded rather than re-derived at `Up`, because the gesture was
+    /// decided at the second `Down`: a release that moved is a `Drag`,
+    /// and hit-testing the release position would let one gesture start
+    /// on a control and finish somewhere else.
+    pending_double_click: Option<ClickZone>,
     /// Nodes the *user* folded. Never written by anything the user did
     /// not ask for, which is the whole point of it being separate from
     /// `auto_folded` (spec 0249 S3).
@@ -2121,7 +2132,7 @@ impl App {
             select_anchor: None,
             select_engaged: false,
             last_click: None,
-            pending_double_click: false,
+            pending_double_click: None,
             folded: HashSet::new(),
             auto_folded: stops.iter().copied().collect(),
             bake_queue: stops.iter().copied().collect(),
@@ -2457,6 +2468,7 @@ mod lines;
 mod manage_pane;
 mod menu;
 mod mouse;
+use mouse::ClickZone;
 mod navigation;
 #[cfg(unix)]
 mod neovim;

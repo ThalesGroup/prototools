@@ -4,6 +4,21 @@
 
 use super::*;
 
+/// Which of a main-pane row's two click zones a `Down` landed in
+/// (spec 0284 S6).
+///
+/// A double-click pair has to agree on its zone, so this is half of
+/// `last_click`'s key: a click on the text followed by a click on the
+/// cue beside it is two single clicks, not a gesture.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum ClickZone {
+    /// The row's own text, whose double-click selects the line.
+    Text,
+    /// The heat cue's `[…]` suffix, whose double-click opens the
+    /// override selection pane.
+    Cue,
+}
+
 impl App {
     /// Handle one mouse event: wheel scroll pans the hovered pane's
     /// viewport; a left click on a foldable node's marker column toggles
@@ -251,11 +266,23 @@ impl App {
                 // *control*: it must act on every click that reaches
                 // it, and a run of four fast clicks on it must be four
                 // toggles, not three plus a gesture.
+                //
+                // The heat cue is a control too, but it acts only on the
+                // second click of a pair, so it does not need that rule
+                // and pairs normally (spec 0284 S7). It does need its
+                // own half of the key: the two zones' double-clicks mean
+                // different things, so a pair may not straddle them.
                 self.pending_double_click = match line_idx {
-                    Some(l) if !on_marker => is_double_click(&mut self.last_click, l),
+                    Some(l) if !on_marker => {
+                        let zone = match self.heat_cue_at_point(event.column, event.row) {
+                            Some(_) => ClickZone::Cue,
+                            None => ClickZone::Text,
+                        };
+                        is_double_click(&mut self.last_click, (l, zone)).then_some(zone)
+                    }
                     _ => {
                         self.last_click = None;
-                        false
+                        None
                     }
                 };
 
@@ -338,16 +365,31 @@ impl App {
                 // a gesture that both selects text and opens a side pane
                 // is two gestures wearing one name — and the pane is the
                 // more disruptive of the two to get by accident.
-                MouseEventKind::Up(MouseButton::Left) => {
-                    if self.pending_double_click {
-                        self.select_current_line();
-                    } else if !self.select_engaged {
-                        // No drag happened, so the click selected
-                        // nothing — drop the anchor it armed rather than
-                        // leave it standing.
+                //
+                // On the heat cue it is the other way round (spec 0284
+                // S4). The cue asks *some other type fits these bytes
+                // better*, and the override pane is the answer, so a
+                // double-click there opens it and selects nothing — the
+                // row's text is not what was pointed at, and spec 0242
+                // S11 already puts the suffix in no selection. The
+                // first click of the pair has put the caret on that
+                // line, and `toggle_override` acts on the cursor, so the
+                // gesture needs no positioning step of its own. Its
+                // close arm is unreachable from here: with the pane open
+                // `main_interactive` is false and this whole block is
+                // skipped.
+                MouseEventKind::Up(MouseButton::Left) => match self.pending_double_click {
+                    Some(ClickZone::Text) => self.select_current_line(),
+                    Some(ClickZone::Cue) => {
                         self.clear_selection();
+                        self.toggle_override();
                     }
-                }
+                    // No drag happened, so the click selected nothing —
+                    // drop the anchor it armed rather than leave it
+                    // standing.
+                    None if !self.select_engaged => self.clear_selection(),
+                    None => {}
+                },
                 _ => {}
             }
         }
@@ -438,6 +480,38 @@ impl App {
             heights.row_at(heights.offset(self.scroll.index) + rel_row as usize);
         self.visible_row_pos(content_row)
             .map(|(_, line)| (line, part))
+    }
+
+    /// Spec 0284 S2: the line whose drawn heat suffix — ` [3/7]`,
+    /// ` [2@7]`, ` [?/7]` or ` [?]` — covers `(col, row)`, or `None`
+    /// where no suffix is drawn there.
+    ///
+    /// The suffix begins one column past the row's text: column 0 is the
+    /// reserved heat gutter (spec 0138 N1) and the text between them is
+    /// as long as the pan left it. **No `pan_offset` is added back**,
+    /// unlike the fold marker's hit test above: `render` pushes the
+    /// suffix span *after* `pan_spans`, so the suffix does not scroll.
+    ///
+    /// Only the document row of a wire pair is a target, since only it
+    /// draws a suffix. A cue hidden by `i`, or a line that draws none,
+    /// is `None` — the target is exactly what is on screen.
+    pub(super) fn heat_cue_at_point(&mut self, col: u16, row: u16) -> Option<usize> {
+        let (line_idx, part) = self.main_pane_line_part(col, row)?;
+        if part != 0 {
+            return None;
+        }
+        let pos = self.line_pos(line_idx)?;
+        let display = self.heat_cue_at(pos);
+        let (_, suffix) = self.heat_chrome(&display);
+        let width = suffix?.content.chars().count();
+        let drawn = self.committed_row_at(line_idx, pos);
+        let start = 1 + self
+            .row_content(drawn)
+            .chars()
+            .count()
+            .saturating_sub(self.pan_offset);
+        let x = (col - self.main_area.x) as usize;
+        (start..start + width).contains(&x).then_some(line_idx)
     }
 
     /// Dispatch one main-pane left-click: on a fold marker it toggles
@@ -544,11 +618,27 @@ impl App {
             .saturating_sub(self.pan_offset);
         // Column 0 of the pane is the heat glyph's reserved gutter (spec
         // 0138 N1), which is never a caret stop.
-        let x = (col.saturating_sub(self.main_area.x) as usize).saturating_sub(1);
-        self.cursor_column = if x < panned {
-            (x + self.pan_offset).saturating_sub(render::FOLD_FIELD_WIDTH)
+        let x = col.saturating_sub(self.main_area.x) as usize;
+        self.cursor_column = if x == 0 {
+            // Spec 0284 S5: the gutter is one zone of its own, ahead of
+            // the two below, and means the row's first non-blank at any
+            // pan. Setting 0 is enough — the `clamp_caret_column` at the
+            // end of this function raises it to `caret_bounds().0`,
+            // which is that character by definition.
+            //
+            // Letting the saturation below decide instead gave the same
+            // answer only while unpanned: with `pan_offset > 0` it
+            // landed on the leftmost *visible* character. The gutter
+            // does not scroll, so a click in it must not mean two
+            // things depending on how far the view has.
+            //
+            // The anchor stays `Free` (N3): this places the caret, it
+            // does not declare `CaretAnchor::Home` the way `0`/`^` does.
+            0
+        } else if x - 1 < panned {
+            (x - 1 + self.pan_offset).saturating_sub(render::FOLD_FIELD_WIDTH)
         } else {
-            text_chars + (x - panned)
+            text_chars + (x - 1 - panned)
         };
         self.clamp_caret_column();
         self.desired_column = self.cursor_column;
@@ -615,7 +705,7 @@ impl App {
         self.override_focus = false;
         self.manage_focus = false;
         self.last_click = None;
-        self.pending_double_click = false;
+        self.pending_double_click = None;
         if !self.select_engaged {
             self.select_anchor = Some(self.cursor_pos());
         }

@@ -2,7 +2,11 @@
 //
 // SPDX-License-Identifier: MIT
 
+use super::super::heat_cue::HEAT_CUE_PREVIEW;
+use super::super::heat_worker::{HeatWorkerHandle, RangeHeatEntry};
+use super::super::tiered::Tier;
 use super::super::*;
+use super::heat_cue::seed_range_heat_entry;
 use super::support::*;
 
 /// Regression test (2026-07-15 feedback): `EnableMouseCapture` turns
@@ -1098,4 +1102,302 @@ fn a_click_places_the_caret_except_on_the_fold_marker() {
         "the whole two-column fold field toggles, not just the glyph"
     );
     assert_eq!(app.cursor_column, indent, "and still not the caret");
+}
+
+// ---------------------------------------------------------------------
+// Spec 0284 — the heat cue is a control
+// ---------------------------------------------------------------------
+
+/// An app whose node 0 shows the given cue on its header line, wide
+/// enough for `toggle_override` to open.
+///
+/// `best_count` of 1 gives the `[current/best]` suffix, 2 or more the
+/// `[tie@score]` one. The seeding is `i_toggles_heat_cues_hidden`'s: an
+/// entry planted straight into `heat_caches`, which is what lets a cue
+/// exist without a scoring graph behind it.
+fn cue_app(best_count: usize, current: i64) -> App {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.term_width = 120;
+    let range = extract::message_payload_range(&app.blob, &app.tree[0].span.raw_range);
+    seed_range_heat_entry(
+        &mut app,
+        range.start,
+        Some(50),
+        best_count,
+        "google.protobuf.DescriptorProto",
+        Some(current),
+    );
+    app
+}
+
+/// The pane column of `needle`'s first character on the main pane's
+/// first row, read back off a rendered frame — and the frame is what
+/// establishes `main_area` for the click that follows.
+///
+/// Read from the buffer rather than rebuilt from `row_content` and
+/// `pan_offset`, because spec 0282's two-column hover offset survived
+/// fourteen tests whose helper reproduced the implementation's own
+/// arithmetic: helper and implementation agreed while both were wrong.
+fn drawn_column(app: &mut App, needle: &str) -> u16 {
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let row: String = (0..80)
+        .map(|x| buffer[(x, app.main_area.y)].symbol().to_string())
+        .collect();
+    let at = row
+        .find(needle)
+        .unwrap_or_else(|| panic!("{needle:?} is not drawn on the first row: {row:?}"));
+    // A byte index over a row that opens with the multi-byte heat glyph.
+    row[..at].chars().count() as u16
+}
+
+fn click_at(app: &mut App, col: u16, row: u16) {
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        app.handle_mouse(MouseEvent {
+            kind,
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+    }
+}
+
+fn double_click_at(app: &mut App, col: u16, row: u16) {
+    click_at(app, col, row);
+    click_at(app, col, row);
+}
+
+/// Spec 0284 S4: the cue asks *some other type fits these bytes
+/// better*, and the override pane is the answer — so double-clicking
+/// the cue opens it, exactly as `t` does. Both numeric shapes are
+/// targets; they differ only in what they count.
+#[test]
+fn a_double_click_on_a_numeric_cue_opens_the_override_pane() {
+    for (best_count, current, suffix) in [(1, 10, " [10/50]"), (2, 50, " [2@50]")] {
+        let mut app = cue_app(best_count, current);
+        let col = drawn_column(&mut app, suffix);
+        let row = app.main_area.y;
+        double_click_at(&mut app, col + 2, row);
+        assert_eq!(
+            app.override_target,
+            Some(0),
+            "{suffix} must open the pane on the node it describes"
+        );
+        assert!(app.override_focus, "and hand it the keyboard");
+        assert!(
+            app.selection_span().is_none(),
+            "{suffix}: and select nothing"
+        );
+    }
+}
+
+/// The row selection a double-click on the text would have made does
+/// not happen on the cue: the row's text is not what was pointed at,
+/// and spec 0242 S11 already puts the heat suffix in no selection.
+#[test]
+fn a_double_click_on_a_cue_leaves_the_row_unselected() {
+    let mut app = cue_app(1, 10);
+    let cue = drawn_column(&mut app, " [10/50]");
+    let row = app.main_area.y;
+    // The row's last character, one column left of the suffix — column
+    // 1 is this node's fold marker, which forms no pair at all.
+    let text = cue - 1;
+
+    double_click_at(&mut app, text, row);
+    let text_selection = app.selection_span().expect("the text zone selects the row");
+
+    double_click_at(&mut app, cue + 2, row);
+    assert!(
+        app.selection_span().is_none(),
+        "the cue zone selects nothing, where the text zone made {text_selection:?}"
+    );
+}
+
+/// Spec 0284 S6 does not disturb the gesture it splits: a double-click
+/// on the row's own text still selects the row, cue or no cue.
+#[test]
+fn a_double_click_on_the_text_still_selects_the_row() {
+    let mut app = cue_app(1, 10);
+    let cue = drawn_column(&mut app, " [10/50]");
+    let row = app.main_area.y;
+    double_click_at(&mut app, cue - 1, row);
+    assert!(
+        app.selection_span().is_some(),
+        "the last character of the text is still the text zone"
+    );
+    assert!(app.override_target.is_none());
+}
+
+/// Spec 0284 S6: a pair must agree on its zone. Two clicks in quick
+/// succession on the same *line* but either side of the boundary are
+/// two single clicks — the alternative is a gesture that has to choose
+/// between selecting the row and opening a pane.
+#[test]
+fn a_click_on_the_text_then_on_the_cue_is_not_a_pair() {
+    let mut app = cue_app(1, 10);
+    let cue = drawn_column(&mut app, " [10/50]");
+    let row = app.main_area.y;
+    let text = cue - 1;
+
+    click_at(&mut app, text, row);
+    click_at(&mut app, cue + 2, row);
+    assert!(app.override_target.is_none(), "text then cue is not a pair");
+    assert!(app.selection_span().is_none());
+
+    // ...and the other way round. From a cleared slate, since the click
+    // that just landed was itself on the cue and pairing with it is the
+    // gesture, not the counter-example.
+    app.last_click = None;
+    click_at(&mut app, cue + 2, row);
+    click_at(&mut app, text, row);
+    assert!(app.override_target.is_none(), "cue then text is not either");
+    assert!(app.selection_span().is_none());
+
+    // Two clicks that do agree on the zone still pair.
+    app.last_click = None;
+    double_click_at(&mut app, cue + 2, row);
+    assert_eq!(app.override_target, Some(0));
+}
+
+/// Spec 0284 S3: every drawn suffix is a target, including a pending
+/// one. A reader who double-clicks a cue that is still resolving wants
+/// the same pane, and the pane resolves its own candidates on open — a
+/// uniform rule also keeps the target from appearing and disappearing
+/// under the pointer as a background sweep lands.
+#[test]
+fn a_pending_cue_is_a_target_too() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.term_width = 120;
+    // A worker, so `heat_cue_resolve` does not fall back to scoring on
+    // this thread — and only the window half seeded, so the current
+    // type's own score is still missing.
+    app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
+    let range = extract::message_payload_range(&app.blob, &app.tree[0].span.raw_range);
+    app.heat_caches.lock().unwrap().by_range.upsert(
+        range.start,
+        RangeHeatEntry {
+            best_score: Some(50),
+            best_count: 1,
+            top_n: vec![("a.Type".to_string(), 50); HEAT_CUE_PREVIEW],
+        },
+        Tier::Visible,
+    );
+
+    let col = drawn_column(&mut app, " [?/50]");
+    let row = app.main_area.y;
+    double_click_at(&mut app, col + 2, row);
+    assert_eq!(app.override_target, Some(0));
+}
+
+/// A row that draws no suffix offers no target there — the target is
+/// exactly what is on screen. The columns past such a row's text are
+/// the caret track's own right-hand zone (spec 0194 S1), so a
+/// double-click on them selects the row, as everywhere else in the text.
+#[test]
+fn a_row_with_no_cue_has_no_target() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.term_width = 120;
+    let past_the_text = drawn_column(&mut app, "{") + 4;
+    let row = app.main_area.y;
+
+    assert_eq!(app.heat_cue_at_point(past_the_text, row), None);
+    double_click_at(&mut app, past_the_text, row);
+    assert!(app.override_target.is_none());
+    assert!(
+        app.selection_span().is_some(),
+        "with no control there, the row's own double-click stands"
+    );
+}
+
+/// Spec 0284 S2: the hit test follows the *drawn* suffix. `render`
+/// pushes the suffix span after `pan_spans`, so a pan slides it left
+/// along with the text's right edge — and no `pan_offset` is added back
+/// on the way in, unlike the fold marker's hit test.
+#[test]
+fn the_cue_target_follows_the_drawn_suffix_at_any_pan() {
+    const PAN: u16 = 4;
+    let mut app = cue_app(1, 10);
+    let unpanned = drawn_column(&mut app, " [10/50]");
+    let row = app.main_area.y;
+    // Far enough into the eight columns of ` [10/50]` that panning by
+    // `PAN` carries the suffix off it entirely.
+    let tail = unpanned + 7;
+    assert_eq!(app.heat_cue_at_point(tail, row), Some(0));
+
+    app.pan_offset = PAN as usize;
+    let panned = drawn_column(&mut app, " [10/50]");
+    assert_eq!(
+        panned,
+        unpanned - PAN,
+        "the suffix rides the text's right edge"
+    );
+    assert_eq!(app.heat_cue_at_point(panned + 7, row), Some(0));
+    assert_eq!(
+        app.heat_cue_at_point(tail, row),
+        None,
+        "and nothing is left behind at the column it vacated"
+    );
+}
+
+/// Spec 0284 S5: column 0 is the reserved heat gutter, it does not
+/// scroll, and a click in it means the row's first non-blank at any
+/// pan. Letting the old `saturating_sub(1)` fall through to the text
+/// zone gave that answer only while unpanned; panned, it landed on the
+/// leftmost *visible* character instead.
+#[test]
+fn a_click_in_the_left_margin_lands_on_the_first_non_blank() {
+    let (mut app, items) = repeated_message_fixture();
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 60, 20);
+
+    let header = app.absolute_start(items[1]);
+    let row = app
+        .visible_row_of_line(header)
+        .expect("the header row is visible") as u16;
+    let indent =
+        app.document_lines()[header].len() - app.document_lines()[header].trim_start().len();
+
+    app.handle_click(0, row);
+    assert_eq!(app.cursor_column, indent);
+
+    app.pan_offset = 5;
+    app.handle_click(0, row);
+    assert_eq!(
+        app.cursor_column, indent,
+        "the gutter does not scroll, so a click in it must not mean \
+         two things depending on how far the view has"
+    );
+}
+
+/// Spec 0284 N3: it places the caret and says nothing about why. Spec
+/// 0199 S10 has every click forfeit the anchor — an anchored caret
+/// changes what the next `h`/`l` does, and a click must not decide that.
+#[test]
+fn a_click_in_the_left_margin_forfeits_the_anchor() {
+    let (mut app, items) = repeated_message_fixture();
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 60, 20);
+
+    let header = app.absolute_start(items[1]);
+    let row = app
+        .visible_row_of_line(header)
+        .expect("the header row is visible") as u16;
+
+    app.handle_click(0, row);
+    app.handle_key(KeyEvent::new(KeyCode::Char('0'), KeyModifiers::NONE));
+    assert_eq!(app.caret_anchor, CaretAnchor::Home, "`0` declares it");
+
+    app.handle_click(0, row);
+    assert_eq!(
+        app.caret_anchor,
+        CaretAnchor::Free,
+        "the same landing place, and no claim about it"
+    );
 }

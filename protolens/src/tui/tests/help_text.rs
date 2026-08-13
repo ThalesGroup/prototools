@@ -150,3 +150,19 @@ fn no_help_line_is_too_wide_to_read() {
         "help lines wider than {LIMIT} columns are cut off, not wrapped: {long:#?}",
     );
 }
+
+/// Spec 0284 S8. Neither gesture is a key, so the scan above cannot
+/// see them: a mouse binding drifts out of the help with nothing to
+/// notice, which is what this asserts against.
+#[test]
+fn the_help_text_documents_both_mouse_gestures() {
+    let help = HELP_TEXT.join("\n");
+    assert!(
+        help.contains("double-click on a [ ] cue"),
+        "the cue's double-click is undocumented"
+    );
+    assert!(
+        help.contains("click in the left margin"),
+        "the left margin's click is undocumented"
+    );
+}
