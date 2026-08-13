@@ -951,12 +951,20 @@ impl App {
     /// says nothing about the node and everything about how deep it is.
     /// The two extra spans are paid only on a row that has a marker
     /// *and* something to say about it.
+    ///
+    /// And the glyph never wears the underline either, whatever spec
+    /// 0192's weight says: the marker is a triangle a single rule runs
+    /// straight through, and the two together read as neither. The
+    /// bold half of a manual override's weight still lands here, and
+    /// the underline still lands on the row's key and type name, which
+    /// is where it can be read.
     fn margin_spans(
         &self,
         margin: String,
         owner: Option<usize>,
         emphasis: Modifier,
     ) -> Vec<Span<'static>> {
+        let emphasis = emphasis - Modifier::UNDERLINED;
         let color = self.fold_marker_color(owner);
         if color.is_none() && emphasis.is_empty() {
             return vec![Span::raw(margin)];

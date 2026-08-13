@@ -482,6 +482,15 @@ fn an_override_weights_the_key_the_marker_and_the_type_name() {
         for (i, &row) in window.iter().enumerate() {
             let plain = app.row_spans(row, i, Modifier::empty());
             let drawn = app.row_spans(row, i, emphasis[i]);
+            // The glyph takes the weight but never the underline: a
+            // rule drawn straight through a triangle reads as neither.
+            for span in &drawn {
+                assert!(
+                    !span.content.contains(render::FOLD_GLYPH_OPEN)
+                        || !span.style.add_modifier.contains(Modifier::UNDERLINED),
+                    "row {i}: the fold glyph is underlined"
+                );
+            }
             let want: &[String] = match i {
                 _ if i == manual => want_manual,
                 _ if i == auto => want_auto,

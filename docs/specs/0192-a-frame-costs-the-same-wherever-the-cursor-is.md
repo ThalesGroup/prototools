@@ -27,6 +27,13 @@ Status: implemented — but S1's stored field is gone, and for a better
         not margin-wide — a color is invisible on the surrounding spaces
         (which is why spec 0247 S10 could settle for one span) but an
         underline is not, and would draw a rule across the indentation.
+        Amended 2026-08-13: the marker takes the **bold** half of the
+        weight and never the underline, on the same argument one step
+        further in. A rule drawn through the triangle glyph makes it
+        hard to read as a triangle and hard to read as a rule; the
+        underline still lands on the key and the type name, where it
+        can be read. So the marker no longer tells a manual override
+        from an auto-derived one — the other two targets do.
         There is no whole-row fallback: a bare footer carries no cue,
         which is accepted, because the header it closes is on screen
         carrying all three. Once `a` hides the annotations, the key and
