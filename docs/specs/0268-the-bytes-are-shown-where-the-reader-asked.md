@@ -8,6 +8,19 @@ SPDX-License-Identifier: MIT
 
 Status: implemented
 Implemented in: 2026-08-09
+Amended 2026-08-13: **S8, `Ctrl-w` puts the bytes away.** N1's single
+        run is cleared by `w` or `W` on a row *inside* it, which means
+        the gesture has to be aimed at a run the reader may have
+        scrolled away from — and after a `W` on a large subtree the run
+        can be longer than the screen. `Ctrl-w` sets the span to `None`
+        whatever is showing and wherever the caret is, through
+        `set_wire_span` so that the caret keeps its terminal row as the
+        pane grows back (S6). On nothing showing it is a no-op, not an
+        error: "the bytes are away" is the state it names, not a
+        transition it performs. It is not one of spec 0242 S3's
+        selection-keepers — it does not read the selection — and
+        `keeps_the_selection` already excludes it, `Ctrl-w` not being
+        `w`.
 App: protolens
 Refs: docs/specs/0225-the-wire-bytes-are-shown-under-each-line.md (the
         wire row itself, and S8's whole-pane `w` this replaces),

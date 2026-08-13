@@ -221,6 +221,22 @@ impl App {
         self.set_wire_span(target, self.cursor_display_row());
     }
 
+    /// Spec 0268 S8: `Ctrl-w` — put the bytes away, wherever they are.
+    ///
+    /// `w` and `W` can only turn a run off from inside it, and the run
+    /// may be nowhere near the caret by the time the reader is done
+    /// with it. This is the one gesture that does not have to be aimed.
+    ///
+    /// It goes through [`App::set_wire_span`] rather than assigning
+    /// `None` itself, for the geometry that method owns: clearing a run
+    /// above the caret shortens the pane by however many rows it held,
+    /// and the caret's terminal row has to survive that. The probe is
+    /// immaterial — both branches of the toggle yield `None` when the
+    /// target is `None`.
+    pub(super) fn wire_clear(&mut self) {
+        self.set_wire_span(None, self.cursor_display_row());
+    }
+
     /// Spec 0268 S3: `W` — the same for the whole subtree containing the
     /// selection, or the caret's own node when nothing is selected.
     pub(super) fn wire_subtree(&mut self) {

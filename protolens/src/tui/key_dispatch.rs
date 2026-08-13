@@ -712,6 +712,13 @@ impl App {
                 // not copy by itself (see the no-op
                 // `Up(MouseButton::Left)` arm in `handle_mouse`).
                 KeyCode::Char('c') if ctrl => self.copy_current_selection_or_line(),
+
+                // Spec 0268 S8: put the bytes away. `w` and `W` turn a
+                // run off only from a row inside it, and after scrolling
+                // there may be no such row on screen; this one needs no
+                // aim. On `Ctrl-w` because it is the same gesture as `w`
+                // with the target dropped.
+                KeyCode::Char('w') if ctrl => self.wire_clear(),
                 _ => {}
             }
             return;

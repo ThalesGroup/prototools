@@ -79,6 +79,10 @@ fn press(app: &mut App, c: char) {
     app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
 }
 
+fn ctrl(app: &mut App, c: char) {
+    app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+}
+
 /// Spec 0268 test plan 9: the whole document shows its bytes — the span
 /// the pre-0268 whole-pane `w` amounted to, and what the viewport tests
 /// below were always testing.
@@ -479,6 +483,41 @@ fn w_inside_a_shown_run_turns_the_whole_run_off() {
         drawn_wire_rows(&mut app).is_empty(),
         "and no row in the frame has bytes under it"
     );
+}
+
+/// Spec 0268 S8: `Ctrl-w` clears the run from anywhere, and does
+/// nothing at all when there is no run.
+///
+/// The discriminating case is a caret *outside* the shown run: `w`
+/// there would light the caret's own line instead of clearing, which is
+/// the gap S8 exists to fill.
+#[test]
+fn ctrl_w_clears_the_run_from_outside_it() {
+    let (mut app, _run, _tail, _a, _b) = packed_run_with_tail_fixture();
+    app.main_area = Rect::new(0, 0, 80, 22);
+    for _ in 0..4 {
+        app.move_down();
+    }
+    press(&mut app, 'W');
+    assert_eq!(shown_rows(&app), vec![4, 5, 6]);
+
+    // Off the run entirely, where `w` would light line 0 rather than
+    // put anything away.
+    app.move_home();
+    assert_eq!(app.cursor_line(), 0);
+
+    ctrl(&mut app, 'w');
+    assert!(app.wire.is_none());
+    assert!(shown_rows(&app).is_empty());
+    assert!(
+        drawn_wire_rows(&mut app).is_empty(),
+        "and no row in the frame has bytes under it"
+    );
+
+    // Again on nothing: still nothing, and no row has become tall.
+    ctrl(&mut app, 'w');
+    assert!(app.wire.is_none());
+    assert!(shown_rows(&app).is_empty());
 }
 
 /// Spec 0268 test plan 4, and G2: `W` on a submessage shows that
