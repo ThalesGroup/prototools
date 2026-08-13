@@ -459,7 +459,7 @@ impl App {
         // unwanted as one already open once the reader has done
         // something else. `s` re-opens it below, after its own handler
         // has decided the box is warranted.
-        self.dismiss_score_popup();
+        self.dismiss_popup();
 
         // Dismiss the splash screen transparently: the key that dismisses
         // it is also processed as a real command, same as if there had

@@ -1316,7 +1316,7 @@ impl App {
         // refused while a menu is open, so the two never overlap, and
         // drawing it here keeps the menu the last thing on screen if
         // that guarantee were ever weakened.
-        self.render_score_popup(frame, area);
+        self.render_popup(frame, area);
     }
 
     /// The text area and its local statusline — everything `render`

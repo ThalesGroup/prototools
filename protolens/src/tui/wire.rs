@@ -182,8 +182,8 @@ impl WirePalette {
 
 /// Which part of the row the pen is in, so that a byte carrying no tier
 /// takes that part's borrowed hue (spec 0225 S11).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Region {
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Region {
     Tag,
     Type,
     Len,
@@ -191,6 +191,75 @@ enum Region {
     /// Bytes no framing claimed. They belong to none of the four and
     /// take the subdued default: nothing honest can be said about them.
     Unclaimed,
+}
+
+/// What the pointer can be resting on, one wire row's worth
+/// (spec 0282 S3).
+///
+/// [`Region`] is wrapped rather than extended. Its five variants are
+/// exactly the parts of a *record*, and the painter uses it to decide
+/// banding; the two marks below are not parts of a record — they stand
+/// where bytes were never drawn — so giving them `Region` variants
+/// would put two non-regions into a banding enum and oblige every
+/// `match` on it to answer for them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum WirePart {
+    Region(Region),
+    /// The `??` a [`Painter::cut`] draws: the region whose bytes ran
+    /// out, and how many the record still owes when it declared a
+    /// length to subtract from.
+    Truncated {
+        region: Region,
+        missing: Option<usize>,
+    },
+    /// The `…×N` a [`Painter::finish`] draws, carrying its own N —
+    /// `finish` has already counted it, and a second count in the popup
+    /// is a second count that can disagree.
+    Elided {
+        hidden: usize,
+    },
+}
+
+/// One run of columns of a wire row, and what the painter drew there.
+///
+/// `cols` are within the row's own hex, before [`margin`] prepends the
+/// indent and the connector; `bytes` are absolute offsets in the blob,
+/// since the painter works on a slice of it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(super) struct PartSpan {
+    pub(super) cols: Range<usize>,
+    pub(super) part: WirePart,
+    pub(super) bytes: Range<usize>,
+}
+
+/// What one wire row drew where, and what it accused while drawing it.
+///
+/// Built only when someone asks for it (spec 0282 G4). The hot path
+/// wants neither list: the parts are wanted on hover and only on hover,
+/// and the keywords have always been a cross-check rather than
+/// something the row draws.
+#[derive(Default)]
+pub(super) struct WireRecord {
+    pub(super) parts: Vec<PartSpan>,
+    /// Each accusation with the part it is *about* — which is not
+    /// always the part the pen was in when it was found (spec 0282 S4).
+    pub(super) flags: Vec<(Region, &'static str)>,
+    /// Spec 0283 S1: the same columns at byte resolution.
+    ///
+    /// `parts` coalesces a run into one entry, which is right for the
+    /// question *what part is this* and throws away the one this
+    /// answers: *which byte*. One entry per byte drawn, in the order
+    /// they were drawn.
+    pub(super) cells: Vec<ByteCell>,
+}
+
+/// The columns one drawn byte occupies, and where it came from
+/// (spec 0283 S1).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(super) struct ByteCell {
+    pub(super) cols: Range<usize>,
+    /// An absolute offset in the blob.
+    pub(super) at: usize,
 }
 
 /// What every part of a wire row with no hue of its own wears:
@@ -215,17 +284,30 @@ fn block(style: Style) -> Option<Style> {
 /// One rendered wire row.
 pub(super) struct WireRow {
     pub(super) spans: Vec<Span<'static>>,
-    /// The annotation keywords this row's bytes justify, in the order
-    /// they were found — the wire-level subset of what prototext-core
+    /// What was drawn where, and the annotation keywords this row's
+    /// bytes justify — the wire-level subset of what prototext-core
     /// would print as `#@ ...` on the line above.
     ///
-    /// Test-only, and deliberately so: nothing draws a keyword, the
-    /// styling already went through `tier_of`, and keeping the list at
-    /// runtime would allocate on every row of every frame to say what
-    /// the row already shows. It exists so a test can cross-check the
-    /// two independent derivations (S11, "where the facts come from").
+    /// `None` on every row a frame draws: nothing draws a keyword, the
+    /// styling already went through `tier_of`, and keeping either list
+    /// at runtime would allocate on every row of every frame to say
+    /// what the row already shows. It is filled when a hover asks which
+    /// byte it is on (spec 0282 S5), and by the tests, which use it to
+    /// cross-check the two independent derivations (0225 S11).
+    pub(super) record: Option<WireRecord>,
+}
+
+impl WireRow {
+    /// The keywords alone, in the order they were found — the shape the
+    /// cross-check of 0225 S11 wants, where the hover box wants them
+    /// filtered by the part they are about and reads `flags` directly.
     #[cfg(test)]
-    pub(super) flags: Vec<&'static str>,
+    pub(super) fn flags(&self) -> Vec<&'static str> {
+        match &self.record {
+            Some(record) => record.flags.iter().map(|(_, kw)| *kw).collect(),
+            None => Vec::new(),
+        }
+    }
 }
 
 /// The one-entry memo of S4: where the *next* element of a packed run
@@ -478,6 +560,128 @@ impl App {
             wire_spans(&overlay.bytes, &slice, self.theme, palette),
         )
     }
+
+    /// What the pointer is resting on, when it is resting on a wire row
+    /// (spec 0282 S5).
+    ///
+    /// The row is drawn again, once, with the recorder attached, and
+    /// the column looked up in what it noted. Drawing it again rather
+    /// than remembering it is the whole of G4: this happens at most
+    /// once per pointer movement, where remembering would cost a `Vec`
+    /// per wire row per frame for a feature that is idle almost always.
+    ///
+    /// `None` for the document row of a pair, for a column past the
+    /// row's drawn end, and for the punctuation between two parts.
+    pub(super) fn wire_part_at(&self, column: u16, row: u16) -> Option<WireHit> {
+        let (line_idx, part) = self.main_pane_line_part(column, row)?;
+        if part == 0 {
+            return None;
+        }
+        let pos = self.line_pos(line_idx)?;
+        // `display_row_text`, and not `row_content`: the margin `margin`
+        // draws is `FOLD_FIELD_WIDTH + indent` wide, so the indent it
+        // wants is the line's own — and `row_content` has already put
+        // the fold field in front of it. Measuring there subtracts the
+        // fold field twice. This is the same text `render` measures for
+        // the same purpose, and the same text `wire_palette` reads.
+        let text = self.display_row_text(self.committed_row_at(line_idx, pos));
+
+        // The same mapping `set_caret_from_click` computes — pane
+        // column, less the reserved glyph gutter, plus the pan already
+        // taken off the content — and then the margin `margin` puts in
+        // front of the hex, which is the document row's own indent.
+        let index =
+            (column.saturating_sub(self.main_area.x) as usize).checked_sub(1)? + self.pan_offset;
+        let indent = text.len() - text.trim_start().len();
+        let hex = index
+            .checked_sub(render::FOLD_FIELD_WIDTH + indent + WIRE_CONNECTOR.chars().count())?;
+
+        let mut memo = PackedCursor::default();
+        let slice = self.wire_slice(pos, &mut memo)?;
+        let palette = recording_palette(&text, self.theme);
+        let record = wire_spans_recorded(&self.blob, &slice, self.theme, Some(&palette)).record?;
+        let span = record.parts.iter().find(|p| p.cols.contains(&hex))?;
+
+        // Filed under the part they are about (S4), so a tag's
+        // `tag_ohb` does not appear in the box for the type digit
+        // beside it. The `??` inherits the flaws of the region it
+        // interrupted: the keyword accuses a byte, and the mark is that
+        // same accusation drawn where the byte is missing.
+        let region = match span.part {
+            WirePart::Region(region) | WirePart::Truncated { region, .. } => Some(region),
+            WirePart::Elided { .. } => None,
+        };
+        let flaws = record
+            .flags
+            .iter()
+            .filter(|(at, _)| Some(*at) == region)
+            .map(|(_, keyword)| *keyword)
+            .collect();
+        Some(WireHit {
+            pos,
+            part: span.part,
+            bytes: span.bytes.clone(),
+            // Spec 0283 S2: which of the part's bytes, for the parts
+            // that are more than one. `None` at the two marks, which
+            // stand where bytes are not.
+            byte: record
+                .cells
+                .iter()
+                .find(|cell| cell.cols.contains(&hex))
+                .map(|cell| cell.at),
+            flaws,
+        })
+    }
+}
+
+/// One part of one wire row, as the pointer found it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(super) struct WireHit {
+    pub(super) pos: LinePos,
+    pub(super) part: WirePart,
+    /// Absolute offsets in the blob — empty for the two marks, which
+    /// stand where bytes are not.
+    pub(super) bytes: Range<usize>,
+    /// The one byte of `bytes` the pointer is actually on
+    /// (spec 0283 S2).
+    pub(super) byte: Option<usize>,
+    /// The annotation keywords filed under this part.
+    pub(super) flaws: Vec<&'static str>,
+}
+
+impl WireHit {
+    /// Whether two hits are the same part — everything except which of
+    /// its bytes the pointer is on (spec 0283 S11).
+    ///
+    /// Destructured rather than compared field by field, so a field
+    /// added later has to be put on one side of this line deliberately.
+    pub(super) fn same_part(&self, other: &Self) -> bool {
+        let Self {
+            pos,
+            part,
+            bytes,
+            byte: _,
+            flaws,
+        } = self;
+        (pos, part, bytes, flaws) == (&other.pos, &other.part, &other.bytes, &other.flaws)
+    }
+}
+
+/// The palette a recording run is given.
+///
+/// The four hues are what `wire_palette` computes with no syntax hints
+/// at all, because no answer a hover box gives depends on a color. What
+/// it does depend on is the document row's accusation, and that is read
+/// from the row's own text exactly as `wire_palette` reads it — so the
+/// keywords this run files are the ones the drawn row banded.
+fn recording_palette(text: &str, theme: ThemeKind) -> WirePalette {
+    WirePalette {
+        tag: theme::wire_style(theme::WireRole::Tag, None, theme),
+        ty: theme::wire_style(theme::WireRole::Type, None, theme),
+        len: theme::wire_style(theme::WireRole::Length, None, theme),
+        payload: theme::wire_style(theme::WireRole::Payload, None, theme),
+        flaw: schema_flaw(text),
+    }
 }
 
 /// Where the row's annotation names its type: the first token after
@@ -720,18 +924,43 @@ pub(super) fn wire_spans(
     theme: ThemeKind,
     palette: Option<&WirePalette>,
 ) -> WireRow {
+    paint(blob, slice, theme, palette, false)
+}
+
+/// The same row, with a note of what was drawn where (spec 0282 S3).
+///
+/// One row per pointer movement, never per frame: this is the whole of
+/// G4, and the reason the recorder is a parameter rather than always
+/// on.
+pub(super) fn wire_spans_recorded(
+    blob: &[u8],
+    slice: &WireSlice,
+    theme: ThemeKind,
+    palette: Option<&WirePalette>,
+) -> WireRow {
+    paint(blob, slice, theme, palette, true)
+}
+
+fn paint(
+    blob: &[u8],
+    slice: &WireSlice,
+    theme: ThemeKind,
+    palette: Option<&WirePalette>,
+    record: bool,
+) -> WireRow {
     let record_end = slice.record_end.max(slice.bytes.end).min(blob.len());
     let start = slice.bytes.start.min(record_end);
     let mut painter = Painter {
         rec: &blob[start..record_end],
+        base: start,
         limit: slice.bytes.end.saturating_sub(start),
         theme,
         palette,
         region: Region::Unclaimed,
         last_block: None,
         spans: Vec::new(),
-        #[cfg(test)]
-        flags: Vec::new(),
+        record: record.then(WireRecord::default),
+        cols: 0,
         drawn: 0,
         dropped: 0,
         need_space: false,
@@ -787,7 +1016,9 @@ fn draw_tagged(painter: &mut Painter) -> usize {
             // bytes that did arrive are the ones the reader has to look
             // at: they wear the band, not just the `!` at their end.
             let short = declared > available;
-            let tier = short.then(|| painter.accuse("TRUNCATED_BYTES")).flatten();
+            let tier = short
+                .then(|| painter.accuse(Region::Payload, "TRUNCATED_BYTES"))
+                .flatten();
             if short {
                 painter.bytes(at..at + shown, tier);
                 painter.cut();
@@ -813,18 +1044,21 @@ fn draw_tagged(painter: &mut Painter) -> usize {
             let short = shown < width;
             let tier = short
                 .then(|| {
-                    painter.accuse(if wtype == WT_I64 {
-                        "INVALID_FIXED64"
-                    } else {
-                        "INVALID_FIXED32"
-                    })
+                    painter.accuse(
+                        Region::Payload,
+                        if wtype == WT_I64 {
+                            "INVALID_FIXED64"
+                        } else {
+                            "INVALID_FIXED32"
+                        },
+                    )
                 })
                 .flatten();
             if short {
                 painter.bytes(at..at + shown, tier);
                 painter.cut();
             } else {
-                let nan = painter.told(SchemaFlaw::NanBits, "nan_bits");
+                let nan = painter.told(Region::Payload, SchemaFlaw::NanBits, "nan_bits");
                 draw_fixed(painter, at..at + shown, nan);
                 painter.punct("]");
             }
@@ -836,7 +1070,7 @@ fn draw_tagged(painter: &mut Painter) -> usize {
             // Spec 0279 S3: an enum value the schema has no name for is
             // accused as a whole. The number *is* the accusation, and
             // every byte of the varint carries part of it.
-            let unknown = painter.told(SchemaFlaw::EnumUnknown, "ENUM_UNKNOWN");
+            let unknown = painter.told(Region::Payload, SchemaFlaw::EnumUnknown, "ENUM_UNKNOWN");
             let (value, next) = draw_varint(painter, at, "val_ohb", "INVALID_VARINT", unknown);
             if value.is_some() {
                 painter.punct("]");
@@ -880,7 +1114,7 @@ fn draw_stray_group_end(painter: &mut Painter) -> Option<usize> {
     if tag.wtag_gar.is_some() {
         return None;
     }
-    let tier = painter.accuse("INVALID_GROUP_END");
+    let tier = painter.accuse(Region::Tag, "INVALID_GROUP_END");
     painter.region = Region::Tag;
     let end = tag.next_pos.min(painter.rec.len());
     painter.tag_head(0, tier, None);
@@ -898,7 +1132,7 @@ fn draw_stray_group_end(painter: &mut Painter) -> Option<usize> {
 /// here to set the length prefix apart — the row still names the
 /// keyword, and `tier_of` answers `None`, which is the severity.
 fn draw_packed_head(painter: &mut Painter, varint: bool, close: bool) -> usize {
-    painter.accuse("pack_size");
+    painter.accuse(Region::Len, "pack_size");
     let (mut at, wtype) = draw_tag(painter, false);
     if wtype != Some(WT_LEN) {
         return at;
@@ -928,11 +1162,11 @@ fn draw_element(painter: &mut Painter, at: usize, varint: bool) -> usize {
         // unnamed enum value is however many its number needs: in both
         // cases the whole varint is what the row above is about.
         let whole = painter
-            .told(SchemaFlaw::Neg, "neg")
-            .or_else(|| painter.told(SchemaFlaw::EnumUnknown, "ENUM_UNKNOWN"));
+            .told(Region::Payload, SchemaFlaw::Neg, "neg")
+            .or_else(|| painter.told(Region::Payload, SchemaFlaw::EnumUnknown, "ENUM_UNKNOWN"));
         draw_varint(painter, at, "val_ohb", "INVALID_VARINT", whole).1
     } else {
-        let nan = painter.told(SchemaFlaw::NanBits, "nan_bits");
+        let nan = painter.told(Region::Payload, SchemaFlaw::NanBits, "nan_bits");
         draw_fixed(painter, at..painter.limit, nan);
         painter.limit
     }
@@ -946,7 +1180,7 @@ fn draw_closing(painter: &mut Painter, field_number: u32) -> usize {
         // Spec 0225 S11: `!` already means *the byte that should be here
         // is not*, and an unterminated group is exactly that one level
         // up — the END tag is the missing byte. The word said no more.
-        painter.accuse("OPEN_GROUP");
+        painter.accuse(Region::Tag, "OPEN_GROUP");
         painter.cut();
         return 0;
     }
@@ -957,7 +1191,7 @@ fn draw_closing(painter: &mut Painter, field_number: u32) -> usize {
             // wire-type digit is END_GROUP and is correct; the field
             // number beside it is not. The number is then legible in
             // the hex, so no marker repeats it.
-            let tier = painter.accuse("END_MISMATCH");
+            let tier = painter.accuse(Region::Tag, "END_MISMATCH");
             painter.tag_head(0, tier, None);
             for i in 1..tag.next_pos {
                 painter.byte(i, tier);
@@ -985,7 +1219,7 @@ fn draw_tag(painter: &mut Painter, closing: bool) -> (usize, Option<u32>) {
         // `parse_wiretag` reports this by swallowing the rest of the
         // buffer, which says nothing about *where* the fault is. Only
         // the three type bits are wrong, so only they are accused.
-        let tier = painter.accuse("INVALID_TAG_TYPE");
+        let tier = painter.accuse(Region::Type, "INVALID_TAG_TYPE");
         painter.tag_head(0, None, tier);
         return (1, None);
     }
@@ -993,11 +1227,14 @@ fn draw_tag(painter: &mut Painter, closing: bool) -> (usize, Option<u32>) {
     if tag.wtag_gar.is_some() {
         // Spec 0279 S4: the last byte is the one whose continuation bit
         // is not honored; the ones before it are a prefix that decoded.
-        let tier = painter.accuse(if closing {
-            "INVALID_GROUP_END"
-        } else {
-            "INVALID_VARINT"
-        });
+        let tier = painter.accuse(
+            Region::Tag,
+            if closing {
+                "INVALID_GROUP_END"
+            } else {
+                "INVALID_VARINT"
+            },
+        );
         let end = painter.rec.len();
         painter.bytes(0..end.saturating_sub(1), None);
         painter.bytes(end.saturating_sub(1)..end, tier);
@@ -1008,16 +1245,16 @@ fn draw_tag(painter: &mut Painter, closing: bool) -> (usize, Option<u32>) {
     let out_of_range = tag.wfield_oor.is_some();
     let overhang = tag.wfield_ohb.unwrap_or(0) as usize;
     let oor = out_of_range
-        .then(|| painter.accuse(if closing { "ETAG_OOR" } else { "TAG_OOR" }))
+        .then(|| painter.accuse(Region::Tag, if closing { "ETAG_OOR" } else { "TAG_OOR" }))
         .flatten();
     let ohb = (!out_of_range && overhang > 0)
-        .then(|| painter.accuse(if closing { "etag_ohb" } else { "tag_ohb" }))
+        .then(|| painter.accuse(Region::Tag, if closing { "etag_ohb" } else { "tag_ohb" }))
         .flatten();
     // Spec 0279 S3: the three type bits are the whole of a
     // `TYPE_MISMATCH`. The field number found its declaration and the
     // payload is what the tag says it is; what contradicts the schema
     // is the type the tag declares, and nothing else on the row.
-    let mismatch = painter.told(SchemaFlaw::TypeMismatch, "TYPE_MISMATCH");
+    let mismatch = painter.told(Region::Type, SchemaFlaw::TypeMismatch, "TYPE_MISMATCH");
     // Spec 0279's 2026-08-12 amendment: when no schema declares the
     // field, its number is what the reader has instead of a name, so the
     // whole field-number half wears the fold margin's blue. `TAG_OOR`
@@ -1076,10 +1313,13 @@ fn draw_payload(painter: &mut Painter, range: Range<usize>) {
             return;
         }
     };
-    let tier = painter.accuse(match flaw {
-        SchemaFlaw::Utf8 => "INVALID_STRING",
-        _ => "INVALID_PACKED_RECORDS",
-    });
+    let tier = painter.accuse(
+        Region::Payload,
+        match flaw {
+            SchemaFlaw::Utf8 => "INVALID_STRING",
+            _ => "INVALID_PACKED_RECORDS",
+        },
+    );
     let mut at = 0;
     for span in bad {
         painter.bytes(range.start + at..range.start + span.start, None);
@@ -1190,8 +1430,12 @@ fn draw_varint(
     invalid_flag: &'static str,
     whole: Option<Band>,
 ) -> (Option<u64>, usize) {
+    // Both accusations are about the varint being drawn, which is the
+    // length prefix or the value depending on who called — so the part
+    // is the pen's own here, unlike `draw_tag`'s.
+    let region = painter.region;
     if at >= painter.rec.len() {
-        painter.accuse(invalid_flag);
+        painter.accuse(region, invalid_flag);
         painter.cut();
         return (None, painter.rec.len());
     }
@@ -1201,7 +1445,7 @@ fn draw_varint(
         // wrong is the continuation bit of the last, which promises a
         // byte the record does not have — so that byte is banded and
         // the `??` stands where the byte it promised would be.
-        let tier = painter.accuse(invalid_flag);
+        let tier = painter.accuse(region, invalid_flag);
         let end = painter.rec.len();
         let last = end.saturating_sub(1).max(at);
         painter.bytes(at..last, None);
@@ -1213,7 +1457,7 @@ fn draw_varint(
     let overhang = parsed.varint_ohb.unwrap_or(0) as usize;
     painter.bytes(at..end - overhang, whole);
     if overhang > 0 {
-        let tier = painter.accuse(overhang_flag);
+        let tier = painter.accuse(region, overhang_flag);
         painter.bytes(end - overhang..end, tier);
     }
     (parsed.varint, end)
@@ -1224,6 +1468,9 @@ fn draw_varint(
 /// differ only on a packed run's element-0 row.
 struct Painter<'a> {
     rec: &'a [u8],
+    /// Where `rec` begins in the blob, so a recorded byte range is one
+    /// the caller can index the blob with (spec 0282 S3).
+    base: usize,
     limit: usize,
     theme: ThemeKind,
     /// The hues borrowed from the document row (spec 0225 S11), or `None`
@@ -1241,8 +1488,13 @@ struct Painter<'a> {
     /// multi-byte tag's remaining bytes continue.
     last_block: Option<Style>,
     spans: Vec<Span<'static>>,
-    #[cfg(test)]
-    flags: Vec<&'static str>,
+    /// `Some` only when someone asked what is drawn where.
+    record: Option<WireRecord>,
+    /// How many columns the row has emitted, kept as the spans are
+    /// pushed rather than measured afterwards — the recorder needs a
+    /// column range per drawing call, and summing the spans at each one
+    /// would be quadratic in the row's length.
+    cols: usize,
     drawn: usize,
     dropped: usize,
     need_space: bool,
@@ -1288,6 +1540,46 @@ impl Painter<'_> {
         }
     }
 
+    /// Every span the row emits goes through here, so `cols` is always
+    /// the width of what has been drawn so far.
+    fn emit(&mut self, span: Span<'static>) {
+        self.cols += span.content.chars().count();
+        self.spans.push(span);
+    }
+
+    /// Note that the columns from `from` to here drew `part`
+    /// (spec 0282 S3).
+    ///
+    /// Consecutive, adjacent spans of the same part coalesce, so a
+    /// payload run is one entry and a multi-byte tag's continuation
+    /// bytes join the field number they continue. Punctuation records
+    /// nothing and so breaks the adjacency, which is what keeps a `[`
+    /// from being swallowed into the payload behind it (N1).
+    fn mark(&mut self, from: usize, part: WirePart, bytes: Range<usize>) {
+        let cols = from..self.cols;
+        let Some(record) = &mut self.record else {
+            return;
+        };
+        if let Some(last) = record.parts.last_mut() {
+            if last.part == part && last.cols.end == cols.start {
+                last.cols.end = cols.end;
+                last.bytes.end = last.bytes.end.max(bytes.end);
+                return;
+            }
+        }
+        record.parts.push(PartSpan { cols, part, bytes });
+    }
+
+    /// Note that the columns from `from` to here drew the byte at `at`
+    /// (spec 0283 S1). Never coalesced: that is the whole difference
+    /// between this list and `mark`'s.
+    fn cell(&mut self, from: usize, at: usize) {
+        let cols = from..self.cols;
+        if let Some(record) = &mut self.record {
+            record.cells.push(ByteCell { cols, at });
+        }
+    }
+
     /// A space between two hex pairs.
     ///
     /// Filled if it lies *inside* one band — the byte before it wore
@@ -1301,7 +1593,7 @@ impl Painter<'_> {
                 Some(band) if self.last_block == here => band,
                 _ => Style::default(),
             };
-            self.spans.push(Span::styled(" ", fill));
+            self.emit(Span::styled(" ", fill));
         }
         self.need_space = true;
     }
@@ -1314,12 +1606,22 @@ impl Painter<'_> {
             self.dropped += 1;
             return;
         }
+        // From before the separator, not after it: a space inside a run
+        // is part of the run, so including it keeps a recorded part's
+        // columns contiguous and lets the coalescing in `mark` do its
+        // job.
+        let from = self.cols;
         let style = self.style(band);
         self.separate(style);
-        self.spans
-            .push(Span::styled(format!("{:02x}", self.rec[i]), style));
+        self.emit(Span::styled(format!("{:02x}", self.rec[i]), style));
         self.last_block = block(style);
         self.drawn += 1;
+        self.mark(
+            from,
+            WirePart::Region(self.region),
+            self.base + i..self.base + i + 1,
+        );
+        self.cell(from, self.base + i);
     }
 
     fn bytes(&mut self, range: Range<usize>, band: Option<Band>) {
@@ -1361,9 +1663,21 @@ impl Painter<'_> {
         let byte = self.rec[i];
         let number_style = self.style_in(Region::Tag, number);
         let wtype_style = self.style_in(Region::Type, wtype);
+        // One byte, so one cell (spec 0283 S1) — the two halves and the
+        // bar between them are all of it.
+        let whole = self.cols;
+        let from = self.cols;
         self.separate(wtype_style);
-        self.spans
-            .push(Span::styled(format!("{}", byte & 0x07), wtype_style));
+        self.emit(Span::styled(format!("{}", byte & 0x07), wtype_style));
+        // The two halves are the row's two smallest targets and the
+        // only place one byte is two parts (spec 0282 S3). The bar
+        // between them is recorded as neither: it is punctuation, and
+        // pointing at it points at nothing (N1).
+        self.mark(
+            from,
+            WirePart::Region(Region::Type),
+            self.base + i..self.base + i + 1,
+        );
         // The bar joins the two halves when they wear the same band and
         // parts them when they do not — the same rule `separate` applies
         // to the gap between two hex pairs, for the same reason.
@@ -1371,18 +1685,24 @@ impl Painter<'_> {
             (Some(band), Some(other)) if band == other => band,
             _ => Style::default(),
         };
-        self.spans.push(Span::styled("|", bar));
-        self.spans
-            .push(Span::styled(format!("{:02x}", byte & 0xF8), number_style));
+        self.emit(Span::styled("|", bar));
+        let from = self.cols;
+        self.emit(Span::styled(format!("{:02x}", byte & 0xF8), number_style));
         self.last_block = block(number_style);
         self.drawn += 1;
+        self.mark(
+            from,
+            WirePart::Region(Region::Tag),
+            self.base + i..self.base + i + 1,
+        );
+        self.cell(whole, self.base + i);
     }
 
     fn punct(&mut self, text: &'static str) {
         if self.drawn >= WIRE_ROW_MAX_BYTES {
             return;
         }
-        self.spans.push(Span::styled(text, subdued()));
+        self.emit(Span::styled(text, subdued()));
         self.need_space = false;
     }
 
@@ -1401,10 +1721,22 @@ impl Painter<'_> {
     /// message, not of the display, and the row flags every one of those
     /// the same way.
     fn cut(&mut self) {
+        let from = self.cols;
         let style = self.alarm();
         self.separate(style);
-        self.spans.push(Span::styled("??".to_string(), style));
+        self.emit(Span::styled("??".to_string(), style));
         self.need_space = false;
+        // An empty byte range, because that is exactly what it stands
+        // for: the mark is where bytes are not (spec 0282 S11).
+        let at = self.base + self.rec.len();
+        self.mark(
+            from,
+            WirePart::Truncated {
+                region: self.region,
+                missing: None,
+            },
+            at..at,
+        );
     }
 
     /// How many bytes the record promised and did not deliver, glued to
@@ -1416,8 +1748,20 @@ impl Painter<'_> {
     /// Alarmed with the `!`, and contiguous with it: the glyph and its
     /// count are one accusation.
     fn missing(&mut self, n: usize) {
-        self.spans.push(Span::styled(format!("×{n}"), self.alarm()));
+        self.emit(Span::styled(format!("×{n}"), self.alarm()));
         self.need_space = false;
+        // Glued to the `??` on screen and glued to it here: one
+        // accusation, so one target, and the count is the fact the box
+        // wants (spec 0282 S11).
+        let cols = self.cols;
+        if let Some(record) = &mut self.record {
+            if let Some(last) = record.parts.last_mut() {
+                if let WirePart::Truncated { missing, .. } = &mut last.part {
+                    *missing = Some(n);
+                    last.cols.end = cols;
+                }
+            }
+        }
     }
 
     /// The style the row flags a defect of the *message* with: exactly
@@ -1435,10 +1779,18 @@ impl Painter<'_> {
     /// decides a severity of its own. It reports the keyword, and
     /// `annotation::tier_of` — the same table `highlights.scm` mirrors
     /// for the `#@` row — decides. The keyword is kept so a test can
-    /// cross-check this row's findings against the annotation above it.
-    fn accuse(&mut self, keyword: &'static str) -> Option<Band> {
-        #[cfg(test)]
-        self.flags.push(keyword);
+    /// cross-check this row's findings against the annotation above it,
+    /// and so the hover box can read it aloud (spec 0282 S13).
+    ///
+    /// `region` is the part the accusation is *about*, and is stated
+    /// rather than read off `self.region`: a `TYPE_MISMATCH` is found
+    /// while the pen is in the tag but is about the type digit beside
+    /// it. Spec 0279 already pairs a flaw with its bytes at the call
+    /// site, for the same reason — the site is what knows.
+    fn accuse(&mut self, region: Region, keyword: &'static str) -> Option<Band> {
+        if let Some(record) = &mut self.record {
+            record.flags.push((region, keyword));
+        }
         annotation::tier_of(keyword).map(Band::from)
     }
 
@@ -1449,11 +1801,11 @@ impl Painter<'_> {
     /// rather than in a table, because the site is where the *bytes*
     /// the keyword is about are known — which is the whole of what this
     /// module contributes.
-    fn told(&mut self, flaw: SchemaFlaw, keyword: &'static str) -> Option<Band> {
+    fn told(&mut self, region: Region, flaw: SchemaFlaw, keyword: &'static str) -> Option<Band> {
         if self.palette.and_then(|p| p.flaw) != Some(flaw) {
             return None;
         }
-        self.accuse(keyword)
+        self.accuse(region, keyword)
     }
 
     /// [`Band::Unknown`] on a row the document half said no schema
@@ -1475,13 +1827,20 @@ impl Painter<'_> {
     /// as a screen full of alarms.
     fn finish(mut self) -> WireRow {
         if self.dropped > 0 {
-            self.spans
-                .push(Span::styled(format!("…×{}", self.dropped), subdued()));
+            let from = self.cols;
+            self.emit(Span::styled(format!("…×{}", self.dropped), subdued()));
+            let end = self.base + self.rec.len();
+            self.mark(
+                from,
+                WirePart::Elided {
+                    hidden: self.dropped,
+                },
+                end..end,
+            );
         }
         WireRow {
             spans: self.spans,
-            #[cfg(test)]
-            flags: self.flags,
+            record: self.record,
         }
     }
 }
@@ -1501,7 +1860,10 @@ mod tests {
         framing: Framing,
         field_number: u32,
     ) -> WireRow {
-        wire_spans(
+        // Recorded, because that is what carries `flags` — and because a
+        // test that asserts on the parts is asserting on the same run
+        // the styling came out of.
+        wire_spans_recorded(
             blob,
             &WireSlice {
                 bytes,
@@ -1646,7 +2008,7 @@ mod tests {
         // the `??` itself spaced off `48`, which is a byte that arrived.
         let row = draw(&[0x0A, 0x05, 0x48], Framing::Tagged, 1);
         assert_eq!(text(&row), "2|08:05[48 ??×4");
-        assert_eq!(row.flags, ["TRUNCATED_BYTES"]);
+        assert_eq!(row.flags(), ["TRUNCATED_BYTES"]);
         // Both glyphs wear the `Invalid` tier, and they are one
         // accusation: the bytes are missing from the *message*, not from
         // the row.
@@ -1665,7 +2027,7 @@ mod tests {
         // wire type 7 and so fails earlier, on the type bits.
         let row = draw(&[0x82, 0x80, 0x80], Framing::Tagged, 1);
         assert_eq!(text(&row), "82 80 80 ??");
-        assert_eq!(row.flags, ["INVALID_VARINT"]);
+        assert_eq!(row.flags(), ["INVALID_VARINT"]);
     }
 
     #[test]
@@ -1673,7 +2035,7 @@ mod tests {
         // field 1, wire type 7.
         let row = draw(&[0x0F], Framing::Tagged, 1);
         assert_eq!(text(&row), "7|08");
-        assert_eq!(row.flags, ["INVALID_TAG_TYPE"]);
+        assert_eq!(row.flags(), ["INVALID_TAG_TYPE"]);
         // The field number is fine and keeps its borrowed hue; the wire
         // type is not, and the accusation takes its band over — saying
         // what a byte is for stops mattering once it is malformed
@@ -1695,7 +2057,7 @@ mod tests {
         // prototext-core renders as the pseudo-field's value.
         let row = draw(&[0xD4, 0x06, 0x08, 0x01], Framing::Tagged, 106);
         assert_eq!(text(&row), "4|d0 06 08 01");
-        assert_eq!(row.flags, ["INVALID_GROUP_END"]);
+        assert_eq!(row.flags(), ["INVALID_GROUP_END"]);
         // Everything but the wire type: it reports a group end and
         // there is one. What is wrong is that the tag is here.
         let invalid = tier_hue(Tier::Invalid);
@@ -1724,7 +2086,7 @@ mod tests {
     fn an_open_group_footer_row_is_a_bare_empty_slot() {
         let row = draw_of(&[], 0..0, 0, Framing::Closing, 3);
         assert_eq!(text(&row), "??");
-        assert_eq!(row.flags, ["OPEN_GROUP"]);
+        assert_eq!(row.flags(), ["OPEN_GROUP"]);
     }
 
     #[test]
@@ -1732,13 +2094,13 @@ mod tests {
         // field 3, END_GROUP.
         let row = draw(&[0x1C], Framing::Closing, 3);
         assert_eq!(text(&row), "4|18");
-        assert!(row.flags.is_empty());
+        assert!(row.flags().is_empty());
         // The same bytes closing field 2 instead. Spec 0225 S11: the
         // wrong number is *shown* wrong rather than restated in words,
         // so the row is unchanged and the field number reddens.
         let row = draw(&[0x1C], Framing::Closing, 2);
         assert_eq!(text(&row), "4|18");
-        assert_eq!(row.flags, ["END_MISMATCH"]);
+        assert_eq!(row.flags(), ["END_MISMATCH"]);
         assert_eq!(row.spans[2].content.as_ref(), "18");
         assert_eq!(row.spans[2].style.bg, Some(tier_hue(Tier::Invalid)));
         // The wire type is not what is wrong — it says END_GROUP, and
@@ -1752,7 +2114,7 @@ mod tests {
         // field 2, varint, value 42 written in three bytes.
         let row = draw(&[0x10, 0xAA, 0x80, 0x00], Framing::Tagged, 2);
         assert_eq!(text(&row), "0|10[aa 80 00]");
-        assert_eq!(row.flags, ["val_ohb"]);
+        assert_eq!(row.flags(), ["val_ohb"]);
         let yellow = tier_hue(Tier::NonCanonical);
         // The padding bytes are accused, and only they: `aa` is a
         // perfectly good first byte. The gap between the two joins
@@ -1783,7 +2145,7 @@ mod tests {
         // perfectly good.
         let row = draw(&[0x00, 0x01], Framing::Tagged, 0);
         assert_eq!(text(&row), "0|00[01]");
-        assert_eq!(row.flags, ["TAG_OOR"]);
+        assert_eq!(row.flags(), ["TAG_OOR"]);
         assert_eq!(row.spans[2].content.as_ref(), "00");
         assert_eq!(row.spans[2].style.bg, Some(tier_hue(Tier::Invalid)));
         assert_eq!(row.spans[0].content.as_ref(), "0");
@@ -1809,7 +2171,7 @@ mod tests {
         );
         assert_eq!(text(&head), "2|08:02[01");
         // The row still names what it found; `tier_of` answers `None`.
-        assert_eq!(head.flags, ["pack_size"]);
+        assert_eq!(head.flags(), ["pack_size"]);
         assert_eq!(head.spans[0].style.bg, Some(TYPE_HUE), "the wire type");
         assert_eq!(head.spans[2].style.bg, Some(TAG_HUE), "the field number");
         assert_eq!(head.spans[4].content.as_ref(), "02");
@@ -1849,7 +2211,7 @@ mod tests {
         let blob = [0x0A, 0x03, 0x08, 0x01, 0x00];
         let row = draw_of(&blob, 0..2, 5, Framing::Tagged, 1);
         assert_eq!(text(&row), "2|08:03[");
-        assert!(row.flags.is_empty());
+        assert!(row.flags().is_empty());
     }
 
     #[test]
@@ -1867,7 +2229,7 @@ mod tests {
     #[test]
     fn a_row_with_nothing_to_borrow_is_gray_throughout() {
         // The `TAG_OOR` case above, which is as colorful as a row gets.
-        let row = wire_spans(
+        let row = wire_spans_recorded(
             &[0x00, 0x01],
             &WireSlice {
                 bytes: 0..2,
@@ -1879,7 +2241,7 @@ mod tests {
             None,
         );
         assert_eq!(text(&row), "0|00[01]");
-        assert_eq!(row.flags, ["TAG_OOR"]);
+        assert_eq!(row.flags(), ["TAG_OOR"]);
         assert!(row
             .spans
             .iter()
@@ -1964,7 +2326,8 @@ mod tests {
         framing: Framing,
         field_number: u32,
     ) -> WireRow {
-        wire_spans(
+        // Recorded, for the same reason `draw_of` is.
+        wire_spans_recorded(
             blob,
             &WireSlice {
                 bytes,
@@ -1992,7 +2355,7 @@ mod tests {
         assert_eq!(text(&row), "2|08:04[41 ff fe 42]");
         //                                        2|08:04[41 ff fe 42]
         assert_eq!(accused(&row, Tier::Invalid), "           ^^^^^    ");
-        assert_eq!(row.flags, ["INVALID_STRING"]);
+        assert_eq!(row.flags(), ["INVALID_STRING"]);
         // field 4, varint: an enum value the schema has no name for. The
         // number is the accusation, so every byte of it is banded — and
         // the tag before it is not: the field is declared, and declared
@@ -2070,7 +2433,7 @@ mod tests {
         // nothing, so neither anomaly color appears anywhere on it.
         assert_eq!(accused(&row, Tier::NonCanonical), " ".repeat(11));
         assert_eq!(accused(&row, Tier::Invalid), " ".repeat(11));
-        assert!(row.flags.is_empty(), "no keyword says this");
+        assert!(row.flags().is_empty(), "no keyword says this");
         // The wire type keeps its own borrowed hue, and so does the
         // payload: what is unknown is which field these bytes are for,
         // not what they are.
@@ -2117,13 +2480,13 @@ mod tests {
         // A tag varint that never terminates.
         let row = draw(&[0x82, 0x80, 0x80], Framing::Tagged, 1);
         assert_eq!(text(&row), "82 80 80 ??");
-        assert_eq!(row.flags, ["INVALID_VARINT"]);
+        assert_eq!(row.flags(), ["INVALID_VARINT"]);
         //                                        82 80 80 ??
         assert_eq!(accused(&row, Tier::Invalid), "      ^^^^^");
         // The same failure in a value varint.
         let row = draw(&[0x10, 0x80, 0x80], Framing::Tagged, 2);
         assert_eq!(text(&row), "0|10[80 80 ??");
-        assert_eq!(row.flags, ["INVALID_VARINT"]);
+        assert_eq!(row.flags(), ["INVALID_VARINT"]);
         //                                        0|10[80 80 ??
         assert_eq!(accused(&row, Tier::Invalid), "        ^^^^^");
         // And in a packed payload, which spec 0232 drew a third way:
@@ -2137,7 +2500,7 @@ mod tests {
         assert_eq!(text(&row), "2|08:03[01 02 80 ??]");
         //                                        2|08:03[01 02 80 ??]
         assert_eq!(accused(&row, Tier::Invalid), "              ^^^^^ ");
-        assert_eq!(row.flags, ["INVALID_PACKED_RECORDS"]);
+        assert_eq!(row.flags(), ["INVALID_PACKED_RECORDS"]);
     }
 
     /// Spec 0279 S2. Two of the six keywords open an annotation and four

@@ -4,7 +4,7 @@
 
 //! Spec 0280: the box a heat cue's number can be asked for.
 
-use super::super::score_popup::{Breakdown, HOVER_DWELL};
+use super::super::popup::{Breakdown, HoverTarget, HOVER_DWELL};
 use super::super::*;
 use super::heat_cue::seed_range_heat_entry;
 use super::support::*;
@@ -55,6 +55,15 @@ fn column_of(app: &App, line: usize, needle: &str) -> u16 {
     1 + content[..at].chars().count() as u16
 }
 
+/// The node a `Type` hover names — `None` when nothing is hovered, and
+/// `None` for a wire target, which names a part of a row and not a type.
+fn hovered_node(app: &App) -> Option<usize> {
+    match app.hover.as_ref()?.target {
+        HoverTarget::Type(node) => Some(node),
+        HoverTarget::Wire(_) => None,
+    }
+}
+
 fn moved(column: u16, row: u16) -> MouseEvent {
     MouseEvent {
         kind: MouseEventKind::Moved,
@@ -79,8 +88,8 @@ fn hover_over_a_type_name_arms_the_dwell() {
         app.hover_deadline.is_some(),
         "the type a row declares must arm the dwell"
     );
-    assert_eq!(app.hover.map(|h| h.node), Some(0));
-    assert!(app.score_popup.is_none(), "the dwell has not expired yet");
+    assert_eq!(hovered_node(&app), Some(0));
+    assert!(app.popup.is_none(), "the dwell has not expired yet");
 
     // The value is the document, which is what a click is for.
     app.handle_mouse(moved(column_of(&app, 0, "x: 1"), 0));
@@ -98,7 +107,7 @@ fn hover_over_a_type_name_arms_the_dwell() {
     app.handle_mouse(moved(column_of(&app, 1, "repeated"), 1));
     assert!(app.hover.is_none(), "a label is not the type");
     app.handle_mouse(moved(column_of(&app, 1, "Color"), 1));
-    assert_eq!(app.hover.map(|h| h.node), Some(1));
+    assert_eq!(hovered_node(&app), Some(1));
     app.handle_mouse(moved(column_of(&app, 1, "(5)"), 1));
     assert!(app.hover.is_none(), "an enum's value is not the type");
 
@@ -123,12 +132,12 @@ fn the_dwell_opens_the_popup_and_leaving_closes_it() {
     let mut app = type_row_app();
     let target = column_of(&app, 0, "int32");
     app.handle_mouse(moved(target, 0));
-    assert!(app.score_popup.is_none());
+    assert!(app.popup.is_none());
 
     app.hover_deadline = Some(Instant::now() - HOVER_DWELL);
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
     terminal.draw(|frame| app.render(frame)).unwrap();
-    let popup = app.score_popup.clone().expect("the dwell has been earned");
+    let popup = app.popup.clone().expect("the dwell has been earned");
     assert_eq!(popup.anchor, (target, 0));
     assert!(
         app.hover_deadline.is_none(),
@@ -137,7 +146,7 @@ fn the_dwell_opens_the_popup_and_leaving_closes_it() {
 
     app.handle_mouse(moved(column_of(&app, 0, "x: 1"), 0));
     assert!(
-        app.score_popup.is_none(),
+        app.popup.is_none(),
         "a move off the target takes the box with it (S16)"
     );
 }
@@ -229,16 +238,18 @@ fn a_vetoed_type_reports_only_that() {
         "and `inferred_score` reports it by refusing to answer"
     );
 
-    let popup = ScorePopup {
-        type_key: "Msg0".to_string(),
-        breakdown: Breakdown::Scored(b),
+    let popup = Popup {
+        body: PopupBody::Score {
+            type_key: "Msg0".to_string(),
+            breakdown: Breakdown::Scored(b),
+        },
         anchor: (0, 0),
     };
-    let lines = App::score_popup_lines(&popup);
+    let lines = App::popup_lines(&popup, 22);
     assert_eq!(lines.len(), 2, "the type key and the verdict, nothing else");
-    assert!(lines[1].contains("vetoed"), "{lines:?}");
+    assert!(lines[1].text.contains("vetoed"), "{lines:?}");
     assert!(
-        !lines.iter().any(|l| l.contains('×')),
+        !lines.iter().any(|l| l.text.contains('×')),
         "no counters in the box: {lines:?}"
     );
 }
@@ -283,14 +294,20 @@ fn the_memo_is_one_entry_keyed_on_the_range_and_the_type() {
 fn s_opens_the_same_box_at_the_caret() {
     let mut app = cue_app();
     app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
-    let popup = app.score_popup.clone().expect("`s` opens the box");
+    let popup = app.popup.clone().expect("`s` opens the box");
     assert_eq!(popup.anchor, app.menu_anchor());
-    assert_eq!(popup.breakdown, app.score_breakdown(app.cursor));
+    assert_eq!(
+        popup.body,
+        PopupBody::Score {
+            type_key: app.current_type_key(app.cursor).expect("a typed node"),
+            breakdown: app.score_breakdown(app.cursor),
+        }
+    );
 
     // Any key at all takes it down again (S16) — there is no dismiss
     // binding to learn.
     app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
-    assert!(app.score_popup.is_none());
+    assert!(app.popup.is_none());
 
     let rows = app.main_menu_items();
     assert!(
@@ -320,7 +337,7 @@ fn nothing_hovers_while_a_menu_is_open() {
 
     // And a box cannot be opened underneath one either.
     app.open_score_popup(0, (target, 0));
-    assert!(app.score_popup.is_none());
+    assert!(app.popup.is_none());
 }
 
 /// Spec 0280 S15: zero categories are omitted, so a clean node's box is
@@ -331,17 +348,19 @@ fn only_the_non_zero_terms_are_printed() {
     let payload = [(1u8 << 3), 1];
 
     let b = inferred_breakdown(&payload, "Msg0", graph.graph()).unwrap();
-    let popup = ScorePopup {
-        type_key: "Msg0".to_string(),
-        breakdown: Breakdown::Scored(b),
+    let popup = Popup {
+        body: PopupBody::Score {
+            type_key: "Msg0".to_string(),
+            breakdown: Breakdown::Scored(b),
+        },
         anchor: (0, 0),
     };
-    let lines = App::score_popup_lines(&popup);
+    let lines = App::popup_lines(&popup, 22);
     assert_eq!(
         lines.len(),
         3,
         "the type key, the one non-zero term, and the total: {lines:?}"
     );
-    assert!(lines[1].contains("fields matched"), "{lines:?}");
-    assert!(lines[2].contains("total"), "{lines:?}");
+    assert!(lines[1].text.contains("fields matched"), "{lines:?}");
+    assert!(lines[2].text.contains("total"), "{lines:?}");
 }

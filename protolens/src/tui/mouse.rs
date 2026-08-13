@@ -34,7 +34,7 @@ impl App {
 
         // Spec 0280 S16: anything that is not the pointer holding still
         // takes the box down, so there is no dismiss binding to learn.
-        self.dismiss_score_popup();
+        self.dismiss_popup();
 
         // Dismiss the splash screen transparently, same as `handle_key`
         // (spec 0113 D22/D28): the mouse event that dismisses it is also
@@ -407,14 +407,23 @@ impl App {
     /// (spec 0129 §G1) — shared by `handle_click` and the drag-select
     /// tracking in `handle_mouse`.
     pub(super) fn main_pane_line_idx(&self, col: u16, row: u16) -> Option<usize> {
+        self.main_pane_line_part(col, row).map(|(line, _)| line)
+    }
+
+    /// The same, keeping *which* terminal row of the pair it was
+    /// (spec 0282 S2): 0 is the document row, 1 the wire row below it.
+    ///
+    /// A click does not care — spec 0225 S8 has a click anywhere in the
+    /// pair select the line, because the row is taller and not two
+    /// controls. A hover does: the two rows hold different things, and
+    /// asking about a thing is not the same as choosing a line.
+    pub(super) fn main_pane_line_part(&self, col: u16, row: u16) -> Option<(usize, usize)> {
         let area = self.main_area;
         if !Self::rect_contains(area, col, row) {
             return None;
         }
-        // Spec 0225 S8: a line showing its bytes is two terminal rows
-        // thick, so a click anywhere in the pair selects the line — the
-        // rows are simply taller, not separately clickable. Which rows
-        // those are is spec 0268 S4's map rather than a division.
+        // Which rows are which is spec 0268 S4's map rather than a
+        // division.
         //
         // Spec 0230: `scroll.skip` shifts the whole pane by a terminal
         // row, so it is added back before the division. A negative skip
@@ -425,8 +434,10 @@ impl App {
             return None;
         }
         let heights = self.row_heights();
-        let (content_row, _) = heights.row_at(heights.offset(self.scroll.index) + rel_row as usize);
-        self.visible_row_pos(content_row).map(|(_, line)| line)
+        let (content_row, part) =
+            heights.row_at(heights.offset(self.scroll.index) + rel_row as usize);
+        self.visible_row_pos(content_row)
+            .map(|(_, line)| (line, part))
     }
 
     /// Dispatch one main-pane left-click: on a fold marker it toggles

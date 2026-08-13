@@ -81,8 +81,8 @@ use menu::{key_label, Menu};
 use pane_scroll::{
     AnchorLine, PaneScroll, RowHeights, WireAnchor, WireRowCache, WireSpan, FLAT_ROWS,
 };
+use popup::{BoxLine, Breakdown, Hover, Popup, PopupBody, WireBox};
 use prefetch::{PrefetchStep, PrefetchTrace, PrefetchWalk};
-use score_popup::{Breakdown, Hover, ScorePopup};
 use search::{SearchScope, SweepStep};
 pub use terminal::run;
 
@@ -1872,7 +1872,7 @@ pub struct App {
     /// The open score box, `None` when there is none (spec 0280 S14).
     /// Drawn last, after the menu, and refused while the menu is open —
     /// the menu stays the innermost modal.
-    score_popup: Option<ScorePopup>,
+    popup: Option<Popup>,
     /// The annotated type name the pointer is resting on, `None` when it
     /// is on none. Not itself visible: it is what `track_hover_dwell`
     /// opens the box for once `hover_deadline` expires.
@@ -2211,7 +2211,7 @@ impl App {
             help_open: false,
             help_scroll: 0,
             menu: None,
-            score_popup: None,
+            popup: None,
             hover: None,
             hover_deadline: None,
             breakdown_memo: None,
@@ -2468,10 +2468,11 @@ mod override_export;
 mod override_resolve;
 mod override_select;
 mod pane_scroll;
+mod popup;
+mod popup_wire;
 mod prefetch;
 mod preview_truncate;
 mod render;
-mod score_popup;
 mod script_pane;
 mod search;
 mod search_cursor;
