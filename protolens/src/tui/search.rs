@@ -1322,7 +1322,7 @@ impl App {
         // Not `find`: an accepted find is a committed search like any
         // other (spec 0276 S6), so what it leaves behind is spelled the
         // way `n`/`N` will repeat it.
-        Some(format!("{}{pattern}", search_prefix(*dir, false)))
+        Some(format!("{}{pattern}", search_prefix(*dir, None)))
     }
 
     pub(super) fn search_tally_text(&self) -> Option<String> {
@@ -1358,7 +1358,7 @@ impl App {
             // Only a find previews: a `/` prompt there can still be
             // abandoned, and this move is not undone.
             SweepCursor::Index(_) => {
-                if let CommandLineKind::Search { find: true, .. } = self.command_kind {
+                if let CommandLineKind::Search { find: Some(_), .. } = self.command_kind {
                     self.apply_sweep_hit(self.search_scope(), hit);
                 }
             }
@@ -1476,7 +1476,14 @@ impl App {
             .last_search_for(self.search_scope())
             .map(|(_, pattern)| pattern.clone())
             .unwrap_or_default();
-        self.open_command_line(CommandLineKind::Search { dir, find: true }, prefill);
+        // Spec 0281 G1: the active direction starts as the default.
+        self.open_command_line(
+            CommandLineKind::Search {
+                dir,
+                find: Some(dir),
+            },
+            prefill,
+        );
         self.restart_search_sweep();
     }
 
@@ -1530,6 +1537,44 @@ impl App {
         self.search_dirty = true;
         // Spec 0246 S16: no browse survives a prompt.
         self.search_browse = None;
+    }
+
+    /// Spec 0281 S4: rotate in an absolute document direction and leave
+    /// a find prompt pointing that way.
+    ///
+    /// Only a find has an active direction to set (N1): at a `/`/`?`
+    /// prompt `dir` is what `Enter` will commit and what the prefix
+    /// names, and spec 0246 S17's `Ctrl-←`/`Ctrl-→` deliberately do not
+    /// touch either.
+    pub(super) fn step_search_match(&mut self, dir: SearchDir) {
+        if let CommandLineKind::Search {
+            find: Some(home), ..
+        } = self.command_kind
+        {
+            self.command_kind = CommandLineKind::Search {
+                dir,
+                find: Some(home),
+            };
+        }
+        self.rotate_search_match(dir);
+    }
+
+    /// Spec 0281 S3: `Shift-→` (`back == false`) steps in the find's
+    /// default direction and `Shift-←` in its opposite — and both leave
+    /// the prompt pointing where they went, so the following `Enter`
+    /// continues rather than doubling back.
+    ///
+    /// A no-op at a committing prompt, which has no default to be
+    /// relative to; the caller's own guard means it is never reached
+    /// from one.
+    pub(super) fn step_find_match(&mut self, back: bool) {
+        let CommandLineKind::Search {
+            find: Some(home), ..
+        } = self.command_kind
+        else {
+            return;
+        };
+        self.step_search_match(if back { home.reverse() } else { home });
     }
 
     /// Spec 0246 S17/S18: show the next match in `dir` — absolute
@@ -2119,10 +2164,14 @@ enum Visit {
 /// Punctuation rather than the `F`/`B` that opened a find: the buffer
 /// arrives pre-filled, so a letter prefix would render `Ffoo` and read
 /// as a typo.
-fn search_prefix(dir: SearchDir, find: bool) -> char {
-    match (dir, find) {
+fn search_prefix(dir: SearchDir, find: Option<SearchDir>) -> char {
+    match (dir, find.is_some()) {
         (SearchDir::Forward, false) => '/',
         (SearchDir::Backward, false) => '?',
+        // Spec 0281 S2: `dir` is the *active* direction, so a find
+        // opened with `B` and stepped forward shows `>`. The prefix
+        // names where the next `Enter` goes, not which key opened the
+        // prompt.
         (SearchDir::Forward, true) => '>',
         (SearchDir::Backward, true) => '<',
     }

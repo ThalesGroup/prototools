@@ -2008,7 +2008,7 @@ fn f_opens_a_find_prompt_prefilled_with_the_last_pattern() {
         app.command_kind,
         CommandLineKind::Search {
             dir: SearchDir::Forward,
-            find: true,
+            find: Some(SearchDir::Forward),
         }
     );
     settle_sweep(&mut app);
@@ -2178,6 +2178,186 @@ fn f_finds_in_the_manage_pane() {
         app.last_manage_search,
         Some((SearchDir::Forward, "zz".to_string()))
     );
+}
+
+// ---------------------------------------------------------------------
+// Spec 0281: a find steps whichever way you point it.
+// ---------------------------------------------------------------------
+
+/// Press `code` with `Shift` — spec 0281 S3's relative pair.
+fn press_shift(app: &mut App, code: KeyCode) {
+    app.handle_key(KeyEvent::new(code, KeyModifiers::SHIFT));
+}
+
+/// The prompt's prefix character, which spec 0281 S2 makes a readout of
+/// the active direction.
+fn prefix(app: &App) -> char {
+    app.search_row_text()
+        .expect("a prompt is open")
+        .chars()
+        .next()
+        .expect("the prefix is the first character")
+}
+
+/// Spec 0281 test-plan item 1 (G2, S3). The Shift pair is relative to
+/// the key that opened the prompt: `Shift-→` is *onward*, which after
+/// `B` means backward through the document.
+#[test]
+fn shift_arrows_step_relative_to_the_find_that_opened_the_prompt() {
+    // Matches on nodes 0, 2 and 3.
+    let texts = ["beta: 1", "x: 2", "beta: 3", "beta: 4"];
+
+    let mut app = sibling_leaves_app(&texts);
+    app.splash = false;
+    app.term_width = 120;
+    app.cursor = 3;
+    find_by_key(&mut app, 'B', "beta");
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(2));
+
+    press_shift(&mut app, KeyCode::Right);
+    settle_sweep(&mut app);
+    assert_eq!(
+        app.search_current_cell().map(|c| c.0),
+        Some(0),
+        "onward from a `B` prompt is backward through the document"
+    );
+    press_shift(&mut app, KeyCode::Left);
+    settle_sweep(&mut app);
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(2), "and back");
+
+    // The mirror: from an `F` prompt the same two keys point the other
+    // way round.
+    let mut app = sibling_leaves_app(&texts);
+    app.splash = false;
+    app.term_width = 120;
+    find_by_key(&mut app, 'F', "beta");
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(2));
+
+    press_shift(&mut app, KeyCode::Right);
+    settle_sweep(&mut app);
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(3));
+    press_shift(&mut app, KeyCode::Left);
+    settle_sweep(&mut app);
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(2));
+}
+
+/// Spec 0281 test-plan item 2 (G3, G4, S2, S5). A step aims the prompt:
+/// the prefix says where the next `Enter` goes, and `Enter` goes there.
+///
+/// This is the whole of what `Ctrl-←` could not do before — it moved
+/// the match and left the prompt pointing the other way.
+#[test]
+fn a_step_points_the_prompt_at_where_it_went() {
+    let mut app = sibling_leaves_app(&["beta: 1", "x: 2", "beta: 3", "beta: 4"]);
+    app.splash = false;
+    app.term_width = 120;
+    app.cursor = 3;
+
+    find_by_key(&mut app, 'B', "beta");
+    assert_eq!(prefix(&app), '<');
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(2));
+
+    // Back, from a backward find: forward through the document.
+    press_shift(&mut app, KeyCode::Left);
+    settle_sweep(&mut app);
+    assert_eq!(prefix(&app), '>');
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(3));
+    press(&mut app, KeyCode::Enter);
+    settle_sweep(&mut app);
+    assert_eq!(
+        app.search_current_cell().map(|c| c.0),
+        Some(0),
+        "`Enter` continues forward, wrapping, rather than doubling back"
+    );
+
+    // And onward again re-aims it at the default.
+    press_shift(&mut app, KeyCode::Right);
+    settle_sweep(&mut app);
+    assert_eq!(prefix(&app), '<');
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(3));
+    press(&mut app, KeyCode::Enter);
+    settle_sweep(&mut app);
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(2));
+}
+
+/// Spec 0281 test-plan item 3 (S4, N2). The Ctrl pair keeps its absolute
+/// directions and gains only the aiming.
+#[test]
+fn ctrl_arrows_stay_absolute_and_set_the_active_direction() {
+    let mut app = sibling_leaves_app(&["beta: 1", "x: 2", "beta: 3", "beta: 4"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    find_by_key(&mut app, 'F', "beta");
+    assert_eq!(prefix(&app), '>');
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(2));
+
+    press_ctrl(&mut app, KeyCode::Left);
+    settle_sweep(&mut app);
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(0));
+    assert_eq!(prefix(&app), '<', "the prompt now points where it went");
+
+    press(&mut app, KeyCode::Enter);
+    settle_sweep(&mut app);
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(3));
+}
+
+/// Spec 0281 test-plan item 4 (N1, S3). A `/` prompt is untouched: its
+/// `Ctrl-←` still rotates without re-pointing anything, and `Shift-→`
+/// is still the text caret.
+#[test]
+fn a_commit_prompt_has_no_active_direction() {
+    let mut app = sibling_leaves_app(&["beta: 1", "x: 2", "beta: 3", "beta: 4"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    type_keys(&mut app, "/");
+    type_keys(&mut app, "beta");
+    settle_sweep(&mut app);
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(2));
+
+    press_ctrl(&mut app, KeyCode::Left);
+    settle_sweep(&mut app);
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(0));
+    assert_eq!(prefix(&app), '/', "still the forward search it opened as");
+
+    press(&mut app, KeyCode::Home);
+    press_shift(&mut app, KeyCode::Right);
+    assert_eq!(
+        app.command_cursor, 1,
+        "`Shift-→` falls through to the text caret"
+    );
+
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(
+        app.last_search,
+        Some((SearchDir::Forward, "beta".to_string()))
+    );
+}
+
+/// Spec 0281 test-plan item 5 (S2). An accepted find is committed in the
+/// direction it last stepped, so `n` carries on that way.
+#[test]
+fn an_accepted_find_repeats_in_the_direction_it_last_stepped() {
+    let mut app = sibling_leaves_app(&["beta: 1", "x: 2", "beta: 3", "beta: 4"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    find_by_key(&mut app, 'F', "beta");
+    press_shift(&mut app, KeyCode::Left);
+    settle_sweep(&mut app);
+    assert_eq!(app.search_current_cell().map(|c| c.0), Some(0));
+
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.cursor, 0);
+    assert_eq!(
+        app.last_search,
+        Some((SearchDir::Backward, "beta".to_string())),
+        "the echo spells the last step, not the key that opened the prompt"
+    );
+
+    press(&mut app, KeyCode::Char('n'));
+    assert_eq!(app.cursor, 3, "{}", app.message);
 }
 
 // ---------------------------------------------------------------------

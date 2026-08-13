@@ -173,7 +173,9 @@ impl App {
                 // and leaves everything else exactly where it is — the
                 // buffer, the caret in it, the origin and the highlight.
                 // It never reaches the commit below.
-                if let CommandLineKind::Search { dir, find: true } = self.command_kind {
+                // Spec 0281 S5: `dir` is the active direction, so this
+                // steps whichever way the reader last pointed the prompt.
+                if let CommandLineKind::Search { dir, find: Some(_) } = self.command_kind {
                     self.rotate_search_match(dir);
                     return;
                 }
@@ -235,7 +237,7 @@ impl App {
             KeyCode::Esc => {
                 // Spec 0276 S5: at a find prompt `Esc` is the accept,
                 // not the cancel — the gesture's one exit (N1).
-                if let CommandLineKind::Search { dir, find: true } = self.command_kind {
+                if let CommandLineKind::Search { dir, find: Some(_) } = self.command_kind {
                     self.accept_find(dir);
                     return;
                 }
@@ -262,13 +264,40 @@ impl App {
             // what keeps that from being a surprise later (N1).
             KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if matches!(self.command_kind, CommandLineKind::Search { .. }) {
-                    self.rotate_search_match(SearchDir::Forward);
+                    self.step_search_match(SearchDir::Forward);
                 }
             }
             KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if matches!(self.command_kind, CommandLineKind::Search { .. }) {
-                    self.rotate_search_match(SearchDir::Backward);
+                    self.step_search_match(SearchDir::Backward);
                 }
+            }
+            // Spec 0281 S3: the find's own pair — *onward* and *back*
+            // rather than forward and backward, so that after `B` the
+            // key that keeps going is still the right-hand one.
+            //
+            // The `find` guard is in the pattern rather than in the body
+            // (S6): at a `/`, `?` or `:` prompt these must reach the
+            // plain Left/Right arms below, which is what they do today.
+            // They sit after the Ctrl pair so that a Ctrl-Shift-arrow
+            // keeps meaning the Ctrl one.
+            KeyCode::Right
+                if key.modifiers.contains(KeyModifiers::SHIFT)
+                    && matches!(
+                        self.command_kind,
+                        CommandLineKind::Search { find: Some(_), .. }
+                    ) =>
+            {
+                self.step_find_match(false);
+            }
+            KeyCode::Left
+                if key.modifiers.contains(KeyModifiers::SHIFT)
+                    && matches!(
+                        self.command_kind,
+                        CommandLineKind::Search { find: Some(_), .. }
+                    ) =>
+            {
+                self.step_find_match(true);
             }
             // Spec 0246 S14: the search history. Unbound at a `:` prompt
             // (N1), where these fall through to the catch-all below.

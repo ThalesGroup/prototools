@@ -937,16 +937,31 @@ enum ManageRow {
 /// makes the compiler name every site. `command_kind` is set by
 /// `open_command_line` on every prompt, so the mode cannot leak from
 /// one to the next.
+///
+/// Spec 0281 S1 widens that field from a `bool` to carry the find's
+/// **default** direction — the one its opening key named — while `dir`
+/// becomes the **active** one, where the next `Enter` will step.
+/// `Shift-→`/`Shift-←` are the only readers of `find`'s payload;
+/// everything downstream (the prefix character, `restart_search_sweep`,
+/// `accept_find`'s echo) reads `dir` and is right about "active"
+/// without change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CommandLineKind {
     Command,
-    Search { dir: SearchDir, find: bool },
+    Search {
+        /// Where the next step goes — and at a `/`/`?` prompt, what
+        /// `Enter` will commit.
+        dir: SearchDir,
+        /// `Some(d)` for an `F`/`B` prompt opened by the key naming
+        /// `d`; `None` for a committing one.
+        find: Option<SearchDir>,
+    },
 }
 
 impl CommandLineKind {
     /// A `/`/`?` prompt — the committing one.
     fn search(dir: SearchDir) -> Self {
-        Self::Search { dir, find: false }
+        Self::Search { dir, find: None }
     }
 }
 

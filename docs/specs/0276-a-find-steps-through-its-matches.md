@@ -70,7 +70,9 @@ to the commit, and starts from the last pattern rather than from nothing.
 ## Specification
 
 - **S1.** `CommandLineKind::Search` gains a field: `Search { dir:
-  SearchDir, find: bool }`. A field rather than a fourth variant,
+  SearchDir, find: bool }`. *(Amended 2026-08-13 by spec 0281 S1: the
+  field is `find: Option<SearchDir>`, carrying the find's default
+  direction, and `dir` becomes the active one.)* A field rather than a fourth variant,
   because a variant leaves every existing `matches!(…, Search(_))` test
   — the history browse, the incremental restart, the pattern tint —
   quietly answering "no" for the new prompt. Widening the existing
@@ -92,7 +94,8 @@ to the commit, and starts from the last pattern rather than from nothing.
   prefix would render `Ffoo` and read as a typo.
 
 - **S4.** `Enter` in a find prompt is `rotate_search_match(dir)` and
-  nothing else — the buffer, the cursor, the origin and the highlight
+  nothing else — where spec 0281 S5 makes `dir` the *active* direction,
+  so it steps whichever way the reader last pointed the prompt — the buffer, the cursor, the origin and the highlight
   all stay. Spec 0246 S18's rotation restarts from the displayed match
   and cycles, so a single-match pattern rotates to itself rather than
   reporting a miss.
