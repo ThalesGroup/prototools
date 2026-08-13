@@ -350,7 +350,16 @@ pub(super) fn caret_right(&mut self) {
         self.desired_column = self.cursor_column;
         return;
     }
-    self.first_child_move();
+    if self.cursor_line_in_node == 0
+        && (self.cursor_folded() || self.first_child(self.cursor).is_some())
+    {
+        self.first_child_move();
+        return;
+    }
+    // Nothing ahead in the tree: carry on to the next row.
+    if self.step_down() {
+        self.caret_to_line_start();
+    }
 }
 ```
 
@@ -370,7 +379,19 @@ all three of anchor, column and fold state. Each part earns its place:
 Order matters on a one-column row, where `first == last`. The unfold
 branch runs first, so `l` on a folded footer-like row opens it; if it is
 not folded, control reaches the `End`-adopting branch and the row's
-single column can still be anchored and descended from.
+single column can still be anchored from.
+
+**Two different rows end in `}`, and only one of them descends.** A
+folded node is drawn `name { ... }` on a single row, so its last
+character is a closing brace; that row *is* the node's header, and
+reading right through it is reading into the node — the unfold, then on
+a further press the descent. An expanded node's own footer row is a
+closing brace as well, but its subtree is drawn **above** it, so there
+is nothing ahead there but the next line. `cursor` is deliberately the
+same node on both rows (spec 0142), which is why the descent branch has
+to name the row: it is gated on `cursor_line_in_node == 0`. A folded
+node is one row and so is always its own header, which is what keeps
+the two readings of `}` from needing two code paths.
 
 ### S7. `parent_move` folds first, `first_child_move` unfolds first
 
@@ -662,3 +683,24 @@ One thing the user confirmed rather than the spec deriving: the caret is
 anchored `Home` at startup, "voluntarily" — so the very first `h` on a
 freshly opened file folds the root node rather than being spent adopting
 a position.
+
+## Amendment, 2026-08-13 — the two rows that end in `}`
+
+S6 said a one-column row that is not folded "can still be anchored and
+descended from". That was written with a folded node's `name { ... }`
+row in mind, where the closing brace is the last character of the
+node's *header* and reading through it reads into the node. An expanded
+node's footer row also ends in `}` and is also one column, but its
+subtree is drawn above it, so the same sentence sent the caret
+backwards into a child the reader had already passed — reported by the
+user as "pressing twice on Right goes to the first subnode instead of
+the next line".
+
+The descent is now gated on `cursor_line_in_node == 0`, which is the
+one thing that tells the two rows apart: spec 0142 makes `cursor` the
+same node on both. S6's listing and its closing paragraph are corrected
+above. Nothing else moves — a folded node is a single row and so is
+always its own header, so S7's split (one press unfolds, the next
+descends) and the `l`/`h` inverse property it exists for are untouched.
+Covered by
+`l_off_a_closing_brace_goes_on_rather_than_back_into_the_subtree`.

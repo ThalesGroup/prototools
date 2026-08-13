@@ -658,7 +658,19 @@ impl App {
         }
         // A voluntary `End`. Descend if there is anywhere to descend to
         // — a folded node to open, or a child to enter.
-        if self.cursor_folded() || self.first_child(self.cursor).is_some() {
+        //
+        // Only from the node's *header* row. The descent reads right
+        // through the opening brace, which is where the subtree lies on
+        // screen; a bracketed node owns a closing-brace row as well, and
+        // `cursor` is deliberately the same node on both of them, so the
+        // row has to be named or the caret jumps backwards into a
+        // subtree drawn above it. Off the `}` there is nothing ahead but
+        // the next line, which is what the fall-through below already
+        // does. A folded node is one row, so it is always its own
+        // header.
+        if self.cursor_line_in_node == 0
+            && (self.cursor_folded() || self.first_child(self.cursor).is_some())
+        {
             self.first_child_move();
             return;
         }

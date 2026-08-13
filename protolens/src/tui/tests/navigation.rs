@@ -1084,6 +1084,53 @@ fn l_at_a_voluntary_end_descends_into_the_first_child() {
     assert_eq!(app.cursor, id_idx);
 }
 
+/// Spec 0199 S6 descends through the *opening* brace, because that is
+/// where the subtree lies on screen. A bracketed node owns a second row
+/// — its closing brace — and `cursor` is deliberately the same node on
+/// both (spec 0142), so the descent has to be told which row it is on.
+///
+/// Off the closing brace the subtree is drawn *above*, so rightward
+/// motion carries on to the next line like any other end of text.
+/// Without the guard the caret jumped backwards into the first child.
+#[test]
+fn l_off_a_closing_brace_goes_on_rather_than_back_into_the_subtree() {
+    let (mut app, inner_idx, id_idx) = type_as_fixture();
+    app.set_cursor(inner_idx);
+    app.cursor_line_in_node = app.tree[inner_idx].lines_total - 1;
+    // Arrived at the row rather than aimed at its end, which is what
+    // makes it the two presses the report describes: one to adopt the
+    // End, one to act on it.
+    let (_, last) = app.caret_bounds();
+    app.cursor_column = last;
+    app.desired_column = last + 5;
+    app.caret_anchor = CaretAnchor::Free;
+
+    let footer = app.cursor_line();
+    let pos = LinePos {
+        node: app.cursor,
+        line_in_node: app.cursor_line_in_node,
+    };
+    assert!(
+        app.row_text(app.committed_row_at(footer, pos))
+            .trim_end()
+            .ends_with('}'),
+        "the fixture must put the caret on the closing brace"
+    );
+
+    app.caret_right();
+    assert_eq!(app.cursor_line(), footer, "the first press only anchors");
+    assert_eq!(app.caret_anchor, CaretAnchor::End);
+
+    app.caret_right();
+    assert_ne!(app.cursor, id_idx, "the subtree is above, not ahead");
+    assert_eq!(app.cursor_line(), footer + 1, "on to the next line");
+    assert_eq!(
+        app.cursor_column,
+        app.caret_bounds().0,
+        "and at that line's first character"
+    );
+}
+
 /// Spec 0199 test-plan items 16 and 17 (S7). `l` at End on a *folded*
 /// node unfolds instead of descending, and stops — which is what makes
 /// `h` at Home its inverse: the round trip returns both the fold set
