@@ -56,11 +56,11 @@ fn column_of(app: &App, line: usize, needle: &str) -> u16 {
 }
 
 /// The node a `Type` hover names — `None` when nothing is hovered, and
-/// `None` for a wire target, which names a part of a row and not a type.
+/// `None` for a wire or document target, neither of which names a type.
 fn hovered_node(app: &App) -> Option<usize> {
     match app.hover.as_ref()?.target {
         HoverTarget::Type(node) => Some(node),
-        HoverTarget::Wire(_) => None,
+        HoverTarget::Wire(_) | HoverTarget::Doc(_) => None,
     }
 }
 
@@ -74,11 +74,15 @@ fn moved(column: u16, row: u16) -> MouseEvent {
 }
 
 /// Spec 0280 test plan 1 / S10: the annotation's type name is a target
-/// and nothing else on the row is.
+/// and nothing else on the row names a *type*.
 ///
 /// Both halves matter. A hover that armed nothing would give the reader
 /// no way in; one that armed everywhere would put a box over the text
 /// they are reading, which is exactly the open-ended surface N3 refuses.
+///
+/// Since spec 0285 the neighboring tokens do arm a dwell of their own,
+/// so the assertions below are that they are not *this* target: one
+/// point, one box (0285 S5).
 #[test]
 fn hover_over_a_type_name_arms_the_dwell() {
     let mut app = type_row_app();
@@ -91,21 +95,22 @@ fn hover_over_a_type_name_arms_the_dwell() {
     assert_eq!(hovered_node(&app), Some(0));
     assert!(app.popup.is_none(), "the dwell has not expired yet");
 
-    // The value is the document, which is what a click is for.
+    // The field key is the document, which is what a click is for.
     app.handle_mouse(moved(column_of(&app, 0, "x: 1"), 0));
-    assert!(
-        app.hover_deadline.is_none(),
-        "an ordinary document column names nothing"
+    assert_eq!(
+        hovered_node(&app),
+        None,
+        "an ordinary document column names no type"
     );
 
     // The field number the type is declared with is not the type.
     app.handle_mouse(moved(column_of(&app, 0, "= 1") + 2, 0));
-    assert!(app.hover_deadline.is_none());
+    assert_eq!(hovered_node(&app), None);
 
     // Neither a label in front of the name nor an enum's value behind
     // it belongs to it.
     app.handle_mouse(moved(column_of(&app, 1, "repeated"), 1));
-    assert!(app.hover.is_none(), "a label is not the type");
+    assert_eq!(hovered_node(&app), None, "a label is not the type");
     app.handle_mouse(moved(column_of(&app, 1, "Color"), 1));
     assert_eq!(hovered_node(&app), Some(1));
     app.handle_mouse(moved(column_of(&app, 1, "(5)"), 1));

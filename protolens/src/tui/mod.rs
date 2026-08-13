@@ -2481,6 +2481,7 @@ mod override_resolve;
 mod override_select;
 mod pane_scroll;
 mod popup;
+mod popup_doc;
 mod popup_wire;
 mod prefetch;
 mod preview_truncate;

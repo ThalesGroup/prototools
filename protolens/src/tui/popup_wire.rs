@@ -19,6 +19,7 @@
 
 use super::wire::{Region, WireHit, WirePart, WIRE_ROW_MAX_BYTES};
 use super::*;
+use crate::annotation::{clause, PACK_SIZE};
 use prototext_core::helpers::{
     decode_bool, decode_double, decode_fixed32, decode_fixed64, decode_float, decode_int32,
     decode_int64, decode_sfixed32, decode_sfixed64, decode_sint32, decode_sint64, decode_uint32,
@@ -47,45 +48,6 @@ fn wire_type_name(wtype: u32) -> &'static str {
         _ => "invalid — no such wire type",
     }
 }
-
-/// The plain-English clause that follows an accusation keyword
-/// (spec 0282 S13).
-///
-/// The keyword is printed because it is what the row above shows and
-/// what `docs/prototext/annotation-format.md` documents; the clause is
-/// printed because a keyword is not an explanation. `None` for anything
-/// unlisted, which then prints as the bare keyword rather than as a
-/// keyword and an empty dash.
-fn flaw_clause(keyword: &str) -> Option<&'static str> {
-    Some(match keyword {
-        "TAG_OOR" | "ETAG_OOR" => "a field number must be between 1 and 536870911",
-        "tag_ohb" | "etag_ohb" => "the tag varint is padded, not minimal",
-        "len_ohb" => "the length varint is padded, not minimal",
-        "val_ohb" => "this varint is padded, not minimal",
-        "neg" => "a negative value in five bytes, not the canonical ten",
-        "nan_bits" => "a NaN, but not the bit pattern protoc writes",
-        "ENUM_UNKNOWN" => "no name in the declared enum has this number",
-        "TYPE_MISMATCH" => "the schema declares this field with another wire type",
-        "OPEN_GROUP" => "this group is never closed",
-        "END_MISMATCH" => "this group end names a different field than its start",
-        "INVALID_TAG_TYPE" => "6 and 7 are not wire types",
-        "INVALID_VARINT" => "this varint has no final byte",
-        "INVALID_GROUP_END" => "this group-end tag has no final byte",
-        "INVALID_LEN" => "the length prefix has no final byte",
-        "INVALID_FIXED64" => "a 64-bit value needs eight bytes and fewer are left",
-        "INVALID_FIXED32" => "a 32-bit value needs four bytes and fewer are left",
-        "TRUNCATED_BYTES" => "the declared length runs past the end of the message",
-        "INVALID_PACKED_RECORDS" => "these bytes do not divide into whole packed elements",
-        "INVALID_STRING" => "these bytes are not valid UTF-8",
-        _ => return None,
-    })
-}
-
-/// The one keyword the painter files that is a landmark rather than a
-/// defect (0225's 2026-08-06 amendment): it says the record carries a
-/// packed run. S8 prints it as part of the length line, so it must not
-/// also arrive as a flaw.
-const PACK_SIZE: &str = "pack_size";
 
 /// Readings with nothing to point at (spec 0283 N1): no substring of
 /// `1.4142135623730951` is the byte the pointer is on.
@@ -201,7 +163,7 @@ impl App {
             .iter()
             .filter(|keyword| **keyword != PACK_SIZE)
             .map(|keyword| {
-                BoxLine::plain(match flaw_clause(keyword) {
+                BoxLine::plain(match clause(keyword) {
                     Some(clause) => format!("{keyword} — {clause}"),
                     None => (*keyword).to_string(),
                 })

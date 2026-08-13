@@ -10,12 +10,22 @@ SPDX-License-Identifier: MIT
 This document is the definitive reference for the text representation emitted
 by `prototext -d` (decode) and consumed by `prototext -e` (encode).
 
-The format is a superset of the
+**prototext is the
 [protobuf text format](https://protobuf.dev/reference/protobuf/textformat-spec/)
-as produced by `protoc --decode`.  For canonical wire input, `prototext -d`
-output (ignoring the `#@` annotation comment) is byte-for-byte identical to
-`protoc --decode` output.  Every field line carries an inline annotation
-comment (`#@`) that encodes enough information to reconstruct the exact binary
+(textproto), plus prototext annotations.**  Three terms, layered:
+
+- `#@` is the *marker*.  It is a textproto comment (`#`) with an `@` after it,
+  so an annotated file remains a legal textproto file to any reader that skips
+  comments.  It introduces an annotation; it is not one.
+- A **prototext annotation** is everything from the `#@` to end of line.  Its
+  grammar is [below](#annotation-structure), and the wire type, the field
+  declaration and the modifiers are its members.
+- **prototext** is the resulting format: textproto to the left of the `#@`,
+  annotations to the right.
+
+For canonical wire input, `prototext -d` output — ignoring the annotations — is
+byte-for-byte identical to `protoc --decode` output.  Every field line carries
+an annotation that encodes enough information to reconstruct the exact binary
 bytes on re-encoding, including all non-canonical or anomalous aspects.
 
 ---

@@ -335,6 +335,45 @@ fn a_flawed_part_names_its_keyword() {
         .any(|l| l.contains("val_ohb")));
 }
 
+/// Spec 0285 test plan 2 / G2: a keyword reads the same in both boxes,
+/// because there is one copy of the sentence.
+///
+/// The fixture is `a_flawed_part_names_its_keyword`'s, and that is the
+/// point: one blob draws `val_ohb` on the wire row and again in the
+/// document row's `#@` annotation, so the two boxes can be opened over
+/// the same fault and compared. What would drift is a second table;
+/// what this asserts is that the wire box's line is the document box's
+/// clause with the keyword written in front of it.
+#[test]
+fn a_keyword_reads_the_same_in_both_boxes() {
+    let mut app = sample_app(&[0x28, 0x87, 0x00]);
+
+    let wire = box_at(&app, 1, col_of(&app, 1, "87"), TALL)
+        .last()
+        .cloned()
+        .expect("the padded varint has a flaw line");
+
+    // The same line's *document* row, which spells the same keyword.
+    let pos = app.line_pos(1).expect("a drawn line");
+    let content = app.row_content(app.committed_row_at(1, pos));
+    let at = content.find("val_ohb").expect("the annotation names it");
+    let row = (0..app.main_area.height)
+        .find(|r| app.main_pane_line_part(app.main_area.x + 1, *r) == Some((1, 0)))
+        .expect("its document row is on screen");
+    let column = app.main_area.x + 1 + (content[..at].chars().count() - app.pan_offset) as u16;
+
+    let hit = app
+        .doc_element_at_point(column, app.main_area.y + row)
+        .expect("the keyword is a target");
+    let doc: Vec<String> = popup_doc::doc_lines(&hit)
+        .into_iter()
+        .map(|line| line.text)
+        .collect();
+
+    let clause = doc.last().expect("the box explains it");
+    assert_eq!(wire, format!("val_ohb — {clause}"), "{doc:?}");
+}
+
 /// Spec 0282 test plan 9 / S10: the flaws outrank the alternatives, so
 /// a short pane keeps them and drops the readings instead.
 #[test]

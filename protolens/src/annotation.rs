@@ -104,6 +104,75 @@ pub fn tier_of(keyword: &str) -> Option<Tier> {
     }
 }
 
+/// The plain-English clause a keyword stands for (spec 0285 S1).
+///
+/// The keyword is what the row shows and what
+/// `docs/prototext/annotation-format.md` documents; the clause is here
+/// because a keyword is not an explanation. It lives beside [`tier_of`]
+/// so that how serious a keyword is and what it says cannot come apart,
+/// and so that the wire box and the document box print one string
+/// rather than two that drift (spec 0285 G2).
+///
+/// `None` for anything unlisted, which prints as the bare keyword
+/// rather than as a keyword and an empty dash. The drift test below
+/// keeps the vocabulary itself from reaching that arm.
+pub fn clause(keyword: &str) -> Option<&'static str> {
+    Some(match keyword {
+        "TAG_OOR" | "ETAG_OOR" => "a field number must be between 1 and 536870911",
+        "tag_ohb" | "etag_ohb" => "the tag varint is padded, not minimal",
+        "len_ohb" => "the length varint is padded, not minimal",
+        "val_ohb" => "this varint is padded, not minimal",
+        "ohb" => "this packed element's varint is padded, not minimal",
+        "packed_ohb" => "the v1 spelling of ohb: one list for the whole packed run",
+        "neg" | "truncated_neg" => "a negative value in five bytes, not the canonical ten",
+        "packed_truncated_neg" => "the v1 spelling of neg: one list for the whole packed run",
+        "nan_bits" => "a NaN, but not the bit pattern protoc writes",
+        "ENUM_UNKNOWN" => "no name in the declared enum has this number",
+        "TYPE_MISMATCH" => "the schema declares this field with another wire type",
+        "OPEN_GROUP" => "this group is never closed",
+        "END_MISMATCH" => "this group end names a different field than its start",
+        "INVALID_TAG_TYPE" => "6 and 7 are not wire types",
+        "INVALID_VARINT" => "this varint has no final byte",
+        "INVALID_GROUP_END" => "this group-end tag has no final byte",
+        "INVALID_LEN" => "the length prefix has no final byte",
+        "INVALID_FIXED64" => "a 64-bit value needs eight bytes and fewer are left",
+        "INVALID_FIXED32" => "a 32-bit value needs four bytes and fewer are left",
+        "TRUNCATED_BYTES" => "the declared length runs past the end of the message",
+        "MISSING" => "how many bytes short of its declared length the record is",
+        "INVALID_PACKED_RECORDS" => "these bytes do not divide into whole packed elements",
+        "INVALID_STRING" => "these bytes are not valid UTF-8",
+        PACK_SIZE => "how many elements this one packed wire record holds",
+        _ => return None,
+    })
+}
+
+/// The same, for the wire-type token an annotation opens with
+/// (spec 0285 S4) — and, by answering `Some`, the recognizer for one.
+///
+/// Kept apart from [`clause`] rather than folded into it because
+/// `bytes`, `fixed32` and `fixed64` are *also* proto scalar type names
+/// and mean something else in that position (spec 0285's rejected
+/// word-keyed table). Two functions is how the caller declares which
+/// position it is asking about.
+pub fn wire_type_clause(token: &str) -> Option<&'static str> {
+    Some(match token {
+        "varint" => "wire type 0 — a base-128 integer, one to ten bytes",
+        "fixed64" => "wire type 1 — eight bytes, little-endian",
+        "bytes" => "wire type 2 — a length prefix, then that many bytes",
+        "group" => "wire types 3 and 4 — a start tag, the fields, a matching end tag",
+        "fixed32" => "wire type 5 — four bytes, little-endian",
+        _ => return None,
+    })
+}
+
+/// The one keyword that is a landmark rather than a defect (0225's
+/// 2026-08-06 amendment): it says the record carries a packed run.
+///
+/// Named because two callers must agree about it — the wire box prints
+/// it as part of its length line and so must not also print it as a
+/// flaw, and [`clause`] answers for it despite it having no tier.
+pub const PACK_SIZE: &str = "pack_size";
+
 /// Every keyword in the vocabulary, paired with its tier — the drift
 /// test's input, so that `highlights.scm`'s copy of these lists cannot
 /// quietly fall behind this one. Nothing at runtime enumerates the
@@ -143,6 +212,35 @@ mod tests {
         // that is not an anomaly gets no tier rather than the mildest
         // one.
         assert_eq!(tier_of("pack_size"), None);
+    }
+
+    /// Spec 0285 S2. A modifier prototext-core adds later shows up
+    /// uncolored *and* unexplained, and the second is the one nothing
+    /// else would notice: an unlisted keyword prints as a bare word in
+    /// a box whose whole purpose is to not be a bare word.
+    #[test]
+    fn every_keyword_has_a_clause() {
+        for keyword in NON_CANONICAL.iter().chain(INVALID.iter()) {
+            assert!(clause(keyword).is_some(), "{keyword} has no clause");
+        }
+        assert!(clause(PACK_SIZE).is_some(), "{PACK_SIZE} has no clause");
+        for token in WIRE_TYPE_NAMES {
+            assert!(wire_type_clause(token).is_some(), "{token} has no clause");
+        }
+    }
+
+    /// The two positions a word-keyed table would confuse: every
+    /// wire-type token that is also a proto scalar type name must be
+    /// unknown to the *other* function, or a caller asking in one
+    /// position could be answered from the other.
+    #[test]
+    fn the_two_clause_tables_do_not_overlap() {
+        for token in WIRE_TYPE_NAMES {
+            assert_eq!(clause(token), None, "{token} is in both tables");
+        }
+        for keyword in NON_CANONICAL.iter().chain(INVALID.iter()) {
+            assert_eq!(wire_type_clause(keyword), None, "{keyword} is in both");
+        }
     }
 
     #[test]

@@ -20,6 +20,7 @@ mod override_cmd;
 mod override_preview;
 mod override_select;
 mod popup;
+mod popup_doc;
 mod popup_wire;
 mod prefetch;
 mod preview_truncate;

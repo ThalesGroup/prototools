@@ -20,10 +20,10 @@
 //! timing and teardown rule below is shared, and nothing here knows
 //! which body it is holding.
 
+use super::popup_doc::{annotation_type_span, DocHit};
 use super::wire::WireHit;
 use super::*;
 use crate::override_pane::{inferred_breakdown, ScoreBreakdown};
-use prototext_core::serialize::encode_text::annotation_start;
 
 /// How long the pointer must hold still on a type before the box
 /// appears (spec 0280 S12).
@@ -36,6 +36,17 @@ use prototext_core::serialize::encode_text::annotation_start;
 /// the low end of that is right here because the answer is already
 /// computed (S13) and the box costs nothing to dismiss (S16).
 pub(super) const HOVER_DWELL: Duration = Duration::from_millis(400);
+
+/// The same, for an explanation rather than a datum (spec 0285 S7).
+///
+/// [`HOVER_DWELL`] is short because the answer is about the reader's
+/// own bytes and they asked about one specific node. This is the other
+/// case: a pointer crossing a dense `#@` annotation on its way
+/// somewhere passes over five explainable tokens, and at 400 ms each
+/// crossing would open five boxes in turn. 900 ms is past the top of
+/// the 400-600 ms desktop range — long enough to be the pause of
+/// someone who has stopped to read rather than someone travelling.
+pub(super) const EXPLAIN_DWELL: Duration = Duration::from_millis(900);
 
 /// What can be said about one node's current type.
 ///
@@ -66,6 +77,9 @@ pub(super) enum PopupBody {
     },
     /// Spec 0282: what one part of one wire row says.
     Wire(WireBox),
+    /// Spec 0285: what one token of one document row means. A fixed
+    /// two to four lines, so it needs nothing of 0282 S10's `fit`.
+    Doc(Vec<BoxLine>),
 }
 
 /// One line of a box.
@@ -161,6 +175,8 @@ pub(super) enum HoverTarget {
     Type(usize),
     /// Spec 0282: one part of one wire row.
     Wire(WireHit),
+    /// Spec 0285: one token of one document row.
+    Doc(DocHit),
 }
 
 impl HoverTarget {
@@ -171,6 +187,17 @@ impl HoverTarget {
         match (self, other) {
             (Self::Wire(a), Self::Wire(b)) => a.same_part(b),
             _ => false,
+        }
+    }
+
+    /// How long the pointer must hold still to earn this box
+    /// (spec 0285 S7). One deadline field either way: which constant it
+    /// is set from is a property of what is being asked, not of the
+    /// timer.
+    fn dwell(&self) -> Duration {
+        match self {
+            Self::Doc(_) => EXPLAIN_DWELL,
+            _ => HOVER_DWELL,
         }
     }
 }
@@ -205,46 +232,6 @@ impl ScoreBreakdown {
             .map(|(n, label, weight)| format!("{n:>5} × {weight:<+4} {label}"))
             .collect()
     }
-}
-
-/// The byte range, within a drawn row, of the `type` token of its `#@`
-/// annotation — `None` for a row that declares none (spec 0280 S10).
-///
-/// Read off the format rather than off the highlighter: the annotation
-/// grammar (`docs/prototext/annotation-format.md`) spells a declaration
-/// `[label ]type[ [packed=true]] = NUMBER`, and `push_field_decl` is
-/// the only thing that writes `" = "` into an annotation — every
-/// modifier spells itself `key: value`. `node_status::row_status` leans
-/// on that same fact to find the same token.
-///
-/// An enum's type carries its value (`Color(5)`, `Color([1, 2])`); the
-/// name alone is the target, because the value is a datum and not
-/// something the box has anything to say about.
-fn annotation_type_span(row: &str) -> Option<Range<usize>> {
-    // `annotation_start` reports where the *value* ends, before the two
-    // separator spaces, so the marker is still ahead of us.
-    let at = annotation_start(row)?;
-    let mark = at + row[at..].find("#@ ")? + "#@ ".len();
-
-    let mut start = mark;
-    for token in row[mark..].split(';') {
-        let here = start;
-        start += token.len() + 1;
-        let Some(eq) = token.find(" = ") else {
-            continue;
-        };
-        let decl = &token[..eq];
-        let mut lo = decl.len() - decl.trim_start().len();
-        for label in ["repeated ", "required "] {
-            if decl[lo..].starts_with(label) {
-                lo += label.len();
-                break;
-            }
-        }
-        let hi = lo + decl[lo..].find(['(', ' ']).unwrap_or(decl.len() - lo);
-        return (hi > lo).then_some(here + lo..here + hi);
-    }
-    None
 }
 
 impl App {
@@ -386,7 +373,13 @@ impl App {
                 Some((_, part)) if part > 0 => {
                     self.wire_part_at(column, row).map(HoverTarget::Wire)
                 }
-                Some(_) => self.type_annotation_at(column, row).map(HoverTarget::Type),
+                // Spec 0285 S5: the type name first, so it keeps 0280's
+                // box and its shorter dwell; every other token of the
+                // row falls through to the explanation.
+                Some(_) => match self.type_annotation_at(column, row) {
+                    Some(node) => Some(HoverTarget::Type(node)),
+                    None => self.doc_element_at_point(column, row).map(HoverTarget::Doc),
+                },
                 None => None,
             }
             .map(|target| Hover {
@@ -429,7 +422,10 @@ impl App {
         }
 
         self.hover = target;
-        self.hover_deadline = self.hover.as_ref().map(|_| Instant::now() + HOVER_DWELL);
+        self.hover_deadline = self
+            .hover
+            .as_ref()
+            .map(|hover| Instant::now() + hover.target.dwell());
         // Spec 0280 S13: the query goes out on arrival, so the box is
         // full the moment it appears rather than a frame or a walk
         // later. A wire target has nothing to send: `wire_part_at` has
@@ -465,6 +461,7 @@ impl App {
         match hover.target {
             HoverTarget::Type(node) => self.open_score_popup(node, hover.anchor),
             HoverTarget::Wire(hit) => self.open_wire_popup(&hit, hover.anchor),
+            HoverTarget::Doc(hit) => self.open_doc_popup(&hit, hover.anchor),
         }
     }
 
@@ -534,6 +531,7 @@ impl App {
     pub(super) fn popup_lines(popup: &Popup, avail: usize) -> Vec<BoxLine> {
         let (type_key, breakdown) = match &popup.body {
             PopupBody::Wire(body) => return body.fit(avail),
+            PopupBody::Doc(lines) => return lines.clone(),
             PopupBody::Score {
                 type_key,
                 breakdown,

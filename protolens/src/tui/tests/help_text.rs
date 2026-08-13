@@ -166,3 +166,15 @@ fn the_help_text_documents_both_mouse_gestures() {
         "the left margin's click is undocumented"
     );
 }
+
+/// Spec 0285 S10. Same blind spot: resting the pointer is not a key
+/// either, and the document row's box is the one a reader has to be
+/// told exists — the wire row's is found by anyone already reading hex.
+#[test]
+fn the_help_text_documents_the_document_hover() {
+    let help = HELP_TEXT.join("\n");
+    assert!(
+        help.contains("resting the pointer on a document row"),
+        "the document row's explanation box is undocumented"
+    );
+}
