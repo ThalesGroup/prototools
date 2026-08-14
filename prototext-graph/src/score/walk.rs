@@ -194,6 +194,28 @@ struct ActiveEntry {
     /// entries, never reorder or rebuild them, so an entry's verdict stays
     /// its own.
     verdict: Verdict,
+    /// Unknown fields charged to this group but not yet added to
+    /// `ws.scores[e].unknowns`, for every `e` in `entries` (spec 0294).
+    ///
+    /// Every entry of a group shares its state, so an unknown field is
+    /// charged to all of them identically — the increment is a property of
+    /// the group, and only its *destination* is per-entry. Accumulating it
+    /// here turns N scattered read-modify-writes into one local one.
+    ///
+    /// Worth doing because that destination is the expensive part:
+    /// `ws.scores` is indexed by candidate id, so each increment is a random
+    /// access into an array 72 bytes × the root count — 3.5 MB on
+    /// googleapis, far past L2. Measured over a googleapis startup, this one
+    /// site did **228 597 154** such writes across **41 726 817** group
+    /// updates, and the flush below does one per entry per group lifetime —
+    /// **13 249 300** in total. The scattered traffic falls 17.3x.
+    ///
+    /// Deferral is invisible because no counter is read during the walk:
+    /// the walk reads only `vetoed` (through `is_vetoed`) and writes
+    /// `termination`. The one thing that must hold is that the pending
+    /// charge is flushed before `entries` can shrink — see
+    /// [`flush_pending`].
+    pending_unknowns: u64,
 }
 
 /// Global walk state shared across all recursion levels.
@@ -366,6 +388,7 @@ fn group_by_state(
             entries,
             occurrences: SmallVec::new(),
             verdict: Verdict::Unknown,
+            pending_unknowns: 0,
         });
     }
     result
@@ -1053,6 +1076,31 @@ fn packed_run_verdict(
 
 // ── Multi-entry parallel walk (spec 0048) ─────────────────────────────────────
 
+/// Charge `ae`'s accumulated unknowns to each of its entries and reset the
+/// accumulator.
+///
+/// Must be called before `ae.entries` can shrink or the group can die — the
+/// pending charge belongs to the entries that were present when it was
+/// accrued. Everything else about a walk is oblivious to it, because no
+/// counter in `EntryScore` is read until the walk is over.
+#[inline]
+fn flush_pending(ae: &mut ActiveEntry, scores: &mut [EntryScore]) {
+    if ae.pending_unknowns == 0 {
+        return;
+    }
+    for &e in &ae.entries {
+        scores[e as usize].unknowns += ae.pending_unknowns;
+    }
+    ae.pending_unknowns = 0;
+}
+
+/// [`flush_pending`] over a whole active set.
+fn flush_all(active: &mut [ActiveEntry], scores: &mut [EntryScore]) {
+    for ae in active.iter_mut() {
+        flush_pending(ae, scores);
+    }
+}
+
 /// Veto all entries in `active` and clear the set.
 ///
 /// `reason` is deliberately a plain `&str` rather than `set_vetoed`'s
@@ -1060,7 +1108,8 @@ fn packed_run_verdict(
 /// terminal error that ends the walk, so it is paid once — not once per
 /// candidate per tag, which is what made laziness worth it there.
 fn veto_all(active: &mut Vec<ActiveEntry>, ws: &mut WalkState, reason: &str) {
-    for ae in active.iter() {
+    for ae in active.iter_mut() {
+        flush_pending(ae, ws.scores);
         for &e in &ae.entries {
             ws.set_vetoed(e, || reason.to_string());
         }
@@ -1085,7 +1134,7 @@ fn veto_all(active: &mut Vec<ActiveEntry>, ws: &mut WalkState, reason: &str) {
 /// `set_vetoed` site is immediately followed by `ae.entries.clear()`, and
 /// the LEN arm then drops the emptied `ActiveEntry`s). The `debug_assert`
 /// is that invariant, checked on every skip.
-fn propagate_vetoes(active: &mut Vec<ActiveEntry>, ws: &WalkState, since: u64) {
+fn propagate_vetoes(active: &mut Vec<ActiveEntry>, ws: &mut WalkState, since: u64) {
     if ws.veto_epoch == since {
         debug_assert!(
             active
@@ -1097,6 +1146,10 @@ fn propagate_vetoes(active: &mut Vec<ActiveEntry>, ws: &WalkState, since: u64) {
         return;
     }
     for ae in active.iter_mut() {
+        // Before the retain, not after: the pending charge was accrued
+        // while the entries about to be dropped were still part of the
+        // group, so it is owed to them too.
+        flush_pending(ae, ws.scores);
         ae.entries.retain(|e| !ws.is_vetoed(*e));
     }
     active.retain(|ae| !ae.entries.is_empty());
@@ -1290,10 +1343,30 @@ fn extract_any_value(any_bytes: &[u8]) -> Option<&[u8]> {
     None
 }
 
+/// Walk one message frame, then settle what its surviving groups still owe.
+///
+/// The settling is here rather than at the end of the body because the body
+/// returns from some twenty places. A frame owns its `ActiveEntry`s outright
+/// — every recursion is handed a fresh set built by `group_by_state` — so
+/// "the frame returned" is exactly "these groups are over", and one flush on
+/// the way out covers every exit that was not already a veto.
 fn score_message_multi(
     buf: &[u8],
     start: usize,
     mut active: Vec<ActiveEntry>,
+    my_group: Option<u64>,
+    ws: &mut WalkState,
+    depth: usize,
+) -> usize {
+    let pos = score_message_multi_inner(buf, start, &mut active, my_group, ws, depth);
+    flush_all(&mut active, ws.scores);
+    pos
+}
+
+fn score_message_multi_inner(
+    buf: &[u8],
+    start: usize,
+    active: &mut Vec<ActiveEntry>,
     my_group: Option<u64>,
     ws: &mut WalkState,
     depth: usize,
@@ -1321,7 +1394,7 @@ fn score_message_multi(
     // local degradation: a range this walker cannot finish reading is a range
     // it cannot honestly score.
     if depth > MAX_WIRE_DEPTH {
-        veto_all(&mut active, ws, "recursion depth exceeded");
+        veto_all(active, ws, "recursion depth exceeded");
         return buflen;
     }
 
@@ -1330,10 +1403,10 @@ fn score_message_multi(
             if !active.is_empty() {
                 if my_group.is_some() {
                     // Reached EOF while still inside a group — open-ended group → veto.
-                    veto_all(&mut active, ws, "open-ended group (EOF inside group)");
+                    veto_all(active, ws, "open-ended group (EOF inside group)");
                     return buflen;
                 }
-                for ae in &active {
+                for ae in active.iter() {
                     apply_cardinality_multi(ws.graph, ae, ws.scores);
                 }
             }
@@ -1361,7 +1434,7 @@ fn score_message_multi(
 
         let tag = parse_wiretag(buf, pos);
         if tag.garbage.is_some() {
-            veto_all(&mut active, ws, "garbage wire tag");
+            veto_all(active, ws, "garbage wire tag");
             return buflen;
         }
         let field_number = tag.field_number;
@@ -1389,6 +1462,7 @@ fn score_message_multi(
                 // absent from the record that ended, and deferring this pass
                 // would instead judge it against occurrences polluted by the
                 // record that follows.
+                flush_pending(ae, ws.scores);
                 apply_cardinality_multi(ws.graph, ae, ws.scores);
                 for &e in &ae.entries {
                     ws.scores[e as usize].termination = tag_start;
@@ -1404,7 +1478,7 @@ fn score_message_multi(
         // ── Wire-level non-canonical penalties (all active entries) ───────────
 
         if tag.overhang > 0 || tag.out_of_range {
-            for ae in &active {
+            for ae in active.iter() {
                 for &e in &ae.entries {
                     if tag.overhang > 0 {
                         ws.scores[e as usize].non_canonical += 1;
@@ -1482,6 +1556,7 @@ fn score_message_multi(
         // Apply mismatches: veto affected entries, then drop empty ActiveEntries.
         for ae in active.iter_mut() {
             if matches!(ae.verdict, Verdict::Mismatch) {
+                flush_pending(ae, ws.scores);
                 for &e in &ae.entries {
                     ws.set_vetoed(e, || {
                         format!(
@@ -1504,7 +1579,7 @@ fn score_message_multi(
             WT_VARINT => {
                 let vr = parse_varint(buf, pos);
                 if vr.garbage.is_some() {
-                    veto_all(&mut active, ws, "truncated varint body");
+                    veto_all(active, ws, "truncated varint body");
                     return buflen;
                 }
                 pos = vr.next_pos;
@@ -1512,16 +1587,13 @@ fn score_message_multi(
 
                 for ae in active.iter_mut() {
                     match ae.verdict {
-                        Verdict::Unknown => {
-                            for &e in &ae.entries {
-                                ws.scores[e as usize].unknowns += 1;
-                            }
-                        }
+                        Verdict::Unknown => ae.pending_unknowns += 1,
                         Verdict::Found(child, _label) => {
                             let node = find_node(ws.graph, child);
                             let v = check_varint_value(ws.graph, node, val, vr.overhang);
                             apply_value_verdict(ws, ae, v);
                             if v.vetoed {
+                                flush_pending(ae, ws.scores);
                                 for &e in &ae.entries {
                                     ws.set_vetoed(e, || {
                                         format!("varint value out of range on field {field_number}")
@@ -1552,17 +1624,13 @@ fn score_message_multi(
 
             WT_I64 => {
                 let Some(end) = payload_end(pos, 8, buflen) else {
-                    veto_all(&mut active, ws, "truncated I64 body");
+                    veto_all(active, ws, "truncated I64 body");
                     return buflen;
                 };
                 pos = end;
                 for ae in active.iter_mut() {
                     match ae.verdict {
-                        Verdict::Unknown => {
-                            for &e in &ae.entries {
-                                ws.scores[e as usize].unknowns += 1;
-                            }
-                        }
+                        Verdict::Unknown => ae.pending_unknowns += 1,
                         Verdict::Found(_, _) => {
                             record_occurrence(&mut ae.occurrences, field_number as u32);
                             for &e in &ae.entries {
@@ -1580,14 +1648,14 @@ fn score_message_multi(
             WT_LEN => {
                 let lr = parse_varint(buf, pos);
                 if lr.garbage.is_some() {
-                    veto_all(&mut active, ws, "truncated LEN length prefix");
+                    veto_all(active, ws, "truncated LEN length prefix");
                     return buflen;
                 }
                 pos = lr.next_pos;
 
                 // Length-prefix overhang: all active entries at this depth.
                 if lr.overhang > 0 {
-                    for ae in &active {
+                    for ae in active.iter() {
                         for &e in &ae.entries {
                             ws.scores[e as usize].non_canonical += 1;
                         }
@@ -1595,7 +1663,7 @@ fn score_message_multi(
                 }
 
                 let Some(end) = payload_end(pos, lr.value, buflen) else {
-                    veto_all(&mut active, ws, "LEN body extends past end of buffer");
+                    veto_all(active, ws, "LEN body extends past end of buffer");
                     return buflen;
                 };
                 let payload = &buf[pos..end];
@@ -1634,11 +1702,7 @@ fn score_message_multi(
 
                 for ae in active.iter_mut() {
                     match ae.verdict {
-                        Verdict::Unknown => {
-                            for &e in &ae.entries {
-                                ws.scores[e as usize].unknowns += 1;
-                            }
-                        }
+                        Verdict::Unknown => ae.pending_unknowns += 1,
                         Verdict::FoundPacked(child, elem_wt) => {
                             let run_ok = match elem_wt as u32 {
                                 WT_I64 => payload.len().is_multiple_of(8),
@@ -1648,6 +1712,7 @@ fn score_message_multi(
                                 }),
                             };
                             if !run_ok {
+                                flush_pending(ae, ws.scores);
                                 for &e in &ae.entries {
                                     ws.set_vetoed(e, || {
                                         format!(
@@ -1712,6 +1777,7 @@ fn score_message_multi(
                                 do_veto = v.vetoed;
                             }
                             if do_veto {
+                                flush_pending(ae, ws.scores);
                                 for &e in &ae.entries {
                                     ws.set_vetoed(e, || {
                                         format!(
@@ -1748,6 +1814,7 @@ fn score_message_multi(
                                     && !*payload_utf8_ok
                                         .get_or_insert_with(|| std::str::from_utf8(payload).is_ok())
                                 {
+                                    flush_pending(ae, ws.scores);
                                     for &e in &ae.entries {
                                         ws.set_vetoed(e, || {
                                             format!("invalid UTF-8 on string field {field_number}")
@@ -1835,7 +1902,7 @@ fn score_message_multi(
                         let child_active = group_by_state(ws.graph, normal_pairs.into_iter());
                         score_message_multi(payload, 0, child_active, None, ws, depth + 1);
                     }
-                    propagate_vetoes(&mut active, ws, veto_epoch);
+                    propagate_vetoes(active, ws, veto_epoch);
                 }
             }
 
@@ -1879,7 +1946,7 @@ fn score_message_multi(
                         ws,
                         depth + 1,
                     );
-                    propagate_vetoes(&mut active, ws, veto_epoch);
+                    propagate_vetoes(active, ws, veto_epoch);
                     // Record occurrences and matches for surviving Found entries.
                     for ae in active.iter_mut() {
                         if matches!(ae.verdict, Verdict::Found(_, _)) {
@@ -1894,7 +1961,7 @@ fn score_message_multi(
                     // All entries are Unknown — use parse_group_blind for boundary.
                     match parse_group_blind(buf, pos, field_number) {
                         None => {
-                            veto_all(&mut active, ws, "malformed unknown group");
+                            veto_all(active, ws, "malformed unknown group");
                             return buflen;
                         }
                         Some(np) => np,
@@ -1914,6 +1981,7 @@ fn score_message_multi(
                             // stay_out entries also can't parse it — veto them too.
                             for ae in active.iter_mut() {
                                 if matches!(ae.verdict, Verdict::Unknown | Verdict::Extension) {
+                                    flush_pending(ae, ws.scores);
                                     for &e in &ae.entries {
                                         ws.set_vetoed(e, || {
                                             "malformed group (blind fallback)".to_string()
@@ -1944,13 +2012,13 @@ fn score_message_multi(
 
             WT_END_GROUP => match my_group {
                 None => {
-                    veto_all(&mut active, ws, "unexpected END_GROUP outside any group");
+                    veto_all(active, ws, "unexpected END_GROUP outside any group");
                     return buflen;
                 }
                 Some(expected) => {
                     if field_number != expected {
                         veto_all(
-                            &mut active,
+                            active,
                             ws,
                             &format!(
                                 "mismatched END_GROUP: expected field {expected}, got {field_number}"
@@ -1958,7 +2026,7 @@ fn score_message_multi(
                         );
                         return buflen;
                     }
-                    for ae in &active {
+                    for ae in active.iter() {
                         apply_cardinality_multi(ws.graph, ae, ws.scores);
                     }
                     return pos;
@@ -1967,17 +2035,13 @@ fn score_message_multi(
 
             WT_I32 => {
                 let Some(end) = payload_end(pos, 4, buflen) else {
-                    veto_all(&mut active, ws, "truncated I32 body");
+                    veto_all(active, ws, "truncated I32 body");
                     return buflen;
                 };
                 pos = end;
                 for ae in active.iter_mut() {
                     match ae.verdict {
-                        Verdict::Unknown => {
-                            for &e in &ae.entries {
-                                ws.scores[e as usize].unknowns += 1;
-                            }
-                        }
+                        Verdict::Unknown => ae.pending_unknowns += 1,
                         Verdict::Found(_, _) => {
                             record_occurrence(&mut ae.occurrences, field_number as u32);
                             for &e in &ae.entries {
