@@ -104,13 +104,33 @@ win.
 `export /` over googleapis: **byte-identical across 5 278 322 lines**.
 
 protolens startup on googleapis, `taskset -c 0-7 … -j 8`, the two
-binaries interleaved, medians of 5:
+binaries interleaved, medians of 5: **2.021 s → 1.707 s, −15.6%**. All
+five pairs agree in sign with non-overlapping ranges — well clear of
+this machine's 1-2% noise.
 
-| | before | after |
+Timestamping protolens' own progress lines (interleaved, 3 pairs, spread
+under 20 ms) attributes it:
+
+| phase | before | after |
 | --- | ---: | ---: |
-| startup | 2.021 s | **1.707 s** |
-| sweep only (startup − 1.376 s serial floor) | 0.645 s | **0.331 s** |
+| open + mmap (→ `inferring`) | 0.021 s | 0.022 s |
+| **sweep** (`inferring` → `rendering`) | **1.59 s** | **1.25 s** |
+| render (`rendering` → `indexing`) | 0.117 s | 0.117 s |
+| index + teardown | 0.30 s | 0.31 s |
 
-**−15.6% of startup, −48.7% of the sweep**, and all five interleaved
-pairs agree in sign with non-overlapping ranges — well clear of this
-machine's 1-2% noise.
+The whole −0.34 s lands in the sweep, which is where the change is:
+**−21% of the sweep**, and nothing else moves.
+
+### A correction to the earlier arithmetic
+
+A first draft of this section claimed −48.7% of the sweep, by
+subtracting a 1.376 s "serial floor" from both totals. That floor was an
+Amdahl fit over *whole-startup* totals taken before specs 0290 and 0291,
+and it is not this build's serial time — measured directly, the serial
+tail is 0.43 s. Subtracting it would have flattered the result more than
+twice over.
+
+The correction matters beyond this spec: it was also the basis for
+"the sweep is now a minority of startup". It is not. **At `-j 8` the
+sweep is 1.25 s of a 1.71 s startup — 73%** — so the walk, not the
+serial phase, is still where startup time lives.
