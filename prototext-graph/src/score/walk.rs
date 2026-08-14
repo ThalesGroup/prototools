@@ -456,9 +456,24 @@ pub fn score_subset<'g>(
 /// work is duplicated, not divided. Whole groups are disjoint by
 /// construction, so they are the unit that can actually be shared out.
 ///
-/// Balancing is largest-group-first onto the currently-smallest part.
-/// That is O(G log G) on a few thousand groups, against seconds of
-/// walking — it does not need to be cleverer.
+/// **Balancing counts groups, not roots** (spec 0290). Having just said
+/// that a group is the unit of work, weighing a part by how many *roots*
+/// it holds contradicts it, and the contradiction was measured: on
+/// googleapis three of twenty-four parts held 23.7% of the roots and did
+/// **0.82% of the work**, because one group is one traversal however
+/// many roots share it. Those three parts were effectively idle and the
+/// pool was 21 wide, not 24.
+///
+/// Neither key *predicts* cost — parts 3-23 were within 3.8% on group
+/// count and varied 10x in time — so this buys 1-3% of makespan, not
+/// more. It is a correctness-of-intent fix; the straggler is handled by
+/// spec 0269's seat donation instead.
+///
+/// Groups are handed out largest-first, one per part in turn. With group
+/// count as the key that *is* round-robin — every part is tied until the
+/// wheel comes round, and `min_by_key` would return the first tie each
+/// time — so it is written as the modulo directly, which also drops the
+/// hand-out from O(G·n) to O(G).
 ///
 /// Returns only non-empty parts, so the result may be shorter than `n`
 /// (and is a single part when `n <= 1`, or when the graph has fewer
@@ -491,18 +506,13 @@ pub fn partition_roots(graph: &ArchivedCompiledGraph, n: usize) -> Vec<Vec<u32>>
     }
     groups.sort_unstable_by_key(|g| std::cmp::Reverse(g.len()));
 
-    let mut parts: Vec<Vec<u32>> = vec![Vec::new(); n.min(groups.len())];
-    for group in groups {
-        let smallest = parts
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, p)| p.len())
-            .map(|(i, _)| i)
-            .expect("at least one part while groups remain");
-        parts[smallest].extend(group);
+    let k = n.min(groups.len());
+    let mut parts: Vec<Vec<u32>> = vec![Vec::new(); k];
+    for (i, group) in groups.into_iter().enumerate() {
+        parts[i % k].extend(group);
     }
-    // Bin packing on the group sizes cannot leave a part empty here (there
-    // are at least as many groups as parts). Sorting each part is not
+    // Round-robin over at least `k` groups cannot leave a part empty
+    // (there are at least as many groups as parts). Sorting each part is not
     // required by anything downstream — `group_by_state` sorts what it is
     // given, and the ranking's order comes from `candidate_order` — it just
     // makes a part a canonical list of root indices rather than one in

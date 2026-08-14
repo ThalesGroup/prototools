@@ -2116,6 +2116,89 @@ fn build_many_root_graph(n: u32) -> score_load::LoadedGraph {
     score_load::load_graph(&path).expect("load graph")
 }
 
+/// One state shared by `big` roots, plus `singles` roots each alone on a
+/// state. The googleapis shape in miniature: on that corpus one group held
+/// 4645 roots while most held one, which is what made balancing on the root
+/// count fill three whole parts with almost no work (spec 0290).
+fn build_lopsided_root_graph(big: u32, singles: u32) -> score_load::LoadedGraph {
+    let mut states = std::collections::HashMap::new();
+    let field = |number: u32| {
+        vec![ScoringField {
+            number,
+            kind: ScoringKind::Uint32,
+            child: None,
+            range: None,
+            label: FieldLabel::Optional,
+        }]
+    };
+    // Field number 1 throughout, so Hopcroft collapses these onto one state.
+    for i in 0..big {
+        states.insert(format!("B{i}"), field(1));
+    }
+    for i in 0..singles {
+        states.insert(format!("S{i}"), field(i + 2));
+    }
+    let roots: Vec<String> = (0..big)
+        .map(|i| format!("B{i}"))
+        .chain((0..singles).map(|i| format!("S{i}")))
+        .collect();
+    let merged = Merged {
+        states,
+        node_kinds: std::collections::HashMap::new(),
+        roots: roots.clone(),
+        ..Default::default()
+    };
+    let (raw, reg) = graph::build(&merged);
+    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_, _| {});
+    let compiled = graph::compile(&raw, &reg, &partition, &roots);
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("lopsided.bin");
+    serial::write(&compiled, &path).expect("write graph");
+    let _ = std::mem::ManuallyDrop::new(dir);
+    score_load::load_graph(&path).expect("load graph")
+}
+
+/// Spec 0290: a part is weighed by how many *groups* it holds, because a
+/// group is one traversal however many roots share it.
+///
+/// The regression this guards is what the code actually did. With one group
+/// of 40 roots and 40 singleton groups, balancing on the root count gives
+/// that one group a part to itself and then spends the next 39 handouts
+/// bringing other parts up to its size — so one part ends up holding a
+/// single group and doing almost nothing, which is the 24-part googleapis
+/// failure in miniature. Root counts are what looked even while that
+/// happened; group counts are what did not.
+#[test]
+fn a_partition_is_balanced_by_group_count_not_root_count() {
+    let g = build_lopsided_root_graph(40, 40);
+    let state_of: std::collections::HashMap<u32, u32> = g
+        .roots
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (i as u32, r.state_id.to_native()))
+        .collect();
+
+    for n in 2..=8 {
+        let parts = walk::partition_roots(&g, n);
+        let group_counts: Vec<usize> = parts
+            .iter()
+            .map(|p| {
+                p.iter()
+                    .map(|r| state_of[r])
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+            })
+            .collect();
+        let lo = *group_counts.iter().min().expect("a non-empty partition");
+        let hi = *group_counts.iter().max().expect("a non-empty partition");
+        assert!(
+            hi - lo <= 1,
+            "n={n}: group counts {group_counts:?} differ by more than one"
+        );
+    }
+}
+
 /// Spec 0217 G2: sharding is a scheduling change, never a scoring change.
 /// Every partition of the roots, scored subset by subset and reassembled,
 /// must reproduce `score_all` counter for counter.
