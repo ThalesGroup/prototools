@@ -23,6 +23,7 @@
 //! unknown per the field presence rule, with `non_canonical` incremented so
 //! callers can apply a quality penalty.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use prototext_core::helpers::{payload_end, MAX_WIRE_DEPTH};
@@ -224,6 +225,20 @@ struct WalkState<'a, 'g> {
     /// reasons as `packed_scratch` — capacity survives the token, and the
     /// application step below borrows `ws` mutably.
     elem_verdicts: Vec<(u32, ValueVerdict)>,
+    /// `fqdn -> state_id` over every root, built on the first `Any` this walk
+    /// resolves and not at all if it resolves none (spec 0291).
+    ///
+    /// The `Any` arm used to answer `type_url` with a linear scan over
+    /// `graph.roots`, deref'ing an `ArchivedString` per root — 49 255 of them
+    /// on googleapis, per occurrence. That showed up as **8.73% of a protolens
+    /// startup** in rkyv's `string/repr.rs` alone, plus most of a further
+    /// 1.61% in `slice::cmp`.
+    ///
+    /// Built lazily because a payload with no `Any` must not pay for it, and
+    /// per `WalkState` — i.e. once per part — because the build amortizes over
+    /// every occurrence in that part's walk. Measured on googleapis startup:
+    /// 24 walks, 23 313 resolutions, so ~971 lookups pay for each build.
+    any_index: Option<HashMap<&'a str, u32>>,
 }
 
 impl<'a, 'g> WalkState<'a, 'g> {
@@ -245,7 +260,26 @@ impl<'a, 'g> WalkState<'a, 'g> {
             cancel,
             packed_scratch: Vec::new(),
             elem_verdicts: Vec::new(),
+            any_index: None,
         }
+    }
+
+    /// The root state an `Any`'s `type_url` names, or `None` if the graph has
+    /// no root by that name (spec 0291).
+    ///
+    /// The index is built on the first call and reused for the rest of the
+    /// walk. `or_insert` keeps the *first* root of a duplicated name, which is
+    /// what the linear `find` it replaced returned.
+    fn resolve_any_root(&mut self, fqdn: &str) -> Option<u32> {
+        let graph = self.graph;
+        let index = self.any_index.get_or_insert_with(|| {
+            let mut m = HashMap::with_capacity(graph.roots.len());
+            for r in graph.roots.iter() {
+                m.entry(r.fqdn.as_str()).or_insert(r.state_id.to_native());
+            }
+            m
+        });
+        index.get(fqdn).copied()
     }
 
     /// `Relaxed` because the flag carries no data: the walk reads it to
@@ -1682,11 +1716,7 @@ fn score_message_multi(
                                 } else {
                                     type_url
                                 };
-                                ws.graph
-                                    .roots
-                                    .iter()
-                                    .find(|r| r.fqdn.as_str() == fqdn)
-                                    .map(|r| r.state_id.to_native())
+                                ws.resolve_any_root(fqdn)
                             });
                         match resolved_state {
                             Some(root_state) => {
@@ -1905,6 +1935,7 @@ mod set_vetoed_tests {
             cancel: None,
             packed_scratch: Vec::new(),
             elem_verdicts: Vec::new(),
+            any_index: None,
         }
     }
 

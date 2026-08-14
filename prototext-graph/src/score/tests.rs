@@ -1387,6 +1387,30 @@ fn any_expansion_empty_value() {
     assert!(!s.vetoed, "Any with empty value must not veto");
 }
 
+/// TC-S4: an `Any` whose `type_url` names nothing in the graph scores its
+/// `value` as a plain bytes match and does not recurse.
+///
+/// The miss is the branch spec 0291 rewrote: resolution used to be a linear
+/// `find` that ran off the end of `graph.roots`, and is now a lookup that
+/// returns `None`. A hit is already covered by TC-S1..S3, so this is the
+/// half that had no guard.
+#[test]
+fn any_expansion_leaves_an_unresolvable_type_url_alone() {
+    let g = build_graph_any();
+
+    let value = field_len(1, b"hello");
+    let any = any_bytes("type.googleapis.com/NoSuchType", &value);
+    let pb = field_len(1, &any); // Wrapper { field1: Any }
+
+    let s = score_entry(&pb, &g, "Wrapper");
+    assert!(!s.vetoed, "an unresolvable type_url must not veto");
+    assert_eq!(
+        s.matches, 1,
+        "only Wrapper.field1 matches; the value is opaque bytes"
+    );
+    assert_eq!(s.unknowns, 0);
+}
+
 // ── Entry-count ceiling (spec 0140 G6, 0172 S5, 0179 S1) ─────────────────────
 
 /// TC-OF1: a corpus past the old `u16` ceiling loads and scores.
