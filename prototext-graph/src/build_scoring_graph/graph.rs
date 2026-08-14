@@ -413,10 +413,14 @@ pub fn compile(
                 is_string,
                 range_idx,
                 ext_range_idx,
+                // Derived below, once both tables are sorted.
+                trans_offset: 0,
+                trans_len: 0,
             },
         )
         .collect();
     nodes.sort_by_key(|n| n.state_id);
+    link_transitions(&mut nodes, &transitions);
 
     // ── Root entries ──────────────────────────────────────────────────────────
     let mut root_entries: Vec<RootEntry> = Vec::new();
@@ -445,6 +449,32 @@ pub fn compile(
         ext_ranges,
         ext_range_sets,
         has_extension_ranges: raw.has_extension_ranges,
+    }
+}
+
+/// Fill every node's `trans_offset`/`trans_len` from the transition table.
+///
+/// Both compile paths end with `nodes` sorted by `state_id` and `transitions`
+/// sorted by `(state_id, field_number)`, which is what makes one state's edges
+/// a contiguous run. This is the only place that correspondence is
+/// established, so both callers must run it *after* both sorts.
+///
+/// A state with no outgoing edges gets `trans_len == 0`; its `trans_offset` is
+/// then never read. A transition whose `state_id` has no node entry is
+/// skipped — it cannot be reached by a walk, which only ever searches from a
+/// state it already resolved to a node.
+fn link_transitions(nodes: &mut [NodeEntry], transitions: &[TransitionEntry]) {
+    let mut ti = 0usize;
+    for n in nodes.iter_mut() {
+        while ti < transitions.len() && transitions[ti].state_id < n.state_id {
+            ti += 1;
+        }
+        let start = ti;
+        while ti < transitions.len() && transitions[ti].state_id == n.state_id {
+            ti += 1;
+        }
+        n.trans_offset = start as u32;
+        n.trans_len = (ti - start) as u32;
     }
 }
 
@@ -492,6 +522,9 @@ pub fn compile_initial(raw: &RawGraph, reg: &LeafRegistry, roots: &[String]) -> 
                 .get(&node_id)
                 .copied()
                 .unwrap_or(NO_EXT_RANGES),
+            // Derived below, once both tables are sorted.
+            trans_offset: 0,
+            trans_len: 0,
         });
     }
 
@@ -505,9 +538,13 @@ pub fn compile_initial(raw: &RawGraph, reg: &LeafRegistry, roots: &[String]) -> 
             is_string: attrs.is_string,
             range_idx: attrs.range_idx,
             ext_range_idx: NO_EXT_RANGES,
+            // Derived below, once both tables are sorted.
+            trans_offset: 0,
+            trans_len: 0,
         });
     }
     nodes.sort_by_key(|n| n.state_id);
+    link_transitions(&mut nodes, &transitions);
 
     // ── Roots ─────────────────────────────────────────────────────────────────
     let mut root_entries: Vec<RootEntry> = Vec::new();

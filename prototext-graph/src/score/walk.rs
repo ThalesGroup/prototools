@@ -138,6 +138,17 @@ enum Verdict {
 /// last entry index is vetoed).
 struct ActiveEntry {
     state_id: u32,
+    /// This state's own run in `graph.transitions`, copied from its
+    /// `NodeEntry` when the entry is built.
+    ///
+    /// Resolved once here rather than on every lookup because an
+    /// `ActiveEntry` outlives many tags: measured over a googleapis startup,
+    /// **2 571 866 entries served 55 517 968 `find_transition` calls — 21.6
+    /// each**. That ratio is what pays for the one `find_node` this costs,
+    /// and it is the same build-once/use-many shape as spec 0291's `Any`
+    /// index.
+    trans_offset: u32,
+    trans_len: u32,
     /// Entry indices (into `WalkState::scores`) routing through this state
     /// at the current nesting level.  SmallVec avoids heap allocation for the
     /// common case of few entries per state.
@@ -326,7 +337,10 @@ impl<'a, 'g> WalkState<'a, 'g> {
 }
 
 /// Group entries by their state_id, producing one `ActiveEntry` per distinct state.
-fn group_by_state(pairs: impl Iterator<Item = (u32, u32)>) -> Vec<ActiveEntry> {
+fn group_by_state(
+    graph: &ArchivedCompiledGraph,
+    pairs: impl Iterator<Item = (u32, u32)>,
+) -> Vec<ActiveEntry> {
     let mut v: Vec<(u32, u32)> = pairs.collect();
     v.sort_unstable_by_key(|&(s, _)| s);
     let mut result = Vec::new();
@@ -338,8 +352,17 @@ fn group_by_state(pairs: impl Iterator<Item = (u32, u32)>) -> Vec<ActiveEntry> {
             entries.push(v[i].1);
             i += 1;
         }
+        // The one node lookup this entry will ever need. A state with no
+        // node entry gets an empty run, so every field it sees is Unknown —
+        // the same answer the old global search gave by finding nothing.
+        let (trans_offset, trans_len) = match find_node(graph, state_id) {
+            Some(n) => (n.trans_offset.to_native(), n.trans_len.to_native()),
+            None => (0, 0),
+        };
         result.push(ActiveEntry {
             state_id,
+            trans_offset,
+            trans_len,
             entries,
             occurrences: SmallVec::new(),
             verdict: Verdict::Unknown,
@@ -476,6 +499,7 @@ pub fn score_subset<'g>(
     // positions within `graph.roots` — which is why the result is in
     // `roots` order and why the caller's merge needs no remapping.
     let initial_active = group_by_state(
+        graph,
         roots
             .iter()
             .enumerate()
@@ -720,31 +744,45 @@ fn parse_group_blind(buf: &[u8], mut pos: usize, expected_field: u64) -> Option<
 
 // ── Schema lookup ─────────────────────────────────────────────────────────────
 //
-// The transition table is sorted by (state_id, field_number).  A single binary
-// search finds the transition for the given (state, field_number).  Whether the
-// stream wire type matches is determined by looking up the child node's
-// wire_type in the node table (also sorted by state_id).
+// The transition table is sorted by (state_id, field_number), so one state's
+// edges are contiguous.  `ActiveEntry` carries that run, and the search below
+// covers only it.  Whether the stream wire type matches is determined by
+// looking up the child node's wire_type in the node table (sorted by state_id).
 
 struct TransitionResult {
     child_state_id: u32,
     label: u8,
 }
 
+/// Find `field_number` within one state's run of transitions.
+///
+/// `run` is `(trans_offset, trans_len)` off the state's `NodeEntry`, carried
+/// on the `ActiveEntry`. Searching the run rather than the whole table is the
+/// point: on googleapis a state has a mean of 5.14 edges (median 3) against
+/// 85 806 in the table, so this is ~2.4 probes over one or two cache lines
+/// instead of ~16 scattered over 1.37 MB. The global search was 16.48% of a
+/// protolens startup.
+///
+/// The loop stays hand-rolled and branchy on purpose. `slice::binary_search_by`
+/// was tried and cost **+16.5%**: it is deliberately branchless (`cmov`), which
+/// serializes the probe chain and denies the CPU the speculation that overlaps
+/// the misses. That mattered when this searched 1.37 MB; it matters less now,
+/// but there is no reason to re-take the risk.
 fn find_transition(
     graph: &ArchivedCompiledGraph,
-    state: u32,
+    run: (u32, u32),
     field_number: u32,
 ) -> Option<TransitionResult> {
     let t = &graph.transitions;
-    let mut lo = 0usize;
-    let mut hi = t.len();
+    let (offset, len) = (run.0 as usize, run.1 as usize);
+    let mut lo = offset;
+    let mut hi = offset + len;
     while lo < hi {
         let mid = lo + (hi - lo) / 2;
-        let ts = t[mid].state_id.to_native();
         let tf = t[mid].field_number.to_native();
-        if ts < state || (ts == state && tf < field_number) {
+        if tf < field_number {
             lo = mid + 1;
-        } else if ts == state && tf == field_number {
+        } else if tf == field_number {
             return Some(TransitionResult {
                 child_state_id: t[mid].child_state_id.to_native(),
                 label: t[mid].label,
@@ -1121,7 +1159,7 @@ fn scan_terminates(graph: &ArchivedCompiledGraph, ae: &ActiveEntry, tag: &TagRes
         return true;
     }
     let field_number = tag.field_number as u32;
-    match find_transition(graph, ae.state_id, field_number) {
+    match find_transition(graph, (ae.trans_offset, ae.trans_len), field_number) {
         // Rule 1. Strict by construction: a state with an empty range set has
         // declared itself closed, and an undeclared field number in a closed
         // state is a boundary.
@@ -1394,7 +1432,11 @@ fn score_message_multi(
             let v = if tag.out_of_range {
                 Verdict::Unknown
             } else {
-                match find_transition(ws.graph, ae.state_id, field_number as u32) {
+                match find_transition(
+                    ws.graph,
+                    (ae.trans_offset, ae.trans_len),
+                    field_number as u32,
+                ) {
                     None => {
                         // Spec 0238 S15: an unknown field the message has
                         // declared room for is neither evidence for nor
@@ -1765,8 +1807,10 @@ fn score_message_multi(
                                 // Recurse into the `value` sub-field's bytes only —
                                 // not the whole Any body (spec 0107).
                                 let value_payload = extract_any_value(payload).unwrap_or(&[]);
-                                let any_active =
-                                    group_by_state(any_pairs.iter().map(|&(_, e)| (root_state, e)));
+                                let any_active = group_by_state(
+                                    ws.graph,
+                                    any_pairs.iter().map(|&(_, e)| (root_state, e)),
+                                );
                                 score_message_multi(
                                     value_payload,
                                     0,
@@ -1788,7 +1832,7 @@ fn score_message_multi(
                     }
 
                     if !normal_pairs.is_empty() {
-                        let child_active = group_by_state(normal_pairs.into_iter());
+                        let child_active = group_by_state(ws.graph, normal_pairs.into_iter());
                         score_message_multi(payload, 0, child_active, None, ws, depth + 1);
                     }
                     propagate_vetoes(&mut active, ws, veto_epoch);
@@ -1825,7 +1869,7 @@ fn score_message_multi(
 
                 let new_pos = if !recurse_into.is_empty() {
                     // Recurse with schema — boundaries are determined by the group walk.
-                    let child_active = group_by_state(recurse_into.iter().copied());
+                    let child_active = group_by_state(ws.graph, recurse_into.iter().copied());
                     let veto_epoch = ws.veto_epoch;
                     let np = score_message_multi(
                         buf,
