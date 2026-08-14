@@ -769,12 +769,15 @@ fn parse_group_blind(buf: &[u8], mut pos: usize, expected_field: u64) -> Option<
 //
 // The transition table is sorted by (state_id, field_number), so one state's
 // edges are contiguous.  `ActiveEntry` carries that run, and the search below
-// covers only it.  Whether the stream wire type matches is determined by
-// looking up the child node's wire_type in the node table (sorted by state_id).
+// covers only it.  Whether the stream wire type matches is read off the edge
+// itself: the child's wire type is denormalized onto it at build time.
 
 struct TransitionResult {
     child_state_id: u32,
     label: u8,
+    /// The child's protobuf wire type, read straight off the edge — see
+    /// `TransitionEntry::child_wire_type`.
+    child_wire_type: u8,
 }
 
 /// Find `field_number` within one state's run of transitions.
@@ -809,34 +812,13 @@ fn find_transition(
             return Some(TransitionResult {
                 child_state_id: t[mid].child_state_id.to_native(),
                 label: t[mid].label,
+                child_wire_type: t[mid].child_wire_type,
             });
         } else {
             hi = mid;
         }
     }
     None
-}
-
-fn node_wire_type(graph: &ArchivedCompiledGraph, state_id: u32) -> u8 {
-    let n = &graph.nodes;
-    let mut lo = 0usize;
-    let mut hi = n.len();
-    while lo < hi {
-        let mid = lo + (hi - lo) / 2;
-        let ns = n[mid].state_id.to_native();
-        if ns < state_id {
-            lo = mid + 1;
-        } else if ns == state_id {
-            // wire_type 8 (UINT32) and 9 (INT32) are internal discriminants;
-            // their actual protobuf wire type is 0 (varint).
-            let wt = n[mid].wire_type;
-            return if wt == 8 || wt == 9 { 0 } else { wt };
-        } else {
-            hi = mid;
-        }
-    }
-    // Should never happen for a well-formed graph.
-    u8::MAX
 }
 
 /// Binary search for the node with the given `state_id` (nodes are sorted by
@@ -1157,18 +1139,20 @@ fn propagate_vetoes(active: &mut Vec<ActiveEntry>, ws: &mut WalkState, since: u6
 
 /// Apply end-of-frame cardinality checks for the multi-entry walk.
 /// Called once per ActiveEntry at the end of each message/group frame.
+///
+/// Walks the state's own run of `transitions` — the one spec 0293 put on the
+/// `ActiveEntry` — rather than binary-searching the whole 1.37 MB table for
+/// where that run starts. This call site was the one 0293 left behind; the
+/// search it drops was 1.4% of a googleapis startup.
 fn apply_cardinality_multi(
     graph: &ArchivedCompiledGraph,
     ae: &ActiveEntry,
     scores: &mut [EntryScore],
 ) {
-    let state = ae.state_id;
     let t = &graph.transitions;
-    let start = t.partition_point(|e| e.state_id.to_native() < state);
-    for entry in &t[start..] {
-        if entry.state_id.to_native() != state {
-            break;
-        }
+    let start = ae.trans_offset as usize;
+    let end = start + ae.trans_len as usize;
+    for entry in &t[start..end] {
         let fn_ = entry.field_number.to_native();
         let count = ae
             .occurrences
@@ -1527,7 +1511,7 @@ fn score_message_multi_inner(
                         }
                     }
                     Some(tr) => {
-                        let expected_wt = node_wire_type(ws.graph, tr.child_state_id) as u32;
+                        let expected_wt = tr.child_wire_type as u32;
                         if wire_type == expected_wt {
                             Verdict::Found(tr.child_state_id, tr.label)
                         } else if wire_type == WT_LEN

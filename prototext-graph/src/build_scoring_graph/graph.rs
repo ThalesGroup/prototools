@@ -358,6 +358,8 @@ pub fn compile(
                 state_id,
                 field_number,
                 label,
+                // Placeholder; `link_transitions` fills it from the child node.
+                child_wire_type: 0,
                 child_state_id,
             },
         )
@@ -420,7 +422,7 @@ pub fn compile(
         )
         .collect();
     nodes.sort_by_key(|n| n.state_id);
-    link_transitions(&mut nodes, &transitions);
+    link_transitions(&mut nodes, &mut transitions);
 
     // ── Root entries ──────────────────────────────────────────────────────────
     let mut root_entries: Vec<RootEntry> = Vec::new();
@@ -452,7 +454,8 @@ pub fn compile(
     }
 }
 
-/// Fill every node's `trans_offset`/`trans_len` from the transition table.
+/// Cross-link the node and transition tables: every node learns where its own
+/// edges are, and every edge learns what wire type its child expects.
 ///
 /// Both compile paths end with `nodes` sorted by `state_id` and `transitions`
 /// sorted by `(state_id, field_number)`, which is what makes one state's edges
@@ -463,7 +466,7 @@ pub fn compile(
 /// then never read. A transition whose `state_id` has no node entry is
 /// skipped — it cannot be reached by a walk, which only ever searches from a
 /// state it already resolved to a node.
-fn link_transitions(nodes: &mut [NodeEntry], transitions: &[TransitionEntry]) {
+fn link_transitions(nodes: &mut [NodeEntry], transitions: &mut [TransitionEntry]) {
     let mut ti = 0usize;
     for n in nodes.iter_mut() {
         while ti < transitions.len() && transitions[ti].state_id < n.state_id {
@@ -475,6 +478,24 @@ fn link_transitions(nodes: &mut [NodeEntry], transitions: &[TransitionEntry]) {
         }
         n.trans_offset = start as u32;
         n.trans_len = (ti - start) as u32;
+    }
+
+    // A binary search per edge, once, so the walk never has to do one. Not
+    // a co-walk like the loop above: `transitions` is ordered by *source*
+    // state, and this reads the *destination*, which is in no useful order.
+    for t in transitions.iter_mut() {
+        t.child_wire_type = match nodes.binary_search_by_key(&t.child_state_id, |n| n.state_id) {
+            // wire types 8 (UINT32) and 9 (INT32) are internal
+            // discriminants; both are varint on the wire.
+            Ok(i) => match nodes[i].wire_type {
+                8 | 9 => 0,
+                wt => wt,
+            },
+            // Matches what the walk's own lookup used to answer for a child
+            // with no node entry: a value no tag can carry, so the edge is a
+            // wire-type mismatch rather than a match.
+            Err(_) => u8::MAX,
+        };
     }
 }
 
@@ -501,6 +522,8 @@ pub fn compile_initial(raw: &RawGraph, reg: &LeafRegistry, roots: &[String]) -> 
                 state_id: e.src,
                 field_number: e.field_number,
                 label: e.label,
+                // Placeholder; `link_transitions` fills it from the child node.
+                child_wire_type: 0,
                 child_state_id: dst_id,
             }
         })
@@ -544,7 +567,7 @@ pub fn compile_initial(raw: &RawGraph, reg: &LeafRegistry, roots: &[String]) -> 
         });
     }
     nodes.sort_by_key(|n| n.state_id);
-    link_transitions(&mut nodes, &transitions);
+    link_transitions(&mut nodes, &mut transitions);
 
     // ── Roots ─────────────────────────────────────────────────────────────────
     let mut root_entries: Vec<RootEntry> = Vec::new();

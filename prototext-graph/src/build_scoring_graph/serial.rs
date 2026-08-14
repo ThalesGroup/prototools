@@ -84,6 +84,16 @@ pub struct TransitionEntry {
     pub state_id: u32,
     pub field_number: u32,
     pub label: u8,
+    /// The protobuf wire type the child expects, already normalized: the
+    /// internal discriminants 8 (UINT32) and 9 (INT32) are stored as 0, and a
+    /// child with no node entry as `u8::MAX`. Filled by `link_transitions`.
+    ///
+    /// Denormalized off the child's `NodeEntry` because the walk's verdict
+    /// loop needs exactly this and nothing else about the child: it used to
+    /// binary-search all 16 696 nodes for it, once per candidate per tag,
+    /// which was **6.07%** of a googleapis startup. It lives in padding
+    /// `TransitionEntry` already had, so the table does not grow.
+    pub child_wire_type: u8,
     pub child_state_id: u32,
 }
 
@@ -131,7 +141,12 @@ const MAGIC: &[u8; 8] = b"PTSGRAPH";
 /// state an empty transition run and so score every field as unknown, which
 /// is exactly the plausible-wrong-answer failure the version check exists to
 /// prevent.
-pub const GRAPH_VERSION: u32 = 4;
+///
+/// 4 → 5: `TransitionEntry.child_wire_type`. Derived data again, and again
+/// rejected rather than shimmed: a v4 file read as v5 would find whatever
+/// byte the old padding held there and compare it against the tag's wire
+/// type, so every field would be judged a match or a mismatch at random.
+pub const GRAPH_VERSION: u32 = 5;
 
 // ── Writing ───────────────────────────────────────────────────────────────────
 
