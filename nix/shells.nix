@@ -110,6 +110,39 @@
       pkgs.pyright
       # Arithmetic in shell one-liners (benchmark and allocation-count math).
       bc
+
+      # ── Performance audit toolchain ──────────────────────────────────────
+      # This machine's benchmark noise floor is target-dependent and can be
+      # large (`prototext-graph --bench score` measured a +15.9% same-binary
+      # delta on one row), which puts many real effects below the resolution
+      # of a wall clock. The tools below exist so that a question about
+      # instructions, allocations or cache behaviour can be answered with a
+      # deterministic counter instead of a timer — the approach that settled
+      # spec 0179 when ~20 minutes of Criterion could not.
+      #
+      # valgrind — callgrind (exact per-function instruction counts and a
+      #   call graph), cachegrind (cache/branch simulation), DHAT (heap
+      #   access profile) and massif (heap over time), plus the
+      #   `callgrind_annotate` / `cg_annotate` / `ms_print` reporters. It
+      #   simulates rather than samples, so it needs no kernel permission
+      #   and works under the default `perf_event_paranoid = 2`. Roughly
+      #   50x slowdown, which the corpus replay can afford.
+      valgrind
+      # hyperfine — whole-command wall clock with warmup, and min/median
+      #   rather than mean (`--export-json` for the record). Replaces
+      #   hand-rolled `time` loops for end-to-end binary measurements.
+      hyperfine
+      # perf — the only tool here that reads real hardware counters at full
+      #   speed. Requires `/proc/sys/kernel/perf_event_paranoid <= 1`; the
+      #   default on this VM is 2, so it is present but inert until that
+      #   sysctl is lowered. Kept in the shell so enabling it is a one-line
+      #   root change rather than another shell rebuild.
+      perf
+      # gprof2dot + graphviz — render a callgrind profile as a call graph.
+      #   `chafa` above displays the result inline in the terminal, so a
+      #   headless VM is not a limitation.
+      gprof2dot
+      graphviz
       # Demo / ASCII-art utilities (not part of the released package)
       figlet
       toilet

@@ -65,11 +65,19 @@ fn synthetic_yaml(n: usize) -> String {
         // packed-vs-expanded workload exercises (spec 0175). It is absent from
         // `blob()`, so the pre-existing benchmarks are unaffected beyond one
         // more transition in each root's table.
+        //
+        // Field 4 is packable *and* `int32`, which is what reaches the
+        // per-element check (spec 0288 S8). `uint64` does not: the check is
+        // gated on `wire_type` 8 or 9 or a non-empty range, so field 3's run is
+        // validated for termination and then not looked at again. That gate is
+        // why 35.99% of a real startup was invisible to this bench — the only
+        // packed field it had was one the element loop skips.
         s.push_str(&format!(
             "  Msg{i}:\n    fields:\n    \
              - number: 1\n      type: string\n    \
              - number: 2\n      type: message\n      child: Leaf\n      label: repeated\n    \
              - number: 3\n      type: uint64\n      label: repeated\n    \
+             - number: 4\n      type: int32\n      label: repeated\n    \
              - number: {}\n      type: uint64\n",
             100 + i
         ));
@@ -100,14 +108,27 @@ fn write_varint(out: &mut Vec<u8>, mut v: u64) {
 }
 
 /// A blob every synthetic root matches: `records` repetitions of
-/// `1: "<string>"` followed by `2 { 1: <varint> }`.
-fn blob(records: usize) -> Vec<u8> {
+/// `1: "<string>"` followed by `2 { 1: <varint> }`, plus the two spec-0288 S8
+/// density knobs.
+///
+/// * `packed` — elements in a packed `4: [int32]` run per record, `0` to omit
+///   the field. This is the only knob that reaches the per-element varint
+///   check, and its payload is re-read by every candidate, so it is the axis
+///   the S1 buffer acts on.
+/// * `string_len` — bytes in field 1's payload. UTF-8 validity is tested over
+///   the whole payload once per candidate, so the S6 memo's saving scales with
+///   this and not with the record count.
+///
+/// Both are reported as *corners*, never averaged into one number: a blob with
+/// neither knob raised does not enter either path at all, and one with both
+/// raised is not more representative than either, only different.
+fn blob(records: usize, packed: usize, string_len: usize) -> Vec<u8> {
+    let filler: String = std::iter::repeat_n('x', string_len).collect();
     let mut out = Vec::new();
     for i in 0..records {
         write_varint(&mut out, (1 << 3) | 2);
-        let s = format!("value-{i}");
-        write_varint(&mut out, s.len() as u64);
-        out.extend_from_slice(s.as_bytes());
+        write_varint(&mut out, filler.len() as u64);
+        out.extend_from_slice(filler.as_bytes());
 
         write_varint(&mut out, (2 << 3) | 2);
         let mut inner = Vec::new();
@@ -115,6 +136,19 @@ fn blob(records: usize) -> Vec<u8> {
         write_varint(&mut inner, i as u64);
         write_varint(&mut out, inner.len() as u64);
         out.extend_from_slice(&inner);
+
+        if packed > 0 {
+            let mut payload = Vec::new();
+            for k in 0..packed {
+                // In range for an int32, so the run is accepted and every
+                // element is visited — the case with no early break, which is
+                // the expensive one and therefore the one to measure.
+                write_varint(&mut payload, (k % 1000) as u64);
+            }
+            write_varint(&mut out, (4 << 3) | 2);
+            write_varint(&mut out, payload.len() as u64);
+            out.extend_from_slice(&payload);
+        }
     }
     out
 }
@@ -179,9 +213,37 @@ fn bench_packed_vs_expanded(c: &mut Criterion) {
     g.finish();
 }
 
+/// The two spec-0288 S8 knobs, at corners of (packed density, string density,
+/// root count).
+///
+/// `packed=0, strings=8` is the pre-0288 workload and enters neither path;
+/// raising `packed` is what reaches the per-element check that was 54.1% of a
+/// real startup and 0.37% of this bench; raising `string_len` is what makes the
+/// UTF-8 test cost anything. Each corner is its own Criterion id — collapsing
+/// them into a mean would report a number describing no workload.
+fn bench_payload_density(c: &mut Criterion) {
+    let opts = ScoringOpts::default();
+    let mut g = c.benchmark_group("payload_density");
+
+    for &roots in &[256usize, 1024] {
+        let graph = build_graph(roots);
+        for &(packed, string_len) in &[(0usize, 8usize), (64, 8), (0, 512), (64, 512)] {
+            let pb = blob(64, packed, string_len);
+            g.throughput(Throughput::Bytes(pb.len() as u64));
+            g.bench_with_input(
+                BenchmarkId::new(format!("packed{packed}_str{string_len}"), roots),
+                &roots,
+                |b, _| b.iter(|| score_all(black_box(&pb), graph.graph(), &opts)),
+            );
+        }
+    }
+
+    g.finish();
+}
+
 /// `score_all` against a widening active set — the O(A) vs O(A²) question.
 fn bench_score_all_roots(c: &mut Criterion) {
-    let pb = blob(64);
+    let pb = blob(64, 0, 8);
     let opts = ScoringOpts::default();
     let mut g = c.benchmark_group("score_all_by_root_count");
     g.throughput(Throughput::Bytes(pb.len() as u64));
@@ -200,7 +262,7 @@ fn bench_score_all_roots(c: &mut Criterion) {
 /// immediately, so what is left is what `score_all` pays *before* it looks at
 /// a byte — one `EntryScore` per root.
 fn bench_score_all_setup(c: &mut Criterion) {
-    let pb = blob(1);
+    let pb = blob(1, 0, 8);
     let opts = ScoringOpts::default();
     let mut g = c.benchmark_group("score_all_setup");
 
@@ -218,7 +280,7 @@ fn bench_score_all_setup(c: &mut Criterion) {
 /// This isolates the per-record walk cost from anything that scales with the
 /// active set.
 fn bench_score_one(c: &mut Criterion) {
-    let pb = blob(64);
+    let pb = blob(64, 0, 8);
     let opts = ScoringOpts::default();
     let graph = build_graph(1024);
     let mut g = c.benchmark_group("score_one");
@@ -237,5 +299,6 @@ criterion_group!(
     bench_score_all_setup,
     bench_score_one,
     bench_packed_vs_expanded,
+    bench_payload_density,
 );
 criterion_main!(benches);

@@ -42,10 +42,74 @@ pub struct VarintResult<'a> {
 /// parse_wiretag and decoder hot loops, enabling intra-procedural optimizations
 /// (constant-fold the shift sequence, avoid call overhead).  perf showed
 /// parse_varint at 4.33% and parse_wiretag at 10.49% of Path A samples.
+///
+/// Spec 0288 S7: that `#[inline]` was being *declined*.  The full parser is a
+/// 563-byte body — past LLVM's threshold — so every call was a real call
+/// returning a 56-byte struct through a hidden pointer, measured at 54.6
+/// instructions per call and 35.99% of a protolens startup.  What follows is
+/// only the common case: a terminator inside the buffer, a value that fits in
+/// 64 bits, and no overhang.  Everything else tail-calls
+/// [`parse_varint_uncommon`], which is the previous body moved rather than
+/// copied — there is exactly one implementation of truncation, of overflow and
+/// of the overhang scan, and it is over there.
+///
+/// The uncommon path re-reads from `start`.  That is deliberate: it keeps the
+/// two bodies from having to agree on a hand-off state, and it costs a second
+/// scan of at most ten bytes on the path that is by construction rare.
 #[inline]
 pub fn parse_varint(buf: &[u8], start: usize) -> VarintResult<'_> {
     let buflen = buf.len();
     assert!(start <= buflen);
+
+    let mut v: u64 = 0;
+    let mut shift: u32 = 0;
+    let mut pos = start;
+
+    while pos < buflen {
+        let b = buf[pos];
+        pos += 1;
+
+        if b < 0x80 {
+            // Terminator.  Two things still disqualify the common case: a
+            // 10th byte carrying more than bit 64 (overflow), and a `0x00`
+            // terminator that is not also the first byte (overhang).
+            if (shift == 63 && b > 1) || (b == 0x00 && pos > start + 1) {
+                break;
+            }
+            v |= (b as u64) << shift;
+            return VarintResult {
+                next_pos: pos,
+                varint_gar: None,
+                varint: Some(v),
+                varint_ohb: None,
+            };
+        }
+
+        // A continuation bit on the 10th byte means an 11th, which cannot be
+        // part of a value that fits in 64 bits.
+        if shift >= 63 {
+            break;
+        }
+        v |= ((b & 0x7f) as u64) << shift;
+        shift += 7;
+    }
+
+    // Fell out of the buffer without a terminator, or hit one of the cases
+    // above.  Either way this is not the common case.
+    parse_varint_uncommon(buf, start)
+}
+
+/// The truncated, overflowing, absurdly long and overhung varints — everything
+/// [`parse_varint`]'s inlined common case hands off (spec 0288 S7).
+///
+/// `#[cold]` so LLVM lays it out away from the caller and stops considering it
+/// for inlining into anything; `#[inline(never)]` so the hand-off is real and
+/// the entry point above stays small enough for its own `#[inline]` to be
+/// taken.
+#[cold]
+#[inline(never)]
+fn parse_varint_uncommon(buf: &[u8], start: usize) -> VarintResult<'_> {
+    let buflen = buf.len();
 
     if start == buflen {
         // Empty buffer at this position → garbage (empty)

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # `cargo` under the benchmark lock, held shared.
 #
-# Compilation is deliberately unrestricted here — all 12 vCPUs, no pinning,
+# Compilation is deliberately unrestricted here — all 8 vCPUs, no pinning,
 # and several of these may run at once. The lock's only effect is that none of
 # them runs while `bin/bench` holds the same lock exclusively. It blocks rather
 # than failing, because waiting out a measurement is exactly what we want a

@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# Instruction-level profile of one of the two hot walks, under callgrind.
+#
+# Answers a different question from `bin/bench`: not "did this get faster" but
+# "where do the instructions go". Callgrind counts by simulation, so the counts
+# are deterministic and repeatable to the instruction — which matters because
+# this machine's Criterion noise floor is target-dependent and can exceed the
+# effect being looked for (`--bench score` measured a +15.9% same-binary delta).
+# It costs ~50x slowdown and it serializes threads, so it cannot see a
+# concurrency effect; use `perf record -e cpu-clock` for that.
+#
+# Three traps this script exists to close, each of which produced a wrong or
+# empty answer at least once:
+#
+#   1. Callgrind attributes the whole process, and benchmark setup is not
+#      small — the one-time schema parse was 52% of `--bench codec`. So
+#      collection starts off and is toggled on by a marked region.
+#   2. A --toggle-collect pattern that matches nothing collects nothing, and
+#      only says so after the full simulation has run. The collected total is
+#      checked here, and a zero is a hard failure rather than an empty report.
+#   3. Without debug info a profile stops at the function boundary, which is
+#      useless when one function is 83% of the walk. Hence --profile profiling.
+#
+# Usage:
+#   bin/profile score  [roots] [records] [iterations] [packed] [string_len]
+#                                                      # default 1024 64 20 0 8
+#     `packed` is elements in a packed int32 run per record and `string_len` is
+#     the string field's payload length — spec 0288 S8's two density knobs.
+#     Both default to off, which is the pre-0288 workload: it reaches neither
+#     the per-element varint check nor a UTF-8 scan of any size, which is why
+#     that workload showed `parse_varint` at 0.37% against 35.99% of a startup.
+#   bin/profile decode [iterations] [annotated]         # default 50 1
+#   bin/profile startup                                 # protolens on googleapis
+#
+# `startup` is the motivating command rather than a micro-benchmark, and needs
+# none of the scoping above: the process *is* the walk, so collection runs from
+# the start. It profiles the real binary on the real corpus, which is the only
+# place the packed-element loop that dominates it is reachable at all — see
+# docs/prototext/walk-profiles.md. Takes ~7 min under callgrind.
+#
+# Writes the raw profile to /tmp/callgrind-<target>.out and prints the
+# function-level summary. For line-level detail on one function:
+#   callgrind_annotate --auto=yes /tmp/callgrind-<target>.out | less
+set -euo pipefail
+
+TARGET="${1:-}"
+shift || true
+
+case "$TARGET" in
+    score)   CRATE=prototext-graph; EXAMPLE=profile_score  ;;
+    decode)  CRATE=prototext-core;  EXAMPLE=profile_decode ;;
+    startup) CRATE=protolens;       EXAMPLE=                ;;
+    *) echo "usage: bin/profile {score|decode|startup} [args...]" >&2; exit 2 ;;
+esac
+
+if [[ "$TARGET" == startup && -z "${PROTOTEXT_GOOGLEAPIS_SET:-}" ]]; then
+    echo "bin/profile: PROTOTEXT_GOOGLEAPIS_SET is unset; enter the dev shell" >&2
+    exit 1
+fi
+
+# Same lock as bin/bench, for the same reason: a build must not overlap a
+# measurement. Hardcoded /tmp because $TMPDIR is per-nix-shell here and would
+# give every shell a private lock, enforcing nothing.
+LOCK="/tmp/prototools-bench.lock"
+OUT="/tmp/callgrind-${TARGET}.out"
+
+# Build unpinned and under a shared lock, like any other build. `profiling`
+# is `release` plus line tables (see the workspace Cargo.toml) — never plain
+# `release`, or the annotation below has no line numbers to report.
+exec 8>"$LOCK"
+flock -s 8
+if [[ -n "$EXAMPLE" ]]; then
+    cargo build --profile profiling -p "$CRATE" --example "$EXAMPLE"
+    BIN="target/profiling/examples/$EXAMPLE"
+else
+    cargo build --profile profiling -p "$CRATE"
+    BIN="target/profiling/$CRATE"
+fi
+exec 8>&-
+
+[[ -x "$BIN" ]] || { echo "bin/profile: $BIN missing after build" >&2; exit 1; }
+
+exec 9>"$LOCK"
+if ! flock -n -x 9; then
+    echo "bin/profile: a build or a benchmark holds the lock; not profiling" >&2
+    exit 1
+fi
+
+# One core is right even though callgrind's counts do not depend on placement:
+# it keeps this consistent with bin/bench, and 4-7 is one whole L2 cluster.
+rm -f "$OUT"
+if [[ "$TARGET" == startup ]]; then
+    # No toggle: the whole process is the thing being measured.
+    taskset -c "${BENCH_CPUS:-4}" \
+        valgrind --tool=callgrind \
+                 --callgrind-out-file="$OUT" \
+                 "$BIN" --descriptor-set "$PROTOTEXT_GOOGLEAPIS_SET" \
+                        "$PROTOTEXT_GOOGLEAPIS_SET" quit
+else
+    taskset -c "${BENCH_CPUS:-4}" \
+        valgrind --tool=callgrind \
+                 --collect-atstart=no \
+                 --toggle-collect='*profile_region*' \
+                 --callgrind-out-file="$OUT" \
+                 "$BIN" "$@"
+fi
+
+# Trap 2. `Collected: 0` means the toggle matched nothing — a silent failure
+# that otherwise looks like a clean run with an empty report. `startup` has no
+# toggle, but the same check catches a binary that exited on a usage error.
+COLLECTED=$(sed -n 's/^summary: *//p' "$OUT" | tr -d ' ')
+if [[ -z "$COLLECTED" || "$COLLECTED" == "0" ]]; then
+    echo "bin/profile: collected 0 events — the profile_region symbol was not" >&2
+    echo "  reached. Check it is still #[inline(never)] and that the example ran." >&2
+    exit 1
+fi
+
+echo
+echo "── $TARGET: $COLLECTED instructions collected ──"
+# --tree=both is what named the caller of the 900 M varint parses; the
+# self-cost table alone said `parse_varint` and stopped there.
+callgrind_annotate --auto=no --threshold=90 --tree=both "$OUT"

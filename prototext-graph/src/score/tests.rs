@@ -2004,6 +2004,82 @@ fn packed_enum_element_scores_like_the_expanded_one() {
     assert_eq!(packed.non_canonical, 0);
 }
 
+/// Spec 0288 S4: buffering the run's decoded elements must not disturb the
+/// order they are visited in, nor where the walk stops. `non_canonical` is the
+/// count of offending elements *before* the first veto, so a summary of the run
+/// could not reproduce it — which is the reason S1 buffers values instead.
+///
+/// The run is built so that the two facts are separable: two penalized elements,
+/// then one that vetoes, then a third penalized one that must never be reached.
+/// A buffer read to the end would report 3; reading it with the break in place
+/// reports 2. Pinned against the expanded encoding of the same values, whose
+/// break is a different mechanism entirely — `active.retain` drops the candidate
+/// between tokens — so agreement is evidence and not a shared bug.
+#[test]
+fn packed_run_scores_identically_when_buffered() {
+    let g = build_packed_graph();
+
+    // -1 as a 5-byte int32: non-canonical, and out of the [0..2] range.
+    const NEG: u64 = 0xFFFF_FFFF;
+    // Neither a u32 nor a sign-extended i32 — impossible, so it vetoes.
+    const GAP: u64 = 0x1_0000_0000;
+
+    let mut payload = varint(NEG);
+    payload.extend(varint(NEG));
+    payload.extend(varint(GAP));
+    payload.extend(varint(NEG));
+    let packed = score_entry(&field_len(6, &payload), &g, "P");
+
+    let mut pb = field_varint(6, NEG);
+    pb.extend(field_varint(6, NEG));
+    pb.extend(field_varint(6, GAP));
+    pb.extend(field_varint(6, NEG));
+    let expanded = score_entry(&pb, &g, "P");
+
+    assert!(packed.vetoed, "the third element is an impossible int32");
+    assert!(expanded.vetoed);
+    assert_eq!(
+        packed.non_canonical, expanded.non_canonical,
+        "the prefix count must not depend on the encoding"
+    );
+    assert_eq!(
+        packed.non_canonical, 2,
+        "the fourth element is past the break and must not be counted"
+    );
+    assert_eq!(packed.out_of_range, expanded.out_of_range);
+    assert_eq!(packed.out_of_range, 2);
+}
+
+/// Spec 0288 S1/S2: the scratch buffer is reused across tokens, so it must be
+/// cleared before each run is decoded into it.
+///
+/// A stale tail is invisible to the run that produced it and only shows up on a
+/// *shorter* following run, which is what this encodes: three penalized elements
+/// then a single clean one. A buffer that grew instead of being cleared would
+/// re-visit the first run's elements under the second run's candidate and report
+/// 6 rather than 3.
+#[test]
+fn packed_scratch_is_cleared_between_runs() {
+    let g = build_packed_graph();
+
+    const NEG: u64 = 0xFFFF_FFFF;
+    let mut long_run = varint(NEG);
+    long_run.extend(varint(NEG));
+    long_run.extend(varint(NEG));
+
+    let mut pb = field_len(6, &long_run);
+    pb.extend(field_len(6, &varint(1)));
+    let s = score_entry(&pb, &g, "P");
+
+    assert!(!s.vetoed);
+    assert_eq!(s.matches, 2, "two runs are two wire occurrences");
+    assert_eq!(
+        s.non_canonical, 3,
+        "the second run has one clean element, and inherits none"
+    );
+    assert_eq!(s.out_of_range, 3);
+}
+
 // ── Root subsets and partitions (spec 0217) ───────────────────────────────────
 
 /// `n` roots, each a single-field message. Roots `i` and `i + n/2` declare

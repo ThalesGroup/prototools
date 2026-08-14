@@ -196,6 +196,34 @@ struct WalkState<'a, 'g> {
     policy: Policy,
     /// See [`score_subset`]'s `cancel` parameter.
     cancel: Option<&'a AtomicBool>,
+    /// The decoded `(value, overhang)` elements of the packed varint payload
+    /// currently under the LEN arm, filled once per token by
+    /// [`packed_varints_terminate`] and read by every candidate that reads that
+    /// payload as a packed run (spec 0288 S1/S2).
+    ///
+    /// It lives here, rather than in the arm, so that its capacity survives the
+    /// token: it is cleared per payload and reaches the high-water mark of the
+    /// longest run in the blob, keeping spec 0179's no-allocation-in-steady-
+    /// state posture. The arm takes it out with `mem::take` for the duration of
+    /// the candidate loop, because `check_varint_value` borrows the whole
+    /// `WalkState` mutably.
+    packed_scratch: Vec<(u64, u64)>,
+    /// Per-token memo of [`packed_run_verdict`], keyed on the child state id
+    /// (spec 0289 S4).
+    ///
+    /// The run's verdict depends only on the payload and the leaf, so every
+    /// candidate group resolving to the same child recomputes a bit-identical
+    /// answer and breaks at the identical element. Spec 0288 shared the
+    /// *decode* across those candidates and measured the remaining redundancy
+    /// at 35x on googleapis: 875 123 235 `check_varint_value` calls against
+    /// 25 019 063 distinct elements.
+    ///
+    /// A `Vec` scanned linearly rather than a map: the number of *distinct*
+    /// children under one LEN tag is a handful, and at that size a scan beats
+    /// hashing. Lives here, and is `mem::take`n by the arm, for the same two
+    /// reasons as `packed_scratch` — capacity survives the token, and the
+    /// application step below borrows `ws` mutably.
+    elem_verdicts: Vec<(u32, ValueVerdict)>,
 }
 
 impl<'a, 'g> WalkState<'a, 'g> {
@@ -215,6 +243,8 @@ impl<'a, 'g> WalkState<'a, 'g> {
             expand_any: opts.expand_any,
             policy: opts.policy,
             cancel,
+            packed_scratch: Vec::new(),
+            elem_verdicts: Vec::new(),
         }
     }
 
@@ -756,12 +786,22 @@ fn record_occurrence(occurrences: &mut SmallVec<[(u32, u32); 2]>, field_number: 
 
 // ── Packed / expanded repeated scalars (spec 0175) ────────────────────────────
 
-/// True iff `payload` is a run of varints ending exactly at its end.
+/// True iff `payload` is a run of varints ending exactly at its end, filling
+/// `out` with the `(value, overhang)` of each element on the way.
 ///
 /// A varint whose continuation bit runs past the payload, or that overflows 64
 /// bits, makes the run *impossible* rather than merely unlikely — which is what
 /// separates this check from a `non_canonical` penalty.
-fn packed_varints_terminate(payload: &[u8]) -> bool {
+///
+/// Spec 0288 S1: this scan is memoized per token, and it already decodes every
+/// element. Keeping the values is what lets the per-candidate element check
+/// below read them instead of re-deriving them once per active entry group —
+/// the decode is shared, the verdict is not. `out` is truncated to zero on
+/// entry, so a caller may hand in a buffer of any prior length; on a `false`
+/// return its contents are a meaningless prefix, which is safe because the
+/// caller tests the run before reading them (S5).
+fn packed_varints_terminate(payload: &[u8], out: &mut Vec<(u64, u64)>) -> bool {
+    out.clear();
     let mut p = 0usize;
     while p < payload.len() {
         let vr = parse_varint(payload, p);
@@ -769,8 +809,27 @@ fn packed_varints_terminate(payload: &[u8]) -> bool {
             return false;
         }
         p = vr.next_pos;
+        out.push((vr.value, vr.overhang));
     }
     true
+}
+
+/// What one varint value costs one candidate: the penalties it accrues and
+/// whether it vetoes.
+///
+/// Spec 0289 S1. This is the whole reason the check can be cached. Every
+/// quantity here is a function of `(graph, node, val, overhang)` and of nothing
+/// else — in particular not of the active entry group, which contributes only
+/// the *set of entries* the counts are then added to. Separating the two lets
+/// one derivation serve every candidate that resolved to the same leaf.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+struct ValueVerdict {
+    /// The value is impossible for this leaf, so the candidate is dead.
+    vetoed: bool,
+    /// Overhang, and negatives written in the truncated 5-byte form.
+    non_canonical: u64,
+    /// Outside a `Range` leaf's declared extent — a penalty, never a veto.
+    out_of_range: u64,
 }
 
 /// Per-element varint checks, shared by the expanded and the packed encoding of
@@ -778,43 +837,44 @@ fn packed_varints_terminate(payload: &[u8]) -> bool {
 /// veto, the `non_canonical` penalty for a negative written in the truncated
 /// 5-byte form, and the `Range` leaf's `[min, max]` test.
 ///
-/// Returns true iff the value vetoes. The caller owns the veto and match
-/// bookkeeping, which differ between one expanded occurrence and one element of
-/// a packed run.
+/// Spec 0289 S1: this used to take `&mut WalkState` and `&ActiveEntry` and
+/// write the penalties straight into `ws.scores`, which is what tied it to a
+/// single candidate and made it uncacheable. It now returns them. The caller
+/// owns applying them, and the veto and match bookkeeping, which differ between
+/// one expanded occurrence and one element of a packed run.
 #[inline]
 fn check_varint_value(
-    ws: &mut WalkState<'_, '_>,
-    ae: &ActiveEntry,
+    graph: &ArchivedCompiledGraph,
     node: Option<&ArchivedNodeEntry>,
     val: u64,
     overhang: u64,
-) -> bool {
-    if overhang > 0 {
-        for &e in &ae.entries {
-            ws.scores[e as usize].non_canonical += 1;
-        }
-    }
+) -> ValueVerdict {
+    let mut v = ValueVerdict {
+        vetoed: false,
+        non_canonical: u64::from(overhang > 0),
+        out_of_range: 0,
+    };
     let Some(n) = node else {
-        return false;
+        return v;
     };
     let ri = n.range_idx.to_native();
     match n.wire_type {
         9 => {
             // INT32: veto if in invalid gap (0xFFFF_FFFF, 0xFFFF_FFFF_8000_0000)
             if val > 0xFFFF_FFFF && val < 0xFFFF_FFFF_8000_0000u64 {
-                return true;
+                v.vetoed = true;
+                return v;
             }
             if (0x8000_0000u64..=0xFFFF_FFFFu64).contains(&val) {
                 // truncated negative int32 (4-byte encoding)
-                for &e in &ae.entries {
-                    ws.scores[e as usize].non_canonical += 1;
-                }
+                v.non_canonical += 1;
             }
-            false
+            v
         }
         8 => {
             // UINT32: veto if > 32-bit
-            val > 0xFFFF_FFFF
+            v.vetoed = val > 0xFFFF_FFFF;
+            v
         }
         0 if ri != 0xFFFF => {
             // RANGE (bool / enum). Spec 0172 S2: mirrors the INT32 arm above. A
@@ -826,16 +886,15 @@ fn check_varint_value(
             // *canonical* encoding fatal while merely penalizing the sloppy
             // 5-byte one.
             if val > 0xFFFF_FFFF && val < 0xFFFF_FFFF_8000_0000u64 {
-                return true;
+                v.vetoed = true;
+                return v;
             }
             if (0x8000_0000u64..=0xFFFF_FFFFu64).contains(&val) {
                 // Negative written in the non-canonical 5-byte form.
-                for &e in &ae.entries {
-                    ws.scores[e as usize].non_canonical += 1;
-                }
+                v.non_canonical += 1;
             }
-            let Some(range) = ws.graph.ranges.get(ri as usize) else {
-                return false;
+            let Some(range) = graph.ranges.get(ri as usize) else {
+                return v;
             };
             let (min, max) = (range.0.to_native() as i64, range.1.to_native() as i64);
             // The explicit `as u32` step makes this correct for both encodings:
@@ -843,7 +902,7 @@ fn check_varint_value(
             // no-op on the 5-byte one.
             let signed = val as u32 as i32 as i64;
             if signed >= min && signed <= max {
-                return false;
+                return v;
             }
             // Spec 0178 S2: a penalty, never a veto. Out of range is not out of
             // bounds — a `bool` is `value != 0` in every generated parser, so 2
@@ -852,13 +911,52 @@ fn check_varint_value(
             // strong evidence against the candidate, which is what
             // `out_of_range`'s -15 is for, but neither is impossible, and the
             // governing principle vetoes only the impossible.
-            for &e in &ae.entries {
-                ws.scores[e as usize].out_of_range += 1;
-            }
-            false
+            v.out_of_range += 1;
+            v
         }
-        _ => false, // UINT64 or non-varint: no range check
+        _ => v, // UINT64 or non-varint: no range check
     }
+}
+
+/// Add one [`ValueVerdict`]'s penalties to every entry of one candidate group.
+///
+/// Spec 0289 S2: the half of the old `check_varint_value` that genuinely
+/// depends on `ae`. Kept separate so the derivation above can be shared while
+/// this still runs per candidate.
+#[inline]
+fn apply_value_verdict(ws: &mut WalkState<'_, '_>, ae: &ActiveEntry, v: ValueVerdict) {
+    if v.non_canonical == 0 && v.out_of_range == 0 {
+        return;
+    }
+    for &e in &ae.entries {
+        let s = &mut ws.scores[e as usize];
+        s.non_canonical += v.non_canonical;
+        s.out_of_range += v.out_of_range;
+    }
+}
+
+/// The verdict of a whole packed varint run against one leaf, as a single
+/// summed [`ValueVerdict`].
+///
+/// Spec 0289 S3. Order and break-on-first-veto are those of the element loop
+/// this replaces, so the accumulated counts are still the offenders *before*
+/// the break, exactly as spec 0288 S4 required of the per-element form.
+fn packed_run_verdict(
+    graph: &ArchivedCompiledGraph,
+    node: Option<&ArchivedNodeEntry>,
+    elements: &[(u64, u64)],
+) -> ValueVerdict {
+    let mut acc = ValueVerdict::default();
+    for &(value, overhang) in elements {
+        let v = check_varint_value(graph, node, value, overhang);
+        acc.non_canonical += v.non_canonical;
+        acc.out_of_range += v.out_of_range;
+        if v.vetoed {
+            acc.vetoed = true;
+            break;
+        }
+    }
+    acc
 }
 
 // ── Multi-entry parallel walk (spec 0048) ─────────────────────────────────────
@@ -1300,8 +1398,9 @@ fn score_message_multi(
                         }
                         Verdict::Found(child, _label) => {
                             let node = find_node(ws.graph, child);
-                            let do_veto = check_varint_value(ws, ae, node, val, vr.overhang);
-                            if do_veto {
+                            let v = check_varint_value(ws.graph, node, val, vr.overhang);
+                            apply_value_verdict(ws, ae, v);
+                            if v.vetoed {
                                 for &e in &ae.entries {
                                     ws.set_vetoed(e, || {
                                         format!("varint value out of range on field {field_number}")
@@ -1391,6 +1490,27 @@ fn score_message_multi(
                 // spec 0173 removed from the verdict loop one arm above.
                 let mut packed_varints_ok: Option<bool> = None;
 
+                // Spec 0288 S6: likewise for UTF-8 validity, which is a
+                // property of the bytes and was being re-derived at the
+                // `is_string` test once per candidate reading this payload as a
+                // string. `is_string` itself stays per candidate.
+                let mut payload_utf8_ok: Option<bool> = None;
+
+                // Spec 0288 S2: out of `ws` for the loop, back in after it, so
+                // the elements decoded by the memoized scan can be read while
+                // `check_varint_value` holds `&mut ws`. Three word moves, and
+                // the allocation is carried to the next token.
+                let mut packed_vals = std::mem::take(&mut ws.packed_scratch);
+
+                // Spec 0289 S4: same trick, same reason. Cleared per token —
+                // the verdicts memoized here are answers about *this* payload.
+                let mut elem_verdicts = std::mem::take(&mut ws.elem_verdicts);
+                elem_verdicts.clear();
+
+                // `ws.graph` is a shared reference, so copying it out lets the
+                // derivation run while `apply_value_verdict` holds `&mut ws`.
+                let graph = ws.graph;
+
                 for ae in active.iter_mut() {
                     match ae.verdict {
                         Verdict::Unknown => {
@@ -1402,8 +1522,9 @@ fn score_message_multi(
                             let run_ok = match elem_wt as u32 {
                                 WT_I64 => payload.len().is_multiple_of(8),
                                 WT_I32 => payload.len().is_multiple_of(4),
-                                _ => *packed_varints_ok
-                                    .get_or_insert_with(|| packed_varints_terminate(payload)),
+                                _ => *packed_varints_ok.get_or_insert_with(|| {
+                                    packed_varints_terminate(payload, &mut packed_vals)
+                                }),
                             };
                             if !run_ok {
                                 for &e in &ae.entries {
@@ -1442,15 +1563,32 @@ fn score_message_multi(
                                 });
                             let mut do_veto = false;
                             if needs_element_check {
-                                let mut p = 0usize;
-                                while p < payload.len() {
-                                    let vr = parse_varint(payload, p);
-                                    p = vr.next_pos;
-                                    if check_varint_value(ws, ae, node, vr.value, vr.overhang) {
-                                        do_veto = true;
-                                        break;
+                                // Spec 0288 S5: `needs_element_check` implies
+                                // `elem_wt == WT_VARINT`, which took the `_`
+                                // arm above, and `run_ok` was tested first and
+                                // `continue`d on failure — so `packed_vals`
+                                // holds this payload's elements, in order.
+                                // Load-bearing: reordering those two tests
+                                // breaks it.
+                                debug_assert_eq!(
+                                    packed_varints_ok,
+                                    Some(true),
+                                    "element check reached without a completed packed scan",
+                                );
+                                // Spec 0289 S4: derive once per distinct child,
+                                // apply once per candidate. The scan over the
+                                // memo is over distinct children under this one
+                                // tag, not over candidates.
+                                let v = match elem_verdicts.iter().find(|(c, _)| *c == child) {
+                                    Some(&(_, v)) => v,
+                                    None => {
+                                        let v = packed_run_verdict(graph, node, &packed_vals);
+                                        elem_verdicts.push((child, v));
+                                        v
                                     }
-                                }
+                                };
+                                apply_value_verdict(ws, ae, v);
+                                do_veto = v.vetoed;
                             }
                             if do_veto {
                                 for &e in &ae.entries {
@@ -1485,7 +1623,10 @@ fn score_message_multi(
                                 }
                             } else {
                                 let is_string = node.is_some_and(|n| n.is_string);
-                                if is_string && std::str::from_utf8(payload).is_err() {
+                                if is_string
+                                    && !*payload_utf8_ok
+                                        .get_or_insert_with(|| std::str::from_utf8(payload).is_ok())
+                                {
                                     for &e in &ae.entries {
                                         ws.set_vetoed(e, || {
                                             format!("invalid UTF-8 on string field {field_number}")
@@ -1508,6 +1649,11 @@ fn score_message_multi(
                         Verdict::Mismatch => {}
                     }
                 }
+                // Before the recursion below, which needs `ws` whole — and
+                // which is why the buffer cannot be borrowed across it.
+                ws.packed_scratch = packed_vals;
+                ws.elem_verdicts = elem_verdicts;
+
                 active.retain(|ae| !ae.entries.is_empty());
 
                 if !child_pairs.is_empty() {
@@ -1747,6 +1893,8 @@ mod set_vetoed_tests {
             expand_any: true,
             policy: Policy::Score,
             cancel: None,
+            packed_scratch: Vec::new(),
+            elem_verdicts: Vec::new(),
         }
     }
 
@@ -1882,5 +2030,75 @@ mod record_occurrence_tests {
             record_occurrence(&mut occ, f);
         }
         assert_eq!(occ.as_slice(), &[(2, 2), (5, 1), (9, 1)]);
+    }
+}
+
+// ── Tests: the packed scratch buffer (spec 0288 S1/S2) ───────────────────────
+
+#[cfg(test)]
+mod packed_scratch_tests {
+    use super::*;
+
+    fn varint(mut v: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let b = (v & 0x7f) as u8;
+            v >>= 7;
+            if v == 0 {
+                out.push(b);
+                return out;
+            }
+            out.push(b | 0x80);
+        }
+    }
+
+    fn run_of(n: usize) -> Vec<u8> {
+        (0..n).flat_map(|i| varint(i as u64)).collect()
+    }
+
+    /// Spec 0288 S2: the buffer reaches the high-water mark of the longest run
+    /// and stays there. Spec 0179's no-allocation-in-steady-state posture is a
+    /// constraint on this spec, and the walk visits one token after another
+    /// with the same buffer — so a `Vec::new()` per token, or a `shrink`, would
+    /// put an allocation back on the hot path once per LEN tag.
+    ///
+    /// The warmup is the whole point: the first call is *expected* to grow.
+    /// What is asserted is that no later call does, including the ones that are
+    /// longer than their immediate predecessor but shorter than the mark.
+    #[test]
+    fn packed_scratch_does_not_grow_after_warmup() {
+        let mut scratch = Vec::new();
+
+        assert!(packed_varints_terminate(&run_of(1024), &mut scratch));
+        let mark = scratch.capacity();
+        assert_eq!(scratch.len(), 1024);
+
+        for n in [1usize, 512, 3, 1023, 700, 1024] {
+            assert!(packed_varints_terminate(&run_of(n), &mut scratch));
+            assert_eq!(scratch.len(), n, "the run's elements, and only those");
+            assert_eq!(
+                scratch.capacity(),
+                mark,
+                "the buffer reallocated on a run of {n} it had already sized for",
+            );
+        }
+    }
+
+    /// The clear happens on entry, not on success — so a run that is rejected
+    /// leaves no tail behind for the next one. The walk does not read the
+    /// buffer after a `false` (spec 0288 S5 tests `run_ok` first), but the next
+    /// token's `packed_varints_terminate` writes over it, and that write must
+    /// start from empty.
+    #[test]
+    fn a_rejected_run_leaves_nothing_for_the_next() {
+        let mut scratch = Vec::new();
+        assert!(packed_varints_terminate(&run_of(8), &mut scratch));
+
+        let mut truncated = run_of(3);
+        truncated.push(0x80); // continuation bit set, no following byte
+        assert!(!packed_varints_terminate(&truncated, &mut scratch));
+
+        assert!(packed_varints_terminate(&run_of(2), &mut scratch));
+        assert_eq!(scratch.len(), 2);
     }
 }

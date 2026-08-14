@@ -49,27 +49,36 @@ HTML reports from Criterion runs are written to `target/criterion/`.
 
 ## Machine configuration
 
-The development VM is given host CPUs **0–11 mapped one-to-one** onto guest
-vCPUs 0–11.  The host is an Intel Core Ultra 7 165U, whose topology is
-asymmetric:
+The development VM is given the host's **eight E-cores, mapped one-to-one**
+onto guest vCPUs 0–7.  The host is an Intel Core Ultra 7 165U, whose full
+topology is asymmetric, but the slice handed to the VM deliberately is not:
 
-| host CPU | kind | clock | L2 |
+| vCPU | kind | clock | L2 |
 | --- | --- | --- | --- |
-| 0,1 | P-core, hyperthread pair | 4.9 GHz | private |
-| 2,3 | P-core, hyperthread pair | 4.9 GHz | private |
-| 4–7 | E-core cluster | 3.8 GHz | shared by the four |
-| 8–11 | E-core cluster | 3.8 GHz | shared by the four |
-| 12,13 | LP E-cores | 2.1 GHz | own |
+| 0–3 | E-core cluster | uniform | shared by the four |
+| 4–7 | E-core cluster | uniform | shared by the four |
 
-The two LP E-cores are **excluded from the VM entirely**.  A guest scheduler
-cannot see capacity asymmetry — ITMT/EAS capacity is not exposed to a VM — so
-it would happily place a single-threaded link step on a 2.1 GHz core and make
-build times unpredictable for no gain.
+The host's P-cores and its two LP E-cores are **excluded from the VM
+entirely**.  A guest scheduler cannot see capacity asymmetry — ITMT/EAS
+capacity is not exposed to a VM — so given a mixed set it would happily place
+a single-threaded link step on the slowest core and make build times
+unpredictable for no gain.  Handing the guest one uniform class removes the
+placement lottery at its source rather than compensating for it downstream.
 
-**Compilation is unrestricted** across all 12 vCPUs.  **Measurements are
-pinned** to the 4–7 cluster: without pinning, the same benchmark landing on a
-P-core one run and an E-core the next differs by 1.3× (4.9/3.8) before any
-code change, which swamps most real effects.
+What is left is a single asymmetry, and it is a *cache* one: the two clusters
+each have their own L2.
+
+**This structure is invisible from inside the VM.**  Guest sysfs reports every
+vCPU with a private 2 MB L2 (`cache/index2/shared_cpu_list` naming only
+itself) and empty `thread_siblings_list`/`core_siblings_list`; no `cpufreq` is
+exposed at all.  The table above is therefore knowledge about the host, not
+something a probe or a program can recover — which also means code that plans
+thread placement from kernel-declared topology, such as protolens'
+`affinity::plan`, treats all eight vCPUs as unrelated peers here.
+
+**Compilation is unrestricted** across all 8 vCPUs.  **Measurements are
+pinned** to the 4–7 cluster, which is exactly one L2: the measurement owns
+that cache outright, and nothing running on 0–3 can evict from it.
 
 `bin/bench` defaults to `taskset -c 4`, one core, which is right for the
 library benches — they are single-threaded, and confining them leaves the rest
@@ -83,6 +92,11 @@ BENCH_CPUS=4-7 bin/bench -p protolens --bench <name>
 protolens is the case that needs the whole cluster: it runs three threads, and
 its heat worker deliberately does the expensive `score_all` with no lock held
 (`heat_worker.rs:387`), so it really does overlap with the TUI thread.
+
+A measurement that needs more than four cores takes **both clusters, whole**
+(`BENCH_CPUS=0-7`).  Never straddle the boundary — a range such as `2-5` gets
+half of each L2 and adds cross-cluster traffic, which is the worst of both and
+is not comparable with either.
 
 ### Non-overlap is enforced, not remembered
 
@@ -104,18 +118,34 @@ shared for its duration and drops it before the exclusive acquisition.
 
 `nix-build` is **not** lock-aware.  Do not start one while measuring.
 
-To confirm the vCPU mapping on a reconfigured machine, time a fixed-work
-register-bound spin loop on each vCPU in turn — wallclock is inversely
-proportional to core clock, so P, E and LP-E separate cleanly with no overlap
-between the groups:
+To confirm the vCPU set on a reconfigured machine, time a fixed-work
+register-bound spin loop on each vCPU in turn.  Wallclock is inversely
+proportional to core clock, so any class mixed into the VM shows up as a
+cleanly separated group, and a vCPU that is not there at all fails the
+`taskset` outright:
 
 ```sh
 TIMEFORMAT='%3R'
-for c in $(seq 0 11); do printf "vcpu %2d: " "$c"; { time taskset -c $c ./spin; } 2>&1; done
+for c in $(seq 0 13); do printf "vcpu %2d: " "$c"; { time taskset -c $c ./spin; } 2>&1; done
 ```
 
-Measured 2026-07-26: vCPUs 0–3 at 0.252–0.259 s, vCPUs 4–11 at 0.327–0.338 s.
-The 1.30× ratio matches 4.9/3.8 = 1.29, confirming vCPU *N* is host CPU *N*.
+Measured 2026-08-14: vCPUs 0–7 at 0.264–0.272 s — a 1.03× spread, i.e. one
+uniform class, as intended — and vCPUs 8–13 rejected with `failed to set
+affinity: Invalid argument`.  A grouping in this output means the VM has been
+given a mixed set and needs reconfiguring, not that the benchmark should route
+around it.
+
+The probe says nothing about the L2 clusters: two cores sharing an L2 run a
+register-bound loop at identical speed, and, as noted above, the guest cannot
+see the sharing either.  Cluster membership has to come from the host
+configuration.
+
+For historical context when reading older measurements in this repo: until
+2026-08-14 the VM was given host CPUs 0–11, comprising four P-core threads
+(0–3, 4.9 GHz) and two E-core clusters (4–7 and 8–11, 3.8 GHz).  The probe
+then separated them by 1.30×, matching 4.9/3.8.  Numbers taken under that
+configuration on vCPUs 4–7 remain comparable with today's; anything measured
+on 0–3, or across 8–11, does not.
 
 ## Measurement noise
 

@@ -47,3 +47,14 @@ prototext-schema = { path = "prototext-schema", version = "0.1.0" }
 codegen-units   = 1
 lto             = "thin"
 overflow-checks = true
+
+# Release codegen plus line tables, for `bin/profile`.  A profile of the hot
+# walks stops at the function boundary without them, and `score_message_multi`
+# alone is 43% of a protolens startup — see docs/prototext/walk-profiles.md.
+# Separate from `release` so a profiling build never invalidates target/release
+# and cannot be shipped by accident; `line-tables-only` because callgrind and
+# perf need line numbers, not variable locations, and full debug info costs
+# link time and disk for nothing here.
+[profile.profiling]
+inherits = "release"
+debug    = "line-tables-only"
