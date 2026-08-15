@@ -56,8 +56,48 @@ pub struct VarintResult<'a> {
 /// The uncommon path re-reads from `start`.  That is deliberate: it keeps the
 /// two bodies from having to agree on a hand-off state, and it costs a second
 /// scan of at most ten bytes on the path that is by construction rare.
-#[inline]
+///
+/// Spec 0296: 0288's split was still one level too coarse.  **96.1% of the
+/// 49.4 M varints a googleapis startup reads are a single byte** — small field
+/// numbers and small values — and for those the loop below is all overhead:
+/// the shift accumulator never advances and both disqualifiers are false by
+/// construction (`shift` is 0, and `pos` is `start + 1`, so a `0x00` here is
+/// canonical rather than overhang).  What survives in this function is that
+/// one case, small enough that its `#[inline]` is finally taken and the
+/// 56-byte result never reaches memory: at every call site both `Option`
+/// fields are the literal `None`, so a caller that flattens them — the
+/// scoring walk's adapter does exactly that — folds the whole struct away.
+///
+/// `#[inline(always)]` rather than `#[inline]` because the hint alone was
+/// measured being declined *again*, one level up: with only `#[inline]` here,
+/// LLVM inlined this into `walk.rs`'s adapter and then declined to inline the
+/// adapter, which left the struct materialized after all and returned 1.0%
+/// instead of 4.1%.
+#[inline(always)]
 pub fn parse_varint(buf: &[u8], start: usize) -> VarintResult<'_> {
+    if let Some(&b) = buf.get(start) {
+        if b < 0x80 {
+            return VarintResult {
+                next_pos: start + 1,
+                varint_gar: None,
+                varint: Some(b as u64),
+                varint_ohb: None,
+            };
+        }
+    }
+    parse_varint_multibyte(buf, start)
+}
+
+/// Two bytes and up — and, because `buf.get(start)` above returns `None` for
+/// an out-of-range `start`, also the empty and out-of-bounds cases, which is
+/// what keeps the `assert!` below the one bounds contract.
+///
+/// `#[inline(never)]` so the hand-off is real: it is what keeps the entry
+/// point above small.  Not `#[cold]` — at 3.9% this is uncommon, not rare,
+/// and laying it out in the far section would cost those calls a taken
+/// branch and an instruction-cache miss for no gain.
+#[inline(never)]
+fn parse_varint_multibyte(buf: &[u8], start: usize) -> VarintResult<'_> {
     let buflen = buf.len();
     assert!(start <= buflen);
 
