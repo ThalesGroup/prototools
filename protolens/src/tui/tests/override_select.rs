@@ -422,10 +422,7 @@ fn t_opens_on_active_raw_override_on_the_none_sentinel_row() {
 
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
     assert_eq!(app.override_sort, SortMode::Lexicographic);
-    assert_eq!(
-        app.override_candidates[app.override_highlight].0,
-        "protolens_internal.None"
-    );
+    assert_eq!(app.override_candidates[app.override_highlight].0, "none");
 }
 
 /// Spec 0139 Step B: no override is active for the cursor node, but
@@ -483,10 +480,7 @@ fn t_falls_back_to_lexicographic_silently_when_no_graph_and_no_match() {
 
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
     assert_eq!(app.override_sort, SortMode::Lexicographic);
-    assert_eq!(
-        app.override_candidates[app.override_highlight].0,
-        "protolens_internal.None"
-    );
+    assert_eq!(app.override_candidates[app.override_highlight].0, "none");
     assert!(
         !app.message.contains("no scoring graph"),
         "message must be suppressed on this auto-fallback path: {}",

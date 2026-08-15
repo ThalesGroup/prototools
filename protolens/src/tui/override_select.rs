@@ -122,7 +122,7 @@ impl App {
     fn open_override_on_type(&mut self, fqdn_or_raw: Option<String>) {
         // Spec 0137 §G4: raw (`Option::None`) maps to the `None`
         // sentinel string.
-        let key = fqdn_or_raw.unwrap_or_else(|| "protolens_internal.None".to_string());
+        let key = fqdn_or_raw.unwrap_or_else(|| decode::NONE_KEYWORD.to_string());
         self.override_sort = SortMode::Inferred;
         self.recompute_override_candidates();
         self.upgrade_active_override_to_complete();
@@ -335,8 +335,13 @@ impl App {
             // Spec 0137 §G1/§G4: the `None` sentinel + the 15 primitive
             // keywords are prepended, in that fixed order, ahead of the
             // sorted message/group/enum FQDNs — alphabetic mode only
-            // (§G7).
-            SortMode::Lexicographic => std::iter::once("protolens_internal.None".to_string())
+            // (§G7).  `MESSAGE_KEYWORD` (spec 0299) sits beside `None`
+            // rather than in `ALL_PRIMITIVE_KEYWORDS`, because it is not
+            // a primitive — it carries a target descriptor.  Like the
+            // primitives it is stored as its bare keyword, not as a FQDN,
+            // so `wrapper_target_for` can resolve it directly.
+            SortMode::Lexicographic => std::iter::once(decode::NONE_KEYWORD.to_string())
+                .chain(std::iter::once(decode::MESSAGE_KEYWORD.to_string()))
                 .chain(decode::ALL_PRIMITIVE_KEYWORDS.iter().map(|s| s.to_string()))
                 .chain(self.all_type_fqdns.iter().cloned())
                 .map(|f| (f, None))
@@ -543,19 +548,18 @@ impl App {
     /// scrolls the candidate list without moving the highlight, bounded
     /// only by the content itself — and, per spec 0244 S7, past either
     /// end of it, by the same `pan_top_bounds` the main pane uses.
+    ///
+    /// Spec 0286: and behind the same wall, which is
+    /// `side_pan_vertical`'s whole business.
     pub(super) fn override_pan_vertical(&mut self, step: usize, up: bool) {
-        let (min_top, max_top) =
-            pan_top_bounds(self.override_candidates.len(), self.override_list_height);
-        let top = self.override_scroll.top(&FLAT_ROWS);
-        let moved = if up {
-            top - step as isize
-        } else {
-            top + step as isize
-        };
-        let landed = moved.clamp(min_top, max_top);
-        // Spec 0245 S2: a pan that hit its bound asks for no frame.
-        self.event_changed_nothing = landed == top;
-        self.override_scroll.set_top(landed, &FLAT_ROWS);
+        self.event_changed_nothing = side_pan_vertical(
+            &mut self.override_scroll,
+            &mut self.override_resistance,
+            self.override_candidates.len(),
+            self.override_list_height,
+            step,
+            up,
+        );
     }
 
     /// Horizontal pan for the override pane (Ctrl-Left/Ctrl-Right,
@@ -611,7 +615,10 @@ impl App {
         let end = end.min(self.override_candidates.len());
         for row in start..end {
             let name = self.override_candidates[row].0.clone();
-            if name == "protolens_internal.None" {
+            if name == decode::NONE_KEYWORD || name == decode::MESSAGE_KEYWORD {
+                // These two have no file to load — `none` has no target,
+                // and `message`'s synthetic is registered on demand by
+                // `schema_free_message`, not by the pool's file closure.
                 continue;
             }
             let Some((target_desc, field_type)) = self.ctx.wrapper_target_for(&name, is_group)
@@ -642,8 +649,11 @@ impl App {
     /// file's closure loaded by then.
     pub(super) fn override_row_display(&self, row: usize) -> (String, Style) {
         let (fqdn, score) = &self.override_candidates[row];
-        let (display_fqdn, base_style) = if fqdn == "protolens_internal.None" {
-            ("None".to_string(), Style::default())
+        let (display_fqdn, base_style) = if fqdn == decode::NONE_KEYWORD {
+            (fqdn.clone(), Style::default())
+        } else if fqdn == decode::MESSAGE_KEYWORD {
+            // Spec 0299: displayed as-is like a primitive keyword.
+            (fqdn.clone(), Style::default())
         } else if decode::primitive_type_for_keyword(fqdn).is_some() {
             (fqdn.clone(), Style::default())
         } else if self.ctx.pool().get_enum_by_name(fqdn).is_some() {

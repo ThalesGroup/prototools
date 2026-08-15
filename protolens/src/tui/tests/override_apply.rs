@@ -277,7 +277,7 @@ fn a_deleted_override_restores_a_packed_run_rather_than_a_type_mismatch() {
         path: app.positional_path(run),
     };
     app.overrides
-        .activate(origin.clone(), Some("protolens_internal.None".to_string()));
+        .activate(origin.clone(), Some("none".to_string()));
     app.render_overrides(app.first_node);
 
     let entry_idx = app

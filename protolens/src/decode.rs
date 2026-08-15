@@ -1621,6 +1621,12 @@ pub(crate) fn primitive_type_for_keyword(keyword: &str) -> Option<Type> {
     })
 }
 
+/// The keyword that clears an override back to raw / no-type.  Stored
+/// and matched as its bare string (like every other keyword), so that
+/// `fqdn_needs_dot_prefix` can protect a real type named `none` by
+/// prepending `.`.
+pub(crate) const NONE_KEYWORD: &str = "none";
+
 /// The keyword that reads a length-delimited payload as a message with
 /// no schema at all (spec 0299) — the one override keyword that carries
 /// a target descriptor, which is why it cannot be a line in
@@ -1635,11 +1641,12 @@ pub(crate) const MESSAGE_KEYWORD: &str = "message";
 /// reaches the reader, in the `#@` annotation on the spliced node's
 /// header, and `message` is the one word there that is both true and
 /// already in the reader's vocabulary — they just typed it.
-const SCHEMA_FREE_MESSAGE_FQDN: &str = "protolens_internal.message";
+pub(crate) const SCHEMA_FREE_MESSAGE_FQDN: &str = "protolens_internal.message";
 
 /// Whether `name` is one of the keywords `wrapper_target_for` resolves
 /// without consulting the pool: the fifteen primitives (spec 0135 §G4)
-/// plus `MESSAGE_KEYWORD` (spec 0299).
+/// plus `MESSAGE_KEYWORD` (spec 0299).  `NONE_KEYWORD` is intentionally
+/// excluded — it is not a type and never reaches `wrapper_target_for`.
 ///
 /// The one kind of name a wire-type compatibility check applies to. An
 /// FQDN's fitness for a node is the pool's business, not the tag's.
@@ -1717,11 +1724,14 @@ pub(crate) fn packed_framing(span: &NodeSpan) -> bool {
     effective_wire_type(span) == prototext_core::helpers::WT_LEN
 }
 
-/// Every primitive keyword `primitive_type_for_keyword` recognizes,
-/// alphabetically pre-sorted (spec 0137 §G1) — used by the override
-/// pane's alphabetic-mode candidate list. Must stay in sync with that
-/// function's match arms (the same duplication precedent
-/// `override_keywords_for_wire_type` already accepts).
+/// The 15 primitive override keywords `primitive_type_for_keyword`
+/// recognizes. Pre-sorted (spec 0137 §G1). Must stay in sync with
+/// `primitive_type_for_keyword`'s match arms (the same duplication
+/// precedent `override_keywords_for_wire_type` already accepts).
+///
+/// `MESSAGE_KEYWORD` (spec 0299) is intentionally absent: it carries a
+/// target descriptor and cannot live in `primitive_type_for_keyword`.
+/// The lexicographic override pane emits it separately, alongside `None`.
 pub(crate) const ALL_PRIMITIVE_KEYWORDS: &[&str] = &[
     "bool", "bytes", "double", "fixed32", "fixed64", "float", "int32", "int64", "sfixed32",
     "sfixed64", "sint32", "sint64", "string", "uint32", "uint64",

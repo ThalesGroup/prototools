@@ -1038,7 +1038,8 @@ impl App {
     pub(super) fn fqdn_under_focus(&self) -> Option<String> {
         if self.override_focus {
             let (fqdn, _) = self.override_candidates.get(self.override_highlight)?;
-            if fqdn == "protolens_internal.None"
+            if fqdn == decode::NONE_KEYWORD
+                || fqdn == decode::MESSAGE_KEYWORD
                 || decode::ALL_PRIMITIVE_KEYWORDS.contains(&fqdn.as_str())
             {
                 return None;

@@ -33,6 +33,10 @@ impl App {
             } else {
                 "message"
             };
+            // Spec 0299: the schema-free synthetic shows as the bare keyword.
+            if fqdn == decode::SCHEMA_FREE_MESSAGE_FQDN {
+                return Some((decode::MESSAGE_KEYWORD.to_string(), Some(tag)));
+            }
             // The internal, globally-shared MessageSet Item FQDN
             // (`decode::MESSAGE_SET_ITEM_FQDN`) is never shown to the
             // user directly — show the friendly, MessageSet-specific
@@ -51,10 +55,12 @@ impl App {
         if decode::primitive_type_for_keyword(&effective).is_some() {
             return Some((effective, None));
         }
-        // Not a primitive keyword: the only other possibility reaching
-        // this branch is an enum FQDN from `natural_type` (an active
-        // override can never resolve to a message FQDN here — see the
-        // `is_message` branch above).
+        if effective == decode::MESSAGE_KEYWORD {
+            return Some((effective, Some("message")));
+        }
+        // Not a primitive or the `message` keyword: the only other
+        // possibility reaching this branch is an enum FQDN from
+        // `natural_type`.
         Some((format_fqdn_label(&effective), Some("enum")))
     }
 }
@@ -74,7 +80,7 @@ pub(super) fn format_fqdn_label(fqdn: &str) -> String {
 /// collide with an override keyword if displayed undecorated. Two
 /// terms, because the vocabulary has two halves: the names
 /// `wrapper_target_for` resolves — the fifteen primitives and spec
-/// 0299's `message` — and `None`, the "no type" sentinel, which
+/// 0299's `message` — and `none`, the "no type" sentinel, which
 /// `render_node_as` intercepts before that ladder is ever reached.
 ///
 /// Presentation only, as this module's header says: a real type named
@@ -82,5 +88,5 @@ pub(super) fn format_fqdn_label(fqdn: &str) -> String {
 /// name, exactly as a type named `bool` does — the ladder asks the pool
 /// first, deliberately.
 pub(super) fn fqdn_needs_dot_prefix(fqdn: &str) -> bool {
-    decode::is_override_keyword(fqdn) || fqdn == "None"
+    decode::is_override_keyword(fqdn) || fqdn == decode::NONE_KEYWORD
 }

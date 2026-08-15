@@ -248,9 +248,9 @@ fn override_pane_pans_past_both_ends() {
         "panning must not move the highlight"
     );
 
-    for _ in 0..4 {
-        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
-    }
+    // Spec 0286: the last candidate is a wall now, so reaching the
+    // over-pan past it takes leaning rather than one more key.
+    pan_to_the_bound(&mut app, Pannable::Override, true);
     assert_eq!(
         app.override_scroll.top(&FLAT_ROWS),
         max_top,
@@ -265,7 +265,7 @@ fn override_pane_pans_past_both_ends() {
     assert_eq!(app.override_highlight, 19);
 
     app.override_scroll = PaneScroll::default();
-    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
+    pan_to_the_bound(&mut app, Pannable::Override, false);
     assert_eq!(
         app.override_scroll.top(&FLAT_ROWS),
         min_top,
@@ -341,7 +341,8 @@ fn manage_pane_pans_past_both_ends() {
     );
 
     app.manage_scroll = PaneScroll::default();
-    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
+    // Spec 0286: the first row is a wall, and the over-pan is past it.
+    pan_to_the_bound(&mut app, Pannable::Manage, false);
     assert_eq!(
         app.manage_scroll.top(&FLAT_ROWS),
         min_top,
@@ -384,7 +385,8 @@ fn a_pan_that_hit_its_bound_asks_for_no_frame() {
     assert!(app.event_changed_nothing, "already at column 0");
 
     // The side panes answer for themselves — they have their own
-    // `PaneScroll` and their own copy of the arithmetic.
+    // `PaneScroll` and their own wall, though they share the arithmetic
+    // over both (`side_pan_vertical`).
     app.override_focus = true;
     app.override_target = Some(0);
     app.override_candidates = (0..30).map(|i| (format!("cand.Type{i}"), None)).collect();
@@ -492,7 +494,7 @@ fn v_in_override_pane_is_a_no_op_for_the_none_sentinel() {
     app.splash = false;
     app.override_focus = true;
     app.override_target = Some(0);
-    app.override_candidates = vec![("protolens_internal.None".to_string(), None)];
+    app.override_candidates = vec![("none".to_string(), None)];
     app.override_highlight = 0;
 
     app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));

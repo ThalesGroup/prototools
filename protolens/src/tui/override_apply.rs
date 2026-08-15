@@ -3,7 +3,9 @@
 // SPDX-License-Identifier: MIT
 
 use super::override_resolve::ParentFieldOrExt;
-use super::preview_truncate::{insert_truncation_marker, trunc_shape_for, truncate_interior};
+use super::preview_truncate::{
+    insert_truncation_marker, reframe_to_actual_length, trunc_shape_for, truncate_interior,
+};
 use super::*;
 
 use prost_reflect::prost_types::field_descriptor_proto::Type;
@@ -1418,7 +1420,7 @@ impl App {
         // yield no synthetic field at all.
         let (target_desc, field_type) = match target {
             None => (None, None),
-            Some("protolens_internal.None") => (None, None),
+            Some(decode::NONE_KEYWORD) => (None, None),
             Some(name) => {
                 let is_group =
                     u32::from(old_span.wire_type) == prototext_core::helpers::WT_START_GROUP;
@@ -1445,6 +1447,15 @@ impl App {
         // Bounding the renderer's *input* bounds its decode, its render,
         // its span count and its line count together, which is why
         // `prototext-core` itself carries no budget.
+        //
+        // Spec 0302: a TRUNCATED_BYTES node's declared length varint claims
+        // more bytes than are present. Both paths fix this:
+        // - preview: `truncate_interior` cuts to the budget and rewrites the
+        //   varint as a side-effect (the budget is at most the actual bytes).
+        // - commit: `reframe_to_actual_length` rewrites the varint to match
+        //   the actual payload, without dropping a byte. The arena already
+        //   has slots for the children — spec 0302's ArenaSink change walks
+        //   the available bytes and allocates them on startup.
         let mut truncated = false;
         if is_preview {
             let shape = trunc_shape_for(field_type, u32::from(old_span.wire_type), packed);
@@ -1453,6 +1464,10 @@ impl App {
             {
                 field_bytes = Cow::Owned(cut);
                 truncated = true;
+            }
+        } else if field_type.is_some() {
+            if let Some(reframed) = reframe_to_actual_length(&field_bytes) {
+                field_bytes = Cow::Owned(reframed);
             }
         }
 
