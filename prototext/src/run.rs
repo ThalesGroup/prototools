@@ -457,20 +457,22 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
 
             run_decode(
                 &mut desc_ctx,
-                r#type.as_deref(),
-                raw,
-                in_place,
-                assume_binary,
-                annotations,
-                !no_expand_any,
-                hide_unknown_fields,
-                !no_expand_message_set,
-                detailed_score,
-                &scoring_opts,
-                strict,
-                &cli.output,
-                output_root.as_ref(),
-                &cli.input_root,
+                &DecodeOpts {
+                    type_name: r#type.as_deref(),
+                    raw,
+                    in_place,
+                    assume_binary,
+                    annotations,
+                    expand_any: !no_expand_any,
+                    hide_unknown_fields,
+                    expand_message_set: !no_expand_message_set,
+                    detailed_score,
+                    scoring_opts: &scoring_opts,
+                    strict,
+                    output: &cli.output,
+                    output_root: output_root.as_ref(),
+                    input_root: &cli.input_root,
+                },
                 &paths,
             )
         }
@@ -710,10 +712,8 @@ fn install_loaders(desc_ctx: &mut DescriptorContext) -> ExtLoaderGuard {
 
 // ── decode handler ────────────────────────────────────────────────────────────
 
-#[allow(clippy::too_many_arguments)]
-fn run_decode(
-    desc_ctx: &mut DescriptorContext,
-    type_name: Option<&str>,
+struct DecodeOpts<'a> {
+    type_name: Option<&'a str>,
     raw: bool,
     in_place: bool,
     assume_binary: bool,
@@ -722,13 +722,32 @@ fn run_decode(
     hide_unknown_fields: bool,
     expand_message_set: bool,
     detailed_score: bool,
-    scoring_opts: &ScoringOpts,
+    scoring_opts: &'a ScoringOpts,
     strict: bool,
-    output: &Option<PathBuf>,
-    output_root: Option<&PathBuf>,
-    input_root: &Option<PathBuf>,
+    output: &'a Option<PathBuf>,
+    output_root: Option<&'a PathBuf>,
+    input_root: &'a Option<PathBuf>,
+}
+
+fn run_decode(
+    desc_ctx: &mut DescriptorContext,
+    opts: &DecodeOpts<'_>,
     paths: &[String],
 ) -> Result<(), String> {
+    let type_name = opts.type_name;
+    let raw = opts.raw;
+    let in_place = opts.in_place;
+    let assume_binary = opts.assume_binary;
+    let annotations = opts.annotations;
+    let expand_any = opts.expand_any;
+    let hide_unknown_fields = opts.hide_unknown_fields;
+    let expand_message_set = opts.expand_message_set;
+    let detailed_score = opts.detailed_score;
+    let scoring_opts = opts.scoring_opts;
+    let strict = opts.strict;
+    let output = opts.output;
+    let output_root = opts.output_root;
+    let input_root = opts.input_root;
     // --raw: bypass all schema / inference logic and render field numbers +
     // wire types directly.  No descriptor set required.
     if raw {
