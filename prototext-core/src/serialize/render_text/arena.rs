@@ -234,13 +234,35 @@ impl Sink for ArenaSink {
         &mut self,
         _field_number: u64,
         _tag: TagFacts,
-        _kind: MalformedKind,
-        _raw: &[u8],
+        kind: MalformedKind,
+        raw: &[u8],
         raw_range: Range<usize>,
     ) {
         // S4: a malformed region is a node like any other, at its position
         // among its siblings. Where such a region begins is fixed by the
         // bytes, so that position is the same under every interpretation.
+        //
+        // Spec 0302: a TruncatedBytes field is descended into like any other
+        // LEN field — the available bytes may contain valid sub-fields, and a
+        // `message` override (spec 0299) needs arena slots for them. `raw` is
+        // exactly the available payload bytes (from after the length varint to
+        // end-of-buffer), which `render_message` can walk directly.
+        // `raw_range.end - raw.len()` is the payload offset in the current
+        // frame (= the position right after the length varint).
+        // Empty payload: no children can exist; fall through to the leaf path.
+        if matches!(kind, MalformedKind::TruncatedBytes { .. }) && !raw.is_empty() {
+            let (start, end) = self.absolute(raw_range.clone());
+            let slot = self.push(start, start); // raw_end backpatched below
+            let payload_offset = raw_range.end - raw.len();
+            let saved = (self.raw_base, self.parent, self.depth);
+            self.raw_base += payload_offset;
+            self.parent = slot;
+            self.depth += 1;
+            render_message(raw, 0, None, None, false, self);
+            (self.raw_base, self.parent, self.depth) = saved;
+            self.nodes.raw_end[slot as usize] = end;
+            return;
+        }
         let (start, end) = self.absolute(raw_range);
         self.push(start, end);
     }

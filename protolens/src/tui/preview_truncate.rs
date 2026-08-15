@@ -113,6 +113,31 @@ pub(super) fn truncate_interior(
     Some(out)
 }
 
+/// Spec 0302: rewrite a TRUNCATED_BYTES field's declared length varint to
+/// match the bytes actually present, so the decoder opens it as a message
+/// instead of emitting another TRUNCATED_BYTES line.
+///
+/// Returns `None` for non-LEN fields and for fields whose declared length
+/// already equals their actual payload (the normal case).
+pub(super) fn reframe_to_actual_length(field_bytes: &[u8]) -> Option<Vec<u8>> {
+    let tag = parse_wiretag(field_bytes, 0);
+    if tag.wtype? != WT_LEN {
+        return None;
+    }
+    let len = parse_varint(field_bytes, tag.next_pos);
+    let declared = len.varint? as usize;
+    let payload = &field_bytes[len.next_pos..];
+    if payload.len() == declared {
+        return None;
+    }
+    let new_prefix = encode_varint_bytes(payload.len() as u64, None);
+    let mut out = Vec::with_capacity(tag.next_pos + new_prefix.len() + payload.len());
+    out.extend_from_slice(&field_bytes[..tag.next_pos]);
+    out.extend_from_slice(&new_prefix);
+    out.extend_from_slice(payload);
+    Some(out)
+}
+
 /// Spec 0174 §S3: which cut rule a preview of this candidate needs.
 ///
 /// `field_type` is the synthetic wrapper field's declared type (`None`

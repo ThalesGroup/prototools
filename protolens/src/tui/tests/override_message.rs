@@ -187,3 +187,174 @@ fn the_keyword_is_offered_for_len_and_shadows_a_bare_fqdn() {
         "only a bare name can collide",
     );
 }
+
+// ── Spec 0302 tests ───────────────────────────────────────────────────────────
+
+/// A TRUNCATED_BYTES field with two available payload bytes that form a
+/// valid sub-field (`field 1, varint 5`). Declared length is 20; actual
+/// payload is 2 bytes.
+///
+/// The truncated field: tag `\x0a` (field 1, LEN), length `\x14` (= 20),
+/// then `\x08\x05` (field 1, varint 5). The walker sees 20 declared bytes
+/// but only 2 are present.
+const TRUNC_WITH_CHILDREN: &[u8] = b"\x0a\x14\x08\x05";
+
+/// Spec 0302 S1: the arena walk descends into a TRUNCATED_BYTES field's
+/// available bytes and allocates child slots for any valid sub-fields found
+/// there, so that a later `message` override can splice them in without
+/// `overlay_spans` panicking.
+///
+/// Before spec 0302 the TRUNCATED_BYTES node was a leaf; after it, the
+/// node at arena slot 1 has one child (the `\x08\x05` varint field).
+#[test]
+fn truncated_bytes_arena_has_children() {
+    let app = untyped_app(TRUNC_WITH_CHILDREN);
+
+    // The wrapped blob has one top-level field (the wrapped content).
+    // That field's payload = TRUNC_WITH_CHILDREN = one TRUNCATED_BYTES
+    // field. Slot 0 is the wrapper's LEN field; slot 1 is the
+    // TRUNCATED_BYTES field.
+    let trunc_slot = {
+        let fc = app.arena.first_child();
+        fc[0] as usize // first child of root = the TRUNCATED_BYTES slot
+    };
+    let child_count_in_arena = {
+        let fc = app.arena.first_child();
+        fc[trunc_slot + 1] as usize - fc[trunc_slot] as usize
+    };
+    assert!(
+        child_count_in_arena > 0,
+        "spec 0302 S1: the arena must descend into the available bytes \
+         of a TRUNCATED_BYTES field and allocate child slots \
+         (got 0 children for slot {trunc_slot})",
+    );
+}
+
+/// Spec 0302 G1 / S1: a `message` override on a TRUNCATED_BYTES node
+/// commits successfully and the node becomes `is_message = true`.
+///
+/// Without the arena fix the commit would either panic (`overlay_spans`
+/// asserting every rendered span has a slot) or silently produce another
+/// TRUNCATED_BYTES line instead of nested content.
+#[test]
+fn message_override_on_truncated_bytes_commits() {
+    let mut app = untyped_app(TRUNC_WITH_CHILDREN);
+
+    // Open the root as a message first so its child (the TRUNCATED_BYTES
+    // field) becomes navigable at `/1`.
+    app.run_command("override / --as message");
+
+    // The TRUNCATED_BYTES field is the first (and only) child of the root.
+    let trunc_idx = app
+        .resolve_path("/1")
+        .expect("TRUNCATED_BYTES field must be reachable at /1 after root override");
+
+    assert!(
+        app.document_lines()
+            .iter()
+            .any(|l| l.contains("TRUNCATED_BYTES")),
+        "the node must start out as TRUNCATED_BYTES before the override",
+    );
+
+    app.run_command(&format!(
+        "override {} --as message",
+        app.positional_path(trunc_idx)
+    ));
+
+    let trunc_idx_after = app
+        .resolve_path("/1")
+        .expect("node must still be reachable after the override");
+    assert!(
+        app.tree[trunc_idx_after].span.is_message,
+        "spec 0302 G1: after committing a `message` override the node \
+         must be is_message = true",
+    );
+    assert!(
+        !app.document_lines()
+            .iter()
+            .any(|l| l.contains("TRUNCATED_BYTES")),
+        "the committed render must not contain TRUNCATED_BYTES — it \
+         opened the available bytes as a nested message",
+    );
+}
+
+/// Spec 0302 S3: `status_type_label` returns `(\"message\", Some(\"message\"))`
+/// for a node whose active override is the `message` keyword but whose
+/// rendered span still has `is_message = false`.
+///
+/// This is the state that existed for every TRUNCATED_BYTES node before
+/// the arena fix (the commit decoded to TRUNCATED_BYTES again), and it is
+/// still reachable during a preview of any node where the commit has not
+/// yet run. The test injects the override entry directly to avoid depending
+/// on timing.
+#[test]
+fn status_line_shows_message_not_enum() {
+    let mut app = untyped_app(TRUNC_WITH_CHILDREN);
+    // Open the root as message so the child is rendered.
+    app.run_command("override / --as message");
+
+    let trunc_idx = app
+        .resolve_path("/1")
+        .expect("TRUNCATED_BYTES field must be reachable at /1");
+    let path = app.positional_path(trunc_idx);
+
+    // Plant an active override with type "message" without committing —
+    // simulates the preview / pre-arena-fix state where is_message stays
+    // false while the entry is present.
+    app.overrides.activate(
+        OverrideOrigin::Path { path },
+        Some(decode::MESSAGE_KEYWORD.to_string()),
+    );
+
+    // The span must still be is_message = false (we did not splice).
+    assert!(
+        !app.tree[trunc_idx].span.is_message,
+        "precondition: is_message must be false for this test to be meaningful",
+    );
+
+    let (label, tag) = app
+        .status_type_label(trunc_idx)
+        .expect("active `message` override must produce a status label");
+    assert_eq!(
+        label, "message",
+        "spec 0302 S3: the label must be the bare keyword, not `.message`",
+    );
+    assert_eq!(
+        tag,
+        Some("message"),
+        "spec 0302 S3: the tag must be `message`, not `enum`",
+    );
+}
+
+/// Spec 0302 S4: the `none` keyword is the lowercase string `\"none\"`,
+/// matching every other override keyword. The first candidate in
+/// lexicographic mode is `\"none\"`, and activating it produces a raw
+/// render (no splice — spec 0237).
+#[test]
+fn none_keyword_is_lowercase() {
+    let mut app = untyped_app(CUT_SHORT);
+    // Open the root as a message so children are visible.
+    app.run_command("override / --as message");
+
+    // Point the override pane at the root so `recompute_override_candidates`
+    // fills the list in lexicographic order.
+    app.override_target = Some(app.first_node);
+    app.override_sort = SortMode::Lexicographic;
+    app.recompute_override_candidates();
+
+    assert_eq!(
+        app.override_candidates.first().map(|(s, _)| s.as_str()),
+        Some(decode::NONE_KEYWORD),
+        "spec 0302 S4: the first override candidate must be the \
+         lowercase `none` keyword, not `protolens_internal.None` or `None`",
+    );
+    assert_eq!(decode::NONE_KEYWORD, "none");
+
+    // Committing `none` on the root resets it to raw bytes — no splice.
+    app.run_command("override / --as none");
+    assert_eq!(
+        app.document_lines(),
+        vec![r#"1: "\n\003abc\n\020short"  #@ string"#],
+        "after `none` the root must revert to the raw single-line render",
+    );
+}
