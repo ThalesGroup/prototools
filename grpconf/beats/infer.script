@@ -87,9 +87,8 @@ steps:
     node: /
 
   - text: |
-      Before we leave: the collection remembers what you just chose,
-      so the next session opens carrying it.
+      Before we leave: press :quit.
 
-      Press Enter to save, then :quit.
+      Beat 9 opens the log with the same database — the one that was
+      inside the executable two minutes ago.
     node: /
-    override: save $STAGE/overrides.yaml

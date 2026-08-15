@@ -119,7 +119,7 @@ steps:
       Under googleapis the picture changed.
     fold: all
     unfold: [/]
-    node: "3 {"
+    node: /3
 
   - text: |
       Two candidates.  The same score.
@@ -135,7 +135,7 @@ steps:
       What separates them is not in the payload at all.
     fold: all
     unfold: [/]
-    node: "3 {"
+    node: /3
 
   - text: |
       It is two lines up.  An unnamed field, in a message nothing could
@@ -171,7 +171,7 @@ steps:
       it in 200 ms.  Go slowly.
     fold: all
     unfold: [/3]
-    node: request
+    node: language_code
 
   - text: |
       1.  A singular field that occurs twice.
@@ -184,10 +184,8 @@ steps:
 
       This program writes his credential into its own log file, in a
       place a normal decoder will never print.
-    node: note
-    wire-lines:
-      from: note
-      to: note
+    node: "x-goog-api-key"
+    wire-line: "x-goog-api-key"
 
   - text: |
       2.  A non-minimal varint.
@@ -214,28 +212,13 @@ steps:
     node: "99:"
     wire-line: "99:"
 
-  - text: |
-      4.  A truncated length-delimited record, at the tail.
-
-      The app was killed mid-write.  The length prefix said more bytes
-      than arrived.
-
-      This is the input protoc refuses outright.  The damage is bounded
-      to one entry: everything above it read cleanly, and still does.
-      The length prefix is what makes the boundary knowable.
-
-      That is all four.
-    fold: all
-    unfold: [/]
-    node: "TRUNCATED_BYTES"
-
   # -----------------------------------------------------------------------
   # BEAT 11: What Alice sends back (merged from export.script)
   # -----------------------------------------------------------------------
 
   - text: |
       One question left.  We have read the payload, named its fields,
-      and pointed at four things standard tooling does not show.
+      and pointed at three things standard tooling does not show.
 
       Did we change any of it?
 
@@ -245,7 +228,7 @@ steps:
     fold: all
     unfold: [/]
     node: /
-    override: export $STAGE/boblog.prototext
+    override: export grpconf/stage/boblog.prototext
 
   - text: |
       The round trip is one command in the shell:

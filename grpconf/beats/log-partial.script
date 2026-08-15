@@ -69,7 +69,7 @@ steps:
     fold: all
     unfold: [/]
     node: "1 {"
-    override: override /1 --as bobapp.v1.Entry
+    override: override /:1 --as bobapp.v1.Entry
 
   - text: |
       The log has three entries.  Unfold the first with l.
@@ -94,16 +94,7 @@ steps:
     node: request
 
   - text: |
-      One more thing before we leave: the last entry.
-
-      It does not render at all.  It comes back as one opaque run:
-
-          #@ TRUNCATED_BYTES; MISSING: 1024
-
-      The tool does not merely fail; it says how far short the file
-      falls.  The length prefix is what makes that number knowable.
-
       :quit, and we reopen with a bigger dictionary.
     fold: all
     unfold: [/]
-    node: "TRUNCATED_BYTES"
+    node: request
