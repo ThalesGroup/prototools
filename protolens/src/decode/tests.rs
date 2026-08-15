@@ -54,7 +54,7 @@ fn one_entry_graph() -> LoadedGraph {
 }
 
 /// The three primitive-keyword lists — `primitive_type_for_keyword`'s
-/// match arms, `primitive_keywords_for_wire_type`'s per-wire-type
+/// match arms, `override_keywords_for_wire_type`'s per-wire-type
 /// slices, and `ALL_PRIMITIVE_KEYWORDS` — held against each other.
 ///
 /// They are one list written out three times, and their own doc
@@ -63,10 +63,15 @@ fn one_entry_graph() -> LoadedGraph {
 /// noisily: a keyword missing from `ALL_PRIMITIVE_KEYWORDS` cannot
 /// be picked from the override pane's alphabetic list but still
 /// works when typed; one missing from
-/// `primitive_keywords_for_wire_type` is refused as
+/// `override_keywords_for_wire_type` is refused as
 /// wire-incompatible on a field it fits perfectly; one missing from
 /// `primitive_type_for_keyword` is offered by both of the others and
 /// then falls through to an FQDN lookup that cannot resolve it.
+///
+/// Spec 0299 puts one non-primitive in the wire-type table —
+/// `MESSAGE_KEYWORD`, which carries a target descriptor and so cannot
+/// live in `primitive_type_for_keyword` — so the table's union is the
+/// primitives *plus that one name*, and nothing else.
 #[test]
 fn the_three_primitive_keyword_lists_agree() {
     use prototext_core::helpers::{WT_I32, WT_I64, WT_LEN, WT_START_GROUP, WT_VARINT};
@@ -91,7 +96,7 @@ fn the_three_primitive_keyword_lists_agree() {
     // decode.
     let mut filed: Vec<&str> = Vec::new();
     for wire_type in [WT_VARINT, WT_I32, WT_I64, WT_LEN, WT_START_GROUP] {
-        for keyword in primitive_keywords_for_wire_type(wire_type) {
+        for keyword in override_keywords_for_wire_type(wire_type) {
             assert!(
                 !filed.contains(keyword),
                 "{keyword} is filed under two wire types",
@@ -107,7 +112,9 @@ fn the_three_primitive_keyword_lists_agree() {
             let want = match *keyword {
                 "float" => WT_I32,
                 "double" => WT_I64,
-                "string" | "bytes" => WT_LEN,
+                // Spec 0299: `message` is length-delimited framing too,
+                // and is the one name here that is not a primitive.
+                "string" | "bytes" | MESSAGE_KEYWORD => WT_LEN,
                 k if k.ends_with("32") && k.starts_with("fixed") => WT_I32,
                 k if k.ends_with("32") && k.starts_with("sfixed") => WT_I32,
                 k if k.ends_with("64") && k.starts_with("fixed") => WT_I64,
@@ -118,14 +125,23 @@ fn the_three_primitive_keyword_lists_agree() {
         }
     }
     filed.sort_unstable();
+    let mut want_filed = ALL_PRIMITIVE_KEYWORDS.to_vec();
+    want_filed.push(MESSAGE_KEYWORD);
+    want_filed.sort_unstable();
     assert_eq!(
-        filed, ALL_PRIMITIVE_KEYWORDS,
+        filed, want_filed,
         "the wire-type table and the alphabetic list name different \
          keywords",
     );
+    assert!(
+        primitive_type_for_keyword(MESSAGE_KEYWORD).is_none(),
+        "spec 0299: `message` carries a target, so it must resolve \
+         through `wrapper_target_for`, not as a bare primitive",
+    );
 
-    // Spec 0135 Background: group framing is never a primitive.
-    assert!(primitive_keywords_for_wire_type(WT_START_GROUP).is_empty());
+    // Spec 0135 Background: group framing is never a primitive — and
+    // spec 0299 leaves it alone, since it already is message framing.
+    assert!(override_keywords_for_wire_type(WT_START_GROUP).is_empty());
     // And `enum` is deliberately not a keyword anywhere yet (spec
     // 0135 Non-goals) — offering it would promise a target path that
     // does not exist.

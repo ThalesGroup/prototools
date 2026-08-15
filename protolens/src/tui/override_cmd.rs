@@ -360,7 +360,7 @@ impl App {
     /// The validation `:type-as` used to do (spec 0114 §1, spec 0135
     /// §G4), against an arbitrary node rather than always the cursor:
     /// the target must
-    /// be an eligible override target, and a primitive type keyword must
+    /// be an eligible override target, and an override keyword must
     /// be wire-compatible with the target's current wire type.
     ///
     /// Only the *subject* node is checked. An origin that also covers
@@ -379,11 +379,16 @@ impl App {
         let Some(name) = new_fqdn else {
             return Ok(());
         };
-        if decode::primitive_type_for_keyword(name).is_none() {
+        // Only a keyword is checked here — spec 0299's `message`
+        // included, which is why this asks `is_override_keyword` rather
+        // than `primitive_type_for_keyword`. An FQDN names a type the
+        // pool has to resolve, and its fitness is not a wire-type
+        // question.
+        if !decode::is_override_keyword(name) {
             return Ok(());
         }
         let wire_type = decode::effective_wire_type(&self.tree[idx].span);
-        if decode::primitive_keywords_for_wire_type(wire_type).contains(&name) {
+        if decode::override_keywords_for_wire_type(wire_type).contains(&name) {
             Ok(())
         } else {
             Err(format!(

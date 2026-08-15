@@ -61,9 +61,7 @@ impl App {
 
 /// Formats a message/group/enum status-line label (spec 0136): `fqdn`
 /// prepended with a leading `.` only if omitting it would make the bare
-/// `fqdn` collide with a primitive keyword or the reserved `None`
-/// keyword (a future fake primitive type, per review — not yet wired up
-/// anywhere in this codebase).
+/// `fqdn` collide with one of the override keywords.
 pub(super) fn format_fqdn_label(fqdn: &str) -> String {
     if fqdn_needs_dot_prefix(fqdn) {
         format!(".{fqdn}")
@@ -73,8 +71,16 @@ pub(super) fn format_fqdn_label(fqdn: &str) -> String {
 }
 
 /// Spec 0136/0137 §G6: whether a bare message/group/enum FQDN would
-/// collide with a primitive keyword or the reserved `None` keyword if
-/// displayed undecorated.
+/// collide with an override keyword if displayed undecorated. Two
+/// terms, because the vocabulary has two halves: the names
+/// `wrapper_target_for` resolves — the fifteen primitives and spec
+/// 0299's `message` — and `None`, the "no type" sentinel, which
+/// `render_node_as` intercepts before that ladder is ever reached.
+///
+/// Presentation only, as this module's header says: a real type named
+/// `message` shows as `.message`, but it still *resolves* from the bare
+/// name, exactly as a type named `bool` does — the ladder asks the pool
+/// first, deliberately.
 pub(super) fn fqdn_needs_dot_prefix(fqdn: &str) -> bool {
-    decode::primitive_type_for_keyword(fqdn).is_some() || fqdn == "None"
+    decode::is_override_keyword(fqdn) || fqdn == "None"
 }

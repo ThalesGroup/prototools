@@ -541,10 +541,11 @@ impl App {
     /// Type-argument completion (spec 0114 §7, spec 0236 S12) —
     /// candidates are `all_type_fqdns` (the same session-global,
     /// lexicographically-sorted list §3.2/§6 already compute and cache),
-    /// reused here rather than recomputed, plus (spec 0135 §G4) the
-    /// primitive type keywords wire-compatible with the cursor node's
-    /// current wire type (a packed element's own effective wire type is
-    /// always `WT_LEN`, per its reconstructed record — spec 0135 §G1).
+    /// reused here rather than recomputed, plus (spec 0135 §G4, spec
+    /// 0299) the override keywords wire-compatible with the cursor
+    /// node's current wire type (a packed element's own effective wire
+    /// type is always `WT_LEN`, per its reconstructed record — spec
+    /// 0135 §G1).
     ///
     /// Takes an explicit `subject` node and token start rather than
     /// assuming the cursor and "just past the command name":
@@ -562,7 +563,7 @@ impl App {
         // `self.all_type_fqdns` for `matches`'s lifetime) so the
         // subsequent `self.replace_token`/`self.completion = ...` calls
         // below aren't blocked by a live immutable borrow of `self`.
-        let candidates = decode::primitive_keywords_for_wire_type(wire_type)
+        let candidates = decode::override_keywords_for_wire_type(wire_type)
             .iter()
             .copied()
             .chain(self.all_type_fqdns.iter().map(String::as_str));

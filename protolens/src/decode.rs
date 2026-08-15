@@ -1322,13 +1322,14 @@ impl DescriptorContext {
     /// the field's own type. `None` means `name` resolved as nothing at
     /// all.
     ///
-    /// The ladder is ordered message → primitive keyword → enum, and
-    /// that order is a rule, not a convenience: it is what makes a
-    /// message named `bool` resolve as a message. It used to be written
-    /// twice — once where the splice resolves the highlighted candidate,
-    /// once where the pane warms the visible ones ahead of it — so a
-    /// reordering would have made warming register a wrapper the splice
-    /// then never looks up.
+    /// The ladder is ordered message FQDN → the `message` keyword →
+    /// primitive keyword → enum, and that order is a rule, not a
+    /// convenience: it is what makes a message named `bool` — or, since
+    /// spec 0299, one named `message` — resolve as a message. It used to
+    /// be written twice — once where the splice resolves the highlighted
+    /// candidate, once where the pane warms the visible ones ahead of it
+    /// — so a reordering would have made warming register a wrapper the
+    /// splice then never looks up.
     ///
     /// `is_group` distinguishes the two message framings; the caller
     /// reads it off the node being overridden, which this does not see.
@@ -1340,12 +1341,55 @@ impl DescriptorContext {
         if let Some(desc) = self.message(name) {
             let ft = if is_group { Type::Group } else { Type::Message };
             Some((Some(WrapperTarget::Message(desc)), ft))
+        } else if name == MESSAGE_KEYWORD {
+            // Spec 0299: always `Type::Message`, never `Type::Group`.
+            // The keyword is offered for `WT_LEN` alone — group framing
+            // already *is* message framing — so a group node never
+            // reaches here through a path that validated the keyword.
+            Some((
+                Some(WrapperTarget::Message(self.schema_free_message()?)),
+                Type::Message,
+            ))
         } else if let Some(prim) = primitive_type_for_keyword(name) {
             Some((None, prim))
         } else {
             let enum_desc = self.enumeration(name)?;
             Some((Some(WrapperTarget::Enum(enum_desc)), Type::Enum))
         }
+    }
+
+    /// The descriptor behind the `message` keyword (spec 0299): a
+    /// synthetic message with **no fields**, in the same
+    /// `protolens_internal` package every other synthetic shape lives
+    /// in, registered on first use and found by the same
+    /// `get_message_by_name` early return `register_wrapper` uses.
+    ///
+    /// Zero fields is the whole mechanism. prototext-core renders a
+    /// field its message descriptor does not declare as an unknown one —
+    /// numeric key, wire type read off the tag — so a message that
+    /// declares nothing renders its entire payload exactly as `prototext
+    /// decode --raw` does.
+    ///
+    /// Not `google.protobuf.Empty`, which would be the same shape: it is
+    /// not guaranteed present in every pool protolens is handed, and it
+    /// would put a real, misleading FQDN where the reader expects none.
+    ///
+    /// `None` only if the pool refuses the registration — a miss, not a
+    /// crash, the same rule [`message`](Self::message) follows.
+    pub(crate) fn schema_free_message(&mut self) -> Option<MessageDescriptor> {
+        if let Some(existing) = self.pool().get_message_by_name(SCHEMA_FREE_MESSAGE_FQDN) {
+            return Some(existing);
+        }
+        register_synthetic(
+            self.pool_mut(),
+            SCHEMA_FREE_MESSAGE_FQDN,
+            MESSAGE_KEYWORD,
+            "protolens_internal/message.proto",
+            Vec::new(),
+            Vec::new(),
+            "schema-free message",
+        )
+        .ok()
     }
 }
 
@@ -1577,16 +1621,45 @@ pub(crate) fn primitive_type_for_keyword(keyword: &str) -> Option<Type> {
     })
 }
 
-/// Every primitive keyword (spec 0135 §G3/§G4) wire-compatible with
-/// `wire_type` — the reverse direction of `primitive_type_for_keyword`,
-/// used for `:type-as` wire-compatibility rejection and tab-completion.
-/// `WT_START_GROUP` yields no primitives at all (Background): group
-/// framing can never be validly reinterpreted as a primitive scalar, only
-/// as a message/group FQDN target (resolved separately). `enum` is
-/// deliberately absent from the `WT_VARINT` list — recorded in G3's
-/// compatibility rule for a future spec, but this spec wires up no enum
-/// target path anywhere (Non-goals).
-pub(crate) fn primitive_keywords_for_wire_type(wire_type: u32) -> &'static [&'static str] {
+/// The keyword that reads a length-delimited payload as a message with
+/// no schema at all (spec 0299) — the one override keyword that carries
+/// a target descriptor, which is why it cannot be a line in
+/// `primitive_type_for_keyword`.
+pub(crate) const MESSAGE_KEYWORD: &str = "message";
+
+/// The FQDN `MESSAGE_KEYWORD` resolves to — see
+/// [`DescriptorContext::schema_free_message`], which is the only thing
+/// that should name it.
+///
+/// Its short name is the keyword itself, deliberately: the type's name
+/// reaches the reader, in the `#@` annotation on the spliced node's
+/// header, and `message` is the one word there that is both true and
+/// already in the reader's vocabulary — they just typed it.
+const SCHEMA_FREE_MESSAGE_FQDN: &str = "protolens_internal.message";
+
+/// Whether `name` is one of the keywords `wrapper_target_for` resolves
+/// without consulting the pool: the fifteen primitives (spec 0135 §G4)
+/// plus `MESSAGE_KEYWORD` (spec 0299).
+///
+/// The one kind of name a wire-type compatibility check applies to. An
+/// FQDN's fitness for a node is the pool's business, not the tag's.
+pub(crate) fn is_override_keyword(name: &str) -> bool {
+    primitive_type_for_keyword(name).is_some() || name == MESSAGE_KEYWORD
+}
+
+/// Every override keyword (spec 0135 §G3/§G4, spec 0299)
+/// wire-compatible with `wire_type` — the reverse direction of
+/// `is_override_keyword`, used for `:override`'s wire-compatibility
+/// rejection and its tab-completion.
+///
+/// `WT_START_GROUP` yields nothing at all (spec 0135 Background): group
+/// framing can never be validly reinterpreted as a primitive scalar,
+/// only as a message/group FQDN target (resolved separately) — and
+/// `message` is no use to it either, since group framing already *is*
+/// message framing. `enum` is deliberately absent from the `WT_VARINT`
+/// list — recorded in G3's compatibility rule for a future spec, but no
+/// enum keyword path exists anywhere (spec 0135 Non-goals).
+pub(crate) fn override_keywords_for_wire_type(wire_type: u32) -> &'static [&'static str] {
     use prototext_core::helpers::{WT_I32, WT_I64, WT_LEN, WT_START_GROUP, WT_VARINT};
     match wire_type {
         WT_VARINT => &[
@@ -1594,7 +1667,7 @@ pub(crate) fn primitive_keywords_for_wire_type(wire_type: u32) -> &'static [&'st
         ],
         WT_I32 => &["fixed32", "sfixed32", "float"],
         WT_I64 => &["fixed64", "sfixed64", "double"],
-        WT_LEN => &["string", "bytes"],
+        WT_LEN => &["string", "bytes", MESSAGE_KEYWORD],
         WT_START_GROUP => &[],
         _ => &[],
     }
@@ -1648,7 +1721,7 @@ pub(crate) fn packed_framing(span: &NodeSpan) -> bool {
 /// alphabetically pre-sorted (spec 0137 §G1) — used by the override
 /// pane's alphabetic-mode candidate list. Must stay in sync with that
 /// function's match arms (the same duplication precedent
-/// `primitive_keywords_for_wire_type` already accepts).
+/// `override_keywords_for_wire_type` already accepts).
 pub(crate) const ALL_PRIMITIVE_KEYWORDS: &[&str] = &[
     "bool", "bytes", "double", "fixed32", "fixed64", "float", "int32", "int64", "sfixed32",
     "sfixed64", "sint32", "sint64", "string", "uint32", "uint64",

@@ -18,6 +18,7 @@ mod navigation;
 mod node_status;
 mod override_apply;
 mod override_cmd;
+mod override_message;
 mod override_preview;
 mod override_select;
 mod popup;
