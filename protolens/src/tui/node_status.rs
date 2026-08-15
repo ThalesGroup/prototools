@@ -39,9 +39,27 @@ impl App {
     /// child's, so walking the arena backwards visits every child
     /// before its parent. No recursion, no stack, no queue, and each
     /// slot is touched once as a parent and once as a child.
+    ///
+    /// `auto_folded` is flattened to one bit per slot first. Asking the
+    /// set directly is a random probe into a table of tens of thousands
+    /// of entries, once per node — 4.74 M of them on googleapis, which
+    /// measured **5.0% of a startup**, almost all of it hashing and
+    /// missing. The bitset is filled in one pass over the set (which is
+    /// three orders of magnitude smaller than the arena) and then read
+    /// *in the order the loop already walks*, so it costs one cache line
+    /// per 512 nodes and prefetches perfectly.
+    ///
+    /// A cheaper-looking fix — a faster hasher — was tried and measured
+    /// **3.3% slower** on 3.7% fewer instructions: SipHash's arithmetic
+    /// was overlapping the probe's cache miss, so removing it exposed the
+    /// latency it had been hiding. The probe is the cost, not the hash.
     pub(super) fn rebuild_status(&mut self) {
+        let mut stops = vec![0u64; self.tree.len().div_ceil(64)];
+        for &idx in &self.auto_folded {
+            stops[idx / 64] |= 1 << (idx % 64);
+        }
         for idx in (0..self.tree.len()).rev() {
-            let own = self.own_status(idx);
+            let own = self.own_status(idx, stops[idx / 64] & (1 << (idx % 64)) != 0);
             self.status_own[idx] = own;
             self.status_rolled[idx] = own.max(self.children_status(idx));
         }
@@ -59,7 +77,7 @@ impl App {
     /// Returns `idx`'s rolled status, so a parent's `max` needs no
     /// second read.
     pub(super) fn refresh_status_subtree(&mut self, idx: usize) -> Status {
-        let own = self.own_status(idx);
+        let own = self.own_status(idx, self.auto_folded.contains(&idx));
         self.status_own[idx] = own;
         let mut rolled = own;
         for child in self.child_slots(idx) {
@@ -116,7 +134,11 @@ impl App {
     /// off the children would find nothing. Rolling it up then happens
     /// by the ordinary `max`, which is the point — every ancestor of an
     /// unbaked region reads provisional until the bake reaches it.
-    fn own_status(&self, idx: usize) -> Status {
+    ///
+    /// `is_stop` is `auto_folded.contains(&idx)`, taken as a parameter
+    /// rather than asked here so that `rebuild_status` can answer it
+    /// from a bitset. There is still one statement of the status rule.
+    fn own_status(&self, idx: usize, is_stop: bool) -> Status {
         let mut worst = match self.node_text[idx].as_deref() {
             Some(text) => {
                 let text_says = text.split('\n').map(row_status).max().unwrap_or_default();
@@ -130,7 +152,7 @@ impl App {
         };
         // A stop always has text — its header and its footer — so this
         // is never the reason a vacant slot gets a status.
-        if self.auto_folded.contains(&idx) {
+        if is_stop {
             worst = worst.max(Status::Unbaked);
         }
         worst
