@@ -151,7 +151,7 @@
       chafa
       tree
       bat
-    ]) ++ [ buf ];
+    ]) ++ [ buf grpconfDemo ];
 
     shellHook = ''
       old_opts=$(set +o)
@@ -401,8 +401,8 @@ components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
         # all files are writable.
         #
         # The copy is guarded by a sentinel file recording the nix store path
-        # that last populated the stage.  If it matches, skip the copy to avoid
-        # the overhead on every shell entry after the first.
+        # that last populated the stage.  If it matches, skip everything to
+        # avoid the overhead on every shell entry after the first.
         #
         # grpconf/stage/ is gitignored, so nothing here touches the repo index.
         local stage="$PWD/grpconf/stage"
@@ -416,8 +416,8 @@ components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
         rm -rf "$stage"
         cp -r --no-preserve=mode "$demo" "$stage"
         # Record which nix derivation populated the stage so the guard above
-        # can detect when the derivation changes (e.g. after nix-build -A
-        # grpconf-demo following a bobapp source change).
+        # can detect when the derivation changes (e.g. after a bobapp source
+        # change that produces a new grpconf-demo store path).
         echo "$demo" > "$sentinel"
         echo "[hook] demo: grpconf/stage/ ready ($(du -sh "$stage" | cut -f1))"
       }
