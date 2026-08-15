@@ -60,7 +60,7 @@ pub(super) const ACTIVITY_GLYPH: &str = "●";
 /// (2014), and a font without them draws tofu. That is a one-line
 /// revert, and the pair to revert *to* is the small one named above.
 pub(super) const FOLD_GLYPH_OPEN: char = '⏷';
-const FOLD_GLYPH_CLOSED: char = '⏵';
+pub(super) const FOLD_GLYPH_CLOSED: char = '⏵';
 
 /// Spec 0193 S1: how many columns the fold field reserves left of the
 /// row's own text. Two, because that is the marker plus the space that
@@ -755,7 +755,7 @@ impl App {
     ///
     /// Applied to the glyph alone by `margin_spans`, which is where the
     /// reason it cannot be the whole margin is written down.
-    fn fold_marker_color(&self, owner: Option<usize>) -> Option<Color> {
+    pub(super) fn fold_marker_color(&self, owner: Option<usize>) -> Option<Color> {
         let idx = owner?;
         self.fold_marker_of(owner)?;
         theme::status_color(self.status_of(idx), self.theme)

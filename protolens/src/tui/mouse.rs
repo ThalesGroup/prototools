@@ -514,6 +514,50 @@ impl App {
         (start..start + width).contains(&x).then_some(line_idx)
     }
 
+    /// Whether pane column `col` falls on the fold marker of the row
+    /// `pos` draws — the glyph and the blank column beside it.
+    ///
+    /// Spec 0142: a footer line carries no fold glyph and a leaf has
+    /// nothing to fold, so neither draws a field to aim at.
+    ///
+    /// Column 0 is always the heat-cue gutter (spec 0138 N1: a glyph or
+    /// a reserved blank, never part of the line's own text) — the
+    /// marker sits one column further right.
+    ///
+    /// `pan_offset` is added back for the same reason
+    /// `set_caret_from_click` adds it: the fold margin is part of the
+    /// row's content, so `pan_spans` drops it along with everything
+    /// else the pan scrolls off the left edge. Without this the
+    /// marker's hit target stays at the column it occupied *before* the
+    /// pan, so on a panned view a click on the visible glyph places the
+    /// caret and a click on some unrelated character folds the node.
+    ///
+    /// The target is the marker *and* the blank column `fold_margin`
+    /// draws beside it — the whole two-column fold field, never any of
+    /// the row's text (the field is `FOLD_FIELD_WIDTH` wide by
+    /// construction and the first non-blank starts after it). A
+    /// one-column target is too small to click repeatedly: a fast run
+    /// of clicks drifts by a cell and one of its presses silently
+    /// becomes a caret placement instead of a toggle, which reads as a
+    /// lost click.
+    ///
+    /// Spec 0287 S3: the hover that *explains* the marker asks this
+    /// too. Sharing the locator is the point — the box says "click to
+    /// unfold it", and it can only say so over columns that would in
+    /// fact have toggled.
+    pub(super) fn in_fold_field(&self, col: u16, pos: LinePos) -> bool {
+        if self.is_footer(pos) || !self.has_children(pos.node) {
+            return false;
+        }
+        let Some(rel_col) = col.checked_sub(self.main_area.x).map(usize::from) else {
+            return false;
+        };
+        let line = self.line_text(pos);
+        let marker = render::marker_column(&line) as usize;
+        let field = marker..marker + render::FOLD_FIELD_WIDTH;
+        rel_col >= 1 && field.contains(&(rel_col - 1 + self.pan_offset))
+    }
+
     /// Dispatch one main-pane left-click: on a fold marker it toggles
     /// the fold, anywhere else it moves the caret under the pointer.
     ///
@@ -541,40 +585,9 @@ impl App {
         // pointer, because `set_cursor` is what a node-level jump uses
         // and the marker is left of every column the caret may rest
         // on.
-        //
-        // Spec 0142: a footer line carries no fold glyph, so the check
-        // is confined to the rows a node draws its own content on.
-        if !self.is_footer(pos) && self.has_children(pos.node) {
-            // Column 0 is always the heat-cue gutter (spec 0138 N1: a
-            // glyph or a reserved blank, never part of the line's own
-            // text) — the marker sits one column further right.
-            //
-            // `pan_offset` is added back for the same reason
-            // `set_caret_from_click` adds it: the fold margin is part of
-            // the row's content, so `pan_spans` drops it along with
-            // everything else the pan scrolls off the left edge. Without
-            // this the marker's hit target stays at the column it
-            // occupied *before* the pan, so on a panned view a click on
-            // the visible glyph places the caret and a click on some
-            // unrelated character folds the node.
-            //
-            // The hit target is the marker *and* the blank column
-            // `fold_margin` draws beside it — the whole two-column fold
-            // field, never any of the row's text (the field is
-            // `FOLD_FIELD_WIDTH` wide by construction and the first
-            // non-blank starts after it). A one-column target is too
-            // small to click repeatedly: a fast run of clicks drifts by
-            // a cell and one of its presses silently becomes a caret
-            // placement instead of a toggle, which reads as a lost
-            // click.
-            let rel_col = (col - self.main_area.x) as usize;
-            let line = self.line_text(pos);
-            let marker = render::marker_column(&line) as usize;
-            let field = marker..marker + render::FOLD_FIELD_WIDTH;
-            if rel_col >= 1 && field.contains(&(rel_col - 1 + self.pan_offset)) {
-                self.toggle_fold(pos.node);
-                return true;
-            }
+        if self.in_fold_field(col, pos) {
+            self.toggle_fold(pos.node);
+            return true;
         }
 
         if (self.cursor, self.cursor_line_in_node) != (pos.node, pos.line_in_node) {

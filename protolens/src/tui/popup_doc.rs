@@ -47,6 +47,66 @@ pub(super) enum DocElement {
     /// Any other annotation token — a modifier, with or without a
     /// value.
     Modifier,
+
+    // Spec 0287 S1: four members that are *chrome* rather than grammar.
+    // They join the nine above so that there is one hit type, one
+    // dwell, one "still on the same thing" comparison and one box
+    // builder; a parallel `ChromeHit` would duplicate `DocHit`'s
+    // `line`/`at` identity, which is the whole of what makes two hovers
+    // the same hover. Each carries what its wording depends on, read
+    // off the mark as drawn (G2) rather than re-derived when the box is
+    // built.
+    /// The `●` in the reserved gutter (spec 0138 N1). `tie` is which of
+    /// the two cues drew it — blue for a tie, red for a mismatch.
+    HeatGlyph { tie: bool },
+    /// The ` [3/47]`, ` [2@85]`, ` [?/47]` or ` [?]` at the end of the
+    /// row.
+    HeatSuffix(SuffixShape),
+    /// The `⏷`/`⏵` in the fold margin. `colored` is spec 0247 S10's
+    /// status hue, which the box only mentions when the glyph is
+    /// actually wearing one.
+    FoldMarker { folded: bool, colored: bool },
+    /// The `{ ... }` a folded node collapses to. `unread` is spec 0260
+    /// S2's violet: nobody has looked inside this region, as against a
+    /// fold the reader made.
+    FoldSummary { unread: bool },
+}
+
+/// Which of `HeatDisplay`'s shapes the drawn suffix is (spec 0154 G6),
+/// to the precision the box's words need.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum SuffixShape {
+    /// ` [3/47]` — this node's own score, then the best any candidate
+    /// reached.
+    Mismatch,
+    /// ` [-/47]` — the current type does not fit these bytes at all.
+    NoFit,
+    /// ` [2@85]` — `n` types share the top score.
+    Tie,
+    /// ` [?/47]` — the best is known and this node's own is not.
+    Pending,
+    /// ` [?]` — nothing is known yet.
+    Unknown,
+}
+
+impl SuffixShape {
+    /// The shape of `display`, or `None` where no suffix is drawn.
+    ///
+    /// Spec 0287 G2: taken from the value `heat_chrome` formatted, so
+    /// the box and the suffix cannot disagree about which of the five
+    /// the reader is looking at.
+    fn of(display: &heat_cue::HeatDisplay) -> Option<Self> {
+        Some(match display {
+            heat_cue::HeatDisplay::Cue(cue) => match cue.kind {
+                heat_cue::HeatCueKind::Mismatch { current: None, .. } => Self::NoFit,
+                heat_cue::HeatCueKind::Mismatch { .. } => Self::Mismatch,
+                heat_cue::HeatCueKind::Tie { .. } => Self::Tie,
+            },
+            heat_cue::HeatDisplay::PendingCurrent { .. } => Self::Pending,
+            heat_cue::HeatDisplay::Unknown => Self::Unknown,
+            heat_cue::HeatDisplay::None => return None,
+        })
+    }
 }
 
 /// The pointer resting on one element of one row.
@@ -67,6 +127,14 @@ pub(super) struct DocHit {
     /// including a packed `Color([1, 2])`, where no single number is
     /// this line's.
     enum_number: Option<String>,
+}
+
+impl DocHit {
+    /// Which of [`DocElement`]'s kinds this hit landed on.
+    #[cfg(test)]
+    pub(super) fn element(&self) -> DocElement {
+        self.element
+    }
 }
 
 /// Every element of a drawn row, in ascending order.
@@ -205,6 +273,129 @@ fn key_clause(key: &str) -> &'static str {
 }
 
 impl App {
+    /// Spec 0287 S3: the two heat-cue targets, both in columns no token
+    /// of the row can reach — column 0 exactly, which spec 0285's
+    /// mapping gives up on with a `checked_sub(1)`, and the suffix past
+    /// the row's last character, where its `nth(index)` already yields
+    /// `None`.
+    ///
+    /// The cue is asked for once and the glyph and the suffix are both
+    /// read off that one answer, which is G2: `heat_cue_at` and
+    /// `heat_chrome` are what drew the mark, so a box built from them
+    /// cannot describe a cue the reader is not looking at. A cue hidden
+    /// by `i` is `HeatDisplay::None` and so is not a target at all.
+    fn heat_chrome_hit(
+        &mut self,
+        column: u16,
+        row: u16,
+        line: usize,
+        pos: LinePos,
+    ) -> Option<DocHit> {
+        let on_glyph = column == self.main_area.x;
+        // Spec 0287 S3: the suffix's own geometry, unchanged — it adds
+        // no `pan_offset`, because `render` pushes the suffix after
+        // `pan_spans` and so the suffix does not pan.
+        if !on_glyph && self.heat_cue_at_point(column, row) != Some(line) {
+            return None;
+        }
+        let display = self.heat_cue_at(pos);
+        let (glyph, suffix) = self.heat_chrome(&display);
+
+        let (element, token) = if on_glyph {
+            // N3: the reserved blank is not a target. `heat_chrome`
+            // draws one for a settled node, for a pending one, and for
+            // a cue the ANSI-16 palette cannot color — so what decides
+            // is the glyph that came back, never the display's shape.
+            if glyph.content != heat_cue::HEAT_GLYPH {
+                return None;
+            }
+            let heat_cue::HeatDisplay::Cue(cue) = display else {
+                return None;
+            };
+            let tie = matches!(cue.kind, heat_cue::HeatCueKind::Tie { .. });
+            (DocElement::HeatGlyph { tie }, glyph.content.into_owned())
+        } else {
+            let suffix = suffix?;
+            (
+                DocElement::HeatSuffix(SuffixShape::of(&display)?),
+                suffix.content.trim().to_string(),
+            )
+        };
+        Some(DocHit {
+            line,
+            at: 0,
+            element,
+            token,
+            enum_number: None,
+        })
+    }
+
+    /// Spec 0287 S3: the fold marker, located by the one locator
+    /// `handle_click` toggles from — so the box's *click to unfold it*
+    /// is true of every column it appears over, by construction.
+    fn fold_marker_hit(&self, column: u16, line: usize, pos: LinePos) -> Option<DocHit> {
+        if !self.in_fold_field(column, pos) {
+            return None;
+        }
+        let folded = self.is_folded(pos.node);
+        Some(DocHit {
+            line,
+            at: 0,
+            element: DocElement::FoldMarker {
+                folded,
+                colored: self.fold_marker_color(Some(pos.node)).is_some(),
+            },
+            token: if folded {
+                render::FOLD_GLYPH_CLOSED
+            } else {
+                render::FOLD_GLYPH_OPEN
+            }
+            .to_string(),
+            enum_number: None,
+        })
+    }
+
+    /// Spec 0287 S3: the `{ ... }` a folded node collapses to, which
+    /// `row_text_of` has already spliced into the content the mapping
+    /// indexes.
+    ///
+    /// The node's own fold state is what says there is a summary here —
+    /// searching the row for `"{ ... }"` would find those characters
+    /// inside a string value too, and `doc_elements` cannot tell a
+    /// value from a splice. Where the splice went is then read back the
+    /// way `row_text_of` put it there: after the row's last `{`, or at
+    /// the end when the row has none.
+    ///
+    /// The span runs from the brace to the closing one, so pointing at
+    /// either it or the ellipsis gives one answer.
+    fn fold_summary_hit(
+        &self,
+        line: usize,
+        pos: LinePos,
+        content: &str,
+        byte: usize,
+    ) -> Option<DocHit> {
+        if self.is_footer(pos) || !self.has_children(pos.node) || !self.is_folded(pos.node) {
+            return None;
+        }
+        let span = match content.rfind('{') {
+            Some(at) => at..at + "{ ... }".len(),
+            None => content.len().checked_sub(" ... }".len())?..content.len(),
+        };
+        if !span.contains(&byte) {
+            return None;
+        }
+        Some(DocHit {
+            line,
+            at: span.start,
+            element: DocElement::FoldSummary {
+                unread: self.unread_fold_style(pos.node).is_some(),
+            },
+            token: content.get(span)?.to_string(),
+            enum_number: None,
+        })
+    }
+
     /// The element drawn at this point, if it is one the box has
     /// anything to say about (spec 0285 S4).
     ///
@@ -218,6 +409,18 @@ impl App {
     pub(super) fn doc_element_at_point(&mut self, column: u16, row: u16) -> Option<DocHit> {
         let line = self.main_pane_line_idx(column, row)?;
         let pos = self.line_pos(line)?;
+
+        // Spec 0287 S6: the chrome is tested before the row is lexed.
+        // The tests are integer range checks and are disjoint from
+        // every token, so pointing at text — the common case — pays for
+        // them and nothing else.
+        if let Some(hit) = self.heat_chrome_hit(column, row, line, pos) {
+            return Some(hit);
+        }
+        if let Some(hit) = self.fold_marker_hit(column, line, pos) {
+            return Some(hit);
+        }
+
         let content = self.row_content(self.committed_row_at(line, pos));
 
         // The same mapping `type_annotation_at` computes: pane column,
@@ -226,6 +429,10 @@ impl App {
         let index =
             (column.saturating_sub(self.main_area.x) as usize).checked_sub(1)? + self.pan_offset;
         let byte = content.char_indices().nth(index)?.0;
+
+        if let Some(hit) = self.fold_summary_hit(line, pos, &content, byte) {
+            return Some(hit);
+        }
 
         let elements = doc_elements(&content);
         let (element, span) = elements.iter().find(|(_, s)| s.contains(&byte))?.clone();
@@ -315,6 +522,79 @@ pub(super) fn doc_lines(hit: &DocHit) -> Vec<BoxLine> {
             let keyword = keyword_of(&hit.token);
             lines.extend(tier_of(keyword).map(|tier| tier.clause().to_string()));
             lines.extend(clause(keyword).map(str::to_string));
+        }
+        // Spec 0287 S4. Every one of these is an *orientation* box in
+        // N5's sense — it says what a mark is, not what a value is —
+        // and none of them carries a number the reader does not
+        // already have on screen: where one is wanted, the box says
+        // where it is.
+        DocElement::HeatGlyph { tie } => {
+            lines.push(
+                match tie {
+                    true => "another type scores exactly as well as this one",
+                    false => "another type scores higher on these bytes",
+                }
+                .to_string(),
+            );
+            lines.push(
+                match tie {
+                    true => "brighter means a higher score",
+                    false => "brighter means a bigger difference",
+                }
+                .to_string(),
+            );
+            lines.push("the [...] at the end of the row has the numbers".to_string());
+        }
+        DocElement::HeatSuffix(shape) => {
+            match shape {
+                SuffixShape::Mismatch => {
+                    lines.push("left: what this node's type scores here".to_string());
+                    lines.push("right: the best score any candidate reached".to_string());
+                }
+                SuffixShape::NoFit => {
+                    lines.push("the - is: this node's type does not fit at all".to_string());
+                    lines.push("right: the best score any candidate reached".to_string());
+                }
+                SuffixShape::Tie => {
+                    lines.push("n types score s here - the best, but not the".to_string());
+                    lines.push("only best".to_string());
+                }
+                SuffixShape::Pending => {
+                    lines.push("the best is known; this node's own score is".to_string());
+                    lines.push("still being computed".to_string());
+                }
+                SuffixShape::Unknown => lines.push("still scoring these bytes".to_string()),
+            }
+            // G3: the one thing about this mark a reader cannot
+            // discover by looking at it (spec 0284 S2).
+            lines.push("double-click to choose a type for this node".to_string());
+        }
+        DocElement::FoldMarker { folded, colored } => {
+            lines.push(
+                match folded {
+                    true => "this node is folded",
+                    false => "this node is unfolded",
+                }
+                .to_string(),
+            );
+            lines.push(
+                match folded {
+                    true => "click to unfold it",
+                    false => "click to fold it",
+                }
+                .to_string(),
+            );
+            if colored {
+                lines.push("the color is the worst thing found anywhere inside".to_string());
+            }
+        }
+        DocElement::FoldSummary { unread } => {
+            if unread {
+                lines.push("nobody has looked inside this region yet".to_string());
+            } else {
+                lines.push("this node is folded: its fields are not shown".to_string());
+                lines.push("click the marker in the left margin to unfold it".to_string());
+            }
         }
         // Refused by `doc_element_at_point`, so unreachable — and left
         // as a box with only its own token rather than a panic, since a

@@ -4,8 +4,11 @@
 
 //! Spec 0285: the box a document token earns.
 
+use super::super::heat_cue::HEAT_CUE_PREVIEW;
+use super::super::heat_worker::{HeatWorkerHandle, RangeHeatEntry};
 use super::super::popup::{HoverTarget, EXPLAIN_DWELL, HOVER_DWELL};
-use super::super::popup_doc::doc_lines;
+use super::super::popup_doc::{doc_lines, DocElement};
+use super::super::tiered::Tier;
 use super::super::*;
 use super::support::*;
 use ratatui::layout::Rect;
@@ -312,4 +315,330 @@ fn a_keyword_with_no_clause_is_not_a_target() {
         ],
         "the marker introduces the annotation rather than being it"
     );
+}
+
+// ---------------------------------------------------------------------
+// Spec 0287: the chrome beside a row
+// ---------------------------------------------------------------------
+
+/// A `message_node_app` whose root has a heat cue seeded on it, drawn
+/// so the header is the pane's own row 0.
+///
+/// The two arguments are the two caches a cue is read out of, and
+/// their absence is what spec 0154 G6's progressive shapes *are*: no
+/// `stats` is `[?]`, stats without a `current` is `[?/best]`.
+fn cue_app(stats: Option<(i64, usize)>, current: Option<Option<i64>>) -> App {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 120, 24);
+    // Without a worker, `heat_cue_resolve` reads an unsettled cache as
+    // "nothing will ever resolve this" and draws no cue at all, so the
+    // two progressive shapes would be unreachable.
+    app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
+    let start = extract::message_payload_range(&app.blob, &app.tree[0].span.raw_range).start;
+    {
+        let mut caches = app.heat_caches.lock().unwrap();
+        if let Some((best_score, best_count)) = stats {
+            caches.by_range.upsert(
+                start,
+                RangeHeatEntry {
+                    best_score: Some(best_score),
+                    best_count,
+                    top_n: vec![("protolens_internal.dummy".to_string(), 0); HEAT_CUE_PREVIEW],
+                },
+                Tier::Visible,
+            );
+        }
+        if let Some(score) = current {
+            caches.current_score.upsert(
+                (start, "google.protobuf.DescriptorProto".to_string()),
+                score,
+                Tier::Visible,
+            );
+        }
+    }
+    app
+}
+
+/// The box the pane's column 0 of row 0 opens.
+fn glyph_box(app: &mut App) -> Vec<String> {
+    let hit = app
+        .doc_element_at_point(app.main_area.x, app.main_area.y)
+        .expect("the glyph is a target");
+    doc_lines(&hit).into_iter().map(|l| l.text).collect()
+}
+
+/// The box the drawn heat suffix of row 0 opens, hit through
+/// `heat_cue_at_point`'s own geometry — one column inside it, so the
+/// test cannot pass by pointing at the row's text.
+fn suffix_box(app: &mut App) -> Vec<String> {
+    let content = app.row_content(app.committed_row(0).expect("a drawn row"));
+    let column = app.main_area.x + 1 + content.chars().count() as u16;
+    assert_eq!(
+        app.heat_cue_at_point(column, app.main_area.y),
+        Some(0),
+        "the column must be inside the drawn suffix"
+    );
+    let hit = app
+        .doc_element_at_point(column, app.main_area.y)
+        .expect("the suffix is a target");
+    doc_lines(&hit).into_iter().map(|l| l.text).collect()
+}
+
+/// Spec 0287 test plan 1 / S4: the glyph's own color decides the words,
+/// so the box and the mark cannot disagree (G2).
+#[test]
+fn the_heat_glyph_explains_its_color() {
+    let mut app = cue_app(Some((50, 1)), Some(Some(10)));
+    assert_eq!(
+        glyph_box(&mut app),
+        [
+            heat_cue::HEAT_GLYPH,
+            "another type scores higher on these bytes",
+            "brighter means a bigger difference",
+            "the [...] at the end of the row has the numbers",
+        ]
+    );
+
+    // A tie is the same glyph in the same column, and a different box.
+    let mut app = cue_app(Some((50, 3)), Some(Some(50)));
+    assert_eq!(
+        glyph_box(&mut app),
+        [
+            heat_cue::HEAT_GLYPH,
+            "another type scores exactly as well as this one",
+            "brighter means a higher score",
+            "the [...] at the end of the row has the numbers",
+        ]
+    );
+}
+
+/// Spec 0287 test plan 2 / S4: each of `HeatDisplay`'s drawn shapes has
+/// its own words, and the token line is the suffix as drawn.
+#[test]
+fn the_heat_suffix_explains_its_numbers() {
+    let shapes = |app: &mut App| {
+        let lines = suffix_box(app);
+        (lines[0].clone(), lines[1].clone())
+    };
+
+    let mut app = cue_app(Some((50, 1)), Some(Some(10)));
+    assert_eq!(
+        shapes(&mut app),
+        (
+            "[10/50]".to_string(),
+            "left: what this node's type scores here".to_string()
+        )
+    );
+
+    let mut app = cue_app(Some((50, 1)), Some(None));
+    assert_eq!(
+        shapes(&mut app),
+        (
+            "[-/50]".to_string(),
+            "the - is: this node's type does not fit at all".to_string()
+        )
+    );
+
+    let mut app = cue_app(Some((50, 3)), Some(Some(50)));
+    assert_eq!(
+        shapes(&mut app),
+        (
+            "[3@50]".to_string(),
+            "n types score s here - the best, but not the".to_string()
+        )
+    );
+
+    let mut app = cue_app(Some((50, 1)), None);
+    assert_eq!(
+        shapes(&mut app),
+        (
+            "[?/50]".to_string(),
+            "the best is known; this node's own score is".to_string()
+        )
+    );
+
+    let mut app = cue_app(None, None);
+    assert_eq!(
+        shapes(&mut app),
+        ("[?]".to_string(), "still scoring these bytes".to_string())
+    );
+}
+
+/// Spec 0287 G3: the one thing about the suffix a reader cannot
+/// discover by looking at it, on every shape it takes.
+#[test]
+fn the_heat_suffix_names_the_double_click() {
+    for (stats, current) in [
+        (Some((50, 1)), Some(Some(10))),
+        (Some((50, 1)), Some(None)),
+        (Some((50, 3)), Some(Some(50))),
+        (Some((50, 1)), None),
+        (None, None),
+    ] {
+        let mut app = cue_app(stats, current);
+        let lines = suffix_box(&mut app);
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("double-click to choose a type for this node"),
+            "the suffix is a control, whatever it currently reads"
+        );
+    }
+
+    // The glyph is not: `heat_cue_at_point` measures the suffix alone,
+    // so column 0 has no double-click to name and the box points at the
+    // numbers instead.
+    let mut app = cue_app(Some((50, 1)), Some(Some(10)));
+    assert!(!glyph_box(&mut app).iter().any(|l| l.contains("double")));
+}
+
+/// Spec 0287 test plan 8 / S3: the target is exactly what is on screen,
+/// so `i` takes both cue targets away with the marks.
+#[test]
+fn a_hidden_cue_is_not_a_target() {
+    let mut app = cue_app(Some((50, 1)), Some(Some(10)));
+    let content = app.row_content(app.committed_row(0).expect("a drawn row"));
+    let suffix_column = app.main_area.x + 1 + content.chars().count() as u16;
+    assert!(app.doc_element_at_point(app.main_area.x, 0).is_some());
+    assert!(app.doc_element_at_point(suffix_column, 0).is_some());
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+
+    assert!(app.doc_element_at_point(app.main_area.x, 0).is_none());
+    assert!(app.doc_element_at_point(suffix_column, 0).is_none());
+}
+
+/// Spec 0287 test plan 4 / S4: the box flips with the glyph, and says
+/// which way the click will go.
+#[test]
+fn the_fold_marker_explains_which_way_it_is() {
+    let (mut app, inner, ..) = unknown_field_fixture();
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 120, 24);
+    let line = app.absolute_start(inner);
+    let pos = app.line_pos(line).unwrap();
+    let column = app.main_area.x + 1 + render::marker_column(&app.line_text(pos));
+
+    let read = |app: &mut App| {
+        let hit = app
+            .doc_element_at_point(column, line as u16)
+            .expect("the marker is a target");
+        doc_lines(&hit)
+            .into_iter()
+            .map(|l| l.text)
+            .collect::<Vec<_>>()
+    };
+
+    assert!(!app.is_folded(inner));
+    let open = read(&mut app);
+    assert_eq!(open[0], render::FOLD_GLYPH_OPEN.to_string());
+    assert_eq!(open[1], "this node is unfolded");
+    assert_eq!(open[2], "click to fold it");
+
+    app.toggle_fold(inner);
+    let closed = read(&mut app);
+    assert_eq!(closed[0], render::FOLD_GLYPH_CLOSED.to_string());
+    assert_eq!(closed[1], "this node is folded");
+    assert_eq!(closed[2], "click to unfold it");
+
+    // Spec 0247 S10: this fixture's subtree holds an unknown field, so
+    // the glyph wears a status color and the box says what it means.
+    assert_eq!(
+        closed.last().map(String::as_str),
+        Some("the color is the worst thing found anywhere inside"),
+        "the fixture's subtree is not clean, so the glyph is colored"
+    );
+}
+
+/// Spec 0287 test plan 5 / S3: the hover target and the click target
+/// are the same rectangle, because they are the same locator. Every
+/// column of the fold field is both, and no column outside it is
+/// either.
+#[test]
+fn the_fold_marker_hover_and_click_share_a_rectangle() {
+    let (mut app, inner, ..) = unknown_field_fixture();
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 120, 24);
+    let line = app.absolute_start(inner);
+    let pos = app.line_pos(line).unwrap();
+    let marker = render::marker_column(&app.line_text(pos)) as usize;
+
+    for column in 0..12u16 {
+        let in_field = (marker..marker + render::FOLD_FIELD_WIDTH)
+            .contains(&(column as usize).wrapping_sub(1));
+        let is_marker = matches!(
+            app.doc_element_at_point(column, line as u16),
+            Some(hit) if matches!(hit.element(), DocElement::FoldMarker { .. })
+        );
+        assert_eq!(
+            is_marker, in_field,
+            "column {column}: the box and the toggle must agree"
+        );
+        // And what the click does there is the same answer, read off
+        // the one locator both go through.
+        assert_eq!(app.in_fold_field(column, pos), in_field);
+    }
+}
+
+/// Spec 0287 test plan 6 / S3: pointing at the brace and pointing at
+/// the ellipsis give one answer, and a folded node says so.
+#[test]
+fn a_folded_node_explains_its_summary() {
+    let (mut app, inner, ..) = unknown_field_fixture();
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 120, 24);
+    app.toggle_fold(inner);
+    let line = app.absolute_start(inner);
+
+    let content = app.row_content(app.committed_row(line).expect("a drawn row"));
+    let brace = content.rfind('{').expect("a folded node draws its brace");
+    let first = 1 + content[..brace].chars().count() as u16;
+
+    let expected = [
+        "{ ... }",
+        "this node is folded: its fields are not shown",
+        "click the marker in the left margin to unfold it",
+    ];
+    for column in first..first + "{ ... }".len() as u16 {
+        let hit = app
+            .doc_element_at_point(column, line as u16)
+            .unwrap_or_else(|| panic!("column {column} of the summary is a target"));
+        let lines: Vec<String> = doc_lines(&hit).into_iter().map(|l| l.text).collect();
+        assert_eq!(lines, expected, "column {column}");
+    }
+}
+
+/// Spec 0287 test plan 7 / S4: spec 0260's arm — a violet `{ ... }` is
+/// not a fold the reader made, and the box says that instead.
+#[test]
+fn an_unbaked_summary_says_nobody_has_looked() {
+    let (mut app, inner, ..) = unknown_field_fixture();
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 120, 24);
+    app.toggle_fold(inner);
+    app.auto_folded.insert(inner);
+    let line = app.absolute_start(inner);
+
+    let content = app.row_content(app.committed_row(line).expect("a drawn row"));
+    // The fold margin holds a multibyte glyph, so the column is a
+    // count of characters, not the brace's byte offset.
+    let brace = content.rfind('{').expect("a brace");
+    let column = 1 + content[..brace].chars().count() as u16;
+    let hit = app
+        .doc_element_at_point(column, line as u16)
+        .expect("the summary is a target");
+    let lines: Vec<String> = doc_lines(&hit).into_iter().map(|l| l.text).collect();
+    assert_eq!(
+        lines,
+        ["{ ... }", "nobody has looked inside this region yet"]
+    );
+}
+
+/// Spec 0287 test plan 9 / S3: the chrome takes only columns no token
+/// can reach, so a key that starts immediately after the fold field
+/// still answers for its own first character.
+#[test]
+fn chrome_does_not_steal_a_token() {
+    let mut app = doc_app(&["x: 1  #@ varint"]);
+    assert_eq!(box_at(&mut app, 0, "x")[0], "x");
 }
