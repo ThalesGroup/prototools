@@ -560,31 +560,11 @@ pub fn score_subset<'g>(
 /// more. It is a correctness-of-intent fix; the straggler is handled by
 /// spec 0269's seat donation instead.
 ///
-/// **Groups are ordered by name, and the order is cut contiguously**
-/// (spec 0300). Splitting the sweep does not divide its work, it
-/// multiplies it: a state reachable from k different parts is walked k
-/// times, and on googleapis that duplication cost 2.27x at 24 parts. A
-/// protobuf FQDN encodes its package hierarchy and types in one package
-/// refer overwhelmingly to each other, so sorting groups by a
-/// representative FQDN puts structurally related states next to each
-/// other for free, and a contiguous cut keeps them in one part — where
-/// their shared closure is traversed once instead of once per part.
-/// Measured on googleapis: total sweep work −15.5% and −12.5% over two
-/// interleaved rounds, closure duplication 4.87x → 1.31x, for a
-/// partition that builds in 14.9 ms against 7.3 ms.
-///
-/// The representative is the lexicographically smallest FQDN among the
-/// roots sharing that state. Several roots may share one, so picking the
-/// first in root order would make the partition depend on root ordering.
-/// The whole name is the key, not a package prefix: prefix depths 1, 2
-/// and 3 were measured and scored *identically*, so the clustering comes
-/// from lexicographic order over the full name and a prefix parameter
-/// would be a knob with nothing behind it.
-///
-/// Balancing is unchanged — a block holds `groups/k` groups, so parts
-/// are still weighed by group count. The straggler does not move (about
-/// 1%), which leaves the sweep tail-bound rather than work-bound; that
-/// is spec 0269's problem, not this one's.
+/// Groups are handed out largest-first, one per part in turn. With group
+/// count as the key that *is* round-robin — every part is tied until the
+/// wheel comes round, and `min_by_key` would return the first tie each
+/// time — so it is written as the modulo directly, which also drops the
+/// hand-out from O(G·n) to O(G).
 ///
 /// Returns only non-empty parts, so the result may be shorter than `n`
 /// (and is a single part when `n <= 1`, or when the graph has fewer
@@ -604,47 +584,33 @@ pub fn partition_roots(graph: &ArchivedCompiledGraph, n: usize) -> Vec<Vec<u32>>
         .collect();
     by_state.sort_unstable();
 
-    // Each group carries the smallest FQDN among its roots, which is what
-    // it is then ordered by.
-    let mut groups: Vec<(&str, Vec<u32>)> = Vec::new();
+    let mut groups: Vec<Vec<u32>> = Vec::new();
     let mut i = 0;
     while i < by_state.len() {
         let state = by_state[i].0;
         let mut group = Vec::new();
-        let mut name = graph.roots[by_state[i].1 as usize].fqdn.as_str();
         while i < by_state.len() && by_state[i].0 == state {
-            let fqdn = graph.roots[by_state[i].1 as usize].fqdn.as_str();
-            if fqdn < name {
-                name = fqdn;
-            }
             group.push(by_state[i].1);
             i += 1;
         }
-        groups.push((name, group));
+        groups.push(group);
     }
-    groups.sort_unstable_by(|a, b| a.0.cmp(b.0));
+    groups.sort_unstable_by_key(|g| std::cmp::Reverse(g.len()));
 
-    // Cut the sorted list into `k` contiguous blocks of as near as makes no
-    // difference `groups/k` groups each. `k <= groups.len()`, so every block
-    // holds at least one group and no part comes back empty.
     let k = n.min(groups.len());
-    let base = groups.len() / k;
-    let extra = groups.len() % k;
-    let mut parts: Vec<Vec<u32>> = Vec::with_capacity(k);
-    let mut rest = groups.into_iter();
-    for p in 0..k {
-        let take = base + usize::from(p < extra);
-        let mut part = Vec::new();
-        for (_, group) in rest.by_ref().take(take) {
-            part.extend(group);
-        }
-        // Sorting a part is not required by anything downstream —
-        // `group_by_state` sorts what it is given, and the ranking's order
-        // comes from `candidate_order` — it just makes a part a canonical
-        // list of root indices rather than one in name order, which is what
-        // makes two runs comparable when reading a trace.
+    let mut parts: Vec<Vec<u32>> = vec![Vec::new(); k];
+    for (i, group) in groups.into_iter().enumerate() {
+        parts[i % k].extend(group);
+    }
+    // Round-robin over at least `k` groups cannot leave a part empty
+    // (there are at least as many groups as parts). Sorting each part is not
+    // required by anything downstream — `group_by_state` sorts what it is
+    // given, and the ranking's order comes from `candidate_order` — it just
+    // makes a part a canonical list of root indices rather than one in
+    // largest-group-first order, which is what makes two runs comparable
+    // when reading a trace.
+    for part in &mut parts {
         part.sort_unstable();
-        parts.push(part);
     }
     parts
 }
