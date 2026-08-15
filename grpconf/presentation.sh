@@ -28,8 +28,9 @@ demo/header "0. Stage"
 # sent all three to Alice with no .proto, no type name and no idea what the      \
 # thing is talking to.  Alice is who this talk is addressed to.                  \
 #                                                                                \
-# Three files, built ahead of time (grpconf/artifacts.md), under                 \
-# grpconf/stage/, which is not in the repo:                                      \
+# Three files, built ahead of time (grpconf/artifacts.md).  The dev-shell        \
+# populates grpconf/stage/ from `nix-build -A grpconf-demo`; everything          \
+# below is a writable copy of that read-only nix store path:                     \
 #                                                                                \
 #   bobapp     the executable Bob downloaded.  Real gRPC client, descriptors     \
 #              embedded UNCOMPRESSED.  No symbols, no source.                    \
@@ -40,6 +41,9 @@ demo/header "0. Stage"
 # And one pre-built database.  bobapp.desc is NOT here: it is built on stage     \
 # in beat 6, out of the binary, which is the whole point of that beat.           \
 #                                                                                \
+# The binary lives at grpconf/stage/bin/bobapp so that bobapp.desc's stem        \
+# directory (grpconf/stage/bobapp/) does not collide with it.                    \
+#                                                                                \
 #   googleapis.desc  the repo corpus: 7 771 files, 58 777 types, indexed once      \
 #                                                                                \
 # Until they exist this beat is the only one that fails, and it fails            \
@@ -48,7 +52,7 @@ demo/header "0. Stage"
 \
 export STAGE=grpconf/stage
 \
-export BOBAPP=$STAGE/bobapp BOBSHARK=$STAGE/bobshark BOBLOG=$STAGE/boblog
+export BOBAPP=$STAGE/bin/bobapp BOBSHARK=$STAGE/bobshark BOBLOG=$STAGE/boblog
 \
 export GOOGLEAPIS=$STAGE/googleapis.desc BOBDESC=$STAGE/bobapp.desc
 \
@@ -59,7 +63,7 @@ for f in $BOBAPP $BOBSHARK $BOBLOG $GOOGLEAPIS; do [ -e $f ] || echo "MISSING: $
 # \
 # Clean everything beat 6 derives, so a rerun is honest.
 \
-rm -rf $SRC $SRC2 $BOBDESC $STAGE/boblog.prototext $STAGE/roundtrip.pb
+rm -rf $SRC $SRC2 $BOBDESC ${BOBDESC%.desc} $STAGE/boblog.prototext $STAGE/roundtrip.pb
 
 \
 demo/header "1. The problem"
@@ -249,7 +253,7 @@ demo/header "8. Inference"
 # two of the findings arrive before anyone has looked at the document.           \
 #
 \
-protolens --descriptor-set $BOBDESC -I $SRC --script grpconf/beats/infer.script $BOBSHARK
+protolens --descriptor-set $BOBDESC -I $SRC --script $STAGE/beats/infer.script $BOBSHARK
 
 \
 demo/header "9. The log, half-read"
@@ -272,7 +276,7 @@ demo/header "9. The log, half-read"
 # wrong one.                                                                     \
 #
 \
-protolens --descriptor-set $BOBDESC -I $SRC --script grpconf/beats/log-partial.script $BOBLOG
+protolens --descriptor-set $BOBDESC -I $SRC --script $STAGE/beats/log-partial.script $BOBLOG
 
 \
 demo/header "10. The full corpus"
@@ -309,7 +313,7 @@ demo/header "10. The full corpus"
 #  both are on the wire.  The first one is Bob's API key."                       \
 #
 \
-protolens --descriptor-set $GOOGLEAPIS -I $SRC --script grpconf/beats/log-full.script $BOBLOG
+protolens --descriptor-set $GOOGLEAPIS -I $SRC --script $STAGE/beats/log-full.script $BOBLOG
 
 \
 demo/header "11. What Alice sends back"

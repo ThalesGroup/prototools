@@ -48,6 +48,7 @@
 , protoscan
 , wktDb             # well-known-types schema DB; carries the PROTOTEXT_DESCRIPTOR_SET setup-hook
 , googleapisDb      # googleapis schema DB; dev-shell only (PROTOTEXT_GOOGLEAPIS_SET)
+, grpconfDemo       # grpconf-demo stage: bin/bobapp, boblog, bobshark, googleapis.desc, beats/
 , buf               # narrow-pinned buf (newer than the main nixpkgs pin's 1.59.0; see default.nix)
 }:
 
@@ -390,6 +391,37 @@ components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
         makewhatis "$PWD/man" 2>/dev/null || true
       }
 
+      _hook_demo() {
+        # Populate grpconf/stage/ from the grpconf-demo nix derivation so that
+        # presentation.sh has a writable working directory.
+        #
+        # The nix store is read-only, so protolens cannot create sidecar files
+        # beside googleapis.desc and beat 6 cannot write bobapp.desc or src/.
+        # --no-preserve=mode strips the 0444/0555 modes from the copy so that
+        # all files are writable.
+        #
+        # The copy is guarded by a sentinel file recording the nix store path
+        # that last populated the stage.  If it matches, skip the copy to avoid
+        # the overhead on every shell entry after the first.
+        #
+        # grpconf/stage/ is gitignored, so nothing here touches the repo index.
+        local stage="$PWD/grpconf/stage"
+        local sentinel="$stage/.demo-source"
+        local demo="${grpconfDemo}"
+        if [[ "$(cat "$sentinel" 2>/dev/null)" == "$demo" ]]; then
+          echo "[hook] demo: grpconf/stage/ up to date — skipping"
+          return
+        fi
+        echo "[hook] demo: populating grpconf/stage/ from grpconf-demo"
+        rm -rf "$stage"
+        cp -r --no-preserve=mode "$demo" "$stage"
+        # Record which nix derivation populated the stage so the guard above
+        # can detect when the derivation changes (e.g. after nix-build -A
+        # grpconf-demo following a bobapp source change).
+        echo "$demo" > "$sentinel"
+        echo "[hook] demo: grpconf/stage/ ready ($(du -sh "$stage" | cut -f1))"
+      }
+
       _hook_completions() {
         echo "[hook] completions: prototext, protolens, reproto, protoscan"
         # bash completion for prototext
@@ -420,6 +452,7 @@ components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
       _hook_codegen
       _hook_rust
       _hook_cargo
+      _hook_demo
       _hook_man
       _hook_completions
 

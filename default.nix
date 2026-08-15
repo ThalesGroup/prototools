@@ -100,7 +100,16 @@ let
         # grpconf/anomalies.pb is `#@` prototext text under a `.pb` name
         # (spec 0226), and `prototext-core/tests/anomaly_fixture.rs`
         # include_str! it, so the test cannot compile without it.
-        (fixtureFilter ./grpconf)
+        # grpconf/anomalies.script is run by `protolens/tests/batch_script.rs`.
+        # grpconf/beats/ and grpconf/fixtures/ are demo-only and not referenced
+        # by any Rust test — excluded so that editing a beat script or a demo
+        # fixture does not invalidate the workspace build cache.
+        (pkgs.lib.fileset.difference
+          (fixtureFilter ./grpconf)
+          (pkgs.lib.fileset.unions [
+            (pkgs.lib.fileset.maybeMissing ./grpconf/beats)
+            (pkgs.lib.fileset.maybeMissing ./grpconf/fixtures)
+          ]))
         # prototext/wkt/prebuilt/*.rkyv — the git-committed WKT scoring
         # graph. `prototext/build.rs` copies it under `--features
         # prebuilt-wkt`, which nix/rust.nix's bootstrapArgs now passes to
@@ -112,12 +121,12 @@ let
       (pkgs.lib.fileset.unions [
         (pkgs.lib.fileset.maybeMissing ./target)
         (pkgs.lib.fileset.maybeMissing ./prototext-graph/target)
-        # demo/ringer is an excluded Cargo project (spec 0241 S1/S2), but
+        # demo/bobapp is an excluded Cargo project (spec 0241 S1/S2), but
         # `[workspace] exclude` does not reach crane: commonCargoSources
         # admits any .rs/.toml it finds.  Without this subtraction every edit
-        # to ringer would change workspaceSrc's hash and rebuild the whole
+        # to bobapp would change workspaceSrc's hash and rebuild the whole
         # Rust world for a demo that ci does not even compile from here.
-        (pkgs.lib.fileset.maybeMissing ./demo/ringer)
+        (pkgs.lib.fileset.maybeMissing ./demo/bobapp)
       ]);
   };
 
@@ -427,9 +436,63 @@ let
     # material, not `ci` material, and it is deliberately kept out of
     # user-shell for that reason.
     inherit (python) googleapisDb;
+    inherit grpconfDemo;
     repoRoot    = toString ./.;
     rustcVersion = pkgs.rustc.unwrapped.version;
   };
+
+  # ---------------------------------------------------------------------------
+  # bobapp — the demo binary (separate Cargo workspace, spec 0241 S1).
+  # Built from demo/bobapp/default.nix; not wired into ci or full-tests.
+  # ---------------------------------------------------------------------------
+  bobapp = import ./demo/bobapp/default.nix {
+    inherit pkgs crane;
+    bobappDesc = python.bobappDesc;
+  };
+
+  # ---------------------------------------------------------------------------
+  # grpconf-demo — read-only stage for the gRPConf 2026 live demo.
+  #
+  # Contains everything the presenter needs except the files beat 6 builds
+  # live on stage (bobapp.desc, src/, src2/) and the files beat 11 writes
+  # (boblog.prototext, roundtrip.pb).  Those go into a writable working
+  # directory; see _hook_demo in nix/shells.nix.
+  #
+  # Layout mirrors grpconf/stage/ so that presentation.sh needs no changes:
+  #
+  #   $out/bin/bobapp          the bobapp binary
+  #   $out/bobshark            one captured request body (84 bytes)
+  #   $out/boblog              the log with four anomalies (20 198 bytes)
+  #   $out/googleapis.desc     full corpus: 7 771 files, 58 777 types
+  #   $out/googleapis/         sidecars: hopcroft.rkyv, index.rkyv, proto/
+  #   $out/beats/              beat scripts: infer, log-partial, log-full
+  #
+  # Build once:   nix-build -A grpconf-demo
+  # Populate stage: dev-shell's _hook_demo does  cp -r --no-preserve=mode
+  #                 result/ grpconf/stage/  so the stage is writable.
+  # ---------------------------------------------------------------------------
+  grpconfDemo = pkgs.runCommand "grpconf-demo" { } ''
+    set -euo pipefail
+    mkdir -p "$out/bin" "$out/beats"
+
+    # The bobapp binary.
+    cp ${bobapp}/bin/bobapp "$out/bin/bobapp"
+
+    # Committed fixtures: the pre-minted request capture and log.
+    cp ${./grpconf/fixtures/bobshark} "$out/bobshark"
+    cp ${./grpconf/fixtures/boblog}   "$out/boblog"
+
+    # The googleapis schema DB.  The descriptor and its sidecars must sit
+    # beside each other under the same stem so that protolens finds
+    # hopcroft.rkyv and index.rkyv without a warning.
+    cp ${python.googleapisDb}/googleapis.desc "$out/googleapis.desc"
+    cp -r ${python.googleapisDb}/googleapis   "$out/googleapis"
+
+    # Beat scripts.  Read-only in the stage is fine — they are never written.
+    cp ${./grpconf/beats/infer.script}       "$out/beats/infer.script"
+    cp ${./grpconf/beats/log-partial.script} "$out/beats/log-partial.script"
+    cp ${./grpconf/beats/log-full.script}    "$out/beats/log-full.script"
+  '';
 
   # ---------------------------------------------------------------------------
   # Convenience bundle: prototext + protolens + reproto + protoscan
@@ -506,7 +569,9 @@ in
   googleapis-tests     = python.googleapisTests;
   custom-db            = python.customDb;
   custom-tests         = python.customTests;
-  ringer-desc          = python.ringerDesc;
+  bobapp-desc          = python.bobappDesc;
+  bobapp               = bobapp;
+  grpconf-demo         = grpconfDemo;
   user-shell           = shells.user-shell;
   dev-shell            = shells.dev-shell;
   wkt-db               = wktDb;
