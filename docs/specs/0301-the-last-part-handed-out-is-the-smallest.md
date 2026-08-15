@@ -174,9 +174,12 @@ count as the controlled parameter instead of the outcome.
 
 Implemented in full on 2026-08-15, four gates clean, `export /` over
 googleapis byte-identical (5 278 322 lines). The code was correct and
-**was not committed**; the implementation is preserved as a patch beside
-this campaign's notes. `SPREAD = 1` reproduces today's partition exactly
-(1.391 s against pre-0300's 1.393 s), which validates the control arm.
+**was not committed**; `prototext-graph/examples/part_grade.rs` carries
+`quotas` and the dealing loop verbatim, with `SPREAD` as an argument
+instead of a constant, so the implementation is recoverable from the
+repository rather than from a patch someone has to still have.
+`SPREAD = 1` reproduces today's partition exactly (1.391 s against
+pre-0300's 1.393 s), which validates the control arm.
 
 **Real `-j 8` startup**, `taskset -c 0-7`, paired rounds against the
 `SPREAD = 1` control:
