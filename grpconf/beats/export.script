@@ -1,0 +1,60 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+# Beat 11 of grpconf/synopsis.md — 1:30, the finale.
+#
+# STATUS: merged into log-full.script (synopsis open question 3).
+#
+# Beat 10 and beat 11 share a session because the overrides set in beat 10
+# must still be in force for the export.  The last two steps of
+# log-full.script are the export and the round-trip narration.
+#
+# presentation.sh invokes log-full.script; beat 11's shell commands
+# (prototext encode + cmp) follow it as separate eval'd lines.
+#
+# If the sessions are ever split, move these steps here:
+#
+#   title: Byte-exact
+#
+#   steps:
+#     - text: |
+#         One question left.  We have read the payload, named its fields,
+#         and pointed at four things standard tooling does not show.
+#
+#         Did we change any of it?
+#
+#         Press Enter to write the document out as plain text.
+#       fold: all
+#       unfold: [/]
+#       node: /
+#       override: export $STAGE/boblog.prototext
+#
+#     - text: |
+#         The round trip is one command in the shell:
+#
+#             prototext encode boblog.prototext -o roundtrip.pb
+#             cmp boblog roundtrip.pb && echo identical
+#
+#         The leaked key survived.  It would not have survived
+#         protoc --decode.
+#
+#         :quit, and we close on the shell.
+#       fold: all
+#       unfold: [/]
+#       node: /
+
+title: Byte-exact (merged — see log-full.script)
+
+steps:
+  - text: |
+      This script is a placeholder.  The export beat is the final two
+      steps of log-full.script, which runs in the same session as
+      beat 10 so the overrides stay in force.
+
+      If you are seeing this, presentation.sh has been updated to invoke
+      this file separately.  Move the last two steps of log-full.script
+      here and restore the separate session invocation.
+    fold: all
+    unfold: [/]
+    node: /

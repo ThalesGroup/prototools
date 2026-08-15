@@ -1,0 +1,482 @@
+#!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2025 Frederic Ruget <fred@s3ns.io> (GitHub: @douzebis)
+# SPDX-FileCopyrightText: 2025 Thales Cloud Sécurisé
+#
+# SPDX-License-Identifier: MIT
+
+# Parse arguments: [--splash <file-or-name>] <commands_file>
+SPLASH_FILE=""
+SPLASH_NAME=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --splash) SPLASH_ARG="$2"; shift 2
+            if [[ -f "$SPLASH_ARG" ]]; then
+                SPLASH_FILE="$SPLASH_ARG"
+            else
+                SPLASH_NAME="$SPLASH_ARG"
+            fi
+            ;;
+        *)        break ;;
+    esac
+done
+
+CONFIG_FILE="$1"
+[[ -f "$CONFIG_FILE" ]] || { echo "Usage: $0 [--splash <file|name>] <commands_file>"; exit 1; }
+
+# Create a temporary directory
+trap '[[ -n "$TMPDIR" && -d "$TMPDIR" ]] && rm -rf "$TMPDIR"' EXIT
+TMPDIR=$(mktemp -d)
+
+# Load commands, handling backslash line continuations
+commands=()
+display_commands=()  # For multi-line display
+accumulated=""
+display_accumulated=""
+while IFS= read -r line || [[ -n "$line" ]]; do
+    # If line ends with backslash, accumulate it
+    if [[ "$line" =~ \\[[:space:]]*$ ]]; then
+        # Remove trailing backslash and whitespace for execution
+        accumulated="${accumulated}${line%\\} "
+        # Keep the line with backslash for display
+        display_accumulated="${display_accumulated}${line}"$'\n'
+    else
+        # No backslash at end - complete the command
+        commands+=("${accumulated}${line}")
+        if [[ -n "$display_accumulated" ]]; then
+            # This was a multi-line command, use display version
+            display_commands+=("${display_accumulated}${line}")
+        else
+            # Single line command
+            display_commands+=("${line}")
+        fi
+        accumulated=""
+        display_accumulated=""
+    fi
+done < "$CONFIG_FILE"
+
+# If file ended with a continuation line, add it
+if [[ -n "$accumulated" ]]; then
+    commands+=("$accumulated")
+    display_commands+=("$display_accumulated")
+fi
+
+index=0
+n=${#commands[@]}
+prev_status=0
+
+trap 'stty sane; kill -STOP $$' TSTP
+resume_after_fg=0
+trap 'resume_after_fg=1; echo; echo "[Resumed demo: hit ENTER to continue]"' CONT
+
+# === ANSI COLOR CODES (Readline-compliant) ===
+BOLD=$'\001\e[1m\002'
+BLUE=$'\001\e[94m\002'
+BBLUE=$'\001\e[1;94m\002'
+GRAY=$'\001\e[90m\002'
+LGRAY=$'\001\e[37m\002'
+BGREEN=$'\001\e[1;32m\002'
+LGREEN=$'\001\e[92m\002'
+DGREEN=$'\001\e[32m\002'
+RED=$'\001\e[31m\002'
+BRED=$'\001\e[1;91m\002'
+WHITE=$'\001\e[97m\002'
+YELLOW=$'\001\e[93m\002'
+BYELLOW=$'\001\e[1;93m\002'
+DYELLOW=$'\001\e[33m\002'
+RESET=$'\001\e[0m\002'
+
+# === PURE ANSI ESCAPES (For screen control) ===
+# NOTE: Removed \001/\002 wrappers for screen control
+MOVE_CURSOR_UP=$'\033[1A'     # Moves cursor up 1 line
+ERASE_LINE_TO_END=$'\033[K' # Erases from cursor to end of line
+
+# === CORE FUNCTIONS ===
+
+# Function to calculate the number of screen lines a string occupies.
+# $1: The string (command)
+# $2: The visible width of the prompt string
+calculate_lines() {
+    local str="$1"
+    local prompt_width="$2"
+
+    # Check if string contains actual newlines
+    if [[ "$str" == *$'\n'* ]]; then
+        # Count newlines + 1 (for the last line)
+        local count=$(echo -n "$str" | grep -c $'\n')
+        echo $((count + 1))
+    else
+        # Single line - calculate wrapping based on terminal width
+        local total_length="${#str}"
+        COLUMNS=${COLUMNS:-80} # Use environment variable or default
+
+        local first_line_width=$(( COLUMNS - prompt_width ))
+        local remaining_length=$(( total_length - first_line_width ))
+        local lines=1
+
+        if (( remaining_length > 0 )); then
+            # Integer division for number of remaining lines
+            lines=$(( lines + (remaining_length + COLUMNS - 1) / COLUMNS ))
+        fi
+
+        echo "$lines"
+    fi
+}
+
+# Fixed display width of the counter field "(X/N)" — always as wide as "(N/N)"
+# so the cursor-forward escape in prompt_static is constant across all indices.
+_COUNTER_WIDTH=0  # set dynamically in _update_prompt per current index
+
+# Rebuild prompt strings.
+#   prompt        — full prompt with real counter, used for direct display.
+#   prompt_static — prompt where the counter region is replaced by a
+#                   cursor-forward escape (readline-invisible); used for
+#                   read -e -p so readline's baked prompt skips over the
+#                   counter that we pre-print manually.
+#   prompt_bw / PROMPT_DISPLAY_WIDTH — plain-text width for line-wrap calc.
+_update_prompt() {
+    local cwd_display
+    local cwd="$PWD"
+    if [[ "$cwd" == "$HOME"* ]]; then
+        cwd_display="~${cwd#$HOME}"
+    else
+        cwd_display="$cwd"
+    fi
+    local prefix="${GRAY}[demo:$cwd_display ("
+    local suffix=")]\$ ${RESET}${LGRAY}"
+    local counter="$((index+1))/$n"
+    _COUNTER_WIDTH=${#counter}
+    prompt="${prefix}${counter}${suffix}"
+    # prompt_static: replace counter with cursor-forward of same visual width,
+    # then pad readline's width accounting by appending _COUNTER_WIDTH repetitions
+    # of \001\033[D\002$ (cursor-left zero-width to readline, $ counted as +1 width).
+    # This makes readline's prompt width match the terminal reality, so that
+    # beginning-of-line (Ctrl-A) computes screen-line boundaries correctly on
+    # multi-line buffers.
+    local fwd=$'\001\033['"${_COUNTER_WIDTH}C"$'\002'
+    local pad="" i
+    for (( i = 0; i < _COUNTER_WIDTH; i++ )); do
+        pad+=$'\001\033[D\002 '
+    done
+    prompt_static="${prefix}${fwd}${suffix}${pad}"
+    prompt_bw="[demo:$cwd_display (${counter})]$ "
+    PROMPT_DISPLAY_WIDTH="${#prompt_bw}"
+}
+
+# Pre-print the counter, then \r back to column 0 so readline starts fresh.
+# readline's prompt_static paints "[demo:cwd (" then cursor-forwards over the
+# counter we left here, then continues with ")]$ ".
+_preprint_counter() {
+    local cwd_display cwd="$PWD"
+    if [[ "$cwd" == "$HOME"* ]]; then
+        cwd_display="~${cwd#$HOME}"
+    else
+        cwd_display="$cwd"
+    fi
+    local raw_gray
+    raw_gray="${GRAY//$'\001'/}"; raw_gray="${raw_gray//$'\002'/}"
+    local counter="$((index+1))/$n"
+    # Print full prefix + counter to position counter at correct column, then \r.
+    printf '\r%s[demo:%s (%s\r' "$raw_gray" "$cwd_display" "$counter" >/dev/tty
+}
+
+# Update just the counter in place (called from navigation callbacks).
+# Moves to column 0, repaints the gray prefix + counter, then returns
+# cursor to start of line — readline redraws prompt_static on top, which
+# cursor-forwards over the counter we just painted.
+_redraw_prompt() {
+    _update_prompt
+    _preprint_counter
+}
+
+# Readline hooks for wrap-around Up/Down, preserving edits
+browse_up() {
+    # Save current edits (could be multi-line)
+    display_commands[$index]="$READLINE_LINE"
+    # Convert to single-line for execution
+    commands[$index]=$(echo "$READLINE_LINE" | tr -d '\n' | sed 's/\\  */ /g')
+    (( index-- ))
+    if (( index < 0 )); then
+        index=0
+        _redraw_prompt
+        return
+    fi
+    # Load the display version (multi-line format)
+    READLINE_LINE="${display_commands[$index]}"
+    READLINE_POINT=${#READLINE_LINE}
+    _redraw_prompt
+}
+
+browse_down() {
+    # Save current edits (could be multi-line)
+    display_commands[$index]="$READLINE_LINE"
+    # Convert to single-line for execution
+    commands[$index]=$(echo "$READLINE_LINE" | tr -d '\n' | sed 's/\\  */ /g')
+    (( index++ ))
+    if (( index >= n )); then
+        index=$((n-1))
+        _redraw_prompt
+        return
+    fi
+    # Load the display version (multi-line format)
+    READLINE_LINE="${display_commands[$index]}"
+    READLINE_POINT=${#READLINE_LINE}
+    _redraw_prompt
+}
+
+# === Line Editing Helpers ===
+
+duplicate_line() {
+    # Save current line
+    display_commands[$index]="$READLINE_LINE"
+    commands[$index]=$(echo "$READLINE_LINE" | tr -d '\n' | sed 's/\\  */ /g')
+    # Insert a duplicate below current index
+    commands=("${commands[@]:0:index+1}" "${commands[$index]}" "${commands[@]:index+1}")
+    display_commands=("${display_commands[@]:0:index+1}" "${display_commands[$index]}" "${display_commands[@]:index+1}")
+    ((index++))
+    n=${#commands[@]}
+}
+
+delete_line() {
+    # Remove current line from both arrays
+    commands=("${commands[@]:0:index}" "${commands[@]:index+1}")
+    display_commands=("${display_commands[@]:0:index}" "${display_commands[@]:index+1}")
+    (( index > 0 )) && ((index--))
+    n=${#commands[@]}
+    READLINE_LINE="${display_commands[$index]}"
+    READLINE_POINT=${#READLINE_LINE}
+}
+
+save_commands() {
+    # Save current line before saving file
+    display_commands[$index]="$READLINE_LINE"
+    # Overwrite the config file with display versions (to preserve multi-line format)
+    printf "%s\n" "${display_commands[@]}" > "$CONFIG_FILE"
+    echo -e "\n${BGREEN}[Saved to $CONFIG_FILE]${RESET}"
+}
+
+# NOTE: The pre_execute function is removed.
+
+# Bind arrows
+bind -x '"\e[A": browse_up' 2>/dev/null
+bind -x '"\e[B": browse_down' 2>/dev/null
+
+# ctrl-P / ctrl-N history navigation
+bind -x '"\C-p": browse_up' 2>/dev/null
+bind -x '"\C-n": browse_down' 2>/dev/null
+
+# F1–F3 are bound via a single bind -f call so readline builds the entire
+# \eO prefix keymap atomically.  Registering \eOP...\eOR with separate
+# incremental bind -x calls causes prefix-keymap corruption where later
+# entries overwrite earlier ones.
+#
+#   F1 \eOP — show help
+#   F2 \eOQ — duplicate line   (Ctrl-D = EOF/delete-char — don't shadow)
+#   F3 \eOR — delete line      (Ctrl-K = kill-line      — don't shadow)
+#
+# The inputrc maps each F-key to a private unused Ctrl sequence that is then
+# picked up by bind -x.  Ctrl-\ Ctrl-] Ctrl-^ are chosen: they have
+# no standard readline meaning and are not generated by normal keyboard input.
+#
+# Page Up / Page Down are bound directly via bind -x (CSI sequences \e[5~
+# and \e[6~ use the ~ terminator, not the \eO prefix, so they do not
+# suffer from the prefix-keymap corruption issue).
+
+# F1: show mini-help
+show_help() {
+    printf "\r\033[K" >/dev/tty
+    printf "%s  F1      show this help\n" "$YELLOW" >/dev/tty
+    printf "  ↑/↓     browse history  (also Ctrl-P / Ctrl-N)\n" >/dev/tty
+    printf "  PgUp/↓  fast browse (10 steps)\n" >/dev/tty
+    printf "  ENTER   run command\n" >/dev/tty
+    printf "  F2      duplicate current line\n" >/dev/tty
+    printf "  F3      delete current line\n" >/dev/tty
+    printf "  Ctrl-S  save history to file%s\n" "$RESET" >/dev/tty
+}
+
+# Page Up / Page Down: jump 5 steps
+fast_up() {
+    display_commands[$index]="$READLINE_LINE"
+    commands[$index]=$(echo "$READLINE_LINE" | tr -d '\n' | sed 's/\\  */ /g')
+    (( index -= 10 ))
+    if (( index < 0 )); then index=0; fi
+    READLINE_LINE="${display_commands[$index]}"
+    READLINE_POINT=${#READLINE_LINE}
+    _redraw_prompt
+}
+
+fast_down() {
+    display_commands[$index]="$READLINE_LINE"
+    commands[$index]=$(echo "$READLINE_LINE" | tr -d '\n' | sed 's/\\  */ /g')
+    (( index += 10 ))
+    if (( index >= n )); then index=$((n-1)); fi
+    READLINE_LINE="${display_commands[$index]}"
+    READLINE_POINT=${#READLINE_LINE}
+    _redraw_prompt
+}
+
+_INPUTRC=$(mktemp)
+cat > "$_INPUTRC" <<'INPUTRC'
+"\eOP":   "\034"
+"\eOQ":   "\035"
+"\eOR":   "\036"
+"\e[12~": "\035"
+"\e[13~": "\036"
+INPUTRC
+bind -f "$_INPUTRC" 2>/dev/null
+rm -f "$_INPUTRC"
+unset _INPUTRC
+bind -x '"\034": show_help'      2>/dev/null
+bind -x '"\035": duplicate_line' 2>/dev/null
+bind -x '"\036": delete_line'    2>/dev/null
+bind -x '"\e[5~": fast_up'       2>/dev/null
+bind -x '"\e[6~": fast_down'     2>/dev/null
+
+# Ctrl-S: save commands to file
+stty -ixon  # allow Ctrl-S (disable terminal XOFF)
+bind -x '"\C-s": save_commands' 2>/dev/null
+
+# --- Startup ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+clear
+if [[ -n "$SPLASH_NAME" ]]; then
+    "$SCRIPT_DIR/header" "$SPLASH_NAME"
+elif [[ -f "$SPLASH_FILE" ]]; then
+    cat "$SPLASH_FILE"
+fi
+printf "%s  F1  help%s\n\n" "$YELLOW" "$RESET"
+
+# --- Main loop ---
+while true; do
+
+    # 1. ASSEMBLE THE PROMPT
+    _update_prompt
+
+    # 2. Pre-print the counter at column 0; read -e -p will cursor-forward over it.
+    _preprint_counter
+
+    # 3. READ COMMAND (Execution pauses here until ENTER is hit)
+    # Pass the display version to readline (with actual newlines for multi-line commands)
+    read -e -i "${display_commands[$index]}" -p "$prompt_static" usercmd || break
+
+    # If we just resumed, skip execution
+    if (( resume_after_fg )); then
+        resume_after_fg=0
+        # Convert multi-line to single-line for execution
+        usercmd_exec=$(echo "$usercmd" | tr -d '\n' | sed 's/\\  */ /g')
+        commands[$index]="$usercmd_exec"
+        display_commands[$index]="$usercmd"
+        continue   # go to next iteration, prompt again
+    fi
+
+    # 3. POST-READ SCREEN MANIPULATION (Erasing and Re-coloring)
+
+    # a. Convert to single-line for execution
+    usercmd_exec=$(echo "$usercmd" | sed 's/\\  */ /g')
+
+    # b. Detect whether the user edited a multi-line block.
+    # Readline collapses multi-line display to a single line on return, so we
+    # cannot use usercmd directly.  Instead we squash the original display the
+    # same way the loader does (strip trailing \ and join) and compare with
+    # what readline returned.  If they match: no edit, keep original display.
+    # If they differ: user edited, adopt usercmd as the new (single-line) display.
+    if [[ "${display_commands[$index]}" == *$'\n'* ]]; then
+        # Squash original display: strip trailing '\' from each line, join directly
+        # (mirrors how readline collapses backslash-newline continuations)
+        squashed=$(printf '%s' "${display_commands[$index]}" | sed 's/\\$//' | tr -d '\n' | sed 's/[[:space:]]*$//')
+        if [[ "$usercmd" == "$squashed" ]]; then
+            display_cmd="${display_commands[$index]}"   # unedited: keep multi-line display
+        else
+            display_cmd="$usercmd"                      # edited: use single-line version
+            display_commands[$index]="$usercmd"
+        fi
+    else
+        display_cmd="$usercmd"
+        display_commands[$index]="$usercmd"
+    fi
+
+    # c. Store execution version
+    commands[$index]="$usercmd_exec"
+
+    # d. Calculate lines to erase based on what readline ACTUALLY DISPLAYED
+    # This is always display_commands[$index], not what it returned
+    lines_to_erase=$(calculate_lines "${display_commands[$index]}" "$PROMPT_DISPLAY_WIDTH")
+
+    # e. Erase the previous prompt line and the multi-line command input
+    # IMPORTANT: After ENTER on multi-line read, cursor stays on LAST line, not next line
+    # So for multi-line commands, we need to move up (lines - 1) times
+    if [[ "${display_commands[$index]}" == *$'\n'* ]]; then
+        # Multi-line: cursor is on last line of command
+        moves_up=$((lines_to_erase - 1))
+    else
+        # Single-line: cursor moved to next line
+        moves_up=$lines_to_erase
+    fi
+
+    i=1
+    while (( i <= moves_up )); do
+        # Move up to get to the beginning of the command input area
+        printf "%s" "$MOVE_CURSOR_UP" >/dev/tty
+        i=$((i + 1))
+    done
+    # We are now at the top of the command input area.
+
+    # Cut at potential comment tag '#'
+    car=${display_cmd%%#*}
+    # Now derive the comment part (if any)
+    if [[ $display_cmd == "$car"* ]]; then
+        cdr=${display_cmd#"$car"}
+    else
+        cdr=
+    fi
+
+    # Print the re-colored command (handling multi-line properly)
+    if [[ "$display_cmd" == *$'\n'* ]]; then
+        # Multi-line: print first line with prompt, then continuation lines
+        # Split into lines
+        IFS=$'\n' read -rd '' -a lines <<< "$display_cmd"
+
+        # Print first line with prompt
+        first_line="${lines[0]}"
+        first_car=${first_line%%#*}
+        if [[ $first_line == "$first_car"* ]]; then
+            first_cdr=${first_line#"$first_car"}
+        else
+            first_cdr=
+        fi
+        printf "\r%s%s%s%s%s%s\n" "$prompt" "${WHITE}${BOLD}" "$first_car" "${BBLUE}" "$first_cdr" "${RESET}" >/dev/tty
+
+        # Print remaining lines without prompt (just indentation)
+        for (( i=1; i<${#lines[@]}; i++ )); do
+            line="${lines[i]}"
+            line_car=${line%%#*}
+            if [[ $line == "$line_car"* ]]; then
+                line_cdr=${line#"$line_car"}
+            else
+                line_cdr=
+            fi
+            printf "%s%s%s%s%s\n" "${WHITE}${BOLD}" "$line_car" "${BBLUE}" "$line_cdr" "${RESET}" >/dev/tty
+        done
+    else
+        # Single line: use original simple printf
+        printf "\r%s%s%s%s%s%s\n" "$prompt" "${WHITE}${BOLD}" "$car" "${BBLUE}" "$cdr" "${RESET}" >/dev/tty
+    fi
+
+    # 4. EXECUTE THE COMMAND
+
+    eval "$usercmd_exec"
+    status=$?
+    if [[ -n "$car" ]]; then
+        # Query cursor column after output.
+        # If > 1, output ended mid-line: add a newline so the next prompt starts cleanly.
+        IFS='[;' read -s -d R -p $'\033[6n' _ _row col </dev/tty
+        [[ "$col" != "1" ]] && echo
+    fi
+    if [[ "$status" != 0 ]]; then
+        printf "%s[Error status: %s]%s\n" "$BRED" "$status" "$RESET"
+    fi
+
+    # Move to next command
+    ((index++))
+    (( index >= n )) && break
+done

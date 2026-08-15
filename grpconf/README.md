@@ -25,9 +25,11 @@ once, which is what the fixture exists for.
 
 `anomalies.script` sits beside the blob and is picked up automatically, so the
 session opens with a commentary pane at the top walking the sections below in
-order. Press <kbd>space</kbd> to hand it the arrow keys, then
-<kbd>→</kbd>/<kbd>←</kbd> to step; <kbd>space</kbd> again gives the
-keys back and you can explore from wherever the step left you. `--no-script`
+order. Press <kbd>space</kbd> to turn script navigation on, then
+<kbd>;</kbd>/<kbd>,</kbd> to step forward and back (<kbd>.</kbd>/<kbd>?</kbd>
+scroll the pane); <kbd>space</kbd> again turns it off and you can explore from
+wherever the step left you. The arrow keys are never the script's, so a stray
+one moves the caret and not the step. `--no-script`
 opens the blob without it. Specified in
 `docs/specs/0271-a-script-walks-the-reader-through-the-blob.md`.
 

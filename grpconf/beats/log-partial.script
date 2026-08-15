@@ -1,0 +1,109 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+# Beat 9 of grpconf/synopsis.md — 2:00, the log, half-read.
+#
+# Payload: grpconf/stage/boblog, 20 198 bytes.
+# Database: grpconf/stage/bobapp.desc — 41 files recovered from bobapp.
+#
+# Invocation:
+#   protolens --descriptor-set $BOBDESC -I $SRC \
+#       --script grpconf/beats/log-partial.script $BOBLOG
+#
+# The document opens with NO TYPE — the truncated tail disqualifies every
+# candidate (anomaly 4 is why beat 9 exists).  The heat cues take over.
+#
+# ENDS UNRESOLVED.  The Places payloads stay opaque bytes.  Do not resolve
+# them here.  The cliffhanger is the beat.
+#
+# node: search strings — see infer.script's header.  After the root is
+# overridden to bobapp.v1.Log, field names are: entry (field 1 repeated),
+# at/method/note/request/response inside each entry.  Before the override
+# the root is <raw / no type> and the fields are bare numbers.
+#
+# Re-pin:
+#   protolens --descriptor-set $BOBDESC -I $SRC \
+#       --script grpconf/beats/log-partial.script $BOBLOG script \
+#     | grep 'error:'
+
+title: The log, half-read
+
+steps:
+  - text: |
+      A different shape of document, and the first honest one.
+
+      The log opened with no type at all.  Beat 8's file was named in
+      50 ms; this one defeats the same machinery completely.  The cause
+      is anomaly 4 — the truncated tail makes every candidate walk off
+      the end of the file, and an incomplete walk is a veto.
+
+      The heat cues still have something to say.  Press space, then
+      -> to step.
+    fold: all
+    unfold: [/]
+    node: /
+
+  - text: |
+      The bracket beside this entry is a heat cue.
+
+      protolens cannot name the document, but it can look at any piece
+      of it and say: this shape is somebody's message.  It points at
+      this entry and names a type, from the bytes alone, with nothing
+      to go on.  Hover over the bracket, or press t to see the
+      breakdown.
+
+      Thirty-five points clear of the runner-up.
+    fold: all
+    unfold: [/]
+    node: "1 {"
+
+  - text: |
+      The command line below is prefilled.
+
+      This override names the ENVELOPE — field 1 repeated, the log's
+      own format, recovered from the same binary the descriptors came
+      from.  Press Enter to apply it.
+
+      One override, one keystroke, and the whole log opens.
+    fold: all
+    unfold: [/]
+    node: "1 {"
+    override: override /1 --as bobapp.v1.Entry
+
+  - text: |
+      The log has three entries.  Unfold the first with l.
+
+      Inside: at, method, note, request, response.  The Routes entry
+      opens in the clear — ComputeRoutesRequest at -16.  Thirty-nine
+      points of daylight, same as beat 8.
+    fold: all
+    unfold: [/]
+    node: entry
+
+  - text: |
+      The Places entries do not.
+
+      Their cue is lit but dim: the best thing this database can offer
+      is a type at -37.  That is the tool saying: there is a message in
+      here, and I do not have it.
+
+      Leave it hanging.  Do not resolve it here.
+    fold: all
+    unfold: [/1]
+    node: request
+
+  - text: |
+      One more thing before we leave: the last entry.
+
+      It does not render at all.  It comes back as one opaque run:
+
+          #@ TRUNCATED_BYTES; MISSING: 1024
+
+      The tool does not merely fail; it says how far short the file
+      falls.  The length prefix is what makes that number knowable.
+
+      :quit, and we reopen with a bigger dictionary.
+    fold: all
+    unfold: [/]
+    node: "TRUNCATED_BYTES"
