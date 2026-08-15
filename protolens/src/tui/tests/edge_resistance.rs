@@ -199,6 +199,129 @@ fn any_other_input_ends_the_gesture() {
     assert!(app.scroll_resistance.pushing(), "still against the wall");
 }
 
+/// An override pane with 30 candidates in a 5-row list, drawn once so
+/// that the statusline the wall's cue lands on is real.
+fn override_app() -> (App, Terminal<TestBackend>) {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.override_focus = true;
+    app.override_target = Some(0);
+    app.override_candidates = (0..30).map(|i| (format!("cand.Type{i}"), None)).collect();
+    let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    (app, terminal)
+}
+
+/// Spec 0286 S2, in the two side panes: their lists have ends worth
+/// stopping at too, and spec 0244 S7's over-pan past them is reached the
+/// same way — by leaning.
+#[test]
+fn a_side_panes_list_stops_at_its_own_last_row() {
+    let (mut app, _terminal) = override_app();
+    let natural_max = natural_top_bounds(app.override_candidates.len(), app.override_list_height).1;
+    assert!(natural_max > 0, "a list worth panning");
+
+    for _ in 0..30 {
+        app.override_pan_vertical(PAN_STEP, false);
+    }
+    assert_eq!(
+        app.override_scroll.top(&FLAT_ROWS),
+        natural_max,
+        "the wheel stops on the last candidate, not past it"
+    );
+    assert!(app.override_resistance.pushing(), "and is pushing on it");
+
+    // Held against it, it gives — into spec 0244's over-pan and no
+    // further.
+    app.override_resistance.backdate(EDGE_HOLD);
+    app.override_pan_vertical(PAN_STEP, false);
+    assert!(
+        app.override_scroll.top(&FLAT_ROWS) > natural_max,
+        "and the next one is through"
+    );
+}
+
+/// Spec 0286 S3+S6: a run is a repeat of the same push against the same
+/// wall, so the three panes' walls are three runs and not one. Panning
+/// the main pane is not a pan of the override pane's list, so it ends
+/// that pane's gesture and puts its cue out rather than adding to it.
+///
+/// Driven through `dispatch_event`, because `settle` is what enforces
+/// this and only `dispatch_event` calls it.
+#[test]
+fn each_panes_wall_is_pushed_on_its_own() {
+    let (mut app, _terminal) = override_app();
+    let key = |key| AppEvent::Term(Event::Key(key));
+    // Ctrl-Down pans this pane's own list; Alt-Down reaches past it to
+    // the main pane (spec 0185 S5).
+    let mine = KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL);
+    let theirs = KeyEvent::new(KeyCode::Down, KeyModifiers::ALT);
+
+    for _ in 0..8 {
+        dispatch_event(&mut app, &key(mine));
+    }
+    let stopped = app.override_scroll.top(&FLAT_ROWS);
+    assert!(app.override_resistance.pushing(), "pushing this wall");
+    assert!(
+        !app.scroll_resistance.pushing(),
+        "and not the main pane's, which was never touched"
+    );
+
+    dispatch_event(&mut app, &key(theirs));
+    assert!(
+        !app.override_resistance.pushing(),
+        "another pane's pan is not this pane's gesture"
+    );
+
+    // So what follows is a first push and not a fourth, however old the
+    // pressure it interrupted was.
+    dispatch_event(&mut app, &key(mine));
+    app.override_resistance.backdate(EDGE_HOLD);
+    dispatch_event(&mut app, &key(mine));
+    assert_eq!(
+        app.override_scroll.top(&FLAT_ROWS),
+        stopped,
+        "two pushes are not a gesture"
+    );
+}
+
+/// Spec 0286 S6 in the override pane: its own statusline carries its own
+/// viewport label, and the accent reports its own wall.
+///
+/// A *named* color, as the main pane's own case is: the CI sandbox has
+/// no `COLORTERM`.
+#[test]
+fn a_side_panes_viewport_label_is_accented_while_its_wall_is_pushed() {
+    let (mut app, mut terminal) = override_app();
+    let row = |app: &App, terminal: &Terminal<TestBackend>| -> Vec<(String, Style)> {
+        let buffer = terminal.backend().buffer();
+        let y = app.side_area.y + app.side_area.height;
+        (app.side_area.x..app.side_area.x + app.side_area.width)
+            .map(|x| (buffer[(x, y)].symbol().to_string(), buffer[(x, y)].style()))
+            .collect()
+    };
+    let accented = |cells: &[(String, Style)]| -> String {
+        cells
+            .iter()
+            .filter(|(_, style)| style.fg == Some(theme::edge_resistance_color()))
+            .map(|(symbol, _)| symbol.as_str())
+            .collect()
+    };
+
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert_eq!(accented(&row(&app, &terminal)), "", "nothing is pushing");
+
+    for _ in 0..30 {
+        app.override_pan_vertical(PAN_STEP, false);
+    }
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert_eq!(
+        accented(&row(&app, &terminal)),
+        "Bot",
+        "the label alone, and the one at the end of this pane's own row"
+    );
+}
+
 /// Spec 0286 test plan 7 / S7: the push that lights the cue changes the
 /// screen and so owes a frame; the ones behind it do not, which is what
 /// keeps a held wheel at the bottom of a document as cheap as spec 0245

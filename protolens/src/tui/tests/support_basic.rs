@@ -242,8 +242,45 @@ pub(super) fn wide_sibling_scalars_app(n: usize) -> App {
     app_named(decoded, DescriptorContext::empty_for_test(), "test.pb")
 }
 
-/// Pans the main pane until it will not move again, leaning on spec
-/// 0286's wall as often as it stands back up.
+/// One of the three panes [`pan_to_the_bound`] can lean on. Each names
+/// a viewport, the `PAN_STEP` pan that drives it and the spec 0286 wall
+/// in front of it — which is all that differs between them.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Pannable {
+    Main,
+    Override,
+    Manage,
+}
+
+impl Pannable {
+    fn top(self, app: &App) -> isize {
+        match self {
+            Self::Main => app.scroll_top(),
+            Self::Override => app.override_scroll.top(&FLAT_ROWS),
+            Self::Manage => app.manage_scroll.top(&FLAT_ROWS),
+        }
+    }
+
+    fn pan(self, app: &mut App, down: bool) {
+        match self {
+            Self::Main if down => app.pan_vertical_down(),
+            Self::Main => app.pan_vertical_up(),
+            Self::Override => app.override_pan_vertical(PAN_STEP, !down),
+            Self::Manage => app.manage_pan_vertical(PAN_STEP, !down),
+        }
+    }
+
+    fn backdate(self, app: &mut App) {
+        match self {
+            Self::Main => app.scroll_resistance.backdate(EDGE_HOLD),
+            Self::Override => app.override_resistance.backdate(EDGE_HOLD),
+            Self::Manage => app.manage_resistance.backdate(EDGE_HOLD),
+        }
+    }
+}
+
+/// Pans `pane` until it will not move again, leaning on spec 0286's wall
+/// as often as it stands back up.
 ///
 /// Spec 0244's over-pan lies *past* that wall, so a test about the
 /// over-pan bounds has to lean on it rather than expect to arrive in one
@@ -251,16 +288,12 @@ pub(super) fn wide_sibling_scalars_app(n: usize) -> App {
 /// through, which is what keeps this instant. Terminates: once outside a
 /// natural bound a pan is free again and counts no push, so a run of
 /// refusals there is a run of real refusals.
-pub(super) fn pan_to_the_bound(app: &mut App, down: bool) {
+pub(super) fn pan_to_the_bound(app: &mut App, pane: Pannable, down: bool) {
     let mut refused = 0;
     while refused <= EDGE_PUSHES {
-        let before = app.scroll_top();
-        if down {
-            app.pan_vertical_down();
-        } else {
-            app.pan_vertical_up();
-        }
-        if app.scroll_top() != before {
+        let before = pane.top(app);
+        pane.pan(app, down);
+        if pane.top(app) != before {
             refused = 0;
             continue;
         }
@@ -268,6 +301,6 @@ pub(super) fn pan_to_the_bound(app: &mut App, down: bool) {
         // Refused by either the wall — which holding against it gets
         // through — or spec 0244's own bound, where nothing is pushing
         // and this is a no-op.
-        app.scroll_resistance.backdate(EDGE_HOLD);
+        pane.backdate(app);
     }
 }

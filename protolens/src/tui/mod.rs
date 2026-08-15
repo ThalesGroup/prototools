@@ -751,6 +751,49 @@ fn natural_top_bounds(content_rows: usize, pane_height: usize) -> (isize, isize)
     (0, content_rows.saturating_sub(pane_height) as isize)
 }
 
+/// The vertical pan the two side panes share: `override_pan_vertical`
+/// and `manage_pan_vertical` differ only in which viewport, which wall
+/// and which row count they name.
+///
+/// Simpler than the main pane's `pan_vertical` in one respect that is
+/// the whole of the difference: a side pane's rows are one terminal row
+/// each, so `step` is already a count of terminal rows and `(step, up)`
+/// is already spec 0286's gesture. The main pane has to translate both
+/// through `RowHeights`, which is why it does not come through here.
+///
+/// A free function rather than a method because it takes two of `App`'s
+/// fields mutably at once, and returns rather than assigns
+/// `event_changed_nothing` for the same reason.
+///
+/// Returns whether the pan left the screen as it was: it moved nothing
+/// (spec 0245 S2) *and* did not change the wall's cue (spec 0286 S7).
+fn side_pan_vertical(
+    scroll: &mut PaneScroll,
+    wall: &mut EdgeResistance,
+    total_rows: usize,
+    pane_height: usize,
+    step: usize,
+    up: bool,
+) -> bool {
+    let top = scroll.top(&FLAT_ROWS);
+    let moved = if up {
+        top - step as isize
+    } else {
+        top + step as isize
+    };
+    let was_pushing = wall.pushing();
+    let landed = wall.land(
+        (step, up),
+        top,
+        moved,
+        natural_top_bounds(total_rows, pane_height),
+        pan_top_bounds(total_rows, pane_height),
+        Instant::now(),
+    );
+    scroll.set_top(landed, &FLAT_ROWS);
+    landed == top && was_pushing == wall.pushing()
+}
+
 /// Shared pan-by-`step` arithmetic behind the command bar's Shift+wheel/
 /// native ScrollLeft/ScrollRight handling in `handle_mouse` — moves
 /// `*offset` by `step`, saturating at `0`. `step` is `WHEEL_PAN_STEP`
@@ -1514,8 +1557,10 @@ pub struct App {
     /// lines, which in wire mode are two terminal rows thick.
     scroll: PaneScroll,
     /// Spec 0286: the wall at either end of the content that `scroll`
-    /// must be pushed through to over-pan. One per pannable pane; the
-    /// side panes have none yet (0286 N3).
+    /// must be pushed through to over-pan. One per pannable pane —
+    /// `override_resistance` and `manage_resistance` are the other two,
+    /// and each is settled by every input event whichever pane it was
+    /// aimed at.
     scroll_resistance: EdgeResistance,
     /// Spec 0259 S1: `scroll`, as of the last frame, said in nodes
     /// instead of in row numbers — so that a splice, which renumbers
@@ -1647,6 +1692,12 @@ pub struct App {
     /// override pane's candidate list. Its rows are one terminal row
     /// tall, so `skip` is only ever `0` or negative (spec 0244 S3).
     override_scroll: PaneScroll,
+    /// Spec 0286: `scroll_resistance`'s counterpart for
+    /// `override_scroll`. Its own, and not the main pane's: a run is a
+    /// repeat of the same push against the same end of the same
+    /// content, and the reader can pan one pane while the other sits at
+    /// its bound.
+    override_resistance: EdgeResistance,
     /// `override_highlight`'s value as of the last render pass that
     /// applied `clamp_scroll_to_visible` to `override_scroll` (mirrors
     /// `last_cursor_row`) — reset to `None` everywhere `override_scroll`
@@ -1802,6 +1853,8 @@ pub struct App {
     /// Vertical viewport (in rows) for the management pane's listing.
     /// One terminal row per row, as `override_scroll`.
     manage_scroll: PaneScroll,
+    /// Spec 0286: `scroll_resistance`'s counterpart for `manage_scroll`.
+    manage_resistance: EdgeResistance,
     /// `manage_highlighted_row()`'s value as of the last render pass that
     /// applied `clamp_scroll_to_visible` to `manage_scroll` (mirrors
     /// `last_cursor_row`) — reset to `None` everywhere `manage_scroll`
@@ -2217,6 +2270,7 @@ impl App {
             override_candidates: Vec::new(),
             override_highlight: 0,
             override_scroll: PaneScroll::default(),
+            override_resistance: EdgeResistance::default(),
             last_override_highlight: None,
             last_override_search: None,
             term_width: 0,
@@ -2250,6 +2304,7 @@ impl App {
             manage_focus: false,
             manage_highlight: 0,
             manage_scroll: PaneScroll::default(),
+            manage_resistance: EdgeResistance::default(),
             last_manage_highlight: None,
             last_manage_click: None,
             last_manage_row_click: None,

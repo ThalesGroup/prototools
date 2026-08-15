@@ -289,3 +289,34 @@ nonetheless, and found by reading rather than by the report.
 
 `EdgeResistance` is five fields and no allocation; the per-pan cost is a
 comparison against a bound and, at a wall, one `Instant::now()`.
+
+## 2026-08-15 amendment — N3 is done, and cost what S8 said it would
+
+The override and manage panes have their own walls:
+`App::override_resistance` and `App::manage_resistance` beside
+`scroll_resistance`. No change to the mechanism, and none to any
+constant.
+
+- The two panes' pans were already the same eleven lines twice over, so
+  the wall went in once: `side_pan_vertical(scroll, wall, total_rows,
+  pane_height, step, up) -> bool` in `tui/mod.rs`, beside the two bound
+  functions it calls. It returns S7's verdict rather than assigning
+  `event_changed_nothing`, and is a free function rather than a method,
+  because it holds two of `App`'s fields mutably at once.
+- A side pane's rows are one terminal row each, so `step` is already a
+  count of terminal rows and `(step, up)` is already the gesture. That
+  translation through `RowHeights` is the only reason the main pane's
+  `pan_vertical` does not come through the same door.
+- Each pane's statusline already carried its own `viewport_label`, so
+  S6's cue is `statusline_line` in two more places with that pane's own
+  `pushing()`.
+- `settle_edge_resistance` settles **all three** walls, with `|` and not
+  `||`: being asked is what ends a gesture, so no wall may be skipped.
+  A pan aimed at one pane is correctly something other than a pan as far
+  as the other two are concerned — which is what
+  `each_panes_wall_is_pushed_on_its_own` asserts.
+
+Three of spec 0244's own side-pane tests had to be taught to lean, as
+the main pane's were in the first cut. `tests/support_basic.rs`'s
+`pan_to_the_bound` took a `Pannable` parameter (`Main`/`Override`/
+`Manage`) rather than growing two copies.

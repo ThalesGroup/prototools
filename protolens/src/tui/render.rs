@@ -2144,18 +2144,29 @@ impl App {
 
         // Spec 0193 S4: drawn only now, since the viewport label needs
         // the scroll offset this pane's own clamp above just settled.
+        let viewport = viewport_label(
+            self.override_scroll.top(&FLAT_ROWS),
+            list_height,
+            total_rows,
+        );
         let right = format!(
             "L{}/{}  {}",
             self.override_highlight + 1,
             total_rows,
-            viewport_label(
-                self.override_scroll.top(&FLAT_ROWS),
-                list_height,
-                total_rows
-            ),
+            viewport
         );
         let text = statusline_text(&left, Some(&right), split[1].width as usize);
-        frame.render_widget(Paragraph::new(Line::styled(text, style)), split[1]);
+        frame.render_widget(
+            // Spec 0286 S6: the label wears the accent while this pane's
+            // own end of its own list is being pushed against.
+            Paragraph::new(statusline_line(
+                text,
+                Some(&viewport),
+                style,
+                self.override_resistance.pushing(),
+            )),
+            split[1],
+        );
 
         // Warm the wrapper-descriptor registration for the whole
         // currently-visible window ahead of time, so arrowing through

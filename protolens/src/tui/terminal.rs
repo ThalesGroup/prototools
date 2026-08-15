@@ -499,8 +499,16 @@ where
 /// change on screen, so it takes back spec 0245 S2's "nothing happened"
 /// verdict — which the handler above reached without knowing this was
 /// coming.
+/// Every pane's wall, and not just the focused one's: focus can change
+/// during the very event being settled, and a pan aimed at one pane is
+/// something other than a pan as far as the other two are concerned.
+/// `|` rather than `||` — being asked is what ends a gesture, so no wall
+/// may be skipped.
 fn settle_edge_resistance(app: &mut App) {
-    if app.scroll_resistance.settle() {
+    let put_a_cue_out = app.scroll_resistance.settle()
+        | app.override_resistance.settle()
+        | app.manage_resistance.settle();
+    if put_a_cue_out {
         app.event_changed_nothing = false;
     }
 }

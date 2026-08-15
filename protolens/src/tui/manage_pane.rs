@@ -122,20 +122,20 @@ impl App {
     /// Vertical pan for the management pane (Ctrl-Up/Ctrl-Down at `step
     /// == PAN_STEP`, plain mouse wheel at `step == WHEEL_PAN_STEP`):
     /// scrolls the listing without moving the highlight, bounded only by
-    /// the content itself — and, per spec 0244 S7, past either end of it.
+    /// the content itself — and, per spec 0244 S7, past either end of it,
+    /// once spec 0286's wall has been pushed through.
     pub(super) fn manage_pan_vertical(&mut self, step: usize, up: bool) {
-        let (min_top, max_top) =
-            pan_top_bounds(self.manage_display_rows().len(), self.manage_list_height);
-        let top = self.manage_scroll.top(&FLAT_ROWS);
-        let moved = if up {
-            top - step as isize
-        } else {
-            top + step as isize
-        };
-        let landed = moved.clamp(min_top, max_top);
-        // Spec 0245 S2: a pan that hit its bound asks for no frame.
-        self.event_changed_nothing = landed == top;
-        self.manage_scroll.set_top(landed, &FLAT_ROWS);
+        // Counted before the pan, because `manage_display_rows` borrows
+        // `self` whole and `side_pan_vertical` holds two of its fields.
+        let total = self.manage_display_rows().len();
+        self.event_changed_nothing = side_pan_vertical(
+            &mut self.manage_scroll,
+            &mut self.manage_resistance,
+            total,
+            self.manage_list_height,
+            step,
+            up,
+        );
     }
 
     /// Horizontal pan for the management pane (Ctrl-Left/Ctrl-Right,
@@ -829,14 +829,19 @@ impl App {
             .unwrap_or_default();
         let left = format!("{origin_path} - type overrides");
         // Spec 0193 S4.
-        let right = format!(
-            "L{}/{}  {}",
-            highlighted_row + 1,
-            total_rows,
-            viewport_label(self.manage_scroll.top(&FLAT_ROWS), list_height, total_rows),
-        );
+        let viewport = viewport_label(self.manage_scroll.top(&FLAT_ROWS), list_height, total_rows);
+        let right = format!("L{}/{}  {}", highlighted_row + 1, total_rows, viewport);
         let text = statusline_text(&left, Some(&right), split[1].width as usize);
-        frame.render_widget(Paragraph::new(Line::styled(text, style)), split[1]);
+        frame.render_widget(
+            // Spec 0286 S6.
+            Paragraph::new(statusline_line(
+                text,
+                Some(&viewport),
+                style,
+                self.manage_resistance.pushing(),
+            )),
+            split[1],
+        );
 
         // Spec 0244 S9: blank rows above the first entry when over-panned.
         let mut lines: Vec<Line> = vec![Line::default(); blank_rows];

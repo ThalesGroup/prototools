@@ -203,7 +203,7 @@ fn ctrl_up_down_pan_the_main_pane_without_moving_the_cursor() {
         (15 + PAN_STEP as isize).min(natural_max),
         "must scroll by PAN_STEP, clamped at the content's own last line"
     );
-    pan_to_the_bound(&mut app, true);
+    pan_to_the_bound(&mut app, Pannable::Main, true);
     assert_eq!(
         app.scroll_top(),
         max_top,
@@ -215,7 +215,7 @@ fn ctrl_up_down_pan_the_main_pane_without_moving_the_cursor() {
     assert_eq!(app.scroll_top(), max_top - PAN_STEP as isize);
 
     app.set_scroll_top(0);
-    pan_to_the_bound(&mut app, false);
+    pan_to_the_bound(&mut app, Pannable::Main, false);
     assert_eq!(
         app.scroll_top(),
         min_top,
@@ -240,7 +240,7 @@ fn pan_up_may_leave_blank_rows_above_the_first_line() {
 
     // Spec 0286: the first line is a wall now, so this pushes through it.
     // The blank rows past it are still there — they cost a shove.
-    pan_to_the_bound(&mut app, false);
+    pan_to_the_bound(&mut app, Pannable::Main, false);
     assert!(
         app.scroll_top() < 0,
         "pushing on past the top must leave the document's first line, \

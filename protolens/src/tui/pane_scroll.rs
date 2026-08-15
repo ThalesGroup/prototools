@@ -206,9 +206,10 @@ pub(super) const EDGE_PUSHES: u8 = 3;
 /// representation of a fact the position already carries is a second
 /// thing to get wrong.
 ///
-/// One of these per pannable pane. Only the main pane has one today
-/// (spec 0286 N3); the side panes want the same wall and need a field
-/// and a call site each, not a redesign.
+/// One of these per pannable pane, and all three exist: the main pane's
+/// `scroll_resistance`, and the two side panes' `override_resistance`
+/// and `manage_resistance`, which spec 0286 N3 left for afterwards and
+/// which cost the field and the call site each that it predicted.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct EdgeResistance {
     /// Pans refused at this end since the run began, for
