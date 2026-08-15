@@ -2223,6 +2223,57 @@ fn a_partition_is_balanced_by_group_count_not_root_count() {
     }
 }
 
+/// Spec 0300 S1/S2: groups are ordered by a representative FQDN — the
+/// lexicographically smallest among the roots sharing that state — and the
+/// sorted list is cut into contiguous blocks.
+///
+/// Contiguity is the whole mechanism: a protobuf FQDN encodes its package
+/// hierarchy, so name order puts structurally related states side by side,
+/// and only a contiguous cut keeps them in one part where their shared
+/// closure is walked once rather than once per part. Asserting the
+/// concatenation reproduces the sorted list checks both halves at once —
+/// that the order is by name, and that no part reaches outside its block.
+#[test]
+fn a_partition_cuts_the_name_order_into_contiguous_blocks() {
+    let g = build_lopsided_root_graph(40, 40);
+    let rep_of = |part: &[u32]| -> Vec<String> {
+        let mut by_state: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
+        for &r in part {
+            let root = &g.roots[r as usize];
+            let name = root.fqdn.as_str();
+            by_state
+                .entry(root.state_id.to_native())
+                .and_modify(|held| {
+                    if name < held.as_str() {
+                        *held = name.to_owned();
+                    }
+                })
+                .or_insert_with(|| name.to_owned());
+        }
+        by_state.into_values().collect()
+    };
+
+    let all_sorted = {
+        let mut reps = rep_of(&(0..g.roots.len() as u32).collect::<Vec<_>>());
+        reps.sort_unstable();
+        reps
+    };
+
+    for n in 2..=8 {
+        let parts = walk::partition_roots(&g, n);
+        let mut concatenated: Vec<String> = Vec::new();
+        for part in &parts {
+            let mut reps = rep_of(part);
+            reps.sort_unstable();
+            concatenated.extend(reps);
+        }
+        assert_eq!(
+            concatenated, all_sorted,
+            "n={n}: parts are not contiguous blocks of the name order"
+        );
+    }
+}
+
 /// Spec 0217 G2: sharding is a scheduling change, never a scoring change.
 /// Every partition of the roots, scored subset by subset and reassembled,
 /// must reproduce `score_all` counter for counter.
