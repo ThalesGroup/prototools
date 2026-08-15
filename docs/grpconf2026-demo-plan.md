@@ -12,7 +12,10 @@ Framing and design decisions for the 20-minute talk advertised in
 detailed script can be written against it without relitigating the
 choices.
 
-Status: framing agreed, detailed synopsis not yet written.
+Status: framing agreed; synopsis written, then **re-framed**. Read
+"Revision — the Bob and Alice frame" at the end before trusting the
+"The artifacts" and "The beats, with budget" sections above, both of
+which are superseded.
 
 
 The constraints
@@ -298,3 +301,83 @@ Open items
 - Specify protolens script mode against the four requirements above.
 - Time every beat on the real hardware once the synopsis exists;
   `demo-timing.md` is the precedent for that format.
+
+
+Revision — the Bob and Alice frame
+----------------------------------
+
+Recorded 2026-08-14. `grpconf/synopsis.md` draft 2 re-frames the demo.
+Everything in "Decisions" and "The prompter" above still holds. Two
+sections above do not, and are superseded here rather than edited in
+place, so the reasoning that produced them stays readable.
+
+**The story has people in it now.** Bob downloads an executable off
+the net, plays with it, and sends it to Alice with a log it wrote and
+a capture he took. This is not decoration. It supplies a *motive* for
+each beat — Alice is answering Bob's question, not touring a feature
+list — and it gives the finale a recipient, which "extract, re-encode,
+diff" never had.
+
+**Two artifacts became three.** "The artifacts" above is superseded:
+
+| | Was | Is |
+|---|---|---|
+| the executable | `ordersvc`, a fictional order service | `bobapp`, a real client of the Google Routes API |
+| the payload | `capture.pb` | `bobshark`, one request body |
+| — | — | `boblog`, the log bobapp wrote |
+
+Splitting the payload in two is what buys the second half. bobshark is
+*one message*, so inference has a clean single-type target and the
+wrong-guess beat has somewhere uncluttered to happen. boblog is a
+*container*, so the demo can show a document that is **partly**
+readable — which is the honest steady state of this kind of work, and
+the only thing that motivates escalating to the full corpus.
+
+**The escalation is the new spine.** There are now two schema
+databases, and moving between them is a beat rather than a setup
+detail: `bobapp.desc` (39 files, built on stage out of the binary)
+reads the envelope and some entries; the pre-built `merged.desc`
+(58 777 types) reads the rest. In between, the unresolved payloads sit
+there wearing heat cues — protolens saying *there is a message here
+and I cannot name it*. That cliffhanger did not exist before and it is
+the strongest thing in the revision.
+
+**The anomalies stopped being curiosities.** In draft 1 they were
+fixture content the demo detoured to admire. Here bobapp is a program
+of unknown provenance, so a non-canonical encoder is in character and
+the anomalies are *the finding* — the reason Alice was called. One
+consequence worth recording: anomaly 1's smuggled value is now **Bob's
+API key**, logged by his own downloaded app, replacing draft 1's
+"somebody's exfiltration channel". The exfiltration framing invited a
+threat model the demo never substantiated. A utility that carelessly
+logs your credential is more common, more checkable, and lands harder.
+
+**The editor beat's justification changed.** Above, it exists so the
+nested `v` launch is free and so the loop binary → descriptors →
+source closes on stage. Both still true, but the *argument* is now
+better: in beat 10 Alice reads a recovered `.proto` to decide whether
+a candidate type really fits a subnode. Judging relevance is not
+something a score can do for you, and what you want in front of you
+while you do it is the schema, as source, in your own editor. The
+setup stays early; the payoff moves late.
+
+**The beat list is superseded** by `grpconf/synopsis.md` draft 2:
+twelve beats, 18:40 against 20:00. `protoc --decode` failing (beat 2)
+and the wrong-guess override (beat 8) were both proposed for deletion
+during the re-frame and were both kept — the first because the
+abstract's title is *Beyond `protoc --decode`*, the second because
+this document called it "the highest-value 45 seconds available" and
+nothing about the new frame makes that less true. It now shares the
+demo with a *second* override in beat 10 that makes a different claim.
+
+**Open items settled by the revision:** the executable is
+`demo/ringer/` renamed to bobapp — it already makes a real live gRPC
+call and already embeds its descriptors; `protoscan` was verified to
+find all 39 of them in the Rust binary, which retired the question of
+rewriting it in Go. Script mode was specified and implemented as spec
+0271. The remaining build work is in `grpconf/artifacts.md`.
+
+**Open item created by the revision:** beat 8 asserts that
+`google.maps.routes.v1` outranks `google.maps.routing.v2` on
+bobshark's bytes. Both types are in the corpus; the collision itself
+is unmeasured, and it is now the demo's largest single risk.

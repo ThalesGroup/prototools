@@ -7,7 +7,7 @@ SPDX-License-Identifier: MIT
 # 0241 — a real call leaves bytes worth opening
 
 Status: draft
-App: ringer
+App: bobapp
 Refs: docs/specs/0226-a-fixture-shows-every-anomaly.md (the demo blob this
         one complements), docs/specs/0228-the-well-known-types-are-the-default-descriptor-set.md
         (why the build variable is not `PROTOTEXT_DESCRIPTOR_SET`),
@@ -51,28 +51,28 @@ both would blur them.
 
 ## Goals
 
-- **G1.** `ringer` makes a real unary gRPC call to a live Google API over
+- **G1.** `bobapp` makes a real unary gRPC call to a live Google API over
   TLS, authenticated by an API key, and exits with the server's status.
 - **G2.** Every googleapis message it builds or reads is handled
   **reflectively**, from descriptors. No `tonic-build`, no generated Rust
   type for any googleapis message.
 - **G3.** The descriptor set is embedded in the executable, and holds
-  **only what ringer actually calls** — the transitive closure of one
+  **only what bobapp actually calls** — the transitive closure of one
   service file, not all of googleapis. That is what a real application
   ships, and it keeps the binary and the pool honest.
-- **G3b.** `ringer --dump-descriptor <path>` writes that embedded set back
+- **G3b.** `bobapp --dump-descriptor <path>` writes that embedded set back
   out, so `reproto --schema-db-out` can build a scoring DB from it at demo
   time. The schema the audience inspects with is then provably the schema
   the application was built against — extracted from the binary in front
   of them rather than prepared earlier.
-- **G4.** The exact bytes ringer put on the wire are written to a file
+- **G4.** The exact bytes bobapp put on the wire are written to a file
   that `protolens` opens **without `--type`**, so the inference sweep
   names the message.
-- **G5.** ringer's response is logged the same way. Same codec, opposite
+- **G5.** bobapp's response is logged the same way. Same codec, opposite
   trait; and `ComputeRoutesResponse` is the larger and more interesting
   of the two messages, so the demo gets its best artifact for one extra
   `impl`.
-- **G6.** Adding ringer does not change what the rest of the workspace
+- **G6.** Adding bobapp does not change what the rest of the workspace
   compiles, and does not add a single derivation to `nix-build -A ci`.
 
 ## Non-goals
@@ -83,7 +83,7 @@ both would blur them.
   variable is the shortest credible path to a live response.
 - **N3.** A general-purpose `grpcurl`. The method is fixed and the request
   is built from a handful of flags. Arbitrary request authoring would
-  make ringer a tool, and a tool needs a spec of its own.
+  make bobapp a tool, and a tool needs a spec of its own.
 - **N4.** Any test that touches the network. A demo whose test suite needs
   a credential and a route to the internet is a demo that is broken half
   the time. Everything under test stops at the encoder.
@@ -98,52 +98,52 @@ both would blur them.
 
 ### Where it lives (G6)
 
-- **S1.** `demo/ringer/` is its own Cargo project with its own
+- **S1.** `demo/bobapp/` is its own Cargo project with its own
   `Cargo.lock`, named in the root `Cargo.toml`'s `[workspace] exclude`.
 
   tonic, hyper, rustls and tokio appear nowhere in the workspace
-  dependency graph today. As a workspace member, ringer would pull all
+  dependency graph today. As a workspace member, bobapp would pull all
   four into `depsCache` and into every `--workspace` derivation, because
   cargo unifies features across the whole workspace — the trap spec 0239
   hit from a single leaf-crate dependency. Exclusion keeps
   `nix-build -A ci` byte-identical to what it builds today.
 
-- **S2.** `workspaceSrc` subtracts `demo/ringer` by `lib.fileset.difference`.
+- **S2.** `workspaceSrc` subtracts `demo/bobapp` by `lib.fileset.difference`.
   `crane.fileset.commonCargoSources ./.` admits any `.rs`/`.toml` it finds,
   `[workspace] exclude` notwithstanding, so without the subtraction every
-  edit to ringer would change `workspaceSrc`'s hash and rebuild the entire
+  edit to bobapp would change `workspaceSrc`'s hash and rebuild the entire
   Rust world.
 
 - **S3.** `publish = false`.
 
 ### The embedded descriptors (G3, G3b)
 
-- **S4.** A `ringerDesc` derivation runs `protoc --include_imports` over
+- **S4.** A `bobappDesc` derivation runs `protoc --include_imports` over
   the single file `google/maps/routing/v2/routes_service.proto` from the
   pinned googleapis corpus, producing a `FileDescriptorSet` holding that
   file and its transitive imports and nothing else. This is the same
   `protoc` invocation `googleapisPbs` makes, narrowed from the whole
   corpus to one entry point.
 
-- **S5.** `build.rs` reads `RINGER_DESCRIPTOR_SET`, copies the file to
-  `$OUT_DIR/ringer.desc`, and emits `cargo::rerun-if-env-changed` plus
+- **S5.** `build.rs` reads `BOBAPP_DESCRIPTOR_SET`, copies the file to
+  `$OUT_DIR/bobapp.desc`, and emits `cargo::rerun-if-env-changed` plus
   `cargo::rerun-if-changed` for it. The binary does `include_bytes!`.
 
-- **S6.** The variable is `RINGER_DESCRIPTOR_SET`, **not**
+- **S6.** The variable is `BOBAPP_DESCRIPTOR_SET`, **not**
   `PROTOTEXT_DESCRIPTOR_SET`. Spec 0228 makes the latter point at the
   well-known types in both shells, so reusing it would mean that
-  `cargo build` inside a dev-shell silently produced a ringer that cannot
+  `cargo build` inside a dev-shell silently produced a bobapp that cannot
   name `google.maps.routing.v2.Routes`, and the failure would surface as a
   runtime "type not found" a long way from its cause.
 
   It is not `PROTOTEXT_GOOGLEAPIS_SET` either (the dev-shell's path to the
-  full corpus DB): ringer embeds its own narrow set, and reaching for the
+  full corpus DB): bobapp embeds its own narrow set, and reaching for the
   7 771-file one would be exactly the mistake S4 exists to avoid.
 
 - **S7.** If the variable is unset, the build **fails**, naming
-  `nix-build -A ringer-desc --no-out-link` in the error. No fallback to
-  the WKTs: a ringer that cannot describe the service it calls is not a
-  ringer, and a demo that half-works is worse than one that refuses to
+  `nix-build -A bobapp-desc --no-out-link` in the error. No fallback to
+  the WKTs: a bobapp that cannot describe the service it calls is not a
+  bobapp, and a demo that half-works is worse than one that refuses to
   build.
 
 - **S8.** Embedded raw, not compressed, and the `DescriptorPool` is built
@@ -158,7 +158,7 @@ both would blur them.
   would ship, and a demo whose whole claim is "this is an ordinary app"
   cannot open by contradicting itself.
 
-- **S9.** `ringer --dump-descriptor <path>` writes the embedded set to
+- **S9.** `bobapp --dump-descriptor <path>` writes the embedded set to
   `<path>` and exits, before any network setup. That is what makes the
   demo self-contained: the audience extracts the schema from the binary,
   runs `reproto --schema-db-out` on it to get `hopcroft.rkyv`,
@@ -179,13 +179,13 @@ both would blur them.
   `/google.maps.routing.v2.Routes/ComputeRoutes`. TLS through rustls with
   the platform root store.
 
-- **S12.** Request metadata carries `x-goog-api-key` from `RINGER_API_KEY`
+- **S12.** Request metadata carries `x-goog-api-key` from `BOBAPP_API_KEY`
   and `x-goog-fieldmask` (Routes rejects a call without a field mask).
   The key is read from the environment and from nowhere else — never a
   flag, so it cannot reach shell history or `/proc/<pid>/cmdline`.
 
 - **S13.** CLI:
-  `ringer --origin <address> --destination <address> [--travel-mode DRIVE] [--depart-in <duration>] [--log-dir <dir>]`.
+  `bobapp --origin <address> --destination <address> [--travel-mode DRIVE] [--depart-in <duration>] [--log-dir <dir>]`.
 
   `--origin`/`--destination` fill `Waypoint.address`, one arm of that
   message's `location_type` oneof. That is the shortest path to a request
@@ -214,7 +214,7 @@ both would blur them.
   differ from the first in field order and default elision, and the demo's
   whole claim is that these are the bytes that went out.
 
-- **S17.** On success ringer prints the command that reads them back:
+- **S17.** On success bobapp prints the command that reads them back:
 
   ```
   protolens --descriptor-set <the path build.rs was given> <dir>/request.pb
@@ -227,32 +227,32 @@ both would blur them.
 
 ### Nix (G6)
 
-- **S18.** `ringerDesc` (S4) is exposed as `nix-build -A ringer-desc`, and
-  a crane derivation building ringer against it as `nix-build -A ringer`.
-  Both are cheap — `ringerDesc` is one `protoc` run over one file — so
+- **S18.** `bobappDesc` (S4) is exposed as `nix-build -A bobapp-desc`, and
+  a crane derivation building bobapp against it as `nix-build -A bobapp`.
+  Both are cheap — `bobappDesc` is one `protoc` run over one file — so
   both belong in `ci`. Neither pulls in `googleapisDb`, which is what kept
   the earlier draft's version of this out of `ci`.
 
-- **S19.** Neither shell exports `RINGER_DESCRIPTOR_SET`: it is a
+- **S19.** Neither shell exports `BOBAPP_DESCRIPTOR_SET`: it is a
   build-time input to one excluded Cargo project, not a property of the
-  environment. `demo/ringer/README.md` gives the one-liner instead:
+  environment. `demo/bobapp/README.md` gives the one-liner instead:
 
   ```
-  RINGER_DESCRIPTOR_SET=$(nix-build -A ringer-desc --no-out-link)/ringer.desc \
-    cargo build --release --manifest-path demo/ringer/Cargo.toml
+  BOBAPP_DESCRIPTOR_SET=$(nix-build -A bobapp-desc --no-out-link)/bobapp.desc \
+    cargo build --release --manifest-path demo/bobapp/Cargo.toml
   ```
 
 ### The second demonstration
 
 - **S20.** Out of scope here, and recorded so that the first demo is not
   grown to accommodate it: the same `request.pb` is re-opened against the
-  full `$PROTOTEXT_GOOGLEAPIS_SET`. Nothing in ringer changes for it — the
+  full `$PROTOTEXT_GOOGLEAPIS_SET`. Nothing in bobapp changes for it — the
   log is just bytes, and which descriptor set protolens is pointed at is a
   command-line argument.
 
 ## Alternatives considered
 
-**ringer as a workspace member.** Rejected: cargo unifies features across
+**bobapp as a workspace member.** Rejected: cargo unifies features across
 a workspace, so tonic/hyper/rustls/tokio would enter every
 `--workspace` derivation and `depsCache`. Spec 0239 records what one
 leaf-crate dependency already cost here.
@@ -274,7 +274,7 @@ measured and is not incidental — 1.34 s cold to build the pool and 720 MB
 peak RSS, for an application that calls one method (see S8). And it is not
 what a real application ships, so it would undercut the exact claim the
 demo exists to make. Scale is now a second demonstration against
-`$PROTOTEXT_GOOGLEAPIS_SET` (S20), which costs ringer nothing because the
+`$PROTOTEXT_GOOGLEAPIS_SET` (S20), which costs bobapp nothing because the
 log is just bytes.
 
 **Reusing `prototext-schema`'s lazy index instead of
@@ -313,8 +313,8 @@ None of these touch the network (N4).
    encode path with no socket.
 3. `logged_bytes_carry_no_frame_header` — the first byte of the captured
    request parses as a protobuf tag, not as a compression flag.
-4. `missing_api_key_fails_before_connecting` — with `RINGER_API_KEY`
-   unset, ringer exits non-zero and opens no connection.
+4. `missing_api_key_fails_before_connecting` — with `BOBAPP_API_KEY`
+   unset, bobapp exits non-zero and opens no connection.
 5. `dumped_descriptor_is_the_embedded_one` — `--dump-descriptor` writes
    bytes equal to the embedded slice, and `reproto --schema-db-out` on the
    result produces `hopcroft.rkyv`, `index.rkyv` and a `proto/` tree. This
@@ -324,7 +324,7 @@ None of these touch the network (N4).
    no `--type`; assert the inferred root type is
    `google.maps.routing.v2.ComputeRoutesRequest`. G4 stated as an
    assertion. Needs no googleapis DB now, so it can live in `ci`.
-7. Manual, with a real key: `ringer --origin … --destination … --log-dir /tmp/r`
+7. Manual, with a real key: `bobapp --origin … --destination … --log-dir /tmp/r`
    returns a route, writes both files, and the command it prints opens
    `request.pb` with the message correctly named.
 

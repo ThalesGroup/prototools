@@ -1,0 +1,37 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
+syntax = "proto3";
+
+package bobapp.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// One round trip: what was asked, and what came back.
+//
+// `request` and `response` are `bytes` rather than `google.protobuf.Any`
+// on purpose. An `Any` carries a `type_url`, which a reader resolves
+// directly; these payloads are opaque, and the only breadcrumb to what
+// they hold is `method` sitting next to them.
+message Entry {
+  google.protobuf.Timestamp at = 1;
+
+  // The gRPC method path, e.g.
+  // "/google.maps.routing.v2.Routes/ComputeRoutes".
+  string method = 2;
+
+  // A free-text diagnostic. It is numbered before the payloads because it
+  // is written before them: the entry is opened when the call goes out and
+  // closed when it lands, and the note is what the app had to say at each
+  // of those moments. Singular, so a reader is handed only the last thing
+  // written into it.
+  string note = 3;
+
+  bytes request = 4;
+  bytes response = 5;
+}
+
+message Log {
+  repeated Entry entry = 1;
+}

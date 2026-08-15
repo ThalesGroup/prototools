@@ -15,7 +15,7 @@ Refs: docs/specs/0123-protolens-batch-mode.md (the batch subcommand this
       docs/specs/0147-protolens-status-message-command-line-split.md (the
       command/message row a step prefills),
       docs/specs/0199-the-arrow-keys-fold-before-they-leave-the-node.md
-      (the bare-arrow bindings this displaces while navigation is on),
+      (the arrow bindings this once displaced, and no longer does),
       docs/specs/0257-the-first-pane-does-not-wait-for-the-last-line.md
       (why a step may name a node whose lines do not exist yet),
       docs/specs/0261-an-export-waits-for-the-lines-it-names.md (the
@@ -197,7 +197,7 @@ than ending it. Two states:
 
 - **navigation off:** `space to enter script navigation`, falling back
   to `space to enter`.
-- **navigation on:** `^←/^→ step 3/23`, then `^↑/^↓ scroll`, then
+- **navigation on:** `,/; step 3/23`, then `?/. scroll`, then
   `space to quit script navigation`, falling back to `space to quit`,
   then dropped from the right as the terminal narrows. The step counter
   is the last thing to go — on a narrow terminal it is the only thing
@@ -223,10 +223,10 @@ around a legend:
 
 | legend | columns |
 |---|---|
-| `^←/^→ step 3/23  ^↑/^↓ scroll  space to quit script navigation` | 68 |
-| `^←/^→ step 3/23  ^↑/^↓ scroll  space to quit` | 50 |
-| `^←/^→ step 3/23  ^↑/^↓ scroll` | 35 |
-| `^←/^→ step 3/23` | 21 |
+| `,/; step 3/23  ?/. scroll  space to quit script navigation` | 68 |
+| `,/; step 3/23  ?/. scroll  space to quit` | 50 |
+| `,/; step 3/23  ?/. scroll` | 35 |
+| `,/; step 3/23` | 21 |
 | `space to enter script navigation` | 38 |
 | `space to enter` | 20 |
 
@@ -259,7 +259,7 @@ the comparison the split exists for reads without a keypress.
 
 Every one of those is derived from the step and the current document.
 Nothing is remembered from the step before. That is what makes G4 true
-without an undo stack: `Ctrl-Left` re-applies step *n−1* from scratch
+without an undo stack: `,` re-applies step *n−1* from scratch
 and gets the same view it got the first time, whatever the presenter
 did in between.
 
@@ -282,19 +282,19 @@ character at the `:` prompt.
   current step, so the gesture that puts the session back under the
   script also puts the view back where the script left it: wandering off
   between steps is free (G3), and coming back is one key.
-- **while navigation is on:** `Left` previous step, `Right` next step,
-  `Up`/`Down` scroll the script pane by one line.
-- **while navigation is off:** the arrows are not touched.
+- **while navigation is on:** `,` previous step, `;` next step, `?`/`.`
+  scroll the script pane by one line.
+- **while navigation is off:** none of the four is touched.
 
-`Left`/`Right` at the ends of the script are a no-op with a message;
+`,`/`;` at the ends of the script are a no-op with a message;
 they do not wrap.
 
-**Amended 2026-08-12: `Up`/`Down` stop at both ends of the step's own
-text.** A step is a paragraph, not a document — scrolling past either
-end shows blank rows and loses the only thing the pane is for, and the
-ends of a step are exactly where `Left`/`Right` take over. The floor is
-0 and the ceiling is the step's wrapped height less the pane's, which is
-0 whenever the step already fits.
+**Amended 2026-08-12: the scroll keys stop at both ends of the step's
+own text.** A step is a paragraph, not a document — scrolling past
+either end shows blank rows and loses the only thing the pane is for,
+and the ends of a step are exactly where the step keys take over. The
+floor is 0 and the ceiling is the step's wrapped height less the pane's,
+which is 0 whenever the step already fits.
 
 That height comes from `Paragraph::line_count` on the paragraph the pane
 will actually draw, which is why the pane and the bound now share one
@@ -310,12 +310,20 @@ rather than a frame later.
 **Amended 2026-08-12: the bare arrows, not the Ctrl-arrows.** Handing
 navigation to the pane should hand it *navigation* — the keys a reader
 already reaches for — and a walkthrough is read with the same four keys
-as a slide deck. A modifier on an arrow is never the script's, on or
-off, so the selection (`Shift`), the pan and the word motion (`Alt`) and
-the sibling-level fold (`Ctrl`) all still reach the main pane while a
-step is on screen. The table below is therefore a table of what a *bare*
-arrow displaces, and every entry in it is displaced only while
-navigation is on.
+as a slide deck.
+
+**Amended 2026-08-14, and this reverses the arrows entirely: `,` `;` `?`
+`.`, and no arrow at all.** The 2026-08-12 argument was about a *reader*.
+The user of a script is a *presenter*, and a presenter standing in front
+of a room reaches for an arrow key without deciding to — to nudge the
+caret, to pan a wide row, to look one line further down. Under the old
+binding that reflex changed the slide, and there is no undo stack to
+climb back out of (S6): the step is re-derived from scratch, so a
+mis-stepped view is not the view that was on screen a moment earlier.
+The cost of the wrong key is therefore not a scroll, it is a lost place
+in the talk in front of an audience. The four keys are now punctuation
+the presenter has to *choose*: `,`/`;` sit side by side for backward and
+forward, and `?`/`.` sit above and below the `;` on a QWERTY row.
 
 What this costs, and what covers it:
 
@@ -323,16 +331,20 @@ What this costs, and what covers it:
 | --- | --- | --- |
 | page down | `space`, `:733` | `f`, `PageDown` |
 | page up | `Shift-Space`, `:730` | `b`, `PageUp` (`Shift-Space` also still works) |
-| caret motion | main `Left`/`Right`/`Up`/`Down` | `h`/`l`/`k`/`j` |
-| override-pane highlight | `Up`/`Down`, `:184`/`:185` | `j`/`k` |
-| manage-pane highlight | `Up`/`Down` | `j`/`k` |
+| backward search | `?`, `:225` and `:951` | `/` then the direction keys (S of 0281) |
 
-Every displaced gesture has a letter spelling that is not displaced, so
-nothing is lost. The 2026-08-12 amendment above also *returns* the four
-Ctrl-arrow gestures the first draft had taken — the sibling skip, the
-sibling-level fold and the override pane's two pans — which is why this
-spec's `Alt-Up`/`Alt-Down` addition to the override pane is no longer
-load-bearing.
+Only `?` is really taken, and only while navigation is on — `,` and `;`
+and `.` were unbound. That one collision is accepted knowingly: a search
+is a keystroke away by another spelling, and `space` hands `?` straight
+back. The 2026-08-12 amendment's arrow-displacement table is gone with
+the arrows; the caret motion, both pane highlights and every modified
+arrow now reach their usual handler whether navigation is on or off,
+which is what the reflex needed.
+
+Because `?` is a shifted key on most layouts the guard on the script
+block is `!ctrl_or_alt(&key)` rather than a test that no modifier at all
+is held — `space`, which must stay unshifted to leave `Shift-Space`
+alone, keeps its own explicit `SHIFT` exclusion.
 
 ### S8 — On load
 
@@ -463,13 +475,14 @@ the script out of the pane's internals.
 
 ### Leave the existing keys alone and pick free chords
 
-The keys this spec takes are all bound. But the chords still free are
-the ones nobody can find under stage lighting. `space` for
-forward/toggle is the pager idiom, and the bare arrows for step/scroll
-are what a slide deck trains people to expect — and, as of the
-2026-08-12 amendment to S7, what "hand navigation to the pane" ought to
-mean literally. The displaced bindings all have letter spellings
-already (S7).
+This is where the spec ended up, by the 2026-08-14 amendment to S7 —
+though not for the reason the alternative gives. `space` for
+forward/toggle stays, because it is the pager idiom. The other four are
+now unbound punctuation, not because free chords are cheap but because
+a bound one was actively dangerous: the arrows are what a presenter's
+hand does *by reflex*, and a reflex must not change slide. "Nobody can
+find them under stage lighting" is the right worry about a chord and the
+wrong worry about a key the presenter meant to press.
 
 ### Record a keystroke macro instead of a declarative script
 
@@ -497,9 +510,10 @@ ones.
    2: the view equals the view step 2 produced the first time. This is
    G4, and it is the test that fails if a directive is ever made to
    inherit from the previous step.
-4. `space_toggles_and_ctrl_arrows_are_conditional` — with navigation
-   off, `Ctrl-Up` still skips siblings; with it on, it scrolls the
-   pane; `space` toggles in both states, and `f` pages down in both.
+4. `space_toggles_and_the_step_keys_are_conditional` — with navigation
+   on, `;` advances and `,` goes back; with it off, neither does and `?`
+   is a backward search again; `space` toggles in both states; and a
+   stray `Right` never changes the step, whichever state it is in.
 5. `a_step_waits_for_its_lines` — with the bake artificially stalled, a
    step naming a deep node produces its wire rows rather than an empty
    span (S12).
@@ -512,7 +526,7 @@ ones.
    rendered, which would make it a test of the renderer rather than of
    the script.
 8. `scrolling_the_pane_stops_at_the_steps_own_text` — the 2026-08-12
-   amendment: `Up` at the top is a no-op, `Down` stops one paneful short
+   amendment: `?` at the top is a no-op, `.` stops one paneful short
    of the step's end, and halving the pane's width moves that stop,
    since the bound is the *wrapped* height and not the line count.
 9. `reuse lint` passes.

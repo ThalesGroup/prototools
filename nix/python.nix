@@ -406,18 +406,24 @@ EOF
       @"$TMPDIR/proto_list.txt"
   '';
 
-  # The descriptor set ringer embeds (spec 0241 S4).
+  # The descriptor set bobapp embeds (spec 0241 S4).
   #
   # The same protoc invocation googleapisPbs makes, narrowed from the whole
-  # corpus to one entry point: routes_service.proto and its transitive
-  # imports, and nothing else.  That is what a real application ships, and it
-  # is what keeps ringer's DescriptorPool cheap — decoding the full 25.6 MB
-  # googleapis.desc costs 1.34 s and peaks at 720 MB RSS, against ~50 kB here.
+  # corpus to two entry points: routes_service.proto with its transitive
+  # imports, and bobapp's own log envelope.  That is what a real application
+  # ships, and it is what keeps bobapp's DescriptorPool cheap — decoding the
+  # full 25.6 MB googleapis.desc costs 1.34 s and peaks at 720 MB RSS,
+  # against ~50 kB here.
   #
-  # Cheap enough for `ci`: one protoc run over one file.  It pulls in
+  # bobapp/v1/log.proto is in here so that the schema recovered *from the
+  # binary* names the log envelope, while googleapis — which has never heard
+  # of Bob's app — does not.  That asymmetry is the demo's escalation: see
+  # grpconf/synopsis.md beats 9 and 10.
+  #
+  # Cheap enough for `ci`: one protoc run over two files.  It pulls in
   # corpusGoogleapis but not googleapisPbs or googleapisDb, so it costs the
   # corpus fetch and nothing more.
-  ringerDesc = pkgs.runCommand "ringer-desc" {
+  bobappDesc = pkgs.runCommand "bobapp-desc" {
     buildInputs = [ pkgs.protobuf ];
   } ''
     set -euo pipefail
@@ -425,9 +431,11 @@ EOF
 
     protoc \
       --proto_path="${corpusGoogleapis}" \
-      --descriptor_set_out="$out/ringer.desc" \
+      --proto_path="${../demo/bobapp/proto}" \
+      --descriptor_set_out="$out/bobapp.desc" \
       --include_imports \
-      google/maps/routing/v2/routes_service.proto
+      google/maps/routing/v2/routes_service.proto \
+      bobapp/v1/log.proto
   '';
 
   # Build the googleapis schema DB + instantiated messages.
@@ -636,7 +644,7 @@ in {
     googleapisPbs
     googleapisDb
     googleapisTests
-    ringerDesc
+    bobappDesc
     customDb
     customTests;
 }
