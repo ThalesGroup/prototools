@@ -53,13 +53,52 @@ impl App {
     /// **3.3% slower** on 3.7% fewer instructions: SipHash's arithmetic
     /// was overlapping the probe's cache miss, so removing it exposed the
     /// latency it had been hiding. The probe is the cost, not the hash.
+    ///
+    /// The pass is O(arena) but the *work* is O(rendered), which since
+    /// spec 0257 are wildly different numbers: a startup renders a
+    /// screenful, so on googleapis 7 798 of 4 737 284 slots show
+    /// anything at all. A slot the current interpretation does not
+    /// render says `Ok` and shows no children, so it cannot change any
+    /// ancestor's roll-up — `Ok` is the bottom of the lattice and
+    /// `max(Ok, x) == x`. Skipping the two random reads below is
+    /// therefore exact, not approximate.
+    ///
+    /// That `Ok` is the bottom is load-bearing, and it is why
+    /// `Status::Unbaked` ranks *above* it rather than below: a stop's
+    /// vacant descendants have to contribute nothing, so that the
+    /// `Unbaked` a stop carries in its own right is what reaches the
+    /// ancestors (spec 0249 S12).
+    ///
+    /// **The rendered set is closed under parent.** A child's rows are
+    /// emitted inside its parent's body, and spec 0249's row budget
+    /// gates `descend` — entry into a body — never the iteration over a
+    /// sibling list, so a node the budget stops at still emits every
+    /// child's header and footer. An unrendered slot therefore has no
+    /// rendered children, and a sibling block is all-or-nothing, which
+    /// is the same fact `child_slots` relies on when it tests only
+    /// `block.start`. `assert_ancestor_closed` checks it outright.
+    ///
+    /// The skipped slots are still *written*, not merely passed over:
+    /// this has to produce what a from-scratch computation would, since
+    /// that is exactly what `assert_status_is_exact` compares it
+    /// against.
     pub(super) fn rebuild_status(&mut self) {
         let mut stops = vec![0u64; self.tree.len().div_ceil(64)];
         for &idx in &self.auto_folded {
             stops[idx / 64] |= 1 << (idx % 64);
         }
         for idx in (0..self.tree.len()).rev() {
-            let own = self.own_status(idx, stops[idx / 64] & (1 << (idx % 64)) != 0);
+            let is_stop = stops[idx / 64] & (1 << (idx % 64)) != 0;
+            // `node_text` is the load `own_status` would make first, so
+            // the fast path costs one sequential read and two stores.
+            // The stop bit is checked rather than inferred from the
+            // text, so the `Unbaked` rung is never assumed away.
+            if self.node_text[idx].is_none() && !is_stop {
+                self.status_own[idx] = Status::Ok;
+                self.status_rolled[idx] = Status::Ok;
+                continue;
+            }
+            let own = self.own_status(idx, is_stop);
             self.status_own[idx] = own;
             self.status_rolled[idx] = own.max(self.children_status(idx));
         }
@@ -181,8 +220,35 @@ impl App {
     /// line-count check next to it. The case that most needs it is a
     /// status going *down*, where the ancestor walk's early stop is the
     /// thing most likely to be wrong.
+    /// The property `rebuild_status`'s fast path rests on: the rendered
+    /// set is closed under parent, so a slot showing no text shows no
+    /// children and is not a stop.
+    ///
+    /// Checked outright rather than left to the roll-up comparison
+    /// below. A violation *would* show up there — the incremental path
+    /// has no fast path, so the two would disagree — but only where a
+    /// splice happens to have a non-`Ok` node beneath a textless one.
+    /// This says the thing itself, over the whole arena.
+    #[cfg(test)]
+    fn assert_ancestor_closed(&self) {
+        for idx in 0..self.tree.len() {
+            if self.node_text[idx].is_some() {
+                continue;
+            }
+            assert!(
+                self.child_slots(idx).is_empty(),
+                "node {idx}: renders nothing but shows children"
+            );
+            assert!(
+                !self.auto_folded.contains(&idx),
+                "node {idx}: renders nothing but is a bake stop"
+            );
+        }
+    }
+
     #[cfg(test)]
     pub(super) fn assert_status_is_exact(&mut self) {
+        self.assert_ancestor_closed();
         let (own, rolled) = (self.status_own.clone(), self.status_rolled.clone());
         self.rebuild_status();
         for idx in 0..self.tree.len() {
