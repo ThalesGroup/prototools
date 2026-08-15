@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # protolens input review — keys and mouse, every pane and mode
 
-*last verified: 2026-08-12*
+*last verified: 2026-08-14*
 
 A review of protolens's whole input surface: what its logic is, where it
 is internally consistent, where it is not, and what could be changed.
@@ -75,7 +75,7 @@ the most global concern to the most local. In order:
 | 4 | command buffer open → `handle_command_key` | ditto — and this is what keeps `space` a literal space at the `:` prompt |
 | 5 | `:` open command line | reachable from every pane, so commands never need a focus dance |
 | 6 | `v` jump to definition | same reason |
-| 7 | script keys (`space`, and bare arrows while active) | above the side panes so the script drives regardless of focus |
+| 7 | script keys (`space`, and `,`/`;`/`?`/`.` while active) | above the side panes so the script drives regardless of focus |
 | 8 | `override_focus` → `handle_override_key` | pane focus |
 | 9 | `manage_open && manage_focus` → `handle_manage_key` | pane focus |
 | 10 | empty-tree guard (`return`) | everything below indexes `self.tree` |
@@ -191,9 +191,11 @@ Readline: `Ctrl-b`/`Ctrl-f`, `Alt-b`/`Alt-f`, `Ctrl-a`/`Ctrl-e`,
 
 ### 2.6 Script pane (a fifth surface, not a pane you focus)
 
-`Space` toggles navigation; while on, the **bare** `Left`/`Right` step
-and `Up`/`Down` scroll the pane, from any focus. A modified arrow is
-never the script's.
+`Space` toggles navigation; while on, `,`/`;` step and `?`/`.` scroll
+the pane, from any focus. **No arrow key is ever the script's** — as of
+2026-08-14 they were handed back, because a presenter reaches for one by
+reflex and a reflex must not change step (0271 S7). `?` is the one
+binding really taken, and only while navigation is on.
 
 ---
 
@@ -435,8 +437,10 @@ because terminals eat `Shift`.
   lists is already a bound key — so it documents the keyboard instead of
   competing with it (C9).
 - **The wheel does not pan the script pane.** Every other surface
-  scrolls under the pointer; the script pane scrolls only via `Up`/`Down`
-  with navigation on (C10).
+  scrolls under the pointer; the script pane scrolls only via `?`/`.`
+  with navigation on (C10). The 2026-08-14 rebinding sharpens this: the
+  scroll keys are now punctuation nobody guesses, so the wheel is the
+  only gesture a presenter would find by instinct.
 - **`Ctrl`+wheel is unbound.** In a viewer this is conventionally zoom,
   and protolens has an exact analogue in fold depth. Concretely:
   `Ctrl`+wheel-down folds one level *under the node the pointer is over*
@@ -577,10 +581,12 @@ Four live drifts, all invisible to the test:
    `Delete`, `Backspace`, `F1`).
 4. **The override pane's `Alt-Up`/`Alt-Down` rationale is dead.**
    `help_text.rs:162` explains them as the pan "for a session with a
-   script loaded (where Ctrl-Up/Ctrl-Down belong to the script)". Since
-   2026-08-12 the script takes the **bare** arrows, so `Ctrl-Up`/
-   `Ctrl-Down` are not the script's, and these two arms are unreachable
-   anyway (§8).
+   script loaded (where Ctrl-Up/Ctrl-Down belong to the script)". No
+   arrow has belonged to the script since 2026-08-12, and since
+   2026-08-14 none belongs to it under any modifier, so the rationale is
+   doubly dead; these two arms are unreachable anyway (§8). **Fixed
+   2026-08-14** — the help line is now "the same vertical pan, a second
+   spelling".
 
 Also: **`i` in the main pane (heat cues) is not described anywhere.**
 The help documents `i` only as the override pane's sort toggle; the test
@@ -905,9 +911,12 @@ permanently.
 
 The cost is that it is a real break with the vim-plus-less idiom the app
 has committed to — in vim, bare letters *are* the vocabulary — and it
-makes every action one keystroke longer. `,` is free but `space` is not
-(it is the script toggle), so the two most conventional leaders are down
-to one. **Recommend against for now**: with fourteen proposals'-worth of
+makes every action one keystroke longer. Neither of the two most
+conventional leaders is free: `space` is the script toggle, and since
+2026-08-14 `,` is the script's previous-step key — so a leader would
+have to be found elsewhere, and this proposal costs more than it did
+when it was written. **Recommend against for now**: with fourteen
+proposals'-worth of
 smaller fixes available, the homonym problem does not yet need a
 structural answer. It becomes the right answer if the binding count
 keeps growing.

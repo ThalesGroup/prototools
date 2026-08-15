@@ -173,12 +173,12 @@ impl App {
             }
             // Spec 0271 S7: a second spelling, added when script
             // navigation still took the Ctrl-arrows and this was the one
-            // pane gesture with no alternative left. The 2026-08-12
-            // amendment moved the script to the bare arrows and gave the
-            // Ctrl pair back, so this is now only a mirror of the
-            // horizontal pan above, which has had its `Alt` pair all
-            // along. Unreachable as written — the main pane's own
-            // `Alt-Up`/`Alt-Down` arms are matched first.
+            // pane gesture with no alternative left. The script has held
+            // no arrow key at all since 2026-08-14, under any modifier,
+            // so this is now only a mirror of the horizontal pan above,
+            // which has had its `Alt` pair all along. Unreachable as
+            // written — the main pane's own `Alt-Up`/`Alt-Down` arms are
+            // matched first.
             KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
                 self.override_pan_vertical(PAN_STEP, true)
             }
@@ -561,12 +561,22 @@ impl App {
         // `space` is stolen for the whole session whenever a script is
         // loaded, because it is the toggle and so cannot be conditional
         // on the state it toggles. Paging keeps `f`/`PageDown`, and
-        // `Shift-Space` is a different chord and is left alone. The bare
-        // arrows are taken only while navigation is on — that is what
-        // handing navigation to the pane *means*, and every main-pane
-        // gesture they displace has a letter spelling (`h`/`l`/`j`/`k`)
-        // already. Modified arrows are left alone, so the selection, the
-        // pan and the sibling-level fold all still reach the main pane.
+        // `Shift-Space` is a different chord and is left alone.
+        //
+        // Stepping is on `,`/`;` and scrolling the step text on `?`/`.`,
+        // taken only while navigation is on. They are NOT the bare arrows
+        // (the 2026-08-12 amendment, reversed here): a presenter reaches
+        // for an arrow key by reflex, and a reflex must not change slide.
+        // Punctuation is deliberate in a way an arrow is not. `?` is the
+        // one of the four that was already bound — it opens the help —
+        // and it is knowingly shadowed while navigation is on, because
+        // `space` turns navigation off and hands it straight back.
+        //
+        // SHIFT is admitted rather than refused: `?` is a shifted key on
+        // most layouts, so the usual "no modifiers" gate would make it
+        // unreachable. Ctrl and Alt are still refused, so the selection,
+        // the pan and the sibling-level fold all still reach the main
+        // pane, as do all four arrows now.
         if self.script.is_some() {
             if key.code == KeyCode::Char(' ')
                 && !ctrl_or_alt(&key)
@@ -575,25 +585,21 @@ impl App {
                 self.script_toggle();
                 return;
             }
-            if self.script_active()
-                && !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT)
-            {
+            if self.script_active() && !ctrl_or_alt(&key) {
                 match key.code {
-                    KeyCode::Left => {
+                    KeyCode::Char(',') => {
                         self.script_advance(false);
                         return;
                     }
-                    KeyCode::Right => {
+                    KeyCode::Char(';') => {
                         self.script_advance(true);
                         return;
                     }
-                    KeyCode::Up => {
+                    KeyCode::Char('?') => {
                         self.script_scroll_by(false);
                         return;
                     }
-                    KeyCode::Down => {
+                    KeyCode::Char('.') => {
                         self.script_scroll_by(true);
                         return;
                     }

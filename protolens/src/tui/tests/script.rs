@@ -98,50 +98,51 @@ fn a_step_is_a_function_of_the_script() {
     assert_eq!(view(&app), want, "step 2 must reproduce step 2's view");
 }
 
-/// Spec 0271 test-plan item 4. `space` toggles in both states; the bare
-/// arrows only belong to the script while navigation is on, and go back
-/// to moving the caret the moment it is off. A *modified* arrow is never
-/// the script's, on or off.
+/// Spec 0271 test-plan item 4, re-aimed at the punctuation keys. `space`
+/// toggles in both states; `,`/`;` only belong to the script while
+/// navigation is on. The arrows are never the script's in either state —
+/// that is the point of moving off them.
 #[test]
-fn space_toggles_and_bare_arrows_are_conditional() {
+fn space_toggles_and_the_step_keys_are_conditional() {
     let (mut app, items) = repeated_message_fixture();
     app.set_script(script_of(THREE_STEPS));
     assert!(app.script_active(), "spec 0271 S8: navigation starts on");
 
-    // On: the bare arrows are the script's, and the document does not
-    // move on its own.
+    // On: `;` is the script's, and the document does not move on its own.
     let before = app.cursor;
-    app.handle_key(key(KeyCode::Right, KeyModifiers::NONE));
+    app.handle_key(key(KeyCode::Char(';'), KeyModifiers::NONE));
     assert_ne!(app.cursor, before, "step 2 moves the cursor itself");
     let step = app.script.as_ref().expect("a script is loaded").current;
-    assert_eq!(step, 1, "Right advances the step");
+    assert_eq!(step, 1, "`;` advances the step");
 
-    // Still on: Ctrl-Down is the sibling move it has always been.
+    // Still on: a bare arrow reaches the document, script or no script.
     app.set_cursor(items[0]);
     app.handle_key(key(KeyCode::Down, KeyModifiers::CONTROL));
     assert_eq!(app.cursor, items[1], "Ctrl-Down skips siblings even so");
     let step = app.script.as_ref().expect("a script is loaded").current;
-    assert_eq!(step, 1, "and a modified arrow never steps the script");
+    assert_eq!(step, 1, "and no arrow, modified or not, steps the script");
+    app.handle_key(key(KeyCode::Right, KeyModifiers::NONE));
+    let step = app.script.as_ref().expect("a script is loaded").current;
+    assert_eq!(step, 1, "a presenter's stray Right must not change step");
 
     app.handle_key(key(KeyCode::Char(' '), KeyModifiers::NONE));
     assert!(!app.script_active(), "space turns navigation off");
 
-    // Off: the bare arrow is the document's again, and the step does not
-    // change.
+    // Off: `;` is no longer the script's and the step does not change.
     app.set_cursor(items[0]);
-    app.handle_key(key(KeyCode::Right, KeyModifiers::NONE));
+    app.handle_key(key(KeyCode::Char(';'), KeyModifiers::NONE));
     let step = app.script.as_ref().expect("a script is loaded").current;
     assert_eq!(step, 1, "and the step stayed where it was");
 
     app.handle_key(key(KeyCode::Char(' '), KeyModifiers::NONE));
     assert!(app.script_active(), "space turns it back on");
-    app.handle_key(key(KeyCode::Right, KeyModifiers::NONE));
+    app.handle_key(key(KeyCode::Char(';'), KeyModifiers::NONE));
     let step = app.script.as_ref().expect("a script is loaded").current;
-    assert_eq!(step, 2, "and the script has the arrows back");
+    assert_eq!(step, 2, "and the script has the step keys back");
 }
 
 /// Amending spec 0271 S5 (2026-08-12): a step is a paragraph, so
-/// `Up`/`Down` stop at both of its ends rather than panning off into
+/// `?`/`.` stop at both of its ends rather than panning off into
 /// blank rows.
 #[test]
 fn scrolling_the_pane_stops_at_the_steps_own_text() {
@@ -355,7 +356,7 @@ fn the_separator_legend_is_flushed_right() {
     // 64, so the toggle is spelled short while the step counter and the
     // scroll keys both stay.
     assert!(
-        separator.ends_with("←/→ step 1/3  ↑/↓ scroll  space to quit ──"),
+        separator.ends_with(",/; step 1/3  ?/. scroll  space to quit ──"),
         "the legend must sit at the right edge: {separator:?}"
     );
     assert!(

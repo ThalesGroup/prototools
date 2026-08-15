@@ -44,8 +44,9 @@ pub(crate) struct ScriptState {
     pub(super) script: Script,
     /// 0-based index into `script.steps`.
     pub(super) current: usize,
-    /// Whether the bare arrows are overridden (spec 0271 S7). `space`
-    /// toggles it.
+    /// Whether `,`/`;`/`?`/`.` step and scroll the script rather than
+    /// meaning what they otherwise mean (spec 0271 S7). `space` toggles
+    /// it.
     ///
     /// Starts **on** (amended 2026-08-10). S8 had it start off because
     /// the pane "arrives unasked for", which stopped being true: a
@@ -731,7 +732,7 @@ fn script_legend(state: &ScriptState, width: usize) -> String {
         return String::new();
     }
     let counter = format!(
-        "←/→ step {}/{}",
+        ",/; step {}/{}",
         state.current + 1,
         state.script.steps.len()
     );
@@ -740,9 +741,9 @@ fn script_legend(state: &ScriptState, width: usize) -> String {
     // a loop over parts and a loop over spellings cannot express that
     // without the outer one deciding wrongly.
     let ladder = [
-        format!("{counter}  ↑/↓ scroll  space to quit script navigation"),
-        format!("{counter}  ↑/↓ scroll  space to quit"),
-        format!("{counter}  ↑/↓ scroll"),
+        format!("{counter}  ?/. scroll  space to quit script navigation"),
+        format!("{counter}  ?/. scroll  space to quit"),
+        format!("{counter}  ?/. scroll"),
         counter,
     ];
     for candidate in ladder {
@@ -799,14 +800,14 @@ mod tests {
         let state = state(true, 2, 23);
         assert_eq!(
             script_legend(&state, 80),
-            "←/→ step 3/23  ↑/↓ scroll  space to quit script navigation"
+            ",/; step 3/23  ?/. scroll  space to quit script navigation"
         );
         assert_eq!(
             script_legend(&state, 60),
-            "←/→ step 3/23  ↑/↓ scroll  space to quit"
+            ",/; step 3/23  ?/. scroll  space to quit"
         );
-        assert_eq!(script_legend(&state, 40), "←/→ step 3/23  ↑/↓ scroll");
-        assert_eq!(script_legend(&state, 26), "←/→ step 3/23");
+        assert_eq!(script_legend(&state, 40), ",/; step 3/23  ?/. scroll");
+        assert_eq!(script_legend(&state, 26), ",/; step 3/23");
         // Narrower than the counter plus its rule: the rule alone.
         assert_eq!(script_legend(&state, 8), "");
     }
@@ -822,12 +823,12 @@ mod tests {
         for (state, legend, width) in [
             (
                 &on,
-                "←/→ step 3/23  ↑/↓ scroll  space to quit script navigation",
+                ",/; step 3/23  ?/. scroll  space to quit script navigation",
                 64,
             ),
-            (&on, "←/→ step 3/23  ↑/↓ scroll  space to quit", 46),
-            (&on, "←/→ step 3/23  ↑/↓ scroll", 31),
-            (&on, "←/→ step 3/23", 19),
+            (&on, ",/; step 3/23  ?/. scroll  space to quit", 46),
+            (&on, ",/; step 3/23  ?/. scroll", 31),
+            (&on, ",/; step 3/23", 19),
             (&off, "space to enter script navigation", 38),
             (&off, "space to enter", 20),
         ] {
