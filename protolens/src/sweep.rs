@@ -169,8 +169,9 @@ pub(crate) fn ranked(
     graph: &ArchivedCompiledGraph,
     jobs: usize,
     cancel: Option<&AtomicBool>,
+    cut: bool,
 ) -> RankedCandidates {
-    ranked_with(pb, graph, jobs, cancel, |_| ()).0
+    ranked_with(pb, graph, jobs, cancel, cut, |_| ()).0
 }
 
 /// [`ranked`], with `meanwhile` run on the calling thread while the shards
@@ -191,14 +192,23 @@ pub(crate) fn ranked(
 /// ceiling, the seating below may lower it, and the calling thread may
 /// or may not join. That count exists only here, so this is where it is
 /// reported from — `main`'s startup line is the caller that wants it.
+///
+/// `cut` is spec 0310's `end_undeclared`: `pb` ends because the bytes
+/// ran out, not because a length prefix said where it ends. It is a
+/// property of the query, so it is an argument here and not a field of
+/// anything cached.
 pub(crate) fn ranked_with<T>(
     pb: &[u8],
     graph: &ArchivedCompiledGraph,
     jobs: usize,
     cancel: Option<&AtomicBool>,
+    cut: bool,
     meanwhile: impl FnOnce(usize) -> T,
 ) -> (RankedCandidates, T) {
-    let opts = ScoringOpts::default();
+    let opts = ScoringOpts {
+        end_undeclared: cut,
+        ..Default::default()
+    };
     // Clamped here rather than only at the command line, so that every
     // path into the sweep is bounded by the machine whether or not its
     // caller remembered to ask.
@@ -681,20 +691,23 @@ impl Partition {
     /// out of. `cancel` abandons the walk mid-field, and the run
     /// returned is then **partial and meaningless**: a caller that
     /// raised it must discard this and walk the part again.
+    ///
+    /// `cut` (spec 0310 S7) is folded into a copy of the stored options
+    /// rather than stored alongside them: the partition is shared for
+    /// the life of the process and the flag belongs to one query.
     pub(crate) fn walk(
         &self,
         index: usize,
         pb: &[u8],
         graph: &ArchivedCompiledGraph,
         cancel: Option<&AtomicBool>,
+        cut: bool,
     ) -> RankedCandidates {
-        rank(score_subset(
-            pb,
-            graph,
-            &self.opts,
-            &self.parts[index],
-            cancel,
-        ))
+        let opts = ScoringOpts {
+            end_undeclared: cut,
+            ..self.opts.clone()
+        };
+        rank(score_subset(pb, graph, &opts, &self.parts[index], cancel))
     }
 }
 
@@ -895,7 +908,7 @@ mod tests {
 
         // `jobs: 1` takes the un-sharded path (`target_parts(1) == 1`),
         // on this thread, with nothing spawned. That is the reference.
-        let reference = ranked(&blob, graph.graph(), 1, None);
+        let reference = ranked(&blob, graph.graph(), 1, None, false);
         assert!(
             !reference.is_empty(),
             "the fixture must actually score something"
@@ -906,7 +919,7 @@ mod tests {
         // the clamp is exercised too).
         for jobs in [2, 3, 4, 8, SWEEP_PARTS, SWEEP_PARTS + 8, 512] {
             assert_eq!(
-                ranked(&blob, graph.graph(), jobs, None),
+                ranked(&blob, graph.graph(), jobs, None, false),
                 reference,
                 "the ranking must not depend on how many threads produced it \
                  (jobs = {jobs})"
@@ -939,9 +952,9 @@ mod tests {
         let graph = many_root_graph();
         let blob = scorable_blob();
         let cancel = AtomicBool::new(true);
-        let out = ranked(&blob, graph.graph(), 8, Some(&cancel));
+        let out = ranked(&blob, graph.graph(), 8, Some(&cancel), false);
         assert!(
-            out.len() <= ranked(&blob, graph.graph(), 8, None).len(),
+            out.len() <= ranked(&blob, graph.graph(), 8, None, false).len(),
             "a cancelled sweep cannot produce more than a complete one"
         );
     }
@@ -989,7 +1002,7 @@ mod tests {
     fn a_query_walked_part_by_part_produces_the_whole_sweeps_ranking() {
         let graph = many_root_graph();
         let blob = scorable_blob();
-        let reference = ranked(&blob, graph.graph(), 1, None);
+        let reference = ranked(&blob, graph.graph(), 1, None, false);
         assert!(
             !reference.is_empty(),
             "the fixture must actually score something"
@@ -1003,7 +1016,7 @@ mod tests {
         );
         let runs: Vec<RankedCandidates> = (0..partition.parts())
             .rev()
-            .map(|i| partition.walk(i, &blob, graph.graph(), None))
+            .map(|i| partition.walk(i, &blob, graph.graph(), None, false))
             .collect();
         assert_eq!(merge(runs), reference);
     }

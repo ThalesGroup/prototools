@@ -1237,7 +1237,8 @@ pub(super) fn heat_worker_loop(
                             .current_key
                             .as_deref()
                             .expect("covers_current false implies current_key is Some");
-                        let score = override_pane::inferred_score(range_bytes, key, graph);
+                        let cut = override_pane::ends_where_the_bytes_end(&req.range, blob.len());
+                        let score = override_pane::inferred_score(range_bytes, key, graph, cut);
                         let mut c = caches.lock().unwrap_or_else(|e| e.into_inner());
                         c.current_score
                             .upsert((start, key.to_string()), score, req.tier);
@@ -1288,7 +1289,8 @@ pub(super) fn heat_worker_loop(
                     me.sit();
                     me.walking()
                 });
-                let run = partition.walk(part, &blob[req.range.clone()], graph, Some(cancel));
+                let cut = override_pane::ends_where_the_bytes_end(&req.range, blob.len());
+                let run = partition.walk(part, &blob[req.range.clone()], graph, Some(cancel), cut);
                 drop(walking);
                 if queue.stop_flag.load(Ordering::Relaxed) {
                     queue.end_sweep(start);
@@ -2344,8 +2346,10 @@ messages:
         rx.recv_timeout(Duration::from_secs(2))
             .expect("progress must fire for the first request");
 
+        // `true`: the request covers the whole blob, so the worker scores it
+        // as a range whose end is where the bytes end (spec 0310 S7).
         let expected_candidates =
-            override_pane::inferred_candidates(&range_bytes, graph.graph(), 1, None);
+            override_pane::inferred_candidates(&range_bytes, graph.graph(), 1, None, true);
         let expected_stats = heat_cue::derive_stats(&expected_candidates);
         assert_eq!(entry.best_score, expected_stats.best_score);
         assert_eq!(entry.best_count, expected_stats.best_count);
@@ -2645,7 +2649,8 @@ messages:
         }
         let entry = entry.expect("the speculative sweep must populate by_range");
 
-        let expected = override_pane::inferred_candidates(&range_bytes, graph.graph(), 1, None);
+        let expected =
+            override_pane::inferred_candidates(&range_bytes, graph.graph(), 1, None, true);
         let expected_stats = heat_cue::derive_stats(&expected);
         assert_eq!(entry.best_score, expected_stats.best_score);
         assert_eq!(entry.best_count, expected_stats.best_count);

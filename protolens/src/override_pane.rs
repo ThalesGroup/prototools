@@ -68,8 +68,29 @@ pub fn inferred_candidates(
     graph: &ArchivedCompiledGraph,
     jobs: usize,
     cancel: Option<&AtomicBool>,
+    cut: bool,
 ) -> Vec<(String, i64)> {
-    crate::sweep::ranked(range_bytes, graph, jobs, cancel)
+    crate::sweep::ranked(range_bytes, graph, jobs, cancel, cut)
+}
+
+/// Whether a query over `blob[range]` should be scored as a range whose
+/// end is where the bytes ran out (spec 0310 S7) — i.e. what to pass as
+/// the `cut` argument of the three functions here.
+///
+/// One expression, in one place, because it is the *only* thing that
+/// separates "this file ended" from "a length prefix lied" and every
+/// caller must answer it the same way. A range carved out by a declared
+/// length that fitted ends before the blob does; a document, and a
+/// truncated node's available bytes (spec 0302), end exactly where the
+/// blob does.
+///
+/// The one case it reads generously is a node whose declared length
+/// happens to end at the last byte of the file. Telling that apart from
+/// a cut needs the arena, which none of these callers has; the cost of
+/// being wrong is a candidate list charged five points where an empty
+/// one would also have been defensible.
+pub fn ends_where_the_bytes_end(range: &std::ops::Range<usize>, blob_len: usize) -> bool {
+    range.end >= blob_len
 }
 
 /// A single candidate's inferred score, scored alone (spec 0154 G1) —
@@ -82,8 +103,9 @@ pub fn inferred_score(
     range_bytes: &[u8],
     fqdn: &str,
     graph: &ArchivedCompiledGraph,
+    cut: bool,
 ) -> Option<i64> {
-    let result = score_one(range_bytes, fqdn, graph, &ScoringOpts::default())?;
+    let result = score_one(range_bytes, fqdn, graph, &cut_opts(cut))?;
     if result.vetoed {
         None
     } else {
@@ -110,6 +132,11 @@ pub struct ScoreBreakdown {
     /// whatever had accumulated by then, which is a fact about where
     /// the walk stopped rather than about the payload.
     pub vetoed: bool,
+    /// Spec 0310 S3: the range ran out of bytes part-way through a
+    /// token. Unlike `vetoed`, the counts above remain meaningful —
+    /// everything before the cut was read normally; what is unknown is
+    /// only what the cut removed.
+    pub truncated: bool,
 }
 
 impl ScoreBreakdown {
@@ -117,6 +144,7 @@ impl ScoreBreakdown {
     /// can assert the decomposition really does decompose it.
     pub fn score(&self) -> i64 {
         self.matches as i64
+            - 5 * self.truncated as i64
             - 10 * self.unknowns as i64
             - 15 * self.out_of_range as i64
             - 20 * self.non_canonical as i64
@@ -135,8 +163,9 @@ pub fn inferred_breakdown(
     range_bytes: &[u8],
     fqdn: &str,
     graph: &ArchivedCompiledGraph,
+    cut: bool,
 ) -> Option<ScoreBreakdown> {
-    let r = score_one(range_bytes, fqdn, graph, &ScoringOpts::default())?;
+    let r = score_one(range_bytes, fqdn, graph, &cut_opts(cut))?;
     Some(ScoreBreakdown {
         matches: r.matches,
         unknowns: r.unknowns,
@@ -144,7 +173,17 @@ pub fn inferred_breakdown(
         non_canonical: r.non_canonical,
         mismatches: r.mismatches,
         vetoed: r.vetoed,
+        truncated: r.truncated,
     })
+}
+
+/// The single-entry counterpart of what `sweep` folds into its stored
+/// options (spec 0310 S7).
+fn cut_opts(cut: bool) -> ScoringOpts {
+    ScoringOpts {
+        end_undeclared: cut,
+        ..Default::default()
+    }
 }
 
 // ── Override collection (spec 0117) ─────────────────────────────────────────

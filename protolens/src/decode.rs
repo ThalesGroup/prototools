@@ -471,8 +471,11 @@ pub fn determine_root_type_meanwhile<T>(
             let Some(graph) = ctx.graph.clone() else {
                 return Ok((None, Vec::new(), meanwhile(0)));
             };
+            // Spec 0310 S7: a document's end is never declared by anything
+            // inside it, so a file cut by its capture scores what it has
+            // rather than vetoing every candidate at its last token.
             let (candidates, meanwhile) =
-                sweep::ranked_with(blob, graph.graph(), jobs, None, meanwhile);
+                sweep::ranked_with(blob, graph.graph(), jobs, None, true, meanwhile);
             let desc = pick_winner(&candidates).and_then(|fqdn| ctx.message(&fqdn));
             Ok((desc, candidates, meanwhile))
         }

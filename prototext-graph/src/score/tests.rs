@@ -209,6 +209,7 @@ fn score_coefficients_rank_by_suspicion() {
             non_canonical: 0,
             mismatches: 0,
             vetoed: false,
+            truncated: false,
             termination: 0,
         };
         f(&mut s);
@@ -216,22 +217,30 @@ fn score_coefficients_rank_by_suspicion() {
     };
 
     let matched = one(|s| s.matches = 1);
+    let cut = one(|s| s.truncated = true);
     let unknown = one(|s| s.unknowns = 1);
     let oor = one(|s| s.out_of_range = 1);
     let non_canon = one(|s| s.non_canonical = 1);
     let missing_required = one(|s| s.mismatches = 1);
 
     assert_eq!(matched, 1);
+    assert_eq!(cut, -5);
     assert_eq!(unknown, -10);
     assert_eq!(oor, -15);
     assert_eq!(non_canon, -20);
     assert_eq!(missing_required, -30);
 
     // Increasing suspicion, which is also the order the reports print.
+    // `truncated` (spec 0310) is the mildest charge of all: it is evidence
+    // about the capture, not about the writer and not about the schema fit.
     assert!(
-        matched > unknown && unknown > oor && oor > non_canon && non_canon > missing_required,
+        matched > cut
+            && cut > unknown
+            && unknown > oor
+            && oor > non_canon
+            && non_canon > missing_required,
         "coefficients must rank by suspicion: \
-         matched {matched} > unknown {unknown} > out_of_range {oor} > \
+         matched {matched} > truncated {cut} > unknown {unknown} > out_of_range {oor} > \
          non_canonical {non_canon} > mismatches {missing_required}"
     );
 }
@@ -2650,4 +2659,140 @@ fn test_score_policy_output_unchanged() {
     assert_eq!(s.unknowns, 2, "G4: an unknown is an unknown under `Score`");
     assert_eq!(s.non_canonical, 1, "field 1 twice");
     assert!(!s.vetoed);
+}
+
+// ── Spec 0310: a cut range scores what it has ────────────────────────────────
+
+fn cut_opts() -> walk::ScoringOpts {
+    walk::ScoringOpts {
+        end_undeclared: true,
+        ..Default::default()
+    }
+}
+
+/// Spec 0310 test 1. The same blob, cut at its tail, read twice: with the
+/// end declared it is a lie and every candidate dies; with the end
+/// undeclared it is a capture that ran out and keeps its evidence.
+///
+/// The score difference from the untruncated original is exactly the −5
+/// charge plus the matches the cut removed — which is what makes the
+/// coefficient a charge for being provisional rather than a charge for
+/// the missing bytes (spec 0310 N5).
+#[test]
+fn a_cut_tail_scores_instead_of_vetoing() {
+    let g = build_graph();
+
+    let mut whole = field_varint(1, 1); // id (required)
+    whole.extend(field_len(2, b"hello")); // name
+    whole.extend(field_len(4, &field_varint(1, 42))); // child
+
+    let intact = score_entry(&whole, &g, "Outer");
+    assert!(!intact.vetoed);
+    assert!(!intact.truncated);
+    assert_eq!(intact.matches, 4, "three outer fields and `child.value`");
+
+    // Drop the last two bytes of `child`'s payload, so its declared length
+    // now runs past the end of what is there.
+    let cut = &whole[..whole.len() - 2];
+
+    let declared = score_entry(cut, &g, "Outer");
+    assert!(
+        declared.vetoed,
+        "with the end declared, an overrun is a length that lied"
+    );
+
+    let ran_out = score_entry_opts(cut, &g, "Outer", &cut_opts());
+    assert!(!ran_out.vetoed, "a cut capture is not a wrong file");
+    assert!(ran_out.truncated);
+    assert_eq!(
+        ran_out.matches, 2,
+        "the two fields before the cut still count; `child` does not"
+    );
+    assert_eq!(
+        ran_out.score(),
+        intact.score() - 5 - 2,
+        "five for being provisional, two for the matches the cut removed"
+    );
+}
+
+/// Spec 0310 test 2 / G2. The flag says the *outermost* range ran out. A
+/// nested length that overruns its parent's declared end is a frame
+/// contradicting itself, and still vetoes — otherwise the demotion would
+/// have swallowed a veto that is about impossibility, not about capture.
+#[test]
+fn only_the_ran_out_sites_are_demoted() {
+    let g = build_graph();
+
+    // `child` declares 4 bytes but its payload holds a nested LEN whose own
+    // length claims 40. The outer message is complete: its own declared
+    // length fits inside the buffer with room to spare.
+    let liar = [tag(1, 2), varint(40)].concat();
+    let mut inner = liar.clone();
+    inner.resize(4, 0);
+    let mut pb = field_varint(1, 1);
+    pb.extend(field_len(4, &inner));
+    pb.extend(field_varint(3, 7)); // a whole field after the lie
+
+    let s = score_entry_opts(&pb, &g, "Outer", &cut_opts());
+    assert!(
+        s.vetoed,
+        "a length that overruns a declared parent end is still a veto"
+    );
+    assert!(!s.truncated);
+}
+
+/// Spec 0310 S5. The cut frame runs no cardinality pass, so a `required`
+/// field the cut removed is not charged as absent. Without the rule this
+/// is −30 and the demotion recovers nothing.
+#[test]
+fn a_cut_frame_charges_no_absent_required_field() {
+    let g = build_graph();
+
+    // `Outer.id` is required and is written last, so the cut removes it.
+    let mut pb = field_len(2, b"hello");
+    pb.extend(field_len(4, &field_varint(1, 42)));
+    pb.extend(field_varint(1, 1));
+    let cut = &pb[..pb.len() - 4];
+
+    let s = score_entry_opts(cut, &g, "Outer", &cut_opts());
+    assert!(!s.vetoed);
+    assert!(s.truncated);
+    assert_eq!(
+        s.mismatches, 0,
+        "a frame that did not end cannot report a field as absent"
+    );
+}
+
+/// Spec 0310 N2. `Scan` reads an overrun as "this candidate root does not
+/// start here", and owns the termination-offset contract a demoted overrun
+/// would have to satisfy. The two options are not combinable.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "end_undeclared is not defined under Policy::Scan")]
+fn scan_policy_refuses_the_flag() {
+    let g = compile_and_load(&scan_merged(vec![uint32(1, FieldLabel::Optional)], &[]));
+    let opts = walk::ScoringOpts {
+        end_undeclared: true,
+        ..scan_opts()
+    };
+    let _ = score_entry_opts(&field_varint(1, 1), &g, "Rec", &opts);
+}
+
+/// Spec 0310 S2, the three varint sites. `VarintResult::garbage` flattens
+/// "ran out" together with "still going after ten bytes", and `next_pos`
+/// does not separate them either — the overflow path forces it to `buflen`
+/// as well. `varint_ran_out` is what separates them, and this is the case
+/// that proves it does: an overlong varint that met its terminator, with
+/// bytes still to come, must still veto.
+#[test]
+fn a_varint_overflow_before_the_end_is_not_a_cut() {
+    let g = build_graph();
+
+    let mut pb = tag(1, 0);
+    pb.extend([0xFF; 11]); // eleven continuation bytes: overflow, not a cut
+    pb.extend(field_varint(3, 7)); // and bytes after it, so it is not the tail
+
+    let s = score_entry_opts(&pb, &g, "Outer", &cut_opts());
+    assert!(s.vetoed, "an overlong varint is impossible, not incomplete");
+    assert!(!s.truncated);
 }

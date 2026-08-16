@@ -226,11 +226,24 @@ impl ScoreBreakdown {
             (self.non_canonical, "non-canonical encoding", -20),
             (self.mismatches, "required field absent", -30),
         ];
-        terms
+        let mut out: Vec<String> = terms
             .iter()
             .filter(|(n, _, _)| *n > 0)
             .map(|(n, label, weight)| format!("{n:>5} × {weight:<+4} {label}"))
-            .collect()
+            .collect();
+        // Spec 0310 S3. Last, because it is the mildest charge and the
+        // box reads worst-last — and without a count, because
+        // `truncated` is a bool: "1 ×" would invite the reader to
+        // wonder what two of them would mean. The weight still lands in
+        // the same column as every other term's, so the lines above it
+        // still visibly sum to the total below.
+        if self.truncated {
+            out.push(format!(
+                "{:>5}   {:<4} the bytes ran out before the end",
+                "", -5
+            ));
+        }
+        out
     }
 }
 
@@ -270,13 +283,15 @@ impl App {
         // Cloned rather than borrowed, for the reason `heat_cue_resolve`
         // clones it (spec 0180 S2): the `Arc` clone leaves `self` free
         // to be borrowed mutably for the memo write below.
+        let cut = crate::override_pane::ends_where_the_bytes_end(&range, self.blob.len());
         let breakdown = match self.ctx.graph.clone() {
             None => Breakdown::NoGraph,
-            Some(graph) => match inferred_breakdown(&self.blob[range.clone()], &key, graph.graph())
-            {
-                None => Breakdown::Unranked,
-                Some(b) => Breakdown::Scored(b),
-            },
+            Some(graph) => {
+                match inferred_breakdown(&self.blob[range.clone()], &key, graph.graph(), cut) {
+                    None => Breakdown::Unranked,
+                    Some(b) => Breakdown::Scored(b),
+                }
+            }
         };
         self.breakdown_memo = Some(((range.start, key), breakdown));
         breakdown

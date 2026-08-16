@@ -1653,7 +1653,8 @@ fn measure_root_type_gate(desc_path: &Path, decode_too: bool) {
         return;
     };
     let t = Instant::now();
-    let candidates = crate::sweep::ranked(&blob, graph.graph(), 1, None);
+    // `true`, as the startup sweep this is standing in for (spec 0310 S7).
+    let candidates = crate::sweep::ranked(&blob, graph.graph(), 1, None, true);
     let winner = decode::pick_winner(&candidates);
     let sweep = t.elapsed();
     eprintln!(

@@ -70,6 +70,23 @@ pub struct EntryScore<'g> {
     /// never reaches here.
     pub mismatches: u64,
     pub vetoed: bool,
+    /// The range ran out of bytes part-way through a token, and the caller
+    /// had declared (via [`ScoringOpts::end_undeclared`]) that its end is
+    /// where the bytes end — so this is a cut capture rather than a lie
+    /// told by a length prefix, and is scored instead of vetoed
+    /// (spec 0310 S2).
+    ///
+    /// A `bool` rather than a counter: the sites that set it return
+    /// immediately, so it can be set at most once per walk, and a count
+    /// that is only ever 0 or 1 invites a reader to sum it.
+    ///
+    /// It also carries what the demotion took away. Before spec 0310,
+    /// `vetoed` was the only way a caller could tell that a reading was
+    /// incomplete; a truncated entry is no longer vetoed, so *this* is now
+    /// the "the counters below describe only part of the record" flag.
+    /// Unlike `vetoed`, the counters remain meaningful: everything before
+    /// the cut was read normally.
+    pub truncated: bool,
     /// Byte offset at which this root stopped consuming (spec 0238 S14).
     ///
     /// Under [`Policy::Scan`] that is the termination offset — the first byte
@@ -85,10 +102,10 @@ pub struct EntryScore<'g> {
     /// bytes to `usize`'s 8, which at 49 255 corpus roots is 400 KB of extra
     /// result per `score_all` call.
     ///
-    /// **Meaningless on a vetoed entry**, where it is `pb.len()` under both
-    /// policies: a veto fires part-way through a field already consumed, at
-    /// an offset that is not a record boundary and may lie past the true end
-    /// of the record.
+    /// **Meaningless on a vetoed entry, and on a truncated one**, where it is
+    /// `pb.len()` under both policies: a veto fires part-way through a field
+    /// already consumed, at an offset that is not a record boundary and may
+    /// lie past the true end of the record.
     pub termination: usize,
 }
 
@@ -102,8 +119,23 @@ impl EntryScore<'_> {
     /// conformance*: the schema still fits, the writer was odd. `mismatches` is
     /// the heaviest because it is evidence about *schema fit* with no benign
     /// reading: `required` is precisely what a conformant writer cannot omit.
+    ///
+    /// `truncated` sits below all of them (spec 0310 S4) because it is
+    /// evidence about the *capture* and about nothing else: it says nothing
+    /// about the writer and nothing about whether the schema fits. Not zero,
+    /// because scores are compared across ranges and a cut reading is
+    /// provisional in a way a complete one is not. **Five** because a fixed
+    /// constant is self-scaling against the evidence — it is the number of
+    /// matched fields a cut range must show before it scores positive at
+    /// all, so a 20 KB capture missing its last record is charged noise
+    /// while a range cut after one tag goes negative.
+    ///
+    /// Within one candidate list the charge is levied once per range on
+    /// every survivor equally, so it cannot reorder anything; its only
+    /// effects are on comparisons *between* ranges.
     pub fn score(&self) -> i64 {
         self.matches as i64
+            - 5 * self.truncated as i64
             - 10 * self.unknowns as i64
             - 15 * self.out_of_range as i64
             - 20 * self.non_canonical as i64
@@ -412,6 +444,10 @@ pub enum Policy {
 /// build one with `..Default::default()` rather than field by field. Rust has
 /// no default-valued struct fields, so a complete literal has to name every
 /// one of them and breaks on each addition (spec 0238 S11).
+///
+/// `Clone` so that a caller holding a shared set of options can vary one
+/// per-query field off it (spec 0310 S7) without restating the rest.
+#[derive(Clone)]
 pub struct ScoringOpts {
     /// If true (default), google.protobuf.Any fields are expanded using the
     /// type resolved from type_url and scored against the wrapped type.
@@ -420,6 +456,28 @@ pub struct ScoringOpts {
     /// Defaults to [`Policy::Score`], the behaviour every caller had before
     /// the policy existed.
     pub policy: Policy,
+    /// This range ends because the bytes ran out, not because a length
+    /// prefix said where it ends (spec 0310 S1). A range that runs out
+    /// part-way through a token is then scored with `EntryScore::truncated`
+    /// set, rather than vetoing every candidate that reached the cut.
+    ///
+    /// It is a static property of where the range came from, not a
+    /// discovered one, which is what makes it answerable before the walk:
+    /// a whole file always has it, a byte range carved out by a declared
+    /// length never does, and a truncated node's available bytes have it
+    /// again. The walk cannot derive it — at depth 0 it has a buffer and no
+    /// way to tell whether its last byte is a file's last byte or a
+    /// payload's — which is why it is an input.
+    ///
+    /// A well-formed range never reaches a demoted site, so the flag costs
+    /// it nothing.
+    ///
+    /// Refused under [`Policy::Scan`] (spec 0310 N2): Scan hunts records in
+    /// a haystack, where an overrun is exactly the evidence that the
+    /// candidate root does not start here, and it owns the
+    /// termination-offset contract that a demoted overrun would have to
+    /// define a value for.
+    pub end_undeclared: bool,
 }
 
 impl Default for ScoringOpts {
@@ -427,6 +485,7 @@ impl Default for ScoringOpts {
         Self {
             expand_any: true,
             policy: Policy::default(),
+            end_undeclared: false,
         }
     }
 }
@@ -502,6 +561,14 @@ pub fn score_subset<'g>(
          schema database with reproto's --emit-extension-ranges"
     );
 
+    // Spec 0310 N2. Scan reads an overrun as "this candidate root does not
+    // start here", which is the whole point of the policy, and it owns the
+    // termination-offset contract a demoted overrun would have to satisfy.
+    debug_assert!(
+        !opts.end_undeclared || opts.policy != Policy::Scan,
+        "ScoringOpts::end_undeclared is not defined under Policy::Scan"
+    );
+
     let mut scores: Vec<EntryScore<'g>> = roots
         .iter()
         .map(|&r| EntryScore {
@@ -512,6 +579,7 @@ pub fn score_subset<'g>(
             non_canonical: 0,
             mismatches: 0,
             vetoed: false,
+            truncated: false,
             // Overwritten only by an S12 termination, so "ran to the end" is
             // the value a root keeps by not stopping.
             termination: pb.len(),
@@ -530,7 +598,7 @@ pub fn score_subset<'g>(
     );
 
     let mut ws = WalkState::new(graph, &mut scores, opts, cancel);
-    score_message_multi(pb, 0, initial_active, None, &mut ws, 0);
+    score_message_multi(pb, 0, initial_active, None, &mut ws, 0, opts.end_undeclared);
 
     scores
 }
@@ -1099,6 +1167,53 @@ fn veto_all(active: &mut Vec<ActiveEntry>, ws: &mut WalkState, reason: &str) {
     active.clear();
 }
 
+/// The range ended part-way through a token: [`veto_all`], unless `cut` says
+/// it ended because the bytes ran out, in which case the entries keep their
+/// score and are flagged `truncated` instead (spec 0310 S2).
+///
+/// Every caller returns immediately afterwards, exactly as it did when this
+/// was `veto_all` outright — the range is over either way. What changes is
+/// only whether the candidates that reached the cut survive it.
+///
+/// No end-of-frame cardinality pass runs on the cut frame (spec 0310 S5),
+/// which is what the `veto_all` callers already did by returning before
+/// [`apply_cardinality_multi`], and is now the rule rather than a side
+/// effect: a cardinality check is a statement about a frame that ended, and
+/// this one did not. Dropping it is what keeps the demotion from charging
+/// `mismatches` — 30 points — for a `required` field the cut may simply have
+/// removed.
+fn cut_or_veto(active: &mut Vec<ActiveEntry>, ws: &mut WalkState, cut: bool, reason: &str) {
+    if !cut {
+        veto_all(active, ws, reason);
+        return;
+    }
+    for ae in active.iter_mut() {
+        flush_pending(ae, ws.scores);
+        for &e in &ae.entries {
+            ws.scores[e as usize].truncated = true;
+        }
+    }
+    active.clear();
+}
+
+/// Whether the varint parse that failed at `pos` failed because the bytes ran
+/// out, rather than because the value overflowed (spec 0310 S2).
+///
+/// `VarintResult::garbage` flattens the two, and `next_pos` cannot separate
+/// them either: the overflow path forces `next_pos = buflen` just as the
+/// truncated path does (`prototext-core/src/helpers/varint.rs`). What *does*
+/// separate them is that a truncated varint never met a terminator — every
+/// byte from `pos` onwards carries the continuation bit — whereas an overlong
+/// one either met a terminator or is itself also cut, and being read as cut is
+/// then the right answer anyway.
+///
+/// The scan is bounded by the rest of the buffer and runs at most once per
+/// walk, since every caller returns immediately.
+#[inline]
+fn varint_ran_out(buf: &[u8], pos: usize) -> bool {
+    buf[pos.min(buf.len())..].iter().all(|b| b & 0x80 != 0)
+}
+
 /// Remove newly-vetoed entries from every ActiveEntry in `active`, then drop
 /// empty ActiveEntries.  Called after returning from a sub-message recursion.
 ///
@@ -1334,6 +1449,13 @@ fn extract_any_value(any_bytes: &[u8]) -> Option<&[u8]> {
 /// — every recursion is handed a fresh set built by `group_by_state` — so
 /// "the frame returned" is exactly "these groups are over", and one flush on
 /// the way out covers every exit that was not already a veto.
+///
+/// `end_undeclared` is this *frame's* copy of [`ScoringOpts::end_undeclared`]
+/// (spec 0310 S1), not the walk's: it says whether `buf`'s end is where the
+/// available bytes stop. A group recursion shares its parent's buffer and so
+/// inherits it; a LEN or `Any` recursion walks a payload delimited by a
+/// declared length and so passes `false`, because an overrun *there* is a
+/// frame contradicting itself rather than a capture running out.
 fn score_message_multi(
     buf: &[u8],
     start: usize,
@@ -1341,8 +1463,10 @@ fn score_message_multi(
     my_group: Option<u64>,
     ws: &mut WalkState,
     depth: usize,
+    end_undeclared: bool,
 ) -> usize {
-    let pos = score_message_multi_inner(buf, start, &mut active, my_group, ws, depth);
+    let pos =
+        score_message_multi_inner(buf, start, &mut active, my_group, ws, depth, end_undeclared);
     flush_all(&mut active, ws.scores);
     pos
 }
@@ -1354,6 +1478,7 @@ fn score_message_multi_inner(
     my_group: Option<u64>,
     ws: &mut WalkState,
     depth: usize,
+    end_undeclared: bool,
 ) -> usize {
     let buflen = buf.len();
     let mut pos = start;
@@ -1386,8 +1511,14 @@ fn score_message_multi_inner(
         if pos == buflen || active.is_empty() {
             if !active.is_empty() {
                 if my_group.is_some() {
-                    // Reached EOF while still inside a group — open-ended group → veto.
-                    veto_all(active, ws, "open-ended group (EOF inside group)");
+                    // Reached EOF while still inside a group — open-ended group → veto,
+                    // unless the bytes simply ran out (spec 0310 S2).
+                    cut_or_veto(
+                        active,
+                        ws,
+                        end_undeclared,
+                        "open-ended group (EOF inside group)",
+                    );
                     return buflen;
                 }
                 for ae in active.iter() {
@@ -1418,7 +1549,8 @@ fn score_message_multi_inner(
 
         let tag = parse_wiretag(buf, pos);
         if tag.garbage.is_some() {
-            veto_all(active, ws, "garbage wire tag");
+            let cut = end_undeclared && varint_ran_out(buf, tag_start);
+            cut_or_veto(active, ws, cut, "garbage wire tag");
             return buflen;
         }
         let field_number = tag.field_number;
@@ -1563,7 +1695,8 @@ fn score_message_multi_inner(
             WT_VARINT => {
                 let vr = parse_varint(buf, pos);
                 if vr.garbage.is_some() {
-                    veto_all(active, ws, "truncated varint body");
+                    let cut = end_undeclared && varint_ran_out(buf, pos);
+                    cut_or_veto(active, ws, cut, "truncated varint body");
                     return buflen;
                 }
                 pos = vr.next_pos;
@@ -1608,7 +1741,7 @@ fn score_message_multi_inner(
 
             WT_I64 => {
                 let Some(end) = payload_end(pos, 8, buflen) else {
-                    veto_all(active, ws, "truncated I64 body");
+                    cut_or_veto(active, ws, end_undeclared, "truncated I64 body");
                     return buflen;
                 };
                 pos = end;
@@ -1632,7 +1765,8 @@ fn score_message_multi_inner(
             WT_LEN => {
                 let lr = parse_varint(buf, pos);
                 if lr.garbage.is_some() {
-                    veto_all(active, ws, "truncated LEN length prefix");
+                    let cut = end_undeclared && varint_ran_out(buf, pos);
+                    cut_or_veto(active, ws, cut, "truncated LEN length prefix");
                     return buflen;
                 }
                 pos = lr.next_pos;
@@ -1647,7 +1781,12 @@ fn score_message_multi_inner(
                 }
 
                 let Some(end) = payload_end(pos, lr.value, buflen) else {
-                    veto_all(active, ws, "LEN body extends past end of buffer");
+                    cut_or_veto(
+                        active,
+                        ws,
+                        end_undeclared,
+                        "LEN body extends past end of buffer",
+                    );
                     return buflen;
                 };
                 let payload = &buf[pos..end];
@@ -1869,6 +2008,7 @@ fn score_message_multi_inner(
                                     None,
                                     ws,
                                     depth + 1,
+                                    false,
                                 );
                             }
                             None => {
@@ -1884,7 +2024,7 @@ fn score_message_multi_inner(
 
                     if !normal_pairs.is_empty() {
                         let child_active = group_by_state(ws.graph, normal_pairs.into_iter());
-                        score_message_multi(payload, 0, child_active, None, ws, depth + 1);
+                        score_message_multi(payload, 0, child_active, None, ws, depth + 1, false);
                     }
                     propagate_vetoes(active, ws, veto_epoch);
                 }
@@ -1929,6 +2069,7 @@ fn score_message_multi_inner(
                         Some(field_number),
                         ws,
                         depth + 1,
+                        end_undeclared,
                     );
                     propagate_vetoes(active, ws, veto_epoch);
                     // Record occurrences and matches for surviving Found entries.
@@ -2019,7 +2160,7 @@ fn score_message_multi_inner(
 
             WT_I32 => {
                 let Some(end) = payload_end(pos, 4, buflen) else {
-                    veto_all(active, ws, "truncated I32 body");
+                    cut_or_veto(active, ws, end_undeclared, "truncated I32 body");
                     return buflen;
                 };
                 pos = end;
@@ -2115,6 +2256,7 @@ mod set_vetoed_tests {
             non_canonical: 0,
             mismatches: 0,
             vetoed: false,
+            truncated: false,
             termination: 0,
         }
     }

@@ -203,7 +203,7 @@ fn the_breakdown_is_the_scores_own_terms() {
     // field 1, varint 1 (declared) then field 2, varint 1 (not).
     let payload = [(1u8 << 3), 1, (2u8 << 3), 1];
 
-    let b = inferred_breakdown(&payload, "Msg0", graph.graph())
+    let b = inferred_breakdown(&payload, "Msg0", graph.graph(), false)
         .expect("Msg0 is a root type of this graph");
     assert!(!b.vetoed);
     assert_eq!(b.matches, 1, "field 1 is declared");
@@ -214,12 +214,12 @@ fn the_breakdown_is_the_scores_own_terms() {
 
     assert_eq!(
         Some(b.score()),
-        inferred_score(&payload, "Msg0", graph.graph()),
+        inferred_score(&payload, "Msg0", graph.graph(), false),
         "the decomposition must sum to the number the cue prints"
     );
 
     // `None` keeps `inferred_score`'s own meaning: not a root type.
-    assert!(inferred_breakdown(&payload, "no.such.Type", graph.graph()).is_none());
+    assert!(inferred_breakdown(&payload, "no.such.Type", graph.graph(), false).is_none());
 }
 
 /// Spec 0280 test plan 6 / S3: a vetoed entry reports only that.
@@ -235,10 +235,10 @@ fn a_vetoed_type_reports_only_that() {
     // which the walk cannot reconcile and vetoes on.
     let payload = [(1u8 << 3) | WT_LEN as u8, 1, b'x'];
 
-    let b = inferred_breakdown(&payload, "Msg0", graph.graph()).expect("still a root type");
+    let b = inferred_breakdown(&payload, "Msg0", graph.graph(), false).expect("still a root type");
     assert!(b.vetoed, "a wire-type contradiction vetoes");
     assert_eq!(
-        inferred_score(&payload, "Msg0", graph.graph()),
+        inferred_score(&payload, "Msg0", graph.graph(), false),
         None,
         "and `inferred_score` reports it by refusing to answer"
     );
@@ -352,7 +352,7 @@ fn only_the_non_zero_terms_are_printed() {
     let graph = test_scoring_graph();
     let payload = [(1u8 << 3), 1];
 
-    let b = inferred_breakdown(&payload, "Msg0", graph.graph()).unwrap();
+    let b = inferred_breakdown(&payload, "Msg0", graph.graph(), false).unwrap();
     let popup = Popup {
         body: PopupBody::Score {
             type_key: "Msg0".to_string(),
@@ -368,4 +368,44 @@ fn only_the_non_zero_terms_are_printed() {
     );
     assert!(lines[1].text.contains("fields matched"), "{lines:?}");
     assert!(lines[2].text.contains("total"), "{lines:?}");
+}
+
+/// Spec 0310 S3: a cut range's counters stay meaningful — unlike a
+/// vetoed one's — so the box prints them, and says why the reading is
+/// provisional in a line of its own.
+#[test]
+fn a_cut_range_says_so_and_still_shows_its_terms() {
+    let graph = test_scoring_graph();
+    // Field 1 (declared) in full, then a LEN field whose declared length
+    // runs past what is there.
+    let payload = [(1u8 << 3), 1, (2u8 << 3) | WT_LEN as u8, 9, b'x'];
+
+    let b = inferred_breakdown(&payload, "Msg0", graph.graph(), true).expect("a root type");
+    assert!(!b.vetoed, "a cut is not a contradiction");
+    assert!(b.truncated);
+    assert_eq!(b.matches, 1, "the field before the cut still counts");
+
+    let popup = Popup {
+        body: PopupBody::Score {
+            type_key: "Msg0".to_string(),
+            breakdown: Breakdown::Scored(b),
+        },
+        anchor: (0, 0),
+    };
+    let lines = App::popup_lines(&popup, 22);
+    assert!(lines[1].text.contains("fields matched"), "{lines:?}");
+    let cut = lines
+        .iter()
+        .find(|l| l.text.contains("the bytes ran out"))
+        .unwrap_or_else(|| panic!("the box must say the range was cut: {lines:?}"));
+    assert!(cut.text.contains("-5"), "with its weight: {cut:?}");
+    assert!(
+        !cut.text.contains('×'),
+        "and without a count, since it is a bool: {cut:?}"
+    );
+    let total = &lines.last().expect("a total").text;
+    assert!(
+        total.contains("total") && total.contains(&b.score().to_string()),
+        "the terms above must still sum to the total: {lines:?}"
+    );
 }

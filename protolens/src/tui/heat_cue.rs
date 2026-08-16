@@ -493,13 +493,14 @@ impl App {
         };
         let graph = graph.graph();
         let range_bytes = &self.blob[range.clone()];
+        let cut = override_pane::ends_where_the_bytes_end(&range, self.blob.len());
         let state = if let Some(best) = state.best() {
             // Window already covered — only the current type's score is
             // missing (spec 0154 G3's cheap path, mirrored here).
             let key = current_key
                 .as_deref()
                 .expect("unsettled with best known implies current is still pending");
-            let score = override_pane::inferred_score(range_bytes, key, graph);
+            let score = override_pane::inferred_score(range_bytes, key, graph, cut);
             let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
             caches
                 .current_score
@@ -512,7 +513,7 @@ impl App {
             // reason it is synchronous: this runs on the thread that
             // would have to raise the flag.
             let candidates =
-                override_pane::inferred_candidates(range_bytes, graph, self.sweep_jobs, None);
+                override_pane::inferred_candidates(range_bytes, graph, self.sweep_jobs, None, cut);
             let stats = derive_stats(&candidates);
             let current_entry = current_key
                 .as_deref()
