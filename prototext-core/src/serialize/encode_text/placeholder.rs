@@ -62,6 +62,18 @@ pub(super) fn write_placeholder(
 /// the varint (spec 0303 S6: inflates the declared length to reconstruct the
 /// original pre-truncation wire size for a `TRUNCATED_MESSAGE` field).
 /// Returns the total waste (placeholder waste + frame_acw) to propagate up.
+///
+/// **Invariant: the written varint must fit in `5 + ohb` bytes** — that is,
+/// `child_len_compacted + missing_extra < 2^35` (spec 0311 S6). The varint is
+/// written *flush-right* into the room reserved by `write_placeholder`, so a
+/// sixth byte lands on the `next_placeholder` link and silently corrupts the
+/// forward list `compact` walks: `waste` stays non-negative all the way to
+/// `k = BASE_OVERHEAD + ohb`, so the failure is a wrong buffer, not a panic.
+///
+/// `child_len_compacted` is bounded by what was actually written.
+/// `missing_extra` is not — it comes from a `MISSING:` count in the input —
+/// so callers must bound it. The renderer does: `descends_when_truncated`
+/// refuses to emit `TRUNCATED_MESSAGE` above `2^35`.
 pub(super) fn fill_placeholder(
     out: &mut [u8],
     placeholder_start: usize,
@@ -83,6 +95,12 @@ pub(super) fn fill_placeholder(
         &mut tmp,
     );
     let k = tmp.len(); // actual bytes used (varint_bytes + ohb)
+    debug_assert!(
+        k <= 5 + ohb,
+        "spec 0311 S6: a length of {} needs {k} varint bytes and would \
+         overwrite the next_placeholder link",
+        child_len_compacted as u64 + missing_extra
+    );
 
     // Write varint flush-right into varint_room.
     let varint_room_end = placeholder_start + BASE_OVERHEAD + ohb;
@@ -144,4 +162,40 @@ pub(super) fn compact(out: &mut Vec<u8>, first_placeholder: usize, base: usize) 
     }
 
     out.truncate(write_pos);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Spec 0311 test plan C6. The largest length the renderer will ever ask
+    /// for is one below `2^35`; its varint is exactly five bytes, which is
+    /// the whole of `varint_room` and not one byte more. The assertion is on
+    /// the `next_placeholder` link: it must still read back as the sentinel
+    /// the placeholder was written with.
+    #[test]
+    fn the_placeholder_varint_room_is_respected() {
+        for ohb in [0usize, 1, 3] {
+            let mut out = Vec::new();
+            let (mut first, mut last) = (None, None);
+            let (start, content_start) = write_placeholder(&mut out, ohb, &mut first, &mut last);
+            out.extend_from_slice(&[0x08, 0x2A]); // two bytes of content
+            let content_len = (out.len() - content_start) as u64;
+
+            let missing_extra = (1u64 << 35) - 1 - content_len;
+            let waste = fill_placeholder(&mut out, start, ohb, content_start, 0, missing_extra);
+
+            // Five varint bytes plus `ohb` overhead bytes: the room exactly.
+            let k = BASE_OVERHEAD + ohb - waste;
+            assert_eq!(k, 5 + ohb, "ohb {ohb}: varint took {k} bytes");
+
+            let mut next = [0u8; 8];
+            next[..5].copy_from_slice(&out[start + 1..start + 6]);
+            assert_eq!(
+                u64::from_le_bytes(next),
+                NO_NEXT,
+                "ohb {ohb}: the varint overwrote the next_placeholder link"
+            );
+        }
+    }
 }

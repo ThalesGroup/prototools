@@ -26,11 +26,21 @@ pub(in super::super) struct FieldCtx<'a> {
 }
 
 /// Render a length-delimited field (string, bytes, message, packed, wire-bytes).
+///
+/// `missing` is `Some(n)` only on spec 0311's path: this field's length
+/// prefix declared `n` bytes more than the buffer held, `data` is the bytes
+/// that *are* present, and the caller has already established that the
+/// schema declares a non-group message here. Every other caller passes
+/// `None`, and the assertion below is that guarantee written down —
+/// everything from the depth cap to the packed path to the wire-type
+/// mismatch is unreachable with it set, so none of them has to decide what
+/// to do with a count they cannot re-encode.
 pub(in super::super) fn render_len_field<S: Sink>(
     ctx: FieldCtx<'_>,
     schema_present: bool,
     raw_range: Range<usize>,
     data: &[u8],
+    missing: Option<u64>,
     sink: &mut S,
 ) {
     let FieldCtx {
@@ -38,6 +48,13 @@ pub(in super::super) fn render_len_field<S: Sink>(
         field_schema,
         tag,
     } = ctx;
+    debug_assert!(
+        missing.is_none()
+            || field_schema
+                .is_some_and(|fs| { !fs.is_group() && matches!(fs.kind(), Kind::Message(_)) }),
+        "spec 0311 S2: a missing count is only ever carried on a declared \
+         non-group message field"
+    );
     if sink.treat_len_as_opaque() {
         sink.scalar_field(
             field_number,
@@ -107,6 +124,10 @@ pub(in super::super) fn render_len_field<S: Sink>(
                 tag,
                 NestedKind::Message {
                     probed_as_message: Some(probed_as_message),
+                    // Unreachable with a count set: an unknown field has no
+                    // schema, and spec 0311 routes only schema-declared
+                    // messages here (N1 leaves the cascade alone).
+                    missing: None,
                 },
                 raw_range.start,
                 raw_range.end - data.len(),
@@ -208,7 +229,13 @@ pub(in super::super) fn render_len_field<S: Sink>(
             // Any expansion intercept (spec 0089): if the field type is
             // google.protobuf.Any and EXPAND_ANY is set, try to expand the
             // value inline using the resolved type from type_url.
-            if EXPAND_ANY.with(|c| c.get())
+            //
+            // Spec 0311 N6: a truncated payload does not expand. Both
+            // expansions synthesize virtual fields whose round-trip is
+            // defined against complete bytes, and neither carries a place
+            // to put the declared length back.
+            if missing.is_none()
+                && EXPAND_ANY.with(|c| c.get())
                 && nested_msg_desc.full_name() == "google.protobuf.Any"
                 && render_any_expansion(
                     FieldCtx {
@@ -227,7 +254,10 @@ pub(in super::super) fn render_len_field<S: Sink>(
 
             // MessageSet expansion intercept (spec 0100): if the field type
             // is a MessageSet (structural heuristic), expand groups inline.
-            if EXPAND_MESSAGE_SET.with(|c| c.get()) && is_message_set(&nested_msg_desc) {
+            if missing.is_none()
+                && EXPAND_MESSAGE_SET.with(|c| c.get())
+                && is_message_set(&nested_msg_desc)
+            {
                 render_message_set_expansion(
                     &nested_msg_desc,
                     FieldCtx {
@@ -252,6 +282,7 @@ pub(in super::super) fn render_len_field<S: Sink>(
                 NestedKind::Message {
                     // A declared message field: the schema decided, no probe ran.
                     probed_as_message: None,
+                    missing,
                 },
                 raw_range.start,
                 raw_range.end - data.len(),

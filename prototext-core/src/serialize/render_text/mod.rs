@@ -313,6 +313,51 @@ pub(super) fn at_depth_cap() -> bool {
     DEPTH.with(Cell::get) >= MAX_WIRE_DEPTH
 }
 
+/// A declared length that cannot be re-encoded (spec 0311 S6).
+///
+/// `fill_placeholder` writes the restored length varint flush-right into
+/// `varint_room_base(5) + ohb` bytes, and a sixth minimal byte writes over
+/// the `next_placeholder` link with no panic — a wrong output rather than a
+/// crash. Five varint bytes hold `2^35 - 1`.
+///
+/// Ordinarily unreachable, because a length is bounded by the buffer that
+/// satisfied it. A *truncated* field's length is bounded by nothing: it is
+/// a number read out of a file that, being cut, may be corrupt in other
+/// ways too.
+const MAX_REENCODABLE_LEN: u64 = 1 << 35;
+
+/// Spec 0311 S1: whether a LEN field whose length prefix overran should be
+/// descended into rather than handed back as `TRUNCATED_BYTES`.
+///
+/// Four conditions, and each one is the absence of a way to lose bytes:
+///
+/// - the schema declares a non-group message — the same test
+///   `render_len_field` itself applies, so the two agree on what the
+///   ordinary case is;
+/// - the declared length is re-encodable (`MAX_REENCODABLE_LEN`);
+/// - the sink reads LEN payloads opaquely (`ProbeSink`), in which case
+///   `render_len_field` would return before the nested path and hand the
+///   bytes back with no declared length — and, more to the point, the
+///   malformity is exactly what the probe is there to see;
+/// - the depth cap, where `render_len_field` deliberately drops the schema
+///   and re-emits the payload as unknown bytes, which again has nowhere to
+///   put the shortfall.
+///
+/// The rule is stated here, before anything is written, rather than left
+/// for `render_len_field` to discover: spec 0174 G1's round-trip promise is
+/// unconditional, and it holds only if the renderer never emits text the
+/// encoder cannot honor.
+fn descends_when_truncated<S: Sink>(
+    field_schema: Option<&FieldOrExt>,
+    length: u64,
+    sink: &S,
+) -> bool {
+    length < MAX_REENCODABLE_LEN
+        && !sink.treat_len_as_opaque()
+        && !at_depth_cap()
+        && field_schema.is_some_and(|fs| !fs.is_group() && matches!(fs.kind(), Kind::Message(_)))
+}
+
 /// Return `true` when `data` is already rendered prototext text (fast-path).
 pub fn is_prototext_text(data: &[u8]) -> bool {
     data.starts_with(PROTOTEXT_MAGIC)
@@ -734,7 +779,31 @@ fn render_message<'a, S: Sink>(
                 let length = lr.varint.unwrap();
 
                 let Some(end) = payload_end(pos, length, buflen) else {
+                    // Spec 0311 S1: the bounds check consults the schema
+                    // before giving up on the field. A declared non-group
+                    // message is descended into over the bytes that are
+                    // present, carrying the shortfall so the header can say
+                    // it and the re-encode can restore the declared length.
                     let missing = bytes_missing(pos, length, buflen);
+                    if descends_when_truncated(field_schema.as_ref(), length, sink) {
+                        render_len_field(
+                            FieldCtx {
+                                field_number,
+                                field_schema: field_schema.as_ref(),
+                                tag: TagFacts {
+                                    tag_ohb,
+                                    tag_oor,
+                                    len_ohb,
+                                },
+                            },
+                            schema_present,
+                            field_start..buflen,
+                            &buf[pos..buflen],
+                            Some(missing),
+                            sink,
+                        );
+                        return (buflen, None);
+                    }
                     let raw = &buf[pos..];
                     sink.malformed(
                         field_number,
@@ -765,6 +834,7 @@ fn render_message<'a, S: Sink>(
                     schema_present,
                     field_start..pos,
                     data,
+                    None,
                     sink,
                 );
             }
@@ -1730,5 +1800,455 @@ mod tests {
         );
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("INVALID_TAG_TYPE"), "got: {text}");
+    }
+
+    // ── Spec 0311: a truncated field still has its declared type ────────────
+
+    /// An `optional` field. `type_name` is `Some` only for message, group and
+    /// enum kinds.
+    fn opt_field(
+        name: &str,
+        number: i32,
+        ty: prost_types::field_descriptor_proto::Type,
+        type_name: Option<&str>,
+    ) -> prost_types::FieldDescriptorProto {
+        use prost_types::field_descriptor_proto::Label;
+        prost_types::FieldDescriptorProto {
+            name: Some(name.into()),
+            number: Some(number),
+            r#type: Some(ty as i32),
+            type_name: type_name.map(str::to_string),
+            label: Some(Label::Optional as i32),
+            ..Default::default()
+        }
+    }
+
+    fn message(
+        name: &str,
+        field: Vec<prost_types::FieldDescriptorProto>,
+    ) -> prost_types::DescriptorProto {
+        prost_types::DescriptorProto {
+            name: Some(name.into()),
+            field,
+            ..Default::default()
+        }
+    }
+
+    /// `Outer { Mid mid = 1; int32 tail = 3; }`,
+    /// `Mid { Inner inner = 1; string label = 2; }`,
+    /// `Inner { string s = 1; int32 n = 2; }` — three spine depths, so a cut
+    /// past the outer header truncates one frame at every level (G3).
+    fn nested_schema() -> crate::schema::ParsedSchema {
+        use prost_types::field_descriptor_proto::Type;
+        build_schema(
+            vec![
+                message(
+                    "Inner",
+                    vec![
+                        opt_field("s", 1, Type::String, None),
+                        opt_field("n", 2, Type::Int32, None),
+                    ],
+                ),
+                message(
+                    "Mid",
+                    vec![
+                        opt_field("inner", 1, Type::Message, Some(".Inner")),
+                        opt_field("label", 2, Type::String, None),
+                    ],
+                ),
+                message(
+                    "Outer",
+                    vec![
+                        opt_field("mid", 1, Type::Message, Some(".Mid")),
+                        opt_field("tail", 3, Type::Int32, None),
+                    ],
+                ),
+            ],
+            "Outer",
+        )
+    }
+
+    /// `Outer { mid { inner { s: "abc" n: 42 } label: "xy" } tail: 7 }`.
+    fn nested_blob() -> Vec<u8> {
+        let inner = [0x0A, 0x03, b'a', b'b', b'c', 0x10, 0x2A];
+        let mut mid = vec![0x0A, inner.len() as u8];
+        mid.extend_from_slice(&inner);
+        mid.extend_from_slice(&[0x12, 0x02, b'x', b'y']);
+        let mut outer = vec![0x0A, mid.len() as u8];
+        outer.extend_from_slice(&mid);
+        outer.extend_from_slice(&[0x18, 0x07]);
+        outer
+    }
+
+    /// One message carrying every kind whose truncation this spec declines to
+    /// change: a declared `string`, a declared `bytes`, a packed `int32`
+    /// field, a group, and an unknown field — beside the declared sub-message
+    /// that it does change.
+    fn mixed_schema() -> crate::schema::ParsedSchema {
+        use prost_types::field_descriptor_proto::{Label, Type};
+        let packed = prost_types::FieldDescriptorProto {
+            label: Some(Label::Repeated as i32),
+            options: Some(prost_types::FieldOptions {
+                packed: Some(true),
+                ..Default::default()
+            }),
+            ..opt_field("nums", 4, Type::Int32, None)
+        };
+        build_schema(
+            vec![
+                message("Inner", vec![opt_field("s", 1, Type::String, None)]),
+                message("Grp", vec![opt_field("v", 1, Type::Int32, None)]),
+                message(
+                    "Mixed",
+                    vec![
+                        opt_field("sub", 1, Type::Message, Some(".Inner")),
+                        opt_field("s", 2, Type::String, None),
+                        opt_field("b", 3, Type::Bytes, None),
+                        packed,
+                        opt_field("grp", 5, Type::Group, Some(".Grp")),
+                    ],
+                ),
+            ],
+            "Mixed",
+        )
+    }
+
+    fn mixed_blob() -> Vec<u8> {
+        vec![
+            0x0A, 0x04, 0x0A, 0x02, b'a', b'b', // sub { s: "ab" }
+            0x12, 0x02, b'h', b'i', // s: "hi"
+            0x1A, 0x02, 0x01, 0x02, // b: "\001\002"
+            0x22, 0x04, 0x01, 0x02, 0xAC, 0x02, // nums: [1, 2, 300], packed
+            0x2B, 0x08, 0x09, 0x2C, // grp { v: 9 }
+            0x48, 0x05, // unknown field 9, varint
+        ]
+    }
+
+    fn annotated(blob: &[u8], root: Option<&prost_reflect::MessageDescriptor>) -> String {
+        let out = decode_and_render(
+            blob,
+            root,
+            DecodeRenderOpts {
+                annotations: true,
+                indent_size: 2,
+                ..Default::default()
+            },
+        );
+        String::from_utf8(out).unwrap()
+    }
+
+    /// Render with a header, so the result can be fed back to the encoder.
+    fn for_round_trip(blob: &[u8], root: Option<&prost_reflect::MessageDescriptor>) -> Vec<u8> {
+        decode_and_render(
+            blob,
+            root,
+            DecodeRenderOpts {
+                annotations: true,
+                emit_header: true,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Render `blob`, re-encode the rendering, and require the original bytes.
+    fn assert_round_trips(blob: &[u8], root: Option<&prost_reflect::MessageDescriptor>) -> String {
+        let rendered = for_round_trip(blob, root);
+        let wire = crate::serialize::encode_text::encode_text_to_binary(&rendered);
+        let text = String::from_utf8(rendered).unwrap();
+        assert_eq!(wire, blob, "did not round-trip:\n{text}");
+        text
+    }
+
+    /// Spec 0311 test plan A. Render every prefix of `blob` and require each
+    /// rendering to re-encode to exactly the prefix it came from.
+    ///
+    /// Every cut position is covered by construction: inside a tag byte,
+    /// inside a length varint, inside a payload at every nesting depth, and
+    /// exactly on a field boundary — where nothing is truncated and the sweep
+    /// merely re-asserts the ordinary round trip.
+    fn sweep_prefixes(blob: &[u8], root: Option<&prost_reflect::MessageDescriptor>) {
+        for k in 1..=blob.len() {
+            let cut = &blob[..k];
+            let rendered = for_round_trip(cut, root);
+            let wire = crate::serialize::encode_text::encode_text_to_binary(&rendered);
+            assert_eq!(
+                wire,
+                cut,
+                "cut at {k}/{} did not round-trip:\n{}",
+                blob.len(),
+                String::from_utf8_lossy(&rendered)
+            );
+        }
+    }
+
+    #[test]
+    fn truncating_anywhere_round_trips() {
+        let nested = nested_schema();
+        let nested_root = nested.root_descriptor().unwrap();
+        // G1's path: three spine depths, each cut carrying its own count.
+        sweep_prefixes(&nested_blob(), Some(&nested_root));
+        // The same bytes with no schema. Pins N1 across the whole sweep, and
+        // becomes spec 0312's primary fixture when the carve-out lands — at
+        // which point the rendering changes and this assertion does not.
+        sweep_prefixes(&nested_blob(), None);
+
+        let mixed = mixed_schema();
+        let mixed_root = mixed.root_descriptor().unwrap();
+        // Cuts through the string, bytes and packed fields pin N2 and N3 for
+        // free; a cut past the START_GROUP pins N4.
+        sweep_prefixes(&mixed_blob(), Some(&mixed_root));
+    }
+
+    // ── B — round-trip cases a tail cut cannot produce ──────────────────────
+
+    #[test]
+    fn a_lying_length_prefix_round_trips() {
+        // `Mid.inner` declares 32 bytes with 3 present, and the file
+        // continues afterwards: impossible from a tail cut, trivial to write.
+        // The re-encode must restore the *declared* 32, not the actual 3.
+        let blob: &[u8] = &[
+            0x0A, 0x05, // mid, 5 bytes
+            0x0A, 0x20, 0x0A, 0x01, b'z', // inner, declared 32, 3 present
+            0x18, 0x07, // tail: 7
+        ];
+        let schema = nested_schema();
+        let root = schema.root_descriptor().unwrap();
+        let text = assert_round_trips(blob, Some(&root));
+        assert!(text.contains("MISSING: 29"), "got: {text}");
+    }
+
+    #[test]
+    fn non_minimal_lengths_survive_truncation() {
+        // The truncated field's tag and length varint both carry an overhead
+        // byte. `fill_placeholder` writes the inflated length flush-right
+        // into room sized by `ohb`, and that is the one arithmetic in the
+        // chain that is not obviously right.
+        let blob: &[u8] = &[
+            0x0A, 0x07, // mid, 7 bytes
+            0x8A, 0x00, // inner's tag, two bytes instead of one
+            0xA0, 0x00, // its length, 32, two bytes instead of one
+            0x0A, 0x01, b'z', // 3 bytes present
+            0x18, 0x07, // tail: 7
+        ];
+        let schema = nested_schema();
+        let root = schema.root_descriptor().unwrap();
+        let text = assert_round_trips(blob, Some(&root));
+        assert!(text.contains("tag_ohb"), "got: {text}");
+        assert!(text.contains("len_ohb"), "got: {text}");
+        assert!(text.contains("MISSING: 29"), "got: {text}");
+    }
+
+    #[test]
+    fn a_truncated_message_with_no_available_bytes_round_trips() {
+        // Declared 32, zero present: an empty body whose entire content is
+        // the missing count. `child_len_compacted` is 0 here, so an encoder
+        // that treats `missing` as an adjustment rather than an addend fails.
+        let blob: &[u8] = &[0x0A, 0x02, 0x0A, 0x20, 0x18, 0x07];
+        let schema = nested_schema();
+        let root = schema.root_descriptor().unwrap();
+        let text = assert_round_trips(blob, Some(&root));
+        assert!(
+            text.contains("TRUNCATED_MESSAGE; MISSING: 32"),
+            "got: {text}"
+        );
+    }
+
+    #[test]
+    fn truncated_bytes_inside_a_truncated_message_round_trips() {
+        // One document, both encoder arms: the placeholder path for the
+        // overrunning sub-message, and `encode_text/fields.rs`'s direct write
+        // for the overrunning declared string inside it. They compute the
+        // declared length by different routes and this is the only case that
+        // makes them agree in one buffer.
+        let blob: &[u8] = &[
+            0x0A, 0x06, // mid, 6 bytes
+            0x0A, 0x0A, // inner, declared 10, 4 present
+            0x0A, 0x08, b'a', b'b', // s, declared 8, 2 present
+            0x18, 0x07, // tail: 7
+        ];
+        let schema = nested_schema();
+        let root = schema.root_descriptor().unwrap();
+        let text = assert_round_trips(blob, Some(&root));
+        assert!(
+            text.contains("TRUNCATED_MESSAGE; MISSING: 6"),
+            "got: {text}"
+        );
+        assert!(text.contains("TRUNCATED_BYTES; MISSING: 6"), "got: {text}");
+    }
+
+    // ── C — the guard, and the hazard behind it ─────────────────────────────
+
+    #[test]
+    fn an_unrepresentable_declared_length_does_not_descend() {
+        // Spec 0311 S6. A declared length of `2^35` needs six varint bytes,
+        // one more than `fill_placeholder`'s flush-right room, so the
+        // renderer must not emit `TRUNCATED_MESSAGE` for it at all. Without
+        // the guard the encoder writes over the `next_placeholder` link and
+        // returns a wrong buffer with no panic.
+        let mut blob = vec![0x0A];
+        push_varint(1 << 35, &mut blob);
+        let schema = nested_schema();
+        let root = schema.root_descriptor().unwrap();
+        let text = assert_round_trips(&blob, Some(&root));
+        assert!(text.contains("TRUNCATED_BYTES"), "got: {text}");
+        assert!(!text.contains("TRUNCATED_MESSAGE"), "got: {text}");
+
+        // One below the cap still descends: the guard is a ceiling, not a
+        // blanket refusal.
+        let mut just_under = vec![0x0A];
+        push_varint((1 << 35) - 1, &mut just_under);
+        let text = assert_round_trips(&just_under, Some(&root));
+        assert!(text.contains("TRUNCATED_MESSAGE"), "got: {text}");
+    }
+
+    // ── D — rendering, and the non-goal pins ────────────────────────────────
+
+    #[test]
+    fn a_declared_message_field_that_overruns_descends() {
+        // `mid` declares 13 bytes with 10 present: the complete `inner` and
+        // one stray tag byte. G1 — the children that fit are shown, rather
+        // than one opaque bytes line.
+        let blob = &nested_blob()[..12];
+        let schema = nested_schema();
+        let root = schema.root_descriptor().unwrap();
+        let text = annotated(blob, Some(&root));
+        assert!(text.starts_with("mid {"), "got: {text}");
+        assert!(text.contains("s: \"abc\""), "got: {text}");
+        assert!(text.contains("n: 42"), "got: {text}");
+    }
+
+    #[test]
+    fn the_truncated_header_carries_missing() {
+        let blob = &nested_blob()[..12];
+        let schema = nested_schema();
+        let root = schema.root_descriptor().unwrap();
+        let text = annotated(blob, Some(&root));
+        let header = text.lines().next().unwrap();
+        assert!(
+            header.contains("TRUNCATED_MESSAGE; MISSING: 3"),
+            "got: {header}"
+        );
+    }
+
+    #[test]
+    fn truncation_is_counted_at_every_spine_level() {
+        // Cut so that `mid`, `inner` and `inner.s` all overrun. Each frame
+        // reports its own shortfall against its own declared length: 13−5,
+        // 7−3, 3−1. G3 — the test a one-shot implementation fails.
+        let blob = &nested_blob()[..7];
+        let schema = nested_schema();
+        let root = schema.root_descriptor().unwrap();
+        let text = annotated(blob, Some(&root));
+        assert!(
+            text.contains("TRUNCATED_MESSAGE; MISSING: 8"),
+            "got: {text}"
+        );
+        assert!(
+            text.contains("TRUNCATED_MESSAGE; MISSING: 4"),
+            "got: {text}"
+        );
+        assert!(text.contains("TRUNCATED_BYTES; MISSING: 2"), "got: {text}");
+    }
+
+    #[test]
+    fn a_declared_string_field_that_overruns_stays_bytes() {
+        // N2. `Inner.s` declares 3 bytes with 1 present.
+        let schema = nested_schema();
+        let inner = schema
+            .get_descriptor("Inner")
+            .expect("Inner is in the pool");
+        let text = annotated(&[0x0A, 0x03, b'a'], Some(&inner));
+        assert!(text.contains("TRUNCATED_BYTES; MISSING: 2"), "got: {text}");
+        assert!(!text.contains("TRUNCATED_MESSAGE"), "got: {text}");
+    }
+
+    #[test]
+    fn an_unknown_truncated_field_is_unchanged() {
+        // N1, and the guard that stops this spec's change from drifting into
+        // the probe: with no schema a cut prefix is still one opaque line.
+        let text = annotated(&nested_blob()[..7], None);
+        assert!(!text.contains("TRUNCATED_MESSAGE"), "got: {text}");
+        assert_eq!(text.matches("TRUNCATED_BYTES").count(), 1, "got: {text}");
+    }
+
+    /// `Holder { google.protobuf.Any a = 1; }` plus a `Payload` for the
+    /// `Any` to carry, in a second file so `Any` keeps its real package.
+    fn any_schema() -> crate::schema::ParsedSchema {
+        use prost::Message as ProstMessage;
+        use prost_types::field_descriptor_proto::Type;
+        let any_file = prost_types::FileDescriptorProto {
+            name: Some("google/protobuf/any.proto".into()),
+            package: Some("google.protobuf".into()),
+            syntax: Some("proto3".into()),
+            message_type: vec![message(
+                "Any",
+                vec![
+                    opt_field("type_url", 1, Type::String, None),
+                    opt_field("value", 2, Type::Bytes, None),
+                ],
+            )],
+            ..Default::default()
+        };
+        let test_file = prost_types::FileDescriptorProto {
+            name: Some("test_0311_any.proto".into()),
+            syntax: Some("proto2".into()),
+            dependency: vec!["google/protobuf/any.proto".into()],
+            message_type: vec![
+                message("Payload", vec![opt_field("v", 1, Type::Int32, None)]),
+                message(
+                    "Holder",
+                    vec![opt_field(
+                        "a",
+                        1,
+                        Type::Message,
+                        Some(".google.protobuf.Any"),
+                    )],
+                ),
+            ],
+            ..Default::default()
+        };
+        let fds = prost_types::FileDescriptorSet {
+            file: vec![any_file, test_file],
+        };
+        let mut buf = Vec::new();
+        fds.encode(&mut buf).unwrap();
+        crate::schema::parse_schema(&buf, "Holder").unwrap()
+    }
+
+    #[test]
+    fn a_truncated_any_does_not_expand() {
+        // N6. Both expansions synthesize virtual fields whose round-trip is
+        // defined against complete bytes, so a cut payload falls through to
+        // the plain nested-message rendering of S2.
+        let schema = any_schema();
+        let root = schema.root_descriptor().unwrap();
+        let payload = schema
+            .get_descriptor("Payload")
+            .expect("Payload is in the pool");
+
+        let url = b"type.googleapis.com/Payload";
+        let mut any = vec![0x0A, url.len() as u8];
+        any.extend_from_slice(url);
+        any.extend_from_slice(&[0x12, 0x02, 0x08, 0x09]);
+        let mut blob = vec![0x0A, any.len() as u8];
+        blob.extend_from_slice(&any);
+
+        let payload_for_loader = payload.clone();
+        crate::set_any_loader(Box::new(move |fqdn| {
+            (fqdn == "Payload").then(|| std::sync::Arc::new(payload_for_loader.clone()))
+        }));
+
+        // Intact: the expansion runs, so the assertion below is not vacuous.
+        let intact = annotated(&blob, Some(&root));
+        // Cut by two bytes: `a` overruns, and the expansion is skipped.
+        let cut = annotated(&blob[..blob.len() - 2], Some(&root));
+        crate::clear_any_loader();
+
+        assert!(
+            intact.contains("Payload = 2"),
+            "expansion did not run: {intact}"
+        );
+        assert!(cut.contains("TRUNCATED_MESSAGE; MISSING: 2"), "got: {cut}");
+        assert!(!cut.contains("Payload = 2"), "got: {cut}");
     }
 }

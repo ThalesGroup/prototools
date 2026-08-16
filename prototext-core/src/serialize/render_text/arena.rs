@@ -182,7 +182,8 @@ impl Sink for ArenaSink {
         self.nodes.probes_as_message[slot as usize] = matches!(
             kind,
             NestedKind::Message {
-                probed_as_message: Some(true)
+                probed_as_message: Some(true),
+                ..
             }
         );
         let mark = ArenaMark {

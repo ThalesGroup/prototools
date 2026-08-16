@@ -165,6 +165,8 @@ pub(in super::super) fn render_any_expansion<S: Sink>(
         NestedKind::Message {
             // An `Any` expansion: the schema decided, no probe ran.
             probed_as_message: None,
+            // A truncated payload never reaches an expansion (spec 0311 N6).
+            missing: None,
         },
         raw_range.start,
         raw_range.end - data.len(),

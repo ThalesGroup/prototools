@@ -213,13 +213,17 @@ source_code_info {  #@ SourceCodeInfo = 9
 # length prefix bounds the damage, so the parent's scan resumes at the next tag
 # and the document can hold as many of these as it likes.
 #
-# `MISSING: 3` is not a number chosen here; it is computed against what was
-# actually left in the buffer.
+# The `MISSING` counts are not numbers chosen here; each is computed against
+# what was actually left in the buffer.  6.a nests two of them: the schema
+# names a message at field 2, so the cut field is descended into anyway (spec
+# 0311), and the cut inside it lands on a declared string, which is not.
 # ---------------------------------------------------------------------------
 
 name: "6.a. A length prefix that claims more bytes than are there."  #@ string = 1
 message_type {  #@ repeated DescriptorProto = 4
-  2: "\001\002\030\t"  #@ TRUNCATED_BYTES; MISSING: 3
+  field {  #@ repeated FieldDescriptorProto = 2; TRUNCATED_MESSAGE; MISSING: 3
+    1: "ab"  #@ TRUNCATED_BYTES; MISSING: 2
+  }
 }
 
 name: "6.b. A varint with no terminating byte."  #@ string = 1

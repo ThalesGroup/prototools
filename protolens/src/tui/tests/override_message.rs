@@ -524,3 +524,115 @@ fn a_truncated_record_reddens_every_node_above_it() {
     }
     assert_eq!(node, app.first_node, "the walk reached the root");
 }
+
+// ── Spec 0311 tests ───────────────────────────────────────────────────────────
+
+/// The Background's reproduction in miniature: a `Set` of three `Entry`
+/// records, the third one cut. `Entry` is *declared* at field 1 of `Set`,
+/// so under spec 0311 the cut record is descended into with no user
+/// action at all.
+///
+/// The bytes: two whole entries (`0A 03 0A 01 'a'`, then `'b'`) and a
+/// third whose length prefix says 9 with 3 present — `name: "c"` is
+/// there, six bytes are not.
+fn cut_entry_fixture() -> App {
+    use prost_types::field_descriptor_proto::{Label, Type};
+    let fds = proto3_fds(
+        "test_0311.proto",
+        vec![
+            message(
+                "Entry",
+                vec![
+                    field("name", 1, Label::Optional, Type::String),
+                    field("n", 2, Label::Optional, Type::Int32),
+                ],
+            ),
+            message(
+                "Set",
+                vec![field_of(
+                    "file",
+                    1,
+                    Label::Repeated,
+                    Type::Message,
+                    ".test.Entry",
+                )],
+            ),
+        ],
+    );
+    fixture_under("cut-entry", &fds, "test.Set", CUT_ENTRY)
+}
+
+const CUT_ENTRY: &[u8] = b"\x0a\x03\x0a\x01a\x0a\x03\x0a\x01b\x0a\x09\x0a\x01c";
+
+/// Spec 0311 G1, and the end-to-end shape of its Background: the cut
+/// record renders under its declared type with the fields that survived
+/// visible, and nobody had to ask.
+#[test]
+fn a_cut_record_opens_under_its_declared_type() {
+    let app = cut_entry_fixture();
+    let lines = app.document_lines();
+
+    assert_eq!(
+        lines.iter().filter(|l| l.contains("file {")).count(),
+        3,
+        "all three records are bracketed, the cut one included: {lines:?}",
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("TRUNCATED_BYTES")),
+        "the schema names the type — nothing is left opaque: {lines:?}",
+    );
+    let header = lines
+        .iter()
+        .find(|l| l.contains("TRUNCATED_MESSAGE"))
+        .expect("the cut record says so on its own header");
+    assert!(header.contains("MISSING: 6"), "got: {header}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.trim() == r#"name: "c"  #@ string = 1"#),
+        "the field that survived the cut is readable: {lines:?}",
+    );
+}
+
+/// Spec 0311 S5: the arena and the render are built by separate walks,
+/// and spec 0210's accounting asserts they agree. `run_command` runs
+/// `assert_line_counts_are_exact` on the way out of the batch, so the
+/// assertion here is that the commands come back at all — plus that the
+/// cut node folds and unfolds like any other message.
+#[test]
+fn arena_and_render_agree_on_a_truncated_declared_message() {
+    let mut app = cut_entry_fixture();
+    let before = app.document_lines();
+
+    // A splice onto the truncated node itself: re-declaring the type it
+    // already has must reproduce the same document, byte for byte.
+    app.run_command("override /3 --as test.Entry");
+    assert_eq!(app.document_lines(), before, "the splice changed the text");
+
+    // Resolved after the splice, not before: a splice renumbers.
+    let cut = app.resolve_path("/3").expect("the third record");
+    assert!(!app.folded.contains(&cut), "it starts out open");
+    app.toggle_fold(cut);
+    assert!(app.folded.contains(&cut), "the cut record must fold");
+    app.toggle_fold(cut);
+    assert!(!app.folded.contains(&cut), "and unfold again");
+    assert_eq!(app.document_lines(), before, "the folding changed the text");
+}
+
+/// Spec 0311 N7 / test-plan item 16: binary export goes through
+/// `extract_binary` and the arena rather than through the text encoder,
+/// and must return the input bytes for a document the text encoder also
+/// round-trips.
+#[test]
+fn export_binary_is_byte_identical_over_a_truncated_spine() {
+    let app = cut_entry_fixture();
+    let root = &app.tree[app.first_node];
+    let bytes = crate::extract::extract_bytes(
+        crate::extract::ExtractFormat::Binary,
+        &app.blob,
+        &[],
+        root,
+        0..0,
+    );
+    assert_eq!(bytes, CUT_ENTRY, "the export is not the file");
+}

@@ -186,6 +186,8 @@ pub(in super::super) fn render_message_set_expansion<S: Sink>(
         NestedKind::Message {
             // A `MessageSet` item: the schema decided, no probe ran.
             probed_as_message: None,
+            // A truncated payload never reaches an expansion (spec 0311 N6).
+            missing: None,
         },
         raw_range.start,
         raw_range.end - data.len(),
@@ -207,6 +209,7 @@ pub(in super::super) fn render_message_set_expansion<S: Sink>(
                 schema_present,
                 raw_range.clone(),
                 data,
+                None,
                 sink,
             );
             drop(_outer);
@@ -339,6 +342,7 @@ pub(in super::super) fn render_message_set_expansion<S: Sink>(
                 schema_present,
                 raw_range.clone(),
                 msg_bytes,
+                None,
                 sink,
             );
         }

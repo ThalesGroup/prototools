@@ -61,6 +61,20 @@ pub(super) enum NestedKind {
         /// *record* the verdict (`ArenaSink`) and a sink wanting to *obey*
         /// it (everything else) cannot come to different conclusions.
         probed_as_message: Option<bool>,
+        /// This field's own length prefix declared `missing` more bytes
+        /// than the buffer held, and the descent below covers only the
+        /// bytes that are present (spec 0311 G1).
+        ///
+        /// `None` for the overwhelming majority of nested openings, which
+        /// are over a payload that is all there.
+        ///
+        /// Distinct from `TextSink::missing_payload_bytes` (spec 0303),
+        /// which answers a different question: *the caller reframed the
+        /// root node it handed me and knows what it removed*. This one is
+        /// *this field's length prefix overran*, discovered by the
+        /// renderer, at any depth, and possibly several times in one
+        /// document — once per level of a truncated spine (spec 0311 G3).
+        missing: Option<u64>,
     },
     Group,
 }
@@ -685,9 +699,18 @@ impl Sink for TextSink {
         // the outermost `begin_nested` call — so it never leaks onto inner
         // nodes.  The value is set by `decode_and_render_indexed` when the
         // caller (splice_override) tells it the field is truncated.
-        let missing = self.missing_payload_bytes.take();
+        let reframed = self.missing_payload_bytes.take();
         match kind {
-            NestedKind::Message { .. } => {
+            NestedKind::Message {
+                missing: declared, ..
+            } => {
+                // Spec 0311 S3: the renderer's own finding wins. Both
+                // sources stay because they answer different questions —
+                // see `NestedKind::Message::missing` — and on the one node
+                // where both could speak (a reframed root that is itself
+                // still truncated) the length prefix in front of us is the
+                // more specific fact.
+                let missing = declared.or(reframed);
                 let is_known = field_schema.is_some();
                 wob_prefix_n(field_number, field_schema, !is_known, &mut self.out);
                 if ANNOTATIONS.with(|c| c.get()) {
@@ -730,9 +753,12 @@ impl Sink for TextSink {
                 if annotations {
                     let mut aw = AnnWriter::new();
                     aw.push(&mut self.out, b"group");
-                    // Groups have no declared length; `missing` is always None here.
-                    // The truncated-group case is `OPEN_GROUP`, not `TRUNCATED_GROUP`.
-                    let _ = missing;
+                    // Groups have no declared length, so neither source of a
+                    // missing count applies here. The truncated-group case is
+                    // `OPEN_GROUP`, not `TRUNCATED_GROUP` (spec 0303 N6,
+                    // spec 0311 N4). The one-shot is still consumed above so
+                    // that it cannot leak onto a later node.
+                    let _ = reframed;
                 }
                 self.newline();
                 CBL_START.with(|c| c.set(self.out.len()));
