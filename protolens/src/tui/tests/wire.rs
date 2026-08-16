@@ -149,11 +149,15 @@ fn each_line_claims_its_own_bytes() {
     assert_eq!(rows[9], "", "the wrapper root's footer claims no bytes");
 }
 
-/// Field 1 = `"abc"`, then a second field 1 declaring 16 payload bytes
-/// with only the 5 of `"short"` present. One invalid token, so the probe
-/// disqualifies the file (spec 0266) and it renders as a single flat
-/// line — which is the shape spec 0306 is about.
-const CUT_SHORT: &[u8] = b"\x0a\x03abc\x0a\x10short";
+/// One field 1 declaring 16 payload bytes with only the 5 of `"short"`
+/// present, and nothing before it. The probe disqualifies the file
+/// (spec 0266) and it renders as a single flat line — which is the shape
+/// spec 0306 is about.
+///
+/// Nothing before the cut is load-bearing: spec 0312 forgives a cut tail
+/// once enough whole fields precede it, so a payload with a complete
+/// field in front of this one would descend and stop being flat.
+const CUT_AT_ONCE: &[u8] = b"\x0a\x10short";
 
 /// An untyped `App` — what opening a file with neither a descriptor set
 /// nor a `--type` builds. A twin of `override_message.rs`'s `untyped_app`;
@@ -173,7 +177,7 @@ fn untyped_wire_app(bytes: &[u8]) -> App {
 /// instead, which cost the row its framing.
 #[test]
 fn w_on_a_flat_wrapper_root_shows_the_whole_file() {
-    let app = untyped_wire_app(CUT_SHORT);
+    let app = untyped_wire_app(CUT_AT_ONCE);
     assert_eq!(app.total_lines(), 1, "the probe declines: one flat line");
 
     let pos = app.line_pos(0).expect("line 0 is inside the document");
@@ -189,7 +193,7 @@ fn w_on_a_flat_wrapper_root_shows_the_whole_file() {
     );
     assert_eq!(
         &app.blob[app.wrapper_offset..],
-        CUT_SHORT,
+        CUT_AT_ONCE,
         "and past the prefix those bytes are the file, byte for byte",
     );
     assert!(
@@ -211,7 +215,7 @@ fn w_on_a_flat_wrapper_root_shows_the_whole_file() {
 /// byte of the file may.
 #[test]
 fn a_fabricated_byte_is_drawn_as_one() {
-    let flat = untyped_wire_app(CUT_SHORT);
+    let flat = untyped_wire_app(CUT_AT_ONCE);
     let (bracketed, _run, _tail, _a, _b) = packed_run_with_tail_fixture();
 
     for app in [&flat, &bracketed] {

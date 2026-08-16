@@ -18,14 +18,19 @@ use crate::decode::{decode, DescriptorContext, RootType};
 use crate::node_status::Status;
 use prototext_core::serialize::render_text::decode_and_render;
 
-/// Field 1 = `"abc"`, then a second field 1 whose length prefix
+/// A cut tail with *nothing* before it: one field 1 whose length prefix
 /// declares 16 payload bytes and whose payload is the 5 of `"short"`.
 ///
-/// The cut tail is the point: it is one malformed token, arbitrarily
-/// late, and it is what disqualifies the *whole* file from being read
-/// as a message. `grpconf/stage/boblog` is this fixture at 20 198
-/// bytes.
-const CUT_SHORT: &[u8] = b"\x0a\x03abc\x0a\x10short";
+/// Zero complete fields precede the cut, so spec 0312's threshold is not
+/// met and spec 0266's verdict stands: one bad token, one opaque line,
+/// until the reader says otherwise. That is what makes it the fixture for
+/// spec 0299's override — a payload the probe already descends into has
+/// nothing left for the override to prove.
+///
+/// `grpconf/stage/boblog` is deliberately *not* this shape: it shows
+/// three whole log entries before its cut, so spec 0312 forgives it and
+/// the reader never has to ask.
+const CUT_AT_ONCE: &[u8] = b"\x0a\x10short";
 
 /// An untyped `App` over `bytes` — what opening a file with neither a
 /// descriptor set nor a `--type` builds.
@@ -63,11 +68,15 @@ fn raw_render(bytes: &[u8]) -> Vec<String> {
 /// The document with the wrapper's own header and footer taken off and
 /// its one level of indentation removed — the part of it that answers
 /// to `bytes`, in `raw_render`'s coordinates.
-fn interior(app: &App) -> Vec<String> {
+///
+/// `header` is spelled out by the caller because it is the one line that
+/// records *who decided*: `message = 1` is a reader's override naming a
+/// type, a bare `message` is the probe's own verdict.
+fn interior(app: &App, header: &str) -> Vec<String> {
     let lines = app.document_lines();
-    let (header, rest) = lines.split_first().expect("a rendered document has lines");
+    let (first, rest) = lines.split_first().expect("a rendered document has lines");
     let (footer, body) = rest.split_last().expect("a message node has a footer");
-    assert_eq!(header, "1 {  #@ message = 1", "the wrapper's own header");
+    assert_eq!(first, header, "the wrapper's own header");
     assert_eq!(footer, "}", "the wrapper's own footer");
     body.iter()
         .map(|l| {
@@ -86,16 +95,19 @@ fn interior(app: &App) -> Vec<String> {
 /// on the record it belongs to instead of swallowing the file.
 #[test]
 fn overriding_the_root_to_message_renders_what_prototext_raw_renders() {
-    let mut app = untyped_app(CUT_SHORT);
+    let mut app = untyped_app(CUT_AT_ONCE);
     assert_eq!(
         app.document_lines(),
-        vec![r#"1: "\n\003abc\n\020short"  #@ string"#],
+        vec![r#"1: "\n\020short"  #@ string"#],
         "spec 0266: one invalid token disqualifies the whole payload",
     );
 
     app.run_command("override / --as message");
 
-    assert_eq!(interior(&app), raw_render(CUT_SHORT));
+    assert_eq!(
+        interior(&app, "1 {  #@ message = 1"),
+        raw_render(CUT_AT_ONCE)
+    );
     assert!(
         app.document_lines().len() > 2,
         "the payload must have been walked, not re-wrapped",
@@ -115,7 +127,7 @@ fn a_well_formed_payload_reads_the_same_either_way() {
 
     app.run_command("override / --as message");
 
-    assert_eq!(interior(&app), raw_render(bytes));
+    assert_eq!(interior(&app, "1 {  #@ message = 1"), raw_render(bytes));
     assert_eq!(
         before[1..],
         app.document_lines()[1..],
@@ -200,6 +212,15 @@ fn the_keyword_is_offered_for_len_and_shadows_a_bare_fqdn() {
 /// but only 2 are present.
 const TRUNC_WITH_CHILDREN: &[u8] = b"\x0a\x14\x08\x05";
 
+/// The same cut field, whose two available bytes are field 1's varint tag
+/// followed by a continuation byte that never ends.
+///
+/// Spec 0312 forgives a cut tail and nothing else (G3), so the open
+/// varint keeps this node opaque where `TRUNC_WITH_CHILDREN` is now
+/// descended into unasked. That is what leaves a `message` override with
+/// something to do, which is what these two tests are about.
+const TRUNC_STILL_OPAQUE: &[u8] = b"\x0a\x14\x08\xff";
+
 /// Spec 0302 S1: the arena walk descends into a TRUNCATED_BYTES field's
 /// available bytes and allocates child slots for any valid sub-fields found
 /// there, so that a later `message` override can splice them in without
@@ -239,7 +260,7 @@ fn truncated_bytes_arena_has_children() {
 /// TRUNCATED_BYTES line instead of nested content.
 #[test]
 fn message_override_on_truncated_bytes_commits() {
-    let mut app = untyped_app(TRUNC_WITH_CHILDREN);
+    let mut app = untyped_app(TRUNC_STILL_OPAQUE);
 
     // Open the root as a message first so its child (the TRUNCATED_BYTES
     // field) becomes navigable at `/1`.
@@ -290,7 +311,7 @@ fn message_override_on_truncated_bytes_commits() {
 /// on timing.
 #[test]
 fn status_line_shows_message_not_enum() {
-    let mut app = untyped_app(TRUNC_WITH_CHILDREN);
+    let mut app = untyped_app(TRUNC_STILL_OPAQUE);
     // Open the root as message so the child is rendered.
     app.run_command("override / --as message");
 
@@ -448,7 +469,7 @@ fn annotation_explains_truncated_message() {
 /// render (no splice — spec 0237).
 #[test]
 fn none_keyword_is_lowercase() {
-    let mut app = untyped_app(CUT_SHORT);
+    let mut app = untyped_app(CUT_AT_ONCE);
     // Open the root as a message so children are visible.
     app.run_command("override / --as message");
 
@@ -470,7 +491,7 @@ fn none_keyword_is_lowercase() {
     app.run_command("override / --as none");
     assert_eq!(
         app.document_lines(),
-        vec![r#"1: "\n\003abc\n\020short"  #@ string"#],
+        vec![r#"1: "\n\020short"  #@ string"#],
         "after `none` the root must revert to the raw single-line render",
     );
 }
@@ -484,7 +505,7 @@ fn none_keyword_is_lowercase() {
 /// reason no annotation needs to be invented for the declined render.
 #[test]
 fn a_truncated_record_reddens_every_node_above_it() {
-    let mut app = untyped_app(CUT_SHORT);
+    let mut app = untyped_app(CUT_AT_ONCE);
     app.run_command("override / --as message");
 
     let lines = app.document_lines();
@@ -635,4 +656,113 @@ fn export_binary_is_byte_identical_over_a_truncated_spine() {
         0..0,
     );
     assert_eq!(bytes, CUT_ENTRY, "the export is not the file");
+}
+
+// ── Spec 0312 tests ───────────────────────────────────────────────────────────
+
+/// `grpconf/fixtures/boblog` in miniature, and with no schema anywhere:
+/// three whole records under a repeated field 1, then a fourth whose
+/// length prefix says 9 and delivers 2.
+///
+/// The real file is 20 198 bytes, three intact log entries and a fourth
+/// cut short by 1 024. It is not `include_bytes!`d here because
+/// `grpconf/fixtures/` is subtracted from the nix `workspaceSrc` as
+/// demo-only; what these tests need from it is its shape, which is this.
+const THREE_THEN_CUT: &[u8] = b"\x0a\x02\x08\x01\x0a\x02\x08\x02\x0a\x02\x08\x03\x0a\x09\x08\x04";
+
+/// Spec 0312 G1, end to end and with nobody asked: the document opens
+/// as a message, all four records are navigable, and the cut one says so
+/// on its own header instead of taking the file down with it.
+///
+/// Before this spec the same bytes were a single escaped line and `/1`
+/// did not resolve.
+#[test]
+fn a_cut_tail_after_three_whole_records_opens_untouched() {
+    let app = untyped_app(THREE_THEN_CUT);
+    let lines = app.document_lines();
+
+    // Indented, so the wrapper root's own identical header is not counted.
+    assert_eq!(
+        lines.iter().filter(|l| l.starts_with("  1 {")).count(),
+        4,
+        "all four records are bracketed, the cut one included: {lines:?}",
+    );
+    for record in 1..=4 {
+        assert!(
+            app.resolve_path(&format!("/{record}")).is_some(),
+            "/{record} must resolve: {lines:?}",
+        );
+    }
+    let header = lines
+        .iter()
+        .find(|l| l.contains("TRUNCATED_MESSAGE"))
+        .expect("the cut record says so on its own header");
+    assert!(header.contains("MISSING: 7"), "got: {header}");
+}
+
+/// Spec 0312 G6, as agreement rather than as a pasted expectation: the
+/// caller with no override mechanism gets the same document protolens
+/// does. `prototext decode --raw` is the only route for that caller and
+/// this is the assertion that it exists.
+#[test]
+fn prototext_raw_reads_a_forgiven_cut_the_same_way() {
+    let app = untyped_app(THREE_THEN_CUT);
+    assert_eq!(
+        interior(&app, "1 {  #@ message"),
+        raw_render(THREE_THEN_CUT),
+    );
+}
+
+/// Spec 0312 test-plan item 10: the arena and the render are built by
+/// separate walks over a forgiven cut, and spec 0210's accounting
+/// asserts they agree. `run_command` runs `assert_line_counts_are_exact`
+/// on the way out of the batch, so this passes only if they do.
+#[test]
+fn arena_and_render_agree_on_a_forgiven_cut() {
+    let mut app = untyped_app(THREE_THEN_CUT);
+
+    // Re-declaring the reading the probe already chose. The splice walks
+    // the arena where the probe walked the bytes, so it reproduces the
+    // truncated reading line for line — all it adds is `= 1`, which says
+    // the type is now named by a reader instead of guessed.
+    app.run_command("override /4 --as message");
+    let spliced = app.document_lines();
+    assert!(
+        spliced
+            .iter()
+            .any(|l| l.contains("message = 1; TRUNCATED_MESSAGE; MISSING: 7")),
+        "the splice lost the truncation: {spliced:?}",
+    );
+
+    let cut = app.resolve_path("/4").expect("the fourth record");
+    app.toggle_fold(cut);
+    assert!(app.folded.contains(&cut), "the cut record must fold");
+    app.toggle_fold(cut);
+    assert_eq!(
+        app.document_lines(),
+        spliced,
+        "the folding changed the text"
+    );
+}
+
+/// Spec 0312 test-plan item 11: binary export goes through the arena
+/// rather than the text encoder, and a forgiven cut must not cost it a
+/// byte.
+///
+/// The number that made this worth writing is boblog's: 20 198 bytes in,
+/// and 20 202 out before this spec — a spurious tag and a 3-byte length,
+/// which is exactly what `ScalarValue::Bytes` re-encodes a declined cut
+/// as when nothing restores the declared length.
+#[test]
+fn export_binary_is_byte_identical_for_a_forgiven_cut() {
+    let app = untyped_app(THREE_THEN_CUT);
+    let root = &app.tree[app.first_node];
+    let bytes = crate::extract::extract_bytes(
+        crate::extract::ExtractFormat::Binary,
+        &app.blob,
+        &[],
+        root,
+        0..0,
+    );
+    assert_eq!(bytes, THREE_THEN_CUT, "the export is not the file");
 }

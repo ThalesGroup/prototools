@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0312 — enough of a message is a message
 
-Status: draft
+Status: implemented
+Implemented in: 2026-08-16
 App: prototext-core, protolens
 Refs: docs/specs/0266-….md (the probe's verdict: any invalid token
         disqualifies; this spec carves out exactly one of them),
@@ -367,5 +368,142 @@ which is the point of having written them there.
 
 ## Measured outcome
 
-Filled in at implementation. Must include the `P` curve from S5 with the
-false-positive and true-positive rates at the chosen value.
+**`P = 1`.**
+
+The sweep read `complete_fields` and `forgiven_tail_cut` off the probe
+directly instead of recompiling per value, so every `P` in `0..=16` was
+measured in one pass over each payload. `P = 0` was included although S5
+asked for `1..16`, because without it there is no way to see how much of
+the admission is the threshold's doing and how much is spec 0266's.
+
+### The negative controls
+
+PNG, ELF, gzip, UTF-8 prose and JSON, cut at each of **72 742** offsets.
+**One** false positive, and it is the same one at every `P` from 0 to 16:
+a ten-byte PNG prefix — the signature `\x89PNG\r\n\x1a\n` and two zero
+bytes — that parses clean as a two-byte tag and one `fixed64`, reaching
+the end of the buffer with nothing cut. It forgives nothing; it is spec
+0266's own verdict and it predates this spec. **The rate this spec was
+not allowed to move did not move.**
+
+Only JSON reached a forgivable cut at all (413 of its offsets); prose,
+ELF, gzip and PNG reached zero between them, which is worth stating
+because it means for four of the five files `P` was never consulted.
+
+### Where `P` actually separates
+
+The file sample cannot rank one `P` against another — spec 0266's
+invalid-token rule rejects those payloads before the threshold is
+reached. So the question was asked where it can be answered: over
+**every** byte string of a given length.
+
+| width | strings | `P = 0` | `P = 1` | `P ≥ 2` |
+|---|---|---|---|---|
+| 1 | 256 | 0 % | 0 % | 0 % |
+| 2 | 65 536 | 5.88 % | 2.98 % | 2.98 % |
+| 3 | 16 777 216 | 8.96 % | 3.06 % | 3.06 % |
+| 4 | 4 294 967 296 | 10.66 % | 2.51 % | 2.43 % |
+
+`P ≥ 2` is spec 0266's baseline exactly: at four bytes, 104 158 576
+strings, which is the number admitted when no cut is ever forgiven. So
+the whole cost of this spec, over every four-byte string in existence, is
+**3 714 750 strings — 0.086 percentage points**. The cost of `P = 0` is
++8.24 points, which is the threshold earning its existence: without it a
+lone cut field with nothing in front of it counts as evidence of itself.
+
+Every `P` above 1 is indistinguishable from `P = 1` at these widths.
+
+### What each step up costs
+
+googleapis, 375 blobs, **21 782** cut offsets of which 18 399 reached a
+forgivable cut; and `fixtures/descriptor.pb`, **18 752** cut offsets.
+Percentage of cuts recovered:
+
+| `P` | googleapis | descriptor.pb |
+|---|---|---|
+| 0 | 89.22 % | 99.88 % |
+| 1 | 68.74 % | 98.67 % |
+| 2 | 54.05 % | 97.33 % |
+| 3 | 40.67 % | 87.21 % |
+| 4 | 27.33 % | 81.98 % |
+| 8 | 12.19 % | 8.11 % |
+| 16 | 5.66 % | 0.05 % |
+
+So `P = 1` buys nothing over `P = 2` on the false-positive side and gives
+up 14.7 points of recall to reach it. Nothing above 1 is paid for.
+
+### The prediction S5 made, priced
+
+S5 named `08 01 0A 09 78` as the failure mode of `P = 1`: an
+ordinary-looking scrap of binary reported as a message. It is real —
+`a_cut_tail_after_enough_fields_is_a_message` is that fixture, and it
+descends. The measurement's answer is that the whole family it belongs to
+is 0.086 points of four-byte strings, against a 14.7-point recall loss to
+refuse it. Recorded rather than argued away.
+
+S5 also expected boblog to want a large `P`: it forgives at `P ≤ 3` and
+declines at `P ≥ 4`, having shown exactly three whole entries before its
+cut. `P = 8` would not in fact have worked.
+
+### The document this spec exists for
+
+`grpconf/fixtures/boblog`, 20 198 bytes, untyped and with no override:
+
+- `protoc --decode_raw` — exit 1, `Failed to parse input.`, no output.
+- `prototext decode --raw` — exit 0, 1 215 lines, with
+  `1 {  #@ message; TRUNCATED_MESSAGE; MISSING: 1024` on the fourth
+  entry's header and `TRUNCATED_BYTES; MISSING: 1024` on the `response`
+  field inside it.
+- Binary export: 20 198 bytes in, **20 198** out. Before this spec it was
+  20 202 — a spurious tag and a 3-byte length, which is S3's hazard
+  measured rather than reasoned about.
+
+### Where the implementation departed from the test plan
+
+- **A2 folded into A1.** `truncating_anywhere_round_trips`'s schema-less
+  sweep already asserts the round trip at every cut offset, forgiven and
+  declined alike. A declined cut that re-encoded three bytes short fails
+  there, which is what A2 was for; a second test asserting text-identity
+  with the pre-0312 renderer would pin the rendering, not the claim.
+- **C9 recast.** "These files produce one bytes line" is false and was
+  false before this spec — see the PNG prefix above. The assertion is
+  instead that no offset of any of the five descends *by being forgiven*,
+  which is the claim the measurement actually supports, at every offset
+  rather than a handful.
+- **D11/D12 use boblog's shape, not boblog.** `grpconf/fixtures/` is
+  subtracted from the nix `workspaceSrc` as demo-only, so a unit test
+  cannot `include_bytes!` it. `THREE_THEN_CUT` is three whole records and
+  a fourth cut, which is what the assertions turn on; the file's own
+  numbers are above.
+
+### One consequence the specification did not name
+
+A schema-less cut field with **zero** available bytes now descends, as an
+empty `TRUNCATED_MESSAGE`. `P` does not stop it and should not: nothing
+was forgiven. The payload has no cut *in* it — it has no bytes at all —
+so `says_message`'s third clause is not reached, exactly as its own doc
+comment says ("a payload with no cut is judged as it was before, however
+few fields it has").
+
+It is consistent rather than surprising: `0a 00`, a *complete* empty LEN
+field with no schema, has always rendered `1 {}`. Spec 0266's verdict on
+an empty payload is and was "message"; all this spec changed is that a
+cut field now reaches the cascade that asks. `prototext`'s
+`a_malformed_field_gets_its_own_one_line_span` was the only test resting
+on the old routing, and its fixture gained one garbage byte so that it is
+still testing a malformity.
+
+### Two bugs the arena work surfaced
+
+Both in `ArenaSink`, both found by `assert_cached_verdicts_are_real`:
+
+- The spec-0302 descent passed `frame_ends_at_eof: true` unconditionally,
+  which would forgive a cut in a frame in the middle of the blob. Fixed
+  by giving `ArenaSink` a `blob_len` and re-deriving the flag — this
+  spec's rule holds in the arena too or it holds nowhere.
+- `well_framed_len_payload`, the test-side oracle, only recognized an
+  exactly-fitting LEN field, so it expected `false` for cut fields — which
+  since this spec *are* cascade nodes. The cached `true` it flagged at
+  `descriptor.pb` offset 2884 was correct: the 14 available bytes of
+  `request_type_url` parse as a `fixed64` and a `fixed32`, consuming all
+  14.

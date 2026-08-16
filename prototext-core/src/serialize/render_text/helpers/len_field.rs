@@ -7,7 +7,9 @@ use std::ops::Range;
 
 use prost_reflect::{Cardinality, Kind, MessageDescriptor};
 
-use super::super::sink::{GroupCloseFacts, NestedKind, ProbeSink, ScalarValue, Sink, TagFacts};
+use super::super::sink::{
+    GroupCloseFacts, MalformedKind, NestedKind, ProbeSink, ScalarValue, Sink, TagFacts,
+};
 use super::super::{
     at_depth_cap, descend, enter_level, render_message, FieldOrExt, EXPAND_ANY, EXPAND_MESSAGE_SET,
     HIDE_UNKNOWN,
@@ -23,18 +25,25 @@ pub(in super::super) struct FieldCtx<'a> {
     pub(in super::super) field_number: u64,
     pub(in super::super) field_schema: Option<&'a FieldOrExt>,
     pub(in super::super) tag: TagFacts,
+    /// This field's payload ends where the available bytes stop, rather
+    /// than at a boundary an enclosing length prefix declared (spec 0312
+    /// S2). Carried on the context rather than as one more `bool`
+    /// parameter beside `schema_present`, so that no call site can swap
+    /// the two silently.
+    pub(in super::super) frame_ends_at_eof: bool,
 }
 
 /// Render a length-delimited field (string, bytes, message, packed, wire-bytes).
 ///
-/// `missing` is `Some(n)` only on spec 0311's path: this field's length
-/// prefix declared `n` bytes more than the buffer held, `data` is the bytes
-/// that *are* present, and the caller has already established that the
-/// schema declares a non-group message here. Every other caller passes
-/// `None`, and the assertion below is that guarantee written down —
-/// everything from the depth cap to the packed path to the wire-type
-/// mismatch is unreachable with it set, so none of them has to decide what
-/// to do with a count they cannot re-encode.
+/// `missing` is `Some(n)` only on the truncated path: this field's length
+/// prefix declared `n` bytes more than the buffer held, and `data` is the
+/// bytes that *are* present. The caller has already established that the
+/// schema declares a non-group message here (spec 0311) or declares
+/// nothing at all (spec 0312). Every other caller passes `None`, and the
+/// assertion below is that guarantee written down — everything from the
+/// depth cap to the packed path to the wire-type mismatch is unreachable
+/// with it set, so none of them has to decide what to do with a count they
+/// cannot re-encode.
 pub(in super::super) fn render_len_field<S: Sink>(
     ctx: FieldCtx<'_>,
     schema_present: bool,
@@ -47,13 +56,14 @@ pub(in super::super) fn render_len_field<S: Sink>(
         field_number,
         field_schema,
         tag,
+        frame_ends_at_eof,
     } = ctx;
     debug_assert!(
         missing.is_none()
             || field_schema
-                .is_some_and(|fs| { !fs.is_group() && matches!(fs.kind(), Kind::Message(_)) }),
-        "spec 0311 S2: a missing count is only ever carried on a declared \
-         non-group message field"
+                .is_none_or(|fs| { !fs.is_group() && matches!(fs.kind(), Kind::Message(_)) }),
+        "spec 0311 S2 / spec 0312 S1: a missing count is only ever carried on \
+         a declared non-group message field, or on a field with no schema"
     );
     if sink.treat_len_as_opaque() {
         sink.scalar_field(
@@ -99,6 +109,18 @@ pub(in super::super) fn render_len_field<S: Sink>(
         // hide_unknown_fields (spec 0103).
         let hide_unknown = HIDE_UNKNOWN.with(|c| c.get());
         if hide_unknown && schema_present {
+            // A truncated field never reached this cascade before spec 0312,
+            // so `hide_unknown` never suppressed one, and it must not start:
+            // the bytes are still there and the re-encode still owes them.
+            decline_unknown_len(
+                field_number,
+                tag,
+                raw_range,
+                data,
+                missing,
+                schema_present,
+                sink,
+            );
             return;
         }
 
@@ -113,8 +135,9 @@ pub(in super::super) fn render_len_field<S: Sink>(
         // the same, on `NestedKind::Message`, so that recording what the
         // cascade would have decided never means re-deriving it.
         let probed_as_message = {
-            let mut probe = ProbeSink::default();
-            let (next_pos, _) = render_message(data, 0, None, None, false, &mut probe);
+            let mut probe = ProbeSink::new(frame_ends_at_eof);
+            let (next_pos, _) =
+                render_message(data, 0, None, frame_ends_at_eof, None, false, &mut probe);
             probe.says_message(next_pos, data)
         };
         if probed_as_message || sink.unknown_len_is_message() {
@@ -124,16 +147,14 @@ pub(in super::super) fn render_len_field<S: Sink>(
                 tag,
                 NestedKind::Message {
                     probed_as_message: Some(probed_as_message),
-                    // Unreachable with a count set: an unknown field has no
-                    // schema, and spec 0311 routes only schema-declared
-                    // messages here (N1 leaves the cascade alone).
-                    missing: None,
+                    // Spec 0312 G1: a forgiven cut still says what it lost.
+                    missing,
                 },
                 raw_range.start,
                 raw_range.end - data.len(),
             );
             let descended = descend(sink, |sink| {
-                render_message(data, 0, None, None, schema_present, sink);
+                render_message(data, 0, None, frame_ends_at_eof, None, schema_present, sink);
             });
             sink.end_nested(mark, raw_range, None);
             if !descended {
@@ -142,15 +163,14 @@ pub(in super::super) fn render_len_field<S: Sink>(
             return;
         }
 
-        // Steps 2/3 (UTF-8 string, else raw bytes) are collapsed into
-        // `scalar_field`'s `ScalarValue::Bytes` handling for `field_schema: None`.
-        sink.scalar_field(
+        decline_unknown_len(
             field_number,
-            None,
             tag,
-            ScalarValue::Bytes(data),
             raw_range,
+            data,
+            missing,
             schema_present,
+            sink,
         );
         return;
     };
@@ -242,6 +262,7 @@ pub(in super::super) fn render_len_field<S: Sink>(
                         field_number,
                         field_schema: Some(fs),
                         tag,
+                        frame_ends_at_eof,
                     },
                     schema_present,
                     raw_range.clone(),
@@ -264,6 +285,7 @@ pub(in super::super) fn render_len_field<S: Sink>(
                         field_number,
                         field_schema: Some(fs),
                         tag,
+                        frame_ends_at_eof,
                     },
                     schema_present,
                     raw_range,
@@ -288,7 +310,15 @@ pub(in super::super) fn render_len_field<S: Sink>(
                 raw_range.end - data.len(),
             );
             let descended = descend(sink, |sink| {
-                render_message(data, 0, None, nested_schema, schema_present, sink);
+                render_message(
+                    data,
+                    0,
+                    None,
+                    frame_ends_at_eof,
+                    nested_schema,
+                    schema_present,
+                    sink,
+                );
             });
             sink.end_nested(mark, raw_range, None);
             if !descended {
@@ -311,6 +341,46 @@ pub(in super::super) fn render_len_field<S: Sink>(
     );
 }
 
+/// The spec 0097 cascade's steps 2/3 — read the payload as a UTF-8 string
+/// if it is one, else as escaped bytes — with the one exception spec 0312
+/// S3 makes for a truncated payload.
+///
+/// **A cut payload must go back out as `TRUNCATED_BYTES`, not as
+/// `ScalarValue::Bytes`.** They look alike and re-encode differently:
+/// `Bytes` writes tag + `len(available)` + payload, which is short by
+/// exactly the bytes the length prefix declared and never delivered, while
+/// the `TRUNCATED_BYTES` arm (`encode_text/fields.rs`) adds them back.
+/// Routing the declined case through here at all is what creates that
+/// hazard, so the fix belongs here, in the one place all three declines
+/// pass through.
+fn decline_unknown_len<S: Sink>(
+    field_number: u64,
+    tag: TagFacts,
+    raw_range: Range<usize>,
+    data: &[u8],
+    missing: Option<u64>,
+    schema_present: bool,
+    sink: &mut S,
+) {
+    match missing {
+        Some(missing) => sink.malformed(
+            field_number,
+            tag,
+            MalformedKind::TruncatedBytes { missing },
+            data,
+            raw_range,
+        ),
+        None => sink.scalar_field(
+            field_number,
+            None,
+            tag,
+            ScalarValue::Bytes(data),
+            raw_range,
+            schema_present,
+        ),
+    }
+}
+
 /// Render a GROUP field (proto2), with greedy rendering and post-hoc fixup.
 pub(in super::super) fn render_group_field<S: Sink>(
     buf: &[u8],
@@ -324,6 +394,7 @@ pub(in super::super) fn render_group_field<S: Sink>(
         field_number,
         field_schema,
         tag,
+        frame_ends_at_eof,
     } = ctx;
     // Determine nested schema.  `msg_desc` from `fs.kind()` is already live
     // and correct — no lookup needed (spec 0106 S1).  Mismatch/unknown-field
@@ -375,6 +446,9 @@ pub(in super::super) fn render_group_field<S: Sink>(
             buf,
             start,
             Some(field_number),
+            // A group continues in the caller's buffer, so it ends where
+            // the caller's frame ends (spec 0312 S2).
+            frame_ends_at_eof,
             nested_schema_opt,
             schema_present,
             sink,

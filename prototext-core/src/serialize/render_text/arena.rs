@@ -88,6 +88,10 @@ struct ArenaSink {
     parent: u32,
     depth: u16,
     max_depth: u16,
+    /// Length of the whole blob, in absolute coordinates. Only
+    /// [`ArenaSink::malformed`]'s spec-0302 descent reads it, to re-derive
+    /// spec 0312 S2's flag for a frame it opens itself.
+    blob_len: usize,
 }
 
 impl ArenaSink {
@@ -95,8 +99,9 @@ impl ArenaSink {
     /// byte, since every node's tag costs at least one byte, so reserving
     /// `blob.len() + 1` removes reallocation outright at the price of
     /// address space that is never faulted in.
-    fn with_capacity(capacity: usize) -> Self {
+    fn with_capacity(blob_len: usize, capacity: usize) -> Self {
         ArenaSink {
+            blob_len,
             nodes: DocumentOrderNodes {
                 parent: Vec::with_capacity(capacity),
                 depth: Vec::with_capacity(capacity),
@@ -259,7 +264,14 @@ impl Sink for ArenaSink {
             self.raw_base += payload_offset;
             self.parent = slot;
             self.depth += 1;
-            render_message(raw, 0, None, None, false, self);
+            // `raw` is the available bytes of a cut field, so it ends where
+            // its own frame does — which is the end of the blob only if
+            // every frame around it also ended there (spec 0312 S2). The
+            // arena's own verdict does not depend on the flag —
+            // `unknown_len_is_message` is unconditional — but the probes it
+            // runs on the way down do.
+            let ends_at_eof = end as usize == self.blob_len;
+            render_message(raw, 0, None, ends_at_eof, None, false, self);
             (self.raw_base, self.parent, self.depth) = saved;
             self.nodes.raw_end[slot as usize] = end;
             return;
@@ -316,8 +328,8 @@ pub(super) fn walk_document_order(buf: &[u8]) -> Result<DocumentOrderNodes, Code
     EXPAND_MESSAGE_SET.with(|c| c.set(false));
     DEPTH.with(|c| c.set(0));
 
-    let mut sink = ArenaSink::with_capacity(buf.len() + 1);
-    render_message(buf, 0, None, None, false, &mut sink);
+    let mut sink = ArenaSink::with_capacity(buf.len(), buf.len() + 1);
+    render_message(buf, 0, None, true, None, false, &mut sink);
 
     if sink.max_depth >= MAX_NODE_DEPTH {
         return Err(CodecError::InputTooDeep {
@@ -925,9 +937,9 @@ mod tests {
     /// already know. It calls the same `says_message` `render_len_field`
     /// does (spec 0266 S4), so the live verdict and the cached one cannot
     /// drift by the test transcribing the rule and then falling behind it.
-    fn probe_says_message(payload: &[u8]) -> bool {
-        let mut probe = super::super::sink::ProbeSink::default();
-        let (next_pos, _) = render_message(payload, 0, None, None, false, &mut probe);
+    fn probe_says_message(payload: &[u8], ends_at_eof: bool) -> bool {
+        let mut probe = super::super::sink::ProbeSink::new(ends_at_eof);
+        let (next_pos, _) = render_message(payload, 0, None, ends_at_eof, None, false, &mut probe);
         probe.says_message(next_pos, payload)
     }
 
@@ -942,7 +954,13 @@ mod tests {
         let mut checked = 0;
         for slot in 0..arena.len() {
             let node = &buf[raw_start[slot] as usize..raw_end[slot] as usize];
-            let expected = well_framed_len_payload(node).map(probe_says_message);
+            // Spec 0312 S2's rule, restated in arena coordinates. The walk
+            // hands each payload `parent_ends_at_eof && end == parent_len`,
+            // and unrolling that induction leaves exactly one condition:
+            // the node's own bytes reach the end of the blob.
+            let ends_at_eof = raw_end[slot] as usize == buf.len();
+            let expected = well_framed_len_payload(node)
+                .map(|payload| probe_says_message(payload, ends_at_eof));
             // A node that is not a well-framed LEN field never faced the
             // cascade — a group, a scalar, a packed run, a malformed region
             // — and must read `false`. Asserting that is the whole point:
@@ -961,16 +979,25 @@ mod tests {
         assert!(checked > 0, "the fixture contains no LEN node to check");
     }
 
-    /// A node's payload, if its bytes are exactly one length-delimited
-    /// field — which is what `render_len_field` opened a nested message on.
+    /// A node's payload, if its bytes are one length-delimited field —
+    /// which is what `render_len_field` opened a nested message on.
+    ///
+    /// A field whose declared length overruns the node counts too, since
+    /// spec 0312: a cut LEN field with no schema reaches the same cascade,
+    /// and the bytes it did receive are what the probe was shown. Only the
+    /// re-encodability bound turns such a field away before the probe.
     fn well_framed_len_payload(node: &[u8]) -> Option<&[u8]> {
         let tag = parse_wiretag(node, 0);
         if tag.wtype != Some(WT_LEN) {
             return None;
         }
         let len = parse_varint(node, tag.next_pos);
-        let length = len.varint? as usize;
-        (len.next_pos + length == node.len()).then(|| &node[len.next_pos..])
+        let length = len.varint?;
+        if length >= super::super::MAX_REENCODABLE_LEN {
+            return None;
+        }
+        let payload = node.get(len.next_pos..)?;
+        (length as usize >= payload.len()).then_some(payload)
     }
 
     /// The bit the arena's *shape* cannot carry: these five bytes get

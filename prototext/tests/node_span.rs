@@ -560,7 +560,13 @@ fn scalar_leaf_nodes_have_no_type_fqdn() {
 fn a_malformed_field_gets_its_own_one_line_span() {
     // field 1, VARINT, value 5 — well formed.
     // field 2, LEN, length 127 — but the buffer ends, so TRUNCATED_BYTES.
-    let wire = [0x08u8, 0x05, 0x12, 0x7f];
+    //
+    // The one available byte is what keeps it so. Spec 0312 routes a cut
+    // field with no schema through the unknown-LEN cascade, and an *empty*
+    // available payload is a message on spec 0266's own long-standing terms
+    // — `0a 00` renders `1 {}` too. `0xff` is a tag varint that never ends,
+    // which is an ordinary disqualification and leaves the field opaque.
+    let wire = [0x08u8, 0x05, 0x12, 0x7f, 0xff];
     let (text, spans, _fqdns) = render_indexed(
         &wire,
         None,

@@ -177,6 +177,11 @@ pub(in super::super) fn render_message_set_expansion<S: Sink>(
         field_number,
         field_schema,
         tag,
+        // Every payload below is delimited by a length prefix inside the
+        // MessageSet, so none of them ends "because the bytes ran out"
+        // (spec 0312 S2). An expansion is refused on a truncated payload
+        // anyway (spec 0311 N6).
+        frame_ends_at_eof: _,
     } = ctx;
     // ── Outer block opener ────────────────────────────────────────────────────
     let outer_mark = sink.begin_nested(
@@ -205,6 +210,7 @@ pub(in super::super) fn render_message_set_expansion<S: Sink>(
                     field_number: 1,
                     field_schema: None,
                     tag: TagFacts::default(),
+                    frame_ends_at_eof: false,
                 },
                 schema_present,
                 raw_range.clone(),
@@ -302,6 +308,7 @@ pub(in super::super) fn render_message_set_expansion<S: Sink>(
                         msg_bytes,
                         0,
                         None,
+                        false,
                         Some(&inner_msg_desc),
                         schema_present,
                         sink,
@@ -338,6 +345,7 @@ pub(in super::super) fn render_message_set_expansion<S: Sink>(
                     field_number: 1,
                     field_schema: None,
                     tag: TagFacts::default(),
+                    frame_ends_at_eof: false,
                 },
                 schema_present,
                 raw_range.clone(),

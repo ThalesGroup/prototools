@@ -1015,19 +1015,78 @@ impl Sink for TextSink {
 /// returns `false`): it is a read-only helper that may be invoked from the
 /// middle of an in-progress outer render (typically a `TextSink` pass), and
 /// must not disturb that render's own state.
-#[derive(Default)]
+///
+/// Spec 0312 carves out exactly one exception, and it is the only one:
+/// a payload cut by the capture running out, after it has already shown
+/// [`MIN_FIELDS_BEFORE_A_FORGIVEN_CUT`] complete fields, is still a
+/// message. Everything else about the verdict is unchanged.
 pub(super) struct ProbeSink {
     invalid_count: u64,
+    /// Fields the probe saw rendered without objection (spec 0312 S4).
+    complete_fields: u64,
+    /// A `TruncatedBytes` was reported and *not* counted invalid, because
+    /// this frame's end is the end of the available bytes (spec 0312 S4).
+    forgiven_tail_cut: bool,
+    /// Spec 0312 S2, as handed to [`ProbeSink::new`]. Constant for the
+    /// whole probe: LEN payloads are opaque here, so the only recursion is
+    /// into groups, and a group shares its parent's buffer.
+    frame_ends_at_eof: bool,
 }
 
+/// Spec 0312 S5's `P`: how many complete fields a payload must show before
+/// a cut tail is forgiven.
+///
+/// Measured, not chosen by taste — see the spec's Measured outcome for the
+/// admission and false-positive curves this value was read off. A constant
+/// and not an option: a knob here would be a knob on what the document
+/// *is*, and the reader already has `message` (spec 0299) for disagreeing
+/// with the verdict, in both directions.
+///
+/// One, in short, because the measurement found nothing for a larger value
+/// to buy. Over all 4 294 967 296 four-byte strings, `P = 0` admits 10.66%
+/// against spec 0266's 2.43% baseline — so a threshold there must be, or a
+/// lone cut field with nothing before it counts as evidence of itself. But
+/// `P = 1` admits 2.51%, eight hundredths of a point over that baseline,
+/// and every `P` above 1 is indistinguishable from it. On real
+/// non-protobuf files — PNG, ELF, gzip, prose, JSON, cut at each of 72 742
+/// offsets — no value of `P` in 0..=16 admits a single one. Meanwhile each
+/// step up costs real recall: on the googleapis corpus, 68.7% of cuts are
+/// recovered at 1 and 54.1% at 2.
+pub(super) const MIN_FIELDS_BEFORE_A_FORGIVEN_CUT: u64 = 1;
+
 impl ProbeSink {
+    /// `frame_ends_at_eof` is spec 0312 S2's rule for the payload about to
+    /// be probed: its end is where the available bytes stop, not a
+    /// boundary an enclosing length prefix declared.
+    pub(super) fn new(frame_ends_at_eof: bool) -> Self {
+        Self {
+            invalid_count: 0,
+            complete_fields: 0,
+            forgiven_tail_cut: false,
+            frame_ends_at_eof,
+        }
+    }
+
     /// Spec 0097 cascade Step 1's verdict, stated once (spec 0266 S4).
     ///
     /// `next_pos` is what `render_message` returned; `data` the payload it
     /// was given. Both conditions matter: a payload that stopped short is
     /// not a message either, even if everything it did parse was clean.
+    /// (They still hold on the forgiven path: the malformity branch
+    /// returns `(buflen, None)`.)
+    ///
+    /// The third clause is spec 0312's, and note where the field count is
+    /// *not* consulted — a payload with no cut is judged exactly as it was
+    /// before, however few fields it has.
     pub(super) fn says_message(&self, next_pos: usize, data: &[u8]) -> bool {
-        self.invalid_count == 0 && next_pos == data.len()
+        self.invalid_count == 0
+            && next_pos == data.len()
+            && (!self.forgiven_tail_cut || self.complete_fields >= MIN_FIELDS_BEFORE_A_FORGIVEN_CUT)
+    }
+
+    /// Note one field rendered without objection (spec 0312 S4).
+    fn complete_field(&mut self) {
+        self.complete_fields += 1;
     }
 
     /// Note that rendering this payload as a message would report an
@@ -1074,6 +1133,7 @@ impl Sink for ProbeSink {
         _schema_present: bool,
     ) {
         self.note_tag(tag);
+        self.complete_field();
         // Exhaustive, and every arm is empty: a scalar's *value* carries
         // exactly one anomaly, `val_ohb`, and that one is non-canonical.
         // The match earns its keep by failing to compile if that stops
@@ -1135,6 +1195,8 @@ impl Sink for ProbeSink {
         } = facts;
         if end_tag_is_out_of_range || mismatched_group_end.is_some() {
             self.invalid();
+        } else {
+            self.complete_field();
         }
     }
 
@@ -1183,8 +1245,25 @@ impl Sink for ProbeSink {
             | MalformedKind::InvalidFixed64
             | MalformedKind::InvalidFixed32
             | MalformedKind::InvalidLen
-            | MalformedKind::TruncatedBytes { missing: _ }
             | MalformedKind::InvalidGroupEnd => self.invalid(),
+            // Spec 0312 S4: a length prefix that overran *while the bytes
+            // were running out* is a cut capture, not a frame contradicting
+            // itself, and is forgiven — conditionally, and the condition is
+            // checked in `says_message` rather than here, because the field
+            // count is not final yet. When the frame's end is not the
+            // buffer's end, bytes continue past a prefix that claimed them,
+            // and that is still a lie (G2).
+            //
+            // `InvalidVarint` and the two `InvalidFixed*` above are also
+            // "the bytes ran out", and stay invalid: they carry no count to
+            // restore and their encoder arms write verbatim (N4).
+            MalformedKind::TruncatedBytes { missing: _ } => {
+                if self.frame_ends_at_eof {
+                    self.forgiven_tail_cut = true;
+                } else {
+                    self.invalid();
+                }
+            }
         }
     }
 

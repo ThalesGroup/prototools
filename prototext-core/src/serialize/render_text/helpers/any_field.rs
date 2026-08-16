@@ -130,6 +130,11 @@ pub(in super::super) fn render_any_expansion<S: Sink>(
         field_number,
         field_schema,
         tag,
+        // The wrapped value is delimited by the `Any`'s own field-2 length
+        // prefix, so it never ends "because the bytes ran out" (spec 0312
+        // S2). An expansion is refused on a truncated payload anyway
+        // (spec 0311 N6).
+        frame_ends_at_eof: _,
     } = ctx;
     if !EXPAND_ANY.with(|c| c.get()) {
         return false;
@@ -209,6 +214,7 @@ pub(in super::super) fn render_any_expansion<S: Sink>(
             value_bytes,
             0,
             None,
+            false,
             Some(&*resolved_desc),
             schema_present,
             sink,

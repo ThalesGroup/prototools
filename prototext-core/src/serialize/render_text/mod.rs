@@ -326,14 +326,24 @@ pub(super) fn at_depth_cap() -> bool {
 /// ways too.
 const MAX_REENCODABLE_LEN: u64 = 1 << 35;
 
-/// Spec 0311 S1: whether a LEN field whose length prefix overran should be
-/// descended into rather than handed back as `TRUNCATED_BYTES`.
+/// Spec 0311 S1 and spec 0312 S1: whether a LEN field whose length prefix
+/// overran should be handed to `render_len_field` over the bytes that are
+/// present, rather than given up on as `TRUNCATED_BYTES` right here.
 ///
-/// Four conditions, and each one is the absence of a way to lose bytes:
+/// Two conditions say the field is one `render_len_field` has an answer
+/// for:
 ///
 /// - the schema declares a non-group message — the same test
 ///   `render_len_field` itself applies, so the two agree on what the
-///   ordinary case is;
+///   ordinary case is (spec 0311);
+/// - or the schema declares nothing at all for this field number, in which
+///   case the spec 0097 cascade decides, with the probe now able to forgive
+///   a tail cut (spec 0312). Note that `render_len_field` may still decline;
+///   S3 makes that decline emit the same `TRUNCATED_BYTES` this function's
+///   `false` would have.
+///
+/// Three more are the absence of a way to lose bytes:
+///
 /// - the declared length is re-encodable (`MAX_REENCODABLE_LEN`);
 /// - the sink reads LEN payloads opaquely (`ProbeSink`), in which case
 ///   `render_len_field` would return before the nested path and hand the
@@ -352,10 +362,11 @@ fn descends_when_truncated<S: Sink>(
     length: u64,
     sink: &S,
 ) -> bool {
-    length < MAX_REENCODABLE_LEN
-        && !sink.treat_len_as_opaque()
-        && !at_depth_cap()
-        && field_schema.is_some_and(|fs| !fs.is_group() && matches!(fs.kind(), Kind::Message(_)))
+    let handled = match field_schema {
+        Some(fs) => !fs.is_group() && matches!(fs.kind(), Kind::Message(_)),
+        None => true,
+    };
+    handled && length < MAX_REENCODABLE_LEN && !sink.treat_len_as_opaque() && !at_depth_cap()
 }
 
 /// Return `true` when `data` is already rendered prototext text (fast-path).
@@ -487,7 +498,9 @@ pub fn decode_and_render(
 
     let schema_present = root_desc.is_some();
 
-    render_message(buf, 0, None, root_desc, schema_present, &mut sink);
+    // Spec 0312 S2: the document's own end is the one place `true` is
+    // written down. Every nested frame derives its answer from this.
+    render_message(buf, 0, None, true, root_desc, schema_present, &mut sink);
 
     sink.into_inner()
 }
@@ -583,7 +596,9 @@ pub fn decode_and_render_indexed(
 
     let schema_present = root_desc.is_some();
 
-    render_message(buf, 0, None, root_desc, schema_present, &mut sink);
+    // Spec 0312 S2: the document's own end is the one place `true` is
+    // written down. Every nested frame derives its answer from this.
+    render_message(buf, 0, None, true, root_desc, schema_present, &mut sink);
 
     let (text, spans, undescended) = sink.into_parts();
     Ok(IndexedRender {
@@ -601,10 +616,20 @@ pub fn decode_and_render_indexed(
 /// - `next_pos`: byte position after this message (for the caller to
 ///   continue its own parse loop, or for GROUP end detection).
 /// - `group_end_tag`: `Some(tag)` when parsing terminated on a `WT_END_GROUP`.
+///
+/// `frame_ends_at_eof` (spec 0312 S2) says `buf`'s end is where the
+/// available bytes stop, rather than a boundary an enclosing length prefix
+/// declared. It is the renderer's copy of the one rule protolens spells
+/// `override_pane::ends_where_the_bytes_end` and the scoring walk spells
+/// `ScoringOpts::end_undeclared`; the three must not drift. It is a
+/// parameter and not a thread-local offset because it is frame-relative by
+/// construction — a nested payload resets the coordinate frame, so an
+/// offset would not survive the descent.
 fn render_message<'a, S: Sink>(
     buf: &'a [u8],
     start: usize,
     my_group: Option<u64>,
+    frame_ends_at_eof: bool,
     schema: Option<&MessageDescriptor>,
     schema_present: bool,
     sink: &mut S,
@@ -784,6 +809,8 @@ fn render_message<'a, S: Sink>(
                     // message is descended into over the bytes that are
                     // present, carrying the shortfall so the header can say
                     // it and the re-encode can restore the declared length.
+                    // Spec 0312 S1 adds the field with no schema at all,
+                    // where the cascade decides instead.
                     let missing = bytes_missing(pos, length, buflen);
                     if descends_when_truncated(field_schema.as_ref(), length, sink) {
                         render_len_field(
@@ -795,6 +822,9 @@ fn render_message<'a, S: Sink>(
                                     tag_oor,
                                     len_ohb,
                                 },
+                                // The payload is `buf[pos..buflen]`, so it
+                                // ends exactly where this frame does.
+                                frame_ends_at_eof,
                             },
                             schema_present,
                             field_start..buflen,
@@ -830,6 +860,11 @@ fn render_message<'a, S: Sink>(
                             tag_oor,
                             len_ohb,
                         },
+                        // Spec 0312 S2: the payload inherits the answer only
+                        // if it reaches this frame's own end. A satisfied
+                        // length prefix followed by more bytes is precisely
+                        // the case that must not be forgiven.
+                        frame_ends_at_eof: frame_ends_at_eof && end == buflen,
                     },
                     schema_present,
                     field_start..pos,
@@ -879,6 +914,9 @@ fn render_message<'a, S: Sink>(
                             tag_oor,
                             len_ohb: None,
                         },
+                        // A group has no length prefix: it continues in this
+                        // same buffer, so it ends where this frame ends.
+                        frame_ends_at_eof,
                     },
                     schema_present,
                     field_start,
@@ -1077,14 +1115,14 @@ mod tests {
         let buf: &[u8] = &[0x0A, 0x05, b'h', b'e', b'l', b'l', b'o'];
 
         let mut probing = NestCounter::default();
-        render_message(buf, 0, None, None, false, &mut probing);
+        render_message(buf, 0, None, false, None, false, &mut probing);
         assert_eq!(probing.nested, 0, "the probe declines `hello`");
 
         let mut greedy = NestCounter {
             greedy: true,
             nested: 0,
         };
-        render_message(buf, 0, None, None, false, &mut greedy);
+        render_message(buf, 0, None, false, None, false, &mut greedy);
         assert_eq!(greedy.nested, 1, "greedy opens it regardless");
     }
 
@@ -2166,6 +2204,10 @@ mod tests {
     fn an_unknown_truncated_field_is_unchanged() {
         // N1, and the guard that stops this spec's change from drifting into
         // the probe: with no schema a cut prefix is still one opaque line.
+        //
+        // Still true after spec 0312, and for its reason rather than by
+        // luck: this prefix cuts `Mid.inner`'s payload before a single whole
+        // field of it has been seen, so the threshold is not met.
         let text = annotated(&nested_blob()[..7], None);
         assert!(!text.contains("TRUNCATED_MESSAGE"), "got: {text}");
         assert_eq!(text.matches("TRUNCATED_BYTES").count(), 1, "got: {text}");
@@ -2250,5 +2292,149 @@ mod tests {
         );
         assert!(cut.contains("TRUNCATED_MESSAGE; MISSING: 2"), "got: {cut}");
         assert!(!cut.contains("Payload = 2"), "got: {cut}");
+    }
+
+    // ── Spec 0312: enough of a message is a message ─────────────────────────
+    //
+    // Spec 0312's test-plan group A is `truncating_anywhere_round_trips`
+    // above, whose schema-less sweep asserts the round trip at *every* cut
+    // offset — the forgiven ones and, which is the point of S3, the declined
+    // ones too. A declined cut that re-encoded three bytes short would fail
+    // there and nowhere else.
+
+    /// One length-delimited field carrying `payload`, so that the probe is
+    /// consulted at all: `decode_and_render`'s own buffer has no enclosing
+    /// LEN field and is never probed (N5).
+    fn wrapped(payload: &[u8]) -> Vec<u8> {
+        assert!(payload.len() < 128, "one length byte");
+        let mut blob = vec![0x0A, payload.len() as u8];
+        blob.extend_from_slice(payload);
+        blob
+    }
+
+    /// Whether the renderer opened `blob`'s first field as a message *on
+    /// this spec's account* — that is, descended into a payload it had to
+    /// forgive a cut to accept.
+    ///
+    /// Not simply "descended". Spec 0266 already admits the occasional
+    /// binary scrap whose bytes happen to parse clean to the last one, and
+    /// this spec neither adds to that set nor is allowed to: what it may
+    /// change is only the verdict on a payload whose tail is cut. A
+    /// descended block carrying no truncation is therefore the old verdict,
+    /// unchanged, whatever it is.
+    fn forgave_a_cut(blob: &[u8]) -> bool {
+        let text = annotated(blob, None);
+        text.contains('{') && text.contains("TRUNCATED_")
+    }
+
+    /// Field 1 varint 1, then field 2 declaring nine payload bytes and
+    /// delivering one — spec 0312 S5's own example of the scrap of binary
+    /// that `P` has to rule on. One whole field precedes the cut.
+    const ONE_FIELD_THEN_CUT: &[u8] = &[0x08, 0x01, 0x12, 0x09, b'x'];
+
+    #[test]
+    fn a_cut_tail_after_enough_fields_is_a_message() {
+        // G1. The measured `P` is 1, so one whole field is enough.
+        let blob = wrapped(ONE_FIELD_THEN_CUT);
+        let text = assert_round_trips(&blob, None);
+        assert!(text.contains('{'), "the payload stayed opaque: {text}");
+        assert!(text.contains("TRUNCATED_BYTES; MISSING: 8"), "got: {text}");
+    }
+
+    #[test]
+    fn a_cut_tail_after_too_few_fields_is_bytes() {
+        // G4, at `P - 1` = no whole field at all: the same cut field with
+        // nothing in front of it. This is the assertion that fails if `P` is
+        // ever lowered to zero.
+        let blob = wrapped(&ONE_FIELD_THEN_CUT[2..]);
+        let text = assert_round_trips(&blob, None);
+        assert!(!text.contains('{'), "the cut was forgiven: {text}");
+    }
+
+    #[test]
+    fn a_lying_length_prefix_is_still_not_a_message() {
+        // G2, and the test that fails if `frame_ends_at_eof` is dropped or
+        // hardcoded true. The payload is byte-for-byte the forgiven one
+        // above; all that changes is that the file continues past the field
+        // holding it, so the overrun cannot be "the bytes ran out".
+        let mut blob = wrapped(ONE_FIELD_THEN_CUT);
+        blob.extend_from_slice(&[0x18, 0x07]);
+        let text = assert_round_trips(&blob, None);
+        assert!(!text.contains('{'), "a lying length was forgiven: {text}");
+    }
+
+    #[test]
+    fn frame_ends_at_eof_is_false_below_a_satisfied_prefix() {
+        // The threading itself, as one file: the same seven bytes twice
+        // over. The first copy's frame ends where the second begins, the
+        // second's ends with the file, and only the second may descend.
+        //
+        // An offset-valued thread-local cannot express this — both copies
+        // are the same bytes at the same frame-relative positions — which is
+        // S2's argument turned into an assertion.
+        let mut blob = wrapped(ONE_FIELD_THEN_CUT);
+        blob.extend_from_slice(&wrapped(ONE_FIELD_THEN_CUT));
+        let text = assert_round_trips(&blob, None);
+        assert_eq!(
+            text.matches('{').count(),
+            1,
+            "exactly the copy at the end of the file descends: {text}",
+        );
+    }
+
+    #[test]
+    fn a_cut_tail_plus_one_more_flaw_is_not_a_message() {
+        // G3. Wire type 6 does not exist, so the field ahead of the cut is
+        // an ordinary spec 0266 disqualification and `invalid_count` is
+        // non-zero however forgivable the tail is.
+        let blob = wrapped(&[0x08, 0x01, 0x0E, 0x12, 0x09, b'x']);
+        let text = assert_round_trips(&blob, None);
+        assert!(!text.contains('{'), "a second flaw was forgiven: {text}");
+    }
+
+    #[test]
+    fn a_cut_group_is_still_not_a_message() {
+        // N3. A group has no length prefix, so a cut one has no `MISSING`
+        // to report and nothing to restore on re-encode. It is also the
+        // case `ProbeSink::end_nested` singles out: a trailing `START_GROUP`
+        // byte must not be allowed to rescue a string.
+        let blob = wrapped(&[0x08, 0x01, 0x0B]);
+        let text = assert_round_trips(&blob, None);
+        assert!(!text.contains('{'), "a cut group was forgiven: {text}");
+    }
+
+    #[test]
+    fn binary_files_do_not_become_messages() {
+        // Spec 0312 S5's negative controls, frozen. Cut at each of 72 742
+        // offsets, these five files produced one false positive, and it is
+        // the same one at every `P` from 0 to 16 — a ten-byte PNG prefix
+        // that parses clean as a single `fixed64`, forgiving nothing. That
+        // is spec 0266's rate, and this spec is not allowed to move it.
+        //
+        // So the assertion is not "nothing descends" — something already
+        // did, before this spec existed. It is that nothing descends *by
+        // being forgiven*, at every offset of all five.
+        let png: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x10\x00\x00\x00\x10\x08\x06\x00\x00\x00\x1f\xf3\xffa";
+        let elf: &[u8] = b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x03\x00>\x00\x01\x00\x00\x00\x50\x10\x00\x00\x00\x00\x00\x00";
+        let gz: &[u8] = b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03\xcbH\xcd\xc9\xc9W(\xcf/\xcaI\x01\x00\x85\x11J\r\x0b\x00\x00\x00";
+        let prose: &[u8] = b"The quick brown fox jumps over the lazy dog.";
+        let json: &[u8] = br#"{"a":1,"b":[2,3],"c":"hello","d":null}"#;
+
+        for (name, file) in [
+            ("png", png),
+            ("elf", elf),
+            ("gz", gz),
+            ("prose", prose),
+            ("json", json),
+        ] {
+            for k in 1..=file.len() {
+                let blob = wrapped(&file[..k]);
+                assert!(
+                    !forgave_a_cut(&blob),
+                    "{name} cut at {k} was read as a message:\n{}",
+                    annotated(&blob, None),
+                );
+            }
+        }
     }
 }
