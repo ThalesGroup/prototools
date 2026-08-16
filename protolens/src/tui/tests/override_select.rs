@@ -1437,3 +1437,236 @@ fn esc_and_enter_land_in_the_same_place_and_the_default_kind_returns() {
         "the entry names the node the user pointed at, not its parent"
     );
 }
+
+/// A graph, a cold cache, and a cursor node whose type is *unresolved*
+/// (`NO_FQDN`) — so spec 0139's ladder finds no candidate at step C and
+/// `t` reaches `open_override_on_default`. The same shape an untyped
+/// root has, which is where the empty pane was reported.
+fn cold_cache_default_target_app() -> App {
+    // Tag `0x0A` = field 1 << 3 | WT_LEN(2), length 0 — one arena slot,
+    // matching the single tree node below.
+    let blob = vec![0x0A, 0x00];
+    let lines: Vec<String> = vec!["1 {".to_string(), "}".to_string()];
+    let node = TreeNode {
+        span: NodeSpan {
+            field_number: 1,
+            raw_range: 0..2,
+            text_range: 0..2,
+            level: 0,
+            type_fqdn: NO_FQDN,
+            is_message: true,
+            packed_record_start: NO_PACKED_RECORD,
+            wire_type: WT_LEN as u8,
+        },
+        lines_total: 2,
+        lines_visible: 2,
+        rendered_as: NOT_RENDERED,
+    };
+    let decoded = Decoded {
+        total_lines: lines.len(),
+        stops: Vec::new(),
+        row_budget: None,
+        node_text: vec![Some(Box::from(lines[0].as_str()))],
+        tree: vec![node],
+        root_type: "google.protobuf.Empty".to_string(),
+        arena: crate::decode::arena_of(&blob),
+        blob: Arc::new(Blob::unwrapped(blob)),
+        wrapper_offset: 0,
+        root_candidates: Vec::new(),
+        fqdns: FqdnTable::new(),
+    };
+    let ctx = DescriptorContext::for_test_with_graph(test_scoring_graph());
+    let mut app = fixture_app(decoded, ctx);
+    app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
+    app.splash = false;
+    app.term_width = 120;
+    // Steps A and B of spec 0139's ladder run before C: an applicable
+    // management entry would route `t` to `open_override_on_type`
+    // instead, which is not the path under test.
+    while !app.overrides.entries().is_empty() {
+        app.overrides.remove(0);
+    }
+    app
+}
+
+/// Spec 0305 test 1 (G1): with a scoring graph and a cold cache, opening
+/// the pane on a default target must show the lexicographic universe
+/// rather than nothing, and must stay in `Inferred` order so the
+/// in-flight fetch still has somewhere to land.
+#[test]
+fn cold_cache_open_shows_the_lexicographic_list() {
+    let mut app = cold_cache_default_target_app();
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+
+    assert!(
+        !app.override_candidates.is_empty(),
+        "spec 0305 G1: a cold cache must show the lexicographic universe, \
+         not an empty pane"
+    );
+    assert_eq!(
+        app.override_sort,
+        SortMode::Inferred,
+        "spec 0305 S1: the placeholder does not change the sort mode — the \
+         arriving scores are still what the reader asked for"
+    );
+}
+
+/// Spec 0305 test 2 (G3), the regression that pinned the clobber:
+/// `upgrade_active_override_to_complete` used to sync
+/// `override_candidates` from `override_inferred_raw` unconditionally.
+/// On a cold cache that raw list is empty and the sort mode is
+/// `Inferred` by construction, so the call `open_override_on_default`
+/// makes immediately after installing the placeholder wiped it out and
+/// the pane went blank again.
+#[test]
+fn the_placeholder_survives_the_complete_fetch() {
+    let mut app = message_node_app_with_graph();
+    app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
+    app.override_target = Some(0);
+    app.override_sort = SortMode::Inferred;
+    app.override_list_height = 4;
+
+    app.recompute_override_candidates();
+    assert!(app.override_candidates_pending);
+    assert!(app.override_candidates.is_empty());
+
+    // Stand in for `open_override_on_default`'s placeholder install.
+    app.override_candidates = vec![("none".to_string(), None), ("message".to_string(), None)];
+    let placeholder = app.override_candidates.clone();
+
+    app.upgrade_active_override_to_complete();
+
+    assert!(
+        app.override_complete_pending,
+        "the fetch missed, so it is still outstanding"
+    );
+    assert_eq!(
+        app.override_candidates, placeholder,
+        "spec 0305 S3: a lookup that returned nothing must not blank a list \
+         that is already on screen"
+    );
+}
+
+/// Spec 0305 test 3 (G2): when the scored page arrives it replaces the
+/// placeholder wholesale and puts the highlight back at row 0.
+#[test]
+fn arriving_scores_replace_the_placeholder() {
+    let mut app = message_node_app_with_graph();
+    app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
+    app.override_target = Some(0);
+    app.override_sort = SortMode::Inferred;
+    app.override_list_height = 4;
+
+    app.recompute_override_candidates();
+    assert!(app.override_candidates_pending);
+    app.override_candidates = vec![
+        ("none".to_string(), None),
+        ("message".to_string(), None),
+        ("bool".to_string(), None),
+        ("bytes".to_string(), None),
+    ];
+    app.override_highlight = 3;
+
+    let range = extract::message_payload_range(&app.blob, &app.tree[0].span.raw_range);
+    app.heat_caches.lock().unwrap().by_range.upsert(
+        range.start,
+        RangeHeatEntry {
+            best_score: Some(9),
+            best_count: 1,
+            top_n: vec![("pkg.Type".to_string(), 9); 4],
+        },
+        Tier::Visible,
+    );
+
+    app.poll_pending_override_work();
+
+    assert!(!app.override_candidates_pending);
+    assert_eq!(
+        app.override_candidates,
+        vec![("pkg.Type".to_string(), Some(9)); 4],
+        "spec 0305 G2: the scored list replaces the placeholder"
+    );
+    assert_eq!(app.override_highlight, 0, "and the highlight resets");
+}
+
+/// Spec 0305 N2/test 4: the no-graph path is unchanged. Nothing is ever
+/// coming, so the pane falls back to `Lexicographic` outright and the
+/// sort mode names what is on screen.
+#[test]
+fn no_graph_still_falls_back_to_lexicographic() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.term_width = 120;
+    app.message.clear();
+    assert!(app.ctx.graph.is_none());
+    while !app.overrides.entries().is_empty() {
+        app.overrides.remove(0);
+    }
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+
+    assert_eq!(app.override_sort, SortMode::Lexicographic);
+    assert!(!app.override_candidates.is_empty());
+}
+
+/// Spec 0305 S2/test 5: the placeholder is the same sequence
+/// `recompute_override_candidates` builds for `SortMode::Lexicographic`,
+/// because both call `lexico_candidates`. A reader who starts reading
+/// the placeholder and a reader who pressed `i` see the same list, and
+/// the order cannot drift between the two.
+#[test]
+fn the_placeholder_is_the_same_list_the_i_toggle_gives() {
+    let mut app = cold_cache_default_target_app();
+
+    // The cold-cache placeholder.
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert_eq!(app.override_sort, SortMode::Inferred);
+    let placeholder = app.override_candidates.clone();
+
+    // What `i` would produce for the same target.
+    app.override_sort = SortMode::Lexicographic;
+    app.recompute_override_candidates();
+
+    assert_eq!(app.override_candidates, placeholder);
+}
+
+/// Spec 0305 S5/test 6: the scorer answers, and the answer is "nothing"
+/// — every candidate vetoed, as happens on a truncated root (spec
+/// 0266). That is final, so the pane keeps the lexicographic universe
+/// on screen and says `Lexicographic`, instead of letting the empty
+/// arrival wipe the placeholder.
+#[test]
+fn an_empty_scored_answer_falls_back_to_lexicographic() {
+    let mut app = cold_cache_default_target_app();
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert_eq!(app.override_sort, SortMode::Inferred);
+    let placeholder = app.override_candidates.clone();
+    assert!(!placeholder.is_empty());
+
+    let range = extract::message_payload_range(&app.blob, &app.tree[0].span.raw_range);
+    app.heat_caches.lock().unwrap().by_range.upsert(
+        range.start,
+        RangeHeatEntry {
+            best_score: None,
+            best_count: 0,
+            top_n: Vec::new(),
+        },
+        Tier::Visible,
+    );
+
+    app.poll_pending_override_work();
+
+    assert_eq!(
+        app.override_sort,
+        SortMode::Lexicographic,
+        "spec 0305 S5: an empty answer is final, so the sort mode names \
+         what is on screen"
+    );
+    assert_eq!(
+        app.override_candidates, placeholder,
+        "and what is on screen is still the full universe"
+    );
+    assert!(app.message.is_empty(), "with no 'Scoring candidates…' left");
+}

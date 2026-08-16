@@ -174,20 +174,27 @@ impl App {
     fn open_override_on_default(&mut self) {
         self.override_sort = SortMode::Inferred;
         self.recompute_override_candidates();
-        // An empty list while `override_candidates_pending` is set means
-        // the cache was merely cold at open time, not that `Inferred`
-        // has nothing to offer; falling back would discard the in-flight
-        // fetch. Wait for it. With no scoring graph at all no request is
-        // ever queued, `pending` stays false, and the fallback runs
-        // immediately.
-        if self.override_candidates.is_empty() && !self.override_candidates_pending {
+        if self.override_candidates.is_empty() {
             // Spec 0147 G5's top-of-`handle_key` clear does not cover
             // this: it dismisses messages left over from a *previous*
             // keypress, whereas `recompute_override_candidates` set this
             // one during this keypress.
             self.message.clear();
-            self.override_sort = SortMode::Lexicographic;
-            self.recompute_override_candidates();
+            if self.override_candidates_pending {
+                // Cache is cold: the in-flight request may still deliver
+                // scored results. Keep `override_sort = Inferred` so that
+                // `poll_pending_override_work` can replace this placeholder
+                // when results arrive. Show the lexico list for now so the
+                // reader has something useful immediately.
+                self.override_candidates = self.lexico_candidates();
+                // Still fetch the full list so it is ready when results
+                // arrive.
+                self.upgrade_active_override_to_complete();
+            } else {
+                // No graph, or graph returned nothing — no results
+                // coming.
+                self.fall_back_to_lexicographic();
+            }
             return;
         }
         // Start fetching the rest of the list now rather than waiting
@@ -195,6 +202,42 @@ impl App {
         // `poll_pending_override_work` carries it to
         // `override_candidates_complete` from here.
         self.upgrade_active_override_to_complete();
+    }
+
+    /// Nothing is coming that could fill the inferred list — either no
+    /// scoring graph exists, or the scorer has answered and vetoed
+    /// everything. Show the fixed universe and say so: the sort mode
+    /// must name what is on screen.
+    ///
+    /// Clearing the message is part of the fallback (spec 0139 Step D):
+    /// `recompute_override_candidates`'s "no scoring graph available;
+    /// press 'i'" and its "Scoring candidates…" both tell the reader to
+    /// do something this call has just done for them.
+    fn fall_back_to_lexicographic(&mut self) {
+        self.message.clear();
+        self.override_sort = SortMode::Lexicographic;
+        self.recompute_override_candidates();
+    }
+
+    /// Spec 0137 §G1/§G4: the `None` sentinel + the 15 primitive
+    /// keywords, in that fixed order, ahead of the sorted
+    /// message/group/enum FQDNs. `MESSAGE_KEYWORD` (spec 0299) sits
+    /// beside `None` rather than in `ALL_PRIMITIVE_KEYWORDS`, because it
+    /// is not a primitive — it carries a target descriptor. Like the
+    /// primitives it is stored as its bare keyword, not as a FQDN, so
+    /// `wrapper_target_for` can resolve it directly.
+    ///
+    /// Spec 0305 S2: shared by `recompute_override_candidates`'s
+    /// `Lexicographic` arm and by the cold-cache placeholder, so the
+    /// order cannot drift between the two. Does not touch
+    /// `override_sort`.
+    fn lexico_candidates(&self) -> Vec<(String, Option<i64>)> {
+        std::iter::once(decode::NONE_KEYWORD.to_string())
+            .chain(std::iter::once(decode::MESSAGE_KEYWORD.to_string()))
+            .chain(decode::ALL_PRIMITIVE_KEYWORDS.iter().map(|s| s.to_string()))
+            .chain(self.all_type_fqdns.iter().cloned())
+            .map(|f| (f, None))
+            .collect()
     }
 
     /// `Enter` on a main-pane node (item 3, spec 0139 follow-up): a
@@ -332,20 +375,7 @@ impl App {
             return;
         };
         self.override_candidates = match self.override_sort {
-            // Spec 0137 §G1/§G4: the `None` sentinel + the 15 primitive
-            // keywords are prepended, in that fixed order, ahead of the
-            // sorted message/group/enum FQDNs — alphabetic mode only
-            // (§G7).  `MESSAGE_KEYWORD` (spec 0299) sits beside `None`
-            // rather than in `ALL_PRIMITIVE_KEYWORDS`, because it is not
-            // a primitive — it carries a target descriptor.  Like the
-            // primitives it is stored as its bare keyword, not as a FQDN,
-            // so `wrapper_target_for` can resolve it directly.
-            SortMode::Lexicographic => std::iter::once(decode::NONE_KEYWORD.to_string())
-                .chain(std::iter::once(decode::MESSAGE_KEYWORD.to_string()))
-                .chain(decode::ALL_PRIMITIVE_KEYWORDS.iter().map(|s| s.to_string()))
-                .chain(self.all_type_fqdns.iter().cloned())
-                .map(|f| (f, None))
-                .collect(),
+            SortMode::Lexicographic => self.lexico_candidates(),
             SortMode::Inferred => match &self.ctx.graph {
                 Some(_graph) => {
                     let range = self.heat_scored_range(idx);
@@ -427,25 +457,41 @@ impl App {
                 self.override_inferred_raw = candidates;
                 self.override_candidates_complete = true;
                 self.override_complete_pending = false;
+                // Spec 0305 S3: sync the on-screen list only on a hit.
+                // On a miss `override_inferred_raw` is whatever it was —
+                // typically empty — and writing it out would blank the
+                // cold-cache placeholder installed by
+                // `open_override_on_default` a moment earlier.
+                //
+                // Only while `Inferred` is still the active sort mode:
+                // `poll_pending_override_work` calls this unguarded on a
+                // background wakeup, and the pane may since have fallen
+                // back to `Lexicographic`; the resolved `Inferred` data
+                // must then stay parked in `override_inferred_raw` for a
+                // later `i` toggle rather than clobbering what is on
+                // screen.
+                if self.override_sort == SortMode::Inferred {
+                    if self.override_inferred_raw.is_empty() {
+                        // Spec 0305 S5: a hit that answers "nothing"
+                        // is final — every candidate was vetoed. Do
+                        // what S1's not-pending branch does, so the
+                        // sort mode names what is on screen instead of
+                        // leaving an empty `Inferred` pane behind.
+                        self.fall_back_to_lexicographic();
+                    } else {
+                        self.override_candidates = self
+                            .override_inferred_raw
+                            .iter()
+                            .map(|(f, s)| (f.clone(), Some(*s)))
+                            .collect();
+                    }
+                }
             }
             None => {
                 self.override_complete_pending = true;
             }
         }
         self.active_override_range = Some(range);
-        // Only sync the on-screen list while `Inferred` is still the
-        // active sort mode. `poll_pending_override_work` calls this
-        // unguarded on a background wakeup, and the pane may since have
-        // fallen back to `Lexicographic`; the resolved `Inferred` data
-        // must then stay parked in `override_inferred_raw` for a later
-        // `i` toggle rather than clobbering what is on screen.
-        if self.override_sort == SortMode::Inferred {
-            self.override_candidates = self
-                .override_inferred_raw
-                .iter()
-                .map(|(f, s)| (f.clone(), Some(*s)))
-                .collect();
-        }
     }
 
     /// Re-checks the shared cache for the override pane's outstanding
@@ -488,15 +534,23 @@ impl App {
                 // freshly-cached list waits in `override_inferred_raw`
                 // for a later `i` toggle.
                 if self.override_sort == SortMode::Inferred {
-                    self.override_candidates = self
-                        .override_inferred_raw
-                        .iter()
-                        .map(|(f, s)| (f.clone(), Some(*s)))
-                        .collect();
-                    self.override_highlight = 0;
-                    self.override_scroll = PaneScroll::default();
-                    self.last_override_highlight = None;
-                    self.message.clear();
+                    if self.override_inferred_raw.is_empty() {
+                        // Spec 0305 S5, as in
+                        // `upgrade_active_override_to_complete`: an
+                        // empty arrival must not wipe the placeholder
+                        // the cold-cache open put up.
+                        self.fall_back_to_lexicographic();
+                    } else {
+                        self.override_candidates = self
+                            .override_inferred_raw
+                            .iter()
+                            .map(|(f, s)| (f.clone(), Some(*s)))
+                            .collect();
+                        self.override_highlight = 0;
+                        self.override_scroll = PaneScroll::default();
+                        self.last_override_highlight = None;
+                        self.message.clear();
+                    }
                 }
             }
         }
