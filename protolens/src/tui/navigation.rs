@@ -620,11 +620,13 @@ impl App {
             self.cursor_column -= 1;
             self.desired_column = self.cursor_column;
             self.settle_anchor();
+            self.pan_to_caret();
             return;
         }
         if self.caret_anchor != CaretAnchor::Home {
             self.caret_anchor = CaretAnchor::Home;
             self.desired_column = self.cursor_column;
+            self.pan_to_caret();
             return;
         }
         self.parent_move();
@@ -665,11 +667,13 @@ impl App {
             self.cursor_column += 1;
             self.desired_column = self.cursor_column;
             self.settle_anchor();
+            self.pan_to_caret();
             return;
         }
         if self.caret_anchor != CaretAnchor::End {
             self.caret_anchor = CaretAnchor::End;
             self.desired_column = self.cursor_column;
+            self.pan_to_caret();
             return;
         }
         // A voluntary `End`. Descend if there is anywhere to descend to
@@ -713,6 +717,7 @@ impl App {
         self.cursor_column = self.caret_bounds().0;
         self.desired_column = self.cursor_column;
         self.caret_anchor = CaretAnchor::Home;
+        self.pan_to_caret();
     }
 
     /// Spec 0194 S6: `$`. Declares the anchor (spec 0199 S1 rule 1).
@@ -720,6 +725,7 @@ impl App {
         self.cursor_column = self.caret_bounds().1;
         self.desired_column = self.cursor_column;
         self.caret_anchor = CaretAnchor::End;
+        self.pan_to_caret();
     }
 
     /// Spec 0199 S8: `Alt-Left`, the command line's `Alt-b` applied to
@@ -734,6 +740,7 @@ impl App {
         self.clamp_caret_column();
         self.desired_column = self.cursor_column;
         self.settle_anchor();
+        self.pan_to_caret();
     }
 
     /// Spec 0199 S8: `Alt-Right`, the command line's `Alt-f`.
@@ -744,6 +751,7 @@ impl App {
         self.clamp_caret_column();
         self.desired_column = self.cursor_column;
         self.settle_anchor();
+        self.pan_to_caret();
     }
 
     /// The cursor row's own text, as `char`s — the same text

@@ -173,7 +173,7 @@ impl App {
     /// `center_columns` (`search.rs`) centers because a search jump
     /// lands somewhere the reader has not been, whereas extending a
     /// selection by one character should move the view by one column.
-    fn pan_to_caret(&mut self) {
+    pub(super) fn pan_to_caret(&mut self) {
         let usable = (self.main_area.width as usize)
             .saturating_sub(1)
             .saturating_sub(render::FOLD_FIELD_WIDTH);

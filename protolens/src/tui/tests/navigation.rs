@@ -1623,3 +1623,113 @@ fn opening_an_auto_fold_renders_the_body_it_stood_for() {
         "expanded rows must match the unbounded render"
     );
 }
+
+/// The columns `pan_to_caret` is trying to keep the caret inside of —
+/// the pane less the always-reserved heat-cue gutter (spec 0138 N1) and
+/// the fold field (spec 0193 S1).
+fn usable_columns(app: &App) -> usize {
+    (app.main_area.width as usize)
+        .saturating_sub(1)
+        .saturating_sub(render::FOLD_FIELD_WIDTH)
+}
+
+fn caret_is_visible(app: &App) -> bool {
+    let usable = usable_columns(app);
+    app.cursor_column >= app.pan_offset && app.cursor_column < app.pan_offset + usable
+}
+
+/// Spec 0304 test 1 (G1): `$` on a line wider than the pane brings the
+/// view with it. Before this the caret was simply off to the right with
+/// nothing on screen to show where it had gone.
+#[test]
+fn dollar_pans_to_the_end_of_a_long_line() {
+    let line = "x".repeat(200);
+    let mut app = sibling_leaves_app(&[&line]);
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 40, 5);
+
+    app.caret_to_line_end();
+
+    assert!(app.pan_offset > 0, "the view must have moved");
+    assert!(
+        caret_is_visible(&app),
+        "spec 0304 G1: `$` keeps the caret on screen"
+    );
+}
+
+/// Spec 0304 test 2 (N1): the rule spread here is spec 0242 S7's
+/// minimum move, not a centering — stepping one column off the right
+/// edge pans by exactly one column.
+#[test]
+fn caret_pans_by_one_column_not_by_a_screenful() {
+    let line = "x".repeat(200);
+    let mut app = sibling_leaves_app(&[&line]);
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 40, 5);
+    let usable = usable_columns(&app);
+
+    // The last visible column, with the view at the far left.
+    app.pan_offset = 0;
+    app.cursor_column = usable - 1;
+    app.desired_column = app.cursor_column;
+    app.caret_anchor = CaretAnchor::Free;
+
+    app.caret_right();
+
+    assert_eq!(app.cursor_column, usable);
+    assert_eq!(
+        app.pan_offset, 1,
+        "spec 0304 N1: a one-column move costs a one-column pan"
+    );
+}
+
+/// Spec 0304 test 3 (G1): `Alt-Right` is a motion like any other, so it
+/// never leaves the caret outside the visible columns however far along
+/// the line it walks.
+#[test]
+fn word_motion_keeps_the_caret_visible() {
+    let line = "alpha beta gamma delta epsilon ".repeat(8);
+    let mut app = sibling_leaves_app(&[&line]);
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 40, 5);
+
+    for step in 0..60 {
+        app.caret_word_right();
+        assert!(
+            caret_is_visible(&app),
+            "step {step}: column {} outside [{}, {})",
+            app.cursor_column,
+            app.pan_offset,
+            app.pan_offset + usable_columns(&app)
+        );
+    }
+    assert!(app.pan_offset > 0, "the walk must have reached off-screen");
+
+    for step in 0..60 {
+        app.caret_word_left();
+        assert!(
+            caret_is_visible(&app),
+            "back step {step}: column {} outside [{}, {})",
+            app.cursor_column,
+            app.pan_offset,
+            app.pan_offset + usable_columns(&app)
+        );
+    }
+}
+
+/// Spec 0304 test 4 (G1): `^` pans back. The pair is what makes the two
+/// bound motions of spec 0194 S6 usable on a line wider than the pane.
+#[test]
+fn caret_to_line_start_pans_back() {
+    let line = "x".repeat(200);
+    let mut app = sibling_leaves_app(&[&line]);
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 40, 5);
+
+    app.caret_to_line_end();
+    assert!(app.pan_offset > 0);
+
+    app.caret_to_line_start();
+    assert_eq!(app.pan_offset, 0);
+    assert!(caret_is_visible(&app));
+}
