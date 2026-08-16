@@ -809,6 +809,39 @@ fn sliding_along_a_payload_keeps_one_box() {
     assert!(app.hover_deadline.is_some());
 }
 
+/// Spec 0307 test 5 / S5: the box over `Blob`'s prefix leads by saying
+/// those bytes are not in the file, and no other box says it.
+///
+/// It leads rather than trails because that is why the reader hovered:
+/// the answer to "what is this odd green" comes before "field 1".
+#[test]
+fn a_hover_over_the_wrapper_prefix_says_the_bytes_are_not_in_the_file() {
+    let app = packed_app();
+    // Line 0 is the wrapper root: `Blob`'s field-1 tag, then the length
+    // of everything after it. Every byte of the row is protolens' own.
+    assert_eq!(hex(&app, 0), "2|08:0d[");
+    let not_in_the_file =
+        "these bytes are not in the file — protolens wraps every document in a field 1";
+
+    for (col, then) in [
+        (0, "wire type 2 — LEN"),
+        (col_of(&app, 0, "08"), "field 1"),
+        (col_of(&app, 0, "0d"), "length 13 bytes"),
+    ] {
+        let lines = box_at(&app, 0, col, TALL);
+        assert_eq!(lines[0], not_in_the_file, "at column {col}");
+        assert_eq!(lines[1], then, "at column {col}");
+    }
+
+    // Line 1 is `vals: 5`, whose tag is the user's own byte one past
+    // the prefix — the nearest thing on screen that must not say it.
+    assert_eq!(
+        box_at(&app, 1, 0, TALL)[0],
+        "wire type 2 — LEN",
+        "a byte of the file is not announced as protolens'",
+    );
+}
+
 /// The characters the open box marks.
 fn marked_of_popup(app: &App) -> String {
     let popup = app.popup.as_ref().expect("an open box");

@@ -121,6 +121,13 @@ impl App {
     /// The box's three groups for one hit (spec 0282 S6-S13).
     pub(super) fn wire_box(&self, hit: &WireHit) -> WireBox {
         let mut body = WireBox::default();
+        if self.is_synthetic(hit) {
+            body.head.push(BoxLine::plain(
+                "these bytes are not in the file — protolens wraps every \
+                 document in a field 1"
+                    .to_string(),
+            ));
+        }
         match hit.part {
             // S12: the row ran out of columns; the message did not run
             // out of bytes. So no flaw line, and the one instruction any
@@ -170,6 +177,18 @@ impl App {
             })
             .collect();
         body
+    }
+
+    /// Whether the hit is on `Blob`'s prefix — the tag and length
+    /// protolens wrote itself (spec 0307 S5).
+    ///
+    /// A part is wholly inside the prefix or wholly outside it: the
+    /// length varint ends exactly where the payload begins, so no
+    /// coalesced run of columns straddles the boundary.
+    fn is_synthetic(&self, hit: &WireHit) -> bool {
+        self.wrapper_offset > 0
+            && self.parent(hit.pos.node).is_none()
+            && hit.bytes.end <= self.wrapper_offset
     }
 
     /// The head lines for the four parts of a record (S6-S9).

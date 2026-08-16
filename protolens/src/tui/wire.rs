@@ -59,6 +59,16 @@ pub(super) struct WireSlice {
     /// The node's own field number — needed only by [`Framing::Closing`],
     /// which is the one row whose bytes have to *agree* with something.
     pub(super) field_number: u32,
+    /// Spec 0307 S1: the absolute offset before which this row's bytes
+    /// are protolens' own rather than the user's.
+    ///
+    /// `0` on every slice but the wrapper root's, where it is
+    /// `wrapper_offset` — the width of the field-1 tag and length
+    /// `Blob` prepends. Those bytes are drawn like any others and then
+    /// marked, rather than withheld: withholding them left the one row
+    /// that is the whole document as the only LEN node on screen with
+    /// no framing.
+    pub(super) synthetic_end: usize,
 }
 
 /// What the row's first byte is.
@@ -366,6 +376,7 @@ fn head_or_tail(
             record_end: bytes.end,
             framing: Framing::Tagged,
             field_number,
+            synthetic_end: 0,
         };
     }
     let tail_start = children.map_or(bytes.end, |c| c.end);
@@ -378,12 +389,13 @@ fn head_or_tail(
             Framing::Raw
         },
         field_number,
+        synthetic_end: 0,
     }
 }
 
 impl App {
-    /// The bytes the line `pos` names owns, or `None` when it owns none
-    /// it may show — the wrapper root (S3) and an unrendered slot.
+    /// The bytes the line `pos` names owns, or `None` for an unrendered
+    /// slot.
     pub(super) fn wire_slice(&self, pos: LinePos, memo: &mut PackedCursor) -> Option<WireSlice> {
         let idx = pos.node;
         let node = self.tree.get(idx)?;
@@ -404,42 +416,23 @@ impl App {
         // A bracketed node's own lines are its first and its last; a
         // flat one has only the head.
         let footer = node.is_bracketed() && pos.line_in_node > 0;
-        let slice = head_or_tail(&node.span, start..end, children, footer);
+        let mut slice = head_or_tail(&node.span, start..end, children, footer);
+        // Spec 0307 S1. `Blob`'s field-1 tag and length are protolens'
+        // own bytes, and spec 0225 S3 refused the whole node rather than
+        // show them — which, on an untyped blob rendering as one flat
+        // line, hid the entire file. Spec 0306 narrowed them away
+        // instead, and had to call what was left `Framing::Raw`: the one
+        // row that is the whole document became the only LEN node on
+        // screen with no framing at all.
+        //
+        // So they are drawn, framed like anything else, and marked. Set
+        // on both of the root's rows: a bracketed root's tail begins at
+        // or past `wrapper_offset`, so the flag costs that row nothing
+        // and needs no second predicate to say so.
         if self.wrapper_offset > 0 && self.parent(idx).is_none() {
-            return self.without_the_wrapper_prefix(slice);
+            slice.synthetic_end = self.wrapper_offset;
         }
         Some(slice)
-    }
-
-    /// The wrapper root's slice, minus `Blob`'s synthetic
-    /// `write_tag(1, WT_LEN)` and length prefix (spec 0306 S1-S3).
-    ///
-    /// Those bytes are not in the user's file, and the wire view's whole
-    /// value is that what it shows is on disk — so spec 0225 S3 refused
-    /// the row. But it refused the *node*, and a flat wrapper root's
-    /// head is three or four invented bytes followed by the entire file.
-    /// On an untyped blob the probe declines, the document is one flat
-    /// line (spec 0299), and that refusal hid every byte of it.
-    ///
-    /// The subtraction is the one `display_range` already applies to
-    /// this same node's coordinates.
-    fn without_the_wrapper_prefix(&self, slice: WireSlice) -> Option<WireSlice> {
-        let start = slice.bytes.start.max(self.wrapper_offset);
-        if start >= slice.bytes.end {
-            // S2: not a rare path — a *bracketed* root's head is exactly
-            // the prefix, because its first child begins at
-            // `wrapper_offset`.
-            return None;
-        }
-        Some(WireSlice {
-            bytes: start..slice.bytes.end,
-            // S3: what remains does not begin with a tag, and the only
-            // tag it ever had was invented. `Raw` — "bytes no framing
-            // claims … drawn plain, which is all that can honestly be
-            // said about them" — is exactly their status.
-            framing: Framing::Raw,
-            ..slice
-        })
     }
 
     /// S4: element `pos.line_in_node` of a packed run, with the record's
@@ -494,6 +487,9 @@ impl App {
             record_end: payload_end,
             framing,
             field_number: node.span.field_number,
+            // A packed run is never the root, so none of its bytes are
+            // protolens' own.
+            synthetic_end: 0,
         })
     }
 
@@ -925,6 +921,9 @@ fn preview_packed_slice(spans: &[NodeSpan], i: usize) -> WireSlice {
             Framing::Element { varint, close }
         },
         field_number: span.field_number,
+        // A preview's bytes are its own re-encoded buffer, whose
+        // offsets have nothing to do with `Blob`'s prefix (0307 N4).
+        synthetic_end: 0,
     }
 }
 
@@ -985,6 +984,7 @@ fn paint(
         theme,
         palette,
         region: Region::Unclaimed,
+        synthetic: slice.synthetic_end.saturating_sub(start),
         last_block: None,
         spans: Vec::new(),
         record: record.then(WireRecord::default),
@@ -1507,6 +1507,11 @@ struct Painter<'a> {
     palette: Option<&'a WirePalette>,
     /// Which of the four the pen is currently in.
     region: Region,
+    /// Spec 0307 S2: the row's [`WireSlice::synthetic_end`], as an
+    /// offset into `rec` rather than into the blob — `0` on every row
+    /// but the wrapper root's, where `tint` is then a comparison
+    /// against zero that never fires.
+    synthetic: usize,
     /// The background block the byte just drawn wore. What tells
     /// `separate` whether the gap it is about to draw is inside one
     /// block or between two.
@@ -1566,6 +1571,19 @@ impl Painter<'_> {
                 Region::Unclaimed => subdued(),
             },
         }
+    }
+
+    /// Spec 0307 S2: `style`, with byte `i`'s provenance on it.
+    ///
+    /// Neither color is touched — a fabricated tag is still a tag and
+    /// still wears `Region::Tag`'s hue, which is what makes it readable
+    /// as one, and the hex keeps the one foreground that stays legible
+    /// over every band.
+    fn tint(&self, style: Style, i: usize) -> Style {
+        if i < self.synthetic {
+            return style.add_modifier(theme::SYNTHETIC);
+        }
+        style
     }
 
     /// Every span the row emits goes through here, so `cols` is always
@@ -1639,7 +1657,7 @@ impl Painter<'_> {
         // columns contiguous and lets the coalescing in `mark` do its
         // job.
         let from = self.cols;
-        let style = self.style(band);
+        let style = self.tint(self.style(band), i);
         self.separate(style);
         self.emit(Span::styled(format!("{:02x}", self.rec[i]), style));
         self.last_block = block(style);
@@ -1689,8 +1707,8 @@ impl Painter<'_> {
             return;
         }
         let byte = self.rec[i];
-        let number_style = self.style_in(Region::Tag, number);
-        let wtype_style = self.style_in(Region::Type, wtype);
+        let number_style = self.tint(self.style_in(Region::Tag, number), i);
+        let wtype_style = self.tint(self.style_in(Region::Type, wtype), i);
         // One byte, so one cell (spec 0283 S1) — the two halves and the
         // bar between them are all of it.
         let whole = self.cols;
@@ -1713,7 +1731,9 @@ impl Painter<'_> {
             (Some(band), Some(other)) if band == other => band,
             _ => Style::default(),
         };
-        self.emit(Span::styled("|", bar));
+        // Spec 0307 S3: the bar is part of the byte, so it says what
+        // the byte's two halves say about where the byte came from.
+        self.emit(Span::styled("|", self.tint(bar, i)));
         let from = self.cols;
         self.emit(Span::styled(format!("{:02x}", byte & 0xF8), number_style));
         self.last_block = block(number_style);
@@ -1898,6 +1918,7 @@ mod tests {
                 record_end,
                 framing,
                 field_number,
+                synthetic_end: 0,
             },
             ThemeKind::Dark,
             Some(&WirePalette::for_test()),
@@ -2264,6 +2285,7 @@ mod tests {
                 record_end: 2,
                 framing: Framing::Tagged,
                 field_number: 0,
+                synthetic_end: 0,
             },
             ThemeKind::Dark,
             None,
@@ -2362,6 +2384,7 @@ mod tests {
                 record_end,
                 framing,
                 field_number,
+                synthetic_end: 0,
             },
             ThemeKind::Dark,
             Some(&WirePalette::accusing(flaw)),

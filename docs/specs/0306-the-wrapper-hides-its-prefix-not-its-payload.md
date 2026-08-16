@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0306 — the wrapper hides its prefix, not its payload
 
-Status: implemented
+Status: superseded by 0307
 Implemented in: 2026-08-16
 App: protolens
 Refs: docs/specs/0225-….md (S3 suppresses the wrapper root's wire row;

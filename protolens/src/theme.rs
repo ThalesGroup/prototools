@@ -707,6 +707,24 @@ const WIRE_LUMA_LIGHT: f32 = 177.0;
 const WIRE_TEXT_DARK: Color = Color::Rgb(0xB0, 0xB0, 0xB0);
 const WIRE_TEXT_LIGHT: Color = Color::Rgb(0x4F, 0x4F, 0x4F);
 
+/// What marks something protolens invented rather than read from the
+/// file (spec 0307 S2): `Blob`'s wrapper tag and length in the wire
+/// row, and the `1` those bytes put on the document row.
+///
+/// Not a color, on either row. The wire row's two color channels are
+/// both spoken for — a background hue for what a byte is *for*, taken
+/// over by a tier's band when it is malformed — and the third,
+/// [`WIRE_TEXT_DARK`], is the one thing keeping dense hex legible over
+/// whichever band it lands on; a green tried there was hard to read
+/// against the blue an undeclared field wears. The document row's
+/// colors are the grammar's and are not protolens' to spend.
+///
+/// Italic is the right shape for the fact besides. Provenance is not a
+/// property of the byte, it is a note that the byte is not the reader's
+/// — the typographic convention for an interjection in someone else's
+/// text.
+pub const SYNTHETIC: Modifier = Modifier::ITALIC;
+
 /// The style a wire byte wears (spec 0225 S11): `borrowed`'s color,
 /// brought to the wire row's brightness and worn as a *background*.
 ///

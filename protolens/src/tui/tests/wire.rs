@@ -10,7 +10,7 @@
 //! handed to it is the right one, and that the pane is drawn and
 //! navigated as pairs of rows once `w` is on.
 
-use super::super::wire::{Framing, PackedCursor, WirePalette};
+use super::super::wire::{wire_spans_recorded, Framing, PackedCursor, WirePalette};
 use super::super::*;
 use super::support::*;
 use crate::decode::{decode, DescriptorContext, RootType};
@@ -122,12 +122,13 @@ fn each_line_claims_its_own_bytes() {
     let (app, _run, _tail, _a, _b) = packed_run_with_tail_fixture();
     let rows = wire_rows(&app);
 
-    // S3: the wrapper is protolens' own framing, not the user's blob,
-    // so its root row shows nothing. Spec 0306 test 3 rides here: it is
-    // now the *narrowing* that empties both rows rather than a refusal
-    // of the node — this root is bracketed, so its head is exactly the
-    // synthetic prefix and its tail is exactly empty.
-    assert_eq!(rows[0], "", "the wrapper root claims no bytes (S3)");
+    // Spec 0307 test 3. This root is bracketed, so its head is exactly
+    // `Blob`'s synthetic prefix — drawn like any other LEN header, and
+    // set in italic rather than withheld. Spec 0225 S3 refused
+    // the node and 0306 narrowed the prefix away; both left the row
+    // empty, and 0306 left it the one LEN node on screen with no
+    // framing.
+    assert_eq!(rows[0], "2|08:0d[", "the wrapper root shows its header");
 
     // S4: the record's tag and length ride on element 0's row, and each
     // later element gets its own row. The run closes on the last one.
@@ -164,11 +165,12 @@ fn untyped_wire_app(bytes: &[u8]) -> App {
     fixture_app(decoded, ctx)
 }
 
-/// Spec 0306 test 1. The wrapper root is flat here, so its head runs from
-/// `Blob`'s two invented bytes to the end of the buffer. Refusing the
-/// node to hide the prefix threw the file away with it — and since the
-/// document is this one line, it threw away every byte the wire view
-/// exists to show.
+/// Spec 0307 test 1. The wrapper root is flat here, so its head runs
+/// from `Blob`'s two invented bytes to the end of the buffer. Spec 0225
+/// S3 refused the node to hide the prefix and threw the file away with
+/// it — and since the document is this one line, it threw away every
+/// byte the wire view exists to show. Spec 0306 narrowed the prefix off
+/// instead, which cost the row its framing.
 #[test]
 fn w_on_a_flat_wrapper_root_shows_the_whole_file() {
     let app = untyped_wire_app(CUT_SHORT);
@@ -178,32 +180,37 @@ fn w_on_a_flat_wrapper_root_shows_the_whole_file() {
     let mut memo = PackedCursor::default();
     let slice = app
         .wire_slice(pos, &mut memo)
-        .expect("S1: the wrapper root's payload is the user's file");
+        .expect("the wrapper root's payload is the user's file");
 
     assert_eq!(
         slice.bytes,
-        app.wrapper_offset..app.blob.len(),
-        "S1: the whole node, less the synthetic prefix",
+        0..app.blob.len(),
+        "S1: the whole node, prefix included",
     );
     assert_eq!(
-        &app.blob[slice.bytes.clone()],
+        &app.blob[app.wrapper_offset..],
         CUT_SHORT,
-        "and those bytes are the file, byte for byte",
+        "and past the prefix those bytes are the file, byte for byte",
     );
     assert!(
-        matches!(slice.framing, Framing::Raw),
-        "S3: the tag it had was invented, and is no longer in the slice",
+        matches!(slice.framing, Framing::Tagged),
+        "G1: framed like any other LEN node",
+    );
+    assert_eq!(
+        slice.synthetic_end, app.wrapper_offset,
+        "S1: and the prefix is flagged as protolens' own",
     );
 }
 
-/// Spec 0306 test 2 — G2 as an assertion rather than as a review rule.
+/// Spec 0307 test 2 — G2 as an assertion rather than as a review rule.
 ///
-/// Over both root shapes, because they narrow differently: the flat root
-/// above keeps its payload, the bracketed one of
-/// `each_line_claims_its_own_bytes` narrows to nothing on both its rows.
-/// Neither may hand out a byte that is not in the user's file.
+/// Over both root shapes, because they draw different amounts of the
+/// prefix: the flat root above shows it and the whole file behind it,
+/// the bracketed one of `each_line_claims_its_own_bytes` shows the
+/// prefix and nothing else. Every fabricated byte must say so, and no
+/// byte of the file may.
 #[test]
-fn a_wrapper_root_never_shows_a_fabricated_byte() {
+fn a_fabricated_byte_is_drawn_as_one() {
     let flat = untyped_wire_app(CUT_SHORT);
     let (bracketed, _run, _tail, _a, _b) = packed_run_with_tail_fixture();
 
@@ -220,13 +227,42 @@ fn a_wrapper_root_never_shows_a_fabricated_byte() {
             let Some(slice) = app.wire_slice(pos, &mut memo) else {
                 continue;
             };
-            assert!(
-                slice.bytes.start >= app.wrapper_offset,
-                "line {line} of the wrapper root starts at {}, inside the \
-                 {}-byte synthetic prefix",
-                slice.bytes.start,
-                app.wrapper_offset,
+            let row = wire_spans_recorded(
+                &app.blob,
+                &slice,
+                ThemeKind::Dark,
+                Some(&WirePalette::for_test()),
             );
+            let record = row.record.as_ref().expect("a recorded run notes its cells");
+            // One (glyph, style) per drawn column, so a cell's columns
+            // can be looked up whatever the spans they were split
+            // across — a tag byte is three of them: `2`, `|` and `08`.
+            // The separator space between two hex pairs is one of a
+            // cell's columns and carries no glyph, so nothing it wears
+            // says anything.
+            let cols: Vec<(char, Style)> = row
+                .spans
+                .iter()
+                .flat_map(|span| span.content.chars().map(|c| (c, span.style)))
+                .collect();
+            for cell in &record.cells {
+                let fabricated = cell.at < app.wrapper_offset;
+                for col in cell.cols.clone() {
+                    let (glyph, style) = cols[col];
+                    if glyph == ' ' {
+                        continue;
+                    }
+                    assert_eq!(
+                        style.add_modifier.contains(theme::SYNTHETIC),
+                        fabricated,
+                        "column {col} (`{glyph}`) of byte {} on line \
+                         {line} is drawn {style:?}, and the synthetic \
+                         prefix is the first {} bytes",
+                        cell.at,
+                        app.wrapper_offset,
+                    );
+                }
+            }
         }
     }
 }
@@ -265,10 +301,11 @@ fn every_byte_appears_exactly_once_in_document_order() {
         .iter()
         .map(|row| rejoined_hex(row))
         .collect();
-    let expected: String = app.blob[app.wrapper_offset..]
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    // The whole blob, `Blob`'s prefix included (spec 0307 test 4). That
+    // is the partition `head_or_tail` guarantees by construction, and
+    // the wrapper root was its one exception for as long as its prefix
+    // was withheld.
+    let expected: String = app.blob.iter().map(|b| format!("{b:02x}")).collect();
     assert_eq!(hex, expected);
 }
 

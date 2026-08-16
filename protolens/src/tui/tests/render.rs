@@ -532,6 +532,55 @@ fn an_override_weights_the_key_the_marker_and_the_type_name() {
     check(&mut app, &run(&[&glyph, "1"]), &run(&[&glyph, "value"]));
 }
 
+/// Spec 0307 S6: the wrapper root's key is the `1` of the field `Blob`
+/// wrapped the document in — a number protolens wrote, not one the file
+/// carries — and the document row marks it the way the wire row marks
+/// the bytes that spell it. No other row's key is marked, because no
+/// other row's key was invented.
+///
+/// The assertion is about the key alone, not about the whole row: the
+/// ANSI-16 fallback palette already spends italic on `Comment`, so every
+/// row's `#@` annotation wears it there and "only this row is italic"
+/// would be false in a terminal without `COLORTERM` — which the Nix
+/// sandbox is.
+#[test]
+fn the_wrapper_roots_key_says_protolens_wrote_it() {
+    let (mut app, ..) = packed_run_with_tail_fixture();
+    assert!(app.wrapper_offset > 0, "the fixture must be wrapped");
+
+    let window: Vec<DisplayRow> = (0..app.composed_row_count())
+        .filter_map(|d| app.display_row(d))
+        .collect();
+    app.refresh_window_styles(&window);
+
+    // The key is the row's first glyph past the fold margin and the
+    // indent, read off the finished spans so that what is measured is
+    // what is drawn.
+    let key = |app: &App, i: usize| -> (char, bool) {
+        let (c, style) = app
+            .row_spans(window[i], i, Modifier::empty())
+            .iter()
+            .flat_map(|s| {
+                let style = s.style;
+                s.content.chars().map(move |c| (c, style))
+            })
+            .find(|&(c, _)| c.is_alphanumeric())
+            .unwrap_or_else(|| panic!("row {i} has no key: {:?}", app.row_content(window[i])));
+        (c, style.add_modifier.contains(theme::SYNTHETIC))
+    };
+
+    assert_eq!(app.parent(app.line_pos(0).expect("line 0").node), None);
+    assert_eq!(key(&app, 0), ('1', true), "the root's key is protolens'");
+
+    let child = (1..window.len())
+        .find(|&i| {
+            matches!(window[i], DisplayRow::Committed(c)
+                if app.node_at_own_line(c.line).is_some_and(|n| app.parent(n).is_some()))
+        })
+        .expect("the fixture has a child row");
+    assert!(!key(&app, child).1, "row {child}: a real key is not marked");
+}
+
 /// A passive status message auto-dismisses once `MESSAGE_TIMEOUT` has
 /// elapsed since it was set — detected by `track_message_timeout`
 /// (called from `render`) noticing an expired `message_deadline`.

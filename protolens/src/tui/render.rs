@@ -914,6 +914,14 @@ impl App {
             spans.extend(self.margin_spans(margin, node, emphasis));
         }
 
+        // Spec 0307 S6: the wrapper root's key is `Blob`'s field 1 — a
+        // number protolens wrote to wrap the file, not one the file
+        // carries — and it is marked as the wire row marks the bytes
+        // that spell it. Only the key: the row's other `Attribute` is
+        // its annotation's field number, which repeats it.
+        let synthetic_key =
+            self.wrapper_offset > 0 && node.is_some_and(|idx| self.parent(idx).is_none());
+
         // Spec 0192 S2: the key is the *first* `Attribute` segment. The
         // annotation's field number — the `1` of `#@ Inner = 1` — is an
         // `Attribute` too, and is deliberately left alone: it repeats
@@ -923,16 +931,16 @@ impl App {
         let segments: Vec<_> = segments
             .into_iter()
             .map(|(range, role)| {
-                let weighted = match role {
-                    Some(SyntaxRole::Type) => true,
-                    Some(SyntaxRole::Attribute) => !std::mem::replace(&mut key_seen, true),
-                    _ => false,
-                };
-                let weight = if weighted {
+                let key = matches!(role, Some(SyntaxRole::Attribute))
+                    && !std::mem::replace(&mut key_seen, true);
+                let mut weight = if key || matches!(role, Some(SyntaxRole::Type)) {
                     emphasis
                 } else {
                     Modifier::empty()
                 };
+                if key && synthetic_key {
+                    weight |= theme::SYNTHETIC;
+                }
                 (range, role, weight)
             })
             .collect();
