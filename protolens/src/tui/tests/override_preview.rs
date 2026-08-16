@@ -299,6 +299,21 @@ fn the_selection_pane_holds_focus_but_still_lets_the_main_pane_pan() {
         "...but it must say why"
     );
 
+    // And it must still say why once the button comes back up. A click
+    // is two events, and the release used to clear the status line the
+    // press had just written — so the refusal was on screen for exactly
+    // as long as the button was held.
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: app.main_area.x + 1,
+        row: app.main_area.y + 1,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(
+        app.message, OVERRIDE_FOCUS_LOCK_MESSAGE,
+        "releasing the button must not wipe the answer to the click"
+    );
+
     // G4: a one-row-high pane is what gives this three-line fixture
     // something to scroll.
     app.main_area.height = 1;

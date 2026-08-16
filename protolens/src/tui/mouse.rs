@@ -56,10 +56,19 @@ impl App {
         // processed as a real event, not swallowed.
         self.splash = false;
 
-        self.message.clear();
-        // Spec 0278 S3: a wheel scroll dismisses the search echo — and
-        // spec 0277's count with it — exactly as a keypress does.
-        self.search_echo = None;
+        // A gesture dismisses the status line once, when it begins.
+        // `Up` and `Drag` are the tail of a `Down` that has already done
+        // so, and clearing again on them is not idempotent: when that
+        // `Down` was *refused* and named the refusal — the override
+        // pane's focus lock, below — the release wipes the message
+        // within the click that asked for it, so the answer flashes for
+        // as long as the button was held and then vanishes.
+        if !matches!(event.kind, MouseEventKind::Up(_) | MouseEventKind::Drag(_)) {
+            self.message.clear();
+            // Spec 0278 S3: a wheel scroll dismisses the search echo —
+            // and spec 0277's count with it — exactly as a keypress does.
+            self.search_echo = None;
+        }
 
         // An open context menu takes the mouse before anything else,
         // for the same reason it takes the keyboard: it is the innermost
