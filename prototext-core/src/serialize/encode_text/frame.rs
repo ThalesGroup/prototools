@@ -12,6 +12,9 @@ pub(super) enum Frame {
         ohb: usize,               // length_overhang_count (extra bytes in varint_room)
         content_start: usize,     // first byte of child content (after placeholder)
         acw: usize,               // accumulated child waste from inner placeholders
+        /// Spec 0303 S6: extra bytes to add to the content length when backpatching,
+        /// so the declared length reflects the original (pre-truncation) wire size.
+        missing: Option<u64>,
     },
     Group {
         field_number: u64,

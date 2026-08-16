@@ -326,6 +326,121 @@ fn status_line_shows_message_not_enum() {
     );
 }
 
+// ── Spec 0303 tests ───────────────────────────────────────────────────────────
+
+/// Spec 0303 G1/S2: after committing a `message` override on a
+/// TRUNCATED_BYTES node, the header line carries `TRUNCATED_MESSAGE; MISSING:
+/// N` with the correct count.
+///
+/// `TRUNC_WITH_CHILDREN`: tag `\x0a` (field 1, LEN), length `\x14` (= 20),
+/// then `\x08\x05` (2 available bytes). Missing = 20 - 2 = 18.
+#[test]
+fn truncated_message_header_carries_missing() {
+    let mut app = untyped_app(TRUNC_WITH_CHILDREN);
+    app.run_command("override / --as message");
+
+    let trunc_idx = app
+        .resolve_path("/1")
+        .expect("TRUNCATED_BYTES field must be reachable at /1");
+    app.run_command(&format!(
+        "override {} --as message",
+        app.positional_path(trunc_idx)
+    ));
+
+    // The header line of the now-message node must carry the annotation.
+    let lines = app.document_lines();
+    let header = lines
+        .iter()
+        .find(|l| l.contains("TRUNCATED_MESSAGE"))
+        .expect("spec 0303 G1: the header must contain TRUNCATED_MESSAGE after the commit");
+
+    assert!(
+        header.contains("MISSING: 18"),
+        "spec 0303 S2: MISSING count must be 20 - 2 = 18, got: {header}",
+    );
+}
+
+/// Spec 0303 G2/S6: `encode_text_to_binary` inflates the declared length by
+/// the `MISSING` value, reconstructing the original declared length varint.
+///
+/// The prototext round-trip: override the TRUNCATED_BYTES child as `message`,
+/// collect the document text, encode it back to binary, and assert the
+/// re-encoded binary's length varint for the truncated field equals the
+/// original declared length (20), not the actual payload length (2).
+#[test]
+fn encoder_inflates_length_for_truncated_message() {
+    let mut app = untyped_app(TRUNC_WITH_CHILDREN);
+    app.run_command("override / --as message");
+
+    let trunc_idx = app
+        .resolve_path("/1")
+        .expect("TRUNCATED_BYTES field must be reachable at /1");
+    app.run_command(&format!(
+        "override {} --as message",
+        app.positional_path(trunc_idx)
+    ));
+
+    // Collect the full annotated document text.
+    let lines = app.document_lines();
+    let prototext = format!("#@ prototext: protoc\n{}\n", lines.join("\n"));
+
+    let wire = prototext_core::serialize::encode_text::encode_text_to_binary(prototext.as_bytes());
+
+    // TRUNC_WITH_CHILDREN = \x0a \x14 \x08 \x05
+    // The wrapper outer field gets its own tag+length (2 bytes tag-field-1 +
+    // varint for wrapper length).  The inner TRUNCATED field must have its
+    // own LEN varint = 20 (= \x14), not 2 (= \x02).
+    assert!(
+        wire.contains(&0x14),
+        "spec 0303 G2: the re-encoded binary must contain the original declared \
+         length varint (0x14 = 20), not the actual payload length",
+    );
+    assert!(
+        !wire.ends_with(&[0x02, 0x08, 0x05]),
+        "spec 0303 G2: the inner field's length varint must be 20, not 2",
+    );
+}
+
+/// Spec 0303 S3: a normal (non-truncated) `message` override does NOT emit
+/// `TRUNCATED_MESSAGE` — the annotation is specific to the truncated case.
+#[test]
+fn normal_message_override_has_no_truncated_annotation() {
+    // Well-formed: field 1 = varint 5, inside field 1 outer (no truncation).
+    let bytes = b"\x0a\x02\x08\x05";
+    let mut app = untyped_app(bytes);
+    app.run_command("override / --as message");
+
+    let lines = app.document_lines();
+    assert!(
+        !lines.iter().any(|l| l.contains("TRUNCATED_MESSAGE")),
+        "spec 0303 S3: a non-truncated field must not carry TRUNCATED_MESSAGE, \
+         got lines: {lines:?}",
+    );
+}
+
+/// Spec 0303 S7: `TRUNCATED_MESSAGE` is in the INVALID annotation tier.
+#[test]
+fn truncated_message_is_invalid_tier() {
+    use crate::annotation::{tier_of, Tier};
+    assert_eq!(
+        tier_of("TRUNCATED_MESSAGE"),
+        Some(Tier::Invalid),
+        "spec 0303 S7: TRUNCATED_MESSAGE must be @annotation.invalid",
+    );
+}
+
+/// Spec 0303 S8: `clause` returns an explanation for `TRUNCATED_MESSAGE`.
+#[test]
+fn annotation_explains_truncated_message() {
+    use crate::annotation::clause;
+    let explanation = clause("TRUNCATED_MESSAGE").expect("spec 0303 S8: must have a clause");
+    assert!(
+        explanation.contains("declared length") && explanation.contains("available bytes"),
+        "spec 0303 S8: explanation must mention the declared length and available bytes, \
+         got: {explanation}",
+    );
+}
+
 /// Spec 0302 S4: the `none` keyword is the lowercase string `\"none\"`,
 /// matching every other override keyword. The first candidate in
 /// lexicographic mode is `\"none\"`, and activating it produces a raw

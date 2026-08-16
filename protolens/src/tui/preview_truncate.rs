@@ -113,6 +113,24 @@ pub(super) fn truncate_interior(
     Some(out)
 }
 
+/// Spec 0303 S3: how many bytes the declared length exceeds the actual payload
+/// for a TRUNCATED_BYTES (LEN) field — i.e. `declared - actual_payload`.
+///
+/// Returns `None` for non-LEN fields and for fields whose declared length
+/// already equals their actual payload (the normal case, where no annotation
+/// is needed).  Called on the *original* `field_bytes`, before
+/// `reframe_to_actual_length` rewrites the varint.
+pub(super) fn missing_bytes_for(field_bytes: &[u8]) -> Option<u64> {
+    let tag = parse_wiretag(field_bytes, 0);
+    if tag.wtype? != WT_LEN {
+        return None;
+    }
+    let len = parse_varint(field_bytes, tag.next_pos);
+    let declared = len.varint?;
+    let actual = (field_bytes.len() - len.next_pos) as u64;
+    declared.checked_sub(actual).filter(|&d| d > 0)
+}
+
 /// Spec 0302: rewrite a TRUNCATED_BYTES field's declared length varint to
 /// match the bytes actually present, so the decoder opens it as a message
 /// instead of emitting another TRUNCATED_BYTES line.

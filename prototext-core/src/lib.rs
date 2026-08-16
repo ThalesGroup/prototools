@@ -145,6 +145,7 @@ pub fn render_as_text(
             // The public API renders whole documents; only `protolens`'s
             // viewport asks to be bounded (spec 0249 S1).
             row_budget: None,
+            missing_payload_bytes: None,
         },
     ))
 }

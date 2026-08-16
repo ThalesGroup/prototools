@@ -68,7 +68,7 @@ pub const NON_CANONICAL: [&str; 11] = [
 ];
 
 /// [`Tier::Invalid`]'s members.
-pub const INVALID: [&str; 15] = [
+pub const INVALID: [&str; 16] = [
     "TAG_OOR",
     "ETAG_OOR",
     "TYPE_MISMATCH",
@@ -84,6 +84,7 @@ pub const INVALID: [&str; 15] = [
     "INVALID_STRING",
     "INVALID_PACKED_RECORDS",
     "TRUNCATED_BYTES",
+    "TRUNCATED_MESSAGE",
 ];
 
 /// The tier of one annotation keyword — the bare word, with any
@@ -138,6 +139,9 @@ pub fn clause(keyword: &str) -> Option<&'static str> {
         "INVALID_FIXED64" => "a 64-bit value needs eight bytes and fewer are left",
         "INVALID_FIXED32" => "a 32-bit value needs four bytes and fewer are left",
         "TRUNCATED_BYTES" => "the declared length runs past the end of the message",
+        "TRUNCATED_MESSAGE" => {
+            "the declared length runs past the end of the message; the available bytes are shown"
+        }
         "MISSING" => "how many bytes short of its declared length the record is",
         "INVALID_PACKED_RECORDS" => "these bytes do not divide into whole packed elements",
         "INVALID_STRING" => "these bytes are not valid UTF-8",

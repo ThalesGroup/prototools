@@ -4,7 +4,8 @@
 
 use super::override_resolve::ParentFieldOrExt;
 use super::preview_truncate::{
-    insert_truncation_marker, reframe_to_actual_length, trunc_shape_for, truncate_interior,
+    insert_truncation_marker, missing_bytes_for, reframe_to_actual_length, trunc_shape_for,
+    truncate_interior,
 };
 use super::*;
 
@@ -1457,6 +1458,13 @@ impl App {
         //   has slots for the children — spec 0302's ArenaSink change walks
         //   the available bytes and allocates them on startup.
         let mut truncated = false;
+        // Spec 0303 S3: bytes missing from the original declared length.
+        // Set on the commit path only, when the field is a TRUNCATED_BYTES
+        // node opened as a message — `reframe_to_actual_length` triggers
+        // exactly when `declared > actual_payload`, which is the truncated
+        // case.  Passed into `DecodeRenderOpts` so the renderer annotates
+        // the header with `TRUNCATED_MESSAGE; MISSING: N`.
+        let mut missing_payload_bytes: Option<u64> = None;
         if is_preview {
             let shape = trunc_shape_for(field_type, u32::from(old_span.wire_type), packed);
             if let Some(cut) =
@@ -1467,6 +1475,10 @@ impl App {
             }
         } else if field_type.is_some() {
             if let Some(reframed) = reframe_to_actual_length(&field_bytes) {
+                // Compute the missing count before replacing field_bytes.
+                // `missing_bytes_for` reads the tag+varint from the original
+                // bytes and returns `declared - actual_payload`.
+                missing_payload_bytes = missing_bytes_for(&field_bytes);
                 field_bytes = Cow::Owned(reframed);
             }
         }
@@ -1535,6 +1547,10 @@ impl App {
                     expand_message_set: false,
                     // Spec 0249 S1.
                     row_budget,
+                    // Spec 0303 S3: annotate the outermost header with
+                    // TRUNCATED_MESSAGE/TRUNCATED_GROUP; MISSING: N when this
+                    // node was a TRUNCATED_BYTES field opened as a message.
+                    missing_payload_bytes,
                     ..Default::default()
                 };
                 // Spec 0248: an extension on a spliced subtree resolves the

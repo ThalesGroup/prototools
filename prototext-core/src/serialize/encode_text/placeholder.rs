@@ -58,6 +58,9 @@ pub(super) fn write_placeholder(
 ///
 /// `frame_acw` is the accumulated waste from inner placeholders within this
 /// frame's content region (needed to compute the correct compacted length).
+/// `missing_extra` is added to the compacted length before it is written as
+/// the varint (spec 0303 S6: inflates the declared length to reconstruct the
+/// original pre-truncation wire size for a `TRUNCATED_MESSAGE` field).
 /// Returns the total waste (placeholder waste + frame_acw) to propagate up.
 pub(super) fn fill_placeholder(
     out: &mut [u8],
@@ -65,6 +68,7 @@ pub(super) fn fill_placeholder(
     ohb: usize,
     content_start: usize,
     frame_acw: usize,
+    missing_extra: u64,
 ) -> usize {
     // Compacted child length = raw length − waste from inner placeholders.
     let child_len_raw = out.len() - content_start;
@@ -73,7 +77,11 @@ pub(super) fn fill_placeholder(
     // Encode compacted length (with optional ohb non-minimal bytes).
     let ohb_opt = if ohb > 0 { Some(ohb as u64) } else { None };
     let mut tmp = Vec::new();
-    write_varint_ohb(child_len_compacted as u64, ohb_opt, &mut tmp);
+    write_varint_ohb(
+        child_len_compacted as u64 + missing_extra,
+        ohb_opt,
+        &mut tmp,
+    );
     let k = tmp.len(); // actual bytes used (varint_bytes + ohb)
 
     // Write varint flush-right into varint_room.

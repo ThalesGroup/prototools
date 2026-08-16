@@ -38,6 +38,10 @@ pub(crate) struct Ann<'a> {
     pub(crate) elem_ohb: Option<u64>,
     /// True when this per-line packed element is a truncated-negative int32/enum (`neg`).
     pub(crate) elem_neg_trunc: bool,
+    /// Spec 0303 S5: the nested message's declared length is `missing_bytes_count`
+    /// bytes larger than the content encoded here.  Set when the header carries
+    /// `TRUNCATED_MESSAGE`.
+    pub(crate) truncated_message: bool,
 }
 
 // ── Annotation parser ─────────────────────────────────────────────────────────
@@ -115,6 +119,8 @@ pub(crate) fn parse_annotation(ann_str: &str) -> Ann<'_> {
                 "neg" => {
                     ann.elem_neg_trunc = true;
                 }
+                // Spec 0303 S5: truncation flag — carried on message headers.
+                "TRUNCATED_MESSAGE" => ann.truncated_message = true,
                 // Flags that don't affect binary encoding — ignore.
                 "TAG_OOR" | "ETAG_OOR" | "TYPE_MISMATCH" | "ENUM_UNKNOWN" => {}
                 // Everything else is a wire-type name (lowercase valid or ALLCAPS invalid).

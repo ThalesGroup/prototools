@@ -356,6 +356,15 @@ pub struct DecodeRenderOpts {
     /// unwind still emits the siblings it had not reached, one folded row
     /// each, so a consumer's line counts stay exact.
     pub row_budget: Option<usize>,
+    /// Spec 0303 S3: when the outermost field being rendered is a
+    /// TRUNCATED_BYTES node opened as a message, the number of bytes
+    /// missing from the original declared length.  The renderer annotates
+    /// the outermost `begin_nested` header with `TRUNCATED_MESSAGE; MISSING:
+    /// N` (or `TRUNCATED_GROUP; MISSING: N` for group framing) so the count
+    /// survives in prototext output and the encoder can reconstruct the
+    /// original declared length on re-encode.  `None` for every normal
+    /// render; only `splice_override` sets this, and only on the commit path.
+    pub missing_payload_bytes: Option<u64>,
 }
 
 impl Default for DecodeRenderOpts {
@@ -369,6 +378,7 @@ impl Default for DecodeRenderOpts {
             initial_level: 0,
             emit_header: false,
             row_budget: None,
+            missing_payload_bytes: None,
         }
     }
 }
@@ -398,6 +408,7 @@ pub fn decode_and_render(
         initial_level,
         emit_header,
         row_budget,
+        missing_payload_bytes: _, // not applicable to the non-indexed path
     } = opts;
     let capacity = buf.len() * 8;
     let mut sink = TextSink::new(capacity);
@@ -498,10 +509,14 @@ pub fn decode_and_render_indexed(
         initial_level,
         emit_header,
         row_budget,
+        missing_payload_bytes,
     } = opts;
     let capacity = buf.len() * 8;
     let mut sink = IndexingTextSink::new(capacity, fqdns);
     sink.set_row_budget(row_budget);
+    if let Some(missing) = missing_payload_bytes {
+        sink.set_missing_payload_bytes(missing);
+    }
 
     if annotations && emit_header {
         sink.write_header(b"#@ prototext: protoc\n");

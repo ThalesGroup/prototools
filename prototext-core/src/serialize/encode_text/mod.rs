@@ -227,10 +227,20 @@ pub fn encode_text_to_binary_into(text: &[u8], out: &mut Vec<u8>) {
                             ohb,
                             content_start,
                             acw,
+                            missing,
                         }) => {
-                            let total_waste =
-                                fill_placeholder(out, placeholder_start, ohb, content_start, acw);
-                            // Propagate waste to parent frame.
+                            // Spec 0303 S6: inflate the declared length by `missing` so
+                            // re-encoding a TRUNCATED_MESSAGE field reconstructs the
+                            // original (pre-truncation) wire length.
+                            let missing_extra = missing.unwrap_or(0);
+                            let total_waste = fill_placeholder(
+                                out,
+                                placeholder_start,
+                                ohb,
+                                content_start,
+                                acw,
+                                missing_extra,
+                            );
                             if let Some(parent) = stack.last_mut() {
                                 *parent.acw_mut() += total_waste;
                             }
@@ -304,6 +314,11 @@ pub fn encode_text_to_binary_into(text: &[u8], out: &mut Vec<u8>) {
                     ohb,
                     content_start,
                     acw: 0,
+                    // Spec 0303 S6: inflate the declared length by this count.
+                    missing: ann
+                        .truncated_message
+                        .then_some(ann.missing_bytes_count)
+                        .flatten(),
                 });
             }
             continue;
@@ -512,6 +527,7 @@ mod tests {
             pack_size: None,
             elem_ohb: None,
             elem_neg_trunc: false,
+            truncated_message: false,
         }
     }
 

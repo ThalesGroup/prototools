@@ -328,6 +328,11 @@ pub(super) struct TextSink {
     /// Spec 0249 S1: stop descending once `line_count` reaches this.
     /// `None` — every caller but a bounded render — is unbounded.
     row_budget: Option<usize>,
+    /// Spec 0303 S1/S2: bytes missing from the outermost field's declared
+    /// length (set when a TRUNCATED_BYTES node is opened as a message).
+    /// Consumed on the very first `begin_nested` call and reset to `None`,
+    /// so it never leaks onto an inner node.
+    missing_payload_bytes: Option<u64>,
 }
 
 impl TextSink {
@@ -336,6 +341,7 @@ impl TextSink {
             out: Vec::with_capacity(capacity),
             line_count: 0,
             row_budget: None,
+            missing_payload_bytes: None,
         }
     }
 
@@ -343,6 +349,12 @@ impl TextSink {
     /// lines count: they occupy rows on screen like any other.
     pub(super) fn set_row_budget(&mut self, budget: Option<usize>) {
         self.row_budget = budget;
+    }
+
+    /// Spec 0303 S1/S2: mark the outermost field as truncated so `begin_nested`
+    /// emits `TRUNCATED_MESSAGE; MISSING: N` (or `TRUNCATED_GROUP`) on its header.
+    pub(super) fn set_missing_payload_bytes(&mut self, missing: u64) {
+        self.missing_payload_bytes = Some(missing);
     }
 
     pub(super) fn into_inner(self) -> Vec<u8> {
@@ -669,6 +681,11 @@ impl Sink for TextSink {
         _raw_start: usize,
         _payload_start: usize,
     ) -> TextMark {
+        // Spec 0303 S1/S2: consume the missing-bytes count exactly once — on
+        // the outermost `begin_nested` call — so it never leaks onto inner
+        // nodes.  The value is set by `decode_and_render_indexed` when the
+        // caller (splice_override) tells it the field is truncated.
+        let missing = self.missing_payload_bytes.take();
         match kind {
             NestedKind::Message { .. } => {
                 let is_known = field_schema.is_some();
@@ -687,6 +704,11 @@ impl Sink for TextSink {
                         tag.tag_oor,
                         tag.len_ohb,
                     );
+                    // Spec 0303 S2: annotate the header if this field is truncated.
+                    if let Some(n) = missing {
+                        aw.push(&mut self.out, b"TRUNCATED_MESSAGE");
+                        aw.push_u64_mod(&mut self.out, b"MISSING: ", n);
+                    }
                 }
                 self.newline();
                 CBL_START.with(|c| c.set(self.out.len()));
@@ -708,6 +730,9 @@ impl Sink for TextSink {
                 if annotations {
                     let mut aw = AnnWriter::new();
                     aw.push(&mut self.out, b"group");
+                    // Groups have no declared length; `missing` is always None here.
+                    // The truncated-group case is `OPEN_GROUP`, not `TRUNCATED_GROUP`.
+                    let _ = missing;
                 }
                 self.newline();
                 CBL_START.with(|c| c.set(self.out.len()));
@@ -1357,6 +1382,11 @@ impl<'f> IndexingTextSink<'f> {
     /// See `TextSink::set_row_budget` (spec 0249 S1).
     pub(super) fn set_row_budget(&mut self, budget: Option<usize>) {
         self.inner.set_row_budget(budget);
+    }
+
+    /// See `TextSink::set_missing_payload_bytes` (spec 0303 S1/S2).
+    pub(super) fn set_missing_payload_bytes(&mut self, missing: u64) {
+        self.inner.set_missing_payload_bytes(missing);
     }
 
     /// Write raw header bytes (see `TextSink::write_header`), keeping
