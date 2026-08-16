@@ -15,6 +15,7 @@ use super::super::*;
 use super::support::*;
 
 use crate::decode::{decode, DescriptorContext, RootType};
+use crate::node_status::Status;
 use prototext_core::serialize::render_text::decode_and_render;
 
 /// Field 1 = `"abc"`, then a second field 1 whose length prefix
@@ -472,4 +473,54 @@ fn none_keyword_is_lowercase() {
         vec![r#"1: "\n\003abc\n\020short"  #@ string"#],
         "after `none` the root must revert to the raw single-line render",
     );
+}
+
+/// Spec 0247 S10 composed with spec 0299: a truncation is reported by the
+/// node it belongs to, and every node above it goes red for it.
+///
+/// `/` itself is never truncated — `Blob` writes the wrapper's length from
+/// the buffer it actually has — so `/` says nothing about truncation on its
+/// own line and must still wear the color. That combination is the whole
+/// reason no annotation needs to be invented for the declined render.
+#[test]
+fn a_truncated_record_reddens_every_node_above_it() {
+    let mut app = untyped_app(CUT_SHORT);
+    app.run_command("override / --as message");
+
+    let lines = app.document_lines();
+    let row = lines
+        .iter()
+        .position(|l| l.contains("TRUNCATED_BYTES"))
+        .expect("the cut record reports itself");
+    let cut = app
+        .line_pos(row)
+        .expect("the row is inside the document")
+        .node;
+
+    assert_ne!(
+        cut, app.first_node,
+        "the truncation is never the root's own — which is what makes the \
+         walk below non-vacuous, and `/` red only by inheritance",
+    );
+    assert_eq!(
+        app.status_own[cut],
+        Status::Invalid,
+        "the record whose length overruns the buffer is the one accusing",
+    );
+
+    let mut node = cut;
+    while let Some(parent) = app.parent(node) {
+        assert_eq!(
+            app.status_of(parent),
+            Status::Invalid,
+            "node {parent} is above the truncation and must show it",
+        );
+        assert_eq!(
+            app.status_own[parent],
+            Status::Ok,
+            "node {parent} is intact itself; the red is inherited, not its own",
+        );
+        node = parent;
+    }
+    assert_eq!(node, app.first_node, "the walk reached the root");
 }

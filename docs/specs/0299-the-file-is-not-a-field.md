@@ -149,6 +149,27 @@ probing changed.
   sentinel — are now both live, so they are stated together in one
   predicate rather than scattered.
 
+### How a truncation becomes visible — nothing to add
+
+Worth stating, because it looks like a gap and is not. A line reports an
+anomaly when the anomaly is its own; otherwise it inherits the color and
+not the words. On a cut-short file that composes by itself:
+
+- `/` renders as `string`/`bytes` and says nothing about truncation. It
+  is not truncated — `Blob` gave it the right length.
+- Override `/` to `message`. The payload is walked, the cut record
+  becomes a node, and *that* node carries `TRUNCATED_BYTES; MISSING: N`.
+  `/` turns red through spec 0247 S10's roll-up — for its child, not for
+  itself.
+- Override that child — call it `/9` — to `message` in turn. Now two
+  counts are in play and both are on the right line: `/9`'s own shortfall
+  on `/9`'s header (spec 0303), and its new child `/9/12`'s on `/9/12`.
+  `/9` is red for two independent reasons — itself, and its subtree.
+
+No rule had to learn about any of this.
+`a_truncated_record_reddens_every_node_above_it`
+(`tui/tests/override_message.rs`) asserts the first two steps.
+
 ## Alternatives considered
 
 ### A `--message` CLI flag
@@ -178,6 +199,44 @@ they overrule it.
 
 Rejected under N2. The scorer is never consulted for the untyped render;
 and "penalize but keep the score" is deferred as spec 0238 N6.
+
+### Annotating the declined line with the missing byte count
+
+Drafted, implemented and abandoned on 2026-08-16 (the number 0307 was
+allocated to it and returned). The idea: the probe knows the payload is
+short by N, discards N, and the cascade then renders `string`; carry N
+across and append `TRUNCATED_MESSAGE; MISSING: N` to the scalar line, so
+protolens says as much as `prototext decode --raw`.
+
+Two things are wrong with it, and the first is fatal.
+
+**A count the probe produces always belongs to a descendant.** Not
+because counts in general do — a node can perfectly well be short in its
+own right, and when it is, spec 0303 puts `TRUNCATED_MESSAGE; MISSING: N`
+on its own header, which is correct. But a field short in its own right
+**never reaches the probe**: `render_len_field` is entered only after the
+declared length has been checked against the buffer, and a length that
+overruns raises `TruncatedBytes` on that field in the outer walk, with no
+cascade and no probe. So the enclosing field of any probed payload is
+complete by construction, and every `TruncatedBytes` the probe meets is
+strictly inside it.
+
+Writing that inner count on the enclosing line, with nothing to say whose
+shortfall it is, states it as the line's own. On a real file it read
+`#@ bytes; TRUNCATED_MESSAGE; MISSING: 88577`, inviting the reader to
+conclude the file was 88 577 bytes short. The document root is the
+sharpest instance — `Blob` writes the wrapper's length from the buffer it
+actually has, so `/` has no count of its own and the number on it could
+only ever have been someone else's.
+
+**`TRUNCATED_MESSAGE` does not mean that.** Spec 0303 defines it as
+"this node, *opened as a message*, is missing N bytes". A declined
+payload was not opened as a message, so the token contradicts the
+`string`/`bytes` token beside it on the same line.
+
+A new keyword for "something inside these complete bytes overruns the
+buffer" is rejected too: it grows the annotation vocabulary to restate,
+on a parent, what a child says for itself the moment it exists.
 
 ## Test plan
 
