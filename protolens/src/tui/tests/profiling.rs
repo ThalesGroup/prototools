@@ -847,7 +847,7 @@ fn repro_crash_activate_then_close_on_pdb() {
 
     // Mimic `handle_override_key`'s `Enter` arm exactly.
     let origin = app
-        .override_origin_for_kind(cursor)
+        .override_origin_for_kind(cursor, None)
         .expect("origin for cursor");
     app.overrides.activate(origin.clone(), own_fqdn.clone());
     eprintln!(
@@ -929,7 +929,7 @@ fn repro_crash_real_t_then_manual_confirm_on_pdb() {
     // Mimic `handle_override_key`'s `Enter` arm's core effect manually
     // (bypassing the candidate list -- already shown irrelevant).
     let origin = app
-        .override_origin_for_kind(cursor)
+        .override_origin_for_kind(cursor, None)
         .expect("origin for cursor");
     app.overrides.activate(origin.clone(), own_fqdn.clone());
     eprintln!(
@@ -1017,7 +1017,7 @@ fn repro_crash_two_previews_then_manual_confirm_on_pdb() {
     // Manual confirm (bypassing the candidate list -- already shown
     // irrelevant to which type gets picked here).
     let origin = app
-        .override_origin_for_kind(cursor)
+        .override_origin_for_kind(cursor, None)
         .expect("origin for cursor");
     app.overrides.activate(origin.clone(), own_fqdn.clone());
     eprintln!(
@@ -1114,7 +1114,7 @@ fn repro_crash_raw_then_typed_preview_then_manual_confirm_on_pdb() {
     // Manual confirm (bypassing the candidate list dispatch itself --
     // already shown irrelevant to which type gets picked here).
     let origin = app
-        .override_origin_for_kind(cursor)
+        .override_origin_for_kind(cursor, None)
         .expect("origin for cursor");
     app.overrides.activate(origin.clone(), own_fqdn.clone());
     eprintln!(
@@ -1547,13 +1547,13 @@ fn profile_nested_commit_on_pdb() {
         );
     }
 
-    // The target must be a node whose override matches *one* node.
-    // Since spec 0208 S2 `override_origin_for_kind` yields a plain
-    // `Path`, which already addresses a single node — but the
-    // sibling-uniqueness filter below is kept so this run picks the same
-    // target as the earlier readings it is compared against (under the
-    // old `PathField` default a repeated field, e.g. `file` on the root
-    // with 465 elements, retyped the whole document instead).
+    // The target must be a node whose override matches *one* node, or
+    // this measures a whole-document retype. Spec 0308 S1's default is
+    // `fqdn:field` wherever it can be, which is broader than a
+    // positional path — a repeated field such as `file` on the root,
+    // with 465 elements, would retype every one of them — so the
+    // uniqueness filter below is load-bearing, and it also keeps this
+    // run comparable to the earlier readings.
     let midpoint = app.document_lines().len() / 2;
     let target = (0..app.tree.len())
         .filter(|&i| {
@@ -1599,7 +1599,7 @@ fn profile_nested_commit_on_pdb() {
     // every confirm.
     app.tree_mut()[target].rendered_as = NOT_RENDERED;
     let origin = app
-        .override_origin_for_kind(target)
+        .override_origin_for_kind(target, None)
         .expect("origin for target");
     app.overrides.activate(origin, own_fqdn);
 

@@ -161,8 +161,10 @@ pub enum OverrideKind {
 }
 
 impl OverrideKind {
-    /// Rotates `z` in the override selection pane: `Path -> PathField ->
-    /// FqdnField -> Path -> ...` (spec 0117 §2).
+    /// Rotates `z`: `Path -> PathField -> FqdnField -> Path -> ...`
+    /// (spec 0117 §2) — in the management pane on an existing entry
+    /// (spec 0124 G2), and in the selection pane on the origin a
+    /// confirm would create (spec 0309 S2).
     pub fn next(self) -> Self {
         match self {
             OverrideKind::Path => OverrideKind::PathField,

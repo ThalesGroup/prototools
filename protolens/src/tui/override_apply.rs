@@ -1684,21 +1684,126 @@ impl App {
         (start..raw_end, self.node_lines(idx))
     }
 
-    /// Origin for a brand-new override, targeting node `idx` — created
-    /// as kind `Path` (spec 0208 S2). A `PathField` default would
-    /// survive sibling reordering and insertion better, but robustness
-    /// is the wrong thing for a *default* to optimize: the user points
-    /// at one node, and a `PathField` entry is expressed in terms of
-    /// that node's **parent** plus a field number, so it reads as being
-    /// about somewhere else and silently covers every same-numbered
-    /// sibling. `z`/`Z` in the management pane (spec 0124 G2) promote an
-    /// entry to `path:field` for whoever wants that.
+    /// The origin `kind` would build for node `idx` under override type
+    /// `r#type`, or `None` when that combination cannot be expressed
+    /// (spec 0309 S1). The one predicate the default ladder, the
+    /// selection pane's `z`/`Z` rotation and the projected status line
+    /// all consult, so none of the three can offer a kind another
+    /// refuses.
     ///
-    /// Keeps returning `Result` although `OverrideKind::Path` cannot
-    /// fail: the sole call site sits opposite `origin_for_kind(idx,
-    /// kind)`, which genuinely can, and both arms must agree on a type.
-    pub(super) fn override_origin_for_kind(&self, idx: usize) -> Result<OverrideOrigin, String> {
+    /// Two refusals sit on top of `origin_for_kind`'s own two failure
+    /// modes — no parent, and an unresolved parent type:
+    ///
+    /// - `field_number == 0` is the virtual-wrapper sentinel, not a
+    ///   field number, and either field-scoped kind would happily build
+    ///   an origin naming field 0;
+    /// - `message` (spec 0299) is a schema-free reinterpretation of one
+    ///   node's bytes. `fqdn:field` would spread it over every node of
+    ///   the parent's type — a claim about the schema that the keyword,
+    ///   which exists precisely because no schema fits, cannot make.
+    pub(super) fn override_origin_if_it_fits(
+        &self,
+        idx: usize,
+        kind: OverrideKind,
+        r#type: Option<&str>,
+    ) -> Option<OverrideOrigin> {
+        if kind != OverrideKind::Path && self.tree[idx].span.field_number == 0 {
+            return None;
+        }
+        if kind == OverrideKind::FqdnField && r#type == Some(decode::MESSAGE_KEYWORD) {
+            return None;
+        }
+        self.origin_for_kind(idx, kind).ok()
+    }
+
+    /// Origin for a brand-new override of type `r#type`, targeting node
+    /// `idx`: the widest kind the node can express (spec 0308 S1),
+    /// `fqdn:field` before `path:field` before plain `path`.
+    ///
+    /// This reverses spec 0208 S2, which made the default `path` on the
+    /// ground that a `path:field` entry reads as being about the node's
+    /// parent and covers every same-numbered sibling. That breadth is
+    /// now the point: a reader who retypes a field means the field, and
+    /// `z`/`Z` (spec 0309 S2 here, spec 0124 G2 in the management pane)
+    /// narrow an entry back to `path` for whoever wants the one node.
+    ///
+    /// The ladder tries rather than re-derives: each rung is exactly
+    /// `override_origin_if_it_fits` answering for one kind, so the
+    /// default cannot land on a kind the rotation would refuse.
+    pub(super) fn override_origin_for_kind(
+        &self,
+        idx: usize,
+        r#type: Option<&str>,
+    ) -> Result<OverrideOrigin, String> {
+        for kind in [OverrideKind::FqdnField, OverrideKind::PathField] {
+            if let Some(origin) = self.override_origin_if_it_fits(idx, kind, r#type) {
+                return Ok(origin);
+            }
+        }
         self.origin_for_kind(idx, OverrideKind::Path)
+    }
+
+    /// The type the selection pane's highlighted row names — the string
+    /// as `override_candidates` stores it, so `none`/`message` arrive as
+    /// their bare keywords rather than as FQDNs. `None` while the list
+    /// is still empty (a cold heat cache).
+    pub(super) fn highlighted_override_type(&self) -> Option<&str> {
+        self.override_candidates
+            .get(self.override_highlight)
+            .map(|(fqdn, _)| fqdn.as_str())
+    }
+
+    /// The origin confirming the selection pane right now would create
+    /// (spec 0309 S3) — read by the `Enter` handler and by the pane's
+    /// own status line, so what the reader is shown is what they get.
+    ///
+    /// A pinned `override_origin_kind` wins: it is either the kind of
+    /// the entry the pane was opened on (spec 0200 S3, the only thing
+    /// that retypes that entry in place rather than shadowing it) or the
+    /// kind the reader chose here with `z`/`Z`. Both are deliberate,
+    /// where the ladder is only a default.
+    pub(super) fn projected_override_origin(&self) -> Result<OverrideOrigin, String> {
+        let Some(idx) = self.override_target else {
+            return Err("no override target".to_string());
+        };
+        match self.override_origin_kind {
+            Some(kind) => self.origin_for_kind(idx, kind),
+            None => self.override_origin_for_kind(idx, self.highlighted_override_type()),
+        }
+    }
+
+    /// `z`/`Z` in the selection pane (spec 0309 S2): pin the projected
+    /// origin one step round the three-kind barrel, skipping whatever
+    /// `override_origin_if_it_fits` refuses for this node and type.
+    ///
+    /// Skipping rather than reporting is what keeps this simple: `path`
+    /// always fits, so at most three steps land somewhere, and the
+    /// status line never projects an origin `Enter` would then reject.
+    /// Landing back on the kind it started from means that kind is the
+    /// only one there is, which is worth saying.
+    pub(super) fn rotate_override_kind(&mut self, reverse: bool) {
+        let Some(idx) = self.override_target else {
+            return;
+        };
+        let Ok(current) = self.projected_override_origin() else {
+            return;
+        };
+        let current = current.kind();
+        let r#type = self.highlighted_override_type().map(str::to_owned);
+        let mut kind = current;
+        for _ in 0..3 {
+            kind = if reverse { kind.prev() } else { kind.next() };
+            if self
+                .override_origin_if_it_fits(idx, kind, r#type.as_deref())
+                .is_some()
+            {
+                break;
+            }
+        }
+        self.override_origin_kind = Some(kind);
+        if kind == current {
+            self.message = format!("{} is the only origin kind this node fits", kind.label());
+        }
     }
 
     /// Origin for an arbitrary `kind`, targeting node `idx` (spec 0117
@@ -1706,7 +1811,9 @@ impl App {
     /// manage-pane `z` key can rederive an origin under a rotated kind).
     /// `PathField`/`FqdnField` error out when `idx` is the wrapper root
     /// (no parent) or, for `FqdnField`, when the parent's `type_fqdn` is
-    /// unresolved.
+    /// unresolved — or, since spec 0309 S1, when it is the schema-free
+    /// `message` synthetic, which is the same thing said by a node whose
+    /// type the reader has explicitly declared unknowable.
     pub(super) fn origin_for_kind(
         &self,
         idx: usize,
@@ -1734,6 +1841,16 @@ impl App {
                     .get(self.tree[parent].span.type_fqdn)
                     .ok_or_else(|| "parent's type is unresolved".to_string())?
                     .to_owned();
+                // Spec 0309 S1: the schema-free `message` synthetic
+                // (spec 0299) has a FQDN only because prost-reflect
+                // requires every descriptor to have one. It names no
+                // schema — it is what a reader picks when none fits —
+                // so `protolens_internal.message:1` would be an origin
+                // claiming a field number under "unknown", matching
+                // every node anyone ever overrode to `message`.
+                if fqdn == decode::SCHEMA_FREE_MESSAGE_FQDN {
+                    return Err("parent is a schema-free `message`".to_string());
+                }
                 Ok(OverrideOrigin::FqdnField {
                     fqdn,
                     field: u64::from(self.tree[idx].span.field_number),

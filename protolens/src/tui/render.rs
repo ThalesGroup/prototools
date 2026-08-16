@@ -2124,12 +2124,37 @@ impl App {
         let inner = split[0];
         self.side_area = inner;
 
-        let node_path = self.positional_path(idx);
+        // Spec 0309 S5: the mode label names the list `i` would switch
+        // *to*, not the one on screen — the reader can already see which
+        // list they are looking at, and a bare "all types" beside it
+        // reads as a claim about the rows above rather than as the one
+        // thing they might want next.
         let mode_label = match self.override_sort {
-            SortMode::Lexicographic => "all types",
-            SortMode::Inferred => "inferred types",
+            SortMode::Lexicographic => "i → inferred types",
+            SortMode::Inferred => "i → all types",
         };
-        let left = format!("{node_path} - {mode_label}");
+        // Spec 0309 S4: the sentence `Enter` would carry out — the
+        // origin `projected_override_origin` will actually build, and
+        // the type the highlighted row names. The node's own positional
+        // path is only the fallback for a target with no projectable
+        // origin at all; `override <origin>` is otherwise strictly more
+        // informative, since a `path` projection *is* that path.
+        //
+        // The type is its last `.`-segment: this row is a reminder of
+        // what is highlighted a few lines above, not a second place to
+        // read a FQDN, and the full name would routinely crowd out the
+        // mode label on a pane this narrow.
+        let origin = match self.projected_override_origin() {
+            Ok(origin) => origin.label(),
+            Err(_) => self.positional_path(idx),
+        };
+        let left = match self
+            .highlighted_override_type()
+            .and_then(|f| f.rsplit('.').next())
+        {
+            Some(short) => format!("override {origin} as {short} - {mode_label}"),
+            None => format!("override {origin} - {mode_label}"),
+        };
 
         let list_height = inner.height as usize;
         self.override_list_height = list_height;

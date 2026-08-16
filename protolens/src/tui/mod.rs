@@ -1635,8 +1635,8 @@ pub struct App {
     override_opened_from_manage: bool,
     /// The origin kind to confirm a new type under, when the selection
     /// pane was opened on an *existing* entry (spec 0200 S3). `None` —
-    /// the pane opened on a bare main-pane node — means the plain
-    /// `path` default of `override_origin_for_kind` (spec 0208 S2).
+    /// the pane opened on a bare main-pane node — means whichever kind
+    /// `override_origin_for_kind` derives for that node (spec 0308 S1).
     ///
     /// Set by `open_override_from_manage` from the entry's own origin,
     /// so that retyping an entry keeps the kind the user chose for it

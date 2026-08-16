@@ -1214,9 +1214,10 @@ fn manage_pane_rename_updates_entry_and_rerenders_active_override() {
 
 /// The rename gesture applies to the document root exactly like any
 /// other node: `:override`-ing the root creates an active
-/// `Path { path: "/" }` entry (`override_origin_for_kind`'s
-/// plain-`path` default, spec 0208 S2), which the manage pane's `o`
-/// renames and re-renders in place, same as a non-root node.
+/// `Path { path: "/" }` entry — the root is the case spec 0308 S1's
+/// ladder falls all the way through, having neither a parent nor a
+/// field number — which the manage pane's `o` renames and re-renders in
+/// place, same as a non-root node.
 #[test]
 fn manage_pane_rename_works_on_the_document_root_with_a_real_type() {
     let (mut app, _inner_idx, _) = type_as_fixture();

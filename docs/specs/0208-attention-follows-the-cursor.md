@@ -221,6 +221,12 @@ collision either.
 
 ### S2 — the default origin kind is `path`
 
+> **Reversed by spec 0308 S1** (2026-08-16). The default is now the
+> widest kind the node can express: `fqdn:field`, else `path:field`,
+> else `path`. What this section says a `path:field` entry *covers* is
+> still accurate; it is the premise that a default should cover as
+> little as possible that 0308 rejects.
+
 `override_origin_for_kind` becomes a single infallible derivation:
 
 ```rust

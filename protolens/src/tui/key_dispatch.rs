@@ -245,10 +245,17 @@ impl App {
             // `:override`. The pane picks a type from a list; `o` is
             // the way out to the other two dimensions it cannot express.
             KeyCode::Char('o') => self.prefill_override_cmd(),
+            // Spec 0309 S2: rotate the origin kind the status line is
+            // projecting, so the reader who wants a narrower reach than
+            // spec 0308's widest-first default can say so *before*
+            // confirming, rather than creating an entry and retyping it
+            // with the management pane's own `z`/`Z` (spec 0124 G2).
+            KeyCode::Char('z') => self.rotate_override_kind(false),
+            KeyCode::Char('Z') => self.rotate_override_kind(true),
             KeyCode::Enter => {
-                let Some(idx) = self.override_target else {
+                if self.override_target.is_none() {
                     return;
-                };
+                }
                 // Spec 0137 §G4: `override_candidates` is indexed
                 // directly. In alphabetic mode index `0` is always the
                 // `None` sentinel, which resolves to raw
@@ -269,8 +276,8 @@ impl App {
                 // collection or 0114's splice-render is touched.
                 //
                 // Spec 0200 S3: when the pane was opened on an existing
-                // entry, that entry's kind wins over the default (plain
-                // `path`, spec 0208 S2). An entry's kind is deliberate —
+                // entry, that entry's kind wins over the derived default
+                // (spec 0308 S1). An entry's kind is deliberate —
                 // the manage pane's `z`/`Z` set it (spec 0124 G2) — and
                 // deriving the default kind instead would not retype the
                 // entry at all: `activate` deactivates only entries with
@@ -282,11 +289,11 @@ impl App {
                 // type has become unresolved since the entry was
                 // created, and silently retyping under a different kind
                 // is precisely the defect above.
-                let origin = match self.override_origin_kind {
-                    Some(kind) => self.origin_for_kind(idx, kind),
-                    None => self.override_origin_for_kind(idx),
-                };
-                let origin = match origin {
+                //
+                // Spec 0309 S3: the same call the status line has been
+                // projecting all along, so confirming produces the
+                // origin the reader was just shown.
+                let origin = match self.projected_override_origin() {
                     Ok(origin) => origin,
                     Err(e) => {
                         self.message = format!("cannot create override: {e}");

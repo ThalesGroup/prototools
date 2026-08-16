@@ -4,6 +4,7 @@
 
 use std::thread;
 
+use crate::decode::{decode, DescriptorContext, RootType};
 use crate::override_pane::OverrideCollection;
 
 use super::super::heat_worker::{HeatWorkerHandle, RangeHeatEntry};
@@ -400,7 +401,9 @@ fn t_opens_on_active_primitive_override_in_lexicographic_mode() {
     app.splash = false;
     app.term_width = 120;
 
-    let origin = app.override_origin_for_kind(app.cursor).unwrap();
+    let origin = app
+        .override_origin_for_kind(app.cursor, Some("fixed32"))
+        .unwrap();
     app.overrides.activate(origin, Some("fixed32".to_string()));
 
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
@@ -417,7 +420,7 @@ fn t_opens_on_active_raw_override_on_the_none_sentinel_row() {
     app.splash = false;
     app.term_width = 120;
 
-    let origin = app.override_origin_for_kind(app.cursor).unwrap();
+    let origin = app.override_origin_for_kind(app.cursor, None).unwrap();
     app.overrides.activate(origin, None);
 
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
@@ -442,7 +445,9 @@ fn t_opens_on_first_inactive_matching_entry_when_none_is_active() {
         app.overrides.remove(0);
     }
 
-    let origin = app.override_origin_for_kind(app.cursor).unwrap();
+    let origin = app
+        .override_origin_for_kind(app.cursor, Some("int32"))
+        .unwrap();
     app.overrides
         .activate(origin.clone(), Some("int32".to_string()));
     let idx = app
@@ -701,9 +706,12 @@ fn override_search_with_no_argument_reuses_the_active_pattern() {
     assert_eq!(app.override_highlight, 1); // pkg.Beta
 }
 
-/// Spec 0147 G2: the override-select pane's local statusline reads
-/// "inferred types" in `Inferred` mode and "all types" in
-/// `Lexicographic` mode.
+/// Spec 0147 G2, spec 0309 S5: the override-select pane's local
+/// statusline names the list `i` would switch *to* — so it reads "i →
+/// all types" while the *inferred* list is on screen, and the other way
+/// round. Asserting the whole label, not a `contains`: "all types" is a
+/// substring of both wordings, so a `contains` would pass in either
+/// mode.
 #[test]
 fn override_statusline_wording_differs_by_sort_mode() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
@@ -711,30 +719,20 @@ fn override_statusline_wording_differs_by_sort_mode() {
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
     assert!(app.override_target.is_some());
 
-    let backend = TestBackend::new(120, 24);
-    let mut terminal = Terminal::new(backend).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(200, 24)).unwrap();
 
     app.override_sort = SortMode::Inferred;
-    terminal.draw(|frame| app.render(frame)).unwrap();
-    let statusline_row = app.side_area.y + app.side_area.height;
-    let buffer = terminal.backend().buffer();
-    let row_text: String = (0..buffer.area.width)
-        .map(|x| buffer[(x, statusline_row)].symbol().to_string())
-        .collect();
+    let row_text = override_statusline(&mut app, &mut terminal);
     assert!(
-        row_text.contains("inferred types"),
-        "Inferred mode must read \"inferred types\": {row_text:?}"
+        row_text.ends_with("- i → all types"),
+        "the inferred list offers the other one: {row_text:?}"
     );
 
     app.override_sort = SortMode::Lexicographic;
-    terminal.draw(|frame| app.render(frame)).unwrap();
-    let buffer = terminal.backend().buffer();
-    let row_text: String = (0..buffer.area.width)
-        .map(|x| buffer[(x, statusline_row)].symbol().to_string())
-        .collect();
+    let row_text = override_statusline(&mut app, &mut terminal);
     assert!(
-        row_text.contains("all types"),
-        "Lexicographic mode must read \"all types\": {row_text:?}"
+        row_text.ends_with("- i → inferred types"),
+        "and back again: {row_text:?}"
     );
 }
 
@@ -1379,8 +1377,10 @@ fn enter_from_the_manage_pane_keeps_a_path_kind() {
 /// where they land — the pane-level property G2 is really about — and a
 /// `t` from the main pane after a management-pane session still gets the
 /// default kind, which is what a leaked `override_origin_kind` would
-/// break. That default is plain `path` since spec 0208 S2; before it,
-/// `path:field`.
+/// break. Since spec 0308 S1 that default is derived from the node —
+/// `fqdn:field` here, the fixture's field having both a number and a
+/// resolved parent type. Spec 0208 S2 made it plain `path`; before that
+/// it was `path:field`.
 #[test]
 fn esc_and_enter_land_in_the_same_place_and_the_default_kind_returns() {
     let (mut app, items) = repeated_message_fixture();
@@ -1401,8 +1401,8 @@ fn esc_and_enter_land_in_the_same_place_and_the_default_kind_returns() {
     assert!(app.manage_open, "Esc returns to the caller too");
     assert_eq!(app.override_origin_kind, None, "and clears the kind");
 
-    // A fresh `t` from the main pane: no caller kind, so the plain
-    // `path` default applies (spec 0208 S2).
+    // A fresh `t` from the main pane: no caller kind, so the default is
+    // derived from the node (spec 0308 S1).
     app.manage_open = false;
     app.manage_focus = false;
     app.set_cursor(items[1]);
@@ -1428,14 +1428,255 @@ fn esc_and_enter_land_in_the_same_place_and_the_default_kind_returns() {
         .iter()
         .find(|e| e.active && e.r#type.as_deref() == Some(chosen.as_str()))
         .expect("the override was created");
-    assert_eq!(created.origin.kind(), OverrideKind::Path);
+    assert_eq!(created.origin.kind(), OverrideKind::FqdnField);
     assert_eq!(
         created.origin,
-        OverrideOrigin::Path {
-            path: app.positional_path(items[1])
-        },
-        "the entry names the node the user pointed at, not its parent"
+        app.origin_for_kind(items[1], OverrideKind::FqdnField)
+            .expect("the fixture's parent type is resolved"),
+        "the entry names the field, by the type that declares it"
     );
+}
+
+/// Spec 0308 S1's three rungs, each reached by the condition that
+/// disqualifies the one above it.
+///
+/// The rule is stated as "the widest kind the node can express", so what
+/// is worth testing is that each *narrowing* happens — asserting only
+/// the `fqdn:field` case would pass against a constant.
+///
+/// Two fixtures, because a rung is a property of the document and not
+/// something to fake by writing into a decoded tree: the typed one has a
+/// resolved parent, and an untyped blob's records hang off the wrapper
+/// root, which has no type at all.
+#[test]
+fn a_new_overrides_kind_is_the_widest_the_node_can_express() {
+    let (typed, items) = repeated_message_fixture();
+    assert_eq!(
+        typed
+            .override_origin_for_kind(items[0], None)
+            .unwrap()
+            .kind(),
+        OverrideKind::FqdnField,
+        "a field number and a resolved parent type",
+    );
+
+    // Spec 0309 S1: the same node, one rung down, because `message`
+    // refuses to be spread over every node of the parent's type.
+    assert_eq!(
+        typed
+            .override_origin_for_kind(items[0], Some(decode::MESSAGE_KEYWORD))
+            .unwrap()
+            .kind(),
+        OverrideKind::PathField,
+        "`message` skips the fqdn:field rung and no other",
+    );
+
+    // The wrapper root has neither a parent nor a field number — both
+    // reasons to reach the fallback at once.
+    assert_eq!(
+        typed
+            .override_origin_for_kind(typed.first_node, None)
+            .unwrap()
+            .kind(),
+        OverrideKind::Path,
+        "nothing but its own position left to name it by",
+    );
+
+    // Field 1 = `"abc"`, opened with no descriptor set: the record has a
+    // field number, and its parent is the wrapper root, whose type is
+    // nothing the origin could name.
+    let mut ctx = DescriptorContext::empty_for_test();
+    let decoded = decode(wrapped(b"\x0a\x03abc"), &mut ctx, RootType::Raw, 2).unwrap();
+    let untyped = fixture_app(decoded, ctx);
+    let child = untyped
+        .first_child(untyped.first_node)
+        .expect("the probe accepts a well-formed record");
+    assert_eq!(
+        untyped.override_origin_for_kind(child, None).unwrap(),
+        OverrideOrigin::PathField {
+            path: untyped.positional_path(untyped.first_node),
+            field: 1,
+        },
+        "a field number, but nothing to name the parent by",
+    );
+}
+
+/// Spec 0309 S2: `z`/`Z` pin the projected kind, and `Enter` builds the
+/// origin under the pinned one rather than under spec 0308's default.
+///
+/// Driven through `handle_key` because the binding is half the claim —
+/// `OverrideKind::next`'s doc comment said `z` rotated here for two
+/// years before anything actually called it.
+#[test]
+fn z_pins_the_projected_kind_and_enter_builds_it() {
+    let (mut app, items) = repeated_message_fixture();
+    app.set_cursor(items[1]);
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert_eq!(app.override_origin_kind, None, "nothing pinned yet");
+    assert_eq!(
+        app.projected_override_origin().unwrap().kind(),
+        OverrideKind::FqdnField,
+        "spec 0308's widest-first default",
+    );
+
+    // The full barrel, forward then back, so neither direction can pass
+    // by rotating to a constant.
+    for expected in [
+        OverrideKind::Path,
+        OverrideKind::PathField,
+        OverrideKind::FqdnField,
+    ] {
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        assert_eq!(app.override_origin_kind, Some(expected));
+        assert_eq!(app.projected_override_origin().unwrap().kind(), expected);
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::NONE));
+    assert_eq!(app.override_origin_kind, Some(OverrideKind::PathField));
+
+    app.override_sort = SortMode::Lexicographic;
+    app.recompute_override_candidates();
+    // `recompute_override_candidates` resets the highlight but not the
+    // pin: the reader's choice of kind is about the node, not about
+    // which type is under the highlight.
+    assert_eq!(app.override_origin_kind, Some(OverrideKind::PathField));
+    let chosen = app.all_type_fqdns[0].clone();
+    app.override_highlight = app
+        .override_candidates
+        .iter()
+        .position(|(f, _)| *f == chosen)
+        .expect("chosen FQDN must be a candidate");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let created = app
+        .overrides
+        .entries()
+        .iter()
+        .find(|e| e.active && e.r#type.as_deref() == Some(chosen.as_str()))
+        .expect("the override was created");
+    assert_eq!(
+        created.origin,
+        app.origin_for_kind(items[1], OverrideKind::PathField)
+            .expect("the node has a parent"),
+        "`Enter` honors the pin, not the default",
+    );
+}
+
+/// Spec 0309 S1: `message` is a reinterpretation of *these* bytes, so
+/// neither the default ladder nor `z` will spread it across a type.
+#[test]
+fn message_never_reaches_the_fqdn_field_kind() {
+    let (mut app, items) = repeated_message_fixture();
+    app.set_cursor(items[1]);
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    app.override_sort = SortMode::Lexicographic;
+    app.recompute_override_candidates();
+    app.override_highlight = app
+        .override_candidates
+        .iter()
+        .position(|(f, _)| f == decode::MESSAGE_KEYWORD)
+        .expect("spec 0299 puts `message` in the lexicographic list");
+
+    assert_eq!(
+        app.projected_override_origin().unwrap().kind(),
+        OverrideKind::PathField,
+        "the default falls one rung, no further",
+    );
+    // Two steps forward from `path:field` would land on `fqdn:field`
+    // via `path`; the rotation must skip it and come back round.
+    for expected in [OverrideKind::Path, OverrideKind::PathField] {
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        assert_eq!(app.override_origin_kind, Some(expected));
+    }
+
+    // And the other half of the refusal: once the override is applied,
+    // the node's *children* must not name it either. Their parent's
+    // `type_fqdn` is now the synthetic, and `protolens_internal.message
+    // :1` would be an origin claiming a field under "unknown".
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let target = app
+        .overrides
+        .entries()
+        .iter()
+        .find(|e| e.active && e.r#type.as_deref() == Some(decode::MESSAGE_KEYWORD))
+        .map(|e| e.origin.clone())
+        .expect("the override was created");
+    let reinterpreted = app.manage_affected_nodes(&target)[0];
+    assert_eq!(
+        app.fqdns.get(app.tree[reinterpreted].span.type_fqdn),
+        Some(decode::SCHEMA_FREE_MESSAGE_FQDN),
+        "the node now carries the synthetic type",
+    );
+    let child = app
+        .first_child(reinterpreted)
+        .expect("a schema-free message still shows its unknown fields");
+    assert!(app.origin_for_kind(child, OverrideKind::FqdnField).is_err());
+    assert_eq!(
+        app.override_origin_for_kind(child, None).unwrap().kind(),
+        OverrideKind::PathField,
+        "the ladder falls through to the positional parent",
+    );
+}
+
+/// Spec 0309 S4: the pane's statusline reads as the sentence `Enter`
+/// would carry out — the projected origin and the short type name —
+/// and follows `z`.
+#[test]
+fn the_override_statusline_projects_the_origin_and_the_short_type() {
+    let (mut app, items) = repeated_message_fixture();
+    app.set_cursor(items[1]);
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    app.override_sort = SortMode::Lexicographic;
+    app.recompute_override_candidates();
+    app.override_highlight = app
+        .override_candidates
+        .iter()
+        .position(|(f, _)| f == "test.Item")
+        .expect("the fixture's own message type is a candidate");
+
+    let mut terminal = Terminal::new(TestBackend::new(200, 24)).unwrap();
+    let fqdn_origin = app
+        .origin_for_kind(items[1], OverrideKind::FqdnField)
+        .unwrap();
+    assert_eq!(
+        override_statusline(&mut app, &mut terminal),
+        format!(
+            "override {} as Item - i → inferred types",
+            fqdn_origin.label()
+        ),
+        "the origin is spelled in full, the type by its last segment",
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+    let path_origin = app.origin_for_kind(items[1], OverrideKind::Path).unwrap();
+    assert_eq!(
+        override_statusline(&mut app, &mut terminal),
+        format!(
+            "override {} as Item - i → inferred types",
+            path_origin.label()
+        ),
+        "the projection follows the pin",
+    );
+}
+
+/// The override pane's local statusline row, trimmed of the right-hand
+/// `L…/…` viewport half, which the tests above are not about.
+///
+/// Columns are clipped to `side_area`: the main pane's own local
+/// statusline sits at the same `y`, and a full-width read would return
+/// that one first.
+fn override_statusline(app: &mut App, terminal: &mut Terminal<TestBackend>) -> String {
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let area = app.side_area;
+    let row = area.y + area.height;
+    let buffer = terminal.backend().buffer();
+    let text: String = (area.x..area.x + area.width)
+        .map(|x| buffer[(x, row)].symbol().to_string())
+        .collect();
+    text.split("  ")
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 /// A graph, a cold cache, and a cursor node whose type is *unresolved*
