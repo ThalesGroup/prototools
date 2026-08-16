@@ -58,3 +58,21 @@ overflow-checks = true
 [profile.profiling]
 inherits = "release"
 debug    = "line-tables-only"
+
+# Iterating on tests.  `release`'s `codegen-units = 1` plus thin LTO means a
+# one-line edit recompiles protolens as a single codegen unit, LTOs it against
+# every dependency and relinks — minutes, for one assertion.  `--release` is
+# not optional here (a debug `cargo test` overflows the stack in
+# `render::a_document_nested_to_the_wire_depth_limit_opens_and_draws`), so this
+# keeps release codegen and drops only what makes the rebuild slow.
+#
+# Separate from `release` for the same reason `profiling` is: a fast build must
+# never invalidate target/release, which is what the dev-shell puts on PATH and
+# what the four gates measure.  Gates stay on `--release`; iterate with
+#
+#     cargo test --profile quick --bin protolens <filter>
+[profile.quick]
+inherits      = "release"
+lto           = false
+codegen-units = 16
+incremental   = true
