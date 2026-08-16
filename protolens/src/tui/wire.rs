@@ -390,13 +390,6 @@ impl App {
         if !node.is_rendered() {
             return None;
         }
-        // S3: slot 0's head is `Blob`'s synthetic `write_tag(1, WT_LEN)`
-        // and length prefix. Showing bytes that are not in the user's
-        // file would be a fabrication in the one view whose entire
-        // purpose is fidelity to them.
-        if self.wrapper_offset > 0 && self.parent(idx).is_none() {
-            return None;
-        }
         let start = self.arena.raw_start()[idx] as usize;
         let end = self.arena.raw_end()[idx] as usize;
 
@@ -411,7 +404,42 @@ impl App {
         // A bracketed node's own lines are its first and its last; a
         // flat one has only the head.
         let footer = node.is_bracketed() && pos.line_in_node > 0;
-        Some(head_or_tail(&node.span, start..end, children, footer))
+        let slice = head_or_tail(&node.span, start..end, children, footer);
+        if self.wrapper_offset > 0 && self.parent(idx).is_none() {
+            return self.without_the_wrapper_prefix(slice);
+        }
+        Some(slice)
+    }
+
+    /// The wrapper root's slice, minus `Blob`'s synthetic
+    /// `write_tag(1, WT_LEN)` and length prefix (spec 0306 S1-S3).
+    ///
+    /// Those bytes are not in the user's file, and the wire view's whole
+    /// value is that what it shows is on disk — so spec 0225 S3 refused
+    /// the row. But it refused the *node*, and a flat wrapper root's
+    /// head is three or four invented bytes followed by the entire file.
+    /// On an untyped blob the probe declines, the document is one flat
+    /// line (spec 0299), and that refusal hid every byte of it.
+    ///
+    /// The subtraction is the one `display_range` already applies to
+    /// this same node's coordinates.
+    fn without_the_wrapper_prefix(&self, slice: WireSlice) -> Option<WireSlice> {
+        let start = slice.bytes.start.max(self.wrapper_offset);
+        if start >= slice.bytes.end {
+            // S2: not a rare path — a *bracketed* root's head is exactly
+            // the prefix, because its first child begins at
+            // `wrapper_offset`.
+            return None;
+        }
+        Some(WireSlice {
+            bytes: start..slice.bytes.end,
+            // S3: what remains does not begin with a tag, and the only
+            // tag it ever had was invented. `Raw` — "bytes no framing
+            // claims … drawn plain, which is all that can honestly be
+            // said about them" — is exactly their status.
+            framing: Framing::Raw,
+            ..slice
+        })
     }
 
     /// S4: element `pos.line_in_node` of a packed run, with the record's

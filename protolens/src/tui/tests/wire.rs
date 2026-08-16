@@ -10,9 +10,10 @@
 //! handed to it is the right one, and that the pane is drawn and
 //! navigated as pairs of rows once `w` is on.
 
-use super::super::wire::{PackedCursor, WirePalette};
+use super::super::wire::{Framing, PackedCursor, WirePalette};
 use super::super::*;
 use super::support::*;
+use crate::decode::{decode, DescriptorContext, RootType};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use prost_types::field_descriptor_proto::{Label, Type};
 use ratatui::layout::Rect;
@@ -122,7 +123,10 @@ fn each_line_claims_its_own_bytes() {
     let rows = wire_rows(&app);
 
     // S3: the wrapper is protolens' own framing, not the user's blob,
-    // so its root row shows nothing.
+    // so its root row shows nothing. Spec 0306 test 3 rides here: it is
+    // now the *narrowing* that empties both rows rather than a refusal
+    // of the node — this root is bracketed, so its head is exactly the
+    // synthetic prefix and its tail is exactly empty.
     assert_eq!(rows[0], "", "the wrapper root claims no bytes (S3)");
 
     // S4: the record's tag and length ride on element 0's row, and each
@@ -142,6 +146,89 @@ fn each_line_claims_its_own_bytes() {
     assert_eq!(rows[7], "0|18[2a]");
     assert_eq!(rows[8], "0|20[2b]");
     assert_eq!(rows[9], "", "the wrapper root's footer claims no bytes");
+}
+
+/// Field 1 = `"abc"`, then a second field 1 declaring 16 payload bytes
+/// with only the 5 of `"short"` present. One invalid token, so the probe
+/// disqualifies the file (spec 0266) and it renders as a single flat
+/// line — which is the shape spec 0306 is about.
+const CUT_SHORT: &[u8] = b"\x0a\x03abc\x0a\x10short";
+
+/// An untyped `App` — what opening a file with neither a descriptor set
+/// nor a `--type` builds. A twin of `override_message.rs`'s `untyped_app`;
+/// kept local because the two files assert about different halves of the
+/// same document and neither owns the other's fixture.
+fn untyped_wire_app(bytes: &[u8]) -> App {
+    let mut ctx = DescriptorContext::empty_for_test();
+    let decoded = decode(wrapped(bytes), &mut ctx, RootType::Raw, 2).unwrap();
+    fixture_app(decoded, ctx)
+}
+
+/// Spec 0306 test 1. The wrapper root is flat here, so its head runs from
+/// `Blob`'s two invented bytes to the end of the buffer. Refusing the
+/// node to hide the prefix threw the file away with it — and since the
+/// document is this one line, it threw away every byte the wire view
+/// exists to show.
+#[test]
+fn w_on_a_flat_wrapper_root_shows_the_whole_file() {
+    let app = untyped_wire_app(CUT_SHORT);
+    assert_eq!(app.total_lines(), 1, "the probe declines: one flat line");
+
+    let pos = app.line_pos(0).expect("line 0 is inside the document");
+    let mut memo = PackedCursor::default();
+    let slice = app
+        .wire_slice(pos, &mut memo)
+        .expect("S1: the wrapper root's payload is the user's file");
+
+    assert_eq!(
+        slice.bytes,
+        app.wrapper_offset..app.blob.len(),
+        "S1: the whole node, less the synthetic prefix",
+    );
+    assert_eq!(
+        &app.blob[slice.bytes.clone()],
+        CUT_SHORT,
+        "and those bytes are the file, byte for byte",
+    );
+    assert!(
+        matches!(slice.framing, Framing::Raw),
+        "S3: the tag it had was invented, and is no longer in the slice",
+    );
+}
+
+/// Spec 0306 test 2 — G2 as an assertion rather than as a review rule.
+///
+/// Over both root shapes, because they narrow differently: the flat root
+/// above keeps its payload, the bracketed one of
+/// `each_line_claims_its_own_bytes` narrows to nothing on both its rows.
+/// Neither may hand out a byte that is not in the user's file.
+#[test]
+fn a_wrapper_root_never_shows_a_fabricated_byte() {
+    let flat = untyped_wire_app(CUT_SHORT);
+    let (bracketed, _run, _tail, _a, _b) = packed_run_with_tail_fixture();
+
+    for app in [&flat, &bracketed] {
+        assert!(app.wrapper_offset > 0, "the fixture must be wrapped");
+        let mut memo = PackedCursor::default();
+        for line in 0..app.total_lines() {
+            let pos = app.line_pos(line).expect("line is inside the document");
+            // The same predicate the production guard uses, so the test
+            // cannot drift from it by assuming the root is slot 0.
+            if app.parent(pos.node).is_some() {
+                continue;
+            }
+            let Some(slice) = app.wire_slice(pos, &mut memo) else {
+                continue;
+            };
+            assert!(
+                slice.bytes.start >= app.wrapper_offset,
+                "line {line} of the wrapper root starts at {}, inside the \
+                 {}-byte synthetic prefix",
+                slice.bytes.start,
+                app.wrapper_offset,
+            );
+        }
+    }
 }
 
 /// A row's hex, with every split tag byte put back together: a tag's
