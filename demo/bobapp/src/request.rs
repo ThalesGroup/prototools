@@ -102,7 +102,9 @@ pub fn lookup(
         Value::String(language_code.to_owned()),
     )?;
     set_enum(&mut request, "rank_preference", "RELEVANCE")?;
-    set(&mut request, "open_now", Value::Bool(true))?;
+    // Deliberately not `open_now`: it would make the number of results — and
+    // so the size of the logged response — depend on the hour the artifact
+    // was minted, and a fixture minted at midnight comes back all but empty.
     set(&mut request, "min_rating", Value::F64(4.0))?;
     set(&mut request, "max_result_count", Value::I32(5))?;
 

@@ -297,10 +297,15 @@ draft 1 did not have:
 invisible to standard tooling in a different way, and because each one
 falls out of the story rather than being sprinkled on:
 
-1. **A singular field that occurs twice.** Legal wire; last-one-wins.
-   `protoc --decode` shows you the second value, `note: "ok"`. The
-   first is the `x-goog-api-key` header the app sent, which it logs
-   and should not.
+1. **A singular field that occurs twice, the first value being a whole
+   message hiding in a `string`.** Legal wire; last-one-wins.
+   `protoc --decode` shows you the second `text_query`, the place name
+   that was really searched for, and stops. The first is a debug trace
+   the app left in front of it — a `google.rpc.Status` carrying the
+   `x-goog-api-key` it authenticated with, which it logs and should
+   not. Under googleapis those 164 bytes have exactly one candidate, so
+   the heat cue does not merely say "this is not a string": it names
+   the message, and the key is one keystroke away.
 2. **A non-minimal varint** (`val_ohb`). Decodes to the same number,
    re-encodes to different bytes. Nothing downstream notices.
 3. **A field the recovered schema does not declare.** A newer producer

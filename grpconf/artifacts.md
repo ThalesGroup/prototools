@@ -111,7 +111,7 @@ package bobapp.v1;
 message Entry {
   google.protobuf.Timestamp at = 1;
   string method   = 2;   // "/google.maps.routing.v2.Routes/ComputeRoutes"
-  string note     = 3;   // a diagnostic — and anomaly 1's carrier (step 4)
+  string note     = 3;   // a diagnostic: "sent" while in flight, "ok" after
   bytes  request  = 4;   // opaque on purpose
   bytes  response = 5;   // opaque on purpose
 }
@@ -220,9 +220,14 @@ The lookup is deliberately more than one field. A three-field message
 is too generic to score: with `text_query`, `language_code` and
 `max_result_count` alone the top candidate under googleapis was
 `google.ads.admanager.v1.ReportDefinition`. The shipped request also
-sets `rank_preference`, `open_now`, `min_rating` and a
-`location_bias.circle` around the leg's endpoint, which is both what a
-real search looks like and enough shape to be recognized:
+sets `rank_preference`, `min_rating` and a `location_bias.circle` around
+the leg's endpoint, which is both what a real search looks like and
+enough shape to be recognized:
+
+It deliberately does **not** set `open_now`. That field would make the
+number of results — and so the size of the logged response — depend on
+the hour the artifact was minted; a mint at midnight came back with one
+result and then none.
 
 | descriptor set | top candidate for the lookup payload | score | runner-up |
 |---|---|---|---|
@@ -271,34 +276,45 @@ Which anomaly lands in which artifact:
 |---|---|---|---|---|
 | 2 | A varint padded past minimal length | **request** | a scalar in the request | An encoder that reserves a fixed-width varint and never compacts it. |
 | 3 | A field the schema does not declare | **request** | a tag inside the request | A newer build writing a field the recovered schema predates. |
-| 1 | A singular field written twice | **log** | `Entry.note` | The app writes a diagnostic while the call is in flight — which is the outgoing `x-goog-api-key` header — then overwrites it with `ok` when the call lands. Last-one-wins hides the first. |
+| 1 | A singular field written twice, the first occurrence being a whole message hiding in a `string` | **lookup request** | `SearchTextRequest.text_query` | The app leaves a debug trace in the query it is about to send — a `google.rpc.Status` carrying the `x-goog-api-key` it authenticated with — then writes the real query over it. Last-one-wins hides the first from the server and from `protoc`. |
 | 4 | A record truncated at the tail | **log** | the last `Entry` | The process was killed mid-write. |
 
 ### What was built, and what it measures
 
-`demo/bobapp/src/anomaly.rs` is the whole of it: `rewrite_request` and
-`rewrite_log` are the two text round trips, `cut_short` is the short
-write. The request rewrite sits in `codec.rs` between `item.encode` and
-`record_request`, the log rewrite at the end of `Recorder::encode_log`,
-and the cut in `main.rs`'s `write_log`.
+`demo/bobapp/src/anomaly.rs` is the whole of it: `rewrite_request` is
+one text round trip per request type, `cut_short` is the short write.
+The request rewrite sits in `codec.rs` between `item.encode` and
+`record_request`, and the cut in `main.rs`'s `write_log`. Which of the
+two patches runs is decided by the request's own type — the route call
+gets 2 and 3, the place lookup gets 1 — so the log shows two pairs of
+entries, odd in two different ways.
 
-**The carrier of anomaly 1 is `Entry.note`, not `Entry.method`.** Two
-reasons. `method` is what tells one call from another in a multi-entry
-log, and corrupting it costs the demo a landmark it needs. And a
-free-text diagnostic that gets overwritten is the *ordinary* shape of
-this bug — debug logging left in — which is exactly the small,
-defensible claim the synopsis asks for. `note` is numbered **3**, ahead
-of `request` (4) and `response` (5), so that anomaly 4's tail cut
-cannot reach it: with one entry in the log, all four anomalies are on
-one screen, in reading order.
+**The carrier of anomaly 1 is `SearchTextRequest.text_query`, and what
+it carries is a message.** A duplicated diagnostic *string* is a
+one-line observation; a duplicated field whose first value is a
+serialized `google.rpc.Status` is one the tool has to earn. The trace
+holds an `Any` that spells `google.rpc.ErrorInfo` out in its
+`type_url`, and inside that an `ErrorInfo` filing the key under
+`x-goog-api-key`, the name of the header the call really did travel in.
+Scored against googleapis those 164 bytes have **exactly one candidate**
+— `google.rpc.Status`, +8 — so protolens's heat cue does not merely say
+"this is not a string", it names the message. The leak is not visible to
+`protoc --decode`, which shows the second `text_query` and stops.
 
-Verified against a live Grenoble→Lyon call (2026-08-15):
+Every byte of the trace is ASCII, which is what lets it pass for the
+`string` it is written into: a proto3 `string` has to be valid UTF-8 or
+the server rejects the call, and Places accepted it. ASCII holds only
+while every length varint inside the trace stays below 128, so
+`debug_trace` checks the result and fails loudly if a constant grows
+past that.
+
+Verified against a live Grenoble→Lyon call (2026-08-16):
 
 | Anomaly | On the wire | |
 |---|---|---|
 | 2 | `20 81 80 80 80 00` | field 4, value 1, spelled in five bytes |
 | 3 | `9a 06 10 "bobapp/0.9.3-rc2"` | field 99, LEN, undeclared anywhere |
-| 1 | `1a 37 "x-goog-api-key: AIza…"` then `1a 02 "ok"` | field 3 twice |
+| 1 | `0a a4 01 <164-byte Status>` then `0a 12 "coffee in Grenoble"` | field 1 twice |
 | 4 | 1 024 bytes short | `protoc --decode_raw` exits 1, "Failed to parse input" |
 
 Two facts worth having on stage. **Google accepted the request** — the
@@ -307,9 +323,9 @@ came back, which is the point of saying they are legal. And the fake
 key is 39 characters beginning `AIza`, asserted by a test, because
 that shape is what the room recognizes in the half-second it is up.
 
-Twelve tests in `demo/bobapp` cover it, including that the patch **fails
-loudly** rather than silently doing nothing when its target line is
-absent.
+Fourteen tests in `demo/bobapp` cover it, including that each patch
+**fails loudly** rather than silently doing nothing when its target line
+is absent.
 
 **Anomaly 4 forced bobapp to make two calls, and this is not
 negotiable.** The first run wrote a one-entry log, and cutting its tail
@@ -322,10 +338,10 @@ file as one opaque `1: "…"`. Beat 9 would have had nothing to read.
 bobapp now looks up both directions — the route asked for and the
 return leg — which is in character for a round-trip planner and gives
 the log entries that are whole. Verified: the first three render with
-`at`, `method`, **both `note` lines**, and a `request`; the route ones
-carry the padded varint and field 99, and the last entry is a bare `1:`
-holding the bytes that survived the cut. `protoc --decode_raw` still
-refuses the file.
+`at`, `method`, `note`, a `request` and a `response`; the two lookup
+requests carry **both `text_query` lines**, the two route ones carry the
+padded varint and field 99, and the last entry is truncated in place.
+`protoc --decode_raw` still refuses the file.
 
 The general rule this leaves behind: **a truncated tail needs something
 in front of it to be the tail of.**
@@ -471,7 +487,7 @@ Beat 6's `bobapp.desc` is built on stage, in one command, from the
 binary. `googleapis.desc` is the repo's own corpus, shipped by CI and
 not made for this talk.
 
-## Step 8 — mint the artifacts — **done 2026-08-15**
+## Step 8 — mint the artifacts — **re-minted 2026-08-16**
 
 One live run, with the key, producing files that are then **committed
 and never re-minted during a talk**:
@@ -487,19 +503,34 @@ BOBAPP_API_KEY=$(cat ~/.config/bobapp/api-key) \
 ```
 
 Grenoble ↔ Lyon, as coordinates, for the reason step 6 gives. All four
-calls succeeded; **Google accepted the padded varint and the undeclared
-field** and returned a full route both ways. `log.pb` is 20 198 bytes,
-four entries:
+calls succeeded; **Google accepted the padded varint, the undeclared
+field and the duplicated `text_query`** and returned a full route both
+ways. `log.pb` is 20 243 bytes, four entries:
 
 | # | Method | Request | Response |
 |---|---|---|---|
-| 0 | `Places/SearchText` | 75 | 532 |
-| 1 | `Places/SearchText` | 73 | 518 |
+| 0 | `Places/SearchText` | 240 | 508 |
+| 1 | `Places/SearchText` | 238 | 484 |
 | 2 | `Routes/ComputeRoutes` | 84 | 9 868 |
-| 3 | `Routes/ComputeRoutes` | 84 | 9 480, of which **8 456 are on disk** |
+| 3 | `Routes/ComputeRoutes` | 84 | 9 633, of which **8 609 are on disk** |
 
-Entry 3 claims 9 690 bytes and 8 666 remain — the 1 024-byte cut lands
+Each lookup request is 164 bytes bigger than the query alone needs: that
+is anomaly 1's trace, sitting in front of the real `text_query`.
+
+Entry 3 claims 9 633 bytes and 8 609 remain — the 1 024-byte cut lands
 inside its response, which is where anomaly 4 has to land.
+
+Measured on the result, against `googleapis.desc`:
+
+| node | top candidate | score | runner-up |
+|---|---|---|---|
+| the whole file | — | vetoed | — |
+| a lookup request | `google.maps.places.v1.SearchTextRequest` | −8 | none |
+| **its first `text_query`** | **`google.rpc.Status`** | **+8** | **none** |
+| a lookup response | `SearchNearbyResponse` **tie** `SearchTextResponse` | +45 | — |
+
+The lookup request used to score +12; the duplicated field is what costs
+it the twenty points, and it is still the only candidate.
 
 The demo itself must not touch the network. Rehearse it in airplane
 mode at least once.
@@ -566,7 +597,7 @@ With the cut record removed cleanly (the first 10 081 bytes):
 
 A one-field wrapper wins a document whose top level is one LEN field,
 because it matches everything it sees and has nothing to be penalized
-for, while the true type is docked for the doubled `note`. This is a
+for, while the true type is docked for what it finds inside. This is a
 scoring question, not a demo question — `docs/scoring-flaws.md` is where
 it belongs. It costs the demo nothing, because the root is vetoed
 anyway and the beat runs off the cue, not off root inference.

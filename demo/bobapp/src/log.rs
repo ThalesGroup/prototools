@@ -37,10 +37,7 @@ use anyhow::{Context, Result};
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage, Value};
 
-use crate::{
-    anomaly,
-    request::{message, set},
-};
+use crate::request::{message, set};
 
 /// `bobapp.v1.Log`, fully qualified.
 pub const LOG_TYPE: &str = "bobapp.v1.Log";
@@ -117,10 +114,7 @@ impl Recorder {
 
         let mut out = Vec::with_capacity(log.encoded_len());
         log.encode(&mut out).context("encoding the log")?;
-
-        // The same seam as the request encoder's, for the same reason: the
-        // last thing to touch the bytes is the thing that makes them bobapp's.
-        anomaly::rewrite_log(&out, &message(pool, LOG_TYPE)?)
+        Ok(out)
     }
 
     /// True if nothing was ever recorded, so the caller can skip the write.
