@@ -576,3 +576,53 @@ fn an_unknown_length_delimited_blob_can_be_read_as_a_packed_run() {
         app.document_lines()
     );
 }
+
+/// The budget makes a preview *narrower* than the row it stands in for.
+/// Spec 0185 G4 anticipated only the other direction — a mismatched
+/// candidate rendering wide — but an overlay narrows the visible content
+/// exactly as a fold or an override splice does, and owes the same
+/// `clamp_pan_offset`.
+///
+/// Without it, `$` on a long blob line and then `t` left `pan_offset`
+/// past the right edge of every row on screen: `pan_spans` yielded
+/// nothing for any of them and the main pane went blank.
+#[test]
+fn a_budgeted_preview_clamps_a_pan_made_for_the_untruncated_row() {
+    let (mut app, blob_idx) = preview_budget_fixture_bytes(&vec![b'z'; 400]);
+    app.override_preview_byte_budget = 16;
+    // A pane the untruncated line does not fit in, which is what gives
+    // `$` something to pan.
+    app.main_area = ratatui::layout::Rect::new(0, 0, 40, 8);
+    app.cursor = blob_idx;
+    // The fixture pre-arms `override_target`; `t` would read that as
+    // "already open" and close the pane instead.
+    app.override_target = None;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('$'), KeyModifiers::NONE));
+    let panned = app.pan_offset;
+    assert!(panned > 0, "the caret at a long line's end pans right");
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert!(
+        app.preview_overlay.is_some(),
+        "`t` must put a preview up: {}",
+        app.message
+    );
+    assert!(
+        app.max_visible_line_len() < panned,
+        "the fixture must actually narrow: the budgeted preview's widest \
+         row has to fall short of where the reader had panned",
+    );
+
+    let bound = app.max_pan_offset();
+    assert!(
+        app.pan_offset <= bound,
+        "the pan must be clamped to what the overlay shows ({} > {bound})",
+        app.pan_offset,
+    );
+    assert!(
+        app.max_visible_line_len() > app.pan_offset,
+        "so some row still has a character left of the pan — the pane is \
+         not blank",
+    );
+}

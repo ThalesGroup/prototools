@@ -799,6 +799,14 @@ impl App {
                 self.message = format!("cannot preview override: {e}");
             }
         }
+        // Substituting the overlay narrows the visible content exactly
+        // as a fold or a splice does, and owes the same clamp. A
+        // preview is routinely far narrower than the row it stands in
+        // for — spec 0174's byte budget cuts its interior — so a reader
+        // who had panned right (`$` on a flat blob line puts
+        // `pan_offset` in the tens of thousands) was left panned past
+        // the end of every row on screen, and the pane went blank.
+        self.clamp_pan_offset();
     }
 
     /// Find the next `override_candidates` entry whose FQDN contains
