@@ -310,6 +310,70 @@ fn score_still_honors_no_expand_any() {
     );
 }
 
+// ── Spec 0314: the CLI scores a whole file ───────────────────────────────────
+
+/// A capture cut mid-token is scored, not vetoed, and says that it was cut.
+///
+/// Driven through the binary for the same reason as the test above: the three
+/// `ScoringOpts` literals use `..Default::default()`, so a field that stops
+/// being wired up takes its default silently rather than failing to compile,
+/// and `ScoringOpts::default()` has `end_undeclared: false`.
+///
+/// `score --type` rather than `list-schemas`, so the assertion does not depend
+/// on which of the well-known types happens to rank first; `list-schemas` is
+/// checked only for being non-empty, which is the half of the defect the
+/// reader actually met.
+#[test]
+#[cfg(feature = "wkt-db")]
+fn a_cut_capture_is_scored_and_says_so() {
+    // `google.protobuf.Option { name: "xyz" }`, then a second field whose
+    // length prefix claims 50 bytes and delivers two.
+    let intact: &[u8] = &[0x0a, 0x03, b'x', b'y', b'z'];
+    let cut: &[u8] = &[0x0a, 0x03, b'x', b'y', b'z', 0x12, 0x32, 0x0a, 0x2c];
+
+    let run = |args: &[&str], payload: &[u8]| -> String {
+        let out = prototext_cmd()
+            .args(args)
+            .arg("--assume-binary")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to spawn prototext")
+            .wait_with_output_and_stdin(payload);
+        assert!(
+            out.status.success(),
+            "prototext {:?} failed:\n{}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).expect("output is UTF-8")
+    };
+
+    let score = ["score", "--type", "google.protobuf.Option"];
+    let cut_score = run(&score, cut);
+    assert!(
+        cut_score.contains("truncated: true"),
+        "a cut capture must score and report the cut, got:\n{cut_score}"
+    );
+    assert!(
+        !cut_score.contains("vetoed"),
+        "a cut capture must not be vetoed, got:\n{cut_score}"
+    );
+
+    let intact_score = run(&score, intact);
+    assert!(
+        intact_score.contains("truncated: false"),
+        "an intact capture must report no cut, got:\n{intact_score}"
+    );
+
+    let listed = run(&["list-schemas", "--top", "1", "--detailed-score"], cut);
+    assert!(
+        listed.contains("- type: "),
+        "a cut capture must offer at least one candidate, got:\n{listed}"
+    );
+}
+
 // ── §3.2 No crash without annotations (all fixtures) ─────────────────────────
 
 /// CLI: `prototext decode --no-annotations` must exit 0 for every fixture.

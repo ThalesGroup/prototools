@@ -165,6 +165,10 @@ pub struct InferredType {
     pub out_of_range: u64,
     pub non_canonical: u64,
     pub mismatches: u64,
+    /// The input ran out of bytes part-way through a token (spec 0310).  Not
+    /// one of the counters: everything above describes the bytes that did
+    /// arrive, and this says there were fewer of them than the writer sent.
+    pub truncated: bool,
 }
 
 /// Outcome of attempting to infer the message type of a protobuf blob.
@@ -230,6 +234,7 @@ pub fn infer_type(
                 out_of_range: r.out_of_range,
                 non_canonical: r.non_canonical,
                 mismatches: r.mismatches,
+                truncated: r.truncated,
             })
             .collect();
         ambiguous.sort_by(|a, b| a.fqdn.cmp(&b.fqdn));
@@ -246,6 +251,7 @@ pub fn infer_type(
         out_of_range: winner.out_of_range,
         non_canonical: winner.non_canonical,
         mismatches: winner.mismatches,
+        truncated: winner.truncated,
     }))
 }
 
@@ -256,9 +262,16 @@ fn inferred_header(inferred: &InferredType) -> String {
     } else {
         inferred.score.to_string()
     };
+    // `truncated` appears only when set: it is a bool, not a counter, and a
+    // "truncated: false" on the head of every decode would be noise.
+    let cut = if inferred.truncated {
+        ", truncated"
+    } else {
+        ""
+    };
     format!(
         "# Type: {}\n# Score: {}  (matched: {}, unknown: {}, out_of_range: {}, \
-         non_canonical: {}, mismatches: {})\n\n",
+         non_canonical: {}, mismatches: {}{})\n\n",
         inferred.fqdn,
         score_str,
         inferred.matches,
@@ -266,6 +279,7 @@ fn inferred_header(inferred: &InferredType) -> String {
         inferred.out_of_range,
         inferred.non_canonical,
         inferred.mismatches,
+        cut,
     )
 }
 
@@ -281,6 +295,7 @@ fn write_type_entry(w: &mut dyn Write, indent: &str, t: &InferredType, detailed_
         let _ = writeln!(w, "{indent}  out_of_range: {}", t.out_of_range);
         let _ = writeln!(w, "{indent}  non_canonical: {}", t.non_canonical);
         let _ = writeln!(w, "{indent}  mismatches: {}", t.mismatches);
+        let _ = writeln!(w, "{indent}  truncated: {}", t.truncated);
     }
 }
 
@@ -382,6 +397,7 @@ pub fn list_schemas_one(
             out_of_range: r.out_of_range,
             non_canonical: r.non_canonical,
             mismatches: r.mismatches,
+            truncated: r.truncated,
         })
         .collect();
 
@@ -435,6 +451,8 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
             let output_root = cli.output_root.clone();
             let scoring_opts = ScoringOpts {
                 expand_any: !no_expand_any,
+                // Every buffer this CLI scores is a whole input (spec 0314).
+                end_undeclared: true,
                 ..Default::default()
             };
 
@@ -513,6 +531,8 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
             })?;
             let scoring_opts = ScoringOpts {
                 expand_any: !no_expand_any,
+                // Every buffer this CLI scores is a whole input (spec 0314).
+                end_undeclared: true,
                 ..Default::default()
             };
             run_list_schemas(
@@ -544,6 +564,8 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
             })?;
             let scoring_opts = ScoringOpts {
                 expand_any: !no_expand_any,
+                // Every buffer this CLI scores is a whole input (spec 0314).
+                end_undeclared: true,
                 ..Default::default()
             };
             run_score(
@@ -1112,6 +1134,10 @@ fn run_score(
         out_of_range: u64,
         non_canonical: u64,
         mismatches: u64,
+        /// The input ran out of bytes part-way through a token (spec 0310).
+        /// Last, because it is the mildest charge and it is not a counter:
+        /// the counters above describe only the bytes that arrived.
+        truncated: bool,
     }
 
     #[derive(Serialize)]
@@ -1153,6 +1179,7 @@ fn run_score(
                 out_of_range: result.out_of_range,
                 non_canonical: result.non_canonical,
                 mismatches: result.mismatches,
+                truncated: result.truncated,
             },
         ))
     };
