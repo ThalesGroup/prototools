@@ -683,6 +683,19 @@ const YAML_FORMAT_VERSION: u32 = 1;
 struct YamlFile<E> {
     version: u32,
     target: YamlTarget,
+    /// The FQDNs `:override --as-new` declared (spec 0315 S10), which
+    /// `:restore` must re-declare before it applies the entries naming
+    /// them — otherwise every one of those entries restores into
+    /// `type '<FQDN>' not found in descriptor set`.
+    ///
+    /// `default` so that a file written before this key existed still
+    /// loads, and `skip_serializing_if` so that a session which declared
+    /// nothing still writes exactly the file it used to. The version is
+    /// not bumped: the key is additive, and a build that ignores it
+    /// fails loudly, per node, which is the failure mode the version
+    /// check exists to distinguish itself from.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    created_types: Vec<String>,
     overrides: Vec<E>,
 }
 
@@ -775,7 +788,16 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 
 impl OverrideCollection {
     /// Serializes the collection to the spec 0117 §4 YAML format.
-    pub fn to_yaml(&self, blob_sha256: String, descriptor_set_sha256: String) -> String {
+    ///
+    /// `created_types` is not the collection's own (spec 0315 S10) — it
+    /// belongs to the `DescriptorContext`, and is passed through here
+    /// because this is the one function that writes the file.
+    pub fn to_yaml(
+        &self,
+        blob_sha256: String,
+        descriptor_set_sha256: String,
+        created_types: Vec<String>,
+    ) -> String {
         let overrides = self
             .entries
             .iter()
@@ -815,6 +837,7 @@ impl OverrideCollection {
                 blob_sha256,
                 descriptor_set_sha256,
             },
+            created_types,
             overrides,
         };
         serde_norway::to_string(&file).expect("OverrideCollection YAML serialization cannot fail")
@@ -823,7 +846,9 @@ impl OverrideCollection {
     /// Parses the spec 0117 §4 YAML format. The entries are re-sorted
     /// here, so the file's own order need not be trusted. Also returns
     /// the recorded target hashes, for the caller to compare against the
-    /// currently-loaded blob/descriptor set.
+    /// currently-loaded blob/descriptor set, and the declared types
+    /// (spec 0315 S10), which the caller must register before it applies
+    /// any entry.
     ///
     /// The parse is in two stages — the envelope, then each entry on its
     /// own — for the sake of the diagnostic. `YamlEntry` is `untagged`,
@@ -832,7 +857,7 @@ impl OverrideCollection {
     /// no clue which of the entries was at fault; in a file of a hundred
     /// entries that is not something a user can act on. Converting one
     /// `Value` at a time costs the position information back.
-    pub fn from_yaml(text: &str) -> Result<(Self, YamlTarget), String> {
+    pub fn from_yaml(text: &str) -> Result<(Self, YamlTarget, Vec<String>), String> {
         let file: YamlFile<serde_norway::Value> = serde_norway::from_str(text).map_err(|e| {
             format!(
                 "malformed overrides file (expected `version`, `target` and a \
@@ -901,7 +926,7 @@ impl OverrideCollection {
         }
         let mut collection = OverrideCollection { entries };
         collection.sort();
-        Ok((collection, file.target))
+        Ok((collection, file.target, file.created_types))
     }
 }
 
@@ -1283,8 +1308,8 @@ mod tests {
             Some("pkg.Other".to_string()),
         );
 
-        let yaml = collection.to_yaml("blobhash".to_string(), "deschash".to_string());
-        let (restored, target) = OverrideCollection::from_yaml(&yaml).unwrap();
+        let yaml = collection.to_yaml("blobhash".to_string(), "deschash".to_string(), Vec::new());
+        let (restored, target, _) = OverrideCollection::from_yaml(&yaml).unwrap();
         assert_eq!(target.blob_sha256, "blobhash");
         assert_eq!(target.descriptor_set_sha256, "deschash");
         assert_eq!(restored.entries(), collection.entries());
@@ -1300,7 +1325,7 @@ mod tests {
             None,
         );
         collection.toggle_active(0); // deactivate it
-        let yaml = collection.to_yaml("b".to_string(), "d".to_string());
+        let yaml = collection.to_yaml("b".to_string(), "d".to_string(), Vec::new());
         assert!(!yaml.contains("active"));
     }
 
@@ -1344,7 +1369,7 @@ overrides:
     name: label
     active: true
 ";
-        let (collection, _) = OverrideCollection::from_yaml(yaml).expect("must parse");
+        let (collection, ..) = OverrideCollection::from_yaml(yaml).expect("must parse");
         assert_eq!(collection.entries().len(), 1);
         assert_eq!(collection.entries()[0].r#type, None);
         assert_eq!(collection.entries()[0].name.as_deref(), Some("label"));
@@ -1395,7 +1420,7 @@ overrides:
     type: pkg.C
     active: true
 ";
-        let (mut collection, _) = OverrideCollection::from_yaml(yaml).expect("must parse");
+        let (mut collection, ..) = OverrideCollection::from_yaml(yaml).expect("must parse");
         assert_eq!(collection.enforce_single_active(), 1);
         let active: Vec<_> = collection
             .entries()
@@ -1422,7 +1447,7 @@ overrides:
     type: pkg.B
     active: true
 ";
-        let (mut collection, _) = OverrideCollection::from_yaml(yaml).expect("must parse");
+        let (mut collection, ..) = OverrideCollection::from_yaml(yaml).expect("must parse");
         assert_eq!(collection.enforce_single_active(), 0);
         assert!(!collection.entries()[0].active);
         assert!(collection.entries()[1].active);

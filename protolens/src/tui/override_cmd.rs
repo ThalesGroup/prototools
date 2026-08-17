@@ -44,6 +44,16 @@ pub(super) struct OverrideArgs {
     pub(super) origin: OverrideOrigin,
     pub(super) r#type: Option<String>,
     pub(super) name: Option<String>,
+    /// Whether `r#type` arrived as `--as-new` (spec 0315 S1) and must
+    /// therefore be declared before it is applied.
+    ///
+    /// A `bool` beside `r#type`, not a second type field: `--as-new foo`
+    /// and `--as foo` store the *identical* entry, because declaring is
+    /// a property of the invocation and not of the entry. That is what
+    /// makes every replay path — re-render, undo, `:restore`, a scripted
+    /// step — correct at once: they all re-apply entries, and none of
+    /// them re-declares anything.
+    pub(super) declare: bool,
 }
 
 /// Parse `<origin>` and the two flags, in any order (spec 0237 S2).
@@ -55,14 +65,27 @@ pub(super) fn parse_override(args: &[&str]) -> Result<OverrideArgs, String> {
     let mut origin: Option<OverrideOrigin> = None;
     let mut r#type: Option<String> = None;
     let mut name: Option<String> = None;
+    let mut declare = false;
+    let mut saw_as = false;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match *arg {
-            "--as" => {
+            "--as" | "--as-new" => {
+                let is_new = *arg == "--as-new";
+                // Only the *pair* is refused, not a repeated flag: a
+                // half-edited line that says `--as` twice still means
+                // what its last one says, as it always did.
+                if (saw_as || declare) && declare != is_new {
+                    return Err(
+                        "override: --as and --as-new are alternatives — name only one".to_string(),
+                    );
+                }
                 let value = args
                     .next()
-                    .ok_or_else(|| "override: --as needs a value".to_string())?;
+                    .ok_or_else(|| format!("override: {arg} needs a value"))?;
                 r#type = Some((*value).to_string());
+                declare = is_new;
+                saw_as = !is_new;
             }
             "--field-name" => {
                 let value = args
@@ -84,6 +107,7 @@ pub(super) fn parse_override(args: &[&str]) -> Result<OverrideArgs, String> {
         origin,
         r#type,
         name,
+        declare,
     })
 }
 
@@ -299,6 +323,29 @@ impl App {
         };
         let origin = parsed.origin;
         let subject = self.origin_subject_node(&origin);
+
+        // Spec 0315 S2: before validation and before `activate`, so the
+        // type exists by the time `render_overrides` resolves it. A
+        // re-declaration is not an error (S3) — it only earns a note on
+        // the message this command ends with.
+        let mut note = String::new();
+        if parsed.declare {
+            let fqdn = parsed
+                .r#type
+                .clone()
+                .expect("parse_override only sets `declare` alongside a type");
+            match self.ctx.declare_type(&fqdn) {
+                Ok(decode::Declared::Fresh) => {}
+                Ok(decode::Declared::Reused) => {
+                    note = format!("{fqdn} already declared — reusing it; ");
+                }
+                Err(e) => {
+                    self.message = e;
+                    return;
+                }
+            }
+        }
+
         if let Err(e) = self.validate_override_target(subject, parsed.r#type.as_deref()) {
             self.message = e;
             return;
@@ -344,7 +391,7 @@ impl App {
         let nodes = self.manage_affected_nodes(&origin).len();
         let as_what = parsed.r#type.as_deref().unwrap_or("raw");
         let plural = if nodes == 1 { "node" } else { "nodes" };
-        self.message = format!("{} as {as_what} — {nodes} {plural}", origin.label());
+        self.message = format!("{note}{} as {as_what} — {nodes} {plural}", origin.label());
     }
 
     /// The index of the entry with exactly this origin and type — the
@@ -411,6 +458,11 @@ impl App {
         match before.split_whitespace().next_back() {
             Some("--field-name") => self.complete_field_name(token_start, token, before),
             Some("--as") => self.complete_override_type(token_start, token, before),
+            // Spec 0315 S7: `--as-new` completes nothing. It declares a
+            // name; `--as` is where an existing one is picked, and
+            // offering the existing ones here would offer exactly the
+            // names S4 refuses.
+            Some("--as-new") => {}
             _ => self.complete_override_origin(token_start, token),
         }
     }

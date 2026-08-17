@@ -169,13 +169,12 @@ fn yaml_round_trips_auto_flag_and_defaults_false_when_absent() {
         },
         Some("pkg.Type".to_string()),
     );
-    let yaml = collection.to_yaml("blobsha".to_string(), "descsha".to_string());
+    let yaml = collection.to_yaml("blobsha".to_string(), "descsha".to_string(), Vec::new());
     assert!(
         yaml.contains("auto: true"),
         "auto: true must round-trip: {yaml}"
     );
-    let (restored, _target) =
-        override_pane::OverrideCollection::from_yaml(&yaml).expect("must parse");
+    let (restored, ..) = override_pane::OverrideCollection::from_yaml(&yaml).expect("must parse");
     assert!(
         restored.entries()[0].auto,
         "restored entry must keep auto: true"
@@ -185,7 +184,7 @@ fn yaml_round_trips_auto_flag_and_defaults_false_when_absent() {
     let legacy_yaml = "version: 1\n\
          target:\n  blob_sha256: blobsha\n  descriptor_set_sha256: descsha\n\
          overrides:\n  - path: /\n    type: pkg.Type\n    active: true\n";
-    let (legacy, _target) =
+    let (legacy, ..) =
         override_pane::OverrideCollection::from_yaml(legacy_yaml).expect("must parse legacy");
     assert!(
         !legacy.entries()[0].auto,
@@ -861,7 +860,7 @@ fn restore_overrides_warns_on_hash_mismatch_without_blocking() {
     let (mut app, _, _) = type_as_fixture();
     let yaml = app
         .overrides
-        .to_yaml("deadbeef".to_string(), "deadbeef".to_string());
+        .to_yaml("deadbeef".to_string(), "deadbeef".to_string(), Vec::new());
 
     let file = TempFile::written("restore-hash-mismatch.yaml", yaml.as_bytes());
 

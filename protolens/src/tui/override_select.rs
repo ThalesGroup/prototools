@@ -231,10 +231,18 @@ impl App {
     /// `Lexicographic` arm and by the cold-cache placeholder, so the
     /// order cannot drift between the two. Does not touch
     /// `override_sort`.
+    ///
+    /// Spec 0315 S8: the declared types follow the primitives, in
+    /// creation order, and appear in *this* list alone. A declared type
+    /// has no score and cannot acquire one — the scoring database was
+    /// built at startup from the descriptor set, which has never heard
+    /// of it — so listing it among inferred candidates would
+    /// misrepresent it as having been scored and lost.
     fn lexico_candidates(&self) -> Vec<(String, Option<i64>)> {
         std::iter::once(decode::NONE_KEYWORD.to_string())
             .chain(std::iter::once(decode::MESSAGE_KEYWORD.to_string()))
             .chain(decode::ALL_PRIMITIVE_KEYWORDS.iter().map(|s| s.to_string()))
+            .chain(self.ctx.created_types().iter().cloned())
             .chain(self.all_type_fqdns.iter().cloned())
             .map(|f| (f, None))
             .collect()

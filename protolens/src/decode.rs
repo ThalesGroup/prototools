@@ -97,6 +97,16 @@ pub struct DescriptorContext {
     source: Option<PathBuf>,
     /// Set when the on-demand path was declined; see `EagerFallback`.
     pub fallback: Option<EagerFallback>,
+    /// The FQDNs the reader declared with `:override --as-new` (spec
+    /// 0315), in creation order — which is the order the selection pane
+    /// lists them in, and the order `:save` writes them.
+    ///
+    /// A `Vec` rather than a set: the list is short (one per anchor the
+    /// reader named by hand), and the pool is already the authority on
+    /// whether a name is taken. What this adds is *provenance* — which
+    /// of the pool's messages the reader made up — which the pool cannot
+    /// answer.
+    created_types: Vec<String>,
 }
 
 /// Keeps the extension loader (spec 0248) installed, and keeps the context it
@@ -240,6 +250,7 @@ impl DescriptorContext {
                         graph,
                         source: Some(path.to_path_buf()),
                         fallback: None,
+                        created_types: Vec::new(),
                     })
                 }
                 Err(e) => Some(format!(
@@ -260,6 +271,7 @@ impl DescriptorContext {
             graph,
             source: Some(path.to_path_buf()),
             fallback: fallback.map(|message| EagerFallback { message }),
+            created_types: Vec::new(),
         })
     }
 
@@ -308,6 +320,7 @@ impl DescriptorContext {
             graph: None,
             source: None,
             fallback: None,
+            created_types: Vec::new(),
         }
     }
 
@@ -1385,15 +1398,126 @@ impl DescriptorContext {
         }
         register_synthetic(
             self.pool_mut(),
-            SCHEMA_FREE_MESSAGE_FQDN,
-            MESSAGE_KEYWORD,
-            "protolens_internal/message.proto",
+            SyntheticName {
+                package: Some("protolens_internal"),
+                full_name: SCHEMA_FREE_MESSAGE_FQDN,
+                short_name: MESSAGE_KEYWORD,
+                file_name: "protolens_internal/message.proto",
+            },
             Vec::new(),
             Vec::new(),
             "schema-free message",
         )
         .ok()
     }
+
+    /// The FQDNs declared with `--as-new` this session (spec 0315 S6),
+    /// in creation order.
+    pub(crate) fn created_types(&self) -> &[String] {
+        &self.created_types
+    }
+
+    /// Whether `fqdn` names a type this session declared, as opposed to
+    /// one the descriptor set supplied. The question restore-time
+    /// validation asks (spec 0315 S13): an `fqdn:field` origin under a
+    /// declared anchor names a field no descriptor declares, and must
+    /// still resolve.
+    pub(crate) fn is_declared_type(&self, fqdn: &str) -> bool {
+        self.created_types.iter().any(|t| t == fqdn)
+    }
+
+    /// Declare `fqdn` as a zero-field message the descriptor set does
+    /// not contain (spec 0315 S1–S6), so that it can anchor `fqdn:field`
+    /// overrides.
+    ///
+    /// The shape is spec 0299's exactly — no fields, so every field met
+    /// inside renders as an unknown — but under the reader's own name
+    /// rather than the one shared internal one. That name is the whole
+    /// feature: `protolens_internal.message:3` would claim field 3 of
+    /// every node anyone ever overrode to `message`, which is why spec
+    /// 0309 refuses `fqdn:field` under one.
+    ///
+    /// Idempotent (S3): re-declaring is `Declared::Reused`, not an
+    /// error. There is no content for a second declaration to conflict
+    /// with, and scripted steps (spec 0271) replay.
+    pub(crate) fn declare_type(&mut self, fqdn: &str) -> Result<Declared, String> {
+        if self.is_declared_type(fqdn) {
+            return Ok(Declared::Reused);
+        }
+        if !is_valid_fqdn(fqdn) {
+            return Err(format!(
+                "override: '{fqdn}' is not a valid type name — expected \
+                 dot-separated identifiers"
+            ));
+        }
+        // Before the pool lookup: `wrapper_target_for` asks the pool
+        // first and only then checks its keyword rungs, deliberately, so
+        // a declared type named `bool` would silently redefine `--as
+        // bool` for the rest of the session.
+        if is_override_keyword(fqdn) || fqdn == NONE_KEYWORD {
+            return Err(format!(
+                "override: '{fqdn}' is an override keyword — pick another name"
+            ));
+        }
+        if fqdn.starts_with("protolens_internal.") {
+            return Err(
+                "override: the protolens_internal package is reserved for protolens' own \
+                 synthetic types"
+                    .to_string(),
+            );
+        }
+        if self.message(fqdn).is_some() {
+            return Err(format!("override: '{fqdn}' already exists — use --as"));
+        }
+        let (package, short_name) = match fqdn.rsplit_once('.') {
+            Some((package, short_name)) => (Some(package), short_name),
+            None => (None, fqdn),
+        };
+        register_synthetic(
+            self.pool_mut(),
+            SyntheticName {
+                package,
+                full_name: fqdn,
+                short_name,
+                // Unique per declared type — two declarations in one
+                // package must not share a file — and, at the same time,
+                // the marker that keeps provenance recoverable from the
+                // pool alone.
+                file_name: &format!("protolens_new/{fqdn}.proto"),
+            },
+            Vec::new(),
+            Vec::new(),
+            "declared",
+        )
+        .map_err(|e| format!("override: {e}"))?;
+        self.created_types.push(fqdn.to_string());
+        Ok(Declared::Fresh)
+    }
+}
+
+/// What [`DescriptorContext::declare_type`] did — the two outcomes that
+/// are both success (spec 0315 S3), distinguished only so the caller can
+/// say which one happened.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Declared {
+    Fresh,
+    Reused,
+}
+
+/// Whether `name` is a dot-separated sequence of protobuf identifiers.
+///
+/// Checked before `add_file_descriptor_proto` gets the name, because its
+/// own refusal describes a malformed file rather than a malformed name,
+/// and the reader typed the name.
+fn is_valid_fqdn(name: &str) -> bool {
+    !name.is_empty()
+        && name.split('.').all(|seg| {
+            let mut chars = seg.chars();
+            chars
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
 }
 
 /// Build (or reuse, if already registered) a synthetic one-field message
@@ -1492,22 +1616,44 @@ pub(crate) fn register_wrapper(
     drop(target);
     register_synthetic(
         pool,
-        &full_name,
-        short_name,
-        &format!("protolens_internal/{short_name}.proto"),
+        SyntheticName {
+            package: Some("protolens_internal"),
+            full_name: &full_name,
+            short_name,
+            file_name: &format!("protolens_internal/{short_name}.proto"),
+        },
         dependency,
         vec![field],
         "wrapper",
     )
 }
 
-/// Registers a one-message file under `protolens_internal` holding
-/// `fields` as `full_name`, and hands the new descriptor back.
+/// Where a synthetic message goes and what it is called there.
 ///
-/// `file_name` is a parameter rather than derived from `short_name`:
-/// the MessageSet item's message is `Item` but its file is
-/// `message_set_item.proto`, and renaming either would change a pool
-/// key.
+/// One value rather than four `&str` parameters in a row: none of them
+/// means anything without the others, and none can be derived from the
+/// rest. `full_name` in particular is the pool key, not `package` joined
+/// to `short_name` — protobuf's own name resolution puts a nested
+/// message's parents in between — so the caller states it.
+struct SyntheticName<'a> {
+    /// The file's `package`, or `None` for a single-segment name. A
+    /// parameter rather than the fixed `protolens_internal` it used to
+    /// be, because spec 0315's declared types live in whatever package
+    /// the reader's FQDN names.
+    package: Option<&'a str>,
+    /// What `get_message_by_name` will be asked for once the file is in.
+    full_name: &'a str,
+    /// The `DescriptorProto`'s own `name`.
+    short_name: &'a str,
+    /// The file's `name`. Not derived from `short_name`: the MessageSet
+    /// item's message is `Item` but its file is
+    /// `message_set_item.proto`, and renaming either would change a
+    /// pool key.
+    file_name: &'a str,
+}
+
+/// Registers a one-message file holding `fields` under `name`, and hands
+/// the new descriptor back.
 ///
 /// The "already registered?" early return stays with each caller. It is
 /// what keeps a repeat wrapper off the mutating path entirely — see
@@ -1515,20 +1661,18 @@ pub(crate) fn register_wrapper(
 /// here would mean building the field list before finding out.
 fn register_synthetic(
     pool: &mut DescriptorPool,
-    full_name: &str,
-    short_name: &str,
-    file_name: &str,
+    name: SyntheticName<'_>,
     dependency: Vec<String>,
     fields: Vec<FieldDescriptorProto>,
     what: &str,
 ) -> Result<MessageDescriptor, DecodeError> {
     let file = FileDescriptorProto {
-        name: Some(file_name.to_string()),
-        package: Some("protolens_internal".to_string()),
+        name: Some(name.file_name.to_string()),
+        package: name.package.map(str::to_string),
         dependency,
         syntax: Some("proto2".to_string()),
         message_type: vec![DescriptorProto {
-            name: Some(short_name.to_string()),
+            name: Some(name.short_name.to_string()),
             field: fields,
             ..Default::default()
         }],
@@ -1536,7 +1680,7 @@ fn register_synthetic(
     };
     pool.add_file_descriptor_proto(file)
         .map_err(|e| DecodeError::Schema(format!("registering {what} descriptor: {e}")))?;
-    pool.get_message_by_name(full_name)
+    pool.get_message_by_name(name.full_name)
         .ok_or_else(|| DecodeError::Schema(format!("{what} descriptor registered but not found")))
 }
 
@@ -1804,9 +1948,12 @@ pub(crate) fn register_message_set_item(
     };
     register_synthetic(
         pool,
-        MESSAGE_SET_ITEM_FQDN,
-        "Item",
-        "protolens_internal/message_set_item.proto",
+        SyntheticName {
+            package: Some("protolens_internal"),
+            full_name: MESSAGE_SET_ITEM_FQDN,
+            short_name: "Item",
+            file_name: "protolens_internal/message_set_item.proto",
+        },
         Vec::new(),
         vec![type_id_field, message_field],
         "MessageSetItem",

@@ -512,3 +512,332 @@ fn override_completion_dispatches_on_the_token() {
         format!("override {path} --field-name x --as test.Inner")
     );
 }
+
+// ── spec 0315: `--as-new`, the reader's own type name ────────────────
+
+/// `node`'s rendered subtree, minus its header row — the row that
+/// carries the `#@` type annotation, and hence the one row a declared
+/// type is *supposed* to spell differently from `message`.
+fn subtree_body(app: &App, node: usize) -> Vec<String> {
+    let start = app.absolute_start(node);
+    (1..app.tree[node].lines_total)
+        .map(|k| {
+            let pos = app
+                .line_pos(start + k as usize)
+                .expect("line is inside the subtree");
+            app.line_text(pos).into_owned()
+        })
+        .collect()
+}
+
+/// Spec 0315 G1/S1/S2: `--as-new` declares a type the descriptor set
+/// does not have and applies it in the same breath, and the entry it
+/// stores is indistinguishable from an `--as` one — declaring is a
+/// property of the invocation.
+///
+/// The rendering assertion is the substance: a declared type is spec
+/// 0299's zero-field message under the reader's own name, so the bytes
+/// under it read exactly as they do under `--as message`. Compared
+/// against `message`'s own render rather than a hand-copied
+/// expectation, so the two cannot drift.
+#[test]
+fn as_new_declares_a_type_the_pool_did_not_have() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.cursor = inner_idx;
+    let path = app.positional_path(inner_idx);
+
+    app.run_command(&format!("override {path} --as message"));
+    let under_keyword = subtree_body(&app, inner_idx);
+
+    app.run_command(&format!("override {path} --as-new mine.Foo"));
+
+    let entry = entry_at(&app, &OverrideOrigin::Path { path: path.clone() });
+    assert_eq!(
+        entry.r#type.as_deref(),
+        Some("mine.Foo"),
+        "the entry stores the bare FQDN, exactly as `--as mine.Foo` would"
+    );
+    assert_eq!(type_name_of(&app, inner_idx), Some("mine.Foo"));
+    assert_eq!(app.ctx.created_types(), ["mine.Foo".to_string()]);
+    assert_eq!(
+        subtree_body(&app, inner_idx),
+        under_keyword,
+        "a declared type is `message` with a name on it"
+    );
+}
+
+/// Spec 0315 G3/S3: re-declaring is not an error. It is what lets a
+/// scripted step (spec 0271) be stepped over twice, and it is safe
+/// because N1 makes every declaration the identical zero-field message
+/// — there is no content for a second one to conflict with.
+#[test]
+fn as_new_twice_is_not_an_error() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.cursor = inner_idx;
+    let path = app.positional_path(inner_idx);
+
+    app.run_command(&format!("override {path} --as-new mine.Foo"));
+    assert!(
+        !app.message.contains("already"),
+        "the first declaration says nothing about reuse: {}",
+        app.message
+    );
+
+    app.run_command(&format!("override {path} --as-new mine.Foo"));
+    assert!(
+        app.message
+            .contains("mine.Foo already declared — reusing it"),
+        "unexpected message: {}",
+        app.message
+    );
+    assert!(
+        app.message.contains("as mine.Foo — 1 node"),
+        "the override itself still reports its blast radius: {}",
+        app.message
+    );
+    assert_eq!(
+        app.ctx.created_types(),
+        ["mine.Foo".to_string()],
+        "one registration, not two"
+    );
+}
+
+/// Spec 0315 S4.1 and G4's other direction: the reader cannot silently
+/// shadow a type the descriptor set already publishes. Refused, and the
+/// refusal names the flag that does what they meant.
+#[test]
+fn as_new_refuses_a_real_type() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.cursor = inner_idx;
+    let path = app.positional_path(inner_idx);
+
+    app.run_command(&format!("override {path} --as-new test.Inner"));
+    assert!(
+        app.message.contains("'test.Inner' already exists") && app.message.contains("--as"),
+        "unexpected message: {}",
+        app.message
+    );
+    assert!(app.ctx.created_types().is_empty());
+}
+
+/// Spec 0315 S4.2/S4.3/S4.4: three names `--as-new` will not take.
+///
+/// The keyword refusal is the load-bearing one. `wrapper_target_for`
+/// asks the pool *before* it checks its keyword rungs — deliberately,
+/// so that a real message named `bool` resolves as a message — so a
+/// declared `bool` would silently redefine `--as bool` for the rest of
+/// the session. Asserted by using `--as bool` afterwards.
+#[test]
+fn as_new_refuses_a_keyword_the_internal_package_and_a_non_name() {
+    let (mut app, _inner_idx, id_idx) = type_as_fixture();
+    app.cursor = id_idx;
+    let path = app.positional_path(id_idx);
+
+    for (name, expected) in [
+        ("bool", "is an override keyword"),
+        ("none", "is an override keyword"),
+        ("protolens_internal.foo", "reserved"),
+        ("mine..Foo", "not a valid type name"),
+        ("9lives", "not a valid type name"),
+    ] {
+        app.run_command(&format!("override {path} --as-new {name}"));
+        assert!(
+            app.message.contains(expected),
+            "'{name}' must be refused with '{expected}': {}",
+            app.message
+        );
+    }
+    assert!(app.ctx.created_types().is_empty());
+
+    app.run_command(&format!("override {path} --as bool"));
+    assert_eq!(
+        entry_at(&app, &OverrideOrigin::Path { path })
+            .r#type
+            .as_deref(),
+        Some("bool"),
+        "`bool` must still mean the primitive"
+    );
+}
+
+/// Spec 0315 S1: the two flags are alternatives. Naming both is a parse
+/// error, because there is no reading of it that is not a mistake —
+/// unlike a repeated `--as`, which still means what its last one says.
+#[test]
+fn as_new_and_as_are_mutually_exclusive() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.cursor = inner_idx;
+    let path = app.positional_path(inner_idx);
+    let before = app.overrides.entries().to_vec();
+
+    app.run_command(&format!(
+        "override {path} --as test.Inner --as-new mine.Foo"
+    ));
+    assert!(
+        app.message.contains("--as and --as-new are alternatives"),
+        "unexpected message: {}",
+        app.message
+    );
+    assert_eq!(app.overrides.entries(), before.as_slice());
+    assert!(app.ctx.created_types().is_empty());
+
+    // A repeated `--as` is not the same mistake and is not refused.
+    app.run_command(&format!("override {path} --as test.Outer --as test.Inner"));
+    assert_eq!(
+        entry_at(&app, &OverrideOrigin::Path { path })
+            .r#type
+            .as_deref(),
+        Some("test.Inner")
+    );
+}
+
+/// Spec 0315 G2 — the one that matters. A declared type is an ordinary
+/// FQDN to the origin machinery, so it anchors `fqdn:field`: naming one
+/// field under it covers *every* node of that shape, which is the whole
+/// reason to declare a name rather than override node by node.
+///
+/// Contrast is asserted too: the same sequence under `--as message`
+/// falls to `path:field`, because spec 0309 refuses `fqdn:field` there —
+/// all schema-free nodes share one name, so the origin would claim
+/// field 1 of every node anyone ever overrode to `message`.
+#[test]
+fn a_declared_type_anchors_an_fqdn_field_origin() {
+    let (mut app, items) = repeated_message_fixture();
+    app.cursor = items[0];
+
+    // All three `Item`s at once, so their children are three
+    // structurally identical nodes under one declared type.
+    app.run_command("override test.Outer:1 --as-new mine.Item");
+    let first = app
+        .nth_child(app.first_node, 0)
+        .expect("the document still has three items");
+    let child = app.first_child(first).expect("each item has one field");
+
+    assert_eq!(
+        app.override_origin_for_kind(child, Some("mine.Item"))
+            .expect("the ladder always lands somewhere")
+            .label(),
+        "mine.Item:1",
+        "spec 0308's widest-first default reaches fqdn:field under a declared anchor"
+    );
+
+    app.run_command("override mine.Item:1 --as int32");
+    assert!(
+        app.message.contains("mine.Item:1 as int32 — 3 nodes"),
+        "one entry must cover all three occurrences: {}",
+        app.message
+    );
+
+    // The contrast: `message` is refused the same rung.
+    app.run_command("override test.Outer:1 --as message");
+    let first = app.nth_child(app.first_node, 0).expect("still three items");
+    let child = app.first_child(first).expect("each item has one field");
+    assert_eq!(
+        app.override_origin_for_kind(child, Some(decode::MESSAGE_KEYWORD))
+            .expect("the ladder always lands somewhere")
+            .kind(),
+        OverrideKind::PathField,
+        "spec 0309: a schema-free `message` cannot anchor fqdn:field"
+    );
+}
+
+/// Spec 0315 G5/S7/S8: a declared type is visible in the two places it
+/// is useful, and in neither of the two it would misrepresent.
+///
+/// `--as-new`'s own completion offers nothing on purpose: it would
+/// offer exactly the names S4 refuses.
+#[test]
+fn declared_types_complete_and_list() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.splash = false;
+    app.cursor = inner_idx;
+    let path = app.positional_path(inner_idx);
+    app.run_command(&format!("override {path} --as-new mine.Foo"));
+
+    let line = format!("override {path} --as ");
+    assert_eq!(
+        complete(&mut app, &format!("{line}mi")),
+        format!("{line}mine.Foo")
+    );
+
+    let before = format!("override {path} --as-new mi");
+    assert_eq!(
+        complete(&mut app, &before),
+        before,
+        "--as-new completes nothing"
+    );
+
+    // `complete` leaves the command line open, and a command line takes
+    // every keystroke — including the `t` that opens the pane.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    // The pane opens on the lexicographic list, because that is the only
+    // list the node's own declared type is in (S8 — no scored list can
+    // contain it) and spec 0139 opens on the highlighted current type.
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert_eq!(app.override_sort, SortMode::Lexicographic);
+    let names: Vec<&str> = app
+        .override_candidates
+        .iter()
+        .map(|(f, _)| f.as_str())
+        .collect();
+    let declared = names
+        .iter()
+        .position(|n| *n == "mine.Foo")
+        .expect("the declared type must be listed");
+    let last_keyword = names
+        .iter()
+        .position(|n| *n == "bytes")
+        .expect("the primitives are listed");
+    let first_real = names
+        .iter()
+        .position(|n| n.starts_with("test."))
+        .expect("the descriptor set's own types are listed");
+    assert!(
+        last_keyword < declared && declared < first_real,
+        "after the keywords, before the sorted FQDNs: {names:?}"
+    );
+}
+
+/// Spec 0315 G6/S10/S13: a collection using a declared type restores
+/// into a fresh session with every entry intact.
+///
+/// The trap is `origin_resolves`, which asks the named message to
+/// *declare* the field. A declared anchor has no fields by construction,
+/// so without S13 every entry under one is dropped by
+/// `retain_resolvable` and the restore half-applies without saying so.
+#[test]
+fn save_restore_round_trips_a_declared_type() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.cursor = inner_idx;
+    let path = app.positional_path(inner_idx);
+    app.run_command(&format!("override {path} --as-new mine.Foo"));
+    app.run_command("override mine.Foo:1 --as int32 --field-name tagged");
+
+    let file = TempFile::reserved("save-restore-declared.yaml");
+    app.run_save_overrides(vec![file.as_str()]);
+    let yaml = std::fs::read_to_string(file.as_str()).expect("the save must have written");
+    assert!(
+        yaml.contains("created_types:") && yaml.contains("mine.Foo"),
+        "the declared type must be recorded: {yaml}"
+    );
+
+    // A genuinely fresh session: its own pool, which has never heard of
+    // `mine.Foo`, and its own empty registry.
+    let (mut fresh, _, _) = type_as_fixture();
+    fresh.run_restore_overrides(vec![file.as_str()]);
+    assert!(
+        !fresh.message.contains("dropped"),
+        "no entry may be dropped: {}",
+        fresh.message
+    );
+    assert_eq!(fresh.ctx.created_types(), ["mine.Foo".to_string()]);
+    let restored = entry_at(
+        &fresh,
+        &OverrideOrigin::FqdnField {
+            fqdn: "mine.Foo".to_string(),
+            field: 1,
+        },
+    );
+    assert_eq!(restored.r#type.as_deref(), Some("int32"));
+    assert_eq!(restored.name.as_deref(), Some("tagged"));
+}

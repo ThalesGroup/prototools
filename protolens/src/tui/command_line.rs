@@ -563,9 +563,14 @@ impl App {
         // `self.all_type_fqdns` for `matches`'s lifetime) so the
         // subsequent `self.replace_token`/`self.completion = ...` calls
         // below aren't blocked by a live immutable borrow of `self`.
+        // Spec 0315 S7: declared types are chained in explicitly rather
+        // than recomputing `all_type_fqdns` to include them — that list
+        // is built once, before any override exists, and that timing is
+        // the only thing keeping every synthetic wrapper out of it.
         let candidates = decode::override_keywords_for_wire_type(wire_type)
             .iter()
             .copied()
+            .chain(self.ctx.created_types().iter().map(String::as_str))
             .chain(self.all_type_fqdns.iter().map(String::as_str));
         let mut matches: Vec<String> = complete_prefix(arg_prefix, candidates)
             .into_iter()
@@ -1050,13 +1055,20 @@ impl App {
     /// needs the path to resolve to a node; `PathField` additionally
     /// needs that node to have at least one child with the given field
     /// number; `FqdnField` needs the FQDN to resolve in the descriptor
-    /// pool and that message to declare the given field number.
+    /// pool and that message to declare the given field number — unless
+    /// the FQDN is a declared type (spec 0315 S13), which by
+    /// construction declares no fields at all.
     pub(super) fn origin_resolves(&mut self, origin: &OverrideOrigin) -> bool {
         match origin {
             OverrideOrigin::Path { path } => self.resolve_path(path).is_some(),
             OverrideOrigin::PathField { path, field } => self
                 .resolve_path(path)
                 .is_some_and(|idx| self.children_with_field(idx, *field).next().is_some()),
+            // The declared-field test is right for a real type — an
+            // origin naming a field the published schema does not have
+            // is stale — and meaningless for a declared one, where the
+            // set of `fqdn:field` entries *is* the schema.
+            OverrideOrigin::FqdnField { fqdn, .. } if self.ctx.is_declared_type(fqdn) => true,
             // A restored collection names types the current render may
             // never have touched, so this JIT-loads (spec 0197 §S5).
             OverrideOrigin::FqdnField { fqdn, field } => self
@@ -1082,7 +1094,11 @@ impl App {
                 return;
             }
         };
-        let yaml = self.overrides.to_yaml(blob_sha256, descriptor_set_sha256);
+        let yaml = self.overrides.to_yaml(
+            blob_sha256,
+            descriptor_set_sha256,
+            self.ctx.created_types().to_vec(),
+        );
         match write_atomically(Path::new(&path), yaml.as_bytes()) {
             Ok(()) => self.message = format!("saved overrides to {path}"),
             Err(e) => self.message = format!("save error: {e}"),
@@ -1119,7 +1135,18 @@ impl App {
     /// mode (spec 0123 G4) treats it as a hard error.
     pub(crate) fn load_overrides(&mut self, path: &str) -> Result<OverrideLoad, String> {
         let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-        let (mut collection, target) = override_pane::OverrideCollection::from_yaml(&text)?;
+        let (mut collection, target, created_types) =
+            override_pane::OverrideCollection::from_yaml(&text)?;
+        // Spec 0315 S10/S11: before `retain_resolvable`, which is what
+        // would otherwise drop every entry naming one of these. It
+        // *refers* to the types rather than re-declaring them, so S4's
+        // already-exists refusal is not applied: if the real type has
+        // since appeared in the descriptor set, using it is the better
+        // outcome, and the descriptor-set hash mismatch below already
+        // tells the reader the set has moved.
+        for fqdn in &created_types {
+            let _ = self.ctx.declare_type(fqdn);
+        }
         let dropped = collection.retain_resolvable(|origin| self.origin_resolves(origin));
         let (blob_sha256, descriptor_set_sha256) = self.target_hashes()?;
         let mut warnings = Vec::new();

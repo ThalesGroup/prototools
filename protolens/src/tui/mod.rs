@@ -208,7 +208,7 @@ fn command_flags(cmd: &str) -> &'static [&'static str] {
             "--descriptor-prototext",
             "--prototext",
         ],
-        "override" => &["--as", "--field-name"],
+        "override" => &["--as", "--as-new", "--field-name"],
         _ => &[],
     }
 }
