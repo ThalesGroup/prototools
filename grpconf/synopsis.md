@@ -429,7 +429,7 @@ are built on stage, in one command each, out of a binary Bob sent.**
 | On screen | Built from | Size | What it can name |
 |---|---|---|---|
 | `bobapp1.desc` | `reproto -I bobapp1 --schema-db-out` | 64 816 B, 41 files | boblog's envelope, and the Routes v2 traffic. Nothing Places. One version of the Routes API, so nothing in it is ambiguous. |
-| `bobapp2.desc` | `reproto -I bobapp2 --schema-db-out` | ~127 kB, ~76 files | all of the above, **plus** the Places traffic and the leaked `google.rpc.Status` down to the key inside its `Any`. Holds *both* Routes versions, so it is ambiguous where the small one was not. |
+| `bobapp2.desc` | `reproto -I bobapp2 --schema-db-out` | 130 044 B, 77 files | all of the above, **plus** the Places traffic and the leaked `google.rpc.Status` down to the key inside its `Any`. Holds *both* Routes versions, so it is ambiguous where the small one was not. |
 | `googleapis.desc` | the repo's own googleapis corpus, as CI builds it | 25 660 332 B, 7 771 files, 58 777 types | the Google traffic — and **not** the envelope. Epilogue only. |
 
 **There is no merged set, and that is the point.** protolens takes a
@@ -477,9 +477,12 @@ google.rpc.Status` gives **3 matches, score 3**; with expansion it gives
 `google/rpc/error_details.proto` and `bobapp1` does not. *More schema,
 more the tool can say*, priced.
 
-Open time, headless, on `boblog` (20 243 B): **7 ms** under
-`bobapp1.desc`, **6 ms** under `bobapp2.desc`, **39 ms** under
-`googleapis.desc`. That is the epilogue's whole numeric content.
+Open time on `boblog` (20 243 B), `protolens … quit`, wall clock with
+process spawn included, mean of ten: **17 ms** under `bobapp1.desc`,
+**17 ms** under `bobapp2.desc`, **82 ms** under `googleapis.desc`
+(`protolens --version` alone costs 4 ms of that). That is the
+epilogue's whole numeric content: two hundred times the dictionary
+costs five times the wait, and the wait is a tenth of a second.
 
 ## The cast
 
@@ -977,14 +980,18 @@ Somebody is going to ask whether this works against a real corpus, so
 answer it before the Q&A and get two things for the price of one.
 
 **It scales.** 7 771 files, 58 777 types, 25.6 MB, indexed once. The
-same 20 KB log opens in **39 ms** against it, against 6 ms for the
-127 kB database — because startup scales with the payload, not with the
-descriptor set.
+same 20 KB log opens in **82 ms** against it, against 17 ms for the
+130 kB database — two hundred times the dictionary for five times the
+wait, because startup scales with the payload, not with the descriptor
+set.
 
 **And it reads less of the file.** The envelope goes dark: the best
 googleapis can offer for `bobapp.v1.Log` is a crowd of candidates at −2,
 because Google has never heard of Bob's app. Everything below it is
-numbered unknowns.
+numbered unknowns — the probe still walks all the way down to
+`/1/4/1/3/2/3/1`, which is the key, so the *shapes* survive intact and
+only the names are gone. That is the sharper version of the point, and
+it is free.
 
 > Two hundred times the dictionary, and it knows less about this file
 > than the one I built out of Bob's Downloads folder. More schema is not
@@ -1146,14 +1153,24 @@ a shell step in `presentation.sh`.
    field of route entry 3, lifted verbatim.
 4. **Nothing for `googleapis.desc`.** It is the corpus the repo's CI
    already builds — not made for this talk, and the better for it.
-5. **The four `.script` files and the outer step list.** `infer.script`
-   survives draft 3 largely intact. `log-partial.script` and
-   `log-full.script` were written against draft 2 and must be **rewritten
-   as `log-v1.script` and `log-v2.script`**: the first loses its vetoed
-   root and its envelope override, the second changes database and gains
-   the key. `scale.script` is new and small. `export.script` stays a
-   stub. `presentation.sh` is still written against a single `bobapp`
-   and `bobapp.desc` and must be re-pinned wholesale.
+5. ~~**The four `.script` files and the outer step list.**~~ **Done
+   2026-08-17.** `infer.script` survived draft 3 intact.
+   `log-partial.script` and `log-full.script` were deleted and rewritten
+   as `log-v1.script` (5 steps) and `log-v2.script` (18 steps, five
+   prefilled overrides, the export last); `scale.script` is new and has
+   3. `export.script` stays a stub. `presentation.sh` was re-pinned
+   wholesale onto `BOBAPP1`/`BOBAPP2`, `DESC1`/`DESC2`, `SRC1`/`SRC2`
+   and `PROTO2`, and now opens with the protoscan 41/77 gate.
+
+   Every script is re-pinned by driving the binary headlessly —
+   `protolens … script | grep 'error:'` — and every one prints nothing
+   except `log-v2.script`, which prints `no match for "val_ohb"` twice
+   and is documented in its own header as doing so. That is not drift:
+   the headless transcript never executes a prefill, so the route
+   request is still an escaped byte string at that step, and the
+   over-long varint is the one anomaly with no ASCII to anchor a search
+   on. Every other search in that file is spelled to match in *both*
+   states.
 6. **A `demo/header` title per beat**, as `demo/01-tutorial.sh` does.
 
 ## Verified so far
@@ -1179,11 +1196,10 @@ beats above are not resting on hope. Everything below was re-measured
 - **The leaked Status escalation is real and attributable**: +3 in a
   three-way tie → **+8 sole**, and `--no-expand-any` reproduces the +3
   exactly (3 matches vs 8), so the five points are demonstrably the
-  expanded `Any`. Caveat: the +8 was measured on a database built with
-  `google/rpc/error_details.proto` but *without* `bobapp/v1/log.proto`,
-  because the stale scanner described under Traps dropped the latter. A
-  single `bobapp2.desc` carrying both has not yet been built end to end.
-  Do that first, on a rebuilt `fdp_scan_lib`, before pinning beat 10.
+  expanded `Any`. Measured on the staged `bobapp2.desc` — 130 044 B,
+  77 files, carrying *both* `google/rpc/error_details.proto` and
+  `bobapp/v1/log.proto`, so the envelope and the key are named by one
+  database.
 - **The v1/v2 collision is real, and it is a tie.** On the route
   request under `bobapp2.desc`, `routes.v1.ComputeRoutesRequest` and
   `routing.v2.ComputeRoutesRequest` both score −16 and render the
@@ -1192,9 +1208,12 @@ beats above are not resting on hope. Everything below was re-measured
   strict subset.
 - **The scorer counts two anomalies unprompted** — `unknown: 1` and
   `non_canonical: 1` — on bobshark, before the file is opened.
-- **Open times on boblog, headless**: 7 ms / 6 ms / 39 ms against
-  `bobapp1.desc` / `bobapp2.desc` / `googleapis.desc`. The interactive
-  numbers will be larger; re-time on the projector.
+- **Open times on boblog**: 17 ms / 17 ms / 82 ms against
+  `bobapp1.desc` / `bobapp2.desc` / `googleapis.desc`, wall clock over
+  `protolens … quit`, mean of ten. Re-measured 2026-08-17 against the
+  rebuilt stage; an earlier draft quoted 7 / 6 / 39 ms, which no longer
+  reproduces. The interactive numbers will be larger; re-time on the
+  projector.
 
 ## Traps
 

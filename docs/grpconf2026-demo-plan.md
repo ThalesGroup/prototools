@@ -383,3 +383,52 @@ rewriting it in Go. Script mode was specified and implemented as spec
 `google.maps.routes.v1` outranks `google.maps.routing.v2` on
 bobshark's bytes. Both types are in the corpus; the collision itself
 is unmeasured, and it is now the demo's largest single risk.
+
+
+Revision — two builds of Bob's app
+----------------------------------
+
+Recorded 2026-08-17. `grpconf/synopsis.md` draft 3. The Bob and Alice
+frame above holds in full; two of its consequences do not, and one open
+item is closed.
+
+**Three artifacts became four, and the second database stopped being
+Google's.** Bob downloaded bobapp **twice** — an older build and a
+newer one — and the escalation now runs `bobapp1.desc` (41 files) →
+`bobapp2.desc` (77 files) rather than bobapp → the full corpus. Both
+databases are built on stage, one command each, out of a binary Bob
+sent. `merged.desc` was never built and is deleted from the plan:
+protolens takes a single `--descriptor-set`, so "both at once" was
+never a mode it had.
+
+What this buys is a differentiator instead of a scale demo. The bigger
+dictionary is *Bob's own second download*, so the payoff is attributable
+to something in the story rather than to a corpus the audience has to
+take on trust — and the three files bobapp2 adds are each visibly
+load-bearing: Places names the lookup traffic, Routes v1 creates the
+tie, and `google/rpc/error_details.proto` is what opens the leaked
+`google.rpc.Status` down to the API key inside its `Any`.
+
+**googleapis is demoted to a droppable epilogue.** One minute, two
+claims, no dependencies: it scales (82 ms against 17 ms for two hundred
+times the dictionary), and it reads *less* of this file, because Google
+has never heard of Bob's app. Three data points make a curve; two make
+a slogan.
+
+**The open item above is closed, and the answer was "tie".**
+`routes.v1.ComputeRoutesRequest`'s field numbers are a strict subset of
+`routing.v2`'s, so v1 can never *outrank* v2 — a tie at −16 is the
+ceiling, and both render the payload identically. That is a better beat
+than a wrong guess: the tool is not confused, and what breaks the tie is
+a `method:` string elsewhere in the file that no scoring function is
+allowed to read. The tie now lives in beat 10, under `bobapp2.desc`,
+which is why beat 8 is unambiguous and stays that way.
+
+**One more thing changed underneath the demo.** Specs 0310 and 0314
+stopped a truncated tail from vetoing every candidate, so boblog's root
+is now *named* — `bobapp.v1.Log`, +19, `truncated: true` — where draft
+2's beat 9 opened it with no type at all. The beat is stronger for it:
+"here is the answer, and here is exactly how much of the file it does
+not cover" beats "nothing can name this".
+
+The beat list is superseded again: thirteen beats, 18:20 against 20:00.

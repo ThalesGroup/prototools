@@ -4,13 +4,13 @@
 
 # Beat 11 of grpconf/synopsis.md — 1:30, the finale.
 #
-# STATUS: merged into log-full.script (synopsis open question 3).
+# STATUS: merged into log-v2.script (synopsis open question 3).
 #
 # Beat 10 and beat 11 share a session because the overrides set in beat 10
 # must still be in force for the export.  The last two steps of
-# log-full.script are the export and the round-trip narration.
+# log-v2.script are the export and the round-trip narration.
 #
-# presentation.sh invokes log-full.script; beat 11's shell commands
+# presentation.sh invokes log-v2.script; beat 11's shell commands
 # (prototext encode + cmp) follow it as separate eval'd lines.
 #
 # If the sessions are ever split, move these steps here:
@@ -44,16 +44,16 @@
 #       unfold: [/]
 #       node: /
 
-title: Byte-exact (merged — see log-full.script)
+title: Byte-exact (merged — see log-v2.script)
 
 steps:
   - text: |
       This script is a placeholder.  The export beat is the final two
-      steps of log-full.script, which runs in the same session as
+      steps of log-v2.script, which runs in the same session as
       beat 10 so the overrides stay in force.
 
       If you are seeing this, presentation.sh has been updated to invoke
-      this file separately.  Move the last two steps of log-full.script
+      this file separately.  Move the last two steps of log-v2.script
       here and restore the separate session invocation.
     fold: all
     unfold: [/]

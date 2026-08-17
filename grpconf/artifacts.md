@@ -6,15 +6,26 @@ SPDX-License-Identifier: MIT
 
 # Building bobapp, bobshark and boblog
 
-The build plan for the three artifacts `grpconf/synopsis.md` runs on.
-Read the synopsis first — this document only says how the files get
-made, not why they are shaped the way they are.
+The build plan for the artifacts `grpconf/synopsis.md` runs on. Read the
+synopsis first — this document only says how the files get made, not why
+they are shaped the way they are.
 
-Status: **every step but 7 is done** (2026-08-14/15); step 7 is plan.
-Step 6's measurement came back with two answers, neither of them the one
-beat 8 is written against — see "Step 6" below, and the synopsis's open
-question 1. What is left for the artifacts is the *narration*: the
-synopsis's beats 8 and 10 have not caught up with steps 3 and 6.
+Status: **every step is done** (2026-08-14 → 2026-08-17). Steps 1–9 are
+records of work already landed and are kept as written; where a later
+change invalidated one of their conclusions the section says so in
+place rather than being quietly rewritten. Step 10 is the two-build
+split that draft 3 of the synopsis turns on.
+
+**Two things below were true when they were measured and are not true
+now**, and both are called out where they sit:
+
+- There is **one bobapp binary** in steps 1–9. There are two from step
+  10 on, and no artifact named `bobapp.desc` exists any more —
+  `bobapp1.desc` and `bobapp2.desc` do.
+- Step 9 records that boblog's **root is vetoed**. Spec 0314 retired
+  that: the root is named `bobapp.v1.Log` at +19 and reports
+  `truncated: true`. Draft 2's beat 9 was built on the veto; draft 3's
+  is built on the honest partial answer, which is a better beat.
 
 ## The starting point: ringer already is most of bobapp
 
@@ -457,13 +468,19 @@ has already geocoded sends.
 `bobapp --origin "45.188529, 5.724524" --destination "45.764043, 4.835659"`
 is now the minting command.
 
-### Consequence for beat 8, which is **not yet resolved**
+### Consequence for beat 8 — **resolved 2026-08-17 by step 10**
 
-Beat 8 as written runs `protolens --descriptor-set bobapp.desc bobshark`
-— and against `bobapp.desc` the answer is unambiguous and *correct*, 39
-points clear. The collision only exists against `googleapis.desc`, which
-beat 10 is what introduces. So the beat's manual-override detour has no
-home where it currently sits. See the synopsis's open question 1.
+Beat 8 runs against the *older* build's database, and there the answer
+is unambiguous and correct: `routing.v2` at −16, next candidate −55.
+The collision needs a database holding both Routes versions, and
+`bobapp1.desc` holds one.
+
+When this was written the only such database was `googleapis.desc`, so
+the manual-override detour had nowhere to live but the epilogue. Step 10
+gave it a home: `bobapp2.desc` embeds `google/maps/routes/v1` as well,
+so the tie appears in beat 10, one command after beat 9, out of Bob's
+own second binary — and the tie is now *evidence for* the escalation
+rather than a wart on it. The synopsis's old open question 1 is closed.
 
 ## Step 7 — googleapis.desc — **nothing to build**
 
@@ -483,9 +500,10 @@ from a written-down path. Several stale `*-googleapis-db` paths coexist
 in the store and an old one carries a v2 scoring graph the current
 binary rejects.
 
-Beat 6's `bobapp.desc` is built on stage, in one command, from the
-binary. `googleapis.desc` is the repo's own corpus, shipped by CI and
-not made for this talk.
+Beat 6's databases — `bobapp1.desc` and `bobapp2.desc` since step 10 —
+are built on stage, one command each, from the binaries.
+`googleapis.desc` is the repo's own corpus, shipped by CI and not made
+for this talk.
 
 ## Step 8 — mint the artifacts — **re-minted 2026-08-16**
 
@@ -540,18 +558,33 @@ mode at least once.
 Measured on the minted `log.pb` against the on-stage `bobapp.desc`
 database.
 
-### The root has no type, and that is the beat
+### The root has no type, and that is the beat — **SUPERSEDED**
+
+> **This section is a record, not a fact.** Spec 0310 stopped a cut tail
+> from vetoing every candidate, and spec 0314 (2026-08-17) wired the
+> same assertion into the `prototext` CLI, so both tools now agree. The
+> root of boblog is named `bobapp.v1.Log`, **score 19**, 24 matched,
+> 0 unknown, 0 mismatched, `truncated: true`, under both bobapp
+> databases. Everything below this line describes the behavior before
+> those two specs; the numbers in the cue table are still accurate,
+> because the cues never depended on the root.
+>
+> The beat got better, not worse. "Nothing can name this file" was a
+> demonstration of a limit; "here is the answer, and here is exactly how
+> much of the file it does not cover" is a demonstration of the thesis.
+> Draft 3's beat 9 is written to the second one and ends on the
+> `method:` line instead of on a shrug.
 
 ```
 protolens: inferring root type (18 KB) on 8 threads...
 protolens: rendering root node as <raw / no type> (18 KB)...
 ```
 
-`prototext list-schemas` returns an **empty candidate list** for the
-whole file. The cause is anomaly 4: the cut record makes every candidate
-walk off the end, and an incomplete walk is a veto.
+`prototext list-schemas` returned an **empty candidate list** for the
+whole file. The cause was anomaly 4: the cut record made every candidate
+walk off the end, and an incomplete walk was a veto.
 
-This is not a failure to route around. It is what beat 9 is *for*. A
+That was not a failure to route around; it was what beat 9 was *for*. A
 document nothing can name is exactly the document whose **heat cues**
 have something to say, and they do:
 
@@ -616,6 +649,64 @@ cp target/release/libprototext_graph_lib.so "$SHIM/prototext_graph_lib.so"
 PYTHONPATH=/tmp/gshim ./bin/reproto --schema-db-out /tmp/bobapp-db/bobapp.desc bobapp.desc
 ```
 
+## Step 10 — two builds, two databases — **done 2026-08-17**
+
+The change draft 3 of the synopsis is built on. Bob downloaded bobapp
+**twice**: an older build and a newer one. The escalation that used to
+run bobapp → googleapis now runs bobapp1 → bobapp2, with googleapis
+demoted to a droppable epilogue, so the demo's central move is made out
+of two artifacts that are both Bob's.
+
+**How it is built.** One Rust/tonic source tree, built twice from
+`demo/bobapp/default.nix` with a `variant` argument. `pname` and the two
+env vars are deliberately outside `commonArgs` so both variants share
+one dependency cache. Nix attributes: `bobapp1`, `bobapp2`,
+`bobapp1-desc`, `bobapp2-desc`. `bobapp` and `bobapp-desc` no longer
+exist, and `grpconf-demo` stages `bin/bobapp1` and `bin/bobapp2`.
+
+The only difference between the two is the entry-point list handed to
+`protoc` when the embedded `FileDescriptorSet` is made:
+
+| | embedded files | dumps | recovered database |
+|---|---|---|---|
+| `bobapp1` | 41 | 51 111 B | `bobapp1.desc`, 64 816 B |
+| `bobapp2` | 77 | 103 430 B | `bobapp2.desc`, 130 044 B |
+
+bobapp2 adds Places v1, Routes **v1**, and `google/rpc/error_details.proto`.
+Those three are the whole second half of the talk: the first names the
+lookup traffic, the second creates the tie, and the third is what makes
+the leaked `google.rpc.Status` open all the way to the key inside its
+`Any` (+3 in a three-way tie → **+8 sole**, and `--no-expand-any`
+reproduces the +3 exactly, so the five points are demonstrably the
+expanded `Any`).
+
+**The trap that will cost a rehearsal.** In *both* embedded sets the
+last `FileDescriptorProto` is `bobapp/v1/log.proto`, and the spec 0313
+bug discarded the final descriptor whenever any byte followed it. On a
+shell holding a pre-0313 `fdp_scan_lib`, `protoscan` prints 40 and 76
+instead of 41 and 77 and — much worse — `reproto` emits
+
+```
+Warning: missing dependency file:bobapp/v1/log.proto
+```
+
+and **silently builds a database with no envelope in it**, which guts
+beats 9 through 11. It is a warning rather than a refusal because that
+is reproto's posture on partial input, and that posture is right; it is
+simply invisible here. `presentation.sh` now opens with
+
+```sh
+protoscan $BOBAPP1 | wc -l ; protoscan $BOBAPP2 | wc -l
+```
+
+as a gate. The answers must be 41 and 77.
+
+**Verified against the staged files, 2026-08-17.** Every score the
+synopsis quotes for beats 9–12 was re-measured with `prototext
+list-schemas` on the real bytes; the table lives in the synopsis under
+"The measured escalation". The four `.script` files were re-pinned by
+driving the binary headlessly.
+
 ## Open items
 
 - ~~Whether bobapp *calls* the extra service or merely builds and logs
@@ -628,6 +719,11 @@ PYTHONPATH=/tmp/gshim ./bin/reproto --schema-db-out /tmp/bobapp-db/bobapp.desc b
   it should have done anyway.
 - ~~Whether the anomaly writer lives behind a flag.~~ **Closed
   2026-08-14: unconditional.** See step 4.
-- Whether spec 0241 is amended or superseded. Leaning superseded.
-- Sizes and timings for the synopsis's "honest numbers on screen"
-  line, once boblog exists.
+- ~~Whether beat 8's collision has a home.~~ **Closed 2026-08-17 by
+  step 10:** it lives in beat 10, under `bobapp2.desc`.
+- Whether spec 0241 is amended or superseded. Leaning superseded. It
+  now also predates the two-variant split.
+- ~~Sizes and timings for the synopsis's "honest numbers on screen"
+  line, once boblog exists.~~ **Closed 2026-08-17.** boblog is
+  20 243 B; open times are 17 / 17 / 82 ms against `bobapp1.desc` /
+  `bobapp2.desc` / `googleapis.desc`.
