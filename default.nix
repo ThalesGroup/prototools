@@ -70,8 +70,8 @@ let
   # directories: .pb, .proto, .yaml, .script, .license, Cargo.lock.  Excludes
   # .md, .py, .pyc, .gitignore, __pycache__ and other non-Rust artefacts that
   # would otherwise pollute the hash.  .script is spec 0271's guided walk —
-  # `protolens/tests/batch_script.rs` runs grpconf/anomalies.script over
-  # grpconf/anomalies.pb, so the test cannot pass without it.
+  # `protolens/tests/batch_script.rs` runs tests/fixtures/anomalies.script over
+  # tests/fixtures/anomalies.pb, so the test cannot pass without it.
   fixtureFilter = dir: pkgs.lib.fileset.fileFilter
     (f: f.hasExt "pb" || f.hasExt "proto" || f.hasExt "yaml"
         || f.hasExt "script" || f.hasExt "license")
@@ -97,19 +97,20 @@ let
         # `prototext-core/src/serialize/render_text/mod.rs` include_bytes!
         # descriptor.pb and so cannot even compile without it.
         ./prototext-core/fixtures
-        # grpconf/anomalies.pb is `#@` prototext text under a `.pb` name
-        # (spec 0226), and `prototext-core/tests/anomaly_fixture.rs`
-        # include_str! it, so the test cannot compile without it.
-        # grpconf/anomalies.script is run by `protolens/tests/batch_script.rs`.
-        # grpconf/beats/ and grpconf/fixtures/ are demo-only and not referenced
-        # by any Rust test — excluded so that editing a beat script or a demo
-        # fixture does not invalidate the workspace build cache.
-        (pkgs.lib.fileset.difference
-          (fixtureFilter ./grpconf)
-          (pkgs.lib.fileset.unions [
-            (pkgs.lib.fileset.maybeMissing ./grpconf/beats)
-            (pkgs.lib.fileset.maybeMissing ./grpconf/fixtures)
-          ]))
+        # grpconf/ is deliberately absent, and must stay that way.  It is the
+        # live demo: it *uses* the tools and has no business invalidating
+        # their build.  It was in here for `anomalies.pb` and
+        # `anomalies.script`, which are not demo artefacts at all but shared
+        # test fixtures of prototext-core and protolens; they now live under
+        # ./tests/fixtures, admitted above like every other fixture.
+        #
+        # What that cost while it lasted: grpconf/stage/ is gitignored
+        # scratch, populated from the grpconf-demo derivation and then written
+        # to by the demo itself (beat 6 lands the schema DBs, beat 11 the
+        # export).  It carries the unpacked googleapis proto/ tree, which
+        # fixtureFilter admits — 134 MB across 23 317 files of workspaceSrc's
+        # 140 MB.  Every stage repopulation and every rehearsal rebuilt the
+        # entire Rust world.
         # prototext/wkt/prebuilt/*.rkyv — the git-committed WKT scoring
         # graph. `prototext/build.rs` copies it under `--features
         # prebuilt-wkt`, which nix/rust.nix's bootstrapArgs now passes to
@@ -435,19 +436,33 @@ let
     # corpus protoc run and a reproto --schema-db-out. It is `full-tests`
     # material, not `ci` material, and it is deliberately kept out of
     # user-shell for that reason.
-    inherit (python) googleapisDb;
+    inherit (python) googleapisDb bobapp2Desc;
     inherit grpconfDemo;
     repoRoot    = toString ./.;
     rustcVersion = pkgs.rustc.unwrapped.version;
   };
 
   # ---------------------------------------------------------------------------
-  # bobapp — the demo binary (separate Cargo workspace, spec 0241 S1).
+  # bobapp — the demo binaries (separate Cargo workspace, spec 0241 S1).
   # Built from demo/bobapp/default.nix; not wired into ci or full-tests.
+  #
+  # Two builds of the one crate, differing only in the descriptor set they
+  # embed: bobapp1 knows Routes v2 and the log envelope, bobapp2 also knows
+  # Places, the legacy Routes v1, and google.rpc's error details.  See
+  # nix/python.nix for why, and grpconf/synopsis.md for what it buys.
   # ---------------------------------------------------------------------------
-  bobapp = import ./demo/bobapp/default.nix {
+  bobapp1 = import ./demo/bobapp/default.nix {
     inherit pkgs crane;
-    bobappDesc = python.bobappDesc;
+    variant    = "bobapp1";
+    bobappDesc = python.bobapp1Desc;
+    traceDesc  = python.bobapp2Desc;
+  };
+
+  bobapp2 = import ./demo/bobapp/default.nix {
+    inherit pkgs crane;
+    variant    = "bobapp2";
+    bobappDesc = python.bobapp2Desc;
+    traceDesc  = python.bobapp2Desc;
   };
 
   # ---------------------------------------------------------------------------
@@ -460,9 +475,11 @@ let
   #
   # Layout mirrors grpconf/stage/ so that presentation.sh needs no changes:
   #
-  #   $out/bin/bobapp          the bobapp binary
+  #   $out/bin/bobapp1         the build with Routes v2 alone (41 files)
+  #   $out/bin/bobapp2         the build that also knows Places, Routes v1
+  #                            and google.rpc's error details (77 files)
   #   $out/bobshark            one captured request body (84 bytes)
-  #   $out/boblog              the log with four anomalies (20 198 bytes)
+  #   $out/boblog              the log with four anomalies (20 243 bytes)
   #   $out/googleapis.desc     full corpus: 7 771 files, 58 777 types
   #   $out/googleapis/         sidecars: hopcroft.rkyv, index.rkyv, proto/
   #   $out/beats/              beat scripts: infer, log-partial, log-full
@@ -475,8 +492,9 @@ let
     set -euo pipefail
     mkdir -p "$out/bin" "$out/beats"
 
-    # The bobapp binary.
-    cp ${bobapp}/bin/bobapp "$out/bin/bobapp"
+    # The two bobapp binaries.
+    cp ${bobapp1}/bin/bobapp1 "$out/bin/bobapp1"
+    cp ${bobapp2}/bin/bobapp2 "$out/bin/bobapp2"
 
     # Committed fixtures: the pre-minted request capture and log.
     cp ${./grpconf/fixtures/bobshark} "$out/bobshark"
@@ -569,8 +587,10 @@ in
   googleapis-tests     = python.googleapisTests;
   custom-db            = python.customDb;
   custom-tests         = python.customTests;
-  bobapp-desc          = python.bobappDesc;
-  bobapp               = bobapp;
+  bobapp1-desc         = python.bobapp1Desc;
+  bobapp2-desc         = python.bobapp2Desc;
+  bobapp1              = bobapp1;
+  bobapp2              = bobapp2;
   grpconf-demo         = grpconfDemo;
   user-shell           = shells.user-shell;
   dev-shell            = shells.dev-shell;

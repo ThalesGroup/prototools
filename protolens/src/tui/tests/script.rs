@@ -236,7 +236,7 @@ fn a_step_leaves_room_below_its_node() {
 }
 
 /// Spec 0279 S5, amended 2026-08-12. A caption need not be an ancestor:
-/// in `grpconf/anomalies.pb` it is the top-level `name` line *beside*
+/// in `tests/fixtures/anomalies.pb` it is the top-level `name` line *beside*
 /// the wrapper, so that folding the document leaves the headings
 /// readable. The climb alone puts the wrapper's first row at the top of
 /// the pane and the row naming it just above the fold, so the view

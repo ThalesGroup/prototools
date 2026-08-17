@@ -10,7 +10,7 @@
 # `.pb`, opened directly, and edited by hand.
 #
 #     protolens --descriptor-set <set> --type google.protobuf.FileDescriptorProto \
-#         grpconf/anomalies.pb
+#         tests/fixtures/anomalies.pb
 #
 # Lines starting with `#` are dropped by the encoder and never reach the wire,
 # so they are invisible in protolens.  The explanations the audience sees are

@@ -315,7 +315,7 @@ falls out of the story rather than being sprinkled on:
    killed mid-write. The input `protoc` refuses.
 
 Four is the budget. The full vocabulary — thirty annotation tokens,
-every one of them — lives in `grpconf/anomalies.pb`, which is a repo
+every one of them — lives in `tests/fixtures/anomalies.pb`, which is a repo
 pointer and a Q&A artifact, not a beat.
 
 ### Who writes them, and where they land
@@ -852,7 +852,7 @@ Stated so the synopsis is honest about its own edges:
   Whether the pcap and the tshark one-liner appear at all is an open
   question — see below.
 - **No walk through the full anomaly vocabulary.** Four of thirty.
-  `grpconf/anomalies.pb` and its guided script are the pointer.
+  `tests/fixtures/anomalies.pb` and its guided script are the pointer.
 - **No `protoc` rehabilitation.** The talk is not against `protoc`; it
   is about the cases `protoc` was not built for. Say so once, in beat
   2, and do not litigate it.

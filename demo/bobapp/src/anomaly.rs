@@ -302,16 +302,25 @@ language_code: \"en-US\"  #@ string = 6
 max_result_count: 5  #@ int32 = 4
 ";
 
-    /// The trace, built against the descriptor set the demo ships.
+    /// The trace, built against a set that declares the types it is made of.
     ///
-    /// bobapp embeds no Places service and no `google.rpc`, so this reads the
-    /// same set off disk that `--extra-descriptor-set` points at.
+    /// The `bobapp1` build embeds neither the Places service nor
+    /// `google.rpc.ErrorInfo`, so this cannot use the crate's own
+    /// `DESCRIPTOR_SET`: it needs whatever `--extra-descriptor-set` would
+    /// point at.  `BOBAPP_TRACE_DESCRIPTOR_SET` is where it lives, and
+    /// `demo/bobapp/default.nix` points it at `bobapp2.desc` — the `bobapp2`
+    /// build's own 103 kB set, which declares every type below.  The 25.6 MB
+    /// corpus would do just as well and used to be what was used, but making
+    /// it a build input of a demo binary meant every prototext-core edit
+    /// re-derived the whole googleapis schema DB before bobapp could compile.
+    ///
+    /// Read at run time rather than with `env!`, because the store path
+    /// changes whenever the set is rebuilt and baking it in would rebuild
+    /// bobapp with it.
     fn trace() -> Vec<u8> {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../grpconf/stage/googleapis.desc"
-        );
-        let bytes = std::fs::read(path).expect("the staged descriptor set");
+        let path = std::env::var("BOBAPP_TRACE_DESCRIPTOR_SET")
+            .expect("BOBAPP_TRACE_DESCRIPTOR_SET is unset; enter the dev shell");
+        let bytes = std::fs::read(&path).expect("the googleapis descriptor set");
         let pool = DescriptorPool::decode(&bytes[..]).expect("it parses");
         debug_trace(&pool).expect("the trace encodes")
     }

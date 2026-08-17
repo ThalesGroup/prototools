@@ -10,10 +10,17 @@ A demo blob for protolens. It exhibits **every** annotation token
 prototext-core can emit: the five wire-type names, `pack_size`, the nine
 non-canonical modifiers and the fifteen invalid ones.
 
+It lives here, beside the other shared fixtures, rather than under `grpconf/`
+with the conference demo: it is a test fixture of both `prototext-core` and
+`protolens` before it is anything else, and `grpconf/` is deliberately kept out
+of the Rust build's source snapshot. The dev shell exports
+`PROTOTEXT_ANOMALIES_BLOB` pointing here, so a demo beat can reach it without
+spelling a path.
+
 ## Running it
 
 ```
-protolens --type google.protobuf.FileDescriptorProto grpconf/anomalies.pb
+protolens --type google.protobuf.FileDescriptorProto tests/fixtures/anomalies.pb
 ```
 
 No `--descriptor-set` is needed: `google.protobuf.FileDescriptorProto` is one
@@ -58,7 +65,7 @@ Any descriptor set containing `descriptor.proto` also works, passed with
 the repo. `prototext` resolves `google.protobuf.*` on its own too:
 
 ```
-prototext decode -t google.protobuf.FileDescriptorProto grpconf/anomalies.pb
+prototext decode -t google.protobuf.FileDescriptorProto tests/fixtures/anomalies.pb
 ```
 
 ## What is committed

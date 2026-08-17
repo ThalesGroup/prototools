@@ -48,7 +48,8 @@
 , protoscan
 , wktDb             # well-known-types schema DB; carries the PROTOTEXT_DESCRIPTOR_SET setup-hook
 , googleapisDb      # googleapis schema DB; dev-shell only (PROTOTEXT_GOOGLEAPIS_SET)
-, grpconfDemo       # grpconf-demo stage: bin/bobapp, boblog, bobshark, googleapis.desc, beats/
+, bobapp2Desc       # bobapp2's embedded set; dev-shell only (BOBAPP_TRACE_DESCRIPTOR_SET)
+, grpconfDemo       # grpconf-demo stage: bin/bobapp1, bin/bobapp2, boblog, bobshark, googleapis.desc, beats/
 , buf               # narrow-pinned buf (newer than the main nixpkgs pin's 1.59.0; see default.nix)
 }:
 
@@ -160,7 +161,7 @@
       # ── Named hook functions ───────────────────────────────────────────────
 
       _hook_env() {
-        echo "[hook] env: NIXSHELL_REPO, PROTOTEXT_{DESCRIPTOR,WKT,GOOGLEAPIS}_SET, PYO3_PYTHON, PATH, PYTHONPATH"
+        echo "[hook] env: NIXSHELL_REPO, PROTOTEXT_{DESCRIPTOR,WKT,GOOGLEAPIS}_SET, PROTOTEXT_ANOMALIES_BLOB, PYO3_PYTHON, PATH, PYTHONPATH"
         # Detected by ~/.claude/hooks/claude-hook-post-edit-lint to confirm
         # that the active nix-shell belongs to this repo.
         export NIXSHELL_REPO="${repoRoot}"
@@ -187,6 +188,25 @@
         # it in user-shell would make a first `nix-shell` build all of it.
         export PROTOTEXT_WKT_SET="${wktDb}/share/prototools/wkt.desc"
         export PROTOTEXT_GOOGLEAPIS_SET="${googleapisDb}/googleapis.desc"
+
+        # The spec-0226 fixture: one example of every annotation prototext can
+        # emit, as `#@` prototext text under a `.pb` name.  It is a test
+        # fixture of prototext-core and protolens first — hence
+        # tests/fixtures/ rather than grpconf/, which must contribute nothing
+        # to the Rust build — but it is also the one blob that shows the whole
+        # vocabulary at once, so a demo beat may want to reach for it.  Named
+        # here so that such a beat never has to spell a repo-relative path.
+        #
+        # A source path, not a store path, unlike the two sets above: the
+        # fixture is committed, and it is edited by hand.  Its `.script`
+        # sidecar is found *beside the blob* by protolens' script discovery,
+        # which the source tree satisfies for free.
+        export PROTOTEXT_ANOMALIES_BLOB="${repoRoot}/tests/fixtures/anomalies.pb"
+
+        # demo/bobapp's anomaly tests build a google.rpc.Status carrying an
+        # ErrorInfo, which the bobapp1 build does not embed.  bobapp2's set is
+        # the smallest one that declares them; see demo/bobapp/src/anomaly.rs.
+        export BOBAPP_TRACE_DESCRIPTOR_SET="${bobapp2Desc}/bobapp2.desc"
 
         export PYO3_PYTHON="${pythonExecutable}"
         export PATH="${repoRoot}/bin:${pythonBin}/bin:${repoRoot}/target/release:$PATH"
@@ -396,7 +416,7 @@ components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
         # presentation.sh has a writable working directory.
         #
         # The nix store is read-only, so protolens cannot create sidecar files
-        # beside googleapis.desc and beat 6 cannot write bobapp.desc or src/.
+        # beside googleapis.desc and beat 6 cannot write bobapp1.desc or src/.
         # --no-preserve=mode strips the 0444/0555 modes from the copy so that
         # all files are writable.
         #

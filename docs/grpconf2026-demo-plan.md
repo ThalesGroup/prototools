@@ -46,10 +46,12 @@ descriptor, its type is already known and there is nothing to infer.
 2. **The captured payload** — one gRPC message of unknown type. This is
    what protolens identifies, browses, and round-trips.
 
-Both are **still to be crafted**. Neither is `grpconf/anomalies.pb`.
+Both are **still to be crafted**. Neither is `tests/fixtures/anomalies.pb`
+— which, being nobody's demo artifact, was moved out of `grpconf/`
+on 2026-08-17.
 
-`grpconf/anomalies.pb` is typed `google.protobuf.FileDescriptorProto`
-(see `grpconf/README.md`), so it cannot serve as the captured payload
+`tests/fixtures/anomalies.pb` is typed `google.protobuf.FileDescriptorProto`
+(see `tests/fixtures/README.md`), so it cannot serve as the captured payload
 without breaking the story. The anomaly payload must be a *second*
 fixture typed as the application's own message; `prototext-core/tests/
 anomaly_fixture.rs` and spec 0226 make that cheap to build and keep

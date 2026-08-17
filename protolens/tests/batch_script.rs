@@ -4,7 +4,7 @@
 
 //! CLI-level (black-box, subprocess) integration tests for `protolens`'s
 //! batch `script` subcommand — spec 0271 S14, and the smoke test the
-//! `grpconf/anomalies.script` walk exists to be.
+//! `tests/fixtures/anomalies.script` walk exists to be.
 //!
 //! The transcript reports the *resolved* outcome of every directive, so
 //! a script that has drifted out of sync with its blob shows up here as
@@ -41,7 +41,7 @@ fn run(args: &[&str]) -> Output {
 fn anomalies(extra: &[&str]) -> Output {
     let root = repo();
     let descriptor = root.join("prototext-core/fixtures/descriptor.pb");
-    let blob = root.join("grpconf/anomalies.pb");
+    let blob = root.join("tests/fixtures/anomalies.pb");
     let mut args = vec![
         "--descriptor-set",
         descriptor.to_str().unwrap(),

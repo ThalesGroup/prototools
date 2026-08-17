@@ -406,24 +406,37 @@ EOF
       @"$TMPDIR/proto_list.txt"
   '';
 
-  # The descriptor set bobapp embeds (spec 0241 S4).
+  # The descriptor sets the two bobapp builds embed (spec 0241 S4).
   #
   # The same protoc invocation googleapisPbs makes, narrowed from the whole
-  # corpus to two entry points: routes_service.proto with its transitive
-  # imports, and bobapp's own log envelope.  That is what a real application
+  # corpus to a handful of entry points.  That is what a real application
   # ships, and it is what keeps bobapp's DescriptorPool cheap — decoding the
   # full 25.6 MB googleapis.desc costs 1.34 s and peaks at 720 MB RSS,
-  # against ~50 kB here.
+  # against 51 kB and 103 kB here.
   #
-  # bobapp/v1/log.proto is in here so that the schema recovered *from the
+  # bobapp/v1/log.proto is in both so that the schema recovered *from the
   # binary* names the log envelope, while googleapis — which has never heard
-  # of Bob's app — does not.  That asymmetry is the demo's escalation: see
-  # grpconf/synopsis.md beats 9 and 10.
+  # of Bob's app — does not.
   #
-  # Cheap enough for `ci`: one protoc run over two files.  It pulls in
-  # corpusGoogleapis but not googleapisPbs or googleapisDb, so it costs the
-  # corpus fetch and nothing more.
-  bobappDesc = pkgs.runCommand "bobapp-desc" {
+  # The two differ on purpose, and the difference is the demo's escalation:
+  #
+  #   bobapp1  the build Bob grabbed first.  Routes v2 and the envelope, and
+  #            nothing else: 41 files.  It can read the route traffic and it
+  #            cannot read anything else in the log.
+  #   bobapp2  the build he grabbed when the app started misbehaving.  Adds
+  #            the Places text search, the legacy Routes v1 client the
+  #            migration has not finished retiring, and the richer
+  #            google.rpc error details: 77 files.  It is the set that can
+  #            name `SearchTextRequest`, that holds *two* versions of the
+  #            Routes API for the scorer to be torn between, and that
+  #            declares `google.rpc.ErrorInfo` — the shape of the leak.
+  #
+  # See grpconf/synopsis.md beats 8 to 11.
+  #
+  # Cheap enough for `ci`: two protoc runs over a few files each.  They pull
+  # in corpusGoogleapis but not googleapisPbs or googleapisDb, so they cost
+  # the corpus fetch and nothing more.
+  bobappDescOf = variant: entryPoints: pkgs.runCommand "${variant}-desc" {
     buildInputs = [ pkgs.protobuf ];
   } ''
     set -euo pipefail
@@ -432,11 +445,23 @@ EOF
     protoc \
       --proto_path="${corpusGoogleapis}" \
       --proto_path="${../demo/bobapp/proto}" \
-      --descriptor_set_out="$out/bobapp.desc" \
+      --descriptor_set_out="$out/${variant}.desc" \
       --include_imports \
-      google/maps/routing/v2/routes_service.proto \
-      bobapp/v1/log.proto
+      ${pkgs.lib.escapeShellArgs entryPoints}
   '';
+
+  bobapp1Desc = bobappDescOf "bobapp1" [
+    "google/maps/routing/v2/routes_service.proto"
+    "bobapp/v1/log.proto"
+  ];
+
+  bobapp2Desc = bobappDescOf "bobapp2" [
+    "google/maps/routing/v2/routes_service.proto"
+    "google/maps/places/v1/places_service.proto"
+    "google/maps/routes/v1/route_service.proto"
+    "google/rpc/error_details.proto"
+    "bobapp/v1/log.proto"
+  ];
 
   # Build the googleapis schema DB + instantiated messages.
   # Depends on googleapisPbs (single multi-FDP FDS) so proto compilation is
@@ -644,7 +669,8 @@ in {
     googleapisPbs
     googleapisDb
     googleapisTests
-    bobappDesc
+    bobapp1Desc
+    bobapp2Desc
     customDb
     customTests;
 }

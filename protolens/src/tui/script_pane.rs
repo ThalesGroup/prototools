@@ -342,7 +342,7 @@ impl App {
     ///
     /// **Amended 2026-08-12: the preceding sibling comes too, if it
     /// fits.** A caption need not be an ancestor of what it captions. In
-    /// `grpconf/anomalies.pb` it is the opposite — the heading is a
+    /// `tests/fixtures/anomalies.pb` it is the opposite — the heading is a
     /// top-level `name` line and the example is the submessage *beside*
     /// it, precisely so that the heading survives folding, which a
     /// caption written inside the wrapper does not. The climb alone then

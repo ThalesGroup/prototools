@@ -26,7 +26,7 @@ steps:
       make sense of at all. This session was opened with
 
           protolens --type google.protobuf.FileDescriptorProto \
-              grpconf/anomalies.pb
+              tests/fixtures/anomalies.pb
 
       and picked up this commentary from anomalies.script beside the blob.
 

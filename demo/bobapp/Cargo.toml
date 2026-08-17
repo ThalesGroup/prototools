@@ -9,10 +9,14 @@
 # tonic, hyper, rustls and tokio into every `--workspace` derivation and into
 # `depsCache`.  None of those four appear in the workspace graph today.
 #
-# Build it with the descriptor set nix produces:
+# One crate, two shipped builds: which one you get is decided entirely by the
+# descriptor set nix hands build.rs.  See nix/python.nix for the difference.
 #
-#   BOBAPP_DESCRIPTOR_SET=$(nix-build -A bobapp-desc --no-out-link)/bobapp.desc \
+#   BOBAPP_DESCRIPTOR_SET=$(nix-build -A bobapp2-desc --no-out-link)/bobapp2.desc \
 #     cargo build --release --manifest-path demo/bobapp/Cargo.toml
+#
+# The tests additionally need BOBAPP_TRACE_DESCRIPTOR_SET; the dev-shell
+# exports both.
 
 [package]
 name        = "bobapp"

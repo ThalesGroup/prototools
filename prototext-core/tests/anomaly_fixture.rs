@@ -2,7 +2,8 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Spec 0226 — `grpconf/anomalies.pb` covers the whole annotation vocabulary.
+//! Spec 0226 — `tests/fixtures/anomalies.pb` covers the whole annotation
+//! vocabulary.
 //!
 //! The fixture is `#@` prototext text committed under a `.pb` name: both tools
 //! detect the format from the first thirteen bytes, so there is no build step
@@ -11,7 +12,7 @@
 use prototext_core::{parse_schema, render_as_bytes, render_as_text, RenderOpts};
 use std::collections::BTreeSet;
 
-const FIXTURE: &str = include_str!("../../grpconf/anomalies.pb");
+const FIXTURE: &str = include_str!("../../tests/fixtures/anomalies.pb");
 const DESCRIPTOR: &[u8] = include_bytes!("../fixtures/descriptor.pb");
 const ROOT_TYPE: &str = "google.protobuf.FileDescriptorProto";
 

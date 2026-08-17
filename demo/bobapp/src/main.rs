@@ -111,7 +111,13 @@ struct Cli {
     extra_descriptor_set: Option<PathBuf>,
 
     /// Look a place up by name before routing.  Repeatable.
-    #[arg(long, requires = "extra_descriptor_set")]
+    ///
+    /// The bobapp1 build compiled in no Places service, so there it needs
+    /// `--extra-descriptor-set`; bobapp2 has one and does not.  Which is why
+    /// clap does not require the flag: whether it is needed is a fact about
+    /// the descriptor set this build embeds, and the error, if it comes,
+    /// names the type that could not be found.
+    #[arg(long)]
     look_up: Vec<String>,
 }
 
@@ -210,23 +216,29 @@ async fn main() -> Result<()> {
 
 /// Calls `SearchText` once per `--look-up`.
 ///
-/// The descriptor set comes off disk because this build compiled in no Places
-/// service: `--dump-descriptor` cannot produce a schema that names these
-/// bytes, which is exactly what makes them worth opening with a bigger one.
-/// The call is as real as the routing one — same codec, same recorder — so
-/// the difference between the two pairs of entries is entirely a matter of
-/// which schema can read them back.
+/// Where the schema comes from is the whole point of shipping two builds.
+/// bobapp1 compiled in no Places service, so `--dump-descriptor` cannot
+/// produce a schema that names these bytes and the call needs
+/// `--extra-descriptor-set` to be made at all — which is exactly what makes
+/// the bytes worth opening with a bigger dictionary.  bobapp2 embeds Places,
+/// so it needs no flag and its recovered schema reads its own lookups back.
+/// The call itself is as real as the routing one either way — same codec,
+/// same recorder — so the difference between the two pairs of entries is
+/// entirely a matter of which schema can read them.
 async fn look_up(cli: &Cli, api_key: &str, recorder: &codec::SharedRecorder) -> Result<()> {
     if cli.look_up.is_empty() {
         return Ok(());
     }
-    let path = cli
-        .extra_descriptor_set
-        .as_deref()
-        .expect("required by clap");
-    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    let pool = DescriptorPool::decode(&bytes[..])
-        .with_context(|| format!("{} does not parse as a descriptor set", path.display()))?;
+    // Cheap to clone: a DescriptorPool is reference-counted internally.
+    let pool = match cli.extra_descriptor_set.as_deref() {
+        Some(path) => {
+            let bytes =
+                std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+            DescriptorPool::decode(&bytes[..])
+                .with_context(|| format!("{} does not parse as a descriptor set", path.display()))?
+        }
+        None => pool()?.clone(),
+    };
 
     let wire = Wire {
         endpoint: LOOKUP_ENDPOINT,
