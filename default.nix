@@ -482,7 +482,7 @@ let
   #   $out/boblog              the log with four anomalies (20 243 bytes)
   #   $out/googleapis.desc     full corpus: 7 771 files, 58 777 types
   #   $out/googleapis/         sidecars: hopcroft.rkyv, index.rkyv, proto/
-  #   $out/beats/              beat scripts: infer, log-partial, log-full
+  #   $out/beats/              every grpconf/beats/*.script
   #
   # Build once:   nix-build -A grpconf-demo
   # Populate stage: dev-shell's _hook_demo does  cp -r --no-preserve=mode
@@ -507,9 +507,10 @@ let
     cp -r ${python.googleapisDb}/googleapis   "$out/googleapis"
 
     # Beat scripts.  Read-only in the stage is fine — they are never written.
-    cp ${./grpconf/beats/infer.script}       "$out/beats/infer.script"
-    cp ${./grpconf/beats/log-partial.script} "$out/beats/log-partial.script"
-    cp ${./grpconf/beats/log-full.script}    "$out/beats/log-full.script"
+    # Copied as a directory so that renaming or adding a beat needs no edit
+    # here — the set has already turned over once (log-partial/log-full
+    # became log-v1/log-v2) and left this derivation pointing at nothing.
+    cp ${./grpconf/beats}/*.script "$out/beats/"
   '';
 
   # ---------------------------------------------------------------------------
