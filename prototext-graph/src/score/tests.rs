@@ -2796,3 +2796,70 @@ fn a_varint_overflow_before_the_end_is_not_a_cut() {
     assert!(s.vetoed, "an overlong varint is impossible, not incomplete");
     assert!(!s.truncated);
 }
+
+// ── Spec 0313: a record ends at its last clean boundary ──────────────────────
+
+/// Spec 0313 test 8 (S3). The rule is one rule: an anomaly that merely
+/// counts ends the reading exactly as a veto does, and the entry reports the
+/// boundary before it.
+///
+/// The anomaly is an enum value outside its declared range, chosen because
+/// `scan_terminates` cannot foresee it — the lookahead reads the tag, and
+/// this is a fact about the *value*. What follows it is a wire type of 7,
+/// which no walk that reached it could survive; that the result is not
+/// vetoed is how "the bytes beyond are never read" is observed.
+#[test]
+fn an_anomaly_stops_the_walk() {
+    let g = compile_and_load(&scan_merged(
+        vec![
+            uint32(1, FieldLabel::Optional),
+            ScoringField {
+                number: 2,
+                kind: ScoringKind::Range,
+                child: None,
+                range: Some((0, 2)),
+                label: FieldLabel::Optional,
+            },
+        ],
+        &[],
+    ));
+
+    let mut pb = field_varint(1, 1); // 0..2 — the last clean boundary
+    pb.extend(field_varint(2, 99)); // 2..4 — outside (0, 2)
+    pb.extend(tag(3, 7)); // an impossible wire type, never reached
+
+    let r = score_entry_opts(&pb, &g, "Rec", &scan_opts());
+    assert_eq!(r.termination, 2, "the boundary before the anomaly");
+    assert_eq!(r.matches, 1, "the snapshot's count, not the walk's");
+    assert_eq!(r.out_of_range, 0, "the anomaly is behind the boundary");
+    assert!(!r.vetoed, "the walk stopped before the impossible tag");
+
+    // The tail really is poisonous: `Score`, which reads on, chokes on it.
+    assert!(score_entry(&pb, &g, "Rec").vetoed);
+}
+
+/// Spec 0313 test 6 / N1. `EntryScore::truncated` has no site to be set from
+/// under `Policy::Scan`: `end_undeclared` is refused there (spec 0310 N2), so
+/// every `cut_or_veto` takes its `veto_all` arm. A record whose last field
+/// runs off the end therefore reports the clean prefix with the flag clear —
+/// which is why S2's definition of clean does not name it.
+#[test]
+fn a_scan_never_sets_truncated() {
+    let g = compile_and_load(&scan_merged(
+        vec![
+            uint32(1, FieldLabel::Optional),
+            string(2, FieldLabel::Optional),
+        ],
+        &[],
+    ));
+
+    let mut pb = field_varint(1, 1); // 0..2 — the last clean boundary
+    pb.extend(field_len(2, b"hello")); // declares five bytes...
+    pb.truncate(pb.len() - 2); // ...and leaves three
+
+    let r = score_entry_opts(&pb, &g, "Rec", &scan_opts());
+    assert!(!r.truncated, "unreachable under `Scan`, by N1");
+    assert!(!r.vetoed, "an overrun reports the clean prefix instead");
+    assert_eq!(r.termination, 2);
+    assert_eq!(r.matches, 1);
+}

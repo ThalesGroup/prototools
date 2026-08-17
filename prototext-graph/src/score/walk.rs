@@ -250,6 +250,24 @@ struct ActiveEntry {
     pending_unknowns: u64,
 }
 
+/// The last depth-0 field boundary at which an entry was still clean
+/// (spec 0313 S1).
+///
+/// Two fields and no more, because a snapshot is by definition taken where
+/// every anomaly counter reads zero (spec 0313 S2): there is nothing else
+/// about a clean entry to remember. Restoring one is "zero the anomalies and
+/// put these two back".
+///
+/// `Default` is the truthful answer for an entry that never reached a
+/// boundary — a record of no bytes, matching nothing.
+#[derive(Clone, Copy, Default)]
+struct Snapshot {
+    /// The boundary itself: the first byte of the tag not yet read, which is
+    /// where a record ending here ends.
+    at: usize,
+    matches: u64,
+}
+
 /// Global walk state shared across all recursion levels.
 struct WalkState<'a, 'g> {
     graph: &'a ArchivedCompiledGraph,
@@ -312,6 +330,14 @@ struct WalkState<'a, 'g> {
     /// every occurrence in that part's walk. Measured on googleapis startup:
     /// 24 walks, 23 313 resolutions, so ~971 lookups pay for each build.
     any_index: Option<HashMap<&'a str, u32>>,
+    /// One [`Snapshot`] per entry under [`Policy::Scan`], and an empty `Vec`
+    /// under every other policy (spec 0313 N3).
+    ///
+    /// Empty rather than absent because the one branch that reads it is
+    /// already gated on the policy, so an `Option` would buy a second check
+    /// and nothing else. The allocation is 16 bytes per root, paid only by
+    /// the scanner — which walks one root.
+    snapshots: Vec<Snapshot>,
 }
 
 impl<'a, 'g> WalkState<'a, 'g> {
@@ -335,6 +361,11 @@ impl<'a, 'g> WalkState<'a, 'g> {
             packed_scratch: Vec::new(),
             elem_verdicts: Vec::new(),
             any_index: None,
+            snapshots: if opts.policy == Policy::Scan {
+                vec![Snapshot::default(); n]
+            } else {
+                Vec::new()
+            },
         }
     }
 
@@ -381,11 +412,20 @@ impl<'a, 'g> WalkState<'a, 'g> {
         }
         self.vetoed[ei / 64] |= 1 << (ei % 64);
         self.veto_epoch += 1;
-        self.scores[ei].vetoed = true;
         if let Some(ref dbg) = self.debug_fqdn {
             if self.scores[ei].fqdn == *dbg {
                 eprintln!("[veto] {} — {}", self.scores[ei].fqdn, reason());
             }
+        }
+        // Spec 0313 S3. Under `Scan` a veto ends the *reading*, not the
+        // candidate: the record is whatever was clean before it, and this is
+        // the one funnel every veto site passes through. The bitset set above
+        // — not this flag — is what the walk steers by, so the entry still
+        // leaves the active set exactly as it did.
+        if self.policy == Policy::Scan {
+            report_last_clean_boundary(self.scores, &self.snapshots, ei);
+        } else {
+            self.scores[ei].vetoed = true;
         }
     }
 }
@@ -601,6 +641,32 @@ pub fn score_subset<'g>(
     score_message_multi(pb, 0, initial_active, None, &mut ws, 0, opts.end_undeclared);
 
     scores
+}
+
+/// Spec 0313 S3. The walk has abandoned this entry, so it reports the last
+/// depth-0 boundary at which it was clean instead of reporting nothing.
+///
+/// Called where an entry is *abandoned*, and deliberately nowhere else. An
+/// entry that **finished** — by a spec 0238 S12 termination, or by reaching
+/// the end of the buffer — has already reported its own true boundary, and
+/// its counters describe the record that ended rather than the walk that
+/// overran it. A `required` field such a record genuinely lacks is charged
+/// there by [`apply_cardinality_multi`] and has to survive; an end-of-walk
+/// sweep over the counters cannot tell that verdict from the wreckage of an
+/// overrun, which is why there is no end-of-walk sweep.
+///
+/// No cardinality pass runs here, for the reason spec 0310 S5 gives about the
+/// cut frame: such a check is a statement about a frame that ended, and this
+/// one did not end — it was left.
+fn report_last_clean_boundary(scores: &mut [EntryScore], snapshots: &[Snapshot], e: usize) {
+    let snap = snapshots[e];
+    let s = &mut scores[e];
+    s.matches = snap.matches;
+    s.unknowns = 0;
+    s.mismatches = 0;
+    s.non_canonical = 0;
+    s.out_of_range = 0;
+    s.termination = snap.at;
 }
 
 /// Split `graph`'s roots into at most `n` parts, balanced by size and
@@ -1538,6 +1604,60 @@ fn score_message_multi_inner(
             return buflen;
         }
 
+        // ── SCAN: snapshot, and stop on an anomaly (spec 0313 S1, S3) ─────────
+        //
+        // A depth-0 field boundary, in the only sense that matters: the
+        // previous top-level field is fully consumed and the next tag has not
+        // been read, so `pos` is exactly where a record ending here ends.
+        //
+        // The two halves are one pass because they answer one question. An
+        // entry still clean records this boundary as the furthest it is known
+        // to be good. An entry that is *not* clean can never be clean again —
+        // counters only rise and vetoes only get set — so no boundary beyond
+        // this one can improve on the snapshot it already has: it reports
+        // that snapshot and leaves the walk, instead of reading the rest of
+        // the buffer to reach an answer already settled. A veto is the same
+        // judgment reached the same way; it just cannot wait for a boundary,
+        // so `set_vetoed` makes it on the spot.
+        //
+        // Only entries the walk *abandons* are rewritten here. One that goes
+        // on to terminate cleanly, or to reach the end of the buffer, keeps
+        // the counters it earns there — see `report_last_clean_boundary`.
+        //
+        // Ahead of the S12 termination block for the same reason that block
+        // is ahead of the verdicts: at this instant nothing has been charged
+        // for the tag about to be read. A candidate that terminates cleanly
+        // takes its snapshot at this same `pos` first and then reports it as
+        // `termination`, so the two paths cannot disagree.
+        if ws.policy == Policy::Scan && depth == 0 {
+            // Unknowns are charged to the group and posted lazily (spec
+            // 0294), so an entry can be dirty while `scores` still reads
+            // zero. Posting them here is what lets the test below read one
+            // place instead of two.
+            flush_all(active, ws.scores);
+            for ae in active.iter_mut() {
+                ae.entries.retain(|e| {
+                    let e = *e as usize;
+                    let s = &ws.scores[e];
+                    let clean = s.unknowns == 0
+                        && s.mismatches == 0
+                        && s.non_canonical == 0
+                        && s.out_of_range == 0;
+                    let matches = s.matches;
+                    if clean {
+                        ws.snapshots[e] = Snapshot { at: pos, matches };
+                    } else {
+                        report_last_clean_boundary(ws.scores, &ws.snapshots, e);
+                    }
+                    clean
+                });
+            }
+            active.retain(|ae| !ae.entries.is_empty());
+            if active.is_empty() {
+                return pos;
+            }
+        }
+
         // ── Parse wire tag ────────────────────────────────────────────────────
 
         // Saved before the tag is decoded because this — not `pos` — is what
@@ -2211,6 +2331,7 @@ mod set_vetoed_tests {
             packed_scratch: Vec::new(),
             elem_verdicts: Vec::new(),
             any_index: None,
+            snapshots: Vec::new(),
         }
     }
 
@@ -2309,6 +2430,57 @@ mod set_vetoed_tests {
             "why".to_string()
         });
         assert_eq!(built.get(), 1, "a repeat veto must not build it again");
+    }
+
+    /// Spec 0313 test 7 / N3. The snapshot vector exists under
+    /// `Policy::Scan` and nowhere else, so the walk protolens and prototext
+    /// drive carries no state it does not use.
+    ///
+    /// Asserted on the field rather than through behavior, because there is
+    /// no behavior to observe: the point of N3 is that the default policy's
+    /// output is byte-for-byte what it was before the snapshots existed.
+    #[test]
+    fn scan_snapshots_do_not_reach_the_default_policy() {
+        let graph = tiny_graph();
+        let mut scores = vec![entry("pkg.Msg"), entry("pkg.Other")];
+
+        let scored = WalkState::new(&graph, &mut scores, &ScoringOpts::default(), None);
+        assert!(scored.snapshots.is_empty(), "no snapshots under `Score`");
+        drop(scored);
+
+        let opts = ScoringOpts {
+            policy: Policy::Scan,
+            ..Default::default()
+        };
+        let scanned = WalkState::new(&graph, &mut scores, &opts, None);
+        assert_eq!(scanned.snapshots.len(), 2, "one per entry under `Scan`");
+    }
+
+    /// Spec 0313 S3, at the funnel. Every veto site in the walk reaches
+    /// `set_vetoed`, and under `Scan` that is where a veto stops meaning "no
+    /// answer" and starts meaning "the answer is the last snapshot". The
+    /// entry still leaves the active set — the bitset, not the flag, is what
+    /// the walk steers by — so only the reported score changes.
+    #[test]
+    fn a_scan_veto_reports_the_last_snapshot() {
+        let graph = tiny_graph();
+        let mut scores = vec![entry("pkg.Msg")];
+        let mut ws = walk_state(&graph, &mut scores, None);
+        ws.policy = Policy::Scan;
+        ws.snapshots = vec![Snapshot { at: 12, matches: 3 }];
+        ws.scores[0].matches = 9;
+        ws.scores[0].unknowns = 4;
+
+        ws.set_vetoed(0, || "why".to_string());
+
+        assert!(ws.is_vetoed(0), "the entry must still leave the walk");
+        assert!(
+            !ws.scores[0].vetoed,
+            "a `Scan` veto is a boundary, not a no"
+        );
+        assert_eq!(ws.scores[0].termination, 12);
+        assert_eq!(ws.scores[0].matches, 3);
+        assert_eq!(ws.scores[0].unknowns, 0);
     }
 }
 

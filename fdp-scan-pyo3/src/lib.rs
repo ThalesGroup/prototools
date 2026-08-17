@@ -165,9 +165,18 @@ fn walk_candidates(data: &[u8]) -> Vec<(usize, usize)> {
 /// with record size (8 … 171 309 across googleapis.desc). A genuine record
 /// has zero defects at every size.
 ///
-/// A vetoed candidate yields no boundary at all: a veto fires inside a field
-/// already consumed, so it leaves the counters polluted by bytes that may lie
-/// past the true end of the record (spec 0238 N6).
+/// A veto no longer costs the boundary. Under `Policy::Scan` the walk reports
+/// the last offset at which the candidate was clean (spec 0313 S3), so a
+/// record followed by bytes that are not a record — the last member of an
+/// embedded `FileDescriptorSet`, which used to be lost whole to whatever the
+/// linker placed after it — comes back intact. The counters read here are
+/// therefore the ones the *recovered* record earned, and the only defect a
+/// recovered record can still carry is a `required` field it lacks, charged
+/// where it ended.
+///
+/// What that leaves is the one judgment the walk cannot make, because it is
+/// knowledge about `FileDescriptorProto` rather than about protobuf: whether
+/// the recovered record is worth reporting as a `.proto` file at all.
 fn score_candidate(data: &[u8], start: usize) -> Option<usize> {
     let opts = ScoringOpts {
         policy: Policy::Scan,
@@ -177,7 +186,65 @@ fn score_candidate(data: &[u8], start: usize) -> Option<usize> {
     if entry.vetoed || entry.unknowns != 0 || entry.mismatches != 0 {
         return None;
     }
-    Some(start + entry.termination)
+    let end = start + entry.termination;
+    if !declares_more_than_a_name(&data[start..end]) {
+        return None;
+    }
+    Some(end)
+}
+
+/// Whether `record` carries a top-level field other than `name` (spec 0313 S4).
+///
+/// Structural rather than a threshold on `score()`, which is a sum over
+/// matched fields and so ranges over four orders of magnitude with record
+/// size (8 … 171 309 across googleapis.desc). This states the thing that is
+/// actually wrong with a false positive — it declares no package, no message,
+/// no service, not even a syntax — instead of a number that has to be
+/// re-justified whenever the corpus or the scoring changes.
+///
+/// It is needed because cleanliness cannot reject these. Every false positive
+/// the scanner faces is a `.proto`-suffixed Java package name:
+/// `option java_package = "com.google.cloud.pubsublite.proto"` is field 1 of
+/// `FileOptions`, tag `0x0a`, which the anchor cannot tell from a file name.
+/// The record recovered from one is a flawless descriptor carrying its name
+/// and nothing else.
+///
+/// One field and not two: `name` + `package` is a real 19-byte descriptor, as
+/// is `name` + `dependency` at 31 — a file whose only statement is an
+/// `import`. Only the empty `.proto` file yields a descriptor with nothing
+/// but its own name.
+///
+/// The record is known to parse, the walk having just read it, so anything
+/// this cannot decode means the caller passed something else; `false` is the
+/// safe answer to that.
+fn declares_more_than_a_name(record: &[u8]) -> bool {
+    let mut pos = 0;
+    while pos < record.len() {
+        let Some((tag, tag_len)) = decode_varint(&record[pos..]) else {
+            return false;
+        };
+        if tag >> 3 != 1 {
+            return true;
+        }
+        // Field 1 is `name`, a string, so the only wire type it can wear is
+        // LEN and its payload is skipped by its own length prefix.
+        if tag & 7 != 2 {
+            return false;
+        }
+        pos += tag_len;
+        let Some((len, len_len)) = decode_varint(&record[pos..]) else {
+            return false;
+        };
+        let Some(next) = pos
+            .checked_add(len_len)
+            .and_then(|p| p.checked_add(len as usize))
+            .filter(|&p| p <= record.len())
+        else {
+            return false;
+        };
+        pos = next;
+    }
+    false
 }
 
 fn decode_varint(data: &[u8]) -> Option<(u64, usize)> {
@@ -200,9 +267,12 @@ fn decode_varint(data: &[u8]) -> Option<(u64, usize)> {
 mod tests {
     use super::*;
 
-    /// Build a minimal FileDescriptorProto encoding with just field 1 (name).
-    /// Returns the encoded bytes.
-    fn make_fdp(name: &str) -> Vec<u8> {
+    /// A message carrying just field 1, `name` — a `FileDescriptorProto` or a
+    /// `DescriptorProto` depending on where it is put.
+    ///
+    /// Not usable on its own as a scanner fixture: a record with no top-level
+    /// field but its name is refused (spec 0313 S4). Use [`make_fdp`].
+    fn name_field(name: &str) -> Vec<u8> {
         let mut buf = Vec::new();
         // field 1, wire type 2 (length-delimited)
         buf.push(0x0A);
@@ -220,6 +290,14 @@ mod tests {
             }
         }
         buf.extend_from_slice(name_bytes);
+        buf
+    }
+
+    /// The smallest `FileDescriptorProto` the scanner will report: a `name`
+    /// and a `package`, which is what a real 19-byte descriptor looks like.
+    fn make_fdp(name: &str) -> Vec<u8> {
+        let mut buf = name_field(name);
+        buf.extend_from_slice(&framed(2, b"p"));
         buf
     }
 
@@ -242,8 +320,10 @@ mod tests {
 
     #[test]
     fn test_truncated_fdp_not_returned() {
-        // A FDP whose name field is cut off mid-string — should not be returned.
-        let fdp = make_fdp("foo.proto");
+        // A FDP whose name field is cut off mid-string — should not be
+        // returned. `name_field`, not `make_fdp`, so that the bytes removed
+        // are the name's own and the test still says what it says.
+        let fdp = name_field("foo.proto");
         let truncated = &fdp[..fdp.len() - 3]; // cut off last 3 bytes of name
 
         let ranges = scan_bytes(truncated);
@@ -358,7 +438,7 @@ mod tests {
     fn make_fdp_with_messages(name: &str, messages: usize) -> Vec<u8> {
         let mut buf = make_fdp(name);
         for i in 0..messages {
-            let descriptor = make_fdp(&format!("M{i}")); // DescriptorProto.name
+            let descriptor = name_field(&format!("M{i}")); // DescriptorProto.name
             buf.extend_from_slice(&framed(4, &descriptor));
         }
         buf
@@ -430,6 +510,116 @@ mod tests {
                 Some(fdp.len()),
                 "an FDP with {messages} message_type entries was rejected"
             );
+        }
+    }
+
+    // ── Spec 0313: a record ends at its last clean boundary ──────────────────
+
+    /// Spec 0313 test 1, in its synthetic form: a complete record followed by
+    /// arbitrary bytes is still recovered, at its true end.
+    ///
+    /// Both tails, because the pair is what killed the narrow fix. `0x77` is
+    /// wire type 7, which no tag can wear, so the walk dies parsing it.
+    /// `0x18 0x01` is a perfectly legal tag for `dependency` — declared, and
+    /// repeated, so spec 0238 S12's lookahead lets it through — carrying the
+    /// wrong wire type, so the walk dies a field later and somewhere else. A
+    /// rule keyed on either death recovers one record and loses the other.
+    #[test]
+    fn a_record_followed_by_rubbish_is_still_recovered() {
+        for tail in [&[0x77u8][..], &[0x18, 0x01][..]] {
+            let fdp = make_fdp("foo.proto");
+            let mut buf = fdp.clone();
+            buf.extend_from_slice(tail);
+
+            assert_eq!(
+                scan_bytes(&buf),
+                vec![(0, fdp.len())],
+                "trailing bytes {tail:02x?}"
+            );
+        }
+    }
+
+    /// Spec 0313 test 5 / N1. A cut record is reported as the last depth-0
+    /// boundary before the cut. That is the accepted consequence of having no
+    /// rule of its own for truncation: what comes back is never itself a cut
+    /// record — every field in it was read whole — but nothing says the source
+    /// was longer.
+    ///
+    /// And when the cut lands before the record's second depth-0 field, the
+    /// structural floor refuses it outright rather than handing back a stub
+    /// (S4).
+    #[test]
+    fn a_cut_record_reports_its_clean_prefix() {
+        let whole = make_fdp_with_messages("foo/bar.proto", 3);
+        let two = make_fdp_with_messages("foo/bar.proto", 2);
+        let cut = &whole[..whole.len() - 3]; // most of the third entry gone
+
+        assert_eq!(
+            scan_bytes(cut),
+            vec![(0, two.len())],
+            "the boundary before the cut, not the cut"
+        );
+
+        let name_and_package = make_fdp("foo/bar.proto");
+        let cut = &name_and_package[..name_and_package.len() - 1];
+        assert!(
+            scan_bytes(cut).is_empty(),
+            "a clean prefix of one field is not a descriptor"
+        );
+    }
+
+    /// Spec 0313 test 3 / S4. The false positive the scanner actually faces.
+    /// `option java_package = "com.google.cloud.pubsublite.proto"` is field 1
+    /// of `FileOptions` — tag `0x0a`, a plausible path, and at the anchor
+    /// indistinguishable from a file name. Its first boundary is a flawless
+    /// one-field descriptor, so cleanliness cannot reject it and the veto
+    /// arrives only at the boundary after; without the floor the stub is
+    /// handed back.
+    #[test]
+    fn a_java_package_name_is_not_a_descriptor() {
+        let stub = name_field("com.google.cloud.pubsublite.proto");
+        assert_eq!(score_candidate(&stub, 0), None);
+        assert!(scan_bytes(&stub).is_empty());
+
+        // One further depth-0 field and the same anchor is a real, if tiny,
+        // descriptor: the floor is one field, not two.
+        let mut real = stub.clone();
+        real.extend_from_slice(&framed(2, b"pkg"));
+        assert_eq!(score_candidate(&real, 0), Some(real.len()));
+    }
+
+    /// Spec 0313 test 4 / S2. Every member of the corpus, scored on its own
+    /// declared extent, is clean under the strict definition — including the
+    /// two sloppiness counters the accept rule of spec 0239 ignores. This is
+    /// what licenses naming them in S2, and it must be re-run if either gains
+    /// a new site.
+    #[test]
+    #[ignore = "needs a googleapis.desc in PROTOSCAN_CORPUS_DESC"]
+    fn every_real_descriptor_is_clean_at_its_own_end() {
+        let data = corpus();
+        let opts = ScoringOpts {
+            policy: Policy::Scan,
+            ..Default::default()
+        };
+        for (start, end) in framing_boundaries(&data) {
+            let e = score_one(&data[start..end], FDP, wkt_graph().graph(), &opts)
+                .expect("FileDescriptorProto is a root of the embedded graph");
+            assert!(
+                !e.vetoed
+                    && e.unknowns == 0
+                    && e.mismatches == 0
+                    && e.non_canonical == 0
+                    && e.out_of_range == 0,
+                "record at {start} is not clean: vetoed={} unknowns={} \
+                 mismatches={} non_canonical={} out_of_range={}",
+                e.vetoed,
+                e.unknowns,
+                e.mismatches,
+                e.non_canonical,
+                e.out_of_range,
+            );
+            assert!(!e.truncated, "record at {start}: `Scan` cannot set this");
+            assert_eq!(e.termination, end - start, "record at {start}");
         }
     }
 }
