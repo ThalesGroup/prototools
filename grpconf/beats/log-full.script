@@ -4,7 +4,7 @@
 
 # Beat 10 + 11 (merged) of grpconf/synopsis.md — 5:00 + 1:30.
 #
-# Payload: grpconf/stage/boblog, 20 198 bytes.
+# Payload: grpconf/stage/boblog, 20 243 bytes.
 # Database: grpconf/stage/googleapis.desc — 7 771 files, 58 777 types.
 #
 # Invocation:
@@ -154,21 +154,25 @@ steps:
     override: override /3:4 --as google.maps.routing.v2.ComputeRoutesRequest
 
   # -----------------------------------------------------------------------
-  # MOVE 3: reconstructed source earns its keep, then w + four anomalies
+  # MOVE 3: reconstructed source earns its keep, then w + three anomalies
+  #
+  # The tour crosses two entries: anomaly 1 lives in the first Places
+  # request, anomalies 2 and 3 in the route request.  Anomaly 4 is the
+  # truncated tail, which beat 9 already showed and the export step below
+  # returns to.
   # -----------------------------------------------------------------------
 
   - text: |
       Now the part this talk is actually about.
 
-      Navigate to the route request's request field and press w.
-      The bytes that each line was decoded from appear underneath it,
-      in three severity tiers.
+      Navigate to a request field and press w.  The bytes that each line
+      was decoded from appear underneath it, in three severity tiers.
 
       This is where "non-canonical" stops being an abstraction.
       It is a color on a byte.
 
-      Four anomalies follow.  The display takes 200 ms.  Nobody absorbs
-      it in 200 ms.  Go slowly.
+      Three anomalies follow, in two different entries.  The display
+      takes 200 ms.  Nobody absorbs it in 200 ms.  Go slowly.
     fold: all
     unfold: [/3]
     node: language_code
@@ -176,14 +180,45 @@ steps:
   - text: |
       1.  A singular field that occurs twice.
 
-      Perfectly legal on the wire.  The specification says last one wins.
-      protoc --decode shows you the second value, note: "ok".
+      This one is back in the first Places request, so we leave the route
+      request for a moment.  text_query is singular in the schema, and it
+      is here twice.  Perfectly legal on the wire: the specification says
+      last one wins, so protoc --decode shows you the second one,
+      "coffee in Grenoble", and stops.
 
-      Both are here, in wire order, because both are on the wire.
-      The first one is Bob's API key.
+      Both are on the wire, so both are here, in wire order.
+    fold: all
+    unfold: [/1]
+    node: "coffee in Grenoble"
 
-      This program writes his credential into its own log file, in a
-      place a normal decoder will never print.
+  - text: |
+      And the first one is not a place name.
+
+      It is 164 bytes of message wearing a string.  The field is declared
+      string, so nothing about the schema invites a second look — but the
+      cue is scored on the bytes, not on the declaration, and under
+      googleapis those bytes have exactly one candidate:
+
+          google.rpc.Status    +8    (no runner-up)
+
+      So the cue does not merely say "this is not text".  It names the
+      message.  Press Enter to take it at its word.
+    node: "debug: outbound call authenticated"
+    wire-line: "debug: outbound call authenticated"
+    override: override /1/4/1 --as google.rpc.Status
+
+  - text: |
+      Open it and the Any says what it is carrying, in plain text:
+
+          type.googleapis.com/google.rpc.ErrorInfo
+
+      and inside that, the metadata bobapp attached to its debug trace:
+
+          "x-goog-api-key": "AIza..."
+
+      Bob's app writes the credential it authenticated with into its own
+      log, inside a field a normal decoder prints as a string it will
+      never show you.
     node: "x-goog-api-key"
     wire-line: "x-goog-api-key"
 
@@ -197,6 +232,10 @@ steps:
 
       Look at the tail of the byte run: that is the padding.  Beat 4
       noticed it in passing; this is the payoff.
+
+      Back in the route request for this one and the next.
+    fold: all
+    unfold: [/3]
     node: val_ohb
     wire-line: val_ohb
 
@@ -209,6 +248,8 @@ steps:
       it is called.
 
       This is the one an ordinary decoder drops on the floor.
+    fold: all
+    unfold: [/3]
     node: "99:"
     wire-line: "99:"
 
