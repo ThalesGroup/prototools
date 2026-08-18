@@ -104,10 +104,15 @@ query is seconds of work rather than milliseconds.
 - **N3.** Cancelling and restarting a promoted query at its new tier.
   The parts already handed out keep the tier they were handed at — see
   S5 for what that costs.
-- **N4.** The one-second `:q`. `override_pane::inferred_score` in the
-  admit fast path takes no cancel flag, unlike the `partition.walk`
-  beside it, so a worker inside it when the stop lands runs it to
-  completion. Real, unmeasured, and a separate change.
+- **N4.** The one-second `:q`. **The attribution here was wrong — see
+  spec 0320, which measured it.** The second was glibc freeing the baked
+  document after the terminal had already been restored; every worker is
+  joined inside 17 ms, burst or idle.
+
+  What is true, and remains out of scope: `override_pane::inferred_score`
+  in the admit fast path takes no cancel flag, unlike the
+  `partition.walk` beside it, so a worker inside it when the stop lands
+  runs it to completion. Under 17 ms, so not a quit problem.
 
 ## Specification
 

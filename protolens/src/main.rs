@@ -730,6 +730,30 @@ fn main() -> ExitCode {
                 eprintln!("error: {e}");
                 return ExitCode::FAILURE;
             }
+            // Spec 0320 S1: do not take this apart. Dropping a baked
+            // `App` for `googleapis.desc` is a second of glibc free-list
+            // coalescing (91% of it in `malloc_consolidate`/`unlink_chunk`
+            // under `Arc::drop_slow`), handing spec 0222's per-slot line
+            // strings back to an allocator whose whole address space the
+            // kernel is about to reclaim in one act. `tui::run` has
+            // already restored the terminal — measured at 17 ms — so
+            // every millisecond after it is the user watching a dead
+            // process tidy up.
+            //
+            // Safe because nothing in this chain has anything left to do:
+            // the heat worker was shut down inside `tui::run` (spec 0152)
+            // and so cannot write to the restored terminal; `Blob`'s
+            // mapping is a `munmap` the kernel performs anyway; and
+            // `SegmentScan`'s abort-and-join exists to keep a superseded
+            // sweep from outliving the data it borrows, of which there is
+            // no next borrower. The two file-removing destructors in this
+            // crate are `#[cfg(test)]` and never on this path — a leaked
+            // temp file would be a real cost and was checked for.
+            //
+            // Recheck that list before giving `App` a field whose `Drop`
+            // does anything observable. Only the success path: a failure
+            // returns above and drops normally.
+            std::mem::forget(app);
             ExitCode::SUCCESS
         }
     }
