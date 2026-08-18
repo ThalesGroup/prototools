@@ -109,6 +109,12 @@ struct ActiveQuery {
 /// scrolled away and back is re-stamped with the current generation by
 /// construction, instead of inheriting the stale stamp of the entry it
 /// merged into.
+///
+/// Spec 0319 S2 qualifies that: only a push at `Visible` or above
+/// re-stamps. A `Prefetch` re-ask says nothing about what is on screen,
+/// and once spec 0319 S1 stopped such a re-ask from demoting the entry
+/// out of the staleness check, re-stamping would have kept a request
+/// alive for a window nobody is looking at.
 #[derive(Clone)]
 struct QueuedRequest {
     req: HeatRequest,
@@ -379,8 +385,18 @@ impl HeatRequestQueue {
     /// `in_flight` means *a walk is happening right now*, not *somebody
     /// intends to finish this* — which is also the reading its other
     /// consumer, the activity dot, wants.
-    fn end_sweep(&self, start: usize) {
+    ///
+    /// Returns the tier the range was registered at, which under spec
+    /// 0319 S3 need not be the tier it was admitted at. The `Task::Admit`
+    /// early-outs decide whether to wake the main thread by it, for the
+    /// same reason `deposit_part` hands its request back.
+    fn end_sweep(&self, start: usize) -> Option<Tier> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let was = state
+            .in_flight
+            .iter()
+            .find(|(s, _)| *s == start)
+            .map(|&(_, t)| t);
         state.in_flight.retain(|(s, _)| *s != start);
         state.active.retain(|q| q.start != start);
         self.publish_in_flight(&state);
@@ -388,6 +404,7 @@ impl HeatRequestQueue {
         // to everyone who stood aside for it, and this is the only thing
         // that will tell them.
         self.condvar.notify_all();
+        was
     }
 
     /// Registers the query over `start` as a set of `parts` tasks (spec
@@ -413,17 +430,27 @@ impl HeatRequestQueue {
     }
 
     /// Accounts for a finished part (spec 0262 S4). `Some` — carrying
-    /// every run the query produced — exactly for the worker that walked
-    /// its **last** part; that worker merges and records.
+    /// the query's own request and every run it produced — exactly for
+    /// the worker that walked its **last** part; that worker merges and
+    /// records.
     ///
     /// The merge is charged to a worker rather than to a collector on
     /// purpose, and it is not a detail: merged serially it costs 244 ms
     /// per screenful on googleapis against 96 ms merged in the pool.
+    ///
+    /// The request comes back with the runs (spec 0319 S4) rather than
+    /// being taken from the `Task::Walk` that carried this part, because
+    /// the task's copy was made when the part was handed out and the
+    /// query may have been promoted since. What the finishing worker
+    /// decides with it — the tier its cache entries are written at, and
+    /// whether the completion wakes the main thread — must follow the
+    /// query as it now stands, or a promotion arriving after the last
+    /// hand-out has no effect at the one moment it matters.
     fn deposit_part(
         &self,
         start: usize,
         run: crate::decode::RankedCandidates,
-    ) -> Option<Vec<crate::decode::RankedCandidates>> {
+    ) -> Option<(HeatRequest, Vec<crate::decode::RankedCandidates>)> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let i = state.active.iter().position(|q| q.start == start)?;
         let query = &mut state.active[i];
@@ -435,7 +462,8 @@ impl HeatRequestQueue {
         if query.outstanding > 0 || !query.pending.is_empty() {
             return None;
         }
-        Some(state.active.remove(i).runs)
+        let query = state.active.remove(i);
+        Some((query.req, query.runs))
     }
 
     /// Gives a part back unwalked (spec 0262 S8) — its run was cancelled
@@ -508,10 +536,22 @@ impl HeatRequestQueue {
     /// G5) and, tagged onto the merged request itself, what the
     /// eventual worker completion should be tagged with (G4).
     /// Merging by `range.start` (union window, newest `current_key`
-    /// wins) happens regardless of tier — the promoting `peek` that
-    /// looks up the existing entry already applies `tier`'s own
-    /// promotion, so `upsert`'s subsequent `max` is a no-op on top of
-    /// it.
+    /// wins) happens regardless of tier.
+    ///
+    /// The merged tier is the **higher** of the two (spec 0319 S1), and
+    /// that is the whole of what keeps a request agreeing with the band
+    /// the queue put it in. `upsert` refuses to retag or relink an entry
+    /// on a push below its tier — a background re-check must not re-rank
+    /// what the user asked for — but it does write the payload, so
+    /// handing it a request tagged with the lower tier leaves the slot
+    /// ranked `Visible` and the request inside it saying `Prefetch`.
+    /// Everything downstream reads the request: the in-flight
+    /// registration and so the activity dot, the query's standing among
+    /// the pool's parts, and whether the completion wakes the main
+    /// thread at all. `prefetch_step` walks outward from the cursor and
+    /// skips settled nodes, so the ranges it re-asks at `Prefetch` are
+    /// exactly the unsettled rows the render pass asked for at `Visible`
+    /// in the same frame — this is not a corner.
     fn push(&self, req: HeatRequest, tier: Tier) -> UpsertOutcome<usize> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let key = req.range.start;
@@ -528,14 +568,19 @@ impl HeatRequestQueue {
                 current_key: req.current_key.clone(),
                 start: existing.req.start.min(req.start),
                 end: existing.req.end.max(req.end),
-                tier,
+                tier: existing.req.tier.max(tier),
             },
             None => HeatRequest { tier, ..req },
         };
-        // Spec 0252 S1: always the *current* generation, including on a
-        // merge — the ask being recorded is this one, whatever window
-        // the entry it merged into belonged to.
-        let generation = state.generation;
+        // Spec 0252 S1: the current generation, because the ask being
+        // recorded is this one, whatever window the entry it merged into
+        // belonged to. Spec 0319 S2: unless this ask is a `Prefetch`
+        // one, which says nothing about what is on screen and so has no
+        // business vouching for a `Visible` entry's window.
+        let generation = match &existing {
+            Some(existing) if tier < Tier::Visible => existing.generation,
+            _ => state.generation,
+        };
         let outcome = state.mru.upsert(
             key,
             QueuedRequest {
@@ -544,9 +589,52 @@ impl HeatRequestQueue {
             },
             tier,
         );
+        // Spec 0319 S3: and if the range is already being walked, the
+        // ask reaches the walk rather than the queue.
+        let promoted = Self::promote_live_locked(&mut state, key, tier);
         self.publish_occupancy(&state);
+        if promoted {
+            self.publish_in_flight(&state);
+        }
         self.condvar.notify_one();
         outcome
+    }
+
+    /// Spec 0319 S3: raises the tier of the query over `start`, if one
+    /// is live, to `tier`. `true` if anything changed, which is when the
+    /// caller owes a `publish_in_flight`.
+    ///
+    /// Once a range is registered in `in_flight`, spec 0250 S4 drops
+    /// every later request for it — correctly, since a second sweep
+    /// would compute the same answer. But the request being dropped may
+    /// be more urgent than the query it is dropped in favor of, and
+    /// dropping it whole discards that. A speculative read-ahead over a
+    /// range the reader has since scrolled to is then still scheduled,
+    /// still reported and still completed as speculation, and a
+    /// `Prefetch` completion does not wake the main thread (spec 0164
+    /// G10) — so the answer lands in the cache and is not drawn until
+    /// something else forces a frame.
+    ///
+    /// Only the tier moves. The window and `current_key` of the later
+    /// ask stay behind on the queue entry and take spec 0250 S4's
+    /// drop-and-re-push path: parts of this query have already been
+    /// walked against the request as it stood, and widening it now would
+    /// mean the parts still to come answered a different question.
+    fn promote_live_locked(state: &mut HeatRequestQueueState, start: usize, tier: Tier) -> bool {
+        let mut changed = false;
+        for (_, t) in state.in_flight.iter_mut().filter(|(s, _)| *s == start) {
+            if tier > *t {
+                *t = tier;
+                changed = true;
+            }
+        }
+        if let Some(query) = state.active.iter_mut().find(|q| q.start == start) {
+            if tier > query.req.tier {
+                query.req.tier = tier;
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// Blocks until there is something for a worker to do, or `stop` is
@@ -1254,12 +1342,14 @@ pub(super) fn heat_worker_loop(
                         continue;
                     }
                 }
-                queue.end_sweep(start);
                 // Spec 0164 G10: a `Prefetch`-tier completion writes its
                 // cache entry but never wakes the main thread — a large
                 // read-ahead burst would otherwise mean thousands of
-                // no-op redraws.
-                if req.tier != Tier::Prefetch {
+                // no-op redraws. Spec 0319 S4: at the tier the range
+                // stands registered at, which a push landing during the
+                // check above may have raised.
+                let registered = queue.end_sweep(start);
+                if registered.unwrap_or(req.tier) != Tier::Prefetch {
                     let _ = progress.send(AppEvent::HeatWorkerProgress);
                 }
             }
@@ -1306,13 +1396,17 @@ pub(super) fn heat_worker_loop(
                     queue.abandon_part(start, part);
                     continue;
                 }
-                let Some(runs) = queue.deposit_part(start, run) else {
+                let Some((live, runs)) = queue.deposit_part(start, run) else {
                     continue;
                 };
                 // Spec 0262 S4: the merge is the last part's own work.
-                record_sweep(&queue, &caches, start, &req, crate::sweep::merge(runs));
+                // Spec 0319 S4: `live`, not the `req` this part was
+                // handed, so a query promoted mid-walk caches its answer
+                // at the tier somebody is actually waiting at — and, at
+                // `Visible` or above, wakes them to see it.
+                record_sweep(&queue, &caches, start, &live, crate::sweep::merge(runs));
                 queue.end_sweep(start);
-                if req.tier != Tier::Prefetch {
+                if live.tier != Tier::Prefetch {
                     let _ = progress.send(AppEvent::HeatWorkerProgress);
                 }
             }
@@ -1970,6 +2064,141 @@ mod tests {
             (0, 3),
             "the lower-tier push's window must still be merged in"
         );
+        assert_eq!(
+            merged.tier,
+            Tier::User,
+            "nor change its tier — this comment predates spec 0319 and \
+             was untrue for the four months it went unchecked"
+        );
+    }
+
+    // ── Spec 0319: a request never becomes less urgent ──────────────
+
+    /// S1, and the fault it fixes. `prefetch_step` re-asks for the very
+    /// rows the render pass has already asked for at `Visible`, so this
+    /// pair of pushes happens in every frame that draws a `[?]`. The
+    /// merge used to take the second push's tier outright, leaving the
+    /// entry ranked `Visible` by the band and labelled `Prefetch` by the
+    /// request everything downstream reads.
+    #[test]
+    fn a_prefetch_re_ask_does_not_demote_a_queued_visible_request() {
+        let queue = HeatRequestQueue::new();
+        queue.push(req_at(1, Tier::Visible), Tier::Visible);
+        queue.push(req_at(1, Tier::Prefetch), Tier::Prefetch);
+
+        let (start, admitted) = queue.take_one().expect("the entry is still queued");
+        assert_eq!(start, 1);
+        assert_eq!(admitted.tier, Tier::Visible);
+    }
+
+    /// S2: the other half of S1. A `Prefetch` re-ask keeps the entry
+    /// `Visible`, so it is once again subject to the window-staleness
+    /// check — and must not be exempted from it a second way, by having
+    /// its stamp refreshed. Read-ahead walks the whole document outward
+    /// from the cursor, so it reaches ranges that scrolled off screen
+    /// long ago.
+    #[test]
+    fn a_prefetch_re_ask_does_not_revive_a_stale_visible_request() {
+        let queue = HeatRequestQueue::new();
+        queue.push(req_at(1, Tier::Visible), Tier::Visible);
+        queue.new_window();
+        queue.push(req_at(1, Tier::Prefetch), Tier::Prefetch);
+
+        assert!(
+            queue.try_next_task().is_none(),
+            "the ask belongs to a window that is gone"
+        );
+        assert_eq!(queue.len(), 0, "and is discarded rather than served");
+    }
+
+    /// S3: the reader has scrolled to a range read-ahead had already
+    /// started on. Spec 0250 S4 drops the duplicate request, correctly —
+    /// but the urgency it carried must reach the walk, or the row the
+    /// user is looking at is finished as speculation.
+    #[test]
+    fn a_visible_ask_promotes_a_query_already_in_flight() {
+        let queue = HeatRequestQueue::new();
+        queue.push(req_at(1, Tier::Prefetch), Tier::Prefetch);
+        assert_eq!(queue.admit_one().unwrap().0, 1);
+        assert_eq!(queue.activity(), Some(Tier::Prefetch));
+
+        queue.push(req_at(1, Tier::Visible), Tier::Visible);
+        assert_eq!(
+            queue.in_flight_ranges(),
+            vec![(1, Tier::Visible)],
+            "the ask reaches the walk even though the request is dropped"
+        );
+        assert_eq!(
+            queue.activity(),
+            Some(Tier::Visible),
+            "so the activity dot stops calling this speculation"
+        );
+
+        assert!(
+            queue.try_next_task().is_none(),
+            "the duplicate is still dropped — only the tier moved"
+        );
+        assert_eq!(
+            queue.activity(),
+            Some(Tier::Visible),
+            "and draining it does not undo the promotion"
+        );
+    }
+
+    /// S4: a promotion that lands after the query's last part was handed
+    /// out still has to be honored, because the finishing worker decides
+    /// two things by the tier — what it caches the answer at, and
+    /// whether it wakes the main thread at all (spec 0164 G10). Reading
+    /// that off the `Task::Walk`'s own copy is what made the reported
+    /// `[?]` outlive its answer.
+    #[test]
+    fn a_promoted_query_hands_its_new_tier_to_the_last_part() {
+        let queue = HeatRequestQueue::new();
+        queue.activate(3, req_at(3, Tier::Prefetch), 1);
+        let Some(Task::Walk { req, .. }) = queue.try_next_task() else {
+            panic!("an active query's parts are what is on offer");
+        };
+        assert_eq!(req.tier, Tier::Prefetch, "handed out as speculation");
+
+        queue.push(req_at(3, Tier::Visible), Tier::Visible);
+        let (live, runs) = queue
+            .deposit_part(3, vec![("a.T".to_string(), 1)])
+            .expect("the only part back is the last one");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(
+            live.tier,
+            Tier::Visible,
+            "the query's own request, not the snapshot the part carried"
+        );
+    }
+
+    /// S5: promotion to `User` is the one case the parts already in
+    /// flight can see, and they see it the same way a fresh `User`
+    /// arrival is seen — put the part down and take it again at the new
+    /// tier. One part per busy worker is redone; the alternative is
+    /// reading the live tier under the lock once per wire field.
+    #[test]
+    fn promoting_an_in_flight_query_to_user_takes_the_pool() {
+        let queue = HeatRequestQueue::new();
+        queue.activate(5, req_at(5, Tier::Prefetch), 2);
+        let Some(Task::Walk { part, epoch, .. }) = queue.try_next_task() else {
+            panic!("an active query's parts are what is on offer");
+        };
+        assert!(!queue.stand_aside.load(Ordering::Relaxed));
+
+        queue.push(req_at(5, Tier::User), Tier::User);
+        assert!(
+            queue.stand_aside.load(Ordering::Relaxed),
+            "a User ask for the range being walked owes the pool the same \
+             clearing as a User ask for any other range"
+        );
+        assert_ne!(queue.abort_epoch.load(Ordering::Relaxed), epoch);
+
+        queue.abandon_part(5, part);
+        let Some(Task::Walk { req, .. }) = queue.try_next_task() else {
+            panic!("the promoted query is now the User work the pool is held for");
+        };
+        assert_eq!(req.tier, Tier::User, "and it is re-handed at the new tier");
     }
 
     /// Pushing past `HEAT_REQUEST_QUEUE_MAX_ENTRIES` caps the queue
@@ -2038,7 +2267,7 @@ mod tests {
                 .is_none(),
             "the first part back has nothing to merge yet"
         );
-        let runs = queue
+        let (_, runs) = queue
             .deposit_part(3, vec![("a.U".to_string(), 2)])
             .expect("the last part back is handed the whole query");
         assert_eq!(runs.len(), 2);
