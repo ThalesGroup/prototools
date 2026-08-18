@@ -2863,3 +2863,152 @@ fn a_scan_never_sets_truncated() {
     assert_eq!(r.termination, 2);
     assert_eq!(r.matches, 1);
 }
+
+// ── Spec 0324: a message with no fields is still a message ───────────────────
+
+/// `Rec { optional Nothing a = 1; optional bytes b = 2; }` where `Nothing`
+/// declares no field at all — the shape of `google.protobuf.Empty`, and the
+/// one the walk used to read as a `bytes` leaf because a zero-field message
+/// has no outgoing transition to be recognized by. Field 2 is a real `bytes`
+/// leaf, so the graph holds both of the states this spec exists to tell
+/// apart.
+fn zero_field_child_merged() -> Merged {
+    let mut states = std::collections::HashMap::new();
+    states.insert(
+        "Rec".to_string(),
+        vec![
+            ScoringField {
+                number: 1,
+                kind: ScoringKind::Node,
+                child: Some("Nothing".to_string()),
+                range: None,
+                label: FieldLabel::Optional,
+            },
+            ScoringField {
+                number: 2,
+                kind: ScoringKind::LenBytes,
+                child: None,
+                range: None,
+                label: FieldLabel::Optional,
+            },
+        ],
+    );
+    states.insert("Nothing".to_string(), vec![]);
+    Merged {
+        states,
+        node_kinds: std::collections::HashMap::new(),
+        roots: vec!["Rec".to_string()],
+        ..Default::default()
+    }
+}
+
+/// Spec 0324 test 1 (G1, S3): the predicate alone, isolated from any veto. A
+/// clean unknown tag inside the zero-field field is a field the candidate
+/// does not declare, so it costs `unknowns`. Before the fix the walk never
+/// entered, and the payload scored `matches: 1` — a perfect reading of bytes
+/// it had not looked at.
+#[test]
+fn a_zero_field_message_is_walked() {
+    let g = compile_and_load(&zero_field_child_merged());
+    let pb = field_len(1, &field_varint(7, 1));
+
+    let s = score_entry(&pb, &g, "Rec");
+    assert!(!s.vetoed, "a clean unknown tag is scored, not vetoed");
+    assert_eq!(s.unknowns, 1, "field 7 is not declared by `Nothing`");
+    assert_eq!(
+        s.matches, 1,
+        "the field itself still matches; only its contents are charged"
+    );
+}
+
+/// Spec 0324 test 2 (G1): the Background's A/B, as an assertion. Wire type 7
+/// is one no tag may carry, so it vetoes under a type with fields; it must
+/// veto under a type without them too.
+#[test]
+fn a_fault_in_a_zero_field_message_vetoes_its_parent() {
+    let g = compile_and_load(&zero_field_child_merged());
+    let pb = field_len(1, &[0x0f]); // field 1, wire type 7
+
+    assert!(
+        score_entry(&pb, &g, "Rec").vetoed,
+        "an impossible wire type inside `Nothing` disqualifies `Rec`"
+    );
+}
+
+/// Spec 0324 test 3: the reported case. An unclosed group has no length
+/// prefix to rescue it, so it is a fault of the frame it opens in — and the
+/// veto must reach the *root* entry, which is what makes this
+/// `propagate_vetoes` rather than a verdict local to the child walk.
+#[test]
+fn an_open_group_in_a_zero_field_message_vetoes() {
+    let g = compile_and_load(&zero_field_child_merged());
+    let pb = field_len(1, &tag(14, 3)); // START_GROUP, never closed
+
+    assert!(
+        score_entry(&pb, &g, "Rec").vetoed,
+        "the open group must reach `Rec`, not stop at `Nothing`"
+    );
+}
+
+/// Spec 0324 test 4: the common, legitimate case, and what stops the fix from
+/// turning every `Empty` in a corpus into a penalty. A present-but-empty
+/// zero-field message has nothing inside to charge.
+#[test]
+fn an_empty_zero_field_message_still_matches() {
+    let g = compile_and_load(&zero_field_child_merged());
+    let pb = field_len(1, &[]);
+
+    let s = score_entry(&pb, &g, "Rec");
+    assert!(!s.vetoed);
+    assert_eq!(s.matches, 1);
+    assert_eq!(s.unknowns, 0);
+    assert_eq!(s.score(), 1, "an `Empty` costs nothing to read");
+}
+
+/// Spec 0324 test 5 (S2): the normalization, pinned where it would otherwise
+/// break silently. `NodeEntry::wire_type` may say 10; `child_wire_type` may
+/// not, because the walk compares it against a tag's wire type — a value no
+/// tag can carry would make every message field a mismatch.
+#[test]
+fn a_message_node_is_not_a_bytes_leaf() {
+    let merged = zero_field_child_merged();
+    let (raw, reg) = graph::build(&merged);
+    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_, _| {});
+    let compiled = graph::compile(&raw, &reg, &partition, &merged.roots);
+
+    // Followed edge by edge from the root rather than counted, because the
+    // node table also holds the reserved `Any` and `MessageSet` states
+    // (spec 0089 §9) and they are message states too.
+    let rec = compiled.roots[0].state_id;
+    let child_of = |field: u32| {
+        let t = compiled
+            .transitions
+            .iter()
+            .find(|t| t.state_id == rec && t.field_number == field)
+            .expect("the field is declared");
+        let n = compiled
+            .nodes
+            .iter()
+            .find(|n| n.state_id == t.child_state_id)
+            .expect("the child has a node entry");
+        (t.child_wire_type, n.wire_type, n.is_string, n.trans_len)
+    };
+
+    assert_eq!(
+        child_of(1),
+        (2, serial::WT_NODE_MESSAGE, false, 0),
+        "`Nothing` is a message with no transitions, and its edge says LEN"
+    );
+    assert_eq!(
+        child_of(2),
+        (2, 2, false, 0),
+        "the `bytes` leaf it used to be indistinguishable from is unchanged"
+    );
+    assert!(
+        compiled
+            .transitions
+            .iter()
+            .all(|t| t.child_wire_type != serial::WT_NODE_MESSAGE),
+        "no edge may carry the internal discriminant"
+    );
+}

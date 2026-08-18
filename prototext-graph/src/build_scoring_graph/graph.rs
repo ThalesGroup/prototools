@@ -9,7 +9,9 @@ use std::collections::HashMap;
 use super::hopcroft::Partition;
 use super::load::{FieldLabel, Merged, NodeKind, ScoringField, ScoringKind};
 use super::serial::CompiledGraph;
-use super::serial::{ExtRangeSet, NodeEntry, RootEntry, TransitionEntry, NO_EXT_RANGES};
+use super::serial::{
+    ExtRangeSet, NodeEntry, RootEntry, TransitionEntry, NO_EXT_RANGES, WT_NODE_MESSAGE,
+};
 
 // ── Leaf sentinel node IDs ────────────────────────────────────────────────────
 //
@@ -174,7 +176,7 @@ pub struct RawGraph {
     pub edges: Vec<RawEdge>,
     /// Total node count: non-leaf nodes + all leaves.
     pub num_nodes: u32,
-    /// wire_type per non-leaf node ID (2=LENDEL, 3=GROUP).
+    /// wire_type per non-leaf node ID (10=MESSAGE, 3=GROUP).
     pub node_wire_types: HashMap<u32, u8>,
     /// Interned canonical extension-range sets, sorted (spec 0238 S5-S6).
     /// Sorted by the set itself rather than by first encounter, so the table
@@ -239,9 +241,11 @@ pub fn build(merged: &Merged) -> (RawGraph, LeafRegistry) {
     // This must happen before Hopcroft so the initial partition is correct.
     let mut node_wire_types: HashMap<u32, u8> = HashMap::new();
     for (fqdn, &node_id) in &node_ids {
+        // Spec 0324 S2: a message state says so, rather than borrowing the
+        // `2` a `bytes` leaf also carries. A group already said so with `3`.
         let wt = match merged.node_kinds.get(fqdn) {
             Some(NodeKind::Group) => 3u8,
-            _ => 2u8,
+            _ => WT_NODE_MESSAGE,
         };
         node_wire_types.insert(node_id, wt);
     }
@@ -485,10 +489,13 @@ fn link_transitions(nodes: &mut [NodeEntry], transitions: &mut [TransitionEntry]
     // state, and this reads the *destination*, which is in no useful order.
     for t in transitions.iter_mut() {
         t.child_wire_type = match nodes.binary_search_by_key(&t.child_state_id, |n| n.state_id) {
-            // wire types 8 (UINT32) and 9 (INT32) are internal
-            // discriminants; both are varint on the wire.
+            // wire types 8 (UINT32), 9 (INT32) and 10 (MESSAGE) are internal
+            // discriminants; the first two are varint on the wire, the third
+            // LEN. This is the one place the distinction must not leak —
+            // `child_wire_type` is compared against a tag's wire type.
             Ok(i) => match nodes[i].wire_type {
                 8 | 9 => 0,
+                WT_NODE_MESSAGE => 2,
                 wt => wt,
             },
             // Matches what the walk's own lookup used to answer for a child

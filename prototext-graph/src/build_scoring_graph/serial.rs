@@ -13,7 +13,19 @@ use rkyv::{Archive, Deserialize, Serialize};
 
 /// One node (state) in the compiled graph.
 ///
-/// `wire_type`: 0=UINT64, 1=I64, 2=LEN, 3=START_GROUP, 5=I32, 8=UINT32, 9=INT32.
+/// `wire_type`: 0=UINT64, 1=I64, 2=LEN, 3=START_GROUP, 5=I32, 8=UINT32,
+/// 9=INT32, 10=MESSAGE.
+///
+/// 8, 9 and 10 are internal discriminants, not wire types: they say what the
+/// state *is*, where the rest say how it is framed. 10 exists because a
+/// zero-field message and a `bytes` leaf are otherwise indistinguishable here
+/// — both `wire_type: 2, is_string: false, range_idx: 0xFFFF, trans_len: 0` —
+/// and the walk must descend into the first and not the second (spec 0324
+/// S1/S2). The build knows: Hopcroft seeds messages and leaves from two
+/// separate maps and never merges them; only the serialized node forgot.
+///
+/// `link_transitions` normalizes 10 back to the on-wire 2 for
+/// `TransitionEntry::child_wire_type`, which *is* compared against a tag.
 ///
 /// `is_string`: true iff wire_type=2 and a UTF-8 check is required.
 ///
@@ -146,7 +158,17 @@ const MAGIC: &[u8; 8] = b"PTSGRAPH";
 /// rejected rather than shimmed: a v4 file read as v5 would find whatever
 /// byte the old padding held there and compare it against the tag's wire
 /// type, so every field would be judged a match or a mismatch at random.
-pub const GRAPH_VERSION: u32 = 5;
+///
+/// 5 → 6: `NodeEntry.wire_type` discriminant 10 = MESSAGE (spec 0324 S2). A
+/// v5 file read as v6 would find `2` on every message node, so the walk would
+/// take the leaf branch for all of them and stop descending entirely — a
+/// plausible wrong answer of exactly the kind the check exists to prevent.
+pub const GRAPH_VERSION: u32 = 6;
+
+/// `NodeEntry::wire_type` for a message state (spec 0324 S2) — as opposed to
+/// a `bytes` leaf, which keeps the on-wire `2`. A group keeps `3`, which was
+/// already unambiguous.
+pub const WT_NODE_MESSAGE: u8 = 10;
 
 // ── Writing ───────────────────────────────────────────────────────────────────
 
@@ -184,6 +206,7 @@ pub fn dump_compiled(graph: &CompiledGraph) -> String {
     for n in &graph.nodes {
         out.push_str(&format!("  - id: {}\n", n.state_id));
         let type_str = match n.wire_type {
+            WT_NODE_MESSAGE => "message",
             9 => "int32",
             8 => "uint32",
             0 if n.range_idx == 0xFFFF => "uint64",

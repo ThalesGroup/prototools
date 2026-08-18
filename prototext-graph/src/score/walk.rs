@@ -29,7 +29,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use prototext_core::helpers::{payload_end, MAX_WIRE_DEPTH};
 use smallvec::SmallVec;
 
-use crate::build_scoring_graph::serial::{ArchivedCompiledGraph, ArchivedNodeEntry, NO_EXT_RANGES};
+use crate::build_scoring_graph::serial::{
+    ArchivedCompiledGraph, ArchivedNodeEntry, NO_EXT_RANGES, WT_NODE_MESSAGE,
+};
 
 // ── Wire-type constants (mirrors prototext-core/src/helpers/wire.rs) ──────────
 
@@ -985,15 +987,6 @@ fn in_ext_range(graph: &ArchivedCompiledGraph, state_id: u32, field_number: u32)
     graph.ext_ranges[start..end]
         .iter()
         .any(|r| r.0.to_native() <= field_number && field_number <= r.1.to_native())
-}
-
-/// True iff `state_id` has at least one outgoing transition, i.e. is a
-/// message/group state rather than a leaf (string/bytes) state.
-fn state_has_transitions(graph: &ArchivedCompiledGraph, state_id: u32) -> bool {
-    let t = &graph.transitions;
-    let start = t.partition_point(|e| e.state_id.to_native() < state_id);
-    t.get(start)
-        .is_some_and(|e| e.state_id.to_native() == state_id)
 }
 
 // ── Cardinality check helpers ─────────────────────────────────────────────────
@@ -2043,8 +2036,14 @@ fn score_message_multi_inner(
                             }
                         }
                         Verdict::Found(child, _label) => {
-                            let is_message = state_has_transitions(ws.graph, child);
+                            // Spec 0324 S3: asked of the node, not of the
+                            // transition table. "Has an outgoing edge" and
+                            // "is a message" are different questions, and a
+                            // zero-field message answers them differently —
+                            // which is how a fault inside one used to score
+                            // as a clean match.
                             let node = find_node(ws.graph, child);
+                            let is_message = node.is_some_and(|n| n.wire_type == WT_NODE_MESSAGE);
                             if is_message {
                                 record_occurrence(&mut ae.occurrences, field_number as u32);
                                 for &e in &ae.entries {

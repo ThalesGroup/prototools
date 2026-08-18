@@ -27,7 +27,7 @@ use super::graph::{
     leaf_attrs, LeafRegistry, RawGraph, ANY_NODE_ID, LEAF_I32, LEAF_I64, LEAF_INT32, LEAF_LEN,
     LEAF_STRING, LEAF_UINT32, LEAF_UINT64, MESSAGE_SET_NODE_ID, NUM_FIXED_LEAVES,
 };
-use super::serial::NO_EXT_RANGES;
+use super::serial::{NO_EXT_RANGES, WT_NODE_MESSAGE};
 
 /// The three attributes that separate message blocks in the initial partition:
 /// framing (`wire_type`), extensibility (`ext_range_idx`, spec 0238 S7) and the
@@ -137,6 +137,9 @@ pub fn minimize(
     let mut leaf_attr_to_block: HashMap<(u8, bool, u16), usize> = HashMap::new();
     // Note: leaf partition key is (wire_type, is_string, range_idx).
     // wire_type 8 = UINT32, 9 = INT32 ensure they start in distinct classes.
+    // Message states now key on 10 = MESSAGE (spec 0324 S2) where they used
+    // to key on 2. Every message moves together and no leaf moves at all, so
+    // the initial partition is renamed, not repartitioned.
     let mut block_of: Vec<usize> = vec![0usize; n];
     let mut num_blocks: usize = 0;
 
@@ -151,7 +154,10 @@ pub fn minimize(
             block_of[i] = b;
             continue;
         }
-        let wt = node_wire_types.get(&node_id).copied().unwrap_or(2);
+        let wt = node_wire_types
+            .get(&node_id)
+            .copied()
+            .unwrap_or(WT_NODE_MESSAGE);
         let ext = raw
             .node_ext_range_idx
             .get(&node_id)
