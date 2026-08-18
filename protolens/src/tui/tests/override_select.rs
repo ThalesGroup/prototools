@@ -131,6 +131,9 @@ fn t_opens_the_override_pane_on_an_unresolved_message_node() {
         total_lines: lines.len(),
         // Spec 0257 S1: a hand-built document was never bounded.
         stops: Vec::new(),
+        // Spec 0323 S2: a hand-built tree writes its own counts, so
+        // nothing in it is folded.
+        folded: FoldSet::default(),
         row_budget: None,
         // Spec 0222 S1/S2: a bracketed node keeps its header alone, and
         // the `}` is derived from it.
@@ -180,6 +183,9 @@ fn t_opens_the_override_pane_on_a_varint_scalar_field() {
         total_lines: lines.len(),
         // Spec 0257 S1: a hand-built document was never bounded.
         stops: Vec::new(),
+        // Spec 0323 S2: a hand-built tree writes its own counts, so
+        // nothing in it is folded.
+        folded: FoldSet::default(),
         row_budget: None,
         node_text: vec![Some(Box::from(lines[0].as_str()))],
         tree: vec![node],
@@ -336,14 +342,16 @@ fn t_opens_the_override_pane_on_a_length_delimited_scalar_field() {
     // decomposes `"hi"` further than this rendering shows, so the tree
     // has to be derived rather than written out.
     let arena = crate::decode::arena_of(&[0x0A, 0x02, b'h', b'i']);
-    let (tree, node_text, _stops) = crate::decode::build_tree(vec![span], &lines, &arena, &[]);
+    let built = crate::decode::build_tree(vec![span], &lines, &arena, &[]);
     let decoded = Decoded {
         total_lines: lines.len(),
         // Spec 0257 S1: a hand-built document was never bounded.
         stops: Vec::new(),
         row_budget: None,
-        node_text,
-        tree,
+        // Spec 0323 S2: from the same pass that wrote the counts.
+        folded: built.folded,
+        node_text: built.node_text,
+        tree: built.tree,
         root_type: "test.Scalar".to_string(),
         arena,
         blob: Arc::new(Blob::unwrapped(vec![0x0A, 0x02, b'h', b'i'])),
@@ -1706,6 +1714,9 @@ fn cold_cache_default_target_app() -> App {
     let decoded = Decoded {
         total_lines: lines.len(),
         stops: Vec::new(),
+        // Spec 0323 S2: a hand-built tree writes its own counts, so
+        // nothing in it is folded.
+        folded: FoldSet::default(),
         row_budget: None,
         node_text: vec![Some(Box::from(lines[0].as_str()))],
         tree: vec![node],

@@ -175,7 +175,7 @@ impl App {
     /// selection by one character should move the view by one column.
     pub(super) fn pan_to_caret(&mut self) {
         let usable = (self.main_area.width as usize)
-            .saturating_sub(1)
+            .saturating_sub(render::HEAT_FIELD_WIDTH)
             .saturating_sub(render::FOLD_FIELD_WIDTH);
         if usable == 0 {
             return;
@@ -210,7 +210,7 @@ impl App {
     /// exactly the case.
     ///
     /// `row_text_of`, not `row_content`: spec 0193 S1's fold margin is
-    /// gutter furniture, and a `⏷` (or the two blank columns that stand
+    /// gutter furniture, and a `▼` (or the two blank columns that stand
     /// in for one) pasted into a `.textproto` would not parse.
     ///
     /// One descent to enter the document and then a step per row (spec

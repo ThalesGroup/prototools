@@ -555,7 +555,7 @@ fn teleports_land_on_the_named_line_with_a_fold_above_them() {
     assert_eq!(app.cursor_line(), line, "search line");
     assert_eq!(app.cursor_display_row(), row, "search row");
     assert!(
-        app.folded.contains(&items[0]),
+        app.folded.contains(items[0]),
         "a search must not disturb a fold it did not land in"
     );
 

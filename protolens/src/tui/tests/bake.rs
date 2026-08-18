@@ -105,12 +105,12 @@ fn a_baked_document_is_the_unbounded_document() {
             .expect("an unbounded splice must succeed");
         app.document_lines()
     };
-    let want_counts = {
+    let (want_counts, want_folded) = {
         let (mut app, _) = repeated_message_fixture();
         let root = app.first_node;
         app.splice_override(root, Some("test.Outer".to_string()), None)
             .unwrap();
-        counts(&app)
+        (counts(&app), app.folded.clone())
     };
 
     // From `MIN_EXPAND_ROWS` up. A budget of 1 is not a smaller case of
@@ -143,10 +143,15 @@ fn a_baked_document_is_the_unbounded_document() {
             want_counts,
             "budget {budget}: same counts at every node"
         );
-        assert!(
-            app.folded.is_empty(),
-            "budget {budget}: and the bake invented no user fold: {:?}",
-            app.folded
+        // Spec 0323 S2: a splice writes every bracketed slot folded, so
+        // "no fold" is no longer the resting state and `is_empty` would
+        // be the wrong question. The claim that survives is the one this
+        // test was always making — the bake invents nothing. Whatever
+        // folds the unbounded splice ends with, the bounded one plus its
+        // drain must end with exactly those.
+        assert_eq!(
+            app.folded, want_folded,
+            "budget {budget}: and the bake invented no fold of its own"
         );
     }
 }
@@ -185,11 +190,11 @@ fn a_stop_on_screen_is_baked_before_the_queue_order() {
 
     assert_eq!(app.bake_step(), BakeStep::Visible);
     assert!(
-        !app.auto_folded.contains(&items[2]),
+        !app.auto_folded.contains(items[2]),
         "the stop the reader is looking at is the one that got a body"
     );
     assert!(
-        app.auto_folded.contains(&items[0]) && app.auto_folded.contains(&items[1]),
+        app.auto_folded.contains(items[0]) && app.auto_folded.contains(items[1]),
         "and the ones off screen waited their turn: {:?}",
         app.auto_folded
     );
@@ -349,7 +354,7 @@ fn a_stale_bake_queue_entry_is_skipped() {
     // The user arrives at the first stop and opens it by hand. It leaves
     // `auto_folded`, but the bake's queue still names it.
     app.open(items[0]);
-    assert!(!app.auto_folded.contains(&items[0]));
+    assert!(!app.auto_folded.contains(items[0]));
     assert_eq!(app.bake_queue.len(), queued, "the queue is not repaired");
 
     let steps = drain(&mut app);
@@ -577,7 +582,12 @@ fn an_opened_stop_expands_any_too() {
 
     let mut app = bounded_any_fixture(App::MIN_EXPAND_ROWS);
     let mut opened = 0;
-    while let Some(&stop) = app.auto_folded.iter().next() {
+    // `let … else` rather than `while let`, so that the borrow the
+    // iterator holds on `app` ends before `open` takes it mutably.
+    loop {
+        let Some(stop) = app.auto_folded.iter().next() else {
+            break;
+        };
         app.open(stop);
         opened += 1;
         assert!(opened < 100, "opening stops by hand must terminate");
@@ -622,7 +632,7 @@ fn a_bounded_startup_leaves_stops() {
         app.auto_folded
     );
     for i in [items[1], items[2]] {
-        assert!(app.auto_folded.contains(&i), "Item {i} must be a stop");
+        assert!(app.auto_folded.contains(i), "Item {i} must be a stop");
         assert!(
             app.bake_queue.contains(&i),
             "and must be queued for the bake"
@@ -634,7 +644,7 @@ fn a_bounded_startup_leaves_stops() {
         );
     }
     assert!(
-        !app.auto_folded.contains(&items[0]),
+        !app.auto_folded.contains(items[0]),
         "the first Item was inside the budget"
     );
 }
@@ -795,10 +805,7 @@ fn an_unbaked_fold_is_violet() {
     let violet = theme::status_color(Status::Unbaked, app.theme);
     assert!(violet.is_some(), "the fixture must run on an RGB palette");
 
-    assert!(
-        app.auto_folded.contains(&items[1]),
-        "the stop the bake owes"
-    );
+    assert!(app.auto_folded.contains(items[1]), "the stop the bake owes");
     assert_eq!(
         summary_colors(&mut app, items[1]),
         vec![violet; 7],
@@ -845,7 +852,7 @@ fn a_folded_stop_the_user_also_folded_stays_violet() {
     app.splash = false;
     let violet = theme::status_color(Status::Unbaked, app.theme);
 
-    assert!(app.auto_folded.contains(&items[1]));
+    assert!(app.auto_folded.contains(items[1]));
     app.folded.insert(items[1]);
 
     assert_eq!(summary_colors(&mut app, items[1]), vec![violet; 7]);
@@ -914,7 +921,7 @@ fn a_bake_above_the_viewport_holds_the_rows() {
     assert_eq!(before_top.node, items[2], "the setup must have scrolled");
 
     assert!(
-        app.auto_folded.contains(&items[1]),
+        app.auto_folded.contains(items[1]),
         "there must be a stop above the viewport to bake"
     );
     app.expand_auto_fold(items[1], App::BAKE_ROW_BUDGET);
@@ -956,7 +963,7 @@ fn an_anchor_on_a_footer_survives_its_body_arriving() {
     );
     assert_eq!(before_top.node, root);
 
-    assert!(app.auto_folded.contains(&items[1]));
+    assert!(app.auto_folded.contains(items[1]));
     app.expand_auto_fold(items[1], App::BAKE_ROW_BUDGET);
 
     let after_top = top_row(&app);
@@ -1001,7 +1008,7 @@ fn a_caret_on_a_brace_does_not_drag_the_viewport() {
     let before_top = top_row(&app);
     assert!(app.is_footer(before_top), "the setup must park on a brace");
 
-    assert!(app.auto_folded.contains(&items[1]));
+    assert!(app.auto_folded.contains(items[1]));
     app.expand_auto_fold(items[1], App::BAKE_ROW_BUDGET);
 
     assert_eq!(
@@ -1029,7 +1036,7 @@ fn a_bake_below_the_viewport_moves_nothing() {
     let before_scroll = app.scroll;
 
     assert!(
-        app.auto_folded.contains(&items[2]),
+        app.auto_folded.contains(items[2]),
         "the stop must be below the viewport"
     );
     app.expand_auto_fold(items[2], App::BAKE_ROW_BUDGET);
@@ -1179,18 +1186,18 @@ fn an_export_of_a_stop_is_whole() {
     let target = items[2];
     let sibling = items[1];
     assert!(
-        app.auto_folded.contains(&target) && app.auto_folded.contains(&sibling),
+        app.auto_folded.contains(target) && app.auto_folded.contains(sibling),
         "the fixture must leave both of the last two items unbaked"
     );
 
     app.set_cursor(target);
     let got = exported(&mut app, "stop", &[]).expect("the export must write a file");
     assert!(
-        !app.auto_folded.contains(&target),
+        !app.auto_folded.contains(target),
         "the export must have paid off the node it names"
     );
     assert!(
-        app.auto_folded.contains(&sibling),
+        app.auto_folded.contains(sibling),
         "and only that node — a sibling stop is the bake's business"
     );
 
@@ -1277,7 +1284,7 @@ fn a_descriptor_export_of_a_stop_has_its_fields() {
 
     let (mut app, items) = bounded_repeated_message_fixture(3);
     app.splash = false;
-    assert!(app.auto_folded.contains(&items[2]));
+    assert!(app.auto_folded.contains(items[2]));
     app.set_cursor(items[2]);
 
     let bytes =
@@ -1301,7 +1308,7 @@ fn a_refused_expansion_refuses_the_export() {
     let (mut app, items) = bounded_repeated_message_fixture(3);
     app.splash = false;
     let stop = items[2];
-    assert!(app.auto_folded.contains(&stop));
+    assert!(app.auto_folded.contains(stop));
 
     // A splice refuses when its target does not resolve, and
     // `expand_auto_fold` re-renders a node under the target its own
@@ -1338,12 +1345,7 @@ fn bake_subtree_attempts_each_node_once() {
         .intern(&(Some(Some("no.such.Type".to_string())), "items".to_string()));
     app.tree_mut()[stop].rendered_as = bogus;
 
-    let others: Vec<usize> = app
-        .auto_folded
-        .iter()
-        .copied()
-        .filter(|&i| i != stop)
-        .collect();
+    let others: Vec<usize> = app.auto_folded.iter().filter(|&i| i != stop).collect();
     assert!(
         !others.is_empty(),
         "the fixture must have a second stop, or the descent proves nothing"
@@ -1354,7 +1356,7 @@ fn bake_subtree_attempts_each_node_once() {
         "the refusal must be reported"
     );
     assert_eq!(
-        app.auto_folded.iter().copied().collect::<Vec<_>>(),
+        app.auto_folded.iter().collect::<Vec<_>>(),
         vec![stop],
         "every stop but the refusing one must have been paid off"
     );

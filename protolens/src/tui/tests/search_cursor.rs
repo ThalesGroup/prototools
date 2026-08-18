@@ -281,7 +281,7 @@ fn the_window_highlight_does_not_join_rows_across_a_bake_hole() {
     // is not `line_text`: a folded stop's header is drawn `{ ... }`.
     let drawn: Vec<String> = window.iter().map(|&row| app.row_text(row)).collect();
     let stop_at = |row| match window[row] {
-        DisplayRow::Committed(c) => app.auto_folded.contains(&c.pos.node) && !app.is_footer(c.pos),
+        DisplayRow::Committed(c) => app.auto_folded.contains(c.pos.node) && !app.is_footer(c.pos),
         DisplayRow::Overlay(_) => false,
     };
     assert!(!stop_at(0) && stop_at(1) && stop_at(2), "{drawn:?}");

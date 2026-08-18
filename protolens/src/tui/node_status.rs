@@ -40,19 +40,18 @@ impl App {
     /// before its parent. No recursion, no stack, no queue, and each
     /// slot is touched once as a parent and once as a child.
     ///
-    /// `auto_folded` is flattened to one bit per slot first. Asking the
-    /// set directly is a random probe into a table of tens of thousands
-    /// of entries, once per node — 4.74 M of them on googleapis, which
+    /// The stop test reads `auto_folded`'s words directly, one per 64
+    /// slots, *in the order the loop already walks* — one cache line per
+    /// 512 nodes, prefetching perfectly. Until spec 0323 that bitset was
+    /// allocated and filled from a `HashSet` on every call, because
+    /// probing the set once per node — 4.74 M of them on googleapis —
     /// measured **5.0% of a startup**, almost all of it hashing and
-    /// missing. The bitset is filled in one pass over the set (which is
-    /// three orders of magnitude smaller than the arena) and then read
-    /// *in the order the loop already walks*, so it costs one cache line
-    /// per 512 nodes and prefetches perfectly.
-    ///
-    /// A cheaper-looking fix — a faster hasher — was tried and measured
-    /// **3.3% slower** on 3.7% fewer instructions: SipHash's arithmetic
-    /// was overlapping the probe's cache miss, so removing it exposed the
-    /// latency it had been hiding. The probe is the cost, not the hash.
+    /// missing. A cheaper-looking fix, a faster hasher, was tried and
+    /// measured **3.3% slower** on 3.7% fewer instructions: SipHash's
+    /// arithmetic had been overlapping the probe's cache miss, so
+    /// removing it exposed the latency it was hiding. The probe was the
+    /// cost, not the hash — and the set is now itself the bitset, so the
+    /// flattening pass is gone rather than made cheaper.
     ///
     /// The pass is O(arena) but the *work* is O(rendered), which since
     /// spec 0257 are wildly different numbers: a startup renders a
@@ -83,12 +82,8 @@ impl App {
     /// that is exactly what `assert_status_is_exact` compares it
     /// against.
     pub(super) fn rebuild_status(&mut self) {
-        let mut stops = vec![0u64; self.tree.len().div_ceil(64)];
-        for &idx in &self.auto_folded {
-            stops[idx / 64] |= 1 << (idx % 64);
-        }
         for idx in (0..self.tree.len()).rev() {
-            let is_stop = stops[idx / 64] & (1 << (idx % 64)) != 0;
+            let is_stop = self.auto_folded.word(idx / 64) & (1 << (idx % 64)) != 0;
             // `node_text` is the load `own_status` would make first, so
             // the fast path costs one sequential read and two stores.
             // The stop bit is checked rather than inferred from the
@@ -116,7 +111,7 @@ impl App {
     /// Returns `idx`'s rolled status, so a parent's `max` needs no
     /// second read.
     pub(super) fn refresh_status_subtree(&mut self, idx: usize) -> Status {
-        let own = self.own_status(idx, self.auto_folded.contains(&idx));
+        let own = self.own_status(idx, self.auto_folded.contains(idx));
         self.status_own[idx] = own;
         let mut rolled = own;
         for child in self.child_slots(idx) {
@@ -174,7 +169,7 @@ impl App {
     /// by the ordinary `max`, which is the point — every ancestor of an
     /// unbaked region reads provisional until the bake reaches it.
     ///
-    /// `is_stop` is `auto_folded.contains(&idx)`, taken as a parameter
+    /// `is_stop` is `auto_folded.contains(idx)`, taken as a parameter
     /// rather than asked here so that `rebuild_status` can answer it
     /// from a bitset. There is still one statement of the status rule.
     fn own_status(&self, idx: usize, is_stop: bool) -> Status {
@@ -240,7 +235,7 @@ impl App {
                 "node {idx}: renders nothing but shows children"
             );
             assert!(
-                !self.auto_folded.contains(&idx),
+                !self.auto_folded.contains(idx),
                 "node {idx}: renders nothing but is a bake stop"
             );
         }

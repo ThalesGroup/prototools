@@ -27,8 +27,8 @@ fn doc_app(rows: &[&str]) -> App {
 fn column_of(app: &App, line: usize, needle: &str) -> u16 {
     let content = app.row_content(app.committed_row(line).expect("a drawn row"));
     let at = content.find(needle).expect("the row draws it");
-    // Column 0 of the pane is the heat glyph's reserved gutter.
-    1 + content[..at].chars().count() as u16
+    // The pane's leading columns are the heat glyph's reserved gutter.
+    render::HEAT_FIELD_WIDTH as u16 + content[..at].chars().count() as u16
 }
 
 /// The box a hover over `needle` on row `line` opens, as its text.
@@ -94,7 +94,7 @@ fn hovering_a_leaf_diamond_names_the_tier() {
     let mut app = doc_app(&["x: 1  #@ varint; val_ohb: 3", "y: 2  #@ varint"]);
 
     let hit = app
-        .doc_element_at_point(app.main_area.x + 1, 0)
+        .doc_element_at_point(app.main_area.x + render::HEAT_FIELD_WIDTH as u16, 0)
         .expect("the mark is a target");
     assert_eq!(
         doc_lines(&hit)
@@ -109,7 +109,8 @@ fn hovering_a_leaf_diamond_names_the_tier() {
     );
 
     assert!(
-        app.doc_element_at_point(app.main_area.x + 1, 1).is_none(),
+        app.doc_element_at_point(app.main_area.x + render::HEAT_FIELD_WIDTH as u16, 1)
+            .is_none(),
         "a clean leaf's fold column says nothing"
     );
 }
@@ -402,7 +403,7 @@ fn glyph_box(app: &mut App) -> Vec<String> {
 /// test cannot pass by pointing at the row's text.
 fn suffix_box(app: &mut App) -> Vec<String> {
     let content = app.row_content(app.committed_row(0).expect("a drawn row"));
-    let column = app.main_area.x + 1 + content.chars().count() as u16;
+    let column = app.main_area.x + render::HEAT_FIELD_WIDTH as u16 + content.chars().count() as u16;
     assert_eq!(
         app.heat_cue_at_point(column, app.main_area.y),
         Some(0),
@@ -527,7 +528,8 @@ fn the_heat_suffix_names_the_double_click() {
 fn a_hidden_cue_is_not_a_target() {
     let mut app = cue_app(Some((50, 1)), Some(Some(10)));
     let content = app.row_content(app.committed_row(0).expect("a drawn row"));
-    let suffix_column = app.main_area.x + 1 + content.chars().count() as u16;
+    let suffix_column =
+        app.main_area.x + render::HEAT_FIELD_WIDTH as u16 + content.chars().count() as u16;
     assert!(app.doc_element_at_point(app.main_area.x, 0).is_some());
     assert!(app.doc_element_at_point(suffix_column, 0).is_some());
 
@@ -546,7 +548,9 @@ fn the_fold_marker_explains_which_way_it_is() {
     app.main_area = Rect::new(0, 0, 120, 24);
     let line = app.absolute_start(inner);
     let pos = app.line_pos(line).unwrap();
-    let column = app.main_area.x + 1 + render::marker_column(&app.line_text(pos));
+    let column = app.main_area.x
+        + render::HEAT_FIELD_WIDTH as u16
+        + render::marker_column(&app.line_text(pos));
 
     let read = |app: &mut App| {
         let hit = app
@@ -594,7 +598,7 @@ fn the_fold_marker_hover_and_click_share_a_rectangle() {
 
     for column in 0..12u16 {
         let in_field = (marker..marker + render::FOLD_FIELD_WIDTH)
-            .contains(&(column as usize).wrapping_sub(1));
+            .contains(&(column as usize).wrapping_sub(render::HEAT_FIELD_WIDTH));
         let is_marker = matches!(
             app.doc_element_at_point(column, line as u16),
             Some(hit) if matches!(hit.element(), DocElement::FoldMarker { .. })
@@ -621,7 +625,7 @@ fn a_folded_node_explains_its_summary() {
 
     let content = app.row_content(app.committed_row(line).expect("a drawn row"));
     let brace = content.rfind('{').expect("a folded node draws its brace");
-    let first = 1 + content[..brace].chars().count() as u16;
+    let first = render::HEAT_FIELD_WIDTH as u16 + content[..brace].chars().count() as u16;
 
     let expected = [
         "{ ... }",
@@ -652,7 +656,7 @@ fn an_unbaked_summary_says_nobody_has_looked() {
     // The fold margin holds a multibyte glyph, so the column is a
     // count of characters, not the brace's byte offset.
     let brace = content.rfind('{').expect("a brace");
-    let column = 1 + content[..brace].chars().count() as u16;
+    let column = render::HEAT_FIELD_WIDTH as u16 + content[..brace].chars().count() as u16;
     let hit = app
         .doc_element_at_point(column, line as u16)
         .expect("the summary is a target");

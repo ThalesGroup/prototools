@@ -745,6 +745,9 @@ fn a_toggles_the_main_pane_annotation_display() {
         total_lines: 1,
         // Spec 0257 S1: a hand-built document was never bounded.
         stops: Vec::new(),
+        // Spec 0323 S2: a hand-built tree writes its own counts, so
+        // nothing in it is folded.
+        folded: FoldSet::default(),
         row_budget: None,
         node_text: vec![Some(Box::from(line.as_str()))],
         tree: vec![node],
@@ -1211,10 +1214,10 @@ fn the_activity_dot_renders_the_decided_level_in_column_zero() {
     );
 }
 
-/// Test plan item 6. Reserving column 0 must move the command row, and
-/// everything derived from it, one column right — the cursor included.
-/// This is the assertion that would catch an implementation that inset
-/// the dot at each use site instead of re-binding `cmd_row`.
+/// Test plan item 6. Reserving the dot's field must move the command
+/// row, and everything derived from it, that far right — the cursor
+/// included. This is the assertion that would catch an implementation
+/// that inset the dot at each use site instead of re-binding `cmd_row`.
 #[test]
 fn reserving_the_dot_column_shifts_the_command_row_and_its_cursor() {
     let mut app = message_node_app();
@@ -1225,15 +1228,16 @@ fn reserving_the_dot_column_shifts_the_command_row_and_its_cursor() {
 
     terminal.draw(|frame| app.render(frame)).unwrap();
     let cmd_area = app.cmd_area.expect("an active command buffer draws a row");
-    assert_eq!(cmd_area.x, 1, "the command row starts after the dot column");
-    assert_eq!(cmd_area.width, 79, "and is one column narrower");
+    let field = render::ACTIVITY_FIELD_WIDTH;
+    assert_eq!(cmd_area.x, field, "the command row starts after the dot");
+    assert_eq!(cmd_area.width, 80 - field, "and is that much narrower");
     assert_eq!(
-        terminal.backend().buffer()[(1u16, 9u16)].symbol(),
+        terminal.backend().buffer()[(field, 9u16)].symbol(),
         ":",
-        "the command prefix must land in column 1, not column 0"
+        "the command prefix must land after the dot's field, not in it"
     );
-    // ":cmd" with the cursor past the last char => column 1 + 4.
-    assert_eq!(terminal.get_cursor_position().unwrap().x, 5);
+    // ":cmd" with the cursor past the last char.
+    assert_eq!(terminal.get_cursor_position().unwrap().x, field + 4);
 }
 
 // ── Spec 0187: highlighting is a property of the viewport ────────────────
@@ -1789,7 +1793,9 @@ fn a_leaf_anomaly_wears_a_diamond() {
     // `marker_column` — 0 here, since a root-level row has no
     // indentation for the mark to sit in.
     let at = (
-        app.main_area.x + 1 + render::marker_column(&app.document_lines()[0]),
+        app.main_area.x
+            + render::HEAT_FIELD_WIDTH as u16
+            + render::marker_column(&app.document_lines()[0]),
         app.main_area.y + app.visible_row_of_line(0).expect("row 0 is drawn") as u16,
     );
     assert_eq!(
@@ -2240,7 +2246,7 @@ fn a_selected_row_and_the_caret_row_stay_distinguishable() {
     // The heat-cue column and the fold field come first; the row's own
     // four characters start after them, and are the only cells a
     // selection may touch.
-    let text_x = 1 + render::FOLD_FIELD_WIDTH as u16;
+    let text_x = (render::HEAT_FIELD_WIDTH + render::FOLD_FIELD_WIDTH) as u16;
     let reversed = |row: u16, x: u16| {
         buffer[(area.x + x, area.y + row)]
             .style()

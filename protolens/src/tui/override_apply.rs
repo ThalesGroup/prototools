@@ -110,6 +110,18 @@ impl App {
             match self.splice_override(idx, effective, self.confirm_row_budget()) {
                 Ok(()) => {
                     self.tree_mut()[idx].rendered_as = current;
+                    // Spec 0323 S4: a commit is a gesture, so the node it
+                    // retyped opens. The reader has just watched the
+                    // preview draw the body and should not have to press
+                    // `z` to see it again. Its children keep whatever the
+                    // bits say, which for a subtree the splice just wrote
+                    // is folded, one level at a time.
+                    //
+                    // Here rather than in `splice_override`, which the
+                    // bake also goes through and which must open nothing.
+                    if self.folded.remove(idx) {
+                        self.refresh_line_counts(idx);
+                    }
                     // Spec 0221 S1: this node is settled after all, so
                     // an earlier refusal of it in this same pass was not
                     // final and must not be reported. The guard keeps
@@ -154,58 +166,26 @@ impl App {
     /// Drop every fold flag standing on a strict descendant of `idx`
     /// (spec 0256 S4).
     ///
-    /// There are two ways to ask this, and which is cheaper is a
-    /// property of the call rather than of the question. Asking each
-    /// vacated slot whether it is folded is two hash lookups per *slot
-    /// of the document*: 78 ms of a 448 ms root override on
-    /// `googleapis.desc`, to answer a question about a set that usually
-    /// holds tens of entries. Asking the sets instead costs
-    /// `HashSet::retain`, which is O(capacity) — and `auto_folded`'s
-    /// capacity peaks around 84 000 mid-bake without shrinking, which
-    /// the *bake's* 70 893 splices, a handful of descendants each, would
-    /// pay 70 893 times over. Measured: retaining unconditionally takes
-    /// the drain from 5.4 s to 17.5 s.
+    /// One bit clear per vacated slot, which is the whole of it since
+    /// spec 0323 S1. `descendants` is the rendered subtree, and a fold
+    /// flag can only stand on a node some rendering showed, so walking
+    /// it clears exactly the right flags.
     ///
-    /// So the smaller side is walked, and neither cost can exceed the
-    /// other. Both spellings clear the same flags: `descendants` is the
-    /// rendered subtree, and a fold flag can only stand on a node some
-    /// rendering showed.
-    ///
-    /// Ancestry is resolved through `App::parent`, i.e. through the
-    /// arena, which is immutable (spec 0216) — the rendered tree is
-    /// being taken apart around this call and cannot be walked.
-    fn scrub_folds_under(&mut self, idx: usize, descendants: &[usize]) {
-        if self.folded.is_empty() && self.auto_folded.is_empty() {
-            return;
+    /// While the two sets were `HashSet`s this had to *choose* between
+    /// that walk and a `retain` over the sets — by comparing their
+    /// capacity against the descendant count — because neither was safe
+    /// alone. The walk was two hash lookups per slot of the *document*:
+    /// 78 ms of a 448 ms root override on `googleapis.desc`, to answer a
+    /// question about tens of entries. And `retain` is O(capacity),
+    /// while `auto_folded`'s capacity peaked around 84 000 mid-bake
+    /// without shrinking, which the bake's 70 893 splices — a handful of
+    /// descendants each — would have paid 70 893 times over; retaining
+    /// unconditionally measured 5.4 s → 17.5 s on the drain. Both costs
+    /// belonged to the container, and both are gone with it.
+    fn scrub_folds_under(&mut self, descendants: &[usize]) {
+        for &d in descendants {
+            self.unfold(d);
         }
-        if self.folded.capacity() + self.auto_folded.capacity() > descendants.len() {
-            for &d in descendants {
-                self.unfold(d);
-            }
-            return;
-        }
-        // Taken out and put back so the closure can borrow `self` for
-        // the ancestry walk; `retain` would otherwise hold the set
-        // mutably for the duration.
-        let mut folded = std::mem::take(&mut self.folded);
-        folded.retain(|&f| !self.descends_from(f, idx));
-        self.folded = folded;
-        let mut auto_folded = std::mem::take(&mut self.auto_folded);
-        auto_folded.retain(|&f| !self.descends_from(f, idx));
-        self.auto_folded = auto_folded;
-    }
-
-    /// Whether `node` is a strict descendant of `ancestor`. O(depth),
-    /// which the arena caps at 13 on the corpus.
-    fn descends_from(&self, node: usize, ancestor: usize) -> bool {
-        let mut cur = self.parent(node);
-        while let Some(n) = cur {
-            if n == ancestor {
-                return true;
-            }
-            cur = self.parent(n);
-        }
-        false
     }
 
     /// Hand `idx`'s text to the idle loop instead of freeing it here
@@ -1030,7 +1010,7 @@ impl App {
     /// amortize the folded frontier it re-emits.
     pub(super) fn expand_auto_fold(&mut self, idx: usize, row_budget: usize) {
         debug_assert!(
-            self.auto_folded.contains(&idx),
+            self.auto_folded.contains(idx),
             "only a node whose body was never rendered needs expanding"
         );
         let explicit = match self.provenance.get(self.tree[idx].rendered_as) {
@@ -1136,15 +1116,13 @@ impl App {
 
         // A fold flag on a slot this rendering does not show would be
         // honored again the moment some later override brings the slot
-        // back, hiding unrelated content. `idx` itself is deliberately
-        // left in both sets untouched (spec 0118 §7 — fold state on
-        // `idx` survives its own retype); its `auto_folded` entry is
-        // dealt with separately, below.
+        // back, hiding unrelated content. `idx` itself is left alone
+        // here; both of its entries are dealt with separately, below.
         // Everything the *previous* interpretation showed under `idx`,
         // collected before any of it is vacated.
         let mut old_descendants = Vec::new();
         self.collect_descendants(idx, &mut old_descendants);
-        self.scrub_folds_under(idx, &old_descendants);
+        self.scrub_folds_under(&old_descendants);
         for &d in &old_descendants {
             self.tree_mut()[d] = decode::TreeNode::vacant();
             self.discard_text(d);
@@ -1193,7 +1171,16 @@ impl App {
         // bounded one puts `idx` back in the set; an unbounded one is
         // the reason the entry has to go, and `idx`'s *user* fold is
         // untouched either way.
-        self.auto_folded.remove(&idx);
+        self.auto_folded.remove(idx);
+        // Spec 0323 S4: the uniform rule folds every bracketed slot
+        // `overlay_spans` writes, and `idx` is one of them — so the fold
+        // `idx` already carried has to be remembered here and put back
+        // below. A splice is not a gesture: the bake reaches this through
+        // `expand_auto_fold` and must open nothing the reader did not
+        // ask for. The two paths that *are* gestures clear the bit
+        // themselves — `App::open` before it calls in, `resettle_node`
+        // after a commit — and so read `false` here and stay open.
+        let idx_was_folded = self.folded.contains(idx);
         // Spec 0274 S8: the structure and the text are wanted mutably at
         // the same time, and each accessor borrows the whole `App`.
         // Moved out and put back rather than reached for twice — the
@@ -1203,8 +1190,11 @@ impl App {
         let mut tree = std::mem::take(&mut self.tree);
         let mut text = std::mem::take(&mut self.node_text);
         let stopped = decode::overlay_spans(
-            Arc::get_mut(&mut tree).expect("the halt above leaves the tree unshared"),
-            Arc::get_mut(&mut text).expect("the halt above leaves the text unshared"),
+            decode::Overlay {
+                nodes: Arc::get_mut(&mut tree).expect("the halt above leaves the tree unshared"),
+                text: Arc::get_mut(&mut text).expect("the halt above leaves the text unshared"),
+                folded: &mut self.folded,
+            },
             new_spans,
             &new_lines,
             &self.arena,
@@ -1233,22 +1223,19 @@ impl App {
             // from the viewport rather than diving.
             self.bake_queue.push_back(slot);
         }
-        for &slot in &stopped {
-            self.refresh_line_counts(slot);
-        }
+        // No second loop to fold each stop's count down to the single row
+        // it shows: spec 0323 S2 wrote `lines_visible: 1` for every
+        // bracketed slot as it rendered, and a stop is bracketed.
         // `idx` itself was just retyped, so a cue resolved for it before
         // now answers a question about the superseded interpretation
         // (spec 0152 G6). Its descendants were reset above, when their
         // slots were vacated.
         self.heat_states[idx] = heat_cue::HeatState::default();
 
-        // The subtree under `idx` comes over unfolded, but `idx`'s own
-        // fold survives a retype (only its descendants' folds are
-        // scrubbed, above — spec 0118 §7), and a folded node shows one
-        // line whatever is beneath it. `overlay_spans` cannot know that,
-        // so it set both counts to the full size.
-        if self.is_folded(idx) {
-            self.tree_mut()[idx].lines_visible = 1;
+        // Spec 0323 S4: put `idx`'s own fold back. One bit and one sum
+        // over its children; the climb above it happens below.
+        if !idx_was_folded && self.folded.remove(idx) {
+            self.refresh_line_counts(idx);
         }
 
         // Spec 0210 S3: the ancestors' sizes, and nothing else. It

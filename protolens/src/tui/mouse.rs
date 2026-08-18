@@ -495,9 +495,10 @@ impl App {
     /// ` [2@7]`, ` [?/7]` or ` [?]` — covers `(col, row)`, or `None`
     /// where no suffix is drawn there.
     ///
-    /// The suffix begins one column past the row's text: column 0 is the
-    /// reserved heat gutter (spec 0138 N1) and the text between them is
-    /// as long as the pan left it. **No `pan_offset` is added back**,
+    /// The suffix begins `HEAT_FIELD_WIDTH` columns past the row's text:
+    /// the leading gutter is the reserved heat cue (spec 0138 N1) plus
+    /// the blank beside it, and the text between them is as long as the
+    /// pan left it. **No `pan_offset` is added back**,
     /// unlike the fold marker's hit test above: `render` pushes the
     /// suffix span *after* `pan_spans`, so the suffix does not scroll.
     ///
@@ -514,11 +515,12 @@ impl App {
         let (_, suffix) = self.heat_chrome(&display);
         let width = suffix?.content.chars().count();
         let drawn = self.committed_row_at(line_idx, pos);
-        let start = 1 + self
-            .row_content(drawn)
-            .chars()
-            .count()
-            .saturating_sub(self.pan_offset);
+        let start = render::HEAT_FIELD_WIDTH
+            + self
+                .row_content(drawn)
+                .chars()
+                .count()
+                .saturating_sub(self.pan_offset);
         let x = (col - self.main_area.x) as usize;
         (start..start + width).contains(&x).then_some(line_idx)
     }
@@ -529,9 +531,10 @@ impl App {
     /// Spec 0142: a footer line carries no fold glyph and a leaf has
     /// nothing to fold, so neither draws a field to aim at.
     ///
-    /// Column 0 is always the heat-cue gutter (spec 0138 N1: a glyph or
-    /// a reserved blank, never part of the line's own text) — the
-    /// marker sits one column further right.
+    /// The leading `HEAT_FIELD_WIDTH` columns are always the heat-cue
+    /// gutter (spec 0138 N1: a glyph or a reserved blank, never part of
+    /// the line's own text, followed by a separating blank) — the
+    /// marker sits that far further right.
     ///
     /// `pan_offset` is added back for the same reason
     /// `set_caret_from_click` adds it: the fold margin is part of the
@@ -572,7 +575,10 @@ impl App {
         let line = self.line_text(pos);
         let marker = render::marker_column(&line) as usize;
         let field = marker..marker + render::FOLD_FIELD_WIDTH;
-        rel_col >= 1 && field.contains(&(rel_col - 1 + self.pan_offset))
+        let Some(text_col) = rel_col.checked_sub(render::HEAT_FIELD_WIDTH) else {
+            return false;
+        };
+        field.contains(&(text_col + self.pan_offset))
     }
 
     /// Dispatch one main-pane left-click: on a fold marker it toggles
@@ -646,10 +652,11 @@ impl App {
             .chars()
             .count()
             .saturating_sub(self.pan_offset);
-        // Column 0 of the pane is the heat glyph's reserved gutter (spec
-        // 0138 N1), which is never a caret stop.
+        // The pane's leading `HEAT_FIELD_WIDTH` columns are the heat
+        // glyph's reserved gutter (spec 0138 N1) and the blank beside
+        // it, neither of which is ever a caret stop.
         let x = col.saturating_sub(self.main_area.x) as usize;
-        self.cursor_column = if x == 0 {
+        self.cursor_column = match x.checked_sub(render::HEAT_FIELD_WIDTH) {
             // Spec 0284 S5: the gutter is one zone of its own, ahead of
             // the two below, and means the row's first non-blank at any
             // pan. Setting 0 is enough — the `clamp_caret_column` at the
@@ -664,11 +671,11 @@ impl App {
             //
             // The anchor stays `Free` (N3): this places the caret, it
             // does not declare `CaretAnchor::Home` the way `0`/`^` does.
-            0
-        } else if x - 1 < panned {
-            (x - 1 + self.pan_offset).saturating_sub(render::FOLD_FIELD_WIDTH)
-        } else {
-            text_chars + (x - 1 - panned)
+            None => 0,
+            Some(text_x) if text_x < panned => {
+                (text_x + self.pan_offset).saturating_sub(render::FOLD_FIELD_WIDTH)
+            }
+            Some(text_x) => text_chars + (text_x - panned),
         };
         self.clamp_caret_column();
         self.desired_column = self.cursor_column;

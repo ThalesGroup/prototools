@@ -25,6 +25,13 @@ static NO_STYLES: LineStyles = Vec::new();
 /// cues survive.
 pub(super) const ACTIVITY_GLYPH: &str = "●";
 
+/// How many columns the activity dot's field reserves at the left of
+/// the global command/message row: the dot, then the blank that keeps
+/// it off the leading `:` of a command being typed. The same separation
+/// `HEAT_FIELD_WIDTH` buys in the document pane, and its own constant
+/// because the two gutters are unrelated and must be free to differ.
+pub(super) const ACTIVITY_FIELD_WIDTH: u16 = 2;
+
 /// Spec 0193 S1: the fold marker's glyphs, open (children shown) and
 /// closed (children collapsed into `{ ... }`).
 ///
@@ -35,39 +42,65 @@ pub(super) const ACTIVITY_GLYPH: &str = "●";
 /// apart, so the mark that most has to be read was the one drawn
 /// smallest.
 ///
-/// `MEDIUM`, U+23F7 and U+23F5, under two constraints — and the obvious
-/// `▼`/`▶` fails both, one each:
+/// **Enlarged again 2026-08-18**, the verdict on the medium pair
+/// (U+23F7 and U+23F5) having been "almost OK". `▼` U+25BC `BLACK
+/// DOWN-POINTING TRIANGLE` and `▶` U+25B6 `BLACK RIGHT-POINTING
+/// TRIANGLE` are the largest pair available, and — the requirement that
+/// decides between the candidates — a genuine *pair*: the same glyph
+/// rotated a quarter turn, same block, same weight, same optical size.
+/// `►` U+25BA `BLACK RIGHT-POINTING POINTER` was tried first because it
+/// carries no emoji property, and rejected on sight: it is a different
+/// shape from `▼`, and the eye reads the mismatch before it reads the
+/// direction.
 ///
-/// - **One column.** `FOLD_FIELD_WIDTH` is two and the second column is
-///   the separating space, so a marker the terminal draws double-width
-///   would shift every foldable row's text out of line with every
-///   non-foldable one. These two are East Asian *Neutral*, narrow
-///   everywhere, exactly as the small pair they replace was. `▼`
-///   (U+25BC) and `▶` (U+25B6) are *Ambiguous* and go double-width
-///   under a CJK locale.
-/// - **Not an emoji.** `▶` (U+25B6) is the ▶️ play button in
-///   `emoji-data.txt`. A terminal that reaches for an emoji font draws
-///   it colored *and* double-width — and a glyph that supplies its own
-///   color destroys the only thing this marker is for. U+23F4..U+23F7
-///   are the media block's plain triangles and carry no emoji property;
-///   that block's emoji are U+23E9..U+23EF and U+23F8..U+23FA.
+/// Two risks are accepted knowingly, both observable in one glance:
 ///
-/// The residual risk is font coverage — these arrived in Unicode 7.0
-/// (2014), and a font without them draws tofu. That is a one-line
-/// revert, and the pair to revert *to* is the small one named above.
-pub(super) const FOLD_GLYPH_OPEN: char = '⏷';
-pub(super) const FOLD_GLYPH_CLOSED: char = '⏵';
+/// - **U+25B6 carries the Emoji property** — it is the ▶️ play button
+///   in `emoji-data.txt` — though its `Emoji_Presentation` is *No*, so
+///   a conforming terminal draws it as text. One that reaches for an
+///   emoji font anyway draws it colored and double-width, and a glyph
+///   supplying its own color destroys the only thing this marker is
+///   for: spec 0260's five-state margin. `▼` U+25BC has no emoji
+///   property at all, so the failure shows up as an *asymmetry* — the
+///   closed marker goes colored and wide, the open one does not.
+/// - **Both are East Asian Ambiguous**, where U+23F7/U+23F5 were
+///   Neutral, so under a CJK locale a foldable row's text shifts one
+///   column right of a non-foldable one. Spec 0322 already admitted an
+///   Ambiguous glyph to this very column (`ANOMALY_GLYPH`, `◆` U+25C6)
+///   and the heat cue's `●` U+25CF has always been one; this is the
+///   same bet, not a new one.
+///
+/// Should either risk materialize, the ladder back down is
+/// U+23F7/U+23F5 (medium, Neutral, non-emoji — also a rotated pair) and
+/// then `▾`/`▸` U+25BE/U+25B8 (`SMALL`, the original), each a one-line
+/// revert.
+pub(super) const FOLD_GLYPH_OPEN: char = '▼';
+pub(super) const FOLD_GLYPH_CLOSED: char = '▶';
 
 /// Spec 0193 S1: how many columns the fold field reserves left of the
 /// row's own text. Two, because that is the marker plus the space that
-/// keeps it from reading as part of the identifier beside it (`⏷options`
-/// is one token to the eye; `⏷ options` is not).
+/// keeps it from reading as part of the identifier beside it (`▼options`
+/// is one token to the eye; `▼ options` is not).
 ///
 /// The field is reserved unconditionally, exactly as spec 0138 N1's
 /// heat-cue column is: a field that appeared and vanished with the
 /// window's contents would move the text origin as the user scrolls,
 /// which is worse than spending the two columns.
 pub(super) const FOLD_FIELD_WIDTH: usize = 2;
+
+/// How many columns the heat cue reserves left of the fold field.
+///
+/// Two, for the same reason `FOLD_FIELD_WIDTH` is two: the glyph plus
+/// the blank that keeps it from reading as part of what follows. Spec
+/// 0138 N1 spent one column here and the cue ended up flush against the
+/// fold marker, so `● ▼ options` had the dot and the triangle touching
+/// and the eye read the pair as one compound mark. The blank costs a
+/// column of text and buys the separation.
+///
+/// Like the fold field, reserved unconditionally — a gutter that came
+/// and went with the window's contents would move the text origin as
+/// the reader scrolls.
+pub(super) const HEAT_FIELD_WIDTH: usize = 2;
 
 /// Spec 0322 S1: the mark a leaf wears in the fold column when its own
 /// status is an anomaly — the two tiers `annotation::Tier` names, i.e.
@@ -266,8 +299,8 @@ fn tint_columns(
     width: usize,
     style: Style,
 ) {
-    let lo = FOLD_FIELD_WIDTH + columns.start.max(pan) - pan + 1;
-    let hi = (FOLD_FIELD_WIDTH + columns.end.max(pan) - pan + 1).min(width);
+    let lo = FOLD_FIELD_WIDTH + columns.start.max(pan) - pan + HEAT_FIELD_WIDTH;
+    let hi = (FOLD_FIELD_WIDTH + columns.end.max(pan) - pan + HEAT_FIELD_WIDTH).min(width);
     if lo < hi {
         restyle_range(spans, lo..hi, |s| s.patch(style));
     }
@@ -703,7 +736,7 @@ impl App {
     /// and neither of which is chrome.
     ///
     /// This is what a clipboard copy wants (`selected_text`): the margin
-    /// and its `⏷`/`⏵` are gutter furniture, and pasting them back into
+    /// and its `▼`/`▶` are gutter furniture, and pasting them back into
     /// a `.textproto` would not parse.
     pub(super) fn row_text(&self, row: DisplayRow) -> String {
         self.row_text_of(row, self.display_row_source(row).1)
@@ -860,7 +893,8 @@ impl App {
 
     /// Spec 0194 S1/S2: where caret-track column `column` lands in a
     /// drawn row's final span list, chrome included — so index 0 is the
-    /// heat glyph's reserved column. `None` when a horizontal pan has
+    /// heat glyph's reserved column and index 1 the blank beside it.
+    /// `None` when a horizontal pan has
     /// taken the column off the left edge.
     ///
     /// The track's two zones map differently: the text zone sits behind
@@ -875,9 +909,9 @@ impl App {
         panned_chars: usize,
     ) -> Option<usize> {
         if column < text_chars {
-            Some((FOLD_FIELD_WIDTH + column).checked_sub(self.pan_offset)? + 1)
+            Some((FOLD_FIELD_WIDTH + column).checked_sub(self.pan_offset)? + HEAT_FIELD_WIDTH)
         } else {
-            Some(1 + panned_chars + (column - text_chars))
+            Some(HEAT_FIELD_WIDTH + panned_chars + (column - text_chars))
         }
     }
 
@@ -1667,7 +1701,8 @@ impl App {
             let row = window
                 .iter()
                 .position(|&r| r.committed_line() == Some(line))?;
-            let index = (FOLD_FIELD_WIDTH + column).checked_sub(self.pan_offset)? + 1;
+            let index =
+                (FOLD_FIELD_WIDTH + column).checked_sub(self.pan_offset)? + HEAT_FIELD_WIDTH;
             (index < inner.width as usize).then_some((row, index))
         });
 
@@ -1730,7 +1765,10 @@ impl App {
                 if let Some(suffix) = suffix {
                     spans.push(suffix);
                 }
-                spans.insert(0, glyph);
+                // The cue's glyph, then the blank that keeps it off the
+                // fold marker — `HEAT_FIELD_WIDTH` columns, in one shift
+                // of the span list rather than two.
+                spans.splice(0..0, [glyph, Span::raw(" ")]);
 
                 // Spec 0194 S2: three distinct highlights, not one
                 // row-wide `REVERSED`. The caret's *row* gets the weaker
@@ -1762,8 +1800,11 @@ impl App {
                 }) {
                     let width = inner.width as usize;
                     let pan = self.pan_offset;
-                    let lo = (FOLD_FIELD_WIDTH + range.start).saturating_sub(pan) + 1;
-                    let hi = ((FOLD_FIELD_WIDTH + range.end).saturating_sub(pan) + 1).min(width);
+                    let lo =
+                        (FOLD_FIELD_WIDTH + range.start).saturating_sub(pan) + HEAT_FIELD_WIDTH;
+                    let hi = ((FOLD_FIELD_WIDTH + range.end).saturating_sub(pan)
+                        + HEAT_FIELD_WIDTH)
+                        .min(width);
                     if lo < hi {
                         let style = theme::selection_style(self.theme);
                         restyle_range(&mut spans, lo..hi, |s| s.patch(style));
@@ -1818,8 +1859,9 @@ impl App {
                             if let Some(index) =
                                 (FOLD_FIELD_WIDTH + column).checked_sub(self.pan_offset)
                             {
-                                if index + 1 < width {
-                                    restyle_range(&mut spans, index + 1..index + 2, |style| {
+                                let cell = index + HEAT_FIELD_WIDTH;
+                                if cell < width {
+                                    restyle_range(&mut spans, cell..cell + 1, |style| {
                                         style.patch(current)
                                     });
                                 }
@@ -1857,7 +1899,7 @@ impl App {
                             else {
                                 continue;
                             };
-                            let lo = index + 1;
+                            let lo = index + HEAT_FIELD_WIDTH;
                             let hi = (lo + chars).min(width);
                             if lo < hi {
                                 restyle_range(&mut spans, lo..hi, |s| s.patch(style));
@@ -1911,7 +1953,7 @@ impl App {
                         }
                     };
                     let mut spans = pan_spans(wire_spans.unwrap_or_default(), self.pan_offset);
-                    spans.insert(0, Span::raw(" "));
+                    spans.insert(0, Span::raw(" ".repeat(HEAT_FIELD_WIDTH)));
                     Line::from(spans)
                 });
                 std::iter::once(Line::from(spans)).chain(wire_line)
@@ -2057,15 +2099,16 @@ impl App {
             (Some(buf), None) => format!(":{buf}"),
             (None, None) => self.message.clone(),
         };
-        // Spec 0190 S5: column 0 of the global row is reserved for the
-        // activity dot, unconditionally — so the command row's geometry
-        // never shifts underneath the user mid-edit. Everything
-        // downstream (`cmd_area` for mouse hit-testing, `width` for pan
-        // clamping, `set_cursor_position`) already derives from
-        // `cmd_row`, so re-binding it here is the whole change.
+        // Spec 0190 S5: the global row's leading `ACTIVITY_FIELD_WIDTH`
+        // columns are reserved for the activity dot, unconditionally —
+        // so the command row's geometry never shifts underneath the
+        // user mid-edit. Everything downstream (`cmd_area` for mouse
+        // hit-testing, `width` for pan clamping, `set_cursor_position`)
+        // already derives from `cmd_row`, so re-binding it here is the
+        // whole change.
         let global_row = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .constraints([Constraint::Length(ACTIVITY_FIELD_WIDTH), Constraint::Min(0)])
             .split(area);
         self.render_activity_dot(frame, global_row[0]);
         // Spec 0277 S8: `27 of 42`, right-aligned, in a field the

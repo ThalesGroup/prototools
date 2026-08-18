@@ -186,7 +186,7 @@ fn previewing_a_folded_target_renders_it_in_full_and_leaves_folded_alone() {
     // Spec 0210 S2: folding through `toggle_fold` rather than by hand, so
     // that the line counters the row walk reads are refreshed with it.
     app.toggle_fold(inner_idx);
-    assert!(app.folded.contains(&inner_idx), "the fixture must fold");
+    assert!(app.folded.contains(inner_idx), "the fixture must fold");
     let folded_before = app.folded.clone();
     let rows_before: Vec<usize> = app
         .visible_window(0, app.visible_row_count())

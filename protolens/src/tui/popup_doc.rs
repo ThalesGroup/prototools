@@ -62,7 +62,7 @@ pub(super) enum DocElement {
     /// The ` [3/47]`, ` [2@85]`, ` [?/47]` or ` [?]` at the end of the
     /// row.
     HeatSuffix(SuffixShape),
-    /// The `⏷`/`⏵` in the fold margin. `colored` is spec 0247 S10's
+    /// The `▼`/`▶` in the fold margin. `colored` is spec 0247 S10's
     /// status hue, which the box only mentions when the glyph is
     /// actually wearing one.
     FoldMarker { folded: bool, colored: bool },
@@ -165,7 +165,7 @@ fn doc_elements(row: &str) -> Vec<(DocElement, Range<usize>)> {
 /// The field line proper: the key, and the value if there is one.
 fn push_body(body: &str, out: &mut Vec<(DocElement, Range<usize>)>) {
     // The fold margin and the indentation are chrome, and so is the
-    // `⏷`/`⏵` in them. Rather than naming the glyphs, skip to the first
+    // `▼`/`▶` in them. Rather than naming the glyphs, skip to the first
     // character that can *begin* a key — which also leaves a closing
     // `}` line with no key at all, correctly.
     let Some(start) = body.find(|c: char| c.is_alphanumeric() || c == '_' || c == '[') else {
@@ -280,7 +280,8 @@ fn key_clause(key: &str) -> &'static str {
 impl App {
     /// Spec 0287 S3: the two heat-cue targets, both in columns no token
     /// of the row can reach — column 0 exactly, which spec 0285's
-    /// mapping gives up on with a `checked_sub(1)`, and the suffix past
+    /// mapping gives up on with its `HEAT_FIELD_WIDTH` `checked_sub`
+    /// (as it does on the blank beside it), and the suffix past
     /// the row's last character, where its `nth(index)` already yields
     /// `None`.
     ///
@@ -464,8 +465,9 @@ impl App {
         // The same mapping `type_annotation_at` computes: pane column,
         // less the reserved glyph gutter (spec 0138 N1), plus the pan
         // already taken off the content.
-        let index =
-            (column.saturating_sub(self.main_area.x) as usize).checked_sub(1)? + self.pan_offset;
+        let index = (column.saturating_sub(self.main_area.x) as usize)
+            .checked_sub(render::HEAT_FIELD_WIDTH)?
+            + self.pan_offset;
         let byte = content.char_indices().nth(index)?.0;
 
         if let Some(hit) = self.fold_summary_hit(line, pos, &content, byte) {

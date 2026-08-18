@@ -7,6 +7,7 @@ mod command_line;
 mod edge_resistance;
 mod event_loop;
 mod export_fields;
+mod folding;
 mod heat_cue;
 mod help_text;
 mod key_dispatch;

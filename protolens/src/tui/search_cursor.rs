@@ -296,9 +296,11 @@ impl App {
         if roots.is_empty() || !self.tree[roots.start].is_rendered() {
             return (Vec::new(), Vec::new());
         }
-        // `auto_folded` is a set, and the stops have to be visited in
-        // the order the reader would meet them. Byte order is that
-        // order: the arena asserts a parent starts before its children,
+        // `auto_folded` is in slot order — level order, since spec 0216 —
+        // and the stops have to be visited in the order the reader would
+        // meet them, which is not the same thing: level order groups by
+        // depth. Byte order is the reader's order: the arena asserts a
+        // parent starts before its children,
         // and siblings are laid out as the bytes were, so `raw_start`
         // sorts a pre-order walk. Stops never nest — one has no rendered
         // body to hold another — so there are no ties to break.
@@ -306,7 +308,6 @@ impl App {
         let mut stops: Vec<usize> = self
             .auto_folded
             .iter()
-            .copied()
             .filter(|&n| self.tree[n].is_rendered())
             .collect();
         stops.sort_unstable_by_key(|&n| raw_start[n]);

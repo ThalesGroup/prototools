@@ -72,14 +72,14 @@ impl App {
         // in front of rows the bake will not reach for seconds. Those
         // rows are the only ones anybody is actually reading.
         while let Some(idx) = self.visible_stops.pop_front() {
-            if !self.auto_folded.contains(&idx) {
+            if !self.auto_folded.contains(idx) {
                 continue;
             }
             self.expand_auto_fold(idx, Self::BAKE_ROW_BUDGET);
             return BakeStep::Visible;
         }
         while let Some(idx) = self.bake_queue.pop_front() {
-            if !self.auto_folded.contains(&idx) {
+            if !self.auto_folded.contains(idx) {
                 continue;
             }
             self.expand_auto_fold(idx, Self::BAKE_ROW_BUDGET);
@@ -140,7 +140,7 @@ impl App {
     /// truth about what is owed (spec 0255 S3); the bake queue is only
     /// a hint.
     pub(super) fn unread_fold_style(&self, idx: usize) -> Option<Style> {
-        if !self.auto_folded.contains(&idx) {
+        if !self.auto_folded.contains(idx) {
             return None;
         }
         theme::status_color(Status::Unbaked, self.theme).map(|c| Style::default().fg(c))
@@ -179,9 +179,9 @@ impl App {
         if self.auto_folded.is_empty() {
             return true;
         }
-        if self.auto_folded.contains(&idx) {
+        if self.auto_folded.contains(idx) {
             self.expand_auto_fold(idx, usize::MAX);
-            if self.auto_folded.contains(&idx) {
+            if self.auto_folded.contains(idx) {
                 return false;
             }
         }
@@ -199,7 +199,7 @@ impl App {
         }
         for row in window {
             if let DisplayRow::Committed(c) = row {
-                if self.auto_folded.contains(&c.pos.node) {
+                if self.auto_folded.contains(c.pos.node) {
                     self.visible_stops.push_back(c.pos.node);
                 }
             }

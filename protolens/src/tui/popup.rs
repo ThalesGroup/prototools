@@ -215,7 +215,7 @@ impl ScoreBreakdown {
     /// box reads worst-last the way the formula is written (spec 0280
     /// S15).
     ///
-    /// Zero terms are dropped: five zeros and a total is a form to
+    /// Zero terms are dropped: five zeros under a score is a form to
     /// read, whereas the one or two lines that are actually non-zero
     /// are the finding.
     fn lines(&self) -> Vec<String> {
@@ -235,8 +235,8 @@ impl ScoreBreakdown {
         // box reads worst-last — and without a count, because
         // `truncated` is a bool: "1 ×" would invite the reader to
         // wonder what two of them would mean. The weight still lands in
-        // the same column as every other term's, so the lines above it
-        // still visibly sum to the total below.
+        // the same column as every other term's, so the terms still
+        // visibly sum to the score printed above them.
         if self.truncated {
             out.push(format!(
                 "{:>5}   {:<4} the bytes ran out before the end",
@@ -357,8 +357,9 @@ impl App {
         // column, less the reserved glyph gutter (spec 0138 N1), plus
         // the pan already taken off the content. A column past the
         // row's drawn end lands beyond every span and so names nothing.
-        let index =
-            (column.saturating_sub(self.main_area.x) as usize).checked_sub(1)? + self.pan_offset;
+        let index = (column.saturating_sub(self.main_area.x) as usize)
+            .checked_sub(render::HEAT_FIELD_WIDTH)?
+            + self.pan_offset;
         let lo = content[..span.start].chars().count();
         let hi = lo + content[span].chars().count();
         (lo..hi).contains(&index).then_some(pos.node)
@@ -568,8 +569,13 @@ impl App {
                 if terms.is_empty() {
                     lines.push("nothing scored for this range".to_string());
                 } else {
+                    // The score first, and called `score` — it is the
+                    // number the cue is colored from and the number the
+                    // reader came for, so it should not have to be found
+                    // at the bottom of a sum. The terms below it are the
+                    // detail, read only when the score surprises.
+                    lines.push(format!("{:>5}       score", b.score()));
                     lines.extend(terms);
-                    lines.push(format!("{:>5}       total", b.score()));
                 }
             }
         }

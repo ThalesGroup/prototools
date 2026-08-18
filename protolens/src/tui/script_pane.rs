@@ -228,11 +228,15 @@ impl App {
         if self.folded.is_empty() {
             return;
         }
-        let mut nodes: Vec<usize> = self.folded.iter().copied().collect();
-        nodes.sort_unstable();
-        for idx in nodes.into_iter().rev() {
-            self.folded.remove(&idx);
-            self.refresh_line_counts(idx);
+        // A descending sweep of the arena rather than of the set, for
+        // the reason the `Fold::All` arm below sweeps the same way: since
+        // spec 0323 every bracketed slot is folded by default, so
+        // collecting the set would allocate one `usize` per node of the
+        // document to walk it in an order the arena already gives.
+        for idx in (0..self.tree.len()).rev() {
+            if self.folded.remove(idx) {
+                self.refresh_line_counts(idx);
+            }
         }
         self.folds_changed();
     }
@@ -509,7 +513,7 @@ impl App {
     }
 
     fn script_bake_node(&mut self, idx: usize) {
-        if self.auto_folded.contains(&idx) {
+        if self.auto_folded.contains(idx) {
             self.expand_auto_fold(idx, usize::MAX);
         }
     }

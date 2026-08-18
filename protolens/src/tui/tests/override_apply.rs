@@ -63,15 +63,25 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
         node_with_type(&app, "test.Node").expect("tree must contain the Node submessage");
     let node_level = app.tree[node_idx].span.level;
 
-    // Fold the "a" child before overriding, to verify the stale-fold
-    // scrubbing (`collect_descendants` cleanup).
+    // Fold a child before overriding, to verify the stale-fold scrubbing
+    // (`collect_descendants` cleanup).
+    //
+    // The *flat* child, deliberately. Since spec 0323 S2 `overlay_spans`
+    // folds every bracketed slot it writes, so a bracketed child comes
+    // back folded whether it was scrubbed or not and would prove nothing.
+    // It never clears a flat slot's bit, so a stale fold standing on one
+    // survives the splice — which makes the flat child the only place the
+    // scrub is observable at all.
     let a_idx_before = app
         .first_child(node_idx)
         .expect("Node has at least one child");
+    let b_idx_before = app
+        .next_sibling(a_idx_before)
+        .expect("Node has a second, scalar child");
     // Spec 0210 S2: through `refresh_line_counts`, since a fold now moves
     // the line counters the row walk reads.
-    app.folded.insert(a_idx_before);
-    app.refresh_line_counts(a_idx_before);
+    app.folded.insert(b_idx_before);
+    app.refresh_line_counts(b_idx_before);
 
     let assert_children = |app: &App, tag: &str| {
         let mut children = Vec::new();
@@ -103,7 +113,7 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
     assert_children(&app, "re-typed as itself");
     assert_eq!(type_name_of(&app, node_idx), Some("test.Node"));
     assert!(
-        !app.folded.contains(&a_idx_before),
+        !app.folded.contains(b_idx_before),
         "orphaned old child must be scrubbed from `folded`"
     );
 
@@ -625,7 +635,7 @@ fn deactivating_override_reclamps_pan_offset_to_the_shrunk_content() {
     app.splice_override(inner_idx, Some("test.Inner".to_string()), None)
         .unwrap();
 
-    let usable_width = app.main_area.width as usize - 1;
+    let usable_width = app.main_area.width as usize - render::HEAT_FIELD_WIDTH;
     let max_len = app.max_visible_line_len();
     let expected_max_pan = max_len.saturating_sub(usable_width);
     assert!(
@@ -1331,9 +1341,19 @@ fn a_row_budgeted_splice_folds_every_node_it_stopped_at() {
         );
         assert_eq!(app.tree[*i].lines_visible, 1, "and draws as one row");
     }
+    // An auto-fold is still not a user fold (S3), but emptiness is no
+    // longer how that shows: spec 0323 S2 folds every bracketed slot a
+    // splice writes, so each `Item` now stands in both sets. What
+    // separates them is the spliced node itself — it was not a stop, so
+    // `auto_folded` never names it, and `splice_override` opens it
+    // because the reader asked for it.
     assert!(
-        app.folded.is_empty(),
-        "an auto-fold is not a user fold (S3)"
+        !app.auto_folded.contains(root),
+        "the spliced node was not a stop"
+    );
+    assert!(
+        !app.folded.contains(root),
+        "and the reader asked to see it, so it is open"
     );
 
     // The rows the user sees: the wrapper's own two, plus one per Item.
@@ -1433,7 +1453,7 @@ fn a_bake_keeps_the_user_folds_around_it() {
 
     // The invariant: nothing is rendered under a stop, so nothing under
     // a stop can carry a fold the scrub would clear.
-    for &stop in &app.auto_folded.clone() {
+    for stop in app.auto_folded.clone().iter() {
         let mut below = Vec::new();
         app.collect_descendants(stop, &mut below);
         assert!(
@@ -1450,13 +1470,13 @@ fn a_bake_keeps_the_user_folds_around_it() {
         .expect("a bake must succeed");
 
     assert!(
-        !app.auto_folded.contains(&items[1]),
+        !app.auto_folded.contains(items[1]),
         "a rendered body owes no fold"
     );
     assert!(app.tree[items[1]].lines_total > 2, "and shows its body");
 
     assert!(
-        app.folded.contains(&items[0]),
+        app.folded.contains(items[0]),
         "the user's fold is untouched by a bake elsewhere"
     );
     assert!(app.is_folded(items[0]), "and still draws collapsed");
@@ -1465,8 +1485,8 @@ fn a_bake_keeps_the_user_folds_around_it() {
     // gesture is what holds it collapsed from here on.
     app.splice_override(items[0], Some("test.Item".to_string()), None)
         .expect("a bake must succeed");
-    assert!(!app.auto_folded.contains(&items[0]));
-    assert!(app.folded.contains(&items[0]));
+    assert!(!app.auto_folded.contains(items[0]));
+    assert!(app.folded.contains(items[0]));
     assert!(app.is_folded(items[0]), "the user's fold still holds it");
     assert_eq!(app.tree[items[0]].lines_visible, 1);
 }
@@ -1734,15 +1754,15 @@ fn a_fold_under_a_retyped_node_is_scrubbed() {
         .expect("the splice must succeed");
 
     assert!(
-        !app.folded.contains(&under) && !app.auto_folded.contains(&under),
+        !app.folded.contains(under) && !app.auto_folded.contains(under),
         "a fold under the retyped node describes content that is gone"
     );
     assert!(
-        app.folded.contains(&sibling) && app.auto_folded.contains(&sibling),
+        app.folded.contains(sibling) && app.auto_folded.contains(sibling),
         "a fold on a sibling subtree is none of this splice's business"
     );
     assert!(
-        app.folded.contains(&items[0]),
+        app.folded.contains(items[0]),
         "spec 0118 §7: a node keeps its own fold across its own retype"
     );
 }

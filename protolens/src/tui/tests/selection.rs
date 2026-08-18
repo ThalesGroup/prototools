@@ -171,7 +171,7 @@ fn the_copy_includes_what_a_fold_is_hiding() {
     assert!(!unfolded.is_empty());
 
     app.toggle_fold(items[0]);
-    assert!(app.folded.contains(&items[0]), "the fixture must fold");
+    assert!(app.folded.contains(items[0]), "the fixture must fold");
     assert_eq!(
         select_all(&mut app),
         unfolded,

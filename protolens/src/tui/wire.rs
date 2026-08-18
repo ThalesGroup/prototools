@@ -614,8 +614,9 @@ impl App {
         // column, less the reserved glyph gutter, plus the pan already
         // taken off the content — and then the margin `margin` puts in
         // front of the hex, which is the document row's own indent.
-        let index =
-            (column.saturating_sub(self.main_area.x) as usize).checked_sub(1)? + self.pan_offset;
+        let index = (column.saturating_sub(self.main_area.x) as usize)
+            .checked_sub(render::HEAT_FIELD_WIDTH)?
+            + self.pan_offset;
         let indent = text.len() - text.trim_start().len();
         let hex = index
             .checked_sub(render::FOLD_FIELD_WIDTH + indent + WIRE_CONNECTOR.chars().count())?;

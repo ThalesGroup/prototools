@@ -248,12 +248,51 @@ pub(super) fn app_named(decoded: Decoded, ctx: DescriptorContext, file: &str) ->
 }
 
 /// [`app_named`] as `test.pb`, past the splash screen and wide enough
-/// that nothing truncates — a fixture that is ready to be driven.
-pub(super) fn fixture_app(decoded: Decoded, ctx: DescriptorContext) -> App {
+/// that nothing truncates — the document exactly as `App::new` leaves
+/// it, which since spec 0323 S3 means every bracketed node folded and
+/// the root alone open.
+///
+/// Only the tests of that default want this. Everything else wants
+/// [`fixture_app`].
+pub(super) fn closed_fixture_app(decoded: Decoded, ctx: DescriptorContext) -> App {
     let mut app = app_named(decoded, ctx, "test.pb");
     app.splash = false;
     app.term_width = 120;
     app
+}
+
+/// [`closed_fixture_app`], fully unfolded — a fixture that is ready to
+/// be driven.
+///
+/// A fixture is the starting point of a test that is almost always
+/// about something else — a click, a hover, a splice, a search — and
+/// one that arrived folded would make each of those spell out an
+/// unfolding it does not care about, and read as if the fold were part
+/// of what it was checking. So spec 0323's default is undone here, and
+/// asserted where it is decided instead: over `App::new` directly, in
+/// the spec's own tests.
+pub(super) fn fixture_app(decoded: Decoded, ctx: DescriptorContext) -> App {
+    let mut app = closed_fixture_app(decoded, ctx);
+    unfold_every_node(&mut app);
+    app
+}
+
+/// Drop every *user* fold, deepest-first — `script_reset_folds`'s rule
+/// and its reason: `refresh_line_counts` climbs from the node it is
+/// given and stops at the first level whose count did not move, so a
+/// parent refreshed before its children would propagate a count that is
+/// about to change. Level order (spec 0216) makes descending slot order
+/// deepest-first.
+///
+/// `auto_folded` is left alone. It is not a fold anyone chose, it is
+/// rendering that has not happened yet, and the bounded fixtures exist
+/// precisely to have some.
+pub(super) fn unfold_every_node(app: &mut App) {
+    for idx in (0..app.tree.len()).rev() {
+        if app.folded.remove(idx) {
+            app.refresh_line_counts(idx);
+        }
+    }
 }
 
 /// A whole fixture from its three parts: the schema, the root type to
@@ -262,9 +301,22 @@ pub(super) fn fixture_app(decoded: Decoded, ctx: DescriptorContext) -> App {
 /// `tag` names the temporary descriptor file, so it should say which
 /// fixture this is when one is left behind by a crash.
 pub(super) fn fixture_under(tag: &str, fds: &FileDescriptorSet, root: &str, blob: &[u8]) -> App {
+    let mut app = closed_fixture_under(tag, fds, root, blob);
+    unfold_every_node(&mut app);
+    app
+}
+
+/// [`fixture_under`] left in the state `App::new` produced — for the
+/// spec 0323 tests, which are about that state.
+pub(super) fn closed_fixture_under(
+    tag: &str,
+    fds: &FileDescriptorSet,
+    root: &str,
+    blob: &[u8],
+) -> App {
     let mut ctx = ctx_from_fds(tag, fds);
     let decoded = decode(wrapped(blob), &mut ctx, RootType::Named(root), 2).unwrap();
-    fixture_app(decoded, ctx)
+    closed_fixture_app(decoded, ctx)
 }
 
 /// [`fixture_under`] with spec 0257's startup row budget in force — what
@@ -277,6 +329,22 @@ pub(super) fn fixture_under(tag: &str, fds: &FileDescriptorSet, root: &str, blob
 /// `bounded_confirms` set, so a `drain` over it exercises the startup
 /// path rather than a confirm's.
 pub(super) fn bounded_fixture_under(
+    tag: &str,
+    fds: &FileDescriptorSet,
+    root: &str,
+    blob: &[u8],
+    budget: usize,
+) -> App {
+    let mut app = closed_bounded_fixture_under(tag, fds, root, blob, budget);
+    unfold_every_node(&mut app);
+    app
+}
+
+/// [`bounded_fixture_under`] left in the state `App::new` produced —
+/// [`closed_fixture_under`]'s counterpart, and the only way to see a
+/// node that is a bake stop *and* folded by spec 0323's default, which
+/// is what an interactive session actually starts from.
+pub(super) fn closed_bounded_fixture_under(
     tag: &str,
     fds: &FileDescriptorSet,
     root: &str,
@@ -303,5 +371,5 @@ pub(super) fn bounded_fixture_under(
         Some(budget),
     )
     .unwrap();
-    fixture_app(decoded, ctx)
+    closed_fixture_app(decoded, ctx)
 }

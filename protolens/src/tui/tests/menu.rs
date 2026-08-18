@@ -114,7 +114,7 @@ fn activating_a_row_replays_its_binding() {
     app.activate_menu_item(row);
 
     assert!(app.menu.is_none(), "activating closes the menu");
-    assert!(app.folded.contains(&node), "and folds, as `z` itself would");
+    assert!(app.folded.contains(node), "and folds, as `z` itself would");
 }
 
 /// The second time a reader reaches for the menu, the keystroke that
@@ -128,7 +128,7 @@ fn a_rows_own_key_activates_it_while_the_menu_is_open() {
     app.handle_key(key('z'));
 
     assert!(app.menu.is_none());
-    assert!(app.folded.contains(&node));
+    assert!(app.folded.contains(node));
 }
 
 /// A click past the end of the document names no node, which is a
@@ -165,7 +165,7 @@ fn esc_and_a_click_away_both_close_without_acting() {
     let node = app.cursor;
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.menu.is_none());
-    assert!(!app.folded.contains(&node));
+    assert!(!app.folded.contains(node));
 
     right_click(&mut app, 5, 0);
     // The menu has never been rendered, so its `area` is still the
@@ -177,7 +177,7 @@ fn esc_and_a_click_away_both_close_without_acting() {
         modifiers: KeyModifiers::NONE,
     });
     assert!(app.menu.is_none());
-    assert!(!app.folded.contains(&node));
+    assert!(!app.folded.contains(node));
 }
 
 /// A surface with no applicable action simply does not get a menu — a
@@ -211,7 +211,7 @@ fn m_opens_the_menu_at_the_caret() {
     assert_eq!(
         menu.anchor,
         (
-            (render::FOLD_FIELD_WIDTH + 3 + 1) as u16,
+            (render::FOLD_FIELD_WIDTH + 3 + render::HEAT_FIELD_WIDTH) as u16,
             app.main_area.y + app.cursor_display_row() as u16
         ),
         "anchored on the caret's own cell"

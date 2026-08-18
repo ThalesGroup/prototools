@@ -51,8 +51,8 @@ fn type_row_app() -> App {
 fn column_of(app: &App, line: usize, needle: &str) -> u16 {
     let content = app.row_content(app.committed_row(line).expect("a drawn row"));
     let at = content.find(needle).expect("the row draws it");
-    // Column 0 of the pane is the heat glyph's reserved gutter.
-    1 + content[..at].chars().count() as u16
+    // The pane's leading columns are the heat glyph's reserved gutter.
+    render::HEAT_FIELD_WIDTH as u16 + content[..at].chars().count() as u16
 }
 
 /// The node a `Type` hover names — `None` when nothing is hovered, and
@@ -346,7 +346,7 @@ fn nothing_hovers_while_a_menu_is_open() {
 }
 
 /// Spec 0280 S15: zero categories are omitted, so a clean node's box is
-/// one line saying so rather than five zeros and a total.
+/// one line saying so rather than five zeros under a score.
 #[test]
 fn only_the_non_zero_terms_are_printed() {
     let graph = test_scoring_graph();
@@ -364,10 +364,10 @@ fn only_the_non_zero_terms_are_printed() {
     assert_eq!(
         lines.len(),
         3,
-        "the type key, the one non-zero term, and the total: {lines:?}"
+        "the type key, the score, and the one non-zero term: {lines:?}"
     );
-    assert!(lines[1].text.contains("fields matched"), "{lines:?}");
-    assert!(lines[2].text.contains("total"), "{lines:?}");
+    assert!(lines[1].text.contains("score"), "{lines:?}");
+    assert!(lines[2].text.contains("fields matched"), "{lines:?}");
 }
 
 /// Spec 0310 S3: a cut range's counters stay meaningful — unlike a
@@ -393,7 +393,7 @@ fn a_cut_range_says_so_and_still_shows_its_terms() {
         anchor: (0, 0),
     };
     let lines = App::popup_lines(&popup, 22);
-    assert!(lines[1].text.contains("fields matched"), "{lines:?}");
+    assert!(lines[2].text.contains("fields matched"), "{lines:?}");
     let cut = lines
         .iter()
         .find(|l| l.text.contains("the bytes ran out"))
@@ -403,9 +403,9 @@ fn a_cut_range_says_so_and_still_shows_its_terms() {
         !cut.text.contains('×'),
         "and without a count, since it is a bool: {cut:?}"
     );
-    let total = &lines.last().expect("a total").text;
+    let score = &lines[1].text;
     assert!(
-        total.contains("total") && total.contains(&b.score().to_string()),
-        "the terms above must still sum to the total: {lines:?}"
+        score.contains("score") && score.contains(&b.score().to_string()),
+        "the terms below must still sum to the score: {lines:?}"
     );
 }

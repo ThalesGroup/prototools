@@ -87,7 +87,10 @@ fn hex(app: &App, line: usize) -> String {
 /// row.
 fn point(app: &App, line: usize, col: usize) -> (u16, u16) {
     let row = (0..app.main_area.height)
-        .find(|r| app.main_pane_line_part(app.main_area.x + 1, *r) == Some((line, 1)))
+        .find(|r| {
+            app.main_pane_line_part(app.main_area.x + render::HEAT_FIELD_WIDTH as u16, *r)
+                == Some((line, 1))
+        })
         .expect("that line's wire row is on screen");
     let pos = app.line_pos(line).expect("a drawn line");
     // The line's own indent, measured where `render` measures it — and
@@ -97,7 +100,7 @@ fn point(app: &App, line: usize, col: usize) -> (u16, u16) {
     let indent = text.len() - text.trim_start().len();
     let index = render::FOLD_FIELD_WIDTH + indent + wire::WIRE_CONNECTOR.chars().count() + col;
     (
-        app.main_area.x + 1 + (index - app.pan_offset) as u16,
+        app.main_area.x + render::HEAT_FIELD_WIDTH as u16 + (index - app.pan_offset) as u16,
         app.main_area.y + row,
     )
 }
@@ -358,9 +361,14 @@ fn a_keyword_reads_the_same_in_both_boxes() {
     let content = app.row_content(app.committed_row_at(1, pos));
     let at = content.find("val_ohb").expect("the annotation names it");
     let row = (0..app.main_area.height)
-        .find(|r| app.main_pane_line_part(app.main_area.x + 1, *r) == Some((1, 0)))
+        .find(|r| {
+            app.main_pane_line_part(app.main_area.x + render::HEAT_FIELD_WIDTH as u16, *r)
+                == Some((1, 0))
+        })
         .expect("its document row is on screen");
-    let column = app.main_area.x + 1 + (content[..at].chars().count() - app.pan_offset) as u16;
+    let column = app.main_area.x
+        + render::HEAT_FIELD_WIDTH as u16
+        + (content[..at].chars().count() - app.pan_offset) as u16;
 
     let hit = app
         .doc_element_at_point(column, app.main_area.y + row)
@@ -466,9 +474,9 @@ fn the_document_row_of_a_pair_still_hovers_its_type() {
     // The `int32` of line 7's `#@ int32 = 3` annotation.
     let content = app.row_content(app.committed_row(7).expect("a drawn row"));
     let at = content.find("int32").expect("the row declares its type");
-    let column = 1 + content[..at].chars().count() as u16;
+    let column = render::HEAT_FIELD_WIDTH as u16 + content[..at].chars().count() as u16;
     let document = (0..app.main_area.height)
-        .find(|r| app.main_pane_line_part(1, *r) == Some((7, 0)))
+        .find(|r| app.main_pane_line_part(render::HEAT_FIELD_WIDTH as u16, *r) == Some((7, 0)))
         .expect("the document row is on screen");
 
     app.handle_mouse(moved(column, document));
@@ -542,7 +550,10 @@ fn every_drawn_hex_column_names_the_byte_under_it() {
 
     // The wire row of line 1 — the only row on screen whose part is 1.
     let y = (app.main_area.y..app.main_area.y + app.main_area.height)
-        .find(|y| app.main_pane_line_part(app.main_area.x + 1, *y) == Some((1, 1)))
+        .find(|y| {
+            app.main_pane_line_part(app.main_area.x + render::HEAT_FIELD_WIDTH as u16, *y)
+                == Some((1, 1))
+        })
         .expect("the wire row is on screen");
     let drawn: String = (app.main_area.x..app.main_area.x + app.main_area.width)
         .map(|x| buffer[(x, y)].symbol().to_string())

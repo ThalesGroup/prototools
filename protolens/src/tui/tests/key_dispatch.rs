@@ -884,6 +884,9 @@ fn default_export_descriptor_path_falls_back_to_the_numeric_range_when_unresolva
         total_lines: 2,
         // Spec 0257 S1: a hand-built document was never bounded.
         stops: Vec::new(),
+        // Spec 0323 S2: a hand-built tree writes its own counts, so
+        // nothing in it is folded.
+        folded: FoldSet::default(),
         row_budget: None,
         node_text: vec![Some(Box::from("a")), Some(Box::from("b"))],
         tree,
@@ -941,13 +944,13 @@ fn the_reassigned_keys_dispatch_where_the_table_says() {
     let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
     app.handle_key(ctrl('h'));
     assert!(
-        items.iter().all(|i| app.folded.contains(i)),
+        items.iter().all(|&i| app.folded.contains(i)),
         "`Ctrl-h` folds the whole sibling level"
     );
     assert_eq!(app.cursor, items[1], "and moves no cursor");
     app.handle_key(ctrl('l'));
     assert!(
-        items.iter().all(|i| !app.folded.contains(i)),
+        items.iter().all(|&i| !app.folded.contains(i)),
         "`Ctrl-l` unfolds it again"
     );
     assert_eq!(app.cursor, items[1]);
@@ -963,9 +966,9 @@ fn the_reassigned_keys_dispatch_where_the_table_says() {
     // `z` acts on its own now — it was a chord prefix (`za`/`zc`/`zo`
     // and their sibling-wide capitals) and is a one-key toggle.
     app.handle_key(plain('z'));
-    assert!(app.folded.contains(&items[1]), "`z` alone toggles");
+    assert!(app.folded.contains(items[1]), "`z` alone toggles");
     app.handle_key(plain('z'));
-    assert!(!app.folded.contains(&items[1]), "and toggles back");
+    assert!(!app.folded.contains(items[1]), "and toggles back");
 }
 
 /// `Space`/`f` page down and `Shift-Space`/`b` page up, each landing

@@ -31,6 +31,7 @@ use prototext_graph::score::load::{load_graph, LoadedGraph};
 use prototext_schema::LazyPool;
 
 use crate::blob::Blob;
+use crate::fold_set::FoldSet;
 use crate::provenance::{ProvenanceId, NOT_RENDERED};
 use crate::sweep;
 
@@ -938,11 +939,60 @@ pub(crate) fn build_tree(
     lines: &[String],
     arena: &Arena,
     undescended: &[u32],
-) -> (Vec<TreeNode>, Vec<Option<Box<str>>>, Vec<usize>) {
-    let mut nodes: Vec<TreeNode> = (0..arena.len()).map(|_| TreeNode::vacant()).collect();
-    let mut text: Vec<Option<Box<str>>> = vec![None; arena.len()];
-    let stopped = overlay_spans(&mut nodes, &mut text, spans, lines, arena, 0, undescended);
-    (nodes, text, stopped)
+) -> BuiltTree {
+    let mut tree: Vec<TreeNode> = (0..arena.len()).map(|_| TreeNode::vacant()).collect();
+    let mut node_text: Vec<Option<Box<str>>> = vec![None; arena.len()];
+    // Spec 0323 S1: sized once, here, because the arena is immutable
+    // (spec 0216) — a splice rewrites the overlay under a slot and
+    // allocates none, so no later call can need a wider set.
+    let mut folded = FoldSet::new(arena.len());
+    let stopped = overlay_spans(
+        Overlay {
+            nodes: &mut tree,
+            text: &mut node_text,
+            folded: &mut folded,
+        },
+        spans,
+        lines,
+        arena,
+        0,
+        undescended,
+    );
+    BuiltTree {
+        tree,
+        node_text,
+        folded,
+        stopped,
+    }
+}
+
+/// What one whole-document [`build_tree`] produces.
+///
+/// Named rather than a 4-tuple because two of the four are `Vec`s and a
+/// third is one in all but name: positionally they are interchangeable
+/// to the compiler, and every one of them is destructured straight into
+/// a field of [`Decoded`] with the matching name.
+pub(crate) struct BuiltTree {
+    pub(crate) tree: Vec<TreeNode>,
+    pub(crate) node_text: Vec<Option<Box<str>>>,
+    pub(crate) folded: FoldSet,
+    /// Spec 0249 S1: the slots the render emitted without a body. Empty
+    /// unless the render was row-budgeted.
+    pub(crate) stopped: Vec<usize>,
+}
+
+/// The three parallel arrays [`overlay_spans`] writes, borrowed together.
+///
+/// Borrows rather than an owning struct because the splice path holds
+/// each of the three somewhere different — two behind `Arc::get_mut` on
+/// fields of `App`, the third a field of `App` itself — and no single
+/// owner exists there to hand over. Bundling them here costs nothing and
+/// keeps two `&mut` slices of unrelated element type from sitting
+/// adjacent and unnamed in an argument list.
+pub(crate) struct Overlay<'a> {
+    pub(crate) nodes: &'a mut [TreeNode],
+    pub(crate) text: &'a mut [Option<Box<str>>],
+    pub(crate) folded: &'a mut FoldSet,
 }
 
 /// Spec 0222 S2: the closing line of a bracketed node, derived from its
@@ -1070,15 +1120,27 @@ fn push_subtree_lines(
 /// it emitted without a body, as indices into `spans`; the return value
 /// is the same list as slots. Both are empty unless the render was
 /// row-budgeted.
+///
+/// Spec 0323 S2/S4: every bracketed node this writes enters `folded`,
+/// and is written already collapsed. Being the *single* writer of an
+/// arena slot is what lets one rule — a body no reader has asked to see
+/// is closed — cover a fresh document, a bake's stop and an override's
+/// subtree alike, with no caller having to remember it. The caller opens
+/// again whatever it knows the reader did ask for, which is the root
+/// (`App::new`) or the spliced node itself (`splice_override`).
 pub(crate) fn overlay_spans(
-    nodes: &mut [TreeNode],
-    text: &mut [Option<Box<str>>],
+    overlay: Overlay<'_>,
     spans: Vec<NodeSpan>,
     lines: &[String],
     arena: &Arena,
     root: usize,
     undescended: &[u32],
 ) -> Vec<usize> {
+    let Overlay {
+        nodes,
+        text,
+        folded,
+    } = overlay;
     let slots = slots_for_spans(&spans, arena, root);
     let (raw_start, raw_end) = (arena.raw_start(), arena.raw_end());
 
@@ -1142,11 +1204,18 @@ pub(crate) fn overlay_spans(
         if span.packed_record_start != NO_PACKED_RECORD {
             span.packed_record_start = raw_start[slot];
         }
+        // Spec 0323 S2: a bracketed node is born folded, so the collapsed
+        // count is the value first written and `refresh_line_counts` is
+        // never called to reach it. A flat node cannot be folded, and its
+        // rows are its own.
+        let bracketed = span.is_message;
+        if bracketed {
+            folded.insert(slot);
+        }
         nodes[slot] = TreeNode {
             span,
             lines_total: line_count,
-            // Nothing is folded at build time.
-            lines_visible: line_count,
+            lines_visible: if bracketed { 1 } else { line_count },
             rendered_as: NOT_RENDERED,
         };
     }
@@ -1194,6 +1263,10 @@ pub struct Decoded {
     /// not render. Parallel to `tree`, and indexed the same way.
     pub node_text: Vec<Option<Box<str>>>,
     pub tree: Vec<TreeNode>,
+    /// Spec 0323 S2: every bracketed slot the render wrote, all of them
+    /// collapsed. `App::new` opens the root out of it (S3) and takes it
+    /// as its own `folded`; nothing else has to know the default exists.
+    pub folded: FoldSet,
     /// The blob's structural decomposition, derived from the bytes alone
     /// (spec 0216 S1). Unlike `tree` it does not depend on the type
     /// assignment, so it is built once here and never rebuilt.
@@ -2139,8 +2212,12 @@ pub fn render_resolved(
     if let Some(gap) = arena_gap(&rendered.spans, &arena) {
         panic!("spec 0216: the arena is not a superset of the render — {gap}");
     }
-    let (tree, node_text, stops) =
-        build_tree(rendered.spans, &lines, &arena, &rendered.undescended);
+    let BuiltTree {
+        tree,
+        node_text,
+        folded,
+        stopped: stops,
+    } = build_tree(rendered.spans, &lines, &arena, &rendered.undescended);
     // Spec 0222, test-plan item 3. Same argument as the check above, and
     // the same only-place-it-means-anything: `lines` dies at the end of
     // this function, so a systematic off-by-one in S1's ownership split
@@ -2170,6 +2247,7 @@ pub fn render_resolved(
         row_budget,
         node_text,
         tree,
+        folded,
         arena,
         root_type,
         wrapper_offset: blob.wrapper_offset(),

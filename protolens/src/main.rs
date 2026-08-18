@@ -10,6 +10,7 @@ mod complete;
 mod decode;
 mod export_descriptor;
 mod extract;
+mod fold_set;
 mod man;
 mod node_status;
 mod override_pane;

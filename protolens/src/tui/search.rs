@@ -2010,7 +2010,7 @@ impl App {
         }
         // `prev` is an unbaked stop's header: its subtree is missing
         // between it and the footer drawn underneath it.
-        !self.auto_folded.contains(&prev.pos.node) || self.is_footer(prev.pos)
+        !self.auto_folded.contains(prev.pos.node) || self.is_footer(prev.pos)
     }
 
     /// One run of document-adjacent rows, joined by the `\n` that

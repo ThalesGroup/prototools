@@ -162,13 +162,12 @@ fn pan_right_reaches_the_true_end_of_the_longest_visible_line() {
         app.pan_right();
     }
 
-    let usable_width = app.main_area.width as usize - 1;
+    let usable_width = app.main_area.width as usize - render::HEAT_FIELD_WIDTH;
     assert_eq!(
         app.pan_offset,
         line.len() + render::FOLD_FIELD_WIDTH - usable_width,
         "pan_offset must clamp so the last column of the pane shows the \
-         line's last character, leaving room for the 1-column heat-cue \
-         gutter"
+         line's last character, leaving room for the heat-cue gutter"
     );
 }
 
@@ -432,7 +431,7 @@ fn clicking_a_closing_brace_line_moves_cursor_there_without_folding() {
     assert_eq!(app.cursor, inner_idx);
     assert!(app.cursor_on_footer());
     assert!(
-        !app.folded.contains(&inner_idx),
+        !app.folded.contains(inner_idx),
         "clicking the }} line must not toggle the fold"
     );
 }
@@ -488,7 +487,7 @@ fn empty_bracketed_message_is_foldable() {
     app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
 
     assert!(
-        app.folded.contains(&inner_idx),
+        app.folded.contains(inner_idx),
         "z must fold an empty message"
     );
 }
@@ -509,9 +508,9 @@ fn shift_z_folds_the_whole_subtree_and_unfolds_it_again() {
 
     app.set_cursor(root);
     app.handle_key(KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::NONE));
-    assert!(app.folded.contains(&root), "`Z` folds the cursor node");
+    assert!(app.folded.contains(root), "`Z` folds the cursor node");
     assert!(
-        items.iter().all(|i| app.folded.contains(i)),
+        items.iter().all(|&i| app.folded.contains(i)),
         "and every descendant with it"
     );
 
@@ -526,7 +525,7 @@ fn shift_z_folds_the_whole_subtree_and_unfolds_it_again() {
     app.refresh_line_counts(items[0]);
     app.handle_key(KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::NONE));
     assert!(
-        app.folded.contains(&root) && items.iter().all(|i| app.folded.contains(i)),
+        app.folded.contains(root) && items.iter().all(|&i| app.folded.contains(i)),
         "the cursor node's own state decides for the subtree"
     );
 }
@@ -902,9 +901,9 @@ fn a_click_never_anchors_the_caret() {
 
     let line_idx = app.absolute_start(inner_idx);
     let first = app.caret_bounds().0;
-    // Pane column of text column `first`: the heat-cue gutter (1) plus
-    // the fold field, which `set_caret_from_click` subtracts back out.
-    let column = (first + render::FOLD_FIELD_WIDTH + 1) as u16;
+    // Pane column of text column `first`: the heat-cue gutter plus the
+    // fold field, which `set_caret_from_click` subtracts back out.
+    let column = (first + render::FOLD_FIELD_WIDTH + render::HEAT_FIELD_WIDTH) as u16;
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column,
@@ -917,7 +916,7 @@ fn a_click_never_anchors_the_caret() {
 
     app.caret_left();
     assert!(
-        !app.folded.contains(&inner_idx),
+        !app.folded.contains(inner_idx),
         "a click must not arm the fold"
     );
     assert_eq!(app.caret_anchor, CaretAnchor::Home);
@@ -940,7 +939,7 @@ fn h_away_from_an_end_still_moves_the_caret() {
     app.caret_left();
     app.caret_left();
     assert_eq!(app.cursor_column, column - 2);
-    assert!(!app.folded.contains(&inner_idx), "and folds nothing");
+    assert!(!app.folded.contains(inner_idx), "and folds nothing");
     assert_eq!(app.cursor, inner_idx);
 }
 
@@ -961,14 +960,14 @@ fn h_at_a_voluntary_home_folds_before_it_moves_to_the_parent() {
 
     app.caret_left();
     assert!(
-        !app.folded.contains(&inner_idx),
+        !app.folded.contains(inner_idx),
         "an involuntary Home must not fold"
     );
     assert_eq!(app.caret_anchor, CaretAnchor::Home);
     assert_eq!(app.desired_column, app.cursor_column);
 
     app.caret_left();
-    assert!(app.folded.contains(&inner_idx), "the next press folds");
+    assert!(app.folded.contains(inner_idx), "the next press folds");
     assert_eq!(app.cursor, inner_idx, "and does not move the cursor");
 
     app.caret_left();
@@ -1006,7 +1005,7 @@ fn h_on_the_root_folds_it_and_then_reports_no_parent() {
     app.set_cursor(root);
 
     app.caret_left();
-    assert!(app.folded.contains(&root), "the root folds like any node");
+    assert!(app.folded.contains(root), "the root folds like any node");
     app.message.clear();
     app.caret_left();
     assert_eq!(app.message, "no parent");
@@ -1036,14 +1035,14 @@ fn l_unfolds_only_at_a_voluntary_home_on_a_folded_row() {
     app.caret_right();
     assert_eq!(app.cursor_column, column + 1);
     assert!(
-        app.folded.contains(&inner_idx),
+        app.folded.contains(inner_idx),
         "no unfold away from a voluntary Home"
     );
 
     // Item 11: back at Home, it unfolds and stays put.
     app.caret_to_line_start();
     app.caret_right();
-    assert!(!app.folded.contains(&inner_idx), "the press unfolds");
+    assert!(!app.folded.contains(inner_idx), "the press unfolds");
     assert_eq!(app.cursor, inner_idx, "and does not move the cursor");
 
     // Item 12: expanded now, so the same key at the same anchor is
@@ -1151,7 +1150,7 @@ fn l_at_an_end_unfolds_before_it_descends_and_h_undoes_it() {
     app.caret_to_line_end();
 
     app.caret_right();
-    assert!(!app.folded.contains(&inner_idx), "the first press unfolds");
+    assert!(!app.folded.contains(inner_idx), "the first press unfolds");
     assert_eq!(app.cursor, inner_idx, "and does not descend");
     app.caret_right();
     assert_eq!(app.cursor, id_idx, "the second press descends");
@@ -1166,7 +1165,7 @@ fn l_at_an_end_unfolds_before_it_descends_and_h_undoes_it() {
     app.caret_to_line_start();
     app.caret_left();
     assert!(
-        app.folded.contains(&inner_idx),
+        app.folded.contains(inner_idx),
         "`h` at Home closed what `l` at End opened"
     );
     assert_eq!(app.cursor, inner_idx);
@@ -1189,16 +1188,13 @@ fn ctrl_left_and_ctrl_right_fold_the_whole_sibling_level() {
 
     app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
     for &item in &items {
-        assert!(app.folded.contains(&item), "`Ctrl-h` folds every sibling");
+        assert!(app.folded.contains(item), "`Ctrl-h` folds every sibling");
     }
     assert_eq!(app.cursor, items[0], "and moves no cursor");
 
     app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
     for &item in &items {
-        assert!(
-            !app.folded.contains(&item),
-            "`Ctrl-l` unfolds every sibling"
-        );
+        assert!(!app.folded.contains(item), "`Ctrl-l` unfolds every sibling");
     }
     assert_eq!(app.cursor, items[0]);
 }
@@ -1586,7 +1582,7 @@ fn opening_an_auto_fold_renders_the_body_it_stood_for() {
 
     app.splice_override(app.first_node, Some("test.Outer".to_string()), Some(2))
         .expect("a bounded splice must succeed");
-    assert!(app.auto_folded.contains(&idx), "the budget stopped here");
+    assert!(app.auto_folded.contains(idx), "the budget stopped here");
     assert_eq!(
         app.tree[idx].lines_total, 2,
         "and emitted a header and a footer and nothing between"
@@ -1604,7 +1600,12 @@ fn opening_an_auto_fold_renders_the_body_it_stood_for() {
         app.tree[idx].lines_total > 2,
         "and the body it stood for is there now"
     );
-    assert!(app.folded.is_empty(), "with no user fold invented for it");
+    assert!(
+        !app.folded.contains(idx),
+        "with no user fold invented for it — spec 0323 S2 folds every \
+         bracketed slot the splice writes, but `idx` is the one the \
+         reader asked to see"
+    );
 
     // The rows it now occupies are the ones the unbounded render gives
     // at that node — the expansion is the same render, later.
@@ -1629,7 +1630,7 @@ fn opening_an_auto_fold_renders_the_body_it_stood_for() {
 /// the fold field (spec 0193 S1).
 fn usable_columns(app: &App) -> usize {
     (app.main_area.width as usize)
-        .saturating_sub(1)
+        .saturating_sub(render::HEAT_FIELD_WIDTH)
         .saturating_sub(render::FOLD_FIELD_WIDTH)
 }
 

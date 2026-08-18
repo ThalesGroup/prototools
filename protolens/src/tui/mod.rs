@@ -66,6 +66,7 @@ use crate::blob::wrapped;
 use crate::blob::Blob;
 use crate::colorize::{self, LineStyles, SyntaxRole};
 use crate::decode::{self, widen, Decoded, DescriptorContext, TreeNode};
+use crate::fold_set::FoldSet;
 use crate::node_status::Status;
 pub(crate) use lines::LinePos;
 
@@ -1511,10 +1512,12 @@ pub struct App {
     /// and hit-testing the release position would let one gesture start
     /// on a control and finish somewhere else.
     pending_double_click: Option<ClickZone>,
-    /// Nodes the *user* folded. Never written by anything the user did
-    /// not ask for, which is the whole point of it being separate from
-    /// `auto_folded` (spec 0249 S3).
-    folded: HashSet<usize>,
+    /// Nodes drawn collapsed because nobody has asked to see inside
+    /// them — a fold the user made, or spec 0323's default, which is the
+    /// same thing said by the renderer on the reader's behalf. Never
+    /// written by the *bake*, which is the whole point of it being
+    /// separate from `auto_folded` (spec 0249 S3).
+    folded: FoldSet,
     /// Nodes folded because their body has not been rendered — the ones
     /// a row-bounded render stopped at (spec 0249 S1/S3).
     ///
@@ -1523,7 +1526,7 @@ pub struct App {
     /// a fold the user made over a baked node is not silently undone by
     /// a later bake finishing. Reads do not care which set a node is in
     /// — that is what [`App::is_folded`] is for — only writes do.
-    auto_folded: HashSet<usize>,
+    auto_folded: FoldSet,
     /// The order the bake works through `auto_folded` in (spec 0255 S3).
     ///
     /// A hint, not the truth: `auto_folded` decides whether a node still
@@ -2193,6 +2196,14 @@ impl App {
         // small enough to fit the screen stops nowhere and still asked
         // to be bounded, and its confirms must be too.
         let stops = std::mem::take(&mut decoded.stops);
+        // Spec 0323 S2: every bracketed slot the render wrote, already
+        // collapsed. S3 opens the root out of it below, once the `App`
+        // exists to walk the arena with.
+        let folded = std::mem::take(&mut decoded.folded);
+        let mut auto_folded = FoldSet::new(tree_len);
+        for &slot in &stops {
+            auto_folded.insert(slot);
+        }
         let bounded_confirms = decoded.row_budget.is_some();
         let header = format!("protolens — {blob_label} — {}", decoded.root_type);
         // Spec 0216 S1: the arena is in level order and slot 0 is the
@@ -2255,8 +2266,8 @@ impl App {
             select_engaged: false,
             last_click: None,
             pending_double_click: None,
-            folded: HashSet::new(),
-            auto_folded: stops.iter().copied().collect(),
+            folded,
+            auto_folded,
             bake_queue: stops.iter().copied().collect(),
             visible_stops: VecDeque::new(),
             bounded_confirms,
@@ -2373,18 +2384,24 @@ impl App {
             script: None,
             script_height: None,
         };
-        // Spec 0257 S3: `build_tree` gave each stop the header-plus-footer
-        // pair it actually emitted, but it cannot know the node is folded,
-        // so its `lines_visible` is 2 where the document shows 1. Fixing
-        // it here rather than inside `overlay_spans` keeps the fold sets
-        // the `App`'s business, and it has to happen before
-        // `rebuild_status` below, which reads `auto_folded`.
-        for &slot in &stops {
-            debug_assert!(
-                app.tree[slot].is_bracketed(),
-                "only a message recursion can be undescended (spec 0249 S1)"
-            );
-            app.refresh_line_counts(slot);
+        // Spec 0257 S3 used to repair each stop's `lines_visible` here:
+        // `build_tree` gave it the header-plus-footer pair it actually
+        // emitted, where the document shows one row. Spec 0323 S2 writes
+        // the collapsed count in `overlay_spans` instead — a stop is
+        // bracketed, so it is folded like every other bracketed slot and
+        // its count is right the first time.
+        debug_assert!(
+            stops.iter().all(|&slot| app.tree[slot].is_bracketed()),
+            "only a message recursion can be undescended (spec 0249 S1)"
+        );
+        // Spec 0323 S3: the document opens the way `Z` then `z` leaves
+        // it — everything folded, the root alone open, so disclosure is
+        // one level at a time. S2 did the `Z` as the render wrote each
+        // slot; this is the whole of the `z`, one bit cleared and one
+        // climb over the root's own children.
+        if !app.tree.is_empty() {
+            app.folded.remove(cursor);
+            app.refresh_line_counts(cursor);
         }
         // Spec 0247 S7: the one full pass. Every later change to the
         // document is a splice, and a splice repairs the two arrays

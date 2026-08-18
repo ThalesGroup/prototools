@@ -174,11 +174,18 @@ So the counts exist, are cheap, and never reach the screen.
   (`render.rs:2198-2220`) is extracted to `anchored_rect(anchor,
   width, height, area)` and used by both — there is exactly one right
   answer to "put a box at a point without leaving the screen".
-- **S15.** The box shows the type key it scored, then one line per
-  non-zero category, in `EntryScore::score()`'s own coefficient order
-  (`matches`, `unknowns`, `out_of_range`, `non_canonical`,
-  `mismatches`), each with its count. Zero categories are omitted:
-  a clean node's box is one line saying so, not five zeros.
+- **S15.** The box shows the type key it scored, then the score itself
+  — labeled `score`, since that is the word the rest of the interface
+  uses — then one line per non-zero category, in `EntryScore::score()`'s
+  own coefficient order (`matches`, `unknowns`, `out_of_range`,
+  `non_canonical`, `mismatches`), each with its count. Zero categories
+  are omitted: a clean node's box is one line saying so, not five zeros.
+
+  The score comes *first* rather than as a `total` under the sum. It is
+  the number the cue is colored from and the number the reader opened
+  the box for; the terms are the detail, read only when the score
+  surprises. The terms keep their common weight column, so they still
+  visibly sum to the number above them.
 - **S16.** It is dismissed by anything at all except the pointer
   holding still: any key, any button, any wheel, and a `Moved` off the
   target. There is no dismiss binding to learn, and nothing can be

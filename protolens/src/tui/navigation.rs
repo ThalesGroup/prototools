@@ -405,7 +405,7 @@ impl App {
     /// acts on a folded node acts on both kinds. Only writes
     /// distinguish them.
     pub(super) fn is_folded(&self, idx: usize) -> bool {
-        self.folded.contains(&idx) || self.auto_folded.contains(&idx)
+        self.folded.contains(idx) || self.auto_folded.contains(idx)
     }
 
     /// Open `idx` whichever set folded it, reporting whether it moved.
@@ -414,7 +414,7 @@ impl App {
     /// can fold a node that was already auto-folded — and leaving it in
     /// one of them would draw it collapsed after an unfold gesture.
     pub(super) fn unfold(&mut self, idx: usize) -> bool {
-        self.folded.remove(&idx) | self.auto_folded.remove(&idx)
+        self.folded.remove(idx) | self.auto_folded.remove(idx)
     }
 
     /// Open `idx` on the user's behalf, rendering its body first if a
@@ -429,11 +429,11 @@ impl App {
     /// `unfold_ancestors`, which cannot meet an auto-fold because a
     /// stop has no rendered descendants to climb from.
     pub(super) fn open(&mut self, idx: usize) -> bool {
-        if self.auto_folded.contains(&idx) {
+        if self.auto_folded.contains(idx) {
             // Removed first: the splice below takes `idx` out of
             // `auto_folded` itself, and a node in both sets would
             // otherwise stay drawn collapsed after an open gesture.
-            self.folded.remove(&idx);
+            self.folded.remove(idx);
             self.expand_auto_fold(idx, self.document_pane_height());
             return true;
         }
@@ -955,14 +955,13 @@ impl App {
     }
 
     /// Upper bound for `pan_offset`: the widest currently-visible row's
-    /// last character stays shown, never further. Column 0 of
-    /// `main_area` is always the heat-cue gutter (spec 0138 N1),
-    /// reserved but never panned — only `width - 1` columns actually
-    /// show line text, so the bound must leave room for that extra
-    /// column or panning stops one character short of the line's true
-    /// end.
+    /// last character stays shown, never further. The leading
+    /// `HEAT_FIELD_WIDTH` columns of `main_area` are always the heat-cue
+    /// gutter (spec 0138 N1), reserved but never panned — only the rest
+    /// actually shows line text, so the bound must leave room for them
+    /// or panning stops short of the line's true end.
     pub(super) fn max_pan_offset(&mut self) -> usize {
-        let width = (self.main_area.width as usize).saturating_sub(1);
+        let width = (self.main_area.width as usize).saturating_sub(render::HEAT_FIELD_WIDTH);
         self.max_visible_line_len().saturating_sub(width)
     }
 

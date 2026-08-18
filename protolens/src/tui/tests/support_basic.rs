@@ -27,6 +27,9 @@ pub(super) fn empty_app() -> App {
         total_lines: 0,
         // Spec 0257 S1: a hand-built document was never bounded.
         stops: Vec::new(),
+        // Spec 0323 S2: a hand-built tree writes its own counts, so
+        // nothing in it is folded.
+        folded: FoldSet::default(),
         row_budget: None,
         node_text: Vec::new(),
         tree: Vec::new(),
@@ -75,14 +78,16 @@ pub(super) fn message_node_app_with_root_candidates(
     // malformed child slots the arena keeps and this interpretation
     // does not show, which is exactly the vacant case.
     let arena = crate::decode::arena_of(&blob);
-    let (tree, node_text, _stops) = crate::decode::build_tree(vec![span], &lines, &arena, &[]);
+    let built = crate::decode::build_tree(vec![span], &lines, &arena, &[]);
     let decoded = Decoded {
         total_lines: lines.len(),
         // Spec 0257 S1: a hand-built document was never bounded.
         stops: Vec::new(),
         row_budget: None,
-        node_text,
-        tree,
+        // Spec 0323 S2: from the same pass that wrote the counts.
+        folded: built.folded,
+        node_text: built.node_text,
+        tree: built.tree,
         root_type: "google.protobuf.FileDescriptorProto".to_string(),
         arena,
         blob: Arc::new(Blob::unwrapped(blob)),
@@ -177,6 +182,9 @@ pub(super) fn sibling_leaves_app(texts: &[&str]) -> App {
         total_lines: lines.len(),
         // Spec 0257 S1: a hand-built document was never bounded.
         stops: Vec::new(),
+        // Spec 0323 S2: a hand-built tree writes its own counts, so
+        // nothing in it is folded.
+        folded: FoldSet::default(),
         row_budget: None,
         node_text: own_line_each(&lines),
         tree,
@@ -229,6 +237,9 @@ pub(super) fn wide_sibling_scalars_app(n: usize) -> App {
         total_lines: lines.len(),
         // Spec 0257 S1: a hand-built document was never bounded.
         stops: Vec::new(),
+        // Spec 0323 S2: a hand-built tree writes its own counts, so
+        // nothing in it is folded.
+        folded: FoldSet::default(),
         row_budget: None,
         node_text: own_line_each(&lines),
         tree,

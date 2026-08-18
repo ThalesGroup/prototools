@@ -233,12 +233,12 @@ impl App {
         let row = heights.offset(cursor_row) as isize - self.scroll.top(&heights);
         let last = area.height.saturating_sub(1) as isize;
         // The caret's drawn cell, as `caret_draw_index` computes it: the
-        // fold field, then the column, less the pan, plus one for the
-        // heat gutter. Its past-the-text branch reduces to the same
+        // fold field, then the column, less the pan, plus the heat
+        // gutter. Its past-the-text branch reduces to the same
         // expression, so there is only the one here.
         let column =
             (render::FOLD_FIELD_WIDTH + self.cursor_column).saturating_sub(self.pan_offset);
-        let column = (area.x + 1).saturating_add(column as u16);
+        let column = (area.x + render::HEAT_FIELD_WIDTH as u16).saturating_add(column as u16);
         (
             column.min(area.right().saturating_sub(1)),
             area.y + row.clamp(0, last) as u16,

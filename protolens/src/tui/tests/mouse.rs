@@ -486,7 +486,7 @@ fn a_drag_out_and_back_selects_the_single_character_it_started_on() {
     let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2"]);
     app.splash = false;
     app.main_area = Rect::new(0, 0, 40, 20);
-    let text_x = 1 + render::FOLD_FIELD_WIDTH as u16;
+    let text_x = render::HEAT_FIELD_WIDTH as u16 + render::FOLD_FIELD_WIDTH as u16;
 
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -543,7 +543,7 @@ fn shift_click_extends_the_selection_from_the_caret_then_from_the_anchor() {
     let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2"]);
     app.splash = false;
     app.main_area = Rect::new(0, 0, 40, 20);
-    let text_x = 1 + render::FOLD_FIELD_WIDTH as u16;
+    let text_x = render::HEAT_FIELD_WIDTH as u16 + render::FOLD_FIELD_WIDTH as u16;
     let shift_click = |app: &mut App, column: u16, modifiers: KeyModifiers| {
         for kind in [
             MouseEventKind::Down(MouseButton::Left),
@@ -672,22 +672,22 @@ fn every_click_on_the_fold_marker_toggles_however_many_arrive() {
     let line = app.line_text(app.line_pos(app.absolute_start(node)).unwrap());
     let marker = render::marker_column(&line);
 
-    let folded = app.folded.contains(&node);
+    let folded = app.folded.contains(node);
     for i in 1..=6 {
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
-            column: app.main_area.x + 1 + marker,
+            column: app.main_area.x + render::HEAT_FIELD_WIDTH as u16 + marker,
             row: 0,
             modifiers: KeyModifiers::NONE,
         });
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Up(MouseButton::Left),
-            column: app.main_area.x + 1 + marker,
+            column: app.main_area.x + render::HEAT_FIELD_WIDTH as u16 + marker,
             row: 0,
             modifiers: KeyModifiers::NONE,
         });
         assert_eq!(
-            app.folded.contains(&node),
+            app.folded.contains(node),
             folded != (i % 2 == 1),
             "click {i} must have toggled"
         );
@@ -844,7 +844,7 @@ fn fresh_click_replaces_selection_esc_clears_it() {
     assert_eq!(app.select_anchor, None, "Esc clears the selection");
 }
 
-/// Regression test: clicking a foldable node's `⏵`/`⏷` marker must
+/// Regression test: clicking a foldable node's `▶`/`▼` marker must
 /// still toggle its fold now that the heat-cue gutter (spec 0138 N1)
 /// permanently occupies column 0 of `main_area`, shifting every line's
 /// own text (and its marker) one column to the right.
@@ -854,14 +854,14 @@ fn clicking_the_fold_marker_toggles_the_node_despite_the_heat_cue_gutter() {
     app.splash = false;
     app.main_area = Rect::new(0, 0, 40, 20);
     assert!(app.has_children(grp_idx));
-    assert!(!app.folded.contains(&grp_idx));
+    assert!(!app.folded.contains(grp_idx));
 
     let line_idx = app.absolute_start(grp_idx);
     let indent_len = (app.document_lines()[line_idx].len()
         - app.document_lines()[line_idx].trim_start().len()) as u16;
-    // Column 0 is the heat-cue gutter, so the marker itself sits at
-    // column `indent_len + 1`.
-    let marker_col = indent_len + 1;
+    // The pane's leading columns are the heat-cue gutter, so the marker
+    // itself sits `HEAT_FIELD_WIDTH` further right than the indent.
+    let marker_col = indent_len + render::HEAT_FIELD_WIDTH as u16;
 
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -870,7 +870,7 @@ fn clicking_the_fold_marker_toggles_the_node_despite_the_heat_cue_gutter() {
         modifiers: KeyModifiers::NONE,
     });
     assert!(
-        app.folded.contains(&grp_idx),
+        app.folded.contains(grp_idx),
         "clicking the marker must fold the node"
     );
 
@@ -881,7 +881,7 @@ fn clicking_the_fold_marker_toggles_the_node_despite_the_heat_cue_gutter() {
         modifiers: KeyModifiers::NONE,
     });
     assert!(
-        !app.folded.contains(&grp_idx),
+        !app.folded.contains(grp_idx),
         "clicking the marker again must unfold the node"
     );
 }
@@ -905,7 +905,7 @@ fn a_marker_click_follows_the_glyph_when_the_view_is_panned() {
     // Panned by exactly the marker's own column, the glyph is drawn in
     // the pane's first text column, immediately right of the heat-cue
     // gutter.
-    let drawn_col = app.main_area.x + 1;
+    let drawn_col = app.main_area.x + render::HEAT_FIELD_WIDTH as u16;
     let former_col = drawn_col + marker;
     let click = |app: &mut App, column| {
         app.handle_mouse(MouseEvent {
@@ -922,13 +922,13 @@ fn a_marker_click_follows_the_glyph_when_the_view_is_panned() {
     // to match.
     click(&mut app, former_col);
     assert!(
-        !app.folded.contains(&grp_idx),
+        !app.folded.contains(grp_idx),
         "a click past the panned fold field places the caret, not a fold"
     );
 
     click(&mut app, drawn_col);
     assert!(
-        app.folded.contains(&grp_idx),
+        app.folded.contains(grp_idx),
         "the panned marker must still toggle"
     );
 }
@@ -955,7 +955,7 @@ fn clicking_the_fold_marker_focuses_the_main_pane_and_selects_the_node() {
     let line_idx = app.absolute_start(grp_idx);
     let indent_len = (app.document_lines()[line_idx].len()
         - app.document_lines()[line_idx].trim_start().len()) as u16;
-    let marker_col = indent_len + 1;
+    let marker_col = indent_len + render::HEAT_FIELD_WIDTH as u16;
 
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -965,7 +965,7 @@ fn clicking_the_fold_marker_focuses_the_main_pane_and_selects_the_node() {
     });
 
     assert!(
-        app.folded.contains(&grp_idx),
+        app.folded.contains(grp_idx),
         "clicking the marker must still fold the node"
     );
     assert!(!app.manage_focus, "focus must shift to the main pane");
@@ -1007,7 +1007,7 @@ fn double_click_on_the_fold_marker_toggles_twice_and_opens_nothing() {
     }
 
     assert!(
-        !app.folded.contains(&grp_idx),
+        !app.folded.contains(grp_idx),
         "two clicks on the marker toggle twice, back to where they started"
     );
     assert!(
@@ -1069,7 +1069,7 @@ fn a_click_places_the_caret_except_on_the_fold_marker() {
     let indent =
         app.document_lines()[header].len() - app.document_lines()[header].trim_start().len();
     // The heat-cue column, then the fold field, then the row's text.
-    let text_origin = 1 + render::FOLD_FIELD_WIDTH as u16;
+    let text_origin = render::HEAT_FIELD_WIDTH as u16 + render::FOLD_FIELD_WIDTH as u16;
 
     app.handle_click(text_origin + indent as u16 + 2, row);
     assert_eq!(app.cursor, items[1], "the click moved the cursor there");
@@ -1083,9 +1083,9 @@ fn a_click_places_the_caret_except_on_the_fold_marker() {
     );
 
     let marker = render::marker_column(&app.document_lines()[header]);
-    app.handle_click(marker + 1, row);
+    app.handle_click(marker + render::HEAT_FIELD_WIDTH as u16, row);
     assert!(
-        app.folded.contains(&items[1]),
+        app.folded.contains(items[1]),
         "a click on the marker still folds"
     );
     assert_eq!(
@@ -1098,7 +1098,7 @@ fn a_click_places_the_caret_except_on_the_fold_marker() {
     // a row without drifting off it.
     app.handle_click(marker + 2, row);
     assert!(
-        !app.folded.contains(&items[1]),
+        !app.folded.contains(items[1]),
         "the whole two-column fold field toggles, not just the glyph"
     );
     assert_eq!(app.cursor_column, indent, "and still not the caret");
@@ -1121,7 +1121,9 @@ fn a_click_on_a_leaf_diamond_places_the_caret() {
     );
 
     app.cursor = 1;
-    let column = app.main_area.x + 1 + render::marker_column(&app.document_lines()[0]);
+    let column = app.main_area.x
+        + render::HEAT_FIELD_WIDTH as u16
+        + render::marker_column(&app.document_lines()[0]);
     let spent = app.handle_click(column, app.main_area.y);
     assert!(!spent, "the mark is not a fold control");
     assert!(app.folded.is_empty(), "and it folded nothing");
