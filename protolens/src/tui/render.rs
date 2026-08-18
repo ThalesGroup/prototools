@@ -960,10 +960,10 @@ impl App {
     /// bold half of a manual override's weight still lands here, and
     /// the underline still lands on the row's key and type name, which
     /// is where it can be read.
-    /// Spec 0318 S7: an overlay row takes the preview's tier bar here
-    /// instead. It cannot take both — an overlay row has no owner, so
-    /// `fold_marker_of` gives it no glyph and the column is free on
-    /// every row of the preview whatever `--indent` is set to.
+    /// Spec 0318 S7: an overlay row takes its margin from
+    /// `overlay_margin_spans` instead. The column is free on every row of
+    /// a preview whatever `--indent` is set to, because an overlay row
+    /// has no owner and so `fold_marker_of` gives it no glyph.
     fn margin_spans(
         &self,
         margin: String,
@@ -971,8 +971,8 @@ impl App {
         owner: Option<usize>,
         emphasis: Modifier,
     ) -> Vec<Span<'static>> {
-        if let DisplayRow::Overlay(_) = row {
-            return self.tier_bar_spans(margin);
+        if let DisplayRow::Overlay(index) = row {
+            return self.overlay_margin_spans(margin, index);
         }
         let emphasis = emphasis - Modifier::UNDERLINED;
         let color = self.fold_marker_color(owner);
@@ -998,36 +998,62 @@ impl App {
         spans
     }
 
-    /// Spec 0318 S7: the overlay's fold-column bar, spliced into an
-    /// otherwise blank margin.
+    /// Spec 0318 S7: what an overlay row draws in its fold column, given
+    /// the row's index within the preview.
     ///
-    /// The bar runs the whole preview, first row through closing brace,
-    /// so it says two things at once: *these rows are the preview*,
-    /// which the reader currently has to infer, and how much of the node
-    /// they are. Absence would only have said the second, and only for
-    /// two of the three tiers.
-    fn tier_bar_spans(&self, margin: String) -> Vec<Span<'static>> {
+    /// Row 0 is the previewed node's own header, and it keeps that
+    /// node's fold toggle — the reader is deciding about *that* node, and
+    /// covering its triangle would take away the one control on the row
+    /// they are looking at. The overlay hides the committed row, so the
+    /// glyph has to be drawn here or not at all; `override_target` is the
+    /// node it belongs to.
+    ///
+    /// The bar runs from row 1 to the closing brace, starting directly
+    /// below the triangle. It says two things at once: *these rows are
+    /// the preview*, which the reader would otherwise have to infer, and
+    /// whether they are all of it.
+    fn overlay_margin_spans(&self, margin: String, index: usize) -> Vec<Span<'static>> {
         let Some(o) = self.preview_overlay.as_ref() else {
             return vec![Span::raw(margin)];
         };
-        // The margin is `FOLD_FIELD_WIDTH + indent` spaces and the bar
-        // sits at the column the *first* line's marker would, which is
-        // the shallowest — so it always lands inside. A blank row has no
+        // The margin is `FOLD_FIELD_WIDTH + indent` spaces and the column
+        // is the one the *first* line's marker would occupy, which is the
+        // shallowest — so it always lands inside. A blank row has no
         // margin at all and never reaches here.
         let at = o.tier_column;
         if at >= margin.len() {
             return vec![Span::raw(margin)];
         }
-        let style = Style::default().fg(theme::preview_tier_color(o.tier.hue(), self.theme));
+        let (glyph, color) = if index == 0 {
+            let owner = self.override_target;
+            match self.fold_marker_of(owner) {
+                Some(glyph) => (glyph, self.fold_marker_color(owner)),
+                // A previewed leaf has nothing to fold, so there is no
+                // triangle to preserve and the bar starts at the top.
+                None => (TIER_BAR_GLYPH, self.preview_bar_color(o)),
+            }
+        } else {
+            (TIER_BAR_GLYPH, self.preview_bar_color(o))
+        };
         let mut spans = Vec::with_capacity(3);
         if at > 0 {
             spans.push(Span::raw(margin[..at].to_string()));
         }
-        spans.push(Span::styled(TIER_BAR_GLYPH.to_string(), style));
+        let style = match color {
+            Some(color) => Style::default().fg(color),
+            None => Style::default(),
+        };
+        spans.push(Span::styled(glyph.to_string(), style));
         if at + 1 < margin.len() {
             spans.push(Span::raw(margin[at + 1..].to_string()));
         }
         spans
+    }
+
+    /// Spec 0318 S5: the bar's color — `None`, i.e. the default
+    /// foreground, when the preview is the whole node.
+    fn preview_bar_color(&self, overlay: &PreviewOverlay) -> Option<Color> {
+        theme::preview_bar_color(overlay.tier.is_whole(), self.theme)
     }
 
     /// Turns `content`'s `segments` (byte ranges tagged with an optional

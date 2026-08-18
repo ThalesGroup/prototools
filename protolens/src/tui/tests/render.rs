@@ -1335,14 +1335,18 @@ fn every_overlay_row_is_prototext() {
     );
 }
 
-/// Every drawn cell holding the tier bar, as `(x, y, foreground)`.
-fn tier_bar_cells(app: &App, terminal: &Terminal<TestBackend>) -> Vec<(u16, u16, Color)> {
-    let bar = crate::tui::render::TIER_BAR_GLYPH.to_string();
+/// Every drawn cell whose symbol is `glyph`, as `(x, y, foreground)`.
+fn margin_cells(
+    app: &App,
+    terminal: &Terminal<TestBackend>,
+    glyph: char,
+) -> Vec<(u16, u16, Color)> {
+    let glyph = glyph.to_string();
     let buffer = terminal.backend().buffer();
     let mut out = Vec::new();
     for y in app.main_area.y..app.main_area.y + app.main_area.height {
         for x in app.main_area.x..app.main_area.x + app.main_area.width {
-            if buffer[(x, y)].symbol() == bar {
+            if buffer[(x, y)].symbol() == glyph {
                 out.push((x, y, buffer[(x, y)].fg));
             }
         }
@@ -1350,13 +1354,24 @@ fn tier_bar_cells(app: &App, terminal: &Terminal<TestBackend>) -> Vec<(u16, u16,
     out
 }
 
-/// Spec 0318 S7: the bar runs the whole preview — first row, middle rows
-/// and the closing brace alike — down one column, and its color is the
-/// tier. Absence would have said only "something is missing", and only
-/// for two of the three tiers; a bar on every row also says *these rows
-/// are the preview*, which the reader currently has to infer.
+fn tier_bar_cells(app: &App, terminal: &Terminal<TestBackend>) -> Vec<(u16, u16, Color)> {
+    margin_cells(app, terminal, crate::tui::render::TIER_BAR_GLYPH)
+}
+
+/// Spec 0318 S7: the previewed node keeps its own fold toggle on the
+/// preview's first row, and the bar starts directly below it and runs to
+/// the closing brace.
+///
+/// The triangle is the one control on the row the reader is deciding
+/// about, and the overlay hides the committed row it would have been
+/// drawn on — so covering it with the bar would take it away entirely.
+///
+/// The bar's color answers one question, so it has two states: default
+/// foreground when the preview is the whole node, violet when it is not.
+/// `Clean` and `Ragged` are two decisions in `preview_truncate` and one
+/// answer here.
 #[test]
-fn overlay_rows_draw_the_tier_bar() {
+fn overlay_rows_draw_the_tier_bar_below_the_previewed_nodes_triangle() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
     app.cursor = inner_idx;
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
@@ -1377,35 +1392,44 @@ fn overlay_rows_draw_the_tier_bar() {
         let cells = tier_bar_cells(&app, &terminal);
         assert_eq!(
             cells.len(),
-            row_count,
-            "one bar per overlay row, {tier:?}: {cells:?}"
+            row_count - 1,
+            "the bar covers every overlay row but the first, {tier:?}: {cells:?}"
         );
 
-        let want = crate::theme::preview_tier_color(tier.hue(), app.theme);
-        let column = cells[0].0;
+        // The row above the bar is the preview's first, and the toggle
+        // has to be on it, in the bar's own column. Other triangles are
+        // on screen — the committed rows above the overlay have theirs —
+        // so this is asked of the one position that matters rather than
+        // of the pane.
+        let (bx, by, _) = cells[0];
+        let triangles = margin_cells(&app, &terminal, crate::tui::render::FOLD_GLYPH_OPEN);
+        assert!(
+            triangles.iter().any(|&(x, y, _)| (x, y) == (bx, by - 1)),
+            "the previewed node keeps its toggle, {tier:?}: {triangles:?}"
+        );
+
+        let want =
+            crate::theme::preview_bar_color(tier.is_whole(), app.theme).unwrap_or(Color::Reset);
         for (i, &(x, y, fg)) in cells.iter().enumerate() {
-            assert_eq!(x, column, "the bar must stay in one column, {tier:?}");
-            assert_eq!(y, cells[0].1 + i as u16, "the bar must be contiguous");
-            assert_eq!(fg, want, "the bar's color is the tier, {tier:?}");
+            assert_eq!(x, bx, "the bar must stay below the triangle, {tier:?}");
+            assert_eq!(y, by + i as u16, "the bar must be contiguous");
+            assert_eq!(fg, want, "the bar's color, {tier:?}");
         }
     }
 
-    // And the three tiers must not draw the same color, or the signal
-    // says nothing.
-    let hues: Vec<Color> = [PreviewTier::Whole, PreviewTier::Clean, PreviewTier::Ragged]
-        .map(|t| crate::theme::preview_tier_color(t.hue(), app.theme))
-        .to_vec();
-    assert_eq!(
-        hues.iter().collect::<std::collections::HashSet<_>>().len(),
-        3,
-        "the three tiers must be distinguishable: {hues:?}"
-    );
+    // The two states must not draw alike, or the bar says nothing.
+    let complete = crate::theme::preview_bar_color(true, app.theme);
+    let cut = crate::theme::preview_bar_color(false, app.theme);
+    assert_eq!(complete, None, "a whole preview withholds no color either");
+    assert!(cut.is_some(), "a cut preview must be visibly marked");
 }
 
 /// Spec 0318 S7's claim, and the one that would silently regress: the
 /// fold column is free on an overlay row *at every indent setting*,
 /// because `display_row_source` gives an overlay row no owner and so
-/// `fold_marker_of` gives it no glyph. `--indent 1` is the case where a
+/// `fold_marker_of` gives it no glyph. The one triangle on screen is the
+/// previewed node's, drawn deliberately by `overlay_margin_spans` rather
+/// than found by the ordinary path. `--indent 1` is the case where a
 /// committed row's marker sits in the reserved field rather than in its
 /// own indentation, i.e. where a collision would first show.
 #[test]
@@ -1425,9 +1449,14 @@ fn overlay_fold_column_is_free_at_indent_one() {
     terminal.draw(|frame| app.render(frame)).unwrap();
 
     let cells = tier_bar_cells(&app, &terminal);
-    assert_eq!(cells.len(), row_count, "one bar per overlay row: {cells:?}");
+    assert_eq!(
+        cells.len(),
+        row_count - 1,
+        "one bar per overlay row below the first: {cells:?}"
+    );
 
-    // No fold triangle anywhere on a row the bar is on.
+    // No fold triangle on any row the bar is on — only on the row above
+    // it, which is the previewed node's own.
     let buffer = terminal.backend().buffer();
     for &(_, y, _) in &cells {
         for x in app.main_area.x..app.main_area.x + app.main_area.width {

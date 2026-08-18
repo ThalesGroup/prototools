@@ -536,7 +536,7 @@ fn band_text(theme: ThemeKind, rgb: bool) -> Color {
 /// unstyled rather than painting it a "fine" color, so that a colored
 /// toggle is the only thing on the row that changed.
 ///
-/// `Status::Invalid` borrows its tier color outright rather than
+/// Both anomaly statuses borrow their tier color outright rather than
 /// approximating it: the toggle and the annotation it is summarizing are
 /// two readings of one fact (the same argument `tier_band` makes for the
 /// wire row), and a second copy is how they would drift.
@@ -545,16 +545,17 @@ fn band_text(theme: ThemeKind, rgb: bool) -> Color {
 /// the other a subtree nobody has looked at — so each gets a color of
 /// its own.
 ///
-/// `Status::NonCanonical` is the exception, and it is one on purpose
-/// (2026-08-10). Its tier is an amber at 36°, chosen against the *other
-/// document colors* (see `DARK_RGB::tier_non_canonical`); in the margin
-/// the only colors it is ever seen against are the four here, and 36°
-/// against `Invalid`'s 0° was reported as too close to read apart. The
-/// margin is one glyph wide, which is the hardest place in the app to
-/// judge a hue, so it gets its own scale — white, violet, blue, yellow,
-/// red — held apart by `no_two_fold_margin_colors_share_a_neighborhood`.
-/// Sharing the amber would keep one invariant at the cost of the one the
-/// column exists for.
+/// `Status::NonCanonical` was the exception between 2026-08-10 and
+/// 2026-08-18, wearing a yellow of its own. Its tier is an amber only
+/// 36° from `Invalid`'s red, and in a glyph one cell wide that was
+/// reported as reading as a red; a bespoke yellow at 54° answered that.
+/// It is no longer the exception. The amber is the color the reader has
+/// already learned from `ohb` and `ENUM_UNKNOWN`, and agreeing with the
+/// annotation was judged worth the narrower separation — at the triangle
+/// size the glyphs are actually drawn (U+23F7/U+23F5, spec 0260), amber
+/// against red reads. The cost is real and is recorded on
+/// `no_two_fold_margin_colors_share_a_neighborhood`, which no longer
+/// governs the two borrowed colors.
 pub fn status_color(status: Status, theme: ThemeKind) -> Option<Color> {
     status_color_in(status, theme, supports_rgb())
 }
@@ -572,103 +573,42 @@ fn status_color_in(status: Status, theme: ThemeKind, rgb: bool) -> Option<Color>
             (LIGHT_RGB.status_unbaked, Color::Magenta),
         ),
         Status::Unknown => unknown_color(theme, rgb),
-        // The tier's amber moved to yellow, for the margin only. Hue
-        // 54°, six degrees short of pure: far enough from `Invalid` at
-        // 0° that the two cannot be confused at one glyph, and short of
-        // 60° so it is still a warm color rather than a green-yellow.
-        //
-        // Dark was #FFF14D — the saturation its neighbors carry (0.70)
-        // — and was reported as too close to white. Saturation is the
-        // wrong axis *for yellow* and only for yellow: it is the one hue
-        // whose fully saturated form is already near white in luminance,
-        // so #FFF14D sat 23 points below pure white while violet, red
-        // and blue sat 82 to 137 below at the same saturation.
-        //
-        // Corrected 2026-08-10 by taking blue to zero and pulling red
-        // and green down with it. #E8D200 (luma 200) was the first
-        // attempt and was still read as white, so this is the second:
-        // luma 166, which puts it *below* `Status::Unknown`'s blue at
-        // 173 — inside the range the other three occupy rather than
-        // above all of them. What is spent doing that is hue margin:
-        // 53.8° against the 50° floor the pairwise test enforces, which
-        // is about as dark as a yellow can go before it has to start
-        // turning green to stay clear of the red.
-        //
-        // The luma ceiling in `every_status_color_is_a_hue_and_not_a_tint`
-        // is set so neither rejected value can pass again.
-        //
-        // Light already answered the same question from the other side,
-        // and is unchanged: it matches the *lightness* the light tier
-        // was deepened to, since on white a full-value yellow is the one
-        // mark that disappears. #827800 is `tier_non_canonical`'s luma
-        // to within a point, at 55° instead of 41°.
-        Status::NonCanonical => pick(
-            theme,
-            rgb,
-            (Color::Rgb(0xC2, 0xAE, 0x00), Color::Yellow),
-            (Color::Rgb(0x82, 0x78, 0x00), Color::Yellow),
-        ),
+        Status::NonCanonical => tier_color(Tier::NonCanonical, theme, rgb),
         Status::Invalid => tier_color(Tier::Invalid, theme, rgb),
     })
 }
 
 /// Spec 0318 S5/S7: the color of the bar an override preview draws in
-/// the fold column, saying how much of the node the preview is.
+/// the fold column, or `None` for the default foreground.
 ///
-/// Green, yellow, orange — a fidelity ramp, and the reader's own
-/// vocabulary for one. It is not the anomaly ramp and must not be read
-/// as one; what keeps the two apart is the column. Nothing but this bar
-/// is ever drawn in an overlay row's fold column, a preview's bars are a
-/// contiguous run where a status color is a lone triangle, and the glyph
-/// differs (`│` against `⏵`/`⏷`). The overlap that remains is yellow,
-/// which `Status::NonCanonical` also wears; the bar is deliberately a
-/// warmer, more saturated one so that a committed row's triangle and a
-/// preview's bar do not read as the same mark.
+/// Two colors, not a ramp. The bar answers one question — *is this all
+/// of the node?* — and the reader's next move is the same whichever way
+/// a cut was made, so `Clean` and `Ragged` are one answer here even
+/// though they are two decisions in `preview_truncate`. Where they
+/// differ is in the rendering itself, which a `Ragged` preview annotates
+/// and a `Clean` one does not.
 ///
-/// Unleveled, like the tiers and `status_unbaked`, and for the same
-/// reason: the margin is its own column, and something the reader is
-/// meant to notice without looking for it cannot be brought down to the
-/// document's luminance.
-pub fn preview_tier_color(tier: PreviewTierHue, theme: ThemeKind) -> Color {
-    let rgb = supports_rgb();
-    match tier {
-        // Hue 120°. The one color in the app that means "nothing to
-        // report" out loud rather than by absence, which is what a
-        // preview showing the whole node needs to say — silence here
-        // would be indistinguishable from no preview at all.
-        PreviewTierHue::Whole => pick(
-            theme,
-            rgb,
-            (Color::Rgb(0x3F, 0xC3, 0x3F), Color::Green),
-            (Color::Rgb(0x1B, 0x7F, 0x1B), Color::Green),
-        ),
-        // Hue 45°, warmer and more saturated than `NonCanonical`'s 54°.
-        PreviewTierHue::Clean => pick(
-            theme,
-            rgb,
-            (Color::Rgb(0xFF, 0xBF, 0x00), Color::Yellow),
-            (Color::Rgb(0xA8, 0x7E, 0x00), Color::Yellow),
-        ),
-        // Hue 25°. Orange, because this is the tier where the rendering
-        // below it may carry a truncation the data does not have.
-        PreviewTierHue::Ragged => pick(
-            theme,
-            rgb,
-            (Color::Rgb(0xFF, 0x7A, 0x1A), Color::LightRed),
-            (Color::Rgb(0xB5, 0x45, 0x00), Color::Red),
-        ),
+/// The complete case is left unstyled rather than given a color of its
+/// own. The bar is present on every preview row either way, so its
+/// *presence* already says "this is a preview"; only its color has to
+/// say anything more, and "nothing withheld" is exactly what the fold
+/// column's other scale spells `Status::Ok` — absence.
+///
+/// The violet is `Status::Unbaked`'s, shared on purpose. In this column
+/// that violet already means "there is more here than has been
+/// rendered", which is what a cut preview is; a sixth hue in a column
+/// one glyph wide would cost more than the reuse does. Unleveled, like
+/// the tiers and `status_unbaked`, and for the same reason.
+pub fn preview_bar_color(complete: bool, theme: ThemeKind) -> Option<Color> {
+    if complete {
+        return None;
     }
-}
-
-/// The three preview tiers, as this module sees them. A hue role, like
-/// [`Tier`] and `HeatHue`: `tui::preview_truncate::PreviewTier` is the
-/// decision, this is the color it asks for, and keeping them separate is
-/// what stops the theme depending on the TUI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PreviewTierHue {
-    Whole,
-    Clean,
-    Ragged,
+    Some(pick(
+        theme,
+        supports_rgb(),
+        (DARK_RGB.status_unbaked, Color::LightMagenta),
+        (LIGHT_RGB.status_unbaked, Color::Magenta),
+    ))
 }
 
 /// The color of `tier`, in whichever of the four palettes applies.
@@ -1769,6 +1709,21 @@ mod tests {
         }
     }
 
+    /// Every [`Status`] the fold margin gives a color to. `Status::Ok`
+    /// is absent because it has none.
+    const MARGIN_STATUSES: [Status; 4] = [
+        Status::Unbaked,
+        Status::Unknown,
+        Status::NonCanonical,
+        Status::Invalid,
+    ];
+
+    /// Whether a margin color is a tier's, taken whole, rather than one
+    /// picked for this column. See `status_color`.
+    fn borrows_a_tier(status: Status) -> bool {
+        matches!(status, Status::NonCanonical | Status::Invalid)
+    }
+
     /// Spec 0260 S1: every color the fold margin can wear is saturated
     /// enough to read as a hue rather than as a tint of the foreground,
     /// **and** dark enough not to read as white.
@@ -1791,24 +1746,27 @@ mod tests {
     /// two successive yellows were rejected by eye, at luma 232 and then
     /// at 200, so a ceiling that either could have passed would not have
     /// been carrying the constraint that was actually learned. It leaves
-    /// `Status::Unknown`'s blue — the brightest of the four that survive,
-    /// at 173 — twelve points of room, and everything else far more.
-    /// A future color that has to sit above 185 needs a reason on the
-    /// record, not a raised number.
+    /// `Status::Unknown`'s blue — the brightest that carries it, at 173
+    /// — twelve points of room, and everything else far more. A future
+    /// color that has to sit above 185 needs a reason on the record, not
+    /// a raised number.
+    ///
+    /// The ceiling binds the two colors the margin *chooses*. It does
+    /// not bind the two the margin *borrows* from a tier (2026-08-18):
+    /// those are chosen against the document's palette, where they also
+    /// have a word beside them, and the reason the margin takes them
+    /// anyway is on `status_color`. `Tier::NonCanonical`'s amber is at
+    /// luma 188 and would fail. The saturation floor still binds all
+    /// four — it asks whether a color is a hue at all, which is not a
+    /// question about the column.
     ///
     /// Floor and ceiling are stated rather than the values: this exists
     /// to hand the constraint to the next person choosing one of these
     /// colors, not to pin the four they inherited.
     #[test]
     fn every_status_color_is_a_hue_and_not_a_tint() {
-        let statuses = [
-            Status::Unbaked,
-            Status::Unknown,
-            Status::NonCanonical,
-            Status::Invalid,
-        ];
         for theme in [ThemeKind::Dark, ThemeKind::Light] {
-            for status in statuses {
+            for status in MARGIN_STATUSES {
                 let Some(Color::Rgb(r, g, b)) = status_color_in(status, theme, true) else {
                     panic!("{status:?} has no truecolor entry on {theme:?}");
                 };
@@ -1819,6 +1777,9 @@ mod tests {
                     "{status:?} on {theme:?} is a tint, not a hue: \
                      #{r:02X}{g:02X}{b:02X}, saturation {saturation:.3}",
                 );
+                if borrows_a_tier(status) {
+                    continue;
+                }
                 let luma = 0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b);
                 assert!(
                     luma <= 185.0,
@@ -1830,20 +1791,25 @@ mod tests {
     }
 
     /// The fold margin is a five-color scale — unstyled, violet, blue,
-    /// yellow, red — and the four that carry a hue have to be told apart
-    /// in a single glyph, with no second cue and nothing beside them.
+    /// amber, red — and its colors have to be told apart in a single
+    /// glyph, with no second cue and nothing beside them.
     ///
-    /// `NonCanonical` sat 36° from `Invalid` until 2026-08-10 and was
-    /// reported as reading as a red. The floor is what the fix bought,
-    /// not a claim that one degree less would fail: 55° on `Dark`, and
-    /// 50° is stated because `Light` cannot do better — its `Invalid` is
-    /// at 5° rather than 0°, and a yellow cannot answer by climbing past
-    /// 60° without becoming a green. The two are further apart there
-    /// than the hues alone say, the light yellow being half the
-    /// scarlet's lightness.
+    /// One pair is exempt, and only that pair: `NonCanonical`'s amber
+    /// and `Invalid`'s red are borrowed whole from the tiers, they are
+    /// 36° apart on `Dark` and 35° on `Light`, and agreeing with the
+    /// annotations that wear the same two colors was chosen over
+    /// separating them here (2026-08-18, see `status_color`).
+    /// `no_two_tiers_share_a_color` is what keeps that pair distinct at
+    /// all. Every other pair still has to clear the floor — including a
+    /// borrowed color against a chosen one, so that a color moved into
+    /// this column cannot slip in beside the red. That is the part which
+    /// is easy to forget.
     ///
-    /// A color moved into this column has to clear the floor against all
-    /// three others, which is the part that is easy to forget.
+    /// 50° is what the 2026-08-10 fix bought, when `NonCanonical` did
+    /// have a color of its own: 55° on `Dark`, and 50° is stated because
+    /// `Light` could do no better — its `Invalid` is at 5° rather than
+    /// 0°, and a yellow cannot answer by climbing past 60° without
+    /// becoming a green.
     #[test]
     fn no_two_fold_margin_colors_share_a_neighborhood() {
         /// Hue in degrees, or `None` for a gray, which has none.
@@ -1867,14 +1833,8 @@ mod tests {
             Some((h * 60.0).rem_euclid(360.0))
         }
 
-        let statuses = [
-            Status::Unbaked,
-            Status::Unknown,
-            Status::NonCanonical,
-            Status::Invalid,
-        ];
         for theme in [ThemeKind::Dark, ThemeKind::Light] {
-            let hues: Vec<(Status, f32)> = statuses
+            let hues: Vec<(Status, f32)> = MARGIN_STATUSES
                 .iter()
                 .map(|&s| {
                     let color = status_color_in(s, theme, true).expect("a margin color");
@@ -1883,6 +1843,9 @@ mod tests {
                 .collect();
             for (i, &(a, ha)) in hues.iter().enumerate() {
                 for &(b, hb) in &hues[i + 1..] {
+                    if borrows_a_tier(a) && borrows_a_tier(b) {
+                        continue;
+                    }
                     let apart = (ha - hb).abs().min(360.0 - (ha - hb).abs());
                     assert!(
                         apart >= 50.0,

@@ -23,9 +23,12 @@ use prototext_core::helpers::{
 };
 
 /// Spec 0318 S5: how faithful a preview is to the node it stands for.
-/// Drawn as the color of the bar in the overlay's fold column, which is
-/// the only thing that tells the reader a preview is a sample rather
-/// than the thing.
+///
+/// Three decisions, two colors: the bar in the overlay's fold column
+/// asks only whether the preview is all of the node, so `Clean` and
+/// `Ragged` draw alike (`theme::preview_bar_color` says why). They are
+/// still two decisions here, because they differ in what the rendering
+/// below the bar contains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PreviewTier {
     /// Nothing was cut. The preview *is* the node.
@@ -41,12 +44,10 @@ pub(super) enum PreviewTier {
 }
 
 impl PreviewTier {
-    pub(super) fn hue(self) -> crate::theme::PreviewTierHue {
-        match self {
-            Self::Whole => crate::theme::PreviewTierHue::Whole,
-            Self::Clean => crate::theme::PreviewTierHue::Clean,
-            Self::Ragged => crate::theme::PreviewTierHue::Ragged,
-        }
+    /// Whether the preview withheld nothing — the one question the bar
+    /// in the fold column answers.
+    pub(super) fn is_whole(self) -> bool {
+        self == Self::Whole
     }
 }
 

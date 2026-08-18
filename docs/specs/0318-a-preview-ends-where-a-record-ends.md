@@ -8,6 +8,8 @@ SPDX-License-Identifier: MIT
 
 Status: implemented
 Implemented in: 2026-08-18
+Amended: 2026-08-18 — S5, S7 and N5 superseded on first use; see
+        "Amended 2026-08-18, on first use"
 App: protolens
 Refs: docs/specs/0174-….md (`TruncShape`, the preview byte budget, the
         `...` marker), docs/specs/0185-….md (the preview is an overlay,
@@ -147,6 +149,48 @@ keeps the budget in bytes.
 - **S9.** The bar pans off the left edge with the fold margin, exactly
   as the fold triangle does. Not worth a fix — a reader panned that far
   right is reading a value, not choosing a type.
+
+## Amended 2026-08-18, on first use
+
+The bar shipped as written and was read on screen the same day. Three
+points changed; S1-S4, S6, S8 and S9 stand.
+
+- **A5 supersedes S5's color column, and S7's "in the tier's color".**
+  Three tiers, **two** colors: default foreground when the preview is
+  `Whole`, `Status::Unbaked`'s violet otherwise. The bar answers *is this
+  all of the node?*, and the reader's next move is the same whether the
+  cut was `Clean` or `Ragged`, so the ramp was spending three colors on a
+  binary question. The tier stays three-valued in `preview_truncate` —
+  the cut *is* three decisions, and they differ in what the rendering
+  contains. The complete case is unstyled for the reason S7 gives itself:
+  the bar's presence already says "this is a preview", so only its color
+  has to say more, and "nothing withheld" is what this column spells as
+  absence. `theme::preview_tier_color` and `PreviewTierHue` are deleted.
+
+  This also retires the Alternatives section's last argument against a
+  background — the ramp it invoked no longer exists — but the palette
+  exhaustion and the composition problem are untouched, so N4 stands.
+
+- **A6 supersedes N5.** The previewed node's fold triangle *is* drawn, on
+  overlay row 0, and the bar starts on row 1 beneath it. N5's premise was
+  right and its conclusion did not follow: the overlay covers the
+  committed triangle, which is exactly why the reader loses the ability
+  to fold the node they are inspecting. `render::overlay_margin_spans`
+  reinstates it from `fold_marker_of(override_target)`, in its committed
+  color. A previewed leaf has no triangle, and there the bar starts at
+  row 0.
+
+- **A7.** `Status::NonCanonical` stops being the fold margin's one
+  exception and borrows `Tier::NonCanonical`'s amber, the color the
+  reader already knows from `ohb` and `ENUM_UNKNOWN`. That amber was
+  rejected in this column on 2026-08-10 for sitting 36° from
+  `Status::Invalid`'s red — but at `▾`, and the glyphs grew to `⏷`
+  later the same day. At the size they are now drawn it reads. The two
+  margin invariants change shape rather than threshold: the luma ceiling
+  and the 50° hue floor bind the colors this column *chooses*, and no
+  longer bind the pair it *borrows* against each other. A borrowed color
+  against a chosen one is still checked, so nothing new can slip in
+  beside the red.
 
 ## Alternatives considered
 
