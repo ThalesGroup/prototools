@@ -724,14 +724,14 @@ fn override_statusline_wording_differs_by_sort_mode() {
     app.override_sort = SortMode::Inferred;
     let row_text = override_statusline(&mut app, &mut terminal);
     assert!(
-        row_text.ends_with("- i → all types"),
+        row_text.ends_with("(i → all types)"),
         "the inferred list offers the other one: {row_text:?}"
     );
 
     app.override_sort = SortMode::Lexicographic;
     let row_text = override_statusline(&mut app, &mut terminal);
     assert!(
-        row_text.ends_with("- i → inferred types"),
+        row_text.ends_with("(i → inferred types)"),
         "and back again: {row_text:?}"
     );
 }
@@ -1640,7 +1640,7 @@ fn the_override_statusline_projects_the_origin_and_the_short_type() {
     assert_eq!(
         override_statusline(&mut app, &mut terminal),
         format!(
-            "override {} as Item - i → inferred types",
+            "override {} as Item (i → inferred types)",
             fqdn_origin.label()
         ),
         "the origin is spelled in full, the type by its last segment",
@@ -1651,7 +1651,7 @@ fn the_override_statusline_projects_the_origin_and_the_short_type() {
     assert_eq!(
         override_statusline(&mut app, &mut terminal),
         format!(
-            "override {} as Item - i → inferred types",
+            "override {} as Item (i → inferred types)",
             path_origin.label()
         ),
         "the projection follows the pin",

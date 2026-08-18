@@ -2212,8 +2212,14 @@ impl App {
             .highlighted_override_type()
             .and_then(|f| f.rsplit('.').next())
         {
-            Some(short) => format!("override {origin} as {short} - {mode_label}"),
-            None => format!("override {origin} - {mode_label}"),
+            // Spec 0321 S3: parentheses, not a dash. The left half is a
+            // value — the origin `Enter` will create — and the right is
+            // an affordance; a dash reads as joining two peers, and on a
+            // pane narrow enough for `statusline_text` to cut the left
+            // half a bare dash inside truncated text is ambiguous in a
+            // way `(` is not.
+            Some(short) => format!("override {origin} as {short} ({mode_label})"),
+            None => format!("override {origin} ({mode_label})"),
         };
 
         let list_height = inner.height as usize;

@@ -221,11 +221,98 @@ fn o_prefills_the_current_state_and_enter_is_a_no_op() {
     );
 }
 
-/// Spec 0237 S4: the pre-filled origin is the *applicable entry's*, not
-/// always the subject's bare path. `o` on a node covered by an
-/// `fqdn:field` override must pre-fill that override — otherwise
-/// `Enter` on the unedited line would silently narrow it to this one
-/// node, which is the opposite of spec 0236 G2.
+/// Spec 0321 S1: in the selection pane the pre-filled origin is the one
+/// the status line is projecting — spec 0308's widest-first ladder here,
+/// since nothing covers the node — and it follows `z` for the same
+/// reason `Enter` does. The two exits from one pane must not describe
+/// the same subject differently.
+#[test]
+fn o_in_the_selection_pane_prefills_the_projected_origin() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.splash = false;
+    app.set_cursor(inner_idx);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    let projected = app
+        .projected_override_origin()
+        .expect("the ladder builds an origin for inner");
+    app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+    let buf = app.command_buffer.clone().expect("o must open the line");
+    assert!(
+        buf.starts_with(&format!("override {} ", projected.label())),
+        "the projected origin, not the node's bare path: {buf}"
+    );
+    assert_ne!(
+        projected,
+        OverrideOrigin::Path {
+            path: app.positional_path(inner_idx)
+        },
+        "the ladder must actually have widened, or this proves nothing",
+    );
+
+    // `z` moves the projection, so it must move the pre-fill with it.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+    let pinned = app
+        .projected_override_origin()
+        .expect("the pinned kind still builds");
+    assert_ne!(pinned, projected, "z must have moved the projection");
+    app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+    let buf = app.command_buffer.clone().expect("o must open the line");
+    assert!(
+        buf.starts_with(&format!("override {} ", pinned.label())),
+        "the pre-fill follows the pin: {buf}"
+    );
+}
+
+/// Spec 0321 S2: the command answers the question the selection pane was
+/// asking, so committing it closes the pane. The refusal path is the
+/// other half — it has answered nothing, so the pane stays up.
+#[test]
+fn committing_override_closes_the_selection_pane() {
+    let (mut app, inner_idx, id_idx) = type_as_fixture();
+    app.splash = false;
+    app.set_cursor(inner_idx);
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert!(app.override_target.is_some());
+
+    let path = app.positional_path(inner_idx);
+    app.run_command(&format!("override {path} --as test.Inner"));
+    assert!(
+        app.override_target.is_none() && !app.override_focus,
+        "the pane must be gone",
+    );
+    assert!(
+        app.overrides
+            .entries()
+            .iter()
+            .any(|e| e.active && e.r#type.as_deref() == Some("test.Inner")),
+        "and the entry must exist",
+    );
+
+    // A refused command leaves the pane exactly as it was. `id` is a
+    // varint field, so a `message` keyword is wire-incompatible with it.
+    app.set_cursor(id_idx);
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    let target = app.override_target;
+    app.run_command(&format!(
+        "override {} --as message",
+        app.positional_path(id_idx)
+    ));
+    assert_eq!(app.override_target, target, "the pane must still be up");
+    assert!(
+        app.message.contains("wire"),
+        "and the refusal must be visible: {}",
+        app.message
+    );
+}
+
+/// Spec 0237 S4, as narrowed by spec 0321 N2: the pre-filled origin is
+/// still the applicable entry's whenever that entry is the widest shape
+/// the ladder can build — which an `fqdn:field` entry is. So
+/// `o`-then-`Enter` on a covered node remains the no-op spec 0236 G2
+/// promises, rather than silently narrowing the entry to this one node.
 #[test]
 fn o_prefills_the_applicable_entry_origin() {
     let (mut app, inner_idx, _) = type_as_fixture();

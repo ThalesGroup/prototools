@@ -196,23 +196,40 @@ impl App {
                         .to_string();
                     return;
                 }
-                // Spec 0237 S4: the *applicable entry's* origin, not
-                // always the bare path. `o` on a node covered by an
-                // `fqdn:field` override must pre-fill that override, or
-                // `Enter` on the unedited line would silently narrow it
-                // to this one node — the opposite of spec 0236 G2.
-                let applicable = self.resolve_active_override_entry(idx).cloned();
-                let origin = match &applicable {
-                    Some(entry) => entry.origin.clone(),
-                    None => OverrideOrigin::Path {
-                        path: self.positional_path(idx),
-                    },
-                };
-                (
-                    origin,
-                    self.effective_type(idx),
-                    applicable.and_then(|e| e.name),
-                )
+                // Spec 0321 S1: the origin the pane's own status line is
+                // projecting (spec 0309 S4) — pinned kind if `z`/`Z` set
+                // one, else spec 0308's widest-first ladder. This branch
+                // is reached only from the selection pane, and the pane
+                // must not describe its subject one way in the status
+                // line and another in the line `o` opens.
+                //
+                // This supersedes spec 0237 S4, which took the covering
+                // entry's origin. Because the ladder is *widest*-first,
+                // a node covered by an `fqdn:field` entry still projects
+                // that entry's own origin, so S4's `o`-then-`Enter`
+                // no-op survives where it was aimed; a node covered by a
+                // narrower entry now widens, exactly as `t`-then-`Enter`
+                // already does. `z`/`Z` is how a reader asks for the
+                // narrow one, and the status line shows which is in
+                // force before either key is pressed.
+                //
+                // The fallback matches the status line's (spec 0309 S4)
+                // so that the two still agree when nothing projects.
+                let origin =
+                    self.projected_override_origin()
+                        .unwrap_or_else(|_| OverrideOrigin::Path {
+                            path: self.positional_path(idx),
+                        });
+                // The name follows the origin, not the node: the origin
+                // decides which entry this line describes, which may no
+                // longer be the one covering `idx`.
+                let entry_name = self
+                    .overrides
+                    .entries()
+                    .iter()
+                    .find(|e| e.origin == origin)
+                    .and_then(|e| e.name.clone());
+                (origin, self.effective_type(idx), entry_name)
             }
         };
         let node = self.origin_subject_node(&origin);
@@ -370,6 +387,22 @@ impl App {
         if let Some(idx) = self.entry_index_of(&origin, &parsed.r#type) {
             self.overrides.rename(idx, name);
         }
+
+        // Spec 0321 S2: the command has just answered the question the
+        // selection pane was asking, so the pane goes. Before the splice
+        // rather than after, because `close_override` drops the preview
+        // overlay and spec 0185 S6 forbids the overlay outliving a
+        // render pass — its anchor is a row position the splice
+        // invalidates. Every early return above leaves the pane up: a
+        // refused command has answered nothing.
+        //
+        // This also restores the management pane when the selection pane
+        // was opened from it (spec 0200 S2), which is why the highlight
+        // below is set afterwards — `manage_open` is not true until now.
+        if self.override_target.is_some() {
+            self.close_override();
+        }
+
         self.render_overrides(self.first_node);
 
         // Spec 0236 S11: changing origin or type re-sorts the
