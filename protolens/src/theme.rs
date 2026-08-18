@@ -612,6 +612,65 @@ fn status_color_in(status: Status, theme: ThemeKind, rgb: bool) -> Option<Color>
     })
 }
 
+/// Spec 0318 S5/S7: the color of the bar an override preview draws in
+/// the fold column, saying how much of the node the preview is.
+///
+/// Green, yellow, orange — a fidelity ramp, and the reader's own
+/// vocabulary for one. It is not the anomaly ramp and must not be read
+/// as one; what keeps the two apart is the column. Nothing but this bar
+/// is ever drawn in an overlay row's fold column, a preview's bars are a
+/// contiguous run where a status color is a lone triangle, and the glyph
+/// differs (`│` against `⏵`/`⏷`). The overlap that remains is yellow,
+/// which `Status::NonCanonical` also wears; the bar is deliberately a
+/// warmer, more saturated one so that a committed row's triangle and a
+/// preview's bar do not read as the same mark.
+///
+/// Unleveled, like the tiers and `status_unbaked`, and for the same
+/// reason: the margin is its own column, and something the reader is
+/// meant to notice without looking for it cannot be brought down to the
+/// document's luminance.
+pub fn preview_tier_color(tier: PreviewTierHue, theme: ThemeKind) -> Color {
+    let rgb = supports_rgb();
+    match tier {
+        // Hue 120°. The one color in the app that means "nothing to
+        // report" out loud rather than by absence, which is what a
+        // preview showing the whole node needs to say — silence here
+        // would be indistinguishable from no preview at all.
+        PreviewTierHue::Whole => pick(
+            theme,
+            rgb,
+            (Color::Rgb(0x3F, 0xC3, 0x3F), Color::Green),
+            (Color::Rgb(0x1B, 0x7F, 0x1B), Color::Green),
+        ),
+        // Hue 45°, warmer and more saturated than `NonCanonical`'s 54°.
+        PreviewTierHue::Clean => pick(
+            theme,
+            rgb,
+            (Color::Rgb(0xFF, 0xBF, 0x00), Color::Yellow),
+            (Color::Rgb(0xA8, 0x7E, 0x00), Color::Yellow),
+        ),
+        // Hue 25°. Orange, because this is the tier where the rendering
+        // below it may carry a truncation the data does not have.
+        PreviewTierHue::Ragged => pick(
+            theme,
+            rgb,
+            (Color::Rgb(0xFF, 0x7A, 0x1A), Color::LightRed),
+            (Color::Rgb(0xB5, 0x45, 0x00), Color::Red),
+        ),
+    }
+}
+
+/// The three preview tiers, as this module sees them. A hue role, like
+/// [`Tier`] and `HeatHue`: `tui::preview_truncate::PreviewTier` is the
+/// decision, this is the color it asks for, and keeping them separate is
+/// what stops the theme depending on the TUI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewTierHue {
+    Whole,
+    Clean,
+    Ragged,
+}
+
 /// The color of `tier`, in whichever of the four palettes applies.
 fn tier_color(tier: Tier, theme: ThemeKind, rgb: bool) -> Color {
     pick(

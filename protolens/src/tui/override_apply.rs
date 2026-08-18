@@ -4,8 +4,7 @@
 
 use super::override_resolve::ParentFieldOrExt;
 use super::preview_truncate::{
-    insert_truncation_marker, missing_bytes_for, reframe_to_actual_length, trunc_shape_for,
-    truncate_interior,
+    missing_bytes_for, reframe_to_actual_length, trunc_shape_for, truncate_interior, PreviewTier,
 };
 use super::*;
 
@@ -41,6 +40,9 @@ pub(super) struct RenderedAs {
     /// Empty unless a budget was asked for, which the preview never
     /// does (it bounds bytes, not rows).
     pub(super) undescended: Vec<u32>,
+    /// Spec 0318 S5: how much of the node these lines are. Always
+    /// `Whole` on the commit path, which never truncates (spec 0174 G5).
+    pub(super) tier: PreviewTier,
 }
 
 impl App {
@@ -1449,6 +1451,11 @@ impl App {
         // its span count and its line count together, which is why
         // `prototext-core` itself carries no budget.
         //
+        // Spec 0318: the preview's cut lands on a top-level wire-record
+        // boundary, so the kept prefix is a sequence of whole records and
+        // no field straddles it. `tier` is what the overlay draws to say
+        // how much of the node the reader is looking at.
+        //
         // Spec 0302: a TRUNCATED_BYTES node's declared length varint claims
         // more bytes than are present. Both paths fix this:
         // - preview: `truncate_interior` cuts to the budget and rewrites the
@@ -1457,7 +1464,7 @@ impl App {
         //   the actual payload, without dropping a byte. The arena already
         //   has slots for the children — spec 0302's ArenaSink change walks
         //   the available bytes and allocates them on startup.
-        let mut truncated = false;
+        let mut tier = PreviewTier::Whole;
         // Spec 0303 S3: bytes missing from the original declared length.
         // Set on the commit path only, when the field is a TRUNCATED_BYTES
         // node opened as a message — `reframe_to_actual_length` triggers
@@ -1467,11 +1474,11 @@ impl App {
         let mut missing_payload_bytes: Option<u64> = None;
         if is_preview {
             let shape = trunc_shape_for(field_type, u32::from(old_span.wire_type), packed);
-            if let Some(cut) =
+            if let Some((cut, cut_tier)) =
                 truncate_interior(&field_bytes, self.override_preview_byte_budget, shape)
             {
                 field_bytes = Cow::Owned(cut);
-                truncated = true;
+                tier = cut_tier;
             }
         } else if field_type.is_some() {
             if let Some(reframed) = reframe_to_actual_length(&field_bytes) {
@@ -1632,18 +1639,13 @@ impl App {
             }
         }
 
-        // Spec 0174 §S4: a truncated preview ends with a literal `...`,
-        // so the user sees there is more. Done here, on the rendered
-        // lines, rather than in `prototext-core`: `...` is not part of
-        // the prototext grammar. It carries no `NodeSpan`, so it is not
-        // selectable, not navigable, and not part of any span range;
-        // and per spec 0187 S2 the highlighter never sees it either,
-        // because `render::window_text` blanks it before parsing.
-        let mut new_spans = new_spans;
-        if truncated {
-            insert_truncation_marker(&mut new_lines, &mut new_spans, self.indent_size);
-        }
-
+        // Spec 0318 S8: a truncated preview adds no row of its own.
+        // Spec 0174 S4's trailing `...` used to go here, and could not
+        // stay: `...` is not in the prototext grammar, so tree-sitter
+        // recovered from it by stripping the captures off every row
+        // beneath. The signal is `tier`, drawn in the overlay's fold
+        // column, which is margin rather than document and so is never
+        // parsed at all.
         Ok((
             idx,
             old_span,
@@ -1652,6 +1654,7 @@ impl App {
                 spans: new_spans,
                 bytes: is_preview.then(|| field_bytes.into_owned()),
                 undescended,
+                tier,
             },
         ))
     }

@@ -1300,59 +1300,146 @@ fn the_synthetic_context_is_dropped_not_drawn() {
     }
 }
 
-/// Test plan item 1b. `insert_truncation_marker` writes a literal `...`
-/// row, which is not in the prototext grammar. Before this spec that was
-/// harmless because the marker was spliced in *after* the document was
-/// colorized; now the marker can be inside the window being parsed.
+/// Spec 0318 G3: every row of a preview is prototext, so an overlay
+/// colorizes exactly as the same lines do on their own.
 ///
-/// Left unblanked it does not merely fail to color itself —
-/// tree-sitter's error recovery swallows *following* siblings (see
-/// `colorize::bare_decimal_field_name_does_not_corrupt_sibling_captures`),
-/// so the rows *beneath* it would silently lose their colors. That is
-/// the assertion here: the rows after the marker are colored exactly as
-/// they are with no marker present at all.
+/// This replaces the test that pinned spec 0174 S4's `...` marker being
+/// blanked before the parser saw it. The marker is gone (S8) and the
+/// property is now the stronger one: there is nothing to blank. What
+/// would break it is any future non-grammar row, whose error recovery
+/// swallows *following* siblings — see
+/// `colorize::bare_decimal_field_name_does_not_corrupt_sibling_captures`
+/// — so the rows *beneath* it would silently lose their colors.
 #[test]
-fn a_truncation_marker_does_not_decolor_the_rows_beneath_it() {
+fn every_overlay_row_is_prototext() {
     let mut app = nested_message_set_fixture();
-    // Cut the fixture just after a value line, so the marker lands in
-    // the middle of the window with several colorable rows below it.
-    let cut = 8;
-    let without = app.document_lines().clone();
-    let expected = window_styles_for(&without, app.indent_size);
+    let lines = app.document_lines().clone();
+    let expected = window_styles_for(&lines, app.indent_size);
 
-    let mut with: Vec<String> = without[..cut].to_vec();
-    with.push("            ...".to_string());
-    with.extend(without[cut..].iter().cloned());
-
-    let rows: Vec<DisplayRow> = (0..with.len()).map(DisplayRow::Overlay).collect();
+    let rows: Vec<DisplayRow> = (0..lines.len()).map(DisplayRow::Overlay).collect();
     app.preview_overlay = Some(PreviewOverlay {
         first_row: 0,
         covered_rows: 0,
-        lines: with.clone(),
+        lines: lines.clone(),
         spans: Vec::new(),
         bytes: Vec::new(),
+        tier: PreviewTier::Clean,
+        tier_column: 0,
     });
     app.refresh_window_styles(&rows);
-    let got = &app.window_styles;
 
-    assert_eq!(got.len(), with.len(), "one bucket per drawn row");
-    assert!(
-        got[cut].is_empty(),
-        "the marker row itself is not prototext and gets no hints, got {:?}",
-        got[cut]
-    );
+    assert_eq!(app.window_styles.len(), lines.len(), "one bucket per row");
     assert_eq!(
-        &got[..cut],
-        &expected[..cut],
-        "the rows above the marker are unaffected"
+        app.window_styles, expected,
+        "an overlay row must colorize as the same line does alone"
     );
+}
+
+/// Every drawn cell holding the tier bar, as `(x, y, foreground)`.
+fn tier_bar_cells(app: &App, terminal: &Terminal<TestBackend>) -> Vec<(u16, u16, Color)> {
+    let bar = crate::tui::render::TIER_BAR_GLYPH.to_string();
+    let buffer = terminal.backend().buffer();
+    let mut out = Vec::new();
+    for y in app.main_area.y..app.main_area.y + app.main_area.height {
+        for x in app.main_area.x..app.main_area.x + app.main_area.width {
+            if buffer[(x, y)].symbol() == bar {
+                out.push((x, y, buffer[(x, y)].fg));
+            }
+        }
+    }
+    out
+}
+
+/// Spec 0318 S7: the bar runs the whole preview — first row, middle rows
+/// and the closing brace alike — down one column, and its color is the
+/// tier. Absence would have said only "something is missing", and only
+/// for two of the three tiers; a bar on every row also says *these rows
+/// are the preview*, which the reader currently has to infer.
+#[test]
+fn overlay_rows_draw_the_tier_bar() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.cursor = inner_idx;
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    let row_count = app
+        .preview_overlay
+        .as_ref()
+        .expect("`t` must put a preview up")
+        .lines
+        .len();
+    assert!(row_count >= 3, "the fixture must have an interior to cover");
+
+    let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+
+    for tier in [PreviewTier::Whole, PreviewTier::Clean, PreviewTier::Ragged] {
+        app.preview_overlay.as_mut().unwrap().tier = tier;
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        let cells = tier_bar_cells(&app, &terminal);
+        assert_eq!(
+            cells.len(),
+            row_count,
+            "one bar per overlay row, {tier:?}: {cells:?}"
+        );
+
+        let want = crate::theme::preview_tier_color(tier.hue(), app.theme);
+        let column = cells[0].0;
+        for (i, &(x, y, fg)) in cells.iter().enumerate() {
+            assert_eq!(x, column, "the bar must stay in one column, {tier:?}");
+            assert_eq!(y, cells[0].1 + i as u16, "the bar must be contiguous");
+            assert_eq!(fg, want, "the bar's color is the tier, {tier:?}");
+        }
+    }
+
+    // And the three tiers must not draw the same color, or the signal
+    // says nothing.
+    let hues: Vec<Color> = [PreviewTier::Whole, PreviewTier::Clean, PreviewTier::Ragged]
+        .map(|t| crate::theme::preview_tier_color(t.hue(), app.theme))
+        .to_vec();
     assert_eq!(
-        &got[cut + 1..],
-        &expected[cut..],
-        "the rows below the marker must be colored exactly as they are \
-         when no marker is present — this is the assertion tree-sitter's \
-         error recovery breaks if the marker reaches the parser"
+        hues.iter().collect::<std::collections::HashSet<_>>().len(),
+        3,
+        "the three tiers must be distinguishable: {hues:?}"
     );
+}
+
+/// Spec 0318 S7's claim, and the one that would silently regress: the
+/// fold column is free on an overlay row *at every indent setting*,
+/// because `display_row_source` gives an overlay row no owner and so
+/// `fold_marker_of` gives it no glyph. `--indent 1` is the case where a
+/// committed row's marker sits in the reserved field rather than in its
+/// own indentation, i.e. where a collision would first show.
+#[test]
+fn overlay_fold_column_is_free_at_indent_one() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.indent_size = 1;
+    app.cursor = inner_idx;
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    let row_count = app
+        .preview_overlay
+        .as_ref()
+        .expect("`t` must put a preview up")
+        .lines
+        .len();
+
+    let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    let cells = tier_bar_cells(&app, &terminal);
+    assert_eq!(cells.len(), row_count, "one bar per overlay row: {cells:?}");
+
+    // No fold triangle anywhere on a row the bar is on.
+    let buffer = terminal.backend().buffer();
+    for &(_, y, _) in &cells {
+        for x in app.main_area.x..app.main_area.x + app.main_area.width {
+            let symbol = buffer[(x, y)].symbol();
+            assert!(
+                symbol != crate::tui::render::FOLD_GLYPH_OPEN.to_string()
+                    && symbol != crate::tui::render::FOLD_GLYPH_CLOSED.to_string(),
+                "an overlay row has no owner, so it draws no fold marker: \
+                 row {y} column {x}"
+            );
+        }
+    }
 }
 
 /// Test plan item 3. Hiding annotations is now driven by the format's

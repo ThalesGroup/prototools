@@ -10,10 +10,6 @@ use std::borrow::Cow;
 /// Stand-in for a row that has no styles at all.
 static NO_STYLES: LineStyles = Vec::new();
 
-/// Spec 0174 §S4's truncation marker, trimmed. Not prototext (see
-/// `window_text`).
-const TRUNCATION_MARKER: &str = "...";
-
 /// The activity dot's glyph (spec 0190 S5/S6) — deliberately its own
 /// constant rather than a reuse of `heat_cue::HEAT_GLYPH`, which carries
 /// its own meaning (this row's inferred type disagrees with the
@@ -72,6 +68,13 @@ pub(super) const FOLD_GLYPH_CLOSED: char = '⏵';
 /// window's contents would move the text origin as the user scrolls,
 /// which is worse than spending the two columns.
 pub(super) const FOLD_FIELD_WIDTH: usize = 2;
+
+/// Spec 0318 S7: the bar an override preview draws down the fold column
+/// of its own rows. A box-drawing light vertical (U+2502), not one of
+/// the block elements: the column is one cell wide and shared with a
+/// triangle on the rows above and below, so the mark has to read as a
+/// rule rather than as a filled cell.
+pub(super) const TIER_BAR_GLYPH: char = '│';
 
 /// Spec 0193 S1: the two-column fold field followed by the line's own
 /// indentation, with `marker` — when there is one — placed in the two
@@ -598,26 +601,17 @@ impl App {
     /// transform are display insertions applied downstream, and must not
     /// reach the parser).
     ///
-    /// Rows that are not prototext at all are emitted as `""`. The
-    /// document is not purely prototext: spec 0174 §S4's `...` marker
-    /// is a literal row in a truncated preview's lines, and `...` is not
-    /// in the grammar. Highlighting happens at draw time, so a syntax
-    /// error here would silently strip the color off every row *beneath*
-    /// the marker via tree-sitter's error recovery. Substituting a blank
-    /// line rather than dropping the row keeps the result
-    /// index-parallel with `window`, so the row's own bucket comes out
-    /// empty by construction and no index surgery is needed.
+    /// Spec 0318 S8: every row is prototext. Spec 0174 S4's `...` marker
+    /// was the one row that was not, and had to be blanked here — `...`
+    /// is not in the grammar, highlighting happens at draw time, and a
+    /// syntax error would silently strip the color off every row
+    /// *beneath* it through tree-sitter's error recovery. It is gone: a
+    /// truncated preview now says so with a bar in its fold column,
+    /// which is margin rather than document and is never parsed.
     fn window_text(&self, window: &[DisplayRow]) -> Vec<String> {
         window
             .iter()
-            .map(|&row| {
-                let line = self.display_row_text(row);
-                if line.trim() == TRUNCATION_MARKER {
-                    String::new()
-                } else {
-                    line.into_owned()
-                }
-            })
+            .map(|&row| self.display_row_text(row).into_owned())
             .collect()
     }
 
@@ -911,7 +905,7 @@ impl App {
 
         let mut spans = Vec::with_capacity(segments.len() + 6);
         if !margin.is_empty() {
-            spans.extend(self.margin_spans(margin, node, emphasis));
+            spans.extend(self.margin_spans(margin, row, node, emphasis));
         }
 
         // Spec 0307 S6: the wrapper root's key is `Blob`'s field 1 — a
@@ -966,12 +960,20 @@ impl App {
     /// bold half of a manual override's weight still lands here, and
     /// the underline still lands on the row's key and type name, which
     /// is where it can be read.
+    /// Spec 0318 S7: an overlay row takes the preview's tier bar here
+    /// instead. It cannot take both — an overlay row has no owner, so
+    /// `fold_marker_of` gives it no glyph and the column is free on
+    /// every row of the preview whatever `--indent` is set to.
     fn margin_spans(
         &self,
         margin: String,
+        row: DisplayRow,
         owner: Option<usize>,
         emphasis: Modifier,
     ) -> Vec<Span<'static>> {
+        if let DisplayRow::Overlay(_) = row {
+            return self.tier_bar_spans(margin);
+        }
         let emphasis = emphasis - Modifier::UNDERLINED;
         let color = self.fold_marker_color(owner);
         if color.is_none() && emphasis.is_empty() {
@@ -992,6 +994,38 @@ impl App {
         spans.push(Span::styled(margin[at..end].to_string(), style));
         if end < margin.len() {
             spans.push(Span::raw(margin[end..].to_string()));
+        }
+        spans
+    }
+
+    /// Spec 0318 S7: the overlay's fold-column bar, spliced into an
+    /// otherwise blank margin.
+    ///
+    /// The bar runs the whole preview, first row through closing brace,
+    /// so it says two things at once: *these rows are the preview*,
+    /// which the reader currently has to infer, and how much of the node
+    /// they are. Absence would only have said the second, and only for
+    /// two of the three tiers.
+    fn tier_bar_spans(&self, margin: String) -> Vec<Span<'static>> {
+        let Some(o) = self.preview_overlay.as_ref() else {
+            return vec![Span::raw(margin)];
+        };
+        // The margin is `FOLD_FIELD_WIDTH + indent` spaces and the bar
+        // sits at the column the *first* line's marker would, which is
+        // the shallowest — so it always lands inside. A blank row has no
+        // margin at all and never reaches here.
+        let at = o.tier_column;
+        if at >= margin.len() {
+            return vec![Span::raw(margin)];
+        }
+        let style = Style::default().fg(theme::preview_tier_color(o.tier.hue(), self.theme));
+        let mut spans = Vec::with_capacity(3);
+        if at > 0 {
+            spans.push(Span::raw(margin[..at].to_string()));
+        }
+        spans.push(Span::styled(TIER_BAR_GLYPH.to_string(), style));
+        if at + 1 < margin.len() {
+            spans.push(Span::raw(margin[at + 1..].to_string()));
         }
         spans
     }

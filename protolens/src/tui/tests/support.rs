@@ -12,6 +12,8 @@
 pub(super) use prototext_core::helpers::{WT_LEN, WT_VARINT};
 pub(super) use ratatui::backend::TestBackend;
 
+pub(super) use crate::tui::preview_truncate::PreviewTier;
+
 pub(super) use super::support_any::*;
 pub(super) use super::support_basic::*;
 pub(super) use super::support_build::*;

@@ -790,6 +790,10 @@ impl App {
                     .visible_row_of_line(lines.end)
                     .unwrap_or(rows)
                     .saturating_sub(first_row);
+                let tier_column = rendered
+                    .lines
+                    .first()
+                    .map_or(0, |l| super::render::marker_column(l) as usize);
                 self.preview_overlay = Some(PreviewOverlay {
                     first_row,
                     covered_rows,
@@ -798,6 +802,8 @@ impl App {
                     // Spec 0251 S6: `Some` exactly when `is_preview`,
                     // which the call above passes unconditionally.
                     bytes: rendered.bytes.expect("a preview render owns its bytes"),
+                    tier: rendered.tier,
+                    tier_column,
                 });
             }
             // Spec 0185 S6: a candidate that fails to render leaves the

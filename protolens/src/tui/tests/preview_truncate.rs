@@ -2,8 +2,9 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Spec 0174: the live preview's byte budget, and what a cut at that
-//! budget is allowed to do to the rendering.
+//! Specs 0174 and 0318: the live preview's byte budget, where a cut at
+//! that budget is allowed to land, and how faithful the result says it
+//! is.
 //!
 //! `an_unknown_length_delimited_blob_can_be_read_as_a_packed_run` lives
 //! here rather than with the other splice tests because it needs two of
@@ -86,9 +87,14 @@ fn preview_budget_fixture(field_count: usize) -> (App, usize) {
     preview_budget_fixture_bytes(&payload)
 }
 
-/// Number of `...` truncation markers (spec 0174 §S4).
-fn ellipsis_line_count(lines: &[String]) -> usize {
-    lines.iter().filter(|l| l.trim() == "...").count()
+/// Spec 0318 S5: how faithful the preview `app` currently holds is. The
+/// signal spec 0174 S4's `...` marker used to carry, moved off the
+/// document and into the overlay's fold column.
+fn preview_tier(app: &App) -> PreviewTier {
+    app.preview_overlay
+        .as_ref()
+        .expect("a preview must be held")
+        .tier
 }
 
 /// `lines` with each line's indentation and trailing `#@` annotation
@@ -105,13 +111,12 @@ fn bare_lines(lines: &[String]) -> Vec<String> {
 /// overlay (spec 0185 S3) and never touches the document.
 ///
 /// Spec 0210 S1: the truncation tests below used to *splice* the preview
-/// in. They cannot any more, and nothing in production ever did: a
-/// truncated render carries the `...` marker, which deliberately has no
-/// `NodeSpan` (spec 0174 §S4), so a document holding one has a body line
-/// that no node claims — and a node counting its own lines has nowhere to
-/// put such a line. The byte budget applies only under `is_preview`, and
-/// the one production caller of `splice_override` passes `false`, so the
-/// only way to reach that state was a test.
+/// in. They cannot any more, and nothing in production ever did. The byte
+/// budget applies only under `is_preview`, and the one production caller
+/// of `splice_override` passes `false`, so a spliced truncation was only
+/// ever reachable from a test. Spec 0318 S6 gives the further reason: the
+/// fidelity tier is carried by the *overlay*, so only a preview held as
+/// an overlay has one to read.
 fn preview_lines(app: &mut App, idx: usize, target: &str) -> Vec<String> {
     app.override_target = Some(idx);
     app.override_candidates = vec![(target.to_string(), None)];
@@ -131,9 +136,9 @@ fn preview_lines(app: &mut App, idx: usize, target: &str) -> Vec<String> {
 /// this at the *input*: a *live preview* (`is_preview: true`) hands the
 /// renderer at most that many interior bytes, so the decode, the render,
 /// the span count and the line count are all bounded together, and the
-/// render completes (no hang/panic) with a visible `...` marker in place
-/// of the omitted remainder. A confirmed override (`is_preview: false`)
-/// is intentionally exempt — see the companion test below.
+/// render completes (no hang/panic) and says so through its fidelity
+/// tier (spec 0318 S5). A confirmed override (`is_preview: false`) is
+/// intentionally exempt — see the companion test below.
 #[test]
 fn preview_on_a_pathological_candidate_is_bounded_by_the_byte_budget() {
     let field_count = App::OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT * 2;
@@ -154,22 +159,33 @@ fn preview_on_a_pathological_candidate_is_bounded_by_the_byte_budget() {
          track the mis-parsed field count: spans={} field_count={field_count}",
         rendered.spans.len()
     );
+    // Every record here is two bytes wide, so the soft target is itself
+    // a record boundary: the cut is clean, and the preview says so.
     assert_eq!(
-        ellipsis_line_count(&rendered.lines),
-        1,
-        "a truncated preview must show exactly one `...` marker"
+        rendered.tier,
+        PreviewTier::Clean,
+        "a preview cut at a record boundary is Clean"
     );
 }
 
 /// Companion to the test above (spec 0174 G5): the same pathological
-/// candidate, but spliced as a *confirmed* override (`is_preview:
-/// false`) rather than a live preview — must render completely, with no
-/// truncation and no `...`, since this is the content that actually gets
-/// shown as the real override, not a speculative guess.
+/// candidate, but rendered as a *confirmed* override (`is_preview:
+/// false`) rather than a live preview — must render completely and
+/// untruncated, since this is the content that actually gets shown as the
+/// real override, not a speculative guess.
 #[test]
 fn confirmed_override_is_not_truncated() {
     let field_count = App::OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT * 2;
     let (mut app, blob_idx) = preview_budget_fixture(field_count);
+
+    let (_, _, confirmed) = app
+        .render_node_as(blob_idx, Some("test.Empty"), false, None)
+        .expect("a confirmed render must complete");
+    assert_eq!(
+        confirmed.tier,
+        PreviewTier::Whole,
+        "a confirmed override is never cut, so it is Whole"
+    );
 
     app.splice_override(blob_idx, Some("test.Empty".to_string()), None)
         .expect("a confirmed override splice must complete");
@@ -179,11 +195,6 @@ fn confirmed_override_is_not_truncated() {
         "a confirmed override must render completely, not be truncated by \
          the preview-only byte budget: tree.len()={} field_count={field_count}",
         app.tree.len()
-    );
-    assert_eq!(
-        ellipsis_line_count(&app.document_lines()),
-        0,
-        "a confirmed override must show no truncation marker"
     );
 }
 
@@ -249,28 +260,76 @@ fn a_confirmed_splice_leaves_no_entry_behind() {
 
 /// Spec 0251 S8 / open question 1: how big is a preview render really?
 /// The cache holds nothing else after S5, so this is what sizes
-/// `RENDER_CACHE_MAX_BYTES`. Reported, not asserted — run with
-/// `--ignored --nocapture`.
+/// `RENDER_CACHE_MAX_BYTES`. Spec 0318 test plan item 12 re-asks it now
+/// that a cut may overshoot the budget as far as the hard cap. Reported,
+/// not asserted — run with `--ignored --nocapture`.
 #[test]
 #[ignore]
 fn measure_a_preview_renders_size() {
-    // The worst case the budget admits: a two-byte field per line, so
-    // the line count is as high as 4096 interior bytes can make it.
-    let field_count = App::OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT * 2;
-    let (mut app, blob_idx) = preview_budget_fixture(field_count);
+    use prototext_core::helpers::{write_tag, write_varint, WT_LEN, WT_VARINT};
 
+    let soft = App::OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT;
+    let report = |name: &str, r: &crate::tui::override_apply::RenderedAs| {
+        let line_bytes: usize = r.lines.iter().map(String::len).sum();
+        let span_bytes = r.spans.len() * std::mem::size_of::<NodeSpan>();
+        println!(
+            "{name}: {} lines, {line_bytes} B text, {} spans, \
+             {span_bytes} B spans, {} B total",
+            r.lines.len(),
+            r.spans.len(),
+            line_bytes + span_bytes
+        );
+    };
+
+    // A two-byte field per line, so the line count is as high as `soft`
+    // interior bytes can make it — and, two-byte records being what they
+    // are, `soft` is itself a boundary and nothing overshoots.
+    let (mut app, blob_idx) = preview_budget_fixture(soft * 2);
     let (_, _, r) = app
         .render_node_as(blob_idx, Some("test.Empty"), true, None)
         .expect("a preview render must complete");
+    report("aligned at soft", &r);
 
-    let line_bytes: usize = r.lines.iter().map(String::len).sum();
-    let span_bytes = r.spans.len() * std::mem::size_of::<NodeSpan>();
+    // The worst case S3's overshoot admits: as many two-byte records as
+    // fit below `soft`, then one record long enough to carry the cut all
+    // the way to `hard`. Nearly twice the bytes, one more line — a long
+    // record is one row however long it is, which is why the render size
+    // barely moves.
+    let mut payload = Vec::new();
+    for _ in 0..(soft / 2 - 1) {
+        write_tag(1, WT_VARINT, &mut payload);
+        write_varint(1, &mut payload);
+    }
+    write_tag(2, WT_LEN, &mut payload);
+    write_varint(soft as u64, &mut payload);
+    payload.extend(std::iter::repeat_n(b'z', soft));
+    let (mut app, blob_idx) = preview_budget_fixture_bytes(&payload);
+    let (_, _, r) = app
+        .render_node_as(blob_idx, Some("test.Empty"), true, None)
+        .expect("a preview render must complete");
+    report("straddler carried to hard", &r);
+
+    // What the boundary walk itself costs, on the shape that makes it do
+    // the most work per byte: every top-level record two bytes wide, so
+    // it takes `soft / 2` steps to reach the cut.
+    let mut widest = Vec::new();
+    for _ in 0..(soft * 2) {
+        write_tag(1, WT_VARINT, &mut widest);
+        write_varint(1, &mut widest);
+    }
+    let start = std::time::Instant::now();
+    let rounds = 10_000;
+    for _ in 0..rounds {
+        std::hint::black_box(preview_truncate::cut_at(
+            std::hint::black_box(&widest),
+            soft,
+            preview_truncate::TruncShape::RecordBoundary,
+        ));
+    }
     println!(
-        "preview render: {} lines, {line_bytes} B text, {} spans, \
-         {span_bytes} B spans, {} B total",
-        r.lines.len(),
-        r.spans.len(),
-        line_bytes + span_bytes
+        "boundary walk over {} two-byte records: {:?} per cut",
+        soft / 2,
+        start.elapsed() / rounds
     );
 }
 
@@ -294,7 +353,7 @@ fn preview_respects_a_custom_byte_budget() {
         "a lower custom budget must be honored, not fall back to the \
          default: lines={lines:?}"
     );
-    assert_eq!(ellipsis_line_count(&lines), 1);
+    assert_eq!(preview_tier(&app), PreviewTier::Clean);
 }
 
 /// Spec 0174 G3: the cut is on the *input* bytes, so whatever survives
@@ -321,12 +380,8 @@ fn preview_renders_complete_nested_fields_up_to_the_cut() {
 
     let lines = preview_lines(&mut app, blob_idx, "test.Wrapper");
 
-    // Everything below `blob`'s own header, minus the marker.
-    let interior: Vec<String> = bare_lines(&lines)
-        .into_iter()
-        .skip(1)
-        .filter(|l| *l != "...")
-        .collect();
+    // Everything below `blob`'s own header.
+    let interior: Vec<String> = bare_lines(&lines).into_iter().skip(1).collect();
     let mut expected: Vec<String> = Vec::new();
     for _ in 0..5 {
         expected.extend(["items {", "v: 1", "}"].map(str::to_string));
@@ -342,13 +397,18 @@ fn preview_renders_complete_nested_fields_up_to_the_cut() {
 /// Spec 0174 G4: cutting mid-entry makes the renderer emit its own
 /// malformity annotation for the straddling bytes — which is an artifact
 /// of *our* cut, not of the document, so it must never reach the user.
-/// §S4 replaces that line with the plain `...` marker.
+///
+/// Spec 0318 S2 removes the straddler instead of papering over it: the
+/// budget is a soft target, and the cut runs *forward* from it to the
+/// next top-level record boundary. Here the entries are two bytes wide,
+/// so a budget of 21 cuts at 22 — eleven whole entries, no partial one to
+/// annotate.
 #[test]
 fn preview_shows_no_malformity_marker() {
     let field_count = 50;
     let (mut app, blob_idx) = preview_budget_fixture(field_count);
-    // Odd budget => the cut lands mid-entry, between an entry's tag and
-    // its varint payload.
+    // Odd budget: the naive cut would land mid-entry, between an entry's
+    // tag and its varint payload.
     app.override_preview_byte_budget = 21;
 
     let lines = preview_lines(&mut app, blob_idx, "test.Empty");
@@ -359,56 +419,13 @@ fn preview_shows_no_malformity_marker() {
             || l.contains("UNEXPECTED_EOF")),
         "no malformity marker may leak out of a preview: lines={lines:?}"
     );
-    assert_eq!(ellipsis_line_count(&lines), 1);
-}
-
-/// Spec 0174 §S4: the `...` is the *last* thing inside the truncated
-/// node — just before its closing brace — so it reads as "and there is
-/// more below", not as a sibling of what follows.
-#[test]
-fn truncated_preview_ends_with_an_ellipsis_line() {
-    let field_count = 50;
-    let (mut app, blob_idx) = preview_budget_fixture(field_count);
-    app.override_preview_byte_budget = 20;
-
-    let lines = preview_lines(&mut app, blob_idx, "test.Empty");
-
-    let marker = lines
-        .iter()
-        .position(|l| l.trim() == "...")
-        .expect("a truncated preview must carry a `...` marker");
     assert_eq!(
-        lines[marker + 1].trim(),
-        "}",
-        "the marker must sit immediately before the node's closing brace: \
+        bare_lines(&lines).iter().filter(|l| *l == "1: 1").count(),
+        11,
+        "the cut must move forward to the boundary past the budget: \
          lines={lines:?}"
     );
-    // S4: the marker line carries no styles and no `NodeSpan` — it is
-    // not selectable, not navigable, not part of any span range. Spec
-    // 0187 S2 keeps the "no styles" half true by blanking the marker in
-    // `window_text`, so the highlighter never sees a row that is not
-    // prototext; the row still exists, so the buckets stay one-to-one
-    // with the window.
-    let window: Vec<DisplayRow> = (0..lines.len()).map(DisplayRow::Overlay).collect();
-    app.refresh_window_styles(&window);
-    assert_eq!(app.window_styles.len(), window.len());
-    assert!(app.window_styles[marker].is_empty());
-    // Spec 0210 S1: asked of the render's own spans rather than of the
-    // document, which never holds a marker (see `preview_lines`).
-    let (_, _, rendered) = app
-        .render_node_as(blob_idx, Some("test.Empty"), true, None)
-        .expect("the same render must succeed twice");
-    // An enclosing message's span legitimately spans the marker; what may
-    // not exist is a node whose *own* header or footer that line is, since
-    // that is what makes a line selectable.
-    assert!(
-        !rendered
-            .spans
-            .iter()
-            .any(|s| s.text_range.start == marker as u32 || s.text_range.end == marker as u32 + 1),
-        "no span may own the marker line: {:?}",
-        rendered.spans
-    );
+    assert_eq!(preview_tier(&app), PreviewTier::Clean);
 }
 
 /// Spec 0219 G3/S6: the byte budget applies to a packed target too, and
@@ -443,7 +460,7 @@ fn a_packed_preview_is_cut_at_an_element_boundary() {
         7,
         "the cut must keep a whole number of varint elements: lines={lines:?}"
     );
-    assert_eq!(ellipsis_line_count(&lines), 1);
+    assert_eq!(preview_tier(&app), PreviewTier::Clean);
 
     // The same bytes as a fixed-width run: 15 rounds down to 12, i.e.
     // three whole four-byte elements.
@@ -462,22 +479,22 @@ fn a_packed_preview_is_cut_at_an_element_boundary() {
         3,
         "the cut must keep a whole number of fixed32 elements: lines={lines:?}"
     );
-    assert_eq!(ellipsis_line_count(&lines), 1);
+    assert_eq!(preview_tier(&app), PreviewTier::Clean);
 }
 
 /// Spec 0174 G4's converse: a preview that fits within the budget is
-/// byte-for-byte the confirmed rendering — no marker, nothing to
-/// mistake for missing content.
+/// byte-for-byte the confirmed rendering, and spec 0318 S5 has it say so
+/// — `Whole`, nothing withheld.
 #[test]
-fn untruncated_preview_has_no_ellipsis_line() {
+fn untruncated_preview_is_whole() {
     let (mut app, blob_idx) = preview_budget_fixture(10);
 
     let lines = preview_lines(&mut app, blob_idx, "test.Empty");
 
     assert_eq!(
-        ellipsis_line_count(&lines),
-        0,
-        "an untruncated preview must show no marker: lines={lines:?}"
+        preview_tier(&app),
+        PreviewTier::Whole,
+        "an untruncated preview is Whole: lines={lines:?}"
     );
 }
 
@@ -508,7 +525,7 @@ fn preview_of_a_long_string_stays_valid_utf8() {
         !value.contains("INVALID_STRING"),
         "the cut must never leave a partial character behind: {value}"
     );
-    assert_eq!(ellipsis_line_count(&lines), 1);
+    assert_eq!(preview_tier(&app), PreviewTier::Clean);
 }
 
 /// Spec 0174 §S3 `TruncShape::Never`: a singular numeric value is
@@ -523,14 +540,245 @@ fn preview_of_a_singular_varint_is_never_truncated() {
     let lines = preview_lines(&mut app, id_idx, "int64");
 
     assert_eq!(
-        ellipsis_line_count(&lines),
-        0,
+        preview_tier(&app),
+        PreviewTier::Whole,
         "a singular varint must never be truncated: lines={lines:?}"
     );
     assert!(
         bare_lines(&lines).iter().any(|l| l == "id: 5"),
         "the value must survive intact: lines={lines:?}"
     );
+}
+
+/// Spec 0318 S2: the kept prefix is a sequence of whole top-level
+/// records — which is exactly what a shorter message is. Asserted by
+/// re-walking the kept bytes: a whole-record prefix ends with no
+/// remainder.
+#[test]
+fn record_boundary_cut_keeps_whole_records() {
+    use crate::tui::preview_truncate::{cut_at, TruncShape};
+    use prototext_core::helpers::{write_tag, write_varint, WT_VARINT};
+
+    let mut payload = Vec::new();
+    for _ in 0..3_000 {
+        write_tag(1, WT_VARINT, &mut payload);
+        write_varint(1, &mut payload);
+    }
+    let soft = App::OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT;
+
+    let (kept, tier) = cut_at(&payload, soft, TruncShape::RecordBoundary)
+        .expect("a 6000-byte payload must be cut at a 4096-byte budget");
+    assert_eq!(tier, PreviewTier::Clean);
+    assert_eq!(
+        kept, soft,
+        "two-byte records make the soft target itself a boundary"
+    );
+
+    // Re-walk the kept bytes: whole records leave no remainder.
+    let mut pos = 0usize;
+    while pos < kept {
+        assert_eq!(payload[pos], 0x08, "each record must start with its tag");
+        pos += 2;
+    }
+    assert_eq!(pos, kept, "the prefix must not end mid-record");
+}
+
+/// Spec 0318 G2: because no field straddles the cut, the preview shows no
+/// malformity the full node would not have shown. `TRUNCATED_BYTES` and
+/// spec 0303's missing-byte count are the two annotations a mid-record cut
+/// used to manufacture.
+#[test]
+fn record_boundary_preview_has_no_truncation_annotation() {
+    let field_count = App::OVERRIDE_PREVIEW_BYTE_BUDGET_DEFAULT * 2;
+    let (mut app, blob_idx) = preview_budget_fixture(field_count);
+
+    let lines = preview_lines(&mut app, blob_idx, "test.Empty");
+
+    assert_eq!(preview_tier(&app), PreviewTier::Clean);
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.contains("TRUNCATED_BYTES") || l.contains("missing")),
+        "a record-boundary cut invents no annotation: {:?}",
+        lines.iter().rev().take(4).collect::<Vec<_>>()
+    );
+}
+
+/// Spec 0318 S4: when one record is longer than the room, there is no
+/// boundary to cut at. The preview cuts at the hard cap anyway and lets
+/// the rendering say what it is — showing the reader less than they asked
+/// for with no way to explain it would be worse. `Ragged` is the tier
+/// that admits it.
+#[test]
+fn a_record_longer_than_the_room_is_ragged() {
+    use prototext_core::helpers::{write_tag, write_varint, WT_LEN};
+
+    // One field whose payload alone exceeds the hard cap.
+    let mut payload = Vec::new();
+    write_tag(1, WT_LEN, &mut payload);
+    write_varint(10_000, &mut payload);
+    payload.extend(std::iter::repeat_n(b'z', 10_000));
+
+    let (mut app, blob_idx) = preview_budget_fixture_bytes(&payload);
+    let lines = preview_lines(&mut app, blob_idx, "test.Empty");
+
+    assert_eq!(preview_tier(&app), PreviewTier::Ragged);
+    assert!(
+        lines.iter().any(|l| l.contains("TRUNCATED_BYTES")),
+        "S4 is behavior, not a fallback to hide: lines={lines:?}"
+    );
+}
+
+/// Spec 0318 S5's reason for returning the tier from `cut_at` rather than
+/// letting the caller derive it from the kept length: a boundary landing
+/// exactly on the hard cap is `Clean`, and a mid-record cut at that same
+/// offset is `Ragged`. The number cannot tell them apart.
+#[test]
+fn a_boundary_exactly_at_hard_is_clean() {
+    use crate::tui::preview_truncate::{cut_at, hard_cap, TruncShape};
+    use prototext_core::helpers::{write_tag, write_varint, WT_LEN};
+
+    let soft = 10usize;
+    let hard = hard_cap(soft);
+
+    // A first record exactly `hard` bytes wide: tag + length + 18 bytes
+    // of payload. The first boundary at or after `soft` is `hard` itself.
+    let mut payload = Vec::new();
+    write_tag(1, WT_LEN, &mut payload);
+    write_varint(18, &mut payload);
+    payload.extend(std::iter::repeat_n(b'z', 18));
+    assert_eq!(payload.len(), hard);
+    // A second record, so the payload does not simply fit.
+    write_tag(2, WT_LEN, &mut payload);
+    write_varint(4, &mut payload);
+    payload.extend(std::iter::repeat_n(b'z', 4));
+
+    assert_eq!(
+        cut_at(&payload, soft, TruncShape::RecordBoundary),
+        Some((hard, PreviewTier::Clean)),
+        "a boundary at the cap is still a boundary"
+    );
+
+    // The same offset reached by giving up: one record too long to walk
+    // out of, cut at `hard` mid-record.
+    let mut long = Vec::new();
+    write_tag(1, WT_LEN, &mut long);
+    write_varint(100, &mut long);
+    long.extend(std::iter::repeat_n(b'z', 100));
+    assert_eq!(
+        cut_at(&long, soft, TruncShape::RecordBoundary),
+        Some((hard, PreviewTier::Ragged)),
+        "the same kept length, the opposite verdict"
+    );
+}
+
+/// Spec 0318 S2: any tag or length varint the walk cannot parse ends it.
+/// Guessing past malformed bytes is how a preview would invent a boundary
+/// the data does not have, so S4 takes over instead — and nothing panics
+/// on the way (`parse_wiretag` asserts `start < buflen`).
+#[test]
+fn a_bad_length_varint_before_soft_does_not_panic() {
+    use crate::tui::preview_truncate::{cut_at, hard_cap, TruncShape};
+    use prototext_core::helpers::{write_tag, WT_LEN};
+
+    let soft = 8usize;
+
+    // A length varint whose continuation bits run off the end of the
+    // payload: it never terminates, so it does not parse.
+    let mut unterminated = Vec::new();
+    write_tag(1, WT_LEN, &mut unterminated);
+    unterminated.extend(std::iter::repeat_n(0x80u8, 20));
+    assert_eq!(
+        cut_at(&unterminated, soft, TruncShape::RecordBoundary),
+        Some((hard_cap(soft), PreviewTier::Ragged))
+    );
+
+    // A length that parses but points past the end.
+    let mut overlong = Vec::new();
+    write_tag(1, WT_LEN, &mut overlong);
+    prototext_core::helpers::write_varint(1_000_000, &mut overlong);
+    overlong.extend(std::iter::repeat_n(b'z', 30));
+    assert_eq!(
+        cut_at(&overlong, soft, TruncShape::RecordBoundary),
+        Some((hard_cap(soft), PreviewTier::Ragged))
+    );
+
+    // Wire type 6 is not a wire type at all.
+    let mut bad_tag = vec![(1 << 3) | 6];
+    bad_tag.extend(std::iter::repeat_n(b'z', 30));
+    assert_eq!(
+        cut_at(&bad_tag, soft, TruncShape::RecordBoundary),
+        Some((hard_cap(soft), PreviewTier::Ragged))
+    );
+}
+
+/// Spec 0318 S2: group framing nests, so only depth 0 yields a boundary.
+/// An `END_GROUP` closing a nested group does not end a top-level record,
+/// and cutting there would leave a group open that the reader's node has
+/// closed.
+#[test]
+fn group_payload_cuts_at_top_level_only() {
+    use crate::tui::preview_truncate::{cut_at, TruncShape};
+    use prototext_core::helpers::{
+        write_tag, write_varint, WT_END_GROUP, WT_START_GROUP, WT_VARINT,
+    };
+
+    // Four bytes per group: open, a two-byte varint field, close.
+    let mut payload = Vec::new();
+    for _ in 0..10 {
+        write_tag(1, WT_START_GROUP, &mut payload);
+        write_tag(2, WT_VARINT, &mut payload);
+        write_varint(1, &mut payload);
+        write_tag(1, WT_END_GROUP, &mut payload);
+    }
+    assert_eq!(payload.len(), 40);
+
+    // A budget landing inside the second group. Offsets 5, 6 and 7 are
+    // all inside it — the inner close at 7 is at depth 1 — so the first
+    // boundary at or after 5 is 8.
+    assert_eq!(
+        cut_at(&payload, 5, TruncShape::RecordBoundary),
+        Some((8, PreviewTier::Clean)),
+        "a nested close is not a top-level boundary"
+    );
+}
+
+/// Spec 0318 S5: a node the budget already fits is `Whole`. `cut_at`
+/// says so by cutting nothing at all, which is what the caller reads as
+/// the tier.
+#[test]
+fn a_short_node_is_whole() {
+    use crate::tui::preview_truncate::{cut_at, TruncShape};
+
+    let payload = vec![b'z'; 8];
+    for shape in [
+        TruncShape::RecordBoundary,
+        TruncShape::AnyByte,
+        TruncShape::CharBoundary,
+        TruncShape::PackedVarint,
+        TruncShape::PackedFixed(4),
+        TruncShape::Never,
+    ] {
+        assert_eq!(cut_at(&payload, 8, shape), None, "{shape:?} at its budget");
+        assert_eq!(cut_at(&payload, 16, shape), None, "{shape:?} under it");
+    }
+}
+
+/// Spec 0318 S1: splitting the old `Exact` in two left the `bytes` half
+/// unchanged. To a `bytes` field every byte sequence is a valid value, so
+/// a shorter one aligns to nothing and annotates nothing.
+#[test]
+fn bytes_target_still_cuts_anywhere() {
+    use crate::tui::preview_truncate::{cut_at, TruncShape};
+
+    let payload = vec![b'z'; 100];
+    for soft in [1usize, 7, 33, 99] {
+        assert_eq!(
+            cut_at(&payload, soft, TruncShape::AnyByte),
+            Some((soft, PreviewTier::Clean)),
+            "a bytes cut lands exactly on the budget"
+        );
+    }
 }
 /// Spec 0219 G2: reading a length-delimited record as a packed run is
 /// not limited to records the schema already calls packed — it is the

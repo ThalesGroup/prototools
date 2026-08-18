@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0318 — a preview ends where a record ends
 
-Status: draft
+Status: implemented
+Implemented in: 2026-08-18
 App: protolens
 Refs: docs/specs/0174-….md (`TruncShape`, the preview byte budget, the
         `...` marker), docs/specs/0185-….md (the preview is an overlay,
@@ -203,17 +204,35 @@ cost of every prototext consumer.
 10. `overlay_fold_column_is_free_at_indent_one` — pins S7's claim, which
     is the one that would silently regress if overlay rows ever gained
     an owner.
-11. `no_preview_row_is_outside_the_grammar` — parse every overlay row;
-    G3.
+11. `every_overlay_row_is_prototext` — colorize every overlay row and
+    require the result to equal what the same lines colorize to on their
+    own; G3. Replaces the test that pinned the marker being blanked.
 12. `measure_a_preview_renders_size` — existing; re-measure at the
     doubled worst-case input and confirm `RENDER_CACHE_MAX_BYTES` still
     holds a screenful of candidates.
 
 ## Measured outcome
 
-Filled in at implementation. Two numbers are owed: the worst-case
-preview render size at `hard` (the existing measurement gives 104 512 B
-at 4 096, so ~209 KB is expected, dropping the render cache's headroom
-from ~80 worst-case entries to ~40), and the boundary walk's cost on a
-node whose top-level records are all two bytes — the shape that makes
-the walk do the most work per byte.
+Both numbers came out better than the estimate above them, and for the
+same reason.
+
+**The worst-case preview render barely grew.** `measure_a_preview_
+renders_size`, extended to the overshoot case, reports:
+
+| input | lines | text | spans | total |
+| --- | --- | --- | --- | --- |
+| 2 048 two-byte records, cut at `soft` | 2 050 | 38 937 B | 2 049 | 104 505 B |
+| 2 047 two-byte records then one 4 099-byte record, cut at `hard` | 2 085 | 43 805 B | 2 083 | 110 461 B |
+
++5.7%, not the ~100% predicted. The prediction assumed the extra bytes
+would arrive as more records. They cannot: the walk only overshoots
+`soft` when a *single* record straddles it, and a single record is one
+row however long it is. Doubling the byte cap therefore buys a
+worst-case render 6% larger, and `RENDER_CACHE_MAX_BYTES` keeps
+essentially the headroom it had — ~76 worst-case entries rather than
+~80, against the ~40 the estimate feared.
+
+**The boundary walk costs 23.5 µs** on 2 048 two-byte top-level records
+— 11 ns per record, the shape that makes it do the most work per byte.
+It runs once per `render_node_as`, i.e. once per candidate keystroke,
+against a frame budget three orders of magnitude larger.

@@ -1101,6 +1101,18 @@ pub(super) struct PreviewOverlay {
     /// cut to the byte budget (spec 0174), so these are not a sub-slice
     /// of the blob and cannot be re-derived from one.
     bytes: Vec<u8>,
+    /// Spec 0318 S5/S6: how much of the node these lines are, and the
+    /// column the bar saying so is drawn in.
+    ///
+    /// The column is `marker_column(&lines[0])` — the same function
+    /// `mouse.rs`'s fold hit test uses — so the bar sits exactly where
+    /// the node's own fold triangle would, and the two cannot drift
+    /// apart. The column is free on every row of the overlay by
+    /// construction: `display_row_source` gives an overlay row no owner,
+    /// so an overlay row has no fold marker at any depth (S4), whatever
+    /// `--indent` is set to.
+    tier: preview_truncate::PreviewTier,
+    tier_column: usize,
 }
 
 /// Spec 0185 S2: one row of the main pane as actually drawn — either a

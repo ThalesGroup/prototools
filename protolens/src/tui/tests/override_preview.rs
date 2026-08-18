@@ -111,6 +111,8 @@ fn display_row_map_holds_at_the_substitution_boundaries() {
             lines: vec!["x".to_string(); overlay_len],
             spans: Vec::new(),
             bytes: Vec::new(),
+            tier: PreviewTier::Clean,
+            tier_column: 0,
         });
         assert_eq!(app.composed_row_count(), 10 - 3 + overlay_len);
         assert_eq!(app.display_row(3).and_then(|r| r.committed_line()), Some(3));

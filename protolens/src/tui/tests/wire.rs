@@ -468,6 +468,8 @@ fn a_preview_overlay_displaces_the_shown_run() {
                 lines: vec!["x".to_string(); overlay_len],
                 spans: Vec::new(),
                 bytes: Vec::new(),
+                tier: PreviewTier::Clean,
+                tier_column: 0,
             });
 
             assert_eq!(
@@ -500,6 +502,8 @@ fn an_overlay_row_is_in_the_run_or_out_of_it_with_the_rest() {
         lines: vec!["x".to_string(); 4],
         spans: Vec::new(),
         bytes: Vec::new(),
+        tier: PreviewTier::Clean,
+        tier_column: 0,
     });
 
     assert_eq!(shown_rows(&app), vec![2, 3, 4, 5]);
