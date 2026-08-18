@@ -85,6 +85,35 @@ fn a_modifier_is_explained_with_its_value() {
     );
 }
 
+/// Spec 0322 S5 / test-plan item 6: the leaf's mark explains itself, and
+/// does not borrow the fold marker's words — it folds nothing, so every
+/// line of that box would be false of it. A clean leaf's fold column is
+/// not a target at all.
+#[test]
+fn hovering_a_leaf_diamond_names_the_tier() {
+    let mut app = doc_app(&["x: 1  #@ varint; val_ohb: 3", "y: 2  #@ varint"]);
+
+    let hit = app
+        .doc_element_at_point(app.main_area.x + 1, 0)
+        .expect("the mark is a target");
+    assert_eq!(
+        doc_lines(&hit)
+            .into_iter()
+            .map(|l| l.text)
+            .collect::<Vec<_>>(),
+        [
+            render::ANOMALY_GLYPH.to_string(),
+            "non-canonical: legal, but no writer should emit it".to_string(),
+            "this row's own annotation says which".to_string(),
+        ]
+    );
+
+    assert!(
+        app.doc_element_at_point(app.main_area.x + 1, 1).is_none(),
+        "a clean leaf's fold column says nothing"
+    );
+}
+
 /// Spec 0285 test plan 4 / S4: every part of a field declaration is its
 /// own element, and the type name is none of them (S5/N1).
 #[test]

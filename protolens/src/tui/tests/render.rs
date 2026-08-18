@@ -1424,6 +1424,61 @@ fn overlay_rows_draw_the_tier_bar_below_the_previewed_nodes_triangle() {
     assert!(cut.is_some(), "a cut preview must be visibly marked");
 }
 
+/// Spec 0322 S6 / test-plan item 7: a previewed *leaf* has no toggle to
+/// preserve, but it may have an anomaly mark — and the row the reader is
+/// deciding about is the last place to cover the one thing on it that
+/// says the node is wrong. So the bar starts at row 1 there too, exactly
+/// as it does under a triangle.
+#[test]
+fn a_previewed_leaf_keeps_its_anomaly_mark() {
+    let (mut app, _inner_idx, id_idx) = type_as_fixture();
+    assert!(app.first_child(id_idx).is_none(), "`id` must be a leaf");
+
+    // Give the leaf an anomaly of its own. The overlay renders the node
+    // afresh as the highlighted candidate, but the mark is read off the
+    // *committed* status, which is what this sets.
+    let line = app.document_lines()[app.absolute_start(id_idx)].clone();
+    app.node_text_mut()[id_idx] = Some(Box::from(format!("{line}; val_ohb: 3").as_str()));
+    app.rebuild_status();
+
+    app.cursor = id_idx;
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    let row_count = app
+        .preview_overlay
+        .as_ref()
+        .expect("`t` must put a preview up")
+        .lines
+        .len();
+
+    let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    let want =
+        crate::theme::status_color(crate::node_status::Status::NonCanonical, app.theme).unwrap();
+    let marks = margin_cells(&app, &terminal, crate::tui::render::ANOMALY_GLYPH);
+    assert_eq!(
+        marks.len(),
+        1,
+        "one mark, on the preview's first row: {marks:?}"
+    );
+    let (mx, my, fg) = marks[0];
+    assert_eq!(fg, want, "and in the status hue");
+
+    let bars = tier_bar_cells(&app, &terminal);
+    assert_eq!(
+        bars.len(),
+        row_count - 1,
+        "the bar must start below the mark, not over it: {bars:?}"
+    );
+    for (i, &(x, y, _)) in bars.iter().enumerate() {
+        assert_eq!(
+            (x, y),
+            (mx, my + 1 + i as u16),
+            "contiguous, below the mark"
+        );
+    }
+}
+
 /// Spec 0318 S7's claim, and the one that would silently regress: the
 /// fold column is free on an overlay row *at every indent setting*,
 /// because `display_row_source` gives an overlay row no owner and so
@@ -1714,6 +1769,67 @@ fn a_defect_tints_the_fold_marker_of_every_node_above_it() {
         marked_cells(&clean, &terminal, |s| s.fg == Some(want)),
         Vec::new(),
         "a document with nothing wrong must tint nothing"
+    );
+}
+
+/// Spec 0322 S1/S3 and its test-plan items 1 and 2: a leaf whose own
+/// status is an anomaly wears the diamond, in the status hue — and its
+/// clean sibling wears nothing, which is the half that would pass on a
+/// renderer that marked every leaf.
+#[test]
+fn a_leaf_anomaly_wears_a_diamond() {
+    let want =
+        crate::theme::status_color(crate::node_status::Status::NonCanonical, ThemeKind::Dark)
+            .expect("a non-canonical node must have a color of its own");
+
+    let mut app = sibling_leaves_app(&["x: 1  #@ varint; val_ohb: 3", "y: 2  #@ varint"]);
+    app.theme = ThemeKind::Dark;
+    let terminal = drawn_frame(&mut app, 120, 8);
+    // Where a leaf's toggle would have gone: the heat gutter, then
+    // `marker_column` — 0 here, since a root-level row has no
+    // indentation for the mark to sit in.
+    let at = (
+        app.main_area.x + 1 + render::marker_column(&app.document_lines()[0]),
+        app.main_area.y + app.visible_row_of_line(0).expect("row 0 is drawn") as u16,
+    );
+    assert_eq!(
+        margin_cells(&app, &terminal, render::ANOMALY_GLYPH),
+        vec![(at.0, at.1, want)],
+        "the non-canonical leaf, and only it, must be marked"
+    );
+
+    // Test-plan item 4, the case the spec exists for: `a` truncates the
+    // row at `annotation_start`, so the annotation that used to be the
+    // leaf's only status signal is gone outright — and the mark is not.
+    app.annotations = false;
+    let terminal = drawn_frame(&mut app, 120, 8);
+    assert!(
+        !app.row_content(app.committed_row(0).unwrap())
+            .contains("val_ohb"),
+        "`a` must have removed the annotation, not merely dimmed it"
+    );
+    assert_eq!(
+        margin_cells(&app, &terminal, render::ANOMALY_GLYPH),
+        vec![(at.0, at.1, want)],
+        "the mark must outlive the annotation it stands in for"
+    );
+}
+
+/// Spec 0322 N1 / test-plan item 3: `Unknown` is absence of information
+/// rather than a defect, and spec 0247 S12 makes it universal in the
+/// documents that produce it — so an unknown leaf gets no mark. The
+/// fixture is the one `a_defect_tints_the_fold_marker_of_every_node_
+/// above_it` uses, which pins that its ancestors' toggles *are* tinted,
+/// so this is not passing by nothing being wrong with it.
+#[test]
+fn an_unknown_leaf_wears_no_diamond() {
+    let (mut app, ..) = unknown_field_fixture();
+    app.theme = ThemeKind::Dark;
+    let terminal = drawn_frame(&mut app, 120, 12);
+    assert_eq!(
+        margin_cells(&app, &terminal, render::ANOMALY_GLYPH),
+        Vec::new(),
+        "an undeclared field is not an anomaly"
     );
 }
 

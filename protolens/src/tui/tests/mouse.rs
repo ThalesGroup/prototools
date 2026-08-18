@@ -1104,6 +1104,30 @@ fn a_click_places_the_caret_except_on_the_fold_marker() {
     assert_eq!(app.cursor_column, indent, "and still not the caret");
 }
 
+/// Spec 0322 S4 / test-plan item 5: the leaf's diamond is a mark, not a
+/// control. A click on it has to fall through to the ordinary caret
+/// placement — a mark that swallowed the click without doing anything
+/// would read as a fold toggle that has stopped working, which is
+/// exactly what requirement (2) is against.
+#[test]
+fn a_click_on_a_leaf_diamond_places_the_caret() {
+    let mut app = sibling_leaves_app(&["x: 1  #@ varint; val_ohb: 3", "y: 2  #@ varint"]);
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 60, 20);
+    assert!(
+        app.row_content(app.committed_row(0).unwrap())
+            .starts_with(render::ANOMALY_GLYPH),
+        "the fixture must actually draw the mark"
+    );
+
+    app.cursor = 1;
+    let column = app.main_area.x + 1 + render::marker_column(&app.document_lines()[0]);
+    let spent = app.handle_click(column, app.main_area.y);
+    assert!(!spent, "the mark is not a fold control");
+    assert!(app.folded.is_empty(), "and it folded nothing");
+    assert_eq!(app.cursor, 0, "the click landed as a caret placement");
+}
+
 // ---------------------------------------------------------------------
 // Spec 0284 — the heat cue is a control
 // ---------------------------------------------------------------------

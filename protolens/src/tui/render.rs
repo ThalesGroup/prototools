@@ -69,6 +69,42 @@ pub(super) const FOLD_GLYPH_CLOSED: char = '⏵';
 /// which is worse than spending the two columns.
 pub(super) const FOLD_FIELD_WIDTH: usize = 2;
 
+/// Spec 0322 S1: the mark a leaf wears in the fold column when its own
+/// status is an anomaly — the two tiers `annotation::Tier` names, i.e.
+/// `Status::NonCanonical` and `Status::Invalid`.
+///
+/// A leaf has no fold toggle, so before this the column was blank and
+/// the only thing carrying the leaf's status was its annotation, which
+/// `a` removes outright and a pan moves off the right edge (0322
+/// Background). The diamond is what stays.
+///
+/// `◆` U+25C6, over the `■` the change was proposed with, for three
+/// reasons and one constraint:
+///
+/// - A filled square is the *stop* mark; a diamond is the caution-sign
+///   silhouette, which is the thing being said.
+/// - A fully inked cell is the heaviest mark available, and this is the
+///   *narrowest*-scoped signal in this column — an ancestor's toggle
+///   speaks for a whole subtree. Weighting them the other way round
+///   inverts the column.
+/// - Two adjacent hues are hardest to tell apart on a solid block, and
+///   being able to read the hue is the whole point.
+///
+/// The constraint is the one `FOLD_GLYPH_OPEN` documents: no Emoji
+/// property, or a terminal draws it in an emoji font's own color and
+/// destroys the color that is the message. That rules out `▪` U+25AA,
+/// `◼` U+25FC, `⬛` U+2B1B, `⏹` U+23F9 and — the real loss — `⚠`
+/// U+26A0. U+25C6 carries no emoji property.
+///
+/// Unlike the triangles this one *is* East Asian Ambiguous, so a
+/// CJK-configured terminal may draw it double-width and push a leaf
+/// row's text one column right of its siblings'. Accepted: it is the
+/// same width class as `heat_cue::HEAT_GLYPH`, which the app already
+/// draws in the gutter of every row, and the narrow alternatives
+/// (`◇` U+25C7 hollow, `⋄` U+22C4 tiny) give up the legibility the
+/// mark exists for.
+pub(super) const ANOMALY_GLYPH: char = '◆';
+
 /// Spec 0318 S7: the bar an override preview draws down the fold column
 /// of its own rows. A box-drawing light vertical (U+2502), not one of
 /// the block elements: the column is one cell wide and shared with a
@@ -713,20 +749,45 @@ impl App {
             return (String::new(), content.len());
         }
         let indent_len = content.len() - trimmed.len();
-        (fold_margin(indent_len, self.fold_marker(row)), indent_len)
+        (fold_margin(indent_len, self.margin_glyph(row)), indent_len)
     }
 
-    /// The fold glyph this row's node currently warrants, or `None` when
-    /// the row has no node of its own (footer and overlay rows) or its
-    /// node has nothing to fold.
-    fn fold_marker(&self, row: DisplayRow) -> Option<char> {
-        self.fold_marker_of(self.display_row_source(row).1)
+    /// The glyph this row's node currently warrants in the fold column,
+    /// or `None` when the row has no node of its own (footer and
+    /// overlay rows) or its node warrants neither mark.
+    fn margin_glyph(&self, row: DisplayRow) -> Option<char> {
+        self.margin_glyph_of(self.display_row_source(row).1)
     }
 
-    /// Spec 0215 S6: `fold_marker` for a caller that already holds the
-    /// row's owner. Takes the owner alone — once it is known the row
+    /// Spec 0322 S2: the one decision about what occupies the fold
+    /// column — the node's fold toggle when it has one, else spec
+    /// 0322's anomaly mark when its own status is one.
+    ///
+    /// The two cases cannot both apply: a node with children has a
+    /// toggle, and the toggle already carries the subtree roll-up that
+    /// includes the node's own status.
+    ///
+    /// Spec 0215 S6: takes the owner alone. Once it is known the row
     /// itself is not consulted, so passing it would be an unused
     /// argument rather than documentation.
+    fn margin_glyph_of(&self, owner: Option<usize>) -> Option<char> {
+        let idx = owner?;
+        match self.fold_marker_of(owner) {
+            Some(glyph) => Some(glyph),
+            // N1: `Unknown` and `Unbaked` are absence of information,
+            // not defects, and both are near-universal where they occur
+            // — an untyped document is `Unknown` throughout (spec 0247
+            // S12), so marking it would mark every leaf on screen.
+            None => (self.status_of(idx) >= Status::NonCanonical).then_some(ANOMALY_GLYPH),
+        }
+    }
+
+    /// Spec 0193 S1: the *fold toggle* alone, `None` for a node with
+    /// nothing to fold.
+    ///
+    /// Narrower than `margin_glyph_of` on purpose: `row_text_of` asks
+    /// this to decide whether to splice in `{ ... }`, and that is a
+    /// property of being folded, not of occupying the column.
     fn fold_marker_of(&self, owner: Option<usize>) -> Option<char> {
         let idx = owner?;
         if !self.has_children(idx) {
@@ -739,19 +800,20 @@ impl App {
         })
     }
 
-    /// Spec 0247 S10: the color this row's fold glyph wears — the worst
-    /// status anywhere in its node's subtree, `None` when that is `Ok`.
+    /// Spec 0247 S10: the color this row's margin glyph wears — the
+    /// worst status anywhere in its node's subtree, `None` when that is
+    /// `Ok`.
     ///
-    /// `None` for a row with no glyph, which is every leaf: a leaf's
-    /// status is already the color of its own annotation, so there is
-    /// nothing left for a glyph to add and it does not have one to
-    /// begin with (S11 and N1).
+    /// For a leaf that is the node's own status, because
+    /// `rolled = own.max(children…)` and there are no children. Spec
+    /// 0322 S3: a leaf never reaches here in the `Ok` color, since a
+    /// clean leaf is given no glyph to color.
     ///
     /// Applied to the glyph alone by `margin_spans`, which is where the
     /// reason it cannot be the whole margin is written down.
-    pub(super) fn fold_marker_color(&self, owner: Option<usize>) -> Option<Color> {
+    pub(super) fn margin_glyph_color(&self, owner: Option<usize>) -> Option<Color> {
         let idx = owner?;
-        self.fold_marker_of(owner)?;
+        self.margin_glyph_of(owner)?;
         theme::status_color(self.status_of(idx), self.theme)
     }
 
@@ -963,7 +1025,7 @@ impl App {
     /// Spec 0318 S7: an overlay row takes its margin from
     /// `overlay_margin_spans` instead. The column is free on every row of
     /// a preview whatever `--indent` is set to, because an overlay row
-    /// has no owner and so `fold_marker_of` gives it no glyph.
+    /// has no owner and so `margin_glyph_of` gives it no glyph.
     fn margin_spans(
         &self,
         margin: String,
@@ -975,11 +1037,11 @@ impl App {
             return self.overlay_margin_spans(margin, index);
         }
         let emphasis = emphasis - Modifier::UNDERLINED;
-        let color = self.fold_marker_color(owner);
+        let color = self.margin_glyph_color(owner);
         if color.is_none() && emphasis.is_empty() {
             return vec![Span::raw(margin)];
         }
-        let Some(at) = self.fold_marker_of(owner).and_then(|g| margin.find(g)) else {
+        let Some(at) = self.margin_glyph_of(owner).and_then(|g| margin.find(g)) else {
             return vec![Span::raw(margin)];
         };
         let end = at + margin[at..].chars().next().map_or(0, char::len_utf8);
@@ -1001,10 +1063,11 @@ impl App {
     /// Spec 0318 S7: what an overlay row draws in its fold column, given
     /// the row's index within the preview.
     ///
-    /// Row 0 is the previewed node's own header, and it keeps that
-    /// node's fold toggle — the reader is deciding about *that* node, and
-    /// covering its triangle would take away the one control on the row
-    /// they are looking at. The overlay hides the committed row, so the
+    /// Row 0 is the previewed node's own header, and it keeps whatever
+    /// that node draws in the column — the reader is deciding about
+    /// *that* node, and covering its mark would take away the one
+    /// control, or the one warning, on the row they are looking at.
+    /// The overlay hides the committed row, so the
     /// glyph has to be drawn here or not at all; `override_target` is the
     /// node it belongs to.
     ///
@@ -1026,10 +1089,14 @@ impl App {
         }
         let (glyph, color) = if index == 0 {
             let owner = self.override_target;
-            match self.fold_marker_of(owner) {
-                Some(glyph) => (glyph, self.fold_marker_color(owner)),
-                // A previewed leaf has nothing to fold, so there is no
-                // triangle to preserve and the bar starts at the top.
+            match self.margin_glyph_of(owner) {
+                // Spec 0322 S6: a previewed leaf keeps its anomaly mark
+                // here too — it is the row the reader is deciding
+                // about, and covering the one thing on it that says the
+                // node is wrong would be the worst place to do it.
+                Some(glyph) => (glyph, self.margin_glyph_color(owner)),
+                // A previewed clean leaf has nothing to fold and
+                // nothing to warn about, so the bar starts at the top.
                 None => (TIER_BAR_GLYPH, self.preview_bar_color(o)),
             }
         } else {

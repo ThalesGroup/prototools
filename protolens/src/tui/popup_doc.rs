@@ -70,6 +70,11 @@ pub(super) enum DocElement {
     /// S2's violet: nobody has looked inside this region, as against a
     /// fold the reader made.
     FoldSummary { unread: bool },
+    /// Spec 0322 S5: the `◆` a leaf wears in the fold column. A fifth
+    /// chrome member rather than a flag on `FoldMarker`, because the
+    /// two share only a column: this one folds nothing, and every line
+    /// of the fold marker's box would be false of it.
+    AnomalyMark { tier: Tier },
 }
 
 /// Which of `HeatDisplay`'s shapes the drawn suffix is (spec 0154 G6),
@@ -343,7 +348,7 @@ impl App {
             at: 0,
             element: DocElement::FoldMarker {
                 folded,
-                colored: self.fold_marker_color(Some(pos.node)).is_some(),
+                colored: self.margin_glyph_color(Some(pos.node)).is_some(),
             },
             token: if folded {
                 render::FOLD_GLYPH_CLOSED
@@ -351,6 +356,36 @@ impl App {
                 render::FOLD_GLYPH_OPEN
             }
             .to_string(),
+            enum_number: None,
+        })
+    }
+
+    /// Spec 0322 S5: the leaf anomaly mark — `in_fold_field`'s geometry
+    /// over the nodes `in_fold_field` refuses.
+    ///
+    /// The node test repeats `margin_glyph_of`'s rather than asking it,
+    /// because what is wanted here is the *tier*, and a glyph cannot be
+    /// turned back into one. The two are kept honest by the pair
+    /// `a_leaf_anomaly_wears_a_diamond` and
+    /// `hovering_a_leaf_diamond_names_the_tier`, which run the same
+    /// fixture through the renderer and the hit test.
+    fn anomaly_mark_hit(&self, column: u16, line: usize, pos: LinePos) -> Option<DocHit> {
+        if self.is_footer(pos) || self.has_children(pos.node) {
+            return None;
+        }
+        let tier = match self.status_of(pos.node) {
+            Status::NonCanonical => Tier::NonCanonical,
+            Status::Invalid => Tier::Invalid,
+            _ => return None,
+        };
+        if !self.in_fold_column(column, pos) {
+            return None;
+        }
+        Some(DocHit {
+            line,
+            at: 0,
+            element: DocElement::AnomalyMark { tier },
+            token: render::ANOMALY_GLYPH.to_string(),
             enum_number: None,
         })
     }
@@ -418,6 +453,9 @@ impl App {
             return Some(hit);
         }
         if let Some(hit) = self.fold_marker_hit(column, line, pos) {
+            return Some(hit);
+        }
+        if let Some(hit) = self.anomaly_mark_hit(column, line, pos) {
             return Some(hit);
         }
 
@@ -587,6 +625,15 @@ pub(super) fn doc_lines(hit: &DocHit) -> Vec<BoxLine> {
             if colored {
                 lines.push("the color is the worst thing found anywhere inside".to_string());
             }
+        }
+        DocElement::AnomalyMark { tier } => {
+            lines.push(tier.clause().to_string());
+            // The one thing the mark cannot say by itself. A leaf has no
+            // toggle, so this is the node's *own* trouble and not a
+            // roll-up — and the row's annotation names it, which matters
+            // because `a` may be hiding the annotation right now, which
+            // is the case this mark exists for (spec 0322 Background).
+            lines.push("this row's own annotation says which".to_string());
         }
         DocElement::FoldSummary { unread } => {
             if unread {

@@ -555,9 +555,17 @@ impl App {
     /// unfold it", and it can only say so over columns that would in
     /// fact have toggled.
     pub(super) fn in_fold_field(&self, col: u16, pos: LinePos) -> bool {
-        if self.is_footer(pos) || !self.has_children(pos.node) {
-            return false;
-        }
+        !self.is_footer(pos) && self.has_children(pos.node) && self.in_fold_column(col, pos)
+    }
+
+    /// Spec 0322 S5: `in_fold_field`'s geometry with no test of the
+    /// node, so that the leaf mark's hover can ask the *same* question
+    /// about the *complementary* node.
+    ///
+    /// Split rather than duplicated: the column arithmetic above is the
+    /// part that is easy to get subtly wrong (the gutter, the pan, the
+    /// two-column width), and two copies of it would drift.
+    pub(super) fn in_fold_column(&self, col: u16, pos: LinePos) -> bool {
         let Some(rel_col) = col.checked_sub(self.main_area.x).map(usize::from) else {
             return false;
         };
