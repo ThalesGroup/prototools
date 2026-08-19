@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
+use super::super::bake::BakeStep;
 use super::super::*;
 use super::support::*;
 
@@ -530,14 +531,17 @@ fn shift_z_folds_the_whole_subtree_and_unfolds_it_again() {
     );
 }
 
-/// Spec 0249 S3: a node folded because its body was never rendered
-/// draws and behaves exactly like one the user folded — same collapsed
-/// row count, same closed marker, opened by the same keystroke.
+/// Spec 0249 S3, as spec 0332 G4 amends it: a node folded because its
+/// body was never rendered *reads* exactly like one the user folded —
+/// same collapsed row count, same closed marker — and the user still
+/// cannot be asked to know which set a fold came from.
 ///
-/// The user cannot be asked to know which set a fold came from, so the
-/// asymmetry is confined to the writers.
+/// What changed is the write. `z` records the reader's wish in `folded`
+/// and renders nothing, so the bake's own bit stands and the row is the
+/// row it was. Spec 0332 N2 accepts that latency; what it buys is that
+/// no fold gesture can fire a splice, so none of them can stall.
 #[test]
-fn an_auto_fold_reads_and_opens_like_a_user_fold() {
+fn an_auto_fold_reads_like_a_user_fold_and_a_gesture_leaves_it() {
     let (mut app, items) = repeated_message_fixture();
     app.splash = false;
     let idx = items[0];
@@ -554,21 +558,22 @@ fn an_auto_fold_reads_and_opens_like_a_user_fold() {
     app.set_cursor(idx);
     app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
 
-    assert!(!app.is_folded(idx), "`z` opens it like any other fold");
     assert!(
-        app.auto_folded.is_empty(),
-        "and takes it out of the set it was actually in"
+        app.auto_folded.contains(idx),
+        "`z` does not touch the bake's own bit"
     );
     assert!(
-        app.folded.is_empty(),
-        "without leaving a user fold behind that nobody asked for"
+        !app.folded.contains(idx),
+        "what moved is the reader's wish, which is now `open`"
     );
+    assert!(app.is_folded(idx), "so the node is still drawn collapsed");
+    assert_eq!(app.tree[idx].lines_visible, 1, "on the very same row");
 }
 
 /// Spec 0249 S3: the two sets are independent, and a node can be in
 /// both — the user folds a node that a bounded render already stopped
-/// at. One unfold gesture must open it, so the unfold clears both;
-/// clearing one set alone must leave the other's fold standing.
+/// at. Clearing one set alone must leave the other's fold standing,
+/// in either direction.
 #[test]
 fn a_user_fold_and_an_auto_fold_survive_each_other() {
     let (mut app, items) = repeated_message_fixture();
@@ -586,14 +591,18 @@ fn a_user_fold_and_an_auto_fold_survive_each_other() {
         "clearing the auto-folds must not pop open a fold the user made"
     );
 
-    // And the other way round: the user's unfold is not undone by an
-    // auto-fold entry left in place.
+    // And the other way round: `z` clears the user's fold and the
+    // auto-fold left in place is what still holds the row shut. Spec
+    // 0332 G4 — the gesture writes one set and reads nothing into the
+    // other.
     app.auto_folded.insert(idx);
+    app.folded.insert(idx);
     app.set_cursor(idx);
     app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+    assert!(!app.folded.contains(idx), "`z` withdrew the user's fold");
     assert!(
-        !app.is_folded(idx),
-        "one unfold gesture opens a node that is in both sets"
+        app.is_folded(idx),
+        "and the stop it was standing on top of is untouched"
     );
 }
 
@@ -1554,18 +1563,20 @@ fn a_node_level_jump_puts_the_caret_on_the_first_non_blank() {
     assert_eq!(app.cursor_column, app.caret_bounds().0);
 }
 
-/// Spec 0249 S8: opening a node a bounded render stopped at is a
-/// render, not a set removal.
+/// Spec 0332 N2: `z` on a node a bounded render stopped at withdraws
+/// the user fold and waits. The body arrives when the bake gets there,
+/// and it is the body the unbounded render would have given.
 ///
-/// Without it, `z` would drop the node from `auto_folded` and draw an
-/// empty pair of braces over a body that does exist — the row would
-/// stop saying "not shown here" and start saying "nothing here".
+/// This is the test that used to pin spec 0249 S8's opposite — `z`
+/// *was* the render. Both versions guard the same hazard from the two
+/// sides: the row must never stop saying "not shown here" and start
+/// saying "nothing here". Then it was the splice firing that prevented
+/// it; now it is `auto_folded` standing while `folded` clears.
 ///
-/// `z` reaches the node at all because `has_children` is
-/// `is_bracketed`, and a stop is bracketed: it emitted its header and
-/// footer, just nothing between.
+/// `z` reaches the node at all because a stop is bracketed: it emitted
+/// its header and footer, just nothing between.
 #[test]
-fn opening_an_auto_fold_renders_the_body_it_stood_for() {
+fn a_withdrawn_fold_on_a_stop_is_honored_by_the_bake() {
     let (mut app, items) = repeated_message_fixture();
     app.splash = false;
 
@@ -1592,19 +1603,27 @@ fn opening_an_auto_fold_renders_the_body_it_stood_for() {
     app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
 
     assert!(
+        app.is_folded(idx),
+        "the keystroke rendered nothing, so the row is the row"
+    );
+    assert_eq!(
+        app.tree[idx].lines_total, 2,
+        "header and footer and nothing between, still"
+    );
+    assert!(
+        !app.folded.contains(idx),
+        "but the reader's wish is recorded, and it is `open`"
+    );
+
+    while app.bake_step() != BakeStep::Idle {}
+    assert!(
         !app.is_folded(idx),
-        "`z` opens a stop like any other fold: {:?}",
+        "and the bake honors it: {:?}",
         app.auto_folded
     );
     assert!(
         app.tree[idx].lines_total > 2,
-        "and the body it stood for is there now"
-    );
-    assert!(
-        !app.folded.contains(idx),
-        "with no user fold invented for it — spec 0323 S2 folds every \
-         bracketed slot the splice writes, but `idx` is the one the \
-         reader asked to see"
+        "the body it stood for is there now"
     );
 
     // The rows it now occupies are the ones the unbounded render gives

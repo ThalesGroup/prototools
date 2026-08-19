@@ -317,6 +317,312 @@ fn a_commit_leaves_the_fold_alone() {
     }
 }
 
+// ---------------------------------------------------------------------
+// Spec 0332: folding is a question about the bytes.
+// ---------------------------------------------------------------------
+
+/// [`nested_closed`] with every user fold dropped, so a test can assert
+/// which bits a gesture *put* there rather than which it left.
+fn nested_open() -> App {
+    let mut app = nested_closed();
+    app.splash = false;
+    unfold_every_node(&mut app);
+    app
+}
+
+fn digit(n: usize) -> KeyEvent {
+    let c = char::from(b'0' + u8::try_from(n).expect("a single digit"));
+    KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+}
+
+/// Every arena slot in `root`'s subtree with its depth below `root`.
+///
+/// Written out here rather than borrowed from `set_cursor_fold_depth`,
+/// which is what these tests are checking: a walk that asserted itself
+/// would agree with any bug it had.
+fn arena_subtree(app: &App, root: usize) -> Vec<(usize, usize)> {
+    let first_child = app.arena.first_child();
+    let mut out = vec![(root, 0)];
+    let mut k = 0;
+    while k < out.len() {
+        let (i, depth) = out[k];
+        for child in first_child[i] as usize..first_child[i + 1] as usize {
+            out.push((child, depth + 1));
+        }
+        k += 1;
+    }
+    out
+}
+
+/// Spec 0332 test-plan item 1 (G1): the digit *is* the depth, on every
+/// slot of the subtree at once.
+#[test]
+fn a_digit_sets_the_subtree_to_that_depth() {
+    for depth in 0..5 {
+        let mut app = nested_open();
+        let root = app.first_node;
+        app.set_cursor(root);
+        app.handle_key(digit(depth));
+
+        for (idx, at) in arena_subtree(&app, root) {
+            assert_eq!(
+                app.folded.contains(idx),
+                at >= depth && app.is_foldable(idx),
+                "slot {idx} sits at depth {at} and the digit was {depth}"
+            );
+        }
+        app.assert_line_counts_are_exact();
+    }
+}
+
+/// The same three messages as [`nested_fds`], plus a root that reads
+/// [`NESTED_BLOB`]'s two fields as `bytes`.
+///
+/// `Mid` and `Leaf` are still in the pool so that the flat fields can be
+/// overridden to them afterwards.
+fn flat_fds() -> FileDescriptorSet {
+    let mut fds = nested_fds();
+    let flat = message(
+        "RootFlat",
+        vec![
+            field("a", 1, Label::Optional, Type::Bytes),
+            field("b", 2, Label::Optional, Type::Bytes),
+        ],
+    );
+    fds.file[0].message_type.push(flat);
+    fds
+}
+
+/// Spec 0332 test-plan item 2 (G3): the corollary, and the reason the
+/// walk is over the arena rather than over `child_slots`.
+///
+/// `a` is drawn as a string here, so the rendered tree gives it no
+/// children at all — but the greedy walk decomposed its payload, so the
+/// arena does, and a digit writes bits on those slots. That the bits
+/// then *survive* an override of `a` is the second half: the arena is a
+/// function of the bytes, so slot `k` covers the same byte range under
+/// every typing, and `scrub_folds_under` only clears what some rendering
+/// showed.
+#[test]
+fn a_digit_folds_slots_this_typing_does_not_show() {
+    let mut app = closed_fixture_under("folding-flat", &flat_fds(), "test.RootFlat", NESTED_BLOB);
+    app.splash = false;
+    unfold_every_node(&mut app);
+
+    let a = app.nth_child(app.first_node, 0).expect("RootFlat.a");
+    assert!(!app.has_children(a), "this typing prints `a` as a string");
+    assert!(
+        app.child_slots(a).is_empty(),
+        "so the rendered tree offers nothing below it"
+    );
+    let hidden: Vec<usize> = arena_subtree(&app, a)
+        .into_iter()
+        .filter(|&(idx, _)| idx != a && app.is_foldable(idx))
+        .map(|(idx, _)| idx)
+        .collect();
+    assert!(!hidden.is_empty(), "but the arena does: {hidden:?}");
+
+    app.set_cursor(a);
+    app.handle_key(digit(0));
+    assert!(
+        hidden.iter().all(|&i| app.folded.contains(i)),
+        "a digit reaches slots no row stands for"
+    );
+
+    app.splice_override(a, Some("test.Mid".to_string()), None)
+        .expect("retyping `a` to a message type must succeed");
+    assert!(
+        hidden.iter().all(|&i| app.folded.contains(i)),
+        "and the override does not scrub what it never showed"
+    );
+}
+
+/// Spec 0332 test-plan item 9 (S3): the reverse pass, pinned on the one
+/// digit that both opens and folds within a single keystroke.
+///
+/// `refresh_line_counts` climbs upward and stops at the first ancestor
+/// whose count is unchanged, so a parent refreshed before its children
+/// propagates a number that is about to move again — and the symptom is
+/// silent, a fold marker one row off rather than a panic.
+#[test]
+fn line_counts_stay_exact_after_a_digit() {
+    let mut app = nested_open();
+    let root = app.first_node;
+    app.set_cursor(root);
+    app.handle_key(digit(3));
+    app.handle_key(digit(1));
+    app.assert_line_counts_are_exact();
+    assert_eq!(
+        visible_rows(&app),
+        closed_rows(),
+        "depth 1 is the root open with its children folded"
+    );
+}
+
+/// Spec 0332 test-plan item 3 (G2): a digit names a shape, so pressing
+/// it twice does what pressing it once did, and what came before does
+/// not show through.
+#[test]
+fn a_digit_is_absolute_not_a_toggle() {
+    let shape_after = |presses: &[usize]| {
+        let mut app = nested_open();
+        app.set_cursor(app.first_node);
+        for &p in presses {
+            app.handle_key(digit(p));
+        }
+        (app.folded.clone(), visible_rows(&app))
+    };
+
+    assert_eq!(shape_after(&[2, 2]), shape_after(&[2]), "twice is once");
+    assert_eq!(shape_after(&[3, 1]), shape_after(&[1]), "3 then 1 is 1");
+    assert_eq!(shape_after(&[0, 4]), shape_after(&[4]), "0 then 4 is 4");
+}
+
+/// Spec 0332 test-plan item 4: the shallower digit's folds are not a
+/// floor the deeper one has to work around.
+#[test]
+fn a_deeper_digit_reopens_what_a_shallower_one_closed() {
+    let mut app = nested_open();
+    app.set_cursor(app.first_node);
+
+    app.handle_key(digit(1));
+    let one = visible_rows(&app);
+    assert_eq!(one, closed_rows());
+
+    app.handle_key(digit(3));
+    assert!(visible_rows(&app).len() > one.len(), "3 shows more");
+
+    app.handle_key(digit(1));
+    assert_eq!(visible_rows(&app), one, "and 1 puts it back");
+}
+
+/// Spec 0332 test-plan item 5 (S4, G5): `Z` is the two ends of the
+/// digits' range, which is the claim that they generalize it rather
+/// than reimplement it.
+#[test]
+fn shift_z_is_the_two_extremes_of_the_digits() {
+    let by_shift_z = |folded_first: bool| {
+        let mut app = nested_open();
+        app.set_cursor(app.first_node);
+        if folded_first {
+            app.handle_key(digit(0));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::NONE));
+        app.folded.clone()
+    };
+
+    let by_digit = |depth: usize| {
+        let mut app = nested_open();
+        app.set_cursor(app.first_node);
+        app.handle_key(digit(depth));
+        app.folded.clone()
+    };
+
+    assert_eq!(by_shift_z(false), by_digit(0), "`Z` closing is depth 0");
+    assert_eq!(
+        by_shift_z(true),
+        by_digit(9),
+        "`Z` opening is any depth past the bottom of the subtree"
+    );
+}
+
+/// Spec 0332 test-plan item 6 (G4): the whole of the baking-independence
+/// claim, on all three gestures.
+///
+/// A bake stop is the one node where the old code rendered on a
+/// keystroke. Now every one of them writes `folded` and leaves
+/// `auto_folded` and the rendered rows exactly as they were, so the
+/// keystroke means the same thing whenever it is pressed.
+#[test]
+fn a_fold_gesture_never_renders() {
+    for key in [
+        KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::NONE),
+        digit(4),
+    ] {
+        let mut app = nested_bounded(2);
+        app.splash = false;
+        let stop = app.auto_folded.iter().next().expect("the budget stopped");
+        let stops_before = app.auto_folded.clone();
+        let rows_before = visible_rows(&app);
+
+        app.set_cursor(stop);
+        app.handle_key(key);
+
+        assert_eq!(
+            app.auto_folded, stops_before,
+            "{key:?} must not touch the bake's own bit"
+        );
+        assert_eq!(
+            app.tree[stop].lines_total, 2,
+            "{key:?} must not have spliced a body in"
+        );
+        assert_eq!(visible_rows(&app), rows_before, "so no row moved");
+        assert!(
+            !app.folded.contains(stop),
+            "and what the reader asked for is on record"
+        );
+    }
+}
+
+/// Spec 0332 test-plan item 7: the guard, and the one shape it must
+/// still refuse.
+///
+/// A scalar has no child block in the arena and no braces on screen, so
+/// nothing would ever take it back out of `folded`.
+#[test]
+fn a_digit_on_a_leaf_says_not_foldable() {
+    let mut app = nested_open();
+    let a = app.nth_child(app.first_node, 0).expect("Root.a");
+    let x = app.nth_child(a, 0).expect("Mid.x");
+    let v = app.nth_child(x, 0).expect("Leaf.v");
+    assert!(!app.is_foldable(v), "`v` is an int32");
+
+    let before = app.folded.clone();
+    app.set_cursor(v);
+    app.handle_key(digit(0));
+
+    assert_eq!(app.message, "not foldable");
+    assert_eq!(app.folded, before, "and nothing moved");
+}
+
+/// Spec 0332 test-plan item 8 (N6): the cursor is already on the node
+/// being reshaped, and a digit only changes rows after its header.
+#[test]
+fn a_digit_leaves_the_cursor_where_it_was() {
+    let mut app = nested_open();
+    let a = app.nth_child(app.first_node, 0).expect("Root.a");
+    app.set_cursor(a);
+    let moves = app.cursor_moves;
+
+    app.handle_key(digit(1));
+
+    assert_eq!(app.cursor, a);
+    assert_eq!(app.cursor_moves, moves, "not even a round trip");
+}
+
+/// Spec 0332 test-plan item 10 (S6, N5): `0` folds, and the caret's own
+/// column zero is still one keystroke away.
+#[test]
+fn zero_folds_and_the_caret_still_reaches_column_zero() {
+    let mut app = nested_open();
+    let root = app.first_node;
+    app.set_cursor(root);
+    app.caret_to_line_end();
+
+    app.handle_key(digit(0));
+    assert!(app.folded.contains(root), "`0` closes the cursor node");
+    assert_eq!(
+        visible_rows(&app),
+        vec!["1 { ... }  #@ Root = 1".to_string()],
+        "and everything in it"
+    );
+
+    app.caret_to_line_end();
+    app.handle_key(KeyEvent::new(KeyCode::Char('^'), KeyModifiers::NONE));
+    assert_eq!(app.cursor_column, app.caret_bounds().0);
+}
+
 /// Spec 0323 G4/S5: a stop is now normally in *both* sets, and the
 /// violet margin — which reads `auto_folded` alone, via the `Unbaked`
 /// rung — must still mean "nobody has looked inside" rather than
@@ -339,5 +645,46 @@ fn the_violet_margin_still_means_unread() {
         app.status_of(stop),
         Status::Ok,
         "but no longer unread: a user fold over a baked node is not violet"
+    );
+}
+
+/// The boundary of G3's corollary, measured rather than assumed.
+///
+/// A *fold* recorded on a slot this typing does not print survives an
+/// override of the node above it —
+/// `a_digit_folds_slots_this_typing_does_not_show` is that half. An
+/// *unfold* does not: `decode.rs`'s render inserts every bracketed slot
+/// it writes into `folded` (spec 0323 S2), and a slot that was vacant
+/// has no bit for it to leave alone. Reversing that would need a
+/// third state — "the reader has an opinion about this slot" — which
+/// spec 0332 N7 declines to invent.
+///
+/// Here as a test rather than a comment because the day someone gives
+/// the fold sets that third state, this is what should start failing.
+#[test]
+fn an_unfold_of_a_slot_no_row_stands_for_does_not_survive_an_override() {
+    let mut app = closed_fixture_under("folding-open", &flat_fds(), "test.RootFlat", NESTED_BLOB);
+    app.splash = false;
+    unfold_every_node(&mut app);
+
+    let a = app.nth_child(app.first_node, 0).expect("RootFlat.a");
+    let hidden: Vec<usize> = arena_subtree(&app, a)
+        .into_iter()
+        .filter(|&(idx, _)| idx != a && app.is_foldable(idx))
+        .map(|(idx, _)| idx)
+        .collect();
+
+    app.set_cursor(a);
+    app.handle_key(digit(9));
+    assert!(
+        hidden.iter().all(|&i| !app.folded.contains(i)),
+        "the reader asked for every level"
+    );
+
+    app.splice_override(a, Some("test.Mid".to_string()), None)
+        .expect("retyping `a` to a message type must succeed");
+    assert!(
+        hidden.iter().all(|&i| app.folded.contains(i)),
+        "and the render that first draws those slots folds them anyway"
     );
 }

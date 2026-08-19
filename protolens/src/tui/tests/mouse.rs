@@ -1443,8 +1443,9 @@ fn a_click_in_the_left_margin_forfeits_the_anchor() {
         .expect("the header row is visible") as u16;
 
     app.handle_click(0, row);
-    app.handle_key(KeyEvent::new(KeyCode::Char('0'), KeyModifiers::NONE));
-    assert_eq!(app.caret_anchor, CaretAnchor::Home, "`0` declares it");
+    // `^`, not `0`: spec 0332 S6 gave `0` to the fold depths.
+    app.handle_key(KeyEvent::new(KeyCode::Char('^'), KeyModifiers::NONE));
+    assert_eq!(app.caret_anchor, CaretAnchor::Home, "`^` declares it");
 
     app.handle_click(0, row);
     assert_eq!(

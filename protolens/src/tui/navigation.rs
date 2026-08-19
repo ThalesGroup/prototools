@@ -417,17 +417,81 @@ impl App {
         self.folded.remove(idx) | self.auto_folded.remove(idx)
     }
 
-    /// Open `idx` on the user's behalf, rendering its body first if a
-    /// bounded render never did (spec 0249 S8).
+    /// Whether the arena gives `idx` a child block — i.e. whether the
+    /// *bytes* put anything inside it (spec 0332 S1).
+    ///
+    /// Not [`App::has_children`], which is `is_bracketed`, which is
+    /// `span.is_message`, and so is false on every slot the current
+    /// typing does not print: those hold [`TreeNode::vacant`], whose
+    /// span is a placeholder that must not be read. Asking the arena is
+    /// what lets a fold gesture reach a payload this interpretation
+    /// renders flat.
+    #[inline]
+    pub(super) fn has_arena_children(&self, idx: usize) -> bool {
+        let first_child = self.arena.first_child();
+        first_child[idx] < first_child[idx + 1]
+    }
+
+    /// Record the reader's intent for `idx`, reporting whether the bit
+    /// moved (spec 0332 S2).
+    ///
+    /// The one writer of `folded` on a gesture path, and it writes
+    /// nothing else. `auto_folded` is the bake's own bit — "this body
+    /// has not been rendered yet" — so a keystroke that touched it
+    /// would be answering a question it was not asked, and the same
+    /// keystroke would do different things a second apart. Whether
+    /// anything is *drawn* for `idx` is settled downstream, by
+    /// `auto_folded` and by `child_slots`' `is_rendered` mask; this
+    /// records only what the reader wants.
+    ///
+    /// The guard is on the folding side alone, for the reason
+    /// `set_all_siblings_folded` has always given: a leaf must never
+    /// enter `folded`, since nothing would take it back out. A node
+    /// already *in* `folded` is foldable by construction.
+    pub(super) fn set_folded(&mut self, idx: usize, fold: bool) -> bool {
+        if fold {
+            self.is_foldable(idx) && self.folded.insert(idx)
+        } else {
+            self.folded.remove(idx)
+        }
+    }
+
+    /// Whether `idx` may carry a fold bit at all.
+    ///
+    /// The union of two facts, because neither alone is right:
+    ///
+    /// - the arena gives it a child block — the bytes put something
+    ///   inside it, whatever this typing prints of that;
+    /// - it is drawn bracketed — an empty message has no children in
+    ///   the bytes and is still `Name {` then `}`, so it is foldable and
+    ///   marker-worthy, which is the case [`App::has_children`]'s own
+    ///   doc comment exists to make.
+    ///
+    /// What the union excludes is the only thing it must: a scalar,
+    /// which would go into `folded` with nothing to ever take it back
+    /// out.
+    #[inline]
+    pub(super) fn is_foldable(&self, idx: usize) -> bool {
+        self.has_arena_children(idx) || self.has_children(idx)
+    }
+
+    /// Open `idx` and render its body first if a bounded render never
+    /// did (spec 0249 S8).
     ///
     /// This is the difference between the two fold sets that a *reader*
     /// still cannot see: a user fold hides rows that exist, so opening
     /// it is a set removal; an auto-fold stands where no rows were ever
-    /// produced, so opening it is a render. Plain [`App::unfold`] does
-    /// only the removal and is for the paths that are not a gesture —
-    /// the descendant scrub, which is vacating those slots anyway, and
-    /// `unfold_ancestors`, which cannot meet an auto-fold because a
-    /// stop has no rendered descendants to climb from.
+    /// produced, so opening it is a render.
+    ///
+    /// Since spec 0332 no keystroke comes through here — a gesture
+    /// records intent and renders nothing (G4). The one caller left is
+    /// the script's `unfold:` step, which is not a gesture but a
+    /// declaration that a node shall be *visible* at this beat, and a
+    /// script that walked a reader to a node it could not see would
+    /// have failed at its one job. Plain [`App::unfold`] does only the
+    /// removal, for the descendant scrub (which is vacating those slots
+    /// anyway) and for `unfold_ancestors` (which cannot meet an
+    /// auto-fold, a stop having no rendered descendants to climb from).
     pub(super) fn open(&mut self, idx: usize) -> bool {
         if self.auto_folded.contains(idx) {
             // Removed first: the splice below takes `idx` out of
@@ -1224,10 +1288,13 @@ impl App {
     /// drawn on the row it was already on, and `folds_changed`'s scroll
     /// clamp finds the new cursor already in view and leaves
     /// `scroll_offset` alone.
+    ///
+    /// Spec 0332 S5: this records the reader's wish and draws nothing on
+    /// its own. On a node the bake has not reached, `z` therefore leaves
+    /// the row collapsed until the bake gets there — see that spec's N2,
+    /// which is what buys the guarantee that no fold gesture can stall.
     pub(super) fn toggle_fold(&mut self, idx: usize) {
-        if !self.open(idx) {
-            self.folded.insert(idx);
-        }
+        self.set_folded(idx, !self.is_folded(idx));
         if idx == self.cursor {
             self.cursor_line_in_node = 0;
         } else {
@@ -1244,17 +1311,99 @@ impl App {
 
     /// `z` — toggle the cursor node's own fold.
     ///
-    /// Spec 0249 S8 needs no arm of its own here: `has_children` is
-    /// `is_bracketed`, and a node a bounded render stopped at is
-    /// bracketed — it emitted its header and footer, just nothing
-    /// between. So a stop is foldable by the same test as any other
-    /// message, and `open` is what makes the gesture render.
+    /// Spec 0332 S1: foldable is mostly a question about the bytes, so
+    /// a stop the bake has not reached and a payload this typing prints
+    /// flat are both foldable, and only a scalar says "not foldable".
     pub(super) fn toggle_cursor_fold(&mut self) {
-        if self.has_children(self.cursor) {
+        if self.is_foldable(self.cursor) {
             self.toggle_fold(self.cursor);
         } else {
             self.message = "not foldable".to_string();
         }
+    }
+
+    /// `0` … `9` — set the cursor node's subtree so that everything
+    /// shallower than `depth` is open and everything at `depth` or
+    /// deeper is folded, the cursor node itself being depth 0 (spec
+    /// 0332 S3).
+    ///
+    /// The walk is over the **arena**, not the rendered tree, so a
+    /// payload this interpretation prints as a scalar still takes fold
+    /// bits on the nodes inside it. Overriding that payload to a message
+    /// type later then reveals it already at the depth asked for, with
+    /// no second gesture — the arena being a function of the bytes (spec
+    /// 0216), slot `k` covers the same byte range under every typing, so
+    /// a bit on it is a statement about those bytes.
+    ///
+    /// A digit is *absolute*: pressing it twice does what pressing it
+    /// once did, and it names a shape rather than describing a change.
+    /// That is why the collection covers the whole subtree and not just
+    /// its first `depth` levels. Stopping at the cut would be cheaper
+    /// and pixel-identical on the frame it draws — everything under a
+    /// folded node is hidden — but it would leave the deeper slots as
+    /// history left them, and a later `z` at the cut would reveal an
+    /// arbitrary shape.
+    ///
+    /// `usize::MAX` is "open everything", which is what `Z` opening
+    /// passes.
+    pub(super) fn set_cursor_fold_depth(&mut self, depth: usize) {
+        let root = self.cursor;
+        if !self.is_foldable(root) {
+            self.message = "not foldable".to_string();
+            return;
+        }
+
+        // Breadth-first, so `order` comes out level by level and one
+        // index — where relative depth `depth` begins — separates the
+        // nodes to open from the nodes to fold. A `depth` past the
+        // bottom of the subtree never sets it, and the fallback is
+        // `order.len()`: fold nothing.
+        let mut order = vec![root];
+        let mut cut = None;
+        let mut level = 0usize;
+        let mut level_start = 0usize;
+        while level_start < order.len() {
+            if level == depth {
+                cut = Some(level_start);
+            }
+            let level_end = order.len();
+            let first_child = self.arena.first_child();
+            for k in level_start..level_end {
+                let i = order[k];
+                order.extend(first_child[i] as usize..first_child[i + 1] as usize);
+            }
+            level_start = level_end;
+            level += 1;
+        }
+        let cut = cut.unwrap_or(order.len());
+
+        // Deepest-first, which the reverse of a level-order collection
+        // is: `refresh_line_counts` climbs *upward* and stops at the
+        // first ancestor whose count is unchanged, so refreshing a
+        // parent before its children would propagate counts that are
+        // about to move again.
+        //
+        // An unrendered slot is skipped there rather than refreshed: its
+        // `lines_total` is 0, it contributes to no ancestor's count, and
+        // the climb would provably change nothing.
+        let mut changed = false;
+        for (k, &i) in order.iter().enumerate().rev() {
+            if self.set_folded(i, k >= cut) {
+                changed = true;
+                if self.tree[i].is_rendered() {
+                    self.refresh_line_counts(i);
+                }
+            }
+        }
+        if changed {
+            self.folds_changed();
+        }
+        // The cursor is already on the node being reshaped and a digit
+        // only hides or shows rows after its header, so there is nobody
+        // to move — but that header's text has been rewritten underneath
+        // the caret just the same (spec 0194 S11).
+        self.cursor_line_in_node = 0;
+        self.clamp_caret_column();
     }
 
     /// `Z` — toggle the cursor node and force its whole subtree into the
@@ -1267,51 +1416,18 @@ impl App {
     /// looking at makes `Z` agree with the `z` they can see the result
     /// of.
     ///
-    /// Descendants are visited deepest-first (the reverse of
-    /// `collect_descendants`' pre-order, in which a parent always
-    /// precedes its own descendants), because `refresh_line_counts`
-    /// walks *upward* recomputing each node from its children and stops
-    /// as soon as one is unchanged. Refreshing a parent before its
-    /// children would propagate counts that are about to move again.
-    ///
-    /// The `has_children` guard is on the folding side only, for the
-    /// reason `set_all_siblings_folded` gives: a leaf must never enter
-    /// `folded`, since nothing would take it back out.
+    /// Spec 0332 S4: the two states `Z` reaches are the two ends of the
+    /// digits' range, so it is one call rather than a second walk. That
+    /// is also the claim that the digits *generalize* `Z` — depth 0 is
+    /// `Z` closing, and a depth past the bottom of the subtree is `Z`
+    /// opening.
     pub(super) fn toggle_cursor_fold_recursive(&mut self) {
-        if !self.has_children(self.cursor) {
-            self.message = "not foldable".to_string();
-            return;
-        }
-        let fold = !self.is_folded(self.cursor);
-        let mut nodes = vec![self.cursor];
-        self.collect_descendants(self.cursor, &mut nodes);
-
-        let mut changed = false;
-        for i in nodes.into_iter().rev() {
-            let moved = if fold {
-                self.has_children(i) && self.folded.insert(i)
-            } else {
-                // Spec 0249 S8: opening a stop renders it, one screenful
-                // deep. The stops that render then leaves behind are not
-                // in `nodes` and stay folded — `Z` opens what the
-                // document currently has, not what it could be made to
-                // have, which is the same promise it always made.
-                self.open(i)
-            };
-            if moved {
-                changed = true;
-                self.refresh_line_counts(i);
-            }
-        }
-        if changed {
-            self.folds_changed();
-        }
-        // The cursor is already on the node that was toggled, so unlike
-        // `toggle_fold` there is nobody to move — but its row's text has
-        // been rewritten underneath the caret just the same (spec 0194
-        // S11).
-        self.cursor_line_in_node = 0;
-        self.clamp_caret_column();
+        let depth = if self.is_folded(self.cursor) {
+            usize::MAX
+        } else {
+            0
+        };
+        self.set_cursor_fold_depth(depth);
     }
 
     /// All siblings of `idx` (including `idx` itself), in document order —
@@ -1344,19 +1460,13 @@ impl App {
     /// line counts for each one that actually moved and re-rendering
     /// once at the end if any did.
     ///
-    /// The `has_children` guard is on the folding side only, and not by
-    /// oversight: a leaf must not enter `folded` (nothing would ever
-    /// take it back out), while a node already *in* `folded` has
-    /// children by construction, so unfolding needs no such test.
+    /// `Ctrl-h`/`Ctrl-l` are gestures, so spec 0332 G4 applies to them
+    /// as it does to `z`: they write `folded` through
+    /// [`App::set_folded`] and render nothing.
     fn set_all_siblings_folded(&mut self, fold: bool) {
         let mut changed = false;
         for i in self.sibling_range(self.cursor) {
-            let moved = if fold {
-                self.has_children(i) && self.folded.insert(i)
-            } else {
-                self.open(i)
-            };
-            if moved {
+            if self.set_folded(i, fold) {
                 changed = true;
                 self.refresh_line_counts(i);
             }

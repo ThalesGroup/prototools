@@ -166,9 +166,16 @@ impl App {
     /// (spec 0256 S4).
     ///
     /// One bit clear per vacated slot, which is the whole of it since
-    /// spec 0323 S1. `descendants` is the rendered subtree, and a fold
-    /// flag can only stand on a node some rendering showed, so walking
-    /// it clears exactly the right flags.
+    /// spec 0323 S1. `descendants` is the rendered subtree.
+    ///
+    /// Since spec 0332 that is no longer the same thing as "every slot
+    /// that could hold a flag": a fold gesture walks the arena, so it
+    /// writes bits on slots this typing does not print, and those bits
+    /// survive the splice. That is deliberate rather than a leak — the
+    /// arena is a function of the bytes, so slot `k` covers the same
+    /// byte range under every typing, and a bit on it is a statement
+    /// about those bytes. It is what makes a digit pressed before an
+    /// override still hold after it.
     ///
     /// While the two sets were `HashSet`s this had to *choose* between
     /// that walk and a `retain` over the sets — by comparing their
@@ -801,7 +808,7 @@ impl App {
     /// to its children, so it is O(nodes) rather than a descent per
     /// node. Not reachable from a release build.
     #[cfg(test)]
-    fn assert_line_counts_are_exact(&self) {
+    pub(super) fn assert_line_counts_are_exact(&self) {
         let n_lines = self.total_lines();
 
         // The top level is a forest in the fixtures and a single root in

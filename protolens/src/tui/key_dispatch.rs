@@ -917,11 +917,13 @@ impl App {
             // is a plain left motion in normal mode.
             KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => self.caret_left(),
             KeyCode::Char('l') | KeyCode::Right => self.caret_right(),
-            // `0` and `^` are one destination here: column zero is the
-            // fold gutter and unreachable (S3), so vim's two motions
-            // coincide. Their `Ctrl-a`/`Ctrl-e` aliases (spec 0208 S1)
-            // are in the Ctrl/Alt gate above.
-            KeyCode::Char('0') | KeyCode::Char('^') => self.caret_to_line_start(),
+            // `^` alone: column zero is the fold gutter and unreachable
+            // (S3), so vim's two column-zero motions coincided here, and
+            // spec 0332 S6 gives `0` to the fold depths — one of two
+            // spellings of a destination that keeps `Ctrl-A` as well.
+            // The `Ctrl-a`/`Ctrl-e` aliases (spec 0208 S1) are in the
+            // Ctrl/Alt gate above.
+            KeyCode::Char('^') => self.caret_to_line_start(),
             KeyCode::Char('$') => self.caret_to_line_end(),
             KeyCode::Char('%') => self.jump_matching_brace(),
 
@@ -939,6 +941,16 @@ impl App {
             // well above this match.
             KeyCode::Char('z') => self.toggle_cursor_fold(),
             KeyCode::Char('Z') => self.toggle_cursor_fold_recursive(),
+
+            // Spec 0332 S6: the digit *is* the depth. `0` closes the
+            // cursor node and everything in it, `1` opens it and closes
+            // its children, and so on — which is the one property that
+            // makes ten bindings learnable, and why `0` was taken off
+            // the caret motion above rather than the digits starting at
+            // `1`. Deeper than 9 is what `Z` is for; it has no bound.
+            KeyCode::Char(c) if c.is_ascii_digit() => {
+                self.set_cursor_fold_depth(usize::from(c as u8 - b'0'));
+            }
 
             // Toggle main-pane annotation display (spec 0133 G3) — a
             // pure display attribute, distinct from the override pane's

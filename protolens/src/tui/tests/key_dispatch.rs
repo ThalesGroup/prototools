@@ -929,14 +929,16 @@ fn the_reassigned_keys_dispatch_where_the_table_says() {
     assert_eq!(app.cursor_column, base);
     assert!(app.folded.is_empty(), "`h` no longer folds");
 
-    // `$` and `0` are the two ends of the same row.
+    // `$` and `^` are the two ends of the same row. Spec 0332 S6 took
+    // `0` off this pair and gave it to the fold depths, so the row's
+    // near end has one spelling here and its `Ctrl-A` alias.
     app.handle_key(plain('$'));
     assert_eq!(app.cursor_column, app.caret_bounds().1);
-    app.handle_key(plain('0'));
+    app.handle_key(plain('^'));
     assert_eq!(app.cursor_column, base);
     app.handle_key(plain('$'));
-    app.handle_key(plain('^'));
-    assert_eq!(app.cursor_column, base, "`^` is `0`'s twin, not a variant");
+    app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    assert_eq!(app.cursor_column, base, "`Ctrl-A` is `^`'s alias");
 
     // The sibling-wide fold (spec 0199 S9) moved onto `Control` when
     // spec 0242 S8 gave the shifted pair to the selection. It used to
