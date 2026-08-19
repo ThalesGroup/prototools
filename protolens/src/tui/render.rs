@@ -14,15 +14,16 @@ static NO_STYLES: LineStyles = Vec::new();
 /// constant rather than a reuse of `heat_cue::HEAT_GLYPH`, which carries
 /// its own meaning (this row's inferred type disagrees with the
 /// assigned one). The two say unrelated things and must be free to
-/// diverge; that they currently share a character is a separate,
-/// narrower fact.
+/// diverge, and **since spec 0327 they have**: the cue went to `■`
+/// because it carries a twelve-step brightness ramp that needs the ink,
+/// and this dot carries no scale at all — it is present or absent, in
+/// one of a few tier colors, which is what a dot is for.
 ///
-/// That shared character is not an aesthetic choice: `●` and its
-/// plausible alternatives are East-Asian Ambiguous width, so in a
-/// CJK-configured terminal they render double-width and would overflow
-/// the dot's one-cell slot. Picking the glyph the app already depends on
-/// everywhere means the dot cannot break in a configuration the heat
-/// cues survive.
+/// `●` is still not an aesthetic choice: it and its plausible
+/// alternatives are East-Asian Ambiguous width, so in a CJK-configured
+/// terminal they render double-width and would overflow the dot's
+/// one-cell slot. That is the same class `heat_cue::HEAT_GLYPH` is in,
+/// so the dot cannot break in a configuration the heat cues survive.
 pub(super) const ACTIVITY_GLYPH: &str = "●";
 
 /// How many columns the activity dot's field reserves at the left of
@@ -68,7 +69,8 @@ pub(super) const ACTIVITY_FIELD_WIDTH: u16 = 2;
 ///   column right of a non-foldable one. Spec 0322 already admitted an
 ///   Ambiguous glyph to this very column (`ANOMALY_GLYPH`, `◆` U+25C6)
 ///   and the heat cue's `●` U+25CF has always been one; this is the
-///   same bet, not a new one.
+///   same bet, not a new one. (Spec 0327 moved the cue's glyph to `■`
+///   U+25A0, which is the same width class again.)
 ///
 /// Should either risk materialize, the ladder back down is
 /// U+23F7/U+23F5 (medium, Neutral, non-emoji — also a rotated pair) and
@@ -93,7 +95,7 @@ pub(super) const FOLD_FIELD_WIDTH: usize = 2;
 /// Two, for the same reason `FOLD_FIELD_WIDTH` is two: the glyph plus
 /// the blank that keeps it from reading as part of what follows. Spec
 /// 0138 N1 spent one column here and the cue ended up flush against the
-/// fold marker, so `● ▼ options` had the dot and the triangle touching
+/// fold marker, so `■ ▼ options` had the cue and the triangle touching
 /// and the eye read the pair as one compound mark. The blank costs a
 /// column of text and buys the separation.
 ///

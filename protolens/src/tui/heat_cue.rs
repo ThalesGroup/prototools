@@ -23,15 +23,31 @@ pub(super) const HEAT_CUE_PREVIEW: usize = 8;
 /// folded away and proves nothing.
 const _: () = assert!(HEAT_CUE_PREVIEW > 0);
 
-/// Leading gutter glyph (spec 0138 N1) — a filled circle reads clearly at
-/// a single terminal cell width in both light and dark themes, and is
-/// distinct from the fold marker (`▶`/`▼`) and every other glyph this
-/// crate already uses.
+/// Leading gutter glyph (spec 0138 N1), in the column reserved for it
+/// and distinct from the fold marker (`▶`/`▼`) beside it.
+///
+/// **`■` U+25A0 since spec 0327**, over the `●` U+25CF it was for its
+/// first two hundred specs. The cue *is* a color — two hues over twelve
+/// brightness levels (G5) — and a circle inks about half its cell, which
+/// is where the middle of a twelve-step ramp stops being readable. A
+/// fully inked cell gives the level the whole cell to be read in.
+///
+/// Spec 0322 turned `■` down for `render::ANOMALY_GLYPH` on the opposite
+/// argument, and the difference is the scale, not the taste: the fold
+/// column carries five *hues* at one brightness, where a large uniform
+/// patch does hurt, and this column carries two hues at twelve
+/// *brightnesses*, where area helps. Do not "unify" them.
+///
+/// Two properties a replacement must keep, both already documented at
+/// `render::FOLD_GLYPH_OPEN`: no Emoji property, or a terminal supplies
+/// its own color and destroys the message; and East Asian Ambiguous
+/// width, the class of both the `●` this replaces and the `◆` in the
+/// column beside it. The way back down is `●`, a one-line revert.
 ///
 /// A `&'static str` rather than a `char` (spec 0190 S9): a `char`
 /// forces a `String` build at every render of every visible cue — one
 /// heap allocation per cue per frame.
-pub(super) const HEAT_GLYPH: &str = "●";
+pub(super) const HEAT_GLYPH: &str = "■";
 
 /// A node's computed heat cue (spec 0138 G2-G4, G9-G12): either a
 /// `Mismatch` (red — `best` strictly exceeds `current`) or a `Tie`
