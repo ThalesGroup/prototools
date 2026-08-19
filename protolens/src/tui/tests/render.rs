@@ -1363,6 +1363,28 @@ fn tier_bar_cells(app: &App, terminal: &Terminal<TestBackend>) -> Vec<(u16, u16,
     margin_cells(app, terminal, crate::tui::render::TIER_BAR_GLYPH)
 }
 
+/// The drawn bar cells that carry spec 0334 S3's `DIM`, or those that do
+/// not — which is how a test names the caret node's own bar apart from
+/// its ancestors', the two now being the same glyph in the same field.
+fn tier_bar_cells_dim(
+    app: &App,
+    terminal: &Terminal<TestBackend>,
+    dim: bool,
+) -> Vec<(u16, u16, Color)> {
+    let glyph = crate::tui::render::TIER_BAR_GLYPH.to_string();
+    let buffer = terminal.backend().buffer();
+    let mut out = Vec::new();
+    for y in app.main_area.y..app.main_area.y + app.main_area.height {
+        for x in app.main_area.x..app.main_area.x + app.main_area.width {
+            let cell = &buffer[(x, y)];
+            if cell.symbol() == glyph && cell.modifier.contains(Modifier::DIM) == dim {
+                out.push((x, y, cell.fg));
+            }
+        }
+    }
+    out
+}
+
 /// Spec 0318 S7: the previewed node keeps its own fold toggle on the
 /// preview's first row, and the bar starts directly below it and runs to
 /// the closing brace.
@@ -1394,7 +1416,10 @@ fn overlay_rows_draw_the_tier_bar_below_the_previewed_nodes_triangle() {
         app.preview_overlay.as_mut().unwrap().tier = tier;
         terminal.draw(|frame| app.render(frame)).unwrap();
 
-        let cells = tier_bar_cells(&app, &terminal);
+        // Spec 0334 N2: the overlay's bar is the only *undimmed* one on
+        // its rows. The committed rows around it now carry the caret
+        // node's ancestors' dimmed bars, which this test is not about.
+        let cells = tier_bar_cells_dim(&app, &terminal, false);
         assert_eq!(
             cells.len(),
             row_count - 1,
@@ -1469,7 +1494,9 @@ fn a_previewed_leaf_keeps_its_anomaly_mark() {
     let (mx, my, fg) = marks[0];
     assert_eq!(fg, want, "and in the status hue");
 
-    let bars = tier_bar_cells(&app, &terminal);
+    // Undimmed: spec 0334 puts the caret's ancestors' bars on the
+    // committed rows around the overlay, and this is about the overlay.
+    let bars = tier_bar_cells_dim(&app, &terminal, false);
     assert_eq!(
         bars.len(),
         row_count - 1,
@@ -1508,7 +1535,7 @@ fn overlay_fold_column_is_free_at_indent_one() {
     let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
     terminal.draw(|frame| app.render(frame)).unwrap();
 
-    let cells = tier_bar_cells(&app, &terminal);
+    let cells = tier_bar_cells_dim(&app, &terminal, false);
     assert_eq!(
         cells.len(),
         row_count - 1,
@@ -1538,6 +1565,10 @@ fn overlay_fold_column_is_free_at_indent_one() {
 /// All four in one test because they are one mark, and any three of
 /// them holding while the fourth does not is a bar that says the wrong
 /// thing rather than a bar with a small defect.
+///
+/// Spec 0334 S3: the caret node's bar is the *undimmed* one. Its
+/// ancestors now draw bars of their own in the same field, and
+/// `every_ancestor_wears_a_dimmer_bar` is where those are asserted.
 #[test]
 fn the_current_node_wears_a_bar() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
@@ -1546,7 +1577,7 @@ fn the_current_node_wears_a_bar() {
     assert!(total >= 3, "the fixture's node must have an interior");
 
     let terminal = drawn_frame(&mut app, 120, 24);
-    let bars = tier_bar_cells(&app, &terminal);
+    let bars = tier_bar_cells_dim(&app, &terminal, false);
     assert_eq!(
         bars.len(),
         total - 1,
@@ -1580,6 +1611,10 @@ fn the_current_node_wears_a_bar() {
 /// there is no range to run a bar down — right, since a collapsed
 /// node's extent *is* the row you are on — and a leaf has
 /// `lines_total == 1` and likewise gets none.
+///
+/// Spec 0334 S1 keeps this true of the caret node's *own* bar, the
+/// undimmed one, and says the walk carries on past it: the ancestors'
+/// bars are still there, and item 4 below is where that is asserted.
 #[test]
 fn a_folded_node_has_no_bar() {
     let (mut app, inner_idx, id_idx) = type_as_fixture();
@@ -1589,7 +1624,7 @@ fn a_folded_node_has_no_bar() {
     assert!(app.is_folded(inner_idx), "`z` must fold the cursor node");
     let terminal = drawn_frame(&mut app, 120, 24);
     assert_eq!(
-        tier_bar_cells(&app, &terminal),
+        tier_bar_cells_dim(&app, &terminal, false),
         Vec::new(),
         "a collapsed node's extent is the row you are on"
     );
@@ -1599,9 +1634,84 @@ fn a_folded_node_has_no_bar() {
     assert!(app.first_child(id_idx).is_none(), "`id` must be a leaf");
     let terminal = drawn_frame(&mut app, 120, 24);
     assert_eq!(
-        tier_bar_cells(&app, &terminal),
+        tier_bar_cells_dim(&app, &terminal, false),
         Vec::new(),
         "a leaf is one row and has no extent to draw"
+    );
+}
+
+/// Spec 0334 G1/G2/S1/S2/S3, test plan item 3: with the caret two levels
+/// down, each ancestor draws a bar of its own — in its own column,
+/// strictly left of the caret node's, over its own rows, dimmed.
+#[test]
+fn every_ancestor_wears_a_dimmer_bar() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.cursor = inner_idx;
+    let ancestors: Vec<usize> = std::iter::successors(app.parent(inner_idx), |&i| app.parent(i))
+        .filter(|&i| app.tree[i].lines_total >= 2)
+        .collect();
+    assert!(
+        !ancestors.is_empty(),
+        "the fixture must put the caret inside something"
+    );
+
+    let terminal = drawn_frame(&mut app, 120, 24);
+    let own = tier_bar_cells_dim(&app, &terminal, false);
+    let dimmed = tier_bar_cells_dim(&app, &terminal, true);
+    let own_column = own.first().expect("the caret node draws a bar").0;
+
+    let mut columns: Vec<u16> = dimmed.iter().map(|&(x, ..)| x).collect();
+    columns.sort_unstable();
+    columns.dedup();
+    assert_eq!(
+        columns.len(),
+        ancestors.len(),
+        "one column per ancestor: {dimmed:?}"
+    );
+
+    for (&idx, &x) in ancestors.iter().zip(columns.iter().rev()) {
+        assert!(
+            x < own_column,
+            "an ancestor's column is left of the caret's"
+        );
+        let want = app.margin_glyph_color(Some(idx)).unwrap_or(Color::Reset);
+        let rows: Vec<u16> = dimmed
+            .iter()
+            .filter(|&&(bx, ..)| bx == x)
+            .map(|&(_, y, fg)| {
+                assert_eq!(fg, want, "an ancestor's bar wears its own triangle's color");
+                y
+            })
+            .collect();
+        assert_eq!(
+            rows.len(),
+            app.tree[idx].lines_total as usize - 1,
+            "one bar per subtree row below the ancestor's header"
+        );
+        for (i, &y) in rows.iter().enumerate() {
+            assert_eq!(y, rows[0] + i as u16, "the ancestor's bar is continuous");
+        }
+    }
+}
+
+/// Spec 0334 S1's tail, test plan item 4: a caret on a leaf contributes
+/// no bar of its own, and the walk carries on past it, so every ancestor
+/// still draws one.
+#[test]
+fn a_bar_on_a_leaf_comes_from_its_ancestors() {
+    let (mut app, _inner_idx, id_idx) = type_as_fixture();
+    app.cursor = id_idx;
+    assert!(app.first_child(id_idx).is_none(), "`id` must be a leaf");
+
+    let terminal = drawn_frame(&mut app, 120, 24);
+    assert_eq!(
+        tier_bar_cells_dim(&app, &terminal, false),
+        Vec::new(),
+        "a leaf has no extent of its own to draw"
+    );
+    assert!(
+        !tier_bar_cells_dim(&app, &terminal, true).is_empty(),
+        "but the path down to it is still drawn"
     );
 }
 
@@ -1613,8 +1723,10 @@ fn a_folded_node_has_no_bar() {
 /// levels and an ancestor's bar lands in the very cell a child's
 /// triangle wants. The triangle is a control, and the row's own; the bar
 /// is an ancestor's readout.
-#[test]
-fn a_child_marker_outranks_the_bar() {
+///
+/// The one fixture where two fold columns collide at all, so spec 0334
+/// S4's tie-break between two *bars* is measured on it too.
+fn narrowly_indented_fixture() -> App {
     let mut app = nested_message_set_fixture();
     app.indent_size = 1;
     // Re-indent as `--indent 1` would have. Only leading whitespace
@@ -1629,7 +1741,12 @@ fn a_child_marker_outranks_the_bar() {
             .collect();
         *text = reindented.join("\n").into_boxed_str();
     }
+    app
+}
 
+#[test]
+fn a_child_marker_outranks_the_bar() {
+    let mut app = narrowly_indented_fixture();
     app.cursor = 0;
     let total = app.tree[0].lines_total as usize;
     let terminal = drawn_frame(&mut app, 120, 24);
@@ -1662,6 +1779,57 @@ fn a_child_marker_outranks_the_bar() {
         "the fixture must actually collide: at `--indent 1` a child's \
          marker shares the root's column"
     );
+}
+
+/// Spec 0334 S4, test plan item 5: where two bars want the same cell,
+/// **the nearer node's wins**.
+///
+/// Only reachable at `--indent 1`, where `marker_column` floors: with
+/// the caret on a depth-1 node, its bar and the root's both want column
+/// 0. Every row of the caret node must show the caret node's — the
+/// undimmed one — and the root's dimmed bar must appear only on the rows
+/// the caret node does not cover, which is what says it was suppressed
+/// rather than never drawn.
+#[test]
+fn the_nearer_bar_wins_a_shared_column() {
+    let mut app = narrowly_indented_fixture();
+    let child = app.first_child(0).expect("the root has a child");
+    assert!(
+        app.tree[child].lines_total >= 2,
+        "the caret node must have an interior"
+    );
+    app.cursor = child;
+
+    let terminal = drawn_frame(&mut app, 120, 24);
+    let column = margin_cells(&app, &terminal, crate::tui::render::FOLD_GLYPH_OPEN)
+        .first()
+        .expect("the root has a triangle")
+        .0;
+    let at = |dim: bool| -> Vec<u16> {
+        tier_bar_cells_dim(&app, &terminal, dim)
+            .iter()
+            .filter(|&&(x, ..)| x == column)
+            .map(|&(_, y, _)| y)
+            .collect()
+    };
+
+    let own = at(false);
+    assert_eq!(
+        own.len(),
+        app.tree[child].lines_total as usize - 1,
+        "the caret node's bar shares the root's column and holds all of it"
+    );
+    let root_bar = at(true);
+    assert!(
+        !root_bar.is_empty(),
+        "the root's bar must reach rows of its own, or the tie-break is untested"
+    );
+    for y in &root_bar {
+        assert!(
+            !own.contains(y),
+            "row {y}: the root's bar is drawn only where the caret node's is not"
+        );
+    }
 }
 
 /// Spec 0328 G2/S5, test plan item 4: a wire row takes its left margin
@@ -1705,8 +1873,11 @@ fn a_bar_survives_a_wire_row() {
 /// The bars drawn in `terminal` form one unbroken run down one column,
 /// and there are more of them than `document_rows` — which is what says
 /// the wire rows were drawn through rather than skipped.
+///
+/// The undimmed ones: spec 0334's ancestor bars run down columns of
+/// their own, and this is about the caret node's (or the preview's).
 fn assert_contiguous_bars(app: &App, terminal: &Terminal<TestBackend>, document_rows: usize) {
-    let bars = tier_bar_cells(app, terminal);
+    let bars = tier_bar_cells_dim(app, terminal, false);
     assert!(
         bars.len() > document_rows,
         "the wire rows must carry the bar too: {} bar(s) for {document_rows} \
@@ -2154,11 +2325,16 @@ fn row_content_and_row_spans_agree_byte_for_byte() {
         // did, which is the property `max_visible_line_len` and the two
         // hover hit tests read `row_content` for. Put back and the two
         // agree byte for byte, as they must.
+        //
+        // Spec 0334 S1 puts more than one of them on a row, and the
+        // glyph is three bytes standing in for one blank — so the
+        // second bar's offset in `drawn` runs two bytes ahead of its
+        // offset in `content` per bar already passed.
         let bar = render::TIER_BAR_GLYPH.to_string();
         let content = app.row_content(row);
-        for (at, _) in drawn.match_indices(&bar) {
+        for (seen, (at, _)) in drawn.match_indices(&bar).enumerate() {
             assert_eq!(
-                content.as_bytes().get(at),
+                content.as_bytes().get(at - 2 * seen),
                 Some(&b' '),
                 "row {i}: the bar may only stand where the margin was blank"
             );

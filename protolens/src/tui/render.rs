@@ -147,20 +147,28 @@ pub(super) const ANOMALY_GLYPH: char = '◆';
 /// rule rather than as a filled cell.
 pub(super) const TIER_BAR_GLYPH: char = '│';
 
-/// Spec 0328 S1/S2: where the current node's bar runs, and under which
-/// document shape and caret it was worked out.
+/// Spec 0328 S1/S2 and 0334 S1: where the caret node's bar and each of
+/// its ancestors' run, and under which document shape and caret they
+/// were worked out.
 ///
 /// Held in a `RefCell` on `App` for the same reason `WireRowCache` is:
-/// `absolute_start` is a climb and every row of the viewport asks.
+/// `absolute_start` is a climb and every row of the viewport asks. With
+/// the ancestors in it the fill is a climb per ancestor, which is what
+/// makes the memo load-bearing rather than merely nice.
 pub(super) struct CursorBarCache {
     version: u64,
     cursor: usize,
-    bar: Option<CursorBar>,
+    /// Nearest node first: the caret node, then its parent, up to the
+    /// root. Spec 0334 S4 reads the order to break a column tie.
+    bars: Vec<CursorBar>,
 }
 
-/// The rows the current node's bar occupies, and the column it occupies.
+/// The rows one node's bar occupies, and the column it occupies.
 #[derive(Clone, Copy)]
 struct CursorBar {
+    /// The node the bar belongs to — the caret node, or one of its
+    /// ancestors. Spec 0334 S2 takes the color from *this* node.
+    owner: usize,
     /// The node's header line — the row its fold triangle is on, and so
     /// the row directly above the bar's first document row.
     header: usize,
@@ -170,6 +178,9 @@ struct CursorBar {
     /// triangle sits in (S1). Also a byte offset into any row's fold
     /// margin, which is spaces up to and including it.
     column: usize,
+    /// Spec 0334 S3: an ancestor's bar is dimmed, the caret node's is
+    /// not.
+    dim: bool,
 }
 
 impl CursorBar {
@@ -1128,8 +1139,8 @@ impl App {
             return self.overlay_margin_spans(margin, index);
         }
         // Marked cells, as `(byte range in `margin`, what to draw
-        // there, how)`. At most two: the row's own glyph, and the
-        // current node's bar.
+        // there, how)`: the row's own glyph, and one bar per node on the
+        // path from the root to the caret (spec 0334 S1).
         let mut marks: Vec<(Range<usize>, String, Style)> = Vec::with_capacity(2);
 
         let emphasis = emphasis - Modifier::UNDERLINED;
@@ -1145,23 +1156,10 @@ impl App {
             }
         }
 
-        // Spec 0328 S4: **the row's own mark wins the cell.** The bar
-        // goes in only where this row's margin is blank at the column,
-        // which under `--indent 2` is always — a child's marker is at
-        // least two columns deeper — and under `--indent 0`/`1` is the
-        // test that lets a child's triangle, a control and the row's
-        // own, outrank an ancestor's readout. One byte compare, and it
-        // covers every `--indent`.
-        if let Some(bar) = self
-            .cursor_bar()
-            .filter(|b| row.committed_line().is_some_and(|l| b.covers(l)))
-            .filter(|b| margin.as_bytes().get(b.column) == Some(&b' '))
-        {
-            marks.push((
-                bar.column..bar.column + 1,
-                TIER_BAR_GLYPH.to_string(),
-                self.cursor_bar_style(),
-            ));
+        if let Some(line) = row.committed_line() {
+            for (column, style) in self.bars_on_row(&margin, line, false) {
+                marks.push((column..column + 1, TIER_BAR_GLYPH.to_string(), style));
+            }
         }
 
         if marks.is_empty() {
@@ -1183,46 +1181,131 @@ impl App {
         spans
     }
 
-    /// Spec 0328 S3: the bar wears `margin_glyph_color(Some(cursor))` —
-    /// the very call the node's own triangle takes its color from, so
-    /// the two are the same color by construction rather than by a
-    /// second lookup that could come to disagree.
-    fn cursor_bar_style(&self) -> Style {
-        match self.margin_glyph_color(Some(self.cursor)) {
+    /// Spec 0334 S1/S4: the bars to draw into `margin` on committed line
+    /// `line`, as `(byte column, style)` — at most one per column.
+    ///
+    /// `wire` selects `covers_wire` over `covers`, because a wire row is
+    /// a continuation of the row above it and so takes that row's
+    /// header's bar too (spec 0328 S5).
+    ///
+    /// Two filters, in this order:
+    ///
+    /// - Spec 0328 S4: **the row's own mark wins the cell.** A bar goes
+    ///   in only where this row's margin is blank at the column, which
+    ///   under `--indent 2` is always — a child's marker is at least two
+    ///   columns deeper — and under `--indent 0`/`1` is the test that
+    ///   lets a child's triangle, a control and the row's own, outrank
+    ///   an ancestor's readout. One byte compare, and it covers every
+    ///   `--indent`. It also keeps a bar out of the *middle* of a
+    ///   multi-byte glyph, whose continuation bytes are not `b' '`.
+    /// - Spec 0334 S4: **the nearer node's bar wins a shared column.**
+    ///   The cache is ordered nearest-first, so keeping the first
+    ///   claimant is that rule. It is also what keeps the returned
+    ///   columns distinct, which the splice in `margin_spans` needs.
+    fn bars_on_row(&self, margin: &str, line: usize, wire: bool) -> Vec<(usize, Style)> {
+        // Collected under the borrow, styled outside it: the color comes
+        // from `status_of`, which tracks a node's heat and so must not
+        // be frozen into the cache.
+        let claimants: Vec<CursorBar> = {
+            self.fill_cursor_bars();
+            let cache = self.cursor_bar.borrow();
+            let Some(cache) = cache.as_ref() else {
+                return Vec::new();
+            };
+            cache
+                .bars
+                .iter()
+                .copied()
+                .filter(|b| {
+                    if wire {
+                        b.covers_wire(line)
+                    } else {
+                        b.covers(line)
+                    }
+                })
+                .filter(|b| margin.as_bytes().get(b.column) == Some(&b' '))
+                .collect()
+        };
+        let mut out: Vec<(usize, Style)> = Vec::with_capacity(claimants.len());
+        for bar in claimants {
+            if out.iter().any(|&(column, _)| column == bar.column) {
+                continue;
+            }
+            out.push((bar.column, self.bar_style(&bar)));
+        }
+        out
+    }
+
+    /// Spec 0334 S2/S3: a bar wears `margin_glyph_color` of *its own*
+    /// node — the very call that node's triangle takes its color from,
+    /// so the two are the same color by construction rather than by a
+    /// second lookup that could come to disagree — and an ancestor's is
+    /// dimmed.
+    ///
+    /// `Modifier::DIM` rather than a darker color because there is
+    /// usually no color to darken: `margin_glyph_color` is `None` for an
+    /// `Ok` node, which most ancestors are.
+    fn bar_style(&self, bar: &CursorBar) -> Style {
+        let style = match self.margin_glyph_color(Some(bar.owner)) {
             Some(color) => Style::default().fg(color),
             None => Style::default(),
+        };
+        if bar.dim {
+            style.add_modifier(Modifier::DIM)
+        } else {
+            style
         }
     }
 
-    /// Spec 0328 S1/S2: the current node's bar, memoized.
+    /// Brings [`App::cursor_bar`]'s memo up to date with the current
+    /// document shape and caret.
+    fn fill_cursor_bars(&self) {
+        if let Some(cache) = self.cursor_bar.borrow().as_ref() {
+            if cache.version == self.structural_version && cache.cursor == self.cursor {
+                return;
+            }
+        }
+        let bars = self.compute_cursor_bars();
+        *self.cursor_bar.borrow_mut() = Some(CursorBarCache {
+            version: self.structural_version,
+            cursor: self.cursor,
+            bars,
+        });
+    }
+
+    /// The uncached half of [`App::fill_cursor_bars`]: one bar per node
+    /// on the path from the caret to the root, nearest first.
+    ///
+    /// A node the walk passes may contribute none — see
+    /// [`App::compute_bar`] — and the walk carries on regardless, which
+    /// is spec 0334 S1's "a caret on a leaf still draws its ancestors'
+    /// bars".
+    fn compute_cursor_bars(&self) -> Vec<CursorBar> {
+        let mut bars = Vec::new();
+        let mut idx = self.cursor;
+        loop {
+            if let Some(bar) = self.compute_bar(idx, idx != self.cursor) {
+                bars.push(bar);
+            }
+            match self.parent(idx) {
+                Some(parent) => idx = parent,
+                None => return bars,
+            }
+        }
+    }
+
+    /// Spec 0328 S1/S2: one node's bar.
     ///
     /// `None` for a node with nothing to draw a bar beside: a **leaf**,
     /// whose `lines_total` is 1, and a **folded** node, which draws its
     /// body as the one-row `{ ... }` collapse — right in both cases,
     /// since a collapsed node's extent is the row you are on.
-    fn cursor_bar(&self) -> Option<CursorBar> {
-        if let Some(cache) = self.cursor_bar.borrow().as_ref() {
-            if cache.version == self.structural_version && cache.cursor == self.cursor {
-                return cache.bar;
-            }
-        }
-        let bar = self.compute_cursor_bar();
-        *self.cursor_bar.borrow_mut() = Some(CursorBarCache {
-            version: self.structural_version,
-            cursor: self.cursor,
-            bar,
-        });
-        bar
-    }
-
-    /// The uncached half of [`App::cursor_bar`].
     ///
     /// The line range is the one `cursor_brace_pair` derives, and
     /// `lines_total` is the whole subtree's count — so the bar reaches
     /// the closing brace in O(1), with no per-row walk up each row's
     /// ancestors and no second definition of "in this node".
-    fn compute_cursor_bar(&self) -> Option<CursorBar> {
-        let idx = self.cursor;
+    fn compute_bar(&self, idx: usize, dim: bool) -> Option<CursorBar> {
         if idx >= self.tree.len() || !self.has_children(idx) {
             return None;
         }
@@ -1233,9 +1316,11 @@ impl App {
         let header = self.absolute_start(idx);
         let text = self.node_text[idx].as_deref()?;
         Some(CursorBar {
+            owner: idx,
             header,
             end: header + total,
             column: marker_column(text.split('\n').next()?) as usize,
+            dim,
         })
     }
 
@@ -1315,32 +1400,34 @@ impl App {
     /// column would read as a second foldable node.
     pub(super) fn wire_margin_spans(&self, row: DisplayRow, indent: usize) -> Vec<Span<'static>> {
         let margin = fold_margin(indent, None);
-        let (column, style) = match row {
+        let mut marks = match row {
             DisplayRow::Overlay(_) => match self.preview_overlay.as_ref() {
-                Some(o) => (
+                Some(o) if o.tier_column < margin.len() => vec![(
                     o.tier_column,
                     match self.preview_bar_color(o) {
                         Some(color) => Style::default().fg(color),
                         None => Style::default(),
                     },
-                ),
-                None => return vec![Span::raw(margin)],
+                )],
+                _ => return vec![Span::raw(margin)],
             },
-            DisplayRow::Committed(c) => match self.cursor_bar().filter(|b| b.covers_wire(c.line)) {
-                Some(bar) => (bar.column, self.cursor_bar_style()),
-                None => return vec![Span::raw(margin)],
-            },
+            DisplayRow::Committed(c) => self.bars_on_row(&margin, c.line, true),
         };
-        if column >= margin.len() {
+        if marks.is_empty() {
             return vec![Span::raw(margin)];
         }
-        let mut spans = Vec::with_capacity(3);
-        if column > 0 {
-            spans.push(Span::raw(margin[..column].to_string()));
+        marks.sort_by_key(|&(column, _)| column);
+        let mut spans = Vec::with_capacity(2 * marks.len() + 1);
+        let mut cut = 0;
+        for (column, style) in marks {
+            if column > cut {
+                spans.push(Span::raw(margin[cut..column].to_string()));
+            }
+            spans.push(Span::styled(TIER_BAR_GLYPH.to_string(), style));
+            cut = column + 1;
         }
-        spans.push(Span::styled(TIER_BAR_GLYPH.to_string(), style));
-        if column + 1 < margin.len() {
-            spans.push(Span::raw(margin[column + 1..].to_string()));
+        if cut < margin.len() {
+            spans.push(Span::raw(margin[cut..].to_string()));
         }
         spans
     }
