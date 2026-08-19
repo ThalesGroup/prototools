@@ -20,7 +20,7 @@
 //! timing and teardown rule below is shared, and nothing here knows
 //! which body it is holding.
 
-use super::popup_doc::{annotation_type_span, DocHit};
+use super::popup_doc::{annotation_type_spans, DocHit};
 use super::wire::WireHit;
 use super::*;
 use crate::override_pane::{inferred_breakdown, ScoreBreakdown};
@@ -48,6 +48,13 @@ pub(super) const HOVER_DWELL: Duration = Duration::from_millis(400);
 /// someone who has stopped to read rather than someone travelling.
 pub(super) const EXPLAIN_DWELL: Duration = Duration::from_millis(900);
 
+/// Spec 0326 S5: the border title a candidate box wears.
+///
+/// The one thing this box says that the ordinary one does not, so it
+/// goes where a reader cannot skip it — a line inside the box would sit
+/// among the terms and read as one of them.
+pub(super) const CANDIDATE_TITLE: &str = " best candidate ";
+
 /// What can be said about one node's current type.
 ///
 /// Three states rather than an `Option`, because "there is no scoring
@@ -61,6 +68,10 @@ pub(super) enum Breakdown {
     /// The node's effective type is not a scorable root: a primitive
     /// keyword (`int32`), or a name this graph does not carry.
     Unranked,
+    /// Spec 0326 S4: nothing is known about this range yet — the sweep
+    /// that will name a candidate has not come back. Distinct from
+    /// `Unranked`, which is a verdict; this is the absence of one.
+    Pending,
     Scored(ScoreBreakdown),
 }
 
@@ -74,6 +85,13 @@ pub(super) enum PopupBody {
         /// point is that they are about *this* typing and not the node.
         type_key: String,
         breakdown: Breakdown,
+        /// Spec 0326 S3/S5: `Some(n)` when `type_key` is a *candidate*
+        /// rather than what the node is read as, `n` being how many
+        /// other candidates reached the same top score. The box wears a
+        /// title in that case, because a reader who missed the
+        /// distinction would come away believing the node is already
+        /// typed this way.
+        candidate: Option<usize>,
     },
     /// Spec 0282: what one part of one wire row says.
     Wire(WireBox),
@@ -261,14 +279,24 @@ impl App {
     /// same range, and `heat_cue_resolve`'s no-worker arm already calls
     /// the sibling `inferred_score` right here.
     pub(super) fn score_breakdown(&mut self, idx: usize) -> Breakdown {
-        let range = self.heat_scored_range(idx);
-        let key = match self.current_type_key(idx) {
-            Some(key) => key,
+        match self.current_type_key(idx) {
+            Some(key) => self.breakdown_of(idx, key),
             // A node with no effective type at all — nothing was
             // scored for it, which is `Unranked` rather than a graph
             // that is missing.
-            None => return Breakdown::Unranked,
-        };
+            None => Breakdown::Unranked,
+        }
+    }
+
+    /// The same, against a named type rather than against the node's
+    /// own (spec 0326 S4).
+    ///
+    /// The memo below is keyed on `(range.start, key)` and so already
+    /// tells a candidate's breakdown from the current type's; that is
+    /// why this could be split off without giving it a cache of its
+    /// own.
+    fn breakdown_of(&mut self, idx: usize, key: String) -> Breakdown {
+        let range = self.heat_scored_range(idx);
 
         // Spec 0280 S5: one entry, not a cache. Only one box can be
         // open, so a keyed map would be a cache with a single reader
@@ -297,23 +325,73 @@ impl App {
         breakdown
     }
 
+    /// The box's body for `idx` (spec 0280 S4, spec 0326 S3).
+    ///
+    /// Split on the node's own type, not on which of S1's spans the
+    /// pointer was over: a known group's `group` keyword and its type
+    /// name are two words naming one typing, and the reader pointing at
+    /// either is asking the same question.
+    ///
+    /// Called twice per hover — once on arrival to fill the memo (0280
+    /// S13) and once when the dwell expires — which costs one cache
+    /// peek and one `String` clone the second time, everything else
+    /// being memoized.
+    fn score_body(&mut self, idx: usize) -> PopupBody {
+        let Some(type_key) = self.current_type_key(idx) else {
+            return self.candidate_body(idx);
+        };
+        PopupBody::Score {
+            breakdown: self.score_breakdown(idx),
+            type_key,
+            candidate: None,
+        }
+    }
+
+    /// Spec 0326 S4: the box for a node with no type of its own — the
+    /// best-scoring candidate, and why it scored that.
+    ///
+    /// The name comes out of `by_range`'s `top_n`, which `record_sweep`
+    /// always writes at least one entry of, so this needs no sweep of
+    /// its own; `inferred_breakdown` then scores that one name against
+    /// this one range, which is the call 0280 N4 already weighed. Read
+    /// at `Tier::Visible`, the tier the row's own cue asked at, because
+    /// `peek_with` promotes and reading lower would hand the entry to
+    /// eviction ahead of one nobody is looking at.
+    fn candidate_body(&mut self, idx: usize) -> PopupBody {
+        let start = self.heat_scored_range(idx).start;
+        let found = {
+            let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
+            caches
+                .by_range
+                .peek_with(&start, tiered::Tier::Visible, |entry| {
+                    (entry.top_n.first().cloned(), entry.best_count)
+                })
+                .and_then(|(top, count)| top.map(|(name, _)| (name, count)))
+        };
+        let Some((name, best_count)) = found else {
+            return PopupBody::Score {
+                type_key: "<no type>".to_string(),
+                breakdown: Breakdown::Pending,
+                candidate: Some(0),
+            };
+        };
+        PopupBody::Score {
+            breakdown: self.breakdown_of(idx, name.clone()),
+            type_key: name,
+            // *Others*: the named candidate is the first of the tied
+            // set, so it does not count itself.
+            candidate: Some(best_count.saturating_sub(1)),
+        }
+    }
+
     /// Opens the box for `idx` at `anchor`, unless something outranks
     /// it (spec 0280 S17).
     pub(super) fn open_score_popup(&mut self, idx: usize, anchor: (u16, u16)) {
         if self.menu.is_some() || idx >= self.tree.len() {
             return;
         }
-        let breakdown = self.score_breakdown(idx);
-        let type_key = self
-            .current_type_key(idx)
-            .unwrap_or_else(|| "<no type>".to_string());
-        self.popup = Some(Popup {
-            body: PopupBody::Score {
-                type_key,
-                breakdown,
-            },
-            anchor,
-        });
+        let body = self.score_body(idx);
+        self.popup = Some(Popup { body, anchor });
     }
 
     /// `s` (spec 0280 S18): the same box for the node the caret is on,
@@ -335,14 +413,16 @@ impl App {
     /// The node whose type name is drawn at this point, if any (spec
     /// 0280 S10).
     ///
-    /// One span of one row: the `type` token of the `#@` annotation.
-    /// That is the thing the box is *about* — the reader points at the
-    /// name and is told how well the bytes fit it — and it is the only
-    /// place that name is written down.
+    /// The spans of one row: the `type` token of the `#@` annotation,
+    /// and — spec 0326 S1 — the `message`/`group` keyword that stands
+    /// where one would. Those are the things the box is *about*: the
+    /// reader points at the word naming what the bytes are read as, and
+    /// is told how well they fit it.
     ///
-    /// Deliberately no second target. "Hover anything to learn about
-    /// it" has no edge a reader can hold; "hover the type you are
-    /// asking about" has exactly one.
+    /// Deliberately no target outside that set. "Hover anything to learn
+    /// about it" has no edge a reader can hold; "hover the type you are
+    /// asking about" has one, and a bare `message` is the type as far as
+    /// the document says.
     ///
     /// A row in wire mode is two terminal rows thick and both name it,
     /// exactly as spec 0225 S8 already has a click anywhere in the pair
@@ -351,7 +431,6 @@ impl App {
         let line_idx = self.main_pane_line_idx(column, row)?;
         let pos = self.line_pos(line_idx)?;
         let content = self.row_content(self.committed_row_at(line_idx, pos));
-        let span = annotation_type_span(&content)?;
 
         // The same mapping `set_caret_from_click` computes: pane
         // column, less the reserved glyph gutter (spec 0138 N1), plus
@@ -360,9 +439,14 @@ impl App {
         let index = (column.saturating_sub(self.main_area.x) as usize)
             .checked_sub(render::HEAT_FIELD_WIDTH)?
             + self.pan_offset;
-        let lo = content[..span.start].chars().count();
-        let hi = lo + content[span].chars().count();
-        (lo..hi).contains(&index).then_some(pos.node)
+        annotation_type_spans(&content)
+            .into_iter()
+            .any(|span| {
+                let lo = content[..span.start].chars().count();
+                let hi = lo + content[span].chars().count();
+                (lo..hi).contains(&index)
+            })
+            .then_some(pos.node)
     }
 
     /// One `Moved` event (spec 0280 S6-S9).
@@ -451,7 +535,7 @@ impl App {
             ..
         }) = self.hover
         {
-            self.score_breakdown(node);
+            self.score_body(node);
         }
         // A box left on screen by the pointer that has now left it must
         // be erased, and that is the one hover event owed a frame.
@@ -509,9 +593,21 @@ impl App {
         // because the chrome's own clamping would cut from the bottom
         // and so drop the flaws first — exactly backwards.
         let lines = Self::popup_lines(popup, area.height.saturating_sub(2).max(1) as usize);
+        // Spec 0326 S5: the title is what stops a candidate's name from
+        // being read as the node's own type, so it is part of the
+        // box's width and not decoration clipped off at the edge.
+        let title = matches!(
+            popup.body,
+            PopupBody::Score {
+                candidate: Some(_),
+                ..
+            }
+        )
+        .then_some(CANDIDATE_TITLE);
         let inner_width = lines
             .iter()
             .map(|l| l.text.chars().count())
+            .chain(title.map(|t| t.chars().count() + 2))
             .max()
             .unwrap_or(1)
             .max(1) as u16;
@@ -520,7 +616,11 @@ impl App {
         let rect = render::anchored_rect(popup.anchor, width, height, area);
 
         frame.render_widget(Clear, rect);
-        let block = Block::bordered().border_type(BorderType::Rounded);
+        let block = match title {
+            Some(title) => Block::bordered().title(title),
+            None => Block::bordered(),
+        }
+        .border_type(BorderType::Rounded);
         let inner = block.inner(rect);
         frame.render_widget(block, rect);
         // Spec 0283 S8: a mark reaching past the box's own edge is
@@ -545,18 +645,23 @@ impl App {
     /// a score box is five lines at its very largest and has no ranking
     /// to apply.
     pub(super) fn popup_lines(popup: &Popup, avail: usize) -> Vec<BoxLine> {
-        let (type_key, breakdown) = match &popup.body {
+        let (type_key, breakdown, candidate) = match &popup.body {
             PopupBody::Wire(body) => return body.fit(avail),
             PopupBody::Doc(lines) => return lines.clone(),
             PopupBody::Score {
                 type_key,
                 breakdown,
-            } => (type_key, breakdown),
+                candidate,
+            } => (type_key, breakdown, candidate),
         };
         let mut lines = vec![type_key.clone()];
         match breakdown {
             Breakdown::NoGraph => lines.push("no scoring graph loaded".to_string()),
             Breakdown::Unranked => lines.push("not a scored type".to_string()),
+            // Spec 0326 S4, in `SuffixShape::Unknown`'s own words —
+            // the `[?]` beside the row is already saying this, and the
+            // box must not answer it differently.
+            Breakdown::Pending => lines.push("still scoring these bytes".to_string()),
             // Spec 0280 S3: a veto fires part-way through a field, so
             // the counters hold whatever had accumulated when the walk
             // stopped. Printing them would be printing where the walk
@@ -576,6 +681,14 @@ impl App {
                     // detail, read only when the score surprises.
                     lines.push(format!("{:>5}       score", b.score()));
                     lines.extend(terms);
+                    // Spec 0326 S5: only under a candidate, and only
+                    // when there is one. The score repeated here is the
+                    // breakdown's own sum and not the cached rank
+                    // score, so the two numbers in the box cannot come
+                    // apart.
+                    if let Some(ties @ 1..) = candidate {
+                        lines.push(format!("      {ties} others also score {}", b.score()));
+                    }
                 }
             }
         }

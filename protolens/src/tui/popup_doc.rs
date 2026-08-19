@@ -56,7 +56,7 @@ pub(super) enum DocElement {
     // the same hover. Each carries what its wording depends on, read
     // off the mark as drawn (G2) rather than re-derived when the box is
     // built.
-    /// The `●` in the reserved gutter (spec 0138 N1). `tie` is which of
+    /// The `■` in the reserved gutter (spec 0138 N1). `tie` is which of
     /// the two cues drew it — blue for a tie, red for a mismatch.
     HeatGlyph { tie: bool },
     /// The ` [3/47]`, ` [2@85]`, ` [?/47]` or ` [?]` at the end of the
@@ -241,12 +241,41 @@ fn push_decl(token: &str, base: usize, out: &mut Vec<(DocElement, Range<usize>)>
     out.push((DocElement::Number, base + eq + 1..base + token.len()));
 }
 
-/// Spec 0280 S10's query, over the one parse (spec 0285 S3).
-pub(super) fn annotation_type_span(row: &str) -> Option<Range<usize>> {
+/// Whether a lexed token is one the score box answers for (spec 0326
+/// S1/S2) — **the one rule**, read both by
+/// [`annotation_type_spans`] and by [`App::doc_element_at_point`]'s
+/// refusal, so that a token cannot end up opening both boxes or
+/// neither.
+///
+/// Two members. The declared type name is 0280's original target. The
+/// bare words `message` and `group` are what stands in the type's place
+/// when no schema named one, and they are recognized by *text* rather
+/// than by which element they landed in: `group` lexes as a
+/// [`DocElement::WireType`] and `message` — absent from
+/// `annotation::wire_type_clause`, which names only the five real wire
+/// types (0326 N3) — falls through to [`DocElement::Modifier`]. No
+/// other member of the annotation vocabulary is spelled either word, so
+/// one predicate covers both positions without the caller having to
+/// know which is which.
+fn is_score_anchor(element: DocElement, token: &str) -> bool {
+    match element {
+        DocElement::Type => true,
+        DocElement::WireType | DocElement::Modifier => matches!(token, "message" | "group"),
+        _ => false,
+    }
+}
+
+/// Spec 0280 S10's query, widened by spec 0326 S1, over the one parse
+/// (spec 0285 S3).
+///
+/// Up to two spans on a known group's row — `group; Foo = 3` names the
+/// same node twice and the reader may point at either word.
+pub(super) fn annotation_type_spans(row: &str) -> Vec<Range<usize>> {
     doc_elements(row)
         .into_iter()
-        .find(|(element, _)| *element == DocElement::Type)
+        .filter(|(element, span)| is_score_anchor(*element, &row[span.clone()]))
         .map(|(_, span)| span)
+        .collect()
 }
 
 /// A modifier's keyword, with any `: value` taken off.
@@ -435,9 +464,13 @@ impl App {
     /// The element drawn at this point, if it is one the box has
     /// anything to say about (spec 0285 S4).
     ///
-    /// Two refusals. The type name goes to 0280's score box, so that a
-    /// point has exactly one target and one dwell (S5). A modifier with
-    /// no clause is refused because a box whose only line is the word
+    /// Two refusals. A score anchor goes to 0280's box, so that a point
+    /// has exactly one target and one dwell (S5) — the type name, and
+    /// since spec 0326 the `message`/`group` keyword that stands in its
+    /// place. That takes `group` away from the wire-type explanation
+    /// below, knowingly: it is the one wire-type name that can also be a
+    /// message, which is why the reader is pointing at it. A modifier
+    /// with no clause is refused because a box whose only line is the word
     /// the reader is already looking at is worse than no box — which is
     /// also what keeps the `#@ prototext: protoc` header from being a
     /// target (N4). `annotation::every_keyword_has_a_clause` is what
@@ -477,10 +510,11 @@ impl App {
         let elements = doc_elements(&content);
         let (element, span) = elements.iter().find(|(_, s)| s.contains(&byte))?.clone();
         let token = content[span.clone()].to_string();
-        match element {
-            DocElement::Type => return None,
-            DocElement::Modifier if clause(keyword_of(&token)).is_none() => return None,
-            _ => {}
+        if is_score_anchor(element, &token) {
+            return None;
+        }
+        if element == DocElement::Modifier && clause(keyword_of(&token)).is_none() {
+            return None;
         }
         let enum_number = match element {
             DocElement::Value => enum_number(&content, &elements),

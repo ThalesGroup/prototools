@@ -4,7 +4,9 @@
 
 //! Spec 0280: the box a heat cue's number can be asked for.
 
-use super::super::popup::{Breakdown, HoverTarget, HOVER_DWELL};
+use super::super::heat_worker::RangeHeatEntry;
+use super::super::popup::{Breakdown, HoverTarget, CANDIDATE_TITLE, HOVER_DWELL};
+use super::super::tiered::Tier;
 use super::super::*;
 use super::heat_cue::seed_range_heat_entry;
 use super::support::*;
@@ -247,6 +249,7 @@ fn a_vetoed_type_reports_only_that() {
         body: PopupBody::Score {
             type_key: "Msg0".to_string(),
             breakdown: Breakdown::Scored(b),
+            candidate: None,
         },
         anchor: (0, 0),
     };
@@ -306,6 +309,7 @@ fn s_opens_the_same_box_at_the_caret() {
         PopupBody::Score {
             type_key: app.current_type_key(app.cursor).expect("a typed node"),
             breakdown: app.score_breakdown(app.cursor),
+            candidate: None,
         }
     );
 
@@ -357,6 +361,7 @@ fn only_the_non_zero_terms_are_printed() {
         body: PopupBody::Score {
             type_key: "Msg0".to_string(),
             breakdown: Breakdown::Scored(b),
+            candidate: None,
         },
         anchor: (0, 0),
     };
@@ -389,6 +394,7 @@ fn a_cut_range_says_so_and_still_shows_its_terms() {
         body: PopupBody::Score {
             type_key: "Msg0".to_string(),
             breakdown: Breakdown::Scored(b),
+            candidate: None,
         },
         anchor: (0, 0),
     };
@@ -408,4 +414,139 @@ fn a_cut_range_says_so_and_still_shows_its_terms() {
         score.contains("score") && score.contains(&b.score().to_string()),
         "the terms below must still sum to the score: {lines:?}"
     );
+}
+
+// ---------------------------------------------------------------------
+// Spec 0326: the box an untyped node opens
+// ---------------------------------------------------------------------
+
+/// An app whose node 0 is a message no schema named — the shape a
+/// `1 {  #@ message` row has — with `Msg0` optionally seeded as the top
+/// of `best_count` tied candidates.
+///
+/// `NO_FQDN` on a message node is exactly what makes
+/// `current_type_key` say nothing (`heat_cue.rs`'s first arm), and so
+/// what sends `score_body` down the candidate path.
+fn untyped_app(seed: Option<usize>) -> App {
+    let mut app = message_node_app_with_graph();
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 80, 22);
+    Arc::get_mut(&mut app.tree).expect("the fixture holds it alone")[0]
+        .span
+        .type_fqdn = NO_FQDN;
+    assert_eq!(app.current_type_key(0), None, "the fixture's premise");
+
+    if let Some(best_count) = seed {
+        let start = app.heat_scored_range(0).start;
+        let mut caches = app.heat_caches.lock().unwrap();
+        caches.by_range.upsert(
+            start,
+            RangeHeatEntry {
+                best_score: Some(0),
+                best_count,
+                // One entry is all `record_sweep` guarantees, and all
+                // S4 reads.
+                top_n: vec![("Msg0".to_string(), 0)],
+            },
+            Tier::Visible,
+        );
+    }
+    app
+}
+
+/// Spec 0326 test plan 4 / S3-S4: a node with no type of its own is
+/// answered for by the best-scoring candidate, named and broken down.
+#[test]
+fn an_untyped_node_shows_its_best_candidate() {
+    let mut app = untyped_app(Some(3));
+    app.open_score_popup(0, (0, 0));
+    let body = app.popup.clone().expect("the box opens").body;
+
+    let PopupBody::Score {
+        type_key,
+        breakdown,
+        candidate,
+    } = body
+    else {
+        panic!("a score box: {body:?}");
+    };
+    assert_eq!(type_key, "Msg0", "the cache's own top_n[0]");
+    assert_eq!(candidate, Some(2), "three tied, and it is one of them");
+    assert_ne!(
+        breakdown,
+        Breakdown::Pending,
+        "the name was found, so it was scored"
+    );
+
+    // Spec 0326 S5: the label goes on the border, where it cannot be
+    // read as one of the terms below it.
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let screen: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(
+        screen.contains(CANDIDATE_TITLE.trim()),
+        "the box must say it is a guess"
+    );
+}
+
+/// Spec 0326 S4: with nothing cached the box says the sweep has not
+/// come back — not that the type is unscorable, which is a verdict
+/// this node has not earned.
+#[test]
+fn an_unscored_range_is_pending_not_unranked() {
+    let mut app = untyped_app(None);
+    app.open_score_popup(0, (0, 0));
+    let popup = app.popup.clone().expect("the box still opens");
+    assert!(matches!(
+        popup.body,
+        PopupBody::Score {
+            breakdown: Breakdown::Pending,
+            ..
+        }
+    ));
+    assert_eq!(
+        App::popup_lines(&popup, 22)[1].text,
+        "still scoring these bytes",
+        "the same words the [?] beside the row is already saying"
+    );
+}
+
+/// Spec 0326 test plan 5-7 / S5: the tie line is printed under a
+/// candidate and only when there are ties, and a typed node's box is
+/// the one it always was.
+#[test]
+fn only_a_candidate_box_counts_the_ties() {
+    let graph = test_scoring_graph();
+    let payload = [(1u8 << 3), 1];
+    let b = inferred_breakdown(&payload, "Msg0", graph.graph(), false).unwrap();
+
+    let ties_line = |candidate| {
+        let popup = Popup {
+            body: PopupBody::Score {
+                type_key: "Msg0".to_string(),
+                breakdown: Breakdown::Scored(b),
+                candidate,
+            },
+            anchor: (0, 0),
+        };
+        App::popup_lines(&popup, 22)
+            .into_iter()
+            .find(|l| l.text.contains("also score"))
+            .map(|l| l.text.trim().to_string())
+    };
+
+    assert_eq!(
+        ties_line(Some(3)),
+        Some(format!("3 others also score {}", b.score())),
+        "the number printed is the breakdown's own sum, so the two \
+         numbers in the box cannot come apart"
+    );
+    assert_eq!(ties_line(Some(0)), None, "a lone best has no others");
+    assert_eq!(ties_line(None), None, "and a typed node has no candidate");
 }

@@ -7,7 +7,7 @@
 use super::super::heat_cue::HEAT_CUE_PREVIEW;
 use super::super::heat_worker::{HeatWorkerHandle, RangeHeatEntry};
 use super::super::popup::{HoverTarget, EXPLAIN_DWELL, HOVER_DWELL};
-use super::super::popup_doc::{doc_lines, DocElement};
+use super::super::popup_doc::{annotation_type_spans, doc_lines, DocElement};
 use super::super::tiered::Tier;
 use super::super::*;
 use super::support::*;
@@ -255,6 +255,59 @@ fn the_type_name_still_opens_the_score_box() {
         app.hover.as_ref().map(|h| h.target.clone()),
         Some(HoverTarget::Type(0)),
         "and the hover falls to 0280 rather than to a document box"
+    );
+}
+
+/// Spec 0326 test plan 1-2 / S1: the words that stand where a type name
+/// would are anchors for the same box, recognized by their text — `group`
+/// lexes as a wire type and `message`, absent from the wire-type
+/// vocabulary (N3), falls through to a modifier. A known group's row
+/// names the node twice, so both words are in the zone.
+#[test]
+fn message_and_group_are_score_anchors() {
+    let spans = |row: &str| -> Vec<String> {
+        annotation_type_spans(row)
+            .into_iter()
+            .map(|s| row[s].to_string())
+            .collect()
+    };
+
+    assert_eq!(spans("1 {  #@ message"), ["message"]);
+    assert_eq!(spans("1 {  #@ group"), ["group"]);
+    assert_eq!(
+        spans("g {  #@ group; Foo = 3"),
+        ["group", "Foo"],
+        "one node, two words, one zone"
+    );
+    assert_eq!(spans("x: 1  #@ int32 = 1"), ["int32"], "0280's own target");
+    assert!(
+        spans("1000: \"ab\"  #@ bytes").is_empty(),
+        "a real wire type names no type, so it anchors nothing"
+    );
+}
+
+/// Spec 0326 test plan 3 / S2: one rule decides, so an anchor cannot
+/// also open the document box. `group` knowingly loses its wire-type
+/// explanation to the score box.
+#[test]
+fn a_score_anchor_is_not_a_document_box() {
+    let mut app = doc_app(&["1 {  #@ message", "1 {  #@ group"]);
+
+    assert!(refused(&mut app, 0, "message"));
+    assert!(refused(&mut app, 1, "group"));
+
+    // And the hover falls to 0280's target rather than to nothing,
+    // which is the whole point: today `message` is neither.
+    let column = column_of(&app, 0, "message");
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Moved,
+        column,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(
+        app.hover.as_ref().map(|h| h.target.clone()),
+        Some(HoverTarget::Type(0))
     );
 }
 
