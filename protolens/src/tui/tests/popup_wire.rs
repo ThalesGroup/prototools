@@ -73,7 +73,16 @@ fn hex(app: &App, line: usize) -> String {
     let pos = app.line_pos(line).expect("a drawn line");
     let palette = WirePalette::for_test();
     let spans = app
-        .wire_row(pos, 0, &mut PackedCursor::default(), Some(&palette))
+        .wire_row(
+            pos,
+            // Spec 0328 S5: the margin a bar-free wire row carries, which
+            // is what the `trim_start` below then discards.
+            vec![ratatui::text::Span::raw(
+                " ".repeat(render::FOLD_FIELD_WIDTH),
+            )],
+            &mut PackedCursor::default(),
+            Some(&palette),
+        )
         .expect("that line claims bytes");
     let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
     let body = text.trim_start();

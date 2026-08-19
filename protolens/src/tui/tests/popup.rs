@@ -4,6 +4,7 @@
 
 //! Spec 0280: the box a heat cue's number can be asked for.
 
+use super::super::heat_cue::HeatCueMode;
 use super::super::heat_worker::RangeHeatEntry;
 use super::super::popup::{Breakdown, HoverTarget, CANDIDATE_TITLE, HOVER_DWELL};
 use super::super::tiered::Tier;
@@ -15,12 +16,15 @@ use crate::override_pane::{inferred_breakdown, inferred_score};
 /// An app whose node 0 shows a cue, sized so its header row is the main
 /// pane's own first row at `(0, 0)`.
 ///
-/// The seeding is `i_toggles_heat_cues_hidden`'s: a `RangeHeatEntry`
-/// planted straight into `heat_caches`, which is what lets a cue exist
-/// without a scoring graph behind it.
+/// The seeding is `i_rotates_the_cue_away_and_back`'s: a
+/// `RangeHeatEntry` planted straight into `heat_caches`, which is what
+/// lets a cue exist without a scoring graph behind it. A session opens
+/// with no cues drawn at all (spec 0331 S1), so the mode is asked for
+/// here too.
 fn cue_app() -> App {
     let mut app = message_node_app();
     app.splash = false;
+    app.heat_cues = HeatCueMode::Findings;
     let range = extract::message_payload_range(&app.blob, &app.tree[0].span.raw_range);
     seed_range_heat_entry(
         &mut app,
@@ -326,7 +330,7 @@ fn s_opens_the_same_box_at_the_caret() {
 
     // With the cues hidden there is no number on screen to explain, so
     // the row goes with them.
-    app.heat_cues_hidden = true;
+    app.heat_cues = HeatCueMode::Off;
     let rows = app.main_menu_items();
     assert!(!rows.iter().any(|i| i.key.code == KeyCode::Char('s')));
 }

@@ -151,10 +151,12 @@ impl App {
     /// the node nor the view, and somewhere you can always get to is
     /// what a destination is for.
     ///
-    /// The two toggles name the state they would move to, not the one
-    /// they are in. A row saying "Annotations" leaves the reader to
+    /// The two view controls name the state they would move to, not the
+    /// one they are in. A row saying "Annotations" leaves the reader to
     /// guess which way it goes; a row saying "Hide annotations" does
-    /// not, and it costs a pair of literals.
+    /// not, and it costs a pair of literals. `i` is a three-state
+    /// rotation (spec 0331) rather than a toggle, so it has three
+    /// destinations to name; the row still names exactly the next one.
     pub(super) fn pane_menu_items(&self) -> Vec<MenuItem> {
         vec![
             MenuItem::plain(
@@ -166,10 +168,10 @@ impl App {
                 'a',
             ),
             MenuItem::plain(
-                if self.heat_cues_hidden {
-                    "Show heat cues"
-                } else {
-                    "Hide heat cues"
+                match self.heat_cues {
+                    heat_cue::HeatCueMode::Off => "Show heat cues",
+                    heat_cue::HeatCueMode::Findings => "Show every score",
+                    heat_cue::HeatCueMode::All => "Hide heat cues",
                 },
                 'i',
             ),

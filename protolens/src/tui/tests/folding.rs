@@ -260,6 +260,63 @@ fn a_preview_draws_the_candidate_unfolded() {
     );
 }
 
+/// Spec 0329 test-plan items 1 and 2 (G1, S1): the same claim as
+/// `an_override_subtree_arrives_folded`, but through the key the reader
+/// actually presses.
+///
+/// A distinct test because it is a distinct code path: `splice_override`
+/// never touched the fold bit, and the rule spec 0329 removes lived in
+/// `resettle_node`, which only the render pass behind a confirm reaches.
+/// So the test above passed throughout and this one is the one that
+/// would have failed.
+///
+/// Both directions, since S1 removes a rule rather than inverting one:
+/// a folded node stays folded, and an open node stays open.
+#[test]
+fn a_commit_leaves_the_fold_alone() {
+    for open_first in [false, true] {
+        let mut app = nested_closed();
+        app.splash = false;
+        app.term_width = 120;
+        let a = app.nth_child(app.first_node, 0).expect("Root.a");
+        if open_first {
+            app.open(a);
+            app.refresh_line_counts(a);
+        }
+        app.set_cursor(a);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+        assert!(app.override_focus, "`t` must open the pane on `a`");
+        app.override_candidates = vec![("test.Mid".to_string(), None)];
+        app.override_highlight = 0;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            app.overrides.entries().iter().any(|e| e.active),
+            "the confirm must have committed something: {}",
+            app.message
+        );
+
+        assert_eq!(
+            app.is_folded(a),
+            !open_first,
+            "a commit must neither open nor close the node it retyped"
+        );
+        // Item 2: spec 0323 S4's uniform rule over the *new* children is
+        // untouched by item 1 — what arrives is still closed.
+        let x = app.nth_child(a, 0).expect("Mid.x");
+        assert!(app.is_folded(x), "and its new child arrives closed");
+        assert_eq!(
+            visible_rows(&app),
+            if open_first {
+                one_level_open()
+            } else {
+                closed_rows()
+            }
+        );
+        app.assert_status_is_exact();
+    }
+}
+
 /// Spec 0323 G4/S5: a stop is now normally in *both* sets, and the
 /// violet margin — which reads `auto_folded` alone, via the `Unbaked`
 /// rung — must still mean "nobody has looked inside" rather than

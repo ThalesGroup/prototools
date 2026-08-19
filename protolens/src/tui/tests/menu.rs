@@ -10,6 +10,7 @@
 //! works from inside the menu, an empty menu never opens, and dismissing
 //! one costs nothing.
 
+use super::super::heat_cue::HeatCueMode;
 use super::super::*;
 use super::support::*;
 
@@ -142,7 +143,9 @@ fn a_click_past_the_document_offers_the_views_settings() {
 
     let labels = labels(&app);
     assert!(labels.contains(&"Hide #@ annotations"), "{labels:?}");
-    assert!(labels.contains(&"Hide heat cues"), "{labels:?}");
+    // A session opens with no cues, so the row offers the first of the
+    // three states `i` rotates through (spec 0331 S7).
+    assert!(labels.contains(&"Show heat cues"), "{labels:?}");
     assert!(
         !labels.iter().any(|l| l.starts_with("Wire bytes")),
         "no node here, so nothing that acts on one: {labels:?}"
@@ -150,10 +153,14 @@ fn a_click_past_the_document_offers_the_views_settings() {
 
     // And the labels name the state the row would move *to*.
     app.annotations = false;
-    app.heat_cues_hidden = true;
+    app.heat_cues = HeatCueMode::All;
     let labels: Vec<&str> = app.pane_menu_items().iter().map(|i| i.label).collect();
     assert!(labels.contains(&"Show #@ annotations"), "{labels:?}");
-    assert!(labels.contains(&"Show heat cues"), "{labels:?}");
+    assert!(labels.contains(&"Hide heat cues"), "{labels:?}");
+
+    app.heat_cues = HeatCueMode::Findings;
+    let labels: Vec<&str> = app.pane_menu_items().iter().map(|i| i.label).collect();
+    assert!(labels.contains(&"Show every score"), "{labels:?}");
 }
 
 /// Dismissing costs nothing, either way of dismissing it — which is what

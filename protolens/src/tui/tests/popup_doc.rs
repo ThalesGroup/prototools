@@ -7,7 +7,7 @@
 use super::super::heat_cue::HEAT_CUE_PREVIEW;
 use super::super::heat_worker::{HeatWorkerHandle, RangeHeatEntry};
 use super::super::popup::{HoverTarget, EXPLAIN_DWELL, HOVER_DWELL};
-use super::super::popup_doc::{annotation_type_spans, doc_lines, DocElement};
+use super::super::popup_doc::{annotation_type_spans, doc_lines, DocElement, SuffixShape};
 use super::super::tiered::Tier;
 use super::super::*;
 use super::support::*;
@@ -414,6 +414,8 @@ fn cue_app(stats: Option<(i64, usize)>, current: Option<Option<i64>>) -> App {
     let mut app = message_node_app();
     app.splash = false;
     app.main_area = Rect::new(0, 0, 120, 24);
+    // A session opens with no cues drawn at all (spec 0331 S1).
+    app.heat_cues = heat_cue::HeatCueMode::Findings;
     // Without a worker, `heat_cue_resolve` reads an unsettled cache as
     // "nothing will ever resolve this" and draws no cue at all, so the
     // two progressive shapes would be unreachable.
@@ -451,9 +453,23 @@ fn glyph_box(app: &mut App) -> Vec<String> {
     doc_lines(&hit).into_iter().map(|l| l.text).collect()
 }
 
-/// The box the drawn heat suffix of row 0 opens, hit through
-/// `heat_cue_at_point`'s own geometry — one column inside it, so the
-/// test cannot pass by pointing at the row's text.
+/// The drawn heat suffix of row 0, hit through `heat_cue_at_point`'s
+/// own geometry — one column inside it, so the test cannot pass by
+/// pointing at the row's text.
+fn suffix_element(app: &mut App) -> DocElement {
+    let content = app.row_content(app.committed_row(0).expect("a drawn row"));
+    let column = app.main_area.x + render::HEAT_FIELD_WIDTH as u16 + content.chars().count() as u16;
+    assert_eq!(
+        app.heat_cue_at_point(column, app.main_area.y),
+        Some(0),
+        "the column must be inside the drawn suffix"
+    );
+    app.doc_element_at_point(column, app.main_area.y)
+        .expect("the suffix is a target")
+        .element()
+}
+
+/// The box that same suffix opens.
 fn suffix_box(app: &mut App) -> Vec<String> {
     let content = app.row_content(app.committed_row(0).expect("a drawn row"));
     let column = app.main_area.x + render::HEAT_FIELD_WIDTH as u16 + content.chars().count() as u16;
@@ -575,8 +591,53 @@ fn the_heat_suffix_names_the_double_click() {
     assert!(!glyph_box(&mut app).iter().any(|l| l.contains("double")));
 }
 
+/// Spec 0331 test 7 / S6: spec 0287's rule is that every drawn mark
+/// says what it is, so the two new cues have boxes — each its own, not
+/// nothing and not the other's.
+#[test]
+fn the_new_cues_have_boxes() {
+    // The unique optimum.
+    let mut app = cue_app(Some((50, 1)), Some(Some(50)));
+    app.heat_cues = heat_cue::HeatCueMode::All;
+    assert_eq!(
+        suffix_element(&mut app),
+        DocElement::HeatSuffix(SuffixShape::Agree)
+    );
+    let lines = suffix_box(&mut app);
+    assert_eq!(lines[0], "[50]");
+    assert!(lines[1].contains("best fit"), "{lines:?}");
+    assert_eq!(
+        lines.last().map(String::as_str),
+        Some("double-click to choose a type for this node")
+    );
+
+    // Every candidate vetoed — which `cue_app`'s `stats` cannot spell,
+    // since `None` there means no cache entry at all (`[?]`).
+    let mut app = cue_app(None, None);
+    app.heat_cues = heat_cue::HeatCueMode::All;
+    let start = extract::message_payload_range(&app.blob, &app.tree[0].span.raw_range).start;
+    app.heat_caches.lock().unwrap().by_range.upsert(
+        start,
+        RangeHeatEntry {
+            best_score: None,
+            best_count: 0,
+            top_n: vec![("protolens_internal.dummy".to_string(), 0); HEAT_CUE_PREVIEW],
+        },
+        Tier::Visible,
+    );
+    assert_eq!(
+        suffix_element(&mut app),
+        DocElement::HeatSuffix(SuffixShape::Vetoed)
+    );
+    let lines = suffix_box(&mut app);
+    assert_eq!(lines[0], "[vetoed]");
+    assert!(lines[1].contains("no type known here fits"), "{lines:?}");
+}
+
 /// Spec 0287 test plan 8 / S3: the target is exactly what is on screen,
-/// so `i` takes both cue targets away with the marks.
+/// so rotating the cues away takes both cue targets with the marks.
+/// `I` and not `i` (spec 0331 S2): from the findings view, backward is
+/// the direction that reaches "nothing shown".
 #[test]
 fn a_hidden_cue_is_not_a_target() {
     let mut app = cue_app(Some((50, 1)), Some(Some(10)));
@@ -586,7 +647,7 @@ fn a_hidden_cue_is_not_a_target() {
     assert!(app.doc_element_at_point(app.main_area.x, 0).is_some());
     assert!(app.doc_element_at_point(suffix_column, 0).is_some());
 
-    app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('I'), KeyModifiers::NONE));
 
     assert!(app.doc_element_at_point(app.main_area.x, 0).is_none());
     assert!(app.doc_element_at_point(suffix_column, 0).is_none());

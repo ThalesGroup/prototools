@@ -1153,7 +1153,7 @@ fn only_the_bound_ctrl_and_alt_chords_do_anything_in_the_main_pane() {
             app.folded.len(),
             app.annotations,
             app.wire,
-            app.heat_cues_hidden,
+            format!("{:?}", app.heat_cues),
             app.override_target.is_some(),
             app.manage_open,
             app.command_buffer.is_some(),

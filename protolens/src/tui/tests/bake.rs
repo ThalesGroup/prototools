@@ -1115,6 +1115,203 @@ fn an_anchor_climbs_out_of_a_flattened_subtree() {
     );
 }
 
+/// `Outer { repeated bytes items = 1; }` with `n` elements, each
+/// carrying an encoded `Item { int32 v = 1; }`.
+///
+/// The point of the declared `bytes` is that every item draws **one**
+/// row until something retypes it and **three** afterwards, so a commit
+/// that reaches more than one node *grows* the document — including
+/// above wherever the caret is. A shrinking commit cannot test spec
+/// 0329 G2 at all: it makes the document shorter than the scroll
+/// position it would have to restore, and `set_scroll_top`'s clamp,
+/// which S6 leaves with the last word, wins over the anchor.
+fn opaque_items_fixture(n: usize) -> (App, Vec<usize>) {
+    use prost_types::field_descriptor_proto::{Label, Type};
+    use prototext_core::helpers::{write_tag, write_varint};
+
+    let fds = proto3_fds(
+        "test_opaque_items.proto",
+        vec![
+            message(
+                "Outer",
+                vec![field("items", 1, Label::Repeated, Type::Bytes)],
+            ),
+            message("Item", vec![field("v", 1, Label::Optional, Type::Int32)]),
+        ],
+    );
+    let mut blob = Vec::new();
+    for k in 0..n {
+        write_tag(1, WT_LEN, &mut blob);
+        write_varint(2, &mut blob);
+        write_tag(1, WT_VARINT, &mut blob);
+        write_varint(k as u64 % 100 + 1, &mut blob);
+    }
+
+    let app = fixture_under("opaque-items", &fds, "test.Outer", &blob);
+    let items: Vec<usize> = (0..app.child_count(app.first_node))
+        .map(|k| app.nth_child(app.first_node, k).expect("k is a child"))
+        .collect();
+    assert_eq!(items.len(), n, "one node per element");
+    (app, items)
+}
+
+/// Park `node`'s header three rows down a ten-row pane, with the caret
+/// on it — the state a reader is in when they press `t`. Returns that
+/// terminal row.
+fn park_mid_pane(app: &mut App, node: usize) -> isize {
+    app.splash = false;
+    app.set_cursor(node);
+    app.scroll.index = visible_row_of(app, node) - 3;
+    app.scroll.skip = 0;
+    // Wider than this module's own `draw`, whose 40 columns are below
+    // `MIN_OVERRIDE_WIDTH` — and a frame is what sets `term_width`, so
+    // `t` would refuse the pane on a narrow one.
+    let mut terminal = ratatui::Terminal::new(TestBackend::new(120, 12)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    let row = app.terminal_row_of(visible_row_of(app, node));
+    assert_eq!(row, 3, "the setup must put the target mid-pane");
+    row
+}
+
+/// Spec 0329 G2 / test-plan item 3: the node the reader was pointing at
+/// is drawn on the same terminal row after the commit as before it.
+///
+/// Through `t` then `Enter`, which is the path the Background is about:
+/// the override pane holds a preview overlay from the frame it opens to
+/// the frame it confirms, so spec 0259 S5 cleared the anchor on every
+/// one of those frames and the restore had nothing to use.
+#[test]
+fn a_commit_keeps_the_target_where_it_was() {
+    let (mut app, items) = opaque_items_fixture(20);
+    let target = items[15];
+    let before_row = park_mid_pane(&mut app, target);
+    let before_rows = app.visible_row_count();
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert!(app.override_focus, "`t` must open the pane on the target");
+    app.override_candidates = vec![("test.Item".to_string(), None)];
+    app.override_highlight = 0;
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(
+        app.overrides.entries().iter().any(|e| e.active),
+        "the confirm must have committed something: {}",
+        app.message
+    );
+
+    assert!(
+        app.visible_row_count() > before_rows,
+        "the commit must have changed the document's height, or this \
+         proves nothing"
+    );
+    assert_eq!(
+        app.terminal_row_of(visible_row_of(&app, target)),
+        before_row,
+        "the node the reader was pointing at must not have moved"
+    );
+}
+
+/// Spec 0329 test-plan item 4, and the reason S2's term is signed and
+/// S3 names the *caret's* node.
+///
+/// An `fqdn-field` origin retypes every matching node in the document,
+/// including nodes **above** the target — so rows above it change count
+/// and putting the pane's top row back does not put the target back.
+/// This is the case item 3 does not cover, and it is also what
+/// distinguishes the anchored node from `origin_subject_node`, which
+/// here is `items[0]`, twenty rows above the caret.
+#[test]
+fn a_wide_origin_still_keeps_the_target() {
+    let (mut app, items) = opaque_items_fixture(20);
+    let target = items[15];
+    let before_row = park_mid_pane(&mut app, target);
+
+    app.run_command("override test.Outer:1 --as test.Item");
+
+    assert!(
+        app.tree[items[0]].lines_total > 1,
+        "a node above the target must have been retyped too, or this is \
+         item 3 again: {}",
+        app.message
+    );
+    assert_eq!(
+        app.terminal_row_of(visible_row_of(&app, target)),
+        before_row,
+        "a wide origin must still hold the node the caret was on"
+    );
+}
+
+/// Spec 0329 S2, test-plan item 5: `above` is `skip` renamed and
+/// negated, so on the one row spec 0259 ever anchored — the pane's own
+/// top — capture then restore is the identity and the existing path did
+/// not change behavior.
+///
+/// Both viewport shapes, because `0 == -0` would pass on a term that was
+/// silently dropped — and at `skip = 1` the anchored row sits one row
+/// *above* the pane's top, which is the sign this spec added.
+///
+/// The comparison is on the absolute top rather than on `PaneScroll`
+/// itself: a `skip` past the end of its index's display rows is the same
+/// viewport spelled differently, and `set_scroll_top` normalizes it on
+/// the way back in.
+#[test]
+fn an_anchor_with_no_offset_is_todays_anchor() {
+    let (mut app, items) = repeated_message_fixture();
+    app.splash = false;
+    let row = visible_row_of(&app, items[2]);
+
+    for skip in [0, 1] {
+        // `park_viewport_at` inlined, so the skip is in place before the
+        // frame that captures the anchor.
+        app.cursor = app.first_node;
+        app.cursor_line_in_node = 0;
+        app.scroll.index = row;
+        app.scroll.skip = skip;
+        app.last_cursor_row = Some(0);
+        draw(&mut app, 5);
+        assert_eq!(app.scroll.skip, skip, "the caret clamp must not move it");
+
+        let before = app.scroll_top();
+        app.restore_scroll_anchor();
+        assert_eq!(
+            app.scroll_top(),
+            before,
+            "with nothing changed in between, capture then restore is \
+             the identity, at skip {skip}"
+        );
+    }
+}
+
+/// Spec 0329 S5, test-plan item 6: spec 0259 S5 is right that an overlay
+/// window is the wrong thing to capture an anchor *from*, and wrong to
+/// also throw away the good anchor taken on the frame before the overlay
+/// went up. That discard is why the restore behind every pane confirm
+/// did nothing.
+#[test]
+fn an_overlay_does_not_discard_the_anchor() {
+    let (mut app, items) = repeated_message_fixture();
+    app.splash = false;
+    park_on(&mut app, items[2], 5);
+    let first = app.scroll_anchor.expect("a committed frame captures one");
+
+    app.override_target = Some(items[2]);
+    app.override_candidates = vec![("test.Item".to_string(), None)];
+    app.override_highlight = 0;
+    app.preview_override_highlight();
+    assert!(
+        app.preview_overlay.is_some(),
+        "the preview must be up: {}",
+        app.message
+    );
+    draw(&mut app, 5);
+
+    assert_eq!(
+        app.scroll_anchor,
+        Some(first),
+        "the anchor taken before the overlay must survive it"
+    );
+}
+
 /// Spec 0257 test-plan item 5, and why spec 0258 is a prerequisite
 /// rather than a nice-to-have.
 ///

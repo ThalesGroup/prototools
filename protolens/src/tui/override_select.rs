@@ -65,6 +65,9 @@ impl App {
         self.override_scroll = PaneScroll::default();
         self.last_override_highlight = None;
         self.override_pan_offset = 0;
+        // Spec 0330 S3: the memory is per open-pane session. `t` on a
+        // new node asks a new question, and both orders start at row 0.
+        self.override_sort_highlight = [0; 2];
 
         // Spec 0139: smart initial sort-mode/highlight, in order —
         // A: an active override on the cursor node; else
@@ -794,6 +797,18 @@ impl App {
                     .lines
                     .first()
                     .map_or(0, |l| super::render::marker_column(l) as usize);
+                // Spec 0328 S6: the last *content* row — above the
+                // node's closing brace when the preview is bracketed,
+                // the only row when it is flat. `} ...` would say
+                // something follows the node, and what was withheld is
+                // inside it.
+                let ellipsis_row = (!rendered.tier.is_whole()).then(|| {
+                    let closes = rendered
+                        .lines
+                        .last()
+                        .is_some_and(|l| l.trim_start().starts_with('}'));
+                    rendered.lines.len().saturating_sub(1 + usize::from(closes))
+                });
                 self.preview_overlay = Some(PreviewOverlay {
                     first_row,
                     covered_rows,
@@ -804,6 +819,7 @@ impl App {
                     bytes: rendered.bytes.expect("a preview render owns its bytes"),
                     tier: rendered.tier,
                     tier_column,
+                    ellipsis_row,
                 });
             }
             // Spec 0185 S6: a candidate that fails to render leaves the

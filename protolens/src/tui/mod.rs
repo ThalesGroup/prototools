@@ -1114,6 +1114,15 @@ pub(super) struct PreviewOverlay {
     /// `--indent` is set to.
     tier: preview_truncate::PreviewTier,
     tier_column: usize,
+    /// Spec 0328 S6: which of `lines` carries the `...` saying the
+    /// preview stops here — the last *content* row, above the node's
+    /// closing brace, since `} ...` would say something follows the
+    /// node and what was withheld is inside it. `None` when `tier` is
+    /// `Whole` and nothing was withheld.
+    ///
+    /// Decided here rather than in the renderer so that the row is one
+    /// index compare per drawn row, not a second reading of `lines`.
+    ellipsis_row: Option<usize>,
 }
 
 /// Spec 0185 S2: one row of the main pane as actually drawn — either a
@@ -1244,6 +1253,15 @@ pub struct App {
     /// answer. `RefCell` rather than `Cell` because a `Range` is not
     /// `Copy`; neither borrow is held across a call.
     wire_rows: std::cell::RefCell<Option<WireRowCache>>,
+    /// Spec 0328 S2: where the current node's bar runs, against the
+    /// `structural_version` and the caret node it was derived under.
+    ///
+    /// The range costs an `absolute_start` climb, which sums the line
+    /// counts of every preceding sibling at every level, and each row of
+    /// the viewport would otherwise ask the same question. Cached on the
+    /// same terms `wire_rows` is, plus the caret: moving the caret
+    /// changes the answer without changing the document's shape.
+    cursor_bar: std::cell::RefCell<Option<render::CursorBarCache>>,
     /// Spec 0273 S10: the last pattern text compiled, and what it
     /// compiled to.
     ///
@@ -1583,6 +1601,16 @@ pub struct App {
     /// reader last saw it. `None` before the first frame and while a
     /// preview overlay is held (S5).
     scroll_anchor: Option<pane_scroll::ScrollAnchor>,
+    /// Spec 0329 S3: the anchor a commit takes on its own primary
+    /// target, consumed by the `finalize_override_batch` that closes
+    /// the batch which took it.
+    ///
+    /// Separate from `scroll_anchor` because the two have different
+    /// lifetimes: 0259's is a standing fact about the frame last drawn
+    /// and is re-taken by every frame, while this one is about one
+    /// batch and would otherwise be read — with geometry that has since
+    /// moved — by whatever splice came along next.
+    target_anchor: Option<pane_scroll::ScrollAnchor>,
     /// `cursor_display_row()`'s value as of the last render pass that
     /// applied `clamp_scroll_to_visible` to `scroll` — compared
     /// against the *current* row at the top of every render, so the
@@ -1601,6 +1629,15 @@ pub struct App {
     /// pane (re)opens or its candidate list is recomputed, mirroring how
     /// `override_scroll` (vertical) is already reset at those points.
     override_pan_offset: usize,
+    /// Spec 0330 S1/S3: the caret row each sort order was last left on,
+    /// indexed by `SortMode as usize` — `[Lexicographic, Inferred]`.
+    ///
+    /// Per open-pane session, not per document: cleared when the pane
+    /// opens, so `t` on a new node asks a new question and both orders
+    /// start at row 0. One row per order rather than one shared, because
+    /// row 40 of a 600-entry alphabetic list and row 40 of a 12-entry
+    /// inferred one have nothing to do with each other.
+    override_sort_highlight: [usize; 2],
     /// Horizontal scroll offset (in characters) for the override
     /// management pane's rows (spec 0127 §G1) — reset to `0` whenever the
     /// pane (re)opens or its entry list changes in a way that already
@@ -1813,9 +1850,9 @@ pub struct App {
     /// `true` while `upgrade_active_override_to_complete` is waiting on
     /// a worker request for a wider window (spec 0152 G7).
     override_complete_pending: bool,
-    /// `true` while the main-pane heat cue (spec 0138) is toggled off by
-    /// `i` — hides the cue without discarding `heat_caches`.
-    heat_cues_hidden: bool,
+    /// How much of the main-pane heat machinery is drawn (specs 0138,
+    /// 0331) — rotated by `i`/`I`, and never discarding `heat_caches`.
+    heat_cues: heat_cue::HeatCueMode,
     /// Byte-bounded MRU cache of `(range, type) -> (lines, spans, style
     /// hints)` renders (spec 0116 §8) — consulted/populated by
     /// `apply_override`, keyed by the same `payload_range`/type pair
@@ -2235,6 +2272,7 @@ impl App {
             // Spec 0225 S1: off until the `w` key asks for it.
             wire: None,
             wire_rows: std::cell::RefCell::new(None),
+            cursor_bar: std::cell::RefCell::new(None),
             search_compiled: std::cell::RefCell::new(None),
             indent_size,
             node_text: Arc::new(decoded.node_text),
@@ -2275,9 +2313,11 @@ impl App {
             scroll: PaneScroll::default(),
             scroll_resistance: EdgeResistance::default(),
             scroll_anchor: None,
+            target_anchor: None,
             last_cursor_row: None,
             pan_offset: 0,
             override_pan_offset: 0,
+            override_sort_highlight: [0; 2],
             manage_pan_offset: 0,
             command_pan_offset: 0,
             override_target: None,
@@ -2316,7 +2356,7 @@ impl App {
             heat_window_key: None,
             override_candidates_pending: false,
             override_complete_pending: false,
-            heat_cues_hidden: false,
+            heat_cues: heat_cue::HeatCueMode::default(),
             render_cache: RenderCache::new(RENDER_CACHE_MAX_BYTES),
             active_override_range: None,
             override_inferred_raw: Vec::new(),

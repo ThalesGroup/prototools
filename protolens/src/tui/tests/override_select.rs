@@ -1922,3 +1922,154 @@ fn an_empty_scored_answer_falls_back_to_lexicographic() {
     );
     assert!(app.message.is_empty(), "with no 'Scoring candidates…' left");
 }
+
+/// Spec 0330: a pane with both orders populated and non-trivially
+/// long, so a caret row is a distinguishable thing in each.
+///
+/// The inferred list is served from a warm `by_range` cache, which is
+/// the shape spec 0152 G7's hit path reads (and what
+/// `recompute_override_candidates_pushes_pending_on_miss_and_applies_pre_populated_hit`
+/// pins): four distinct types, so a remembered row is not row 0 by
+/// accident.
+fn two_order_pane_app() -> App {
+    let mut app = message_node_app_with_graph();
+    app.splash = false;
+    app.term_width = 120;
+    app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
+    // Four rows and four cached types: `recompute_override_candidates`
+    // counts a `by_range` entry as a hit only when it covers the window
+    // the pane is about to draw.
+    app.override_list_height = 4;
+    let range = extract::message_payload_range(&app.blob, &app.tree[0].span.raw_range);
+    app.heat_caches.lock().unwrap().by_range.upsert(
+        range.start,
+        RangeHeatEntry {
+            best_score: Some(9),
+            best_count: 1,
+            top_n: vec![
+                ("pkg.A".to_string(), 9),
+                ("pkg.B".to_string(), 8),
+                ("pkg.C".to_string(), 7),
+                ("pkg.D".to_string(), 6),
+            ],
+        },
+        Tier::Visible,
+    );
+    app
+}
+
+/// Press `i` and report the order the pane is now in, with the caret
+/// row it landed on.
+fn toggle_order(app: &mut App) -> (SortMode, usize) {
+    app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+    (app.override_sort, app.override_highlight)
+}
+
+/// Spec 0330 test plan 1 / G1 / S4: `i` is a caret move and ends the way
+/// every other caret move ends — with the candidate now under the caret
+/// previewed. Before this, the overlay left on screen was the one built
+/// for the *previous* order's candidate, and nothing said so.
+///
+/// Compared against `render_node_as` for that candidate rather than
+/// against a copy of the expected text: the claim is that the overlay
+/// belongs to this candidate, and only the renderer can say what that
+/// looks like.
+#[test]
+fn toggling_the_order_previews_at_once() {
+    let mut app = two_order_pane_app();
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    let target = app.override_target.expect("the pane must have opened");
+
+    // Somewhere other than row 0, so the stale overlay and the correct
+    // one are different renderings.
+    app.override_highlight = app.override_candidates.len() - 1;
+    app.preview_override_highlight();
+
+    let (_, row) = toggle_order(&mut app);
+    let landed = app.override_candidates[row].0.clone();
+    let expected = app
+        .render_node_as(target, Some(&landed), true, None)
+        .expect("the landed candidate must render")
+        .2
+        .lines;
+    assert_eq!(
+        app.preview_overlay
+            .as_ref()
+            .expect("a toggle must leave a preview up")
+            .lines,
+        expected,
+        "the overlay must be the one {landed} would produce"
+    );
+}
+
+/// Spec 0330 test plan 2 / G2 / S1: the two orders are two views of one
+/// question and the reader moves between them, so each keeps its own
+/// caret row. Driven through `handle_key` and read back rather than
+/// assuming which order `t` opens in, which is spec 0139's business.
+#[test]
+fn each_order_remembers_its_row() {
+    let mut app = two_order_pane_app();
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    let first = app.override_sort;
+    assert!(app.override_candidates.len() > 2, "room to move the caret");
+
+    let n = 2;
+    app.override_highlight = n;
+
+    // The other order, visited for the first time: row 0, per S2's
+    // "the recompute still resets".
+    let (second, row) = toggle_order(&mut app);
+    assert_ne!(second, first, "`i` must have switched orders");
+    assert_eq!(row, 0, "a first visit starts at the top");
+    assert!(app.override_candidates.len() > 1, "room to move the caret");
+    let m = 1;
+    app.override_highlight = m;
+
+    assert_eq!(toggle_order(&mut app), (first, n), "back where it was left");
+    assert_eq!(toggle_order(&mut app), (second, m), "and so is the other");
+}
+
+/// Spec 0330 S1: the inferred list can have grown or shrunk between two
+/// visits, so the remembered row is clamped to the list it is restored
+/// into rather than indexed with.
+#[test]
+fn a_remembered_row_is_clamped() {
+    let mut app = two_order_pane_app();
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    let entering = match app.override_sort {
+        SortMode::Lexicographic => SortMode::Inferred,
+        SortMode::Inferred => SortMode::Lexicographic,
+    };
+    // A row from a visit to a list that has since shortened — further
+    // out than any list this pane will ever hold.
+    app.override_sort_highlight[entering.slot()] = 9_999;
+
+    let (order, row) = toggle_order(&mut app);
+    assert_eq!(order, entering);
+    assert_eq!(
+        row,
+        app.override_candidates.len() - 1,
+        "the last row, not out of bounds"
+    );
+}
+
+/// Spec 0330 test plan 4 / N2 / S3: the memory is per open-pane session.
+/// `t` on a new node asks a new question, and both orders start at the
+/// top of their own list.
+#[test]
+fn opening_the_pane_forgets_both_rows() {
+    let mut app = two_order_pane_app();
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    app.override_highlight = 2;
+    toggle_order(&mut app);
+    app.override_highlight = 1;
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert_eq!(
+        app.override_sort_highlight, [0; 2],
+        "a fresh open remembers nothing"
+    );
+    assert_eq!(app.override_highlight, 0);
+    assert_eq!(toggle_order(&mut app).1, 0, "and neither order does");
+}

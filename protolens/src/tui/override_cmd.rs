@@ -341,6 +341,17 @@ impl App {
         let origin = parsed.origin;
         let subject = self.origin_subject_node(&origin);
 
+        // Spec 0329 S3: the node whose row must not move, read here
+        // because `close_override` below clears `override_target`.
+        //
+        // The *caret's* node, not `subject`. `origin_subject_node` gives
+        // the origin's first match, which for an `fqdn-field` origin is
+        // the topmost one in the document — anchoring there would hold a
+        // node the reader may never have seen, and would leave the one
+        // they were pointing at to move, which is the whole case S2's
+        // signed term exists for.
+        let anchored = self.override_cmd_subject();
+
         // Spec 0315 S2: before validation and before `activate`, so the
         // type exists by the time `render_overrides` resolves it. A
         // re-declaration is not an error (S3) — it only earns a note on
@@ -403,6 +414,10 @@ impl App {
             self.close_override();
         }
 
+        // Spec 0329 S3: a `path-field` or `fqdn-field` origin retypes
+        // nodes *above* the caret too, which is exactly the case a
+        // top-row anchor cannot hold.
+        self.capture_target_scroll_anchor(anchored);
         self.render_overrides(self.first_node);
 
         // Spec 0236 S11: changing origin or type re-sorts the

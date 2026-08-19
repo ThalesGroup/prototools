@@ -356,6 +356,59 @@ fn preview_respects_a_custom_byte_budget() {
     assert_eq!(preview_tier(&app), PreviewTier::Clean);
 }
 
+/// Spec 0328 G3/S6/S7, test plan item 5: a preview that was cut says so
+/// where it stops, in the same violet its bar wears.
+///
+/// The bar's color already says *that* something was withheld, but the
+/// rendering below it ended at a closing brace like any other and the
+/// reader had to look back up at a one-cell hue to know the brace was
+/// not the node's.
+#[test]
+fn a_cut_preview_ends_in_an_ellipsis() {
+    let (mut app, blob_idx) = preview_budget_fixture(50);
+    app.override_preview_byte_budget = 20;
+    let lines = preview_lines(&mut app, blob_idx, "test.Empty");
+    assert!(!preview_tier(&app).is_whole(), "the fixture must cut");
+
+    // Above the brace, not after it: `} ...` says something follows the
+    // node, and what was withheld is inside it.
+    assert!(
+        lines
+            .last()
+            .is_some_and(|l| l.trim_start().starts_with('}')),
+        "the preview must be bracketed: {lines:?}"
+    );
+    let row = lines.len() - 2;
+    assert_eq!(
+        app.preview_overlay.as_ref().unwrap().ellipsis_row,
+        Some(row),
+        "the last *content* row, decided once when the overlay is built"
+    );
+
+    let want = crate::theme::preview_bar_color(false, app.theme)
+        .expect("a cut preview's bar has a color of its own");
+    let window = [DisplayRow::Overlay(row)];
+    app.refresh_window_styles(&window);
+    let spans = app.row_spans(window[0], 0, Modifier::empty());
+    let tail = spans.last().expect("the row has spans");
+    assert_eq!(tail.content.as_ref(), "...", "spans: {spans:?}");
+    assert_eq!(tail.style.fg, Some(want), "in the bar's own violet");
+
+    // S7: a display insertion, so the line the highlighter parses is
+    // untouched. Spec 0318 N4's "every row is grammatical prototext" is
+    // about exactly this string, and tree-sitter's error recovery in
+    // this grammar swallows *following* siblings — a whole preview
+    // turning one color — which is why the ellipsis stays out of it.
+    assert_eq!(app.display_row_text(window[0]), lines[row]);
+    assert!(!lines[row].contains("..."), "{:?}", lines[row]);
+
+    // And a whole preview draws none, or the mark would say nothing.
+    let (mut app, blob_idx) = preview_budget_fixture(2);
+    let _ = preview_lines(&mut app, blob_idx, "test.Empty");
+    assert!(preview_tier(&app).is_whole(), "two entries fit the budget");
+    assert_eq!(app.preview_overlay.as_ref().unwrap().ellipsis_row, None);
+}
+
 /// Spec 0174 G3: the cut is on the *input* bytes, so whatever survives
 /// it is decoded and rendered exactly as it would have been in the
 /// untruncated document — the entries before the cut keep their full

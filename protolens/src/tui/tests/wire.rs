@@ -18,6 +18,15 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use prost_types::field_descriptor_proto::{Label, Type};
 use ratatui::layout::Rect;
 
+/// Spec 0328 S5: the left margin of a wire row that carries no bar —
+/// exactly the blank `wire.rs` used to build for itself, which is what
+/// keeps these tests measuring the hex and nothing else.
+fn blank_margin(indent: usize) -> Vec<ratatui::text::Span<'static>> {
+    vec![ratatui::text::Span::raw(
+        " ".repeat(render::FOLD_FIELD_WIDTH + indent),
+    )]
+}
+
 /// A row's spans as plain text, with the indent and connector of spec
 /// 0225 S5 taken off — what these tests assert about is the hex.
 fn hex_of(spans: &[ratatui::text::Span<'static>]) -> String {
@@ -34,7 +43,7 @@ fn hex_of(spans: &[ratatui::text::Span<'static>]) -> String {
 fn wire_text(app: &App, line: usize, memo: &mut PackedCursor) -> String {
     let pos = app.line_pos(line).expect("line is inside the document");
     let palette = WirePalette::for_test();
-    app.wire_row(pos, 0, memo, Some(&palette))
+    app.wire_row(pos, blank_margin(0), memo, Some(&palette))
         .map(|spans| hex_of(&spans))
         .unwrap_or_default()
 }
@@ -61,7 +70,7 @@ fn overlay_wire_rows(app: &App) -> Vec<String> {
     let palette = WirePalette::for_test();
     (0..overlay.lines.len())
         .map(|i| {
-            app.preview_wire_row(i, 0, Some(&palette))
+            app.preview_wire_row(i, blank_margin(0), Some(&palette))
                 .map(|spans| hex_of(&spans))
                 .unwrap_or_default()
         })
@@ -470,6 +479,7 @@ fn a_preview_overlay_displaces_the_shown_run() {
                 bytes: Vec::new(),
                 tier: PreviewTier::Clean,
                 tier_column: 0,
+                ellipsis_row: None,
             });
 
             assert_eq!(
@@ -504,6 +514,7 @@ fn an_overlay_row_is_in_the_run_or_out_of_it_with_the_rest() {
         bytes: Vec::new(),
         tier: PreviewTier::Clean,
         tier_column: 0,
+        ellipsis_row: None,
     });
 
     assert_eq!(shown_rows(&app), vec![2, 3, 4, 5]);
@@ -752,6 +763,12 @@ fn capital_w_on_one_packed_element_lights_that_element() {
 /// rather than line numbers: `W` on a node that is still baking has to
 /// cover the lines that have not arrived yet. `Footer` says "the node's
 /// last line, whatever the count has become", so the run grows with it.
+///
+/// The bake alone no longer makes the document taller — spec 0323 S4
+/// and spec 0329 S1 together mean everything it reveals arrives folded,
+/// so the rows it adds are rows nobody asked to see. Opening them is
+/// the gesture that does, and it is the same question for `W`: rows
+/// that did not exist when it was pressed.
 #[test]
 fn a_growing_subtree_keeps_its_bytes() {
     let mut app = nested_any_fixture();
@@ -773,8 +790,12 @@ fn a_growing_subtree_keeps_its_bytes() {
     assert_eq!(shown_rows(&app), (0..short).collect::<Vec<_>>());
 
     while app.bake_step() != BakeStep::Idle {}
+    unfold_every_node(&mut app);
     let full = app.composed_row_count();
-    assert!(full > short, "the bake must reveal rows: {short} -> {full}");
+    assert!(
+        full > short,
+        "the baked-then-opened subtree must be taller: {short} -> {full}"
+    );
     assert_eq!(
         shown_rows(&app),
         (0..full).collect::<Vec<_>>(),
@@ -1058,7 +1079,7 @@ fn pack_size_and_its_wire_bytes_are_both_ordinary() {
     let pos = app.line_pos(1).expect("line 1 is inside the document");
     let palette = WirePalette::for_test();
     let spans = app
-        .wire_row(pos, 0, &mut memo, Some(&palette))
+        .wire_row(pos, blank_margin(0), &mut memo, Some(&palette))
         .expect("it claims bytes");
     let prefix = spans
         .iter()
@@ -1127,7 +1148,7 @@ fn a_wire_row_is_aligned_with_its_document_row() {
     let indent = source.len() - source.trim_start().len();
     let pos = app.line_pos(1).expect("line 1 is inside the document");
     let row: String = app
-        .wire_row(pos, indent, &mut memo, None)
+        .wire_row(pos, blank_margin(indent), &mut memo, None)
         .expect("it claims bytes")
         .iter()
         .map(|s| s.content.as_ref())
@@ -1226,7 +1247,7 @@ fn a_wire_row_goes_monochrome_with_the_document_row() {
     let colored = |app: &App, palette: Option<&WirePalette>| {
         let mut memo = PackedCursor::default();
         let pos = app.line_pos(1).expect("the packed run's first element");
-        app.wire_row(pos, 0, &mut memo, palette)
+        app.wire_row(pos, blank_margin(0), &mut memo, palette)
             .expect("it claims bytes")
             .iter()
             .filter(|s| s.style.fg.is_some() || s.style.bg.is_some())

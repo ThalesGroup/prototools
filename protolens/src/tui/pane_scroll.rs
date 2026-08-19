@@ -408,9 +408,17 @@ pub(super) struct WireRowCache {
 pub(super) struct ScrollAnchor {
     node: usize,
     line: AnchorLine,
-    /// `PaneScroll.skip` as it was, so a wire-mode viewport that starts
-    /// half way down a row lands back half way down it.
-    skip: isize,
+    /// Spec 0329 S2: how many terminal rows sit between the pane's top
+    /// and the anchored row.
+    ///
+    /// Spec 0259's anchor named the top row and so carried the negated
+    /// `PaneScroll.skip` — which is this term for that one row, since
+    /// `terminal_row_of(scroll.index)` is `-skip` by construction. Named
+    /// as a distance, it also holds an anchor on a row *inside* the
+    /// pane, which is what spec 0329 needs. Signed: a target scrolled
+    /// off the top keeps its distance above rather than being dragged
+    /// into view.
+    above: isize,
 }
 
 impl App {
@@ -423,13 +431,19 @@ impl App {
     ///
     /// Spec 0259 S5: not while a preview overlay is held. With an
     /// overlay a display row and a committed visible row are different
-    /// numbers, and the restore answers in the second. No anchor leaves
-    /// the pre-spec behavior, which is what the overlay had anyway.
+    /// numbers, and the restore answers in the second.
+    ///
+    /// Spec 0329 S5: it does not *clear* the anchor either. 0259 S5 is
+    /// right that capturing from an overlay window would record
+    /// nonsense, and wrong to also throw away the good anchor taken on
+    /// the frame before the overlay went up — which is every commit made
+    /// from the override pane, since the pane holds an overlay from the
+    /// frame it opens to the frame it confirms.
     pub(super) fn capture_scroll_anchor(&mut self, window: &[DisplayRow]) {
-        self.scroll_anchor = None;
         if self.preview_overlay.is_some() {
             return;
         }
+        self.scroll_anchor = None;
         let Some(&DisplayRow::Committed(c)) = window.first() else {
             return;
         };
@@ -440,7 +454,42 @@ impl App {
             } else {
                 AnchorLine::FromStart(c.pos.line_in_node)
             },
-            skip: self.scroll.skip,
+            above: -self.scroll.skip,
+        });
+    }
+
+    /// Spec 0329 S3/S4: anchor the commit's *primary target* — the node
+    /// the caret is on — rather than the pane's top row.
+    ///
+    /// An origin kind decides how far a commit reaches, and a
+    /// `path-field` or `fqdn-field` origin retypes nodes **above** the
+    /// one the reader is pointing at. Rows above the target then change
+    /// count too, and putting the top row back does not put the target
+    /// back.
+    ///
+    /// Arithmetic, not a window read — which is what lets it run with a
+    /// preview overlay up. `self.scroll` and `visible_row_of_line` are
+    /// in committed terms either way, because an overlay is a
+    /// substitution made at draw time on top of them.
+    ///
+    /// Written to `target_anchor` rather than over `scroll_anchor`: it
+    /// is a fact about *this* batch, valid only until the
+    /// `finalize_override_batch` that closes it, whereas 0259's is a
+    /// standing fact about the last frame drawn. Left `None` when the
+    /// target is not on a visible row, so the top-row anchor stands as
+    /// the fallback.
+    pub(super) fn capture_target_scroll_anchor(&mut self, idx: usize) {
+        self.target_anchor = None;
+        if idx >= self.tree.len() || self.tree[idx].lines_total == 0 {
+            return;
+        }
+        let Some(row) = self.visible_row_of_line(self.absolute_start(idx)) else {
+            return;
+        };
+        self.target_anchor = Some(ScrollAnchor {
+            node: idx,
+            line: AnchorLine::FromStart(0),
+            above: self.terminal_row_of(row),
         });
     }
 
@@ -452,8 +501,12 @@ impl App {
     /// caret inside the pane and moves nothing, so the two compose
     /// instead of fighting. The other order undoes this and leaves the
     /// caret off screen.
+    /// Spec 0329 S3: a commit's own anchor comes first and is consumed
+    /// here — one batch, one restore. Anything else falls back to
+    /// 0259's top-row anchor, which is re-taken every frame and so is
+    /// still current for the next splice that happens along.
     pub(super) fn restore_scroll_anchor(&mut self) {
-        let Some(anchor) = self.scroll_anchor else {
+        let Some(anchor) = self.target_anchor.take().or(self.scroll_anchor) else {
             return;
         };
         // Spec 0259 S4: an `FqdnField` override can flatten this node's
@@ -483,7 +536,7 @@ impl App {
         let Some(row) = self.visible_row_of_line(line) else {
             return;
         };
-        let top = self.row_heights().offset(row) as isize + anchor.skip;
+        let top = self.row_heights().offset(row) as isize - anchor.above;
         self.set_scroll_top(top);
     }
 }

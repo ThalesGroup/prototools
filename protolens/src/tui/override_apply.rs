@@ -110,18 +110,17 @@ impl App {
             match self.splice_override(idx, effective, self.confirm_row_budget()) {
                 Ok(()) => {
                     self.tree_mut()[idx].rendered_as = current;
-                    // Spec 0323 S4: a commit is a gesture, so the node it
-                    // retyped opens. The reader has just watched the
-                    // preview draw the body and should not have to press
-                    // `z` to see it again. Its children keep whatever the
-                    // bits say, which for a subtree the splice just wrote
-                    // is folded, one level at a time.
+                    // Spec 0329 S1: nothing touches the fold bit here.
+                    // Spec 0323 S4 used to clear it — a commit was a
+                    // gesture and the retyped node opened — and that read
+                    // the wrong way round: the preview *was* the look
+                    // inside, and what the reader wants back afterwards is
+                    // the document at the shape they folded it to.
+                    // `splice_override` already carries the bit across
+                    // `overlay_spans`, so what the set remembered is what
+                    // is drawn. Spec 0323 S4's uniform rule over the
+                    // *new* children is untouched: they arrive folded.
                     //
-                    // Here rather than in `splice_override`, which the
-                    // bake also goes through and which must open nothing.
-                    if self.folded.remove(idx) {
-                        self.refresh_line_counts(idx);
-                    }
                     // Spec 0221 S1: this node is settled after all, so
                     // an earlier refusal of it in this same pass was not
                     // final and must not be reported. The guard keeps

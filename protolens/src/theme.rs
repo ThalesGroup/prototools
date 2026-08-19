@@ -1472,6 +1472,38 @@ fn heat_suffix_style_in(theme: ThemeKind, rgb: bool) -> Style {
     ))
 }
 
+/// The agreeing heat cue's ` [{score}]` suffix color (spec 0331 S4) —
+/// the green a node wears when its current type is the unique best fit
+/// for its bytes.
+///
+/// Green because the two existing hues are *graded* scales that mean
+/// degree-of-finding, and this is the absence of one; a thirteenth stop
+/// on either ramp would read as a very faint finding. It is not the
+/// palette's `comment` green either, which is what the two pending cues
+/// already wear — "settled and fine" and "still working" are the two
+/// answers this mode exists to separate.
+///
+/// Its own constants rather than an `RgbPalette` field, in the shape of
+/// `heat_suffix_style` above and for the same reason: the heat column
+/// is its own palette. Each is the green at its theme's end of that
+/// palette — luma 173 against `heat_rgb::DARK[11]`'s 178 on dark, luma
+/// 43 against `heat_rgb::LIGHT[11]`'s 43 on light — so the agreeing cue
+/// carries the same weight in the column as the mismatch it replaces.
+pub fn heat_agree_style(theme: ThemeKind) -> Style {
+    heat_agree_style_in(theme, supports_rgb())
+}
+
+/// `heat_agree_style` with the color depth passed in rather than
+/// probed — see `style_for_in` for why the flag is an argument.
+fn heat_agree_style_in(theme: ThemeKind, rgb: bool) -> Style {
+    Style::default().fg(pick(
+        theme,
+        rgb,
+        (Color::Rgb(0x4C, 0xEE, 0x5E), Color::LightGreen),
+        (Color::Rgb(0x00, 0x49, 0x00), Color::Green),
+    ))
+}
+
 /// Resolves `ThemeKind::System` to `Dark` or `Light`, once, at startup
 /// (spec 0116 §9's "Selection mechanism"):
 ///

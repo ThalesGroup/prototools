@@ -92,6 +92,10 @@ pub(super) enum SuffixShape {
     Pending,
     /// ` [?]` — nothing is known yet.
     Unknown,
+    /// ` [47]` — spec 0331: this node's type is the unique best fit.
+    Agree,
+    /// ` [vetoed]` — spec 0331: no candidate at all fits these bytes.
+    Vetoed,
 }
 
 impl SuffixShape {
@@ -109,6 +113,11 @@ impl SuffixShape {
             },
             heat_cue::HeatDisplay::PendingCurrent { .. } => Self::Pending,
             heat_cue::HeatDisplay::Unknown => Self::Unknown,
+            // Two shapes where `HeatDisplay` has one variant (spec 0331
+            // S6): the suppression rule is about the class, but a box is
+            // prose, and these two say opposite things.
+            heat_cue::HeatDisplay::Settled { score: Some(_) } => Self::Agree,
+            heat_cue::HeatDisplay::Settled { score: None } => Self::Vetoed,
             heat_cue::HeatDisplay::None => return None,
         })
     }
@@ -638,6 +647,14 @@ pub(super) fn doc_lines(hit: &DocHit) -> Vec<BoxLine> {
                     lines.push("still being computed".to_string());
                 }
                 SuffixShape::Unknown => lines.push("still scoring these bytes".to_string()),
+                SuffixShape::Agree => {
+                    lines.push("this node's type is the best fit for these".to_string());
+                    lines.push("bytes, and nothing else ties it".to_string());
+                }
+                SuffixShape::Vetoed => {
+                    lines.push("no type known here fits these bytes, this".to_string());
+                    lines.push("node's own included".to_string());
+                }
             }
             // G3: the one thing about this mark a reader cannot
             // discover by looking at it (spec 0284 S2).

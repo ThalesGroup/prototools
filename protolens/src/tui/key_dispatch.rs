@@ -208,11 +208,27 @@ impl App {
                 self.preview_override_highlight();
             }
             KeyCode::Char('i') => {
-                self.override_sort = match self.override_sort {
+                // Spec 0330 S1: the two orders are two views of one
+                // question and the reader moves between them, so each
+                // keeps its own caret row.
+                let leaving = self.override_sort;
+                self.override_sort_highlight[leaving.slot()] = self.override_highlight;
+                self.override_sort = match leaving {
                     SortMode::Lexicographic => SortMode::Inferred,
                     SortMode::Inferred => SortMode::Lexicographic,
                 };
+                // Spec 0330 S2: the recompute still resets to row 0 for
+                // its other callers; the restore is the toggle's own
+                // exception and so happens here, after it. Clamped,
+                // since the inferred list can have grown or shrunk
+                // between two visits.
                 self.recompute_override_candidates();
+                let remembered = self.override_sort_highlight[self.override_sort.slot()];
+                self.override_highlight =
+                    remembered.min(self.override_candidates.len().saturating_sub(1));
+                // Spec 0330 S4: a toggle is a caret move and ends the
+                // way every other caret move ends.
+                self.preview_override_highlight();
             }
             // In-pane search (spec 0114 §4): reuses the shared bottom
             // command/message bar as the search prompt, same mechanism
@@ -308,6 +324,14 @@ impl App {
                 // splice runs — its anchor is a row position the splice
                 // is about to invalidate.
                 self.preview_overlay = None;
+                // Spec 0329 S3: the reader asked this question about
+                // one node, so that node is what must still be under
+                // their eyes when the answer lands. `override_target`
+                // and not `cursor`: they are the same node here, and
+                // this one is the one the pane was opened on.
+                if let Some(target) = self.override_target {
+                    self.capture_target_scroll_anchor(target);
+                }
                 self.render_overrides(self.first_node);
                 // Spec 0200 S2: land in the management pane and
                 // highlight the entry just created/reactivated (spec
@@ -932,13 +956,15 @@ impl App {
             KeyCode::Char('w') => self.wire_lines(),
             KeyCode::Char('W') => self.wire_subtree(),
 
-            // Toggle the main-pane inference-mismatch heat cue (spec
-            // 0138) — hides/shows the cue without discarding the
-            // heat-cue caches, distinct from the override pane's own `i`
+            // Rotate how much of the main-pane heat machinery is drawn
+            // (spec 0331 S2): `i` forward through nothing, the findings,
+            // and every scored node; `I` backward. Neither discards the
+            // heat-cue caches. Distinct from the override pane's own `i`
             // (candidate sort toggle), gated behind its own focus check
             // and unreachable here. `Ctrl-i` (jumplist "forward") is in
             // the Ctrl/Alt gate above.
-            KeyCode::Char('i') => self.heat_cues_hidden = !self.heat_cues_hidden,
+            KeyCode::Char('i') => self.heat_cues = self.heat_cues.next(),
+            KeyCode::Char('I') => self.heat_cues = self.heat_cues.prev(),
 
             // Spec 0280 S18: what the cue's number is made of, for the
             // node the caret is on. The same box the pointer earns by

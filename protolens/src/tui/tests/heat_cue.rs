@@ -3,9 +3,10 @@
 // SPDX-License-Identifier: MIT
 
 use super::super::heat_cue::{
-    derive_stats, heat_display, heat_level, score_of, HeatCue, HeatCueKind, HeatDisplay, HeatState,
-    RangeHeatStats, HEAT_CUE_PREVIEW, HEAT_GLYPH, SCORE_FLOOR,
+    derive_stats, heat_display, heat_level, score_of, HeatCue, HeatCueKind, HeatCueMode,
+    HeatDisplay, HeatState, RangeHeatStats, HEAT_CUE_PREVIEW, HEAT_GLYPH, SCORE_FLOOR,
 };
+use prototext_core::helpers::WT_START_GROUP;
 use std::thread;
 
 use super::super::heat_worker::{HeatWorkerHandle, RangeHeatEntry};
@@ -81,6 +82,7 @@ fn a_packed_run_scores_one_cue_over_the_whole_record() {
     // and a column of the same glyph down every element would read as
     // one finding per element (spec 0232).
     seed_range_heat_entry(&mut app, record.start, Some(50), 1, "int32", Some(10));
+    app.heat_cues = HeatCueMode::Findings;
     let rows = app.node_lines(run);
     assert_eq!(rows.len(), 3, "the run draws one row per element");
     assert!(matches!(app.heat_cue_for(rows.start), HeatDisplay::Cue(_)));
@@ -283,7 +285,9 @@ fn h01_unknown_when_best_is_not_yet_known() {
 }
 
 /// H-02 (spec 0138 G8): every candidate vetoed (`best_score: None`) —
-/// nothing shown, settled, regardless of `current`.
+/// settled with no number to print, regardless of `current`. Nothing is
+/// shown in the `Findings` view this case was written under; spec 0331's
+/// third state draws it as ` [vetoed]`.
 #[test]
 fn h02_none_when_every_candidate_is_vetoed() {
     let stats = RangeHeatStats {
@@ -291,7 +295,10 @@ fn h02_none_when_every_candidate_is_vetoed() {
         best_count: 0,
     };
     let state = HeatState::new(Some(stats), None);
-    assert!(matches!(heat_display(state), HeatDisplay::None));
+    assert!(matches!(
+        heat_display(state),
+        HeatDisplay::Settled { score: None }
+    ));
     assert!(state.settled());
 }
 
@@ -401,8 +408,9 @@ fn h06_tie_when_current_shares_the_top_score_with_others() {
 }
 
 /// H-07: `current == best` with no other candidate tied at the top —
-/// a unique optimum — nothing shown, settled, same as before G9
-/// existed.
+/// a unique optimum. Settled with a score, which spec 0331's third
+/// state draws and the other two suppress; nothing is shown in the
+/// `Findings` view this case was written under.
 #[test]
 fn h07_none_for_a_unique_optimum() {
     let stats = RangeHeatStats {
@@ -410,7 +418,10 @@ fn h07_none_for_a_unique_optimum() {
         best_count: 1,
     };
     let state = HeatState::new(Some(stats), Some(Some(50)));
-    assert!(matches!(heat_display(state), HeatDisplay::None));
+    assert!(matches!(
+        heat_display(state),
+        HeatDisplay::Settled { score: Some(50) }
+    ));
     assert!(state.settled());
 }
 
@@ -435,12 +446,14 @@ fn absent_when_no_scoring_graph_is_loaded() {
     assert!(matches!(app.heat_cue_for(header_line), HeatDisplay::None));
 }
 
-/// Spec 0138: `i` toggles `heat_cues_hidden`, suppressing the cue
-/// without discarding the caches — verified by pre-populating them
-/// directly (bypassing the need for a real scoring graph) so a cue
-/// would otherwise be present.
+/// Spec 0138, as rewritten by spec 0331: the cue goes away and comes
+/// back without the caches being discarded. That claim is unchanged;
+/// what changed is that it is a rotation and not a toggle, so the cue
+/// comes back on the *second* press rather than the first. Verified by
+/// pre-populating the caches directly (bypassing the need for a real
+/// scoring graph) so a cue would otherwise be present.
 #[test]
-fn i_toggles_heat_cues_hidden() {
+fn i_rotates_the_cue_away_and_back() {
     let mut app = message_node_app();
     app.splash = false;
     let idx = 0;
@@ -455,10 +468,13 @@ fn i_toggles_heat_cues_hidden() {
     );
     let header_line = app.absolute_start(idx);
 
-    assert!(!app.heat_cues_hidden);
-    let display = app.heat_cue_for(header_line);
+    // A session opens with nothing shown (spec 0331 S1).
+    assert!(matches!(app.heat_cue_for(header_line), HeatDisplay::None));
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+    assert_eq!(app.heat_cues, HeatCueMode::Findings);
     assert!(matches!(
-        display,
+        app.heat_cue_for(header_line),
         HeatDisplay::Cue(HeatCue {
             kind: HeatCueKind::Mismatch {
                 current: Some(10),
@@ -468,17 +484,49 @@ fn i_toggles_heat_cues_hidden() {
         })
     ));
 
+    // A finding is a finding in the third state too.
     app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
-    assert!(app.heat_cues_hidden);
-    assert!(matches!(app.heat_cue_for(header_line), HeatDisplay::None));
+    assert_eq!(app.heat_cues, HeatCueMode::All);
+    assert!(matches!(app.heat_cue_for(header_line), HeatDisplay::Cue(_)));
 
     app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
-    assert!(!app.heat_cues_hidden);
+    assert_eq!(app.heat_cues, HeatCueMode::Off);
+    assert!(matches!(app.heat_cue_for(header_line), HeatDisplay::None));
+
+    // And back, with the cue intact — the caches were never dropped.
+    app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
     assert!(matches!(app.heat_cue_for(header_line), HeatDisplay::Cue(_)));
 }
 
+/// Spec 0331 test 1: `i` visits each of the three states once and
+/// returns; `I` does the same in the other order. Driven through
+/// `handle_key` and starting where `App::new` leaves it, so the opening
+/// state is pinned by the same test.
+#[test]
+fn i_rotates_forward_and_shift_i_rotates_back() {
+    let mut app = message_node_app();
+    app.splash = false;
+    let press = |app: &mut App, c: char| {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        app.heat_cues
+    };
+
+    assert_eq!(
+        app.heat_cues,
+        HeatCueMode::Off,
+        "a session opens with no cues"
+    );
+    assert_eq!(press(&mut app, 'i'), HeatCueMode::Findings);
+    assert_eq!(press(&mut app, 'i'), HeatCueMode::All);
+    assert_eq!(press(&mut app, 'i'), HeatCueMode::Off);
+
+    assert_eq!(press(&mut app, 'I'), HeatCueMode::All);
+    assert_eq!(press(&mut app, 'I'), HeatCueMode::Findings);
+    assert_eq!(press(&mut app, 'I'), HeatCueMode::Off);
+}
+
 /// End-to-end render check (spec 0138 N1): with a cue pre-cached (as
-/// `i_toggles_heat_cues_hidden` above), the main pane's header row
+/// `i_rotates_the_cue_away_and_back` above), the main pane's header row
 /// shows `HEAT_GLYPH` in its own leading column and a trailing
 /// ` [current/best]` suffix; hiding the cue reverts the leading column
 /// to blank and drops the suffix, without otherwise disturbing the
@@ -487,6 +535,7 @@ fn i_toggles_heat_cues_hidden() {
 fn render_shows_the_glyph_column_and_suffix_when_a_cue_is_present() {
     let mut app = message_node_app();
     app.splash = false;
+    app.heat_cues = HeatCueMode::Findings;
     let idx = 0;
     let range = extract::message_payload_range(&app.blob, &app.tree[idx].span.raw_range);
     seed_range_heat_entry(
@@ -522,7 +571,7 @@ fn render_shows_the_glyph_column_and_suffix_when_a_cue_is_present() {
         "must show the current/best suffix: {header_row:?}"
     );
 
-    app.heat_cues_hidden = true;
+    app.heat_cues = HeatCueMode::Off;
     terminal.draw(|frame| app.render(frame)).unwrap();
     let header_row = row_text(terminal.backend().buffer(), inner, inner.y);
     assert_eq!(
@@ -545,6 +594,7 @@ fn render_shows_the_glyph_column_and_suffix_when_a_cue_is_present() {
 fn render_shows_the_tie_count_suffix_when_tied_for_best() {
     let mut app = message_node_app();
     app.splash = false;
+    app.heat_cues = HeatCueMode::Findings;
     let idx = 0;
     let range = extract::message_payload_range(&app.blob, &app.tree[idx].span.raw_range);
     seed_range_heat_entry(
@@ -583,6 +633,178 @@ fn render_shows_the_tie_count_suffix_when_tied_for_best() {
         !header_row.contains('/'),
         "the Tie cue's suffix must not look like Mismatch's [current/best]: {header_row:?}"
     );
+}
+
+// ---------------------------------------------------------------------
+// Spec 0331: the third state
+// ---------------------------------------------------------------------
+
+/// The main pane's first row as drawn, cell by cell — the symbol and
+/// the style it landed with, so an assertion about a color is made
+/// where the color actually arrives rather than on a `Span` upstream.
+fn drawn_header_cells(app: &mut App) -> Vec<(String, ratatui::style::Style)> {
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let buffer = terminal.backend().buffer();
+    (0..80)
+        .map(|x| {
+            let cell = &buffer[(x, app.main_area.y)];
+            (cell.symbol().to_string(), cell.style())
+        })
+        .collect()
+}
+
+/// The style the run of cells spelling `needle` was drawn in, or `None`
+/// where the row does not contain it at all.
+fn drawn_suffix_style(
+    cells: &[(String, ratatui::style::Style)],
+    needle: &str,
+) -> Option<ratatui::style::Style> {
+    let row: String = cells.iter().map(|(s, _)| s.as_str()).collect();
+    let byte = row.find(needle)?;
+    Some(cells[row[..byte].chars().count()].1)
+}
+
+/// Spec 0331 test 2: a node seeded at the unique optimum says nothing
+/// in the findings view and says its own score in the third state, in
+/// the green reserved for agreement.
+#[test]
+fn an_agreeing_node_says_its_score_in_the_third_state() {
+    let mut app = message_node_app();
+    app.splash = false;
+    let range = extract::message_payload_range(&app.blob, &app.tree[0].span.raw_range);
+    // best 50 reached by exactly one candidate, and the current type is
+    // it: the unique optimum.
+    seed_range_heat_entry(
+        &mut app,
+        range.start,
+        Some(50),
+        1,
+        "google.protobuf.DescriptorProto",
+        Some(50),
+    );
+
+    app.heat_cues = HeatCueMode::Findings;
+    let cells = drawn_header_cells(&mut app);
+    let row: String = cells.iter().map(|(s, _)| s.as_str()).collect();
+    assert!(
+        !row.contains('['),
+        "no finding, so nothing at all in the second state: {row:?}"
+    );
+
+    app.heat_cues = HeatCueMode::All;
+    let cells = drawn_header_cells(&mut app);
+    let row: String = cells.iter().map(|(s, _)| s.as_str()).collect();
+    assert!(
+        row.contains(" [50]"),
+        "the third state says the score both halves agree on: {row:?}"
+    );
+    assert_eq!(
+        cells[0].0, " ",
+        "and leaves the glyph column blank (N6): {row:?}"
+    );
+    assert_eq!(
+        drawn_suffix_style(&cells, " [50]").map(|s| s.fg),
+        Some(theme::heat_agree_style(app.theme).fg),
+        "an agreeing cue is green"
+    );
+}
+
+/// Spec 0331 test 3: the companion, and the other half of `Settled`. A
+/// range where every candidate was vetoed says so in words, in the
+/// mismatch red — not in the green, which would claim an agreement
+/// that does not exist.
+#[test]
+fn a_vetoed_range_says_so_in_the_third_state() {
+    let mut app = message_node_app();
+    app.splash = false;
+    let range = extract::message_payload_range(&app.blob, &app.tree[0].span.raw_range);
+    seed_range_heat_entry(
+        &mut app,
+        range.start,
+        None,
+        0,
+        "google.protobuf.DescriptorProto",
+        None,
+    );
+
+    app.heat_cues = HeatCueMode::Findings;
+    let row: String = drawn_header_cells(&mut app)
+        .iter()
+        .map(|(s, _)| s.as_str())
+        .collect();
+    assert!(!row.contains('['), "blank in the second state: {row:?}");
+
+    app.heat_cues = HeatCueMode::All;
+    let cells = drawn_header_cells(&mut app);
+    let row: String = cells.iter().map(|(s, _)| s.as_str()).collect();
+    assert!(row.contains(" [vetoed]"), "{row:?}");
+    assert_eq!(
+        drawn_suffix_style(&cells, " [vetoed]").map(|s| s.fg),
+        Some(theme::heat_suffix_style(app.theme).fg),
+        "a verdict of 'nothing fits' wears the mismatch red"
+    );
+    assert_ne!(
+        theme::heat_suffix_style(app.theme).fg,
+        theme::heat_agree_style(app.theme).fg,
+        "which is only worth asserting if the two differ at all"
+    );
+}
+
+/// Spec 0331 N3 / test 4: a node with no question stays blank in every
+/// state. `heat_cue_at` refuses a non-header line and a node that
+/// cannot be overridden *before* anything is resolved, so those rows
+/// are not blank because the answer was "fine" — there is no question.
+#[test]
+fn a_node_with_no_question_stays_blank() {
+    let (mut app, run, _tail, _a, _b) = packed_run_with_tail_fixture();
+    let record = app.heat_scored_range(run);
+    seed_range_heat_entry(&mut app, record.start, Some(50), 1, "int32", Some(50));
+    app.heat_cues = HeatCueMode::All;
+
+    let rows = app.node_lines(run);
+    for line in rows.start + 1..rows.end {
+        assert!(
+            matches!(app.heat_cue_for(line), HeatDisplay::None),
+            "a continuation line has no question of its own: line {line}"
+        );
+    }
+
+    // And a node `can_override` refuses is blank on its header row too.
+    // No fixture holds one: spec 0135 G3 widened the gate to every wire
+    // type a value can carry, so the shape has to be made by hand — a
+    // group frame that is not itself flagged as a message.
+    let mut app = message_node_app();
+    app.splash = false;
+    app.heat_cues = HeatCueMode::All;
+    let idx = 1;
+    app.tree_mut()[idx].span.is_message = false;
+    app.tree_mut()[idx].span.wire_type = WT_START_GROUP as u8;
+    assert!(!app.can_override(idx), "the hand-made shape is refused");
+    let header = app.absolute_start(idx);
+    assert!(matches!(app.heat_cue_for(header), HeatDisplay::None));
+}
+
+/// Spec 0331 N1 / test 5: the mode is a formatting decision. A frame
+/// drawn in the third state asks the worker for exactly what a frame
+/// drawn in the second state asks for — which is why the third state
+/// can be reached on a keystroke with no repaint latency, and why the
+/// caches are warm the moment it is.
+#[test]
+fn the_third_state_asks_for_nothing_new() {
+    let queued = |mode: HeatCueMode| {
+        let mut app = message_node_app();
+        app.splash = false;
+        app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
+        app.heat_cues = mode;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        app.heat_worker.as_ref().unwrap().queue_len()
+    };
+
+    assert_eq!(queued(HeatCueMode::All), queued(HeatCueMode::Findings));
+    // And the pair is worth comparing only if either asks for anything.
+    assert!(queued(HeatCueMode::Findings) > 0);
 }
 
 /// The cue is main-pane-only (spec 0138 N2/Test-plan): `heat_cue_for`
@@ -627,6 +849,7 @@ fn cue_never_appears_in_the_override_pane() {
 fn second_call_for_the_same_line_is_a_pure_cache_hit() {
     let mut app = message_node_app();
     app.splash = false;
+    app.heat_cues = HeatCueMode::Findings;
     assert!(app.ctx.graph.is_none());
     let idx = 0;
     let range = extract::message_payload_range(&app.blob, &app.tree[idx].span.raw_range);
@@ -724,6 +947,7 @@ fn g3_the_startup_sweep_seeds_the_root_range() {
         .collect();
     let mut app = message_node_app_with_root_candidates(candidates.clone());
     app.splash = false;
+    app.heat_cues = HeatCueMode::Findings;
     assert!(app.ctx.graph.is_none(), "a hit here must not be a re-score");
 
     let range = app.heat_scored_range(app.first_node);
@@ -843,17 +1067,17 @@ fn warm_up_heat_cues_is_a_noop_without_a_scoring_graph() {
     );
 }
 
-/// `heat_cues_hidden` (2026-07-19 feedback) no longer skips
+/// `HeatCueMode::Off` (2026-07-19 feedback) no longer skips
 /// `warm_up_heat_cues`'s own gate — the background worker must keep
 /// priming the cache even while cues are hidden, so `heat_cue_for`
 /// (called by the warm-up loop below) still pushes its request; only
 /// its returned cue is suppressed, at the `heat_cue_for` layer, not
 /// here.
 #[test]
-fn heat_cue_for_still_pushes_a_request_when_heat_cues_hidden() {
+fn heat_cue_for_still_pushes_a_request_when_cues_are_off() {
     let mut app = message_node_app_with_graph();
     app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
-    app.heat_cues_hidden = true;
+    app.heat_cues = HeatCueMode::Off;
     let idx = 0;
     let header_line = app.absolute_start(idx);
 
@@ -937,6 +1161,7 @@ fn heat_lookup_ands_window_and_current_score() {
 fn heat_cue_for_pushes_at_most_one_request_while_pending() {
     let mut app = message_node_app();
     app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
+    app.heat_cues = HeatCueMode::Findings;
     let idx = 0;
     let header_line = app.absolute_start(idx);
 
@@ -968,6 +1193,7 @@ fn heat_cue_for_pushes_at_most_one_request_while_pending() {
 fn heat_cue_for_pre_populated_cache_resolves_without_pushing() {
     let mut app = message_node_app();
     app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
+    app.heat_cues = HeatCueMode::Findings;
     let idx = 0;
     let range = extract::message_payload_range(&app.blob, &app.tree[idx].span.raw_range);
     seed_range_heat_entry(
@@ -999,6 +1225,7 @@ fn heat_cue_for_pre_populated_cache_resolves_without_pushing() {
 fn a_drawn_row_picks_up_a_cache_answer_with_no_recheck() {
     let mut app = message_node_app();
     app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
+    app.heat_cues = HeatCueMode::Findings;
     let idx = 0;
     let range = extract::message_payload_range(&app.blob, &app.tree[idx].span.raw_range);
     let header_line = app.absolute_start(idx);
@@ -1070,6 +1297,7 @@ fn heat_cue_for_resolves_once_a_real_worker_populates_the_cache() {
     ]));
     let idx = 0;
     app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
+    app.heat_cues = HeatCueMode::Findings;
     let header_line = app.absolute_start(idx);
 
     assert!(matches!(

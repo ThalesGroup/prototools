@@ -49,6 +49,48 @@ const _: () = assert!(HEAT_CUE_PREVIEW > 0);
 /// heap allocation per cue per frame.
 pub(super) const HEAT_GLYPH: &str = "■";
 
+/// How much of what the heat machinery knows the main pane draws
+/// (spec 0331 S1). Three states rather than the `i` toggle of spec
+/// 0138, because "no cue here" used to mean four different things and
+/// one of them — *this node's type is the best fit for these bytes* —
+/// is a real answer worth reading.
+///
+/// The mode is read *after* resolution (`heat_cue_at`), so it changes
+/// what is formatted and never what is asked for: `All` costs no
+/// scoring the other two didn't already pay.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub(super) enum HeatCueMode {
+    /// Nothing at all. The opening state: the cue's value is that it
+    /// is rare enough to be worth looking at, and a reader who wants
+    /// it asks.
+    #[default]
+    Off,
+    /// The findings — mismatch, tie, and the two pendings.
+    Findings,
+    /// Those, plus a settled node's ` [{score}]` or ` [vetoed]`.
+    All,
+}
+
+impl HeatCueMode {
+    /// `i`. Forward is the direction that shows more, up to the wrap.
+    pub(super) fn next(self) -> Self {
+        match self {
+            Self::Off => Self::Findings,
+            Self::Findings => Self::All,
+            Self::All => Self::Off,
+        }
+    }
+
+    /// `I`, for the reader who overshot.
+    pub(super) fn prev(self) -> Self {
+        match self {
+            Self::Off => Self::All,
+            Self::Findings => Self::Off,
+            Self::All => Self::Findings,
+        }
+    }
+}
+
 /// A node's computed heat cue (spec 0138 G2-G4, G9-G12): either a
 /// `Mismatch` (red — `best` strictly exceeds `current`) or a `Tie`
 /// (blue — `current` already equals `best`, but at least one other
@@ -86,9 +128,15 @@ pub(super) enum HeatDisplay {
     /// or not is irrelevant here: Mismatch vs. Tie can't be determined
     /// without `best`, so there is no separate `[?/?]` state.
     Unknown,
-    /// Nothing to show, and settled: either every candidate is vetoed
-    /// (`best_score: None`), or `current` is the unique optimum.
+    /// Genuinely nothing: suppressed by the mode, a non-header line, or
+    /// a node that cannot be overridden at all.
     None,
+    /// Settled, with no finding to report — spec 0331, drawn only in
+    /// `HeatCueMode::All`. `Some(score)`: the current type is the
+    /// unique best fit, and `score` is the number both halves agree on.
+    /// `None`: every candidate for this range was vetoed, current
+    /// included, so there is no number and the cue says so in words.
+    Settled { score: Option<i64> },
     /// `best` is known but `current` isn't yet — `[?/{best}]`.
     PendingCurrent { best: i64 },
     /// Both known — a genuine `Mismatch` or `Tie` cue, glyph shown.
@@ -321,11 +369,11 @@ impl App {
     /// (no scoring graph, or a test fixture), falls back to the
     /// synchronous logic, filling only whichever half is still missing.
     ///
-    /// `heat_cues_hidden` (`i`) is checked *last*, after resolving, so
+    /// `heat_cues` (`i`/`I`) is consulted *last*, after resolving, so
     /// the background worker keeps fetching and caching cues for every
-    /// visited line even while hidden and they are already warm the
-    /// moment the user un-hides them; only the returned value is
-    /// suppressed here.
+    /// visited line even while they are hidden and they are already
+    /// warm the moment the user asks for them; only the returned value
+    /// is suppressed here.
     pub(super) fn heat_cue_for(&mut self, line_idx: usize) -> HeatDisplay {
         match self.line_pos(line_idx) {
             Some(pos) => self.heat_cue_at(pos),
@@ -352,10 +400,16 @@ impl App {
             return HeatDisplay::None;
         }
         let display = self.heat_cue_resolve(idx);
-        if self.heat_cues_hidden {
-            return HeatDisplay::None;
+        // Spec 0331 S3: the mode decides what of a resolved answer
+        // reaches the screen, and nothing else.
+        match self.heat_cues {
+            HeatCueMode::Off => HeatDisplay::None,
+            HeatCueMode::Findings => match display {
+                HeatDisplay::Settled { .. } => HeatDisplay::None,
+                other => other,
+            },
+            HeatCueMode::All => display,
         }
-        display
     }
 
     /// Re-asks for the cursor row's cue, so that it sits at the head of
@@ -572,16 +626,22 @@ impl App {
 /// without a real scoring graph. The full display table: `[?]`
 /// whenever `best` isn't known yet (no separate `[?/?]` state —
 /// Mismatch vs. Tie can't be determined without `best` either way);
-/// nothing shown when every candidate is vetoed or `current` is the
-/// unique optimum; `[?/{best}]` while only `current` remains unknown;
+/// `Settled` when every candidate is vetoed or `current` is the unique
+/// optimum; `[?/{best}]` while only `current` remains unknown;
 /// otherwise a genuine `Mismatch`/`Tie` cue. `Option`-aware throughout:
 /// a vetoed `current` is never conflated with a genuine `0` score.
+///
+/// Never `HeatDisplay::None`: a scoreable node in some state always has
+/// *something* to say, and which of it reaches the screen is the mode's
+/// decision, taken in `heat_cue_at`.
 pub(super) fn heat_display(state: HeatState) -> HeatDisplay {
     let Some(stats) = state.best() else {
         return HeatDisplay::Unknown;
     };
     let Some(best) = stats.best_score else {
-        return HeatDisplay::None; // every candidate vetoed — no cue possible
+        // Every candidate vetoed, current included — settled, and with
+        // no number to print (spec 0331).
+        return HeatDisplay::Settled { score: None };
     };
     let Some(current) = state.current() else {
         return HeatDisplay::PendingCurrent { best };
@@ -608,6 +668,11 @@ pub(super) fn heat_display(state: HeatState) -> HeatDisplay {
                 score: best,
             },
         }),
-        _ => HeatDisplay::None, // unique optimum
+        // The unique optimum: the current type is the best fit for
+        // these bytes and nothing else ties it. Settled, with a number
+        // both halves agree on (spec 0331).
+        Some(current) => HeatDisplay::Settled {
+            score: Some(current),
+        },
     }
 }

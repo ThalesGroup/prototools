@@ -28,6 +28,16 @@ pub enum SortMode {
     Inferred,
 }
 
+impl SortMode {
+    /// Index into a two-element per-order array (spec 0330 S1).
+    pub fn slot(self) -> usize {
+        match self {
+            SortMode::Lexicographic => 0,
+            SortMode::Inferred => 1,
+        }
+    }
+}
+
 /// All message/group/enum type FQDNs known to `pool`, alphabetically
 /// sorted (spec 0114 §3.2's lexicographic mode; enums added by spec
 /// 0137 §G2). Independent of range — computed once and reused for

@@ -496,19 +496,21 @@ impl App {
     /// The whole wire row for `pos`, margin included — `None` when the
     /// line has no bytes it may show, or none at all.
     ///
-    /// `indent` is the document row's own indentation, so the hex lines
-    /// up under the text it describes (S5). Column 0 is not here: the
-    /// heat-cue gutter is prepended by `render`, blank, for the same
-    /// reason it is blank — a cue reports how a *node* scores.
+    /// `left` is the document row's own margin — as wide as its
+    /// indentation, so the hex lines up under the text it describes
+    /// (S5), and carrying spec 0328's bars so they do not break on
+    /// every other terminal row. Column 0 is not here: the heat-cue
+    /// gutter is prepended by `render`, blank, for the same reason it
+    /// is blank — a cue reports how a *node* scores.
     pub(super) fn wire_row(
         &self,
         pos: LinePos,
-        indent: usize,
+        left: Vec<Span<'static>>,
         memo: &mut PackedCursor,
         palette: Option<&WirePalette>,
     ) -> Option<Vec<Span<'static>>> {
         let slice = self.wire_slice(pos, memo)?;
-        margin(indent, wire_spans(&self.blob, &slice, self.theme, palette))
+        margin(left, wire_spans(&self.blob, &slice, self.theme, palette))
     }
 
     /// Spec 0225 S11: the four hues this row's bytes borrow, resolved
@@ -574,13 +576,13 @@ impl App {
     pub(super) fn preview_wire_row(
         &self,
         line: usize,
-        indent: usize,
+        left: Vec<Span<'static>>,
         palette: Option<&WirePalette>,
     ) -> Option<Vec<Span<'static>>> {
         let overlay = self.preview_overlay.as_ref()?;
         let slice = preview_slice(&overlay.spans, line)?;
         margin(
-            indent,
+            left,
             wire_spans(&overlay.bytes, &slice, self.theme, palette),
         )
     }
@@ -814,12 +816,15 @@ pub(super) const WIRE_CONNECTOR: &str = "└── ";
 /// an empty row says only that the elbow is there. Suppressing it makes
 /// the connector mean what it looks like it means: below this line are
 /// its bytes.
-fn margin(indent: usize, row: WireRow) -> Option<Vec<Span<'static>>> {
+/// Spec 0328 S5: `left` is the document row's own margin spans, from
+/// `render`'s `wire_margin_spans` — the same `FOLD_FIELD_WIDTH + indent`
+/// columns this used to build for itself, with the bars drawn in.
+fn margin(left: Vec<Span<'static>>, row: WireRow) -> Option<Vec<Span<'static>>> {
     if row.spans.is_empty() {
         return None;
     }
-    let mut spans = Vec::with_capacity(row.spans.len() + 2);
-    spans.push(Span::raw(" ".repeat(render::FOLD_FIELD_WIDTH + indent)));
+    let mut spans = Vec::with_capacity(row.spans.len() + left.len() + 1);
+    spans.extend(left);
     spans.push(Span::styled(WIRE_CONNECTOR, subdued()));
     spans.extend(row.spans);
     Some(spans)

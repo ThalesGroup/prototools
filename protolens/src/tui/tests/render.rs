@@ -1329,6 +1329,7 @@ fn every_overlay_row_is_prototext() {
         bytes: Vec::new(),
         tier: PreviewTier::Clean,
         tier_column: 0,
+        ellipsis_row: None,
     });
     app.refresh_window_styles(&rows);
 
@@ -1527,6 +1528,194 @@ fn overlay_fold_column_is_free_at_indent_one() {
                  row {y} column {x}"
             );
         }
+    }
+}
+
+/// Spec 0328 test plan item 1, and G1/S1/S2/S3 at once: the bar hangs
+/// directly under the current node's own triangle, runs to its closing
+/// brace and stops there, and wears the triangle's color.
+///
+/// All four in one test because they are one mark, and any three of
+/// them holding while the fourth does not is a bar that says the wrong
+/// thing rather than a bar with a small defect.
+#[test]
+fn the_current_node_wears_a_bar() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.cursor = inner_idx;
+    let total = app.tree[inner_idx].lines_total as usize;
+    assert!(total >= 3, "the fixture's node must have an interior");
+
+    let terminal = drawn_frame(&mut app, 120, 24);
+    let bars = tier_bar_cells(&app, &terminal);
+    assert_eq!(
+        bars.len(),
+        total - 1,
+        "one bar per subtree row below the header, and none on the row \
+         after the closing brace: {bars:?}"
+    );
+
+    // S3: the very call the triangle's own color comes from, so the two
+    // agree by construction. Asserted of both, or a renderer that
+    // colored neither would pass.
+    let want = app
+        .margin_glyph_color(Some(inner_idx))
+        .unwrap_or(Color::Reset);
+    let (bx, by, _) = bars[0];
+    let triangles = margin_cells(&app, &terminal, crate::tui::render::FOLD_GLYPH_OPEN);
+    let header = triangles
+        .iter()
+        .find(|&&(x, y, _)| (x, y) == (bx, by - 1))
+        .expect("the header keeps its triangle, directly above the bar");
+    assert_eq!(header.2, want, "the triangle's color");
+
+    for (i, &(x, y, fg)) in bars.iter().enumerate() {
+        assert_eq!(x, bx, "the bar stays in the triangle's column");
+        assert_eq!(y, by + i as u16, "the bar is continuous");
+        assert_eq!(fg, want, "and is the triangle's color");
+    }
+}
+
+/// Spec 0328 test plan item 2 / S2's two consequences that need no code:
+/// a folded node draws its body as the one-row `{ ... }` collapse, so
+/// there is no range to run a bar down — right, since a collapsed
+/// node's extent *is* the row you are on — and a leaf has
+/// `lines_total == 1` and likewise gets none.
+#[test]
+fn a_folded_node_has_no_bar() {
+    let (mut app, inner_idx, id_idx) = type_as_fixture();
+    app.cursor = inner_idx;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+    assert!(app.is_folded(inner_idx), "`z` must fold the cursor node");
+    let terminal = drawn_frame(&mut app, 120, 24);
+    assert_eq!(
+        tier_bar_cells(&app, &terminal),
+        Vec::new(),
+        "a collapsed node's extent is the row you are on"
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+    app.cursor = id_idx;
+    assert!(app.first_child(id_idx).is_none(), "`id` must be a leaf");
+    let terminal = drawn_frame(&mut app, 120, 24);
+    assert_eq!(
+        tier_bar_cells(&app, &terminal),
+        Vec::new(),
+        "a leaf is one row and has no extent to draw"
+    );
+}
+
+/// Spec 0328 S4, test plan item 3: **the row's own mark wins the cell.**
+///
+/// Under the default `--indent 2` the two never meet — a child's marker
+/// is at least two columns deeper — so the case has to be built at
+/// `--indent 1`, where `marker_column` floors at 0 for the first two
+/// levels and an ancestor's bar lands in the very cell a child's
+/// triangle wants. The triangle is a control, and the row's own; the bar
+/// is an ancestor's readout.
+#[test]
+fn a_child_marker_outranks_the_bar() {
+    let mut app = nested_message_set_fixture();
+    app.indent_size = 1;
+    // Re-indent as `--indent 1` would have. Only leading whitespace
+    // changes, so every node's line range stays where it was.
+    for text in app.node_text_mut().iter_mut().flatten() {
+        let reindented: Vec<String> = text
+            .split('\n')
+            .map(|l| {
+                let depth = (l.len() - l.trim_start().len()) / 2;
+                format!("{}{}", " ".repeat(depth), l.trim_start())
+            })
+            .collect();
+        *text = reindented.join("\n").into_boxed_str();
+    }
+
+    app.cursor = 0;
+    let total = app.tree[0].lines_total as usize;
+    let terminal = drawn_frame(&mut app, 120, 24);
+
+    // The root's own triangle fixes the shared column; every marker at
+    // depth 0 or 1 lands in it.
+    let open = crate::tui::render::FOLD_GLYPH_OPEN;
+    let column = margin_cells(&app, &terminal, open)
+        .first()
+        .expect("the root has a triangle")
+        .0;
+
+    let buffer = terminal.backend().buffer();
+    let first = app.main_area.y;
+    let mut triangles = 0;
+    for y in first + 1..first + total as u16 {
+        let symbol = buffer[(column, y)].symbol().to_string();
+        if symbol == open.to_string() {
+            triangles += 1;
+            continue;
+        }
+        assert_eq!(
+            symbol,
+            crate::tui::render::TIER_BAR_GLYPH.to_string(),
+            "row {y} of the cursor node draws its own marker or the bar"
+        );
+    }
+    assert!(
+        triangles > 0,
+        "the fixture must actually collide: at `--indent 1` a child's \
+         marker shares the root's column"
+    );
+}
+
+/// Spec 0328 G2/S5, test plan item 4: a wire row takes its left margin
+/// from the same function its document row does, so both bars run
+/// unbroken through the hex.
+///
+/// The defect this replaces was visible: with bytes shown the bar was
+/// drawn on every other terminal row and read as a dotted line meaning
+/// nothing.
+#[test]
+fn a_bar_survives_a_wire_row() {
+    // The committed bar, with the whole subtree's bytes shown.
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.cursor = inner_idx;
+    let header = app.absolute_start(inner_idx);
+    let total = app.tree[inner_idx].lines_total as usize;
+    let span = app.wire_span_of_lines(header, header + total - 1);
+    app.set_wire_span(span, 0);
+    let terminal = drawn_frame(&mut app, 120, 24);
+    assert_contiguous_bars(&app, &terminal, total - 1);
+
+    // And the preview's, which is the bar spec 0318 S7 drew and this
+    // spec repairs. A single covered committed row puts every overlay
+    // row in the run (spec 0185 S2).
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.cursor = inner_idx;
+    let header = app.absolute_start(inner_idx);
+    let span = app.wire_span_of_lines(header, header);
+    app.set_wire_span(span, 0);
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    let rows = app
+        .preview_overlay
+        .as_ref()
+        .expect("`t` must put a preview up")
+        .lines
+        .len();
+    let terminal = drawn_frame(&mut app, 120, 24);
+    assert_contiguous_bars(&app, &terminal, rows - 1);
+}
+
+/// The bars drawn in `terminal` form one unbroken run down one column,
+/// and there are more of them than `document_rows` — which is what says
+/// the wire rows were drawn through rather than skipped.
+fn assert_contiguous_bars(app: &App, terminal: &Terminal<TestBackend>, document_rows: usize) {
+    let bars = tier_bar_cells(app, terminal);
+    assert!(
+        bars.len() > document_rows,
+        "the wire rows must carry the bar too: {} bar(s) for {document_rows} \
+         document row(s)",
+        bars.len()
+    );
+    for pair in bars.windows(2) {
+        assert_eq!(pair[0].0, pair[1].0, "one column: {bars:?}");
+        assert_eq!(pair[1].1, pair[0].1 + 1, "unbroken: {bars:?}");
     }
 }
 
@@ -1753,9 +1942,16 @@ fn a_defect_tints_the_fold_marker_of_every_node_above_it() {
     let terminal = drawn_frame(&mut app, 120, 12);
     // The whole fold field is styled, indentation and all; only the
     // glyph has ink in it, so the blank cells say nothing either way.
+    //
+    // Spec 0328 S3: the current node's bar takes its color from the very
+    // same `margin_glyph_color` call, so on this fixture — where the
+    // caret rests on the root and the root is the tinted node — it is a
+    // second bearer of `want` running down the column. That is the bar
+    // agreeing with its triangle, which is what S3 asks for; this test
+    // is about which *triangles* the color reaches.
     let tinted: Vec<_> = marked_cells(&app, &terminal, |s| s.fg == Some(want))
         .into_iter()
-        .filter(|(_, sym)| sym != " ")
+        .filter(|(_, sym)| sym != " " && sym != &render::TIER_BAR_GLYPH.to_string())
         .collect();
     // The root and `inner {` — every foldable node on the path.
     let glyph = render::FOLD_GLYPH_OPEN.to_string();
@@ -1952,7 +2148,22 @@ fn row_content_and_row_spans_agree_byte_for_byte() {
             .iter()
             .map(|s| s.content.to_string())
             .collect();
-        assert_eq!(drawn, app.row_content(row), "row {i} disagrees");
+        // Spec 0328 S4: the current node's bar is chrome the renderer
+        // substitutes into a fold-column cell that was blank — a cell
+        // for a cell, so every column downstream still means what it
+        // did, which is the property `max_visible_line_len` and the two
+        // hover hit tests read `row_content` for. Put back and the two
+        // agree byte for byte, as they must.
+        let bar = render::TIER_BAR_GLYPH.to_string();
+        let content = app.row_content(row);
+        for (at, _) in drawn.match_indices(&bar) {
+            assert_eq!(
+                content.as_bytes().get(at),
+                Some(&b' '),
+                "row {i}: the bar may only stand where the margin was blank"
+            );
+        }
+        assert_eq!(drawn.replace(&bar, " "), content, "row {i} disagrees");
     }
 }
 
@@ -2308,6 +2519,7 @@ fn the_caret_reaches_the_heat_suffix_but_never_the_heat_glyph() {
         Some(10),
     );
     app.cursor = idx;
+    app.heat_cues = heat_cue::HeatCueMode::Findings;
     let header = app.absolute_start(idx);
 
     // `$` — the last reachable column is the suffix's closing bracket.
@@ -2393,6 +2605,7 @@ fn the_heat_suffix_does_not_slide_under_a_pan() {
         Some(10),
     );
     app.cursor = 0;
+    app.heat_cues = heat_cue::HeatCueMode::Findings;
 
     let mut terminal = drawn_frame(&mut app, 60, 8);
     let unpanned = drawn_row(&app, &terminal, 0);

@@ -1138,13 +1138,16 @@ fn a_click_on_a_leaf_diamond_places_the_caret() {
 /// enough for `toggle_override` to open.
 ///
 /// `best_count` of 1 gives the `[current/best]` suffix, 2 or more the
-/// `[tie@score]` one. The seeding is `i_toggles_heat_cues_hidden`'s: an
-/// entry planted straight into `heat_caches`, which is what lets a cue
-/// exist without a scoring graph behind it.
+/// `[tie@score]` one. The seeding is
+/// `i_rotates_the_cue_away_and_back`'s: an entry planted straight into
+/// `heat_caches`, which is what lets a cue exist without a scoring
+/// graph behind it. A session opens with no cues drawn at all (spec
+/// 0331 S1), so the mode is asked for here too.
 fn cue_app(best_count: usize, current: i64) -> App {
     let mut app = message_node_app();
     app.splash = false;
     app.term_width = 120;
+    app.heat_cues = heat_cue::HeatCueMode::Findings;
     let range = extract::message_payload_range(&app.blob, &app.tree[0].span.raw_range);
     seed_range_heat_entry(
         &mut app,
@@ -1290,6 +1293,28 @@ fn a_click_on_the_text_then_on_the_cue_is_not_a_pair() {
     assert_eq!(app.override_target, Some(0));
 }
 
+/// Spec 0331 test 6 / S5: the double-click needs no code of its own.
+/// `heat_cue_at_point` measures whatever `heat_chrome` returns as a
+/// suffix, so a new `HeatDisplay` shape is a control by construction —
+/// which is the whole reason the variant lives in `HeatDisplay` rather
+/// than as a string in the renderer.
+#[test]
+fn an_agreeing_cue_is_a_double_click_target() {
+    let mut app = cue_app(1, 50);
+    app.heat_cues = heat_cue::HeatCueMode::All;
+
+    let cue = drawn_column(&mut app, " [50]");
+    let row = app.main_area.y;
+    assert_eq!(
+        app.heat_cue_at_point(cue + 2, row),
+        Some(0),
+        "the hit test reports the columns the frame drew the cue at"
+    );
+
+    double_click_at(&mut app, cue + 2, row);
+    assert_eq!(app.override_target, Some(0));
+}
+
 /// Spec 0284 S3: every drawn suffix is a target, including a pending
 /// one. A reader who double-clicks a cue that is still resolving wants
 /// the same pane, and the pane resolves its own candidates on open — a
@@ -1300,6 +1325,7 @@ fn a_pending_cue_is_a_target_too() {
     let mut app = message_node_app();
     app.splash = false;
     app.term_width = 120;
+    app.heat_cues = heat_cue::HeatCueMode::Findings;
     // A worker, so `heat_cue_resolve` does not fall back to scoring on
     // this thread — and only the window half seeded, so the current
     // type's own score is still missing.

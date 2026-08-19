@@ -147,6 +147,46 @@ pub(super) const ANOMALY_GLYPH: char = '◆';
 /// rule rather than as a filled cell.
 pub(super) const TIER_BAR_GLYPH: char = '│';
 
+/// Spec 0328 S1/S2: where the current node's bar runs, and under which
+/// document shape and caret it was worked out.
+///
+/// Held in a `RefCell` on `App` for the same reason `WireRowCache` is:
+/// `absolute_start` is a climb and every row of the viewport asks.
+pub(super) struct CursorBarCache {
+    version: u64,
+    cursor: usize,
+    bar: Option<CursorBar>,
+}
+
+/// The rows the current node's bar occupies, and the column it occupies.
+#[derive(Clone, Copy)]
+struct CursorBar {
+    /// The node's header line — the row its fold triangle is on, and so
+    /// the row directly above the bar's first document row.
+    header: usize,
+    /// One past the node's last line, i.e. past its closing brace.
+    end: usize,
+    /// `marker_column` of the header, which is the column that
+    /// triangle sits in (S1). Also a byte offset into any row's fold
+    /// margin, which is spaces up to and including it.
+    column: usize,
+}
+
+impl CursorBar {
+    /// Spec 0328 S2: the document rows the bar runs down — the node's
+    /// subtree minus its header, which keeps its triangle.
+    fn covers(&self, line: usize) -> bool {
+        line > self.header && line < self.end
+    }
+
+    /// Spec 0328 S5: a wire row is a continuation of the row above, so
+    /// the header's own wire row — directly under the triangle — takes
+    /// the bar as well.
+    fn covers_wire(&self, line: usize) -> bool {
+        line >= self.header && line < self.end
+    }
+}
+
 /// Spec 0193 S1: the two-column fold field followed by the line's own
 /// indentation, with `marker` — when there is one — placed in the two
 /// display columns *immediately left of* the line's first non-blank
@@ -1001,6 +1041,21 @@ impl App {
             }
         }
 
+        // Spec 0328 S6/S7: a preview that was cut says where it stops,
+        // on its last content row and in the bar's own violet. A
+        // display insertion, like the collapse summary above: spec 0318
+        // N4's "every row is grammatical prototext" is about
+        // `window_text`, the raw line the highlighter parses, and
+        // insertions are applied downstream of it. Nor is it added to
+        // `row_text_of`, which carries the collapse summary only
+        // because the caret walks over that.
+        if let (DisplayRow::Overlay(i), Some(o)) = (row, self.preview_overlay.as_ref()) {
+            if o.ellipsis_row == Some(i) {
+                let style = self.preview_bar_color(o).map(|c| Style::default().fg(c));
+                insertions.push((content.len(), "...".to_string(), style));
+            }
+        }
+
         let mut spans = Vec::with_capacity(segments.len() + 6);
         if !margin.is_empty() {
             spans.extend(self.margin_spans(margin, row, node, emphasis));
@@ -1072,28 +1127,116 @@ impl App {
         if let DisplayRow::Overlay(index) = row {
             return self.overlay_margin_spans(margin, index);
         }
+        // Marked cells, as `(byte range in `margin`, what to draw
+        // there, how)`. At most two: the row's own glyph, and the
+        // current node's bar.
+        let mut marks: Vec<(Range<usize>, String, Style)> = Vec::with_capacity(2);
+
         let emphasis = emphasis - Modifier::UNDERLINED;
         let color = self.margin_glyph_color(owner);
-        if color.is_none() && emphasis.is_empty() {
+        if !(color.is_none() && emphasis.is_empty()) {
+            if let Some(at) = self.margin_glyph_of(owner).and_then(|g| margin.find(g)) {
+                let end = at + margin[at..].chars().next().map_or(0, char::len_utf8);
+                let mut style = Style::default().add_modifier(emphasis);
+                if let Some(color) = color {
+                    style = style.fg(color);
+                }
+                marks.push((at..end, margin[at..end].to_string(), style));
+            }
+        }
+
+        // Spec 0328 S4: **the row's own mark wins the cell.** The bar
+        // goes in only where this row's margin is blank at the column,
+        // which under `--indent 2` is always — a child's marker is at
+        // least two columns deeper — and under `--indent 0`/`1` is the
+        // test that lets a child's triangle, a control and the row's
+        // own, outrank an ancestor's readout. One byte compare, and it
+        // covers every `--indent`.
+        if let Some(bar) = self
+            .cursor_bar()
+            .filter(|b| row.committed_line().is_some_and(|l| b.covers(l)))
+            .filter(|b| margin.as_bytes().get(b.column) == Some(&b' '))
+        {
+            marks.push((
+                bar.column..bar.column + 1,
+                TIER_BAR_GLYPH.to_string(),
+                self.cursor_bar_style(),
+            ));
+        }
+
+        if marks.is_empty() {
             return vec![Span::raw(margin)];
         }
-        let Some(at) = self.margin_glyph_of(owner).and_then(|g| margin.find(g)) else {
-            return vec![Span::raw(margin)];
-        };
-        let end = at + margin[at..].chars().next().map_or(0, char::len_utf8);
-        let mut style = Style::default().add_modifier(emphasis);
-        if let Some(color) = color {
-            style = style.fg(color);
+        marks.sort_by_key(|(range, _, _)| range.start);
+        let mut spans = Vec::with_capacity(2 * marks.len() + 1);
+        let mut cut = 0;
+        for (range, text, style) in marks {
+            if range.start > cut {
+                spans.push(Span::raw(margin[cut..range.start].to_string()));
+            }
+            spans.push(Span::styled(text, style));
+            cut = range.end;
         }
-        let mut spans = Vec::with_capacity(3);
-        if at > 0 {
-            spans.push(Span::raw(margin[..at].to_string()));
-        }
-        spans.push(Span::styled(margin[at..end].to_string(), style));
-        if end < margin.len() {
-            spans.push(Span::raw(margin[end..].to_string()));
+        if cut < margin.len() {
+            spans.push(Span::raw(margin[cut..].to_string()));
         }
         spans
+    }
+
+    /// Spec 0328 S3: the bar wears `margin_glyph_color(Some(cursor))` —
+    /// the very call the node's own triangle takes its color from, so
+    /// the two are the same color by construction rather than by a
+    /// second lookup that could come to disagree.
+    fn cursor_bar_style(&self) -> Style {
+        match self.margin_glyph_color(Some(self.cursor)) {
+            Some(color) => Style::default().fg(color),
+            None => Style::default(),
+        }
+    }
+
+    /// Spec 0328 S1/S2: the current node's bar, memoized.
+    ///
+    /// `None` for a node with nothing to draw a bar beside: a **leaf**,
+    /// whose `lines_total` is 1, and a **folded** node, which draws its
+    /// body as the one-row `{ ... }` collapse — right in both cases,
+    /// since a collapsed node's extent is the row you are on.
+    fn cursor_bar(&self) -> Option<CursorBar> {
+        if let Some(cache) = self.cursor_bar.borrow().as_ref() {
+            if cache.version == self.structural_version && cache.cursor == self.cursor {
+                return cache.bar;
+            }
+        }
+        let bar = self.compute_cursor_bar();
+        *self.cursor_bar.borrow_mut() = Some(CursorBarCache {
+            version: self.structural_version,
+            cursor: self.cursor,
+            bar,
+        });
+        bar
+    }
+
+    /// The uncached half of [`App::cursor_bar`].
+    ///
+    /// The line range is the one `cursor_brace_pair` derives, and
+    /// `lines_total` is the whole subtree's count — so the bar reaches
+    /// the closing brace in O(1), with no per-row walk up each row's
+    /// ancestors and no second definition of "in this node".
+    fn compute_cursor_bar(&self) -> Option<CursorBar> {
+        let idx = self.cursor;
+        if idx >= self.tree.len() || !self.has_children(idx) {
+            return None;
+        }
+        let total = self.tree[idx].lines_total as usize;
+        if total < 2 {
+            return None;
+        }
+        let header = self.absolute_start(idx);
+        let text = self.node_text[idx].as_deref()?;
+        Some(CursorBar {
+            header,
+            end: header + total,
+            column: marker_column(text.split('\n').next()?) as usize,
+        })
     }
 
     /// Spec 0318 S7: what an overlay row draws in its fold column, given
@@ -1157,6 +1300,49 @@ impl App {
     /// foreground, when the preview is the whole node.
     fn preview_bar_color(&self, overlay: &PreviewOverlay) -> Option<Color> {
         theme::preview_bar_color(overlay.tier.is_whole(), self.theme)
+    }
+
+    /// Spec 0328 S5: a wire row's left margin, taken from the same
+    /// function its document row's comes from.
+    ///
+    /// The blank `wire.rs` used to build for itself is exactly
+    /// `fold_margin(indent, None)`, so this is a substitution and not a
+    /// new layout — which is what keeps `wire_part_at`'s column
+    /// arithmetic and the pan untouched.
+    ///
+    /// The bar is drawn here, the triangle is not: a wire row is a
+    /// continuation of the row above it, and a second triangle in the
+    /// column would read as a second foldable node.
+    pub(super) fn wire_margin_spans(&self, row: DisplayRow, indent: usize) -> Vec<Span<'static>> {
+        let margin = fold_margin(indent, None);
+        let (column, style) = match row {
+            DisplayRow::Overlay(_) => match self.preview_overlay.as_ref() {
+                Some(o) => (
+                    o.tier_column,
+                    match self.preview_bar_color(o) {
+                        Some(color) => Style::default().fg(color),
+                        None => Style::default(),
+                    },
+                ),
+                None => return vec![Span::raw(margin)],
+            },
+            DisplayRow::Committed(c) => match self.cursor_bar().filter(|b| b.covers_wire(c.line)) {
+                Some(bar) => (bar.column, self.cursor_bar_style()),
+                None => return vec![Span::raw(margin)],
+            },
+        };
+        if column >= margin.len() {
+            return vec![Span::raw(margin)];
+        }
+        let mut spans = Vec::with_capacity(3);
+        if column > 0 {
+            spans.push(Span::raw(margin[..column].to_string()));
+        }
+        spans.push(Span::styled(TIER_BAR_GLYPH.to_string(), style));
+        if column + 1 < margin.len() {
+            spans.push(Span::raw(margin[column + 1..].to_string()));
+        }
+        spans
     }
 
     /// Turns `content`'s `segments` (byte ranges tagged with an optional
@@ -1266,6 +1452,25 @@ impl App {
             heat_cue::HeatDisplay::Unknown => {
                 (blank(), Some(Span::styled(" [?]", pending_style())))
             }
+            // Spec 0331 S4. No glyph either way (N6): the margin `■` is
+            // graded by `heat_level` and reserved for a finding, and
+            // neither of these is one.
+            heat_cue::HeatDisplay::Settled { score: Some(n) } => (
+                blank(),
+                Some(Span::styled(
+                    format!(" [{n}]"),
+                    theme::heat_agree_style(self.theme),
+                )),
+            ),
+            // The mismatch red, not the green: nothing in the schema
+            // fits these bytes, and claiming agreement would be false.
+            heat_cue::HeatDisplay::Settled { score: None } => (
+                blank(),
+                Some(Span::styled(
+                    " [vetoed]",
+                    theme::heat_suffix_style(self.theme),
+                )),
+            ),
             heat_cue::HeatDisplay::None => (blank(), None),
         }
     }
@@ -1941,18 +2146,20 @@ impl App {
                     let source = self.display_row_text(display_row);
                     let indent = source.len() - source.trim_start().len();
                     let palette = self.wire_palette(row, &source);
+                    // Spec 0328 S5: the same margin the document row
+                    // draws, so both bars run through the hex rows
+                    // instead of breaking on every other terminal row.
+                    let left = self.wire_margin_spans(display_row, indent);
                     let wire_spans = match display_row {
                         DisplayRow::Committed(c) => {
-                            self.wire_row(c.pos, indent, &mut packed_memo, palette.as_ref())
+                            self.wire_row(c.pos, left, &mut packed_memo, palette.as_ref())
                         }
                         // S9: an overlay's bytes are drawn from the
                         // preview's own spans, since a preview is a
                         // proposal to read the same bytes as a different
                         // type and the wire row is what shows they are
                         // indeed the same.
-                        DisplayRow::Overlay(i) => {
-                            self.preview_wire_row(i, indent, palette.as_ref())
-                        }
+                        DisplayRow::Overlay(i) => self.preview_wire_row(i, left, palette.as_ref()),
                     };
                     let mut spans = pan_spans(wire_spans.unwrap_or_default(), self.pan_offset);
                     spans.insert(0, Span::raw(" ".repeat(HEAT_FIELD_WIDTH)));
