@@ -427,9 +427,9 @@ fn drag_select_spans_multiple_main_pane_rows() {
 
 /// A plain click (`Down`+`Up`, no drag, not the second half of a
 /// double-click) must deselect any active selection rather than leave a
-/// length-1 selection behind. Selecting a single line by mouse is the
-/// double-click's job instead — see
-/// `double_click_selects_the_clicked_line_for_copy`.
+/// length-1 selection behind. Selecting by mouse is the drag's job —
+/// spec 0333 N1 took the row selection off the double-click, which
+/// folds instead.
 #[test]
 fn plain_click_with_no_drag_deselects() {
     let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "gamma: 3"]);
@@ -592,70 +592,37 @@ fn shift_click_extends_the_selection_from_the_caret_then_from_the_anchor() {
     assert_eq!(text, "alp");
 }
 
-/// Feedback (2026-07-15): double-clicking a main-pane line (two
-/// `Down`+`Up` clicks on the same line, in quick succession)
-/// explicitly selects that line for copy. Crossterm reports `Down`
-/// identically for single and double clicks, so this exercises the
-/// app's own timestamp/position-based disambiguation
-/// (`App::last_click`/`pending_double_click`).
+/// Spec 0333 S2: the gesture is `z`, including when `z` refuses. A
+/// scalar has nothing to fold, so a double-click on one says so and
+/// changes nothing — rather than falling back on some other meaning,
+/// which is how a gesture becomes two.
 ///
-/// Spec 0242 S10, as amended by the user (2026-08-05): selecting the
-/// line is *all* it does. It used to double as the `t`/`o` smart proxy
-/// (spec 0139), and this fixture's cursor node is the seeded root
-/// override's own target, so the assertion that the manage pane stays
-/// shut is a real one.
+/// Crossterm reports `Down` identically for single and double clicks,
+/// so this also exercises the app's own timestamp/position-based
+/// disambiguation (`App::last_click`/`pending_double_click`).
+///
+/// This fixture's cursor node is the seeded root override's own target,
+/// so the assertion that no side pane opens is a real one: the gesture
+/// used to double as the `t`/`o` smart proxy (spec 0139).
 #[test]
-fn double_click_selects_the_clicked_line_for_copy() {
+fn a_double_click_on_a_leaf_says_not_foldable() {
     let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2"]);
     app.splash = false;
     app.main_area = Rect::new(0, 0, 40, 20);
     app.term_width = 120;
 
-    for _ in 0..2 {
-        app.handle_mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: 0,
-            row: 0,
-            modifiers: KeyModifiers::NONE,
-        });
-        app.handle_mouse(MouseEvent {
-            kind: MouseEventKind::Up(MouseButton::Left),
-            column: 0,
-            row: 0,
-            modifiers: KeyModifiers::NONE,
-        });
-    }
+    double_click_at(&mut app, 0, 0);
 
-    assert_eq!(
-        app.selection_span(),
-        Some((0, 0, 0, 8)),
-        "double-click selects the whole line it landed on"
-    );
+    assert_eq!(app.message, "not foldable");
     assert!(
-        app.message.is_empty(),
-        "unexpected message: {}",
-        app.message
+        app.selection_span().is_none(),
+        "and selects nothing on the way"
     );
     assert!(
         !app.manage_open,
-        "and does not also open a side pane, even on an overridden node"
+        "and does not open a side pane, even on an overridden node"
     );
     assert!(app.override_target.is_none());
-
-    let (count, text) = app.selected_text().expect("selection must be active");
-    assert_eq!(count, 1);
-    assert_eq!(text, "alpha: 1");
-
-    // Spec 0242 S13: a selection inside one line is reported in
-    // characters, since "1 line(s)" would be a lie about a partial one
-    // and this message is the only sign the copy happened.
-    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
-    assert!(
-        app.message == "8 character(s) copied to clipboard"
-            || app.message == "8 character(s) copied to clipboard (OSC 52 fallback)",
-        "unexpected message: {}",
-        app.message
-    );
 }
 
 /// The user's report (2026-08-05): "a quick sequence of 4 clicks on the
@@ -980,6 +947,12 @@ fn clicking_the_fold_marker_focuses_the_main_pane_and_selects_the_node() {
 /// override/manage panes the way a double-click on the node's body
 /// does. Each click has already spent itself on the fold, so it is
 /// never half of a pair.
+///
+/// `marker_col` was `indent_len + 1` until spec 0333, one column short
+/// of the field: the clicks landed in the gutter, which is the *text*
+/// zone, so the pair selected the row and every assertion here held
+/// vacuously. The text zone's double-click now folds, which is what
+/// made the miss visible.
 #[test]
 fn double_click_on_the_fold_marker_toggles_twice_and_opens_nothing() {
     let (mut app, grp_idx) = group_type_fixture();
@@ -990,7 +963,7 @@ fn double_click_on_the_fold_marker_toggles_twice_and_opens_nothing() {
     let line_idx = app.absolute_start(grp_idx);
     let indent_len = (app.document_lines()[line_idx].len()
         - app.document_lines()[line_idx].trim_start().len()) as u16;
-    let marker_col = indent_len + 1;
+    let marker_col = indent_len + render::HEAT_FIELD_WIDTH as u16;
 
     for _ in 0..2 {
         for kind in [
@@ -1201,6 +1174,99 @@ fn double_click_at(app: &mut App, col: u16, row: u16) {
     click_at(app, col, row);
 }
 
+fn mouse_at(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
+    app.handle_mouse(MouseEvent {
+        kind,
+        column: col,
+        row,
+        modifiers: KeyModifiers::NONE,
+    });
+}
+
+/// The main pane's own message node, rendered once so that
+/// `main_area` is established and `drawn_column` can be trusted.
+fn foldable_row_app() -> (App, u16, u16) {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.term_width = 120;
+    let col = drawn_column(&mut app, "{");
+    let row = app.main_area.y;
+    (app, col, row)
+}
+
+/// Spec 0333 S1: the text zone's double-click *is* `z`, so the two must
+/// leave the same document — and a second pair must put it back, since
+/// a toggle that only closes is not a toggle.
+///
+/// It selects nothing on the way. That is not incidental: `z` clears
+/// the selection (it does not pass `keeps_the_selection`), and the
+/// gesture claims to be `z`.
+#[test]
+fn a_double_click_on_a_row_folds_it_like_z() {
+    let (mut by_mouse, col, row) = foldable_row_app();
+    let (mut by_key, _, _) = foldable_row_app();
+
+    for round in ["the first pair closes it", "the second opens it again"] {
+        by_mouse.last_click = None;
+        double_click_at(&mut by_mouse, col, row);
+        by_key.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+
+        assert_eq!(
+            by_mouse.folded.contains(0),
+            by_key.folded.contains(0),
+            "{round}"
+        );
+        assert_eq!(
+            by_mouse.document_lines(),
+            by_key.document_lines(),
+            "{round}"
+        );
+        assert!(
+            by_mouse.selection_span().is_none(),
+            "{round}: and the gesture selects nothing"
+        );
+    }
+    assert!(
+        !by_mouse.folded.contains(0),
+        "two pairs land back where they started"
+    );
+}
+
+/// Spec 0333 S3/G2: a pair whose second click dragged is not the
+/// gesture. `select_engaged` is the test and needs no new state — the
+/// `Down` cleared it, so within a button-down only `drag_caret_to`
+/// sets it.
+#[test]
+fn a_double_click_that_dragged_selects_instead_of_folding() {
+    let (mut app, col, row) = foldable_row_app();
+
+    // First click of the pair, complete. Then a second press that
+    // moves before it is released.
+    click_at(&mut app, col, row);
+    mouse_at(&mut app, MouseEventKind::Down(MouseButton::Left), col, row);
+    mouse_at(
+        &mut app,
+        MouseEventKind::Drag(MouseButton::Left),
+        col + 3,
+        row,
+    );
+    mouse_at(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
+        col + 3,
+        row,
+    );
+
+    assert!(
+        !app.folded.contains(0),
+        "a pair that dragged must fold nothing"
+    );
+    assert!(
+        app.selection_span().is_some(),
+        "and must keep what the drag selected"
+    );
+}
+
 /// Spec 0284 S4: the cue asks *some other type fits these bytes
 /// better*, and the override pane is the answer — so double-clicking
 /// the cue opens it, exactly as `t` does. Both numeric shapes are
@@ -1225,41 +1291,36 @@ fn a_double_click_on_a_numeric_cue_opens_the_override_pane() {
     }
 }
 
-/// The row selection a double-click on the text would have made does
-/// not happen on the cue: the row's text is not what was pointed at,
-/// and spec 0242 S11 already puts the heat suffix in no selection.
+/// Spec 0284 S6 splits the row into two zones, and spec 0333 gives the
+/// text zone a meaning of its own: the same node, pointed at two
+/// columns apart, folds or opens the override pane.
 #[test]
-fn a_double_click_on_a_cue_leaves_the_row_unselected() {
+fn the_two_zones_of_one_row_mean_different_things() {
     let mut app = cue_app(1, 10);
     let cue = drawn_column(&mut app, " [10/50]");
     let row = app.main_area.y;
-    // The row's last character, one column left of the suffix — column
-    // 1 is this node's fold marker, which forms no pair at all.
+    // The row's last character, one column left of the suffix — the
+    // fold field is at the far left and forms no pair at all.
     let text = cue - 1;
 
     double_click_at(&mut app, text, row);
-    let text_selection = app.selection_span().expect("the text zone selects the row");
-
-    double_click_at(&mut app, cue + 2, row);
+    assert!(app.folded.contains(0), "the text zone folds the node");
     assert!(
-        app.selection_span().is_none(),
-        "the cue zone selects nothing, where the text zone made {text_selection:?}"
+        app.override_target.is_none(),
+        "and opens no pane on the way"
     );
-}
 
-/// Spec 0284 S6 does not disturb the gesture it splits: a double-click
-/// on the row's own text still selects the row, cue or no cue.
-#[test]
-fn a_double_click_on_the_text_still_selects_the_row() {
-    let mut app = cue_app(1, 10);
+    // Re-read the column: the fold shortened the row, and the suffix is
+    // appended to the text, so it slid left with it.
     let cue = drawn_column(&mut app, " [10/50]");
-    let row = app.main_area.y;
-    double_click_at(&mut app, cue - 1, row);
-    assert!(
-        app.selection_span().is_some(),
-        "the last character of the text is still the text zone"
+    app.last_click = None;
+    double_click_at(&mut app, cue + 2, row);
+    assert_eq!(
+        app.override_target,
+        Some(0),
+        "the cue zone opens the pane instead"
     );
-    assert!(app.override_target.is_none());
+    assert!(app.folded.contains(0), "and folds nothing further");
 }
 
 /// Spec 0284 S6: a pair must agree on its zone. Two clicks in quick
@@ -1276,7 +1337,7 @@ fn a_click_on_the_text_then_on_the_cue_is_not_a_pair() {
     click_at(&mut app, text, row);
     click_at(&mut app, cue + 2, row);
     assert!(app.override_target.is_none(), "text then cue is not a pair");
-    assert!(app.selection_span().is_none());
+    assert!(!app.folded.contains(0), "and neither zone's gesture ran");
 
     // ...and the other way round. From a cleared slate, since the click
     // that just landed was itself on the cue and pairing with it is the
@@ -1285,7 +1346,7 @@ fn a_click_on_the_text_then_on_the_cue_is_not_a_pair() {
     click_at(&mut app, cue + 2, row);
     click_at(&mut app, text, row);
     assert!(app.override_target.is_none(), "cue then text is not either");
-    assert!(app.selection_span().is_none());
+    assert!(!app.folded.contains(0));
 
     // Two clicks that do agree on the zone still pair.
     app.last_click = None;
@@ -1350,7 +1411,7 @@ fn a_pending_cue_is_a_target_too() {
 /// A row that draws no suffix offers no target there — the target is
 /// exactly what is on screen. The columns past such a row's text are
 /// the caret track's own right-hand zone (spec 0194 S1), so a
-/// double-click on them selects the row, as everywhere else in the text.
+/// double-click on them folds the row, as everywhere else in the text.
 #[test]
 fn a_row_with_no_cue_has_no_target() {
     let mut app = message_node_app();
@@ -1363,7 +1424,7 @@ fn a_row_with_no_cue_has_no_target() {
     double_click_at(&mut app, past_the_text, row);
     assert!(app.override_target.is_none());
     assert!(
-        app.selection_span().is_some(),
+        app.folded.contains(0),
         "with no control there, the row's own double-click stands"
     );
 }

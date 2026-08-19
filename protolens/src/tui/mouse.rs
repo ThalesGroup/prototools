@@ -12,7 +12,8 @@ use super::*;
 /// cue beside it is two single clicks, not a gesture.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum ClickZone {
-    /// The row's own text, whose double-click selects the line.
+    /// The row's own text, whose double-click folds the node it
+    /// belongs to (spec 0333 S1).
     Text,
     /// The heat cue's `[…]` suffix, whose double-click opens the
     /// override selection pane.
@@ -359,36 +360,51 @@ impl App {
                 // the selection its caret motion built; a plain single
                 // click deselects everything; a double-click on a line's
                 // text (recognized by the `Down` handler above, same
-                // line, within `DOUBLE_CLICK_THRESHOLD`) selects the
-                // whole row it landed on.
+                // line, within `DOUBLE_CLICK_THRESHOLD`) folds or
+                // unfolds the node that line belongs to.
                 //
-                // The double-click is the one mouse gesture that names a
-                // *line* rather than a character, which is why it says so
-                // here rather than relying on where the pointer happened
-                // to be: `Down` anchored on the clicked character, and a
-                // second click on the same character would otherwise
-                // select just that character.
+                // Spec 0333 S1: the text zone's double-click is `z`. The
+                // fold marker is the only other way in from the mouse,
+                // and it is two columns wide at the far left of a row
+                // that may be indented forty — so the pane's most common
+                // action made the reader travel to the margin and back,
+                // while the row they meant was under the pointer
+                // already. It costs the row selection that used to be
+                // here (spec 0129), because one zone means one thing;
+                // the drag is what says *this span*, and says it better.
                 //
-                // It selects, and does nothing else. It used to also act
-                // as the `t`/`o` smart proxy `Enter` is (spec 0139), but
-                // a gesture that both selects text and opens a side pane
-                // is two gestures wearing one name — and the pane is the
-                // more disruptive of the two to get by accident.
+                // The clear-then-toggle is `z`'s own pair of steps in
+                // `z`'s own order: `handle_key` drops the selection for
+                // every key that is not one of the four selection keys.
+                // No positioning step is needed — the first click of the
+                // pair put the caret on the row, and
+                // `toggle_cursor_fold` acts on the cursor. A leaf
+                // answers "not foldable", exactly as `z` does (S2): the
+                // gesture is `z`, including when `z` refuses.
                 //
-                // On the heat cue it is the other way round (spec 0284
+                // On the heat cue it means something else (spec 0284
                 // S4). The cue asks *some other type fits these bytes
                 // better*, and the override pane is the answer, so a
                 // double-click there opens it and selects nothing — the
                 // row's text is not what was pointed at, and spec 0242
-                // S11 already puts the suffix in no selection. The
-                // first click of the pair has put the caret on that
-                // line, and `toggle_override` acts on the cursor, so the
-                // gesture needs no positioning step of its own. Its
+                // S11 already puts the suffix in no selection. Its
                 // close arm is unreachable from here: with the pane open
                 // `main_interactive` is false and this whole block is
                 // skipped.
                 MouseEventKind::Up(MouseButton::Left) => match self.pending_double_click {
-                    Some(ClickZone::Text) => self.select_current_line(),
+                    // Spec 0333 S3: a pair that dragged is not the
+                    // gesture, and the test needs no new state. `Down`
+                    // has just cleared `select_engaged`, and within a
+                    // button-down the only writer is `drag_caret_to` —
+                    // so here it *is* "a drag arrived since the press".
+                    // The drag's selection is left standing untouched.
+                    Some(ClickZone::Text) if !self.select_engaged => {
+                        self.clear_selection();
+                        self.toggle_cursor_fold();
+                    }
+                    // Unguarded, unlike the text zone above (N2):
+                    // nothing in the suffix is selectable, so a drag out
+                    // of it expresses nothing to protect.
                     Some(ClickZone::Cue) => {
                         self.clear_selection();
                         self.toggle_override();
@@ -397,7 +413,7 @@ impl App {
                     // drop the anchor it armed rather than leave it
                     // standing.
                     None if !self.select_engaged => self.clear_selection(),
-                    None => {}
+                    _ => {}
                 },
                 _ => {}
             }

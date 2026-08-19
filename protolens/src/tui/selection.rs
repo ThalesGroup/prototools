@@ -78,18 +78,6 @@ impl App {
         self.select_engaged = false;
     }
 
-    /// Spec 0129 §G1: select the caret's whole row, which is what a
-    /// double-click means — the one mouse gesture that names a line
-    /// rather than a character. Expressed as an ordinary selection, so
-    /// the highlight and `Ctrl-c` need know nothing about it: the anchor
-    /// goes to the row's first character and the caret to its last.
-    pub(super) fn select_current_line(&mut self) {
-        self.caret_to_line_start();
-        self.select_anchor = Some(self.cursor_pos());
-        self.select_engaged = true;
-        self.caret_to_line_end();
-    }
-
     /// Spec 0242 S4's "anchor if unanchored": the first `Shift`-motion
     /// pins the selection where the caret already was; later ones only
     /// move the caret. Either way the motion engages the selection — a
