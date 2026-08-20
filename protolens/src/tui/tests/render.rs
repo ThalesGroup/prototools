@@ -1004,11 +1004,17 @@ fn main_statusline_omits_the_ruler_when_a_side_pane_is_open() {
     );
 }
 
-/// 2026-07-19 feedback item 7: the main pane's local statusline shows
-/// the full path as given on the command line (`App::new`'s
-/// `blob_path` argument), not just the short filename.
+/// The main pane's local statusline names the blob by its **file
+/// name**, not by the path it was given on the command line.
+///
+/// Reverses 2026-07-19 feedback item 7, which asked for the full path,
+/// on 2026-08-20: the directories cannot change during a session, so
+/// they say the same thing on every frame while crowding out the part
+/// that does change — and being the head of the row, they are also the
+/// first thing spec 0193 S3's truncation drops, so the row paid for
+/// them precisely when it could least afford to.
 #[test]
-fn main_statusline_shows_the_full_command_line_path_not_just_the_filename() {
+fn main_statusline_names_the_blob_by_its_file_name_not_its_path() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
     app.cursor = inner_idx;
     app.blob_path = PathBuf::from("some/nested/dir/test.pb");
@@ -1022,8 +1028,13 @@ fn main_statusline_shows_the_full_command_line_path_not_just_the_filename() {
         .map(|x| buffer[(x, statusline_row)].symbol().to_string())
         .collect();
     assert!(
-        row_text.contains("some/nested/dir/test.pb"),
-        "the statusline must show the full command-line path: {row_text:?}"
+        row_text.contains("test.pb"),
+        "the statusline must name the blob: {row_text:?}"
+    );
+    assert!(
+        !row_text.contains("some/nested/dir"),
+        "and must not spend the row on directories that cannot change: \
+         {row_text:?}"
     );
 }
 
@@ -1374,26 +1385,40 @@ fn margin_cells(
     out
 }
 
-/// The drawn bar cells that carry spec 0334 S3's `DIM`, or those that do
-/// not — which is how a test names the caret node's own bar apart from
-/// its ancestors', the two now being the same glyph in the same field.
-fn tier_bar_cells_dim(
+/// Whether a drawn symbol is a fold-column bar of *either* weight, for
+/// the tests that are about the bar's position rather than its rank.
+fn is_bar(symbol: &str) -> bool {
+    symbol.chars().eq([crate::tui::render::TIER_BAR_GLYPH])
+        || symbol.chars().eq([crate::tui::render::NEAR_BAR_GLYPH])
+}
+
+/// The drawn bar cells belonging to an **ancestor** of the caret node,
+/// or those belonging to the node the caret is innermost inside — which
+/// is how a test names the two apart, both being in the same field.
+///
+/// The rank rides on the glyph's weight (2026-08-20): light `│` for an
+/// ancestor, heavy `┃` for the near one. It used to ride on
+/// `Modifier::DIM` plus a blend toward the page, which stopped working
+/// when `Status::Unbaked` became a neutral — see `theme.rs`'s
+/// `unbaked_is_a_neutral_and_not_a_hue`.
+///
+/// Keyed on the glyph and **never on the column**: three of the tests
+/// below have the column itself under test, and keying on it would make
+/// them agree with the implementation for free.
+fn tier_bar_cells_far(
     app: &App,
     terminal: &Terminal<TestBackend>,
-    dim: bool,
+    far: bool,
 ) -> Vec<(u16, u16, Color)> {
-    let glyph = crate::tui::render::TIER_BAR_GLYPH.to_string();
-    let buffer = terminal.backend().buffer();
-    let mut out = Vec::new();
-    for y in app.main_area.y..app.main_area.y + app.main_area.height {
-        for x in app.main_area.x..app.main_area.x + app.main_area.width {
-            let cell = &buffer[(x, y)];
-            if cell.symbol() == glyph && cell.modifier.contains(Modifier::DIM) == dim {
-                out.push((x, y, cell.fg));
-            }
-        }
-    }
-    out
+    margin_cells(
+        app,
+        terminal,
+        if far {
+            crate::tui::render::TIER_BAR_GLYPH
+        } else {
+            crate::tui::render::NEAR_BAR_GLYPH
+        },
+    )
 }
 
 /// Spec 0318 S7: the previewed node keeps its own fold toggle on the
@@ -1405,9 +1430,9 @@ fn tier_bar_cells_dim(
 /// drawn on — so covering it with the bar would take it away entirely.
 ///
 /// The bar's color answers one question, so it has two states: default
-/// foreground when the preview is the whole node, violet when it is not.
-/// `Clean` and `Ragged` are two decisions in `preview_truncate` and one
-/// answer here.
+/// foreground when the preview is the whole node, `Status::Unbaked`'s
+/// gray when it is not. `Clean` and `Ragged` are two decisions in
+/// `preview_truncate` and one answer here.
 #[test]
 fn overlay_rows_draw_the_tier_bar_below_the_previewed_nodes_triangle() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
@@ -1427,10 +1452,11 @@ fn overlay_rows_draw_the_tier_bar_below_the_previewed_nodes_triangle() {
         app.preview_overlay.as_mut().unwrap().tier = tier;
         terminal.draw(|frame| app.render(frame)).unwrap();
 
-        // Spec 0334 N2: the overlay's bar is the only *undimmed* one on
-        // its rows. The committed rows around it now carry the caret
-        // node's ancestors' dimmed bars, which this test is not about.
-        let cells = tier_bar_cells_dim(&app, &terminal, false);
+        // Spec 0334 N2: the overlay's is the only *heavy* bar on screen.
+        // The committed rows around it carry the caret node's
+        // ancestors', which are light and which this test is not about;
+        // the caret node's own heavy bar is under the overlay.
+        let cells = tier_bar_cells_far(&app, &terminal, false);
         assert_eq!(
             cells.len(),
             row_count - 1,
@@ -1505,9 +1531,9 @@ fn a_previewed_leaf_keeps_its_anomaly_mark() {
     let (mx, my, fg) = marks[0];
     assert_eq!(fg, want, "and in the status hue");
 
-    // Undimmed: spec 0334 puts the caret's ancestors' bars on the
+    // Heavy: spec 0334 puts the caret's ancestors' light bars on the
     // committed rows around the overlay, and this is about the overlay.
-    let bars = tier_bar_cells_dim(&app, &terminal, false);
+    let bars = tier_bar_cells_far(&app, &terminal, false);
     assert_eq!(
         bars.len(),
         row_count - 1,
@@ -1546,7 +1572,7 @@ fn overlay_fold_column_is_free_at_indent_one() {
     let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
     terminal.draw(|frame| app.render(frame)).unwrap();
 
-    let cells = tier_bar_cells_dim(&app, &terminal, false);
+    let cells = tier_bar_cells_far(&app, &terminal, false);
     assert_eq!(
         cells.len(),
         row_count - 1,
@@ -1593,7 +1619,7 @@ fn the_current_node_wears_a_bar() {
     assert!(total >= 3, "the fixture's node must have an interior");
 
     let terminal = drawn_frame(&mut app, 120, 24);
-    let bars = tier_bar_cells_dim(&app, &terminal, false);
+    let bars = tier_bar_cells_far(&app, &terminal, false);
     assert_eq!(
         bars.len(),
         total - 2,
@@ -1628,19 +1654,19 @@ fn the_current_node_wears_a_bar() {
 /// node's extent *is* the row you are on — and a leaf has
 /// `lines_total == 1` and likewise gets none.
 ///
-/// What the caret node contributing nothing no longer means is that
-/// nothing is undimmed. The undimmed bar is the *nearest* one, not the
-/// caret node's, so it falls through to the nearest ancestor that has
-/// one — which is the point of the rule: the reader keeps a "you are
-/// here" mark on exactly the rows where the caret node cannot supply
-/// one itself.
+/// What the caret node contributing nothing no longer means is that no
+/// bar is heavy. The heavy bar is the *nearest* one, not the caret
+/// node's, so it falls through to the nearest ancestor that has one —
+/// which is the point of the rule: the reader keeps a "you are here"
+/// mark on exactly the rows where the caret node cannot supply one
+/// itself.
 ///
 /// The fold target has to be a node with a **sibling**. Folding an only
 /// child collapses its parent to a header and a brace, which has no
 /// interior either, and the fall-through then has nothing to land on —
 /// true, but it tests the empty case rather than this one.
 #[test]
-fn a_folded_node_hands_its_undimmed_bar_to_the_nearest_ancestor() {
+fn a_folded_node_hands_its_heavy_bar_to_the_nearest_ancestor() {
     let mut app = nested_message_set_fixture();
     let target = (0..app.tree.len())
         .find(|&i| {
@@ -1658,22 +1684,22 @@ fn a_folded_node_hands_its_undimmed_bar_to_the_nearest_ancestor() {
     assert!(
         app.tree[parent].lines_total >= 3,
         "the parent must keep an interior across the fold, or there is \
-         no nearest ancestor for the undimmed bar to fall through to"
+         no nearest ancestor for the heavy bar to fall through to"
     );
 
     let terminal = drawn_frame(&mut app, 120, 24);
-    let undimmed = tier_bar_cells_dim(&app, &terminal, false);
+    let near = tier_bar_cells_far(&app, &terminal, false);
     assert_eq!(
-        undimmed_columns(&undimmed),
+        distinct_columns(&near),
         1,
         "a collapsed node draws no bar of its own, so its parent's is \
-         the one undimmed bar: {undimmed:?}"
+         the one heavy bar: {near:?}"
     );
 }
 
 /// How many distinct columns a set of drawn bar cells occupies — one
 /// bar runs down several rows, so counting cells would count rows.
-fn undimmed_columns(cells: &[(u16, u16, Color)]) -> usize {
+fn distinct_columns(cells: &[(u16, u16, Color)]) -> usize {
     let mut columns: Vec<u16> = cells.iter().map(|&(x, ..)| x).collect();
     columns.sort_unstable();
     columns.dedup();
@@ -1682,9 +1708,10 @@ fn undimmed_columns(cells: &[(u16, u16, Color)]) -> usize {
 
 /// Spec 0334 G1/G2/S1/S2/S3, test plan item 3: with the caret two levels
 /// down, each ancestor draws a bar of its own — in its own column,
-/// strictly left of the caret node's, over its own rows, dimmed.
+/// strictly left of the caret node's, over its own rows, in the light
+/// glyph.
 #[test]
-fn every_ancestor_wears_a_dimmer_bar() {
+fn every_ancestor_wears_a_lighter_bar() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
     app.cursor = inner_idx;
     // `>= 3`, not `>= 2`: a header and a closing brace with no interior
@@ -1699,17 +1726,17 @@ fn every_ancestor_wears_a_dimmer_bar() {
     );
 
     let terminal = drawn_frame(&mut app, 120, 24);
-    let own = tier_bar_cells_dim(&app, &terminal, false);
-    let dimmed = tier_bar_cells_dim(&app, &terminal, true);
+    let own = tier_bar_cells_far(&app, &terminal, false);
+    let far = tier_bar_cells_far(&app, &terminal, true);
     let own_column = own.first().expect("the caret node draws a bar").0;
 
-    let mut columns: Vec<u16> = dimmed.iter().map(|&(x, ..)| x).collect();
+    let mut columns: Vec<u16> = far.iter().map(|&(x, ..)| x).collect();
     columns.sort_unstable();
     columns.dedup();
     assert_eq!(
         columns.len(),
         ancestors.len(),
-        "one column per ancestor: {dimmed:?}"
+        "one column per ancestor: {far:?}"
     );
 
     for (&idx, &x) in ancestors.iter().zip(columns.iter().rev()) {
@@ -1717,16 +1744,12 @@ fn every_ancestor_wears_a_dimmer_bar() {
             x < own_column,
             "an ancestor's column is left of the caret's"
         );
-        // Two adjustments, both in `bar_style`: an ancestor with no
-        // status color of its own falls back to an explicit `DarkGray`
-        // rather than the terminal's default foreground, and whatever
-        // color it ends up with is blended toward the page, since most
-        // terminals ignore `Modifier::DIM` on a 24-bit foreground.
-        let want = crate::theme::dimmed(
-            app.margin_glyph_color(Some(idx)).unwrap_or(Color::DarkGray),
-            app.theme,
-        );
-        let rows: Vec<u16> = dimmed
+        // The color is the owner's status and nothing else — being far
+        // takes nothing off it. `Color::Reset` is what a cell carries
+        // when `bar_style` set no foreground, which is the `Ok` case
+        // and so the common one.
+        let want = app.margin_glyph_color(Some(idx)).unwrap_or(Color::Reset);
+        let rows: Vec<u16> = far
             .iter()
             .filter(|&&(bx, ..)| bx == x)
             .map(|&(_, y, fg)| {
@@ -1750,9 +1773,9 @@ fn every_ancestor_wears_a_dimmer_bar() {
 /// no bar of its own, and the walk carries on past it, so every ancestor
 /// still draws one.
 ///
-/// The nearest of those ancestors is now the undimmed bar — the leaf
-/// having none to be undimmed — and the ones beyond it stay dimmed, so
-/// the path is still read innermost-outward.
+/// The nearest of those ancestors is now the heavy bar — the leaf
+/// having none to be heavy — and the ones beyond it stay light, so the
+/// path is still read innermost-outward.
 #[test]
 fn a_bar_on_a_leaf_comes_from_its_ancestors() {
     let (mut app, _inner_idx, id_idx) = type_as_fixture();
@@ -1760,16 +1783,16 @@ fn a_bar_on_a_leaf_comes_from_its_ancestors() {
     assert!(app.first_child(id_idx).is_none(), "`id` must be a leaf");
 
     let terminal = drawn_frame(&mut app, 120, 24);
-    let undimmed = tier_bar_cells_dim(&app, &terminal, false);
+    let near = tier_bar_cells_far(&app, &terminal, false);
     assert_eq!(
-        undimmed_columns(&undimmed),
+        distinct_columns(&near),
         1,
-        "the leaf's nearest bracketed ancestor supplies the one undimmed \
-         bar: {undimmed:?}"
+        "the leaf's nearest bracketed ancestor supplies the one heavy \
+         bar: {near:?}"
     );
     assert!(
-        !tier_bar_cells_dim(&app, &terminal, true).is_empty(),
-        "and the rest of the path up to the root is still drawn, dimmed"
+        !tier_bar_cells_far(&app, &terminal, true).is_empty(),
+        "and the rest of the path up to the root is still drawn, light"
     );
 }
 
@@ -1829,10 +1852,10 @@ fn a_child_marker_outranks_the_bar() {
             triangles += 1;
             continue;
         }
-        assert_eq!(
-            symbol,
-            crate::tui::render::TIER_BAR_GLYPH.to_string(),
-            "row {y} of the cursor node draws its own marker or the bar"
+        assert!(
+            is_bar(&symbol),
+            "row {y} of the cursor node draws its own marker or the bar, \
+             not {symbol:?}"
         );
     }
     assert!(
@@ -1848,8 +1871,8 @@ fn a_child_marker_outranks_the_bar() {
 /// Only reachable at `--indent 1`, where `marker_column` floors: with
 /// the caret on a depth-1 node, its bar and the root's both want column
 /// 0. Every row of the caret node must show the caret node's — the
-/// undimmed one — and the root's dimmed bar must appear only on the rows
-/// the caret node does not cover, which is what says it was suppressed
+/// heavy one — and the root's light bar must appear only on the rows the
+/// caret node does not cover, which is what says it was suppressed
 /// rather than never drawn.
 #[test]
 fn the_nearer_bar_wins_a_shared_column() {
@@ -1867,8 +1890,8 @@ fn the_nearer_bar_wins_a_shared_column() {
         .first()
         .expect("the root has a triangle")
         .0;
-    let at = |dim: bool| -> Vec<u16> {
-        tier_bar_cells_dim(&app, &terminal, dim)
+    let at = |far: bool| -> Vec<u16> {
+        tier_bar_cells_far(&app, &terminal, far)
             .iter()
             .filter(|&&(x, ..)| x == column)
             .map(|&(_, y, _)| y)
@@ -1962,7 +1985,7 @@ fn a_wire_row_with_no_bytes_still_carries_the_bars() {
     };
     let bar_columns = |y: u16| -> Vec<u16> {
         (app.main_area.x..app.main_area.x + app.main_area.width)
-            .filter(|&x| buffer[(x, y)].symbol() == crate::tui::render::TIER_BAR_GLYPH.to_string())
+            .filter(|&x| is_bar(buffer[(x, y)].symbol()))
             .collect()
     };
 
@@ -1992,10 +2015,10 @@ fn a_wire_row_with_no_bytes_still_carries_the_bars() {
 /// and there are more of them than `document_rows` — which is what says
 /// the wire rows were drawn through rather than skipped.
 ///
-/// The undimmed ones: spec 0334's ancestor bars run down columns of
-/// their own, and this is about the caret node's (or the preview's).
+/// The heavy ones: spec 0334's ancestor bars run down columns of their
+/// own, and this is about the caret node's (or the preview's).
 fn assert_contiguous_bars(app: &App, terminal: &Terminal<TestBackend>, document_rows: usize) {
-    let bars = tier_bar_cells_dim(app, terminal, false);
+    let bars = tier_bar_cells_far(app, terminal, false);
     assert!(
         bars.len() > document_rows,
         "the wire rows must carry the bar too: {} bar(s) for {document_rows} \
@@ -2240,7 +2263,7 @@ fn a_defect_tints_the_fold_marker_of_every_node_above_it() {
     // is about which *triangles* the color reaches.
     let tinted: Vec<_> = marked_cells(&app, &terminal, |s| s.fg == Some(want))
         .into_iter()
-        .filter(|(_, sym)| sym != " " && sym != &render::TIER_BAR_GLYPH.to_string())
+        .filter(|(_, sym)| sym != " " && !is_bar(sym))
         .collect();
     // The root and `inner {` — every foldable node on the path.
     let glyph = render::FOLD_GLYPH_OPEN.to_string();
@@ -2444,20 +2467,20 @@ fn row_content_and_row_spans_agree_byte_for_byte() {
         // hover hit tests read `row_content` for. Put back and the two
         // agree byte for byte, as they must.
         //
-        // Spec 0334 S1 puts more than one of them on a row, and the
+        // Spec 0334 S1 puts more than one of them on a row, and either
         // glyph is three bytes standing in for one blank — so the
         // second bar's offset in `drawn` runs two bytes ahead of its
         // offset in `content` per bar already passed.
-        let bar = render::TIER_BAR_GLYPH.to_string();
+        let bars = [render::TIER_BAR_GLYPH, render::NEAR_BAR_GLYPH];
         let content = app.row_content(row);
-        for (seen, (at, _)) in drawn.match_indices(&bar).enumerate() {
+        for (seen, (at, _)) in drawn.match_indices(bars).enumerate() {
             assert_eq!(
                 content.as_bytes().get(at - 2 * seen),
                 Some(&b' '),
                 "row {i}: the bar may only stand where the margin was blank"
             );
         }
-        assert_eq!(drawn.replace(&bar, " "), content, "row {i} disagrees");
+        assert_eq!(drawn.replace(bars, " "), content, "row {i} disagrees");
     }
 }
 

@@ -31,8 +31,9 @@ pub enum Status {
     /// **The rank looks wrong and is right.** An unbaked subtree might
     /// hide an `Invalid`, so ranking it just *above* `Ok` lets a known
     /// bad sibling still win the fold toggle's color, while "everything
-    /// known is fine, something has not been looked at" reads violet —
-    /// provisional. What it must never do is claim `Ok`, because that
+    /// known is fine, something has not been looked at" reads as the
+    /// neutral gray — provisional, an answer not yet given rather than
+    /// a bad one. What it must never do is claim `Ok`, because that
     /// would make spec 0247's promise — that a toggle carries the worst
     /// news below it — simply false over an auto-fold.
     Unbaked = 1,

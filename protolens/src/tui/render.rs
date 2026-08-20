@@ -147,6 +147,26 @@ pub(super) const ANOMALY_GLYPH: char = '◆';
 /// rule rather than as a filled cell.
 pub(super) const TIER_BAR_GLYPH: char = '│';
 
+/// The bar of the node the caret is innermost inside — the one bar on
+/// screen that is not an ancestor's.
+///
+/// A box-drawing **heavy** vertical (U+2503): the same width class and
+/// the same center alignment as `TIER_BAR_GLYPH`, so the two stack in
+/// one column without shifting. Heavier for the near bar rather than
+/// thinner for the far ones, because `│` is already the lightest
+/// vertical in box-drawing and anything genuinely thinner (`▏`
+/// U+258F) is a block element, which fonts hang on the cell's left
+/// edge instead of its center.
+///
+/// Weight carries the near/far rank that spec 0334 gave to a blend
+/// toward the page plus `Modifier::DIM`. Luma could not keep carrying
+/// it once `Status::Unbaked` became a neutral gray: dimming a gray
+/// moves it along the very axis the *uncolored* bars already occupy,
+/// and a dimmed `#8C8C8C` lands on top of the `DarkGray` an `Ok`
+/// ancestor wears. A hue survives being dimmed because the hue still
+/// names it; a gray has nothing left to be recognized by.
+pub(super) const NEAR_BAR_GLYPH: char = '┃';
+
 /// Spec 0328 S1/S2 and 0334 S1: where the caret node's bar and each of
 /// its ancestors' run, and under which document shape and caret they
 /// were worked out.
@@ -178,11 +198,13 @@ struct CursorBar {
     /// triangle sits in (S1). Also a byte offset into any row's fold
     /// margin, which is spaces up to and including it.
     column: usize,
-    /// Whether this bar is dimmed. Exactly one bar on screen is not:
-    /// the **nearest** one to the caret, which is the caret node's own
-    /// when it has one and otherwise the nearest ancestor's. See
-    /// [`App::compute_cursor_bars`].
-    dim: bool,
+    /// Whether this bar belongs to an ancestor rather than to the
+    /// innermost node the caret is inside. Exactly one bar on screen is
+    /// not `far`: the **nearest** one to the caret, which is the caret
+    /// node's own when it has one and otherwise the nearest ancestor's.
+    /// See [`App::compute_cursor_bars`]. It picks the glyph and nothing
+    /// else; the color is the owner's status — see [`App::bar_style`].
+    far: bool,
 }
 
 impl CursorBar {
@@ -205,6 +227,16 @@ impl CursorBar {
     /// the brace itself, for the reason [`CursorBar::covers`] gives.
     fn covers_wire(&self, line: usize) -> bool {
         line >= self.header && line + 1 < self.end
+    }
+
+    /// Which vertical to draw: heavy for the node the caret is
+    /// innermost inside, light for each ancestor above it.
+    fn glyph(&self) -> char {
+        if self.far {
+            TIER_BAR_GLYPH
+        } else {
+            NEAR_BAR_GLYPH
+        }
     }
 }
 
@@ -1048,7 +1080,7 @@ impl App {
                 // Spec 0260 S2: a node the bake has not reached is not a
                 // region the reader collapsed, it is one nobody has
                 // looked inside, and the summary is where that shows.
-                // The whole brace pair takes the color — a violet
+                // The whole brace pair takes the color — a grayed
                 // `... }` beside a grammar-colored `{` reads as two
                 // things when the point is that the region is one — so
                 // the opening brace is cut from the segments and
@@ -1063,7 +1095,7 @@ impl App {
         }
 
         // Spec 0328 S6/S7: a preview that was cut says where it stops,
-        // on its last content row and in the bar's own violet. A
+        // on its last content row and in the bar's own color. A
         // display insertion, like the collapse summary above: spec 0318
         // N4's "every row is grammatical prototext" is about
         // `window_text`, the raw line the highlighter parses, and
@@ -1167,8 +1199,8 @@ impl App {
         }
 
         if let Some(line) = row.committed_line() {
-            for (column, style) in self.bars_on_row(&margin, line, false) {
-                marks.push((column..column + 1, TIER_BAR_GLYPH.to_string(), style));
+            for (column, glyph, style) in self.bars_on_row(&margin, line, false) {
+                marks.push((column..column + 1, glyph.to_string(), style));
             }
         }
 
@@ -1212,7 +1244,7 @@ impl App {
     ///   The cache is ordered nearest-first, so keeping the first
     ///   claimant is that rule. It is also what keeps the returned
     ///   columns distinct, which the splice in `margin_spans` needs.
-    fn bars_on_row(&self, margin: &str, line: usize, wire: bool) -> Vec<(usize, Style)> {
+    fn bars_on_row(&self, margin: &str, line: usize, wire: bool) -> Vec<(usize, char, Style)> {
         // Collected under the borrow, styled outside it: the color comes
         // from `status_of`, which tracks a node's heat and so must not
         // be frozen into the cache.
@@ -1236,48 +1268,38 @@ impl App {
                 .filter(|b| margin.as_bytes().get(b.column) == Some(&b' '))
                 .collect()
         };
-        let mut out: Vec<(usize, Style)> = Vec::with_capacity(claimants.len());
+        let mut out: Vec<(usize, char, Style)> = Vec::with_capacity(claimants.len());
         for bar in claimants {
-            if out.iter().any(|&(column, _)| column == bar.column) {
+            if out.iter().any(|&(column, _, _)| column == bar.column) {
                 continue;
             }
-            out.push((bar.column, self.bar_style(&bar)));
+            out.push((bar.column, bar.glyph(), self.bar_style(&bar)));
         }
         out
     }
 
-    /// Spec 0334 S2/S3: a bar wears `margin_glyph_color` of *its own*
+    /// Spec 0334 S2: a bar wears `margin_glyph_color` of *its own*
     /// node — the very call that node's triangle takes its color from,
     /// so the two are the same color by construction rather than by a
-    /// second lookup that could come to disagree — and an ancestor's is
-    /// dimmed.
+    /// second lookup that could come to disagree.
     ///
-    /// A dimmed bar is taken down on both axes available, because
-    /// neither one alone covers every bar in the column:
+    /// **Near and far are not told apart here at all.** The color says
+    /// what the node's status is and the glyph says how near it is
+    /// ([`NEAR_BAR_GLYPH`]); one axis each, with no case where the two
+    /// trade places. An `Ok` node has no status color, so it draws in
+    /// the terminal's default foreground whether it is near or far.
     ///
-    /// - `Modifier::DIM` is what a terminal honors for the sixteen
-    ///   named colors and for a bar with no color at all.
-    /// - `theme::dimmed` blends the hue toward the page, which is what
-    ///   a terminal *cannot* decline. Most ignore SGR 2 on a cell
-    ///   carrying a 24-bit foreground, so the fold column's violet,
-    ///   amber and red ancestor bars were coming out at full strength
-    ///   beside the undimmed one — the very distinction being drawn.
-    ///
-    /// And where there is no color at all — `margin_glyph_color` is
-    /// `None` for an `Ok` node, which most ancestors are — the bar is
-    /// given `DarkGray` explicitly rather than left on the terminal's
-    /// default foreground, which is the text's own weight and which
-    /// `DIM` alone barely moves.
+    /// What used to take a far bar down a rank here — `theme::dimmed`
+    /// plus `Modifier::DIM` — is what put `Status::Unbaked`'s gray on
+    /// top of the `DarkGray` an `Ok` ancestor was given: dimming a
+    /// neutral moves it along the one axis the uncolored bars already
+    /// occupy, and unlike a hue it has nothing left to be recognized
+    /// by afterward.
     fn bar_style(&self, bar: &CursorBar) -> Style {
-        let color = self.margin_glyph_color(Some(bar.owner));
-        if !bar.dim {
-            return match color {
-                Some(color) => Style::default().fg(color),
-                None => Style::default(),
-            };
+        match self.margin_glyph_color(Some(bar.owner)) {
+            Some(color) => Style::default().fg(color),
+            None => Style::default(),
         }
-        let color = theme::dimmed(color.unwrap_or(Color::DarkGray), self.theme);
-        Style::default().fg(color).add_modifier(Modifier::DIM)
     }
 
     /// Brings [`App::cursor_bar`]'s memo up to date with the current
@@ -1324,7 +1346,7 @@ impl App {
         loop {
             // `!bars.is_empty()` is the whole rule: the first bar found
             // is the nearest, because the walk goes caret-outward.
-            if let Some(bar) = self.compute_bar(idx, !bars.is_empty()) {
+            if let Some(bar) = self.compute_bar(idx, /* far */ !bars.is_empty()) {
                 bars.push(bar);
             }
             match self.parent(idx) {
@@ -1361,7 +1383,7 @@ impl App {
     ///
     /// O(1) — no per-row walk up each row's ancestors, and no second
     /// definition of "in this node".
-    fn compute_bar(&self, idx: usize, dim: bool) -> Option<CursorBar> {
+    fn compute_bar(&self, idx: usize, far: bool) -> Option<CursorBar> {
         if idx >= self.tree.len() || !self.has_children(idx) || self.is_folded(idx) {
             return None;
         }
@@ -1376,7 +1398,7 @@ impl App {
             header,
             end: header + total,
             column: marker_column(text.split('\n').next()?) as usize,
-            dim,
+            far,
         })
     }
 
@@ -1395,6 +1417,12 @@ impl App {
     /// below the triangle. It says two things at once: *these rows are
     /// the preview*, which the reader would otherwise have to infer, and
     /// whether they are all of it.
+    ///
+    /// It draws [`NEAR_BAR_GLYPH`], the heavy one. A preview is the node
+    /// the reader is deciding about, so it is the nearest thing on
+    /// screen by definition — and the overlay hides that node's
+    /// committed rows, so the heavy bar it would have drawn there is not
+    /// on screen to be doubled.
     fn overlay_margin_spans(&self, margin: String, index: usize) -> Vec<Span<'static>> {
         let Some(o) = self.preview_overlay.as_ref() else {
             return vec![Span::raw(margin)];
@@ -1417,10 +1445,10 @@ impl App {
                 Some(glyph) => (glyph, self.margin_glyph_color(owner)),
                 // A previewed clean leaf has nothing to fold and
                 // nothing to warn about, so the bar starts at the top.
-                None => (TIER_BAR_GLYPH, self.preview_bar_color(o)),
+                None => (NEAR_BAR_GLYPH, self.preview_bar_color(o)),
             }
         } else {
-            (TIER_BAR_GLYPH, self.preview_bar_color(o))
+            (NEAR_BAR_GLYPH, self.preview_bar_color(o))
         };
         let mut spans = Vec::with_capacity(3);
         if at > 0 {
@@ -1460,6 +1488,7 @@ impl App {
             DisplayRow::Overlay(_) => match self.preview_overlay.as_ref() {
                 Some(o) if o.tier_column < margin.len() => vec![(
                     o.tier_column,
+                    NEAR_BAR_GLYPH,
                     match self.preview_bar_color(o) {
                         Some(color) => Style::default().fg(color),
                         None => Style::default(),
@@ -1472,14 +1501,14 @@ impl App {
         if marks.is_empty() {
             return vec![Span::raw(margin)];
         }
-        marks.sort_by_key(|&(column, _)| column);
+        marks.sort_by_key(|&(column, _, _)| column);
         let mut spans = Vec::with_capacity(2 * marks.len() + 1);
         let mut cut = 0;
-        for (column, style) in marks {
+        for (column, glyph, style) in marks {
             if column > cut {
                 spans.push(Span::raw(margin[cut..column].to_string()));
             }
-            spans.push(Span::styled(TIER_BAR_GLYPH.to_string(), style));
+            spans.push(Span::styled(glyph.to_string(), style));
             cut = column + 1;
         }
         if cut < margin.len() {
@@ -2374,7 +2403,20 @@ impl App {
         // ruler is dropped (not truncated) when the side pane is open,
         // since the main pane is only half-width then and there's rarely
         // enough room for it too — the line number stays either way.
-        let path_label = self.blob_path.display();
+        // The blob's file *name*, not the path it was named by
+        // (2026-08-20). The row's job is to say which node the caret is
+        // on; the directories leading to the blob cannot change during
+        // a session, and on a path of any depth they were spending most
+        // of the left half saying so — and being the head, they are
+        // also the first thing spec 0193 S3 drops when the row is
+        // narrow, so they were paid for exactly when there was least
+        // room. `file_name` is `None` only for a path ending in `..` or
+        // in a root, neither of which names a blob, and the whole path
+        // is a better answer there than nothing.
+        let path_label = self.blob_path.file_name().map_or_else(
+            || self.blob_path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
         // Spec 0286 S6 wants the viewport label picked out of the
         // composed row, so it is carried out of the match beside the two
         // halves rather than left inside the `format!` that built it.
@@ -2569,9 +2611,9 @@ impl App {
             // `App::not_found` qualifies its message by: while the bake
             // still owes subtrees the sweep never saw their text, so
             // "not there" is not yet a claim the search is entitled to
-            // make. Violet until it is, and the fold margin beside it
-            // is already drawing that same color against the very
-            // subtrees the answer is missing.
+            // make. `Unbaked`'s gray until it is, and the fold margin
+            // beside it is already drawing that same color against the
+            // very subtrees the answer is missing.
             let searching = matches!(self.command_kind, CommandLineKind::Search { .. })
                 && self.command_buffer.as_ref().is_some_and(|b| !b.is_empty());
             let miss = || match self.search_miss_is_conclusive(self.search_scope()) {

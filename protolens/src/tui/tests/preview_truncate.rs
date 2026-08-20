@@ -357,7 +357,7 @@ fn preview_respects_a_custom_byte_budget() {
 }
 
 /// Spec 0328 G3/S6/S7, test plan item 5: a preview that was cut says so
-/// where it stops, in the same violet its bar wears.
+/// where it stops, in the same color its bar wears.
 ///
 /// The bar's color already says *that* something was withheld, but the
 /// rendering below it ended at a closing brace like any other and the
@@ -392,7 +392,7 @@ fn a_cut_preview_ends_in_an_ellipsis() {
     let spans = app.row_spans(window[0], 0, Modifier::empty());
     let tail = spans.last().expect("the row has spans");
     assert_eq!(tail.content.as_ref(), "...", "spans: {spans:?}");
-    assert_eq!(tail.style.fg, Some(want), "in the bar's own violet");
+    assert_eq!(tail.style.fg, Some(want), "in the bar's own color");
 
     // S7: a display insertion, so the line the highlighter parses is
     // untouched. Spec 0318 N4's "every row is grammatical prototext" is

@@ -91,8 +91,8 @@ fn folding_does_not_change_any_status() {
     assert_eq!(app.status_rolled, before);
 }
 
-/// Spec 0249 S12: a bounded confirm's stops read violet, every ancestor
-/// carries it, and the bake clears it as it goes.
+/// Spec 0249 S12: a bounded confirm's stops read `Unbaked`, every
+/// ancestor carries it, and the bake clears it as it goes.
 ///
 /// Without the rung, spec 0247's promise that a toggle carries the worst
 /// news below it is false over an auto-fold — a stop's descendants are

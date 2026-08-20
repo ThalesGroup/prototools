@@ -102,7 +102,7 @@ impl App {
     /// times a pane, so the rows that replace it are final and the stops
     /// it leaves behind fall below the fold rather than into it.
     /// Spec 0249 S13: the ambient half of "the document is still
-    /// filling in" — the activity dot, in `Unbaked`'s violet, whenever
+    /// filling in" — the activity dot, in `Unbaked`'s gray, whenever
     /// anything still owes a body.
     ///
     /// This settles spec 0249's open question 4: the bake's cue lands on

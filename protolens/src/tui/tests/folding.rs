@@ -624,11 +624,11 @@ fn zero_folds_and_the_caret_still_reaches_column_zero() {
 }
 
 /// Spec 0323 G4/S5: a stop is now normally in *both* sets, and the
-/// violet margin — which reads `auto_folded` alone, via the `Unbaked`
+/// grayed margin — which reads `auto_folded` alone, via the `Unbaked`
 /// rung — must still mean "nobody has looked inside" rather than
 /// "collapsed".
 #[test]
-fn the_violet_margin_still_means_unread() {
+fn the_unbaked_margin_still_means_unread() {
     let mut app = nested_bounded(2);
     let stop = app.auto_folded.iter().next().expect("the budget stopped");
     assert!(app.is_user_folded(stop), "and spec 0323 also folded it");
@@ -644,7 +644,7 @@ fn the_violet_margin_still_means_unread() {
     assert_eq!(
         app.status_of(stop),
         Status::Ok,
-        "but no longer unread: a user fold over a baked node is not violet"
+        "but no longer unread: a user fold over a baked node is not unbaked"
     );
 }
 

@@ -1155,13 +1155,13 @@ fn search_prompt_is_yellow_while_sweeping_and_red_when_finished() {
 
 /// Spec 0272 S2. A miss taken while the bake still owes subtrees is not
 /// the claim red makes — the sweep never saw those bodies. It draws in
-/// the same violet the fold margin is using against those very
+/// the same gray the fold margin is using against those very
 /// subtrees, and turns red only once there is nothing left unread.
 ///
 /// The prompt and `App::not_found`'s message answer to one predicate,
 /// so both halves of the report are asserted here together.
 #[test]
-fn an_unbaked_document_tints_a_miss_violet_rather_than_red() {
+fn an_unbaked_document_tints_a_miss_gray_rather_than_red() {
     let mut app = target_at(2500, 2000, 0);
     app.splash = false;
     app.term_width = 120;

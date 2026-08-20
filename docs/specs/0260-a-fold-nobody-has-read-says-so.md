@@ -193,3 +193,33 @@ Three mutations, each killed:
 Nothing else moved: 812 protolens tests and the full workspace green,
 `row_content` untouched, and the existing `row_content`/`row_spans`
 byte-agreement test needed no change.
+
+## Amended 2026-08-20 — the violet is a neutral gray
+
+S1's whole argument was about finding `Unbaked` a *hue* with enough room
+on the wheel, and the answer was that there was no good room: blue,
+amber and red take 50° each, green reads as "done", and violet was what
+was left. The reframe is that `Unbaked` was never on that scale to
+begin with. It is not a judgement about the bytes — it says the render
+has not caught up, and it goes away by itself — so it takes no hue at
+all: `#8C8C8C` on both pages, luma 140, quieter than the default
+foreground an `Ok` node's mark wears and louder than the page. A hue
+that has run out rather than a hue of its own.
+
+Everything else in this spec stands, S2's whole-brace-pair insertion
+included; only the constant changed. The consequences for the record:
+
+- The three tests above are `an_unbaked_fold_is_gray`,
+  `a_hand_folded_region_is_not_gray` and
+  `a_folded_stop_the_user_also_folded_stays_gray`.
+- Test plan 6 is `every_severity_color_is_a_hue_and_not_a_tint` and no
+  longer governs `Unbaked`. What holds `Unbaked` instead is
+  `unbaked_is_a_neutral_and_not_a_hue`, which asserts the opposite —
+  `r == g == b` — plus a luma window it must sit in on *both* pages.
+- The ANSI-16 fallback gained a constraint the truecolor entry does not
+  have, and it was found by a failing test rather than by eye: the cue
+  is drawn on a folded node's braces, so a fallback equal to
+  `PunctuationBracket`'s color does not weaken it, it deletes it. Pinned
+  by `the_unbaked_fallback_is_not_the_brace_color`. The two pages take
+  different named colors — `DarkGray` on dark, `Gray` on light — because
+  "quieter than the default foreground" points opposite ways on them.

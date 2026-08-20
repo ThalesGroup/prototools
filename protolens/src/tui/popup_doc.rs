@@ -68,8 +68,8 @@ pub(super) enum DocElement {
     /// actually wearing one.
     FoldMarker { folded: bool, colored: bool },
     /// The `{ ... }` a folded node collapses to. `unread` is spec 0260
-    /// S2's violet: nobody has looked inside this region, as against a
-    /// fold the reader made.
+    /// S2's `Unbaked` color: nobody has looked inside this region, as
+    /// against a fold the reader made.
     FoldSummary { unread: bool },
     /// Spec 0322 S5: the `◆` a leaf wears in the fold column. A fifth
     /// chrome member rather than a flag on `FoldMarker`, because the

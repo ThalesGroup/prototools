@@ -801,7 +801,7 @@ fn a_folded_node_explains_its_summary() {
     }
 }
 
-/// Spec 0287 test plan 7 / S4: spec 0260's arm — a violet `{ ... }` is
+/// Spec 0287 test plan 7 / S4: spec 0260's arm — a grayed `{ ... }` is
 /// not a fold the reader made, and the box says that instead.
 #[test]
 fn an_unbaked_summary_says_nobody_has_looked() {

@@ -1111,7 +1111,9 @@ thousands of splices.
     it after the bake returns the full set. S13. *(Implemented
     2026-08-08 as `a_search_that_misses_says_how_much_it_did_not_look_
     at`, on the miss rather than on a match count — see S13's amendment.
-    The dot is `a_bake_in_progress_lights_the_dot_in_violet`, which also
+    The dot is `a_bake_in_progress_lights_the_dot_in_the_unbaked_gray`
+    — the violet became a neutral on 2026-08-20, see spec 0260's
+    amendment — which also
     pins open question 4's answer that the heat subsystem keeps the
     cell.)*
 15. `the_viewport_holds_its_node_when_a_bake_lands` — including a bake

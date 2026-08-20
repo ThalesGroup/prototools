@@ -246,12 +246,12 @@ fn baking_what_is_on_screen_first_reaches_the_same_document() {
 /// column 0 is where the bake's cue lives — open question 4 — so this
 /// asserts on that cell rather than on any new surface.
 #[test]
-fn a_bake_in_progress_lights_the_dot_in_violet() {
+fn a_bake_in_progress_lights_the_dot_in_the_unbaked_gray() {
     let (mut app, _) = repeated_message_fixture();
     app.splash = false;
     let mut terminal = ratatui::Terminal::new(TestBackend::new(80, 10)).unwrap();
     let dot = (0u16, 9u16); // column 0 of the bottom (global) row
-    let violet = theme::status_color(Status::Unbaked, app.theme);
+    let unbaked = theme::status_color(Status::Unbaked, app.theme);
 
     terminal.draw(|frame| app.render(frame)).unwrap();
     assert_eq!(
@@ -267,8 +267,8 @@ fn a_bake_in_progress_lights_the_dot_in_violet() {
     assert_eq!(terminal.backend().buffer()[dot].symbol(), ACTIVITY_GLYPH);
     assert_eq!(
         terminal.backend().buffer()[dot].style().fg,
-        violet,
-        "the same violet the unbaked fold toggles wear"
+        unbaked,
+        "the same gray the unbaked fold toggles wear"
     );
 
     // The heat subsystem keeps the cell while it is using it: the bake
@@ -276,7 +276,7 @@ fn a_bake_in_progress_lights_the_dot_in_violet() {
     app.activity_shown = Some(tiered::Tier::User);
     terminal.draw(|frame| app.render(frame)).unwrap();
     assert_eq!(terminal.backend().buffer()[dot].symbol(), ACTIVITY_GLYPH);
-    assert_ne!(terminal.backend().buffer()[dot].style().fg, violet);
+    assert_ne!(terminal.backend().buffer()[dot].style().fg, unbaked);
     app.activity_shown = None;
 
     drain(&mut app);
@@ -797,19 +797,23 @@ fn summary_colors(app: &mut App, node: usize) -> Vec<Option<Color>> {
 }
 
 /// Spec 0260 G2: a node the bake has not reached draws its whole brace
-/// pair in the `Unbaked` violet — including the opening brace, which
+/// pair in the `Unbaked` gray — including the opening brace, which
 /// would otherwise keep its grammar color and split the cue in two.
+///
+/// That this cue lands on the *braces* is what makes
+/// `the_unbaked_fallback_is_not_the_brace_color` a constraint and not a
+/// nicety.
 #[test]
-fn an_unbaked_fold_is_violet() {
+fn an_unbaked_fold_is_gray() {
     let (mut app, items) = bounded_repeated_message_fixture(3);
     app.splash = false;
-    let violet = theme::status_color(Status::Unbaked, app.theme);
-    assert!(violet.is_some(), "the fixture must run on an RGB palette");
+    let unbaked = theme::status_color(Status::Unbaked, app.theme);
+    assert!(unbaked.is_some(), "`Unbaked` always has a color");
 
     assert!(app.auto_folded.contains(items[1]), "the stop the bake owes");
     assert_eq!(
         summary_colors(&mut app, items[1]),
-        vec![violet; 7],
+        vec![unbaked; 7],
         "every character of `{{ ... }}`, the brace included"
     );
 
@@ -825,10 +829,10 @@ fn an_unbaked_fold_is_violet() {
 /// cue must mean "unread" rather than "folded". Fails if the predicate
 /// is `is_folded`.
 #[test]
-fn a_hand_folded_region_is_not_violet() {
+fn a_hand_folded_region_is_not_gray() {
     let (mut app, items) = repeated_message_fixture();
     app.splash = false;
-    let violet = theme::status_color(Status::Unbaked, app.theme);
+    let unbaked = theme::status_color(Status::Unbaked, app.theme);
     assert!(
         app.auto_folded.is_empty(),
         "nothing is owed in this fixture"
@@ -838,7 +842,7 @@ fn a_hand_folded_region_is_not_violet() {
     let colors = summary_colors(&mut app, items[1]);
     assert_eq!(colors.len(), 7);
     assert!(
-        colors.iter().all(|c| *c != violet),
+        colors.iter().all(|c| *c != unbaked),
         "a collapsed region must not claim to be an unread one: {colors:?}"
     );
 }
@@ -848,15 +852,15 @@ fn a_hand_folded_region_is_not_violet() {
 /// `auto_folded` membership is the test rather than which set folded it
 /// last.
 #[test]
-fn a_folded_stop_the_user_also_folded_stays_violet() {
+fn a_folded_stop_the_user_also_folded_stays_gray() {
     let (mut app, items) = bounded_repeated_message_fixture(3);
     app.splash = false;
-    let violet = theme::status_color(Status::Unbaked, app.theme);
+    let unbaked = theme::status_color(Status::Unbaked, app.theme);
 
     assert!(app.auto_folded.contains(items[1]));
     app.set_folded(items[1], true);
 
-    assert_eq!(summary_colors(&mut app, items[1]), vec![violet; 7]);
+    assert_eq!(summary_colors(&mut app, items[1]), vec![unbaked; 7]);
 }
 
 // ── Spec 0259: the rows on screen stay where they are ───────────────────

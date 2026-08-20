@@ -357,19 +357,28 @@ const DARK_RGB: RgbPalette = RgbPalette {
     // than the ordinary text it has to stand out from.
     tier_non_canonical: Color::Rgb(0xFF, 0xB4, 0x40), // Yellow Orange
     tier_invalid: Color::Rgb(0xFF, 0x55, 0x55),       // Sunset Orange
-    // Spec 0260 S1. The scaling above gave this one `#FFAEF8` — full
-    // value at saturation 0.318, against 0.667 to 0.749 for every other
-    // color the fold margin can wear. It arrived as a tint rather than
-    // as a hue and was reported as too close to the default foreground.
-    // Saturation is the axis that separates a color from white; there
-    // was no room on the other one, the color already being at value
-    // 1.0.
+    // Deliberately **not** a hue. Every other color the fold margin can
+    // wear is on the severity scale and answers "how wrong is this?";
+    // `Unbaked` is not on that scale and is not wrong at all — it is
+    // ephemeral, and it disappears on its own when the bake catches up.
+    // Spec 0260 S1 gave it a violet (`#D24DFF`, hue 285°) because the
+    // hue gaps around blue, amber and red left violet and green as the
+    // only free arcs and green reads as "done". Neutral gray sidesteps
+    // the scale instead of finding room on it: the reader learns "no
+    // color yet, because there is no answer yet".
     //
-    // Hue 285°, saturation 0.70, value 1.0: its neighbors' saturation,
-    // at a hue twenty degrees off the pink `#FFAEF8` reads as. Luma 118
-    // beside `tier_invalid`'s 121, so it is no dimmer in the margin
-    // than the color the palette already trusts there.
-    status_unbaked: Color::Rgb(0xD2, 0x4D, 0xFF), // Electric Purple
+    // Luma 140, i.e. below the default foreground an `Ok` node's mark
+    // wears and above the page. That ordering is the whole reading:
+    // *quieter than a node that has been rendered*, where blue, amber
+    // and red are all louder than one. It is a hue that has run out
+    // rather than a hue of its own.
+    //
+    // An RGB value rather than `Color::DarkGray` because that ordering
+    // is the point and a named color leaves it to the terminal: a
+    // palette that renders bright black at luma 75 and one that renders
+    // it at 120 tell the reader different things. The ANSI-16 fallback
+    // has to accept whichever it gets — see `status_color_in`.
+    status_unbaked: Color::Rgb(0x8C, 0x8C, 0x8C), // Suva Gray
     doc_luma: 170.0,
 };
 
@@ -386,12 +395,19 @@ const LIGHT_RGB: RgbPalette = RgbPalette {
     punctuation_bracket_list: Color::Rgb(0x04, 0x51, 0xA5), // French Blue
     punctuation_bracket_extension: Color::Rgb(0x81, 0x1F, 0x3F), // Dried Burgundy
     // Deepened from VSCode's `#BF8803`, which was the one weak anomaly
-    // mark on white: luma 138 against the violet's 53 and the red's 63,
-    // so it read as the quietest of the three while meaning more than
-    // an unbaked fold does. The other two are already deep and stand.
+    // mark on white: luma 138 against the then-violet unbaked mark's 53
+    // and the red's 63, so it read as the quietest of the three while
+    // meaning more than an unbaked fold does. The other two are already
+    // deep and stand. (The unbaked mark is now a luma-140 neutral and
+    // is *meant* to be the quietest of the four — see
+    // `status_unbaked` below.)
     tier_non_canonical: Color::Rgb(0x9C, 0x6A, 0x00), // Golden Brown
     tier_invalid: Color::Rgb(0xE5, 0x14, 0x00),       // Scarlet
-    status_unbaked: Color::Rgb(0xAF, 0x00, 0xDB),     // Violet
+    // See `DARK_RGB.status_unbaked`. The same gray serves both pages:
+    // the ordering it has to hold is against the *default foreground*,
+    // which is near-black here, and luma 140 is above that exactly as
+    // it is below the dark page's near-white.
+    status_unbaked: Color::Rgb(0x8C, 0x8C, 0x8C), // Suva Gray
     doc_luma: 85.0,
 };
 
@@ -563,14 +579,25 @@ pub fn status_color(status: Status, theme: ThemeKind) -> Option<Color> {
 fn status_color_in(status: Status, theme: ThemeKind, rgb: bool) -> Option<Color> {
     Some(match status {
         Status::Ok => return None,
-        // Spec 0249 S12's violet, measured in spec 0260. Unleveled
-        // like the tiers: the margin is its own column, and a fold
-        // nobody has read has to be visible in it.
+        // Spec 0249 S12's violet, measured in spec 0260, and a neutral
+        // gray since 2026-08-20. Unleveled like the tiers: the margin
+        // is its own column, and a fold nobody has read has to be
+        // visible in it.
+        //
+        // The two fallbacks are **not** the same named color, though
+        // the RGB entries are. What the gray has to say is *quieter
+        // than the default foreground*, and the two pages put that on
+        // opposite sides: bright black on the dark one, light gray on
+        // the light one. Both also avoid the page's
+        // `PunctuationBracket` — `Gray` on dark, `Black` on light —
+        // which matters because a collapsed node's cue is drawn on its
+        // braces, so a collision there erases the cue outright rather
+        // than merely weakening it.
         Status::Unbaked => pick(
             theme,
             rgb,
-            (DARK_RGB.status_unbaked, Color::LightMagenta),
-            (LIGHT_RGB.status_unbaked, Color::Magenta),
+            (DARK_RGB.status_unbaked, Color::DarkGray),
+            (LIGHT_RGB.status_unbaked, Color::Gray),
         ),
         Status::Unknown => unknown_color(theme, rgb),
         Status::NonCanonical => tier_color(Tier::NonCanonical, theme, rgb),
@@ -594,8 +621,8 @@ fn status_color_in(status: Status, theme: ThemeKind, rgb: bool) -> Option<Color>
 /// say anything more, and "nothing withheld" is exactly what the fold
 /// column's other scale spells `Status::Ok` — absence.
 ///
-/// The violet is `Status::Unbaked`'s, shared on purpose. In this column
-/// that violet already means "there is more here than has been
+/// The gray is `Status::Unbaked`'s, shared on purpose. In this column
+/// that gray already means "there is more here than has been
 /// rendered", which is what a cut preview is; a sixth hue in a column
 /// one glyph wide would cost more than the reuse does. Unleveled, like
 /// the tiers and `status_unbaked`, and for the same reason.
@@ -606,8 +633,8 @@ pub fn preview_bar_color(complete: bool, theme: ThemeKind) -> Option<Color> {
     Some(pick(
         theme,
         supports_rgb(),
-        (DARK_RGB.status_unbaked, Color::LightMagenta),
-        (LIGHT_RGB.status_unbaked, Color::Magenta),
+        (DARK_RGB.status_unbaked, Color::DarkGray),
+        (LIGHT_RGB.status_unbaked, Color::Gray),
     ))
 }
 
@@ -884,42 +911,6 @@ fn blended(r: u8, g: u8, b: u8, target: f32, background: f32) -> Color {
     Color::Rgb(mix(r), mix(g), mix(b))
 }
 
-/// How far a dimmed mark is blended toward the page. Enough to read as
-/// a second rank beside an undimmed one of the same hue, not so far
-/// that the hue stops being identifiable — the fold column's colors
-/// carry meaning, so a dimmed bar still has to say *which* status it is.
-const DIM_BLEND: f32 = 0.55;
-
-/// A color taken down a rank, for a mark that is present but secondary.
-///
-/// `Modifier::DIM` is the obvious way to say this and it is not enough
-/// on its own: a great many terminals apply the SGR 2 attribute only to
-/// the sixteen named colors and ignore it outright once a cell carries
-/// a 24-bit foreground. So the fold column's violet, amber and red
-/// ancestor bars came out at full strength beside the undimmed one,
-/// which is exactly the distinction they were meant to lose.
-///
-/// Blending toward the page is the part a terminal cannot decline.
-/// Callers should still add `Modifier::DIM` as well: this function
-/// returns a non-RGB color untouched, because in sixteen colors there
-/// is nothing between the named entries to blend to, and there the
-/// attribute is both all there is and reliably honored.
-pub fn dimmed(color: Color, theme: ThemeKind) -> Color {
-    let Color::Rgb(r, g, b) = color else {
-        return color;
-    };
-    let background = match theme {
-        ThemeKind::Dark => 0.0,
-        ThemeKind::Light => 255.0,
-        ThemeKind::System => system_must_be_resolved(),
-    };
-    let mix = |c: u8| {
-        let c = f32::from(c);
-        (c + (background - c) * DIM_BLEND) as u8
-    };
-    Color::Rgb(mix(r), mix(g), mix(b))
-}
-
 /// ANSI-16 fallback palette, dark (spec 0116 §9's "ANSI-16 palette"
 /// table).
 ///
@@ -1084,8 +1075,8 @@ mod caret_rgb {
     /// whose own comment calls it "Yellow Orange" — and it was read as
     /// orange, which is what it is. Nothing on the command row is
     /// leveled or sits beside an anomaly, so this hue has only the
-    /// other two prompt colors to stay clear of, and red and violet are
-    /// both a long way from 60°.
+    /// other two prompt colors to stay clear of: red is a long way from
+    /// 60°, and the unbaked neutral has no hue to clash with at all.
     pub const DARK_SEARCH_RUNNING: Color = Color::Rgb(0xFF, 0xFF, 0x4D);
     /// Light theme, the typed pattern while the sweep is still running
     /// — the same hue taken down to luma 108, which is where
@@ -1256,7 +1247,7 @@ pub fn search_unmatched_style(theme: ThemeKind) -> Style {
 /// bake still owes the document text — "not in what has been read",
 /// which is not the claim `search_unmatched_style` makes.
 ///
-/// Spec 0249 S12's `Status::Unbaked` violet rather than a fourth hue,
+/// Spec 0249 S12's `Status::Unbaked` gray rather than a fourth hue,
 /// and here the reuse is not economy: the fold margin is already drawing
 /// that color against the very subtrees this answer is missing, and the
 /// activity dot is already drawing it for the bake as a whole. The
@@ -1266,8 +1257,8 @@ pub fn search_unbaked_style(theme: ThemeKind) -> Style {
     Style::default().fg(pick(
         theme,
         supports_rgb(),
-        (DARK_RGB.status_unbaked, Color::LightMagenta),
-        (LIGHT_RGB.status_unbaked, Color::Magenta),
+        (DARK_RGB.status_unbaked, Color::DarkGray),
+        (LIGHT_RGB.status_unbaked, Color::Gray),
     ))
 }
 
@@ -1743,14 +1734,14 @@ mod tests {
         }
     }
 
-    /// Every [`Status`] the fold margin gives a color to. `Status::Ok`
-    /// is absent because it has none.
-    const MARGIN_STATUSES: [Status; 4] = [
-        Status::Unbaked,
-        Status::Unknown,
-        Status::NonCanonical,
-        Status::Invalid,
-    ];
+    /// Every [`Status`] whose fold-margin color is a **hue** — which is
+    /// to say, every one that grades how wrong a node is.
+    ///
+    /// `Status::Ok` is absent because it has no color at all, and
+    /// `Status::Unbaked` because it is deliberately a neutral and is
+    /// not on that scale. See `unbaked_is_a_neutral_and_not_a_hue`,
+    /// which is the test that holds it to that.
+    const MARGIN_HUES: [Status; 3] = [Status::Unknown, Status::NonCanonical, Status::Invalid];
 
     /// Whether a margin color is a tier's, taken whole, rather than one
     /// picked for this column. See `status_color`.
@@ -1785,22 +1776,22 @@ mod tests {
     /// color that has to sit above 185 needs a reason on the record, not
     /// a raised number.
     ///
-    /// The ceiling binds the two colors the margin *chooses*. It does
-    /// not bind the two the margin *borrows* from a tier (2026-08-18):
+    /// The ceiling binds the color the margin *chooses*. It does not
+    /// bind the two the margin *borrows* from a tier (2026-08-18):
     /// those are chosen against the document's palette, where they also
     /// have a word beside them, and the reason the margin takes them
     /// anyway is on `status_color`. `Tier::NonCanonical`'s amber is at
     /// luma 188 and would fail. The saturation floor still binds all
-    /// four — it asks whether a color is a hue at all, which is not a
+    /// three — it asks whether a color is a hue at all, which is not a
     /// question about the column.
     ///
     /// Floor and ceiling are stated rather than the values: this exists
     /// to hand the constraint to the next person choosing one of these
-    /// colors, not to pin the four they inherited.
+    /// colors, not to pin the ones they inherited.
     #[test]
-    fn every_status_color_is_a_hue_and_not_a_tint() {
+    fn every_severity_color_is_a_hue_and_not_a_tint() {
         for theme in [ThemeKind::Dark, ThemeKind::Light] {
-            for status in MARGIN_STATUSES {
+            for status in MARGIN_HUES {
                 let Some(Color::Rgb(r, g, b)) = status_color_in(status, theme, true) else {
                     panic!("{status:?} has no truecolor entry on {theme:?}");
                 };
@@ -1824,9 +1815,12 @@ mod tests {
         }
     }
 
-    /// The fold margin is a five-color scale — unstyled, violet, blue,
-    /// amber, red — and its colors have to be told apart in a single
-    /// glyph, with no second cue and nothing beside them.
+    /// The fold margin's *severity* colors — blue, amber, red — have to
+    /// be told apart in a single glyph, with no second cue and nothing
+    /// beside them.
+    ///
+    /// Unstyled and gray are the column's other two marks and are not
+    /// here: neither has a hue to measure, which is the point of both.
     ///
     /// One pair is exempt, and only that pair: `NonCanonical`'s amber
     /// and `Invalid`'s red are borrowed whole from the tiers, they are
@@ -1868,7 +1862,7 @@ mod tests {
         }
 
         for theme in [ThemeKind::Dark, ThemeKind::Light] {
-            let hues: Vec<(Status, f32)> = MARGIN_STATUSES
+            let hues: Vec<(Status, f32)> = MARGIN_HUES
                 .iter()
                 .map(|&s| {
                     let color = status_color_in(s, theme, true).expect("a margin color");
@@ -1888,6 +1882,80 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// `Status::Unbaked` is deliberately **not** on the scale the two
+    /// tests above police, and this is where that is written down.
+    ///
+    /// It is the one status that is not a judgement about the bytes. It
+    /// says the render has not caught up yet, and it goes away on its
+    /// own when the bake does; the severity colors answer *how wrong is
+    /// this?* and it has no answer to give. So it takes no hue: a
+    /// neutral, below the default foreground the margin leaves an `Ok`
+    /// node and above the page. A hue that has run out, not a hue of
+    /// its own.
+    ///
+    /// It was a violet (`#D24DFF`, hue 285°) until 2026-08-20, chosen
+    /// in spec 0260 because the 50° gaps around blue, amber and red
+    /// left only violet and green free, and green reads as *done*. A
+    /// place on a scale it was not on was the price of that.
+    ///
+    /// **Neutral, but not `Color::DarkGray`.** Nothing dims it now, so
+    /// the reason is no longer that named colors have no dimmed form:
+    /// it is that the fold column's other neutral, the `Ok` ancestor
+    /// bar, *is* the terminal's bright-black, which a user's theme puts
+    /// wherever it likes. Pinning our own value is the only thing
+    /// keeping the two apart.
+    #[test]
+    fn unbaked_is_a_neutral_and_not_a_hue() {
+        for theme in [ThemeKind::Dark, ThemeKind::Light] {
+            let Some(Color::Rgb(r, g, b)) = status_color_in(Status::Unbaked, theme, true) else {
+                panic!("Unbaked has no truecolor entry on {theme:?}");
+            };
+            assert!(
+                r == g && g == b,
+                "Unbaked on {theme:?} carries a hue: #{r:02X}{g:02X}{b:02X}",
+            );
+            let luma = 0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b);
+            assert!(
+                (100.0..=180.0).contains(&luma),
+                "Unbaked on {theme:?} has to sit between the page and the default \
+                 foreground on *both* themes, and does not: #{r:02X}{g:02X}{b:02X}, \
+                 luma {luma:.0} of 255",
+            );
+        }
+    }
+
+    /// The neutral has no truecolor to fall back on in an ANSI-16
+    /// terminal, and there it has to stay off the *brace* color in
+    /// particular.
+    ///
+    /// A node the bake has not reached wears `Unbaked` on the whole of
+    /// its `{ ... }` — brace included, so that the cue is not split in
+    /// two (`an_unbaked_fold_is_gray`). Which means the one syntax role
+    /// it is guaranteed to be drawn against is
+    /// `PunctuationBracket`. Overlap there does not weaken the cue, it
+    /// deletes it: an unbaked fold and a hand-folded one come out
+    /// identical. Caught on 2026-08-20, when the new neutral's first
+    /// dark fallback was `Color::Gray` and that is exactly what a brace
+    /// wears on the dark page.
+    ///
+    /// The two pages take *different* named colors even though they
+    /// share one RGB value, because what the gray says is "quieter than
+    /// the default foreground" and the pages put quieter on opposite
+    /// sides of it.
+    #[test]
+    fn the_unbaked_fallback_is_not_the_brace_color() {
+        for theme in [ThemeKind::Dark, ThemeKind::Light] {
+            let unbaked = status_color_in(Status::Unbaked, theme, false);
+            assert!(unbaked.is_some(), "Unbaked needs a fallback on {theme:?}");
+            assert_ne!(
+                unbaked,
+                style_for_in(SyntaxRole::PunctuationBracket, theme, false).fg,
+                "on an ANSI-16 {theme:?} terminal an unbaked fold's braces \
+                 are indistinguishable from any other braces",
+            );
         }
     }
 
