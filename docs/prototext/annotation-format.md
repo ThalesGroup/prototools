@@ -81,13 +81,17 @@ A keyword naming the binary wire type.  Emitted only for:
 **Omitted for known, well-typed non-group fields** (the wire type is
 unambiguously implied by the proto type).
 
-Valid wire types (lower case):
+Valid shapes (lower case).  Seven tokens, not five: LEN carries no type
+of its own, so the renderer reports which of its three readings the
+payload turned out to admit.
 
 | Token | Wire encoding |
 |---|---|
 | `varint` | VARINT (wire type 0) |
 | `fixed64` | FIXED64 (wire type 1) |
-| `bytes` | LEN (wire type 2) |
+| `bytes` | LEN (wire type 2), read as opaque bytes |
+| `string` | LEN (wire type 2), payload is valid UTF-8 |
+| `message` | LEN (wire type 2), payload parses as a message |
 | `fixed32` | FIXED32 (wire type 5) |
 | `group` | SGROUP/EGROUP (wire types 3/4); also emitted for known group fields |
 
@@ -347,7 +351,8 @@ proto_scalar_type := "double" | "float" | "int64" | "uint64" | "int32"
 
 -- Wire types
 wire_type         := valid_wire_type | invalid_wire_type
-valid_wire_type   := "varint" | "fixed64" | "bytes" | "fixed32" | "group"
+valid_wire_type   := "varint" | "fixed64" | "bytes" | "string" | "message"
+                  |  "fixed32" | "group"
 invalid_wire_type := "INVALID_TAG_TYPE" | "INVALID_VARINT" | "INVALID_FIXED64"
                   |  "INVALID_FIXED32"  | "INVALID_LEN"   | "TRUNCATED_BYTES"
                   |  "INVALID_PACKED_RECORDS" | "INVALID_STRING" | "INVALID_GROUP_END"

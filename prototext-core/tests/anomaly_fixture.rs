@@ -16,7 +16,15 @@ const FIXTURE: &str = include_str!("../../tests/fixtures/anomalies.pb");
 const DESCRIPTOR: &[u8] = include_bytes!("../fixtures/descriptor.pb");
 const ROOT_TYPE: &str = "google.protobuf.FileDescriptorProto";
 
-/// The tokens the renderer can emit, per spec 0226 S2.
+/// The tokens the renderer can emit, per spec 0226 S2 — **less the two
+/// shape names this fixture cannot exhibit**.
+///
+/// `push_wire` also emits `string` and `message` for a schema-blind LEN
+/// payload (spec 0341), and they are not listed here because the
+/// assertion below is an equality: a name in this list the fixture does
+/// not produce fails as loudly as one it produces that is not listed.
+/// Every anomaly here is reached through a declared field of
+/// `FileDescriptorProto`, so no LEN payload arrives without a type.
 const VOCABULARY: &[&str] = &[
     // Wire types (no tier)
     "varint",

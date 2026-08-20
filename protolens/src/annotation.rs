@@ -33,14 +33,33 @@ pub enum Tier {
 /// The wire-type names an annotation echoes. Not anomalies — this is
 /// the document's own vocabulary, quoted.
 ///
-/// Only [`vocabulary`] reads it, so like it this is test-only: the
-/// runtime classifier answers `None` for these names by not listing
-/// them, and listing them here is what lets the drift test assert that
-/// `highlights.scm` gives them the type color rather than a tier — a
-/// wire-type name is what the field *is* when no schema says otherwise,
-/// which is the slot a type name would fill.
+/// Only [`vocabulary`] and [`LEN_SHAPE_NAMES`]'s tests read it, so like
+/// them this is test-only: the runtime classifier answers `None` for
+/// these names by not listing them, and listing them here is what lets
+/// the drift test assert that `highlights.scm` gives them the type
+/// color rather than a tier — a wire-type name is what the field *is*
+/// when no schema says otherwise, which is the slot a type name would
+/// fill.
 #[cfg(test)]
 pub const WIRE_TYPE_NAMES: [&str; 5] = ["varint", "fixed64", "fixed32", "bytes", "group"];
+
+/// The other two readings of wire type 2 (spec 0341).
+///
+/// `AnnWriter::push_wire` opens a schema-blind annotation with one of
+/// **seven** names, not five: besides the wire types above it emits
+/// `string` when the payload is valid UTF-8 and `message` when it
+/// parses as one. They fill the same slot for the same reason and take
+/// the same color.
+///
+/// Kept apart from [`WIRE_TYPE_NAMES`] rather than folded into it
+/// because that list is also [`wire_type_clause`]'s domain, and that
+/// function answers "wire type *N* — …", which neither of these two is:
+/// both are wire type 2, already spoken for by `bytes`. Splitting the
+/// list keeps the hover box's lexer at the five real wire types (spec
+/// 0326 N3) while [`vocabulary`] still covers all seven, which is what
+/// the drift test needs.
+#[cfg(test)]
+pub const LEN_SHAPE_NAMES: [&str; 2] = ["string", "message"];
 
 /// [`Tier::NonCanonical`]'s members.
 ///
@@ -185,6 +204,7 @@ pub const PACK_SIZE: &str = "pack_size";
 pub fn vocabulary() -> Vec<(&'static str, Option<Tier>)> {
     WIRE_TYPE_NAMES
         .iter()
+        .chain(LEN_SHAPE_NAMES.iter())
         .map(|&k| (k, None))
         .chain(NON_CANONICAL.iter().map(|&k| (k, Some(Tier::NonCanonical))))
         .chain(INVALID.iter().map(|&k| (k, Some(Tier::Invalid))))

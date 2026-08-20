@@ -119,14 +119,19 @@
 ((annotation_word) @type
  (#any-of? @type "repeated" "required"))
 
-; A wire-type name fills the same slot when there is no schema — an
+; A shape name fills the same slot when there is no schema — an
 ; unknown or invalid field has nothing else to say what it is — so it
 ; takes the same color, and the wire row's wire type stays typed rather
 ; than going gray exactly where the bytes matter most. The INVALID_*
 ; names are not here: they are anomalies and the tiers below claim
 ; them.
+;
+; Seven names, not five: `bytes`, `string` and `message` are the three
+; readings the renderer can give wire type 2, and they occupy one slot
+; and answer one question, so they take one color (spec 0341).
 ((annotation_word) @type
- (#any-of? @type "varint" "fixed64" "fixed32" "bytes" "group"))
+ (#any-of? @type
+  "varint" "fixed64" "fixed32" "bytes" "group" "string" "message"))
 
 ; The type name itself, identified by what follows it rather than by a
 ; list the query would have to keep: a word immediately before an `=`,
@@ -148,8 +153,8 @@
 ((annotation_item (annotation_eq) . (annotation_number) @attribute))
 
 ; The severity tiers, last so they win over @type for a keyword that
-; happens to sit before an `=`. Wire-type names (varint, fixed64,
-; fixed32, bytes, group) are deliberately absent: they are the
+; happens to sit before an `=`. Shape names (varint, fixed64, fixed32,
+; bytes, string, message, group) are deliberately absent: they are the
 ; document's own vocabulary quoted back, not an anomaly, and the @type
 ; pattern above is what claims them. `pack_size` is absent for the same
 ; reason (spec 0267 S2): it counts a record's elements, which is a fact

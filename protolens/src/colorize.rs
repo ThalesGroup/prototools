@@ -483,12 +483,14 @@ mod tests {
         assert_eq!(roles_across(text, "\\\\"), vec![SyntaxRole::StringEscape]);
         // `roles_across`, not `roles_at`: since spec 0225 S12 an
         // annotation is a rule of its own, so `#@ string` is a marker
-        // and a word rather than one comment-shaped span. `string` is
-        // not in the tier vocabulary and not a declaration, so the
-        // blanket `(annotation) @comment` is all that reaches it — and
-        // the point being asserted, that the escape did not run the
-        // string on past its quote, is that no byte here is a string.
-        assert_eq!(roles_across(text, "#@ string"), vec![SyntaxRole::Comment]);
+        // and a word rather than one comment-shaped span — the marker
+        // comment-gray, the shape name typed (spec 0341). The point
+        // being asserted, that the escape did not run the string on
+        // past its quote, is that neither byte range here is a string.
+        assert_eq!(
+            roles_across(text, "#@ string"),
+            vec![SyntaxRole::Comment, SyntaxRole::Type],
+        );
     }
 
     #[test]

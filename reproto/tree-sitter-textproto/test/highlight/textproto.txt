@@ -100,6 +100,7 @@ esc: "\027\002\\"  #@ string
 #         ^ string.escape
 #             ^ string.escape
 #                  ^ comment
+#                     ^ type
 bts: "\n\004\000hello"
 # <- attribute
 #     ^ string.escape
@@ -168,6 +169,8 @@ f: 6  #@ pkg.Color(3) = 9
 #                       ^ attribute
 e: 5  #@ !!! ??? ;;; ==
 #        ^ comment
+g: 7  #@ message
+#        ^ type
 next_field: 7
 # <- attribute
 #           ^ number
