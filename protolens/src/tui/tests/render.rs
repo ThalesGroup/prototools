@@ -114,42 +114,57 @@ fn a_document_nested_to_the_wire_depth_limit_opens_and_draws() {
     // field each take a level off the top, and the walk keeps the last.
     // One more and `build_arena` refuses the input, which is a different
     // test than this one.
-    let depth = prototext_core::helpers::MAX_WIRE_DEPTH - 3;
-    let mut app = deeply_nested_app(depth);
+    //
+    // `render_overrides_inner` is recursive and fires from `App::new`,
+    // so constructing the fixture alone can overflow the test thread's
+    // default 8 MiB stack in a debug build (~11.5 KiB per frame ×
+    // 997 frames ≈ 11.5 MiB). Run the body on a thread sized for the
+    // worst case, matching `SCORING_THREAD_STACK_SIZE`'s reasoning in
+    // `sweep.rs` which faces the same bound.
+    std::thread::Builder::new()
+        .stack_size(crate::sweep::SCORING_THREAD_STACK_SIZE)
+        .spawn(|| {
+            let depth = prototext_core::helpers::MAX_WIRE_DEPTH - 3;
+            let mut app = deeply_nested_app(depth);
 
-    // Each level renders an opening line and a closing one, so the
-    // document is deep in rows as well as in structure — a fixture that
-    // decoded to a handful of lines would prove nothing about either.
-    assert!(
-        app.document_lines().len() > depth,
-        "{} lines for {depth} levels",
-        app.document_lines().len()
-    );
+            // Each level renders an opening line and a closing one, so
+            // the document is deep in rows as well as in structure — a
+            // fixture that decoded to a handful of lines would prove
+            // nothing about either.
+            assert!(
+                app.document_lines().len() > depth,
+                "{} lines for {depth} levels",
+                app.document_lines().len()
+            );
 
-    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
-    terminal.draw(|frame| app.render(frame)).unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+            terminal.draw(|frame| app.render(frame)).unwrap();
 
-    // The line-owner descent walks one level per iteration, so the
-    // deepest line is the longest walk in the program. Asked for at the
-    // very bottom, where the nesting is.
-    let last = app.document_lines().len() - 1;
-    assert!(app.line_pos(last).is_some(), "no owner for the last line");
-    assert!(app.line_pos(app.document_lines().len() / 2).is_some());
+            // The line-owner descent walks one level per iteration, so
+            // the deepest line is the longest walk in the program. Asked
+            // for at the very bottom, where the nesting is.
+            let last = app.document_lines().len() - 1;
+            assert!(app.line_pos(last).is_some(), "no owner for the last line");
+            assert!(app.line_pos(app.document_lines().len() / 2).is_some());
 
-    // To the bottom and back, folding on the way — the recursive walks
-    // are over the *visible* structure, so a fold is what makes them
-    // re-run at every depth rather than once.
-    for code in [
-        KeyCode::End,
-        KeyCode::Char(' '),
-        KeyCode::Home,
-        KeyCode::Char(' '),
-        KeyCode::Char(' '),
-        KeyCode::End,
-    ] {
-        app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
-        terminal.draw(|frame| app.render(frame)).unwrap();
-    }
+            // To the bottom and back, folding on the way — the recursive
+            // walks are over the *visible* structure, so a fold is what
+            // makes them re-run at every depth rather than once.
+            for code in [
+                KeyCode::End,
+                KeyCode::Char(' '),
+                KeyCode::Home,
+                KeyCode::Char(' '),
+                KeyCode::Char(' '),
+                KeyCode::End,
+            ] {
+                app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+                terminal.draw(|frame| app.render(frame)).unwrap();
+            }
+        })
+        .expect("thread spawn failed")
+        .join()
+        .expect("deep-nesting test panicked");
 }
 
 /// A terminal with no room in it, in every layout the program can be
@@ -1357,10 +1372,6 @@ fn margin_cells(
         }
     }
     out
-}
-
-fn tier_bar_cells(app: &App, terminal: &Terminal<TestBackend>) -> Vec<(u16, u16, Color)> {
-    margin_cells(app, terminal, crate::tui::render::TIER_BAR_GLYPH)
 }
 
 /// The drawn bar cells that carry spec 0334 S3's `DIM`, or those that do

@@ -4,7 +4,7 @@
 
 //! Spec 0285: the box a document token earns.
 
-use super::super::heat_cue::HEAT_CUE_PREVIEW;
+use super::super::heat_cue::{HEAT_ANCHOR_DEFAULT, HEAT_CUE_PREVIEW};
 use super::super::heat_worker::{HeatWorkerHandle, RangeHeatEntry};
 use super::super::popup::{HoverTarget, EXPLAIN_DWELL, HOVER_DWELL};
 use super::super::popup_doc::{annotation_type_spans, doc_lines, DocElement, SuffixShape};
@@ -37,7 +37,10 @@ fn box_at(app: &mut App, line: usize, needle: &str) -> Vec<String> {
     let hit = app
         .doc_element_at_point(column, line as u16)
         .unwrap_or_else(|| panic!("`{needle}` is a target"));
-    doc_lines(&hit).into_iter().map(|l| l.text).collect()
+    doc_lines(&hit, HEAT_ANCHOR_DEFAULT)
+        .into_iter()
+        .map(|l| l.text)
+        .collect()
 }
 
 /// Whether `needle` on row `line` names nothing the box can speak for.
@@ -67,7 +70,7 @@ fn a_modifier_is_explained_with_its_value() {
     // modifier: one token, one target.
     let value = column_of(&app, 0, "val_ohb") + "val_ohb: ".len() as u16;
     let hit = app.doc_element_at_point(value, 0).expect("still the token");
-    assert_eq!(doc_lines(&hit)[0].text, "val_ohb: 3");
+    assert_eq!(doc_lines(&hit, HEAT_ANCHOR_DEFAULT)[0].text, "val_ohb: 3");
 
     // An invalid keyword carries the other tier, and `pack_size` — a
     // landmark rather than a fault — carries neither.
@@ -97,7 +100,7 @@ fn hovering_a_leaf_diamond_names_the_tier() {
         .doc_element_at_point(app.main_area.x + render::HEAT_FIELD_WIDTH as u16, 0)
         .expect("the mark is a target");
     assert_eq!(
-        doc_lines(&hit)
+        doc_lines(&hit, HEAT_ANCHOR_DEFAULT)
             .into_iter()
             .map(|l| l.text)
             .collect::<Vec<_>>(),
@@ -450,7 +453,10 @@ fn glyph_box(app: &mut App) -> Vec<String> {
     let hit = app
         .doc_element_at_point(app.main_area.x, app.main_area.y)
         .expect("the glyph is a target");
-    doc_lines(&hit).into_iter().map(|l| l.text).collect()
+    doc_lines(&hit, HEAT_ANCHOR_DEFAULT)
+        .into_iter()
+        .map(|l| l.text)
+        .collect()
 }
 
 /// The drawn heat suffix of row 0, hit through `heat_cue_at_point`'s
@@ -481,13 +487,18 @@ fn suffix_box(app: &mut App) -> Vec<String> {
     let hit = app
         .doc_element_at_point(column, app.main_area.y)
         .expect("the suffix is a target");
-    doc_lines(&hit).into_iter().map(|l| l.text).collect()
+    doc_lines(&hit, HEAT_ANCHOR_DEFAULT)
+        .into_iter()
+        .map(|l| l.text)
+        .collect()
 }
 
 /// Spec 0287 test plan 1 / S4: the glyph's own color decides the words,
-/// so the box and the mark cannot disagree (G2).
+/// so the box and the mark cannot disagree (G2). Spec 0337 S6: the box
+/// also states the current anchor so the brightness is interpretable.
 #[test]
 fn the_heat_glyph_explains_its_color() {
+    // The default anchor is ln(144) ≈ 4.97, so exp(anchor).round() = 144.
     let mut app = cue_app(Some((50, 1)), Some(Some(10)));
     assert_eq!(
         glyph_box(&mut app),
@@ -495,6 +506,7 @@ fn the_heat_glyph_explains_its_color() {
             heat_cue::HEAT_GLYPH,
             "another type scores higher on these bytes",
             "brighter means a bigger difference",
+            "brightest at score 144 and above",
             "the [...] at the end of the row has the numbers",
         ]
     );
@@ -507,6 +519,7 @@ fn the_heat_glyph_explains_its_color() {
             heat_cue::HEAT_GLYPH,
             "another type scores exactly as well as this one",
             "brighter means a higher score",
+            "brightest at score 144 and above",
             "the [...] at the end of the row has the numbers",
         ]
     );
@@ -700,7 +713,7 @@ fn the_fold_marker_explains_which_way_it_is() {
         let hit = app
             .doc_element_at_point(column, line as u16)
             .expect("the marker is a target");
-        doc_lines(&hit)
+        doc_lines(&hit, HEAT_ANCHOR_DEFAULT)
             .into_iter()
             .map(|l| l.text)
             .collect::<Vec<_>>()
@@ -780,7 +793,10 @@ fn a_folded_node_explains_its_summary() {
         let hit = app
             .doc_element_at_point(column, line as u16)
             .unwrap_or_else(|| panic!("column {column} of the summary is a target"));
-        let lines: Vec<String> = doc_lines(&hit).into_iter().map(|l| l.text).collect();
+        let lines: Vec<String> = doc_lines(&hit, HEAT_ANCHOR_DEFAULT)
+            .into_iter()
+            .map(|l| l.text)
+            .collect();
         assert_eq!(lines, expected, "column {column}");
     }
 }
@@ -804,7 +820,10 @@ fn an_unbaked_summary_says_nobody_has_looked() {
     let hit = app
         .doc_element_at_point(column, line as u16)
         .expect("the summary is a target");
-    let lines: Vec<String> = doc_lines(&hit).into_iter().map(|l| l.text).collect();
+    let lines: Vec<String> = doc_lines(&hit, HEAT_ANCHOR_DEFAULT)
+        .into_iter()
+        .map(|l| l.text)
+        .collect();
     assert_eq!(
         lines,
         ["{ ... }", "nobody has looked inside this region yet"]

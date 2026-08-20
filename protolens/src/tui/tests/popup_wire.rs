@@ -382,7 +382,7 @@ fn a_keyword_reads_the_same_in_both_boxes() {
     let hit = app
         .doc_element_at_point(column, app.main_area.y + row)
         .expect("the keyword is a target");
-    let doc: Vec<String> = popup_doc::doc_lines(&hit)
+    let doc: Vec<String> = popup_doc::doc_lines(&hit, heat_cue::HEAT_ANCHOR_DEFAULT)
         .into_iter()
         .map(|line| line.text)
         .collect();

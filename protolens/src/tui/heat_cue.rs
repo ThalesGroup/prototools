@@ -313,9 +313,10 @@ pub(super) fn score_of(candidates: &[(String, i64)], key: &str) -> Option<i64> {
 /// 21, 34, 55, 89, 144]` as 11 ascending boundaries, partitioning the
 /// score axis into 12 levels. Returns a level in `1..=12`.
 ///
-/// Spec 0336 N1: this function is kept unchanged so that 0337's log
-/// scale can replace just the `t`-derivation without touching the
-/// bucketing itself.
+/// Spec 0336 N1: this function is kept unchanged; spec 0337 replaced the
+/// `t`-derivation with a log scale without touching the bucketing.
+/// Tests only — nothing in the production path calls it.
+#[cfg(test)]
 pub(super) fn heat_level(best_score: i64) -> u8 {
     const BOUNDARIES: [i64; 11] = [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144];
     for (i, &boundary) in BOUNDARIES.iter().enumerate() {
@@ -326,10 +327,107 @@ pub(super) fn heat_level(best_score: i64) -> u8 {
     12
 }
 
-/// Spec 0336 S3's temporary `t` derivation — `(level - 1) / 11` — used
-/// until spec 0337 replaces it with a calibrated log scale.
-pub(super) fn heat_fraction_from_level(best_score: i64) -> f32 {
-    (heat_level(best_score) as f32 - 1.0) / 11.0
+/// Spec 0337 S1: the ramp fraction from a score and a log-space anchor.
+///
+/// ```text
+/// t = clamp(ln(score) / anchor, 0.0, 1.0)   for score >= 1
+/// t = 0.0                                    otherwise
+/// ```
+///
+/// Score 1 is the natural floor (`ln(1) = 0`), so a square can only
+/// move toward the top as unrelated nodes are scored. The anchor is the
+/// 95th-percentile of the document's graded scores (spec 0337 S4),
+/// ratcheted upward, so it never brightens existing squares.
+pub(super) fn heat_fraction(score: i64, anchor: f32) -> f32 {
+    if score < 1 {
+        return 0.0;
+    }
+    ((score as f32).ln() / anchor).clamp(0.0, 1.0)
+}
+
+/// Spec 0337 S5: the default anchor — `ln(144) ≈ 4.97` — is the top of
+/// the Fibonacci ladder spec 0336 replaced. Before calibration, a
+/// small document therefore renders exactly as it did under the old
+/// bucketing; large documents converge away as evidence lands. Stored
+/// as the constant rather than re-computing `ln(144)` every call.
+pub(super) const HEAT_ANCHOR_DEFAULT: f32 = 4.9698_f32; // ln(144)
+
+/// Minimum sample count before the 95th-percentile anchor is consulted
+/// (spec 0337 S4). With fewer samples the percentile is untrustworthy
+/// and the anchor stays at its default.
+const HISTOGRAM_MIN_SAMPLES: u32 = 64;
+
+/// Number of buckets in the log-score histogram. Sixty-four buckets of
+/// 0.25 nats each span `[0, 16]`, covering scores from 1 to ≈ 8.9M
+/// before the final bucket catches everything beyond (spec 0337 S2).
+const HISTOGRAM_BUCKETS: usize = 64;
+
+/// Width of one bucket in nats (spec 0337 S2).
+const HISTOGRAM_BUCKET_WIDTH: f32 = 0.25;
+
+/// Spec 0337 S2: histogram of `ln(best_score)` over nodes that draw a
+/// graded square — mismatches and ties. The 95th-percentile ratcheted
+/// upward is the live `heat_anchor` (spec 0337 S4).
+///
+/// One writer only: every `heat_states[idx]` write goes through
+/// `App::record_heat_state` (spec 0337 S3), which is the only place
+/// that increments a bucket.
+pub(super) struct HeatHistogram {
+    buckets: [u32; HISTOGRAM_BUCKETS],
+    total: u32,
+}
+
+impl Default for HeatHistogram {
+    fn default() -> Self {
+        Self {
+            buckets: [0u32; HISTOGRAM_BUCKETS],
+            total: 0,
+        }
+    }
+}
+
+impl HeatHistogram {
+    /// Total number of samples recorded so far. Tests only.
+    #[cfg(test)]
+    pub(super) fn total(&self) -> u32 {
+        self.total
+    }
+
+    /// Record one settled graded-square score. Called only by
+    /// `record_heat_state` on a transition into a graded `Cue`.
+    pub(super) fn record(&mut self, score: i64) {
+        if score < 1 {
+            return;
+        }
+        let bucket = ((score as f32).ln() / HISTOGRAM_BUCKET_WIDTH) as usize;
+        let bucket = bucket.min(HISTOGRAM_BUCKETS - 1);
+        self.buckets[bucket] = self.buckets[bucket].saturating_add(1);
+        self.total = self.total.saturating_add(1);
+    }
+
+    /// The 95th-percentile of recorded scores, as a log-space value.
+    /// Returns `None` when fewer than `HISTOGRAM_MIN_SAMPLES` have been
+    /// recorded (spec 0337 S4's guard against a single large score
+    /// locking the anchor permanently).
+    pub(super) fn p95(&self) -> Option<f32> {
+        if self.total < HISTOGRAM_MIN_SAMPLES {
+            return None;
+        }
+        // The 95th-percentile bucket: smallest bucket whose cumulative
+        // count reaches 95% of the total.
+        let threshold = (self.total as f32 * 0.95).ceil() as u32;
+        let mut cum = 0u32;
+        for (i, &count) in self.buckets.iter().enumerate() {
+            cum += count;
+            if cum >= threshold {
+                // Return the *top* of bucket i: `(i+1) * width`, which
+                // is the natural anchor for scores in that bucket.
+                return Some((i + 1) as f32 * HISTOGRAM_BUCKET_WIDTH);
+            }
+        }
+        // All samples in the last bucket — return its top.
+        Some(HISTOGRAM_BUCKETS as f32 * HISTOGRAM_BUCKET_WIDTH)
+    }
 }
 
 impl App {
@@ -354,6 +452,49 @@ impl App {
     /// override entry's own name, and `natural_type`'s primitive
     /// keywords like `int32`), and the cache is `Mutex`-shared with the
     /// background worker across a scoring boundary that takes `&str`.
+    /// Spec 0337 S3: the one writer for `heat_states[idx]`. Writes the
+    /// slot and, on a transition from unsettled into a graded `Cue`,
+    /// feeds the histogram and ratchets the anchor.
+    ///
+    /// "One writer" is how spec 0337 G2's "whole arena" claim is
+    /// verifiable: `heat_cue_resolve` and `prefetch_step` — the two
+    /// production paths — both pass through here, so the histogram sees
+    /// every settled score whether or not the row has been on screen.
+    ///
+    /// **Not called on `heat_states[d] = HeatState::default()`** in
+    /// `override_apply`: those resets clear a slot back to unsettled
+    /// and carry no score information. The histogram is forward-only
+    /// (spec 0337 N5) and does not un-record.
+    pub(super) fn record_heat_state(&mut self, idx: usize, state: HeatState) {
+        let was_settled = self.heat_states[idx].settled();
+        self.heat_states[idx] = state;
+        // Feed the histogram only on the first settlement into a graded
+        // square (mismatch or tie). A Settled variant carries no graded
+        // square and must not move the anchor (spec 0337 S2).
+        if !was_settled {
+            if let Some(stats) = state.best() {
+                if let Some(best) = stats.best_score {
+                    // Is this a mismatch or a tie? Re-derive from the
+                    // state rather than calling heat_display (which needs
+                    // the anchor we are in the middle of updating).
+                    let is_graded = match state.current() {
+                        Some(Some(current)) => current < best || stats.best_count > 1,
+                        Some(None) => true, // vetoed current → mismatch
+                        None => false,      // current not yet known
+                    };
+                    if is_graded {
+                        self.heat_histogram.record(best);
+                        if let Some(p95) = self.heat_histogram.p95() {
+                            if p95 > self.heat_anchor {
+                                self.heat_anchor = p95;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     pub(super) fn current_type_key(&self, idx: usize) -> Option<String> {
         let span = &self.tree[idx].span;
         if span.is_message {
@@ -580,7 +721,7 @@ impl App {
     /// visible with no user action in between.
     fn heat_cue_resolve(&mut self, idx: usize) -> HeatDisplay {
         if self.heat_states[idx].settled() {
-            return heat_display(self.heat_states[idx]);
+            return heat_display(self.heat_states[idx], self.heat_anchor);
         }
         let range = self.heat_scored_range(idx);
         let start = range.start;
@@ -603,8 +744,8 @@ impl App {
         let state = self.read_heat_state(start, current_key.as_deref(), tier);
 
         if state.settled() || self.heat_worker.is_some() {
-            self.heat_states[idx] = state;
-            return heat_display(state);
+            self.record_heat_state(idx, state);
+            return heat_display(state, self.heat_anchor);
         }
 
         // No worker and still unsettled after an independent cache read
@@ -674,8 +815,8 @@ impl App {
             HeatState::new(Some(stats), Some(current_entry))
         };
 
-        self.heat_states[idx] = state;
-        heat_display(state)
+        self.record_heat_state(idx, state);
+        heat_display(state, self.heat_anchor)
     }
 }
 
@@ -692,7 +833,11 @@ impl App {
 /// Never `HeatDisplay::None`: a scoreable node in some state always has
 /// *something* to say, and which of it reaches the screen is the mode's
 /// decision, taken in `heat_cue_at`.
-pub(super) fn heat_display(state: HeatState) -> HeatDisplay {
+///
+/// `anchor` is spec 0337's log-space scale top — passed in so this
+/// function stays a pure computation and stays testable without a full
+/// `App`.
+pub(super) fn heat_display(state: HeatState, anchor: f32) -> HeatDisplay {
     let Some(stats) = state.best() else {
         return HeatDisplay::Unknown;
     };
@@ -706,21 +851,21 @@ pub(super) fn heat_display(state: HeatState) -> HeatDisplay {
     };
     match current {
         None => HeatDisplay::Cue(HeatCue {
-            t: heat_fraction_from_level(best),
+            t: heat_fraction(best, anchor),
             kind: HeatCueKind::Mismatch {
                 current: None,
                 best,
             },
         }),
         Some(current) if current < best => HeatDisplay::Cue(HeatCue {
-            t: heat_fraction_from_level(best),
+            t: heat_fraction(best, anchor),
             kind: HeatCueKind::Mismatch {
                 current: Some(current),
                 best,
             },
         }),
         Some(current) if current == best && stats.best_count > 1 => HeatDisplay::Cue(HeatCue {
-            t: heat_fraction_from_level(best),
+            t: heat_fraction(best, anchor),
             kind: HeatCueKind::Tie {
                 tie_count: stats.best_count,
                 score: best,

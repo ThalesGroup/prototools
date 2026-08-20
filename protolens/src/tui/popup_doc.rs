@@ -566,7 +566,7 @@ impl App {
             return;
         }
         self.popup = Some(Popup {
-            body: PopupBody::Doc(doc_lines(hit)),
+            body: PopupBody::Doc(doc_lines(hit, self.heat_anchor)),
             anchor,
         });
     }
@@ -577,7 +577,11 @@ impl App {
 /// The token leads every one of them, so that a reader who pointed at
 /// `tag_ohb: 3` sees the 3 without any clause having to be a format
 /// string with one caller.
-pub(super) fn doc_lines(hit: &DocHit) -> Vec<BoxLine> {
+///
+/// `heat_anchor` is the log-space scale top (spec 0337 S5/S6), used
+/// only for the graded glyph kinds — passed in rather than re-derived
+/// here so the box and the square use the same value.
+pub(super) fn doc_lines(hit: &DocHit, heat_anchor: f32) -> Vec<BoxLine> {
     let mut lines = vec![hit.token.clone()];
     match hit.element {
         DocElement::Key => lines.push(key_clause(&hit.token).to_string()),
@@ -650,9 +654,12 @@ pub(super) fn doc_lines(hit: &DocHit) -> Vec<BoxLine> {
                 }
                 .to_string(),
             );
-            // ...and so there is nothing at the end of the row to point
-            // the reader at, either.
+            // Spec 0337 S6: state the anchor so the reader knows what
+            // "at the top" means for this document. The color is
+            // document-relative and cannot be read without this.
             if kind != HeatGlyphKind::Unmatched {
+                let brightest_at = heat_anchor.exp().round() as u64;
+                lines.push(format!("brightest at score {brightest_at} and above"));
                 lines.push("the [...] at the end of the row has the numbers".to_string());
             }
         }

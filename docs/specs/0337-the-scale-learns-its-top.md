@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0337 — the scale learns its top
 
-Status: draft
+Status: implemented
+Implemented in: 2026-08-20
 App: protolens
 Refs: docs/specs/0336-the-square-is-the-scale.md (the continuous `t`
         this spec supplies, the three hues, and the negative-tail

@@ -345,13 +345,13 @@ impl App {
                     // this node and every later wave spends one of its
                     // guaranteed steps re-proving the same hit instead
                     // of stepping past it: the walk would slow down the
-                    // more the worker has answered.
+                    // more the worker has exceeded.
                     let state = self.read_heat_state(
                         range.start,
                         current_key.as_deref(),
                         tiered::Tier::Prefetch,
                     );
-                    self.heat_states[idx] = state;
+                    self.record_heat_state(idx, state);
                     self.prefetch_trace.hits += 1;
                 }
                 Some(_) => self.prefetch_trace.pushes += 1,

@@ -3,8 +3,9 @@
 // SPDX-License-Identifier: MIT
 
 use super::super::heat_cue::{
-    derive_stats, heat_display, heat_level, score_of, HeatCue, HeatCueKind, HeatCueMode,
-    HeatDisplay, HeatState, RangeHeatStats, HEAT_CUE_PREVIEW, HEAT_GLYPH, SCORE_FLOOR,
+    derive_stats, heat_display, heat_fraction, heat_level, score_of, HeatCue, HeatCueKind,
+    HeatCueMode, HeatDisplay, HeatHistogram, HeatState, RangeHeatStats, HEAT_ANCHOR_DEFAULT,
+    HEAT_CUE_PREVIEW, HEAT_GLYPH, SCORE_FLOOR,
 };
 use prototext_core::helpers::WT_START_GROUP;
 use std::thread;
@@ -278,9 +279,15 @@ fn a_saturated_score_is_still_a_score() {
 #[test]
 fn h01_unknown_when_best_is_not_yet_known() {
     let state = HeatState::new(None, None);
-    assert!(matches!(heat_display(state), HeatDisplay::Unknown));
+    assert!(matches!(
+        heat_display(state, HEAT_ANCHOR_DEFAULT),
+        HeatDisplay::Unknown
+    ));
     let state = HeatState::new(None, Some(Some(5)));
-    assert!(matches!(heat_display(state), HeatDisplay::Unknown));
+    assert!(matches!(
+        heat_display(state, HEAT_ANCHOR_DEFAULT),
+        HeatDisplay::Unknown
+    ));
     assert!(!state.settled());
 }
 
@@ -296,7 +303,7 @@ fn h02_none_when_every_candidate_is_vetoed() {
     };
     let state = HeatState::new(Some(stats), None);
     assert!(matches!(
-        heat_display(state),
+        heat_display(state, HEAT_ANCHOR_DEFAULT),
         HeatDisplay::Settled { score: None }
     ));
     assert!(state.settled());
@@ -312,7 +319,7 @@ fn h03_pending_current_shows_best_only() {
     };
     let state = HeatState::new(Some(stats), None);
     assert!(matches!(
-        heat_display(state),
+        heat_display(state, HEAT_ANCHOR_DEFAULT),
         HeatDisplay::PendingCurrent { best: 50 }
     ));
     assert!(!state.settled());
@@ -329,7 +336,7 @@ fn h04_mismatch_for_a_vetoed_current() {
         best_count: 1,
     };
     let state = HeatState::new(Some(stats), Some(None));
-    let display = heat_display(state);
+    let display = heat_display(state, HEAT_ANCHOR_DEFAULT);
     assert!(matches!(
         display,
         HeatDisplay::Cue(HeatCue {
@@ -352,7 +359,7 @@ fn h05_mismatch_for_a_strictly_lower_current_score() {
         best_count: 1,
     };
     let state = HeatState::new(Some(stats), Some(Some(50)));
-    let display = heat_display(state);
+    let display = heat_display(state, HEAT_ANCHOR_DEFAULT);
     assert!(matches!(
         display,
         HeatDisplay::Cue(HeatCue {
@@ -380,7 +387,7 @@ fn h06_tie_when_current_shares_the_top_score_with_others() {
     };
     let state = HeatState::new(Some(stats), Some(Some(50)));
     assert!(matches!(
-        heat_display(state),
+        heat_display(state, HEAT_ANCHOR_DEFAULT),
         HeatDisplay::Cue(HeatCue {
             kind: HeatCueKind::Tie {
                 tie_count: 2,
@@ -396,7 +403,7 @@ fn h06_tie_when_current_shares_the_top_score_with_others() {
     };
     let state = HeatState::new(Some(stats), Some(Some(50)));
     assert!(matches!(
-        heat_display(state),
+        heat_display(state, HEAT_ANCHOR_DEFAULT),
         HeatDisplay::Cue(HeatCue {
             kind: HeatCueKind::Tie {
                 tie_count: 3,
@@ -419,7 +426,7 @@ fn h07_none_for_a_unique_optimum() {
     };
     let state = HeatState::new(Some(stats), Some(Some(50)));
     assert!(matches!(
-        heat_display(state),
+        heat_display(state, HEAT_ANCHOR_DEFAULT),
         HeatDisplay::Settled { score: Some(50) }
     ));
     assert!(state.settled());
@@ -1560,5 +1567,285 @@ fn moving_the_cursor_moves_the_head_of_the_band_with_it() {
         worker.take_next_range(),
         Some(first_range),
         "and the one it left is still queued behind it"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Spec 0337: the scale learns its top
+// ---------------------------------------------------------------------
+
+/// Spec 0337 test 1 / S1: equal ratios of score produce equal steps in
+/// `t` (the key logarithmic property), `t` is 0 at and below score 1,
+/// and 1 at and above `exp(anchor)`.
+#[test]
+fn the_fraction_is_logarithmic() {
+    let anchor = 4.0_f32; // exp(4) ≈ 54.6; easy to reason about
+
+    // Floor: score 0 and negatives are 0.
+    assert_eq!(heat_fraction(0, anchor), 0.0);
+    assert_eq!(heat_fraction(-7, anchor), 0.0);
+    assert_eq!(heat_fraction(1, anchor), 0.0, "ln(1) = 0");
+
+    // Ceiling: clamps at 1 for any score >= exp(anchor).
+    assert_eq!(heat_fraction(1_000_000, anchor), 1.0);
+
+    // Logarithmic: score^2 is twice the t of score (additive in log space).
+    // Choose scores where both values are well below the ceiling (anchor=4,
+    // so scores must be well below exp(4) ≈ 54.6). Use 3 and 9 = 3^2.
+    let t1 = heat_fraction(3, anchor);
+    let t2 = heat_fraction(9, anchor); // 3^2
+    assert!(
+        (t2 - 2.0 * t1).abs() < 1e-5,
+        "t(score^2) must equal 2*t(score): t1={t1} t2={t2}"
+    );
+}
+
+/// Spec 0337 test 2 / S1: every score at or below 1, including
+/// `SCORE_FLOOR`, maps to `t = 0`. `SCORE_FLOOR` is a sentinel for the
+/// most negative real score; it must produce 0, not a NaN.
+#[test]
+fn a_negative_score_is_the_floor() {
+    let anchor = HEAT_ANCHOR_DEFAULT;
+    for &score in &[SCORE_FLOOR as i64, -100_i64, 0_i64, 1_i64] {
+        assert_eq!(
+            heat_fraction(score, anchor),
+            0.0,
+            "score {score} must map to t = 0"
+        );
+    }
+}
+
+/// Spec 0337 test 3 / S4: the anchor never decreases — it ratchets.
+/// This is the core of G3: a square can only move toward the top, so
+/// no two frames show the same row at different brightnesses due to an
+/// unrelated node being scored.
+#[test]
+fn the_anchor_only_rises() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.heat_cues = HeatCueMode::Findings;
+
+    // A descending sequence: early huge score, then many small ones.
+    // The anchor must never fall below the first ratchet position.
+    let big = 100_000_i64;
+    let small = 5_i64;
+
+    // To get the anchor to move we need 64 samples. Feed the histogram
+    // directly (the public interface — `record_heat_state` is the
+    // production path; here we test the ratchet mechanics in isolation).
+    for _ in 0..64 {
+        app.heat_histogram.record(big);
+    }
+    if let Some(p) = app.heat_histogram.p95() {
+        if p > app.heat_anchor {
+            app.heat_anchor = p;
+        }
+    }
+    let high_anchor = app.heat_anchor;
+    assert!(
+        high_anchor > HEAT_ANCHOR_DEFAULT,
+        "64 big scores must push the anchor up"
+    );
+
+    // Now feed 64 small scores. The percentile should drop, but the
+    // anchor must not.
+    for _ in 0..64 {
+        app.heat_histogram.record(small);
+    }
+    if let Some(p) = app.heat_histogram.p95() {
+        if p > app.heat_anchor {
+            app.heat_anchor = p;
+        }
+    }
+    assert_eq!(
+        app.heat_anchor, high_anchor,
+        "anchor must not fall after small scores arrive"
+    );
+}
+
+/// Spec 0337 test 4 / S4: the 64-sample guard. A single enormous score
+/// — however large — must not move the anchor off the default.
+#[test]
+fn a_thin_histogram_keeps_the_default() {
+    let mut h = HeatHistogram::default();
+    // Fewer than 64 samples: no percentile, anchor stays at default.
+    for _ in 0..63 {
+        h.record(1_000_000);
+    }
+    assert!(
+        h.p95().is_none(),
+        "63 samples is below the guard — no percentile yet"
+    );
+    // The 64th tips it over.
+    h.record(1_000_000);
+    assert!(h.p95().is_some(), "64 samples crosses the threshold");
+}
+
+/// Spec 0337 test 5 / G4: before calibration the scale is today's.
+/// With the default anchor (`ln(144)`), scores at the Fibonacci
+/// boundaries produce roughly the same ordering as the old `heat_level`
+/// bucketing — the floor and ceiling are exact, and intermediate scores
+/// are strictly ordered between them.
+#[test]
+fn an_uncalibrated_document_renders_as_it_did() {
+    let anchor = HEAT_ANCHOR_DEFAULT;
+
+    // Score 1 maps to t=0 (the floor) exactly.
+    assert_eq!(heat_fraction(1, anchor), 0.0);
+    // Score 144 maps to t=1 (the ceiling) exactly, since ln(144)/ln(144)=1.
+    assert!(
+        (heat_fraction(144, anchor) - 1.0).abs() < 0.001,
+        "score 144 must be at or near the top"
+    );
+    // Scores are strictly ordered between the floor and ceiling.
+    let t8 = heat_fraction(8, anchor);
+    let t55 = heat_fraction(55, anchor);
+    assert!(
+        0.0 < t8 && t8 < t55 && t55 < 1.0,
+        "intermediate scores must be strictly ordered: t8={t8} t55={t55}"
+    );
+}
+
+/// Spec 0337 test 6 / S3: `prefetch_step` is one of the three writers
+/// (the one that visits the whole arena off-screen). A cache hit there
+/// must feed the histogram — which is what makes calibration cover the
+/// whole document and not just what has been drawn.
+///
+/// `prefetch_step` calls `record_heat_state` directly on a cache hit —
+/// the same method `heat_cue_resolve` calls. This test exercises that
+/// method with a graded state (mismatch: best=50, current=None) and
+/// verifies the histogram receives the sample.
+///
+/// The other two callers of `record_heat_state` (`heat_cue_resolve`'s
+/// settled-return and its unsettled-lookup arms) are exercised by
+/// `a_settled_node_does_not_feed_it` and the render-path tests.
+#[test]
+fn every_writer_feeds_the_histogram() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.heat_cues = HeatCueMode::All;
+
+    let idx = 0;
+    let range = extract::message_payload_range(&app.blob, &app.tree[idx].span.raw_range);
+
+    // Seed a mismatch (graded square): best=50, no current_key for an
+    // untyped message node → read_heat_state sets current=Some(None).
+    seed_range_heat_entry(&mut app, range.start, Some(50), 1, "int32", None);
+
+    let before = app.heat_histogram.total();
+
+    // Call read_heat_state + record_heat_state directly — the exact two
+    // lines prefetch_step_inner executes on a cache hit. This is the
+    // narrowest test of the prefetch path's histogram contribution.
+    let state = app.read_heat_state(range.start, None, tiered::Tier::Prefetch);
+    app.record_heat_state(idx, state);
+
+    assert!(
+        app.heat_histogram.total() > before,
+        "record_heat_state on a graded cache hit must feed the histogram \
+         (this is what prefetch_step does on every cache hit)"
+    );
+}
+
+/// Spec 0337 test 7 / S2: a `Settled` node — unique optimum or
+/// unmatched — carries no graded square and must not move the histogram.
+/// The document root is also excluded; what matters is the variant, not
+/// which node it is.
+#[test]
+fn a_settled_node_does_not_feed_it() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.heat_cues = HeatCueMode::All;
+
+    let idx = 0;
+    let range = extract::message_payload_range(&app.blob, &app.tree[idx].span.raw_range);
+    let key = "google.protobuf.DescriptorProto";
+
+    // Unique optimum — Settled { score: Some(50) } — no graded square.
+    seed_range_heat_entry(&mut app, range.start, Some(50), 1, key, Some(50));
+    let header = app.absolute_start(idx);
+    app.heat_cue_for(header);
+    assert_eq!(
+        app.heat_histogram.total(),
+        0,
+        "a unique optimum is not a graded square"
+    );
+
+    // Unmatched — Settled { score: None } — also no graded square.
+    // Reset the state so `record_heat_state` sees a fresh node.
+    app.heat_states[idx] = heat_cue::HeatState::default();
+    seed_range_heat_entry(&mut app, range.start, None, 0, key, None);
+    app.heat_cue_for(header);
+    assert_eq!(
+        app.heat_histogram.total(),
+        0,
+        "unmatched (no candidate at all) is not a graded square"
+    );
+}
+
+/// Spec 0337 test 8 / S6: the glyph hover box names the current anchor
+/// so a reader who sees three squares at maximum brightness can learn
+/// what they are "at least as large as". The anchor line is present for
+/// both mismatch and tie glyphs but absent for the unmatched sentinel.
+/// Driven through a full render+hit-test so the box and the square are
+/// built from the same anchor the app holds.
+#[test]
+fn the_box_names_the_anchor() {
+    // Mismatch glyph: a seeded mismatch, app at default anchor.
+    // exp(ln(144)).round() = 144, so the box must say 144.
+    let mut app = message_node_app();
+    app.splash = false;
+    app.heat_cues = HeatCueMode::Findings;
+    let idx = 0;
+    let range = extract::message_payload_range(&app.blob, &app.tree[idx].span.raw_range);
+    seed_range_heat_entry(
+        &mut app,
+        range.start,
+        Some(50),
+        1,
+        "google.protobuf.DescriptorProto",
+        Some(10),
+    );
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    // Hit-test column 0 — the glyph column.
+    let hit = app
+        .doc_element_at_point(app.main_area.x, app.main_area.y)
+        .expect("the glyph is a target");
+    let lines: Vec<String> = super::super::popup_doc::doc_lines(&hit, app.heat_anchor)
+        .into_iter()
+        .map(|l| l.text)
+        .collect();
+    assert!(
+        lines.iter().any(|l| l.contains("brightest at score 144")),
+        "box must name the default anchor score (144): {lines:?}"
+    );
+
+    // Unmatched glyph: flat sentinel, no anchor line. Seeded as
+    // an_unmatched_message_says_so_loudly does.
+    let mut app2 = message_node_app();
+    app2.splash = false;
+    app2.heat_cues = HeatCueMode::All;
+    let range2 = extract::message_payload_range(&app2.blob, &app2.tree[0].span.raw_range);
+    seed_range_heat_entry(
+        &mut app2,
+        range2.start,
+        None,
+        0,
+        "google.protobuf.DescriptorProto",
+        None,
+    );
+    let mut terminal2 = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal2.draw(|frame| app2.render(frame)).unwrap();
+    let hit2 = app2
+        .doc_element_at_point(app2.main_area.x, app2.main_area.y)
+        .expect("the unmatched glyph is a target");
+    let lines2: Vec<String> = super::super::popup_doc::doc_lines(&hit2, app2.heat_anchor)
+        .into_iter()
+        .map(|l| l.text)
+        .collect();
+    assert!(
+        !lines2.iter().any(|l| l.contains("brightest")),
+        "unmatched sentinel must not claim a numeric anchor: {lines2:?}"
     );
 }

@@ -1783,6 +1783,13 @@ pub struct App {
     /// walk steps over it; `Resolved` nodes are read directly, no cache
     /// lock.
     heat_states: Vec<heat_cue::HeatState>,
+    /// Spec 0337 S4: the ratcheted 95th-percentile log-space anchor.
+    /// Starts at `ln(144)` (spec 0337 S5) and only ever rises: a falling
+    /// anchor would brighten squares that already settled, which is
+    /// flicker (spec 0337 G3). Used by `heat_display` as the scale top.
+    heat_anchor: f32,
+    /// Spec 0337 S2: histogram feeding the anchor above (spec 0337 S3).
+    heat_histogram: heat_cue::HeatHistogram,
     /// Spec 0247 S6: the worst thing each node's *own* rows say,
     /// parallel to `tree`.
     status_own: Vec<Status>,
@@ -2343,6 +2350,8 @@ impl App {
             ))),
             heat_worker: None,
             heat_states: vec![heat_cue::HeatState::default(); tree_len],
+            heat_anchor: heat_cue::HEAT_ANCHOR_DEFAULT,
+            heat_histogram: heat_cue::HeatHistogram::default(),
             // Filled by the `rebuild_status` below, once the tree the
             // pass reads is in place.
             status_own: vec![Status::Ok; tree_len],
