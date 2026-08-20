@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0336 — the square is the scale, the word is the class
 
-Status: draft
+Status: implemented
+Implemented in: 2026-08-20
 App: protolens
 Refs: docs/specs/0138-protolens-main-pane-inference-heat-cue.md (the
         two hues, the twelve levels, and the four hand-written ramps
@@ -240,4 +241,12 @@ to unreadable. The number is already *in* the word.
 
 ## Measured outcome
 
-Filled in at implementation.
+Four hand-written `[Color; 12]` tables (48 `Color` entries) replaced by one
+`hsl_to_rgb` converter and one `heat_color(t, hue, theme)` function. Three
+call sites that each imported a different style function (`heat_suffix_style`,
+`heat_agree_style`, and a borrowed `accent_style`) collapsed to one
+`heat_label_style(hue, theme)`. The test suite — 1 173 protolens tests, 25
+theme tests — passes unchanged. The top stops produced by the formula are
+`#4EEF60` (green), `#4E9EEF` (blue), `#EFB94E` (amber); these differ from the
+spec's anchors `#4CEE5E` / `#4D9EEE` / `#EEB94D` by two units per channel —
+within one rounding step, not a visible difference.

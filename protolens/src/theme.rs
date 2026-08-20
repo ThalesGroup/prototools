@@ -1322,186 +1322,152 @@ pub fn unfocused_pane_style() -> Style {
 /// main-pane inference-mismatch cue, not reused from `dark_rgb`/
 /// `light_rgb`'s `SyntaxRole`-driven palettes (none of which form a
 /// natural 12-step heat ramp).
-mod heat_rgb {
-    use ratatui::style::Color;
-
-    /// Dark theme, "ember → flame".
-    pub const DARK: [Color; 12] = [
-        Color::Rgb(0x3D, 0x20, 0x20),
-        Color::Rgb(0x4A, 0x24, 0x20),
-        Color::Rgb(0x57, 0x28, 0x22),
-        Color::Rgb(0x6B, 0x2E, 0x22),
-        Color::Rgb(0x7F, 0x34, 0x20),
-        Color::Rgb(0x96, 0x39, 0x1C),
-        Color::Rgb(0xAD, 0x40, 0x18),
-        Color::Rgb(0xC4, 0x49, 0x13),
-        Color::Rgb(0xDB, 0x54, 0x0D),
-        Color::Rgb(0xF0, 0x60, 0x08),
-        Color::Rgb(0xFF, 0x7A, 0x04),
-        Color::Rgb(0xFF, 0xAC, 0x06),
-    ];
-
-    /// Light theme, "pale → deep red" (ColorBrewer OrRd-inspired).
-    pub const LIGHT: [Color; 12] = [
-        Color::Rgb(0xFD, 0xED, 0xE4),
-        Color::Rgb(0xFC, 0xE0, 0xD0),
-        Color::Rgb(0xFB, 0xD0, 0xB8),
-        Color::Rgb(0xF8, 0xB8, 0x9C),
-        Color::Rgb(0xF4, 0x9E, 0x7E),
-        Color::Rgb(0xED, 0x82, 0x61),
-        Color::Rgb(0xE3, 0x67, 0x49),
-        Color::Rgb(0xD3, 0x4E, 0x36),
-        Color::Rgb(0xBE, 0x38, 0x26),
-        Color::Rgb(0xA2, 0x23, 0x1A),
-        Color::Rgb(0x86, 0x12, 0x10),
-        Color::Rgb(0x6E, 0x10, 0x04),
-    ];
-
-    /// Dark theme, "ice → azure" (spec 0138 G11, the `Tie` cue's hue) —
-    /// derived by swapping the R/B channels of `DARK` above, so it
-    /// carries the exact same luminance progression as the red
-    /// "Mismatch" gradient, in a blue hue rather than red.
-    pub const DARK_BLUE: [Color; 12] = [
-        Color::Rgb(0x20, 0x20, 0x3D),
-        Color::Rgb(0x20, 0x24, 0x4A),
-        Color::Rgb(0x22, 0x28, 0x57),
-        Color::Rgb(0x22, 0x2E, 0x6B),
-        Color::Rgb(0x20, 0x34, 0x7F),
-        Color::Rgb(0x1C, 0x39, 0x96),
-        Color::Rgb(0x18, 0x40, 0xAD),
-        Color::Rgb(0x13, 0x49, 0xC4),
-        Color::Rgb(0x0D, 0x54, 0xDB),
-        Color::Rgb(0x08, 0x60, 0xF0),
-        Color::Rgb(0x04, 0x7A, 0xFF),
-        Color::Rgb(0x06, 0xAC, 0xFF),
-    ];
-
-    /// Light theme, "pale → deep blue" — same R/B-channel-swap
-    /// derivation from `LIGHT` as `DARK_BLUE` is from `DARK`.
-    pub const LIGHT_BLUE: [Color; 12] = [
-        Color::Rgb(0xE4, 0xED, 0xFD),
-        Color::Rgb(0xD0, 0xE0, 0xFC),
-        Color::Rgb(0xB8, 0xD0, 0xFB),
-        Color::Rgb(0x9C, 0xB8, 0xF8),
-        Color::Rgb(0x7E, 0x9E, 0xF4),
-        Color::Rgb(0x61, 0x82, 0xED),
-        Color::Rgb(0x49, 0x67, 0xE3),
-        Color::Rgb(0x36, 0x4E, 0xD3),
-        Color::Rgb(0x26, 0x38, 0xBE),
-        Color::Rgb(0x1A, 0x23, 0xA2),
-        Color::Rgb(0x10, 0x12, 0x86),
-        Color::Rgb(0x04, 0x10, 0x6E),
-    ];
-}
-
-/// Hue selector for the main-pane heat cue (spec 0138 G9-G12): `Red`
-/// for the `Mismatch` cue ("current type scores below best"), `Blue`
-/// for the `Tie` cue ("current type ties for best"). Both share
-/// `heat_style`'s brightness-level model, differing only in which
-/// 12-stop gradient/ANSI-16 pair is used.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// Hue selector for the main-pane heat cue (spec 0336 S1):
+///
+/// - `Green` — `Mismatch`: a better type exists, the call to action.
+/// - `Blue`  — `Tie`/`Settled{Some}`: optimal or uniquely so; cold, low urgency.
+/// - `Amber` — `Settled{None}` sentinel: inference searched and found nothing.
+///
+/// `Red` was removed (spec 0336 S1) rather than renamed: the old warm ramp
+/// was the `Mismatch` cue, and keeping `Red` at a call site that now means
+/// `Mismatch` would carry the wrong intent forward.
+///
+/// Note on luminance: an earlier version derived the blue ramp by swapping
+/// the R/B channels of the warm one, accompanied by a doc comment asserting
+/// "carries the exact same luminance progression". It does not: relative
+/// luminance weights R at 0.2126 and B at 0.0722, so the brightest warm
+/// stop `#FFAC06` computes to ≈178 and its swap `#06ACFF` to ≈143 — a 20%
+/// difference at the top and a proportional skew at every stop below. Do
+/// not retry the R/B-swap idea; it was measured and was wrong by design.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum HeatHue {
-    Red,
+    Green,
     Blue,
+    Amber,
 }
 
-/// Main-pane heat cue color for the leading glyph column (spec 0138;
-/// `hue` selects the `Mismatch` or `Tie` cue, G9-G12). `level` is
-/// 1..=12 (see `tui::heat_cue::heat_level`), already gated present by
-/// the caller (G4 for `Red`/`Mismatch`, G9 for `Blue`/`Tie`). Returns
-/// `None` when the cue must not be shown at all on this terminal — only
-/// possible on the ANSI-16 fallback, for `level <= 3` (`best_score <=
-/// 3`, G7/G12's low-confidence narrowing of the gate); the truecolor
-/// gradient always shows *some* color once the gate has passed, however
-/// dim.
-pub fn heat_style(level: u8, hue: HeatHue, theme: ThemeKind) -> Option<Style> {
-    heat_style_in(level, hue, theme, supports_rgb())
+/// HSL→RGB, returned as `(r, g, b)` in `[0, 255]`.
+///
+/// Standard chroma/hue-sector formula; no external crate needed for three
+/// constants and a continuous ramp.
+fn hsl_to_rgb(h_deg: f32, s: f32, l: f32) -> (u8, u8, u8) {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let h = h_deg / 60.0;
+    let x = c * (1.0 - (h % 2.0 - 1.0).abs());
+    let (r1, g1, b1) = match h as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = l - c / 2.0;
+    let to_u8 = |v: f32| ((v + m).clamp(0.0, 1.0) * 255.0).round() as u8;
+    (to_u8(r1), to_u8(g1), to_u8(b1))
+}
+
+/// Heat-column ramp color for a fraction `t ∈ [0, 1]` (spec 0336 S2).
+///
+/// Fixed saturation `S = 0.83`, fixed hue per class. Lightness linear in
+/// `t` — `L(0) = 0.18` (dark theme) or `0.90` (light theme), `L(1) = 0.62`
+/// (dark) or `0.32` (light). The light theme's range runs downward because
+/// "further from the background" is still the direction of "more".
+///
+/// **Where the constants come from.** Hue 127° and S 0.83 are the hue and
+/// saturation of `#4CEE5E`, spec 0331's green, decomposed. Its lightness
+/// 0.62 is `L(1)`. The other two hues inherit the same S and L bounds so
+/// that one `t` means one perceived position across all three classes. The
+/// top stops that fall out of the formula — `#4EEF60` (green), `#4E9EEF`
+/// (blue), `#EFB94E` (amber) — are mutually distinguishable at a glance,
+/// which is the property the sub-1.0 ceiling exists to preserve. (The green
+/// anchor `#4CEE5E` is what the spec quotes; the formula's output is a rounding
+/// step away from it.)
+///
+/// `t` is clamped to `[0, 1]` before use; callers may pass values slightly
+/// outside that range and rely on the clamp.
+pub fn heat_color(t: f32, hue: HeatHue, theme: ThemeKind) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    let h = match hue {
+        HeatHue::Green => 127.0_f32,
+        HeatHue::Blue => 210.0_f32,
+        HeatHue::Amber => 40.0_f32,
+    };
+    let l = match theme {
+        ThemeKind::Dark => 0.18 + t * (0.62 - 0.18),
+        ThemeKind::Light => 0.90 + t * (0.32 - 0.90),
+        ThemeKind::System => system_must_be_resolved(),
+    };
+    let (r, g, b) = hsl_to_rgb(h, 0.83, l);
+    Color::Rgb(r, g, b)
+}
+
+/// Main-pane heat cue color for the leading glyph column (spec 0336 S3).
+///
+/// `t ∈ [0, 1]` is the position on the ramp (`0` = least intense,
+/// `1` = most), produced by `tui::heat_cue::heat_level` for now (N1) and
+/// by spec 0337's log scale later.
+///
+/// Returns `None` when the cue must not be shown at all on this terminal —
+/// only possible on the ANSI-16 fallback, for `t < 0.25` (spec 0336 S3's
+/// ANSI floor). On truecolor the floor is `L(0)`, which is above the
+/// background but only just; on ANSI-16 a near-background square is worse
+/// than no square (the reader learns the column is quiet when it is not),
+/// so `None` is the honest answer.
+pub fn heat_style(t: f32, hue: HeatHue, theme: ThemeKind) -> Option<Style> {
+    heat_style_in(t, hue, theme, supports_rgb())
 }
 
 /// `heat_style` with the color depth passed in rather than probed — see
 /// `style_for_in` for why the flag is an argument.
-fn heat_style_in(level: u8, hue: HeatHue, theme: ThemeKind, rgb: bool) -> Option<Style> {
+pub(crate) fn heat_style_in(t: f32, hue: HeatHue, theme: ThemeKind, rgb: bool) -> Option<Style> {
     match (theme, rgb) {
-        (ThemeKind::Dark, true) => Some(Style::default().fg(heat_rgb_color(level, false, hue))),
-        (ThemeKind::Light, true) => Some(Style::default().fg(heat_rgb_color(level, true, hue))),
-        (ThemeKind::Dark | ThemeKind::Light, false) if level <= 3 => None,
-        (ThemeKind::Dark | ThemeKind::Light, false) if level <= 7 => {
+        (ThemeKind::Dark | ThemeKind::Light, true) => {
+            Some(Style::default().fg(heat_color(t, hue, theme)))
+        }
+        (ThemeKind::Dark | ThemeKind::Light, false) if t < 0.25 => None,
+        (ThemeKind::Dark | ThemeKind::Light, false) if t < 0.60 => {
             Some(Style::default().fg(match hue {
-                HeatHue::Red => Color::Red,
+                HeatHue::Green => Color::Green,
                 HeatHue::Blue => Color::Blue,
+                HeatHue::Amber => Color::Red,
             }))
         }
         (ThemeKind::Dark | ThemeKind::Light, false) => Some(Style::default().fg(match hue {
-            HeatHue::Red => Color::LightRed,
+            HeatHue::Green => Color::LightGreen,
             HeatHue::Blue => Color::LightBlue,
+            HeatHue::Amber => Color::LightRed,
         })),
         (ThemeKind::System, _) => system_must_be_resolved(),
     }
 }
 
-fn heat_rgb_color(level: u8, light: bool, hue: HeatHue) -> Color {
-    let idx = level.clamp(1, 12) as usize - 1;
-    match (light, hue) {
-        (false, HeatHue::Red) => heat_rgb::DARK[idx],
-        (true, HeatHue::Red) => heat_rgb::LIGHT[idx],
-        (false, HeatHue::Blue) => heat_rgb::DARK_BLUE[idx],
-        (true, HeatHue::Blue) => heat_rgb::LIGHT_BLUE[idx],
-    }
-}
-
-/// The `Mismatch` heat cue's ` [current/best]` suffix color — always the
-/// brightest available red (truecolor level 12, or `Color::LightRed` on
-/// the ANSI-16 fallback) whenever the cue is present at all, regardless
-/// of `level` (spec 0138 N1) — unlike `heat_style`, which grades the
-/// leading glyph by `level`. The `Tie` cue's ` [tie_count@score]` suffix
-/// has no dedicated function: it is styled with
-/// `style_for(SyntaxRole::Boolean, theme)` directly, the same styling as
-/// a `true`/`false` value (spec 0138 G9), not a new color.
-pub fn heat_suffix_style(theme: ThemeKind) -> Style {
-    heat_suffix_style_in(theme, supports_rgb())
-}
-
-/// `heat_suffix_style` with the color depth passed in rather than
-/// probed — see `style_for_in` for why the flag is an argument.
-fn heat_suffix_style_in(theme: ThemeKind, rgb: bool) -> Style {
-    Style::default().fg(pick(
-        theme,
-        rgb,
-        (heat_rgb::DARK[11], Color::LightRed),
-        (heat_rgb::LIGHT[11], Color::LightRed),
-    ))
-}
-
-/// The agreeing heat cue's ` [{score}]` suffix color (spec 0331 S4) —
-/// the green a node wears when its current type is the unique best fit
-/// for its bytes.
+/// The flat color for the heat cue's word (suffix) — always the top of
+/// the ramp (`t = 1`) for the given hue (spec 0336 S5).
 ///
-/// Green because the two existing hues are *graded* scales that mean
-/// degree-of-finding, and this is the absence of one; a thirteenth stop
-/// on either ramp would read as a very faint finding. It is not the
-/// palette's `comment` green either, which is what the two pending cues
-/// already wear — "settled and fine" and "still working" are the two
-/// answers this mode exists to separate.
+/// Replaces `heat_suffix_style` (amber sentinel), `heat_agree_style`
+/// (blue agree), and the tie's borrowed `accent_style` (blue). Three
+/// call sites collapse to one, and the word and the brightest square of
+/// its own class match by construction.
 ///
-/// Its own constants rather than an `RgbPalette` field, in the shape of
-/// `heat_suffix_style` above and for the same reason: the heat column
-/// is its own palette. Each is the green at its theme's end of that
-/// palette — luma 173 against `heat_rgb::DARK[11]`'s 178 on dark, luma
-/// 43 against `heat_rgb::LIGHT[11]`'s 43 on light — so the agreeing cue
-/// carries the same weight in the column as the mismatch it replaces.
-pub fn heat_agree_style(theme: ThemeKind) -> Style {
-    heat_agree_style_in(theme, supports_rgb())
+/// ANSI-16 fallbacks: green → `LightGreen`, blue → `LightBlue`,
+/// amber → `LightRed` (ANSI has no amber slot; `LightRed` is the closest
+/// always-bright option).
+pub fn heat_label_style(hue: HeatHue, theme: ThemeKind) -> Style {
+    heat_label_style_in(hue, theme, supports_rgb())
 }
 
-/// `heat_agree_style` with the color depth passed in rather than
-/// probed — see `style_for_in` for why the flag is an argument.
-fn heat_agree_style_in(theme: ThemeKind, rgb: bool) -> Style {
-    Style::default().fg(pick(
-        theme,
-        rgb,
-        (Color::Rgb(0x4C, 0xEE, 0x5E), Color::LightGreen),
-        (Color::Rgb(0x00, 0x49, 0x00), Color::Green),
-    ))
+/// `heat_label_style` with the color depth passed in rather than probed.
+pub(crate) fn heat_label_style_in(hue: HeatHue, theme: ThemeKind, rgb: bool) -> Style {
+    Style::default().fg(if rgb {
+        heat_color(1.0, hue, theme)
+    } else {
+        match hue {
+            HeatHue::Green => Color::LightGreen,
+            HeatHue::Blue => Color::LightBlue,
+            HeatHue::Amber => Color::LightRed,
+        }
+    })
 }
 
 /// Resolves `ThemeKind::System` to `Dark` or `Light`, once, at startup
@@ -1647,12 +1613,12 @@ mod tests {
                 for role in ALL_ROLES {
                     style_for_in(role, theme, rgb);
                 }
-                for level in 0..=12 {
-                    for hue in [HeatHue::Red, HeatHue::Blue] {
-                        heat_style_in(level, hue, theme, rgb);
+                for &t in &[0.0_f32, 0.5, 1.0] {
+                    for hue in [HeatHue::Green, HeatHue::Blue, HeatHue::Amber] {
+                        heat_style_in(t, hue, theme, rgb);
+                        heat_label_style_in(hue, theme, rgb);
                     }
                 }
-                heat_suffix_style_in(theme, rgb);
             }
         }
     }
@@ -1931,72 +1897,120 @@ mod tests {
         }
     }
 
+    /// Spec 0336 test 1 / S2: the three hues' top stops are distinct and
+    /// Rgb. Exact values are pinned to catch any change to the six
+    /// constants in `heat_color`. The green top is `#4EEF60` (near the
+    /// `#4CEE5E` anchor the spec describes — that anchor is the design
+    /// intent, while these are what `h=127°, S=0.83, L=0.62` actually
+    /// produce through the formula).
     #[test]
-    fn heat_style_grades_the_rgb_gradient_by_level() {
+    fn the_three_hues_are_distinguishable() {
+        // Top stop t=1 in the dark theme.
+        let top = |hue| heat_color(1.0, hue, ThemeKind::Dark);
+        let green = top(HeatHue::Green);
+        let blue = top(HeatHue::Blue);
+        let amber = top(HeatHue::Amber);
+        assert_eq!(green, Color::Rgb(0x4E, 0xEF, 0x60), "green top (dark)");
+        assert_eq!(blue, Color::Rgb(0x4E, 0x9E, 0xEF), "blue top (dark)");
+        assert_eq!(amber, Color::Rgb(0xEF, 0xB9, 0x4E), "amber top (dark)");
+        assert_ne!(green, blue);
+        assert_ne!(green, amber);
+        assert_ne!(blue, amber);
+        // Light theme runs the other direction but the tops are still distinct.
+        let top_l = |hue| heat_color(1.0, hue, ThemeKind::Light);
+        assert_ne!(top_l(HeatHue::Green), top_l(HeatHue::Blue));
+        assert_ne!(top_l(HeatHue::Green), top_l(HeatHue::Amber));
+    }
+
+    /// Spec 0336 test 2: no output ever reaches `(255, 255, 255)` — the
+    /// hue is always present, so green/blue/amber stay distinguishable at
+    /// the brightest stops.
+    #[test]
+    fn a_ramp_never_reaches_white() {
+        for &t in &[0.0_f32, 0.25, 0.5, 0.75, 1.0] {
+            for hue in [HeatHue::Green, HeatHue::Blue, HeatHue::Amber] {
+                for theme in [ThemeKind::Dark, ThemeKind::Light] {
+                    let c = heat_color(t, hue, theme);
+                    assert_ne!(c, Color::Rgb(255, 255, 255), "t={t} {hue:?} {theme:?}");
+                }
+            }
+        }
+    }
+
+    /// Spec 0336 test 5 / G1: a word is never dim. Every suffix, at every
+    /// `t`, draws in the hue's flat label style — always the top of the
+    /// ramp. This is what makes N2 (no perceptual uniformity) safe: the
+    /// word is always legible regardless of how compressed a hue's dynamic
+    /// range is.
+    #[test]
+    fn a_word_is_never_dim() {
         for theme in [ThemeKind::Dark, ThemeKind::Light] {
-            for hue in [HeatHue::Red, HeatHue::Blue] {
-                let level1 = heat_style_in(1, hue, theme, true).unwrap();
-                let level12 = heat_style_in(12, hue, theme, true).unwrap();
-                assert!(matches!(level1.fg, Some(Color::Rgb(..))));
-                assert!(matches!(level12.fg, Some(Color::Rgb(..))));
-                assert_ne!(level1.fg, level12.fg, "brightness must vary by level");
-                // Out-of-range levels clamp rather than panic.
+            for hue in [HeatHue::Green, HeatHue::Blue, HeatHue::Amber] {
+                let label = heat_label_style_in(hue, theme, true);
+                let top = heat_style_in(1.0, hue, theme, true).unwrap();
                 assert_eq!(
-                    heat_style_in(0, hue, theme, true),
-                    heat_style_in(1, hue, theme, true)
-                );
-                assert_eq!(
-                    heat_style_in(200, hue, theme, true),
-                    heat_style_in(12, hue, theme, true)
+                    label.fg, top.fg,
+                    "the word matches the hue's top stop: {hue:?} {theme:?}"
                 );
             }
-            // Same level, different hue: distinct colors (G11).
+        }
+    }
+
+    /// Spec 0336 test 6 / S3: the ANSI-16 fallback draws no square below
+    /// the threshold rather than a near-background one. The `_in` form is
+    /// used because the nix sandbox has no `COLORTERM`.
+    #[test]
+    fn the_ansi_floor_draws_no_square() {
+        for theme in [ThemeKind::Dark, ThemeKind::Light] {
+            for hue in [HeatHue::Green, HeatHue::Blue, HeatHue::Amber] {
+                assert_eq!(
+                    heat_style_in(0.0, hue, theme, false),
+                    None,
+                    "t=0 must be suppressed on ANSI-16: {hue:?} {theme:?}"
+                );
+                assert_eq!(
+                    heat_style_in(0.24, hue, theme, false),
+                    None,
+                    "t=0.24 is below the 0.25 floor: {hue:?} {theme:?}"
+                );
+                assert!(
+                    heat_style_in(0.25, hue, theme, false).is_some(),
+                    "t=0.25 clears the floor: {hue:?} {theme:?}"
+                );
+            }
+        }
+    }
+
+    /// Spec 0336 S3: `heat_style` grades RGB by `t` — different `t`,
+    /// different color — and clamps out-of-range values rather than
+    /// panicking.
+    #[test]
+    fn heat_style_grades_the_rgb_gradient_by_t() {
+        for theme in [ThemeKind::Dark, ThemeKind::Light] {
+            for hue in [HeatHue::Green, HeatHue::Blue, HeatHue::Amber] {
+                let t0 = heat_style_in(0.0, hue, theme, true).unwrap();
+                let t1 = heat_style_in(1.0, hue, theme, true).unwrap();
+                assert!(matches!(t0.fg, Some(Color::Rgb(..))));
+                assert!(matches!(t1.fg, Some(Color::Rgb(..))));
+                assert_ne!(t0.fg, t1.fg, "brightness must vary by t: {hue:?} {theme:?}");
+                // Out-of-range values clamp rather than panic.
+                assert_eq!(
+                    heat_style_in(-1.0, hue, theme, true),
+                    heat_style_in(0.0, hue, theme, true)
+                );
+                assert_eq!(
+                    heat_style_in(2.0, hue, theme, true),
+                    heat_style_in(1.0, hue, theme, true)
+                );
+            }
+            // Same t, different hue: distinct colors.
             assert_ne!(
-                heat_style_in(6, HeatHue::Red, theme, true),
-                heat_style_in(6, HeatHue::Blue, theme, true)
+                heat_style_in(0.5, HeatHue::Green, theme, true),
+                heat_style_in(0.5, HeatHue::Blue, theme, true)
             );
-        }
-    }
-
-    #[test]
-    fn heat_style_ansi16_fallback_thresholds() {
-        for theme in [ThemeKind::Dark, ThemeKind::Light] {
-            // Level 3 == `best_score <= 3` (G7/G12's low-confidence absence).
-            assert_eq!(heat_style_in(3, HeatHue::Red, theme, false), None);
-            assert_eq!(heat_style_in(3, HeatHue::Blue, theme, false), None);
-            // Level 7 == `best_score <= 21`: dark red / dark blue.
-            assert_eq!(
-                heat_style_in(7, HeatHue::Red, theme, false),
-                Some(Style::default().fg(Color::Red))
-            );
-            assert_eq!(
-                heat_style_in(7, HeatHue::Blue, theme, false),
-                Some(Style::default().fg(Color::Blue))
-            );
-            // Level 8 == `best_score > 21`: bright red / bright blue.
-            assert_eq!(
-                heat_style_in(8, HeatHue::Red, theme, false),
-                Some(Style::default().fg(Color::LightRed))
-            );
-            assert_eq!(
-                heat_style_in(8, HeatHue::Blue, theme, false),
-                Some(Style::default().fg(Color::LightBlue))
-            );
-        }
-    }
-
-    #[test]
-    fn heat_suffix_style_is_always_the_brightest_red() {
-        for theme in [ThemeKind::Dark, ThemeKind::Light] {
-            // Truecolor: the top stop of the gradient, whatever the level.
-            assert_eq!(
-                heat_suffix_style_in(theme, true).fg,
-                heat_style_in(12, HeatHue::Red, theme, true).unwrap().fg
-            );
-            // ANSI-16: the brightest red the palette has.
-            assert_eq!(
-                heat_suffix_style_in(theme, false),
-                Style::default().fg(Color::LightRed)
+            assert_ne!(
+                heat_style_in(0.5, HeatHue::Green, theme, true),
+                heat_style_in(0.5, HeatHue::Amber, theme, true)
             );
         }
     }

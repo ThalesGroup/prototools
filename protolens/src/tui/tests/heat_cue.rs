@@ -705,8 +705,11 @@ fn an_agreeing_node_says_its_score_in_the_third_state() {
     );
     assert_eq!(
         drawn_suffix_style(&cells, " [50]").map(|s| s.fg),
-        Some(theme::heat_agree_style(app.theme).fg),
-        "an agreeing cue is green"
+        // Spec 0336 S4: Settled{Some} is a tie of one — the current
+        // type is uniquely best — so it wears the same flat blue the
+        // Tie cue's word does.
+        Some(theme::heat_label_style(theme::HeatHue::Blue, app.theme).fg),
+        "an agreeing cue is flat blue (spec 0336 S4)"
     );
 }
 
@@ -744,19 +747,19 @@ fn an_unmatched_message_says_so_loudly() {
         cells[0].0, HEAT_GLYPH,
         "and unlike its agreeing sibling it wears the square (0335 S4): {row:?}"
     );
+    let amber = theme::heat_label_style(theme::HeatHue::Amber, app.theme).fg;
+    let blue = theme::heat_label_style(theme::HeatHue::Blue, app.theme).fg;
     assert_eq!(
         drawn_suffix_style(&cells, " [unmatched]").map(|s| s.fg),
-        Some(theme::heat_suffix_style(app.theme).fg),
-        "a verdict of 'nothing fits' wears the mismatch red"
+        Some(amber),
+        "a verdict of 'nothing fits' wears flat amber (spec 0336 S4)"
     );
     assert_eq!(
-        cells[0].1.fg,
-        theme::heat_suffix_style(app.theme).fg,
-        "square and word are the one sentinel color, not a ramp position"
+        cells[0].1.fg, amber,
+        "square and word are the one sentinel color"
     );
     assert_ne!(
-        theme::heat_suffix_style(app.theme).fg,
-        theme::heat_agree_style(app.theme).fg,
+        amber, blue,
         "which is only worth asserting if the two differ at all"
     );
 }

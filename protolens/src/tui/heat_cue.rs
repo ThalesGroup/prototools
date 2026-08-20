@@ -92,16 +92,17 @@ impl HeatCueMode {
 }
 
 /// A node's computed heat cue (spec 0138 G2-G4, G9-G12): either a
-/// `Mismatch` (red — `best` strictly exceeds `current`) or a `Tie`
+/// `Mismatch` (green — `best` strictly exceeds `current`) or a `Tie`
 /// (blue — `current` already equals `best`, but at least one other
 /// candidate shares that same top score, so the current typing, while
 /// optimal, isn't the *unique* optimum).
 #[derive(Clone, Copy)]
 pub(super) struct HeatCue {
-    /// Brightness level, 1..=12 (spec 0138 G5), bucketed from `best`
-    /// (`Mismatch`) or from the shared top score (`Tie`) — same
-    /// bucketing function either way.
-    pub(super) level: u8,
+    /// Ramp fraction in `[0, 1]` (spec 0336 S3), derived from `best`
+    /// (`Mismatch`) or from the shared top score (`Tie`) — same source
+    /// either way. Spec 0337 replaces the derivation; the field type
+    /// is already the right shape for it.
+    pub(super) t: f32,
     pub(super) kind: HeatCueKind,
 }
 
@@ -310,7 +311,11 @@ pub(super) fn score_of(candidates: &[(String, i64)], key: &str) -> Option<i64> {
 
 /// Spec 0138 G5's Fibonacci brightness bucketing: `[1, 2, 3, 5, 8, 13,
 /// 21, 34, 55, 89, 144]` as 11 ascending boundaries, partitioning the
-/// score axis into 12 levels.
+/// score axis into 12 levels. Returns a level in `1..=12`.
+///
+/// Spec 0336 N1: this function is kept unchanged so that 0337's log
+/// scale can replace just the `t`-derivation without touching the
+/// bucketing itself.
 pub(super) fn heat_level(best_score: i64) -> u8 {
     const BOUNDARIES: [i64; 11] = [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144];
     for (i, &boundary) in BOUNDARIES.iter().enumerate() {
@@ -319,6 +324,12 @@ pub(super) fn heat_level(best_score: i64) -> u8 {
         }
     }
     12
+}
+
+/// Spec 0336 S3's temporary `t` derivation — `(level - 1) / 11` — used
+/// until spec 0337 replaces it with a calibrated log scale.
+pub(super) fn heat_fraction_from_level(best_score: i64) -> f32 {
+    (heat_level(best_score) as f32 - 1.0) / 11.0
 }
 
 impl App {
@@ -695,21 +706,21 @@ pub(super) fn heat_display(state: HeatState) -> HeatDisplay {
     };
     match current {
         None => HeatDisplay::Cue(HeatCue {
-            level: heat_level(best),
+            t: heat_fraction_from_level(best),
             kind: HeatCueKind::Mismatch {
                 current: None,
                 best,
             },
         }),
         Some(current) if current < best => HeatDisplay::Cue(HeatCue {
-            level: heat_level(best),
+            t: heat_fraction_from_level(best),
             kind: HeatCueKind::Mismatch {
                 current: Some(current),
                 best,
             },
         }),
         Some(current) if current == best && stats.best_count > 1 => HeatDisplay::Cue(HeatCue {
-            level: heat_level(best),
+            t: heat_fraction_from_level(best),
             kind: HeatCueKind::Tie {
                 tie_count: stats.best_count,
                 score: best,

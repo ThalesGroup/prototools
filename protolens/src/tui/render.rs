@@ -1508,27 +1508,28 @@ impl App {
         let blank = || Span::raw(" ");
         match display {
             heat_cue::HeatDisplay::Cue(c) => {
+                // Spec 0336 S4: green for a mismatch (the call to action),
+                // blue for a tie (optimal but not urgent).
                 let hue = match c.kind {
-                    heat_cue::HeatCueKind::Mismatch { .. } => theme::HeatHue::Red,
+                    heat_cue::HeatCueKind::Mismatch { .. } => theme::HeatHue::Green,
                     heat_cue::HeatCueKind::Tie { .. } => theme::HeatHue::Blue,
                 };
-                let Some(style) = theme::heat_style(c.level, hue, self.theme) else {
+                let Some(style) = theme::heat_style(c.t, hue, self.theme) else {
                     return (blank(), None);
                 };
+                // Spec 0336 S5: the word is always the hue's flat top
+                // (`heat_label_style`), never the graded ramp.
+                let label_style = theme::heat_label_style(hue, self.theme);
                 let suffix = match c.kind {
                     heat_cue::HeatCueKind::Mismatch { current, best } => {
                         let current = current
                             .map(|c| c.to_string())
                             .unwrap_or_else(|| "-".to_string());
-                        Span::styled(
-                            format!(" [{current}/{best}]"),
-                            theme::heat_suffix_style(self.theme),
-                        )
+                        Span::styled(format!(" [{current}/{best}]"), label_style)
                     }
-                    heat_cue::HeatCueKind::Tie { tie_count, score } => Span::styled(
-                        format!(" [{tie_count}@{score}]"),
-                        theme::accent_style(self.theme),
-                    ),
+                    heat_cue::HeatCueKind::Tie { tie_count, score } => {
+                        Span::styled(format!(" [{tie_count}@{score}]"), label_style)
+                    }
                 };
                 (Span::styled(heat_cue::HEAT_GLYPH, style), Some(suffix))
             }
@@ -1539,13 +1540,17 @@ impl App {
             heat_cue::HeatDisplay::Unknown => {
                 (blank(), Some(Span::styled(" [?]", pending_style())))
             }
-            // Spec 0331 S4 / N6: being right is not a finding, so no
-            // glyph. The margin `■` is graded and reserved for one.
+            // Spec 0331 S4 / N6 / 0336 S4: being right is not a finding,
+            // so no square. The word is flat blue — Settled{Some} is a
+            // tie of one: no other type shares the top. The tie suffix
+            // and the agree suffix say the same thing with different
+            // cardinality, and giving them different hues would assert
+            // a difference in kind that is not there.
             heat_cue::HeatDisplay::Settled { score: Some(n) } => (
                 blank(),
                 Some(Span::styled(
                     format!(" [{n}]"),
-                    theme::heat_agree_style(self.theme),
+                    theme::heat_label_style(theme::HeatHue::Blue, self.theme),
                 )),
             ),
             // Spec 0335 S4: the one square whose color is a *sentinel
@@ -1560,7 +1565,8 @@ impl App {
             // where the verdict was never meaningful. What is left is
             // rare, and is the finding that most deserves the column.
             heat_cue::HeatDisplay::Settled { score: None } => {
-                let style = theme::heat_suffix_style(self.theme);
+                // Spec 0336 S4/S5: amber, flat, not on the ramp.
+                let style = theme::heat_label_style(theme::HeatHue::Amber, self.theme);
                 (
                     Span::styled(heat_cue::HEAT_GLYPH, style),
                     Some(Span::styled(" [unmatched]", style)),
@@ -2541,25 +2547,24 @@ impl App {
     /// per visible row below), which is what made the dot emit one dark
     /// frame per completed request.
     ///
-    /// Colors reuse `theme::heat_style`'s existing light/dark-aware
-    /// ramps rather than inventing any, and every level is deliberately
-    /// at least 4: `heat_style` returns `None` for `level <= 3` on the
-    /// ANSI-16 fallback, and a diagnostic that silently vanishes on a 16-color
-    /// terminal would be worse than no diagnostic. On that fallback
-    /// these three collapse to `LightRed`/`Red`/`Blue` — still three
-    /// distinguishable states, still darkening along the priority
-    /// order.
+    /// Colors reuse `theme::heat_style`'s light/dark-aware ramps, and
+    /// every `t` is deliberately above the ANSI floor (0.25): a
+    /// diagnostic that silently vanishes on a 16-color terminal would be
+    /// worse than no diagnostic. On that fallback these three collapse to
+    /// `LightGreen`/`Green`/`Blue` — still three distinguishable states,
+    /// still darkening along the priority order. Green replaces the
+    /// former red: the dot is about sweep activity, not a fault.
     ///
     fn render_activity_dot(&mut self, frame: &mut Frame, area: Rect) {
         let style = self
             .activity_shown
             .and_then(|tier| {
-                let (hue, level) = match tier {
-                    tiered::Tier::User => (theme::HeatHue::Red, 12),
-                    tiered::Tier::Visible => (theme::HeatHue::Red, 5),
-                    tiered::Tier::Prefetch => (theme::HeatHue::Blue, 5),
+                let (hue, t) = match tier {
+                    tiered::Tier::User => (theme::HeatHue::Green, 1.0_f32),
+                    tiered::Tier::Visible => (theme::HeatHue::Green, 4.0 / 11.0),
+                    tiered::Tier::Prefetch => (theme::HeatHue::Blue, 4.0 / 11.0),
                 };
-                theme::heat_style(level, hue, self.theme)
+                theme::heat_style(t, hue, self.theme)
             })
             .or_else(|| self.bake_dot_style());
         let span = match style {
