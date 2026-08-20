@@ -401,6 +401,64 @@ fn tint_columns(
     }
 }
 
+/// Spec 0339 S1: where a row's text sits among the cells drawn for it.
+///
+/// `pan` columns of the text are scrolled off to the left; `lead` cells
+/// of gutter precede what is left of it and `trail` more follow that
+/// gutter; the row is cut at `width`. The main pane's two gutters are
+/// the fold margin and the heat field, in that order and on either side
+/// of the pan; a side pane has neither.
+#[derive(Clone, Copy)]
+pub(super) struct RowCells {
+    pub pan: usize,
+    pub lead: usize,
+    pub trail: usize,
+    pub width: usize,
+}
+
+/// Spec 0339 S1: tint every occurrence of `pattern` in `text`, each in
+/// the style `style_of` gives for its start column.
+///
+/// `text` is the row as **drawn**, not the haystack the sweep matched
+/// against (S3): the two differ in both side panes, and the reader's
+/// eye is on the former. That is also why this re-scans rather than
+/// mapping a hit's byte offsets — the other occurrences have no hit to
+/// map, and while a pattern is still being typed neither has the
+/// current one.
+///
+/// `find_range_from` rather than a slice: spec 0273 S6 makes `^` and
+/// `\b` depend on what precedes the offset, which a slice would hide.
+/// The loop is bounded by the text as well as by the matches because a
+/// regex may match nothing at all, and an empty match at the end would
+/// otherwise be re-found forever. Stepping past a match's *start*
+/// rather than its end is what keeps overlapping occurrences honest.
+pub(super) fn tint_matches(
+    spans: &mut Vec<Span<'static>>,
+    text: &str,
+    pattern: &SearchPattern,
+    cells: RowCells,
+    style_of: impl Fn(usize) -> Style,
+) {
+    let mut at = 0;
+    while at <= text.len() {
+        let Some(found) = pattern.find_range_from(text, at) else {
+            break;
+        };
+        let start = char_column(text, found.start);
+        let chars = text[found.clone()].chars().count();
+        at = found.start + text[found.start..].chars().next().map_or(1, char::len_utf8);
+        let style = style_of(start);
+        let Some(index) = (cells.lead + start).checked_sub(cells.pan) else {
+            continue;
+        };
+        let lo = index + cells.trail;
+        let hi = (lo + chars).min(cells.width);
+        if lo < hi {
+            restyle_range(spans, lo..hi, |s| s.patch(style));
+        }
+    }
+}
+
 /// The byte offset of `text`'s `n`-th character, or its length when it
 /// has fewer than `n`.
 fn byte_of_char(text: &str, n: usize) -> usize {
@@ -2260,44 +2318,21 @@ impl App {
                                 }
                             }
                         }
-                        let mut at = 0;
-                        // `find_range_from` rather than a slice: spec 0273
-                        // S6 makes `^` and `\b` depend on what precedes
-                        // `at`, which a slice would hide. The loop is
-                        // bounded by the text as well as by the matches
-                        // because a regex may match nothing at all, and an
-                        // empty match at the end would otherwise be
-                        // re-found forever.
-                        while at <= text.len() {
-                            let Some(found) = pattern.find_range_from(&text, at) else {
-                                break;
-                            };
-                            let start = char_column(&text, found.start);
-                            let chars = text[found.clone()].chars().count();
-                            // Stepping past the match's *start* rather than
-                            // its end is what keeps overlapping occurrences
-                            // honest.
-                            at = found.start
-                                + text[found.start..].chars().next().map_or(1, char::len_utf8);
-                            let style =
-                                if search_current.is_some_and(|(line, column, _, on_path)| {
-                                    !on_path && Some(line) == line_idx && column == start
-                                }) {
-                                    current
-                                } else {
-                                    other
-                                };
-                            let Some(index) =
-                                (FOLD_FIELD_WIDTH + start).checked_sub(self.pan_offset)
-                            else {
-                                continue;
-                            };
-                            let lo = index + HEAT_FIELD_WIDTH;
-                            let hi = (lo + chars).min(width);
-                            if lo < hi {
-                                restyle_range(&mut spans, lo..hi, |s| s.patch(style));
+                        let cells = RowCells {
+                            pan: self.pan_offset,
+                            lead: FOLD_FIELD_WIDTH,
+                            trail: HEAT_FIELD_WIDTH,
+                            width,
+                        };
+                        tint_matches(&mut spans, &text, pattern, cells, |start| {
+                            if search_current.is_some_and(|(line, column, _, on_path)| {
+                                !on_path && Some(line) == line_idx && column == start
+                            }) {
+                                current
+                            } else {
+                                other
                             }
-                        }
+                        });
                     }
                 }
                 if let (true, Some(panned_chars)) = (on_cursor_row, panned_chars) {
@@ -2805,6 +2840,23 @@ impl App {
         // keystroke.
         self.warm_visible_override_wrappers(start, end);
 
+        // Spec 0339 S1/S5: hoisted out of the row loop, as the main
+        // pane's own are — one compile per frame, not one per row — and
+        // gated on this pane owning the search, since
+        // `search_highlight_pattern` answers with the live prompt
+        // buffer whichever pane opened it.
+        let search = (self.active_search_scope() == SearchScope::Override)
+            .then(|| self.search_highlight_pattern())
+            .flatten()
+            .map(|pattern| {
+                (
+                    pattern,
+                    theme::search_current_style(self.theme),
+                    theme::search_match_style(self.theme),
+                    self.search_current_index(),
+                )
+            });
+
         // Spec 0244 S9: an over-panned viewport draws blank rows above
         // the first candidate, exactly as the main pane does.
         let mut lines: Vec<Line> = vec![Line::default(); blank_rows];
@@ -2824,10 +2876,27 @@ impl App {
             };
             // Spec 0127 §G1: pan the override pane's own rows
             // independently of the main pane's `pan_offset`.
-            lines.push(Line::from(pan_spans(
-                vec![Span::styled(text, style)],
+            let mut spans = pan_spans(
+                vec![Span::styled(text.clone(), style)],
                 self.override_pan_offset,
-            )));
+            );
+            // Spec 0339 S1/S4: the tint goes on after the pan, over the
+            // drawn text, and the whole row is the current match or
+            // none of it is — a side pane's stop is its whole entry
+            // (spec 0246 N4), so there is no column to tell two matches
+            // inside one apart.
+            if let Some((pattern, current, other, current_index)) = &search {
+                let hit = *current_index == Some(row);
+                let cells = RowCells {
+                    pan: self.override_pan_offset,
+                    lead: 0,
+                    trail: 0,
+                    width: inner.width as usize,
+                };
+                let style = if hit { *current } else { *other };
+                tint_matches(&mut spans, &text, pattern, cells, |_| style);
+            }
+            lines.push(Line::from(spans));
         }
         frame.render_widget(Paragraph::new(lines), inner);
     }

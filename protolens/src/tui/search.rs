@@ -447,8 +447,16 @@ impl App {
         // Spec 0274 S1: a pattern that can match a `\n` searches the
         // rows joined, which is a different walk over a different
         // haystack. Everything else keeps 0273's row-at-a-time one.
+        //
+        // Spec 0339 S6: only in the main pane. A side pane's rows are a
+        // list, and the `\n` between two of them is an artifact of the
+        // drawing rather than a fact about the data — such a pattern
+        // still matches *within* an entry through the per-entry walk
+        // below, which `find_range`'s `Multi` arm supports.
         let segments = match pattern {
-            SearchPattern::Multi(_) => self.segment_queue(origin, dir),
+            SearchPattern::Multi(_) if origin.scope == SearchScope::Main => {
+                self.segment_queue(origin, dir)
+            }
             _ => VecDeque::new(),
         };
         Some(SearchSweep {
@@ -483,8 +491,8 @@ impl App {
     /// rather than row bytes, so a full cycle still visits every match
     /// exactly once and lands back where it started.
     ///
-    /// Empty for a scope that has no document — a side pane keeps the
-    /// per-row walk unconditionally (N7).
+    /// Only ever called for the main pane (spec 0339 S6); a scope with
+    /// no document has no segments and keeps the per-row walk.
     fn segment_queue(&self, origin: SearchOrigin, dir: SearchDir) -> VecDeque<(Segment, RowBound)> {
         let SweepCursor::Line(pos) = origin.at else {
             return VecDeque::new();
@@ -1448,7 +1456,7 @@ impl App {
     }
 
     /// The pane's own last committed `(direction, pattern)`.
-    fn last_search_for(&self, scope: SearchScope) -> Option<&(SearchDir, String)> {
+    pub(super) fn last_search_for(&self, scope: SearchScope) -> Option<&(SearchDir, String)> {
         match scope {
             SearchScope::Main => self.last_search.as_ref(),
             SearchScope::Override => self.last_override_search.as_ref(),
@@ -1456,12 +1464,34 @@ impl App {
         }
     }
 
-    fn set_last_search_for(&mut self, scope: SearchScope, last: (SearchDir, String)) {
+    pub(super) fn set_last_search_for(&mut self, scope: SearchScope, last: (SearchDir, String)) {
         *match scope {
             SearchScope::Main => &mut self.last_search,
             SearchScope::Override => &mut self.last_override_search,
             SearchScope::Manage => &mut self.last_manage_search,
         } = Some(last);
+    }
+
+    /// Spec 0339 S8: the pane a search in progress belongs to — the
+    /// prompt's own origin scope, or the focused pane when no prompt
+    /// opened one.
+    ///
+    /// Focus cannot move while a prompt is open, so the two agree
+    /// today; saying it once is what keeps a future prompt that *can*
+    /// outlive its pane from committing against the wrong list.
+    pub(super) fn active_search_scope(&self) -> SearchScope {
+        self.search_origin
+            .map_or_else(|| self.search_scope(), |origin| origin.scope)
+    }
+
+    /// vim's `n`/`N`: repeat the focused pane's last committed search,
+    /// `N` reversing the direction it was committed in.
+    pub(super) fn repeat_search(&mut self, back: bool) {
+        let scope = self.search_scope();
+        let Some((dir, pattern)) = self.last_search_for(scope).cloned() else {
+            return;
+        };
+        self.run_search(scope, if back { dir.reverse() } else { dir }, &pattern);
     }
 
     /// Spec 0276 S2: `F`/`B` — a search prompt that steps rather than
@@ -1500,9 +1530,7 @@ impl App {
         let pattern = self.command_buffer.take().unwrap_or_default();
         self.command_cursor = 0;
         self.search_browse = None;
-        let scope = self
-            .search_origin
-            .map_or_else(|| self.search_scope(), |origin| origin.scope);
+        let scope = self.active_search_scope();
         let Some(hit) = self.search_sweep.as_ref().and_then(|sweep| sweep.found) else {
             self.cancel_search();
             return;
@@ -1915,6 +1943,21 @@ impl App {
         };
         let line = self.absolute_start(pos.node) + pos.line_in_node as usize;
         Some((line, hit.column, hit.width, hit.on_path))
+    }
+
+    /// Spec 0339 S4: `search_current_cell`'s side-pane mirror — the
+    /// *entry* the sweep is standing on, whose every occurrence is
+    /// drawn in `search_current_style`.
+    ///
+    /// An entry rather than a cell because spec 0246 N4 makes a side
+    /// pane's stop its whole entry: there is no column to distinguish
+    /// two matches inside one, so the current-match rule there is by
+    /// row. `None` in the main pane, whose matches have columns.
+    pub(super) fn search_current_index(&self) -> Option<usize> {
+        match self.search_sweep.as_ref()?.found?.at {
+            SweepCursor::Index(i) => Some(i),
+            SweepCursor::Line(_) => None,
+        }
     }
 
     /// Spec 0274 S13: the current hit's whole extent, shaped as a

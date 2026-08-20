@@ -6,7 +6,7 @@
 //! matches, which way `n` repeats, and how case is folded.
 //!
 //! Both panes' searches are here rather than one each with its own pane:
-//! they share `jump_to_match`'s casing rules, and the smartcase tests
+//! they share `run_search`'s casing rules, and the smartcase tests
 //! only convince side by side.
 
 use super::super::search::SweepCursor;
@@ -134,8 +134,8 @@ fn main_pane_search_esc_and_empty_backspace_cancel() {
 /// requires main pane to be in focus" — while the override pane has
 /// focus, `/`/`?`/`n` share the same `command_buffer` as main-pane
 /// search (spec-0133-adjacent rework), but `Enter` dispatches to the
-/// override pane's own `jump_to_override_match`, not the main pane's
-/// `jump_to_match` — the main-pane cursor never moves.
+/// override pane's own `SearchScope::Override`, not the main pane's
+/// `SearchScope::Main` — the main-pane cursor never moves.
 #[test]
 fn main_pane_search_keys_are_inert_while_override_pane_has_focus() {
     let mut app = message_node_app();
@@ -425,14 +425,14 @@ fn a_leading_space_is_part_of_the_pattern() {
 fn main_pane_search_is_smartcase() {
     let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "Beta: 3"]);
 
-    app.jump_to_match(SearchDir::Forward, "beta");
+    app.run_search(SearchScope::Main, SearchDir::Forward, "beta");
     assert_eq!(app.cursor, 1);
     // Folds onto the capitalized node rather than stopping at "beta".
-    app.jump_to_match(SearchDir::Forward, "beta");
+    app.run_search(SearchScope::Main, SearchDir::Forward, "beta");
     assert_eq!(app.cursor, 2);
 
     app.set_cursor(0);
-    app.jump_to_match(SearchDir::Forward, "Beta");
+    app.run_search(SearchScope::Main, SearchDir::Forward, "Beta");
     assert_eq!(app.cursor, 2); // skipped the lowercase node entirely
 }
 
@@ -453,11 +453,11 @@ fn override_pane_search_is_smartcase() {
     ];
 
     app.override_highlight = 0;
-    app.jump_to_override_match(SearchDir::Forward, "beta");
+    app.run_search(SearchScope::Override, SearchDir::Forward, "beta");
     assert_eq!(app.override_highlight, 1);
 
     app.override_highlight = 0;
-    app.jump_to_override_match(SearchDir::Forward, "Beta");
+    app.run_search(SearchScope::Override, SearchDir::Forward, "Beta");
     assert_eq!(app.override_highlight, 2);
 }
 
@@ -608,7 +608,7 @@ fn search_finds_the_same_hits_in_the_same_order() {
                 app.set_cursor(app.first_node);
                 let got: Vec<usize> = (0..want.len())
                     .map(|_| {
-                        app.jump_to_match(dir, pattern);
+                        app.run_search(SearchScope::Main, dir, pattern);
                         app.cursor_line()
                     })
                     .collect();
@@ -626,18 +626,18 @@ fn search_finds_the_same_hits_in_the_same_order() {
 fn a_search_hit_puts_the_caret_on_the_match() {
     let mut app = sibling_leaves_app(&["alpha: 1", "  beta: 2"]);
 
-    app.jump_to_match(SearchDir::Forward, "beta");
+    app.run_search(SearchScope::Main, SearchDir::Forward, "beta");
     assert_eq!(app.cursor, 1);
     assert_eq!(app.cursor_column, 2, "on the match's first character");
     assert_eq!(app.desired_column, 2);
 
     // Within the row the caret still follows the match.
-    app.jump_to_match(SearchDir::Forward, "2");
+    app.run_search(SearchScope::Main, SearchDir::Forward, "2");
     assert_eq!(app.cursor, 1);
     assert_eq!(app.cursor_column, "  beta: ".chars().count());
 
     // A pattern whose first character is in the indentation clamps.
-    app.jump_to_match(SearchDir::Forward, " beta");
+    app.run_search(SearchScope::Main, SearchDir::Forward, " beta");
     assert_eq!(app.cursor_column, 2, "clamped onto the first non-blank");
 }
 
@@ -1215,7 +1215,7 @@ fn a_pattern_of_digits_and_slashes_searches_paths_only() {
     );
 
     app.set_cursor(app.first_node);
-    app.jump_to_match(SearchDir::Forward, "/2/1");
+    app.run_search(SearchScope::Main, SearchDir::Forward, "/2/1");
     assert_eq!(app.cursor, id);
 
     // Now a second line carries the same pattern in its *text*. It is
@@ -1223,9 +1223,9 @@ fn a_pattern_of_digits_and_slashes_searches_paths_only() {
     // path the pattern spells.
     app.node_text_mut()[a] = Some(Box::from("  a: \"/2/1\""));
     app.set_cursor(app.first_node);
-    app.jump_to_match(SearchDir::Forward, "/2/1");
+    app.run_search(SearchScope::Main, SearchDir::Forward, "/2/1");
     assert_eq!(app.cursor, id);
-    app.jump_to_match(SearchDir::Forward, "/2/1");
+    app.run_search(SearchScope::Main, SearchDir::Forward, "/2/1");
     assert_eq!(app.cursor, id, "the text spelling the path is not a stop");
 }
 
@@ -1241,7 +1241,7 @@ fn a_word_pattern_never_stops_on_a_path() {
     app.set_cursor(app.first_node);
     // A regex that matches `/2/1` the string, typed without the shape
     // that would make it a path pattern.
-    app.jump_to_match(SearchDir::Forward, "2.1");
+    app.run_search(SearchScope::Main, SearchDir::Forward, "2.1");
     assert_ne!(app.cursor, id);
     assert!(app.message.contains("not found"));
 }
@@ -1293,7 +1293,7 @@ fn a_path_stops_once_per_node() {
 
     app.set_cursor(app.first_node);
     for _ in 0..2 {
-        app.jump_to_match(SearchDir::Forward, "/1");
+        app.run_search(SearchScope::Main, SearchDir::Forward, "/1");
         assert_eq!(app.cursor, run);
         assert_eq!(
             app.cursor_line_in_node, 0,
@@ -1313,7 +1313,7 @@ fn a_bare_slash_walks_every_node() {
     app.set_cursor(app.first_node);
     let mut seen = std::collections::HashSet::from([app.cursor]);
     for _ in 0..8 {
-        app.jump_to_match(SearchDir::Forward, "/");
+        app.run_search(SearchScope::Main, SearchDir::Forward, "/");
         seen.insert(app.cursor);
     }
     for node in [run, tail, a, b, id] {
@@ -1332,7 +1332,7 @@ fn a_path_matches_only_from_its_start() {
     assert_eq!(app.positional_path(id), "/2/1");
 
     app.set_cursor(app.first_node);
-    app.jump_to_match(SearchDir::Forward, "2/1");
+    app.run_search(SearchScope::Main, SearchDir::Forward, "2/1");
     assert_ne!(app.cursor, id, "a suffix of the path is not a match");
     assert!(app.message.contains("not found"));
 
@@ -1340,14 +1340,14 @@ fn a_path_matches_only_from_its_start() {
     // spells first, then the node itself.
     app.message.clear();
     app.set_cursor(app.first_node);
-    app.jump_to_match(SearchDir::Forward, "/2");
+    app.run_search(SearchScope::Main, SearchDir::Forward, "/2");
     assert_eq!(app.cursor, tail, "`/2` is the parent's whole path");
-    app.jump_to_match(SearchDir::Forward, "/2");
+    app.run_search(SearchScope::Main, SearchDir::Forward, "/2");
     assert_eq!(app.cursor, id);
     assert!(app.message.is_empty());
 
     app.set_cursor(app.first_node);
-    app.jump_to_match(SearchDir::Forward, "/2/1");
+    app.run_search(SearchScope::Main, SearchDir::Forward, "/2/1");
     assert_eq!(app.cursor, id);
 }
 
@@ -1365,20 +1365,20 @@ fn a_path_match_lands_on_the_home_anchor() {
     let id = app.nth_child(tail, 0).expect("tail has one child");
 
     app.set_cursor(app.first_node);
-    app.jump_to_match(SearchDir::Forward, "/2/1");
+    app.run_search(SearchScope::Main, SearchDir::Forward, "/2/1");
     assert_eq!(app.cursor, id);
     assert_eq!(app.caret_anchor, CaretAnchor::Home);
     assert_eq!(app.cursor_column, app.caret_bounds().0);
 
     app.set_cursor(app.first_node);
-    app.jump_to_match(SearchDir::Forward, "vals");
+    app.run_search(SearchScope::Main, SearchDir::Forward, "vals");
     assert_eq!(app.caret_anchor, CaretAnchor::Free);
     assert_eq!(app.cursor_column, 2);
 
     // `a`'s path is `/3` and its text now holds `/3` too.
     app.node_text_mut()[a] = Some(Box::from("  a: \"/3\""));
     app.set_cursor(app.first_node);
-    app.jump_to_match(SearchDir::Forward, "/3");
+    app.run_search(SearchScope::Main, SearchDir::Forward, "/3");
     assert_eq!(app.cursor, a);
     assert_eq!(app.caret_anchor, CaretAnchor::Home);
     assert_eq!(app.cursor_column, app.caret_bounds().0);
@@ -1401,7 +1401,7 @@ fn the_side_panes_match_text_only() {
     app.override_highlight = 0;
     app.message.clear();
 
-    app.jump_to_override_match(SearchDir::Forward, "/1");
+    app.run_search(SearchScope::Override, SearchDir::Forward, "/1");
     assert_eq!(app.override_highlight, 0);
     assert!(app.message.contains("not found"));
 }
@@ -1494,7 +1494,7 @@ fn n_stops_at_every_match_on_a_line() {
 
     let got: Vec<(usize, usize)> = (0..4)
         .map(|_| {
-            app.jump_to_match(SearchDir::Forward, "ab");
+            app.run_search(SearchScope::Main, SearchDir::Forward, "ab");
             (app.cursor, app.cursor_column)
         })
         .collect();
@@ -1510,7 +1510,7 @@ fn n_stops_at_every_match_on_a_line() {
 fn a_backward_search_lands_on_the_last_match_of_the_row() {
     let mut app = sibling_leaves_app(&["zz", "ab ab ab"]);
 
-    app.jump_to_match(SearchDir::Backward, "ab");
+    app.run_search(SearchScope::Main, SearchDir::Backward, "ab");
     assert_eq!((app.cursor, app.cursor_column), (1, 6));
 }
 
@@ -1522,7 +1522,7 @@ fn a_search_wraps_back_to_the_match_it_started_on() {
     let mut app = sibling_leaves_app(&["ab", "zz"]);
     app.message.clear();
 
-    app.jump_to_match(SearchDir::Forward, "ab");
+    app.run_search(SearchScope::Main, SearchDir::Forward, "ab");
     assert_eq!((app.cursor, app.cursor_column), (0, 0));
     assert!(
         app.message.is_empty(),
@@ -1539,9 +1539,9 @@ fn a_search_wraps_back_to_the_match_it_started_on() {
 fn overlapping_matches_are_separate_stops() {
     let mut app = sibling_leaves_app(&["aaa", "zz"]);
 
-    app.jump_to_match(SearchDir::Forward, "aa");
+    app.run_search(SearchScope::Main, SearchDir::Forward, "aa");
     assert_eq!((app.cursor, app.cursor_column), (0, 1));
-    app.jump_to_match(SearchDir::Forward, "aa");
+    app.run_search(SearchScope::Main, SearchDir::Forward, "aa");
     assert_eq!((app.cursor, app.cursor_column), (0, 0));
 }
 
@@ -1572,7 +1572,7 @@ fn a_path_match_is_one_stop_per_row() {
 
     let got: Vec<usize> = (0..4)
         .map(|_| {
-            app.jump_to_match(SearchDir::Forward, "/");
+            app.run_search(SearchScope::Main, SearchDir::Forward, "/");
             app.cursor
         })
         .collect();
@@ -1605,7 +1605,7 @@ fn the_manage_pane_still_stops_once_per_entry() {
 
     let got: Vec<usize> = (0..3)
         .map(|_| {
-            app.jump_to_manage_match(SearchDir::Forward, "z");
+            app.run_search(SearchScope::Manage, SearchDir::Forward, "z");
             app.manage_highlight
         })
         .collect();
@@ -2751,4 +2751,289 @@ fn the_echo_outlives_the_message_timeout() {
     assert_eq!(app.message_deadline, None, "the message row was swept");
     assert_eq!(app.search_row_text().as_deref(), Some("/beta"));
     assert_eq!(app.search_tally_text().as_deref(), Some("1 of 1"));
+}
+
+// ---------------------------------------------------------------------
+// Spec 0339: one search, three panes.
+// ---------------------------------------------------------------------
+
+/// The side pane's cells drawn on `bg`, as `(pane row, first pane
+/// column, the symbols in reading order)` — one entry per row that has
+/// any.
+///
+/// Pane columns, not screen columns: `side_area` is the pane's *inner*
+/// rect, so its column 0 is the row text's own column 0. A side pane
+/// has neither of the main pane's two gutters (spec 0339 S2), which is
+/// what makes that identity worth asserting on.
+fn side_pane_tint(app: &mut App, bg: Option<Color>) -> Vec<(usize, usize, String)> {
+    let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let area = app.side_area;
+    let buffer = terminal.backend().buffer();
+    let mut out = Vec::new();
+    for y in area.y..area.y + area.height {
+        let mut first = None;
+        let mut text = String::new();
+        for x in area.x..area.x + area.width {
+            let cell = &buffer[(x, y)];
+            if cell.style().bg == bg {
+                first.get_or_insert((x - area.x) as usize);
+                text.push_str(cell.symbol());
+            }
+        }
+        if let Some(column) = first {
+            out.push(((y - area.y) as usize, column, text));
+        }
+    }
+    out
+}
+
+fn current_tint(app: &mut App) -> Vec<(usize, usize, String)> {
+    let bg = theme::search_current_style(app.theme).bg;
+    side_pane_tint(app, bg)
+}
+
+fn other_tint(app: &mut App) -> Vec<(usize, usize, String)> {
+    let bg = theme::search_match_style(app.theme).bg;
+    side_pane_tint(app, bg)
+}
+
+/// The override pane, open, holding `candidates` and highlighting the
+/// first of them.
+fn override_pane_app(candidates: &[(&str, Option<i64>)]) -> App {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.term_width = 120;
+    press(&mut app, KeyCode::Char('t'));
+    assert!(app.override_focus);
+    app.override_candidates = candidates
+        .iter()
+        .map(|(fqdn, score)| ((*fqdn).to_string(), *score))
+        .collect();
+    app.override_highlight = 0;
+    app
+}
+
+/// The manage pane, open, holding one entry per given type under a
+/// field-scoped origin of its own.
+///
+/// Field-scoped rather than spec 0117's `Path`, because a `Path`
+/// origin's label starts with `/` and so reads as a *path pattern*
+/// (spec 0273 S2), which matches no side-pane text at all (N4).
+fn manage_pane_app(types: &[&str]) -> App {
+    let (mut app, _items) = repeated_message_fixture();
+    app.splash = false;
+    app.term_width = 120;
+    app.manage_open = true;
+    app.manage_focus = true;
+    for (i, ty) in types.iter().enumerate() {
+        app.overrides.activate(
+            OverrideOrigin::FqdnField {
+                fqdn: "test.Outer".to_string(),
+                field: i as u64 + 1,
+            },
+            Some((*ty).to_string()),
+        );
+    }
+    // Entry 0 is the auto-derived root; the activated ones follow it.
+    app.manage_highlight = 0;
+    app
+}
+
+/// Spec 0339 test-plan item 1 (G1, S4). A `/` in the override pane
+/// tints as it is typed: every occurrence in `search_match_style`, and
+/// on the entry the sweep is standing on, `search_current_style`.
+#[test]
+fn a_slash_tints_the_override_pane() {
+    let mut app = override_pane_app(&[
+        ("pkg.Alpha", None),
+        ("pkg.Beta", None),
+        ("pkg.Alphabet", None),
+    ]);
+
+    type_keys(&mut app, "/Alpha");
+    settle_sweep(&mut app);
+
+    // Row 0 is the origin, excluded on the way out (spec 0246 N4), so
+    // the sweep stands on row 2.
+    assert_eq!(app.search_current_index(), Some(2));
+    assert_eq!(current_tint(&mut app), vec![(2, 4, "Alpha".to_string())]);
+    assert_eq!(other_tint(&mut app), vec![(0, 4, "Alpha".to_string())]);
+    assert_eq!(
+        app.override_highlight, 0,
+        "a `/` prompt tints without moving the highlight"
+    );
+}
+
+/// Spec 0339 test-plan item 2 (S3). The tint is a scan of the row as
+/// *drawn*, not a projection of the haystack the sweep matched: a
+/// candidate carrying an inferred score draws a `  (score: N)` tail
+/// that its FQDN haystack knows nothing about, and the tint still lands
+/// on the FQDN and stops there.
+#[test]
+fn the_override_tint_lands_on_the_drawn_text() {
+    let mut app = override_pane_app(&[("pkg.Alpha", Some(7))]);
+    assert_eq!(app.override_row_display(0).0, "pkg.Alpha  (score: 7)");
+
+    type_keys(&mut app, "/Alpha");
+    settle_sweep(&mut app);
+
+    assert_eq!(current_tint(&mut app), vec![(0, 4, "Alpha".to_string())]);
+}
+
+/// Spec 0339 test-plan item 3 (S3, S4). The manage pane tints its type
+/// label, at the column the marker prefix puts it at — which is not
+/// where the same text sits in `manage_search_text`.
+#[test]
+fn a_slash_tints_the_manage_pane() {
+    let mut app = manage_pane_app(&["pkg.zz1", "pkg.zz2"]);
+
+    type_keys(&mut app, "/zz2");
+    settle_sweep(&mut app);
+
+    assert_eq!(app.search_current_index(), Some(2));
+    // Entry 2 draws at pane row 5: each of the three entries has its own
+    // origin, so each is preceded by its own header row.
+    //
+    // `  ● pkg.zz2` — the marker and its two spaces put the label at
+    // column 4, so `zz2` lands at column 8. The haystack, meanwhile, has
+    // the origin label in front of the label and no marker at all; only
+    // a re-scan of the drawn row can put the tint here.
+    assert!(app.manage_search_text(2).starts_with("test.Outer:2 "));
+    assert_eq!(current_tint(&mut app), vec![(5, 8, "zz2".to_string())]);
+}
+
+/// Spec 0339 test-plan item 3, second half (S7, N1). The origin label
+/// is in the haystack but is drawn on the *header* row above the entry,
+/// and a header is not a candidate — so an origin-only match tints
+/// nothing at all while still landing the highlight on the entry.
+#[test]
+fn an_origin_only_match_lands_without_tinting() {
+    let mut app = manage_pane_app(&["pkg.zz1", "pkg.zz2"]);
+
+    commit_search_by_key(&mut app, "Outer:2");
+
+    assert_eq!(app.manage_highlight, 2, "{}", app.message);
+    assert_eq!(current_tint(&mut app), Vec::new());
+    assert_eq!(other_tint(&mut app), Vec::new());
+}
+
+/// Spec 0339 test-plan item 4 (S7). The `as "x"` a row draws is part of
+/// what the pane searches.
+#[test]
+fn the_manage_display_name_is_searchable() {
+    let mut app = manage_pane_app(&["pkg.zz1", "pkg.zz2"]);
+    app.overrides.rename(1, Some("zebra".to_string()));
+    assert!(app.manage_type_line(1).contains("as \"zebra\""));
+
+    commit_search_by_key(&mut app, "zebra");
+
+    assert_eq!(app.manage_highlight, 1, "{}", app.message);
+}
+
+/// Spec 0339 test-plan item 5 (N1). A pattern matching only the origin
+/// labels stops once per matching *entry* over a full `n` cycle — a
+/// header row is drawn, and searched through the entries it groups, but
+/// is never itself a landing.
+#[test]
+fn a_manage_header_is_never_a_landing() {
+    let mut app = manage_pane_app(&["pkg.zz1", "pkg.zz2", "pkg.zz3"]);
+
+    // The root entry's origin is `/`, so only the three field-scoped
+    // ones carry a `test.Outer:` label.
+    commit_search_by_key(&mut app, "Outer:");
+    let first = app.manage_highlight;
+
+    let mut stops = vec![first];
+    loop {
+        press(&mut app, KeyCode::Char('n'));
+        if app.manage_highlight == first {
+            break;
+        }
+        stops.push(app.manage_highlight);
+        assert!(stops.len() <= 8, "a cycle must close: {stops:?}");
+    }
+    assert_eq!(stops, vec![1, 2, 3]);
+}
+
+/// Spec 0339 test-plan item 6 (S6, N2). A side pane's entries are a
+/// list, never one joined haystack: a pattern reaching from the end of
+/// one entry into the next finds nothing, while the same shape of
+/// pattern inside a single entry finds it.
+#[test]
+fn no_match_crosses_two_entries() {
+    let mut app = override_pane_app(&[("pkg.Alpha", None), ("pkg.Beta", None)]);
+
+    commit_search_by_key(&mut app, r"Alpha\s+pkg");
+    assert!(app.message.contains("not found"), "{}", app.message);
+
+    // The same engine — `\s*` admits a newline, so this compiles to
+    // `SearchPattern::Multi` too — matching within one entry.
+    commit_search_by_key(&mut app, r"Alpha\s*");
+    assert_eq!(app.search_current_index(), Some(0), "{}", app.message);
+}
+
+/// Spec 0339 test-plan item 7. `Esc` still puts a side pane back, now
+/// that a `/` visibly changes it: the view returns and the tint goes
+/// with the prompt.
+#[test]
+fn esc_still_restores_a_side_pane() {
+    let mut app = override_pane_app(&[
+        ("pkg.Alpha", None),
+        ("pkg.Beta", None),
+        ("pkg.Alphabet", None),
+    ]);
+    let scroll = app.override_scroll;
+    app.override_pan_offset = 2;
+
+    type_keys(&mut app, "/Alpha");
+    settle_sweep(&mut app);
+    assert!(!current_tint(&mut app).is_empty(), "the prompt tinted");
+
+    press(&mut app, KeyCode::Esc);
+    assert!(app.command_buffer.is_none());
+    assert_eq!(app.override_highlight, 0);
+    assert_eq!(app.override_scroll, scroll);
+    assert_eq!(app.override_pan_offset, 2);
+    assert_eq!(current_tint(&mut app), Vec::new());
+    assert_eq!(other_tint(&mut app), Vec::new());
+}
+
+/// Spec 0339 test-plan item 8 (S9). One `repeat_search`, three
+/// independent memories: `n` in a pane repeats that pane's own last
+/// committed pattern and leaves the other two alone.
+#[test]
+fn n_repeats_its_own_panes_search() {
+    let mut app = override_pane_app(&[
+        ("pkg.Alpha", None),
+        ("pkg.Beta", None),
+        ("pkg.Alphabet", None),
+    ]);
+    app.last_search = Some((SearchDir::Forward, "main-only".to_string()));
+
+    commit_search_by_key(&mut app, "Alpha");
+    assert_eq!(app.override_highlight, 2);
+
+    press(&mut app, KeyCode::Char('n'));
+    assert_eq!(app.override_highlight, 0, "{}", app.message);
+    assert_eq!(
+        app.last_search,
+        Some((SearchDir::Forward, "main-only".to_string())),
+        "the main pane's memory is untouched"
+    );
+    assert_eq!(app.last_manage_search, None);
+
+    let mut app = manage_pane_app(&["pkg.zz1", "pkg.zz2", "pkg.zz3"]);
+    app.last_override_search = Some((SearchDir::Forward, "override-only".to_string()));
+
+    commit_search_by_key(&mut app, "zz");
+    assert_eq!(app.manage_highlight, 1);
+
+    press(&mut app, KeyCode::Char('n'));
+    assert_eq!(app.manage_highlight, 2, "{}", app.message);
+    assert_eq!(
+        app.last_override_search,
+        Some((SearchDir::Forward, "override-only".to_string())),
+        "the override pane's memory is untouched"
+    );
 }

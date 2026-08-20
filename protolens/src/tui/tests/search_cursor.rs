@@ -175,12 +175,12 @@ fn a_backward_search_steps_off_the_cross_row_match_it_is_on() {
 
     // Forward twice, to the second occurrence: node 2's row into node
     // 3's.
-    app.jump_to_match(SearchDir::Forward, r"1\nb");
-    app.jump_to_match(SearchDir::Forward, r"1\nb");
+    app.run_search(SearchScope::Main, SearchDir::Forward, r"1\nb");
+    app.run_search(SearchScope::Main, SearchDir::Forward, r"1\nb");
     assert_eq!(app.cursor, 2, "{}", app.message);
 
     // And back to the first, on node 0 — not round to itself.
-    app.jump_to_match(SearchDir::Backward, r"1\nb");
+    app.run_search(SearchScope::Main, SearchDir::Backward, r"1\nb");
     assert_eq!(app.cursor, 0, "{}", app.message);
 }
 

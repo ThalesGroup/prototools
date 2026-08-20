@@ -838,35 +838,4 @@ impl App {
         // the end of every row on screen, and the pane went blank.
         self.clamp_pan_offset();
     }
-
-    /// Find the next `override_candidates` entry whose FQDN contains
-    /// `pattern` (smartcase — spec 0195 S2), searching in `dir` from
-    /// just past the highlighted row and wrapping around. Moves the
-    /// highlight there on success; otherwise leaves it unchanged and
-    /// sets a status-line message.
-    pub(super) fn jump_to_override_match(&mut self, dir: SearchDir, pattern: &str) {
-        self.run_search(SearchScope::Override, dir, pattern);
-    }
-
-    /// Find the next node whose own opening line contains `pattern`
-    /// (smartcase — spec 0195 S2), searching in `dir` from just past the
-    /// cursor and wrapping around at the ends of the document (spec 0114
-    /// §4, extended to the main pane). Folded-away matches are found and
-    /// then revealed, since the scan covers the whole document rather
-    /// than the visible rows. Matching is against the nodes' current
-    /// rendered text, so an overridden range searches its post-override
-    /// rendering with no special-casing. On a match, moves the cursor
-    /// there (recording a jumplist entry) and unfolds its ancestors;
-    /// otherwise leaves the cursor put and sets a status-line message.
-    ///
-    /// Steps line by line with `next_line`/`prev_line` (spec 0222 S6)
-    /// rather than node by node. The cursor can rest on a closing `}`,
-    /// and a node-level step from there would descend back into the
-    /// node's own children — so only a line-level walk visits the
-    /// document in the order the old text scan did. The wrap endpoints
-    /// are resolved on demand, and only if the walk actually wraps, so
-    /// neither direction pays spec 0195 S1's eager `last_node()`.
-    pub(super) fn jump_to_match(&mut self, dir: SearchDir, pattern: &str) {
-        self.run_search(SearchScope::Main, dir, pattern);
-    }
 }

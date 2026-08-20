@@ -1027,7 +1027,7 @@ fn manage_pane_delete_removes_manual_entry_unchanged() {
 /// Spec 0117 §3, extended: `/`/`?` in the management pane share the
 /// same `command_buffer` as main-pane/override-pane search
 /// (spec-0133-adjacent rework), but `Enter` dispatches to
-/// `jump_to_manage_match`, moving `manage_highlight` rather than the
+/// `run_search` over `SearchScope::Manage`, moving `manage_highlight` rather than the
 /// main-pane cursor or the override pane's own highlight.
 #[test]
 fn manage_pane_search_forward_and_backward() {
@@ -1101,13 +1101,13 @@ fn manage_pane_search_is_smartcase() {
     // A lowercase pattern folds, so searching on from the capitalized
     // entry reaches the lowercase one.
     app.manage_highlight = upper;
-    app.jump_to_manage_match(SearchDir::Forward, "beta");
+    app.run_search(SearchScope::Manage, SearchDir::Forward, "beta");
     assert_eq!(app.manage_highlight, lower);
 
     // A capitalized pattern does not, so searching on from the lowercase
     // entry walks past everything else back to the capitalized one.
     app.manage_highlight = lower;
-    app.jump_to_manage_match(SearchDir::Forward, "Beta");
+    app.run_search(SearchScope::Manage, SearchDir::Forward, "Beta");
     assert_eq!(app.manage_highlight, upper);
 }
 

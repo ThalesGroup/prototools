@@ -241,16 +241,8 @@ impl App {
             KeyCode::Char('?') => {
                 self.open_command_line(CommandLineKind::search(SearchDir::Backward), String::new())
             }
-            KeyCode::Char('n') => {
-                if let Some((dir, pattern)) = self.last_override_search.clone() {
-                    self.jump_to_override_match(dir, &pattern);
-                }
-            }
-            KeyCode::Char('N') => {
-                if let Some((dir, pattern)) = self.last_override_search.clone() {
-                    self.jump_to_override_match(dir.reverse(), &pattern);
-                }
-            }
+            KeyCode::Char('n') => self.repeat_search(false),
+            KeyCode::Char('N') => self.repeat_search(true),
             // Spec 0276 S2: the find prompt — this pane's last pattern
             // pre-filled, `Enter` stepping to the next match and `Esc`
             // accepting the one on screen.
@@ -996,16 +988,8 @@ impl App {
             KeyCode::Char('?') => {
                 self.open_command_line(CommandLineKind::search(SearchDir::Backward), String::new())
             }
-            KeyCode::Char('n') => {
-                if let Some((dir, pattern)) = self.last_search.clone() {
-                    self.jump_to_match(dir, &pattern);
-                }
-            }
-            KeyCode::Char('N') => {
-                if let Some((dir, pattern)) = self.last_search.clone() {
-                    self.jump_to_match(dir.reverse(), &pattern);
-                }
-            }
+            KeyCode::Char('n') => self.repeat_search(false),
+            KeyCode::Char('N') => self.repeat_search(true),
             // Spec 0276 S2: the find prompt — the last pattern
             // pre-filled, `Enter` stepping to the next match and `Esc`
             // accepting the one on screen, caret on its last character.

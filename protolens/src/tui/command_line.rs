@@ -188,48 +188,25 @@ impl App {
                     // in the newly chosen direction (which may differ
                     // from the direction that pattern was originally
                     // searched in — unlike `n`, which always repeats in
-                    // the same direction as last time). Which pane's
-                    // search actually runs is determined by whichever
-                    // pane has focus right now — `override_focus`/
-                    // `manage_focus` are untouched by typing into
-                    // `command_buffer`. All three panes share the main
-                    // pane's bar (spec 0114 §4/0117 §3).
-                    CommandLineKind::Search { dir, .. } if self.override_focus => {
-                        let pattern = if buf.is_empty() {
-                            self.last_override_search
-                                .as_ref()
-                                .map(|(_, p)| p.clone())
-                                .unwrap_or(buf)
-                        } else {
-                            buf
-                        };
-                        self.last_override_search = Some((dir, pattern.clone()));
-                        self.commit_search(dir, &pattern);
-                    }
-                    CommandLineKind::Search { dir, .. }
-                        if self.manage_open && self.manage_focus =>
-                    {
-                        let pattern = if buf.is_empty() {
-                            self.last_manage_search
-                                .as_ref()
-                                .map(|(_, p)| p.clone())
-                                .unwrap_or(buf)
-                        } else {
-                            buf
-                        };
-                        self.last_manage_search = Some((dir, pattern.clone()));
-                        self.commit_search(dir, &pattern);
-                    }
+                    // the same direction as last time).
+                    //
+                    // Spec 0339 S8: which pane's search runs is
+                    // `active_search_scope` — the pane the prompt was
+                    // opened from — and which of the three
+                    // `last_*_search` fields it remembers is
+                    // `set_last_search_for`'s business, not this arm's.
+                    // All three panes share the main pane's bar (spec
+                    // 0114 §4/0117 §3).
                     CommandLineKind::Search { dir, .. } => {
+                        let scope = self.active_search_scope();
                         let pattern = if buf.is_empty() {
-                            self.last_search
-                                .as_ref()
+                            self.last_search_for(scope)
                                 .map(|(_, p)| p.clone())
                                 .unwrap_or(buf)
                         } else {
                             buf
                         };
-                        self.last_search = Some((dir, pattern.clone()));
+                        self.set_last_search_for(scope, (dir, pattern.clone()));
                         self.commit_search(dir, &pattern);
                     }
                 }

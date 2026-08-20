@@ -1716,7 +1716,7 @@ fn backward_search_scales_linearly() {
     fn no_match_wrap(nodes: usize, dir: SearchDir) -> std::time::Duration {
         let mut app = super::support::wide_sibling_scalars_app(nodes);
         let t = Instant::now();
-        app.jump_to_match(dir, "no-such-pattern-anywhere");
+        app.run_search(SearchScope::Main, dir, "no-such-pattern-anywhere");
         t.elapsed()
     }
 

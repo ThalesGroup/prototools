@@ -546,7 +546,7 @@ fn teleports_land_on_the_named_line_with_a_fold_above_them() {
 
     // 1. Search.
     app.set_cursor(app.first_node);
-    app.jump_to_match(SearchDir::Forward, &text);
+    app.run_search(SearchScope::Main, SearchDir::Forward, &text);
     assert_eq!(
         (app.cursor, app.cursor_on_footer()),
         (target, false),

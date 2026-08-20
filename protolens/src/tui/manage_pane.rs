@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::key_dispatch::{ctrl_or_alt, GChord};
+use super::render::{tint_matches, RowCells};
 use super::*;
 
 /// Character column (within `manage_type_line`'s own "  <marker> ..."
@@ -245,23 +246,23 @@ impl App {
     }
 
     /// Search corpus for management-pane entry `idx` (spec 0117 §3's
-    /// `/`/`?`/`n`) — origin label plus type label, so searching for
-    /// either the origin or the type finds it, independent of how the
+    /// `/`/`?`/`n`) — origin label, type label and display name, so
+    /// searching for any of the three finds it, independent of how the
     /// grouped display happens to lay them out across rows.
+    ///
+    /// Spec 0339 S7: the origin label is in here and is *not* drawn on
+    /// the entry's own row — it heads the group above it — so an
+    /// origin-only match tints nothing while still landing the
+    /// highlight on the entry. That is deliberate: a header row is not
+    /// a landing (N1), and searching for an origin has to reach the
+    /// entries it owns.
     pub(super) fn manage_search_text(&self, idx: usize) -> String {
         let e = &self.overrides.entries()[idx];
         let type_label = self.manage_entry_type_label(idx);
-        format!("{} {type_label}", e.origin.label())
-    }
-
-    /// Find the next management-pane entry (spec 0117 §3's `/`/`?`/`n`)
-    /// whose search text (`manage_search_text`) contains `pattern`
-    /// (smartcase — spec 0195 S2), searching in `dir` from just past the
-    /// current highlight, wrapping around. Moves the highlight there on
-    /// success; otherwise leaves it unchanged and sets a status-line
-    /// message.
-    pub(super) fn jump_to_manage_match(&mut self, dir: SearchDir, pattern: &str) {
-        self.run_search(SearchScope::Manage, dir, pattern);
+        match &e.name {
+            Some(name) => format!("{} {type_label} {name}", e.origin.label()),
+            None => format!("{} {type_label}", e.origin.label()),
+        }
     }
 
     /// Origins derivable under `kind` from every node in `affected`, in
@@ -441,16 +442,8 @@ impl App {
             KeyCode::Char('?') => {
                 self.open_command_line(CommandLineKind::search(SearchDir::Backward), String::new())
             }
-            KeyCode::Char('n') => {
-                if let Some((dir, pattern)) = self.last_manage_search.clone() {
-                    self.jump_to_manage_match(dir, &pattern);
-                }
-            }
-            KeyCode::Char('N') => {
-                if let Some((dir, pattern)) = self.last_manage_search.clone() {
-                    self.jump_to_manage_match(dir.reverse(), &pattern);
-                }
-            }
+            KeyCode::Char('n') => self.repeat_search(false),
+            KeyCode::Char('N') => self.repeat_search(true),
             // Spec 0276 S2/S8: the find prompt — this pane's last
             // pattern pre-filled, `Enter` stepping to the next match and
             // `Esc` accepting the one highlighted.
@@ -849,6 +842,22 @@ impl App {
             split[1],
         );
 
+        // Spec 0339 S1/S5: hoisted out of the row loop — one compile
+        // per frame — and gated on this pane owning the search, since
+        // `search_highlight_pattern` answers with the live prompt
+        // buffer whichever pane opened it.
+        let search = (self.active_search_scope() == SearchScope::Manage)
+            .then(|| self.search_highlight_pattern())
+            .flatten()
+            .map(|pattern| {
+                (
+                    pattern,
+                    theme::search_current_style(self.theme),
+                    theme::search_match_style(self.theme),
+                    self.search_current_index(),
+                )
+            });
+
         // Spec 0244 S9: blank rows above the first entry when over-panned.
         let mut lines: Vec<Line> = vec![Line::default(); blank_rows];
         for row in &rows[start..end] {
@@ -889,13 +898,34 @@ impl App {
                     } else {
                         base_style
                     };
-                    lines.push(Line::from(pan_spans(
+                    let mut spans = pan_spans(
                         vec![
                             Span::styled(marker_part.to_string(), base_style),
                             Span::styled(rest_part.to_string(), rest_style),
                         ],
                         self.manage_pan_offset,
-                    )));
+                    );
+                    // Spec 0339 S1/S4: over the drawn row, after the
+                    // pan, and by row rather than by column — a side
+                    // pane's stop is its whole entry (spec 0246 N4).
+                    // A header row draws untinted: it is not a
+                    // candidate (N1), so nothing there is ever the
+                    // current match.
+                    if let Some((pattern, current, other, current_index)) = &search {
+                        let style = if *current_index == Some(*idx) {
+                            *current
+                        } else {
+                            *other
+                        };
+                        let cells = RowCells {
+                            pan: self.manage_pan_offset,
+                            lead: 0,
+                            trail: 0,
+                            width: inner.width as usize,
+                        };
+                        tint_matches(&mut spans, &text, pattern, cells, |_| style);
+                    }
+                    lines.push(Line::from(spans));
                 }
             }
         }
