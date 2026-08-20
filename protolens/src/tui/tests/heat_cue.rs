@@ -710,12 +710,13 @@ fn an_agreeing_node_says_its_score_in_the_third_state() {
     );
 }
 
-/// Spec 0331 test 3: the companion, and the other half of `Settled`. A
-/// range where every candidate was vetoed says so in words, in the
-/// mismatch red — not in the green, which would claim an agreement
-/// that does not exist.
+/// Spec 0331 test 3, re-pointed by spec 0335 S4: the companion, and the
+/// other half of `Settled`. A range where a real message search found
+/// nothing says so in words *and* wears the square — the loudest mark
+/// in the pane, and the one whose color is a sentinel rather than a
+/// position on the ramp.
 #[test]
-fn a_vetoed_range_says_so_in_the_third_state() {
+fn an_unmatched_message_says_so_loudly() {
     let mut app = message_node_app();
     app.splash = false;
     let range = extract::message_payload_range(&app.blob, &app.tree[0].span.raw_range);
@@ -738,17 +739,158 @@ fn a_vetoed_range_says_so_in_the_third_state() {
     app.heat_cues = HeatCueMode::All;
     let cells = drawn_header_cells(&mut app);
     let row: String = cells.iter().map(|(s, _)| s.as_str()).collect();
-    assert!(row.contains(" [vetoed]"), "{row:?}");
+    assert!(row.contains(" [unmatched]"), "{row:?}");
     assert_eq!(
-        drawn_suffix_style(&cells, " [vetoed]").map(|s| s.fg),
+        cells[0].0, HEAT_GLYPH,
+        "and unlike its agreeing sibling it wears the square (0335 S4): {row:?}"
+    );
+    assert_eq!(
+        drawn_suffix_style(&cells, " [unmatched]").map(|s| s.fg),
         Some(theme::heat_suffix_style(app.theme).fg),
         "a verdict of 'nothing fits' wears the mismatch red"
+    );
+    assert_eq!(
+        cells[0].1.fg,
+        theme::heat_suffix_style(app.theme).fg,
+        "square and word are the one sentinel color, not a ramp position"
     );
     assert_ne!(
         theme::heat_suffix_style(app.theme).fg,
         theme::heat_agree_style(app.theme).fg,
         "which is only worth asserting if the two differ at all"
     );
+}
+
+// ---------------------------------------------------------------------
+// Spec 0335: a question not asked is not an answer
+// ---------------------------------------------------------------------
+
+/// Seeds `idx` with the settled-and-empty verdict — a candidate list
+/// that came back with nothing in it — and reports what the third state
+/// would draw for it.
+fn cue_for_an_empty_candidate_list(app: &mut App, idx: usize) -> HeatDisplay {
+    let start = app.heat_scored_range(idx).start;
+    let key = app
+        .current_type_key(idx)
+        .expect("every node in this fixture is declared");
+    seed_range_heat_entry(app, start, None, 0, &key, None);
+    app.heat_cues = HeatCueMode::All;
+    let header = app.absolute_start(idx);
+    app.heat_cue_for(header)
+}
+
+/// Spec 0335 test 1 / G1: the schema has already said these bytes are
+/// text, and a varint cannot be a message under any typing. Neither row
+/// is one whose answer was "nothing fits"; neither had a question. Both
+/// drew ` [vetoed]` before this spec, which is what buried the rows that
+/// did.
+#[test]
+fn a_declared_scalar_asks_no_question() {
+    let (mut app, text, n, _blob) = declared_scalars_fixture();
+    for (idx, what) in [(text, "a declared string"), (n, "a varint")] {
+        assert!(
+            !app.inference_applies(idx),
+            "{what} was never going to have a candidate"
+        );
+        assert!(
+            matches!(
+                cue_for_an_empty_candidate_list(&mut app, idx),
+                HeatDisplay::None
+            ),
+            "{what} draws nothing even in the third state"
+        );
+    }
+}
+
+/// Spec 0335 test 3 / S1: the carve-out and the rule it is carved out
+/// of, asserted as the pair they are. A `bytes` field is the schema
+/// declining to say what is in there — the one declared scalar where a
+/// message search is exactly the point — and its neighbour is not.
+#[test]
+fn a_bytes_field_is_still_asked() {
+    let (mut app, text, _n, blob) = declared_scalars_fixture();
+    assert!(app.inference_applies(blob), "bytes is the carve-out");
+    assert!(matches!(
+        cue_for_an_empty_candidate_list(&mut app, blob),
+        HeatDisplay::Settled { score: None }
+    ));
+    assert!(matches!(
+        cue_for_an_empty_candidate_list(&mut app, text),
+        HeatDisplay::None
+    ));
+}
+
+/// Spec 0335 N2: the gate is on the settled-and-empty arm alone. A
+/// declared `string` whose bytes really do score as a message is rare
+/// and is a genuine finding, so a node the predicate refuses still says
+/// what it found.
+#[test]
+fn a_refused_node_still_reports_a_mismatch() {
+    let (mut app, text, _n, _blob) = declared_scalars_fixture();
+    assert!(!app.inference_applies(text));
+    let start = app.heat_scored_range(text).start;
+    seed_range_heat_entry(&mut app, start, Some(50), 1, "string", Some(10));
+    app.heat_cues = HeatCueMode::All;
+    let header = app.absolute_start(text);
+    assert!(matches!(
+        app.heat_cue_for(header),
+        HeatDisplay::Cue(HeatCue {
+            kind: HeatCueKind::Mismatch { .. },
+            ..
+        })
+    ));
+}
+
+/// Spec 0335 N3: the predicate decides what reaches the screen and
+/// nothing else. A frame over a document of rows it refuses still asks
+/// the worker about every one of them — which is what keeps the caches
+/// warm, and what lets a refused row report a mismatch the moment one
+/// turns up.
+#[test]
+fn the_gate_asks_for_nothing_new() {
+    let (mut app, text, n, blob) = declared_scalars_fixture();
+    app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
+    app.heat_cues = HeatCueMode::All;
+    assert!(
+        [text, n].iter().all(|&idx| !app.inference_applies(idx)),
+        "the fixture is worth rendering only if it holds refused rows"
+    );
+    assert!(app.inference_applies(blob));
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    // Named ranges rather than a count: what the predicate could have
+    // broken is not *how many* requests a frame makes but *which*, and
+    // there is no switch to turn it off for a second render to be
+    // compared against.
+    //
+    // Bounded by the length read first: `take_next_range` *blocks* on an
+    // empty queue, so draining it with `while let Some(..)` would hang
+    // on the pop past the end rather than end the loop.
+    let worker = app.heat_worker.take().expect("just installed");
+    let queued: Vec<usize> = (0..worker.queue_len())
+        .filter_map(|_| worker.take_next_range())
+        .collect();
+    for (idx, what) in [(text, "the string"), (n, "the varint"), (blob, "the bytes")] {
+        let start = app.heat_scored_range(idx).start;
+        assert!(
+            queued.contains(&start),
+            "{what} row is asked about all the same: {queued:?}"
+        );
+    }
+}
+
+/// Spec 0335 N1, pinned directly: the override pane opens where it did.
+/// The new predicate refuses two of these three and `can_override` must
+/// go on admitting all of them, or pressing `t` on an `int32` stops
+/// offering `sfixed32` (spec 0135 G3).
+#[test]
+fn can_override_is_unchanged() {
+    let (app, text, n, blob) = declared_scalars_fixture();
+    for idx in [text, n, blob] {
+        assert!(app.can_override(idx), "node {idx} must stay overridable");
+    }
 }
 
 /// Spec 0331 N3 / test 4: a node with no question stays blank in every

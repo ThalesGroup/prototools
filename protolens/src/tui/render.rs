@@ -1539,9 +1539,8 @@ impl App {
             heat_cue::HeatDisplay::Unknown => {
                 (blank(), Some(Span::styled(" [?]", pending_style())))
             }
-            // Spec 0331 S4. No glyph either way (N6): the margin `■` is
-            // graded by `heat_level` and reserved for a finding, and
-            // neither of these is one.
+            // Spec 0331 S4 / N6: being right is not a finding, so no
+            // glyph. The margin `■` is graded and reserved for one.
             heat_cue::HeatDisplay::Settled { score: Some(n) } => (
                 blank(),
                 Some(Span::styled(
@@ -1549,15 +1548,24 @@ impl App {
                     theme::heat_agree_style(self.theme),
                 )),
             ),
-            // The mismatch red, not the green: nothing in the schema
-            // fits these bytes, and claiming agreement would be false.
-            heat_cue::HeatDisplay::Settled { score: None } => (
-                blank(),
-                Some(Span::styled(
-                    " [vetoed]",
-                    theme::heat_suffix_style(self.theme),
-                )),
-            ),
+            // Spec 0335 S4: the one square whose color is a *sentinel
+            // and not a ramp position*. It sits at the top of the range
+            // because it must be seen, not because it is large — do not
+            // read a maximum score off it.
+            //
+            // The deliberate exception to 0138 G9 / 0331 N6. N6's
+            // argument was that an unmatched range is common enough
+            // that a glyph would ink the whole column; spec 0335 S1's
+            // gate is what makes that false, by taking away the rows
+            // where the verdict was never meaningful. What is left is
+            // rare, and is the finding that most deserves the column.
+            heat_cue::HeatDisplay::Settled { score: None } => {
+                let style = theme::heat_suffix_style(self.theme);
+                (
+                    Span::styled(heat_cue::HEAT_GLYPH, style),
+                    Some(Span::styled(" [unmatched]", style)),
+                )
+            }
             heat_cue::HeatDisplay::None => (blank(), None),
         }
     }

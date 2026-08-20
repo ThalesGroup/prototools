@@ -67,7 +67,7 @@ pub(super) enum HeatCueMode {
     Off,
     /// The findings — mismatch, tie, and the two pendings.
     Findings,
-    /// Those, plus a settled node's ` [{score}]` or ` [vetoed]`.
+    /// Those, plus a settled node's ` [{score}]` or ` [unmatched]`.
     All,
 }
 
@@ -400,6 +400,13 @@ impl App {
             return HeatDisplay::None;
         }
         let display = self.heat_cue_resolve(idx);
+        // Spec 0335 S2: an empty candidate list means two different
+        // things, and only one of them is an answer. Applied to this
+        // arm alone (0335 N2) — a node inference could never have had a
+        // candidate for can still carry a real mismatch or tie.
+        if matches!(display, HeatDisplay::Settled { score: None }) && !self.inference_applies(idx) {
+            return HeatDisplay::None;
+        }
         // Spec 0331 S3: the mode decides what of a resolved answer
         // reaches the screen, and nothing else.
         match self.heat_cues {
@@ -409,6 +416,46 @@ impl App {
                 other => other,
             },
             HeatCueMode::All => display,
+        }
+    }
+
+    /// Whether inference could ever have produced a candidate for
+    /// `idx`'s bytes (spec 0335 S1) — the gate that tells *nothing fits*
+    /// apart from *there was no question*.
+    ///
+    /// **This is not `can_override`, and the two must not be unified.**
+    /// `can_override` gates the override pane, which has to open on a
+    /// varint so the reader can retype it to `sfixed32`; spec 0135 G3
+    /// widened it to every wire type a value can carry, on purpose. This
+    /// one asks whether a *message* search over these bytes was ever
+    /// meaningful, and answers no far more often.
+    ///
+    /// `bytes` is admitted where every other scalar is refused: a
+    /// `bytes` field is the schema declining to say what is in there,
+    /// which is exactly what inference is for, and it is the usual home
+    /// of an embedded message. A declared `string` is refused — it
+    /// asserts UTF-8 text, and a message that is also valid UTF-8 is a
+    /// coincidence rather than a finding.
+    pub(super) fn inference_applies(&self, idx: usize) -> bool {
+        use prost_reflect::Kind;
+        use prototext_core::helpers::{WT_I32, WT_I64, WT_VARINT};
+        // These bytes cannot be a nested message under any typing, so
+        // the candidate list was empty before it was built. A packed
+        // run whose slot still carries its element's wire type lands
+        // here too, which is the answer we want for it either way.
+        if matches!(
+            u32::from(self.tree[idx].span.wire_type),
+            WT_VARINT | WT_I32 | WT_I64
+        ) {
+            return false;
+        }
+        match self.parent_field(idx).map(|field| field.kind()) {
+            // No declaration to read — the document root, an unresolved
+            // parent, or a field nothing declares. Nothing has said what
+            // these bytes are, so the question stands.
+            None => true,
+            Some(Kind::Message(_) | Kind::Bytes) => true,
+            Some(_) => false,
         }
     }
 

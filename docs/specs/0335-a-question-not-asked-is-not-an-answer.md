@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0335 — a question not asked is not an answer
 
-Status: draft
+Status: implemented
+Implemented in: 2026-08-20
 App: protolens
 Refs: docs/specs/0331-a-node-that-fits-can-say-so.md (the ` [vetoed]`
         suffix this splits in two, `HeatDisplay::Settled`, and the rule
@@ -210,4 +211,7 @@ protecting.
 
 ## Measured outcome
 
-Filled in at implementation.
+Over the googleapis descriptor set decoded as its own document (4 936 532
+nodes, every one `can_override`): 84.2% refused by `inference_applies` —
+4 157 544 rows that previously drew `[vetoed]` now draw nothing in `All`.
+The 778 988 that remain are the ones where a message search was meaningful.

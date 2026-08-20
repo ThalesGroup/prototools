@@ -611,7 +611,7 @@ fn the_new_cues_have_boxes() {
         Some("double-click to choose a type for this node")
     );
 
-    // Every candidate vetoed — which `cue_app`'s `stats` cannot spell,
+    // Every candidate rejected — which `cue_app`'s `stats` cannot spell,
     // since `None` there means no cache entry at all (`[?]`).
     let mut app = cue_app(None, None);
     app.heat_cues = heat_cue::HeatCueMode::All;
@@ -627,11 +627,41 @@ fn the_new_cues_have_boxes() {
     );
     assert_eq!(
         suffix_element(&mut app),
-        DocElement::HeatSuffix(SuffixShape::Vetoed)
+        DocElement::HeatSuffix(SuffixShape::Unmatched)
     );
     let lines = suffix_box(&mut app);
-    assert_eq!(lines[0], "[vetoed]");
+    assert_eq!(lines[0], "[unmatched]");
     assert!(lines[1].contains("no type known here fits"), "{lines:?}");
+}
+
+/// Spec 0335 test 6 / S5: the square now means a third thing, and spec
+/// 0287's rule applies to it too — its own prose, not the tie's and not
+/// the mismatch's. The second line is the one that has to differ: a
+/// reader who has learned "brighter means bigger" from the other two
+/// would otherwise read a maximum score off a flat sentinel.
+#[test]
+fn the_unmatched_square_has_a_box() {
+    let mut app = cue_app(None, None);
+    app.heat_cues = heat_cue::HeatCueMode::All;
+    let start = extract::message_payload_range(&app.blob, &app.tree[0].span.raw_range).start;
+    app.heat_caches.lock().unwrap().by_range.upsert(
+        start,
+        RangeHeatEntry {
+            best_score: None,
+            best_count: 0,
+            top_n: vec![("protolens_internal.dummy".to_string(), 0); HEAT_CUE_PREVIEW],
+        },
+        Tier::Visible,
+    );
+    assert_eq!(
+        glyph_box(&mut app),
+        [
+            heat_cue::HEAT_GLYPH,
+            "no type known here fits these bytes",
+            "this one is not graded - there is no score",
+        ],
+        "and no trailing line pointing at numbers that are not there"
+    );
 }
 
 /// Spec 0287 test plan 8 / S3: the target is exactly what is on screen,

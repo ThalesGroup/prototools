@@ -53,6 +53,16 @@
 , buf               # narrow-pinned buf (newer than the main nixpkgs pin's 1.59.0; see default.nix)
 }:
 
+let
+  # Python packages the dev shell wants and no derivation does.
+  #
+  # `pyte` is a terminal emulator: a pty harness feeds protolens' escape
+  # sequences to it and reads the resulting *screen* back, which is what
+  # makes "what did that keystroke actually draw?" a question answerable
+  # without recompiling the Rust test binary.
+  devOnlyPyDeps = [ pythonPkgs.pyte ];
+in
+
 {
   # ---------------------------------------------------------------------------
   # User shell — plain shell with prototext and reproto installed.
@@ -210,7 +220,11 @@
 
         export PYO3_PYTHON="${pythonExecutable}"
         export PATH="${repoRoot}/bin:${pythonBin}/bin:${repoRoot}/target/release:$PATH"
-        export PYTHONPATH="$PWD/reproto/src:$PWD/protoscan/src:${treeSitterTextproto}:${pythonPkgs.makePythonPath reprotoTestDeps}:$PYTHONPATH"
+        # `devOnlyPyDeps` is appended rather than folded into
+        # reprotoTestDeps: that list is also the dep set of reprotoTests,
+        # googleapisTests and customTests, and nothing that runs under
+        # `ci` needs a terminal emulator.
+        export PYTHONPATH="$PWD/reproto/src:$PWD/protoscan/src:${treeSitterTextproto}:${pythonPkgs.makePythonPath (reprotoTestDeps ++ devOnlyPyDeps)}:$PYTHONPATH"
       }
 
       _hook_python() {

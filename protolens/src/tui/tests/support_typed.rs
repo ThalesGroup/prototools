@@ -189,6 +189,61 @@ pub(super) fn enum_field_fixture() -> (App, usize) {
     (app, durability_idx)
 }
 
+/// `Scalars { string text = 1; int32 n = 2; bytes blob = 3; }` — one
+/// node for each branch of spec 0335 S1's predicate, in one document,
+/// so a test can assert the whole rule and not one leg of it.
+///
+/// `blob`'s payload is `08 05`, which is a valid message: the carve-out
+/// exists because that is the common case, and a fixture whose `bytes`
+/// held something unparseable would let a wrong implementation pass.
+///
+/// Returns `(app, text, n, blob)`.
+pub(super) fn declared_scalars_fixture() -> (App, usize, usize, usize) {
+    let scalar = |name: &str, number: i32, ty: Type| FieldDescriptorProto {
+        name: Some(name.to_string()),
+        number: Some(number),
+        label: Some(Label::Optional as i32),
+        r#type: Some(ty as i32),
+        ..Default::default()
+    };
+    let file = FileDescriptorProto {
+        name: Some("test_declared_scalars.proto".to_string()),
+        package: Some("test".to_string()),
+        message_type: vec![DescriptorProto {
+            name: Some("Scalars".to_string()),
+            field: vec![
+                scalar("text", 1, Type::String),
+                scalar("n", 2, Type::Int32),
+                scalar("blob", 3, Type::Bytes),
+            ],
+            ..Default::default()
+        }],
+        syntax: Some("proto3".to_string()),
+        ..Default::default()
+    };
+    let fds = FileDescriptorSet { file: vec![file] };
+
+    // text: "hi", n: 5, blob: "\010\005".
+    let app = fixture_under(
+        "declared-scalars",
+        &fds,
+        "test.Scalars",
+        &[0x0A, 0x02, b'h', b'i', 0x10, 0x05, 0x1A, 0x02, 0x08, 0x05],
+    );
+    // Not a scan for the field numbers: the wrapper occupies slot 0 and
+    // is field 1 too (spec 0216 S1), so a scan would find it first.
+    let mut kids = (0..3).map(|k| {
+        app.nth_child(app.first_node, k)
+            .expect("the document renders all three fields")
+    });
+    let (text, n, blob) = (
+        kids.next().unwrap(),
+        kids.next().unwrap(),
+        kids.next().unwrap(),
+    );
+    (app, text, n, blob)
+}
+
 /// `Outer2 { grp: MyGroup { id: 5 } }`, with `grp` declared as a
 /// genuine schema wire-group field (`Type::Group`) — unlike
 /// `message_set_fixture`'s auto-expanded MessageSet group items,

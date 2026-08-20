@@ -56,9 +56,10 @@ pub(super) enum DocElement {
     // the same hover. Each carries what its wording depends on, read
     // off the mark as drawn (G2) rather than re-derived when the box is
     // built.
-    /// The `■` in the reserved gutter (spec 0138 N1). `tie` is which of
-    /// the two cues drew it — blue for a tie, red for a mismatch.
-    HeatGlyph { tie: bool },
+    /// The `■` in the reserved gutter (spec 0138 N1). The kind is which
+    /// of the three drew it, since each says something different about
+    /// what the color means.
+    HeatGlyph(HeatGlyphKind),
     /// The ` [3/47]`, ` [2@85]`, ` [?/47]` or ` [?]` at the end of the
     /// row.
     HeatSuffix(SuffixShape),
@@ -75,6 +76,17 @@ pub(super) enum DocElement {
     /// two share only a column: this one folds nothing, and every line
     /// of the fold marker's box would be false of it.
     AnomalyMark { tier: Tier },
+}
+
+/// Which cue drew the `■`. Three since spec 0335 gave the unmatched
+/// range a square of its own, and the third is not like the other two:
+/// its color is a flat sentinel where theirs are graded, so the box has
+/// to say a different thing about what brightness means.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum HeatGlyphKind {
+    Mismatch,
+    Tie,
+    Unmatched,
 }
 
 /// Which of `HeatDisplay`'s shapes the drawn suffix is (spec 0154 G6),
@@ -94,8 +106,10 @@ pub(super) enum SuffixShape {
     Unknown,
     /// ` [47]` — spec 0331: this node's type is the unique best fit.
     Agree,
-    /// ` [vetoed]` — spec 0331: no candidate at all fits these bytes.
-    Vetoed,
+    /// ` [unmatched]` — spec 0331: no candidate at all fits these
+    /// bytes. Renamed from `Vetoed` by spec 0335 S3, which also stopped
+    /// it being drawn on rows where no message search ever ran.
+    Unmatched,
 }
 
 impl SuffixShape {
@@ -117,7 +131,7 @@ impl SuffixShape {
             // S6): the suppression rule is about the class, but a box is
             // prose, and these two say opposite things.
             heat_cue::HeatDisplay::Settled { score: Some(_) } => Self::Agree,
-            heat_cue::HeatDisplay::Settled { score: None } => Self::Vetoed,
+            heat_cue::HeatDisplay::Settled { score: None } => Self::Unmatched,
             heat_cue::HeatDisplay::None => return None,
         })
     }
@@ -353,11 +367,16 @@ impl App {
             if glyph.content != heat_cue::HEAT_GLYPH {
                 return None;
             }
-            let heat_cue::HeatDisplay::Cue(cue) = display else {
-                return None;
+            let kind = match display {
+                heat_cue::HeatDisplay::Cue(cue) => match cue.kind {
+                    heat_cue::HeatCueKind::Tie { .. } => HeatGlyphKind::Tie,
+                    heat_cue::HeatCueKind::Mismatch { .. } => HeatGlyphKind::Mismatch,
+                },
+                // Spec 0335 S4's sentinel square.
+                heat_cue::HeatDisplay::Settled { score: None } => HeatGlyphKind::Unmatched,
+                _ => return None,
             };
-            let tie = matches!(cue.kind, heat_cue::HeatCueKind::Tie { .. });
-            (DocElement::HeatGlyph { tie }, glyph.content.into_owned())
+            (DocElement::HeatGlyph(kind), glyph.content.into_owned())
         } else {
             let suffix = suffix?;
             (
@@ -611,22 +630,31 @@ pub(super) fn doc_lines(hit: &DocHit) -> Vec<BoxLine> {
         // and none of them carries a number the reader does not
         // already have on screen: where one is wanted, the box says
         // where it is.
-        DocElement::HeatGlyph { tie } => {
+        DocElement::HeatGlyph(kind) => {
             lines.push(
-                match tie {
-                    true => "another type scores exactly as well as this one",
-                    false => "another type scores higher on these bytes",
+                match kind {
+                    HeatGlyphKind::Tie => "another type scores exactly as well as this one",
+                    HeatGlyphKind::Mismatch => "another type scores higher on these bytes",
+                    HeatGlyphKind::Unmatched => "no type known here fits these bytes",
                 }
                 .to_string(),
             );
             lines.push(
-                match tie {
-                    true => "brighter means a higher score",
-                    false => "brighter means a bigger difference",
+                match kind {
+                    HeatGlyphKind::Tie => "brighter means a higher score",
+                    HeatGlyphKind::Mismatch => "brighter means a bigger difference",
+                    // Spec 0335 S5: a reader who has learned "brighter
+                    // means bigger" from the other two has to be told
+                    // this one is not on that scale.
+                    HeatGlyphKind::Unmatched => "this one is not graded - there is no score",
                 }
                 .to_string(),
             );
-            lines.push("the [...] at the end of the row has the numbers".to_string());
+            // ...and so there is nothing at the end of the row to point
+            // the reader at, either.
+            if kind != HeatGlyphKind::Unmatched {
+                lines.push("the [...] at the end of the row has the numbers".to_string());
+            }
         }
         DocElement::HeatSuffix(shape) => {
             match shape {
@@ -651,7 +679,7 @@ pub(super) fn doc_lines(hit: &DocHit) -> Vec<BoxLine> {
                     lines.push("this node's type is the best fit for these".to_string());
                     lines.push("bytes, and nothing else ties it".to_string());
                 }
-                SuffixShape::Vetoed => {
+                SuffixShape::Unmatched => {
                     lines.push("no type known here fits these bytes, this".to_string());
                     lines.push("node's own included".to_string());
                 }
