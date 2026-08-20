@@ -44,7 +44,9 @@ fn bare_mouse_move_does_not_dismiss_the_splash_screen() {
 
 /// Feedback (2026-07-15): mouse wheel and Shift-wheel scroll the `F1`
 /// help overlay when the pointer hovers over it, instead of leaking
-/// through to the main pane drawn underneath.
+/// through to the main pane drawn underneath. Spec 0340 S2: the wheel
+/// pans it vertically and Shift-wheel horizontally, the same two
+/// gestures the side panes answer to — and neither moves its cursor.
 #[test]
 fn mouse_wheel_scrolls_the_help_overlay_when_hovered() {
     let mut app = message_node_app();
@@ -52,6 +54,7 @@ fn mouse_wheel_scrolls_the_help_overlay_when_hovered() {
     app.main_area = Rect::new(0, 0, 40, 20);
     app.help_open = true;
     app.help_area = Rect::new(5, 5, 30, 10);
+    app.help_list_height = 10;
 
     let cursor_before = app.cursor;
     app.handle_mouse(MouseEvent {
@@ -60,7 +63,8 @@ fn mouse_wheel_scrolls_the_help_overlay_when_hovered() {
         row: 6,
         modifiers: KeyModifiers::NONE,
     });
-    assert_eq!(app.help_scroll, 1);
+    assert_eq!(app.help_scroll.top(&FLAT_ROWS), 1);
+    assert_eq!(app.help_highlight, 0, "a pan does not move the cursor");
     assert_eq!(
         app.cursor, cursor_before,
         "must not also scroll the main pane underneath"
@@ -72,7 +76,12 @@ fn mouse_wheel_scrolls_the_help_overlay_when_hovered() {
         row: 6,
         modifiers: KeyModifiers::SHIFT,
     });
-    assert_eq!(app.help_scroll, 2, "Shift-wheel scrolls it too");
+    assert_eq!(app.help_pan_offset, 1, "Shift-wheel pans it sideways");
+    assert_eq!(
+        app.help_scroll.top(&FLAT_ROWS),
+        1,
+        "and leaves the vertical scroll alone"
+    );
 
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::ScrollUp,
@@ -80,7 +89,7 @@ fn mouse_wheel_scrolls_the_help_overlay_when_hovered() {
         row: 6,
         modifiers: KeyModifiers::NONE,
     });
-    assert_eq!(app.help_scroll, 1);
+    assert_eq!(app.help_scroll.top(&FLAT_ROWS), 0);
 
     // Hovering outside the overlay (but still over the main pane)
     // must not touch `help_scroll` — it falls through to the pane
@@ -91,7 +100,11 @@ fn mouse_wheel_scrolls_the_help_overlay_when_hovered() {
         row: 1,
         modifiers: KeyModifiers::NONE,
     });
-    assert_eq!(app.help_scroll, 1, "unhovered help overlay must not react");
+    assert_eq!(
+        app.help_scroll.top(&FLAT_ROWS),
+        0,
+        "unhovered help overlay must not react"
+    );
 }
 
 /// A mouse click landing in the main pane shifts keyboard focus back

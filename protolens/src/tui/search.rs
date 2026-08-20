@@ -76,6 +76,33 @@ pub(super) enum SearchScope {
     Main,
     Override,
     Manage,
+    /// Spec 0340: the `F1` overlay. A list pane like the two above it —
+    /// `HELP_TEXT` is a flat list of rows, and a `&[&str]` is exactly
+    /// the candidate model `SweepCursor::Index` addresses.
+    Help,
+}
+
+/// How many scopes there are — the width of `App::last_searches`.
+///
+/// Kept beside the enum so the two cannot drift; a scope added without
+/// widening this fails to compile at the array's initializer.
+pub(super) const SCOPE_COUNT: usize = 4;
+
+impl SearchScope {
+    /// Spec 0340 S8: true for every scope whose candidates are a flat
+    /// list of rows addressed by `SweepCursor::Index`.
+    ///
+    /// Only the main pane is not one: its candidates are document lines,
+    /// which carry a node, a path and a column, and every site below
+    /// that asks this handles that case separately anyway.
+    fn is_list(self) -> bool {
+        self != SearchScope::Main
+    }
+
+    /// This scope's slot in `App::last_searches` (spec 0340 S9).
+    fn slot(self) -> usize {
+        self as usize
+    }
 }
 
 /// Spec 0246 S13: how many committed patterns `Up` can reach. vim's
@@ -323,7 +350,13 @@ impl App {
     /// Which pane the prompt belongs to, by the same focus test the
     /// `Enter` arm has always used.
     pub(super) fn search_scope(&self) -> SearchScope {
-        if self.override_focus {
+        // Spec 0340 S4: the help overlay is a modal drawn over whatever
+        // had focus, so while it is up it is the only thing the reader
+        // can be looking at — and it is tested before the focus flags,
+        // which still say what they said when it opened.
+        if self.help_open {
+            SearchScope::Help
+        } else if self.override_focus {
             SearchScope::Override
         } else if self.manage_open && self.manage_focus {
             SearchScope::Manage
@@ -332,36 +365,138 @@ impl App {
         }
     }
 
+    // ----------------------------------------------------------------
+    // Spec 0340 S8: the list panes, addressed by what they have rather
+    // than by which they are.
+    //
+    // `Override`, `Manage` and `Help` all present a flat list of rows
+    // and differ only in which fields name it. Every scope-dispatched
+    // site below needs some subset of exactly five facts — the
+    // highlight, the scroll, the pan, the row count and one row's text
+    // — so each site has a `Main` arm and one list arm, not one arm per
+    // pane. Adding a fourth pane added no arm anywhere.
+    // ----------------------------------------------------------------
+
+    /// How many rows the list pane has.
+    fn list_count(&self, scope: SearchScope) -> usize {
+        match scope {
+            SearchScope::Main => 0,
+            SearchScope::Override => self.override_candidates.len(),
+            SearchScope::Manage => self.overrides.entries().len(),
+            SearchScope::Help => HELP_TEXT.len(),
+        }
+    }
+
+    /// The row the list pane's highlight is on.
+    fn list_highlight(&self, scope: SearchScope) -> usize {
+        match scope {
+            SearchScope::Main => 0,
+            SearchScope::Override => self.override_highlight,
+            SearchScope::Manage => self.manage_highlight,
+            SearchScope::Help => self.help_highlight,
+        }
+    }
+
+    /// One list row's searchable text.
+    ///
+    /// Not necessarily its drawn text: the override pane searches the
+    /// bare FQDN it draws a decorated label for, and the manage pane
+    /// searches an origin label its entry row does not carry. Spec 0339
+    /// S3 is what reconciles the two — the tint re-scans what is drawn.
+    fn list_text(&self, scope: SearchScope, i: usize) -> Cow<'_, str> {
+        match scope {
+            SearchScope::Main => Cow::Borrowed(""),
+            SearchScope::Override => Cow::Borrowed(self.override_candidates[i].0.as_str()),
+            SearchScope::Manage => Cow::Owned(self.manage_search_text(i)),
+            // The one pane whose haystack *is* its drawn text.
+            SearchScope::Help => Cow::Borrowed(HELP_TEXT[i]),
+        }
+    }
+
+    /// The list pane's view: where it is scrolled to, and how far it is
+    /// panned.
+    fn list_view(&self, scope: SearchScope) -> (PaneScroll, usize) {
+        match scope {
+            SearchScope::Main => (PaneScroll::default(), 0),
+            SearchScope::Override => (self.override_scroll, self.override_pan_offset),
+            SearchScope::Manage => (self.manage_scroll, self.manage_pan_offset),
+            SearchScope::Help => (self.help_scroll, self.help_pan_offset),
+        }
+    }
+
+    /// `list_view`'s writable half, plus the height the pane was last
+    /// drawn in: between them they serve both spec 0235 S11's `Esc`
+    /// restore and `show_sweep_hit`'s centering, which is why the two
+    /// are one accessor.
+    fn list_view_mut(
+        &mut self,
+        scope: SearchScope,
+    ) -> Option<(&mut PaneScroll, &mut usize, usize)> {
+        match scope {
+            SearchScope::Main => None,
+            SearchScope::Override => Some((
+                &mut self.override_scroll,
+                &mut self.override_pan_offset,
+                self.override_list_height,
+            )),
+            SearchScope::Manage => Some((
+                &mut self.manage_scroll,
+                &mut self.manage_pan_offset,
+                self.manage_list_height,
+            )),
+            SearchScope::Help => Some((
+                &mut self.help_scroll,
+                &mut self.help_pan_offset,
+                self.help_list_height,
+            )),
+        }
+    }
+
+    /// Land the highlight on row `i`.
+    ///
+    /// Spec 0340 S10: the one thing the three list panes genuinely do
+    /// not share. Landing costs the override pane a preview of the row,
+    /// the manage pane a cleared pending kind, and the help pane
+    /// nothing at all beyond the move.
+    fn set_list_highlight(&mut self, scope: SearchScope, i: usize) {
+        match scope {
+            SearchScope::Main => {}
+            SearchScope::Override => {
+                self.override_highlight = i;
+                // Preview the landing row, as arrow-key movement does.
+                self.preview_override_highlight();
+            }
+            SearchScope::Manage => self.set_manage_highlight(i),
+            SearchScope::Help => self.help_highlight = i,
+        }
+    }
+
     /// Spec 0235 S6: this pane's current position and view.
     pub(super) fn search_origin_for(&self, scope: SearchScope) -> SearchOrigin {
-        let (scroll, pan, at, column) = match scope {
-            SearchScope::Main => {
-                let pos = LinePos {
-                    node: self.cursor,
-                    line_in_node: self.cursor_line_in_node,
-                };
-                // Spec 0246 S8: `cursor_column` counts characters and
-                // the sweep's bounds count bytes, so the conversion
-                // happens once, here, rather than per candidate.
-                let text = self.line_text(pos);
-                let column = text
-                    .char_indices()
-                    .nth(self.cursor_column)
-                    .map_or(text.len(), |(i, _)| i);
-                (self.scroll, self.pan_offset, SweepCursor::Line(pos), column)
-            }
-            SearchScope::Override => (
-                self.override_scroll,
-                self.override_pan_offset,
-                SweepCursor::Index(self.override_highlight),
+        let (scroll, pan, at, column) = if scope.is_list() {
+            let (scroll, pan) = self.list_view(scope);
+            // A list row is one whole stop (spec 0246 N4), so there is
+            // no column for the origin to sit at.
+            (
+                scroll,
+                pan,
+                SweepCursor::Index(self.list_highlight(scope)),
                 0,
-            ),
-            SearchScope::Manage => (
-                self.manage_scroll,
-                self.manage_pan_offset,
-                SweepCursor::Index(self.manage_highlight),
-                0,
-            ),
+            )
+        } else {
+            let pos = LinePos {
+                node: self.cursor,
+                line_in_node: self.cursor_line_in_node,
+            };
+            // Spec 0246 S8: `cursor_column` counts characters and the
+            // sweep's bounds count bytes, so the conversion happens
+            // once, here, rather than per candidate.
+            let text = self.line_text(pos);
+            let column = text
+                .char_indices()
+                .nth(self.cursor_column)
+                .map_or(text.len(), |(i, _)| i);
+            (self.scroll, self.pan_offset, SweepCursor::Line(pos), column)
         };
         SearchOrigin {
             scope,
@@ -376,28 +511,20 @@ impl App {
     /// position itself needs no restoring — by S8 a sweep never moved
     /// it.
     fn restore_search_origin(&mut self, origin: SearchOrigin) {
-        match origin.scope {
-            SearchScope::Main => {
-                self.scroll = origin.scroll;
-                self.pan_offset = origin.pan;
-            }
-            SearchScope::Override => {
-                self.override_scroll = origin.scroll;
-                self.override_pan_offset = origin.pan;
-            }
-            SearchScope::Manage => {
-                self.manage_scroll = origin.scroll;
-                self.manage_pan_offset = origin.pan;
-            }
+        if let Some((scroll, pan, _)) = self.list_view_mut(origin.scope) {
+            *scroll = origin.scroll;
+            *pan = origin.pan;
+        } else {
+            self.scroll = origin.scroll;
+            self.pan_offset = origin.pan;
         }
     }
 
     /// How many candidates a full wrap covers.
     fn search_candidate_count(&self, scope: SearchScope) -> usize {
-        match scope {
-            SearchScope::Main => self.total_lines(),
-            SearchScope::Override => self.override_candidates.len(),
-            SearchScope::Manage => self.overrides.entries().len(),
+        match scope.is_list() {
+            true => self.list_count(scope),
+            false => self.total_lines(),
         }
     }
 
@@ -589,12 +716,9 @@ impl App {
                     end: None,
                 });
             }
-            // Spec 0235 S23: the side panes list FQDNs, not nodes, so
-            // they have one haystack and no path rule.
-            (SearchScope::Override, SweepCursor::Index(i)) => {
-                Cow::Borrowed(self.override_candidates[i].0.as_str())
-            }
-            (SearchScope::Manage, SweepCursor::Index(i)) => Cow::Owned(self.manage_search_text(i)),
+            // Spec 0235 S23: a list pane lists rows, not nodes, so it
+            // has one haystack and no path rule.
+            (scope, SweepCursor::Index(i)) if scope.is_list() => self.list_text(scope, i),
             // A scope is fixed at construction and picks the cursor
             // shape with it, so the remaining pairs do not occur.
             _ => return None,
@@ -1104,12 +1228,9 @@ impl App {
                 }
                 return (count, place);
             }
-            // Spec 0235 S23: the side panes list FQDNs, not nodes, so
-            // they have one haystack and no path rule.
-            (SearchScope::Override, SweepCursor::Index(i)) => {
-                Cow::Borrowed(self.override_candidates[i].0.as_str())
-            }
-            (SearchScope::Manage, SweepCursor::Index(i)) => Cow::Owned(self.manage_search_text(i)),
+            // Spec 0235 S23: a list pane lists rows, not nodes, so it
+            // has one haystack and no path rule.
+            (scope, SweepCursor::Index(i)) if scope.is_list() => self.list_text(scope, i),
             // A scope picks its cursor shape, so the remaining pairs do
             // not occur.
             _ => return (0, None),
@@ -1279,10 +1400,9 @@ impl App {
                     && self.cursor_column >= hit.column
                     && self.cursor_column < hit.column + hit.width.max(1)
             }
-            // A side pane's stop is its whole entry, so standing on the
-            // entry is standing in the match.
-            (SearchScope::Override, SweepCursor::Index(i)) => i == self.override_highlight,
-            (SearchScope::Manage, SweepCursor::Index(i)) => i == self.manage_highlight,
+            // A list pane's stop is its whole row, so standing on the
+            // row is standing in the match.
+            (scope, SweepCursor::Index(i)) if scope.is_list() => i == self.list_highlight(scope),
             _ => false,
         };
         inside
@@ -1409,12 +1529,7 @@ impl App {
                     self.select_sweep_hit(hit);
                 }
             }
-            (SearchScope::Override, SweepCursor::Index(i)) => {
-                self.override_highlight = i;
-                // Preview the landing row, as arrow-key movement does.
-                self.preview_override_highlight();
-            }
-            (SearchScope::Manage, SweepCursor::Index(i)) => self.set_manage_highlight(i),
+            (scope, SweepCursor::Index(i)) if scope.is_list() => self.set_list_highlight(scope, i),
             _ => {}
         }
     }
@@ -1457,19 +1572,11 @@ impl App {
 
     /// The pane's own last committed `(direction, pattern)`.
     pub(super) fn last_search_for(&self, scope: SearchScope) -> Option<&(SearchDir, String)> {
-        match scope {
-            SearchScope::Main => self.last_search.as_ref(),
-            SearchScope::Override => self.last_override_search.as_ref(),
-            SearchScope::Manage => self.last_manage_search.as_ref(),
-        }
+        self.last_searches[scope.slot()].as_ref()
     }
 
     pub(super) fn set_last_search_for(&mut self, scope: SearchScope, last: (SearchDir, String)) {
-        *match scope {
-            SearchScope::Main => &mut self.last_search,
-            SearchScope::Override => &mut self.last_override_search,
-            SearchScope::Manage => &mut self.last_manage_search,
-        } = Some(last);
+        self.last_searches[scope.slot()] = Some(last);
     }
 
     /// Spec 0339 S8: the pane a search in progress belongs to — the
@@ -1902,12 +2009,9 @@ impl App {
                 .then(|| self.compiled_pattern(buf))
                 .flatten();
         }
-        let last = match self.search_scope() {
-            SearchScope::Main => &self.last_search,
-            SearchScope::Override => &self.last_override_search,
-            SearchScope::Manage => &self.last_manage_search,
-        };
-        let pattern = last.as_ref().map(|(_, p)| p.clone())?;
+        let pattern = self
+            .last_search_for(self.search_scope())
+            .map(|(_, p)| p.clone())?;
         self.compiled_pattern(&pattern)
     }
 
@@ -2130,9 +2234,9 @@ impl App {
                 self.center_columns(hit.column, hit.width, pane.width as usize);
             }
             SweepCursor::Index(i) => {
-                let (scroll, height) = match self.search_scope() {
-                    SearchScope::Override => (&mut self.override_scroll, self.override_list_height),
-                    _ => (&mut self.manage_scroll, self.manage_list_height),
+                let scope = self.search_scope();
+                let Some((scroll, _, height)) = self.list_view_mut(scope) else {
+                    return;
                 };
                 let top = scroll.top(&FLAT_ROWS);
                 let i = i as isize;

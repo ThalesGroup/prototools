@@ -1480,7 +1480,7 @@ fn the_compiled_pattern_survives_a_frame() {
 
     // A different pattern is a different compile, or the cache would be
     // wrong rather than merely absent.
-    app.last_search = Some((SearchDir::Forward, "beta".to_string()));
+    app.set_last_search_for(SearchScope::Main, (SearchDir::Forward, "beta".to_string()));
     let third = app.search_highlight_pattern().expect("a live highlight");
     assert!(!std::rc::Rc::ptr_eq(&first, &third));
 }
@@ -1636,6 +1636,45 @@ fn up_at_a_search_prompt_recalls_the_last_committed_pattern() {
 
     press(&mut app, KeyCode::Up);
     assert_eq!(app.command_buffer.as_deref(), Some("alpha"), "no wrap");
+}
+
+/// readline's `previous-history`/`next-history` reach the same history
+/// as the arrows do, at a `/` prompt and at an `F`/`B` find prompt
+/// alike — and, like the arrows, are unbound at a `:` prompt, where
+/// there is no history to browse.
+#[test]
+fn ctrl_p_and_ctrl_n_alias_the_history_arrows() {
+    let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    commit_search_by_key(&mut app, "alpha");
+    commit_search_by_key(&mut app, "beta");
+
+    let ctrl =
+        |app: &mut App, c| app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+
+    type_keys(&mut app, "/");
+    ctrl(&mut app, 'p');
+    assert_eq!(app.command_buffer.as_deref(), Some("beta"));
+    ctrl(&mut app, 'p');
+    assert_eq!(app.command_buffer.as_deref(), Some("alpha"));
+    ctrl(&mut app, 'n');
+    assert_eq!(app.command_buffer.as_deref(), Some("beta"));
+    press(&mut app, KeyCode::Esc);
+
+    // The find prompt `F` opens is the same prompt and browses the same
+    // history.
+    app.handle_key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::NONE));
+    ctrl(&mut app, 'p');
+    assert_eq!(app.command_buffer.as_deref(), Some("beta"));
+    press(&mut app, KeyCode::Esc);
+
+    // At a `:` prompt they are swallowed rather than typed: the buffer
+    // gains neither a history entry nor a literal `p`.
+    app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
+    ctrl(&mut app, 'p');
+    assert_eq!(app.command_buffer.as_deref(), Some(""));
 }
 
 /// Spec 0246 test-plan item 9 (S14). The draft is stashed, not
@@ -2108,8 +2147,8 @@ fn an_accepted_find_is_repeatable_with_n() {
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.cursor, 1);
     assert_eq!(
-        app.last_search,
-        Some((SearchDir::Forward, "beta".to_string()))
+        app.last_search_for(SearchScope::Main),
+        Some(&(SearchDir::Forward, "beta".to_string()))
     );
 
     press(&mut app, KeyCode::Char('n'));
@@ -2139,7 +2178,11 @@ fn esc_on_a_find_with_no_match_restores_the_view() {
     assert_eq!(app.cursor, 1);
     assert_eq!(app.cursor_column, 2);
     assert!(app.search_sweep.is_none());
-    assert_eq!(app.last_search, None, "nothing was accepted");
+    assert_eq!(
+        app.last_search_for(SearchScope::Main),
+        None,
+        "nothing was accepted"
+    );
 }
 
 /// Spec 0276 test-plan item 7 (S8, S9, G1). The same gesture in a side
@@ -2175,8 +2218,8 @@ fn f_finds_in_the_manage_pane() {
     assert!(app.command_buffer.is_none());
     assert_eq!(app.manage_highlight, 2);
     assert_eq!(
-        app.last_manage_search,
-        Some((SearchDir::Forward, "zz".to_string()))
+        app.last_search_for(SearchScope::Manage),
+        Some(&(SearchDir::Forward, "zz".to_string()))
     );
 }
 
@@ -2330,8 +2373,8 @@ fn a_commit_prompt_has_no_active_direction() {
 
     press(&mut app, KeyCode::Enter);
     assert_eq!(
-        app.last_search,
-        Some((SearchDir::Forward, "beta".to_string()))
+        app.last_search_for(SearchScope::Main),
+        Some(&(SearchDir::Forward, "beta".to_string()))
     );
 }
 
@@ -2351,8 +2394,8 @@ fn an_accepted_find_repeats_in_the_direction_it_last_stepped() {
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.cursor, 0);
     assert_eq!(
-        app.last_search,
-        Some((SearchDir::Backward, "beta".to_string())),
+        app.last_search_for(SearchScope::Main),
+        Some(&(SearchDir::Backward, "beta".to_string())),
         "the echo spells the last step, not the key that opened the prompt"
     );
 
@@ -2766,9 +2809,17 @@ fn the_echo_outlives_the_message_timeout() {
 /// has neither of the main pane's two gutters (spec 0339 S2), which is
 /// what makes that identity worth asserting on.
 fn side_pane_tint(app: &mut App, bg: Option<Color>) -> Vec<(usize, usize, String)> {
+    pane_tint(app, bg, |app| app.side_area)
+}
+
+fn pane_tint(
+    app: &mut App,
+    bg: Option<Color>,
+    area_of: impl Fn(&App) -> Rect,
+) -> Vec<(usize, usize, String)> {
     let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
     terminal.draw(|frame| app.render(frame)).unwrap();
-    let area = app.side_area;
+    let area = area_of(app);
     let buffer = terminal.backend().buffer();
     let mut out = Vec::new();
     for y in area.y..area.y + area.height {
@@ -3009,7 +3060,10 @@ fn n_repeats_its_own_panes_search() {
         ("pkg.Beta", None),
         ("pkg.Alphabet", None),
     ]);
-    app.last_search = Some((SearchDir::Forward, "main-only".to_string()));
+    app.set_last_search_for(
+        SearchScope::Main,
+        (SearchDir::Forward, "main-only".to_string()),
+    );
 
     commit_search_by_key(&mut app, "Alpha");
     assert_eq!(app.override_highlight, 2);
@@ -3017,14 +3071,17 @@ fn n_repeats_its_own_panes_search() {
     press(&mut app, KeyCode::Char('n'));
     assert_eq!(app.override_highlight, 0, "{}", app.message);
     assert_eq!(
-        app.last_search,
-        Some((SearchDir::Forward, "main-only".to_string())),
+        app.last_search_for(SearchScope::Main),
+        Some(&(SearchDir::Forward, "main-only".to_string())),
         "the main pane's memory is untouched"
     );
-    assert_eq!(app.last_manage_search, None);
+    assert_eq!(app.last_search_for(SearchScope::Manage), None);
 
     let mut app = manage_pane_app(&["pkg.zz1", "pkg.zz2", "pkg.zz3"]);
-    app.last_override_search = Some((SearchDir::Forward, "override-only".to_string()));
+    app.set_last_search_for(
+        SearchScope::Override,
+        (SearchDir::Forward, "override-only".to_string()),
+    );
 
     commit_search_by_key(&mut app, "zz");
     assert_eq!(app.manage_highlight, 1);
@@ -3032,8 +3089,173 @@ fn n_repeats_its_own_panes_search() {
     press(&mut app, KeyCode::Char('n'));
     assert_eq!(app.manage_highlight, 2, "{}", app.message);
     assert_eq!(
-        app.last_override_search,
-        Some((SearchDir::Forward, "override-only".to_string())),
+        app.last_search_for(SearchScope::Override),
+        Some(&(SearchDir::Forward, "override-only".to_string())),
         "the override pane's memory is untouched"
     );
+}
+
+// ---------------------------------------------------------------------
+// Spec 0340: the help overlay is a pane.
+// ---------------------------------------------------------------------
+
+fn help_current_tint(app: &mut App) -> Vec<(usize, usize, String)> {
+    let bg = theme::search_current_style(app.theme).bg;
+    pane_tint(app, bg, |app| app.help_area)
+}
+
+fn help_other_tint(app: &mut App) -> Vec<(usize, usize, String)> {
+    let bg = theme::search_match_style(app.theme).bg;
+    pane_tint(app, bg, |app| app.help_area)
+}
+
+/// The `F1` overlay, open and drawn once so that `help_area` and
+/// `help_list_height` say what a live frame would.
+fn help_app() -> App {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.term_width = 120;
+    press(&mut app, KeyCode::F(1));
+    assert!(app.help_open);
+    let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    app
+}
+
+/// A substring the help uses on two lines close enough together that one
+/// window holds both — the shape the tint test needs, and the one the
+/// help's two mirrored `h`/`l` entries happen to give it.
+const TWICE: &str = "caret one character";
+
+/// The rows `TWICE` falls on, and the column it starts at on each. Both
+/// derived from `HELP_TEXT` rather than written down, so that an edit to
+/// the help moves the expectation with it instead of breaking it.
+fn twice_hits() -> Vec<(usize, usize)> {
+    HELP_TEXT
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| l.find(TWICE).map(|c| (i, c)))
+        .collect()
+}
+
+/// Spec 0340 test-plan item 4 (S6, S7). The overlay tints as the pattern
+/// is typed: the line the sweep is standing on in the current style,
+/// another line holding the same substring in the other.
+#[test]
+fn a_slash_tints_the_help_overlay() {
+    let hits = twice_hits();
+    let mut app = help_app();
+    // The first two hits must share the drawn window — one to be the
+    // current match, one to be an "other" — and every later hit must
+    // fall off it, or it would show up in the expectations below.
+    let drawn = app.help_list_height;
+    assert!(
+        hits.len() >= 2 && hits[1].0 < drawn && hits[2..].iter().all(|(i, _)| *i >= drawn),
+        "the fixture wants two hits in the first {drawn} rows and none after: {hits:?}"
+    );
+
+    type_keys(&mut app, "/");
+    type_keys(&mut app, TWICE);
+    settle_sweep(&mut app);
+
+    assert_eq!(app.search_current_index(), Some(hits[0].0));
+    assert_eq!(
+        app.help_highlight, 0,
+        "a `/` tints without moving the cursor — that is what the tint is for"
+    );
+    // Pane rows, and the line's own columns: the overlay is unscrolled
+    // and unpanned, and unlike either side pane its haystack is the very
+    // text it draws (S6), so the two coincide exactly.
+    assert_eq!(
+        help_current_tint(&mut app),
+        vec![(hits[0].0, hits[0].1, TWICE.to_string())]
+    );
+    assert_eq!(
+        help_other_tint(&mut app),
+        vec![(hits[1].0, hits[1].1, TWICE.to_string())]
+    );
+}
+
+/// Spec 0340 test-plan item 7 (S1, S4). A committed search lands the
+/// overlay's *cursor*, and `n` carries on from there.
+#[test]
+fn the_help_cursor_is_the_search_landing() {
+    let hits = twice_hits();
+    let mut app = help_app();
+
+    commit_search_by_key(&mut app, TWICE);
+    assert_eq!(app.help_highlight, hits[0].0, "{}", app.message);
+
+    press(&mut app, KeyCode::Char('n'));
+    assert_eq!(app.help_highlight, hits[1].0, "{}", app.message);
+}
+
+/// Spec 0340 test-plan item 5 (S9). The overlay's last pattern is its
+/// own: `n` there repeats it and leaves the other three panes' alone.
+#[test]
+fn n_in_the_help_repeats_only_its_own_search() {
+    let mut app = help_app();
+    app.set_last_search_for(
+        SearchScope::Main,
+        (SearchDir::Forward, "main-only".to_string()),
+    );
+
+    commit_search_by_key(&mut app, TWICE);
+    let landed = app.help_highlight;
+    press(&mut app, KeyCode::Char('n'));
+    assert_ne!(app.help_highlight, landed, "{}", app.message);
+
+    assert_eq!(
+        app.last_search_for(SearchScope::Help),
+        Some(&(SearchDir::Forward, TWICE.to_string()))
+    );
+    assert_eq!(
+        app.last_search_for(SearchScope::Main),
+        Some(&(SearchDir::Forward, "main-only".to_string())),
+        "the main pane's memory is untouched"
+    );
+    assert_eq!(app.last_search_for(SearchScope::Override), None);
+}
+
+/// Spec 0340 test-plan item 6 (S1). `Esc` puts the overlay back where
+/// the prompt found it — which is only expressible now that its scroll
+/// is a `PaneScroll` and not a bare offset.
+#[test]
+fn esc_restores_the_help_view() {
+    let mut app = help_app();
+    app.help_pan_offset = 3;
+    let scroll = app.help_scroll;
+
+    // A pattern near the bottom of the help, so that previewing it has
+    // to scroll — otherwise there is nothing for `Esc` to restore.
+    type_keys(&mut app, "/suspend");
+    settle_sweep(&mut app);
+    assert!(!help_current_tint(&mut app).is_empty(), "the prompt tinted");
+    assert_ne!(app.help_scroll, scroll, "and had to scroll to show it");
+
+    press(&mut app, KeyCode::Esc);
+    assert!(app.command_buffer.is_none());
+    assert_eq!(app.help_highlight, 0, "the cursor never moved");
+    assert_eq!(app.help_scroll, scroll);
+    assert_eq!(app.help_pan_offset, 3);
+    assert_eq!(help_current_tint(&mut app), Vec::new());
+    assert_eq!(help_other_tint(&mut app), Vec::new());
+}
+
+/// Spec 0340 N4. The `\n` between two help lines is an artifact of the
+/// drawing, so no pattern reads across it — while the same pattern
+/// inside one line matches.
+#[test]
+fn no_match_crosses_two_help_lines() {
+    let mut app = help_app();
+    assert_eq!(HELP_TEXT[0], "protolens — key bindings");
+
+    commit_search_by_key(&mut app, r"bindings\s+Movement");
+    assert_eq!(app.help_highlight, 0, "nothing to land on");
+    assert!(app.message.contains("not found"), "{}", app.message);
+
+    app.message.clear();
+    commit_search_by_key(&mut app, r"key\s+bindings");
+    assert_eq!(app.help_highlight, 0, "{}", app.message);
+    assert!(app.message.is_empty(), "{}", app.message);
 }

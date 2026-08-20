@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
+use super::super::search::SearchScope;
 use super::super::*;
 use super::support::*;
 
@@ -1067,9 +1068,9 @@ fn f_and_b_page_in_every_pane() {
     app.splash = false;
     app.help_open = true;
     app.handle_key(f);
-    assert!(app.help_scroll > 0, "`f` scrolls the help");
+    assert!(app.help_highlight > 0, "`f` pages the help");
     app.handle_key(b);
-    assert_eq!(app.help_scroll, 0, "and `b` scrolls back");
+    assert_eq!(app.help_highlight, 0, "and `b` pages back");
 }
 
 /// `Ctrl-N`/`Ctrl-P` are `Down`/`Up` in every pane that has a
@@ -1128,9 +1129,9 @@ fn ctrl_n_and_ctrl_p_alias_down_and_up_in_every_pane() {
     app.splash = false;
     app.help_open = true;
     app.handle_key(ctrl_n);
-    assert_eq!(app.help_scroll, 1);
+    assert_eq!(app.help_highlight, 1);
     app.handle_key(ctrl_p);
-    assert_eq!(app.help_scroll, 0);
+    assert_eq!(app.help_highlight, 0);
 }
 
 /// The main pane's `Control`/`Alt` vocabulary is exactly what
@@ -1256,7 +1257,7 @@ fn only_the_bound_ctrl_and_alt_chords_do_anything_in_the_manage_pane() {
 fn n_and_shift_n_repeat_the_last_search_in_both_directions() {
     let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "beta: 3"]);
     app.splash = false;
-    app.last_search = Some((SearchDir::Forward, "beta".to_string()));
+    app.set_last_search_for(SearchScope::Main, (SearchDir::Forward, "beta".to_string()));
 
     app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
     assert_eq!(app.cursor, 1);
@@ -1309,4 +1310,97 @@ fn ctrl_o_restores_the_whole_caret_position() {
         app.caret_bounds().1,
         "onto the shrunken row's last reachable column"
     );
+}
+
+// ---------------------------------------------------------------------
+// Spec 0340: the help overlay is a pane.
+// ---------------------------------------------------------------------
+
+/// The `F1` overlay, open, with a window height to page by.
+fn help_app() -> App {
+    let mut app = empty_app();
+    app.splash = false;
+    app.handle_key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+    assert!(app.help_open);
+    app.help_list_height = 10;
+    app
+}
+
+/// Spec 0340 test-plan item 1 (S1, S3). `j`/`k` move a cursor, not a
+/// viewport — and the viewport only follows once the cursor would leave
+/// it, which is `clamp_scroll_to_visible`'s job and not the key's.
+#[test]
+fn the_help_overlay_has_a_cursor() {
+    let mut app = help_app();
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+    assert_eq!(app.help_highlight, 1);
+    assert_eq!(
+        app.help_scroll,
+        PaneScroll::default(),
+        "a cursor one row down is still on screen, so nothing scrolls"
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+    assert_eq!(app.help_highlight, 0);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+    assert_eq!(app.help_highlight, 0, "and the top is a floor");
+}
+
+/// Spec 0340 test-plan item 2 (S2). The rest of the vocabulary, meaning
+/// here what it means in the manage pane: pages, ends, and a pan that
+/// leaves the cursor where it is.
+#[test]
+fn help_navigation_matches_the_manage_panes() {
+    let mut app = help_app();
+    let last = HELP_TEXT.len() - 1;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+    assert_eq!(app.help_highlight, 10, "`f` pages by the drawn height");
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+    assert_eq!(app.help_highlight, 0);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE));
+    assert_eq!(app.help_highlight, last);
+    app.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+    assert_eq!(app.help_highlight, 0);
+    app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+    assert_eq!(app.help_highlight, last);
+
+    // `gg` is the other spelling of `Home`, as everywhere else.
+    for _ in 0..2 {
+        app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+    }
+    assert_eq!(app.help_highlight, 0);
+
+    // The pans move the view and nothing else.
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
+    assert_eq!(app.help_scroll.top(&FLAT_ROWS), PAN_STEP as isize);
+    assert_eq!(app.help_highlight, 0, "a pan does not drag the cursor");
+
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+    assert_eq!(app.help_pan_offset, PAN_STEP);
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+    assert_eq!(app.help_pan_offset, 0);
+}
+
+/// Spec 0340 test-plan item 3 (S5). The prompt outranks the overlay: a
+/// `/` opened over the help is fed by the command line, and the letters
+/// that follow reach the buffer instead of being read as help
+/// navigation. Before this the overlay was dispatched first and ate
+/// every one of them.
+#[test]
+fn a_prompt_over_the_help_is_not_swallowed() {
+    let mut app = help_app();
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+    assert!(app.command_buffer.is_some(), "the prompt opened");
+
+    // `j`, `b` and `G` are all help-navigation keys; here they are text.
+    for c in "jbG".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    assert_eq!(app.command_buffer.as_deref(), Some("jbG"));
+    assert_eq!(app.help_highlight, 0, "and none of them moved the cursor");
 }

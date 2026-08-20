@@ -529,16 +529,22 @@ impl App {
         // once help is open, so this only ever needs to *open* it.
         if !self.help_open && key.code == KeyCode::F(1) {
             self.help_open = true;
-            self.help_scroll = 0;
+            self.help_scroll = PaneScroll::default();
+            self.help_highlight = 0;
+            self.help_pan_offset = 0;
             return;
         }
 
-        if self.help_open {
-            self.handle_help_key(key);
-            return;
-        }
+        // Spec 0340 S5: the prompt outranks the overlay, not the other
+        // way round. A `/` opened over the help is still a prompt, and
+        // the overlay must not eat the characters typed into it — the
+        // same order every other pane already lives under.
         if self.command_buffer.is_some() {
             self.handle_command_key(key);
+            return;
+        }
+        if self.help_open {
+            self.handle_help_key(key);
             return;
         }
         // `:` opens the command line regardless of which pane has focus
@@ -1142,8 +1148,61 @@ impl App {
         });
     }
 
-    /// Scroll/close the `F1` help overlay.
+    /// Spec 0340 S2: move the overlay's cursor by `delta` rows, clamped
+    /// to `HELP_TEXT`. The same shape as `move_manage_highlight`, over
+    /// the same `clamp_highlight`.
+    pub(super) fn move_help_highlight(&mut self, delta: isize) {
+        self.help_highlight = clamp_highlight(self.help_highlight, delta, HELP_TEXT.len() - 1);
+    }
+
+    /// Vertical pan for the overlay (Ctrl-Up/Ctrl-Down, and the mouse
+    /// wheel over it): scrolls without moving the cursor, behind spec
+    /// 0286's wall, exactly as the two side panes do.
+    pub(super) fn help_pan_vertical(&mut self, step: usize, up: bool) {
+        self.event_changed_nothing = side_pan_vertical(
+            &mut self.help_scroll,
+            &mut self.help_resistance,
+            HELP_TEXT.len(),
+            self.help_list_height,
+            step,
+            up,
+        );
+    }
+
+    /// Horizontal pan for the overlay, clamped to its longest line.
+    pub(super) fn help_pan_horizontal(&mut self, step: usize, left: bool) {
+        let width = self.help_area.width as usize;
+        let longest = HELP_TEXT
+            .iter()
+            .map(|l| l.chars().count())
+            .max()
+            .unwrap_or(0);
+        let before = self.help_pan_offset;
+        pan_by_step_clamped(
+            &mut self.help_pan_offset,
+            longest.saturating_sub(width),
+            step,
+            left,
+        );
+        // Spec 0245 S2.
+        self.event_changed_nothing = self.help_pan_offset == before;
+    }
+
+    /// Move the cursor in, search, and close, the `F1` help overlay.
+    ///
+    /// Spec 0340 S2: the overlay is a list pane like the other two, so
+    /// its vocabulary is `handle_manage_key`'s stripped of everything
+    /// that acts on an override.
     pub(super) fn handle_help_key(&mut self, key: KeyEvent) {
+        match self.take_g_chord(&key) {
+            GChord::Fired => {
+                self.help_highlight = 0;
+                return;
+            }
+            GChord::Armed => return,
+            GChord::Other => {}
+        }
+
         // This overlay's entire `Control`/`Alt` character vocabulary, in
         // one place, so that the plain-character arms below — which carry
         // no modifier condition of their own — cannot also answer for it
@@ -1153,8 +1212,8 @@ impl App {
             match key.code {
                 // Emacs' own next/previous-line, aliasing `j`/`k` as they
                 // do in every pane.
-                KeyCode::Char('n') if ctrl => self.help_scroll = self.help_scroll.saturating_add(1),
-                KeyCode::Char('p') if ctrl => self.help_scroll = self.help_scroll.saturating_sub(1),
+                KeyCode::Char('n') if ctrl => self.move_help_highlight(1),
+                KeyCode::Char('p') if ctrl => self.move_help_highlight(-1),
                 _ => {}
             }
             return;
@@ -1165,20 +1224,48 @@ impl App {
             // panes, `q` still closing exactly one overlay reads as a
             // leftover rather than a convention.
             KeyCode::Esc | KeyCode::F(1) => self.help_open = false,
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.help_scroll = self.help_scroll.saturating_add(1)
+            // Vertical and horizontal pan: scroll without moving the
+            // cursor, the same two chords the side panes use. Both must
+            // precede the plain arrow arms below, which carry no
+            // modifier condition and would otherwise shadow them.
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.help_pan_vertical(PAN_STEP, true)
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.help_scroll = self.help_scroll.saturating_sub(1)
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.help_pan_vertical(PAN_STEP, false)
             }
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.help_pan_horizontal(PAN_STEP, true)
+            }
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.help_pan_horizontal(PAN_STEP, false)
+            }
+            KeyCode::Char('j') | KeyCode::Down => self.move_help_highlight(1),
+            KeyCode::Char('k') | KeyCode::Up => self.move_help_highlight(-1),
             // Spec 0236 S16: `f`/`b` page here too, as in every other
-            // pane.
+            // pane — moving the cursor by a screenful now, rather than
+            // the view alone.
             KeyCode::PageDown | KeyCode::Char('f') => {
-                self.help_scroll = self.help_scroll.saturating_add(10)
+                self.move_help_highlight(self.help_list_height.max(1) as isize)
             }
             KeyCode::PageUp | KeyCode::Char('b') => {
-                self.help_scroll = self.help_scroll.saturating_sub(10)
+                self.move_help_highlight(-(self.help_list_height.max(1) as isize))
             }
+            KeyCode::Home => self.help_highlight = 0,
+            KeyCode::End | KeyCode::Char('G') => self.help_highlight = HELP_TEXT.len() - 1,
+            // Spec 0340 S4: the same search vocabulary as the two side
+            // panes, over the same engine — the prompt sits on the
+            // command row, which this overlay does not cover.
+            KeyCode::Char('/') => {
+                self.open_command_line(CommandLineKind::search(SearchDir::Forward), String::new())
+            }
+            KeyCode::Char('?') => {
+                self.open_command_line(CommandLineKind::search(SearchDir::Backward), String::new())
+            }
+            KeyCode::Char('n') => self.repeat_search(false),
+            KeyCode::Char('N') => self.repeat_search(true),
+            KeyCode::Char('F') => self.open_find(SearchDir::Forward),
+            KeyCode::Char('B') => self.open_find(SearchDir::Backward),
             _ => {}
         }
     }

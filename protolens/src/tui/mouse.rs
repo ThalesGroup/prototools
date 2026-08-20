@@ -103,15 +103,21 @@ impl App {
         // exists, so this must be checked first. Shift-wheel
         // is reported as a plain `ScrollUp`/`ScrollDown` with the `SHIFT`
         // modifier set (matched here regardless), not as a distinct
-        // event kind — help has no horizontal content to pan, so there's
-        // no separate Shift behavior to give it. Native
+        // event kind — the overlay's own text pans horizontally under
+        // it, the same gesture the side panes answer to. Native
         // `ScrollLeft`/`ScrollRight` (a real horizontal wheel/trackpad
-        // gesture) is likewise swallowed here rather than panning the
-        // pane behind the overlay.
+        // gesture) pans it too.
+        let shift = event.modifiers.contains(KeyModifiers::SHIFT);
         if self.help_open && Self::rect_contains(self.help_area, event.column, event.row) {
             match event.kind {
-                MouseEventKind::ScrollDown => self.help_scroll = self.help_scroll.saturating_add(1),
-                MouseEventKind::ScrollUp => self.help_scroll = self.help_scroll.saturating_sub(1),
+                MouseEventKind::ScrollDown if shift => {
+                    self.help_pan_horizontal(WHEEL_PAN_STEP, false)
+                }
+                MouseEventKind::ScrollUp if shift => self.help_pan_horizontal(WHEEL_PAN_STEP, true),
+                MouseEventKind::ScrollRight => self.help_pan_horizontal(WHEEL_PAN_STEP, false),
+                MouseEventKind::ScrollLeft => self.help_pan_horizontal(WHEEL_PAN_STEP, true),
+                MouseEventKind::ScrollDown => self.help_pan_vertical(WHEEL_PAN_STEP, false),
+                MouseEventKind::ScrollUp => self.help_pan_vertical(WHEEL_PAN_STEP, true),
                 _ => {}
             }
             return;
@@ -128,7 +134,6 @@ impl App {
         // whichever pane is under the pointer, instead of the vertical
         // scroll the plain wheel dispatches to below — checked first so
         // it takes priority over the vertical-scroll branch.
-        let shift = event.modifiers.contains(KeyModifiers::SHIFT);
         let (pan_left, pan_right) = match event.kind {
             MouseEventKind::ScrollLeft => (true, false),
             MouseEventKind::ScrollRight => (false, true),

@@ -2901,19 +2901,72 @@ impl App {
         frame.render_widget(Paragraph::new(lines), inner);
     }
 
-    /// Centered modal listing `HELP_TEXT`, scrollable via `help_scroll`.
+    /// Centered modal listing `HELP_TEXT`.
+    ///
+    /// Spec 0340 S1/S3/S6/S7: a list pane like the other two, drawn the
+    /// same way — a `PaneScroll` window over `FLAT_ROWS`, a reversed
+    /// cursor row, `help_pan_offset` through `pan_spans`, and the shared
+    /// search tint on top.
     pub(super) fn render_help(&mut self, frame: &mut Frame, area: Rect) {
-        let inner = popup_frame(frame, area, 70, 70, " Help (j/k scroll, q/Esc/F1 close) ");
+        let inner = popup_frame(
+            frame,
+            area,
+            70,
+            70,
+            " Help (j/k move, / search, Esc/F1 close) ",
+        );
         self.help_area = inner;
 
-        let visible_height = (inner.height as usize).max(1);
-        let max_scroll = HELP_TEXT.len().saturating_sub(visible_height);
-        self.help_scroll = self.help_scroll.min(max_scroll);
-        let end = (self.help_scroll + visible_height).min(HELP_TEXT.len());
-        let lines: Vec<Line> = HELP_TEXT[self.help_scroll..end]
-            .iter()
-            .map(|&l| Line::from(l))
-            .collect();
+        let list_height = inner.height as usize;
+        self.help_list_height = list_height;
+
+        // Auto-pan into view only on genuine cursor movement, so that a
+        // Ctrl-Up pan is not undone by the next frame.
+        if self.last_help_highlight != Some(self.help_highlight) {
+            clamp_scroll_to_visible(&mut self.help_scroll, self.help_highlight, list_height);
+            self.last_help_highlight = Some(self.help_highlight);
+        }
+        let (blank_rows, rows) = self
+            .help_scroll
+            .window(list_height, &FLAT_ROWS, HELP_TEXT.len());
+
+        let search = (self.active_search_scope() == SearchScope::Help)
+            .then(|| self.search_highlight_pattern())
+            .flatten()
+            .map(|pattern| {
+                (
+                    pattern,
+                    theme::search_current_style(self.theme),
+                    theme::search_match_style(self.theme),
+                    self.search_current_index(),
+                )
+            });
+
+        let mut lines: Vec<Line> = vec![Line::default(); blank_rows];
+        for row in rows {
+            let text = HELP_TEXT[row];
+            let style = if row == self.help_highlight {
+                Style::default().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default()
+            };
+            let mut spans = pan_spans(
+                vec![Span::styled(text.to_string(), style)],
+                self.help_pan_offset,
+            );
+            if let Some((pattern, current, other, current_index)) = &search {
+                let cells = RowCells {
+                    pan: self.help_pan_offset,
+                    lead: 0,
+                    trail: 0,
+                    width: inner.width as usize,
+                };
+                let hit = *current_index == Some(row);
+                let style = if hit { *current } else { *other };
+                tint_matches(&mut spans, text, pattern, cells, |_| style);
+            }
+            lines.push(Line::from(spans));
+        }
         frame.render_widget(Paragraph::new(lines), inner);
     }
 

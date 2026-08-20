@@ -157,6 +157,21 @@ impl App {
                 // ring, and `Ctrl-v` is what every other single-line
                 // field on the user's screen answers to.
                 KeyCode::Char('v') if ctrl => self.paste_from_clipboard(),
+                // readline's `previous-history`/`next-history`, aliasing
+                // the plain `Up`/`Down` below — and carrying that arm's
+                // guard with them, so that like it they stay unbound at
+                // a `:` prompt (spec 0246 S14/N1) rather than silently
+                // browsing a history it does not have.
+                KeyCode::Char('p')
+                    if ctrl && matches!(self.command_kind, CommandLineKind::Search { .. }) =>
+                {
+                    self.browse_search_history(true)
+                }
+                KeyCode::Char('n')
+                    if ctrl && matches!(self.command_kind, CommandLineKind::Search { .. }) =>
+                {
+                    self.browse_search_history(false)
+                }
                 _ => {}
             }
             return;

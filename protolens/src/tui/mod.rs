@@ -1782,9 +1782,6 @@ pub struct App {
     /// candidates), guaranteeing a clamp on the next render even if the
     /// new highlight happens to coincide with the old one.
     last_override_highlight: Option<usize>,
-    /// Last confirmed in-pane search (direction, pattern) — `n` repeats it
-    /// in the same direction.
-    last_override_search: Option<(SearchDir, String)>,
     /// Full terminal width (columns) as of the last `render()` call —
     /// basis for the override pane's minimum-width refusal (spec 0114
     /// §2), since `main_area`'s own width shrinks once the pane is open.
@@ -1960,8 +1957,6 @@ pub struct App {
     /// as `Enter`. Tracked separately from `last_manage_click`, which is
     /// marker-column-only and drives an unrelated toggle behavior.
     last_manage_row_click: Option<(Instant, usize)>,
-    /// Last confirmed management-pane in-pane search — `n` repeats it.
-    last_manage_search: Option<(SearchDir, String)>,
     /// `Some((origin, kind, cursor_moves))` while a `z`/`Z` attempt in
     /// the management pane is unresolved (spec 0134 G2/G3): `origin` is
     /// the highlighted entry's origin at the time of that attempt,
@@ -2006,10 +2001,17 @@ pub struct App {
     /// `Left`/`Right`/`Home`/`End`; edits (`Backspace`/`Delete`/typing)
     /// happen relative to it rather than always at the buffer's end.
     command_cursor: usize,
-    /// Last confirmed main-pane in-pane search (direction, pattern) — `n`
-    /// repeats it in the same direction; an empty `/`/`?` confirmation
-    /// reuses the pattern (spec 0114 §4, mirroring `last_override_search`).
-    last_search: Option<(SearchDir, String)>,
+    /// Spec 0340 S9: each pane's last confirmed search (direction,
+    /// pattern), indexed by `SearchScope`. `n` repeats its own pane's in
+    /// the same direction, and an empty `/`/`?` confirmation reuses its
+    /// pattern (spec 0114 §4).
+    ///
+    /// One array rather than a field per pane: the three were declared
+    /// hundreds of lines apart and read through a three-way match at
+    /// each of three call sites, so a fourth pane cost four edits to add
+    /// nothing new. Reach it through `last_search_for` /
+    /// `set_last_search_for` rather than by index.
+    last_searches: [Option<(SearchDir, String)>; search::SCOPE_COUNT],
     /// Spec 0235 S2: the search in flight, or the finished one whose
     /// answer the prompt is still showing. `None` outside a search.
     search_sweep: Option<search::SearchSweep>,
@@ -2062,8 +2064,26 @@ pub struct App {
     splash_deadline: Instant,
     /// `true` while the `F1` help overlay is open.
     help_open: bool,
-    /// Scroll offset (in `HELP_TEXT` lines) while the help overlay is open.
-    help_scroll: usize,
+    /// Spec 0340 S1: the highlighted `HELP_TEXT` row — the overlay's
+    /// cursor, and the row a search lands on.
+    help_highlight: usize,
+    /// `help_highlight` as of the last frame, so that the auto-pan only
+    /// fires on genuine cursor movement and a deliberate pan survives
+    /// the next frame — `last_override_highlight`'s twin.
+    last_help_highlight: Option<usize>,
+    /// The overlay's viewport. A `PaneScroll` rather than the bare
+    /// `usize` it was before spec 0340, so that the cursor above can be
+    /// kept in view by the same `clamp_scroll_to_visible` the side panes
+    /// use, and so that an `Esc`-cancelled search can restore it.
+    help_scroll: PaneScroll,
+    /// How far the overlay is panned horizontally. The help's longest
+    /// lines run past a 70%-wide modal, so it pans like any other pane.
+    help_pan_offset: usize,
+    /// Rows of `HELP_TEXT` the overlay last drew — the page `f`/`b` move
+    /// by, and the window `show_sweep_hit` centers a match in.
+    help_list_height: usize,
+    /// Spec 0286's wall, for the overlay's own vertical pan.
+    help_resistance: EdgeResistance,
     /// Help overlay's inner (bordered-away) `Rect` as of the last
     /// `render_help()` call — used to hit-test mouse wheel/Shift-wheel
     /// events against the overlay instead of letting them fall through
@@ -2369,7 +2389,6 @@ impl App {
             override_scroll: PaneScroll::default(),
             override_resistance: EdgeResistance::default(),
             last_override_highlight: None,
-            last_override_search: None,
             term_width: 0,
             override_list_height: 0,
             heat_caches: Arc::new(Mutex::new(heat_worker::HeatCaches::new(
@@ -2407,7 +2426,6 @@ impl App {
             last_manage_highlight: None,
             last_manage_click: None,
             last_manage_row_click: None,
-            last_manage_search: None,
             manage_pending_kind: None,
             manage_list_height: 0,
             back_stack: Vec::new(),
@@ -2418,7 +2436,7 @@ impl App {
             command_buffer: None,
             command_kind: CommandLineKind::Command,
             command_cursor: 0,
-            last_search: None,
+            last_searches: Default::default(),
             search_sweep: None,
             search_tally: None,
             search_origin: None,
@@ -2432,7 +2450,12 @@ impl App {
             splash: true,
             splash_deadline: Instant::now() + SPLASH_TIMEOUT,
             help_open: false,
-            help_scroll: 0,
+            help_highlight: 0,
+            last_help_highlight: None,
+            help_scroll: PaneScroll::default(),
+            help_pan_offset: 0,
+            help_list_height: 0,
+            help_resistance: EdgeResistance::default(),
             menu: None,
             popup: None,
             hover: None,
