@@ -2318,7 +2318,22 @@ impl App {
                         // indeed the same.
                         DisplayRow::Overlay(i) => self.preview_wire_row(i, left, palette.as_ref()),
                     };
-                    let mut spans = pan_spans(wire_spans.unwrap_or_default(), self.pan_offset);
+                    // A row of the run with no bytes to show still gets
+                    // its margin. `wire_row` answers `None` for a
+                    // closing brace whose children ended exactly where
+                    // the message did, and suppressing the elbow there
+                    // is right — it would point at an empty row. But
+                    // spec 0328 S5's bars are in the margin, so dropping
+                    // the line with the elbow broke every bar covering
+                    // it for one terminal row.
+                    //
+                    // Built again rather than cloned: the margin is a
+                    // handful of spans, this is the rare row, and the
+                    // common one pays nothing.
+                    let mut spans = pan_spans(
+                        wire_spans.unwrap_or_else(|| self.wire_margin_spans(display_row, indent)),
+                        self.pan_offset,
+                    );
                     spans.insert(0, Span::raw(" ".repeat(HEAT_FIELD_WIDTH)));
                     Line::from(spans)
                 });

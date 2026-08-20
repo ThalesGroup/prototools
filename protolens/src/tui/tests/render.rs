@@ -1932,6 +1932,62 @@ fn a_bar_survives_a_wire_row() {
     assert_contiguous_bars(&app, &terminal, rows - 1);
 }
 
+/// Spec 0328 S5, reported 2026-08-20: a wire row that has no bytes to
+/// show is still a row of the run, and every bar running through the
+/// row above runs through it too.
+///
+/// A LEN submessage's closing brace claims no bytes — its children
+/// ended exactly where the message did — so no elbow is drawn under it,
+/// which is right and is what `wire_row`'s `None` is for. What was
+/// wrong is that the *margin* went with the elbow: the render dropped
+/// the whole line, and every ancestor's bar broke for one terminal row.
+#[test]
+fn a_wire_row_with_no_bytes_still_carries_the_bars() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.cursor = inner_idx;
+    let header = app.absolute_start(inner_idx);
+    let brace = header + app.tree[inner_idx].lines_total as usize - 1;
+    let span = app.wire_span_of_lines(header, brace);
+    app.set_wire_span(span, 0);
+
+    let terminal = drawn_frame(&mut app, 120, 24);
+    let row = app.visible_row_of_line(brace).expect("the brace is drawn");
+    let y = app.main_area.y + u16::try_from(app.terminal_row_of(row)).expect("on screen");
+
+    let buffer = terminal.backend().buffer();
+    let row_text = |y: u16| -> String {
+        (app.main_area.x..app.main_area.x + app.main_area.width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect()
+    };
+    let bar_columns = |y: u16| -> Vec<u16> {
+        (app.main_area.x..app.main_area.x + app.main_area.width)
+            .filter(|&x| buffer[(x, y)].symbol() == crate::tui::render::TIER_BAR_GLYPH.to_string())
+            .collect()
+    };
+
+    assert!(
+        row_text(y).contains('}'),
+        "the row under test must be the closing brace: {:?}",
+        row_text(y)
+    );
+    assert!(
+        !row_text(y + 1).contains(crate::tui::wire::WIRE_CONNECTOR),
+        "the brace's wire row must be the byte-less one, or this pins nothing: {:?}",
+        row_text(y + 1)
+    );
+    assert!(
+        !bar_columns(y).is_empty(),
+        "the fixture must put an ancestor's bar beside the brace, or there is \
+         nothing for the wire row to carry"
+    );
+    assert_eq!(
+        bar_columns(y + 1),
+        bar_columns(y),
+        "the blank wire row carries the same bars as the row it belongs to"
+    );
+}
+
 /// The bars drawn in `terminal` form one unbroken run down one column,
 /// and there are more of them than `document_rows` — which is what says
 /// the wire rows were drawn through rather than skipped.
