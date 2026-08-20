@@ -884,6 +884,42 @@ fn blended(r: u8, g: u8, b: u8, target: f32, background: f32) -> Color {
     Color::Rgb(mix(r), mix(g), mix(b))
 }
 
+/// How far a dimmed mark is blended toward the page. Enough to read as
+/// a second rank beside an undimmed one of the same hue, not so far
+/// that the hue stops being identifiable — the fold column's colors
+/// carry meaning, so a dimmed bar still has to say *which* status it is.
+const DIM_BLEND: f32 = 0.55;
+
+/// A color taken down a rank, for a mark that is present but secondary.
+///
+/// `Modifier::DIM` is the obvious way to say this and it is not enough
+/// on its own: a great many terminals apply the SGR 2 attribute only to
+/// the sixteen named colors and ignore it outright once a cell carries
+/// a 24-bit foreground. So the fold column's violet, amber and red
+/// ancestor bars came out at full strength beside the undimmed one,
+/// which is exactly the distinction they were meant to lose.
+///
+/// Blending toward the page is the part a terminal cannot decline.
+/// Callers should still add `Modifier::DIM` as well: this function
+/// returns a non-RGB color untouched, because in sixteen colors there
+/// is nothing between the named entries to blend to, and there the
+/// attribute is both all there is and reliably honored.
+pub fn dimmed(color: Color, theme: ThemeKind) -> Color {
+    let Color::Rgb(r, g, b) = color else {
+        return color;
+    };
+    let background = match theme {
+        ThemeKind::Dark => 0.0,
+        ThemeKind::Light => 255.0,
+        ThemeKind::System => system_must_be_resolved(),
+    };
+    let mix = |c: u8| {
+        let c = f32::from(c);
+        (c + (background - c) * DIM_BLEND) as u8
+    };
+    Color::Rgb(mix(r), mix(g), mix(b))
+}
+
 /// ANSI-16 fallback palette, dark (spec 0116 §9's "ANSI-16 palette"
 /// table).
 ///

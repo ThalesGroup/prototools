@@ -178,23 +178,33 @@ struct CursorBar {
     /// triangle sits in (S1). Also a byte offset into any row's fold
     /// margin, which is spaces up to and including it.
     column: usize,
-    /// Spec 0334 S3: an ancestor's bar is dimmed, the caret node's is
-    /// not.
+    /// Whether this bar is dimmed. Exactly one bar on screen is not:
+    /// the **nearest** one to the caret, which is the caret node's own
+    /// when it has one and otherwise the nearest ancestor's. See
+    /// [`App::compute_cursor_bars`].
     dim: bool,
 }
 
 impl CursorBar {
-    /// Spec 0328 S2: the document rows the bar runs down — the node's
-    /// subtree minus its header, which keeps its triangle.
+    /// The document rows the bar runs down — the node's subtree minus
+    /// its header, which keeps its triangle (spec 0328 S2), and minus
+    /// its closing brace.
+    ///
+    /// The brace is the node's own extent made visible; a bar beside it
+    /// says the same thing twice, and the pair reads as one mark that
+    /// overshot. Stopping a row short also leaves the bar pointing *at*
+    /// the brace rather than running past it, which is where a reader
+    /// following the bar down is going.
     fn covers(&self, line: usize) -> bool {
-        line > self.header && line < self.end
+        line > self.header && line + 1 < self.end
     }
 
     /// Spec 0328 S5: a wire row is a continuation of the row above, so
     /// the header's own wire row — directly under the triangle — takes
-    /// the bar as well.
+    /// the bar as well. The closing brace's wire row is excluded with
+    /// the brace itself, for the reason [`CursorBar::covers`] gives.
     fn covers_wire(&self, line: usize) -> bool {
-        line >= self.header && line < self.end
+        line >= self.header && line + 1 < self.end
     }
 }
 
@@ -1242,19 +1252,32 @@ impl App {
     /// second lookup that could come to disagree — and an ancestor's is
     /// dimmed.
     ///
-    /// `Modifier::DIM` rather than a darker color because there is
-    /// usually no color to darken: `margin_glyph_color` is `None` for an
-    /// `Ok` node, which most ancestors are.
+    /// A dimmed bar is taken down on both axes available, because
+    /// neither one alone covers every bar in the column:
+    ///
+    /// - `Modifier::DIM` is what a terminal honors for the sixteen
+    ///   named colors and for a bar with no color at all.
+    /// - `theme::dimmed` blends the hue toward the page, which is what
+    ///   a terminal *cannot* decline. Most ignore SGR 2 on a cell
+    ///   carrying a 24-bit foreground, so the fold column's violet,
+    ///   amber and red ancestor bars were coming out at full strength
+    ///   beside the undimmed one — the very distinction being drawn.
+    ///
+    /// And where there is no color at all — `margin_glyph_color` is
+    /// `None` for an `Ok` node, which most ancestors are — the bar is
+    /// given `DarkGray` explicitly rather than left on the terminal's
+    /// default foreground, which is the text's own weight and which
+    /// `DIM` alone barely moves.
     fn bar_style(&self, bar: &CursorBar) -> Style {
-        let style = match self.margin_glyph_color(Some(bar.owner)) {
-            Some(color) => Style::default().fg(color),
-            None => Style::default(),
-        };
-        if bar.dim {
-            style.add_modifier(Modifier::DIM)
-        } else {
-            style
+        let color = self.margin_glyph_color(Some(bar.owner));
+        if !bar.dim {
+            return match color {
+                Some(color) => Style::default().fg(color),
+                None => Style::default(),
+            };
         }
+        let color = theme::dimmed(color.unwrap_or(Color::DarkGray), self.theme);
+        Style::default().fg(color).add_modifier(Modifier::DIM)
     }
 
     /// Brings [`App::cursor_bar`]'s memo up to date with the current
@@ -1280,11 +1303,28 @@ impl App {
     /// [`App::compute_bar`] — and the walk carries on regardless, which
     /// is spec 0334 S1's "a caret on a leaf still draws its ancestors'
     /// bars".
+    ///
+    /// **Exactly one bar is undimmed: the first one this walk finds.**
+    /// Spec 0334 S3 undimmed the caret node's specifically, which left
+    /// a caret on a leaf or on a folded node with nothing but dimmed
+    /// bars — the reader loses the "you are here" mark precisely when
+    /// the caret is on a row that has no bar of its own to stand in for
+    /// it. Keying it on *nearest* instead of on *is the caret node*
+    /// makes the undimmed bar the innermost thing the caret is inside,
+    /// which is the same answer whenever the caret node has a bar and a
+    /// useful one when it does not.
+    ///
+    /// The one case with no undimmed bar is the one with no bar at all:
+    /// nothing on the path from the caret to the root draws one, which
+    /// takes a caret at the top of a document whose root is folded or
+    /// unbracketed.
     fn compute_cursor_bars(&self) -> Vec<CursorBar> {
         let mut bars = Vec::new();
         let mut idx = self.cursor;
         loop {
-            if let Some(bar) = self.compute_bar(idx, idx != self.cursor) {
+            // `!bars.is_empty()` is the whole rule: the first bar found
+            // is the nearest, because the walk goes caret-outward.
+            if let Some(bar) = self.compute_bar(idx, !bars.is_empty()) {
                 bars.push(bar);
             }
             match self.parent(idx) {
@@ -1301,16 +1341,32 @@ impl App {
     /// body as the one-row `{ ... }` collapse — right in both cases,
     /// since a collapsed node's extent is the row you are on.
     ///
-    /// The line range is the one `cursor_brace_pair` derives, and
-    /// `lines_total` is the whole subtree's count — so the bar reaches
-    /// the closing brace in O(1), with no per-row walk up each row's
-    /// ancestors and no second definition of "in this node".
+    /// Also `None` at two lines — a header and its closing brace with
+    /// no interior, which `covers` excludes both of. **`Some` means
+    /// *draws at least one cell*, and [`App::compute_cursor_bars`]
+    /// relies on that**: a bar covering nothing would still take the
+    /// undimmed slot and leave the screen with no visible undimmed bar.
+    /// That is also why the fold is now tested for outright rather than
+    /// left to fall out of the line count — a folded node's rows are
+    /// not on screen at all.
+    ///
+    /// The range is in **absolute line numbers**, and all three terms
+    /// have to agree on that: `absolute_start` sums `lines_total`, and
+    /// `covers` is asked about `CommittedRow::line`, which is absolute
+    /// too. So the extent is `lines_total`, never `lines_visible` —
+    /// mixing the two makes the bar stop short by however many lines a
+    /// folded descendant hides. Those hidden lines fall inside the
+    /// range and no drawn row carries their numbers, so counting them
+    /// costs nothing.
+    ///
+    /// O(1) — no per-row walk up each row's ancestors, and no second
+    /// definition of "in this node".
     fn compute_bar(&self, idx: usize, dim: bool) -> Option<CursorBar> {
-        if idx >= self.tree.len() || !self.has_children(idx) {
+        if idx >= self.tree.len() || !self.has_children(idx) || self.is_folded(idx) {
             return None;
         }
         let total = self.tree[idx].lines_total as usize;
-        if total < 2 {
+        if total < 3 {
             return None;
         }
         let header = self.absolute_start(idx);

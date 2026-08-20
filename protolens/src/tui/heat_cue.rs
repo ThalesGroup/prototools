@@ -44,6 +44,14 @@ const _: () = assert!(HEAT_CUE_PREVIEW > 0);
 /// width, the class of both the `●` this replaces and the `◆` in the
 /// column beside it. The way back down is `●`, a one-line revert.
 ///
+/// **`■` is the largest true square those two constraints leave.**
+/// Tried and rejected: `█` U+2588 FULL BLOCK is larger in area but a
+/// terminal cell is about 1:2, so a filled cell reads as a tall
+/// rectangle, not as a bigger square. The squares that *are* bigger —
+/// `◼` U+25FC, `⬛` U+2B1B — all carry the Emoji property and hand the
+/// color to an emoji font, which is the one thing this glyph cannot
+/// afford. Anything larger needs a second cell, not a second glyph.
+///
 /// A `&'static str` rather than a `char` (spec 0190 S9): a `char`
 /// forces a `String` build at every render of every visible cue — one
 /// heap allocation per cue per frame.

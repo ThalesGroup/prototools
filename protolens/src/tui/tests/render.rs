@@ -1570,12 +1570,17 @@ fn overlay_fold_column_is_free_at_indent_one() {
 }
 
 /// Spec 0328 test plan item 1, and G1/S1/S2/S3 at once: the bar hangs
-/// directly under the current node's own triangle, runs to its closing
-/// brace and stops there, and wears the triangle's color.
+/// directly under the current node's own triangle, stops one row above
+/// its closing brace, and wears the triangle's color.
 ///
 /// All four in one test because they are one mark, and any three of
 /// them holding while the fourth does not is a bar that says the wrong
 /// thing rather than a bar with a small defect.
+///
+/// The bar no longer reaches the brace itself: the brace is the node's
+/// extent already drawn, and a bar beside it says the same thing twice.
+/// So the count is `total - 2` — the header keeps its triangle at the
+/// top, the brace stands alone at the bottom.
 ///
 /// Spec 0334 S3: the caret node's bar is the *undimmed* one. Its
 /// ancestors now draw bars of their own in the same field, and
@@ -1591,9 +1596,9 @@ fn the_current_node_wears_a_bar() {
     let bars = tier_bar_cells_dim(&app, &terminal, false);
     assert_eq!(
         bars.len(),
-        total - 1,
-        "one bar per subtree row below the header, and none on the row \
-         after the closing brace: {bars:?}"
+        total - 2,
+        "one bar per interior row: none on the header, which keeps its \
+         triangle, and none on the closing brace: {bars:?}"
     );
 
     // S3: the very call the triangle's own color comes from, so the two
@@ -1623,32 +1628,56 @@ fn the_current_node_wears_a_bar() {
 /// node's extent *is* the row you are on — and a leaf has
 /// `lines_total == 1` and likewise gets none.
 ///
-/// Spec 0334 S1 keeps this true of the caret node's *own* bar, the
-/// undimmed one, and says the walk carries on past it: the ancestors'
-/// bars are still there, and item 4 below is where that is asserted.
+/// What the caret node contributing nothing no longer means is that
+/// nothing is undimmed. The undimmed bar is the *nearest* one, not the
+/// caret node's, so it falls through to the nearest ancestor that has
+/// one — which is the point of the rule: the reader keeps a "you are
+/// here" mark on exactly the rows where the caret node cannot supply
+/// one itself.
+///
+/// The fold target has to be a node with a **sibling**. Folding an only
+/// child collapses its parent to a header and a brace, which has no
+/// interior either, and the fall-through then has nothing to land on —
+/// true, but it tests the empty case rather than this one.
 #[test]
-fn a_folded_node_has_no_bar() {
-    let (mut app, inner_idx, id_idx) = type_as_fixture();
-    app.cursor = inner_idx;
+fn a_folded_node_hands_its_undimmed_bar_to_the_nearest_ancestor() {
+    let mut app = nested_message_set_fixture();
+    let target = (0..app.tree.len())
+        .find(|&i| {
+            app.child_count(i) > 0
+                && app
+                    .parent(i)
+                    .is_some_and(|p| app.child_count(p) > 1 && app.tree[p].lines_total >= 5)
+        })
+        .expect("the fixture must have a foldable node with a sibling");
+    let parent = app.parent(target).expect("found via its parent");
+    app.cursor = target;
 
     app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
-    assert!(app.is_folded(inner_idx), "`z` must fold the cursor node");
-    let terminal = drawn_frame(&mut app, 120, 24);
-    assert_eq!(
-        tier_bar_cells_dim(&app, &terminal, false),
-        Vec::new(),
-        "a collapsed node's extent is the row you are on"
+    assert!(app.is_folded(target), "`z` must fold the cursor node");
+    assert!(
+        app.tree[parent].lines_total >= 3,
+        "the parent must keep an interior across the fold, or there is \
+         no nearest ancestor for the undimmed bar to fall through to"
     );
 
-    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
-    app.cursor = id_idx;
-    assert!(app.first_child(id_idx).is_none(), "`id` must be a leaf");
     let terminal = drawn_frame(&mut app, 120, 24);
+    let undimmed = tier_bar_cells_dim(&app, &terminal, false);
     assert_eq!(
-        tier_bar_cells_dim(&app, &terminal, false),
-        Vec::new(),
-        "a leaf is one row and has no extent to draw"
+        undimmed_columns(&undimmed),
+        1,
+        "a collapsed node draws no bar of its own, so its parent's is \
+         the one undimmed bar: {undimmed:?}"
     );
+}
+
+/// How many distinct columns a set of drawn bar cells occupies — one
+/// bar runs down several rows, so counting cells would count rows.
+fn undimmed_columns(cells: &[(u16, u16, Color)]) -> usize {
+    let mut columns: Vec<u16> = cells.iter().map(|&(x, ..)| x).collect();
+    columns.sort_unstable();
+    columns.dedup();
+    columns.len()
 }
 
 /// Spec 0334 G1/G2/S1/S2/S3, test plan item 3: with the caret two levels
@@ -1658,8 +1687,11 @@ fn a_folded_node_has_no_bar() {
 fn every_ancestor_wears_a_dimmer_bar() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
     app.cursor = inner_idx;
+    // `>= 3`, not `>= 2`: a header and a closing brace with no interior
+    // between them draw no bar, so such an ancestor contributes no
+    // column and must not be counted as one.
     let ancestors: Vec<usize> = std::iter::successors(app.parent(inner_idx), |&i| app.parent(i))
-        .filter(|&i| app.tree[i].lines_total >= 2)
+        .filter(|&i| app.tree[i].lines_total >= 3)
         .collect();
     assert!(
         !ancestors.is_empty(),
@@ -1685,7 +1717,15 @@ fn every_ancestor_wears_a_dimmer_bar() {
             x < own_column,
             "an ancestor's column is left of the caret's"
         );
-        let want = app.margin_glyph_color(Some(idx)).unwrap_or(Color::Reset);
+        // Two adjustments, both in `bar_style`: an ancestor with no
+        // status color of its own falls back to an explicit `DarkGray`
+        // rather than the terminal's default foreground, and whatever
+        // color it ends up with is blended toward the page, since most
+        // terminals ignore `Modifier::DIM` on a 24-bit foreground.
+        let want = crate::theme::dimmed(
+            app.margin_glyph_color(Some(idx)).unwrap_or(Color::DarkGray),
+            app.theme,
+        );
         let rows: Vec<u16> = dimmed
             .iter()
             .filter(|&&(bx, ..)| bx == x)
@@ -1696,8 +1736,9 @@ fn every_ancestor_wears_a_dimmer_bar() {
             .collect();
         assert_eq!(
             rows.len(),
-            app.tree[idx].lines_total as usize - 1,
-            "one bar per subtree row below the ancestor's header"
+            app.tree[idx].lines_total as usize - 2,
+            "one bar per interior row of the ancestor: not on its header, \
+             which keeps its triangle, and not on its closing brace"
         );
         for (i, &y) in rows.iter().enumerate() {
             assert_eq!(y, rows[0] + i as u16, "the ancestor's bar is continuous");
@@ -1708,6 +1749,10 @@ fn every_ancestor_wears_a_dimmer_bar() {
 /// Spec 0334 S1's tail, test plan item 4: a caret on a leaf contributes
 /// no bar of its own, and the walk carries on past it, so every ancestor
 /// still draws one.
+///
+/// The nearest of those ancestors is now the undimmed bar — the leaf
+/// having none to be undimmed — and the ones beyond it stay dimmed, so
+/// the path is still read innermost-outward.
 #[test]
 fn a_bar_on_a_leaf_comes_from_its_ancestors() {
     let (mut app, _inner_idx, id_idx) = type_as_fixture();
@@ -1715,14 +1760,16 @@ fn a_bar_on_a_leaf_comes_from_its_ancestors() {
     assert!(app.first_child(id_idx).is_none(), "`id` must be a leaf");
 
     let terminal = drawn_frame(&mut app, 120, 24);
+    let undimmed = tier_bar_cells_dim(&app, &terminal, false);
     assert_eq!(
-        tier_bar_cells_dim(&app, &terminal, false),
-        Vec::new(),
-        "a leaf has no extent of its own to draw"
+        undimmed_columns(&undimmed),
+        1,
+        "the leaf's nearest bracketed ancestor supplies the one undimmed \
+         bar: {undimmed:?}"
     );
     assert!(
         !tier_bar_cells_dim(&app, &terminal, true).is_empty(),
-        "but the path down to it is still drawn"
+        "and the rest of the path up to the root is still drawn, dimmed"
     );
 }
 
@@ -1773,7 +1820,10 @@ fn a_child_marker_outranks_the_bar() {
     let buffer = terminal.backend().buffer();
     let first = app.main_area.y;
     let mut triangles = 0;
-    for y in first + 1..first + total as u16 {
+    // The interior rows only: the header at `first` keeps its triangle,
+    // and the closing brace at `first + total - 1` now draws neither a
+    // marker nor a bar, so including it would assert on a blank cell.
+    for y in first + 1..first + total as u16 - 1 {
         let symbol = buffer[(column, y)].symbol().to_string();
         if symbol == open.to_string() {
             triangles += 1;
@@ -1806,8 +1856,9 @@ fn the_nearer_bar_wins_a_shared_column() {
     let mut app = narrowly_indented_fixture();
     let child = app.first_child(0).expect("the root has a child");
     assert!(
-        app.tree[child].lines_total >= 2,
-        "the caret node must have an interior"
+        app.tree[child].lines_total >= 3,
+        "the caret node must have an interior, or its bar covers no row \
+         and the tie-break is vacuous"
     );
     app.cursor = child;
 
@@ -1827,7 +1878,7 @@ fn the_nearer_bar_wins_a_shared_column() {
     let own = at(false);
     assert_eq!(
         own.len(),
-        app.tree[child].lines_total as usize - 1,
+        app.tree[child].lines_total as usize - 2,
         "the caret node's bar shares the root's column and holds all of it"
     );
     let root_bar = at(true);
