@@ -17,6 +17,9 @@
 //! non-canonical — so a pair of case regexes would need its own
 //! exception list and would miscolor the next exception in silence.
 
+#[cfg(test)]
+use prototext_core::Shape;
+
 /// How serious an annotation keyword is. `None` — the absence of a
 /// tier — is the third, commonest state: a wire-type name, a field
 /// declaration or a plain modifier such as `pack_size` is not an
@@ -30,36 +33,21 @@ pub enum Tier {
     Invalid,
 }
 
-/// The wire-type names an annotation echoes. Not anomalies — this is
-/// the document's own vocabulary, quoted.
+/// The five real wire types — [`wire_type_clause`]'s domain, and the
+/// subset of [`Shape`] that answers "wire type *N* — …".
 ///
-/// Only [`vocabulary`] and [`LEN_SHAPE_NAMES`]'s tests read it, so like
-/// them this is test-only: the runtime classifier answers `None` for
-/// these names by not listing them, and listing them here is what lets
-/// the drift test assert that `highlights.scm` gives them the type
-/// color rather than a tier — a wire-type name is what the field *is*
-/// when no schema says otherwise, which is the slot a type name would
-/// fill.
+/// Shorter than the shape vocabulary on purpose: the renderer also
+/// emits `string` and `message` for a schema-blind LEN payload, and
+/// neither is a wire type — both are wire type 2, already spoken for by
+/// `bytes` (spec 0341 N1). Keeping this list at five is what keeps the
+/// hover box lexing those two as modifiers (spec 0326 N3).
+///
+/// This is *not* the vocabulary. [`vocabulary`] reads [`Shape::ALL`],
+/// which is prototext-core's own list, so that the drift test compares
+/// `highlights.scm` against the emitter rather than against a sibling
+/// copy (spec 0342). The test below ties the two spellings together.
 #[cfg(test)]
 pub const WIRE_TYPE_NAMES: [&str; 5] = ["varint", "fixed64", "fixed32", "bytes", "group"];
-
-/// The other two readings of wire type 2 (spec 0341).
-///
-/// `AnnWriter::push_wire` opens a schema-blind annotation with one of
-/// **seven** names, not five: besides the wire types above it emits
-/// `string` when the payload is valid UTF-8 and `message` when it
-/// parses as one. They fill the same slot for the same reason and take
-/// the same color.
-///
-/// Kept apart from [`WIRE_TYPE_NAMES`] rather than folded into it
-/// because that list is also [`wire_type_clause`]'s domain, and that
-/// function answers "wire type *N* — …", which neither of these two is:
-/// both are wire type 2, already spoken for by `bytes`. Splitting the
-/// list keeps the hover box's lexer at the five real wire types (spec
-/// 0326 N3) while [`vocabulary`] still covers all seven, which is what
-/// the drift test needs.
-#[cfg(test)]
-pub const LEN_SHAPE_NAMES: [&str; 2] = ["string", "message"];
 
 /// [`Tier::NonCanonical`]'s members.
 ///
@@ -200,12 +188,16 @@ pub const PACK_SIZE: &str = "pack_size";
 /// test's input, so that `highlights.scm`'s copy of these lists cannot
 /// quietly fall behind this one. Nothing at runtime enumerates the
 /// vocabulary; `tier_of` answers one keyword at a time.
+///
+/// The untiered half is [`Shape::ALL`], prototext-core's own list, not
+/// a copy of it: before spec 0342 this function chained two hand-written
+/// consts, so the drift test compared one mirror against another and
+/// both could be — and were — two names behind the emitter.
 #[cfg(test)]
 pub fn vocabulary() -> Vec<(&'static str, Option<Tier>)> {
-    WIRE_TYPE_NAMES
+    Shape::ALL
         .iter()
-        .chain(LEN_SHAPE_NAMES.iter())
-        .map(|&k| (k, None))
+        .map(|s| (s.as_str(), None))
         .chain(NON_CANONICAL.iter().map(|&k| (k, Some(Tier::NonCanonical))))
         .chain(INVALID.iter().map(|&k| (k, Some(Tier::Invalid))))
         .collect()
@@ -264,6 +256,19 @@ mod tests {
         }
         for keyword in NON_CANONICAL.iter().chain(INVALID.iter()) {
             assert_eq!(wire_type_clause(keyword), None, "{keyword} is in both");
+        }
+    }
+
+    /// Spec 0342 S5. The two lists differ in length on purpose (N2),
+    /// which is exactly the shape of drift that goes unnoticed — so the
+    /// one thing they must agree about, spelling, is asserted.
+    #[test]
+    fn the_wire_type_names_are_shapes() {
+        for token in WIRE_TYPE_NAMES {
+            assert!(
+                Shape::ALL.iter().any(|s| s.as_str() == token),
+                "{token} is not a shape prototext-core emits"
+            );
         }
     }
 

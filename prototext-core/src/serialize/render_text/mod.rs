@@ -7,6 +7,7 @@ mod arena;
 mod fqdn;
 mod helpers;
 mod packed;
+mod shape;
 mod sink;
 mod varint;
 
@@ -26,6 +27,7 @@ use sink::{IndexingTextSink, MalformedKind, ScalarValue, Sink, TagFacts, TextSin
 
 pub use arena::{build_arena, Arena};
 pub use fqdn::{FqdnId, FqdnTable, NO_FQDN, UNINTERNED};
+pub use shape::Shape;
 pub use sink::{NodeSpan, NO_PACKED_RECORD};
 
 // Magic prefix that identifies a textual prototext payload.

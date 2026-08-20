@@ -314,6 +314,7 @@ use super::helpers::{
 };
 use super::packed::{decode_packed_elems, render_packed};
 use super::varint::{decode_varint_typed, render_varint_field, VarintKind};
+use super::Shape;
 use super::{ANNOTATIONS, CBL_START, HIDE_UNKNOWN};
 
 /// Per-`TextSink` "in-progress nested node" marker (§1's `Sink::Mark`).
@@ -480,7 +481,7 @@ impl Sink for TextSink {
                         tag_ohb: tag.tag_ohb,
                         tag_oor: tag.tag_oor,
                         len_ohb: None,
-                        wire_type_name: "fixed64",
+                        shape: Shape::Fixed64,
                         nan_bits,
                         type_mismatch: is_mismatch,
                         schema_present,
@@ -531,7 +532,7 @@ impl Sink for TextSink {
                         tag_ohb: tag.tag_ohb,
                         tag_oor: tag.tag_oor,
                         len_ohb: None,
-                        wire_type_name: "fixed32",
+                        shape: Shape::Fixed32,
                         nan_bits,
                         type_mismatch: is_mismatch,
                         schema_present,
@@ -556,7 +557,7 @@ impl Sink for TextSink {
                             self.out.push(b'"');
                             if annotations {
                                 let mut aw = AnnWriter::new();
-                                aw.push_wire(&mut self.out, "string");
+                                aw.push_shape(&mut self.out, Shape::String);
                                 push_tag_modifiers(
                                     &mut aw,
                                     &mut self.out,
@@ -574,7 +575,7 @@ impl Sink for TextSink {
                             self.out.push(b'"');
                             if annotations {
                                 let mut aw = AnnWriter::new();
-                                aw.push_wire(&mut self.out, "bytes");
+                                aw.push_shape(&mut self.out, Shape::Bytes);
                                 push_tag_modifiers(
                                     &mut aw,
                                     &mut self.out,
@@ -656,7 +657,7 @@ impl Sink for TextSink {
                         escape_bytes_into(data, &mut self.out);
                         self.out.push(b'"');
                         let mut aw = AnnWriter::new();
-                        aw.push_wire(&mut self.out, "bytes");
+                        aw.push_shape(&mut self.out, Shape::Bytes);
                         aw.push(&mut self.out, b"TYPE_MISMATCH");
                         push_tag_modifiers(
                             &mut aw,
@@ -718,7 +719,7 @@ impl Sink for TextSink {
                     if is_known {
                         aw.push_field_decl(&mut self.out, field_number, field_schema, None, None);
                     } else {
-                        aw.push_wire(&mut self.out, "message");
+                        aw.push_shape(&mut self.out, Shape::Message);
                     }
                     push_tag_modifiers(
                         &mut aw,
@@ -752,7 +753,7 @@ impl Sink for TextSink {
                 self.out.extend_from_slice(b" {");
                 if annotations {
                     let mut aw = AnnWriter::new();
-                    aw.push(&mut self.out, b"group");
+                    aw.push_shape(&mut self.out, Shape::Group);
                     // Groups have no declared length, so neither source of a
                     // missing count applies here. The truncated-group case is
                     // `OPEN_GROUP`, not `TRUNCATED_GROUP` (spec 0303 N6,

@@ -5,7 +5,7 @@
 
 use prost_reflect::Kind;
 
-use super::FieldOrExt;
+use super::{FieldOrExt, Shape};
 
 use crate::helpers::{
     decode_bool, decode_int32, decode_int64, decode_sint32, decode_sint64, decode_uint32,
@@ -173,7 +173,7 @@ pub(super) fn render_varint_field(
         let mut aw = AnnWriter::new();
         if unknown || is_wire || is_mismatch {
             // Unknown / raw-wire / type-mismatch: wire type FIRST, then modifiers, NO field_decl
-            aw.push_wire(out, "varint");
+            aw.push_shape(out, Shape::Varint);
             if let Some(v) = tag_ohb {
                 aw.push_u64_mod(out, b"tag_ohb: ", v);
             }

@@ -4,7 +4,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::super::sink::TextSink;
-use super::super::FieldOrExt;
+use super::super::{FieldOrExt, Shape};
 use super::super::{ANNOTATIONS, CBL_START, HIDE_UNKNOWN};
 use super::annotations::{push_tag_modifiers, AnnWriter};
 use super::output::{wfl_prefix, wfl_prefix_n, write_nan_hex};
@@ -21,9 +21,9 @@ pub(in super::super) struct ScalarCtx<'a> {
     pub(in super::super) tag_ohb: Option<u64>,
     pub(in super::super) tag_oor: bool,
     pub(in super::super) len_ohb: Option<u64>,
-    /// Lowercase v2 wire-type name ("fixed64", "fixed32", "bytes", …).
+    /// What this record is, absent a declared type.
     /// Only emitted for unknown or raw-wire fields.
-    pub(in super::super) wire_type_name: &'a str,
+    pub(in super::super) shape: Shape,
     /// Non-canonical NaN bit pattern; emits `nan_bits: 0x…` annotation modifier.
     pub(in super::super) nan_bits: Option<u64>,
     /// True when the wire type is known but doesn't match the schema type.
@@ -34,7 +34,7 @@ pub(in super::super) struct ScalarCtx<'a> {
 
 /// Render a non-varint scalar (FIXED64, FIXED32, string, bytes, wire-bytes).
 ///
-/// `wire_type_name` (in `ctx`) is only emitted for unknown or raw-wire fields.
+/// `shape` (in `ctx`) is only emitted for unknown or raw-wire fields.
 /// Known fields emit field_decl FIRST, then modifiers.
 pub(in super::super) fn render_scalar(
     ctx: &ScalarCtx<'_>,
@@ -48,7 +48,7 @@ pub(in super::super) fn render_scalar(
         tag_ohb,
         tag_oor,
         len_ohb,
-        wire_type_name,
+        shape,
         nan_bits,
         type_mismatch,
         schema_present,
@@ -70,7 +70,7 @@ pub(in super::super) fn render_scalar(
         let mut aw = AnnWriter::new();
         if unknown || is_wire {
             // Unknown/wire: wire type FIRST, then modifiers, NO field_decl
-            aw.push_wire(out, wire_type_name);
+            aw.push_shape(out, shape);
             if type_mismatch {
                 aw.push(out, b"TYPE_MISMATCH");
             }
@@ -113,7 +113,7 @@ pub(in super::super) fn render_invalid(
     out.push(b'"');
     if annotations {
         let mut aw = AnnWriter::new();
-        aw.push_wire(out, inv_name);
+        aw.push_invalid(out, inv_name);
         push_tag_modifiers(&mut aw, out, tag_ohb, tag_oor, None);
         // v2: NO field_decl for invalid fields.
     }

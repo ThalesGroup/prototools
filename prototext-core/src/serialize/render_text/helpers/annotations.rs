@@ -5,7 +5,7 @@
 
 use prost_reflect::{Cardinality, Kind};
 
-use super::super::FieldOrExt;
+use super::super::{FieldOrExt, Shape};
 use super::output::{write_dec_i32, write_dec_u64};
 
 // ── Shared annotation helpers ─────────────────────────────────────────────────
@@ -143,9 +143,24 @@ impl AnnWriter {
         out.extend_from_slice(s);
     }
 
-    /// Push a wire-type or invalid-wire-type token (no trailing `;`).
+    /// Push a schema-blind shape name — what this record is, absent a
+    /// declared type (no trailing `;`).
+    ///
+    /// The one door for the [`Shape`] vocabulary, kept apart from
+    /// [`push_invalid`] so that the parameter can be the enum: while
+    /// both vocabularies came through a single `&str` door, the shape
+    /// names could not be typed (spec 0342 S2).
+    ///
+    /// [`push_invalid`]: AnnWriter::push_invalid
     #[inline]
-    pub(in super::super) fn push_wire(&mut self, out: &mut Vec<u8>, name: &str) {
+    pub(in super::super) fn push_shape(&mut self, out: &mut Vec<u8>, shape: Shape) {
+        self.sep(out);
+        out.extend_from_slice(shape.as_str().as_bytes());
+    }
+
+    /// Push an `INVALID_*` token (no trailing `;`).
+    #[inline]
+    pub(in super::super) fn push_invalid(&mut self, out: &mut Vec<u8>, name: &str) {
         self.sep(out);
         out.extend_from_slice(name.as_bytes());
     }
