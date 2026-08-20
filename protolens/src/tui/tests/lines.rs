@@ -221,7 +221,7 @@ fn check_window_against_the_descent(name: &str, app: &App) {
 #[test]
 fn an_unfolded_document_numbers_rows_and_lines_alike() {
     for (name, app) in real_decodes() {
-        assert!(app.folded.is_empty(), "{name}: fixture starts folded");
+        assert!(app.user_folds().is_empty(), "{name}: fixture starts folded");
         assert_eq!(
             app.visible_row_count(),
             app.document_lines().len(),
@@ -441,7 +441,7 @@ fn a_folded_ancestor_absorbs_the_visible_difference() {
     let (mut app, m, h) = shrinkable_chain_fixture();
     let root = app.first_node;
 
-    app.folded.insert(m);
+    app.set_folded(m, true);
     app.refresh_line_counts(m);
     assert_eq!(app.tree[m].lines_visible, 1, "a fold shows one row");
     let (h_before, m_before, root_before) = (
@@ -500,7 +500,7 @@ fn refresh_line_counts_stops_at_an_unchanged_ancestor() {
         "the fold target must be foldable"
     );
 
-    app.folded.insert(m);
+    app.set_folded(m, true);
     app.refresh_line_counts(m);
     let before: Vec<(u32, u32)> = app
         .tree
@@ -508,7 +508,7 @@ fn refresh_line_counts_stops_at_an_unchanged_ancestor() {
         .map(|n| (n.lines_total, n.lines_visible))
         .collect();
 
-    app.folded.insert(x);
+    app.set_folded(x, true);
     app.refresh_line_counts(x);
 
     let changed: Vec<usize> = (0..app.tree.len())
@@ -555,7 +555,7 @@ fn teleports_land_on_the_named_line_with_a_fold_above_them() {
     assert_eq!(app.cursor_line(), line, "search line");
     assert_eq!(app.cursor_display_row(), row, "search row");
     assert!(
-        app.folded.contains(items[0]),
+        app.is_user_folded(items[0]),
         "a search must not disturb a fold it did not land in"
     );
 

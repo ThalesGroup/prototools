@@ -110,7 +110,7 @@ fn a_baked_document_is_the_unbounded_document() {
         let root = app.first_node;
         app.splice_override(root, Some("test.Outer".to_string()), None)
             .unwrap();
-        (counts(&app), app.folded.clone())
+        (counts(&app), app.user_folds())
     };
 
     // From `MIN_EXPAND_ROWS` up. A budget of 1 is not a smaller case of
@@ -143,14 +143,15 @@ fn a_baked_document_is_the_unbounded_document() {
             want_counts,
             "budget {budget}: same counts at every node"
         );
-        // Spec 0323 S2: a splice writes every bracketed slot folded, so
-        // "no fold" is no longer the resting state and `is_empty` would
-        // be the wrong question. The claim that survives is the one this
-        // test was always making — the bake invents nothing. Whatever
-        // folds the unbounded splice ends with, the bounded one plus its
-        // drain must end with exactly those.
+        // Spec 0338 S1 folds every foldable slot at open, so "no fold"
+        // is not the resting state and `is_empty` would be the wrong
+        // question. The claim that survives is the one this test was
+        // always making — the bake invents nothing. Whatever folds the
+        // unbounded splice ends with, the bounded one plus its drain
+        // must end with exactly those.
         assert_eq!(
-            app.folded, want_folded,
+            app.user_folds(),
+            want_folded,
             "budget {budget}: and the bake invented no fold of its own"
         );
     }
@@ -692,9 +693,9 @@ fn a_baked_startup_is_the_unbounded_startup() {
             "budget {budget}: same counts at every node"
         );
         assert!(
-            app.folded.is_empty(),
+            app.user_folds().is_empty(),
             "budget {budget}: and the startup invented no user fold: {:?}",
-            app.folded
+            app.user_folds()
         );
     }
 }
@@ -853,7 +854,7 @@ fn a_folded_stop_the_user_also_folded_stays_violet() {
     let violet = theme::status_color(Status::Unbaked, app.theme);
 
     assert!(app.auto_folded.contains(items[1]));
-    app.folded.insert(items[1]);
+    app.set_folded(items[1], true);
 
     assert_eq!(summary_colors(&mut app, items[1]), vec![violet; 7]);
 }

@@ -677,7 +677,13 @@ impl App {
                     None if forward => affected[0],
                     None => affected[affected.len() - 1],
                 };
+                // Spec 0338 S5: a node an ancestor is hiding is not a
+                // node the reader has been shown. Every other
+                // jump-to-a-node path opens the way first — the search
+                // sweep, `Ctrl-o`, the script's focus — and this is the
+                // one that did not.
                 self.record_jump();
+                self.unfold_ancestors(next);
                 self.set_cursor(next);
             }
         }

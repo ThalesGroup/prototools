@@ -35,7 +35,7 @@ struct View {
 }
 
 fn view(app: &App) -> View {
-    let mut folded: Vec<usize> = app.folded.iter().collect();
+    let mut folded: Vec<usize> = app.user_folds();
     folded.sort_unstable();
     View {
         cursor: app.positional_path(app.cursor),

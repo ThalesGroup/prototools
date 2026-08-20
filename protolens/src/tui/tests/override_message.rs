@@ -632,11 +632,11 @@ fn arena_and_render_agree_on_a_truncated_declared_message() {
 
     // Resolved after the splice, not before: a splice renumbers.
     let cut = app.resolve_path("/3").expect("the third record");
-    assert!(!app.folded.contains(cut), "it starts out open");
+    assert!(!app.is_user_folded(cut), "it starts out open");
     app.toggle_fold(cut);
-    assert!(app.folded.contains(cut), "the cut record must fold");
+    assert!(app.is_user_folded(cut), "the cut record must fold");
     app.toggle_fold(cut);
-    assert!(!app.folded.contains(cut), "and unfold again");
+    assert!(!app.is_user_folded(cut), "and unfold again");
     assert_eq!(app.document_lines(), before, "the folding changed the text");
 }
 
@@ -736,7 +736,7 @@ fn arena_and_render_agree_on_a_forgiven_cut() {
 
     let cut = app.resolve_path("/4").expect("the fourth record");
     app.toggle_fold(cut);
-    assert!(app.folded.contains(cut), "the cut record must fold");
+    assert!(app.is_user_folded(cut), "the cut record must fold");
     app.toggle_fold(cut);
     assert_eq!(
         app.document_lines(),

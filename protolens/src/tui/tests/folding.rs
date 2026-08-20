@@ -154,7 +154,7 @@ fn startup_matches_z_then_z() {
     by_gesture.toggle_cursor_fold(); // `z`
 
     assert_eq!(visible_rows(&by_gesture), visible_rows(&opened_closed));
-    assert_eq!(by_gesture.folded, opened_closed.folded);
+    assert_eq!(by_gesture.user_folds(), opened_closed.user_folds());
     assert_eq!(by_gesture.auto_folded, opened_closed.auto_folded);
 }
 
@@ -173,7 +173,7 @@ fn a_baked_subtree_arrives_folded() {
         let mid = app.nth_child(app.first_node, k).expect("k is a child");
         let x = app.nth_child(mid, 0).expect("Mid.x");
         assert!(
-            app.folded.contains(x),
+            app.is_user_folded(x),
             "the bake produced {x}, which nobody asked to see"
         );
     }
@@ -366,7 +366,7 @@ fn a_digit_sets_the_subtree_to_that_depth() {
 
         for (idx, at) in arena_subtree(&app, root) {
             assert_eq!(
-                app.folded.contains(idx),
+                app.is_user_folded(idx),
                 at >= depth && app.is_foldable(idx),
                 "slot {idx} sits at depth {at} and the digit was {depth}"
             );
@@ -401,8 +401,8 @@ fn flat_fds() -> FileDescriptorSet {
 /// arena does, and a digit writes bits on those slots. That the bits
 /// then *survive* an override of `a` is the second half: the arena is a
 /// function of the bytes, so slot `k` covers the same byte range under
-/// every typing, and `scrub_folds_under` only clears what some rendering
-/// showed.
+/// every typing, and since spec 0338 G1 a splice writes no bit of the
+/// set at all.
 #[test]
 fn a_digit_folds_slots_this_typing_does_not_show() {
     let mut app = closed_fixture_under("folding-flat", &flat_fds(), "test.RootFlat", NESTED_BLOB);
@@ -425,14 +425,14 @@ fn a_digit_folds_slots_this_typing_does_not_show() {
     app.set_cursor(a);
     app.handle_key(digit(0));
     assert!(
-        hidden.iter().all(|&i| app.folded.contains(i)),
+        hidden.iter().all(|&i| app.is_user_folded(i)),
         "a digit reaches slots no row stands for"
     );
 
     app.splice_override(a, Some("test.Mid".to_string()), None)
         .expect("retyping `a` to a message type must succeed");
     assert!(
-        hidden.iter().all(|&i| app.folded.contains(i)),
+        hidden.iter().all(|&i| app.is_user_folded(i)),
         "and the override does not scrub what it never showed"
     );
 }
@@ -470,7 +470,7 @@ fn a_digit_is_absolute_not_a_toggle() {
         for &p in presses {
             app.handle_key(digit(p));
         }
-        (app.folded.clone(), visible_rows(&app))
+        (app.user_folds(), visible_rows(&app))
     };
 
     assert_eq!(shape_after(&[2, 2]), shape_after(&[2]), "twice is once");
@@ -508,14 +508,14 @@ fn shift_z_is_the_two_extremes_of_the_digits() {
             app.handle_key(digit(0));
         }
         app.handle_key(KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::NONE));
-        app.folded.clone()
+        app.user_folds()
     };
 
     let by_digit = |depth: usize| {
         let mut app = nested_open();
         app.set_cursor(app.first_node);
         app.handle_key(digit(depth));
-        app.folded.clone()
+        app.user_folds()
     };
 
     assert_eq!(by_shift_z(false), by_digit(0), "`Z` closing is depth 0");
@@ -559,7 +559,7 @@ fn a_fold_gesture_never_renders() {
         );
         assert_eq!(visible_rows(&app), rows_before, "so no row moved");
         assert!(
-            !app.folded.contains(stop),
+            !app.is_user_folded(stop),
             "and what the reader asked for is on record"
         );
     }
@@ -578,12 +578,12 @@ fn a_digit_on_a_leaf_says_not_foldable() {
     let v = app.nth_child(x, 0).expect("Leaf.v");
     assert!(!app.is_foldable(v), "`v` is an int32");
 
-    let before = app.folded.clone();
+    let before = app.user_folds();
     app.set_cursor(v);
     app.handle_key(digit(0));
 
     assert_eq!(app.message, "not foldable");
-    assert_eq!(app.folded, before, "and nothing moved");
+    assert_eq!(app.user_folds(), before, "and nothing moved");
 }
 
 /// Spec 0332 test-plan item 8 (N6): the cursor is already on the node
@@ -611,7 +611,7 @@ fn zero_folds_and_the_caret_still_reaches_column_zero() {
     app.caret_to_line_end();
 
     app.handle_key(digit(0));
-    assert!(app.folded.contains(root), "`0` closes the cursor node");
+    assert!(app.is_user_folded(root), "`0` closes the cursor node");
     assert_eq!(
         visible_rows(&app),
         vec!["1 { ... }  #@ Root = 1".to_string()],
@@ -631,7 +631,7 @@ fn zero_folds_and_the_caret_still_reaches_column_zero() {
 fn the_violet_margin_still_means_unread() {
     let mut app = nested_bounded(2);
     let stop = app.auto_folded.iter().next().expect("the budget stopped");
-    assert!(app.folded.contains(stop), "and spec 0323 also folded it");
+    assert!(app.is_user_folded(stop), "and spec 0323 also folded it");
     assert_eq!(
         app.status_of(stop),
         Status::Unbaked,
@@ -640,7 +640,7 @@ fn the_violet_margin_still_means_unread() {
 
     while app.bake_step() != BakeStep::Idle {}
 
-    assert!(app.folded.contains(stop), "still collapsed after the bake");
+    assert!(app.is_user_folded(stop), "still collapsed after the bake");
     assert_eq!(
         app.status_of(stop),
         Status::Ok,
@@ -648,21 +648,20 @@ fn the_violet_margin_still_means_unread() {
     );
 }
 
-/// The boundary of G3's corollary, measured rather than assumed.
+/// Spec 0338 test-plan item 1: the other half of spec 0332 G3's
+/// corollary, which used to run one way only.
 ///
 /// A *fold* recorded on a slot this typing does not print survives an
 /// override of the node above it —
 /// `a_digit_folds_slots_this_typing_does_not_show` is that half. An
-/// *unfold* does not: `decode.rs`'s render inserts every bracketed slot
-/// it writes into `folded` (spec 0323 S2), and a slot that was vacant
-/// has no bit for it to leave alone. Reversing that would need a
-/// third state — "the reader has an opinion about this slot" — which
-/// spec 0332 N7 declines to invent.
-///
-/// Here as a test rather than a comment because the day someone gives
-/// the fold sets that third state, this is what should start failing.
+/// *unfold* did not, because the render inserted every bracketed slot it
+/// wrote into `folded` (spec 0323 S2) and a vacant slot had no bit for
+/// it to leave alone. Spec 0338 S1 gives every foldable slot in the
+/// arena a bit at open, so there is no such thing as a slot with no
+/// answer, and S2 takes the write off the splice entirely. Both halves
+/// now run the same way.
 #[test]
-fn an_unfold_of_a_slot_no_row_stands_for_does_not_survive_an_override() {
+fn an_unfold_survives_an_override_of_the_node_above_it() {
     let mut app = closed_fixture_under("folding-open", &flat_fds(), "test.RootFlat", NESTED_BLOB);
     app.splash = false;
     unfold_every_node(&mut app);
@@ -677,14 +676,14 @@ fn an_unfold_of_a_slot_no_row_stands_for_does_not_survive_an_override() {
     app.set_cursor(a);
     app.handle_key(digit(9));
     assert!(
-        hidden.iter().all(|&i| !app.folded.contains(i)),
+        hidden.iter().all(|&i| !app.is_user_folded(i)),
         "the reader asked for every level"
     );
 
     app.splice_override(a, Some("test.Mid".to_string()), None)
         .expect("retyping `a` to a message type must succeed");
     assert!(
-        hidden.iter().all(|&i| app.folded.contains(i)),
-        "and the render that first draws those slots folds them anyway"
+        hidden.iter().all(|&i| !app.is_user_folded(i)),
+        "and the render that first draws those slots leaves the answer alone"
     );
 }

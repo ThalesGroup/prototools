@@ -1530,16 +1530,41 @@ pub struct App {
     /// and hit-testing the release position would let one gesture start
     /// on a control and finish somewhere else.
     pending_double_click: Option<ClickZone>,
-    /// Nodes drawn collapsed because nobody has asked to see inside
-    /// them — a fold the user made, or spec 0323's default, which is the
-    /// same thing said by the renderer on the reader's behalf. Never
-    /// written by the *bake*, which is the whole point of it being
-    /// separate from `auto_folded` (spec 0249 S3).
-    folded: FoldSet,
+    /// The reader's fold intent: a member is a node the reader has not
+    /// asked to see inside (spec 0332 S2). Never written by the *bake*,
+    /// which is the whole point of it being separate from `auto_folded`
+    /// (spec 0249 S3).
+    ///
+    /// **It is born full** — spec 0338 S1, `FoldSet::full(arena.len())`
+    /// in `build_tree`. "A document opens closed" (spec 0323) is that
+    /// initial value and not a pass that writes it out slot by slot, and
+    /// three consequences follow that are easy to get wrong:
+    ///
+    /// - The set is *total*: every arena slot already has an answer
+    ///   before any render reaches it, so no code downstream has to
+    ///   invent a default for a slot it has not seen. That totality is
+    ///   what lets a splice leave the set entirely alone (S2) — an
+    ///   override is not a fold gesture.
+    /// - Membership is therefore **wider than foldability**: a scalar
+    ///   leaf is a member too. Excluding leaves would mean asking every
+    ///   slot whether it is foldable, which is exactly the arena-wide
+    ///   walk S1 exists to delete. [`App::is_folded`] gates the *read*
+    ///   on [`App::is_foldable`] instead, so a leaf's bit is never
+    ///   consulted. Read-gating, not write-gating.
+    /// - `len()` and `iter()` therefore count and yield leaves. Nothing
+    ///   in the running program asks; a test or a debug dump that does
+    ///   must filter by [`App::is_foldable`] itself.
+    ///
+    /// Read-gating is also what keeps this honest across a splice, since
+    /// foldability is *not* constant: an override can make an empty
+    /// message bracketed that was not before. Under a materialized set
+    /// that slot would carry no bit and draw open; under a full set it
+    /// carries one and draws closed, which is what spec 0323 promises.
+    user_folded: FoldSet,
     /// Nodes folded because their body has not been rendered — the ones
     /// a row-bounded render stopped at (spec 0249 S1/S3).
     ///
-    /// Separate from `folded` in both directions. A bake clears only
+    /// Separate from `user_folded` in both directions. A bake clears only
     /// this set, so a fold the user made never pops open by itself; and
     /// a fold the user made over a baked node is not silently undone by
     /// a later bake finishing. Reads do not care which set a node is in
@@ -2240,10 +2265,12 @@ impl App {
         // small enough to fit the screen stops nowhere and still asked
         // to be bounded, and its confirms must be too.
         let stops = std::mem::take(&mut decoded.stops);
-        // Spec 0323 S2: every bracketed slot the render wrote, already
-        // collapsed. S3 opens the root out of it below, once the `App`
-        // exists to walk the arena with.
-        let folded = std::mem::take(&mut decoded.folded);
+        // Spec 0338 S1: born full — every slot is a member, so the
+        // answer to "does the reader want this open?" is total before
+        // any render asks. Spec 0323 S3 opens the root out of it below,
+        // and that is the one exception to "only the reader writes this
+        // set".
+        let user_folded = std::mem::take(&mut decoded.user_folded);
         let mut auto_folded = FoldSet::new(tree_len);
         for &slot in &stops {
             auto_folded.insert(slot);
@@ -2311,7 +2338,7 @@ impl App {
             select_engaged: false,
             last_click: None,
             pending_double_click: None,
-            folded,
+            user_folded,
             auto_folded,
             bake_queue: stops.iter().copied().collect(),
             visible_stops: VecDeque::new(),
@@ -2435,21 +2462,22 @@ impl App {
         };
         // Spec 0257 S3 used to repair each stop's `lines_visible` here:
         // `build_tree` gave it the header-plus-footer pair it actually
-        // emitted, where the document shows one row. Spec 0323 S2 writes
-        // the collapsed count in `overlay_spans` instead — a stop is
-        // bracketed, so it is folded like every other bracketed slot and
-        // its count is right the first time.
+        // emitted, where the document shows one row. Since spec 0338 S3
+        // `build_tree` writes the collapsed count over the bracketed
+        // slots the render reported — a stop is bracketed, so it is
+        // folded like every other bracketed slot and its count is right
+        // the first time.
         debug_assert!(
             stops.iter().all(|&slot| app.tree[slot].is_bracketed()),
             "only a message recursion can be undescended (spec 0249 S1)"
         );
         // Spec 0323 S3: the document opens the way `Z` then `z` leaves
         // it — everything folded, the root alone open, so disclosure is
-        // one level at a time. S2 did the `Z` as the render wrote each
-        // slot; this is the whole of the `z`, one bit cleared and one
-        // climb over the root's own children.
+        // one level at a time. Spec 0338 S1 does the `Z` by constructing
+        // the set full; this is the whole of the `z`, one bit cleared
+        // and one climb over the root's own children.
         if !app.tree.is_empty() {
-            app.folded.remove(cursor);
+            app.user_folded.remove(cursor);
             app.refresh_line_counts(cursor);
         }
         // Spec 0247 S7: the one full pass. Every later change to the

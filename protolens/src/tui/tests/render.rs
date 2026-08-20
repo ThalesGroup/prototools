@@ -762,7 +762,7 @@ fn a_toggles_the_main_pane_annotation_display() {
         stops: Vec::new(),
         // Spec 0323 S2: a hand-built tree writes its own counts, so
         // nothing in it is folded.
-        folded: FoldSet::default(),
+        user_folded: FoldSet::default(),
         row_budget: None,
         node_text: vec![Some(Box::from(line.as_str()))],
         tree: vec![node],

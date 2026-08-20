@@ -432,7 +432,7 @@ fn clicking_a_closing_brace_line_moves_cursor_there_without_folding() {
     assert_eq!(app.cursor, inner_idx);
     assert!(app.cursor_on_footer());
     assert!(
-        !app.folded.contains(inner_idx),
+        !app.is_user_folded(inner_idx),
         "clicking the }} line must not toggle the fold"
     );
 }
@@ -488,7 +488,7 @@ fn empty_bracketed_message_is_foldable() {
     app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
 
     assert!(
-        app.folded.contains(inner_idx),
+        app.is_user_folded(inner_idx),
         "z must fold an empty message"
     );
 }
@@ -509,24 +509,27 @@ fn shift_z_folds_the_whole_subtree_and_unfolds_it_again() {
 
     app.set_cursor(root);
     app.handle_key(KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::NONE));
-    assert!(app.folded.contains(root), "`Z` folds the cursor node");
+    assert!(app.is_user_folded(root), "`Z` folds the cursor node");
     assert!(
-        items.iter().all(|&i| app.folded.contains(i)),
+        items.iter().all(|&i| app.is_user_folded(i)),
         "and every descendant with it"
     );
 
     app.handle_key(KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::NONE));
-    assert!(app.folded.is_empty(), "`Z` opens the whole subtree again");
+    assert!(
+        app.user_folds().is_empty(),
+        "`Z` opens the whole subtree again"
+    );
 
     // A mixed subtree has no meaningful "opposite", so `Z` follows the
     // one node the user can see: with only a descendant folded, the
     // cursor node is open, and `Z` closes everything rather than
     // toggling each node separately.
-    app.folded.insert(items[0]);
+    app.set_folded(items[0], true);
     app.refresh_line_counts(items[0]);
     app.handle_key(KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::NONE));
     assert!(
-        app.folded.contains(root) && items.iter().all(|&i| app.folded.contains(i)),
+        app.is_user_folded(root) && items.iter().all(|&i| app.is_user_folded(i)),
         "the cursor node's own state decides for the subtree"
     );
 }
@@ -563,7 +566,7 @@ fn an_auto_fold_reads_like_a_user_fold_and_a_gesture_leaves_it() {
         "`z` does not touch the bake's own bit"
     );
     assert!(
-        !app.folded.contains(idx),
+        !app.is_user_folded(idx),
         "what moved is the reader's wish, which is now `open`"
     );
     assert!(app.is_folded(idx), "so the node is still drawn collapsed");
@@ -581,7 +584,7 @@ fn a_user_fold_and_an_auto_fold_survive_each_other() {
     let idx = items[0];
 
     app.auto_folded.insert(idx);
-    app.folded.insert(idx);
+    app.set_folded(idx, true);
     app.refresh_line_counts(idx);
 
     // A bake landing clears only its own set. The user's fold stands.
@@ -596,10 +599,10 @@ fn a_user_fold_and_an_auto_fold_survive_each_other() {
     // 0332 G4 — the gesture writes one set and reads nothing into the
     // other.
     app.auto_folded.insert(idx);
-    app.folded.insert(idx);
+    app.set_folded(idx, true);
     app.set_cursor(idx);
     app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
-    assert!(!app.folded.contains(idx), "`z` withdrew the user's fold");
+    assert!(!app.is_user_folded(idx), "`z` withdrew the user's fold");
     assert!(
         app.is_folded(idx),
         "and the stop it was standing on top of is untouched"
@@ -925,7 +928,7 @@ fn a_click_never_anchors_the_caret() {
 
     app.caret_left();
     assert!(
-        !app.folded.contains(inner_idx),
+        !app.is_user_folded(inner_idx),
         "a click must not arm the fold"
     );
     assert_eq!(app.caret_anchor, CaretAnchor::Home);
@@ -948,7 +951,7 @@ fn h_away_from_an_end_still_moves_the_caret() {
     app.caret_left();
     app.caret_left();
     assert_eq!(app.cursor_column, column - 2);
-    assert!(!app.folded.contains(inner_idx), "and folds nothing");
+    assert!(!app.is_user_folded(inner_idx), "and folds nothing");
     assert_eq!(app.cursor, inner_idx);
 }
 
@@ -969,14 +972,14 @@ fn h_at_a_voluntary_home_folds_before_it_moves_to_the_parent() {
 
     app.caret_left();
     assert!(
-        !app.folded.contains(inner_idx),
+        !app.is_user_folded(inner_idx),
         "an involuntary Home must not fold"
     );
     assert_eq!(app.caret_anchor, CaretAnchor::Home);
     assert_eq!(app.desired_column, app.cursor_column);
 
     app.caret_left();
-    assert!(app.folded.contains(inner_idx), "the next press folds");
+    assert!(app.is_user_folded(inner_idx), "the next press folds");
     assert_eq!(app.cursor, inner_idx, "and does not move the cursor");
 
     app.caret_left();
@@ -999,7 +1002,7 @@ fn h_on_a_scalar_moves_to_the_parent_immediately() {
 
     app.caret_left();
     assert_eq!(app.cursor, inner_idx);
-    assert!(app.folded.is_empty(), "nothing was folded on the way");
+    assert!(app.user_folds().is_empty(), "nothing was folded on the way");
 }
 
 /// Spec 0199 test-plan item 10 (N2). At the root there is no
@@ -1014,7 +1017,7 @@ fn h_on_the_root_folds_it_and_then_reports_no_parent() {
     app.set_cursor(root);
 
     app.caret_left();
-    assert!(app.folded.contains(root), "the root folds like any node");
+    assert!(app.is_user_folded(root), "the root folds like any node");
     app.message.clear();
     app.caret_left();
     assert_eq!(app.message, "no parent");
@@ -1044,14 +1047,14 @@ fn l_unfolds_only_at_a_voluntary_home_on_a_folded_row() {
     app.caret_right();
     assert_eq!(app.cursor_column, column + 1);
     assert!(
-        app.folded.contains(inner_idx),
+        app.is_user_folded(inner_idx),
         "no unfold away from a voluntary Home"
     );
 
     // Item 11: back at Home, it unfolds and stays put.
     app.caret_to_line_start();
     app.caret_right();
-    assert!(!app.folded.contains(inner_idx), "the press unfolds");
+    assert!(!app.is_user_folded(inner_idx), "the press unfolds");
     assert_eq!(app.cursor, inner_idx, "and does not move the cursor");
 
     // Item 12: expanded now, so the same key at the same anchor is
@@ -1159,7 +1162,7 @@ fn l_at_an_end_unfolds_before_it_descends_and_h_undoes_it() {
     app.caret_to_line_end();
 
     app.caret_right();
-    assert!(!app.folded.contains(inner_idx), "the first press unfolds");
+    assert!(!app.is_user_folded(inner_idx), "the first press unfolds");
     assert_eq!(app.cursor, inner_idx, "and does not descend");
     app.caret_right();
     assert_eq!(app.cursor, id_idx, "the second press descends");
@@ -1174,7 +1177,7 @@ fn l_at_an_end_unfolds_before_it_descends_and_h_undoes_it() {
     app.caret_to_line_start();
     app.caret_left();
     assert!(
-        app.folded.contains(inner_idx),
+        app.is_user_folded(inner_idx),
         "`h` at Home closed what `l` at End opened"
     );
     assert_eq!(app.cursor, inner_idx);
@@ -1197,13 +1200,13 @@ fn ctrl_left_and_ctrl_right_fold_the_whole_sibling_level() {
 
     app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
     for &item in &items {
-        assert!(app.folded.contains(item), "`Ctrl-h` folds every sibling");
+        assert!(app.is_user_folded(item), "`Ctrl-h` folds every sibling");
     }
     assert_eq!(app.cursor, items[0], "and moves no cursor");
 
     app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
     for &item in &items {
-        assert!(!app.folded.contains(item), "`Ctrl-l` unfolds every sibling");
+        assert!(!app.is_user_folded(item), "`Ctrl-l` unfolds every sibling");
     }
     assert_eq!(app.cursor, items[0]);
 }
@@ -1262,7 +1265,7 @@ fn shift_alt_arrows_still_pan_without_touching_the_caret() {
     assert!(app.pan_offset < 4, "Shift-Alt-Up must pan left");
     assert_eq!(app.cursor_column, column, "and must not move the caret");
     assert_eq!(app.cursor, inner_idx);
-    assert!(app.folded.is_empty(), "nor fold anything");
+    assert!(app.user_folds().is_empty(), "nor fold anything");
     assert_eq!(app.select_anchor, None, "nor start a selection");
 }
 
@@ -1360,7 +1363,7 @@ fn backspace_moves_the_caret_left_rather_than_to_the_parent() {
     app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
     assert_eq!(app.cursor_column, column - 1);
     assert_eq!(app.cursor, inner_idx, "and stays on the node");
-    assert!(app.folded.is_empty());
+    assert!(app.user_folds().is_empty());
 }
 
 /// Spec 0215 test-plan item 1 (S1/S2). The hoist's whole obligation:
@@ -1527,7 +1530,7 @@ fn a_fold_marker_row_still_reports_its_expanded_text() {
         "the fixture's node must start expanded"
     );
 
-    app.folded.insert(idx);
+    app.set_folded(idx, true);
     let text = app.row_text(app.committed_row(line).unwrap());
     assert!(
         text.contains("... }"),
@@ -1611,7 +1614,7 @@ fn a_withdrawn_fold_on_a_stop_is_honored_by_the_bake() {
         "header and footer and nothing between, still"
     );
     assert!(
-        !app.folded.contains(idx),
+        !app.is_user_folded(idx),
         "but the reader's wish is recorded, and it is `open`"
     );
 

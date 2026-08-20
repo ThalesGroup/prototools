@@ -225,16 +225,18 @@ impl App {
     /// reader or the script chose, it is rendering that has not happened
     /// yet, and the way to clear it is to bake (S12).
     fn script_reset_folds(&mut self) {
-        if self.folded.is_empty() {
-            return;
-        }
         // A descending sweep of the arena rather than of the set, for
         // the reason the `Fold::All` arm below sweeps the same way: since
         // spec 0323 every bracketed slot is folded by default, so
         // collecting the set would allocate one `usize` per node of the
         // document to walk it in an order the arena already gives.
+        //
+        // Every slot is a member since spec 0338 S1, so every clear
+        // reports a move and every slot gets a refresh. On a scalar that
+        // refresh recomputes the counts the node already holds and stops
+        // before its first ancestor.
         for idx in (0..self.tree.len()).rev() {
-            if self.folded.remove(idx) {
+            if self.set_folded(idx, false) {
                 self.refresh_line_counts(idx);
             }
         }
@@ -247,10 +249,10 @@ impl App {
             Fold::None => {}
             Fold::All => {
                 // Descending slot order for `script_reset_folds`'
-                // reason. `has_children` keeps leaves out of `folded`,
-                // where nothing would ever take them back out.
+                // reason. `has_children` keeps the count refresh off
+                // leaves, which have no body to collapse.
                 for idx in (0..self.tree.len()).rev() {
-                    if self.has_children(idx) && self.folded.insert(idx) {
+                    if self.has_children(idx) && self.user_folded.insert(idx) {
                         changed = true;
                         self.refresh_line_counts(idx);
                     }
@@ -260,7 +262,7 @@ impl App {
                 for position in positions {
                     match self.script_resolve(position) {
                         Some(idx) if self.has_children(idx) => {
-                            if self.folded.insert(idx) {
+                            if self.user_folded.insert(idx) {
                                 changed = true;
                                 self.refresh_line_counts(idx);
                             }
@@ -658,7 +660,16 @@ impl App {
             self.script_apply();
             let _ = writeln!(out, "step {}/{}", index + 1, total);
             let _ = writeln!(out, "  node: {}", self.positional_path(self.cursor));
-            let _ = writeln!(out, "  folded: {}", self.folded.len());
+            // Filtered, not `user_folded.len()`: spec 0338 S1 makes the
+            // set total, so its length counts every scalar in the
+            // document. What a beat is pinned against is the number of
+            // nodes a reader sees collapsed.
+            let folded = self
+                .user_folded
+                .iter()
+                .filter(|&idx| self.is_foldable(idx))
+                .count();
+            let _ = writeln!(out, "  folded: {folded}");
             match self.wire_rows() {
                 Some(rows) => {
                     let _ = writeln!(out, "  wire: rows {}..{}", rows.start, rows.end);

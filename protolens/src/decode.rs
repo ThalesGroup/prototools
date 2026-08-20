@@ -942,15 +942,10 @@ pub(crate) fn build_tree(
 ) -> BuiltTree {
     let mut tree: Vec<TreeNode> = (0..arena.len()).map(|_| TreeNode::vacant()).collect();
     let mut node_text: Vec<Option<Box<str>>> = vec![None; arena.len()];
-    // Spec 0323 S1: sized once, here, because the arena is immutable
-    // (spec 0216) — a splice rewrites the overlay under a slot and
-    // allocates none, so no later call can need a wider set.
-    let mut folded = FoldSet::new(arena.len());
-    let stopped = overlay_spans(
+    let Overlaid { stopped, bracketed } = overlay_spans(
         Overlay {
             nodes: &mut tree,
             text: &mut node_text,
-            folded: &mut folded,
         },
         spans,
         lines,
@@ -958,10 +953,36 @@ pub(crate) fn build_tree(
         0,
         undescended,
     );
+    // Spec 0338 S1: a document opens closed, and that is the set's
+    // *initial value* rather than something written into it slot by
+    // slot. Every slot is a member, so every slot has an answer before
+    // any render reaches it — which is the whole of what S1 needs, and
+    // is what lets a splice leave the set alone (S2).
+    //
+    // Leaves are members too. Excluding them would mean asking each
+    // slot whether it is foldable, and that question is the one the
+    // first implementation of this spec answered here, in a walk of the
+    // whole arena: 227 MiB of reads and 115.6 M instructions on
+    // `googleapis.desc`, ~28 ms, to compute a constant. `App::is_folded`
+    // asks it instead, once per slot actually consulted, of which a
+    // frame consults a screenful.
+    //
+    // Spec 0323 S1: sized once, because the arena is immutable (spec
+    // 0216) — a splice rewrites the overlay under a slot and allocates
+    // none, so no later call can need a wider set.
+    let user_folded = FoldSet::full(arena.len());
+    // Spec 0338 S3: `overlay_spans` wrote the open count, having no fold
+    // set to consult. At open nothing is unfolded yet — `App::new` opens
+    // the root after this returns — so every bracketed slot it drew is
+    // collapsed to its header line. Over the slots it reported, not over
+    // the arena: 7 777 of 4 936 532 on `googleapis.desc`.
+    for &slot in &bracketed {
+        tree[slot].lines_visible = 1;
+    }
     BuiltTree {
         tree,
         node_text,
-        folded,
+        user_folded,
         stopped,
     }
 }
@@ -975,24 +996,25 @@ pub(crate) fn build_tree(
 pub(crate) struct BuiltTree {
     pub(crate) tree: Vec<TreeNode>,
     pub(crate) node_text: Vec<Option<Box<str>>>,
-    pub(crate) folded: FoldSet,
+    pub(crate) user_folded: FoldSet,
     /// Spec 0249 S1: the slots the render emitted without a body. Empty
     /// unless the render was row-budgeted.
     pub(crate) stopped: Vec<usize>,
 }
 
-/// The three parallel arrays [`overlay_spans`] writes, borrowed together.
+/// The two parallel arrays [`overlay_spans`] writes, borrowed together.
 ///
 /// Borrows rather than an owning struct because the splice path holds
-/// each of the three somewhere different — two behind `Arc::get_mut` on
-/// fields of `App`, the third a field of `App` itself — and no single
-/// owner exists there to hand over. Bundling them here costs nothing and
-/// keeps two `&mut` slices of unrelated element type from sitting
-/// adjacent and unnamed in an argument list.
+/// each of them behind an `Arc::get_mut` on a different field of `App`,
+/// and no single owner exists there to hand over. Bundling them here
+/// costs nothing and keeps two `&mut` slices of unrelated element type
+/// from sitting adjacent and unnamed in an argument list.
+///
+/// Spec 0338 S2: the fold set used to be a third member. It is the
+/// reader's, and this function is not the reader.
 pub(crate) struct Overlay<'a> {
     pub(crate) nodes: &'a mut [TreeNode],
     pub(crate) text: &'a mut [Option<Box<str>>],
-    pub(crate) folded: &'a mut FoldSet,
 }
 
 /// Spec 0222 S2: the closing line of a bracketed node, derived from its
@@ -1121,13 +1143,19 @@ fn push_subtree_lines(
 /// is the same list as slots. Both are empty unless the render was
 /// row-budgeted.
 ///
-/// Spec 0323 S2/S4: every bracketed node this writes enters `folded`,
-/// and is written already collapsed. Being the *single* writer of an
-/// arena slot is what lets one rule — a body no reader has asked to see
-/// is closed — cover a fresh document, a bake's stop and an override's
-/// subtree alike, with no caller having to remember it. The caller opens
-/// again whatever it knows the reader did ask for, which is the root
-/// (`App::new`) or the spliced node itself (`splice_override`).
+/// Spec 0338 S2/S3: **this writes no fold state.** It cannot: whether a
+/// slot is folded is the reader's answer, and every slot already carries
+/// one — the set is born full (`FoldSet::full`), so a render arriving at
+/// a slot later has nothing to add. What it writes instead is the *open*
+/// `lines_visible`, and the caller settles the counts of whatever is
+/// folded (S3). Spec 0323 S2/S4's "every bracketed node this writes
+/// enters `folded`, already collapsed" is what that replaces.
+///
+/// It does report which slots it drew bracketed, because it is the one
+/// place that knows without looking: it has just written them. A caller
+/// that needs the collapsed count would otherwise have to rediscover
+/// them by scanning the whole node array, which is 207 MiB on
+/// `googleapis.desc` to find 7 777 slots.
 pub(crate) fn overlay_spans(
     overlay: Overlay<'_>,
     spans: Vec<NodeSpan>,
@@ -1135,14 +1163,11 @@ pub(crate) fn overlay_spans(
     arena: &Arena,
     root: usize,
     undescended: &[u32],
-) -> Vec<usize> {
-    let Overlay {
-        nodes,
-        text,
-        folded,
-    } = overlay;
+) -> Overlaid {
+    let Overlay { nodes, text } = overlay;
     let slots = slots_for_spans(&spans, arena, root);
     let (raw_start, raw_end) = (arena.raw_start(), arena.raw_end());
+    let mut bracketed = Vec::new();
 
     for (i, mut span) in spans.into_iter().enumerate() {
         // Spec 0249: a render the arena has no slot for is a structural
@@ -1204,18 +1229,17 @@ pub(crate) fn overlay_spans(
         if span.packed_record_start != NO_PACKED_RECORD {
             span.packed_record_start = raw_start[slot];
         }
-        // Spec 0323 S2: a bracketed node is born folded, so the collapsed
-        // count is the value first written and `refresh_line_counts` is
-        // never called to reach it. A flat node cannot be folded, and its
-        // rows are its own.
-        let bracketed = span.is_message;
-        if bracketed {
-            folded.insert(slot);
+        // Spec 0338 S3: the open count, for bracketed and flat alike.
+        // This cannot know the fold — it no longer holds the set — so it
+        // writes the value that is right when nothing below is closed and
+        // leaves the caller to settle the rest.
+        if span.is_message {
+            bracketed.push(slot);
         }
         nodes[slot] = TreeNode {
             span,
             lines_total: line_count,
-            lines_visible: if bracketed { 1 } else { line_count },
+            lines_visible: line_count,
             rendered_as: NOT_RENDERED,
         };
     }
@@ -1227,10 +1251,30 @@ pub(crate) fn overlay_spans(
     // through the same derivation, and the same assertion, as every
     // span it accompanies. Empty for every render that asked for no
     // budget, which is every render but a bounded one.
-    undescended
-        .iter()
-        .map(|&i| slots[i as usize] as usize)
-        .collect()
+    Overlaid {
+        stopped: undescended
+            .iter()
+            .map(|&i| slots[i as usize] as usize)
+            .collect(),
+        bracketed,
+    }
+}
+
+/// What one [`overlay_spans`] wrote, for the caller that has to settle
+/// the line counts behind it.
+///
+/// Named rather than a pair for [`BuiltTree`]'s reason: both fields are
+/// `Vec<usize>` of arena slots and the compiler would not tell them
+/// apart if they were swapped.
+pub(crate) struct Overlaid {
+    /// Spec 0249 S1: the nodes the render emitted with no body, because
+    /// it ran out of row budget before reaching them.
+    pub(crate) stopped: Vec<usize>,
+    /// Spec 0338 S3: the slots drawn `Name {` … `}`, in the order
+    /// written. These are the ones whose `lines_visible` is not the
+    /// count [`overlay_spans`] wrote whenever they are folded — which,
+    /// at open, is all of them.
+    pub(crate) bracketed: Vec<usize>,
 }
 
 // ── Public entry point ──────────────────────────────────────────────────────
@@ -1263,10 +1307,12 @@ pub struct Decoded {
     /// not render. Parallel to `tree`, and indexed the same way.
     pub node_text: Vec<Option<Box<str>>>,
     pub tree: Vec<TreeNode>,
-    /// Spec 0323 S2: every bracketed slot the render wrote, all of them
-    /// collapsed. `App::new` opens the root out of it (S3) and takes it
-    /// as its own `folded`; nothing else has to know the default exists.
-    pub folded: FoldSet,
+    /// Spec 0338 S1: the reader's fold intent, born **full** — every
+    /// arena slot a member, not just the ones this render reached. That
+    /// is what makes the set total and lets a later splice leave it
+    /// alone. `App::new` opens the root out of it (spec 0323 S3) and
+    /// takes it as its own `user_folded`.
+    pub user_folded: FoldSet,
     /// The blob's structural decomposition, derived from the bytes alone
     /// (spec 0216 S1). Unlike `tree` it does not depend on the type
     /// assignment, so it is built once here and never rebuilt.
@@ -2215,7 +2261,7 @@ pub fn render_resolved(
     let BuiltTree {
         tree,
         node_text,
-        folded,
+        user_folded,
         stopped: stops,
     } = build_tree(rendered.spans, &lines, &arena, &rendered.undescended);
     // Spec 0222, test-plan item 3. Same argument as the check above, and
@@ -2247,7 +2293,7 @@ pub fn render_resolved(
         row_budget,
         node_text,
         tree,
-        folded,
+        user_folded,
         arena,
         root_type,
         wrapper_offset: blob.wrapper_offset(),

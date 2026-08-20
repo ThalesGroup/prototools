@@ -52,8 +52,10 @@ impl App {
     /// contiguity does not survive a *second* override of the same node,
     /// since the first override's new nodes are appended at the array's
     /// end, breaking it). Used to find which array entries become orphans
-    /// once `idx`'s subtree is replaced, so they can be scrubbed from
-    /// `self.folded`.
+    /// once `idx`'s subtree is replaced, so they can be vacated — and,
+    /// walked in reverse, to settle the new subtree's line counts
+    /// deepest-first (spec 0338 S3), a pre-order walk reversed being
+    /// exactly that order.
     pub(super) fn collect_descendants(&self, idx: usize, out: &mut Vec<usize>) {
         let mut child = self.first_child(idx);
         while let Some(c) = child {
@@ -116,10 +118,9 @@ impl App {
                     // the wrong way round: the preview *was* the look
                     // inside, and what the reader wants back afterwards is
                     // the document at the shape they folded it to.
-                    // `splice_override` already carries the bit across
-                    // `overlay_spans`, so what the set remembered is what
-                    // is drawn. Spec 0323 S4's uniform rule over the
-                    // *new* children is untouched: they arrive folded.
+                    // Spec 0338 G1 extends that to the whole subtree:
+                    // `splice_override` writes no fold bit at all, so the
+                    // set after a commit is bit-for-bit the set before it.
                     //
                     // Spec 0221 S1: this node is settled after all, so
                     // an earlier refusal of it in this same pass was not
@@ -159,38 +160,6 @@ impl App {
             }
         } else {
             false
-        }
-    }
-
-    /// Drop every fold flag standing on a strict descendant of `idx`
-    /// (spec 0256 S4).
-    ///
-    /// One bit clear per vacated slot, which is the whole of it since
-    /// spec 0323 S1. `descendants` is the rendered subtree.
-    ///
-    /// Since spec 0332 that is no longer the same thing as "every slot
-    /// that could hold a flag": a fold gesture walks the arena, so it
-    /// writes bits on slots this typing does not print, and those bits
-    /// survive the splice. That is deliberate rather than a leak — the
-    /// arena is a function of the bytes, so slot `k` covers the same
-    /// byte range under every typing, and a bit on it is a statement
-    /// about those bytes. It is what makes a digit pressed before an
-    /// override still hold after it.
-    ///
-    /// While the two sets were `HashSet`s this had to *choose* between
-    /// that walk and a `retain` over the sets — by comparing their
-    /// capacity against the descendant count — because neither was safe
-    /// alone. The walk was two hash lookups per slot of the *document*:
-    /// 78 ms of a 448 ms root override on `googleapis.desc`, to answer a
-    /// question about tens of entries. And `retain` is O(capacity),
-    /// while `auto_folded`'s capacity peaked around 84 000 mid-bake
-    /// without shrinking, which the bake's 70 893 splices — a handful of
-    /// descendants each — would have paid 70 893 times over; retaining
-    /// unconditionally measured 5.4 s → 17.5 s on the drain. Both costs
-    /// belonged to the container, and both are gone with it.
-    fn scrub_folds_under(&mut self, descendants: &[usize]) {
-        for &d in descendants {
-            self.unfold(d);
         }
     }
 
@@ -1120,16 +1089,23 @@ impl App {
         } = rendered;
         self.batch_spliced = true;
 
-        // A fold flag on a slot this rendering does not show would be
-        // honored again the moment some later override brings the slot
-        // back, hiding unrelated content. `idx` itself is left alone
-        // here; both of its entries are dealt with separately, below.
         // Everything the *previous* interpretation showed under `idx`,
         // collected before any of it is vacated.
+        //
+        // Spec 0338 G1/S4: their fold bits are *not* cleared. A bit on
+        // slot `k` is a statement about the bytes slot `k` covers, and
+        // the arena gives it the same bytes under every typing (spec
+        // 0216 S1) — so a retyping has nothing to say about it. The old
+        // `scrub_folds_under` existed only to undo the fold
+        // `overlay_spans` was about to re-apply, and neither happens now.
         let mut old_descendants = Vec::new();
         self.collect_descendants(idx, &mut old_descendants);
-        self.scrub_folds_under(&old_descendants);
         for &d in &old_descendants {
+            // Spec 0338 N2: `auto_folded` *is* this code's to write. It
+            // means "this body has not been rendered", and a vacated slot
+            // has no body at all — leaving the entry would have the next
+            // rendering owe a bake for a node nobody stopped at.
+            self.auto_folded.remove(d);
             self.tree_mut()[d] = decode::TreeNode::vacant();
             self.discard_text(d);
             // The cue answered a question about a node this rendering no
@@ -1178,15 +1154,6 @@ impl App {
         // the reason the entry has to go, and `idx`'s *user* fold is
         // untouched either way.
         self.auto_folded.remove(idx);
-        // Spec 0323 S4: the uniform rule folds every bracketed slot
-        // `overlay_spans` writes, and `idx` is one of them — so the fold
-        // `idx` already carried has to be remembered here and put back
-        // below. A splice is not a gesture: the bake reaches this through
-        // `expand_auto_fold` and must open nothing the reader did not
-        // ask for. The two paths that *are* gestures clear the bit
-        // themselves — `App::open` before it calls in, `resettle_node`
-        // after a commit — and so read `false` here and stay open.
-        let idx_was_folded = self.folded.contains(idx);
         // Spec 0274 S8: the structure and the text are wanted mutably at
         // the same time, and each accessor borrows the whole `App`.
         // Moved out and put back rather than reached for twice — the
@@ -1195,11 +1162,14 @@ impl App {
         self.halt_search_scan();
         let mut tree = std::mem::take(&mut self.tree);
         let mut text = std::mem::take(&mut self.node_text);
-        let stopped = decode::overlay_spans(
+        // `bracketed` is for `build_tree`'s own use (spec 0338 S3); a
+        // splice settles its counts through `collect_descendants` below
+        // instead, since it has to visit the reader's existing folds
+        // there anyway.
+        let decode::Overlaid { stopped, .. } = decode::overlay_spans(
             decode::Overlay {
                 nodes: Arc::get_mut(&mut tree).expect("the halt above leaves the tree unshared"),
                 text: Arc::get_mut(&mut text).expect("the halt above leaves the text unshared"),
-                folded: &mut self.folded,
             },
             new_spans,
             &new_lines,
@@ -1229,20 +1199,33 @@ impl App {
             // from the viewport rather than diving.
             self.bake_queue.push_back(slot);
         }
-        // No second loop to fold each stop's count down to the single row
-        // it shows: spec 0323 S2 wrote `lines_visible: 1` for every
-        // bracketed slot as it rendered, and a stop is bracketed.
+        // Spec 0338 S3: `overlay_spans` wrote every new node's *open*
+        // count, having no fold set to consult. Settling them is this
+        // caller's job, and the fold it has to settle against is the one
+        // the reader left behind plus the stops just inserted above.
+        //
+        // Deepest-first, because `refresh_line_counts` sums a node's
+        // children and needs them already right. `collect_descendants`
+        // is a pre-order walk, so reversing it is exactly that order. A
+        // node with nothing folded beneath it is already correct and its
+        // climb stops at once; a folded one's climb repairs everything
+        // above it, `idx` and its ancestors included.
+        let mut revealed = Vec::new();
+        self.collect_descendants(idx, &mut revealed);
+        for &d in revealed.iter().rev() {
+            if self.is_folded(d) {
+                self.refresh_line_counts(d);
+            }
+        }
+        if self.is_folded(idx) {
+            self.refresh_line_counts(idx);
+        }
+
         // `idx` itself was just retyped, so a cue resolved for it before
         // now answers a question about the superseded interpretation
         // (spec 0152 G6). Its descendants were reset above, when their
         // slots were vacated.
         self.heat_states[idx] = heat_cue::HeatState::default();
-
-        // Spec 0323 S4: put `idx`'s own fold back. One bit and one sum
-        // over its children; the climb above it happens below.
-        if !idx_was_folded && self.folded.remove(idx) {
-            self.refresh_line_counts(idx);
-        }
 
         // Spec 0210 S3: the ancestors' sizes, and nothing else. It
         // belongs *here*, per splice, rather than once per batch in

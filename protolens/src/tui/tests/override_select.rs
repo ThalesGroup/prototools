@@ -133,7 +133,7 @@ fn t_opens_the_override_pane_on_an_unresolved_message_node() {
         stops: Vec::new(),
         // Spec 0323 S2: a hand-built tree writes its own counts, so
         // nothing in it is folded.
-        folded: FoldSet::default(),
+        user_folded: FoldSet::default(),
         row_budget: None,
         // Spec 0222 S1/S2: a bracketed node keeps its header alone, and
         // the `}` is derived from it.
@@ -185,7 +185,7 @@ fn t_opens_the_override_pane_on_a_varint_scalar_field() {
         stops: Vec::new(),
         // Spec 0323 S2: a hand-built tree writes its own counts, so
         // nothing in it is folded.
-        folded: FoldSet::default(),
+        user_folded: FoldSet::default(),
         row_budget: None,
         node_text: vec![Some(Box::from(lines[0].as_str()))],
         tree: vec![node],
@@ -349,7 +349,7 @@ fn t_opens_the_override_pane_on_a_length_delimited_scalar_field() {
         stops: Vec::new(),
         row_budget: None,
         // Spec 0323 S2: from the same pass that wrote the counts.
-        folded: built.folded,
+        user_folded: built.user_folded,
         node_text: built.node_text,
         tree: built.tree,
         root_type: "test.Scalar".to_string(),
@@ -1716,7 +1716,7 @@ fn cold_cache_default_target_app() -> App {
         stops: Vec::new(),
         // Spec 0323 S2: a hand-built tree writes its own counts, so
         // nothing in it is folded.
-        folded: FoldSet::default(),
+        user_folded: FoldSet::default(),
         row_budget: None,
         node_text: vec![Some(Box::from(lines[0].as_str()))],
         tree: vec![node],

@@ -4,15 +4,17 @@
 
 //! Spec 0323 S1: fold state as one bit per arena slot.
 //!
-//! The two sets this replaces — `App::folded` and `App::auto_folded` —
+//! The two sets this replaces — `App::user_folded` and
+//! `App::auto_folded` —
 //! were `HashSet<usize>`, chosen when a fold was a rare thing a reader
 //! did by hand. Neither premise survived:
 //!
 //! - `auto_folded`'s capacity peaks near **84 000 mid-bake** without
 //!   shrinking, which is what forced `bake_queue` into existence
-//!   (`HashSet::iter().next()` scans buckets from the top) and what makes
-//!   `HashSet::retain` unusable in `scrub_folds_under` (retaining
-//!   unconditionally took a bake drain from 5.4 s to 17.5 s).
+//!   (`HashSet::iter().next()` scans buckets from the top) and what made
+//!   `HashSet::retain` unusable in the splice's fold scrub (retaining
+//!   unconditionally took a bake drain from 5.4 s to 17.5 s — spec 0338
+//!   G1 has since removed the scrub itself).
 //! - Probing a set once per slot measured **5.0% of a startup** on
 //!   googleapis, so `rebuild_status` used to flatten it into a bitset —
 //!   allocated and filled on every call — before its reverse pass. A
@@ -44,6 +46,36 @@ impl FoldSet {
             words: vec![0u64; slots.div_ceil(64)].into_boxed_slice(),
             len: 0,
         }
+    }
+
+    /// Room for `slots` members, **all** set.
+    ///
+    /// Spec 0338 S1: this is how "a document opens closed" is said in
+    /// one line. The version that shipped first said it one bit at a
+    /// time — a walk of the whole arena testing each slot for
+    /// foldability — which cost 227 MiB of reads and 115.6 M
+    /// instructions on `googleapis.desc` to arrive at a value the
+    /// constructor can simply start from. A default belongs in an
+    /// initial value, not in a loop that writes the default out.
+    ///
+    /// The set is deliberately *wider* than the foldable slots: a leaf
+    /// is a member too, since excluding leaves is the only thing that
+    /// walk was still doing. That is sound because the read gates on
+    /// foldability — see `App::is_folded` — so a leaf's bit is never
+    /// consulted.
+    ///
+    /// The tail past `slots` is masked off. Nothing indexes there, but
+    /// `len` and `iter` would otherwise report members the arena has no
+    /// slot for, and `iter` is how a test compares two sets.
+    pub fn full(slots: usize) -> Self {
+        let mut words = vec![u64::MAX; slots.div_ceil(64)].into_boxed_slice();
+        let used = slots % 64;
+        if used != 0 {
+            if let Some(last) = words.last_mut() {
+                *last = (1u64 << used) - 1;
+            }
+        }
+        FoldSet { words, len: slots }
     }
 
     #[inline]
@@ -89,10 +121,10 @@ impl FoldSet {
     ///
     /// Tests only, and that is the honest scope rather than an
     /// allowance: nothing in the running program ever wants *every*
-    /// fold dropped at once. `App::open` clears one bit,
-    /// `scrub_folds_under` clears a subtree's, and `script_reset_folds`
-    /// walks deepest-first because each clear has to move the line
-    /// counters with it. A fixture resetting between phases has no
+    /// fold dropped at once. `App::open` clears one bit, and
+    /// `script_reset_folds` walks deepest-first because each clear has
+    /// to move the line counters with it. A fixture resetting between
+    /// phases has no
     /// counters to keep honest yet, which is the one case this serves.
     #[cfg(test)]
     pub fn clear(&mut self) {

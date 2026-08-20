@@ -29,7 +29,7 @@ pub(super) fn empty_app() -> App {
         stops: Vec::new(),
         // Spec 0323 S2: a hand-built tree writes its own counts, so
         // nothing in it is folded.
-        folded: FoldSet::default(),
+        user_folded: FoldSet::default(),
         row_budget: None,
         node_text: Vec::new(),
         tree: Vec::new(),
@@ -85,7 +85,7 @@ pub(super) fn message_node_app_with_root_candidates(
         stops: Vec::new(),
         row_budget: None,
         // Spec 0323 S2: from the same pass that wrote the counts.
-        folded: built.folded,
+        user_folded: built.user_folded,
         node_text: built.node_text,
         tree: built.tree,
         root_type: "google.protobuf.FileDescriptorProto".to_string(),
@@ -184,7 +184,7 @@ pub(super) fn sibling_leaves_app(texts: &[&str]) -> App {
         stops: Vec::new(),
         // Spec 0323 S2: a hand-built tree writes its own counts, so
         // nothing in it is folded.
-        folded: FoldSet::default(),
+        user_folded: FoldSet::default(),
         row_budget: None,
         node_text: own_line_each(&lines),
         tree,
@@ -239,7 +239,7 @@ pub(super) fn wide_sibling_scalars_app(n: usize) -> App {
         stops: Vec::new(),
         // Spec 0323 S2: a hand-built tree writes its own counts, so
         // nothing in it is folded.
-        folded: FoldSet::default(),
+        user_folded: FoldSet::default(),
         row_budget: None,
         node_text: own_line_each(&lines),
         tree,

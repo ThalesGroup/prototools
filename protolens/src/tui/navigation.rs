@@ -404,8 +404,42 @@ impl App {
     /// on screen the two are the same row, and every operation that
     /// acts on a folded node acts on both kinds. Only writes
     /// distinguish them.
+    ///
+    /// The [`App::is_foldable`] gate is what makes `user_folded` a
+    /// *total* answer affordable (spec 0338 S1): the set is born full,
+    /// so a scalar leaf is a member, and this is the one place that
+    /// says a leaf is not folded no matter what its bit holds. Since
+    /// every read comes through here, write-side leaf guards are
+    /// unnecessary — and the gate is also correct across a splice,
+    /// which can make a slot bracketed that was not before, where a
+    /// bit written once at open would have been stale.
     pub(super) fn is_folded(&self, idx: usize) -> bool {
-        self.folded.contains(idx) || self.auto_folded.contains(idx)
+        (self.is_foldable(idx) && self.user_folded.contains(idx)) || self.auto_folded.contains(idx)
+    }
+
+    /// Whether the *reader* has `idx` folded — [`App::is_folded`]
+    /// without the bake's own bit.
+    ///
+    /// Tests only, and the reason it has to exist is spec 0338 S1:
+    /// `user_folded` is born full, so `user_folded.contains(idx)` is
+    /// true of every slot and answers nothing. This is what that
+    /// membership test used to mean.
+    #[cfg(test)]
+    pub(super) fn is_user_folded(&self, idx: usize) -> bool {
+        self.is_foldable(idx) && self.user_folded.contains(idx)
+    }
+
+    /// Every node the reader has folded, in slot order.
+    ///
+    /// Tests only, for [`App::is_user_folded`]'s reason: `user_folded`
+    /// itself also holds every scalar, so its `len` and `iter` are not
+    /// the reader-visible fold state a test wants to pin.
+    #[cfg(test)]
+    pub(super) fn user_folds(&self) -> Vec<usize> {
+        self.user_folded
+            .iter()
+            .filter(|&idx| self.is_foldable(idx))
+            .collect()
     }
 
     /// Open `idx` whichever set folded it, reporting whether it moved.
@@ -414,7 +448,7 @@ impl App {
     /// can fold a node that was already auto-folded — and leaving it in
     /// one of them would draw it collapsed after an unfold gesture.
     pub(super) fn unfold(&mut self, idx: usize) -> bool {
-        self.folded.remove(idx) | self.auto_folded.remove(idx)
+        self.user_folded.remove(idx) | self.auto_folded.remove(idx)
     }
 
     /// Whether the arena gives `idx` a child block — i.e. whether the
@@ -435,7 +469,7 @@ impl App {
     /// Record the reader's intent for `idx`, reporting whether the bit
     /// moved (spec 0332 S2).
     ///
-    /// The one writer of `folded` on a gesture path, and it writes
+    /// The one writer of `user_folded` on a gesture path, and it writes
     /// nothing else. `auto_folded` is the bake's own bit — "this body
     /// has not been rendered yet" — so a keystroke that touched it
     /// would be answering a question it was not asked, and the same
@@ -444,15 +478,23 @@ impl App {
     /// `auto_folded` and by `child_slots`' `is_rendered` mask; this
     /// records only what the reader wants.
     ///
-    /// The guard is on the folding side alone, for the reason
-    /// `set_all_siblings_folded` has always given: a leaf must never
-    /// enter `folded`, since nothing would take it back out. A node
-    /// already *in* `folded` is foldable by construction.
+    /// It used to refuse a scalar, on the grounds that a leaf entering
+    /// the set would have nothing to ever take it back out. Spec 0338
+    /// S1 removes the premise: `user_folded` is born full, so every
+    /// slot already carries a bit, and [`App::is_folded`] gates the
+    /// read on [`App::is_foldable`]. A scalar's bit is simply never
+    /// consulted, so writing it needs no permission.
+    ///
+    /// Nor does the guard pay for itself in the *report*. Callers take
+    /// a `true` as "refresh the line counts", and two of them sweep
+    /// ranges that are mostly scalars — but `refresh_line_counts` on an
+    /// unbracketed node recomputes the counts it already holds, so both
+    /// its deltas are zero and it returns before its first ancestor.
     pub(super) fn set_folded(&mut self, idx: usize, fold: bool) -> bool {
         if fold {
-            self.is_foldable(idx) && self.folded.insert(idx)
+            self.user_folded.insert(idx)
         } else {
-            self.folded.remove(idx)
+            self.user_folded.remove(idx)
         }
     }
 
@@ -468,8 +510,10 @@ impl App {
     ///   doc comment exists to make.
     ///
     /// What the union excludes is the only thing it must: a scalar,
-    /// which would go into `folded` with nothing to ever take it back
-    /// out.
+    /// which has no body to hide. Since spec 0338 S1 this is asked on
+    /// the *read* side ([`App::is_folded`]) rather than guarding a
+    /// write, because `user_folded` is born full and so holds a bit for
+    /// every slot, scalars included.
     #[inline]
     pub(super) fn is_foldable(&self, idx: usize) -> bool {
         self.has_arena_children(idx) || self.has_children(idx)
@@ -497,7 +541,7 @@ impl App {
             // Removed first: the splice below takes `idx` out of
             // `auto_folded` itself, and a node in both sets would
             // otherwise stay drawn collapsed after an open gesture.
-            self.folded.remove(idx);
+            self.user_folded.remove(idx);
             self.expand_auto_fold(idx, self.document_pane_height());
             return true;
         }

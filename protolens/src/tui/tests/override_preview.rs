@@ -27,7 +27,7 @@ fn preview_override_highlight_touches_no_committed_state() {
     let lines = app.document_lines().clone();
     let owners = line_owners(&app);
     let rows = app.visible_row_count();
-    let folded = app.folded.clone();
+    let folded = app.user_folds();
 
     // Forty alternating previews: each one overwrites the overlay, and
     // nothing accumulates because nothing was ever spliced.
@@ -39,7 +39,7 @@ fn preview_override_highlight_touches_no_committed_state() {
         assert_eq!(app.document_lines(), lines);
         assert_eq!(line_owners(&app), owners);
         assert_eq!(app.visible_row_count(), rows);
-        assert_eq!(app.folded, folded);
+        assert_eq!(app.user_folds(), folded);
     }
 
     app.close_override();
@@ -48,7 +48,7 @@ fn preview_override_highlight_touches_no_committed_state() {
     assert_eq!(app.document_lines(), lines);
     assert_eq!(line_owners(&app), owners);
     assert_eq!(app.visible_row_count(), rows);
-    assert_eq!(app.folded, folded);
+    assert_eq!(app.user_folds(), folded);
 }
 
 /// Spec 0185 G3, the acceptance criterion: the overlay's lines must be
@@ -187,8 +187,8 @@ fn previewing_a_folded_target_renders_it_in_full_and_leaves_folded_alone() {
     // Spec 0210 S2: folding through `toggle_fold` rather than by hand, so
     // that the line counters the row walk reads are refreshed with it.
     app.toggle_fold(inner_idx);
-    assert!(app.folded.contains(inner_idx), "the fixture must fold");
-    let folded_before = app.folded.clone();
+    assert!(app.is_user_folded(inner_idx), "the fixture must fold");
+    let folded_before = app.user_folds();
     let rows_before: Vec<usize> = app
         .visible_window(0, app.visible_row_count())
         .into_iter()
@@ -207,7 +207,7 @@ fn previewing_a_folded_target_renders_it_in_full_and_leaves_folded_alone() {
         o.lines,
         o.covered_rows
     );
-    assert_eq!(app.folded, folded_before);
+    assert_eq!(app.user_folds(), folded_before);
     assert_eq!(
         app.visible_window(0, app.visible_row_count())
             .into_iter()
@@ -218,7 +218,7 @@ fn previewing_a_folded_target_renders_it_in_full_and_leaves_folded_alone() {
 
     app.close_override();
     assert!(app.preview_overlay.is_none());
-    assert_eq!(app.folded, folded_before);
+    assert_eq!(app.user_folds(), folded_before);
     assert_eq!(
         app.visible_window(0, app.visible_row_count())
             .into_iter()

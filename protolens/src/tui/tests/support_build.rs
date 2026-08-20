@@ -289,7 +289,7 @@ pub(super) fn fixture_app(decoded: Decoded, ctx: DescriptorContext) -> App {
 /// precisely to have some.
 pub(super) fn unfold_every_node(app: &mut App) {
     for idx in (0..app.tree.len()).rev() {
-        if app.folded.remove(idx) {
+        if app.set_folded(idx, false) {
             app.refresh_line_counts(idx);
         }
     }

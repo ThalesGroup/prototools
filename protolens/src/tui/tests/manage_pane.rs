@@ -48,6 +48,46 @@ fn manage_pane_left_right_circulate_affected_fields() {
     assert_eq!(app.cursor, before, "zero matches must be a no-op");
 }
 
+/// Spec 0338 S5: the node `Left`/`Right` circulates to is one the reader
+/// can see. Landing the cursor behind a closed ancestor selects a node
+/// and shows nothing, which is the same as not answering.
+#[test]
+fn arrows_in_the_manage_pane_reveal_the_node_they_select() {
+    let (mut app, items) = repeated_message_fixture();
+    app.manage_focus = true;
+    app.manage_open = true;
+    app.overrides.activate(
+        OverrideOrigin::PathField {
+            path: "/".to_string(),
+            field: 1,
+        },
+        None,
+    );
+    app.manage_highlight = app.overrides.entries().len() - 1;
+
+    // A node is hidden when something above it is closed.
+    // `visible_row_of_line` cannot be asked: it answers with the folded
+    // ancestor's own row, which is the right answer for drawing a cursor
+    // and the wrong one for this question.
+    let hidden = |app: &App, idx: usize| {
+        std::iter::successors(app.parent(idx), |&p| app.parent(p)).any(|p| app.is_folded(p))
+    };
+
+    app.set_folded(app.first_node, true);
+    app.refresh_line_counts(app.first_node);
+    assert!(
+        hidden(&app, items[0]),
+        "the fixture must start with the targets hidden, or this proves nothing"
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    assert_eq!(app.cursor, items[0]);
+    assert!(
+        !hidden(&app, items[0]),
+        "the selected node must be on a drawn row"
+    );
+}
+
 /// Item 10 (2026-07-17 feedback): clicking an entry that is already
 /// the manage-pane's own highlighted entry (i.e. the "current"
 /// override) — anywhere outside the radio marker column, which keeps

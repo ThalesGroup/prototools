@@ -63,25 +63,22 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
         node_with_type(&app, "test.Node").expect("tree must contain the Node submessage");
     let node_level = app.tree[node_idx].span.level;
 
-    // Fold a child before overriding, to verify the stale-fold scrubbing
-    // (`collect_descendants` cleanup).
+    // Spec 0338 G1: the splice leaves the fold set exactly as it found
+    // it. Asked of the whole set rather than of one chosen slot, because
+    // S1 gives every slot a bit and so leaves no slot whose membership
+    // is special. Equality catches a splice that clears a bit and one
+    // that sets one, which is the promise in both directions.
     //
-    // The *flat* child, deliberately. Since spec 0323 S2 `overlay_spans`
-    // folds every bracketed slot it writes, so a bracketed child comes
-    // back folded whether it was scrubbed or not and would prove nothing.
-    // It never clears a flat slot's bit, so a stale fold standing on one
-    // survives the splice — which makes the flat child the only place the
-    // scrub is observable at all.
-    let a_idx_before = app
-        .first_child(node_idx)
-        .expect("Node has at least one child");
-    let b_idx_before = app
-        .next_sibling(a_idx_before)
-        .expect("Node has a second, scalar child");
-    // Spec 0210 S2: through `refresh_line_counts`, since a fold now moves
+    // The node about to be overridden is opened first, so the snapshot
+    // is not uniformly full: a splice that re-folded its own target
+    // would otherwise be indistinguishable from one that touched
+    // nothing.
+    //
+    // Spec 0210 S2: through `refresh_line_counts`, since a fold moves
     // the line counters the row walk reads.
-    app.folded.insert(b_idx_before);
-    app.refresh_line_counts(b_idx_before);
+    app.set_folded(node_idx, false);
+    app.refresh_line_counts(node_idx);
+    let folds_before = app.user_folded.clone();
 
     let assert_children = |app: &App, tag: &str| {
         let mut children = Vec::new();
@@ -112,21 +109,30 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
         .expect("re-typing as the same type must succeed");
     assert_children(&app, "re-typed as itself");
     assert_eq!(type_name_of(&app, node_idx), Some("test.Node"));
-    assert!(
-        !app.folded.contains(b_idx_before),
-        "orphaned old child must be scrubbed from `folded`"
+    assert_eq!(
+        app.user_folded, folds_before,
+        "spec 0338 G1: a splice writes no fold bit, not even on a slot \
+         whose previous rendering it just discarded"
     );
 
     // 2) Raw override (no schema).
     app.splice_override(node_idx, None, None)
         .expect("raw override must succeed");
     assert_eq!(app.tree[node_idx].span.type_fqdn, NO_FQDN);
+    assert_eq!(
+        app.user_folded, folds_before,
+        "spec 0338 G1: nor does dropping the type"
+    );
 
     // 3) Re-typed again, on top of two prior overrides — exercises
     // repeated overrides of the same node.
     app.splice_override(node_idx, Some("test.Node".to_string()), None)
         .expect("third override must still succeed");
     assert_children(&app, "re-typed a third time");
+    assert_eq!(
+        app.user_folded, folds_before,
+        "spec 0338 G1: nor does the third splice over the same node"
+    );
 
     // Regression (2026-07-19 crash report): `splice_override` appends
     // fresh nodes to `app.tree` on every call but used to leave
@@ -1342,17 +1348,17 @@ fn a_row_budgeted_splice_folds_every_node_it_stopped_at() {
         assert_eq!(app.tree[*i].lines_visible, 1, "and draws as one row");
     }
     // An auto-fold is still not a user fold (S3), but emptiness is no
-    // longer how that shows: spec 0323 S2 folds every bracketed slot a
-    // splice writes, so each `Item` now stands in both sets. What
+    // longer how that shows: spec 0338 S1 folds every foldable slot in
+    // the arena at open, so each `Item` stands in both sets. What
     // separates them is the spliced node itself — it was not a stop, so
-    // `auto_folded` never names it, and `splice_override` opens it
-    // because the reader asked for it.
+    // `auto_folded` never names it, and the reader opened it before
+    // asking for this render.
     assert!(
         !app.auto_folded.contains(root),
         "the spliced node was not a stop"
     );
     assert!(
-        !app.folded.contains(root),
+        !app.is_user_folded(root),
         "and the reader asked to see it, so it is open"
     );
 
@@ -1463,7 +1469,7 @@ fn a_bake_keeps_the_user_folds_around_it() {
     }
 
     // The user folds one stop by hand. It is now in both sets.
-    app.folded.insert(items[0]);
+    app.set_folded(items[0], true);
 
     // Bake a different one: unbounded, same interpretation.
     app.splice_override(items[1], Some("test.Item".to_string()), None)
@@ -1476,7 +1482,7 @@ fn a_bake_keeps_the_user_folds_around_it() {
     assert!(app.tree[items[1]].lines_total > 2, "and shows its body");
 
     assert!(
-        app.folded.contains(items[0]),
+        app.is_user_folded(items[0]),
         "the user's fold is untouched by a bake elsewhere"
     );
     assert!(app.is_folded(items[0]), "and still draws collapsed");
@@ -1486,7 +1492,7 @@ fn a_bake_keeps_the_user_folds_around_it() {
     app.splice_override(items[0], Some("test.Item".to_string()), None)
         .expect("a bake must succeed");
     assert!(!app.auto_folded.contains(items[0]));
-    assert!(app.folded.contains(items[0]));
+    assert!(app.is_user_folded(items[0]));
     assert!(app.is_folded(items[0]), "the user's fold still holds it");
     assert_eq!(app.tree[items[0]].lines_visible, 1);
 }
@@ -1719,30 +1725,33 @@ fn the_idle_loop_empties_the_discarded_text() {
     );
 }
 
-/// Spec 0256 S4 / test-plan item 4: fold flags are scrubbed by asking
-/// the fold sets which of their entries sit under `idx`, not by asking
-/// every slot of the document whether it is folded.
+/// Spec 0338 G1 / test-plan item 2: a commit leaves `folded` exactly as
+/// it found it.
 ///
-/// The mutation guard for S4 — dropping the `retain` entirely must fail
-/// here — and equally the guard against scrubbing too much: a fold on a
-/// sibling subtree is untouched, and `idx`'s own fold survives its own
-/// retype (spec 0118 §7).
+/// Asserted as equality over the *whole set*, not over the rows, so a
+/// bit moved on a slot no row stands for still fails it — which is what
+/// the two halves of spec 0332's corollary disagreed about.
+///
+/// `auto_folded` is the other set and the opposite promise (spec 0338
+/// N2): it says "this body has not been rendered", so a vacated slot
+/// must leave it and a stop must enter it. Both are checked here because
+/// the two used to be cleared by the same call.
 #[test]
-fn a_fold_under_a_retyped_node_is_scrubbed() {
+fn a_commit_leaves_the_fold_set_exactly_as_it_found_it() {
     let (mut app, items) = repeated_message_fixture();
     let under = app
         .nth_child(items[0], 0)
         .expect("Item has a field to fold");
     let sibling = items[1];
 
-    // Seeded directly, because the four cases have to coexist and no
-    // single gesture produces all of them. Both sets feed derived state
-    // — the line counts and the `Unbaked` rung — and the splice under
-    // test asserts both are exact, so they are brought back in line
-    // here rather than left for the assertion to find.
-    app.folded.insert(under);
-    app.folded.insert(sibling);
-    app.folded.insert(items[0]);
+    // Seeded directly, because the cases have to coexist and no single
+    // gesture produces all of them. Both sets feed derived state — the
+    // line counts and the `Unbaked` rung — and the splice under test
+    // asserts both are exact, so they are brought back in line here
+    // rather than left for the assertion to find.
+    app.unfold(items[0]);
+    app.set_folded(under, true);
+    app.set_folded(sibling, true);
     app.auto_folded.insert(under);
     app.auto_folded.insert(sibling);
     app.refresh_line_counts(under);
@@ -1750,19 +1759,22 @@ fn a_fold_under_a_retyped_node_is_scrubbed() {
     app.refresh_line_counts(sibling);
     app.rebuild_status();
 
+    let before: Vec<usize> = app.user_folds();
+
     app.splice_override(items[0], Some("test.Item".to_string()), None)
         .expect("the splice must succeed");
 
-    assert!(
-        !app.folded.contains(under) && !app.auto_folded.contains(under),
-        "a fold under the retyped node describes content that is gone"
+    assert_eq!(
+        app.user_folds(),
+        before,
+        "spec 0338 G1: a splice writes no bit of the reader's set"
     );
     assert!(
-        app.folded.contains(sibling) && app.auto_folded.contains(sibling),
-        "a fold on a sibling subtree is none of this splice's business"
+        !app.auto_folded.contains(under),
+        "spec 0338 N2: the splice re-rendered that body, so it owes no bake"
     );
     assert!(
-        app.folded.contains(items[0]),
-        "spec 0118 §7: a node keeps its own fold across its own retype"
+        app.auto_folded.contains(sibling),
+        "a sibling subtree is none of this splice's business"
     );
 }

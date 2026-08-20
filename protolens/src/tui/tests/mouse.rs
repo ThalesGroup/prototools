@@ -639,7 +639,7 @@ fn every_click_on_the_fold_marker_toggles_however_many_arrive() {
     let line = app.line_text(app.line_pos(app.absolute_start(node)).unwrap());
     let marker = render::marker_column(&line);
 
-    let folded = app.folded.contains(node);
+    let folded = app.is_user_folded(node);
     for i in 1..=6 {
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
@@ -654,7 +654,7 @@ fn every_click_on_the_fold_marker_toggles_however_many_arrive() {
             modifiers: KeyModifiers::NONE,
         });
         assert_eq!(
-            app.folded.contains(node),
+            app.is_user_folded(node),
             folded != (i % 2 == 1),
             "click {i} must have toggled"
         );
@@ -821,7 +821,7 @@ fn clicking_the_fold_marker_toggles_the_node_despite_the_heat_cue_gutter() {
     app.splash = false;
     app.main_area = Rect::new(0, 0, 40, 20);
     assert!(app.has_children(grp_idx));
-    assert!(!app.folded.contains(grp_idx));
+    assert!(!app.is_user_folded(grp_idx));
 
     let line_idx = app.absolute_start(grp_idx);
     let indent_len = (app.document_lines()[line_idx].len()
@@ -837,7 +837,7 @@ fn clicking_the_fold_marker_toggles_the_node_despite_the_heat_cue_gutter() {
         modifiers: KeyModifiers::NONE,
     });
     assert!(
-        app.folded.contains(grp_idx),
+        app.is_user_folded(grp_idx),
         "clicking the marker must fold the node"
     );
 
@@ -848,7 +848,7 @@ fn clicking_the_fold_marker_toggles_the_node_despite_the_heat_cue_gutter() {
         modifiers: KeyModifiers::NONE,
     });
     assert!(
-        !app.folded.contains(grp_idx),
+        !app.is_user_folded(grp_idx),
         "clicking the marker again must unfold the node"
     );
 }
@@ -889,13 +889,13 @@ fn a_marker_click_follows_the_glyph_when_the_view_is_panned() {
     // to match.
     click(&mut app, former_col);
     assert!(
-        !app.folded.contains(grp_idx),
+        !app.is_user_folded(grp_idx),
         "a click past the panned fold field places the caret, not a fold"
     );
 
     click(&mut app, drawn_col);
     assert!(
-        app.folded.contains(grp_idx),
+        app.is_user_folded(grp_idx),
         "the panned marker must still toggle"
     );
 }
@@ -932,7 +932,7 @@ fn clicking_the_fold_marker_focuses_the_main_pane_and_selects_the_node() {
     });
 
     assert!(
-        app.folded.contains(grp_idx),
+        app.is_user_folded(grp_idx),
         "clicking the marker must still fold the node"
     );
     assert!(!app.manage_focus, "focus must shift to the main pane");
@@ -980,7 +980,7 @@ fn double_click_on_the_fold_marker_toggles_twice_and_opens_nothing() {
     }
 
     assert!(
-        !app.folded.contains(grp_idx),
+        !app.is_user_folded(grp_idx),
         "two clicks on the marker toggle twice, back to where they started"
     );
     assert!(
@@ -1058,7 +1058,7 @@ fn a_click_places_the_caret_except_on_the_fold_marker() {
     let marker = render::marker_column(&app.document_lines()[header]);
     app.handle_click(marker + render::HEAT_FIELD_WIDTH as u16, row);
     assert!(
-        app.folded.contains(items[1]),
+        app.is_user_folded(items[1]),
         "a click on the marker still folds"
     );
     assert_eq!(
@@ -1071,7 +1071,7 @@ fn a_click_places_the_caret_except_on_the_fold_marker() {
     // a row without drifting off it.
     app.handle_click(marker + 2, row);
     assert!(
-        !app.folded.contains(items[1]),
+        !app.is_user_folded(items[1]),
         "the whole two-column fold field toggles, not just the glyph"
     );
     assert_eq!(app.cursor_column, indent, "and still not the caret");
@@ -1099,7 +1099,7 @@ fn a_click_on_a_leaf_diamond_places_the_caret() {
         + render::marker_column(&app.document_lines()[0]);
     let spent = app.handle_click(column, app.main_area.y);
     assert!(!spent, "the mark is not a fold control");
-    assert!(app.folded.is_empty(), "and it folded nothing");
+    assert!(app.user_folds().is_empty(), "and it folded nothing");
     assert_eq!(app.cursor, 0, "the click landed as a caret placement");
 }
 
@@ -1212,8 +1212,8 @@ fn a_double_click_on_a_row_folds_it_like_z() {
         by_key.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
 
         assert_eq!(
-            by_mouse.folded.contains(0),
-            by_key.folded.contains(0),
+            by_mouse.is_user_folded(0),
+            by_key.is_user_folded(0),
             "{round}"
         );
         assert_eq!(
@@ -1227,7 +1227,7 @@ fn a_double_click_on_a_row_folds_it_like_z() {
         );
     }
     assert!(
-        !by_mouse.folded.contains(0),
+        !by_mouse.is_user_folded(0),
         "two pairs land back where they started"
     );
 }
@@ -1258,7 +1258,7 @@ fn a_double_click_that_dragged_selects_instead_of_folding() {
     );
 
     assert!(
-        !app.folded.contains(0),
+        !app.is_user_folded(0),
         "a pair that dragged must fold nothing"
     );
     assert!(
@@ -1304,7 +1304,7 @@ fn the_two_zones_of_one_row_mean_different_things() {
     let text = cue - 1;
 
     double_click_at(&mut app, text, row);
-    assert!(app.folded.contains(0), "the text zone folds the node");
+    assert!(app.is_user_folded(0), "the text zone folds the node");
     assert!(
         app.override_target.is_none(),
         "and opens no pane on the way"
@@ -1320,7 +1320,7 @@ fn the_two_zones_of_one_row_mean_different_things() {
         Some(0),
         "the cue zone opens the pane instead"
     );
-    assert!(app.folded.contains(0), "and folds nothing further");
+    assert!(app.is_user_folded(0), "and folds nothing further");
 }
 
 /// Spec 0284 S6: a pair must agree on its zone. Two clicks in quick
@@ -1337,7 +1337,7 @@ fn a_click_on_the_text_then_on_the_cue_is_not_a_pair() {
     click_at(&mut app, text, row);
     click_at(&mut app, cue + 2, row);
     assert!(app.override_target.is_none(), "text then cue is not a pair");
-    assert!(!app.folded.contains(0), "and neither zone's gesture ran");
+    assert!(!app.is_user_folded(0), "and neither zone's gesture ran");
 
     // ...and the other way round. From a cleared slate, since the click
     // that just landed was itself on the cue and pairing with it is the
@@ -1346,7 +1346,7 @@ fn a_click_on_the_text_then_on_the_cue_is_not_a_pair() {
     click_at(&mut app, cue + 2, row);
     click_at(&mut app, text, row);
     assert!(app.override_target.is_none(), "cue then text is not either");
-    assert!(!app.folded.contains(0));
+    assert!(!app.is_user_folded(0));
 
     // Two clicks that do agree on the zone still pair.
     app.last_click = None;
@@ -1424,7 +1424,7 @@ fn a_row_with_no_cue_has_no_target() {
     double_click_at(&mut app, past_the_text, row);
     assert!(app.override_target.is_none());
     assert!(
-        app.folded.contains(0),
+        app.is_user_folded(0),
         "with no control there, the row's own double-click stands"
     );
 }

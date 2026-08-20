@@ -886,7 +886,7 @@ fn default_export_descriptor_path_falls_back_to_the_numeric_range_when_unresolva
         stops: Vec::new(),
         // Spec 0323 S2: a hand-built tree writes its own counts, so
         // nothing in it is folded.
-        folded: FoldSet::default(),
+        user_folded: FoldSet::default(),
         row_budget: None,
         node_text: vec![Some(Box::from("a")), Some(Box::from("b"))],
         tree,
@@ -927,7 +927,7 @@ fn the_reassigned_keys_dispatch_where_the_table_says() {
     assert_eq!(app.cursor_column, base + 1);
     app.handle_key(plain('h'));
     assert_eq!(app.cursor_column, base);
-    assert!(app.folded.is_empty(), "`h` no longer folds");
+    assert!(app.user_folds().is_empty(), "`h` no longer folds");
 
     // `$` and `^` are the two ends of the same row. Spec 0332 S6 took
     // `0` off this pair and gave it to the fold depths, so the row's
@@ -946,13 +946,13 @@ fn the_reassigned_keys_dispatch_where_the_table_says() {
     let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
     app.handle_key(ctrl('h'));
     assert!(
-        items.iter().all(|&i| app.folded.contains(i)),
+        items.iter().all(|&i| app.is_user_folded(i)),
         "`Ctrl-h` folds the whole sibling level"
     );
     assert_eq!(app.cursor, items[1], "and moves no cursor");
     app.handle_key(ctrl('l'));
     assert!(
-        items.iter().all(|&i| !app.folded.contains(i)),
+        items.iter().all(|&i| !app.is_user_folded(i)),
         "`Ctrl-l` unfolds it again"
     );
     assert_eq!(app.cursor, items[1]);
@@ -960,17 +960,17 @@ fn the_reassigned_keys_dispatch_where_the_table_says() {
     // And the shifted pair selects instead, folding nothing.
     app.handle_key(plain('H'));
     assert!(app.selection_span().is_some(), "`H` selects");
-    assert!(app.folded.is_empty(), "and folds nothing");
+    assert!(app.user_folds().is_empty(), "and folds nothing");
     app.handle_key(plain('L'));
-    assert!(app.folded.is_empty(), "nor does `L`");
+    assert!(app.user_folds().is_empty(), "nor does `L`");
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     // `z` acts on its own now — it was a chord prefix (`za`/`zc`/`zo`
     // and their sibling-wide capitals) and is a one-key toggle.
     app.handle_key(plain('z'));
-    assert!(app.folded.contains(items[1]), "`z` alone toggles");
+    assert!(app.is_user_folded(items[1]), "`z` alone toggles");
     app.handle_key(plain('z'));
-    assert!(!app.folded.contains(items[1]), "and toggles back");
+    assert!(!app.is_user_folded(items[1]), "and toggles back");
 }
 
 /// `Space`/`f` page down and `Shift-Space`/`b` page up, each landing
@@ -1152,7 +1152,7 @@ fn only_the_bound_ctrl_and_alt_chords_do_anything_in_the_main_pane() {
             app.cursor,
             app.cursor_column,
             app.cursor_line_in_node,
-            app.folded.len(),
+            app.user_folds().len(),
             app.annotations,
             app.wire,
             format!("{:?}", app.heat_cues),

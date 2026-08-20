@@ -124,12 +124,13 @@ fn a_selection_motion_neither_folds_nor_unfolds() {
     app.set_cursor(items[0]);
     app.caret_to_line_end();
 
-    let folded_before = app.folded.clone();
+    let folded_before = app.user_folds();
     for _ in 0..6 {
         app.select_right();
     }
     assert_eq!(
-        app.folded, folded_before,
+        app.user_folds(),
+        folded_before,
         "stepping off the end of a folded node's header opens nothing"
     );
 
@@ -138,7 +139,8 @@ fn a_selection_motion_neither_folds_nor_unfolds() {
         app.select_left();
     }
     assert_eq!(
-        app.folded, folded_before,
+        app.user_folds(),
+        folded_before,
         "and a leftward motion at Home folds nothing"
     );
 }
@@ -171,7 +173,7 @@ fn the_copy_includes_what_a_fold_is_hiding() {
     assert!(!unfolded.is_empty());
 
     app.toggle_fold(items[0]);
-    assert!(app.folded.contains(items[0]), "the fixture must fold");
+    assert!(app.is_user_folded(items[0]), "the fixture must fold");
     assert_eq!(
         select_all(&mut app),
         unfolded,
