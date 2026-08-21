@@ -143,6 +143,23 @@ impl App {
         theme::status_color(Status::Unbaked, self.theme).map(|c| Style::default().fg(c))
     }
 
+    /// Spec 0343 B6: the activity-dot style while the shadow-sweep trie
+    /// walk is in progress — `Some` from the first idle tick after the
+    /// first frame until the sweep completes and the probe has run.
+    ///
+    /// The sweep is in progress when `shadow_sweep` is `Some` (the walk
+    /// has been initialised) and `!shadow_probed` (the post-completion
+    /// whole-arena probe has not yet fired). Priority in
+    /// `render_activity_dot`: above prefetch/bake, below heat-cue
+    /// user/visible.
+    pub(super) fn shadow_dot_style(&self) -> Option<Style> {
+        if self.shadow_sweep.is_some() && !self.shadow_probed {
+            Some(theme::shadow_sweep_dot_style(self.theme))
+        } else {
+            None
+        }
+    }
+
     /// Spec 0260 S2: the color a folded node's `{ ... }` summary wears,
     /// or `None` for a region the reader collapsed themselves.
     ///

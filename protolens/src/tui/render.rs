@@ -147,25 +147,10 @@ pub(super) const ANOMALY_GLYPH: char = '◆';
 /// rule rather than as a filled cell.
 pub(super) const TIER_BAR_GLYPH: char = '│';
 
-/// The bar of the node the caret is innermost inside — the one bar on
-/// screen that is not an ancestor's.
-///
-/// A box-drawing **heavy** vertical (U+2503): the same width class and
-/// the same center alignment as `TIER_BAR_GLYPH`, so the two stack in
-/// one column without shifting. Heavier for the near bar rather than
-/// thinner for the far ones, because `│` is already the lightest
-/// vertical in box-drawing and anything genuinely thinner (`▏`
-/// U+258F) is a block element, which fonts hang on the cell's left
-/// edge instead of its center.
-///
-/// Weight carries the near/far rank that spec 0334 gave to a blend
-/// toward the page plus `Modifier::DIM`. Luma could not keep carrying
-/// it once `Status::Unbaked` became a neutral gray: dimming a gray
-/// moves it along the very axis the *uncolored* bars already occupy,
-/// and a dimmed `#8C8C8C` lands on top of the `DarkGray` an `Ok`
-/// ancestor wears. A hue survives being dimmed because the hue still
-/// names it; a gray has nothing left to be recognized by.
-pub(super) const NEAR_BAR_GLYPH: char = '┃';
+/// Alias for [`TIER_BAR_GLYPH`]: all bars use the same thin glyph.
+/// Kept so callers that conceptually refer to the near bar remain
+/// self-documenting.
+pub(super) const NEAR_BAR_GLYPH: char = '│';
 
 /// Spec 0328 S1/S2 and 0334 S1: where the caret node's bar and each of
 /// its ancestors' run, and under which document shape and caret they
@@ -198,13 +183,6 @@ struct CursorBar {
     /// triangle sits in (S1). Also a byte offset into any row's fold
     /// margin, which is spaces up to and including it.
     column: usize,
-    /// Whether this bar belongs to an ancestor rather than to the
-    /// innermost node the caret is inside. Exactly one bar on screen is
-    /// not `far`: the **nearest** one to the caret, which is the caret
-    /// node's own when it has one and otherwise the nearest ancestor's.
-    /// See [`App::compute_cursor_bars`]. It picks the glyph and nothing
-    /// else; the color is the owner's status — see [`App::bar_style`].
-    far: bool,
 }
 
 impl CursorBar {
@@ -229,14 +207,8 @@ impl CursorBar {
         line >= self.header && line + 1 < self.end
     }
 
-    /// Which vertical to draw: heavy for the node the caret is
-    /// innermost inside, light for each ancestor above it.
     fn glyph(&self) -> char {
-        if self.far {
-            TIER_BAR_GLYPH
-        } else {
-            NEAR_BAR_GLYPH
-        }
+        TIER_BAR_GLYPH
     }
 }
 
@@ -1194,9 +1166,15 @@ impl App {
         // and an overlay is a preview of a message).
         if self.annotations {
             if let Some(idx) = node.filter(|&i| self.is_shadowed(i)) {
-                let style = theme::status_color(Status::NonCanonical, self.theme)
+                // The `;` separator takes the comment color (greenish),
+                // matching other `#@` annotation separators. Only the
+                // keyword itself is amber (NonCanonical).
+                let sep_style = Some(theme::style_for(SyntaxRole::Comment, self.theme));
+                let kw_style = theme::status_color(Status::NonCanonical, self.theme)
                     .map(|c| Style::default().fg(c));
-                insertions.push((content.len(), "; shadowed_scalar".to_string(), style));
+                let pos = content.len();
+                insertions.push((pos, ";".to_string(), sep_style));
+                insertions.push((pos, " shadowed_scalar".to_string(), kw_style));
                 let _ = idx; // used only for the filter above
             }
         }
@@ -1375,18 +1353,11 @@ impl App {
     /// so the two are the same color by construction rather than by a
     /// second lookup that could come to disagree.
     ///
-    /// **Near and far are not told apart here at all.** The color says
-    /// what the node's status is and the glyph says how near it is
-    /// ([`NEAR_BAR_GLYPH`]); one axis each, with no case where the two
-    /// trade places. An `Ok` node has no status color, so it draws in
-    /// the terminal's default foreground whether it is near or far.
-    ///
-    /// What used to take a far bar down a rank here — `theme::dimmed`
-    /// plus `Modifier::DIM` — is what put `Status::Unbaked`'s gray on
-    /// top of the `DarkGray` an `Ok` ancestor was given: dimming a
-    /// neutral moves it along the one axis the uncolored bars already
-    /// occupy, and unlike a hue it has nothing left to be recognized
-    /// by afterward.
+    /// Near and far bars are not told apart here. All bars use the same
+    /// thin glyph ([`TIER_BAR_GLYPH`]) and take their color from the
+    /// owner's status — see [`App::margin_glyph_color`]. An `Ok` node
+    /// has no status color and draws in the terminal's default
+    /// foreground whether it is near or far.
     fn bar_style(&self, bar: &CursorBar) -> Style {
         match self.margin_glyph_color(Some(bar.owner)) {
             Some(color) => Style::default().fg(color),
@@ -1418,27 +1389,16 @@ impl App {
     /// is spec 0334 S1's "a caret on a leaf still draws its ancestors'
     /// bars".
     ///
-    /// **Exactly one bar is undimmed: the first one this walk finds.**
-    /// Spec 0334 S3 undimmed the caret node's specifically, which left
-    /// a caret on a leaf or on a folded node with nothing but dimmed
-    /// bars — the reader loses the "you are here" mark precisely when
-    /// the caret is on a row that has no bar of its own to stand in for
-    /// it. Keying it on *nearest* instead of on *is the caret node*
-    /// makes the undimmed bar the innermost thing the caret is inside,
-    /// which is the same answer whenever the caret node has a bar and a
-    /// useful one when it does not.
-    ///
-    /// The one case with no undimmed bar is the one with no bar at all:
-    /// nothing on the path from the caret to the root draws one, which
-    /// takes a caret at the top of a document whose root is folded or
-    /// unbracketed.
+    /// All bars use the same glyph and the same style formula, so
+    /// near/far has no visual representation beyond relative column
+    /// position. The one case with no bars at all: nothing on the path
+    /// from the caret to the root draws one, which takes a caret at the
+    /// top of a document whose root is folded or unbracketed.
     fn compute_cursor_bars(&self) -> Vec<CursorBar> {
         let mut bars = Vec::new();
         let mut idx = self.cursor;
         loop {
-            // `!bars.is_empty()` is the whole rule: the first bar found
-            // is the nearest, because the walk goes caret-outward.
-            if let Some(bar) = self.compute_bar(idx, /* far */ !bars.is_empty()) {
+            if let Some(bar) = self.compute_bar(idx) {
                 bars.push(bar);
             }
             match self.parent(idx) {
@@ -1475,7 +1435,7 @@ impl App {
     ///
     /// O(1) — no per-row walk up each row's ancestors, and no second
     /// definition of "in this node".
-    fn compute_bar(&self, idx: usize, far: bool) -> Option<CursorBar> {
+    fn compute_bar(&self, idx: usize) -> Option<CursorBar> {
         if idx >= self.tree.len() || !self.has_children(idx) || self.is_folded(idx) {
             return None;
         }
@@ -1490,7 +1450,6 @@ impl App {
             header,
             end: header + total,
             column: marker_column(text.split('\n').next()?) as usize,
-            far,
         })
     }
 
@@ -1510,11 +1469,9 @@ impl App {
     /// the preview*, which the reader would otherwise have to infer, and
     /// whether they are all of it.
     ///
-    /// It draws [`NEAR_BAR_GLYPH`], the heavy one. A preview is the node
-    /// the reader is deciding about, so it is the nearest thing on
-    /// screen by definition — and the overlay hides that node's
-    /// committed rows, so the heavy bar it would have drawn there is not
-    /// on screen to be doubled.
+    /// It draws [`NEAR_BAR_GLYPH`] (same as [`TIER_BAR_GLYPH`]). A
+    /// preview is the node the reader is deciding about, and the overlay
+    /// hides that node's committed rows, so no bar is doubled.
     fn overlay_margin_spans(&self, margin: String, index: usize) -> Vec<Span<'static>> {
         let Some(o) = self.preview_overlay.as_ref() else {
             return vec![Span::raw(margin)];
@@ -2737,17 +2694,34 @@ impl App {
     /// still darkening along the priority order. Green replaces the
     /// former red: the dot is about sweep activity, not a fault.
     ///
+    /// Priority order, highest first:
+    ///   1. Heat-cue `User` tier — bright green.
+    ///   2. Heat-cue `Visible` tier — dim green.
+    ///   3. Shadow-sweep trie walk (spec 0343 B6) — dark gray.
+    ///   4. Heat-cue `Prefetch` tier — dim blue.
+    ///   5. Bake in progress (spec 0249/0255) — light gray.
+    ///   6. Idle — blank.
+    ///
     fn render_activity_dot(&mut self, frame: &mut Frame, area: Rect) {
-        let style = self
-            .activity_shown
-            .and_then(|tier| {
-                let (hue, t) = match tier {
-                    tiered::Tier::User => (theme::HeatHue::Green, 1.0_f32),
-                    tiered::Tier::Visible => (theme::HeatHue::Green, 4.0 / 11.0),
-                    tiered::Tier::Prefetch => (theme::HeatHue::Blue, 4.0 / 11.0),
-                };
-                theme::heat_style(t, hue, self.theme)
-            })
+        // Priority: User/Visible heat > shadow sweep > Prefetch heat > bake.
+        let upper_heat = self.activity_shown.and_then(|tier| {
+            let (hue, t) = match tier {
+                tiered::Tier::User => (theme::HeatHue::Green, 1.0_f32),
+                tiered::Tier::Visible => (theme::HeatHue::Green, 4.0 / 11.0),
+                tiered::Tier::Prefetch => return None, // below shadow sweep
+            };
+            theme::heat_style(t, hue, self.theme)
+        });
+        let prefetch_heat = self.activity_shown.and_then(|tier| {
+            if tier == tiered::Tier::Prefetch {
+                theme::heat_style(4.0 / 11.0, theme::HeatHue::Blue, self.theme)
+            } else {
+                None
+            }
+        });
+        let style = upper_heat
+            .or_else(|| self.shadow_dot_style())
+            .or_else(|| prefetch_heat)
             .or_else(|| self.bake_dot_style());
         let span = match style {
             Some(style) => Span::styled(ACTIVITY_GLYPH, style),

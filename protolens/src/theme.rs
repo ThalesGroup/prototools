@@ -284,6 +284,12 @@ struct RgbPalette {
     /// says "provisional", not "wrong", and it appears only in the fold
     /// margin, never in an annotation.
     status_unbaked: Color,
+    /// The activity-dot color for the shadow-sweep trie walk (spec 0343
+    /// B6). Darker than `status_unbaked` so the two are visually
+    /// distinct: bake-in-progress (light gray) vs shadow-sweep-in-
+    /// progress (dark gray). Priority: above prefetch/bake, below
+    /// heat-cue user/visible.
+    shadow_sweep_dot: Color,
     /// The one luminance every color above *except the two tiers* is
     /// brought to, by [`doc_leveled`], before it is ever drawn.
     ///
@@ -379,6 +385,14 @@ const DARK_RGB: RgbPalette = RgbPalette {
     // it at 120 tell the reader different things. The ANSI-16 fallback
     // has to accept whichever it gets — see `status_color_in`.
     status_unbaked: Color::Rgb(0x8C, 0x8C, 0x8C), // Suva Gray
+    // Luma 50, well below `status_unbaked`'s 140 and the dark page's
+    // near-black background (~30), landing between them: dim but
+    // legible. The separation from `status_unbaked` is the whole point
+    // — the reader must be able to tell "shadow sweep running" from
+    // "bake running" without guessing. DarkGray (ANSI-16 fallback) is
+    // whatever the terminal makes of it; the two grays will collapse to
+    // one on 16-color terminals, which is acceptable.
+    shadow_sweep_dot: Color::Rgb(0x50, 0x50, 0x50), // Matterhorn
     doc_luma: 170.0,
 };
 
@@ -408,6 +422,12 @@ const LIGHT_RGB: RgbPalette = RgbPalette {
     // which is near-black here, and luma 140 is above that exactly as
     // it is below the dark page's near-white.
     status_unbaked: Color::Rgb(0x8C, 0x8C, 0x8C), // Suva Gray
+    // On a light page the foreground is near-black, so a darker gray
+    // is closer to the foreground than `status_unbaked`. We keep the
+    // same RGB value as the dark page: luma 50 sits above the near-
+    // black foreground and below the light background, so it is still
+    // legible and still distinctly darker than the unbaked gray.
+    shadow_sweep_dot: Color::Rgb(0x50, 0x50, 0x50), // Matterhorn
     doc_luma: 85.0,
 };
 
@@ -574,6 +594,20 @@ fn band_text(theme: ThemeKind, rgb: bool) -> Color {
 /// governs the two borrowed colors.
 pub fn status_color(status: Status, theme: ThemeKind) -> Option<Color> {
     status_color_in(status, theme, supports_rgb())
+}
+
+/// Spec 0343 B6: the color of the activity dot while the shadow-sweep
+/// trie walk is running. Darker than the bake dot so the two states are
+/// visually distinct on RGB terminals; collapses to `DarkGray` on ANSI-16.
+pub fn shadow_sweep_dot_style(theme: ThemeKind) -> Style {
+    let rgb = supports_rgb();
+    let color = pick(
+        theme,
+        rgb,
+        (DARK_RGB.shadow_sweep_dot, Color::DarkGray),
+        (LIGHT_RGB.shadow_sweep_dot, Color::DarkGray),
+    );
+    Style::default().fg(color)
 }
 
 fn status_color_in(status: Status, theme: ThemeKind, rgb: bool) -> Option<Color> {

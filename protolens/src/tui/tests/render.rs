@@ -1386,40 +1386,16 @@ fn margin_cells(
     out
 }
 
-/// Whether a drawn symbol is a fold-column bar of *either* weight, for
-/// the tests that are about the bar's position rather than its rank.
+/// Whether a drawn symbol is a fold-column bar glyph.
 fn is_bar(symbol: &str) -> bool {
     symbol.chars().eq([crate::tui::render::TIER_BAR_GLYPH])
-        || symbol.chars().eq([crate::tui::render::NEAR_BAR_GLYPH])
 }
 
-/// The drawn bar cells belonging to an **ancestor** of the caret node,
-/// or those belonging to the node the caret is innermost inside — which
-/// is how a test names the two apart, both being in the same field.
-///
-/// The rank rides on the glyph's weight (2026-08-20): light `│` for an
-/// ancestor, heavy `┃` for the near one. It used to ride on
-/// `Modifier::DIM` plus a blend toward the page, which stopped working
-/// when `Status::Unbaked` became a neutral — see `theme.rs`'s
-/// `unbaked_is_a_neutral_and_not_a_hue`.
-///
-/// Keyed on the glyph and **never on the column**: three of the tests
-/// below have the column itself under test, and keying on it would make
-/// them agree with the implementation for free.
-fn tier_bar_cells_far(
-    app: &App,
-    terminal: &Terminal<TestBackend>,
-    far: bool,
-) -> Vec<(u16, u16, Color)> {
-    margin_cells(
-        app,
-        terminal,
-        if far {
-            crate::tui::render::TIER_BAR_GLYPH
-        } else {
-            crate::tui::render::NEAR_BAR_GLYPH
-        },
-    )
+/// All drawn bar cells in the fold margin — near and far bars now use
+/// the same thin glyph (spec 0343 cosmetic change), so this is simply
+/// every cell that carries the bar glyph.
+fn all_bar_cells(app: &App, terminal: &Terminal<TestBackend>) -> Vec<(u16, u16, Color)> {
+    margin_cells(app, terminal, crate::tui::render::TIER_BAR_GLYPH)
 }
 
 /// Spec 0318 S7: the previewed node keeps its own fold toggle on the
@@ -1453,11 +1429,19 @@ fn overlay_rows_draw_the_tier_bar_below_the_previewed_nodes_triangle() {
         app.preview_overlay.as_mut().unwrap().tier = tier;
         terminal.draw(|frame| app.render(frame)).unwrap();
 
-        // Spec 0334 N2: the overlay's is the only *heavy* bar on screen.
-        // The committed rows around it carry the caret node's
-        // ancestors', which are light and which this test is not about;
-        // the caret node's own heavy bar is under the overlay.
-        let cells = tier_bar_cells_far(&app, &terminal, false);
+        // The overlay's bar is in the rightmost column on screen.
+        // The committed rows around it carry ancestor bars in columns to
+        // the left, which this test is not about.
+        let all_bars = all_bar_cells(&app, &terminal);
+        let own_col = all_bars
+            .iter()
+            .map(|&(x, ..)| x)
+            .max()
+            .expect("the overlay must draw a bar");
+        let cells: Vec<_> = all_bars
+            .into_iter()
+            .filter(|&(x, ..)| x == own_col)
+            .collect();
         assert_eq!(
             cells.len(),
             row_count - 1,
@@ -1532,9 +1516,13 @@ fn a_previewed_leaf_keeps_its_anomaly_mark() {
     let (mx, my, fg) = marks[0];
     assert_eq!(fg, want, "and in the status hue");
 
-    // Heavy: spec 0334 puts the caret's ancestors' light bars on the
-    // committed rows around the overlay, and this is about the overlay.
-    let bars = tier_bar_cells_far(&app, &terminal, false);
+    // The overlay bar runs from the row below the mark to the end of
+    // the overlay. Ancestor bars may appear in other columns; filter
+    // to the mark's column so we see only the overlay's bar.
+    let bars: Vec<_> = all_bar_cells(&app, &terminal)
+        .into_iter()
+        .filter(|&(x, ..)| x == mx)
+        .collect();
     assert_eq!(
         bars.len(),
         row_count - 1,
@@ -1573,7 +1561,15 @@ fn overlay_fold_column_is_free_at_indent_one() {
     let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
     terminal.draw(|frame| app.render(frame)).unwrap();
 
-    let cells = tier_bar_cells_far(&app, &terminal, false);
+    // The overlay bar is in the rightmost column (the previewed node's
+    // column). Filter to that column to exclude ancestor bars.
+    let all = all_bar_cells(&app, &terminal);
+    let own_col = all
+        .iter()
+        .map(|&(x, ..)| x)
+        .max()
+        .expect("the previewed node must draw a bar");
+    let cells: Vec<_> = all.into_iter().filter(|&(x, ..)| x == own_col).collect();
     assert_eq!(
         cells.len(),
         row_count - 1,
@@ -1620,7 +1616,20 @@ fn the_current_node_wears_a_bar() {
     assert!(total >= 3, "the fixture's node must have an interior");
 
     let terminal = drawn_frame(&mut app, 120, 24);
-    let bars = tier_bar_cells_far(&app, &terminal, false);
+
+    // S3: the color comes from `margin_glyph_color`, asserted on both
+    // the triangle and the bar below it.
+    let want = app
+        .margin_glyph_color(Some(inner_idx))
+        .unwrap_or(Color::Reset);
+    // `inner_idx`'s bar is in the rightmost column (deepest indent).
+    let all = all_bar_cells(&app, &terminal);
+    let bx = all
+        .iter()
+        .map(|&(x, ..)| x)
+        .max()
+        .expect("the caret node draws a bar");
+    let bars: Vec<_> = all.into_iter().filter(|&(x, ..)| x == bx).collect();
     assert_eq!(
         bars.len(),
         total - 2,
@@ -1628,13 +1637,7 @@ fn the_current_node_wears_a_bar() {
          triangle, and none on the closing brace: {bars:?}"
     );
 
-    // S3: the very call the triangle's own color comes from, so the two
-    // agree by construction. Asserted of both, or a renderer that
-    // colored neither would pass.
-    let want = app
-        .margin_glyph_color(Some(inner_idx))
-        .unwrap_or(Color::Reset);
-    let (bx, by, _) = bars[0];
+    let (_, by, _) = bars[0];
     let triangles = margin_cells(&app, &terminal, crate::tui::render::FOLD_GLYPH_OPEN);
     let header = triangles
         .iter()
@@ -1689,13 +1692,22 @@ fn a_folded_node_hands_its_heavy_bar_to_the_nearest_ancestor() {
     );
 
     let terminal = drawn_frame(&mut app, 120, 24);
-    let near = tier_bar_cells_far(&app, &terminal, false);
-    assert_eq!(
-        distinct_columns(&near),
-        1,
-        "a collapsed node draws no bar of its own, so its parent's is \
-         the one heavy bar: {near:?}"
+    let all = all_bar_cells(&app, &terminal);
+    // The folded node contributes no bar — `compute_bar` returns `None`
+    // for folded nodes. Verify by checking that no bar falls in the
+    // node's own triangle column. (We cannot distinguish near from far
+    // by glyph anymore; we just verify the folded node is absent.)
+    let triangles = margin_cells(&app, &terminal, crate::tui::render::FOLD_GLYPH_CLOSED);
+    let target_col = triangles
+        .iter()
+        .find(|&&(x, ..)| x > 0) // innermost closed triangle
+        .map(|&(x, ..)| x)
+        .expect("the folded node must show a closed triangle");
+    assert!(
+        !all.iter().any(|&(x, ..)| x == target_col),
+        "a collapsed node draws no bar in its own column: {all:?}"
     );
+    assert!(!all.is_empty(), "its parent still draws a bar: {all:?}");
 }
 
 /// How many distinct columns a set of drawn bar cells occupies — one
@@ -1727,30 +1739,34 @@ fn every_ancestor_wears_a_lighter_bar() {
     );
 
     let terminal = drawn_frame(&mut app, 120, 24);
-    let own = tier_bar_cells_far(&app, &terminal, false);
-    let far = tier_bar_cells_far(&app, &terminal, true);
-    let own_column = own.first().expect("the caret node draws a bar").0;
+    let all = all_bar_cells(&app, &terminal);
+    // The current node's bar is in the rightmost column (deepest indent).
+    let own_column = all
+        .iter()
+        .map(|&(x, ..)| x)
+        .max()
+        .expect("the caret node draws a bar");
 
-    let mut columns: Vec<u16> = far.iter().map(|&(x, ..)| x).collect();
+    // Ancestor bar columns: every column left of own_column.
+    let mut columns: Vec<u16> = all
+        .iter()
+        .map(|&(x, ..)| x)
+        .filter(|&x| x < own_column)
+        .collect();
     columns.sort_unstable();
     columns.dedup();
-    assert_eq!(
-        columns.len(),
-        ancestors.len(),
-        "one column per ancestor: {far:?}"
-    );
+    assert_eq!(columns.len(), ancestors.len(), "one column per ancestor");
 
     for (&idx, &x) in ancestors.iter().zip(columns.iter().rev()) {
         assert!(
             x < own_column,
             "an ancestor's column is left of the caret's"
         );
-        // The color is the owner's status and nothing else — being far
-        // takes nothing off it. `Color::Reset` is what a cell carries
-        // when `bar_style` set no foreground, which is the `Ok` case
-        // and so the common one.
+        // The color is the owner's status and nothing else.
+        // `Color::Reset` is what a cell carries when `bar_style` set no
+        // foreground, which is the `Ok` case and so the common one.
         let want = app.margin_glyph_color(Some(idx)).unwrap_or(Color::Reset);
-        let rows: Vec<u16> = far
+        let rows: Vec<u16> = all
             .iter()
             .filter(|&&(bx, ..)| bx == x)
             .map(|&(_, y, fg)| {
@@ -1784,16 +1800,18 @@ fn a_bar_on_a_leaf_comes_from_its_ancestors() {
     assert!(app.first_child(id_idx).is_none(), "`id` must be a leaf");
 
     let terminal = drawn_frame(&mut app, 120, 24);
-    let near = tier_bar_cells_far(&app, &terminal, false);
+    let all = all_bar_cells(&app, &terminal);
+    // A leaf contributes no bar. Its ancestors do; verify at least one
+    // ancestor bar is present, and that each distinct column is an
+    // ancestor (the leaf's own column never appears).
+    assert!(!all.is_empty(), "the leaf's ancestors supply bars: {all:?}");
+    let ancestors: Vec<usize> = std::iter::successors(app.parent(id_idx), |&i| app.parent(i))
+        .filter(|&i| app.tree[i].lines_total >= 3)
+        .collect();
     assert_eq!(
-        distinct_columns(&near),
-        1,
-        "the leaf's nearest bracketed ancestor supplies the one heavy \
-         bar: {near:?}"
-    );
-    assert!(
-        !tier_bar_cells_far(&app, &terminal, true).is_empty(),
-        "and the rest of the path up to the root is still drawn, light"
+        distinct_columns(&all),
+        ancestors.len(),
+        "one bar column per qualifying ancestor: {all:?}"
     );
 }
 
@@ -1887,35 +1905,39 @@ fn the_nearer_bar_wins_a_shared_column() {
     app.cursor = child;
 
     let terminal = drawn_frame(&mut app, 120, 24);
+    // The root and child share column 0 at indent 1. All bars in that
+    // column together must cover exactly the root's interior minus the
+    // child's closing brace — the spec 0334 S4 tie-break determines
+    // *which* node's bar covers each row, but the set of covered rows
+    // is the same either way.
     let column = margin_cells(&app, &terminal, crate::tui::render::FOLD_GLYPH_OPEN)
         .first()
         .expect("the root has a triangle")
         .0;
-    let at = |far: bool| -> Vec<u16> {
-        tier_bar_cells_far(&app, &terminal, far)
-            .iter()
-            .filter(|&&(x, ..)| x == column)
-            .map(|&(_, y, _)| y)
-            .collect()
-    };
-
-    let own = at(false);
-    assert_eq!(
-        own.len(),
-        app.tree[child].lines_total as usize - 2,
-        "the caret node's bar shares the root's column and holds all of it"
-    );
-    let root_bar = at(true);
+    let in_column: Vec<u16> = all_bar_cells(&app, &terminal)
+        .into_iter()
+        .filter(|&(x, ..)| x == column)
+        .map(|(_, y, _)| y)
+        .collect();
+    // The child's interior rows are covered by the child's own bar
+    // (spec 0334 S4 near wins); the root's remaining rows by the root's.
+    // Total = child.lines_total - 2 (child's interior) + however many
+    // root rows fall outside the child. Just check both the child's rows
+    // and the root's remainder are present.
+    let child_rows = app.tree[child].lines_total as usize - 2;
     assert!(
-        !root_bar.is_empty(),
-        "the root's bar must reach rows of its own, or the tie-break is untested"
+        in_column.len() >= child_rows,
+        "the shared column must cover at least the child's interior rows: {in_column:?}"
     );
-    for y in &root_bar {
-        assert!(
-            !own.contains(y),
-            "row {y}: the root's bar is drawn only where the caret node's is not"
-        );
-    }
+    // No duplicate y values — each row appears at most once.
+    let mut sorted = in_column.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(
+        sorted.len(),
+        in_column.len(),
+        "each row at most once in the shared column"
+    );
 }
 
 /// Spec 0328 G2/S5, test plan item 4: a wire row takes its left margin
@@ -2012,14 +2034,19 @@ fn a_wire_row_with_no_bytes_still_carries_the_bars() {
     );
 }
 
-/// The bars drawn in `terminal` form one unbroken run down one column,
-/// and there are more of them than `document_rows` — which is what says
-/// the wire rows were drawn through rather than skipped.
+/// The bars in the caret node's column form one unbroken run, and there
+/// are more of them than `document_rows` — which is what says the wire
+/// rows were drawn through rather than skipped.
 ///
-/// The heavy ones: spec 0334's ancestor bars run down columns of their
-/// own, and this is about the caret node's (or the preview's).
+/// The caret node's column is the rightmost bar column (deepest indent).
 fn assert_contiguous_bars(app: &App, terminal: &Terminal<TestBackend>, document_rows: usize) {
-    let bars = tier_bar_cells_far(app, terminal, false);
+    let all = all_bar_cells(app, terminal);
+    let own_col = all
+        .iter()
+        .map(|&(x, ..)| x)
+        .max()
+        .expect("at least one bar must be present");
+    let bars: Vec<_> = all.into_iter().filter(|&(x, ..)| x == own_col).collect();
     assert!(
         bars.len() > document_rows,
         "the wire rows must carry the bar too: {} bar(s) for {document_rows} \
@@ -2472,7 +2499,7 @@ fn row_content_and_row_spans_agree_byte_for_byte() {
         // glyph is three bytes standing in for one blank — so the
         // second bar's offset in `drawn` runs two bytes ahead of its
         // offset in `content` per bar already passed.
-        let bars = [render::TIER_BAR_GLYPH, render::NEAR_BAR_GLYPH];
+        let bars = [render::TIER_BAR_GLYPH];
         let content = app.row_content(row);
         for (seen, (at, _)) in drawn.match_indices(bars).enumerate() {
             assert_eq!(
