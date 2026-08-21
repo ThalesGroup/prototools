@@ -1778,3 +1778,133 @@ fn a_commit_leaves_the_fold_set_exactly_as_it_found_it() {
         "a sibling subtree is none of this splice's business"
     );
 }
+
+/// A commit on a node the reader has opened must not disturb the rows
+/// *after* it. Spec 0338's regression: the siblings following the
+/// spliced node vanished, and the document ended early.
+///
+/// The mechanism, which is why the fixture is shaped the way it is.
+/// `overlay_spans` writes the new subtree's counts absolutely and tells
+/// no ancestor, so while the settlement runs, `idx`'s subtree is in one
+/// reference frame and everything above it is still in the pre-splice
+/// one. A settlement climb that crossed `idx` therefore wrote a
+/// difference that was not a line count of anything up there. Those
+/// strays used to cancel against the parent re-sum that follows —
+/// until one of them was large enough to take an ancestor's
+/// `lines_visible` below zero, where `adjust` clamps. A clamp is
+/// information thrown away, the second difference no longer matches the
+/// first, and the remainder is permanent.
+///
+/// So the fixture needs three things at once: an ancestor above `idx`'s
+/// parent to be corrupted (`assert_line_counts_are_exact` finds it),
+/// enough rows hidden by the new subtree's own folds to overshoot, and
+/// an open ancestor chain — a *folded* ancestor absorbs the difference
+/// and zeroes it, which is the case that always worked.
+#[test]
+fn a_commit_on_an_open_node_keeps_the_rows_after_it() {
+    use prost_types::field_descriptor_proto::{Label, Type};
+
+    let leafy = |name: &str, number: i32| field(name, number, Label::Optional, Type::Int32);
+    let fds = proto3_fds(
+        "test_commit_keeps_the_tail.proto",
+        vec![
+            message(
+                "Outer",
+                vec![field_of(
+                    "m",
+                    1,
+                    Label::Optional,
+                    Type::Message,
+                    ".test.Mid",
+                )],
+            ),
+            message(
+                "Mid",
+                vec![
+                    field("blob", 1, Label::Optional, Type::Bytes),
+                    field("filler", 2, Label::Optional, Type::Int32),
+                ],
+            ),
+            message(
+                "Big",
+                vec![
+                    field_of("a", 1, Label::Optional, Type::Message, ".test.Leafy"),
+                    field_of("b", 2, Label::Optional, Type::Message, ".test.Leafy"),
+                ],
+            ),
+            message(
+                "Leafy",
+                vec![
+                    leafy("v1", 1),
+                    leafy("v2", 2),
+                    leafy("v3", 3),
+                    leafy("v4", 4),
+                ],
+            ),
+        ],
+    );
+
+    // Leafy{1,2,3,4}; Big{a: Leafy, b: Leafy}; Mid{blob: <Big>, filler: 9};
+    // Outer{m: <Mid>}. `blob` is a `bytes` field whose contents happen to
+    // parse, which is exactly the node an override is aimed at.
+    let leafy_bytes = [0x08u8, 0x01, 0x10, 0x02, 0x18, 0x03, 0x20, 0x04];
+    let mut big = vec![0x0Au8, 0x08];
+    big.extend_from_slice(&leafy_bytes);
+    big.push(0x12);
+    big.push(0x08);
+    big.extend_from_slice(&leafy_bytes);
+    let mut mid = vec![0x0Au8, big.len() as u8];
+    mid.extend_from_slice(&big);
+    mid.extend_from_slice(&[0x10, 0x09]);
+    let mut blob = vec![0x0Au8, mid.len() as u8];
+    blob.extend_from_slice(&mid);
+
+    // `closed_fixture_under`, not `fixture_under`: the bug needs the
+    // fold set spec 0338 gives a freshly opened document — born full —
+    // because it is the new subtree's *own* folds that hide the rows
+    // that overshoot. A fixture unfolded on arrival hides none.
+    let mut app = closed_fixture_under("commit-keeps-tail", &fds, "test.Outer", &blob);
+    let outer = app.first_node;
+    let mid_idx = app.first_child(outer).expect("Outer holds m");
+    let idx = app.first_child(mid_idx).expect("Mid holds blob");
+    let filler = app.next_sibling(idx).expect("blob is followed by filler");
+
+    // What the reader did: landed on `blob`, which unfolds its
+    // ancestors, and opened nothing else.
+    for n in [idx, mid_idx, outer] {
+        if app.set_folded(n, false) {
+            app.refresh_line_counts(n);
+        }
+    }
+    let filler_text = app.line_text(LinePos::header(filler)).into_owned();
+    assert!(
+        visible_text(&app).contains(&filler_text),
+        "the sibling after the override target starts out visible"
+    );
+
+    app.splice_override(idx, Some("test.Big".to_string()), None)
+        .expect("the commit must succeed");
+
+    // The symptom. `assert_line_counts_are_exact`, which the splice runs
+    // for itself, is the sharper check — but it names a count, and this
+    // names what the reader lost.
+    let after = visible_text(&app);
+    assert!(
+        after.contains(&filler_text),
+        "the sibling after the spliced node must survive the commit: {after:?}"
+    );
+    assert!(
+        after.trim_end().ends_with('}'),
+        "and the document must still close: {after:?}"
+    );
+}
+
+/// Every row the main pane would draw, joined — the reader's view of
+/// the committed document, folds applied.
+fn visible_text(app: &App) -> String {
+    app.visible_window(0, app.visible_row_count())
+        .into_iter()
+        .map(|(_, pos)| app.line_text(pos).into_owned())
+        .collect::<Vec<_>>()
+        .join("\n")
+}

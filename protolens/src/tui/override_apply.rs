@@ -1208,17 +1208,33 @@ impl App {
         // children and needs them already right. `collect_descendants`
         // is a pre-order walk, so reversing it is exactly that order. A
         // node with nothing folded beneath it is already correct and its
-        // climb stops at once; a folded one's climb repairs everything
-        // above it, `idx` and its ancestors included.
+        // climb stops at once; a folded one's climb carries the rows it
+        // hid up to `idx`.
+        //
+        // Up to `idx` and no further — the ceiling is load-bearing.
+        // `overlay_spans` wrote this subtree's counts absolutely and
+        // told no ancestor, so until the parent re-sum below runs, the
+        // subtree and the document above it are in two different
+        // reference frames, and a difference taken in one is not a line
+        // count in the other. `refresh_line_counts_up_to`'s own doc
+        // comment has why letting it through corrupts rather than
+        // merely disturbs: `adjust` clamps at zero, so the stray
+        // difference does not fully cancel against the parent re-sum's.
         let mut revealed = Vec::new();
         self.collect_descendants(idx, &mut revealed);
         for &d in revealed.iter().rev() {
             if self.is_folded(d) {
-                self.refresh_line_counts(d);
+                self.refresh_line_counts_up_to(d, Some(idx));
             }
         }
+        // `idx` itself last. A folded node absorbs the visible
+        // difference of everything beneath it without moving its own
+        // count (spec 0193), so the climbs above stopped at `idx`
+        // leaving it holding the *open* count `overlay_spans` wrote.
+        // This is what collapses it to its single row — and with the
+        // ceiling at `idx` it is now a purely local recount.
         if self.is_folded(idx) {
-            self.refresh_line_counts(idx);
+            self.refresh_line_counts_up_to(idx, Some(idx));
         }
 
         // `idx` itself was just retyped, so a cue resolved for it before

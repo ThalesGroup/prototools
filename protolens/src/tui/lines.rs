@@ -147,6 +147,33 @@ impl App {
     /// such an ancestor shows one line whatever happens beneath it (spec
     /// 0193).
     pub(super) fn refresh_line_counts(&mut self, idx: usize) {
+        self.refresh_line_counts_up_to(idx, None);
+    }
+
+    /// `refresh_line_counts` with the climb stopped at `ceiling`: that
+    /// node is adjusted, and nothing above it is touched. `None` climbs
+    /// to the root, which is the plain form above.
+    ///
+    /// A bounded climb is what a splice needs while it settles the
+    /// subtree it has just written. `overlay_spans` writes every new
+    /// slot's count *absolutely* and tells no ancestor, so for the
+    /// length of the settlement `idx`'s subtree is in one reference
+    /// frame and everything above `idx` is still in the pre-splice one.
+    /// A difference taken inside the new frame means nothing in the old
+    /// one, and carrying it up writes a number that is not a line count
+    /// of anything.
+    ///
+    /// Those numbers used to cancel: `splice_override` finishes by
+    /// re-summing `idx`'s parent, which takes its own difference against
+    /// whatever the stray climbs had left there, so the two errors
+    /// annihilated on the way to the root. `adjust`'s clamp is what
+    /// makes that unsound — a difference large enough to take an
+    /// ancestor's `lines_visible` below zero is truncated, the second
+    /// error is then smaller than the first, and the remainder is
+    /// permanent. It is easily large enough: the stray difference is
+    /// sized by the *open* subtree, while the ancestor it lands on is
+    /// sized by what the reader currently has unfolded.
+    pub(super) fn refresh_line_counts_up_to(&mut self, idx: usize, ceiling: Option<usize>) {
         let (want_total, want_visible) = if self.tree[idx].is_bracketed() {
             let mut total = 0u32;
             let mut visible = 0u32;
@@ -171,7 +198,11 @@ impl App {
         node.lines_total = want_total;
         node.lines_visible = want_visible;
 
-        let mut cur = self.parent(idx);
+        let mut cur = if ceiling == Some(idx) {
+            None
+        } else {
+            self.parent(idx)
+        };
         while let Some(n) = cur {
             if d_total == 0 && d_visible == 0 {
                 return;
@@ -186,7 +217,11 @@ impl App {
                 let visible = adjust(self.tree[n].lines_visible, d_visible);
                 self.tree_mut()[n].lines_visible = visible;
             }
-            cur = self.parent(n);
+            cur = if ceiling == Some(n) {
+                None
+            } else {
+                self.parent(n)
+            };
         }
     }
 
