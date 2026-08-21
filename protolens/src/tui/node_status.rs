@@ -84,16 +84,19 @@ impl App {
     pub(super) fn rebuild_status(&mut self) {
         for idx in (0..self.tree.len()).rev() {
             let is_stop = self.auto_folded.word(idx / 64) & (1 << (idx % 64)) != 0;
+            // Spec 0343 B9: shadow bit read word-at-a-time alongside the
+            // stop bit so the fast path still costs one sequential read.
+            let is_shadowed = self.shadow_word(idx / 64) & (1 << (idx % 64)) != 0;
             // `node_text` is the load `own_status` would make first, so
             // the fast path costs one sequential read and two stores.
-            // The stop bit is checked rather than inferred from the
-            // text, so the `Unbaked` rung is never assumed away.
-            if self.node_text[idx].is_none() && !is_stop {
+            // Both stop and shadow bits are checked rather than inferred
+            // from the text, so neither rung is assumed away.
+            if self.node_text[idx].is_none() && !is_stop && !is_shadowed {
                 self.status_own[idx] = Status::Ok;
                 self.status_rolled[idx] = Status::Ok;
                 continue;
             }
-            let own = self.own_status(idx, is_stop);
+            let own = self.own_status(idx, is_stop, is_shadowed);
             self.status_own[idx] = own;
             self.status_rolled[idx] = own.max(self.children_status(idx));
         }
@@ -111,7 +114,7 @@ impl App {
     /// Returns `idx`'s rolled status, so a parent's `max` needs no
     /// second read.
     pub(super) fn refresh_status_subtree(&mut self, idx: usize) -> Status {
-        let own = self.own_status(idx, self.auto_folded.contains(idx));
+        let own = self.own_status(idx, self.auto_folded.contains(idx), self.is_shadowed(idx));
         self.status_own[idx] = own;
         let mut rolled = own;
         for child in self.child_slots(idx) {
@@ -172,7 +175,11 @@ impl App {
     /// `is_stop` is `auto_folded.contains(idx)`, taken as a parameter
     /// rather than asked here so that `rebuild_status` can answer it
     /// from a bitset. There is still one statement of the status rule.
-    fn own_status(&self, idx: usize, is_stop: bool) -> Status {
+    ///
+    /// `shadowed` is `is_shadowed(idx)`, taken as a parameter for the
+    /// same reason: `rebuild_status` reads the shadow word once per 64
+    /// slots alongside the stop word (spec 0343 B9).
+    fn own_status(&self, idx: usize, is_stop: bool, shadowed: bool) -> Status {
         let mut worst = match self.node_text[idx].as_deref() {
             Some(text) => {
                 let text_says = text.split('\n').map(row_status).max().unwrap_or_default();
@@ -188,6 +195,12 @@ impl App {
         // is never the reason a vacant slot gets a status.
         if is_stop {
             worst = worst.max(Status::Unbaked);
+        }
+        // Spec 0343 B9: a shadowed scalar is at least NonCanonical.
+        // The ◆ on a leaf follows from this rung through the normal
+        // status_of / theme::status_color path — no new display code.
+        if shadowed {
+            worst = worst.max(Status::NonCanonical);
         }
         worst
     }

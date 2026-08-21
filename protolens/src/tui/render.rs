@@ -902,7 +902,8 @@ impl App {
     /// `owner` must be what `display_row_source` would have returned —
     /// `None` for an overlay row or a footer line, the owning node for a
     /// header line. Passing a wrong node changes only the fold glyph and
-    /// hence the `{ ... }` collapse summary, never the underlying text.
+    /// hence the `{ ... }` collapse summary (and spec 0343 B10's
+    /// `; shadowed_scalar` word), never the underlying text.
     pub(super) fn row_text_of(&self, row: DisplayRow, owner: Option<usize>) -> String {
         let source = self.display_row_text(row);
         let content = if !self.annotations {
@@ -915,6 +916,16 @@ impl App {
             match text.rfind('{') {
                 Some(pos) => text.insert_str(pos + 1, " ... }"),
                 None => text.push_str(" ... }"),
+            }
+        }
+        // Spec 0343 B10: mirror the insertion that `row_spans` makes,
+        // so that `row_content` and `row_spans` stay byte-identical and
+        // the caret can walk the suffix.  Only when annotations are on
+        // (same condition as above) and only for a shadowed slot.
+        if self.annotations {
+            if let Some(idx) = owner.filter(|&i| self.is_shadowed(i)) {
+                text.push_str("; shadowed_scalar");
+                let _ = idx;
             }
         }
         text
@@ -1164,6 +1175,29 @@ impl App {
             if o.ellipsis_row == Some(i) {
                 let style = self.preview_bar_color(o).map(|c| Style::default().fg(c));
                 insertions.push((content.len(), "...".to_string(), style));
+            }
+        }
+
+        // Spec 0343 B10: a shadowed scalar appends `; shadowed_scalar`
+        // to the row's existing `#@` clause — the mark is a later token
+        // in the v2 format, so it takes the intra-comment separator
+        // `"; "` (no leading space, since the annotations.rs helpers
+        // already add one before the first token).
+        //
+        // Only when annotations are on: `row_spans` already strips the
+        // `#@` clause when !self.annotations, so the mark would attach
+        // to nothing. The margin ◆ comes from the shadow bit via B9's
+        // status rung and is independent of this toggle.
+        //
+        // Only for a Committed row owning a shadowed slot. An overlay
+        // row is never shadowed (B5 drops any link with a message end,
+        // and an overlay is a preview of a message).
+        if self.annotations {
+            if let Some(idx) = node.filter(|&i| self.is_shadowed(i)) {
+                let style = theme::status_color(Status::NonCanonical, self.theme)
+                    .map(|c| Style::default().fg(c));
+                insertions.push((content.len(), "; shadowed_scalar".to_string(), style));
+                let _ = idx; // used only for the filter above
             }
         }
 

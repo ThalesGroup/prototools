@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0343 — the last one wins, and the others say so
 
-Status: draft
+Status: implemented
+Implemented in: 2026-08-21
 App: prototext-core, protolens
 Refs: docs/specs/0225-the-wire-bytes-are-shown-under-each-line.md (the
         annotation vocabulary and its drift test, which the new keyword

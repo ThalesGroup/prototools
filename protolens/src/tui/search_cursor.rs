@@ -118,6 +118,18 @@ pub(super) struct DocCursor<'a> {
     /// Somewhere for a derived closing brace to live, since `chunk`
     /// hands out a borrow and 0222 stores that text nowhere.
     close: String,
+    /// Spec 0343 B11: scratch for `node_text + "; shadowed_scalar"` on
+    /// a marked own-text chunk, filled by `reload_mark`. Empty when the
+    /// current place is not a marked non-close node. `bytes()` returns
+    /// this instead of the raw text when non-empty.
+    mark: String,
+    /// The shadow bitset (spec 0343 B7). `None` before the filter runs
+    /// or when no slots are marked.
+    shadowed: Option<Arc<Vec<AtomicU64>>>,
+    /// Mirror of `App::annotations`: the mark suffix is only visible
+    /// when annotations are on, so the cursor must ask the same question
+    /// or the haystack and the display disagree (spec 0343 B11).
+    annotations: bool,
     /// Spec 0274 S7: the epoch cell and the value it must still hold.
     /// The cursor is the abort point, so a search that has been
     /// superseded ends the same way one that ran out of data does.
@@ -131,6 +143,19 @@ impl<'a> DocCursor<'a> {
         seg: Segment,
         abort: Option<(&'a AtomicU64, u64)>,
     ) -> Self {
+        Self::with_marks(st, text, None, false, seg, abort)
+    }
+
+    /// Like [`Self::new`] but with the shadow bitset and annotations
+    /// flag so the cursor includes `; shadowed_scalar` suffixes (B11).
+    pub(super) fn with_marks(
+        st: Structure<'a>,
+        text: &'a [Option<Box<str>>],
+        shadowed: Option<Arc<Vec<AtomicU64>>>,
+        annotations: bool,
+        seg: Segment,
+        abort: Option<(&'a AtomicU64, u64)>,
+    ) -> Self {
         let mut cur = DocCursor {
             st,
             text,
@@ -140,9 +165,13 @@ impl<'a> DocCursor<'a> {
             on_sep: false,
             offset: 0,
             close: String::new(),
+            mark: String::new(),
+            shadowed,
+            annotations,
             abort,
         };
         cur.reload_close();
+        cur.reload_mark();
         // An empty first row is a real row: the haystack opens with the
         // `\n` that follows it. `advance` is what puts the cursor there
         // without moving `offset` off zero.
@@ -159,6 +188,11 @@ impl<'a> DocCursor<'a> {
         if self.at.close {
             return self.close.as_bytes();
         }
+        // Spec 0343 B11: return the combined scratch when the node is
+        // marked and annotations are on — `reload_mark` filled it.
+        if !self.mark.is_empty() {
+            return self.mark.as_bytes();
+        }
         match self.text[self.at.node].as_deref() {
             Some(text) => text.as_bytes(),
             None => b"",
@@ -174,9 +208,33 @@ impl<'a> DocCursor<'a> {
         }
     }
 
+    /// Spec 0343 B11: fill `mark` with `node_text + "; shadowed_scalar"`
+    /// when the current place is a marked own-text node and annotations
+    /// are on.  Called at the same four points as `reload_close`.
+    fn reload_mark(&mut self) {
+        self.mark.clear();
+        if self.at.close || !self.annotations {
+            return;
+        }
+        let node = self.at.node;
+        let Some(bitset) = &self.shadowed else { return };
+        let word = bitset
+            .get(node / 64)
+            .map_or(0, |w| w.load(std::sync::atomic::Ordering::Relaxed));
+        if word & (1 << (node % 64)) == 0 {
+            return;
+        }
+        // Node is marked: build the combined scratch.
+        if let Some(text) = self.text[node].as_deref() {
+            self.mark.push_str(text);
+        }
+        self.mark.push_str("; shadowed_scalar");
+    }
+
     fn restore(&mut self, saved: (Place, bool, usize)) {
         (self.at, self.on_sep, self.offset) = saved;
         self.reload_close();
+        self.reload_mark();
     }
 
     #[inline]
@@ -217,6 +275,7 @@ impl regex_cursor::Cursor for DocCursor<'_> {
             } else if let Some(next) = self.at.next(&self.st) {
                 self.at = next;
                 self.reload_close();
+                self.reload_mark();
                 self.on_sep = true;
             } else {
                 self.restore(saved);
@@ -243,6 +302,7 @@ impl regex_cursor::Cursor for DocCursor<'_> {
                     Some(prev) => {
                         self.at = prev;
                         self.reload_close();
+                        self.reload_mark();
                         self.on_sep = false;
                     }
                     None => {
@@ -414,6 +474,10 @@ impl App {
             return (pos, base..base + self.chunk_len(at));
         }
         let text = self.node_text[at.node].as_deref().unwrap_or("");
+        // Spec 0343 B11: a match landing inside `; shadowed_scalar` has
+        // no real byte to name, so clamp to the row's end.  The clamp
+        // must precede the two slices below, which would panic otherwise.
+        let local = local.min(text.len());
         // A packed run is one node holding many rows (spec 0216 S22), so
         // the row is however many newlines precede `local`.
         let before = &text[..local];
@@ -427,13 +491,33 @@ impl App {
     }
 
     /// A chunk's length in bytes, without building it.
+    ///
+    /// Spec 0343 B11: adds `"; shadowed_scalar".len()` on a marked
+    /// own-text node when annotations are on — one bit test, no text
+    /// built.
     fn chunk_len(&self, at: Place) -> usize {
         let text = self.node_text[at.node].as_deref().unwrap_or("");
         if at.close {
             // `derived_close` is the header's indent and one `}`.
             return text.len() - text.trim_start_matches(' ').len() + 1;
         }
-        text.len()
+        let base = text.len();
+        if self.annotations {
+            let extra = self
+                .shadowed
+                .as_ref()
+                .and_then(|b| b.get(at.node / 64))
+                .map_or(0, |w| {
+                    if w.load(std::sync::atomic::Ordering::Relaxed) & (1 << (at.node % 64)) != 0 {
+                        "; shadowed_scalar".len()
+                    } else {
+                        0
+                    }
+                });
+            base + extra
+        } else {
+            base
+        }
     }
 
     /// Spec 0274 S9: hand one segment to a thread of its own.
@@ -459,6 +543,10 @@ impl App {
         let arena = Arc::clone(&self.arena);
         let text = Arc::clone(&self.node_text);
         let re = Arc::clone(re);
+        // Spec 0343 B11: shadow bitset is `Arc`, so the clone is a
+        // refcount bump — no copy of the bitset itself.
+        let shadowed = self.shadowed.clone();
+        let annotations = self.annotations;
         let epoch = Arc::new(AtomicU64::new(SCAN_LIVE));
         let held = Arc::clone(&epoch);
         let (tx, result) = mpsc::channel();
@@ -475,9 +563,12 @@ impl App {
             let abort = Some((&*held, SCAN_LIVE));
             let found = match dir {
                 SearchDir::Forward => {
-                    find_in_segment(st, &text, &re, seg, lo, abort).filter(|r| r.start < hi)
+                    find_in_segment(st, &text, shadowed, annotations, &re, seg, lo, abort)
+                        .filter(|r| r.start < hi)
                 }
-                SearchDir::Backward => find_last_in_segment(st, &text, &re, seg, lo, hi, abort),
+                SearchDir::Backward => {
+                    find_last_in_segment(st, &text, shadowed, annotations, &re, seg, lo, hi, abort)
+                }
             };
             // The answer goes out *before* the wake-up, so the main
             // thread's `try_recv` on this channel cannot see the event
@@ -506,11 +597,31 @@ impl App {
         hi: usize,
     ) -> Option<Range<usize>> {
         let st = self.structure();
+        let shadowed = self.shadowed.clone();
+        let annotations = self.annotations;
         match dir {
-            SearchDir::Forward => {
-                find_in_segment(st, &self.node_text, re, seg, lo, None).filter(|r| r.start < hi)
-            }
-            SearchDir::Backward => find_last_in_segment(st, &self.node_text, re, seg, lo, hi, None),
+            SearchDir::Forward => find_in_segment(
+                st,
+                &self.node_text,
+                shadowed,
+                annotations,
+                re,
+                seg,
+                lo,
+                None,
+            )
+            .filter(|r| r.start < hi),
+            SearchDir::Backward => find_last_in_segment(
+                st,
+                &self.node_text,
+                shadowed,
+                annotations,
+                re,
+                seg,
+                lo,
+                hi,
+                None,
+            ),
         }
     }
 }
@@ -576,12 +687,14 @@ impl Drop for SegmentScan {
 pub(super) fn find_in_segment(
     st: Structure<'_>,
     text: &[Option<Box<str>>],
+    shadowed: Option<Arc<Vec<AtomicU64>>>,
+    annotations: bool,
     re: &CursorRegex,
     seg: Segment,
     from: usize,
     abort: Option<(&AtomicU64, u64)>,
 ) -> Option<Range<usize>> {
-    let mut cursor = DocCursor::new(st, text, seg, abort);
+    let mut cursor = DocCursor::with_marks(st, text, shadowed, annotations, seg, abort);
     let mut input = CursorInput::new(&mut cursor);
     input.set_start(from);
     re.find(input).map(|m| m.range())
@@ -595,13 +708,15 @@ pub(super) fn find_in_segment(
 pub(super) fn find_last_in_segment(
     st: Structure<'_>,
     text: &[Option<Box<str>>],
+    shadowed: Option<Arc<Vec<AtomicU64>>>,
+    annotations: bool,
     re: &CursorRegex,
     seg: Segment,
     from: usize,
     before: usize,
     abort: Option<(&AtomicU64, u64)>,
 ) -> Option<Range<usize>> {
-    let mut cursor = DocCursor::new(st, text, seg, abort);
+    let mut cursor = DocCursor::with_marks(st, text, shadowed, annotations, seg, abort);
     let mut input = CursorInput::new(&mut cursor);
     input.set_start(from);
     let mut last = None;

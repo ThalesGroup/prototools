@@ -2051,6 +2051,24 @@ pub struct App {
     /// segments on this thread instead. Same shape as
     /// `heat_worker.is_some()`.
     search_progress: Option<mpsc::Sender<event::AppEvent>>,
+    /// Spec 0343 B4/B6: the structural pass in progress, `None` before
+    /// the first idle turn (B6 stage 1) and after the pass completes.
+    /// Its links feed B5's filter once `is_complete()` returns true.
+    shadow_sweep: Option<shadow_sweep::ShadowSweep>,
+    /// Spec 0343 B7: one bit per arena slot, set by the B5 filter when
+    /// a slot is shadowed.  `None` until B6 stage 3 first runs.  The
+    /// `Arc` lets the segment scan share ownership without a copy;
+    /// `AtomicU64` satisfies the borrow checker while the sweep and the
+    /// renderer run on the same thread with `Relaxed` ordering.
+    ///
+    /// Accessor: `is_shadowed(idx)` / `shadow_word(w)` — both return
+    /// 0/false before stage 3 runs, which is the correct answer
+    /// (nothing has been filtered yet).
+    shadowed: Option<Arc<Vec<std::sync::atomic::AtomicU64>>>,
+    /// Spec 0343 B6 stage 3: whether the filter has already run in
+    /// this document load.  Cleared by `invalidate_shadow_bits` on
+    /// every override, so the filter re-runs after each splice.
+    shadow_filter_done: bool,
     /// Active Tab-completion cycle state (spec 0113 D26); `None` when not
     /// currently cycling.
     completion: Option<CompletionState>,
@@ -2446,6 +2464,9 @@ impl App {
             search_dirty: false,
             search_center: false,
             search_progress: None,
+            shadow_sweep: None,
+            shadowed: None,
+            shadow_filter_done: false,
             completion: None,
             splash: true,
             splash_deadline: Instant::now() + SPLASH_TIMEOUT,
@@ -2732,6 +2753,7 @@ mod script_pane;
 mod search;
 mod search_cursor;
 mod selection;
+mod shadow_sweep;
 mod structure;
 mod terminal;
 mod tiered;
