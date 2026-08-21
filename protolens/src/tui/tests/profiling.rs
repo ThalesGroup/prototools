@@ -115,7 +115,7 @@ fn profile_override_pane_down_on_db3() {
         "cursor node: is_message={}, field_number={}, wire_type={}",
         app.tree[app.cursor].span.is_message,
         app.tree[app.cursor].span.field_number,
-        app.tree[app.cursor].span.wire_type
+        app.tree[app.cursor].span.wire_type()
     );
 
     let backend = ratatui::backend::TestBackend::new(120, 50);

@@ -280,7 +280,7 @@ impl App {
         // only by field-1 group nodes, not by every node in the
         // document (spec 0183 S1's cheap-first requirement).
         if field_number == 1
-            && u32::from(self.tree[idx].span.wire_type) == prototext_core::helpers::WT_START_GROUP
+            && u32::from(self.tree[idx].span.wire_type()) == prototext_core::helpers::WT_START_GROUP
             && self.is_message_set_typed(parent)
         {
             return true;
@@ -328,7 +328,7 @@ impl App {
         // `message`) — registered once per pool and reused across every
         // MessageSet occurrence in the document.
         if field_number == 1
-            && u32::from(self.tree[idx].span.wire_type) == prototext_core::helpers::WT_START_GROUP
+            && u32::from(self.tree[idx].span.wire_type()) == prototext_core::helpers::WT_START_GROUP
             && self.is_message_set_typed(parent)
         {
             return decode::register_message_set_item(self.ctx.pool_mut())

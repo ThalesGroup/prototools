@@ -28,7 +28,7 @@ impl App {
         }
         span.is_message
             || matches!(
-                u32::from(span.wire_type),
+                u32::from(span.wire_type()),
                 WT_LEN | WT_VARINT | WT_I32 | WT_I64
             )
     }
@@ -665,7 +665,7 @@ impl App {
         };
         let span = &self.tree[idx].span;
         let field_number = span.field_number;
-        let is_group = u32::from(span.wire_type) == prototext_core::helpers::WT_START_GROUP;
+        let is_group = u32::from(span.wire_type()) == prototext_core::helpers::WT_START_GROUP;
         // Spec 0219 S4: the same predicate `render_node_as` uses, so
         // warming cannot register a wrapper the splice then never looks
         // up — which would restore the per-keystroke registration stall

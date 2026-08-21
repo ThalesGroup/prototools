@@ -12,7 +12,7 @@ use super::super::pane_scroll::{EDGE_HOLD, EDGE_PUSHES};
 use super::super::*;
 use super::support_build::app_named;
 use prototext_core::helpers::{WT_LEN, WT_VARINT};
-use prototext_core::serialize::render_text::NodeSpan;
+use prototext_core::serialize::render_text::{Label, NodeSpan};
 use prototext_graph::build_scoring_graph::build_from_strings;
 use prototext_graph::score::load::LoadedGraph;
 
@@ -71,7 +71,7 @@ pub(super) fn message_node_app_with_root_candidates(
         type_fqdn: fqdns.intern("google.protobuf.DescriptorProto"),
         is_message: true,
         packed_record_start: NO_PACKED_RECORD,
-        wire_type: WT_LEN as u8,
+        wire_and_label: NodeSpan::pack(WT_LEN as u8, Label::NoSchema),
     };
     // Spec 0216: the shape is the blob's, so the overlay is derived
     // rather than written out. The zero payload bytes decompose into
@@ -171,7 +171,7 @@ pub(super) fn sibling_leaves_app(texts: &[&str]) -> App {
                 type_fqdn: NO_FQDN,
                 is_message: false,
                 packed_record_start: NO_PACKED_RECORD,
-                wire_type: WT_VARINT as u8,
+                wire_and_label: NodeSpan::pack(WT_VARINT as u8, Label::NoSchema),
             },
             lines_total: 1,
             lines_visible: 1,
@@ -225,7 +225,7 @@ pub(super) fn wide_sibling_scalars_app(n: usize) -> App {
                     type_fqdn: NO_FQDN,
                     is_message: false,
                     packed_record_start: NO_PACKED_RECORD,
-                    wire_type: WT_VARINT as u8,
+                    wire_and_label: NodeSpan::pack(WT_VARINT as u8, Label::NoSchema),
                 },
                 lines_total: 1,
                 lines_visible: 1,

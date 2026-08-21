@@ -166,6 +166,7 @@ Non-canonical encodings are losslessly recoverable — they round-trip exactly.
 | `nan_bits: 0xHH…` | hex integer | Non-canonical NaN bit pattern for a `float` (8 hex digits) or `double` (16 hex digits) field |
 | `ohb: N` | integer | Per-element varint overhang bytes (packed varint fields, on each element line) |
 | `neg` | flag | Per-element truncated-negative int32/enum (packed fields, on each element line) |
+| `repeated_singular` | flag | The schema declares this field singular, and this is not its first record in the enclosing message. Emitted on the second and every later occurrence, for scalar, enum, message and group fields alike. Never emitted for a repeated field, nor for one no schema describes |
 
 ### Invalid modifiers (ALL CAPS)
 
@@ -363,7 +364,7 @@ modifier := noncanon_valued | noncanon_flag | invalid_valued | invalid_flag
 
 noncanon_valued := ("tag_ohb" | "val_ohb" | "len_ohb" | "etag_ohb" | "ohb") ":" SP INTEGER
                |  "nan_bits: 0x" HEX+
-noncanon_flag   := "truncated_neg" | "neg"
+noncanon_flag   := "truncated_neg" | "neg" | "repeated_singular"
 
 invalid_valued  := ("MISSING" | "END_MISMATCH") ":" SP INTEGER
 invalid_flag    := "TAG_OOR" | "ETAG_OOR" | "OPEN_GROUP" | "TYPE_MISMATCH"
@@ -521,6 +522,22 @@ int32Rp: -2147483648  #@ repeated int32 = 45
 int32Rp: -1  #@ repeated int32 = 45; truncated_neg
 int32Rp: -1  #@ repeated int32 = 45
 ```
+
+### Repeated singular field
+
+The first record is unmarked; every later one carries the flag.  Which
+value a decoder keeps is the *reader's* rule — last-one-wins for a
+scalar, merge for a message — so the annotation reports only the repeat.
+
+```
+#@ prototext: protoc
+int32Op: 7  #@ int32 = 25
+int32Op: 42  #@ int32 = 25; repeated_singular
+```
+
+The flag is scoped to one physical message: a field number that recurs
+inside a nested message is judged against that message's own records,
+not against the enclosing one.
 
 ### Packed fields (varint)
 

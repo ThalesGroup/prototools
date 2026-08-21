@@ -120,6 +120,7 @@ pub(super) fn render_varint_field(
     field_schema: Option<&FieldOrExt>,
     tag_ohb: Option<u64>,
     tag_oor: bool,
+    repeated_singular: bool,
     val_ohb: Option<u64>,
     kind: VarintKind,
     raw_val: u64,
@@ -183,6 +184,9 @@ pub(super) fn render_varint_field(
             if let Some(v) = val_ohb {
                 aw.push_u64_mod(out, b"val_ohb: ", v);
             }
+            if repeated_singular {
+                aw.push(out, b"repeated_singular");
+            }
             if is_mismatch {
                 aw.push(out, b"TYPE_MISMATCH");
             }
@@ -198,6 +202,9 @@ pub(super) fn render_varint_field(
             }
             if let Some(v) = val_ohb {
                 aw.push_u64_mod(out, b"val_ohb: ", v);
+            }
+            if repeated_singular {
+                aw.push(out, b"repeated_singular");
             }
             if is_trunc {
                 aw.push(out, b"truncated_neg");

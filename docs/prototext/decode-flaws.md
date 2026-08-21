@@ -557,6 +557,50 @@ kind that is true — `InvalidGroupEnd` already exists and is what an unclosed
 group actually is. Whether a dedicated kind is warranted is a separate question
 and probably answered "no" for the same reason C3 answered it "no".
 
+### M2. `render_invalid` discards `len_ohb`, so an invalid string or packed record may not round-trip **[new, 2026-08-21]**
+
+**Where:** `render_text/helpers/scalar.rs`, `render_invalid`'s
+`push_tag_modifiers` call, which passes a literal `None` where its callers
+hold a real `len_ohb`.
+
+**What happens.** `len_ohb` — the count of overhang bytes in a
+non-minimal LEN prefix — is populated only on the WT_LEN path
+(`mod.rs:844`, feeding the `TagFacts` literals at `:865`, `:886`,
+`:905`). Two of `render_invalid`'s call sites sit on that path:
+
+- `INVALID_STRING` — a `Kind::String` field whose payload is not UTF-8
+  (`sink.rs`, the `Err(_)` arm of the `Bytes` match);
+- `INVALID_PACKED_RECORDS` — via `render_packed`, which receives
+  `len_ohb` and forwards it everywhere *except* here.
+
+Both discard it. The remaining five sites are reached from
+`TextSink::malformed` for `INVALID_VARINT` / `INVALID_FIXED64` /
+`INVALID_FIXED32` / `INVALID_LEN` / `INVALID_GROUP_END`, where the field
+either has no length prefix at all or has an undecodable one, so `None`
+is right for them.
+
+**Why it may matter.** `len_ohb` is what `encode_text` reads to reproduce
+a non-minimal length varint. If a blob carries a LEN field with an
+over-encoded length *and* a payload that fails UTF-8 validation, the
+rendering omits the annotation and the re-encode emits the minimal
+prefix — a byte-level round-trip loss on a document that is otherwise
+fully reproduced. That is the core promise, so the severity depends
+entirely on whether the combination is reachable in practice; it has not
+been demonstrated, only derived from the code.
+
+**Proposed correction.** Establish reachability first, with a fixture
+carrying an over-encoded length on a non-UTF-8 `string` field, and assert
+`binary → text → binary` is byte-identical. If it fails, pass the real
+`len_ohb` through — `render_invalid`'s callers all have it, and giving it
+a `TagFacts` instead of the loose run would make the omission impossible
+to reintroduce. If it turns out unreachable, say so at the `None` and
+close this.
+
+**Found while** implementing [spec 0343](../specs/0343-the-last-one-wins-and-the-others-say-so.md),
+which added a fourth tag fact and so drew attention to the third being
+dropped. Deliberately not fixed there: changing which annotations an
+invalid field emits is a separate question with its own fixtures.
+
 ---
 
 ## Pending re-derivation

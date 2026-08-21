@@ -28,7 +28,7 @@ impl App {
             // with the currently effective override on every render pass
             // — no separate override lookup needed for this branch.
             let fqdn = self.fqdns.get(span.type_fqdn)?;
-            let tag = if u32::from(span.wire_type) == prototext_core::helpers::WT_START_GROUP {
+            let tag = if u32::from(span.wire_type()) == prototext_core::helpers::WT_START_GROUP {
                 "group"
             } else {
                 "message"

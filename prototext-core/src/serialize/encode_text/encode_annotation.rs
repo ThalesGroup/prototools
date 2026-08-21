@@ -122,7 +122,11 @@ pub(crate) fn parse_annotation(ann_str: &str) -> Ann<'_> {
                 // Spec 0303 S5: truncation flag — carried on message headers.
                 "TRUNCATED_MESSAGE" => ann.truncated_message = true,
                 // Flags that don't affect binary encoding — ignore.
-                "TAG_OOR" | "ETAG_OOR" | "TYPE_MISMATCH" | "ENUM_UNKNOWN" => {}
+                // `repeated_singular` (spec 0343 A1) is one of these: the
+                // repeat is already expressed by the record being written
+                // twice, so the keyword restates what the bytes say.
+                "TAG_OOR" | "ETAG_OOR" | "TYPE_MISMATCH" | "ENUM_UNKNOWN" | "repeated_singular" => {
+                }
                 // Everything else is a wire-type name (lowercase valid or ALLCAPS invalid).
                 _ => {
                     ann.wire_type = token;

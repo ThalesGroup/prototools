@@ -392,7 +392,7 @@ mod tests {
     #[test]
     fn extract_text_prepends_the_prototext_header() {
         use prototext_core::helpers::WT_LEN;
-        use prototext_core::serialize::render_text::{NodeSpan, NO_FQDN, NO_PACKED_RECORD};
+        use prototext_core::serialize::render_text::{Label, NodeSpan, NO_FQDN, NO_PACKED_RECORD};
 
         let lines: Vec<String> = vec!["  options {".to_string(), "  }".to_string()];
         let node = TreeNode {
@@ -406,7 +406,7 @@ mod tests {
                 // header prepending — so left scalar-shaped.
                 is_message: false,
                 packed_record_start: NO_PACKED_RECORD,
-                wire_type: WT_LEN as u8,
+                wire_and_label: NodeSpan::pack(WT_LEN as u8, Label::NoSchema),
             },
             lines_total: 2,
             lines_visible: 2,
@@ -423,7 +423,7 @@ mod tests {
         // yields text still wrapped in the original field, not
         // standalone prototext for the extracted message's own type.
         use prototext_core::helpers::WT_LEN;
-        use prototext_core::serialize::render_text::{FqdnTable, NodeSpan};
+        use prototext_core::serialize::render_text::{FqdnTable, Label, NodeSpan};
 
         let mut fqdns = FqdnTable::new();
         let lines: Vec<String> = vec![
@@ -440,7 +440,7 @@ mod tests {
                 type_fqdn: fqdns.intern("google.protobuf.FileOptions"),
                 is_message: true,
                 packed_record_start: NO_PACKED_RECORD,
-                wire_type: WT_LEN as u8,
+                wire_and_label: NodeSpan::pack(WT_LEN as u8, Label::NoSchema),
             },
             lines_total: 3,
             lines_visible: 3,
@@ -461,7 +461,7 @@ mod tests {
         // message vs. group) is enough to correctly trigger the same
         // wrapping-line stripping.
         use prototext_core::helpers::WT_START_GROUP;
-        use prototext_core::serialize::render_text::{FqdnTable, NodeSpan};
+        use prototext_core::serialize::render_text::{FqdnTable, Label, NodeSpan};
 
         let mut fqdns = FqdnTable::new();
         let lines: Vec<String> = vec![
@@ -478,7 +478,7 @@ mod tests {
                 type_fqdn: fqdns.intern("pkg.MyGroup"),
                 is_message: true,
                 packed_record_start: NO_PACKED_RECORD,
-                wire_type: WT_START_GROUP as u8,
+                wire_and_label: NodeSpan::pack(WT_START_GROUP as u8, Label::NoSchema),
             },
             lines_total: 3,
             lines_visible: 3,

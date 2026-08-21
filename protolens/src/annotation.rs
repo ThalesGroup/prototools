@@ -60,7 +60,7 @@ pub const WIRE_TYPE_NAMES: [&str; 5] = ["varint", "fixed64", "fixed32", "bytes",
 /// scorer charges nothing; that is accepted, because the annotation
 /// text carries no trace of `is_closed` and saying nothing would lose
 /// the closed case entirely.
-pub const NON_CANONICAL: [&str; 11] = [
+pub const NON_CANONICAL: [&str; 12] = [
     "tag_ohb",
     "val_ohb",
     "len_ohb",
@@ -71,6 +71,7 @@ pub const NON_CANONICAL: [&str; 11] = [
     "neg",
     "truncated_neg",
     "packed_truncated_neg",
+    "repeated_singular",
     "ENUM_UNKNOWN",
 ];
 
@@ -135,6 +136,10 @@ pub fn clause(keyword: &str) -> Option<&'static str> {
         "neg" | "truncated_neg" => "a negative value in five bytes, not the canonical ten",
         "packed_truncated_neg" => "the v1 spelling of neg: one list for the whole packed run",
         "nan_bits" => "a NaN, but not the bit pattern protoc writes",
+        // Deliberately silent about which value survives: the rule is
+        // last-one-wins for a scalar but merge for a message, and this
+        // keyword is emitted for both (spec 0343 A1).
+        "repeated_singular" => "the schema declares this field singular, and it already appeared",
         "ENUM_UNKNOWN" => "no name in the declared enum has this number",
         "TYPE_MISMATCH" => "the schema declares this field with another wire type",
         "OPEN_GROUP" => "this group is never closed",

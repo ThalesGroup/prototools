@@ -604,7 +604,7 @@ impl App {
         // run whose slot still carries its element's wire type lands
         // here too, which is the answer we want for it either way.
         if matches!(
-            u32::from(self.tree[idx].span.wire_type),
+            u32::from(self.tree[idx].span.wire_type()),
             WT_VARINT | WT_I32 | WT_I64
         ) {
             return false;

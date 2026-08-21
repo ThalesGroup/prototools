@@ -722,6 +722,7 @@ dependencies = [
  "prost-reflect",
  "rand",
  "sha2",
+ "smallvec",
  "workspace-hack",
 ]
 

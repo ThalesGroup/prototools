@@ -3,7 +3,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-use super::super::sink::TextSink;
+use super::super::sink::{TagFacts, TextSink};
 use super::super::{FieldOrExt, Shape};
 use super::super::{ANNOTATIONS, CBL_START, HIDE_UNKNOWN};
 use super::annotations::{push_tag_modifiers, AnnWriter};
@@ -21,6 +21,8 @@ pub(in super::super) struct ScalarCtx<'a> {
     pub(in super::super) tag_ohb: Option<u64>,
     pub(in super::super) tag_oor: bool,
     pub(in super::super) len_ohb: Option<u64>,
+    /// Spec 0343 A1 — see `TagFacts::repeated_singular`.
+    pub(in super::super) repeated_singular: bool,
     /// What this record is, absent a declared type.
     /// Only emitted for unknown or raw-wire fields.
     pub(in super::super) shape: Shape,
@@ -48,6 +50,7 @@ pub(in super::super) fn render_scalar(
         tag_ohb,
         tag_oor,
         len_ohb,
+        repeated_singular,
         shape,
         nan_bits,
         type_mismatch,
@@ -74,11 +77,11 @@ pub(in super::super) fn render_scalar(
             if type_mismatch {
                 aw.push(out, b"TYPE_MISMATCH");
             }
-            push_tag_modifiers(&mut aw, out, tag_ohb, tag_oor, len_ohb);
+            push_tag_modifiers(&mut aw, out, tag_ohb, tag_oor, len_ohb, repeated_singular);
         } else {
             // Known field: field_decl FIRST, then modifiers
             aw.push_field_decl(out, field_number, field_schema, None, None);
-            push_tag_modifiers(&mut aw, out, tag_ohb, tag_oor, len_ohb);
+            push_tag_modifiers(&mut aw, out, tag_ohb, tag_oor, len_ohb, repeated_singular);
             if let Some(bits) = nan_bits {
                 aw.sep(out);
                 out.extend_from_slice(b"nan_bits: 0x");
@@ -95,11 +98,15 @@ pub(in super::super) fn render_scalar(
 /// INVALID_PACKED_RECORDS / INVALID_STRING / INVALID_GROUP_END as `N: "bytes"`.
 ///
 /// v2: always uses numeric key; emits INVALID_* wire type name; no field_decl.
+///
+/// Takes no `field_schema`: an invalid field emits no `field_decl`, so
+/// there is nothing for the renderer to say about the declared type even
+/// when one is known.
 pub(in super::super) fn render_invalid(
     field_number: u64,
-    _field_schema: Option<&FieldOrExt>,
     tag_ohb: Option<u64>,
     tag_oor: bool,
+    repeated_singular: bool,
     inv_name: &str,
     raw: &[u8],
     sink: &mut TextSink,
@@ -114,7 +121,7 @@ pub(in super::super) fn render_invalid(
     if annotations {
         let mut aw = AnnWriter::new();
         aw.push_invalid(out, inv_name);
-        push_tag_modifiers(&mut aw, out, tag_ohb, tag_oor, None);
+        push_tag_modifiers(&mut aw, out, tag_ohb, tag_oor, None, repeated_singular);
         // v2: NO field_decl for invalid fields.
     }
     sink.newline();
@@ -142,13 +149,17 @@ pub(in super::super) fn render_invalid_tag_type(raw: &[u8], sink: &mut TextSink)
 /// v2: always numeric key; `TRUNCATED_BYTES; MISSING: N`; no field_decl.
 pub(in super::super) fn render_truncated_bytes(
     field_number: u64,
-    tag_ohb: Option<u64>,
-    tag_oor: bool,
-    len_ohb: Option<u64>,
+    tag: TagFacts,
     missing: u64,
     raw: &[u8],
     sink: &mut TextSink,
 ) {
+    let TagFacts {
+        tag_ohb,
+        tag_oor,
+        len_ohb,
+        repeated_singular,
+    } = tag;
     let annotations = ANNOTATIONS.with(|c| c.get());
     let out = &mut sink.out;
     // v2: always numeric key for invalid fields.
@@ -159,7 +170,7 @@ pub(in super::super) fn render_truncated_bytes(
     if annotations {
         let mut aw = AnnWriter::new();
         aw.push(out, b"TRUNCATED_BYTES"); // invalid wire type, ALL CAPS
-        push_tag_modifiers(&mut aw, out, tag_ohb, tag_oor, len_ohb);
+        push_tag_modifiers(&mut aw, out, tag_ohb, tag_oor, len_ohb, repeated_singular);
         aw.push_u64_mod(out, b"MISSING: ", missing); // invalid modifier, ALL CAPS
                                                      // v2: NO field_decl for invalid fields.
     }

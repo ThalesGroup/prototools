@@ -43,6 +43,7 @@ const VOCABULARY: &[&str] = &[
     "nan_bits",
     "truncated_neg",
     "neg",
+    "repeated_singular",
     "ENUM_UNKNOWN",
     // Invalid
     "TAG_OOR",

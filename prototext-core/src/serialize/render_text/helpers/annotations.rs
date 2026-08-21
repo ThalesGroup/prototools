@@ -10,8 +10,11 @@ use super::output::{write_dec_i32, write_dec_u64};
 
 // ── Shared annotation helpers ─────────────────────────────────────────────────
 
-/// Push the three standard tag-level anomaly modifiers into an annotation.
+/// Push the standard tag-level anomaly modifiers into an annotation.
 /// Call this after pushing the field declaration or wire-type name.
+///
+/// `repeated_singular` is spec 0343 A1's keyword, last because it is the
+/// only one of the four that is not a property of these bytes alone.
 #[inline]
 pub(in super::super) fn push_tag_modifiers(
     aw: &mut AnnWriter,
@@ -19,6 +22,7 @@ pub(in super::super) fn push_tag_modifiers(
     tag_ohb: Option<u64>,
     tag_oor: bool,
     len_ohb: Option<u64>,
+    repeated_singular: bool,
 ) {
     if let Some(v) = tag_ohb {
         aw.push_u64_mod(out, b"tag_ohb: ", v);
@@ -28,6 +32,9 @@ pub(in super::super) fn push_tag_modifiers(
     }
     if let Some(v) = len_ohb {
         aw.push_u64_mod(out, b"len_ohb: ", v);
+    }
+    if repeated_singular {
+        aw.push(out, b"repeated_singular");
     }
 }
 

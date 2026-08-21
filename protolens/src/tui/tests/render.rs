@@ -7,6 +7,7 @@ use super::super::render::{window_styles_for, ACTIVITY_GLYPH};
 use super::super::*;
 use super::support::*;
 use prototext_core::serialize::encode_text::annotation_start;
+use prototext_core::serialize::render_text::Label;
 use ratatui::buffer::Buffer;
 
 /// Regression test: a legitimately-empty decode (e.g. reopening an
@@ -750,7 +751,7 @@ fn a_toggles_the_main_pane_annotation_display() {
             type_fqdn: NO_FQDN,
             is_message: false,
             packed_record_start: NO_PACKED_RECORD,
-            wire_type: WT_VARINT as u8,
+            wire_and_label: NodeSpan::pack(WT_VARINT as u8, Label::NoSchema),
         },
         lines_total: 1,
         lines_visible: 1,

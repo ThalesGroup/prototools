@@ -22,7 +22,8 @@ use prost_reflect::prost_types::{DescriptorProto, FieldDescriptorProto, FileDesc
 use prost_reflect::{Cardinality, DescriptorPool, EnumDescriptor, MessageDescriptor};
 use prototext_core::serialize::render_text::NO_FQDN;
 use prototext_core::serialize::render_text::{
-    decode_and_render_indexed, DecodeRenderOpts, FqdnTable, NodeSpan, NO_PACKED_RECORD,
+    decode_and_render_indexed, DecodeRenderOpts, FqdnTable, Label as SpanLabel, NodeSpan,
+    NO_PACKED_RECORD,
 };
 use prototext_core::{
     build_arena, decode_pool, render_as_bytes, set_ext_loader, Arena, ExtLoaderGuard, RenderOpts,
@@ -684,7 +685,7 @@ impl TreeNode {
                 type_fqdn: NO_FQDN,
                 packed_record_start: NO_PACKED_RECORD,
                 level: 0,
-                wire_type: 0,
+                wire_and_label: NodeSpan::pack(0, SpanLabel::NoSchema),
                 is_message: false,
             },
             lines_total: 0,
@@ -1961,7 +1962,7 @@ pub(crate) fn effective_wire_type(span: &NodeSpan) -> u32 {
     if span.packed_record_start != NO_PACKED_RECORD {
         prototext_core::helpers::WT_LEN
     } else {
-        u32::from(span.wire_type)
+        u32::from(span.wire_type())
     }
 }
 

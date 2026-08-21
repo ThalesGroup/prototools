@@ -15,6 +15,7 @@ use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 
 use prost_reflect::{Cardinality, ExtensionDescriptor, FieldDescriptor, Kind, MessageDescriptor};
+use smallvec::SmallVec;
 
 use crate::helpers::{
     bytes_missing, parse_varint, parse_wiretag, payload_end, WiretagResult, MAX_INDEXED_BUFFER,
@@ -28,7 +29,7 @@ use sink::{IndexingTextSink, MalformedKind, ScalarValue, Sink, TagFacts, TextSin
 pub use arena::{build_arena, Arena};
 pub use fqdn::{FqdnId, FqdnTable, NO_FQDN, UNINTERNED};
 pub use shape::Shape;
-pub use sink::{NodeSpan, NO_PACKED_RECORD};
+pub use sink::{Label, NodeSpan, NO_PACKED_RECORD};
 
 // Magic prefix that identifies a textual prototext payload.
 const PROTOTEXT_MAGIC: &[u8] = b"#@ prototext:";
@@ -657,6 +658,15 @@ fn render_message<'a, S: Sink>(
         return (buflen, None);
     };
 
+    // Spec 0343 A2: which singular field numbers this frame has already
+    // spent. The mask answers "certainly not yet" in one instruction for
+    // the overwhelming majority of tags; the vector is consulted only when
+    // the mask's 64 residues collide, and holds the few numbers that a
+    // message actually carries. Both are per-frame — a nested payload gets
+    // its own `render_message`, and so its own pair.
+    let mut seen_mask: u64 = 0;
+    let mut seen_fields: SmallVec<[u32; 8]> = SmallVec::new();
+
     loop {
         if pos == buflen {
             return (pos, None);
@@ -708,6 +718,31 @@ fn render_message<'a, S: Sink>(
             }
         });
 
+        // ── Repeat check (spec 0343 A1/A2) ────────────────────────────────────
+
+        // Only a field the schema calls singular can repeat wrongly. A
+        // repeated field is meant to recur, and a field no schema describes
+        // has nobody to say which it is — so neither is registered, and
+        // neither can ever be reported.
+        let repeated_singular = match field_schema.as_ref() {
+            Some(fs) if fs.cardinality() != Cardinality::Repeated => {
+                let bit = 1u64 << (field_number % 64);
+                if seen_mask & bit == 0 {
+                    seen_mask |= bit;
+                    seen_fields.push(field_number as u32);
+                    false
+                } else if seen_fields.contains(&(field_number as u32)) {
+                    true
+                } else {
+                    // The bit was set by a different field number sharing
+                    // this residue.
+                    seen_fields.push(field_number as u32);
+                    false
+                }
+            }
+            _ => false,
+        };
+
         // ── Wire-type dispatch ────────────────────────────────────────────────
 
         match wire_type {
@@ -721,6 +756,7 @@ fn render_message<'a, S: Sink>(
                             tag_ohb,
                             tag_oor,
                             len_ohb: None,
+                            repeated_singular,
                         },
                         MalformedKind::InvalidVarint,
                         varint_gar,
@@ -739,6 +775,7 @@ fn render_message<'a, S: Sink>(
                         tag_ohb,
                         tag_oor,
                         len_ohb: None,
+                        repeated_singular,
                     },
                     ScalarValue::Varint {
                         raw_val: val,
@@ -759,6 +796,7 @@ fn render_message<'a, S: Sink>(
                             tag_ohb,
                             tag_oor,
                             len_ohb: None,
+                            repeated_singular,
                         },
                         MalformedKind::InvalidFixed64,
                         raw,
@@ -777,6 +815,7 @@ fn render_message<'a, S: Sink>(
                         tag_ohb,
                         tag_oor,
                         len_ohb: None,
+                        repeated_singular,
                     },
                     ScalarValue::Fixed64(data),
                     field_start..pos,
@@ -794,6 +833,7 @@ fn render_message<'a, S: Sink>(
                             tag_ohb,
                             tag_oor,
                             len_ohb: None,
+                            repeated_singular,
                         },
                         MalformedKind::InvalidLen,
                         varint_gar,
@@ -823,6 +863,7 @@ fn render_message<'a, S: Sink>(
                                     tag_ohb,
                                     tag_oor,
                                     len_ohb,
+                                    repeated_singular,
                                 },
                                 // The payload is `buf[pos..buflen]`, so it
                                 // ends exactly where this frame does.
@@ -843,6 +884,7 @@ fn render_message<'a, S: Sink>(
                             tag_ohb,
                             tag_oor,
                             len_ohb,
+                            repeated_singular,
                         },
                         MalformedKind::TruncatedBytes { missing },
                         raw,
@@ -861,6 +903,7 @@ fn render_message<'a, S: Sink>(
                             tag_ohb,
                             tag_oor,
                             len_ohb,
+                            repeated_singular,
                         },
                         // Spec 0312 S2: the payload inherits the answer only
                         // if it reaches this frame's own end. A satisfied
@@ -915,6 +958,7 @@ fn render_message<'a, S: Sink>(
                             tag_ohb,
                             tag_oor,
                             len_ohb: None,
+                            repeated_singular,
                         },
                         // A group has no length prefix: it continues in this
                         // same buffer, so it ends where this frame ends.
@@ -937,6 +981,7 @@ fn render_message<'a, S: Sink>(
                             tag_ohb,
                             tag_oor,
                             len_ohb: None,
+                            repeated_singular,
                         },
                         MalformedKind::InvalidGroupEnd,
                         raw,
@@ -958,6 +1003,7 @@ fn render_message<'a, S: Sink>(
                             tag_ohb,
                             tag_oor,
                             len_ohb: None,
+                            repeated_singular,
                         },
                         MalformedKind::InvalidFixed32,
                         raw,
@@ -976,6 +1022,7 @@ fn render_message<'a, S: Sink>(
                         tag_ohb,
                         tag_oor,
                         len_ohb: None,
+                        repeated_singular,
                     },
                     ScalarValue::Fixed32(data),
                     field_start..pos,

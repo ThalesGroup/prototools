@@ -11,6 +11,7 @@ use super::super::heat_worker::{HeatWorkerHandle, RangeHeatEntry};
 use super::super::tiered::Tier;
 use super::super::*;
 use super::support::*;
+use prototext_core::serialize::render_text::Label;
 
 /// Spec 0114 §1/§2: `t` opens the override pane for a message-shaped
 /// cursor node and moves focus there. Spec 0236 S18: `Esc` is the only
@@ -121,7 +122,7 @@ fn t_opens_the_override_pane_on_an_unresolved_message_node() {
             type_fqdn: NO_FQDN,
             is_message: true,
             packed_record_start: NO_PACKED_RECORD,
-            wire_type: WT_LEN as u8,
+            wire_and_label: NodeSpan::pack(WT_LEN as u8, Label::NoSchema),
         },
         lines_total: 2,
         lines_visible: 2,
@@ -173,7 +174,7 @@ fn t_opens_the_override_pane_on_a_varint_scalar_field() {
             type_fqdn: NO_FQDN,
             is_message: false,
             packed_record_start: NO_PACKED_RECORD,
-            wire_type: WT_VARINT as u8,
+            wire_and_label: NodeSpan::pack(WT_VARINT as u8, Label::NoSchema),
         },
         lines_total: 1,
         lines_visible: 1,
@@ -336,7 +337,7 @@ fn t_opens_the_override_pane_on_a_length_delimited_scalar_field() {
         type_fqdn: NO_FQDN,
         is_message: false,
         packed_record_start: NO_PACKED_RECORD,
-        wire_type: WT_LEN as u8,
+        wire_and_label: NodeSpan::pack(WT_LEN as u8, Label::NoSchema),
     };
     // Spec 0216: the overlay has one entry per arena slot, and the walk
     // decomposes `"hi"` further than this rendering shows, so the tree
@@ -1705,7 +1706,7 @@ fn cold_cache_default_target_app() -> App {
             type_fqdn: NO_FQDN,
             is_message: true,
             packed_record_start: NO_PACKED_RECORD,
-            wire_type: WT_LEN as u8,
+            wire_and_label: NodeSpan::pack(WT_LEN as u8, Label::NoSchema),
         },
         lines_total: 2,
         lines_visible: 2,

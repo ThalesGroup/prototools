@@ -199,7 +199,7 @@ impl App {
                 let wtype = self
                     .blob
                     .get(hit.bytes.start)
-                    .map_or(u32::from(self.tree[node].span.wire_type), |byte| {
+                    .map_or(u32::from(self.tree[node].span.wire_type()), |byte| {
                         u32::from(byte & 0x07)
                     });
                 body.head.push(BoxLine::plain(format!(
@@ -297,7 +297,7 @@ impl App {
     /// The value as the declared enum spells it, when the declared type
     /// is one (S9).
     fn enum_reading(&self, hit: &WireHit) -> Option<String> {
-        if u32::from(self.tree[hit.pos.node].span.wire_type) != WT_VARINT {
+        if u32::from(self.tree[hit.pos.node].span.wire_type()) != WT_VARINT {
             return None;
         }
         let prost_reflect::Kind::Enum(desc) = self.parent_field(hit.pos.node)?.kind() else {
@@ -322,7 +322,7 @@ impl App {
     fn wire_readings(&self, hit: &WireHit) -> Vec<(&'static str, String, Option<Range<usize>>)> {
         let end = hit.bytes.end.min(self.blob.len());
         let bytes = &self.blob[hit.bytes.start.min(end)..end];
-        match u32::from(self.tree[hit.pos.node].span.wire_type) {
+        match u32::from(self.tree[hit.pos.node].span.wire_type()) {
             WT_VARINT => {
                 let Some(v) = parse_varint(&self.blob, hit.bytes.start).varint else {
                     return Vec::new();

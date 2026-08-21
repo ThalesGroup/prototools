@@ -309,9 +309,11 @@ pub(super) fn render_packed(
         Err(()) => {
             render_invalid(
                 field_number,
-                Some(foe),
                 tag_ohb,
                 tag_oor,
+                // A packed record is only ever a repeated field, so spec
+                // 0343 A1's finding cannot arise here.
+                false,
                 "INVALID_PACKED_RECORDS",
                 data,
                 sink,

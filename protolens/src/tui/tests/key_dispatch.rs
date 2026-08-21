@@ -5,6 +5,7 @@
 use super::super::search::SearchScope;
 use super::super::*;
 use super::support::*;
+use prototext_core::serialize::render_text::Label;
 
 /// Spec 0236 S20: `q` is bound to nothing at all — not in the main
 /// pane, not on an empty tree, not in the help overlay — and `:quit`
@@ -874,7 +875,7 @@ fn default_export_descriptor_path_falls_back_to_the_numeric_range_when_unresolva
             type_fqdn: NO_FQDN,
             is_message: false,
             packed_record_start: NO_PACKED_RECORD,
-            wire_type: WT_VARINT as u8,
+            wire_and_label: NodeSpan::pack(WT_VARINT as u8, Label::NoSchema),
         },
         lines_total: 1,
         lines_visible: 1,

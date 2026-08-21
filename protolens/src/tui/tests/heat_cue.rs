@@ -931,7 +931,8 @@ fn a_node_with_no_question_stays_blank() {
     app.heat_cues = HeatCueMode::All;
     let idx = 1;
     app.tree_mut()[idx].span.is_message = false;
-    app.tree_mut()[idx].span.wire_type = WT_START_GROUP as u8;
+    let label = app.tree[idx].span.label();
+    app.tree_mut()[idx].span.wire_and_label = NodeSpan::pack(WT_START_GROUP as u8, label);
     assert!(!app.can_override(idx), "the hand-made shape is refused");
     let header = app.absolute_start(idx);
     assert!(matches!(app.heat_cue_for(header), HeatDisplay::None));

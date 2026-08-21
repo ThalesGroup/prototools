@@ -164,7 +164,7 @@
  (#any-of? @annotation.non_canonical
   "tag_ohb" "val_ohb" "len_ohb" "etag_ohb" "ohb" "packed_ohb"
   "nan_bits" "neg" "truncated_neg" "packed_truncated_neg"
-  "ENUM_UNKNOWN"))
+  "repeated_singular" "ENUM_UNKNOWN"))
 
 ((annotation_word) @annotation.invalid
  (#any-of? @annotation.invalid

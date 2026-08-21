@@ -383,7 +383,7 @@ fn head_or_tail(
     WireSlice {
         bytes: tail_start..bytes.end,
         record_end: bytes.end,
-        framing: if u32::from(span.wire_type) == WT_START_GROUP {
+        framing: if u32::from(span.wire_type()) == WT_START_GROUP {
             Framing::Closing
         } else {
             Framing::Raw
@@ -450,7 +450,7 @@ impl App {
         // The element's own wire type, not the record's outer `WT_LEN` —
         // which is exactly what `NodeSpan::wire_type` holds for a packed
         // element, so nothing has to be looked up in the schema.
-        let elem_wt = u32::from(node.span.wire_type);
+        let elem_wt = u32::from(node.span.wire_type());
         let varint = !matches!(elem_wt, WT_I64 | WT_I32);
 
         let tag = parse_wiretag(&self.blob, start);
@@ -910,7 +910,7 @@ fn preview_packed_slice(spans: &[NodeSpan], i: usize) -> WireSlice {
     let first = i == 0 || !same_run(&spans[i - 1]);
     let close = i + 1 == spans.len() || !same_run(&spans[i + 1]);
 
-    let elem_wt = u32::from(span.wire_type);
+    let elem_wt = u32::from(span.wire_type());
     let varint = !matches!(elem_wt, WT_I64 | WT_I32);
     let start = if first {
         run as usize

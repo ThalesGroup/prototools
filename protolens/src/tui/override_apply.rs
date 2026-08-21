@@ -637,7 +637,7 @@ impl App {
                 // MessageSet rendering uses for it ("Item") — spec 0120
                 // §G2's follow-up cosmetic fix.
                 let is_message_set_item = self.tree[idx].span.field_number == 1
-                    && u32::from(self.tree[idx].span.wire_type)
+                    && u32::from(self.tree[idx].span.wire_type())
                         == prototext_core::helpers::WT_START_GROUP
                     && self
                         .parent(idx)
@@ -1418,7 +1418,7 @@ impl App {
             Some(decode::NONE_KEYWORD) => (None, None),
             Some(name) => {
                 let is_group =
-                    u32::from(old_span.wire_type) == prototext_core::helpers::WT_START_GROUP;
+                    u32::from(old_span.wire_type()) == prototext_core::helpers::WT_START_GROUP;
                 let Some((desc, ft)) = self.ctx.wrapper_target_for(name, is_group) else {
                     return Err(format!("type '{name}' not found in descriptor set"));
                 };
@@ -1465,7 +1465,7 @@ impl App {
         // the header with `TRUNCATED_MESSAGE; MISSING: N`.
         let mut missing_payload_bytes: Option<u64> = None;
         if is_preview {
-            let shape = trunc_shape_for(field_type, u32::from(old_span.wire_type), packed);
+            let shape = trunc_shape_for(field_type, u32::from(old_span.wire_type()), packed);
             if let Some((cut, cut_tier)) =
                 truncate_interior(&field_bytes, self.override_preview_byte_budget, shape)
             {

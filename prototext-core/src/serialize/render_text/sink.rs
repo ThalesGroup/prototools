@@ -24,6 +24,14 @@ pub(super) struct TagFacts {
     pub(super) tag_ohb: Option<u64>,
     pub(super) tag_oor: bool,
     pub(super) len_ohb: Option<u64>,
+    /// Spec 0343 A1: this field number has already been seen in this
+    /// frame, and the schema declares the field singular. A statement
+    /// about the repeat, not about which value survives — which is why
+    /// it can be decided the moment the tag is read.
+    ///
+    /// Always `false` for a repeated field and for one no schema
+    /// describes, so an emitter can write it without re-asking.
+    pub(super) repeated_singular: bool,
 }
 
 /// Wire-kind-specific raw payload for a scalar field. Each variant carries
@@ -295,7 +303,7 @@ pub(super) trait Sink {
 
 // ── `TextSink`: production text rendering ───────────────────────────────────
 
-use prost_reflect::Kind;
+use prost_reflect::{Cardinality, Kind};
 
 use crate::helpers::{
     decode_double, decode_fixed32, decode_fixed64, decode_float, decode_sfixed32, decode_sfixed64,
@@ -433,6 +441,7 @@ impl Sink for TextSink {
                     field_schema,
                     tag.tag_ohb,
                     tag.tag_oor,
+                    tag.repeated_singular,
                     val_ohb,
                     content_kind,
                     typed_val,
@@ -481,6 +490,7 @@ impl Sink for TextSink {
                         tag_ohb: tag.tag_ohb,
                         tag_oor: tag.tag_oor,
                         len_ohb: None,
+                        repeated_singular: tag.repeated_singular,
                         shape: Shape::Fixed64,
                         nan_bits,
                         type_mismatch: is_mismatch,
@@ -532,6 +542,7 @@ impl Sink for TextSink {
                         tag_ohb: tag.tag_ohb,
                         tag_oor: tag.tag_oor,
                         len_ohb: None,
+                        repeated_singular: tag.repeated_singular,
                         shape: Shape::Fixed32,
                         nan_bits,
                         type_mismatch: is_mismatch,
@@ -564,6 +575,7 @@ impl Sink for TextSink {
                                     tag.tag_ohb,
                                     tag.tag_oor,
                                     tag.len_ohb,
+                                    tag.repeated_singular,
                                 );
                             }
                             self.newline();
@@ -582,6 +594,7 @@ impl Sink for TextSink {
                                     tag.tag_ohb,
                                     tag.tag_oor,
                                     tag.len_ohb,
+                                    tag.repeated_singular,
                                 );
                             }
                             self.newline();
@@ -609,6 +622,7 @@ impl Sink for TextSink {
                                     tag.tag_ohb,
                                     tag.tag_oor,
                                     tag.len_ohb,
+                                    tag.repeated_singular,
                                 );
                             }
                             self.newline();
@@ -617,9 +631,9 @@ impl Sink for TextSink {
                         Err(_) => {
                             render_invalid(
                                 field_number,
-                                Some(fs),
                                 tag.tag_ohb,
                                 tag.tag_oor,
+                                tag.repeated_singular,
                                 "INVALID_STRING",
                                 data,
                                 self,
@@ -640,6 +654,7 @@ impl Sink for TextSink {
                                 tag.tag_ohb,
                                 tag.tag_oor,
                                 tag.len_ohb,
+                                tag.repeated_singular,
                             );
                         }
                         self.newline();
@@ -665,6 +680,7 @@ impl Sink for TextSink {
                             tag.tag_ohb,
                             tag.tag_oor,
                             tag.len_ohb,
+                            tag.repeated_singular,
                         );
                         self.newline();
                         CBL_START.with(|c| c.set(self.out.len()));
@@ -727,6 +743,7 @@ impl Sink for TextSink {
                         tag.tag_ohb,
                         tag.tag_oor,
                         tag.len_ohb,
+                        tag.repeated_singular,
                     );
                     // Spec 0303 S2: annotate the header if this field is truncated.
                     if let Some(n) = missing {
@@ -818,7 +835,8 @@ impl Sink for TextSink {
 
                 let mismatch_mod = annotations && is_mismatch;
                 let has_field_decl = decl_opt.is_some();
-                let has_open_tag_mods = annotations && (tag.tag_ohb.is_some() || tag.tag_oor);
+                let has_open_tag_mods =
+                    annotations && (tag.tag_ohb.is_some() || tag.tag_oor || tag.repeated_singular);
                 let has_close_mods = annotations && !close_mods.is_empty();
 
                 if has_field_decl || mismatch_mod || has_open_tag_mods || has_close_mods {
@@ -836,6 +854,9 @@ impl Sink for TextSink {
                     }
                     if tag.tag_oor {
                         insert.push_str("; TAG_OOR");
+                    }
+                    if tag.repeated_singular {
+                        insert.push_str("; repeated_singular");
                     }
                     for m in &close_mods {
                         insert.push_str("; ");
@@ -912,9 +933,9 @@ impl Sink for TextSink {
             MalformedKind::InvalidVarint => {
                 render_invalid(
                     field_number,
-                    None,
                     tag.tag_ohb,
                     tag.tag_oor,
+                    tag.repeated_singular,
                     "INVALID_VARINT",
                     raw,
                     self,
@@ -923,9 +944,9 @@ impl Sink for TextSink {
             MalformedKind::InvalidFixed64 => {
                 render_invalid(
                     field_number,
-                    None,
                     tag.tag_ohb,
                     tag.tag_oor,
+                    tag.repeated_singular,
                     "INVALID_FIXED64",
                     raw,
                     self,
@@ -934,9 +955,9 @@ impl Sink for TextSink {
             MalformedKind::InvalidFixed32 => {
                 render_invalid(
                     field_number,
-                    None,
                     tag.tag_ohb,
                     tag.tag_oor,
+                    tag.repeated_singular,
                     "INVALID_FIXED32",
                     raw,
                     self,
@@ -945,31 +966,23 @@ impl Sink for TextSink {
             MalformedKind::InvalidLen => {
                 render_invalid(
                     field_number,
-                    None,
                     tag.tag_ohb,
                     tag.tag_oor,
+                    tag.repeated_singular,
                     "INVALID_LEN",
                     raw,
                     self,
                 );
             }
             MalformedKind::TruncatedBytes { missing } => {
-                render_truncated_bytes(
-                    field_number,
-                    tag.tag_ohb,
-                    tag.tag_oor,
-                    tag.len_ohb,
-                    missing,
-                    raw,
-                    self,
-                );
+                render_truncated_bytes(field_number, tag, missing, raw, self);
             }
             MalformedKind::InvalidGroupEnd => {
                 render_invalid(
                     field_number,
-                    None,
                     tag.tag_ohb,
                     tag.tag_oor,
+                    tag.repeated_singular,
                     "INVALID_GROUP_END",
                     raw,
                     self,
@@ -1114,6 +1127,10 @@ impl ProbeSink {
             // tag for field 0, so without this every NUL in a string helps
             // that string pass for a message.
             tag_oor,
+            // `repeated_singular` — non-canonical: a duplicate singular
+            // field re-encodes byte for byte, and the last one wins by the
+            // spec's own rule (spec 0343 A1).
+            repeated_singular: _,
         } = tag;
         if tag_oor {
             self.invalid();
@@ -1288,6 +1305,50 @@ use super::LEVEL;
 /// `u32::MAX` out of reach of any offset, so the sentinel cannot collide.
 pub const NO_PACKED_RECORD: u32 = u32::MAX;
 
+/// A field's declared *label*, as `NodeSpan::wire_and_label` records it
+/// (spec 0343 A4).
+///
+/// Four states rather than `Cardinality`'s three, because the two spare
+/// bits hold four: a field no schema describes is a state of its own, not
+/// a collapsed `Optional`. `Optional` and `Required` are both *singular*
+/// — which is also how `prototext-graph`'s `apply_cardinality_multi`
+/// reads them — and it is the consumer, not this type, that decides where
+/// they become the same thing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Label {
+    Optional,
+    Required,
+    Repeated,
+    /// No schema described this field: an unknown field, a malformed one,
+    /// or a virtual wrapper node that has no field of its own.
+    NoSchema,
+}
+
+impl Label {
+    const fn bits(self) -> u8 {
+        match self {
+            Label::Optional => 0,
+            Label::Required => 1,
+            Label::Repeated => 2,
+            Label::NoSchema => 3,
+        }
+    }
+
+    const fn from_bits(bits: u8) -> Label {
+        match bits {
+            0 => Label::Optional,
+            1 => Label::Required,
+            2 => Label::Repeated,
+            _ => Label::NoSchema,
+        }
+    }
+}
+
+/// The three low bits of `NodeSpan::wire_and_label`: the wire type.
+const WIRE_TYPE_MASK: u8 = 0b0000_0111;
+/// Bits 3-4 of `NodeSpan::wire_and_label`: the label.
+const LABEL_SHIFT: u32 = 3;
+
 /// One node's raw/text extent + metadata, recorded by `IndexingTextSink`
 /// (spec 0110 §3).
 ///
@@ -1357,7 +1418,15 @@ pub struct NodeSpan {
     /// A `u16`: `MAX_WIRE_DEPTH` is 1000, so `u8` is too small and this
     /// leaves 65× headroom. Cast at the use site when indexing with it.
     pub level: u16,
-    /// The wire type this node's own value was decoded from — one of
+    /// The wire type this node's own value was decoded from, and the
+    /// field's declared label, in one byte (spec 0343 A4). Read them with
+    /// `wire_type()` and `label()`; write the byte with `pack()`. The two
+    /// are packed together because a wire type never exceeds `5`, so five
+    /// of these eight bits were idle, and because `NodeSpan` is pinned at
+    /// 32 bytes by the assertion below — a ninth field would be +4 on
+    /// every one of the millions `protolens` holds at once.
+    ///
+    /// The wire type is one of
     /// `crate::helpers::{WT_VARINT, WT_I64, WT_LEN, WT_START_GROUP,
     /// WT_I32}`. Set independently of `is_message`/`type_fqdn`: a `LEN`
     /// field rendered as a scalar string/bytes still carries `WT_LEN`, so
@@ -1378,12 +1447,15 @@ pub struct NodeSpan {
     /// types need a fallback arm for it; none can validly reinterpret
     /// framing garbage as a value anyway.
     ///
-    /// A `u8`, since a wire type is the low three bits of a tag. The
-    /// `WT_*` constants stay `u32` — they are used several hundred times
-    /// across the workspace in tag arithmetic, where `u32` is the natural
-    /// type — so the handful of sites comparing a *span's* wire type cast
-    /// at the comparison.
-    pub wire_type: u8,
+    /// The `WT_*` constants stay `u32` — they are used several hundred
+    /// times across the workspace in tag arithmetic, where `u32` is the
+    /// natural type — so the handful of sites comparing a *span's* wire
+    /// type cast at the comparison.
+    ///
+    /// The label is the declared cardinality of the field, `NoSchema` when
+    /// none is known — which is every malformed node and every virtual
+    /// wrapper, neither of which has a field the schema describes.
+    pub wire_and_label: u8,
     /// `true` for a nested message/group node (`begin_nested`/
     /// `begin_virtual_nested`..`end_nested`), `false` for a scalar field
     /// (`scalar_field`) — set independently of `type_fqdn`, which is
@@ -1400,6 +1472,25 @@ pub struct NodeSpan {
 /// outcome, so a future field that happens to fit in padding must fail here
 /// rather than silently falsify all three.
 const _: () = assert!(std::mem::size_of::<NodeSpan>() == 32);
+
+impl NodeSpan {
+    /// Build a `wire_and_label` byte (spec 0343 A4). A wire type is the
+    /// low three bits of a tag and never exceeds `WT_I32`, so it is
+    /// masked rather than checked.
+    pub const fn pack(wire_type: u8, label: Label) -> u8 {
+        (wire_type & WIRE_TYPE_MASK) | (label.bits() << LABEL_SHIFT)
+    }
+
+    /// The wire type half of `wire_and_label`.
+    pub fn wire_type(&self) -> u8 {
+        self.wire_and_label & WIRE_TYPE_MASK
+    }
+
+    /// The label half of `wire_and_label`.
+    pub fn label(&self) -> Label {
+        Label::from_bits((self.wire_and_label >> LABEL_SHIFT) & 0b11)
+    }
+}
 
 /// Narrow a byte offset or line number to the `u32` a `NodeSpan` stores it
 /// in (spec 0212 S2).
@@ -1426,6 +1517,7 @@ pub(super) struct IndexMark {
     type_fqdn: FqdnId,
     is_message: bool,
     wire_type: u32,
+    label: Label,
     /// `IndexingTextSink::raw_base` as it was *before* this node was
     /// opened — i.e. the base to translate this node's own `raw_range`
     /// with at `end_nested`, and to restore `raw_base` to once this
@@ -1443,6 +1535,19 @@ fn declared_type_fqdn(field_schema: Option<&FieldOrExt>, fqdns: &mut FqdnTable) 
     match field_schema.map(|fs| fs.kind()) {
         Some(Kind::Message(desc)) => fqdns.intern(desc.full_name()),
         _ => NO_FQDN,
+    }
+}
+
+/// A field's declared label, when a schema describes it —
+/// `Label::NoSchema` otherwise (spec 0343 A4).
+fn declared_label(field_schema: Option<&FieldOrExt>) -> Label {
+    match field_schema {
+        Some(fs) => match fs.cardinality() {
+            Cardinality::Optional => Label::Optional,
+            Cardinality::Required => Label::Required,
+            Cardinality::Repeated => Label::Repeated,
+        },
+        None => Label::NoSchema,
     }
 }
 
@@ -1583,7 +1688,10 @@ impl Sink for IndexingTextSink<'_> {
                             type_fqdn: NO_FQDN,
                             is_message: false,
                             packed_record_start,
-                            wire_type: elem_wire_type as u8,
+                            wire_and_label: NodeSpan::pack(
+                                elem_wire_type as u8,
+                                declared_label(field_schema),
+                            ),
                         });
                     }
                     return;
@@ -1601,7 +1709,7 @@ impl Sink for IndexingTextSink<'_> {
             type_fqdn: NO_FQDN,
             is_message: false,
             packed_record_start: NO_PACKED_RECORD,
-            wire_type: wire_type as u8,
+            wire_and_label: NodeSpan::pack(wire_type as u8, declared_label(field_schema)),
         });
     }
 
@@ -1638,6 +1746,7 @@ impl Sink for IndexingTextSink<'_> {
             type_fqdn,
             is_message: true,
             wire_type,
+            label: declared_label(field_schema),
             raw_base,
             inner,
         }
@@ -1656,6 +1765,7 @@ impl Sink for IndexingTextSink<'_> {
             type_fqdn,
             is_message,
             wire_type,
+            label,
             raw_base,
             inner,
         } = mark;
@@ -1670,7 +1780,7 @@ impl Sink for IndexingTextSink<'_> {
             type_fqdn,
             is_message,
             packed_record_start: NO_PACKED_RECORD,
-            wire_type: wire_type as u8,
+            wire_and_label: NodeSpan::pack(wire_type as u8, label),
         });
     }
 
@@ -1712,8 +1822,12 @@ impl Sink for IndexingTextSink<'_> {
             level,
             type_fqdn: interned,
             is_message: true,
-            // Always message-shaped; see `NodeSpan::wire_type` doc comment.
+            // Always message-shaped; see `NodeSpan::wire_and_label`'s doc
+            // comment.
             wire_type: WT_LEN,
+            // A wrapper stands for no field of its own, so no schema
+            // describes it (spec 0343 A4).
+            label: Label::NoSchema,
             raw_base,
             inner,
         }
@@ -1766,7 +1880,9 @@ impl Sink for IndexingTextSink<'_> {
             type_fqdn: NO_FQDN,
             is_message: false,
             packed_record_start: NO_PACKED_RECORD,
-            wire_type: wire_type as u8,
+            // `malformed` is handed no `field_schema`: an undecodable
+            // field has no declared label to record.
+            wire_and_label: NodeSpan::pack(wire_type as u8, Label::NoSchema),
         });
     }
 
@@ -1792,5 +1908,41 @@ impl Sink for IndexingTextSink<'_> {
 
     fn tracks_level(&self) -> bool {
         self.inner.tracks_level()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::helpers::{WT_I32, WT_I64, WT_LEN, WT_START_GROUP, WT_VARINT};
+
+    /// Spec 0343 test item 30. `wire_and_label` is the one place in A4
+    /// where a wrong answer is silent: the rename makes the compiler find
+    /// every reader, but nothing but a test says the two halves do not
+    /// tread on each other.
+    #[test]
+    fn a_label_round_trips_through_the_packed_byte() {
+        let labels = [
+            Label::Optional,
+            Label::Required,
+            Label::Repeated,
+            Label::NoSchema,
+        ];
+        for wt in [WT_VARINT, WT_I64, WT_LEN, WT_START_GROUP, WT_I32] {
+            for label in labels {
+                let span = NodeSpan {
+                    field_number: 1,
+                    raw_range: 0..0,
+                    text_range: 0..0,
+                    type_fqdn: NO_FQDN,
+                    packed_record_start: NO_PACKED_RECORD,
+                    level: 0,
+                    wire_and_label: NodeSpan::pack(wt as u8, label),
+                    is_message: false,
+                };
+                assert_eq!(span.wire_type(), wt as u8, "wire type {wt}, {label:?}");
+                assert_eq!(span.label(), label, "wire type {wt}, {label:?}");
+            }
+        }
     }
 }
