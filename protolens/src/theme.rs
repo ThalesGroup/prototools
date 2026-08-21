@@ -392,7 +392,7 @@ const DARK_RGB: RgbPalette = RgbPalette {
     // "bake running" without guessing. DarkGray (ANSI-16 fallback) is
     // whatever the terminal makes of it; the two grays will collapse to
     // one on 16-color terminals, which is acceptable.
-    shadow_sweep_dot: Color::Rgb(0x50, 0x50, 0x50), // Matterhorn
+    shadow_sweep_dot: Color::Rgb(0x50, 0x50, 0x50),
     doc_luma: 170.0,
 };
 
@@ -427,7 +427,7 @@ const LIGHT_RGB: RgbPalette = RgbPalette {
     // same RGB value as the dark page: luma 50 sits above the near-
     // black foreground and below the light background, so it is still
     // legible and still distinctly darker than the unbaked gray.
-    shadow_sweep_dot: Color::Rgb(0x50, 0x50, 0x50), // Matterhorn
+    shadow_sweep_dot: Color::Rgb(0x50, 0x50, 0x50),
     doc_luma: 85.0,
 };
 

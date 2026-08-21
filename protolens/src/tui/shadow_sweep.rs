@@ -270,11 +270,8 @@ impl ShadowSweep {
     }
 }
 
-// ── App integration (B6) ──────────────────────────────────────────────────────
-
 // ── App integration (B5/B6/B7) ───────────────────────────────────────────────
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use prototext_core::serialize::render_text::Label;
@@ -295,24 +292,34 @@ impl App {
         if self.shadow_sweep.is_none() {
             self.shadow_sweep = Some(ShadowSweep::new(&self.arena));
         }
+
+        // Phase 2: incremental post-trie arena probe. Runs after the
+        // trie walk is complete, one chunk at a time, so it does not
+        // block the event loop the way a single unbounded pass would.
+        if let Some(cursor) = self.shadow_probe_cursor {
+            return self.shadow_probe_rendered_step(cursor);
+        }
+
         let sweep = self.shadow_sweep.as_mut().unwrap();
         if sweep.is_complete() {
             // Spec 0343 B6: after an override, `invalidate_shadow_bits`
             // resets `shadow_probed` so the whole-arena probe re-runs
             // here (the trie does not rebuild, only the bits are cleared).
             if !self.shadow_probed {
-                self.shadow_probe_rendered();
+                self.shadow_probe_cursor = Some(0);
+                return true;
             }
             return false;
         }
+
+        // Phase 1: trie walk, one chunk at a time.
         let blob = self.blob.as_ref();
         sweep.step(&self.arena, blob);
-        if !sweep.is_complete() {
-            return true;
+        if sweep.is_complete() {
+            // Trie just finished — start the incremental arena probe.
+            self.shadow_probe_cursor = Some(0);
         }
-        // Structural pass just finished — probe everything already rendered.
-        self.shadow_probe_rendered();
-        false
+        true
     }
 
     /// Spec 0343 B6 stage 3: probe shadow links for each slot in
@@ -334,29 +341,60 @@ impl App {
             return false;
         }
 
-        // Lazily allocate the shadow bitset on the first probe.
-        if self.shadowed.is_none() {
-            let n = self.arena.len();
-            let nwords = n.div_ceil(64);
-            let words = (0..nwords).map(|_| AtomicU64::new(0)).collect();
-            self.shadowed = Some(Arc::new(words));
-        }
-
         self.probe_subtree_inner(idx)
     }
 
-    /// Probe every currently-rendered slot against the structural links.
+    /// Advance the incremental post-trie arena probe by one chunk.
     ///
-    /// Called when the structural pass completes (first time or after
-    /// invalidation from an override) to mark slots that were rendered
-    /// before or during the trie walk.  The bake-driven probe covers
-    /// slots rendered *after* the trie finishes; this covers the rest.
-    fn shadow_probe_rendered(&mut self) {
-        self.shadow_probed = true;
+    /// Scans up to `SHADOW_CHUNK` slots starting at `cursor`. For each
+    /// rendered slot it probes that slot alone — no recursion into
+    /// children — because the linear scan visits every slot anyway.
+    /// Returns `true` while still in progress, `false` when done.
+    fn shadow_probe_rendered_step(&mut self, cursor: usize) -> bool {
         let n = self.arena.len();
-        for idx in 0..n {
+        let end = (cursor + SHADOW_CHUNK).min(n);
+        for idx in cursor..end {
             if self.tree[idx].is_rendered() {
-                self.shadow_probe_subtree(idx);
+                self.probe_slot(idx);
+            }
+        }
+        if end >= n {
+            self.shadow_probe_cursor = None;
+            self.shadow_probed = true;
+            false
+        } else {
+            self.shadow_probe_cursor = Some(end);
+            true
+        }
+    }
+
+    /// Probe a single slot against both maps — no recursion into children.
+    /// Used by the linear arena scan in `shadow_probe_rendered_step`.
+    fn probe_slot(&mut self, idx: usize) {
+        // Forward map: idx is the shadowed slot.
+        if let Some(&(shadowing, ancestor)) = self
+            .shadow_sweep
+            .as_ref()
+            .and_then(|s| s.forward.get(&(idx as u32)))
+        {
+            if self.link_survives(idx as u32, shadowing, ancestor) {
+                self.set_shadow_bit(idx);
+            }
+        }
+        // Backward map: idx is the shadowing slot.
+        if let Some(shadowed) = self
+            .shadow_sweep
+            .as_ref()
+            .and_then(|s| s.backward.get(&(idx as u32)).copied())
+        {
+            if let Some(ancestor) = self
+                .shadow_sweep
+                .as_ref()
+                .and_then(|s| s.forward.get(&shadowed).map(|&(_, anc)| anc))
+            {
+                if self.link_survives(shadowed, idx as u32, ancestor) {
+                    self.set_shadow_bit(shadowed as usize);
+                }
             }
         }
     }
@@ -405,13 +443,13 @@ impl App {
     /// Set the shadow bit for `idx`, refresh its status, and return
     /// `true` if the bit was newly set (was clear before).
     fn set_shadow_bit(&mut self, idx: usize) -> bool {
-        let bitset = self.shadowed.as_ref().unwrap();
         let w = idx / 64;
         let bit = 1u64 << (idx % 64);
-        let prev = bitset[w].fetch_or(bit, Ordering::Relaxed);
-        if prev & bit != 0 {
+        let words = Arc::make_mut(&mut self.shadowed);
+        if words[w] & bit != 0 {
             return false; // already set
         }
+        words[w] |= bit;
         self.refresh_status_subtree(idx);
         self.refresh_status_ancestors(idx);
         true
@@ -462,28 +500,18 @@ impl App {
         true
     }
 
-    /// Spec 0343 B7: read one slot's shadow bit, returning `false` when
-    /// the bitset is not yet allocated (before B6 stage 3 runs).
+    /// Spec 0343 B7: read one slot's shadow bit.
     pub(super) fn is_shadowed(&self, idx: usize) -> bool {
-        match &self.shadowed {
-            None => false,
-            Some(bitset) => {
-                let w = idx / 64;
-                bitset
-                    .get(w)
-                    .is_some_and(|a| a.load(Ordering::Relaxed) & (1u64 << (idx % 64)) != 0)
-            }
-        }
+        let w = idx / 64;
+        self.shadowed
+            .get(w)
+            .is_some_and(|&word| word & (1u64 << (idx % 64)) != 0)
     }
 
-    /// Read one shadow word (64 bits starting at slot `64*w`), returning
-    /// `0` when the bitset is not yet allocated.  Used by `rebuild_status`
-    /// fast path (spec 0343 B9).
+    /// Read one shadow word (64 bits starting at slot `64*w`).
+    /// Used by `rebuild_status` fast path (spec 0343 B9).
     pub(super) fn shadow_word(&self, w: usize) -> u64 {
-        match &self.shadowed {
-            None => 0,
-            Some(bitset) => bitset.get(w).map_or(0, |a| a.load(Ordering::Relaxed)),
-        }
+        self.shadowed.get(w).copied().unwrap_or(0)
     }
 
     /// Clear the shadow bitset so `bake_step` re-probes each newly
@@ -495,11 +523,10 @@ impl App {
     /// the `NonCanonical` rung B9 added is removed — `assert_status_is_exact`
     /// compares against a from-scratch rebuild that sees no shadow bits.
     pub(super) fn invalidate_shadow_bits(&mut self) {
-        let Some(bitset) = &self.shadowed else { return };
         // Collect previously marked slots before zeroing.
         let mut was_marked: Vec<usize> = Vec::new();
-        for (w, word) in bitset.iter().enumerate() {
-            let mut bits = word.swap(0, Ordering::Relaxed);
+        for (w, word) in Arc::make_mut(&mut self.shadowed).iter_mut().enumerate() {
+            let mut bits: u64 = std::mem::replace(word, 0);
             while bits != 0 {
                 let lsb = bits.trailing_zeros() as usize;
                 was_marked.push(w * 64 + lsb);
@@ -513,7 +540,9 @@ impl App {
                 self.refresh_status_ancestors(idx);
             }
         }
-        // Signal that the post-completion probe must re-run.
+        // Signal that the post-completion probe must re-run. Reset the
+        // cursor too in case a previous probe was still in progress.
         self.shadow_probed = false;
+        self.shadow_probe_cursor = None;
     }
 }

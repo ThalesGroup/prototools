@@ -869,13 +869,16 @@ where
                             }
                             // Spec 0343 B6 stage 2: one trie chunk,
                             // between discard and bake.  Deliberately
-                            // does NOT `continue` — one idle pass does
-                            // one chunk *and* one bake step, so the
-                            // bake is not starved while the trie builds
-                            // and the document stops growing on screen.
-                            // The chunk is sized to leave the bake step
-                            // within the frame budget (B6).
-                            app.shadow_step();
+                            // does NOT `continue` before the bake step
+                            // — one idle pass does one chunk *and* one
+                            // bake step, so the bake is not starved
+                            // while the trie builds.  After the bake
+                            // step, if shadow is still in progress it
+                            // does `continue` (with a deadline check)
+                            // so the sweep drains at full speed once
+                            // the bake is done and the loop does not
+                            // sleep between chunks.
+                            let shadow_active = app.shadow_step();
                             // Spec 0255 S5: third — ahead of read-ahead,
                             // and not because it is the more deserving
                             // of the two. Read-ahead cannot make
@@ -910,7 +913,17 @@ where
                                     }
                                     continue;
                                 }
-                                BakeStep::Idle => {}
+                                BakeStep::Idle => {
+                                    // Bake is done; let the shadow sweep
+                                    // drain at full speed now that it no
+                                    // longer has to share each pass.
+                                    if shadow_active {
+                                        if Instant::now() >= deadline {
+                                            break None;
+                                        }
+                                        continue;
+                                    }
+                                }
                             }
                             if matches!(app.prefetch_step(), PrefetchStep::Progressed) {
                                 if Instant::now() >= deadline {

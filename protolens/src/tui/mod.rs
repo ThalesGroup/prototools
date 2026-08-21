@@ -2056,19 +2056,21 @@ pub struct App {
     /// Its links feed B5's filter once `is_complete()` returns true.
     shadow_sweep: Option<shadow_sweep::ShadowSweep>,
     /// Spec 0343 B7: one bit per arena slot, set by the B5 filter when
-    /// a slot is shadowed.  `None` until B6 stage 3 first runs.  The
-    /// `Arc` lets the segment scan share ownership without a copy;
-    /// `AtomicU64` satisfies the borrow checker while the sweep and the
-    /// renderer run on the same thread with `Relaxed` ordering.
-    ///
-    /// Accessor: `is_shadowed(idx)` / `shadow_word(w)` — both return
-    /// 0/false before stage 3 runs, which is the correct answer
-    /// (nothing has been filtered yet).
-    shadowed: Option<Arc<Vec<std::sync::atomic::AtomicU64>>>,
+    /// a slot is shadowed.  Allocated at construction (arena size is
+    /// known then) and zeroed; bits are set incrementally by the probe.
+    /// Written only by the single-threaded trie walk; read-only after
+    /// `shadow_probed` is set.  The `Arc` lets the spawned segment-scan
+    /// thread share the bitset without a copy; plain `u64` (not
+    /// `AtomicU64`) suffices since no concurrent writes ever happen.
+    shadowed: Arc<Vec<u64>>,
     /// Spec 0343 B6: whether the post-completion whole-arena probe has
     /// run.  Reset by `invalidate_shadow_bits` so the probe re-runs
     /// after an override on a fully-rendered document (no bake stops).
     shadow_probed: bool,
+    /// Cursor for the incremental post-trie arena probe (spec 0343 B6).
+    /// `Some(n)` means the probe is running and has scanned `0..n` so
+    /// far; `None` means it is not running.
+    shadow_probe_cursor: Option<usize>,
     /// Active Tab-completion cycle state (spec 0113 D26); `None` when not
     /// currently cycling.
     completion: Option<CompletionState>,
@@ -2334,6 +2336,7 @@ impl App {
         if root_override_type.is_some() {
             overrides.seed_root(root_override_type.clone());
         }
+        let arena_len = decoded.arena.len();
         let mut app = App {
             blob: decoded.blob,
             wrapper_offset: decoded.wrapper_offset,
@@ -2465,8 +2468,9 @@ impl App {
             search_center: false,
             search_progress: None,
             shadow_sweep: None,
-            shadowed: None,
+            shadowed: Arc::new(vec![0u64; arena_len.div_ceil(64)]),
             shadow_probed: false,
+            shadow_probe_cursor: None,
             completion: None,
             splash: true,
             splash_deadline: Instant::now() + SPLASH_TIMEOUT,

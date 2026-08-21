@@ -2697,18 +2697,18 @@ impl App {
     /// Priority order, highest first:
     ///   1. Heat-cue `User` tier — bright green.
     ///   2. Heat-cue `Visible` tier — dim green.
-    ///   3. Shadow-sweep trie walk (spec 0343 B6) — dark gray.
-    ///   4. Heat-cue `Prefetch` tier — dim blue.
-    ///   5. Bake in progress (spec 0249/0255) — light gray.
+    ///   3. Bake in progress (spec 0249/0255) — light gray.
+    ///   4. Shadow-sweep trie walk (spec 0343 B6) — violet.
+    ///   5. Heat-cue `Prefetch` tier — dim blue.
     ///   6. Idle — blank.
     ///
     fn render_activity_dot(&mut self, frame: &mut Frame, area: Rect) {
-        // Priority: User/Visible heat > shadow sweep > Prefetch heat > bake.
+        // Priority: User/Visible heat > bake > shadow sweep > Prefetch heat.
         let upper_heat = self.activity_shown.and_then(|tier| {
             let (hue, t) = match tier {
                 tiered::Tier::User => (theme::HeatHue::Green, 1.0_f32),
                 tiered::Tier::Visible => (theme::HeatHue::Green, 4.0 / 11.0),
-                tiered::Tier::Prefetch => return None, // below shadow sweep
+                tiered::Tier::Prefetch => return None, // below bake
             };
             theme::heat_style(t, hue, self.theme)
         });
@@ -2720,9 +2720,9 @@ impl App {
             }
         });
         let style = upper_heat
+            .or_else(|| self.bake_dot_style())
             .or_else(|| self.shadow_dot_style())
-            .or_else(|| prefetch_heat)
-            .or_else(|| self.bake_dot_style());
+            .or_else(|| prefetch_heat);
         let span = match style {
             Some(style) => Span::styled(ACTIVITY_GLYPH, style),
             None => Span::raw(" "),

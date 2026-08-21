@@ -125,7 +125,7 @@ pub(super) struct DocCursor<'a> {
     mark: String,
     /// The shadow bitset (spec 0343 B7). `None` before the filter runs
     /// or when no slots are marked.
-    shadowed: Option<Arc<Vec<AtomicU64>>>,
+    shadowed: Option<Arc<Vec<u64>>>,
     /// Mirror of `App::annotations`: the mark suffix is only visible
     /// when annotations are on, so the cursor must ask the same question
     /// or the haystack and the display disagree (spec 0343 B11).
@@ -152,7 +152,7 @@ impl<'a> DocCursor<'a> {
     pub(super) fn with_marks(
         st: Structure<'a>,
         text: &'a [Option<Box<str>>],
-        shadowed: Option<Arc<Vec<AtomicU64>>>,
+        shadowed: Option<Arc<Vec<u64>>>,
         annotations: bool,
         seg: Segment,
         abort: Option<(&'a AtomicU64, u64)>,
@@ -218,10 +218,10 @@ impl<'a> DocCursor<'a> {
             return;
         }
         let node = self.at.node;
-        let Some(bitset) = &self.shadowed else { return };
-        let word = bitset
-            .get(node / 64)
-            .map_or(0, |w| w.load(std::sync::atomic::Ordering::Relaxed));
+        let Some(ref bitset) = self.shadowed else {
+            return;
+        };
+        let word = bitset.get(node / 64).copied().unwrap_or(0);
         if word & (1 << (node % 64)) == 0 {
             return;
         }
@@ -504,17 +504,14 @@ impl App {
         }
         let base = text.len();
         if self.annotations {
-            let extra = self
-                .shadowed
-                .as_ref()
-                .and_then(|b| b.get(at.node / 64))
-                .map_or(0, |w| {
-                    if w.load(std::sync::atomic::Ordering::Relaxed) & (1 << (at.node % 64)) != 0 {
-                        "; shadowed_scalar".len()
-                    } else {
-                        0
-                    }
-                });
+            let extra = if self.shadowed.get(at.node / 64).copied().unwrap_or(0)
+                & (1 << (at.node % 64))
+                != 0
+            {
+                "; shadowed_scalar".len()
+            } else {
+                0
+            };
             base + extra
         } else {
             base
@@ -544,9 +541,7 @@ impl App {
         let arena = Arc::clone(&self.arena);
         let text = Arc::clone(&self.node_text);
         let re = Arc::clone(re);
-        // Spec 0343 B11: shadow bitset is `Arc`, so the clone is a
-        // refcount bump — no copy of the bitset itself.
-        let shadowed = self.shadowed.clone();
+        let shadowed = Some(Arc::clone(&self.shadowed));
         let annotations = self.annotations;
         let epoch = Arc::new(AtomicU64::new(SCAN_LIVE));
         let held = Arc::clone(&epoch);
@@ -598,7 +593,7 @@ impl App {
         hi: usize,
     ) -> Option<Range<usize>> {
         let st = self.structure();
-        let shadowed = self.shadowed.clone();
+        let shadowed = Some(Arc::clone(&self.shadowed));
         let annotations = self.annotations;
         match dir {
             SearchDir::Forward => find_in_segment(
@@ -688,7 +683,7 @@ impl Drop for SegmentScan {
 pub(super) fn find_in_segment(
     st: Structure<'_>,
     text: &[Option<Box<str>>],
-    shadowed: Option<Arc<Vec<AtomicU64>>>,
+    shadowed: Option<Arc<Vec<u64>>>,
     annotations: bool,
     re: &CursorRegex,
     seg: Segment,
@@ -709,7 +704,7 @@ pub(super) fn find_in_segment(
 pub(super) fn find_last_in_segment(
     st: Structure<'_>,
     text: &[Option<Box<str>>],
-    shadowed: Option<Arc<Vec<AtomicU64>>>,
+    shadowed: Option<Arc<Vec<u64>>>,
     annotations: bool,
     re: &CursorRegex,
     seg: Segment,

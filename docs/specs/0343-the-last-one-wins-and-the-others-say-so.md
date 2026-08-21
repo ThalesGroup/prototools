@@ -676,16 +676,18 @@ the descriptor says which of it happens.
   predicate is introduced.
 
   **Stage 1 — the first frame owes this spec nothing.** `App::new`,
-  `build_tree` and the first `draw` are untouched: no trie, no bitset,
-  no per-slot pass, nothing to initialize beyond an empty field. Spec
-  0257 spent real effort getting a screenful of a large document up,
-  and this spec must not spend any of it back. The trie is allocated on
-  the first idle pass rather than at open, and so is the bitset (B7).
+  `build_tree` and the first `draw` are untouched: no trie, no per-slot
+  pass, nothing to compute beyond the bitset allocation. Spec 0257 spent
+  real effort getting a screenful of a large document up, and this spec
+  must not spend any of it back. The trie is allocated on the first idle
+  pass rather than at open. The bitset is allocated at `App::new` (B7):
+  it is one zeroed `Vec<u64>` whose size is proportional to the arena,
+  not a pass over the document.
 
-  Putting both passes in the idle ladder is what enforces this, rather
-  than a flag someone has to remember to check: the loop draws at the
-  head of every iteration and only then reaches its idle arm, so no
-  trie work can precede the first frame.
+  Putting the trie in the idle ladder is what enforces the frame-first
+  guarantee, rather than a flag someone has to remember to check: the
+  loop draws at the head of every iteration and only then reaches its
+  idle arm, so no trie work can precede the first frame.
 
   **Stage 2 — the structural pass runs *alongside* the bake, not after
   it.** Everything B4 reads is present the moment the arena is, so the
@@ -701,7 +703,7 @@ the descriptor says which of it happens.
   pass stands aside for a segment scan in flight (spec 0274 S10) with
   no clause of its own.
 
-  **It is the one rung that does not `continue`.** Every other rung
+  **It does not `continue` before the bake step.** Every other rung
   restarts the ladder from the top when it makes progress, which is how
   strict priority is expressed there — and a rung above the bake doing
   that would starve the bake until the whole trie was built, so the
@@ -709,6 +711,13 @@ the descriptor says which of it happens.
   instead: **one idle pass does one trie chunk *and* one bake step.**
   The deviation is the point, and it is written down because the
   obvious edit is to make the rung look like its neighbors.
+
+  **After the bake step, the sweep may `continue`.** Once `bake_step`
+  returns `Idle`, the ladder checks whether `shadow_step` is still in
+  progress; if so, it `continue`s so the post-trie probe drains at full
+  speed without sleeping between chunks. This is how the sweep achieves
+  higher throughput after the bake than during it, without ever blocking
+  a bake step.
 
   **Falling through means skipping the deadline, so the chunk is what
   bounds it.** Every other rung returns to the top of the ladder, and
@@ -724,11 +733,16 @@ the descriptor says which of it happens.
   **Stage 3 — the filter runs incrementally, at two points.**
 
   **On trie completion** — when stage 2's final chunk empties the DFS
-  stack — the sweep probes every *currently rendered* slot against the
-  forward and backward maps. This fires without waiting for the bake:
-  the initial screenful is on screen and its labels are real, so any
-  shadowed scalar already visible is marked immediately. Slots not yet
-  baked are not rendered (`lines_total == 0`) and are simply skipped.
+  stack — the sweep probes every slot in the arena against the forward
+  and backward maps, looking for rendered slots whose label is real.
+  This probe does not run in one shot; it runs incrementally, `SHADOW_CHUNK`
+  slots at a time, via `shadow_probe_cursor`. Slots not yet baked are
+  not rendered (`lines_total == 0`) and are simply skipped. The probe
+  fires without waiting for the bake: the initial screenful is on screen
+  and its labels are real, so any shadowed scalar already visible is
+  marked immediately. After the bake finishes, the
+  `BakeStep::Idle` arm lets the sweep drain at full speed by
+  `continue`-ing the ladder so long as `shadow_step` returns `true`.
 
   **After each bake step** — after `expand_auto_fold` renders a
   subtree — the sweep probes every slot in that subtree. For each slot
@@ -772,21 +786,18 @@ the descriptor says which of it happens.
   immutable: a retype rewrites the overlay under a slot and allocates
   none (spec 0216). There is no growth path to write.
 
-  **It is allocated on the first probe, not at open.** The length is
-  known at open, but B6's first stage forbids spending anything there,
-  and this is not nothing: 4.74 M slots is 74 k words, some 593 kB to
-  zero on a path spec 0257 measures in milliseconds. So the field is
-  empty until the first `bake_step` probe that finds a link, and until
-  then every slot's bit reads `false` — which is also exactly the right
-  answer, since nothing has been probed yet.
+  **It is allocated eagerly at `App::new`, once the arena length is
+  known.** B6's first stage still does no per-slot work — the bitset is
+  a single `vec![0u64; arena_len.div_ceil(64)]`, zeroed by the
+  allocator, and reading zeros from a plain `Vec` is compiler-friendly
+  (no barriers, fully vectorizable). The field is therefore never empty;
+  every slot's bit reads `false` from the first frame onward, which is
+  the right answer before any probe has run.
 
-  **The reader must therefore tolerate an empty set, and the word-wise
-  read is where it would not.** `FoldSet::word` is `self.words[w]`
-  (`fold_set.rs:149`), an unguarded index, and B9's fast path reads the
-  shadow set the same way. An unallocated shadow set answers `0` to
-  `word()` and `false` to a single-bit read rather than panicking, and
-  that is a clause on the accessor rather than a guard at each of its
-  call sites — every rebuild before stage 3 finishes goes through it.
+  **`FoldSet::word` is `self.words[w]`** (`fold_set.rs:149`), an
+  unguarded index, and B9's fast path reads the shadow word the same
+  way — `self.shadowed[w]`. Both are safe: the bitset covers the full
+  arena and is allocated before the first idle pass.
 
   Not written into `node_text`: that is an `Arc` shared with the segment
   scan, so `node_text_mut` halts the scan (spec 0274), and a background
@@ -799,12 +810,16 @@ the descriptor says which of it happens.
   display. The renderer never searches the bitset — it knows the slot
   and wants that slot's bit.
 
-  The bitset is `Arc<Vec<AtomicU64>>`, and the atomics are there for one
-  reason only: `spawn_segment_scan` clones the arena's `Arc`s into a
-  worker thread, so if the search scan reads the bit, a plain `Vec`
-  would be a data race in the strict sense. Sweep and renderer are the
-  same thread and need no synchronization between them; `Relaxed` is
-  sufficient throughout.
+  The bitset is `Arc<Vec<u64>>`. The `Arc` exists for one reason: the
+  search worker (`spawn_segment_scan`) is a fire-and-forget thread
+  stored in `SegmentScan`, so `thread::scope` cannot be used and the
+  bitset must be `'static`-compatible. `Arc::clone` at the spawn site
+  bumps the refcount — no data is copied. Plain `u64` (not `AtomicU64`)
+  is correct because the trie walk is the sole writer and completes
+  before any reader — including the search worker — ever touches the
+  bitset. `Arc::make_mut` handles the write-time single-ownership
+  requirement; it would clone if the refcount were > 1, but the worker
+  is not yet spawned at that point, so it never does.
 
   The third clause is an obligation, not an optimization: a bit set
   behind the reader's back with no frame requested is a row that
@@ -1199,9 +1214,11 @@ six counters are deliberately six `u64`s.
     reason B6's second stage can start before the bake ends. A
     structural pass run over an arena whose `TreeNode`s are all
     `vacant()` must emit the same links as one run after a full bake.
-13. `opening_a_document_allocates_no_trie_and_no_bitset` — B6's first
-    stage, asserted where it can actually be seen: the fields are still
-    empty when the first `draw` returns. Paired with the startup
+13. `opening_a_document_allocates_no_trie` — B6's first stage, asserted
+    where it can actually be seen: the trie field is still `None` when
+    the first `draw` returns. The bitset is allocated eagerly at
+    `App::new` (B7) — it is a zeroed `Vec<u64>`, not a document pass —
+    so the assertion covers only the trie. Paired with the startup
     measurement of item 32, which is what catches a regression this
     assertion is too coarse for.
 14. `a_trie_chunk_does_not_delay_a_bake_step` — B6's second stage, and
@@ -1298,7 +1315,12 @@ six counters are deliberately six `u64`s.
     recorded. The first must not move at all — that is G5, and it is
     the claim item 13 can only approximate. The second may move a
     little, and by how much is the measured price of B6's second stage
-    sharing the ladder with the bake.
+    sharing the ladder with the bake. Using `Arc<Vec<AtomicU64>>` for
+    the bitset was measured to cause a ~3.5× regression on
+    `googleapis.desc` (`AtomicU64::load(Relaxed)` in `rebuild_status`'s
+    inner loop prevents register caching and vectorization); `Vec<u64>`
+    with plain reads keeps bake time within ~25 % of the pre-spec
+    baseline on that file.
 33. A search over a document that **has** marks, timed. B11's scratch
     copies a node's whole text on every cursor step that lands on a
     marked node, and a document with no marks never fills it — so the
