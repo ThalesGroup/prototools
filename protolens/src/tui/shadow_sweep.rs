@@ -97,17 +97,6 @@ struct Frame {
     child_trie: usize,
 }
 
-// ── Links ─────────────────────────────────────────────────────────────────────
-
-/// One structural link: the displaced slot, the displacing one, and
-/// their nearest common arena ancestor (spec 0343 B4).
-#[derive(Clone, Copy, Debug)]
-pub(super) struct Link {
-    pub(super) shadowed: u32,
-    pub(super) shadowing: u32,
-    pub(super) ancestor: u32,
-}
-
 // ── ShadowSweep ──────────────────────────────────────────────────────────────
 
 /// B4's resumable structural pass (spec 0343 B4/B6).
@@ -308,69 +297,123 @@ impl App {
         }
         let sweep = self.shadow_sweep.as_mut().unwrap();
         if sweep.is_complete() {
+            // Spec 0343 B6: after an override, `invalidate_shadow_bits`
+            // resets `shadow_probed` so the whole-arena probe re-runs
+            // here (the trie does not rebuild, only the bits are cleared).
+            if !self.shadow_probed {
+                self.shadow_probe_rendered();
+            }
             return false;
         }
         let blob = self.blob.as_ref();
         sweep.step(&self.arena, blob);
-        !sweep.is_complete()
+        if !sweep.is_complete() {
+            return true;
+        }
+        // Structural pass just finished — probe everything already rendered.
+        self.shadow_probe_rendered();
+        false
     }
 
-    /// Spec 0343 B6 stage 3: run the filter over all links.
+    /// Spec 0343 B6 stage 3: probe shadow links for each slot in
+    /// `idx`'s subtree that the bake just rendered.
     ///
-    /// Called once, from the idle ladder, when both the structural pass
-    /// *and* the bake are idle.  Allocates the shadow bitset (B7) and
-    /// sets bits for every link that passes B5.  Schedules a redraw for
-    /// each slot it marks (B7 third clause).
+    /// Called from `bake_step` immediately after `expand_auto_fold`.
+    /// Walks the subtree recursively (same shape as
+    /// `refresh_status_subtree`) and for each rendered slot checks
+    /// whether the structural pass has recorded a link naming it.  If
+    /// the link passes B5's four clauses, the shadow bit is set and the
+    /// status roll-up is refreshed.
     ///
-    /// Returns `true` if any bit was set (a redraw is owed).
-    pub(super) fn shadow_filter(&mut self) -> bool {
-        let sweep = match self.shadow_sweep.as_ref() {
-            Some(s) if s.is_complete() => s,
-            _ => return false,
-        };
+    /// Returns `true` if any bit was set — the caller promotes the
+    /// `BakeStep` to `Visible` so the frame is repainted immediately.
+    pub(super) fn shadow_probe_subtree(&mut self, idx: usize) -> bool {
+        // Structural pass not yet complete — no links to probe yet.
+        let sweep_complete = self.shadow_sweep.as_ref().is_some_and(|s| s.is_complete());
+        if !sweep_complete {
+            return false;
+        }
 
-        // Lazily allocate the shadow bitset (B7: length = arena length,
-        // never changes).
-        let n = self.arena.len();
-        let nwords = n.div_ceil(64);
+        // Lazily allocate the shadow bitset on the first probe.
         if self.shadowed.is_none() {
+            let n = self.arena.len();
+            let nwords = n.div_ceil(64);
             let words = (0..nwords).map(|_| AtomicU64::new(0)).collect();
             self.shadowed = Some(Arc::new(words));
         }
 
-        // Collect surviving links first (one pass, no double evaluation).
-        let marked: Vec<u32> = {
-            let sweep = self.shadow_sweep.as_ref().unwrap();
-            sweep
-                .forward
-                .iter()
-                .filter(|(&shadowed, &(shadowing, ancestor))| {
-                    self.link_survives(shadowed, shadowing, ancestor)
-                })
-                .map(|(&shadowed, _)| shadowed)
-                .collect()
-        };
+        self.probe_subtree_inner(idx)
+    }
 
-        if marked.is_empty() {
-            return false;
+    /// Probe every currently-rendered slot against the structural links.
+    ///
+    /// Called when the structural pass completes (first time or after
+    /// invalidation from an override) to mark slots that were rendered
+    /// before or during the trie walk.  The bake-driven probe covers
+    /// slots rendered *after* the trie finishes; this covers the rest.
+    fn shadow_probe_rendered(&mut self) {
+        self.shadow_probed = true;
+        let n = self.arena.len();
+        for idx in 0..n {
+            if self.tree[idx].is_rendered() {
+                self.shadow_probe_subtree(idx);
+            }
+        }
+    }
+
+    /// Recursive inner walk for `shadow_probe_subtree`.
+    fn probe_subtree_inner(&mut self, idx: usize) -> bool {
+        let mut any = false;
+
+        // Probe forward map: idx is the shadowed slot.
+        if let Some(&(shadowing, ancestor)) = self
+            .shadow_sweep
+            .as_ref()
+            .and_then(|s| s.forward.get(&(idx as u32)))
+        {
+            if self.link_survives(idx as u32, shadowing, ancestor) {
+                any |= self.set_shadow_bit(idx);
+            }
         }
 
+        // Probe backward map: idx is the shadowing slot.  If the link
+        // survives, set the bit on the shadowed peer.
+        if let Some(shadowed) = self
+            .shadow_sweep
+            .as_ref()
+            .and_then(|s| s.backward.get(&(idx as u32)).copied())
+        {
+            if let Some(ancestor) = self
+                .shadow_sweep
+                .as_ref()
+                .and_then(|s| s.forward.get(&shadowed).map(|&(_, anc)| anc))
+            {
+                if self.link_survives(shadowed, idx as u32, ancestor) {
+                    any |= self.set_shadow_bit(shadowed as usize);
+                }
+            }
+        }
+
+        // Recurse into children.
+        for child in self.child_slots(idx) {
+            any |= self.probe_subtree_inner(child);
+        }
+
+        any
+    }
+
+    /// Set the shadow bit for `idx`, refresh its status, and return
+    /// `true` if the bit was newly set (was clear before).
+    fn set_shadow_bit(&mut self, idx: usize) -> bool {
         let bitset = self.shadowed.as_ref().unwrap();
-        for &slot in &marked {
-            // Set the bit (Relaxed: sweep and display are the same
-            // thread; the segment scan only reads, B7).
-            let w = slot as usize / 64;
-            let bit = 1u64 << (slot as usize % 64);
-            bitset[w].fetch_or(bit, Ordering::Relaxed);
+        let w = idx / 64;
+        let bit = 1u64 << (idx % 64);
+        let prev = bitset[w].fetch_or(bit, Ordering::Relaxed);
+        if prev & bit != 0 {
+            return false; // already set
         }
-
-        // B9: refresh each marked slot and its ancestors so the
-        // roll-up reaches the margin color.
-        for slot in marked {
-            self.refresh_status_subtree(slot as usize);
-            self.refresh_status_ancestors(slot as usize);
-        }
-
+        self.refresh_status_subtree(idx);
+        self.refresh_status_ancestors(idx);
         true
     }
 
@@ -443,16 +486,34 @@ impl App {
         }
     }
 
-    /// Clear the shadow bitset and reset the filter cursor so stage 3
-    /// re-runs on the next idle pass.  Called by override handling on
-    /// every splice (spec 0343 B6: "override invalidates the bits,
-    /// never the links").
+    /// Clear the shadow bitset so `bake_step` re-probes each newly
+    /// rendered slot.  Called by `finalize_override_batch` on every
+    /// splice (spec 0343 B6: "override invalidates the bits, never the
+    /// links").
+    ///
+    /// Slots whose bits are cleared must have their status refreshed so
+    /// the `NonCanonical` rung B9 added is removed — `assert_status_is_exact`
+    /// compares against a from-scratch rebuild that sees no shadow bits.
     pub(super) fn invalidate_shadow_bits(&mut self) {
-        if let Some(bitset) = &self.shadowed {
-            for word in bitset.iter() {
-                word.store(0, Ordering::Relaxed);
+        let Some(bitset) = &self.shadowed else { return };
+        // Collect previously marked slots before zeroing.
+        let mut was_marked: Vec<usize> = Vec::new();
+        for (w, word) in bitset.iter().enumerate() {
+            let mut bits = word.swap(0, Ordering::Relaxed);
+            while bits != 0 {
+                let lsb = bits.trailing_zeros() as usize;
+                was_marked.push(w * 64 + lsb);
+                bits &= bits - 1;
             }
         }
-        self.shadow_filter_done = false;
+        // Refresh status for each slot that lost its shadow bit.
+        for idx in was_marked {
+            if idx < self.tree.len() {
+                self.refresh_status_subtree(idx);
+                self.refresh_status_ancestors(idx);
+            }
+        }
+        // Signal that the post-completion probe must re-run.
+        self.shadow_probed = false;
     }
 }

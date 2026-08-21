@@ -137,6 +137,7 @@ pub(super) struct DocCursor<'a> {
 }
 
 impl<'a> DocCursor<'a> {
+    #[cfg(test)]
     pub(super) fn new(
         st: Structure<'a>,
         text: &'a [Option<Box<str>>],

@@ -721,64 +721,48 @@ the descriptor says which of it happens.
   rung would work too and is rejected only because it puts a second
   deadline test in a ladder that has exactly one.
 
-  **Stage 3 — the filter runs when both of those are done.** It needs
-  the structural pass *complete*, because a link can be emitted at any
-  later offset in the document and a filter run over half the links
-  would mark half the rows and never revisit them. It needs the bake
-  *idle*, because a slot's label is A4's pair of bits on its span,
-  written by the render under the resolved type, and an unbaked slot
-  has no rendering and therefore no label to read.
+  **Stage 3 — the filter runs incrementally, at two points.**
 
-  **Position is the gate, and the only gate.** `BakeStep::Idle` is what
-  falls through to the rungs below, so a filter placed there cannot run
-  while the bake owes a row; and it goes directly after the bake,
-  *ahead* of read-ahead, because it is bounded by the link count rather
-  than by the document, it owes a frame (B7), and deferring the marks
-  behind a finite prefetch queue would keep them off screen for no
-  reason. No second predicate — in particular not
-  `auto_folded.is_empty()`, which is the splice's bit and what
-  `bake_dot_style` reads, and which is therefore free to disagree.
+  **On trie completion** — when stage 2's final chunk empties the DFS
+  stack — the sweep probes every *currently rendered* slot against the
+  forward and backward maps. This fires without waiting for the bake:
+  the initial screenful is on screen and its labels are real, so any
+  shadowed scalar already visible is marked immediately. Slots not yet
+  baked are not rendered (`lines_total == 0`) and are simply skipped.
 
-  **Each stage knows it is owed by its own cursor, which is the same
-  thing "position is the gate" says about the ladder.** Stage 2 has
-  work while its DFS stack is non-empty, and it is complete when the
-  stack empties — the stack B4 gives it is the only state either
-  question needs. Stage 3 has work while a cursor into the link list is
-  short of its end, and it advances that cursor by a bounded number of
-  links per turn for the same reason stage 2 is chunked. Neither is a
-  flag anyone has to remember to set, which is the property that makes
-  the invalidation rule below one line long.
+  **After each bake step** — after `expand_auto_fold` renders a
+  subtree — the sweep probes every slot in that subtree. For each slot
+  N it checks:
+
+  - If `forward[N]` exists — N is a *shadowed* slot — evaluate B5's
+    four clauses for the link `N → shadowing`. If all pass, set N's
+    shadow bit; if N is currently a visible line, mark the frame dirty.
+  - If `backward[N]` exists — N is a *shadowing* slot — look up the
+    shadowed peer S and evaluate B5's four clauses for the link
+    `S → N`. If all pass, set S's shadow bit; if S is currently a
+    visible line, mark the frame dirty.
+
+  The two probe points are complementary: trie completion covers slots
+  rendered before or during the walk; the bake hook covers slots
+  rendered after it. Together they are exhaustive.
+
+  Each probe evaluates B5 with complete information. N is rendered, so
+  its label is real. Every other node on either chain is an ancestor of
+  N — rendered before N by the bake's top-down order — so the
+  document-order trap cannot arise.
 
   **An override invalidates the bits, never the links.** The bitset is
-  cleared and the filter's cursor is rewound to zero — that is the
-  entire invalidation — so the filter re-runs and the structural pass
-  does not, because
-  by B4 its output is a function of the bytes. No incremental repair,
-  no invalidation scope, no partial-state bookkeeping — the thing that
-  would have needed them is the thing that no longer has to be redone.
+  cleared — that is the entire invalidation — and the next
+  `shadow_step` call re-runs the trie-completion probe over all
+  currently rendered slots (which by then includes whatever the
+  re-bake has rendered), while subsequent bake steps cover the rest as
+  they expand. No incremental repair, no invalidation scope, no
+  partial-state bookkeeping. `finalize_override_batch` calls
+  `invalidate_shadow_bits` whenever `batch_spliced` is true.
 
-  Waiting is still a deliberate simplification on the filter's side,
-  and it is worth being explicit about what it buys. Following the bake
-  rather than waiting for it would need a rule for subtrees the bake
-  has sealed and a guard for the document-order trap, where a link
-  whose far end is not yet rendered gets filtered on a label that is
-  not there. Both disappear if every slot a link names is rendered when
-  the filter runs.
-
-  The price is latency, and stage 2 is what keeps it small. The two
-  waits do not add up — the trie is built *during* the bake, so what
-  the reader waits for is the bake alone, plus a filter that visits
-  links and no rows. After an override the re-bake is fast and the trie
-  is not rebuilt at all, so the marks return almost with the rows. The
-  answer arrives shortly after the document stops moving, which is also
-  when the reader starts looking.
-
-  Until stage 3 finishes the document is provisional in the way it
-  already is: `Status::Unbaked` and the activity dot are still up. No
-  new indicator is added, and in particular the absence of a mark is
-  never presented as an answer — a document mid-sweep says the same
-  thing a clean one does, which is why stage 3 completing is what the
-  reader is really waiting for.
+  The structural pass does not re-run after an override, because by B4
+  its output is a function of the bytes, and overrides rewrite the
+  overlay text but never reorder arena slots.
 
 ### The verdict
 
@@ -788,13 +772,13 @@ the descriptor says which of it happens.
   immutable: a retype rewrites the overlay under a slot and allocates
   none (spec 0216). There is no growth path to write.
 
-  **It is allocated when the filter first runs, not at open.** The
-  length is known at open, but B6's first stage forbids spending
-  anything there, and this is not nothing: 4.74 M slots is 74 k words,
-  some 593 kB to zero on a path spec 0257 measures in milliseconds. So
-  the field is empty until stage 3 reaches it, and until then every
-  slot's bit reads `false` — which is also exactly the right answer,
-  since nothing has been filtered yet.
+  **It is allocated on the first probe, not at open.** The length is
+  known at open, but B6's first stage forbids spending anything there,
+  and this is not nothing: 4.74 M slots is 74 k words, some 593 kB to
+  zero on a path spec 0257 measures in milliseconds. So the field is
+  empty until the first `bake_step` probe that finds a link, and until
+  then every slot's bit reads `false` — which is also exactly the right
+  answer, since nothing has been probed yet.
 
   **The reader must therefore tolerate an empty set, and the word-wise
   read is where it would not.** `FoldSet::word` is `self.words[w]`
@@ -1225,16 +1209,15 @@ six counters are deliberately six `u64`s.
     the idle ladder with trie work outstanding must still take a bake
     step; a rung written like its neighbors, with a `continue`, starves
     the bake and this is what says so.
-15. `the_filter_does_not_start_before_the_bake_is_idle` — B6's third
-    stage, driven through the pty harness on a fixture large enough to
-    bake in more than one step. Paired with
-    `the_filter_does_not_start_before_the_trie_is_complete`, the other
-    half of the same gate: a filter run over half the links would mark
-    half the rows and never revisit them, so a partial run is not a
-    slow answer but a wrong one.
-16. `an_override_re_filters_and_does_not_re_scan` — B6's invalidation
-    rule: the links after the splice are the links before it, and the
-    bits agree with a filter run from scratch over the spliced
+15. `the_filter_does_not_start_before_the_trie_is_complete` — B6's
+    stage 2/3 ordering: a probe that names a link not yet emitted by
+    the structural pass would silently miss it. Driven on a fixture
+    large enough that the trie walk takes more than one chunk; asserts
+    no shadow bit is set while the DFS stack is non-empty.
+16. `an_override_clears_and_re_filters` — B6's invalidation rule:
+    after a splice `invalidate_shadow_bits` zeroes the bitset; the
+    subsequent bake re-probes each newly rendered slot; the bits at
+    completion agree with a filter run from scratch over the spliced
     rendering, in the manner of `assert_status_is_exact`.
 17. `a_link_into_an_unrendered_slot_is_dropped` — B5's third drop
     reason, and the one whose absence is a panic rather than a wrong

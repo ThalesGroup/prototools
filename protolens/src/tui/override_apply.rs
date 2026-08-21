@@ -731,6 +731,12 @@ impl App {
             return;
         }
         self.batch_spliced = false;
+        // Spec 0343 B6: an override may change which scalars are
+        // shadowed (a type name resolves labels that were NoSchema
+        // before).  Clear the shadow bits so `bake_step` re-probes
+        // each newly rendered slot.  The structural links (B4) are
+        // still valid — overrides rewrite text but never reorder slots.
+        self.invalidate_shadow_bits();
         // Line numbers moved, so the read-ahead walk must restart.
         self.structural_version += 1;
         // Spec 0259 S3: they moved under the reader too. Put the row that

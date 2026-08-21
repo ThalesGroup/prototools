@@ -2065,10 +2065,10 @@ pub struct App {
     /// 0/false before stage 3 runs, which is the correct answer
     /// (nothing has been filtered yet).
     shadowed: Option<Arc<Vec<std::sync::atomic::AtomicU64>>>,
-    /// Spec 0343 B6 stage 3: whether the filter has already run in
-    /// this document load.  Cleared by `invalidate_shadow_bits` on
-    /// every override, so the filter re-runs after each splice.
-    shadow_filter_done: bool,
+    /// Spec 0343 B6: whether the post-completion whole-arena probe has
+    /// run.  Reset by `invalidate_shadow_bits` so the probe re-runs
+    /// after an override on a fully-rendered document (no bake stops).
+    shadow_probed: bool,
     /// Active Tab-completion cycle state (spec 0113 D26); `None` when not
     /// currently cycling.
     completion: Option<CompletionState>,
@@ -2466,7 +2466,7 @@ impl App {
             search_progress: None,
             shadow_sweep: None,
             shadowed: None,
-            shadow_filter_done: false,
+            shadow_probed: false,
             completion: None,
             splash: true,
             splash_deadline: Instant::now() + SPLASH_TIMEOUT,

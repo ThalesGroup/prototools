@@ -1563,3 +1563,118 @@ fn bake_subtree_attempts_each_node_once() {
         "every stop but the refusing one must have been paid off"
     );
 }
+
+// ── Shadow probe tests (spec 0343 B6 stage 3) ────────────────────────────────
+
+/// Build a blob that has field 1 (singular int32) appearing twice at the
+/// top level — the minimal shadow scenario.
+///
+/// Wire: tag 0x08 (field 1, varint), value 10; tag 0x08, value 20.
+fn two_occurrences_blob() -> Vec<u8> {
+    vec![0x08, 0x0A, 0x08, 0x14]
+}
+
+/// Build a descriptor set for `Msg { int32 x = 1; }` in package `test`.
+fn two_occurrences_fds() -> prost_types::FileDescriptorSet {
+    use super::support_build::{field, message, proto3_fds};
+    use prost_types::field_descriptor_proto::{Label, Type};
+    proto3_fds(
+        "two_occurrences.proto",
+        vec![message(
+            "Msg",
+            vec![field("x", 1, Label::Optional, Type::Int32)],
+        )],
+    )
+}
+
+/// Drive the structural shadow sweep to completion (like `drain` for the
+/// bake), then drain the bake too.
+fn drain_shadow_and_bake(app: &mut App) {
+    for _ in 0..10_000 {
+        if !app.shadow_step() {
+            break;
+        }
+    }
+    drain(app);
+}
+
+/// Spec 0343 B6 stage 3 (bake-driven probe): after the structural sweep
+/// and the bake are both done, the first of two occurrences of the same
+/// singular field is marked as shadowed.
+#[test]
+fn a_shadowed_scalar_is_marked_after_the_bake() {
+    use super::support_build::fixture_under;
+    let fds = two_occurrences_fds();
+    let blob = two_occurrences_blob();
+    let mut app = fixture_under("shadow-basic", &fds, "test.Msg", &blob);
+    app.splash = false;
+    app.term_width = 120;
+
+    drain_shadow_and_bake(&mut app);
+
+    // The arena has three slots: root (slot 0), first occurrence (slot 1),
+    // second occurrence (slot 2).  The first is shadowed by the second.
+    let first = app
+        .tree
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find(|(_, n)| n.is_rendered())
+        .map(|(i, _)| i)
+        .expect("at least one rendered non-root slot");
+    let second = app
+        .tree
+        .iter()
+        .enumerate()
+        .skip(first + 1)
+        .find(|(_, n)| n.is_rendered())
+        .map(|(i, _)| i)
+        .expect("a second rendered slot");
+
+    assert!(
+        app.is_shadowed(first),
+        "slot {first} (first occurrence) must be marked shadowed; \
+         shadowing slot is {second}"
+    );
+    assert!(
+        !app.is_shadowed(second),
+        "slot {second} (last occurrence) must not be marked shadowed"
+    );
+}
+
+/// Spec 0343 B6 invalidation: after an override triggers
+/// `invalidate_shadow_bits`, the bits are cleared and the bake re-probes
+/// them on the next expansion.  The mark must survive a round-trip.
+#[test]
+fn shadow_bits_survive_an_override_round_trip() {
+    use super::support_build::fixture_under;
+    let fds = two_occurrences_fds();
+    let blob = two_occurrences_blob();
+    let mut app = fixture_under("shadow-override", &fds, "test.Msg", &blob);
+    app.splash = false;
+    app.term_width = 120;
+
+    drain_shadow_and_bake(&mut app);
+
+    let first = app
+        .tree
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find(|(_, n)| n.is_rendered())
+        .map(|(i, _)| i)
+        .expect("first rendered slot");
+    assert!(app.is_shadowed(first), "marked before override");
+
+    // Apply an override on the root to trigger invalidate_shadow_bits,
+    // then drain the bake again — the mark must return.
+    let root = app.first_node;
+    app.splice_override(root, Some("test.Msg".to_string()), None)
+        .expect("re-splice must succeed");
+    drain_shadow_and_bake(&mut app);
+
+    assert!(
+        app.is_shadowed(first),
+        "slot {first} must still be marked after override + re-bake"
+    );
+}

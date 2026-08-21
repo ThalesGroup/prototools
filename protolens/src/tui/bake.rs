@@ -76,6 +76,11 @@ impl App {
                 continue;
             }
             self.expand_auto_fold(idx, Self::BAKE_ROW_BUDGET);
+            // Spec 0343 B6 stage 3: probe each newly rendered slot for
+            // shadow links. The subtree is already on screen, so any
+            // shadow bit set here is immediately visible — `Visible` is
+            // correct either way.
+            self.shadow_probe_subtree(idx);
             return BakeStep::Visible;
         }
         while let Some(idx) = self.bake_queue.pop_front() {
@@ -83,7 +88,15 @@ impl App {
                 continue;
             }
             self.expand_auto_fold(idx, Self::BAKE_ROW_BUDGET);
-            return BakeStep::Progressed;
+            // Spec 0343 B6 stage 3: probe shadow links for each newly
+            // rendered slot. If any bit was set, the frame is dirtied
+            // here; the terminal loop's `bake_dirty` flag covers it.
+            let shadow_hit = self.shadow_probe_subtree(idx);
+            return if shadow_hit {
+                BakeStep::Visible
+            } else {
+                BakeStep::Progressed
+            };
         }
         BakeStep::Idle
     }

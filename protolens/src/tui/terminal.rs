@@ -912,24 +912,6 @@ where
                                 }
                                 BakeStep::Idle => {}
                             }
-                            // Spec 0343 B6 stage 3: filter runs when
-                            // both the structural pass and the bake are
-                            // idle.  Placed directly after the bake and
-                            // ahead of read-ahead: it is bounded by the
-                            // link count, not by the document, and
-                            // deferring the marks behind a prefetch
-                            // queue keeps them off screen needlessly.
-                            // Runs once per document load; re-runs after
-                            // an override (invalidate_shadow_bits
-                            // resets shadow_filter_done).
-                            if !app.shadow_filter_done {
-                                if app.shadow_filter() {
-                                    // Bits were set — rows on screen may
-                                    // have changed; ask for a redraw.
-                                    bake_dirty = true;
-                                }
-                                app.shadow_filter_done = true;
-                            }
                             if matches!(app.prefetch_step(), PrefetchStep::Progressed) {
                                 if Instant::now() >= deadline {
                                     break None;
