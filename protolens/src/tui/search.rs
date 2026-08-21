@@ -702,7 +702,19 @@ impl App {
                             end: None,
                         });
                 }
-                let text = self.line_text_at(pos, sweep.offset);
+                let mut text = self.line_text_at(pos, sweep.offset);
+                // Spec 0343 B11: mirror `row_text_of`'s annotation
+                // insertion so the search haystack matches what the
+                // renderer tints. Only the node's own-text row (line 0)
+                // carries the suffix; shadowed scalars are always leaves
+                // and therefore single-row nodes, so `line_in_node == 0`
+                // is always true for a marked slot, but the check costs
+                // nothing and avoids a panic if that assumption breaks.
+                if self.annotations && pos.line_in_node == 0 && self.is_shadowed(pos.node) {
+                    let mut owned = text.into_owned();
+                    owned.push_str("; shadowed_scalar");
+                    text = Cow::Owned(owned);
+                }
                 // The row's first non-blank — the floor every stop's
                 // position is measured against (spec 0246 S3a).
                 let indent = text.len() - text.trim_start().len();
@@ -1194,7 +1206,13 @@ impl App {
                     // Spec 0246 S9: one stop, at the row's start.
                     return (1, here(1));
                 }
-                let text = self.line_text_at(pos, offset);
+                let mut text = self.line_text_at(pos, offset);
+                // Spec 0343 B11: same augmentation as `sweep_test`.
+                if self.annotations && pos.line_in_node == 0 && self.is_shadowed(pos.node) {
+                    let mut owned = text.into_owned();
+                    owned.push_str("; shadowed_scalar");
+                    text = Cow::Owned(owned);
+                }
                 // The row's first non-blank — the floor every stop's
                 // position is measured against (spec 0246 S3a).
                 let indent = text.len() - text.trim_start().len();
@@ -1867,6 +1885,7 @@ impl App {
         match found {
             Some(hit) => {
                 self.apply_sweep_hit(origin.scope, hit);
+                self.search_center = true;
                 self.echo_search(dir, pattern);
             }
             // Spec 0235 S10: the message returns at `Enter`, and only
@@ -1963,6 +1982,7 @@ impl App {
         match found {
             Some(hit) => {
                 self.apply_sweep_hit(scope, hit);
+                self.search_center = true;
                 self.echo_search(dir, pattern);
             }
             None => self.message = self.not_found(pattern, scope),
