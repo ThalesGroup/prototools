@@ -436,7 +436,7 @@ let
     # corpus protoc run and a reproto --schema-db-out. It is `full-tests`
     # material, not `ci` material, and it is deliberately kept out of
     # user-shell for that reason.
-    inherit (python) googleapisDb bobapp2Desc bobappDesc;
+    inherit (python) googleapisDb bobapp2Desc;
     inherit grpconfDemo;
     repoRoot    = toString ./.;
     rustcVersion = pkgs.rustc.unwrapped.version;
