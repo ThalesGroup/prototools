@@ -97,14 +97,14 @@ let
         # `prototext-core/src/serialize/render_text/mod.rs` include_bytes!
         # descriptor.pb and so cannot even compile without it.
         ./prototext-core/fixtures
-        # grpconf/ is deliberately absent, and must stay that way.  It is the
-        # live demo: it *uses* the tools and has no business invalidating
+        # grpconf2026/ is deliberately absent, and must stay that way.  It is
+        # the live demo: it *uses* the tools and has no business invalidating
         # their build.  It was in here for `anomalies.pb` and
         # `anomalies.script`, which are not demo artefacts at all but shared
         # test fixtures of prototext-core and protolens; they now live under
         # ./tests/fixtures, admitted above like every other fixture.
         #
-        # What that cost while it lasted: grpconf/stage/ is gitignored
+        # What that cost while it lasted: grpconf2026/bob/ is gitignored
         # scratch, populated from the grpconf-demo derivation and then written
         # to by the demo itself (beat 6 lands the schema DBs, beat 11 the
         # export).  It carries the unpacked googleapis proto/ tree, which
@@ -436,21 +436,31 @@ let
     # corpus protoc run and a reproto --schema-db-out. It is `full-tests`
     # material, not `ci` material, and it is deliberately kept out of
     # user-shell for that reason.
-    inherit (python) googleapisDb bobapp2Desc;
+    inherit (python) googleapisDb bobapp2Desc bobappDesc;
     inherit grpconfDemo;
     repoRoot    = toString ./.;
     rustcVersion = pkgs.rustc.unwrapped.version;
   };
 
   # ---------------------------------------------------------------------------
-  # bobapp — the demo binaries (separate Cargo workspace, spec 0241 S1).
+  # bobapp — the demo binary (separate Cargo workspace, spec 0241 S1).
   # Built from demo/bobapp/default.nix; not wired into ci or full-tests.
   #
-  # Two builds of the one crate, differing only in the descriptor set they
-  # embed: bobapp1 knows Routes v2 and the log envelope, bobapp2 also knows
-  # Places, the legacy Routes v1, and google.rpc's error details.  See
-  # nix/python.nix for why, and grpconf/synopsis.md for what it buys.
+  # Embeds descriptors for google.maps.places.v1, google.maps.routing.v2,
+  # and the bobapp/v1/log envelope — nothing else.  See nix/python.nix and
+  # grpconf2026/synopsis.md for context.
+  #
+  # bobapp1 / bobapp2 (the old two-binary split) are kept so that existing
+  # nix-build -A targets and ci references do not break; they will be removed
+  # once the narrative is updated.
   # ---------------------------------------------------------------------------
+  bobapp = import ./demo/bobapp/default.nix {
+    inherit pkgs crane;
+    variant    = "bobapp";
+    bobappDesc = python.bobappDesc;
+    traceDesc  = python.bobapp2Desc;
+  };
+
   bobapp1 = import ./demo/bobapp/default.nix {
     inherit pkgs crane;
     variant    = "bobapp1";
@@ -468,37 +478,30 @@ let
   # ---------------------------------------------------------------------------
   # grpconf-demo — read-only stage for the gRPConf 2026 live demo.
   #
-  # Contains everything the presenter needs except the files beat 6 builds
-  # live on stage (bobapp.desc, src/, src2/) and the files beat 11 writes
-  # (boblog.prototext, roundtrip.pb).  Those go into a writable working
-  # directory; see _hook_demo in nix/shells.nix.
+  # Contains everything the presenter needs except the files the beats build
+  # live on stage (app.desc, src/).  Those go into a writable working
+  # directory (grpconf2026/bob/); see _hook_demo in nix/shells.nix.
   #
-  # Layout mirrors grpconf/stage/ so that presentation.sh needs no changes:
-  #
-  #   $out/bin/bobapp1         the build with Routes v2 alone (41 files)
-  #   $out/bin/bobapp2         the build that also knows Places, Routes v1
-  #                            and google.rpc's error details (77 files)
-  #   $out/bobshark            one captured request body (84 bytes)
-  #   $out/boblog              the log with four anomalies (20 243 bytes)
+  #   $out/bin/bobapp          the demo binary (places v1 + routes v2)
+  #   $out/shark               one captured request body (84 bytes)
+  #   $out/log                 the log with four anomalies (20 243 bytes)
   #   $out/googleapis.desc     full corpus: 7 771 files, 58 777 types
   #   $out/googleapis/         sidecars: hopcroft.rkyv, index.rkyv, proto/
-  #   $out/beats/              every grpconf/beats/*.script
+  #   $out/beats/              every grpconf2026/beats/*.script
   #
-  # Build once:   nix-build -A grpconf-demo
-  # Populate stage: dev-shell's _hook_demo does  cp -r --no-preserve=mode
-  #                 result/ grpconf/stage/  so the stage is writable.
+  # Build once:     nix-build -A grpconf-demo
+  # Populate stage: dev-shell's _hook_demo copies this into grpconf2026/bob/.
   # ---------------------------------------------------------------------------
   grpconfDemo = pkgs.runCommand "grpconf-demo" { } ''
     set -euo pipefail
     mkdir -p "$out/bin" "$out/beats"
 
-    # The two bobapp binaries.
-    cp ${bobapp1}/bin/bobapp1 "$out/bin/bobapp1"
-    cp ${bobapp2}/bin/bobapp2 "$out/bin/bobapp2"
+    # The demo binary.
+    cp ${bobapp}/bin/bobapp "$out/bin/bobapp"
 
     # Committed fixtures: the pre-minted request capture and log.
-    cp ${./grpconf/fixtures/bobshark} "$out/bobshark"
-    cp ${./grpconf/fixtures/boblog}   "$out/boblog"
+    cp ${./grpconf2026/fixtures/bobshark} "$out/shark"
+    cp ${./grpconf2026/fixtures/boblog}   "$out/log"
 
     # The googleapis schema DB.  The descriptor and its sidecars must sit
     # beside each other under the same stem so that protolens finds
@@ -510,7 +513,7 @@ let
     # Copied as a directory so that renaming or adding a beat needs no edit
     # here — the set has already turned over once (log-partial/log-full
     # became log-v1/log-v2) and left this derivation pointing at nothing.
-    cp ${./grpconf/beats}/*.script "$out/beats/"
+    cp ${./grpconf2026/beats}/*.script "$out/beats/"
   '';
 
   # ---------------------------------------------------------------------------
@@ -588,8 +591,10 @@ in
   googleapis-tests     = python.googleapisTests;
   custom-db            = python.customDb;
   custom-tests         = python.customTests;
+  bobapp-desc          = python.bobappDesc;
   bobapp1-desc         = python.bobapp1Desc;
   bobapp2-desc         = python.bobapp2Desc;
+  bobapp               = bobapp;
   bobapp1              = bobapp1;
   bobapp2              = bobapp2;
   grpconf-demo         = grpconfDemo;

@@ -2,7 +2,7 @@
 # What's really in that .pb file?                                               \
 # gRPConf 2026 North America — 20 minutes, live terminal.                       \
 #
-# Run from the repo root:  grpconf/prompt grpconf/presentation.sh               \
+# Run from the repo root:  grpconf2026/prompt grpconf2026/presentation.sh       \
 # ENTER runs the next command.  Up/Down browse and edit.                        \
 # F2 duplicates a line, F3 deletes one, Ctrl-S saves.                           \
 #
@@ -10,9 +10,9 @@
 # Bob's app, two databases built on stage, googleapis as a droppable epilogue.  \
 
 \
-export STAGE=grpconf/stage BOBAPP1=grpconf/stage/bin/bobapp1 BOBAPP2=grpconf/stage/bin/bobapp2 BOBSHARK=grpconf/stage/bobshark BOBLOG=grpconf/stage/boblog GOOGLEAPIS=grpconf/stage/googleapis.desc DESC1=grpconf/stage/bobapp1.desc DESC2=grpconf/stage/bobapp2.desc SRC1=grpconf/stage/src1 SRC2=grpconf/stage/src2 PROTO2=grpconf/stage/proto2 SVC=google/maps/routing/v2/routes_service.proto
+export BOB=grpconf2026/bob APP=grpconf2026/bob/app SHARK=grpconf2026/bob/shark LOG=grpconf2026/bob/log GOOGLEAPIS=grpconf2026/bob/googleapis.desc DESC=grpconf2026/bob/app.desc SRC=grpconf2026/bob/src SVC=google/maps/routing/v2/routes_service.proto
 \
-for f in $BOBAPP1 $BOBAPP2 $BOBSHARK $BOBLOG $GOOGLEAPIS; do [ -e "$f" ] && true || echo "MISSING: $f"; done
+for f in $APP $SHARK $LOG $GOOGLEAPIS; do [ -e "$f" ] && true || echo "MISSING: $f"; done
 
 # \
 # REHEARSAL GATE.  A pre-spec-0313 fdp_scan_lib drops the LAST descriptor of   \

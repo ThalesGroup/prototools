@@ -431,7 +431,7 @@ EOF
   #            Routes API for the scorer to be torn between, and that
   #            declares `google.rpc.ErrorInfo` — the shape of the leak.
   #
-  # See grpconf/synopsis.md beats 8 to 11.
+  # See grpconf2026/synopsis.md beats 8 to 11.
   #
   # Cheap enough for `ci`: two protoc runs over a few files each.  They pull
   # in corpusGoogleapis but not googleapisPbs or googleapisDb, so they cost
@@ -449,6 +449,16 @@ EOF
       --include_imports \
       ${pkgs.lib.escapeShellArgs entryPoints}
   '';
+
+  # bobapp — places v1 + routes v2 + the log envelope, nothing else.
+  # bobapp1Desc / bobapp2Desc (the two-binary split) are kept for now so that
+  # ci and full-tests derivations that inherit them do not break; they will be
+  # removed once the narrative is updated.
+  bobappDesc = bobappDescOf "bobapp" [
+    "google/maps/routing/v2/routes_service.proto"
+    "google/maps/places/v1/places_service.proto"
+    "bobapp/v1/log.proto"
+  ];
 
   bobapp1Desc = bobappDescOf "bobapp1" [
     "google/maps/routing/v2/routes_service.proto"
@@ -669,6 +679,7 @@ in {
     googleapisPbs
     googleapisDb
     googleapisTests
+    bobappDesc
     bobapp1Desc
     bobapp2Desc
     customDb
