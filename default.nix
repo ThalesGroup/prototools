@@ -455,9 +455,9 @@ let
   # once the narrative is updated.
   # ---------------------------------------------------------------------------
   # bobappDemo is the single binary for grpconf2026: places v1 + routes v2.
-  # variant = "bobapp1" so the postInstall rename works (mv bobapp bobapp1);
-  # grpconfDemo then copies bin/bobapp1 to $out/bin/bobapp, and _hook_demo
-  # installs it as grpconf2026/bob/app.
+  # variant = "bobapp" matches the descriptor file bobapp.desc and the crate
+  # binary name, so postInstall's rename is skipped (see demo/bobapp/default.nix).
+  # _hook_demo copies grpconfDemo's bin/bobapp to grpconf2026/bob/app.
   bobappDemo = import ./demo/bobapp/default.nix {
     inherit pkgs crane;
     variant    = "bobapp";
