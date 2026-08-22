@@ -460,7 +460,7 @@ let
   # installs it as grpconf2026/bob/app.
   bobappDemo = import ./demo/bobapp/default.nix {
     inherit pkgs crane;
-    variant    = "bobapp1";
+    variant    = "bobapp";
     bobappDesc = python.bobappDesc;
     traceDesc  = python.bobapp2Desc;
   };
@@ -500,8 +500,8 @@ let
     set -euo pipefail
     mkdir -p "$out/bin" "$out/beats"
 
-    # The demo binary (built as bobapp1 by the Crane variant machinery).
-    cp ${bobappDemo}/bin/bobapp1 "$out/bin/bobapp"
+    # The demo binary.
+    cp ${bobappDemo}/bin/bobapp "$out/bin/bobapp"
 
     # Committed fixtures: the pre-minted request capture and log.
     cp ${./grpconf2026/fixtures/bobshark} "$out/shark"
