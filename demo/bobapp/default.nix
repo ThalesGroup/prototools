@@ -106,7 +106,8 @@ in crane.buildPackage (commonArgs // {
   # is, is a fact about the descriptor set inside it.  Rename on install so
   # that the two can sit side by side on stage — and so that a `bobapp1` and
   # a `bobapp2` in the audience's shell history are self-describing.
-  postInstall = ''
+  # Skip the rename when variant already matches the crate binary name.
+  postInstall = pkgs.lib.optionalString (variant != "bobapp") ''
     mv "$out/bin/bobapp" "$out/bin/${variant}"
   '';
 })

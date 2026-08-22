@@ -454,9 +454,13 @@ let
   # nix-build -A targets and ci references do not break; they will be removed
   # once the narrative is updated.
   # ---------------------------------------------------------------------------
-  bobapp = import ./demo/bobapp/default.nix {
+  # bobappDemo is the single binary for grpconf2026: places v1 + routes v2.
+  # variant = "bobapp1" so the postInstall rename works (mv bobapp bobapp1);
+  # grpconfDemo then copies bin/bobapp1 to $out/bin/bobapp, and _hook_demo
+  # installs it as grpconf2026/bob/app.
+  bobappDemo = import ./demo/bobapp/default.nix {
     inherit pkgs crane;
-    variant    = "bobapp";
+    variant    = "bobapp1";
     bobappDesc = python.bobappDesc;
     traceDesc  = python.bobapp2Desc;
   };
@@ -496,8 +500,8 @@ let
     set -euo pipefail
     mkdir -p "$out/bin" "$out/beats"
 
-    # The demo binary.
-    cp ${bobapp}/bin/bobapp "$out/bin/bobapp"
+    # The demo binary (built as bobapp1 by the Crane variant machinery).
+    cp ${bobappDemo}/bin/bobapp1 "$out/bin/bobapp"
 
     # Committed fixtures: the pre-minted request capture and log.
     cp ${./grpconf2026/fixtures/bobshark} "$out/shark"
@@ -594,7 +598,7 @@ in
   bobapp-desc          = python.bobappDesc;
   bobapp1-desc         = python.bobapp1Desc;
   bobapp2-desc         = python.bobapp2Desc;
-  bobapp               = bobapp;
+  bobapp               = bobappDemo;
   bobapp1              = bobapp1;
   bobapp2              = bobapp2;
   grpconf-demo         = grpconfDemo;
