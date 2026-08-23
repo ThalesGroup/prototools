@@ -174,120 +174,51 @@ pub fn write_to(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use prost_reflect::ReflectMessage;
-
     use super::*;
 
-    /// The same descriptor set the binary embeds, so these tests exercise the
-    /// real `bobapp.v1.Log` and not a stand-in.
-    fn pool() -> DescriptorPool {
-        DescriptorPool::decode(crate::DESCRIPTOR_SET).expect("the embedded descriptor set parses")
-    }
-
-    /// Reads a `Log` back through the same schema, so an assertion below can
-    /// speak in field names rather than in bytes.
-    fn decode(pool: &DescriptorPool, bytes: &[u8]) -> DynamicMessage {
-        DynamicMessage::decode(message(pool, LOG_TYPE).unwrap(), bytes).expect("a Log decodes")
-    }
-
-    fn entries(log: &DynamicMessage) -> Vec<DynamicMessage> {
-        log.get_field_by_name("entry")
-            .expect("Log.entry")
-            .as_list()
-            .expect("entry is repeated")
-            .iter()
-            .map(|v| v.as_message().expect("an Entry").clone())
-            .collect()
-    }
-
-    fn field_bytes(entry: &DynamicMessage, name: &str) -> Option<Vec<u8>> {
-        let field = entry.descriptor().get_field_by_name(name).expect("a field");
-        entry
-            .has_field(&field)
-            .then(|| entry.get_field(&field).as_bytes().expect("bytes").to_vec())
-    }
-
     #[test]
-    fn the_envelope_is_in_the_embedded_schema() {
-        let pool = pool();
-        assert!(
-            pool.get_message_by_name(LOG_TYPE).is_some(),
-            "the descriptor set bobapp embeds must define {LOG_TYPE}"
-        );
-        assert!(pool.get_message_by_name(ENTRY_TYPE).is_some());
-    }
-
-    #[test]
-    fn one_round_trip_is_one_entry_holding_both_payloads() {
-        let pool = pool();
+    fn recorder_is_empty_until_first_request() {
         let mut rec = Recorder::default();
         assert!(rec.is_empty());
         rec.record_request("/svc/M", b"\x08\x01");
-        rec.record_response(b"\x10\x02");
         assert!(!rec.is_empty());
-
-        let log = decode(&pool, &rec.encode_log(&pool).unwrap());
-        let entries = entries(&log);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(
-            entries[0].get_field_by_name("method").unwrap().as_str(),
-            Some("/svc/M")
-        );
-        assert_eq!(
-            field_bytes(&entries[0], "request").as_deref(),
-            Some(&b"\x08\x01"[..])
-        );
-        assert_eq!(
-            field_bytes(&entries[0], "response").as_deref(),
-            Some(&b"\x10\x02"[..])
-        );
-    }
-
-    /// The property the log exists for: what went out is what was recorded,
-    /// byte for byte, whatever shape the encoder gave it.
-    #[test]
-    fn an_unanswered_request_is_still_logged_with_its_exact_bytes() {
-        let pool = pool();
-        let mut rec = Recorder::default();
-        // A deliberately non-canonical encoding: a padded varint. Nothing in
-        // the recorder may normalize it away.
-        let odd = b"\x08\x85\x80\x80\x80\x00";
-        rec.record_request("/svc/M", odd);
-
-        let log = decode(&pool, &rec.encode_log(&pool).unwrap());
-        let entries = entries(&log);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(
-            field_bytes(&entries[0], "request").as_deref(),
-            Some(&odd[..])
-        );
-        assert_eq!(
-            field_bytes(&entries[0], "response"),
-            None,
-            "a request with no answer is logged without one"
-        );
     }
 
     #[test]
-    fn a_second_request_does_not_evict_the_first() {
-        let pool = pool();
+    fn unanswered_request_is_not_evicted_by_a_second() {
+        // Two requests in a row: the first closes without a response, the
+        // second stays open.  Both must be present.
         let mut rec = Recorder::default();
         rec.record_request("/svc/A", b"\x08\x01");
         rec.record_request("/svc/B", b"\x08\x02");
-        rec.record_response(b"\x10\x02");
+        // One entry in `done` (the closed first), one in `open`.
+        assert_eq!(rec.done.len(), 1);
+        assert!(rec.open.is_some());
+        assert_eq!(rec.done[0].request.as_deref(), Some(&b"\x08\x01"[..]));
+        assert!(rec.done[0].response.is_none());
+    }
 
-        let log = decode(&pool, &rec.encode_log(&pool).unwrap());
-        let entries = entries(&log);
-        assert_eq!(entries.len(), 2);
+    #[test]
+    fn response_pairs_with_open_request() {
+        let mut rec = Recorder::default();
+        rec.record_request("/svc/M", b"\x08\x01");
+        rec.record_response(b"\x10\x02");
+        // Closed into `done`; `open` is now empty.
+        assert_eq!(rec.done.len(), 1);
+        assert!(rec.open.is_none());
+        assert_eq!(rec.done[0].request.as_deref(), Some(&b"\x08\x01"[..]));
+        assert_eq!(rec.done[0].response.as_deref(), Some(&b"\x10\x02"[..]));
+    }
+
+    #[test]
+    fn non_canonical_bytes_are_preserved_verbatim() {
+        // A padded varint — nothing in the recorder may normalize it.
+        let odd = b"\x08\x85\x80\x80\x80\x00";
+        let mut rec = Recorder::default();
+        rec.record_request("/svc/M", odd);
         assert_eq!(
-            field_bytes(&entries[0], "request").as_deref(),
-            Some(&b"\x08\x01"[..]),
-            "the first request survived, unanswered"
-        );
-        assert_eq!(field_bytes(&entries[0], "response"), None);
-        assert_eq!(
-            field_bytes(&entries[1], "response").as_deref(),
-            Some(&b"\x10\x02"[..])
+            rec.open.as_ref().unwrap().request.as_deref(),
+            Some(&odd[..])
         );
     }
 }

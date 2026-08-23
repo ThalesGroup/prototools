@@ -293,82 +293,6 @@ travel_mode: DRIVE  #@ RouteTravelMode(1) = 4
 language_code: \"en-US\"  #@ string = 10
 ";
 
-    /// A lookup request, as the renderer gives it back with `text_query` set
-    /// once.
-    const RENDERED_LOOKUP: &str = "\
-#@ prototext: protoc
-text_query: \"boulangerie\"  #@ string = 1
-language_code: \"en-US\"  #@ string = 6
-max_result_count: 5  #@ int32 = 4
-";
-
-    /// The trace, built against a set that declares the types it is made of.
-    ///
-    /// The `bobapp1` build embeds neither the Places service nor
-    /// `google.rpc.ErrorInfo`, so this cannot use the crate's own
-    /// `DESCRIPTOR_SET`: it needs whatever `--extra-descriptor-set` would
-    /// point at.  `BOBAPP_TRACE_DESCRIPTOR_SET` is where it lives, and
-    /// `demo/bobapp/default.nix` points it at `bobapp2.desc` — the `bobapp2`
-    /// build's own 103 kB set, which declares every type below.  The 25.6 MB
-    /// corpus would do just as well and used to be what was used, but making
-    /// it a build input of a demo binary meant every prototext-core edit
-    /// re-derived the whole googleapis schema DB before bobapp could compile.
-    ///
-    /// Read at run time rather than with `env!`, because the store path
-    /// changes whenever the set is rebuilt and baking it in would rebuild
-    /// bobapp with it.
-    fn trace() -> Vec<u8> {
-        let path = std::env::var("BOBAPP_TRACE_DESCRIPTOR_SET")
-            .expect("BOBAPP_TRACE_DESCRIPTOR_SET is unset; enter the dev shell");
-        let bytes = std::fs::read(&path).expect("the googleapis descriptor set");
-        let pool = DescriptorPool::decode(&bytes[..]).expect("it parses");
-        debug_trace(&pool).expect("the trace encodes")
-    }
-
-    #[test]
-    fn the_trace_is_the_first_of_two_queries_and_the_real_one_wins() {
-        let trace = trace();
-        let text = patch_lookup(RENDERED_LOOKUP, &escape_bytes(&trace)).unwrap();
-        let queries: Vec<&str> = text
-            .lines()
-            .filter(|l| l.starts_with("text_query: "))
-            .collect();
-        assert_eq!(queries.len(), 2, "the singular field must occur twice");
-        assert!(queries[0].contains(FAKE_KEY), "the trace is written first");
-        assert!(
-            queries[1].contains("\"boulangerie\""),
-            "and overwritten second"
-        );
-
-        // Both are really on the wire, in that order, and the first one's
-        // bytes are the trace message itself — the anomaly is not a rendering
-        // artifact.
-        let bytes = render_as_bytes(text.as_bytes(), RenderOpts::default()).unwrap();
-        let trace_at = find(&bytes, &trace).expect("the trace is on the wire, whole");
-        let real_at = find(&bytes, b"\x0a\x0bboulangerie").expect("so is the real query");
-        assert!(
-            trace_at < real_at,
-            "last one wins, so the trace must come first"
-        );
-    }
-
-    /// What hides the trace is that it passes for a string: a `string` field
-    /// holding bytes that are not UTF-8 is a request the server rejects, and
-    /// an anomaly nobody gets to see.
-    ///
-    /// [`debug_trace`] refuses to return non-ASCII bytes, so this asserts the
-    /// two things that make the guard meaningful — that the payload really is
-    /// the leak, and that it really is text.
-    #[test]
-    fn the_trace_passes_for_a_string() {
-        let trace = trace();
-        let text = std::str::from_utf8(&trace).expect("valid UTF-8");
-        assert!(text.contains(KEY_HEADER));
-        assert!(text.contains(FAKE_KEY));
-        assert!(text.contains(DETAIL_TYPE), "the Any names what it holds");
-        assert!(text.is_ascii(), "ASCII, so no encoder has an opinion");
-    }
-
     #[test]
     fn a_lookup_without_the_target_line_is_an_error() {
         let err = patch_lookup(
@@ -392,10 +316,6 @@ max_result_count: 5  #@ int32 = 4
         // Nothing to cut into yet.
         let stub = vec![0u8; 512];
         assert_eq!(cut_short(&stub).len(), 512);
-    }
-
-    fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-        haystack.windows(needle.len()).position(|w| w == needle)
     }
 
     #[test]

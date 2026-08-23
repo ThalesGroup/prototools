@@ -2,6 +2,31 @@
 --
 -- SPDX-License-Identifier: MIT
 
+-- ── Aesthetics ───────────────────────────────────────────────────────────────
+
+vim.cmd("syntax on")
+vim.cmd("colorscheme desert")
+vim.opt.number    = true
+vim.opt.whichwrap = vim.opt.whichwrap + "<,>,h,l"
+
+-- h / Left  — move to end of previous line when at column 1
+vim.keymap.set("n", "h", function()
+  return vim.fn.col(".") == 1 and "k$" or "h"
+end, { expr = true, silent = true })
+vim.keymap.set("n", "<Left>", function()
+  return vim.fn.col(".") == 1 and "k$" or "h"
+end, { expr = true, silent = true })
+
+-- l / Right — move to start of next line when at last column
+vim.keymap.set("n", "l", function()
+  return vim.fn.col(".") == vim.fn.col("$") and "j0" or "l"
+end, { expr = true, silent = true })
+vim.keymap.set("n", "<Right>", function()
+  return vim.fn.col(".") == vim.fn.col("$") and "j0" or "l"
+end, { expr = true, silent = true })
+
+-- ── Proto filetype + syntax highlighting ─────────────────────────────────────
+
 vim.filetype.add({ extension = { proto = "proto" } })
 
 vim.api.nvim_create_autocmd("FileType", {
