@@ -26,8 +26,8 @@ header "1. Staging"
 # \
 # Three files overall:                                                         \
 # - bob/app    # the downloaded executable                                     \
-# - bob/log    # the downloaded log file                                       \
-# - bob/shark  # the capture he made                                           \
+# - bob/logfile    # the downloaded log file                                       \
+# - bob/capture  # the capture he made                                           \
 
 ls -lh bob
 
@@ -39,9 +39,9 @@ ls -lh bob
 header "2. protoc falls short"
 
 # Let's try protoc for decoding the log file:
-cat bob/log | protoc --decode_raw
+cat bob/logfile | protoc --decode_raw
 # Not much success, let's try with the captured call:
-cat bob/shark | protoc --decode_raw
+cat bob/capture | protoc --decode_raw
 # OK. At least this is protobuf
 
 header "Can we retrieve descriptors?"

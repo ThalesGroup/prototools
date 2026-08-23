@@ -209,7 +209,9 @@ header() {
     local HEIGHT="${3:-5}"
 
     # Strip leading section number: "1. ", "12. ", etc.
+    shopt -s extglob
     TITLE="${TITLE##+([0-9]).+( )}"
+    shopt -u extglob
 
     local TW
     TW=$(echo "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 9999 40'>\

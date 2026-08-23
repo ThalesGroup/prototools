@@ -19,6 +19,8 @@
 /ruff.toml
 /schema-db/data/
 /grpconf2026/bob/
+/grpconf2026/beats/
+/grpconf2026/alice/
 /docs/specs/0043-hopcroft-db-bp-protodb.md
 protoscan/src/protoscan/tests/__pycache__/
 fdp-scan-pyo3/fdp_scan_lib/__pycache__/

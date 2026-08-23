@@ -8,11 +8,9 @@
 # spec 0241 S1) that depends on prototext-core and workspace-hack as path
 # dependencies.  Its Cargo.lock is separate from the root workspace's.
 #
-# The demo ships *two* builds of it, differing only in the descriptor set
-# they embed (see nix/python.nix's bobapp1Desc / bobapp2Desc).  This file is
-# therefore imported twice; everything that distinguishes the two arrives
-# through `variant` and `bobappDesc`, and neither is in commonArgs, so the
-# two share one dependency cache and one dummy build.
+# Everything that distinguishes a variant arrives through `variant` and
+# `bobappDesc`; neither is in commonArgs, so variants share one dependency
+# cache and one dummy build.
 #
 # The binaries are consumed by default.nix's grpconf-demo target; they are
 # not wired into `ci` or `full-tests` because the live API key is a runtime
@@ -21,17 +19,12 @@
 # Inputs:
 #   pkgs       — the same nixpkgs pin as the root default.nix
 #   crane      — the same crane version as the root default.nix
-#   variant    — "bobapp1" or "bobapp2": names the derivation, the descriptor
-#                file inside bobappDesc, and the installed binary
-#   bobappDesc — the matching python.bobappNDesc derivation, holding
+#   variant    — names the derivation, the descriptor file inside bobappDesc,
+#                and the installed binary (e.g. "bobapp")
+#   bobappDesc — the python.bobappDesc derivation, holding
 #                $out/${variant}.desc (BOBAPP_DESCRIPTOR_SET for build.rs)
-#   traceDesc  — python.bobapp2Desc, for BOBAPP_TRACE_DESCRIPTOR_SET (tests
-#                only).  The bobapp1 build embeds no Places service and no
-#                google.rpc.ErrorInfo, yet builds both at run time off the
-#                set --extra-descriptor-set names, so the tests covering that
-#                need a set that declares them.  bobapp2's is the smallest
-#                one that does; the googleapis corpus used to be, and dragged
-#                a 25.6 MB reproto run into every bobapp build.
+#   traceDesc  — descriptor set for BOBAPP_TRACE_DESCRIPTOR_SET (tests only);
+#                typically the same as bobappDesc.
 #
 # Output: $out/bin/${variant}
 #
@@ -99,13 +92,10 @@ in crane.buildPackage (commonArgs // {
   env = {
     # build.rs reads BOBAPP_DESCRIPTOR_SET to embed the descriptor set.
     BOBAPP_DESCRIPTOR_SET       = "${bobappDesc}/${variant}.desc";
-    BOBAPP_TRACE_DESCRIPTOR_SET = "${traceDesc}/bobapp2.desc";
+    BOBAPP_TRACE_DESCRIPTOR_SET = "${traceDesc}/${variant}.desc";
   };
 
-  # Cargo only knows how to build a binary called `bobapp`; which build this
-  # is, is a fact about the descriptor set inside it.  Rename on install so
-  # that the two can sit side by side on stage — and so that a `bobapp1` and
-  # a `bobapp2` in the audience's shell history are self-describing.
+  # Cargo only knows how to build a binary called `bobapp`.
   # Skip the rename when variant already matches the crate binary name.
   postInstall = pkgs.lib.optionalString (variant != "bobapp") ''
     mv "$out/bin/bobapp" "$out/bin/${variant}"

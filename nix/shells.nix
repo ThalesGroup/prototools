@@ -48,8 +48,7 @@
 , protoscan
 , wktDb             # well-known-types schema DB; carries the PROTOTEXT_DESCRIPTOR_SET setup-hook
 , googleapisDb      # googleapis schema DB; dev-shell only (PROTOTEXT_GOOGLEAPIS_SET)
-, bobapp2Desc       # bobapp2's embedded set; dev-shell only (BOBAPP_TRACE_DESCRIPTOR_SET)
-, grpconfDemo       # grpconf-demo stage: bin/bobapp, log, shark, beats/
+, grpconfDemo       # grpconf-demo stage: bin/bobapp, logfile, capture, beats/
 , buf               # narrow-pinned buf (newer than the main nixpkgs pin's 1.59.0; see default.nix)
 }:
 
@@ -220,11 +219,6 @@ in
         # sidecar is found *beside the blob* by protolens' script discovery,
         # which the source tree satisfies for free.
         export PROTOTEXT_ANOMALIES_BLOB="${repoRoot}/tests/fixtures/anomalies.pb"
-
-        # demo/bobapp's anomaly tests build a google.rpc.Status carrying an
-        # ErrorInfo, which the bobapp1 build does not embed.  bobapp2's set is
-        # the smallest one that declares them; see demo/bobapp/src/anomaly.rs.
-        export BOBAPP_TRACE_DESCRIPTOR_SET="${bobapp2Desc}/bobapp2.desc"
 
         export PYO3_PYTHON="${pythonExecutable}"
         export PATH="${repoRoot}/bin:${pythonBin}/bin:${repoRoot}/target/release:$PATH"
@@ -443,8 +437,8 @@ components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
         #
         # Layout written into grpconf2026/:
         #   bob/app          the bobapp binary (places v1 + routes v2)
-        #   bob/log          the log with four anomalies
-        #   bob/shark        one captured request body
+        #   bob/logfile      the log with four anomalies
+        #   bob/capture      one captured request body
         #   beats/           every grpconf2026/beats/*.script
         #   alice/           empty writable scratch directory for Alice's outputs
         #
@@ -468,8 +462,8 @@ components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
         rm -rf "$bob" "$stage/beats"
         mkdir -p "$bob" "$stage/beats" "$stage/alice"
         cp --no-preserve=mode "$demo/bin/bobapp" "$bob/app"
-        cp --no-preserve=mode "$demo/log"        "$bob/log"
-        cp --no-preserve=mode "$demo/shark"      "$bob/shark"
+        cp --no-preserve=mode "$demo/logfile"    "$bob/logfile"
+        cp --no-preserve=mode "$demo/capture"   "$bob/capture"
         cp -r --no-preserve=mode "$demo/beats"/. "$stage/beats/"
         # Record which nix derivation populated the directory.
         echo "$demo" > "$sentinel"

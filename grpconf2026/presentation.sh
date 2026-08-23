@@ -10,7 +10,7 @@
 # Bob's app, two databases built on stage, googleapis as a droppable epilogue.  \
 
 \
-export BOB=grpconf2026/bob APP=grpconf2026/bob/app SHARK=grpconf2026/bob/shark LOG=grpconf2026/bob/log GOOGLEAPIS=grpconf2026/bob/googleapis.desc DESC=grpconf2026/bob/app.desc SRC=grpconf2026/bob/src SVC=google/maps/routing/v2/routes_service.proto
+export BOB=grpconf2026/bob APP=grpconf2026/bob/app CAPTURE=grpconf2026/bob/capture LOG=grpconf2026/bob/logfile GOOGLEAPIS=grpconf2026/bob/googleapis.desc DESC=grpconf2026/bob/app.desc SRC=grpconf2026/bob/src SVC=google/maps/routing/v2/routes_service.proto
 \
 for f in $APP $SHARK $LOG $GOOGLEAPIS; do [ -e "$f" ] && true || echo "MISSING: $f"; done
 

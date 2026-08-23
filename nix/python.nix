@@ -418,23 +418,10 @@ EOF
   # binary* names the log envelope, while googleapis — which has never heard
   # of Bob's app — does not.
   #
-  # The two differ on purpose, and the difference is the demo's escalation:
+  # See grpconf2026/synopsis.md for context.
   #
-  #   bobapp1  the build Bob grabbed first.  Routes v2 and the envelope, and
-  #            nothing else: 41 files.  It can read the route traffic and it
-  #            cannot read anything else in the log.
-  #   bobapp2  the build he grabbed when the app started misbehaving.  Adds
-  #            the Places text search, the legacy Routes v1 client the
-  #            migration has not finished retiring, and the richer
-  #            google.rpc error details: 77 files.  It is the set that can
-  #            name `SearchTextRequest`, that holds *two* versions of the
-  #            Routes API for the scorer to be torn between, and that
-  #            declares `google.rpc.ErrorInfo` — the shape of the leak.
-  #
-  # See grpconf2026/synopsis.md beats 8 to 11.
-  #
-  # Cheap enough for `ci`: two protoc runs over a few files each.  They pull
-  # in corpusGoogleapis but not googleapisPbs or googleapisDb, so they cost
+  # Cheap enough for `ci`: a single protoc run over a few files.  Pulls in
+  # corpusGoogleapis but not googleapisPbs or googleapisDb, so it costs
   # the corpus fetch and nothing more.
   bobappDescOf = variant: entryPoints: pkgs.runCommand "${variant}-desc" {
     buildInputs = [ pkgs.protobuf ];
@@ -450,27 +437,10 @@ EOF
       ${pkgs.lib.escapeShellArgs entryPoints}
   '';
 
-  # bobapp — places v1 + routes v2 + the log envelope, nothing else.
-  # bobapp1Desc / bobapp2Desc (the two-binary split) are kept for now so that
-  # ci and full-tests derivations that inherit them do not break; they will be
-  # removed once the narrative is updated.
+  # bobapp — places v1 + routes v2 only.
   bobappDesc = bobappDescOf "bobapp" [
     "google/maps/routing/v2/routes_service.proto"
     "google/maps/places/v1/places_service.proto"
-    "bobapp/v1/log.proto"
-  ];
-
-  bobapp1Desc = bobappDescOf "bobapp1" [
-    "google/maps/routing/v2/routes_service.proto"
-    "bobapp/v1/log.proto"
-  ];
-
-  bobapp2Desc = bobappDescOf "bobapp2" [
-    "google/maps/routing/v2/routes_service.proto"
-    "google/maps/places/v1/places_service.proto"
-    "google/maps/routes/v1/route_service.proto"
-    "google/rpc/error_details.proto"
-    "bobapp/v1/log.proto"
   ];
 
   # Build the googleapis schema DB + instantiated messages.
@@ -680,8 +650,6 @@ in {
     googleapisDb
     googleapisTests
     bobappDesc
-    bobapp1Desc
-    bobapp2Desc
     customDb
     customTests;
 }

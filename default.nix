@@ -436,65 +436,44 @@ let
     # corpus protoc run and a reproto --schema-db-out. It is `full-tests`
     # material, not `ci` material, and it is deliberately kept out of
     # user-shell for that reason.
-    inherit (python) googleapisDb bobapp2Desc;
+    inherit (python) googleapisDb;
     inherit grpconfDemo;
     repoRoot    = toString ./.;
     rustcVersion = pkgs.rustc.unwrapped.version;
   };
 
   # ---------------------------------------------------------------------------
-  # bobapp — the demo binary (separate Cargo workspace, spec 0241 S1).
-  # Built from demo/bobapp/default.nix; not wired into ci or full-tests.
+  # bobappDemo — the demo binary for grpconf2026 (separate Cargo workspace,
+  # spec 0241 S1).  Built from demo/bobapp/default.nix; not wired into ci or
+  # full-tests.
   #
-  # Embeds descriptors for google.maps.places.v1, google.maps.routing.v2,
-  # and the bobapp/v1/log envelope — nothing else.  See nix/python.nix and
-  # grpconf2026/synopsis.md for context.
-  #
-  # bobapp1 / bobapp2 (the old two-binary split) are kept so that existing
-  # nix-build -A targets and ci references do not break; they will be removed
-  # once the narrative is updated.
-  # ---------------------------------------------------------------------------
-  # bobappDemo is the single binary for grpconf2026: places v1 + routes v2.
   # variant = "bobapp" matches the descriptor file bobapp.desc and the crate
   # binary name, so postInstall's rename is skipped (see demo/bobapp/default.nix).
   # _hook_demo copies grpconfDemo's bin/bobapp to grpconf2026/bob/app.
+  # ---------------------------------------------------------------------------
   bobappDemo = import ./demo/bobapp/default.nix {
     inherit pkgs crane;
     variant    = "bobapp";
     bobappDesc = python.bobappDesc;
-    traceDesc  = python.bobapp2Desc;
-  };
-
-  bobapp1 = import ./demo/bobapp/default.nix {
-    inherit pkgs crane;
-    variant    = "bobapp1";
-    bobappDesc = python.bobapp1Desc;
-    traceDesc  = python.bobapp2Desc;
-  };
-
-  bobapp2 = import ./demo/bobapp/default.nix {
-    inherit pkgs crane;
-    variant    = "bobapp2";
-    bobappDesc = python.bobapp2Desc;
-    traceDesc  = python.bobapp2Desc;
+    traceDesc  = python.bobappDesc;
   };
 
   # ---------------------------------------------------------------------------
   # grpconf-demo — read-only stage for the gRPConf 2026 live demo.
   #
   # Contains everything the presenter needs except the files the beats build
-  # live on stage (app.desc, src/).  Those go into a writable working
-  # directory (grpconf2026/bob/); see _hook_demo in nix/shells.nix.
+  # live on stage (app.desc, src/).  Those go into writable working directories
+  # (grpconf2026/bob/, grpconf2026/alice/); see _hook_demo in nix/shells.nix.
   #
   #   $out/bin/bobapp          the demo binary (places v1 + routes v2)
-  #   $out/shark               one captured request body (84 bytes)
-  #   $out/log                 the log with four anomalies (20 243 bytes)
-  #   $out/googleapis.desc     full corpus: 7 771 files, 58 777 types
-  #   $out/googleapis/         sidecars: hopcroft.rkyv, index.rkyv, proto/
+  #   $out/capture             one captured request body (84 bytes)
+  #   $out/logfile             the log with four anomalies (20 243 bytes)
   #   $out/beats/              every grpconf2026/beats/*.script
   #
+  # googleapis is not included: $PROTOTEXT_GOOGLEAPIS_SET already provides it.
+  #
   # Build once:     nix-build -A grpconf-demo
-  # Populate stage: dev-shell's _hook_demo copies this into grpconf2026/bob/.
+  # Populate stage: dev-shell's _hook_demo unpacks this into grpconf2026/.
   # ---------------------------------------------------------------------------
   grpconfDemo = pkgs.runCommand "grpconf-demo" { } ''
     set -euo pipefail
@@ -504,14 +483,8 @@ let
     cp ${bobappDemo}/bin/bobapp "$out/bin/bobapp"
 
     # Committed fixtures: the pre-minted request capture and log.
-    cp ${./grpconf2026/fixtures/bobshark} "$out/shark"
-    cp ${./grpconf2026/fixtures/boblog}   "$out/log"
-
-    # The googleapis schema DB.  The descriptor and its sidecars must sit
-    # beside each other under the same stem so that protolens finds
-    # hopcroft.rkyv and index.rkyv without a warning.
-    cp ${python.googleapisDb}/googleapis.desc "$out/googleapis.desc"
-    cp -r ${python.googleapisDb}/googleapis   "$out/googleapis"
+    cp ${./grpconf2026/fixtures/bobshark} "$out/capture"
+    cp ${./grpconf2026/fixtures/boblog}   "$out/logfile"
 
     # Beat scripts.  Read-only in the stage is fine — they are never written.
     # Copied as a directory so that renaming or adding a beat needs no edit
@@ -596,11 +569,7 @@ in
   custom-db            = python.customDb;
   custom-tests         = python.customTests;
   bobapp-desc          = python.bobappDesc;
-  bobapp1-desc         = python.bobapp1Desc;
-  bobapp2-desc         = python.bobapp2Desc;
   bobapp               = bobappDemo;
-  bobapp1              = bobapp1;
-  bobapp2              = bobapp2;
   grpconf-demo         = grpconfDemo;
   user-shell           = shells.user-shell;
   dev-shell            = shells.dev-shell;
