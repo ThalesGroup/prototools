@@ -58,8 +58,7 @@ index=0
 n=${#commands[@]}
 prev_status=0
 
-resume_after_fg=0
-trap 'resume_after_fg=1' CONT
+trap 'stty -ixon -echoctl 2>/dev/null' CONT
 # SIGINT: use a real (non-ignore) handler so external commands (children)
 # receive SIG_DFL and are killed by Ctrl-C, while bash itself survives.
 # Builtins (read, while) are not interruptible this way — accepted limitation.
@@ -241,6 +240,9 @@ header() {
 }
 export -f header
 
+blue() { printf '\e[1;94m%s\e[0m\n' "$*"; }
+export -f blue
+
 # ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
@@ -367,7 +369,7 @@ original stdout pipe (dup'd to a private fd before readline hijacks fd 1).
 fd 1 and fd 2 are redirected to /dev/tty so readline prompt output and
 error messages go to the terminal.
 """
-import os, sys, signal, ctypes, ctypes.util, termios, base64 as _b64, readline as _rl_mod
+import os, sys, signal, errno as _errno, ctypes, ctypes.util, termios, base64 as _b64, readline as _rl_mod
 
 # Dup the reply pipe (fd 1) to a private fd before readline hijacks stdout.
 # Then redirect fd 1 and fd 2 to /dev/tty.
@@ -408,18 +410,53 @@ _librl.rl_prep_terminal.argtypes  = [ctypes.c_int]
 _librl.rl_prep_terminal.restype   = None
 _librl.rl_initialize.argtypes     = []
 _librl.rl_initialize.restype      = ctypes.c_int
+_librl.rl_stuff_char.argtypes          = [ctypes.c_int]
+_librl.rl_stuff_char.restype           = ctypes.c_int
+_librl.rl_clear_pending_input.argtypes = []
+_librl.rl_clear_pending_input.restype  = None
+_librl.rl_free_line_state.argtypes     = []
+_librl.rl_free_line_state.restype      = None
+_librl.rl_cleanup_after_signal.argtypes= []
+_librl.rl_cleanup_after_signal.restype = None
 
 _rl_point = ctypes.c_int.in_dll(_librl, "rl_point")
 _rl_end   = ctypes.c_int.in_dll(_librl, "rl_end")
 _rl_done  = ctypes.c_int.in_dll(_librl, "rl_done")
 
-# Point readline's instream/outstream at the tty, not at the coproc pipe.
+_RL_VOIDFUNC = ctypes.CFUNCTYPE(ctypes.c_int)
+
+# sigaction — used to wrap readline's SIGTSTP handler.
+_sigset_t = ctypes.c_ulong * 16  # 128-byte sigset_t on Linux x86-64
+
+class _sigaction_t(ctypes.Structure):
+    _fields_ = [
+        ("sa_handler", _SIGHANDLER),
+        ("sa_mask",    _sigset_t),
+        ("sa_flags",   ctypes.c_ulong),
+        ("sa_restorer",ctypes.c_void_p),
+    ]
+
+_libc.sigaction.argtypes = [ctypes.c_int, ctypes.POINTER(_sigaction_t),
+                             ctypes.POINTER(_sigaction_t)]
+_libc.sigaction.restype  = ctypes.c_int
+
+# ── Inject pipe ────────────────────────────────────────────────────────────────
+# readline's rl_getc_function is replaced with _tp_getc which select()s on
+# both the real tty and an inject pipe.  Writing one byte to _inject_w aborts
+# the current readline() call immediately (no keypress needed).
+_inject_r, _inject_w = os.pipe()
+
+# Point readline's instream/outstream at the tty.
 _libc.fdopen.argtypes = [ctypes.c_int, ctypes.c_char_p]
 _libc.fdopen.restype  = ctypes.c_void_p
-_tty_file_r = _libc.fdopen(os.open("/dev/tty", os.O_RDWR), b"r")
+_tty_fd_r = os.open("/dev/tty", os.O_RDWR)
+_tty_file_r = _libc.fdopen(_tty_fd_r, b"r+")
 _tty_file_w = _libc.fdopen(os.open("/dev/tty", os.O_RDWR), b"w")
 ctypes.c_void_p.in_dll(_librl, "rl_instream").value  = _tty_file_r
 ctypes.c_void_p.in_dll(_librl, "rl_outstream").value = _tty_file_w
+# Note: _tp_getc_function replaces readline's character reader so that we
+# can multiplex the tty with the inject pipe — rl_instream is still set
+# correctly for rl_prep_terminal (it uses fileno(rl_instream) for stty).
 
 # ── SIGINT handler (C-level) ─────────────────────────────────────────────────
 def _sigint_c(signum):
@@ -430,18 +467,69 @@ def _sigint_c(signum):
     os._exit(130)
 _sigint_cb = _SIGHANDLER(_sigint_c)
 
-# ── SIGTSTP handler (C-level) ────────────────────────────────────────────────
-def _sigtstp_c(signum):
-    _librl.rl_deprep_terminal()
-    _libc.signal(signal.SIGTSTP, _SIG_DFL)
-    _libc.kill(0, signal.SIGTSTP)   # stop entire process group
-    # --- resumes here after fg ---
-    _libc.signal(signal.SIGTSTP, _sigtstp_cb)
-    sys.stderr.write("\n[Resumed demo: hit ENTER to continue]\n")
-    sys.stderr.flush()
-    _librl.rl_prep_terminal(1)
-    _librl.rl_redisplay()
-_sigtstp_cb = _SIGHANDLER(_sigtstp_c)
+# ── SIGTSTP / resume handling ─────────────────────────────────────────────────
+# Strategy: wrap readline's own SIGTSTP handler (rl_catch_signals=1).
+# After stop→resume, write one byte to _inject_w.  _tp_getc sees this,
+# sets _send_resume=True, and returns a fake '\r' so readline returns the
+# current buffer immediately — no keypress needed.
+
+_send_resume = False
+_rl_sigtstp_sa = _sigaction_t()   # saved readline handler (filled at runtime)
+
+def _sigtstp_wrap_c(signum):
+    """Wrap readline's SIGTSTP handler: chain stop/resume, then inject abort."""
+    global _send_resume
+    # Chain to readline's own handler (deprep → kill(SIGTSTP) → resume → prep).
+    if _rl_sigtstp_sa.sa_handler:
+        _rl_sigtstp_sa.sa_handler(signum)
+    # We are now resumed.  Inject one byte so _tp_getc wakes up.
+    _send_resume = True
+    try:
+        os.write(_inject_w, b"\x00")
+    except OSError:
+        pass
+_sigtstp_wrap_cb = _SIGHANDLER(_sigtstp_wrap_c)
+
+# ── Custom rl_getc_function ───────────────────────────────────────────────────
+# select() on both the real tty fd and the inject pipe.  When the inject pipe
+# fires, return '\r' (ASCII 13) so readline finishes the current line and
+# returns the buffer.  _rl_done is set so readline_internal_charloop stops.
+import select as _select
+
+_RL_GETCFUNC = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p)
+
+def _tp_getc_c(stream):
+    """Custom rl_getc_function: multiplexes tty and inject pipe."""
+    global _send_resume
+    while True:
+        try:
+            rlist, _, _ = _select.select([_tty_fd_r, _inject_r], [], [])
+        except OSError as e:
+            if e.errno == _errno.EINTR:
+                # Signal interrupted select — loop back; the SIGTSTP handler
+                # may have already written to _inject_w, so re-select picks it up.
+                continue
+            return ord('\r')
+        if _inject_r in rlist:
+            # Drain the inject byte.
+            try:
+                os.read(_inject_r, 1)
+            except OSError:
+                pass
+            _send_resume = True
+            _rl_done.value = 1
+            return ord('\r')
+        if _tty_fd_r in rlist:
+            try:
+                ch = os.read(_tty_fd_r, 1)
+                if ch:
+                    return ch[0]
+                return -1  # EOF
+            except OSError:
+                # EINTR — loop back to select
+                continue
+
+_tp_getc_cb = _RL_GETCFUNC(_tp_getc_c)
 
 # ── Navigation callbacks ──────────────────────────────────────────────────────
 _nav = None
@@ -466,10 +554,14 @@ _cb_del  = _make_nav("del")
 _cb_save = _make_nav("save")
 # Keep all ctypes callables alive (ctypes does not hold a reference).
 _keep_alive = [_cb_up, _cb_down, _cb_pgup, _cb_pgdn, _cb_dup, _cb_del, _cb_save,
-               _sigint_cb, _sigtstp_cb]
+               _sigint_cb, _sigtstp_wrap_cb, _tp_getc_cb]
 
 # ── One-time readline init ────────────────────────────────────────────────────
 _librl.rl_initialize()
+# rl_catch_signals=1 (default): readline manages SIGTSTP itself.
+# Install our custom getc function and SIGTSTP wrapper.
+ctypes.c_void_p.in_dll(_librl, "rl_getc_function").value = \
+    ctypes.cast(_tp_getc_cb, ctypes.c_void_p).value
 
 for _bname, _cb in [
     (b"tp-up",   _cb_up),   (b"tp-down", _cb_down),
@@ -496,7 +588,7 @@ _rl_mod.parse_and_bind(r'"\eOR":   tp-del')
 _rl_mod.parse_and_bind(r'"\C-s":   tp-save')
 
 # ── TTY fd for termios calls ─────────────────────────────────────────────────
-_tfd = 1  # already dup'd to /dev/tty above
+_tfd = _tty_fd_r  # tty fd used for both termios and _tp_getc reads
 
 # ── Prompt width helper ───────────────────────────────────────────────────────
 def _prompt_visible_width(prompt_str):
@@ -554,8 +646,17 @@ def _send(tag: str, payload: bytes):
 _current_seed = b""
 
 def _pre_input_hook():
-    _libc.signal(signal.SIGINT,  _sigint_cb)
-    _libc.signal(signal.SIGTSTP, _sigtstp_cb)
+    _libc.signal(signal.SIGINT, _sigint_cb)
+    # readline has just called rl_set_signals() — its SIGTSTP handler is now
+    # installed.  Read it out and replace it with our wrapper that injects
+    # an abort byte on resume.
+    _libc.sigaction(signal.SIGTSTP, None, ctypes.byref(_rl_sigtstp_sa))
+    _wrap_act = _sigaction_t()
+    _wrap_act.sa_handler = _sigtstp_wrap_cb
+    _wrap_act.sa_mask    = _rl_sigtstp_sa.sa_mask
+    _wrap_act.sa_flags   = _rl_sigtstp_sa.sa_flags
+    _wrap_act.sa_restorer= _rl_sigtstp_sa.sa_restorer
+    _libc.sigaction(signal.SIGTSTP, ctypes.byref(_wrap_act), None)
     _tattr = termios.tcgetattr(_tfd)
     _tattr[3] &= ~termios.ECHOCTL
     termios.tcsetattr(_tfd, termios.TCSANOW, _tattr)
@@ -575,6 +676,8 @@ while True:
 
     _current_seed = seed_b
     _nav = None
+    _send_resume = False
+    _librl.rl_clear_pending_input()
 
     raw_ptr = _librl.readline(prompt_b)
 
@@ -584,7 +687,9 @@ while True:
 
     payload = bytes(raw_ptr)   # copy before next readline() clobbers it
 
-    if _nav is not None:
+    if _send_resume:
+        tag_str = "nav:resume:0"
+    elif _nav is not None:
         try:
             above = _lines_above_cursor(
                 prompt_b.decode(errors='replace'), raw_ptr, _rl_point.value)
@@ -618,6 +723,9 @@ join_continuations() {
 # Main loop
 # ---------------------------------------------------------------------------
 while true; do
+
+    # Re-arm CONT trap (may have been masked in the resume nav case).
+    trap 'stty -ixon -echoctl 2>/dev/null' CONT
 
     # Assemble the prompt.
     _update_prompt
@@ -672,6 +780,17 @@ while true; do
                 save)
                     save_commands
                     ;;
+                resume)
+                    # Mask the CONT trap for this iteration: readline's own
+                    # signal machinery may deliver SIGCONT a second time when
+                    # restoring the signal mask, causing spurious stty calls.
+                    trap '' CONT
+                    # After fg the terminal state is unknown (user may have
+                    # run commands between Ctrl-Z and fg).  Move to a fresh
+                    # line; the next _tp_send/_tp_recv cycle redraws the prompt.
+                    IFS='[;' read -s -d R -p $'\033[6n' _ _row _col </dev/tty
+                    [[ "$_col" != "1" ]] && printf '\n' >/dev/tty
+                    ;;
             esac
             continue
             ;;
@@ -684,15 +803,6 @@ while true; do
             break
             ;;
     esac
-
-    # If we just resumed from Ctrl-Z, skip execution.
-    if (( resume_after_fg )); then
-        resume_after_fg=0
-        join_continuations "$usercmd"
-        commands[$index]="$_joined"
-        display_commands[$index]="$usercmd"
-        continue
-    fi
 
     # usercmd IS the display form; derive execution form by joining continuation lines.
     display_cmd="$usercmd"
