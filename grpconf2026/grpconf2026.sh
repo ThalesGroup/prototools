@@ -1,48 +1,67 @@
-# \
-# What's really in that .pb file?                                               \
-# gRPConf 2026 North America — 20 minutes, live terminal.                       \
-#
-# Run from the repo root:  teleprompt grpconf2026/presentation.sh               \
-# ENTER runs the next command.  Up/Down browse and edit.                        \
-# F2 duplicates a line, F3 deletes one, Ctrl-S saves.                           \
-#
-# Pinned against grpconf/synopsis.md draft 3 (2026-08-17): two builds of        \
-# Bob's app, two databases built on stage, googleapis as a droppable epilogue.  \
+clear && header prototools && echo $'\n\t\t'"gRPConf 2026 North America"$'\n\n\t\t'"fred@s3ns.io"$'\n\t\t'"tabutter@google.com"$'\n\n\n'
 
-\
-export BOB=grpconf2026/bob APP=grpconf2026/bob/app SHARK=grpconf2026/bob/shark LOG=grpconf2026/bob/log GOOGLEAPIS=grpconf2026/bob/googleapis.desc DESC=grpconf2026/bob/app.desc SRC=grpconf2026/bob/src SVC=google/maps/routing/v2/routes_service.proto
-\
-for f in $APP $SHARK $LOG $GOOGLEAPIS; do [ -e "$f" ] && true || echo "MISSING: $f"; done
+header "Context"
 
 # \
-# REHEARSAL GATE.  A pre-spec-0313 fdp_scan_lib drops the LAST descriptor of   \
-# an embedded set, and in both binaries that is bobapp/v1/log.proto — which     \
-# silently guts beats 9 through 11.  These two must print 41 and 77.            \
-#
-\
-protoscan $BOBAPP1 | wc -l ; protoscan $BOBAPP2 | wc -l
-\
-rm -rf $SRC1 $SRC2 $PROTO2 $DESC1 $DESC2 ${DESC1%.desc} ${DESC2%.desc} $STAGE/boblog.prototext $STAGE/roundtrip.pb
+# S3NS is Thales x Google                                                      \
+#                                                                              \
+# prototools is 4 tools:                                                       \
+#                                                                              \
+# CLI                                                                          \
+# - protoscan: extraction of FileDescriptorProto descriptors from executables  \
+# - reproto: analysis and decompilation of FileDescriptor sets                 \
+# - prototext: lossless ser/deser or protobufs, using schemas                  \
+#                                                                              \
+# TUI                                                                          \
+# - protolens: interactive TUI for analysing binary protobufs                  \
 
-\
-demo/header "1. The problem"
+
+header "1. Staging"
 
 # \
-# Bob downloaded an executable, twice — an older build and a newer one.        \
-# It answers routing questions by calling some external service.  He logged    \
-# its traffic and captured one of its calls.                                   \
-#                                                                               \
-# Four files.  No .proto.  No type name.  No source code.                      \
-# Alice is handed the problem.                                                  \
-#                                                                               \
-# "The two binaries differ by 53 KB and nothing else visible.                   \
-#  I do not yet know what the second one is for."                               \
-#
-\
-ls -l $BOBAPP1 $BOBAPP2 $BOBSHARK $BOBLOG
+# Bob downloaded an unknown executable and an associated log file.             \
+# The executable seems to answer routing questions by calling some external    \
+# service. Bob captured one of its calls with wireshark.                       \
 
-\
-demo/header "2. protoc falls short"
+# \
+# Three files overall:                                                         \
+# - bob/app    # the downloaded executable                                     \
+# - bob/log    # the downloaded log file                                       \
+# - bob/shark  # the capture he made                                           \
+
+ls -lh bob
+
+# \
+# Bob suspects the calls to be gRPC, and the logs to be protobuf.              \
+# Alice is handed the lot for analysis.                                        \
+
+
+header "2. protoc falls short"
+
+# Let's try protoc for decoding the log file:
+cat bob/log | protoc --decode_raw
+# Not much success, let's try with the captured call:
+cat bob/shark | protoc --decode_raw
+# OK. At least this is protobuf
+
+header "Can we retrieve descriptors?"
+
+# Let's try with protoscan
+protoscan bob/app | head && echo "..."$'\n'"$(protoscan bob/app | wc -l) descriptors"
+# So bob/app contains reflected descriptors
+
+# Let's retrieve, decompile and index these descriptors
+reproto -I bob/app --schema-db-out alice/app.desc
+# \
+# A couple of files were produced:                                             \
+# - app.desc: FileDescriptorSet for descriptors in app                         \
+# - app/index.rkyv: Index for fast access and loading                          \
+# - app/hopcroft.rkyv: Graph for type inference                                \
+# - app/proto/: Decompiled descriptors (.proto syntax)                         \
+
+ls -lhd alice/app.desc alice/app/index.rkyv alice/app/hopcroft.rkyv alice/app/proto
+
+tree alice/app | nvim -
 
 # \
 # The standard tool needs three things Bob does not have.                       \

@@ -1,0 +1,758 @@
+#!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2025 Frederic Ruget <fred@s3ns.io> (GitHub: @douzebis)
+# SPDX-FileCopyrightText: 2025 Thales Cloud Sécurisé
+#
+# SPDX-License-Identifier: MIT
+
+# Parse arguments: [--splash <file-or-name>] <commands_file>
+SPLASH_FILE=""
+SPLASH_NAME=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --splash) SPLASH_ARG="$2"; shift 2
+            if [[ -f "$SPLASH_ARG" ]]; then
+                SPLASH_FILE="$SPLASH_ARG"
+            else
+                SPLASH_NAME="$SPLASH_ARG"
+            fi
+            ;;
+        *)        break ;;
+    esac
+done
+
+CONFIG_FILE="$1"
+[[ -f "$CONFIG_FILE" ]] || { echo "Usage: $0 [--splash <file|name>] <commands_file>"; exit 1; }
+
+trap 'stty sane' EXIT
+
+# ---------------------------------------------------------------------------
+# Load commands, handling backslash line continuations
+# ---------------------------------------------------------------------------
+commands=()
+display_commands=()  # For multi-line display
+accumulated=""
+display_accumulated=""
+while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ \\[[:space:]]*$ ]]; then
+        accumulated="${accumulated}${line%\\} "
+        display_accumulated="${display_accumulated}${line}"$'\n'
+    else
+        commands+=("${accumulated}${line}")
+        if [[ -n "$display_accumulated" ]]; then
+            display_commands+=("${display_accumulated}${line}")
+        else
+            display_commands+=("${line}")
+        fi
+        accumulated=""
+        display_accumulated=""
+    fi
+done < "$CONFIG_FILE"
+
+if [[ -n "$accumulated" ]]; then
+    commands+=("$accumulated")
+    display_commands+=("$display_accumulated")
+fi
+
+index=0
+n=${#commands[@]}
+prev_status=0
+
+resume_after_fg=0
+trap 'resume_after_fg=1' CONT
+# SIGINT: use a real (non-ignore) handler so external commands (children)
+# receive SIG_DFL and are killed by Ctrl-C, while bash itself survives.
+# Builtins (read, while) are not interruptible this way — accepted limitation.
+trap 'true' INT
+
+# === ANSI COLOR CODES (Readline-compliant) ===
+BOLD=$'\001\e[1m\002'
+BLUE=$'\001\e[94m\002'
+BBLUE=$'\001\e[1;94m\002'
+GRAY=$'\001\e[90m\002'
+LGRAY=$'\001\e[37m\002'
+BGREEN=$'\001\e[1;32m\002'
+LGREEN=$'\001\e[92m\002'
+DGREEN=$'\001\e[32m\002'
+RED=$'\001\e[31m\002'
+BRED=$'\001\e[1;91m\002'
+WHITE=$'\001\e[97m\002'
+YELLOW=$'\001\e[93m\002'
+BYELLOW=$'\001\e[1;93m\002'
+DYELLOW=$'\001\e[33m\002'
+RESET=$'\001\e[0m\002'
+
+# === PURE ANSI ESCAPES (For screen control) ===
+MOVE_CURSOR_UP=$'\033[1A'
+ERASE_LINE_TO_END=$'\033[K'
+
+# === CORE FUNCTIONS ===
+
+# calculate_lines STR PROMPT_WIDTH
+# Sets global _calc_lines to the number of terminal rows the prompt+seed
+# occupies.  Pure bash — no subshells, no pipelines.
+calculate_lines() {
+    local str="$1"
+    local prompt_width="$2"
+    local cols="${COLUMNS:-80}"
+    local lines=1 avail seg_num=0 seg rest had_nl
+    avail=$(( cols - prompt_width ))
+
+    rest="$str"
+    while true; do
+        # Split off first segment at the next \n.
+        if [[ "$rest" == *$'\n'* ]]; then
+            seg="${rest%%$'\n'*}"
+            rest="${rest#*$'\n'}"
+            had_nl=1
+        else
+            seg="$rest"
+            rest=""
+            had_nl=0
+        fi
+        local seg_len=${#seg}
+        if (( seg_num == 0 )); then
+            (( seg_len > avail )) && lines=$(( lines + (seg_len - avail + cols - 1) / cols ))
+        else
+            lines=$(( lines + 1 ))   # the \n itself starts a new screen line
+            (( seg_len > cols )) && lines=$(( lines + (seg_len - cols + cols - 1) / cols ))
+        fi
+        (( seg_num++ ))
+        # Stop when we've processed the last segment (no \n was found in rest).
+        (( had_nl == 0 )) && break
+        avail=$cols   # subsequent segments start at column 0
+    done
+    _calc_lines=$lines
+}
+
+_update_prompt() {
+    local cwd_display
+    local cwd="$PWD"
+    if [[ "$cwd" == "$HOME"* ]]; then
+        cwd_display="~${cwd#$HOME}"
+    else
+        cwd_display="$cwd"
+    fi
+    local prefix="${GRAY}[demo:$cwd_display ("
+    local suffix=")]\$ ${RESET}${LGRAY}"
+    local counter="$((index+1))/$n"
+    prompt="${prefix}${counter}${suffix}"
+    prompt_bw="[demo:$cwd_display (${counter})]$ "
+    PROMPT_DISPLAY_WIDTH="${#prompt_bw}"
+}
+
+
+# Erase what readline drew for the previous prompt+seed, then redraw.
+# $1 = old display string (may contain \\\n continuations)
+# $2 = lines-above-cursor from Python (optional; defaults to old_lines-1)
+_erase_and_redraw() {
+    local old_display="$1"
+    local lines_above="${2:-}"
+    # Calculate total screen lines the old prompt+seed occupied.
+    calculate_lines "$old_display" "$PROMPT_DISPLAY_WIDTH"
+    local old_lines="$_calc_lines"
+    # How many cursor-up moves to reach the top line of the old display.
+    local moves_up
+    if [[ -n "$lines_above" ]]; then
+        moves_up="$lines_above"
+    else
+        moves_up=$(( old_lines - 1 ))
+    fi
+    local i
+    for (( i = 0; i < moves_up; i++ )); do
+        printf '%s' "$MOVE_CURSOR_UP" >/dev/tty
+    done
+    printf '\r\033[J' >/dev/tty
+    _update_prompt
+}
+
+
+# === Line Editing Helpers ===
+
+duplicate_line() {
+    commands=("${commands[@]:0:index+1}" "${commands[$index]}" "${commands[@]:index+1}")
+    display_commands=("${display_commands[@]:0:index+1}" "${display_commands[$index]}" "${display_commands[@]:index+1}")
+    ((index++))
+    n=${#commands[@]}
+}
+
+delete_line() {
+    commands=("${commands[@]:0:index}" "${commands[@]:index+1}")
+    display_commands=("${display_commands[@]:0:index}" "${display_commands[@]:index+1}")
+    (( index > 0 )) && ((index--))
+    n=${#commands[@]}
+}
+
+save_commands() {
+    printf "%s\n" "${display_commands[@]}" > "$CONFIG_FILE"
+    printf '\n%s[Saved to %s]%s\n' $'\e[1;32m' "$CONFIG_FILE" $'\e[0m'
+}
+
+show_help() {
+    printf "\r\033[K" >/dev/tty
+    printf "%s  F1      show this help\n" "$YELLOW" >/dev/tty
+    printf "  ↑/↓     browse history  (also Ctrl-P / Ctrl-N)\n" >/dev/tty
+    printf "  PgUp/↓  fast browse (10 steps)\n" >/dev/tty
+    printf "  ENTER   run command\n" >/dev/tty
+    printf "  F2      duplicate current line\n" >/dev/tty
+    printf "  F3      delete current line\n" >/dev/tty
+    printf "  Ctrl-S  save history to file%s\n" "$RESET" >/dev/tty
+}
+
+# ---------------------------------------------------------------------------
+# header NAME — render a section title using chafa (SVG leg only).
+# Exported so commands run via eval can call it directly.
+# ---------------------------------------------------------------------------
+header() {
+    local TITLE="$1"
+    local COLOR="${2:-#4d8fff}"
+    local HEIGHT="${3:-5}"
+
+    # Strip leading section number: "1. ", "12. ", etc.
+    TITLE="${TITLE##+([0-9]).+( )}"
+
+    local TW
+    TW=$(echo "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 9999 40'>\
+<text x='0' y='32' font-family='DejaVu Sans' font-size='28' font-weight='bold'>${TITLE}</text></svg>" \
+        | magick -background none -density 96 svg:- -trim -format "%w" info: 2>/dev/null)
+    [[ -n "$TW" && "$TW" -gt 0 ]] 2>/dev/null || TW=$(( ${#TITLE} * 15 ))
+
+    local TRANSLATE=$(( TW + 7 ))
+    local VB_WIDTH=$(( TW + 63 ))
+
+    echo
+    echo "<svg xmlns='http://www.w3.org/2000/svg' fill='none'
+         viewBox='12 22 ${VB_WIDTH} 35'>
+      <path fill='#4580e8' d='M39.226 56.943 18.722 30.326c-1.54 1.985-4.89 6.395-6.09 7.92-1.201 1.524-.42 3.017.12 3.572l11.825 15.125z'/>
+      <path fill='#d23935' d='m24.939 41.402 14.106-18.46H24.278l-7.984 10.6z'/>
+      <text x='44' y='50'
+            font-family='DejaVu Sans, sans-serif' font-size='28' font-weight='bold'
+            fill='${COLOR}'>${TITLE}</text>
+      <g transform='translate(${TRANSLATE} 0)'>
+        <path fill='#1b9157' d='m41.775 22.943 20.502 26.616c1.54-1.985 4.89-6.395 6.09-7.92 1.201-1.524.42-3.016-.12-3.572L56.422 22.943z'/>
+        <path fill='#fbb53e' d='M56.062 38.484 41.955 56.943h14.767l7.984-10.6z'/>
+      </g>
+    </svg>" \
+        | magick -background transparent -density 300 svg:- png:- \
+        | chafa -s "x${HEIGHT}" -
+    echo
+}
+export -f header
+
+# ---------------------------------------------------------------------------
+# Startup
+# ---------------------------------------------------------------------------
+
+# S1: Terminal geometry probe — derive chafa --font-ratio from actual cell size.
+TELEPROMPT_FONT_RATIO="1/2"
+_ratio_source="default"
+if [[ "${TERM:-}" != "dumb" && -z "${NO_COLOR:-}" ]]; then
+    _old_stty=$(stty -g </dev/tty 2>/dev/null)
+    if [[ -n "$_old_stty" ]]; then
+        stty raw -echo </dev/tty
+        printf '\e[14t\e[18t' >/dev/tty
+        _probe_response=""
+        read -t 0.3 -r _probe_response </dev/tty || true
+        stty "$_old_stty" </dev/tty
+        _px_h=$(printf '%s' "$_probe_response" | grep -oP '(?<=\[4;)\d+(?=;)')
+        _px_w=$(printf '%s' "$_probe_response" | grep -oP '(?<=\[4;\d{1,5};)\d+(?=t)')
+        _rows=$(printf '%s' "$_probe_response" | grep -oP '(?<=\[8;)\d+(?=;)')
+        _cols=$(printf '%s' "$_probe_response" | grep -oP '(?<=\[8;\d{1,5};)\d+(?=t)')
+        if [[ -n "$_px_h" && -n "$_px_w" && -n "$_rows" && -n "$_cols" \
+              && "$_rows" -gt 0 && "$_cols" -gt 0 ]] 2>/dev/null; then
+            _cell_w=$(( _px_w / _cols ))
+            _cell_h=$(( _px_h / _rows ))
+            if [[ "$_cell_w" -gt 0 && "$_cell_h" -gt 0 ]] 2>/dev/null; then
+                TELEPROMPT_FONT_RATIO="${_cell_w}/${_cell_h}"
+                _ratio_source="measured"
+            fi
+        fi
+        if [[ -n "$_cols" && "$_cols" -gt 0 ]] 2>/dev/null; then
+            COLUMNS="$_cols"
+        fi
+        unset _old_stty _probe_response _px_h _px_w _rows _cols _cell_w _cell_h
+    fi
+fi
+# Fallback: read COLUMNS from tput if not yet set by the probe above.
+if [[ -z "${COLUMNS:-}" ]] || (( COLUMNS <= 0 )); then
+    COLUMNS=$(tput cols 2>/dev/null) || COLUMNS=80
+fi
+export COLUMNS
+trap 'COLUMNS=$(tput cols 2>/dev/null) || true' WINCH
+
+# S2: Dependency check
+if [[ "${TERM:-}" != "dumb" && -z "${NO_COLOR:-}" ]]; then
+    _raw_yellow=$'\e[1;93m'
+    _raw_reset=$'\e[0m'
+    if ! command -v magick &>/dev/null; then
+        printf '%s[teleprompt] warning: magick not found — header() will not render%s\n' \
+            "$_raw_yellow" "$_raw_reset"
+    fi
+    if ! command -v chafa &>/dev/null; then
+        printf '%s[teleprompt] warning: chafa not found — header() will not render%s\n' \
+            "$_raw_yellow" "$_raw_reset"
+    fi
+    unset _raw_yellow _raw_reset
+fi
+
+printf '\e[90m[teleprompt] font-ratio: %s  (%s)\e[0m\n' \
+    "$TELEPROMPT_FONT_RATIO" "$_ratio_source"
+unset _ratio_source
+
+stty -ixon -echoctl
+
+clear
+if [[ -n "$SPLASH_NAME" ]]; then
+    header "$SPLASH_NAME"
+elif [[ -f "$SPLASH_FILE" ]]; then
+    cat "$SPLASH_FILE"
+fi
+printf "%s  F1  help   F2  duplicate   F3  delete   Ctrl-S  save%s\n\n" "$YELLOW" "$RESET"
+
+# ---------------------------------------------------------------------------
+# Start persistent Python readline coproc.
+#
+# The Python source is passed via fd 3 (a here-doc); fd 0 (stdin) is the
+# request pipe from bash; fd 1 (stdout) is the reply pipe to bash.
+# Inside Python, fd 1 is dup'd to a private fd before readline hijacks it,
+# then fd 1 and fd 2 are redirected to /dev/tty.
+#
+# Protocol (both directions use base64 — no byte/char count ambiguity):
+#   bash → python : base64(prompt)\n  base64(seed)\n
+#   python → bash : tag-line\n  base64(payload)\n
+#   tag-line is plain ASCII: nav:<action>:<lines_above> | line | eof
+# ---------------------------------------------------------------------------
+
+# _tp_send PROMPT SEED — encode each field as a single base64 line (no wrapping).
+_tp_send() {
+    local p="$1" s="$2"
+    printf '%s' "$p" | base64 -w0 >&4; printf '\n' >&4
+    printf '%s' "$s" | base64 -w0 >&4; printf '\n' >&4
+}
+
+# _tp_recv — read one reply: sets _rl_tag, _rl_val, _rl_cursor_row, _rl_payload.
+_tp_recv() {
+    IFS= read -r _rl_line <&3
+    _rl_tag="${_rl_line%%:*}"
+    local _rest="${_rl_line#*:}"
+    _rl_val="${_rest%%:*}"
+    _rl_cursor_row="${_rest#*:}"
+    [[ "$_rl_cursor_row" == "$_rl_val" ]] && _rl_cursor_row=""
+    local _pay_b64
+    IFS= read -r _pay_b64 <&3
+    _rl_payload="$(printf '%s' "$_pay_b64" | base64 -d)"
+}
+
+coproc RLCOP ( python3 /dev/fd/3 3<<'PYEOF'
+"""
+Persistent readline coproc for teleprompt.
+
+Runs as a long-lived process alongside bash (started with bash coproc).
+Each round-trip:
+  bash  → writes two base64-encoded lines: base64(prompt)\nbase64(seed)\n
+  Python→ reads prompt+seed, calls readline(), then writes:
+             tag-line\nbase64(payload)\n
+  tag-line is plain ASCII, one of:
+    nav:<action>:<lines_above>   — navigation key fired; payload = buffer bytes
+    line                         — Enter pressed; payload = buffer bytes
+    eof                          — Ctrl-D; payload empty
+
+Base64 encoding makes both directions byte-safe: no length fields, no
+char/byte count mismatch, no issues with newlines or multi-byte UTF-8.
+
+Requests arrive on stdin (fd 0 = pipe from bash).  Replies go on the
+original stdout pipe (dup'd to a private fd before readline hijacks fd 1).
+fd 1 and fd 2 are redirected to /dev/tty so readline prompt output and
+error messages go to the terminal.
+"""
+import os, sys, signal, ctypes, ctypes.util, termios, base64 as _b64, readline as _rl_mod
+
+# Dup the reply pipe (fd 1) to a private fd before readline hijacks stdout.
+# Then redirect fd 1 and fd 2 to /dev/tty.
+_rep_fd = os.dup(1)
+_tty_fd = os.open("/dev/tty", os.O_RDWR)
+os.dup2(_tty_fd, 1)
+os.dup2(_tty_fd, 2)
+os.close(_tty_fd)
+sys.stdout = open("/dev/tty", "w", buffering=1)
+sys.stderr = open("/dev/tty", "w", buffering=1)
+
+# ── libc for C-level signal handlers ────────────────────────────────────────
+_libc_name = ctypes.util.find_library("c")
+_libc = ctypes.CDLL(_libc_name)
+_SIGHANDLER = ctypes.CFUNCTYPE(None, ctypes.c_int)
+_libc.signal.argtypes = [ctypes.c_int, _SIGHANDLER]
+_libc.signal.restype  = _SIGHANDLER
+_libc.kill.argtypes   = [ctypes.c_int, ctypes.c_int]
+_libc.kill.restype    = ctypes.c_int
+_SIG_DFL = ctypes.cast(0, _SIGHANDLER)
+
+# ── libreadline ──────────────────────────────────────────────────────────────
+_librl_path = os.environ.get("TELEPROMPT_LIBREADLINE")
+if not _librl_path:
+    sys.stderr.write("TELEPROMPT_LIBREADLINE not set\n")
+    sys.exit(1)
+_librl = ctypes.CDLL(_librl_path)
+
+_librl.readline.argtypes           = [ctypes.c_char_p]
+_librl.readline.restype            = ctypes.c_char_p
+_librl.rl_replace_line.argtypes   = [ctypes.c_char_p, ctypes.c_int]
+_librl.rl_replace_line.restype    = None
+_librl.rl_redisplay.argtypes      = []
+_librl.rl_redisplay.restype       = None
+_librl.rl_deprep_terminal.argtypes= []
+_librl.rl_deprep_terminal.restype = None
+_librl.rl_prep_terminal.argtypes  = [ctypes.c_int]
+_librl.rl_prep_terminal.restype   = None
+_librl.rl_initialize.argtypes     = []
+_librl.rl_initialize.restype      = ctypes.c_int
+
+_rl_point = ctypes.c_int.in_dll(_librl, "rl_point")
+_rl_end   = ctypes.c_int.in_dll(_librl, "rl_end")
+_rl_done  = ctypes.c_int.in_dll(_librl, "rl_done")
+
+# Point readline's instream/outstream at the tty, not at the coproc pipe.
+_libc.fdopen.argtypes = [ctypes.c_int, ctypes.c_char_p]
+_libc.fdopen.restype  = ctypes.c_void_p
+_tty_file_r = _libc.fdopen(os.open("/dev/tty", os.O_RDWR), b"r")
+_tty_file_w = _libc.fdopen(os.open("/dev/tty", os.O_RDWR), b"w")
+ctypes.c_void_p.in_dll(_librl, "rl_instream").value  = _tty_file_r
+ctypes.c_void_p.in_dll(_librl, "rl_outstream").value = _tty_file_w
+
+# ── SIGINT handler (C-level) ─────────────────────────────────────────────────
+def _sigint_c(signum):
+    try:
+        os.write(_rep_fd, b"eof\n\n")
+    except OSError:
+        pass
+    os._exit(130)
+_sigint_cb = _SIGHANDLER(_sigint_c)
+
+# ── SIGTSTP handler (C-level) ────────────────────────────────────────────────
+def _sigtstp_c(signum):
+    _librl.rl_deprep_terminal()
+    _libc.signal(signal.SIGTSTP, _SIG_DFL)
+    _libc.kill(0, signal.SIGTSTP)   # stop entire process group
+    # --- resumes here after fg ---
+    _libc.signal(signal.SIGTSTP, _sigtstp_cb)
+    sys.stderr.write("\n[Resumed demo: hit ENTER to continue]\n")
+    sys.stderr.flush()
+    _librl.rl_prep_terminal(1)
+    _librl.rl_redisplay()
+_sigtstp_cb = _SIGHANDLER(_sigtstp_c)
+
+# ── Navigation callbacks ──────────────────────────────────────────────────────
+_nav = None
+_RL_CMDFUNC = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int)
+_librl.rl_add_funmap_entry.argtypes = [ctypes.c_char_p, _RL_CMDFUNC]
+_librl.rl_add_funmap_entry.restype  = ctypes.c_int
+
+def _make_nav(name):
+    def _cb(count, key):
+        global _nav
+        _nav = name
+        _rl_done.value = 1
+        return 0
+    return _RL_CMDFUNC(_cb)
+
+_cb_up   = _make_nav("up")
+_cb_down = _make_nav("down")
+_cb_pgup = _make_nav("pgup")
+_cb_pgdn = _make_nav("pgdn")
+_cb_dup  = _make_nav("dup")
+_cb_del  = _make_nav("del")
+_cb_save = _make_nav("save")
+# Keep all ctypes callables alive (ctypes does not hold a reference).
+_keep_alive = [_cb_up, _cb_down, _cb_pgup, _cb_pgdn, _cb_dup, _cb_del, _cb_save,
+               _sigint_cb, _sigtstp_cb]
+
+# ── One-time readline init ────────────────────────────────────────────────────
+_librl.rl_initialize()
+
+for _bname, _cb in [
+    (b"tp-up",   _cb_up),   (b"tp-down", _cb_down),
+    (b"tp-pgup", _cb_pgup), (b"tp-pgdn", _cb_pgdn),
+    (b"tp-dup",  _cb_dup),  (b"tp-del",  _cb_del),
+    (b"tp-save", _cb_save),
+]:
+    _librl.rl_add_funmap_entry(_bname, _cb)
+
+_rl_mod.parse_and_bind("tab: complete")
+ctypes.c_void_p.in_dll(_librl, "rl_attempted_completion_function").value = None
+_rl_mod.set_completer_delims(_rl_mod.get_completer_delims().replace('/', ''))
+
+_rl_mod.parse_and_bind(r'"\e[A":   tp-up')
+_rl_mod.parse_and_bind(r'"\C-p":   tp-up')
+_rl_mod.parse_and_bind(r'"\e[B":   tp-down')
+_rl_mod.parse_and_bind(r'"\C-n":   tp-down')
+_rl_mod.parse_and_bind(r'"\e[5~":  tp-pgup')
+_rl_mod.parse_and_bind(r'"\e[6~":  tp-pgdn')
+_rl_mod.parse_and_bind(r'"\e[12~": tp-dup')
+_rl_mod.parse_and_bind(r'"\e[13~": tp-del')
+_rl_mod.parse_and_bind(r'"\eOQ":   tp-dup')
+_rl_mod.parse_and_bind(r'"\eOR":   tp-del')
+_rl_mod.parse_and_bind(r'"\C-s":   tp-save')
+
+# ── TTY fd for termios calls ─────────────────────────────────────────────────
+_tfd = 1  # already dup'd to /dev/tty above
+
+# ── Prompt width helper ───────────────────────────────────────────────────────
+def _prompt_visible_width(prompt_str):
+    """Count printable columns in a readline prompt (skips \\001..\\002 spans)."""
+    visible = 0
+    in_esc = False
+    for ch in prompt_str:
+        if   ch == '\x01': in_esc = True
+        elif ch == '\x02': in_esc = False
+        elif not in_esc:   visible += 1
+    return visible
+
+# ── Lines-above-cursor helper ─────────────────────────────────────────────────
+def _lines_above_cursor(prompt_str, buf_bytes, point):
+    """Visual lines from cursor up to top of display (0 = cursor on top line)."""
+    cols = int(os.environ.get('COLUMNS', '80'))
+    prompt_cols = _prompt_visible_width(prompt_str)
+    buf_before = buf_bytes[:point]
+    segments = buf_before.split(b'\n')
+    above = 0
+    for i, seg in enumerate(segments):
+        seg_len = len(seg)
+        if i == 0:
+            avail = cols - prompt_cols
+            if seg_len > avail:
+                above += (seg_len - avail + cols - 1) // cols
+        else:
+            above += 1
+            if seg_len > cols:
+                above += (seg_len - cols + cols - 1) // cols
+    return above
+
+# ── I/O pipes ────────────────────────────────────────────────────────────────
+_req  = os.fdopen(0, 'rb', buffering=0)       # bash → python (coproc stdin)
+_rep  = os.fdopen(_rep_fd, 'wb', buffering=0) # python → bash (coproc stdout dup)
+
+def _read_field():
+    """Read one base64-encoded line from the request pipe and return decoded bytes."""
+    line = b""
+    while True:
+        ch = _req.read(1)
+        if not ch or ch == b'\n':
+            break
+        line += ch
+    return _b64.b64decode(line) if line else b""
+
+def _send(tag: str, payload: bytes):
+    data = (tag + "\n").encode() + _b64.b64encode(payload) + b"\n"
+    mv = memoryview(data)
+    written = 0
+    while written < len(data):
+        written += _rep.write(mv[written:])
+
+# ── Pre-input hook ────────────────────────────────────────────────────────────
+_current_seed = b""
+
+def _pre_input_hook():
+    _libc.signal(signal.SIGINT,  _sigint_cb)
+    _libc.signal(signal.SIGTSTP, _sigtstp_cb)
+    _tattr = termios.tcgetattr(_tfd)
+    _tattr[3] &= ~termios.ECHOCTL
+    termios.tcsetattr(_tfd, termios.TCSANOW, _tattr)
+    _librl.rl_replace_line(_current_seed, 0)
+    _rl_point.value = _rl_end.value
+    _librl.rl_redisplay()
+
+_rl_mod.set_pre_input_hook(_pre_input_hook)
+
+# ── Main loop ────────────────────────────────────────────────────────────────
+while True:
+    try:
+        prompt_b = _read_field()
+        seed_b   = _read_field()
+    except Exception:
+        break
+
+    _current_seed = seed_b
+    _nav = None
+
+    raw_ptr = _librl.readline(prompt_b)
+
+    if raw_ptr is None:
+        _send("eof", b"")
+        break
+
+    payload = bytes(raw_ptr)   # copy before next readline() clobbers it
+
+    if _nav is not None:
+        try:
+            above = _lines_above_cursor(
+                prompt_b.decode(errors='replace'), raw_ptr, _rl_point.value)
+        except Exception:
+            above = 0
+        tag_str = f"nav:{_nav}:{above}"
+    else:
+        tag_str = "line"
+    _send(tag_str, payload)
+PYEOF
+)
+# Duplicate coproc fds to fixed numbers so pipelines (subshells) can access them.
+# RLCOP[0] = read-end (Python→bash), RLCOP[1] = write-end (bash→Python).
+exec 3<&"${RLCOP[0]}" 4>&"${RLCOP[1]}"
+
+# ---------------------------------------------------------------------------
+# join_continuations STR → sets _joined (no subshell, no sed)
+# Replaces every backslash-newline pair with a single space.
+# ---------------------------------------------------------------------------
+join_continuations() {
+    local _s="$1"
+    _joined=""
+    while [[ "$_s" == *$'\\\n'* ]]; do
+        _joined+="${_s%%$'\\\n'*} "
+        _s="${_s#*$'\\\n'}"
+    done
+    _joined+="$_s"
+}
+
+# ---------------------------------------------------------------------------
+# Main loop
+# ---------------------------------------------------------------------------
+while true; do
+
+    # Assemble the prompt.
+    _update_prompt
+
+    # Send prompt + seed to the persistent coproc and wait for reply.
+    _tp_send "$prompt" "${display_commands[$index]}"
+    _tp_recv
+
+    case "$_rl_tag" in
+
+        eof)
+            break
+            ;;
+
+        nav)
+            _nav_action="$_rl_val"
+            _nav_buf="$_rl_payload"
+            # Remember what was displayed so we can erase it.
+            _old_display="${display_commands[$index]}"
+            # Save any mid-line edits to the current slot.
+            display_commands[$index]="$_nav_buf"
+            join_continuations "$_nav_buf"
+            commands[$index]="$_joined"
+
+            case "$_nav_action" in
+                up)
+                    (( index > 0 )) && (( index-- ))
+                    _erase_and_redraw "$_old_display" "$_rl_cursor_row"
+                    ;;
+                down)
+                    (( index < n-1 )) && (( index++ ))
+                    _erase_and_redraw "$_old_display" "$_rl_cursor_row"
+                    ;;
+                pgup)
+                    (( index -= 10 ))
+                    (( index < 0 )) && index=0
+                    _erase_and_redraw "$_old_display" "$_rl_cursor_row"
+                    ;;
+                pgdn)
+                    (( index += 10 ))
+                    (( index >= n )) && index=$((n-1))
+                    _erase_and_redraw "$_old_display" "$_rl_cursor_row"
+                    ;;
+                dup)
+                    duplicate_line
+                    _erase_and_redraw "$_old_display" "$_rl_cursor_row"
+                    ;;
+                del)
+                    delete_line
+                    _erase_and_redraw "$_old_display" "$_rl_cursor_row"
+                    ;;
+                save)
+                    save_commands
+                    ;;
+            esac
+            continue
+            ;;
+
+        line)
+            usercmd="$_rl_payload"
+            ;;
+
+        *)
+            break
+            ;;
+    esac
+
+    # If we just resumed from Ctrl-Z, skip execution.
+    if (( resume_after_fg )); then
+        resume_after_fg=0
+        join_continuations "$usercmd"
+        commands[$index]="$_joined"
+        display_commands[$index]="$usercmd"
+        continue
+    fi
+
+    # usercmd IS the display form; derive execution form by joining continuation lines.
+    display_cmd="$usercmd"
+    display_commands[$index]="$usercmd"
+    join_continuations "$usercmd"
+    usercmd_exec="$_joined"
+    commands[$index]="$usercmd_exec"
+
+    # Calculate lines to erase (what readline actually displayed).
+    calculate_lines "${display_commands[$index]}" "$PROMPT_DISPLAY_WIDTH"
+    lines_to_erase="$_calc_lines"
+
+    # After ENTER, readline emits \r\n → cursor one line below the last drawn line,
+    # so moves_up = lines_to_erase.
+    # Exception: when the seed ends with \n, readline has an extra empty continuation
+    # line and emits \x1b[A\r\n instead, keeping the cursor on the same last line,
+    # so moves_up = lines_to_erase - 1.
+    if [[ "$display_cmd" == *$'\n' ]]; then
+        moves_up=$(( lines_to_erase - 1 ))
+    else
+        moves_up=$lines_to_erase
+    fi
+
+    for (( i = 0; i < moves_up; i++ )); do
+        printf "%s" "$MOVE_CURSOR_UP" >/dev/tty
+    done
+
+    # Reprint with syntax coloring (car/cdr split at '#').
+    if [[ "$display_cmd" == *$'\n'* ]]; then
+        IFS=$'\n' read -rd '' -a _lines <<< "$display_cmd"
+        first_line="${_lines[0]}"
+        first_car=${first_line%%#*}
+        first_cdr=${first_line#"$first_car"}
+        printf "\r%s%s%s%s%s%s\n" "$prompt" "${WHITE}${BOLD}" "$first_car" "${BBLUE}" "$first_cdr" "${RESET}" >/dev/tty
+        for (( i=1; i<${#_lines[@]}; i++ )); do
+            _l="${_lines[$i]}"
+            _lcar="${_l%%#*}"; _lcdr="${_l#"$_lcar"}"
+            printf "%s%s%s%s%s\n" "${WHITE}${BOLD}" "$_lcar" "${BBLUE}" "$_lcdr" "${RESET}" >/dev/tty
+        done
+    else
+        car="${display_cmd%%#*}"
+        cdr="${display_cmd#"$car"}"
+        printf "\r%s%s%s%s%s%s\n" "$prompt" "${WHITE}${BOLD}" "$car" "${BBLUE}" "$cdr" "${RESET}" >/dev/tty
+    fi
+
+    # Execute.
+    eval "$usercmd_exec"
+    status=$?
+    if [[ -n "$car" ]]; then
+        IFS='[;' read -s -d R -p $'\033[6n' _ _row col </dev/tty
+        [[ "$col" != "1" ]] && echo
+    fi
+    if [[ "$status" != 0 ]]; then
+        printf "%s[Error status: %s]%s\n" "$BRED" "$status" "$RESET"
+    fi
+
+    # Move to next command.
+    (( index++ )) || true
+    (( index >= n )) && break
+
+done
+
+# Clean up coproc.
+exec 3<&- 4>&-
+kill "${RLCOP_PID}" 2>/dev/null || true

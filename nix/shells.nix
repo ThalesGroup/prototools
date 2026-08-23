@@ -49,7 +49,7 @@
 , wktDb             # well-known-types schema DB; carries the PROTOTEXT_DESCRIPTOR_SET setup-hook
 , googleapisDb      # googleapis schema DB; dev-shell only (PROTOTEXT_GOOGLEAPIS_SET)
 , bobapp2Desc       # bobapp2's embedded set; dev-shell only (BOBAPP_TRACE_DESCRIPTOR_SET)
-, grpconfDemo       # grpconf-demo stage: bin/bobapp, log, shark, googleapis.desc, beats/
+, grpconfDemo       # grpconf-demo stage: bin/bobapp, log, shark, beats/
 , buf               # narrow-pinned buf (newer than the main nixpkgs pin's 1.59.0; see default.nix)
 }:
 
@@ -162,6 +162,10 @@ in
       chafa
       tree
       bat
+      # readline — libreadline is needed by the teleprompt Python server,
+      # which uses ctypes to access rl_add_funmap_entry and readline() directly
+      # for proper multi-line buffer support.
+      readline
     ]) ++ [ buf grpconfDemo ];
 
     shellHook = ''
@@ -171,10 +175,14 @@ in
       # ── Named hook functions ───────────────────────────────────────────────
 
       _hook_env() {
-        echo "[hook] env: NIXSHELL_REPO, PROTOTEXT_{DESCRIPTOR,WKT,GOOGLEAPIS}_SET, PROTOTEXT_ANOMALIES_BLOB, PYO3_PYTHON, PATH, PYTHONPATH"
+        echo "[hook] env: NIXSHELL_REPO, PROTOTEXT_{DESCRIPTOR,WKT,GOOGLEAPIS}_SET, PROTOTEXT_ANOMALIES_BLOB, PYO3_PYTHON, PATH, PYTHONPATH, TELEPROMPT_LIBREADLINE"
         # Detected by ~/.claude/hooks/claude-hook-post-edit-lint to confirm
         # that the active nix-shell belongs to this repo.
         export NIXSHELL_REPO="${repoRoot}"
+
+        # Path to libreadline, used by bin/teleprompt's Python server
+        # to access rl_add_funmap_entry and readline() via ctypes.
+        export TELEPROMPT_LIBREADLINE="${pkgs.readline}/lib/libreadline.so"
 
         # The toolset builds its binaries from source here, so wktDb is not
         # a build input and its setup-hook never fires (spec 0228 S6).
@@ -426,46 +434,46 @@ components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
       }
 
       _hook_demo() {
-        # Populate grpconf2026/bob/ from the grpconf-demo nix derivation so
-        # that the presenter has a writable working directory.
+        # Populate grpconf2026/{bob,beats,alice} from the grpconf-demo nix
+        # derivation so that the presenter has a writable working directory.
         #
-        # The nix store is read-only, so protolens cannot create sidecar files
-        # beside googleapis.desc and the beats cannot write app.desc or src/.
+        # The nix store is read-only, so the beats cannot write app.desc or src/.
         # --no-preserve=mode strips the 0444/0555 modes from the copy so that
         # all files are writable.
         #
-        # Layout written into grpconf2026/bob/:
-        #   app              the bobapp binary (places v1 + routes v2)
-        #   log              the log with four anomalies
-        #   shark            one captured request body
-        #   googleapis.desc  full corpus schema DB
-        #   googleapis/      sidecars: hopcroft.rkyv, index.rkyv, proto/
+        # Layout written into grpconf2026/:
+        #   bob/app          the bobapp binary (places v1 + routes v2)
+        #   bob/log          the log with four anomalies
+        #   bob/shark        one captured request body
         #   beats/           every grpconf2026/beats/*.script
+        #   alice/           empty writable scratch directory for Alice's outputs
+        #
+        # googleapis is not included: $PROTOTEXT_GOOGLEAPIS_SET already provides it.
         #
         # The copy is guarded by a sentinel file recording the nix store path
         # that last populated the directory.  If it matches, skip everything to
         # avoid the overhead on every shell entry after the first.
         #
-        # grpconf2026/bob/ is gitignored, so nothing here touches the repo index.
-        local bob="$PWD/grpconf2026/bob"
+        # grpconf2026/{bob,beats,alice} are gitignored, so nothing here touches
+        # the repo index.
+        local stage="$PWD/grpconf2026"
+        local bob="$stage/bob"
         local sentinel="$bob/.demo-source"
         local demo="${grpconfDemo}"
         if [[ "$(cat "$sentinel" 2>/dev/null)" == "$demo" ]]; then
-          echo "[hook] demo: grpconf2026/bob/ up to date — skipping"
+          echo "[hook] demo: grpconf2026/ up to date — skipping"
           return
         fi
-        echo "[hook] demo: populating grpconf2026/bob/ from grpconf-demo"
-        rm -rf "$bob"
-        mkdir -p "$bob"
+        echo "[hook] demo: populating grpconf2026/ from grpconf-demo"
+        rm -rf "$bob" "$stage/beats"
+        mkdir -p "$bob" "$stage/beats" "$stage/alice"
         cp --no-preserve=mode "$demo/bin/bobapp" "$bob/app"
         cp --no-preserve=mode "$demo/log"        "$bob/log"
         cp --no-preserve=mode "$demo/shark"      "$bob/shark"
-        cp --no-preserve=mode "$demo/googleapis.desc" "$bob/googleapis.desc"
-        cp -r --no-preserve=mode "$demo/googleapis"   "$bob/googleapis"
-        cp -r --no-preserve=mode "$demo/beats"        "$bob/beats"
+        cp -r --no-preserve=mode "$demo/beats"/. "$stage/beats/"
         # Record which nix derivation populated the directory.
         echo "$demo" > "$sentinel"
-        echo "[hook] demo: grpconf2026/bob/ ready ($(du -sh "$bob" | cut -f1))"
+        echo "[hook] demo: grpconf2026/ ready ($(du -sh "$stage" | cut -f1) total)"
       }
 
       _hook_completions() {
