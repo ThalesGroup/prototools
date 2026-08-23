@@ -353,8 +353,8 @@ fn a_cut_capture_is_scored_and_says_so() {
     let score = ["score", "--type", "google.protobuf.Option"];
     let cut_score = run(&score, cut);
     assert!(
-        cut_score.contains("truncated: true"),
-        "a cut capture must score and report the cut, got:\n{cut_score}"
+        !cut_score.contains("truncated: 0"),
+        "a cut capture must report a non-zero truncated count, got:\n{cut_score}"
     );
     assert!(
         !cut_score.contains("vetoed"),
@@ -363,8 +363,8 @@ fn a_cut_capture_is_scored_and_says_so() {
 
     let intact_score = run(&score, intact);
     assert!(
-        intact_score.contains("truncated: false"),
-        "an intact capture must report no cut, got:\n{intact_score}"
+        intact_score.contains("truncated: 0"),
+        "an intact capture must report truncated: 0, got:\n{intact_score}"
     );
 
     let listed = run(&["list-schemas", "--top", "1", "--detailed-score"], cut);

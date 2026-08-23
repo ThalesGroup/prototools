@@ -165,10 +165,9 @@ pub struct InferredType {
     pub out_of_range: u64,
     pub non_canonical: u64,
     pub mismatches: u64,
-    /// The input ran out of bytes part-way through a token (spec 0310).  Not
-    /// one of the counters: everything above describes the bytes that did
-    /// arrive, and this says there were fewer of them than the writer sent.
-    pub truncated: bool,
+    /// Number of frames cut mid-stream (spec 0310, spec 0347).  Zero is the
+    /// normal case; suppressed in the score header when zero.
+    pub truncated: u64,
 }
 
 /// Outcome of attempting to infer the message type of a protobuf blob.
@@ -262,24 +261,33 @@ fn inferred_header(inferred: &InferredType) -> String {
     } else {
         inferred.score.to_string()
     };
-    // `truncated` appears only when set: it is a bool, not a counter, and a
-    // "truncated: false" on the head of every decode would be noise.
-    let cut = if inferred.truncated {
-        ", truncated"
+    let mut parts: Vec<String> = Vec::new();
+    if inferred.matches != 0 {
+        parts.push(format!("matched: {}", inferred.matches));
+    }
+    if inferred.unknowns != 0 {
+        parts.push(format!("unknown: {}", inferred.unknowns));
+    }
+    if inferred.out_of_range != 0 {
+        parts.push(format!("out_of_range: {}", inferred.out_of_range));
+    }
+    if inferred.non_canonical != 0 {
+        parts.push(format!("non_canonical: {}", inferred.non_canonical));
+    }
+    if inferred.mismatches != 0 {
+        parts.push(format!("mismatches: {}", inferred.mismatches));
+    }
+    if inferred.truncated != 0 {
+        parts.push(format!("truncated: {}", inferred.truncated));
+    }
+    let detail = if parts.is_empty() {
+        String::new()
     } else {
-        ""
+        format!("  ({})", parts.join(", "))
     };
     format!(
-        "# Type: {}\n# Score: {}  (matched: {}, unknown: {}, out_of_range: {}, \
-         non_canonical: {}, mismatches: {}{})\n\n",
-        inferred.fqdn,
-        score_str,
-        inferred.matches,
-        inferred.unknowns,
-        inferred.out_of_range,
-        inferred.non_canonical,
-        inferred.mismatches,
-        cut,
+        "# Type: {}\n# Score: {}{}\n\n",
+        inferred.fqdn, score_str, detail,
     )
 }
 
@@ -1134,10 +1142,8 @@ fn run_score(
         out_of_range: u64,
         non_canonical: u64,
         mismatches: u64,
-        /// The input ran out of bytes part-way through a token (spec 0310).
-        /// Last, because it is the mildest charge and it is not a counter:
-        /// the counters above describe only the bytes that arrived.
-        truncated: bool,
+        /// Number of frames cut mid-stream (spec 0310, spec 0347).
+        truncated: u64,
     }
 
     #[derive(Serialize)]

@@ -391,7 +391,7 @@ fn a_cut_range_says_so_and_still_shows_its_terms() {
 
     let b = inferred_breakdown(&payload, "Msg0", graph.graph(), true).expect("a root type");
     assert!(!b.vetoed, "a cut is not a contradiction");
-    assert!(b.truncated);
+    assert!(b.truncated > 0);
     assert_eq!(b.matches, 1, "the field before the cut still counts");
 
     let popup = Popup {
@@ -410,8 +410,8 @@ fn a_cut_range_says_so_and_still_shows_its_terms() {
         .unwrap_or_else(|| panic!("the box must say the range was cut: {lines:?}"));
     assert!(cut.text.contains("-5"), "with its weight: {cut:?}");
     assert!(
-        !cut.text.contains('×'),
-        "and without a count, since it is a bool: {cut:?}"
+        cut.text.contains('×'),
+        "and with a count, since truncated is now u64: {cut:?}"
     );
     let score = &lines[1].text;
     assert!(

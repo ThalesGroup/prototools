@@ -618,7 +618,7 @@ mod tests {
                 e.non_canonical,
                 e.out_of_range,
             );
-            assert!(!e.truncated, "record at {start}: `Scan` cannot set this");
+            assert_eq!(e.truncated, 0, "record at {start}: `Scan` cannot set this");
             assert_eq!(e.termination, end - start, "record at {start}");
         }
     }

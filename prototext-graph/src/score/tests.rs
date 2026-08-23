@@ -209,7 +209,7 @@ fn score_coefficients_rank_by_suspicion() {
             non_canonical: 0,
             mismatches: 0,
             vetoed: false,
-            truncated: false,
+            truncated: 0,
             termination: 0,
         };
         f(&mut s);
@@ -217,7 +217,7 @@ fn score_coefficients_rank_by_suspicion() {
     };
 
     let matched = one(|s| s.matches = 1);
-    let cut = one(|s| s.truncated = true);
+    let cut = one(|s| s.truncated = 1);
     let unknown = one(|s| s.unknowns = 1);
     let oor = one(|s| s.out_of_range = 1);
     let non_canon = one(|s| s.non_canonical = 1);
@@ -2688,7 +2688,7 @@ fn a_cut_tail_scores_instead_of_vetoing() {
 
     let intact = score_entry(&whole, &g, "Outer");
     assert!(!intact.vetoed);
-    assert!(!intact.truncated);
+    assert_eq!(intact.truncated, 0);
     assert_eq!(intact.matches, 4, "three outer fields and `child.value`");
 
     // Drop the last two bytes of `child`'s payload, so its declared length
@@ -2703,7 +2703,7 @@ fn a_cut_tail_scores_instead_of_vetoing() {
 
     let ran_out = score_entry_opts(cut, &g, "Outer", &cut_opts());
     assert!(!ran_out.vetoed, "a cut capture is not a wrong file");
-    assert!(ran_out.truncated);
+    assert!(ran_out.truncated > 0);
     assert_eq!(
         ran_out.matches, 2,
         "the two fields before the cut still count; `child` does not"
@@ -2738,7 +2738,7 @@ fn only_the_ran_out_sites_are_demoted() {
         s.vetoed,
         "a length that overruns a declared parent end is still a veto"
     );
-    assert!(!s.truncated);
+    assert_eq!(s.truncated, 0);
 }
 
 /// Spec 0310 S5. The cut frame runs no cardinality pass, so a `required`
@@ -2756,7 +2756,7 @@ fn a_cut_frame_charges_no_absent_required_field() {
 
     let s = score_entry_opts(cut, &g, "Outer", &cut_opts());
     assert!(!s.vetoed);
-    assert!(s.truncated);
+    assert!(s.truncated > 0);
     assert_eq!(
         s.mismatches, 0,
         "a frame that did not end cannot report a field as absent"
@@ -2794,7 +2794,7 @@ fn a_varint_overflow_before_the_end_is_not_a_cut() {
 
     let s = score_entry_opts(&pb, &g, "Outer", &cut_opts());
     assert!(s.vetoed, "an overlong varint is impossible, not incomplete");
-    assert!(!s.truncated);
+    assert_eq!(s.truncated, 0);
 }
 
 // ── Spec 0313: a record ends at its last clean boundary ──────────────────────
@@ -2858,7 +2858,7 @@ fn a_scan_never_sets_truncated() {
     pb.truncate(pb.len() - 2); // ...and leaves three
 
     let r = score_entry_opts(&pb, &g, "Rec", &scan_opts());
-    assert!(!r.truncated, "unreachable under `Scan`, by N1");
+    assert_eq!(r.truncated, 0, "unreachable under `Scan`, by N1");
     assert!(!r.vetoed, "an overrun reports the clean prefix instead");
     assert_eq!(r.termination, 2);
     assert_eq!(r.matches, 1);

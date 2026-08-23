@@ -72,23 +72,11 @@ pub struct EntryScore<'g> {
     /// never reaches here.
     pub mismatches: u64,
     pub vetoed: bool,
-    /// The range ran out of bytes part-way through a token, and the caller
-    /// had declared (via [`ScoringOpts::end_undeclared`]) that its end is
-    /// where the bytes end — so this is a cut capture rather than a lie
-    /// told by a length prefix, and is scored instead of vetoed
-    /// (spec 0310 S2).
-    ///
-    /// A `bool` rather than a counter: the sites that set it return
-    /// immediately, so it can be set at most once per walk, and a count
-    /// that is only ever 0 or 1 invites a reader to sum it.
-    ///
-    /// It also carries what the demotion took away. Before spec 0310,
-    /// `vetoed` was the only way a caller could tell that a reading was
-    /// incomplete; a truncated entry is no longer vetoed, so *this* is now
-    /// the "the counters below describe only part of the record" flag.
-    /// Unlike `vetoed`, the counters remain meaningful: everything before
-    /// the cut was read normally.
-    pub truncated: bool,
+    /// Counts the number of distinct frames (nodes) that were cut rather than
+    /// vetoed (spec 0310 S2, spec 0347 S1).  Each `cut_or_veto` call that
+    /// chooses the cut path increments by 1.  A blob with two truncated
+    /// sub-messages scores −10 for truncation, not −5.
+    pub truncated: u64,
     /// Byte offset at which this root stopped consuming (spec 0238 S14).
     ///
     /// Under [`Policy::Scan`] that is the termination offset — the first byte
@@ -126,15 +114,13 @@ impl EntryScore<'_> {
     /// evidence about the *capture* and about nothing else: it says nothing
     /// about the writer and nothing about whether the schema fits. Not zero,
     /// because scores are compared across ranges and a cut reading is
-    /// provisional in a way a complete one is not. **Five** because a fixed
-    /// constant is self-scaling against the evidence — it is the number of
-    /// matched fields a cut range must show before it scores positive at
-    /// all, so a 20 KB capture missing its last record is charged noise
-    /// while a range cut after one tag goes negative.
+    /// provisional in a way a complete one is not. **Five** per truncated
+    /// node (spec 0347 S1): a message with two cut sub-messages is charged
+    /// −10, not −5.
     ///
-    /// Within one candidate list the charge is levied once per range on
-    /// every survivor equally, so it cannot reorder anything; its only
-    /// effects are on comparisons *between* ranges.
+    /// Within one candidate list the charge is levied equally on every
+    /// survivor, so it cannot reorder within a range; its effects are on
+    /// comparisons *between* ranges.
     pub fn score(&self) -> i64 {
         self.matches as i64
             - 5 * self.truncated as i64
@@ -621,7 +607,7 @@ pub fn score_subset<'g>(
             non_canonical: 0,
             mismatches: 0,
             vetoed: false,
-            truncated: false,
+            truncated: 0,
             // Overwritten only by an S12 termination, so "ran to the end" is
             // the value a root keeps by not stopping.
             termination: pb.len(),
@@ -1248,8 +1234,14 @@ fn cut_or_veto(active: &mut Vec<ActiveEntry>, ws: &mut WalkState, cut: bool, rea
     }
     for ae in active.iter_mut() {
         flush_pending(ae, ws.scores);
+        // Spec 0346: the frame ended (bytes ran out), so occurrences are
+        // complete for what was actually consumed. Charge cardinality now
+        // before the ActiveEntry is destroyed by active.clear() below.
+        // charge_absent=false: spec 0310 S5, a cut frame may have had its
+        // required field removed by the cut — do not penalise that.
+        apply_cardinality_multi(ws.graph, ae, ws.scores, false);
         for &e in &ae.entries {
-            ws.scores[e as usize].truncated = true;
+            ws.scores[e as usize].truncated += 1;
         }
     }
     active.clear();
@@ -1318,10 +1310,16 @@ fn propagate_vetoes(active: &mut Vec<ActiveEntry>, ws: &mut WalkState, since: u6
 /// `ActiveEntry` — rather than binary-searching the whole 1.37 MB table for
 /// where that run starts. This call site was the one 0293 left behind; the
 /// search it drops was 1.4% of a googleapis startup.
+///
+/// `charge_absent`: when true, a required field with count 0 charges
+/// `mismatches`.  Pass false on the cut path (spec 0310 S5: a cut frame did
+/// not end, so an absent required field may simply have been removed by the
+/// cut and must not be penalised).
 fn apply_cardinality_multi(
     graph: &ArchivedCompiledGraph,
     ae: &ActiveEntry,
     scores: &mut [EntryScore],
+    charge_absent: bool,
 ) {
     let t = &graph.transitions;
     let start = ae.trans_offset as usize;
@@ -1343,8 +1341,10 @@ fn apply_cardinality_multi(
             }
             1 => {
                 if count == 0 {
-                    for &e in &ae.entries {
-                        scores[e as usize].mismatches += 1;
+                    if charge_absent {
+                        for &e in &ae.entries {
+                            scores[e as usize].mismatches += 1;
+                        }
                     }
                 } else if count > 1 {
                     for &e in &ae.entries {
@@ -1581,7 +1581,7 @@ fn score_message_multi_inner(
                     return buflen;
                 }
                 for ae in active.iter() {
-                    apply_cardinality_multi(ws.graph, ae, ws.scores);
+                    apply_cardinality_multi(ws.graph, ae, ws.scores, true);
                 }
             }
             return pos;
@@ -1692,7 +1692,7 @@ fn score_message_multi_inner(
                 // would instead judge it against occurrences polluted by the
                 // record that follows.
                 flush_pending(ae, ws.scores);
-                apply_cardinality_multi(ws.graph, ae, ws.scores);
+                apply_cardinality_multi(ws.graph, ae, ws.scores, true);
                 for &e in &ae.entries {
                     ws.scores[e as usize].termination = tag_start;
                 }
@@ -1894,6 +1894,18 @@ fn score_message_multi_inner(
                 }
 
                 let Some(end) = payload_end(pos, lr.value, buflen) else {
+                    // Spec 0346: the tag and length prefix were successfully
+                    // read, so the field number is known. Record the
+                    // occurrence for Found entries so that apply_cardinality_multi
+                    // (called inside cut_or_veto) counts it — matching what
+                    // the renderer annotates as repeated_singular.
+                    if end_undeclared {
+                        for ae in active.iter_mut() {
+                            if matches!(ae.verdict, Verdict::Found(_, _)) {
+                                record_occurrence(&mut ae.occurrences, field_number as u32);
+                            }
+                        }
+                    }
                     cut_or_veto(
                         active,
                         ws,
@@ -2271,7 +2283,7 @@ fn score_message_multi_inner(
                         return buflen;
                     }
                     for ae in active.iter() {
-                        apply_cardinality_multi(ws.graph, ae, ws.scores);
+                        apply_cardinality_multi(ws.graph, ae, ws.scores, true);
                     }
                     return pos;
                 }
@@ -2376,7 +2388,7 @@ mod set_vetoed_tests {
             non_canonical: 0,
             mismatches: 0,
             vetoed: false,
-            truncated: false,
+            truncated: 0,
             termination: 0,
         }
     }

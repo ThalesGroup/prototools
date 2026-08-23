@@ -249,16 +249,12 @@ impl ScoreBreakdown {
             .filter(|(n, _, _)| *n > 0)
             .map(|(n, label, weight)| format!("{n:>5} × {weight:<+4} {label}"))
             .collect();
-        // Spec 0310 S3. Last, because it is the mildest charge and the
-        // box reads worst-last — and without a count, because
-        // `truncated` is a bool: "1 ×" would invite the reader to
-        // wonder what two of them would mean. The weight still lands in
-        // the same column as every other term's, so the terms still
-        // visibly sum to the score printed above them.
-        if self.truncated {
+        // Spec 0310 S3 / spec 0347 S1. Last because it is the mildest
+        // charge and the box reads worst-last.
+        if self.truncated > 0 {
             out.push(format!(
-                "{:>5}   {:<4} the bytes ran out before the end",
-                "", -5
+                "{:>5} × {:<4} the bytes ran out ({} node(s))",
+                self.truncated, -5, self.truncated
             ));
         }
         out

@@ -146,7 +146,7 @@ pub struct ScoreBreakdown {
     /// token. Unlike `vetoed`, the counts above remain meaningful —
     /// everything before the cut was read normally; what is unknown is
     /// only what the cut removed.
-    pub truncated: bool,
+    pub truncated: u64,
 }
 
 impl ScoreBreakdown {
