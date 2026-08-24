@@ -3289,7 +3289,10 @@ fn shadowed_leaf_app() -> App {
     use prost_types::field_descriptor_proto::{Label, Type};
     let fds = proto3_fds(
         "shadow_render.proto",
-        vec![message("Msg", vec![field("x", 1, Label::Optional, Type::Int32)])],
+        vec![message(
+            "Msg",
+            vec![field("x", 1, Label::Optional, Type::Int32)],
+        )],
     );
     // Two occurrences of field 1 (varint): value 10, value 20.
     let blob = vec![0x08u8, 0x0A, 0x08, 0x14];
@@ -3343,9 +3346,16 @@ fn hollow_anomaly_glyph_for_shadowed_leaf() {
     // The filled diamond must not appear for the shadowed leaf's row.
     // (It may appear on the winning occurrence's row which is NonCanonical.)
     let shadowed_row = app
-        .visible_row_of_line(app.document_lines().iter().position(|l| l.contains("x: 10")).unwrap_or(0))
+        .visible_row_of_line(
+            app.document_lines()
+                .iter()
+                .position(|l| l.contains("x: 10"))
+                .unwrap_or(0),
+        )
         .unwrap_or(0) as u16;
-    let filled_on_shadowed_row = filled.iter().any(|&(_, y, _)| y == app.main_area.y + shadowed_row);
+    let filled_on_shadowed_row = filled
+        .iter()
+        .any(|&(_, y, _)| y == app.main_area.y + shadowed_row);
     assert!(
         !filled_on_shadowed_row,
         "shadowed leaf must not show a filled diamond ◆ on its own row"
@@ -3357,50 +3367,21 @@ fn hollow_anomaly_glyph_for_shadowed_leaf() {
 #[test]
 fn filled_anomaly_glyph_for_non_canonical_leaf() {
     use crate::tui::render;
-    let mut app =
-        sibling_leaves_app(&["x: 1  #@ varint; val_ohb: 3", "y: 2  #@ varint"]);
+    let mut app = sibling_leaves_app(&["x: 1  #@ varint; val_ohb: 3", "y: 2  #@ varint"]);
     app.theme = ThemeKind::Dark;
     let terminal = drawn_frame(&mut app, 120, 8);
     let filled = margin_cells(&app, &terminal, render::ANOMALY_GLYPH);
     let hollow = margin_cells(&app, &terminal, render::HOLLOW_ANOMALY_GLYPH);
-    assert!(!filled.is_empty(), "non-canonical leaf must show filled diamond ◆");
-    assert!(hollow.is_empty(), "non-canonical leaf must not show hollow diamond ◇");
-}
-
-/// Spec 0349 S8/S9 / test-plan item 9: a NonCanonical node's cursor bar is
-/// drawn in the dimmed amber, not the full amber.
-#[test]
-fn bar_color_is_dimmed() {
-    use crate::node_status::Status;
-    let full_amber =
-        crate::theme::status_color(Status::NonCanonical, ThemeKind::Dark).unwrap();
-    let dimmed_amber =
-        crate::theme::bar_status_color(Status::NonCanonical, ThemeKind::Dark).unwrap();
-
-    assert_ne!(
-        full_amber, dimmed_amber,
-        "bar color must differ from the full status color"
+    assert!(
+        !filled.is_empty(),
+        "non-canonical leaf must show filled diamond ◆"
     );
-    // Verify the bar cells on a bracketed NonCanonical node use the dimmed color.
-    let mut app = sibling_leaves_app(&["x: 1  #@ varint; val_ohb: 3"]);
-    app.theme = ThemeKind::Dark;
-    // Wrap in a parent so there is a bar to draw.
-    // (sibling_leaves_app gives flat leaves; use the deep fixture instead.)
-    // Just verify the theme function contract: dimmed != full, dimmed is Some.
-    assert!(dimmed_amber != full_amber);
+    assert!(
+        hollow.is_empty(),
+        "non-canonical leaf must not show hollow diamond ◇"
+    );
 }
 
-/// Spec 0349 S8 / test-plan item 10: Shadowed and NonCanonical produce the
-/// same bar color (same amber hue, both dimmed).
-#[test]
-fn shadowed_bar_color_matches_non_canonical_bar_color() {
-    use crate::node_status::Status;
-    for theme in [ThemeKind::Dark, ThemeKind::Light] {
-        let shadowed = crate::theme::bar_status_color(Status::Shadowed, theme);
-        let non_canonical = crate::theme::bar_status_color(Status::NonCanonical, theme);
-        assert_eq!(
-            shadowed, non_canonical,
-            "Shadowed and NonCanonical must have the same bar color on {theme:?}"
-        );
-    }
-}
+// bar_color_is_dimmed and shadowed_bar_color_matches_non_canonical_bar_color
+// live in theme.rs where bar_status_color_in is in scope, so they can test
+// the RGB path explicitly regardless of whether the terminal supports RGB.

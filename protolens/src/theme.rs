@@ -2266,4 +2266,36 @@ mod tests {
     fn parse_xtgettcap_response_false_on_garbage() {
         assert!(!parse_xtgettcap_response("not a response"));
     }
+
+    /// Spec 0349 S8 / test-plan item 9: the bar color is dimmer than the
+    /// full status color (tested against the RGB palette explicitly, since
+    /// ANSI-16 has no dimmed amber and the Nix sandbox has no COLORTERM).
+    #[test]
+    fn bar_color_is_dimmed() {
+        use crate::node_status::Status;
+        for theme in [ThemeKind::Dark, ThemeKind::Light] {
+            let full = status_color_in(Status::NonCanonical, theme, true).unwrap();
+            let dimmed = bar_status_color_in(Status::NonCanonical, theme, true).unwrap();
+            assert_ne!(
+                full, dimmed,
+                "bar color must differ from full status color on {theme:?}",
+            );
+        }
+    }
+
+    /// Spec 0349 S8 / test-plan item 10: Shadowed and NonCanonical produce
+    /// identical bar colors (same amber, same dimming).
+    #[test]
+    fn shadowed_bar_color_matches_non_canonical_bar_color() {
+        use crate::node_status::Status;
+        for theme in [ThemeKind::Dark, ThemeKind::Light] {
+            for rgb in [true, false] {
+                assert_eq!(
+                    bar_status_color_in(Status::Shadowed, theme, rgb),
+                    bar_status_color_in(Status::NonCanonical, theme, rgb),
+                    "Shadowed and NonCanonical bar colors must match on {theme:?} rgb={rgb}",
+                );
+            }
+        }
+    }
 }

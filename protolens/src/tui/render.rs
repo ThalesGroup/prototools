@@ -1668,10 +1668,18 @@ impl App {
         let blank = || Span::raw(" ");
         match display {
             heat_cue::HeatDisplay::Cue(c) => {
-                // Spec 0336 S4: green for a mismatch (the call to action),
-                // blue for a tie (optimal but not urgent).
+                // Spec 0336 S4 / 0351 S1: green mismatch when the best
+                // candidate scores well (best >= 0, a call to action);
+                // amber mismatch when the best candidate is itself a poor
+                // fit (best < 0); blue for a tie (optimal but not urgent).
                 let hue = match c.kind {
-                    heat_cue::HeatCueKind::Mismatch { .. } => theme::HeatHue::Green,
+                    heat_cue::HeatCueKind::Mismatch { best, .. } => {
+                        if best >= 0 {
+                            theme::HeatHue::Green
+                        } else {
+                            theme::HeatHue::Amber
+                        }
+                    }
                     heat_cue::HeatCueKind::Tie { .. } => theme::HeatHue::Blue,
                 };
                 let Some(style) = theme::heat_style(c.t, hue, self.theme) else {

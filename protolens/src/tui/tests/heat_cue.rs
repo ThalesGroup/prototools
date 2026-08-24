@@ -1850,3 +1850,161 @@ fn the_box_names_the_anchor() {
         "unmatched sentinel must not claim a numeric anchor: {lines2:?}"
     );
 }
+
+// ---------------------------------------------------------------------
+// Spec 0351: a poor fit is not a call to action
+// ---------------------------------------------------------------------
+
+/// Spec 0351 test 1: a `Mismatch` cue with a negative `best` score
+/// draws an amber square and an amber suffix word.
+#[test]
+fn a_negative_best_mismatch_is_amber() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.heat_cues = HeatCueMode::Findings;
+    let range = extract::message_payload_range(&app.blob, &app.tree[0].span.raw_range);
+    // best(-35) > current(-100) → Mismatch fires; best is negative → amber.
+    seed_range_heat_entry(
+        &mut app,
+        range.start,
+        Some(-35),
+        1,
+        "google.protobuf.DescriptorProto",
+        Some(-100),
+    );
+
+    let cells = drawn_header_cells(&mut app);
+    let row: String = cells.iter().map(|(s, _)| s.as_str()).collect();
+    assert!(
+        row.contains("[-100/-35]"),
+        "suffix must show the scores: {row:?}"
+    );
+
+    let amber_label = theme::heat_label_style(theme::HeatHue::Amber, app.theme).fg;
+    let green_label = theme::heat_label_style(theme::HeatHue::Green, app.theme).fg;
+    // Square is at t=0 (floor), so its color is heat_color(0.0, hue, theme).
+    let amber_floor = Some(theme::heat_color(0.0, theme::HeatHue::Amber, app.theme));
+    let green_floor = Some(theme::heat_color(0.0, theme::HeatHue::Green, app.theme));
+    assert_ne!(amber_label, green_label, "amber and green must be distinct");
+    assert_ne!(
+        amber_floor, green_floor,
+        "floor colors must also be distinct"
+    );
+    assert_eq!(
+        drawn_suffix_style(&cells, "[-100/-35]").map(|s| s.fg),
+        Some(amber_label),
+        "negative best: suffix must be flat amber, not green: {row:?}"
+    );
+    assert_eq!(
+        cells[0].1.fg, amber_floor,
+        "negative best: square must be amber at the floor, not green: {row:?}"
+    );
+}
+
+/// Spec 0351 test 2: a `Mismatch` cue with `best == 0` draws green —
+/// zero is not negative, so it is not a poor fit.
+#[test]
+fn a_zero_best_mismatch_is_green() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.heat_cues = HeatCueMode::Findings;
+    let range = extract::message_payload_range(&app.blob, &app.tree[0].span.raw_range);
+    // current=None (vetoed) so best(0) > current triggers Mismatch; best=0 → green.
+    seed_range_heat_entry(
+        &mut app,
+        range.start,
+        Some(0),
+        1,
+        "google.protobuf.DescriptorProto",
+        None,
+    );
+
+    let cells = drawn_header_cells(&mut app);
+    let row: String = cells.iter().map(|(s, _)| s.as_str()).collect();
+    assert!(
+        row.contains("[-/0]"),
+        "suffix must show the scores: {row:?}"
+    );
+
+    let amber = theme::heat_label_style(theme::HeatHue::Amber, app.theme).fg;
+    let green = theme::heat_label_style(theme::HeatHue::Green, app.theme).fg;
+    assert_eq!(
+        drawn_suffix_style(&cells, "[-/0]").map(|s| s.fg),
+        Some(green),
+        "zero best: suffix must be flat green, not amber: {row:?}"
+    );
+    assert_ne!(cells[0].1.fg, amber, "zero best: square must not be amber");
+}
+
+/// Spec 0351 test 3: a `Mismatch` cue with a positive `best` score
+/// draws green — existing behavior pinned.
+#[test]
+fn a_positive_best_mismatch_is_green() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.heat_cues = HeatCueMode::Findings;
+    let range = extract::message_payload_range(&app.blob, &app.tree[0].span.raw_range);
+    // best(50) > current(10) → Mismatch; best >= 0 → green.
+    seed_range_heat_entry(
+        &mut app,
+        range.start,
+        Some(50),
+        1,
+        "google.protobuf.DescriptorProto",
+        Some(10),
+    );
+
+    let cells = drawn_header_cells(&mut app);
+    let row: String = cells.iter().map(|(s, _)| s.as_str()).collect();
+    assert!(
+        row.contains("[10/50]"),
+        "suffix must show the scores: {row:?}"
+    );
+
+    let amber = theme::heat_label_style(theme::HeatHue::Amber, app.theme).fg;
+    let green = theme::heat_label_style(theme::HeatHue::Green, app.theme).fg;
+    assert_eq!(
+        drawn_suffix_style(&cells, "[10/50]").map(|s| s.fg),
+        Some(green),
+        "positive best: suffix must be flat green: {row:?}"
+    );
+    assert_ne!(
+        cells[0].1.fg, amber,
+        "positive best: square must not be amber"
+    );
+}
+
+/// Spec 0351 test 4: a `Tie` cue is blue regardless of the score —
+/// spec 0351 G4 leaves the Tie path untouched.
+#[test]
+fn a_tie_is_always_blue() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.heat_cues = HeatCueMode::Findings;
+    let range = extract::message_payload_range(&app.blob, &app.tree[0].span.raw_range);
+    // Two candidates share the top score — tie.
+    seed_range_heat_entry(
+        &mut app,
+        range.start,
+        Some(50),
+        2,
+        "google.protobuf.DescriptorProto",
+        Some(50),
+    );
+
+    let cells = drawn_header_cells(&mut app);
+    let row: String = cells.iter().map(|(s, _)| s.as_str()).collect();
+    assert!(
+        row.contains("[2@50]"),
+        "tie suffix must be present: {row:?}"
+    );
+
+    let blue = theme::heat_label_style(theme::HeatHue::Blue, app.theme).fg;
+    let amber = theme::heat_label_style(theme::HeatHue::Amber, app.theme).fg;
+    assert_eq!(
+        drawn_suffix_style(&cells, "[2@50]").map(|s| s.fg),
+        Some(blue),
+        "tie suffix must be flat blue: {row:?}"
+    );
+    assert_ne!(cells[0].1.fg, amber, "tie square must not be amber");
+}
