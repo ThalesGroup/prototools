@@ -261,7 +261,18 @@ impl App {
                     .iter()
                     .find(|e| e.origin == origin)
                     .and_then(|e| e.name.clone());
-                (origin, self.effective_type(idx), entry_name)
+                // Spec 0236 S7: pre-fill --as with what the node is
+                // currently rendered as. When that is None (raw node
+                // with no override and no natural type), fall back to
+                // the type currently highlighted in the selection pane
+                // so the user sees what they navigated to.
+                let effective = self.effective_type(idx).or_else(|| {
+                    self.override_candidates
+                        .get(self.override_highlight)
+                        .map(|(fqdn, _)| fqdn.clone())
+                        .filter(|f| f != crate::decode::NONE_KEYWORD)
+                });
+                (origin, effective, entry_name)
             }
         };
         let node = self.origin_subject_node(&origin);

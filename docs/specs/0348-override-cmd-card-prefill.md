@@ -85,9 +85,16 @@ override: --card value must be optional, repeated, or required
 
 **S3.** In `prefill_override_cmd`, when the caller is the **selection
 pane** (i.e. the `entry.is_none()` branch — the management pane branch is
-excluded by N1), add `--card <cardinality>` to the pre-filled line
-immediately after `--as <type>`.  The value comes from
-`field_cardinality(idx)`, formatted as its lowercase string:
+excluded by N1):
+
+- Pre-fill `--as` with `effective_type(idx)` (what the node is currently
+  rendered as).  When `effective_type` returns `None` (raw node with no
+  active override and no natural type), fall back to the type currently
+  highlighted in the selection pane's candidate list, excluding the `none`
+  sentinel — so navigating to a type and pressing `o` always produces a
+  usable `--as` value.
+- Add `--card <cardinality>` immediately after `--as <type>`.  The value
+  comes from `field_cardinality(idx)`, formatted as its lowercase string:
 
 ```
 :override /path/to/node --as google.foo.Bar --card optional --field-name f4
@@ -167,13 +174,13 @@ Always showing `--card` is clearer.
 
 `OverrideEntry` gains `cardinality: Option<Cardinality>` (not persisted to
 YAML, per N3). `parse_override` recognises `--card optional/repeated/required`.
-`prefill_override_cmd` emits `--card <cardinality>` in the selection-pane
-branch; the management-pane branch is unchanged.  `run_override_cmd`
-normalises away a `--card` value that already matches `field_cardinality`
-(mirrors the `--field-name` normalization, spec 0236 S8), so `o`-then-`Enter`
-remains a no-op. Both `splice_override` and `warm_visible_override_wrappers`
-read the stored cardinality first and fall back to `field_cardinality`.
+`prefill_override_cmd` emits `--as <type>` and `--card <cardinality>` in the
+selection-pane branch; when `effective_type` returns `None` (raw node), `--as`
+falls back to the currently highlighted candidate (excluding `none`).
+The management-pane branch is unchanged. `run_override_cmd` normalises away a
+`--card` value that already matches `field_cardinality` (mirrors the
+`--field-name` normalization, spec 0236 S8), so `o`-then-`Enter` remains a
+no-op. Both `splice_override` and `warm_visible_override_wrappers` read the
+stored cardinality first and fall back to `field_cardinality`.
 
-One existing test (`o_prefills_the_applicable_entry_origin`) was broken by the
-first attempt (which stored `Some(Optional)` instead of normalising to `None`)
-and fixed by the normalization. All 1235 protolens tests pass.
+All 1235 protolens tests pass.
