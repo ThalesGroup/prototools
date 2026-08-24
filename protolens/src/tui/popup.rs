@@ -179,6 +179,9 @@ pub(super) struct Popup {
     /// Where it was asked for; flipped at the screen edges by
     /// `anchored_rect`, so a request rather than a position.
     pub(super) anchor: (u16, u16),
+    /// Optional border title, used by `Doc` bodies that want the token
+    /// promoted to the frame (e.g. the heat suffix).
+    pub(super) doc_title: Option<String>,
 }
 
 /// What the pointer is resting on (spec 0282 S1).
@@ -334,6 +337,18 @@ impl App {
     /// being memoized.
     fn score_body(&mut self, idx: usize) -> PopupBody {
         let Some(type_key) = self.current_type_key(idx) else {
+            // A raw `message` or `group` node: the reader is asking how
+            // well these bytes fit an unnamed message, not which named
+            // type fits best (that is already on the RHS heat cue).
+            // Score it as "message" directly rather than showing a
+            // candidate — the candidate info is redundant here.
+            if self.tree[idx].span.kind == NodeKind::Message {
+                return PopupBody::Score {
+                    breakdown: self.breakdown_of(idx, "message".to_string()),
+                    type_key: "message".to_string(),
+                    candidate: None,
+                };
+            }
             return self.candidate_body(idx);
         };
         PopupBody::Score {
@@ -387,7 +402,11 @@ impl App {
             return;
         }
         let body = self.score_body(idx);
-        self.popup = Some(Popup { body, anchor });
+        self.popup = Some(Popup {
+            body,
+            anchor,
+            doc_title: None,
+        });
     }
 
     /// `s` (spec 0280 S18): the same box for the node the caret is on,
@@ -589,21 +608,32 @@ impl App {
         // because the chrome's own clamping would cut from the bottom
         // and so drop the flaws first — exactly backwards.
         let lines = Self::popup_lines(popup, area.height.saturating_sub(2).max(1) as usize);
-        // Spec 0326 S5: the title is what stops a candidate's name from
-        // being read as the node's own type, so it is part of the
-        // box's width and not decoration clipped off at the edge.
-        let title = matches!(
-            popup.body,
+        // Spec 0326 S5: the candidate title is part of the box's width
+        // so it cannot be clipped off at the edge. For Score bodies the
+        // last segment of the type key is always shown as title; for Doc
+        // bodies `open_doc_popup` may supply one (e.g. the heat suffix
+        // token).
+        let title: Option<String> = match &popup.body {
             PopupBody::Score {
                 candidate: Some(_),
+                type_key,
                 ..
-            }
-        )
-        .then_some(CANDIDATE_TITLE);
+            } => Some(format!(
+                " {} — {} ",
+                type_key.rsplit('.').next().unwrap_or(type_key),
+                CANDIDATE_TITLE.trim()
+            )),
+            PopupBody::Score { type_key, .. } => Some(format!(
+                " {} ",
+                type_key.rsplit('.').next().unwrap_or(type_key)
+            )),
+            PopupBody::Doc(_) => popup.doc_title.clone(),
+            PopupBody::Wire(_) => None,
+        };
         let inner_width = lines
             .iter()
             .map(|l| l.text.chars().count())
-            .chain(title.map(|t| t.chars().count() + 2))
+            .chain(title.as_deref().map(|t| t.chars().count() + 2))
             .max()
             .unwrap_or(1)
             .max(1) as u16;

@@ -933,7 +933,7 @@ impl App {
         as_prototext: bool,
     ) -> Result<Vec<u8>, String> {
         let span = &self.tree[self.cursor].span;
-        if !span.is_message {
+        if span.kind != NodeKind::Message {
             return Err("export --descriptor: cursor node is not a message/group".to_string());
         }
         let message_name =

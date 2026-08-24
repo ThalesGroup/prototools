@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2025-2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
-// SPDX-FileCopyrightText: 2025-2026 THALES CLOUD SECURISE SAS
+// SPDX-FileCopyrightText: 2025, 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+// SPDX-FileCopyrightText: 2025, 2026 THALES CLOUD SECURISE SAS
 //
 // SPDX-License-Identifier: MIT
 
@@ -1349,6 +1349,30 @@ const WIRE_TYPE_MASK: u8 = 0b0000_0111;
 /// Bits 3-4 of `NodeSpan::wire_and_label`: the label.
 const LABEL_SHIFT: u32 = 3;
 
+/// The structural reading the renderer chose for a node (spec 0352).
+///
+/// Replaces `NodeSpan::is_message: bool` with a richer discriminant that
+/// fits in the same one byte. For `WT_LEN` nodes the renderer tries, in
+/// order (spec 0097): message parse → UTF-8 check → opaque bytes; the
+/// variant records which rung succeeded, surfacing the renderer's decision
+/// to consumers without requiring them to redo the work.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum NodeKind {
+    /// `WT_VARINT` — a base-128 integer.
+    Varint,
+    /// `WT_I32` — four bytes, little-endian.
+    Fixed32,
+    /// `WT_I64` — eight bytes, little-endian.
+    Fixed64,
+    /// `WT_LEN`, payload is valid UTF-8 (and did not parse as a message).
+    String,
+    /// `WT_LEN`, payload is opaque bytes (not valid UTF-8, not a message).
+    Bytes,
+    /// `WT_LEN` parsed as a nested message, or `WT_START_GROUP`.
+    Message,
+}
+
 /// One node's raw/text extent + metadata, recorded by `IndexingTextSink`
 /// (spec 0110 §3).
 ///
@@ -1393,7 +1417,7 @@ pub struct NodeSpan {
     /// Any/MessageSet-expanded wrapper node — the *resolved* type, which
     /// generally differs from the field's own declared type. `NO_FQDN` for
     /// scalar fields and any node whose type genuinely isn't known — this
-    /// is *not* a scalar/message discriminator (see `is_message`): a
+    /// is *not* a scalar/message discriminator (see `kind`): a
     /// message/group node with no resolved schema also has `type_fqdn:
     /// NO_FQDN`.
     ///
@@ -1428,7 +1452,7 @@ pub struct NodeSpan {
     ///
     /// The wire type is one of
     /// `crate::helpers::{WT_VARINT, WT_I64, WT_LEN, WT_START_GROUP,
-    /// WT_I32}`. Set independently of `is_message`/`type_fqdn`: a `LEN`
+    /// WT_I32}`. Set independently of `kind`/`type_fqdn`: a `LEN`
     /// field rendered as a scalar string/bytes still carries `WT_LEN`, so
     /// consumers can tell it apart from a genuinely non-recursable scalar
     /// (`WT_VARINT`/`WT_I64`/`WT_I32`) without re-parsing the wire tag
@@ -1456,14 +1480,19 @@ pub struct NodeSpan {
     /// none is known — which is every malformed node and every virtual
     /// wrapper, neither of which has a field the schema describes.
     pub wire_and_label: u8,
-    /// `true` for a nested message/group node (`begin_nested`/
-    /// `begin_virtual_nested`..`end_nested`), `false` for a scalar field
-    /// (`scalar_field`) — set independently of `type_fqdn`, which is
-    /// `NO_FQDN` for both a scalar *and* a schema-unresolved
-    /// message/group. This is the structural shape discriminator consumers
-    /// should use (e.g. `protolens`'s override-target validation);
-    /// `type_fqdn != NO_FQDN` alone is ambiguous (spec 0114 §1.2).
-    pub is_message: bool,
+    /// The structural reading the renderer chose for this node (spec 0352).
+    ///
+    /// Replaces `is_message: bool`. One byte, `#[repr(u8)]`, so the
+    /// 32-byte layout is unchanged. For `WT_LEN` nodes the renderer tries
+    /// message parse → UTF-8 check → opaque bytes (spec 0097); the variant
+    /// records which rung succeeded.
+    ///
+    /// Set independently of `type_fqdn`: a schema-unresolved message/group
+    /// has `type_fqdn: NO_FQDN` but `kind: NodeKind::Message`. This is the
+    /// structural shape discriminator consumers should use (e.g.
+    /// `protolens`'s override-target validation); `type_fqdn != NO_FQDN`
+    /// alone is ambiguous (spec 0114 §1.2).
+    pub kind: NodeKind,
 }
 
 /// Spec 0212 S8. An equality, not an upper bound: this number is quoted in
@@ -1515,7 +1544,7 @@ pub(super) struct IndexMark {
     text_start: usize,
     level: usize,
     type_fqdn: FqdnId,
-    is_message: bool,
+    kind: NodeKind,
     wire_type: u32,
     label: Label,
     /// `IndexingTextSink::raw_base` as it was *before* this node was
@@ -1648,6 +1677,32 @@ impl Sink for IndexingTextSink<'_> {
             ScalarValue::Fixed32(_) => WT_I32,
             ScalarValue::Bytes(_) | ScalarValue::Packed(_) => WT_LEN,
         };
+        // Spec 0352: derive NodeKind before `value` is moved. For Bytes
+        // payloads we apply the same UTF-8 check the inner sink uses, so
+        // the kind and the rendered annotation stay in sync.
+        let scalar_kind = match &value {
+            ScalarValue::Varint { .. } => NodeKind::Varint,
+            ScalarValue::Fixed32(_) => NodeKind::Fixed32,
+            ScalarValue::Fixed64(_) => NodeKind::Fixed64,
+            ScalarValue::Packed(_) => NodeKind::Bytes, // overridden per-element below
+            ScalarValue::Bytes(data) => match field_schema {
+                None => {
+                    if std::str::from_utf8(data).is_ok() {
+                        NodeKind::String
+                    } else {
+                        NodeKind::Bytes
+                    }
+                }
+                Some(fs) if fs.kind() == prost_reflect::Kind::String => {
+                    if std::str::from_utf8(data).is_ok() {
+                        NodeKind::String
+                    } else {
+                        NodeKind::Bytes // INVALID_STRING renders as bytes
+                    }
+                }
+                _ => NodeKind::Bytes,
+            },
+        };
         self.inner.scalar_field(
             field_number,
             field_schema,
@@ -1686,7 +1741,11 @@ impl Sink for IndexingTextSink<'_> {
                             text_range: narrow(text_start + i)..narrow(text_start + i + 1),
                             level: level as u16,
                             type_fqdn: NO_FQDN,
-                            is_message: false,
+                            kind: match elem_wire_type {
+                                WT_I32 => NodeKind::Fixed32,
+                                WT_I64 => NodeKind::Fixed64,
+                                _ => NodeKind::Varint,
+                            },
                             packed_record_start,
                             wire_and_label: NodeSpan::pack(
                                 elem_wire_type as u8,
@@ -1707,7 +1766,7 @@ impl Sink for IndexingTextSink<'_> {
             text_range: narrow(text_start)..narrow(text_end),
             level: level as u16,
             type_fqdn: NO_FQDN,
-            is_message: false,
+            kind: scalar_kind,
             packed_record_start: NO_PACKED_RECORD,
             wire_and_label: NodeSpan::pack(wire_type as u8, declared_label(field_schema)),
         });
@@ -1744,7 +1803,7 @@ impl Sink for IndexingTextSink<'_> {
             text_start,
             level,
             type_fqdn,
-            is_message: true,
+            kind: NodeKind::Message,
             wire_type,
             label: declared_label(field_schema),
             raw_base,
@@ -1763,7 +1822,7 @@ impl Sink for IndexingTextSink<'_> {
             text_start,
             level,
             type_fqdn,
-            is_message,
+            kind,
             wire_type,
             label,
             raw_base,
@@ -1778,7 +1837,7 @@ impl Sink for IndexingTextSink<'_> {
             text_range: narrow(text_start)..narrow(text_end),
             level: level as u16,
             type_fqdn,
-            is_message,
+            kind,
             packed_record_start: NO_PACKED_RECORD,
             wire_and_label: NodeSpan::pack(wire_type as u8, label),
         });
@@ -1821,7 +1880,7 @@ impl Sink for IndexingTextSink<'_> {
             text_start,
             level,
             type_fqdn: interned,
-            is_message: true,
+            kind: NodeKind::Message,
             // Always message-shaped; see `NodeSpan::wire_and_label`'s doc
             // comment.
             wire_type: WT_LEN,
@@ -1878,7 +1937,12 @@ impl Sink for IndexingTextSink<'_> {
             text_range: narrow(text_start)..narrow(text_start + 1),
             level: level as u16,
             type_fqdn: NO_FQDN,
-            is_message: false,
+            kind: match wire_type {
+                WT_I32 => NodeKind::Fixed32,
+                WT_I64 => NodeKind::Fixed64,
+                WT_VARINT => NodeKind::Varint,
+                _ => NodeKind::Bytes, // WT_LEN, WT_END_GROUP, InvalidTagType
+            },
             packed_record_start: NO_PACKED_RECORD,
             // `malformed` is handed no `field_schema`: an undecodable
             // field has no declared label to record.
@@ -1938,7 +2002,7 @@ mod tests {
                     packed_record_start: NO_PACKED_RECORD,
                     level: 0,
                     wire_and_label: NodeSpan::pack(wt as u8, label),
-                    is_message: false,
+                    kind: NodeKind::Varint,
                 };
                 assert_eq!(span.wire_type(), wt as u8, "wire type {wt}, {label:?}");
                 assert_eq!(span.label(), label, "wire type {wt}, {label:?}");

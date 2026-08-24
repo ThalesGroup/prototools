@@ -23,6 +23,7 @@ use std::path::Path;
 use prototext_core::helpers::{
     parse_varint, parse_wiretag, write_tag, WT_END_GROUP, WT_LEN, WT_START_GROUP,
 };
+use prototext_core::NodeKind;
 
 use crate::decode::{widen, TreeNode};
 
@@ -175,11 +176,11 @@ pub fn extract_bytes(
 ) -> Vec<u8> {
     match format {
         ExtractFormat::Binary => {
-            let is_message = node.span.is_message;
+            let is_message = node.span.kind == NodeKind::Message;
             extract_binary(blob, &node.span.raw_range, is_message).to_vec()
         }
         ExtractFormat::Text => {
-            let r = if node.span.is_message {
+            let r = if node.span.kind == NodeKind::Message {
                 message_text_range(&text_range)
             } else {
                 text_range
@@ -404,7 +405,7 @@ mod tests {
                 type_fqdn: NO_FQDN,
                 // Not exercising message-line stripping here — just
                 // header prepending — so left scalar-shaped.
-                is_message: false,
+                kind: NodeKind::Bytes,
                 packed_record_start: NO_PACKED_RECORD,
                 wire_and_label: NodeSpan::pack(WT_LEN as u8, Label::NoSchema),
             },
@@ -438,7 +439,7 @@ mod tests {
                 text_range: 0..3,
                 level: 0,
                 type_fqdn: fqdns.intern("google.protobuf.FileOptions"),
-                is_message: true,
+                kind: NodeKind::Message,
                 packed_record_start: NO_PACKED_RECORD,
                 wire_and_label: NodeSpan::pack(WT_LEN as u8, Label::NoSchema),
             },
@@ -476,7 +477,7 @@ mod tests {
                 text_range: 0..3,
                 level: 0,
                 type_fqdn: fqdns.intern("pkg.MyGroup"),
-                is_message: true,
+                kind: NodeKind::Message,
                 packed_record_start: NO_PACKED_RECORD,
                 wire_and_label: NodeSpan::pack(WT_START_GROUP as u8, Label::NoSchema),
             },

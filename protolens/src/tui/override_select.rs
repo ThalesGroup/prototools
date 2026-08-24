@@ -26,7 +26,7 @@ impl App {
         if span.packed_record_start != NO_PACKED_RECORD {
             return true;
         }
-        span.is_message
+        span.kind == NodeKind::Message
             || matches!(
                 u32::from(span.wire_type()),
                 WT_LEN | WT_VARINT | WT_I32 | WT_I64
@@ -96,10 +96,28 @@ impl App {
             .map(|i| self.overrides.entries()[i].r#type.clone())
             .or_else(|| {
                 let span = &self.tree[self.cursor].span;
-                if span.is_message {
+                if span.kind == NodeKind::Message {
                     self.fqdns.get(span.type_fqdn).map(|f| Some(f.to_owned()))
                 } else {
-                    self.natural_type(self.cursor).map(Some)
+                    // Spec 0352 S5: use natural_type when schema is known;
+                    // fall back to span.kind for schema-blind nodes so that
+                    // `t` on a `string` or `bytes` leaf opens on the right
+                    // keyword instead of falling to lexico row 0 (`none`).
+                    self.natural_type(self.cursor)
+                        .map(Some)
+                        .or_else(|| match span.kind {
+                            NodeKind::String => Some(Some("string".to_string())),
+                            NodeKind::Bytes => Some(Some("bytes".to_string())),
+                            // Spec 0352 S5 erratum: supply the first
+                            // wire-compatible keyword so `open_override_on_type`
+                            // falls through to lexicographic mode (primitive
+                            // keywords are never in the inferred list). The user
+                            // can press `i` to reach inferred mode if needed.
+                            NodeKind::Varint => Some(Some("int32".to_string())),
+                            NodeKind::Fixed32 => Some(Some("fixed32".to_string())),
+                            NodeKind::Fixed64 => Some(Some("fixed64".to_string())),
+                            NodeKind::Message => unreachable!(),
+                        })
                 }
             });
 
@@ -138,7 +156,13 @@ impl App {
         // remember `key` for `poll_pending_override_work` to retry as
         // the list arrives, rather than discarding it for
         // `Lexicographic`.
-        if self.override_candidates_pending || self.override_complete_pending {
+        //
+        // Exception: primitive keywords (`none`, `string`, `int32`, …)
+        // are never in the inferred list — only scored FQDNs are. For
+        // those, waiting is pointless; fall straight to `Lexicographic`
+        // where the keyword is guaranteed to appear.
+        let key_is_fqdn = !decode::is_override_keyword(&key) && key != decode::NONE_KEYWORD;
+        if key_is_fqdn && (self.override_candidates_pending || self.override_complete_pending) {
             self.override_seek_target = Some(key);
             return;
         }

@@ -216,7 +216,7 @@ impl App {
     pub(super) fn manage_entry_type_label(&self, idx: usize) -> String {
         let e = &self.overrides.entries()[idx];
         let Some(fqdn) = e.r#type.as_deref() else {
-            return "<raw / no type>".to_string();
+            return "(no type)".to_string();
         };
         if fqdn == decode::MESSAGE_SET_ITEM_FQDN {
             if let OverrideOrigin::Path { path } = &e.origin {

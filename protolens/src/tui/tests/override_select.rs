@@ -120,7 +120,7 @@ fn t_opens_the_override_pane_on_an_unresolved_message_node() {
             text_range: 0..2,
             level: 0,
             type_fqdn: NO_FQDN,
-            is_message: true,
+            kind: NodeKind::Message,
             packed_record_start: NO_PACKED_RECORD,
             wire_and_label: NodeSpan::pack(WT_LEN as u8, Label::NoSchema),
         },
@@ -140,7 +140,7 @@ fn t_opens_the_override_pane_on_an_unresolved_message_node() {
         // the `}` is derived from it.
         node_text: vec![Some(Box::from(lines[0].as_str()))],
         tree: vec![node],
-        root_type: "google.protobuf.Empty".to_string(),
+        root_type: Some("google.protobuf.Empty".to_string()),
         // Tag `0x0A` = field 1 << 3 | WT_LEN(2), length varint `0x00`
         // = 0, zero payload bytes — a real, `raw_range`-consistent
         // blob, needed since spec 0132's live preview now splices
@@ -172,7 +172,7 @@ fn t_opens_the_override_pane_on_a_varint_scalar_field() {
             text_range: 0..1,
             level: 0,
             type_fqdn: NO_FQDN,
-            is_message: false,
+            kind: NodeKind::Varint,
             packed_record_start: NO_PACKED_RECORD,
             wire_and_label: NodeSpan::pack(WT_VARINT as u8, Label::NoSchema),
         },
@@ -190,7 +190,7 @@ fn t_opens_the_override_pane_on_a_varint_scalar_field() {
         row_budget: None,
         node_text: vec![Some(Box::from(lines[0].as_str()))],
         tree: vec![node],
-        root_type: "test.Scalar".to_string(),
+        root_type: Some("test.Scalar".to_string()),
         // Tag `0x08` = field 1 << 3 | WT_VARINT(0), value varint `0x01`
         // — a real, `raw_range`-consistent blob, needed since spec 0132's
         // live preview now splices this node's contents at pane-open
@@ -335,7 +335,7 @@ fn t_opens_the_override_pane_on_a_length_delimited_scalar_field() {
         text_range: 0..1,
         level: 0,
         type_fqdn: NO_FQDN,
-        is_message: false,
+        kind: NodeKind::String,
         packed_record_start: NO_PACKED_RECORD,
         wire_and_label: NodeSpan::pack(WT_LEN as u8, Label::NoSchema),
     };
@@ -353,7 +353,7 @@ fn t_opens_the_override_pane_on_a_length_delimited_scalar_field() {
         user_folded: built.user_folded,
         node_text: built.node_text,
         tree: built.tree,
-        root_type: "test.Scalar".to_string(),
+        root_type: Some("test.Scalar".to_string()),
         arena,
         blob: Arc::new(Blob::unwrapped(vec![0x0A, 0x02, b'h', b'i'])),
         wrapper_offset: 0,
@@ -1704,7 +1704,7 @@ fn cold_cache_default_target_app() -> App {
             text_range: 0..2,
             level: 0,
             type_fqdn: NO_FQDN,
-            is_message: true,
+            kind: NodeKind::Message,
             packed_record_start: NO_PACKED_RECORD,
             wire_and_label: NodeSpan::pack(WT_LEN as u8, Label::NoSchema),
         },
@@ -1721,7 +1721,7 @@ fn cold_cache_default_target_app() -> App {
         row_budget: None,
         node_text: vec![Some(Box::from(lines[0].as_str()))],
         tree: vec![node],
-        root_type: "google.protobuf.Empty".to_string(),
+        root_type: Some("google.protobuf.Empty".to_string()),
         arena: crate::decode::arena_of(&blob),
         blob: Arc::new(Blob::unwrapped(blob)),
         wrapper_offset: 0,
@@ -2073,4 +2073,159 @@ fn opening_the_pane_forgets_both_rows() {
     );
     assert_eq!(app.override_highlight, 0);
     assert_eq!(toggle_order(&mut app).1, 0, "and neither order does");
+}
+
+/// Spec 0352 S5 erratum: `t` on a schema-blind `fixed64` node must open
+/// in lexicographic mode with the highlight on `fixed64`, not on a
+/// message FQDN from the inferred list (which fires a TYPE_MISMATCH
+/// preview immediately).
+#[test]
+fn t_on_fixed64_node_opens_on_fixed64() {
+    let lines: Vec<String> = vec!["value: 0x0000000000000001".to_string()];
+    // Tag `0x09` = field 1 << 3 | WT_I64(1), followed by 8 LE bytes.
+    let blob = vec![0x09u8, 1, 0, 0, 0, 0, 0, 0, 0];
+    let node = TreeNode {
+        span: NodeSpan {
+            field_number: 1,
+            raw_range: 0..9,
+            text_range: 0..1,
+            level: 0,
+            type_fqdn: NO_FQDN,
+            kind: NodeKind::Fixed64,
+            packed_record_start: NO_PACKED_RECORD,
+            wire_and_label: NodeSpan::pack(WT_I64 as u8, Label::NoSchema),
+        },
+        lines_total: 1,
+        lines_visible: 1,
+        rendered_as: NOT_RENDERED,
+    };
+    let decoded = Decoded {
+        total_lines: lines.len(),
+        stops: Vec::new(),
+        user_folded: FoldSet::default(),
+        row_budget: None,
+        node_text: vec![Some(Box::from(lines[0].as_str()))],
+        tree: vec![node],
+        root_type: None,
+        arena: crate::decode::arena_of(&blob),
+        blob: Arc::new(Blob::unwrapped(blob)),
+        wrapper_offset: 0,
+        root_candidates: Vec::new(),
+        fqdns: FqdnTable::new(),
+    };
+    let mut app = fixture_app(decoded, DescriptorContext::empty_for_test());
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+
+    assert_eq!(app.override_sort, SortMode::Lexicographic);
+    let highlighted = app
+        .override_candidates
+        .get(app.override_highlight)
+        .map(|(f, _)| f.as_str());
+    assert_eq!(
+        highlighted,
+        Some("fixed64"),
+        "highlight must be on 'fixed64'"
+    );
+}
+
+/// Spec 0352 S5 erratum: `t` on a schema-blind `fixed32` node must open
+/// in lexicographic mode with the highlight on `fixed32`.
+#[test]
+fn t_on_fixed32_node_opens_on_fixed32() {
+    let lines: Vec<String> = vec!["value: 0x00000001".to_string()];
+    // Tag `0x0D` = field 1 << 3 | WT_I32(5), followed by 4 LE bytes.
+    let blob = vec![0x0Du8, 1, 0, 0, 0];
+    let node = TreeNode {
+        span: NodeSpan {
+            field_number: 1,
+            raw_range: 0..5,
+            text_range: 0..1,
+            level: 0,
+            type_fqdn: NO_FQDN,
+            kind: NodeKind::Fixed32,
+            packed_record_start: NO_PACKED_RECORD,
+            wire_and_label: NodeSpan::pack(WT_I32 as u8, Label::NoSchema),
+        },
+        lines_total: 1,
+        lines_visible: 1,
+        rendered_as: NOT_RENDERED,
+    };
+    let decoded = Decoded {
+        total_lines: lines.len(),
+        stops: Vec::new(),
+        user_folded: FoldSet::default(),
+        row_budget: None,
+        node_text: vec![Some(Box::from(lines[0].as_str()))],
+        tree: vec![node],
+        root_type: None,
+        arena: crate::decode::arena_of(&blob),
+        blob: Arc::new(Blob::unwrapped(blob)),
+        wrapper_offset: 0,
+        root_candidates: Vec::new(),
+        fqdns: FqdnTable::new(),
+    };
+    let mut app = fixture_app(decoded, DescriptorContext::empty_for_test());
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+
+    assert_eq!(app.override_sort, SortMode::Lexicographic);
+    let highlighted = app
+        .override_candidates
+        .get(app.override_highlight)
+        .map(|(f, _)| f.as_str());
+    assert_eq!(
+        highlighted,
+        Some("fixed32"),
+        "highlight must be on 'fixed32'"
+    );
+}
+
+/// Spec 0352 S5 erratum: `t` on a schema-blind `varint` node must open
+/// in lexicographic mode with the highlight on `int32` (the first
+/// wire-compatible keyword for WT_VARINT).
+#[test]
+fn t_on_schema_blind_varint_node_opens_on_int32() {
+    let lines: Vec<String> = vec!["value: 1".to_string()];
+    // Tag `0x08` = field 1 << 3 | WT_VARINT(0), value varint `0x01`.
+    let blob = vec![0x08u8, 0x01];
+    let node = TreeNode {
+        span: NodeSpan {
+            field_number: 1,
+            raw_range: 0..2,
+            text_range: 0..1,
+            level: 0,
+            type_fqdn: NO_FQDN,
+            kind: NodeKind::Varint,
+            packed_record_start: NO_PACKED_RECORD,
+            wire_and_label: NodeSpan::pack(WT_VARINT as u8, Label::NoSchema),
+        },
+        lines_total: 1,
+        lines_visible: 1,
+        rendered_as: NOT_RENDERED,
+    };
+    let decoded = Decoded {
+        total_lines: lines.len(),
+        stops: Vec::new(),
+        user_folded: FoldSet::default(),
+        row_budget: None,
+        node_text: vec![Some(Box::from(lines[0].as_str()))],
+        tree: vec![node],
+        root_type: None,
+        arena: crate::decode::arena_of(&blob),
+        blob: Arc::new(Blob::unwrapped(blob)),
+        wrapper_offset: 0,
+        root_candidates: Vec::new(),
+        fqdns: FqdnTable::new(),
+    };
+    let mut app = fixture_app(decoded, DescriptorContext::empty_for_test());
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+
+    assert_eq!(app.override_sort, SortMode::Lexicographic);
+    let highlighted = app
+        .override_candidates
+        .get(app.override_highlight)
+        .map(|(f, _)| f.as_str());
+    assert_eq!(highlighted, Some("int32"), "highlight must be on 'int32'");
 }

@@ -22,7 +22,7 @@ use prost_reflect::prost_types::{DescriptorProto, FieldDescriptorProto, FileDesc
 use prost_reflect::{Cardinality, DescriptorPool, EnumDescriptor, MessageDescriptor};
 use prototext_core::serialize::render_text::NO_FQDN;
 use prototext_core::serialize::render_text::{
-    decode_and_render_indexed, DecodeRenderOpts, FqdnTable, Label as SpanLabel, NodeSpan,
+    decode_and_render_indexed, DecodeRenderOpts, FqdnTable, Label as SpanLabel, NodeKind, NodeSpan,
     NO_PACKED_RECORD,
 };
 use prototext_core::{
@@ -686,7 +686,7 @@ impl TreeNode {
                 packed_record_start: NO_PACKED_RECORD,
                 level: 0,
                 wire_and_label: NodeSpan::pack(0, SpanLabel::NoSchema),
-                is_message: false,
+                kind: NodeKind::Bytes,
             },
             lines_total: 0,
             lines_visible: 0,
@@ -711,7 +711,7 @@ impl TreeNode {
     /// answers wrongly.
     #[inline]
     pub fn is_bracketed(&self) -> bool {
-        self.span.is_message
+        self.span.kind == NodeKind::Message
     }
 }
 
@@ -1209,7 +1209,7 @@ pub(crate) fn overlay_spans(
         // Spec 0222 S1/S2: a bracketed node's own lines are its first
         // and its last, and the last is `indent + "}"` — derivable from
         // the first, so only the first is kept.
-        text[slot] = Some(if span.is_message {
+        text[slot] = Some(if span.kind == NodeKind::Message {
             debug_assert_eq!(
                 own_lines[own_lines.len() - 1],
                 derived_close(&own_lines[0]),
@@ -1234,7 +1234,7 @@ pub(crate) fn overlay_spans(
         // This cannot know the fold — it no longer holds the set — so it
         // writes the value that is right when nothing below is closed and
         // leaves the caller to settle the rest.
-        if span.is_message {
+        if span.kind == NodeKind::Message {
             bracketed.push(slot);
         }
         nodes[slot] = TreeNode {
@@ -1318,7 +1318,9 @@ pub struct Decoded {
     /// (spec 0216 S1). Unlike `tree` it does not depend on the type
     /// assignment, so it is built once here and never rebuilt.
     pub arena: Arena,
-    pub root_type: String,
+    /// The FQDN the root was decoded as, or `None` when no root-type
+    /// descriptor was resolved and the tree is rendered raw (spec 0353).
+    pub root_type: Option<String>,
     /// The wrapped blob actually decoded (spec 0114 §1.1): a real tag+length
     /// prefix (field 1, `WT_LEN`) ahead of the file's own bytes, so every
     /// `NodeSpan::raw_range` in `tree` is relative to *this* blob, not to
@@ -2176,7 +2178,7 @@ pub fn render_resolved(
 ) -> Result<Decoded, DecodeError> {
     let (root_type, wrapper_desc) = match &root_desc {
         Some(desc) => (
-            desc.full_name().to_string(),
+            Some(desc.full_name().to_string()),
             Some(register_wrapper(
                 ctx.pool_mut(),
                 1,
@@ -2188,7 +2190,7 @@ pub fn render_resolved(
                 Cardinality::Optional,
             )?),
         ),
-        None => ("<raw / no type>".to_string(), None),
+        None => (None, None),
     };
 
     let opts = DecodeRenderOpts {

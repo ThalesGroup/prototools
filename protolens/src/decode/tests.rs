@@ -212,11 +212,11 @@ fn named_types_the_root_and_raw_leaves_it_untyped() {
     let blob = [0x08u8, 0x05];
 
     let named = decode(wrapped(&blob), &mut ctx, RootType::Named("test.Inner"), 2).unwrap();
-    assert_eq!(named.root_type, "test.Inner");
+    assert_eq!(named.root_type, Some("test.Inner".to_string()));
     assert!(named.root_candidates.is_empty(), "no sweep for --type");
 
     let raw = decode(wrapped(&blob), &mut ctx, RootType::Raw, 2).unwrap();
-    assert_eq!(raw.root_type, "<raw / no type>");
+    assert_eq!(raw.root_type, None);
     assert!(raw.root_candidates.is_empty(), "no sweep for --raw");
 }
 
@@ -300,7 +300,7 @@ fn decode_without_type_override_or_graph_renders_raw_not_error() {
     let blob = [0x08u8, 0x05];
 
     let decoded = decode(wrapped(&blob), &mut ctx, RootType::Infer, 2).unwrap();
-    assert_eq!(decoded.root_type, "<raw / no type>");
+    assert_eq!(decoded.root_type, None);
     // The wrapper's own top-level field (the "virtual encompassing
     // message", spec 0114 §1.1) — level 0, no type resolved.
     let wrapper = decoded
@@ -308,7 +308,7 @@ fn decode_without_type_override_or_graph_renders_raw_not_error() {
         .iter()
         .find(|n| n.span.level == 0)
         .expect("tree must contain the wrapper's top-level node");
-    assert!(wrapper.span.is_message);
+    assert!(wrapper.span.kind == NodeKind::Message);
     assert_eq!(wrapper.span.type_fqdn, NO_FQDN);
 }
 
@@ -1193,7 +1193,7 @@ fn a_type_loaded_after_the_root_can_still_be_rendered_through() {
     let arena = build_arena(stray.as_ref()).expect("stray blob is walkable");
     let decoded = render_resolved(stray, &mut ctx, Some(desc), Vec::new(), arena, 2, None).unwrap();
 
-    assert_eq!(decoded.root_type, "t.Stray");
+    assert_eq!(decoded.root_type, Some("t.Stray".to_string()));
     assert!(
         decoded.document_lines().iter().any(|l| l.contains("s: 9")),
         "the freshly loaded type must render by name: {:?}",

@@ -194,7 +194,7 @@ fn resolve_export_fields_untyped_group_child_is_an_error() {
 fn export_descriptor_bytes_on_a_scalar_leaf_cursor_is_an_error() {
     let (mut app, _inner_idx, id_idx) = type_as_fixture();
     app.set_cursor(id_idx);
-    assert!(!app.tree[app.cursor].span.is_message);
+    assert!(app.tree[app.cursor].span.kind != NodeKind::Message);
     let err = app.export_descriptor_bytes(false).unwrap_err();
     assert!(err.contains("not a message/group"), "got: {err}");
 }

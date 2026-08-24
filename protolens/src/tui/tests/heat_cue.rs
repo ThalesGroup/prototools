@@ -930,7 +930,7 @@ fn a_node_with_no_question_stays_blank() {
     app.splash = false;
     app.heat_cues = HeatCueMode::All;
     let idx = 1;
-    app.tree_mut()[idx].span.is_message = false;
+    app.tree_mut()[idx].span.kind = NodeKind::Bytes;
     let label = app.tree[idx].span.label();
     app.tree_mut()[idx].span.wire_and_label = NodeSpan::pack(WT_START_GROUP as u8, label);
     assert!(!app.can_override(idx), "the hand-made shape is refused");

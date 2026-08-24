@@ -52,8 +52,8 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 
 use prototext_core::serialize::render_text::{
-    decode_and_render, decode_and_render_indexed, DecodeRenderOpts, FqdnId, FqdnTable, NodeSpan,
-    NO_PACKED_RECORD,
+    decode_and_render, decode_and_render_indexed, DecodeRenderOpts, FqdnId, FqdnTable, NodeKind,
+    NodeSpan, NO_PACKED_RECORD,
 };
 use prototext_core::Arena;
 // Every `NO_FQDN` outside `decode.rs` is in a test module building a
@@ -2316,7 +2316,10 @@ impl App {
             auto_folded.insert(slot);
         }
         let bounded_confirms = decoded.row_budget.is_some();
-        let header = format!("protolens — {blob_label} — {}", decoded.root_type);
+        let header = format!(
+            "protolens — {blob_label} — {}",
+            decoded.root_type.as_deref().unwrap_or("(no type)")
+        );
         // Spec 0216 S1: the arena is in level order and slot 0 is the
         // wrapper, so the document-order first node is the first slot —
         // no search for the node with no `doc_prev` is needed.
@@ -2325,13 +2328,9 @@ impl App {
         // was explicitly requested or inferred; if neither is available,
         // seed nothing at all — an untyped root has no override worth
         // recording, and the collection is legitimately empty until the
-        // user adds one. `decode::decode` uses the "<raw / no type>"
-        // sentinel for the "neither" case rather than an `Option`.
-        let root_override_type = if decoded.root_type == "<raw / no type>" {
-            None
-        } else {
-            Some(decoded.root_type.clone())
-        };
+        // user adds one. Spec 0353: `root_type` is now `Option<String>`,
+        // so `None` is the direct signal.
+        let root_override_type = decoded.root_type.clone();
         let mut overrides = override_pane::OverrideCollection::new();
         if root_override_type.is_some() {
             overrides.seed_root(root_override_type.clone());

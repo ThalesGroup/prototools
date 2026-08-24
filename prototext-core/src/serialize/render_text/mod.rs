@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2025-2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
-// SPDX-FileCopyrightText: 2025-2026 THALES CLOUD SECURISE SAS
+// SPDX-FileCopyrightText: 2025, 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+// SPDX-FileCopyrightText: 2025, 2026 THALES CLOUD SECURISE SAS
 //
 // SPDX-License-Identifier: MIT
 
@@ -29,7 +29,7 @@ use sink::{IndexingTextSink, MalformedKind, ScalarValue, Sink, TagFacts, TextSin
 pub use arena::{build_arena, Arena};
 pub use fqdn::{FqdnId, FqdnTable, NO_FQDN, UNINTERNED};
 pub use shape::Shape;
-pub use sink::{Label, NodeSpan, NO_PACKED_RECORD};
+pub use sink::{Label, NodeKind, NodeSpan, NO_PACKED_RECORD};
 
 // Magic prefix that identifies a textual prototext payload.
 const PROTOTEXT_MAGIC: &[u8] = b"#@ prototext:";
@@ -1255,7 +1255,7 @@ mod tests {
                 .iter()
                 .map(|&i| &bounded.spans[i as usize])
                 .collect();
-            assert!(stopped.iter().all(|s| s.is_message));
+            assert!(stopped.iter().all(|s| s.kind == NodeKind::Message));
             assert!(
                 stopped
                     .iter()

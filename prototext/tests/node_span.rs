@@ -12,7 +12,8 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use prototext_core::serialize::render_text::{
-    decode_and_render_indexed, DecodeRenderOpts, FqdnTable, NodeSpan, NO_FQDN, NO_PACKED_RECORD,
+    decode_and_render_indexed, DecodeRenderOpts, FqdnTable, NodeKind, NodeSpan, NO_FQDN,
+    NO_PACKED_RECORD,
 };
 use prototext_core::{
     clear_any_loader, parse_schema, schema_from_pool, set_any_loader, MessageDescriptor,
@@ -594,7 +595,7 @@ fn a_malformed_field_gets_its_own_one_line_span() {
         1,
         "every MalformedKind renders exactly one line"
     );
-    assert!(!malformed.is_message);
+    assert!(malformed.kind != NodeKind::Message);
     assert_eq!(malformed.type_fqdn, NO_FQDN);
     // The field's full extent, its tag included — the same convention
     // `scalar_field` uses, not the payload-only slice that gets rendered.
@@ -659,7 +660,7 @@ fn packed_repeated_field_gets_one_node_span_per_element() {
     let elems: Vec<&NodeSpan> = spans.iter().filter(|s| s.field_number == 1).collect();
     assert_eq!(elems.len(), 3, "expected one NodeSpan per packed element");
     for (i, elem) in elems.iter().enumerate() {
-        assert!(!elem.is_message);
+        assert!(elem.kind != NodeKind::Message);
         assert_eq!(
             elem.packed_record_start, 0,
             "packed_record_start must point at the record's own tag"
@@ -897,7 +898,7 @@ fn every_malformity_renders_a_line_owned_by_its_own_span() {
             line as u32..line as u32 + 1,
             "{marker}: a malformity is one line, so its span is scalar-shaped"
         );
-        assert!(!owner.is_message, "{marker}: not a message");
+        assert!(owner.kind != NodeKind::Message, "{marker}: not a message");
         assert_every_line_owned(marker, &text, &spans);
     }
 }

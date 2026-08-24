@@ -287,9 +287,9 @@ fn message_override_on_truncated_bytes_commits() {
         .resolve_path("/1")
         .expect("node must still be reachable after the override");
     assert!(
-        app.tree[trunc_idx_after].span.is_message,
+        app.tree[trunc_idx_after].span.kind == NodeKind::Message,
         "spec 0302 G1: after committing a `message` override the node \
-         must be is_message = true",
+         must have kind = Message",
     );
     assert!(
         !app.document_lines()
@@ -328,10 +328,10 @@ fn status_line_shows_message_not_enum() {
         Some(decode::MESSAGE_KEYWORD.to_string()),
     );
 
-    // The span must still be is_message = false (we did not splice).
+    // The span must still be non-Message (we did not splice).
     assert!(
-        !app.tree[trunc_idx].span.is_message,
-        "precondition: is_message must be false for this test to be meaningful",
+        app.tree[trunc_idx].span.kind != NodeKind::Message,
+        "precondition: kind must not be Message for this test to be meaningful",
     );
 
     let (label, tag) = app

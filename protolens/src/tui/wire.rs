@@ -850,7 +850,7 @@ fn preview_slice(spans: &[NodeSpan], line: usize) -> Option<WireSlice> {
     }
 
     let bytes = span.raw_range.start as usize..span.raw_range.end as usize;
-    if span.is_message {
+    if span.kind == NodeKind::Message {
         if line == span.text_range.start {
             // The children are the spans this one encloses at one more
             // level of indentation. They are contiguous, so only the

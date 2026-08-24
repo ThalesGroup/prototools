@@ -20,7 +20,7 @@ use std::collections::HashMap;
 /// [`NO_FQDN`] means the node carries no type name at all. As with the
 /// `Option<String>` it replaces, that is *not* a scalar/message
 /// discriminator: a message or group node whose schema could not be
-/// resolved also has no type name. Use `NodeSpan::is_message` for shape.
+/// resolved also has no type name. Use `NodeSpan::kind` for shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FqdnId(u32);
 

@@ -9,7 +9,7 @@
 //! `use super::support::*;` without having to know which sibling holds
 //! what.
 
-pub(super) use prototext_core::helpers::{WT_LEN, WT_VARINT};
+pub(super) use prototext_core::helpers::{WT_I32, WT_I64, WT_LEN, WT_VARINT};
 pub(super) use ratatui::backend::TestBackend;
 
 pub(super) use crate::tui::preview_truncate::PreviewTier;

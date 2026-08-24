@@ -31,6 +31,7 @@
 use std::collections::HashMap;
 
 use prototext_core::helpers::{parse_varint, MAX_WIRE_DEPTH};
+use prototext_core::serialize::render_text::NodeKind;
 use prototext_core::Arena;
 
 // ── Trie ─────────────────────────────────────────────────────────────────────
@@ -466,7 +467,9 @@ impl App {
         }
 
         // Drop if either end renders as a message.
-        if tree[shadowed as usize].span.is_message || tree[shadowing as usize].span.is_message {
+        if tree[shadowed as usize].span.kind == NodeKind::Message
+            || tree[shadowing as usize].span.kind == NodeKind::Message
+        {
             return false;
         }
 

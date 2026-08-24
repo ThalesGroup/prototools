@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2025-2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
-// SPDX-FileCopyrightText: 2025-2026 THALES CLOUD SECURISE SAS
+// SPDX-FileCopyrightText: 2025, 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+// SPDX-FileCopyrightText: 2025, 2026 THALES CLOUD SECURISE SAS
 //
 // SPDX-License-Identifier: MIT
 
@@ -14,7 +14,7 @@ pub use prost_reflect::MessageDescriptor;
 pub use schema::{decode_pool, schema_from_pool, ParsedSchema, SchemaError};
 pub use serialize::render_text::{
     build_arena, clear_any_loader, is_prototext_text, set_any_loader, set_ext_loader, AnyLoader,
-    Arena, ExtLoader, ExtLoaderGuard, Shape,
+    Arena, ExtLoader, ExtLoaderGuard, NodeKind, Shape,
 };
 
 // ── Public API types ──────────────────────────────────────────────────────────

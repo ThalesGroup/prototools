@@ -49,8 +49,8 @@ fn diagnose_pdb_max_children_per_parent() {
     eprintln!("top 10 parents by direct-child count:");
     for (idx, c) in with_counts.iter().take(10) {
         eprintln!(
-            "  node {idx}: {c} children, field_number={}, is_message={}",
-            decoded.tree[*idx].span.field_number, decoded.tree[*idx].span.is_message
+            "  node {idx}: {c} children, field_number={}, kind={:?}",
+            decoded.tree[*idx].span.field_number, decoded.tree[*idx].span.kind
         );
     }
 }
@@ -112,8 +112,8 @@ fn profile_override_pane_down_on_db3() {
     // without navigating first.
     eprintln!("default cursor = {}", app.cursor);
     eprintln!(
-        "cursor node: is_message={}, field_number={}, wire_type={}",
-        app.tree[app.cursor].span.is_message,
+        "cursor node: kind={:?}, field_number={}, wire_type={}",
+        app.tree[app.cursor].span.kind,
         app.tree[app.cursor].span.field_number,
         app.tree[app.cursor].span.wire_type()
     );
@@ -1327,8 +1327,8 @@ fn diagnose_sim_t_stall() {
     // 2026-07-25 report: `t` *at the default cursor position*, no
     // navigation first, reportedly loops forever.
     eprintln!(
-        "default cursor: {} (is_message={}, field_number={})",
-        app.cursor, app.tree[app.cursor].span.is_message, app.tree[app.cursor].span.field_number
+        "default cursor: {} (kind={:?}, field_number={})",
+        app.cursor, app.tree[app.cursor].span.kind, app.tree[app.cursor].span.field_number
     );
 
     let t0 = Instant::now();
@@ -1416,8 +1416,8 @@ fn diagnose_sim_node3_t_down_stall() {
     let idx3 = app.resolve_path("/3").expect("node /3 must exist");
     app.set_cursor(idx3);
     eprintln!(
-        "node /3: idx={idx3} is_message={} field_number={}",
-        app.tree[idx3].span.is_message, app.tree[idx3].span.field_number
+        "node /3: idx={idx3} kind={:?} field_number={}",
+        app.tree[idx3].span.kind, app.tree[idx3].span.field_number
     );
     terminal.draw(|frame| app.render(frame)).unwrap();
 
@@ -1558,7 +1558,7 @@ fn profile_nested_commit_on_pdb() {
     let target = (0..app.tree.len())
         .filter(|&i| {
             let s = &app.tree[i].span;
-            if !(s.is_message
+            if !(s.kind == NodeKind::Message
                 && s.type_fqdn != NO_FQDN
                 && s.text_range.start as usize > midpoint
                 && s.text_range.end - s.text_range.start > 100)

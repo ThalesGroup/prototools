@@ -23,8 +23,8 @@ impl App {
     /// `None` for a bare primitive keyword.
     pub(super) fn status_type_label(&self, idx: usize) -> Option<(String, Option<&'static str>)> {
         let span = &self.tree[idx].span;
-        if span.is_message {
-            // `resettle_node` keeps `span.type_fqdn`/`is_message` in sync
+        if span.kind == NodeKind::Message {
+            // `resettle_node` keeps `span.type_fqdn`/`kind` in sync
             // with the currently effective override on every render pass
             // — no separate override lookup needed for this branch.
             let fqdn = self.fqdns.get(span.type_fqdn)?;

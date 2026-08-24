@@ -600,7 +600,7 @@ fn main() -> ExitCode {
                         root_desc
                             .as_ref()
                             .map(|d| d.full_name())
-                            .unwrap_or("<raw / no type>"),
+                            .unwrap_or("(no type)"),
                         size_suffix(&cli.blob)
                     );
                 }

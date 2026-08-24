@@ -505,7 +505,7 @@ impl App {
 
     pub(super) fn current_type_key(&self, idx: usize) -> Option<String> {
         let span = &self.tree[idx].span;
-        if span.is_message {
+        if span.kind == NodeKind::Message {
             return self.fqdns.get(span.type_fqdn).map(str::to_owned);
         }
         match self.resolve_active_override(idx) {

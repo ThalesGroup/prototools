@@ -1299,7 +1299,7 @@ fn no_resolved_root_type_seeds_no_override_and_still_renders_raw() {
     // context has no hopcroft.rkyv, so autoinference is unavailable.
     let blob = [0x08u8, 0x05];
     let decoded = decode(wrapped(&blob), &mut ctx, RootType::Infer, 2).unwrap();
-    assert_eq!(decoded.root_type, "<raw / no type>");
+    assert_eq!(decoded.root_type, None);
 
     let app = app_named(decoded, ctx, "test.pb");
 

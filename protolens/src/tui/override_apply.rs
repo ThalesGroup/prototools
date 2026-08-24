@@ -684,7 +684,7 @@ impl App {
             let descend_here = self.descend.get(c).copied().unwrap_or(false);
             #[cfg(test)]
             let descend_here = if self.unpruned_walk {
-                self.tree[c].span.is_message
+                self.tree[c].span.kind == NodeKind::Message
                     || self.is_auto_expand_candidate(c)
                     || self
                         .resolve_active_override_entry_index_by_path(c, &c_path)

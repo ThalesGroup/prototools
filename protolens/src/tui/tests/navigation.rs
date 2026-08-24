@@ -123,7 +123,7 @@ fn display_range_strips_tag_and_length_for_scalars_including_packed() {
     let id_idx = app
         .nth_child(app.first_node, 0)
         .expect("tree must contain the id field");
-    assert!(!app.tree[id_idx].span.is_message);
+    assert!(app.tree[id_idx].span.kind != NodeKind::Message);
     // Tag (1 byte) stripped: just the varint value byte.
     assert_eq!(app.display_range(id_idx), 1..2);
 
@@ -133,7 +133,7 @@ fn display_range_strips_tag_and_length_for_scalars_including_packed() {
         .nth_child(app.first_node, 1)
         .expect("tree must contain the vals record");
     assert_eq!(app.tree[vals_idx].span.field_number, 2);
-    assert!(!app.tree[vals_idx].span.is_message);
+    assert!(app.tree[vals_idx].span.kind != NodeKind::Message);
     assert_ne!(
         app.tree[vals_idx].span.packed_record_start,
         NO_PACKED_RECORD
