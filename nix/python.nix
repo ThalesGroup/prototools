@@ -406,23 +406,27 @@ EOF
       @"$TMPDIR/proto_list.txt"
   '';
 
-  # The descriptor sets the two bobapp builds embed (spec 0241 S4).
+  # Descriptor sets for bobapp (spec 0350 S3).
   #
-  # The same protoc invocation googleapisPbs makes, narrowed from the whole
-  # corpus to a handful of entry points.  That is what a real application
-  # ships, and it is what keeps bobapp's DescriptorPool cheap — decoding the
-  # full 25.6 MB googleapis.desc costs 1.34 s and peaks at 720 MB RSS,
-  # against 51 kB and 103 kB here.
+  # Two separate sets are produced:
   #
-  # bobapp/v1/log.proto is in both so that the schema recovered *from the
-  # binary* names the log envelope, while googleapis — which has never heard
-  # of Bob's app — does not.
+  #   bobappDesc      — Places/SearchText transitive closure only.
+  #                     Embedded in the binary via include_bytes!.
+  #                     What protoscan finds when it scans the binary.
+  #                     Does NOT include log.proto or Routes types.
   #
-  # See grpconf2026/synopsis.md for context.
+  #   bobappExtraDesc — Routes/ComputeRoutes transitive closure + log.proto.
+  #                     Loaded at runtime from BOBAPP_EXTRA_DESCRIPTOR_SET.
+  #                     Used for all log encoding (Log, Entry, both payload
+  #                     types).  Not embedded; never found by protoscan.
   #
-  # Cheap enough for `ci`: a single protoc run over a few files.  Pulls in
-  # corpusGoogleapis but not googleapisPbs or googleapisDb, so it costs
-  # the corpus fetch and nothing more.
+  # log.proto imports both services, so it cannot be compiled with
+  # --include_imports into the Places-only set without pulling Routes in.
+  # It is therefore excluded from bobappDesc entirely: the log envelope is
+  # opaque under bobapp.desc, which is the demo's intent.
+  #
+  # Cheap enough for `ci`: two small protoc runs over a handful of files.
+  # Pulls in corpusGoogleapis but not googleapisPbs or googleapisDb.
   bobappDescOf = variant: entryPoints: pkgs.runCommand "${variant}-desc" {
     buildInputs = [ pkgs.protobuf ];
   } ''
@@ -437,10 +441,20 @@ EOF
       ${pkgs.lib.escapeShellArgs entryPoints}
   '';
 
-  # bobapp — places v1 + routes v2 only.
+  # Embedded — Places/SearchText only; what protoscan finds in the binary.
   bobappDesc = bobappDescOf "bobapp" [
+    "google/maps/places/v1/places_service.proto"
+  ];
+
+  # Extra — full runtime pool: Routes + Places + log.proto + error_details.
+  # Used for all encoding (ComputeRoutes, SearchText, log).  Not embedded;
+  # never found by protoscan.  error_details.proto is needed by anomaly.rs
+  # (google.rpc.ErrorInfo for the debug trace).
+  bobappExtraDesc = bobappDescOf "bobapp-extra" [
     "google/maps/routing/v2/routes_service.proto"
     "google/maps/places/v1/places_service.proto"
+    "google/rpc/error_details.proto"
+    "bobapp/v1/log.proto"
   ];
 
   # Build the googleapis schema DB + instantiated messages.
@@ -641,6 +655,7 @@ in {
     googleapisDb
     googleapisTests
     bobappDesc
+    bobappExtraDesc
     customDb
     customTests;
 }

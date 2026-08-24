@@ -20,7 +20,10 @@ use tonic::{
     Status,
 };
 
-use crate::{anomaly, log::Recorder};
+use crate::{
+    anomaly,
+    log::{EntryKind, Recorder},
+};
 
 /// Shared between the encoder and the decoder of a single call.
 pub type SharedRecorder = Arc<Mutex<Recorder>>;
@@ -34,14 +37,21 @@ pub struct DynamicCodec {
     /// The full method path, recorded with the request so that a reader of
     /// the log can tell one call from another without matching payload shapes.
     method: String,
+    kind: EntryKind,
     response: MessageDescriptor,
     recorder: SharedRecorder,
 }
 
 impl DynamicCodec {
-    pub fn new(method: &str, response: MessageDescriptor, recorder: SharedRecorder) -> Self {
+    pub fn new(
+        method: &str,
+        kind: EntryKind,
+        response: MessageDescriptor,
+        recorder: SharedRecorder,
+    ) -> Self {
         Self {
             method: method.to_owned(),
+            kind,
             response,
             recorder,
         }
@@ -57,6 +67,7 @@ impl Codec for DynamicCodec {
     fn encoder(&mut self) -> Self::Encoder {
         DynamicEncoder {
             method: self.method.clone(),
+            kind: self.kind,
             recorder: Arc::clone(&self.recorder),
         }
     }
@@ -71,6 +82,7 @@ impl Codec for DynamicCodec {
 
 pub struct DynamicEncoder {
     method: String,
+    kind: EntryKind,
     recorder: SharedRecorder,
 }
 
@@ -105,7 +117,7 @@ impl Encoder for DynamicEncoder {
         self.recorder
             .lock()
             .expect("recorder mutex")
-            .record_request(&self.method, &bytes);
+            .record_request(&self.method, self.kind, &bytes);
         dst.put_slice(&bytes);
         Ok(())
     }

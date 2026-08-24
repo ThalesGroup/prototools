@@ -19,10 +19,8 @@ fn main() {
             eprintln!(
                 "\nBOBAPP_DESCRIPTOR_SET is not set.\n\n\
                  It must name a FileDescriptorSet holding the transitive closure of\n\
-                 google/maps/routing/v2/routes_service.proto.  The demo ships two,\n\
-                 differing in what else they cover; either will build.  For the\n\
-                 larger one:\n\n    \
-                 BOBAPP_DESCRIPTOR_SET=$(nix-build -A bobapp2-desc --no-out-link)/bobapp2.desc \\\n      \
+                 google/maps/places/v1/places_service.proto (spec 0350 S3).\n\n    \
+                 BOBAPP_DESCRIPTOR_SET=$(nix-build -A bobapp-desc --no-out-link)/bobapp.desc \\\n      \
                  cargo build --release --manifest-path demo/bobapp/Cargo.toml\n"
             );
             std::process::exit(1);

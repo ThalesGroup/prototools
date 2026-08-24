@@ -438,9 +438,9 @@ components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
         # all files are writable.
         #
         # Layout written into grpconf2026/:
-        #   bob/app          the bobapp binary (places v1 + routes v2)
-        #   bob/logfile      the log with four anomalies
-        #   bob/capture      one captured request body
+        #   bob/app          the bobapp binary (Places embedded; Routes via extra pool)
+        #   bob/logfile      the log: Routes entries first, then SearchText (truncated)
+        #   bob/capture      one SearchText request body (spec 0350)
         #   beats/           every grpconf2026/beats/*.script
         #   alice/           empty writable scratch directory for Alice's outputs
         #

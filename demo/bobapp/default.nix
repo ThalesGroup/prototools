@@ -22,9 +22,11 @@
 #   variant    — names the derivation, the descriptor file inside bobappDesc,
 #                and the installed binary (e.g. "bobapp")
 #   bobappDesc — the python.bobappDesc derivation, holding
-#                $out/${variant}.desc (BOBAPP_DESCRIPTOR_SET for build.rs)
-#   traceDesc  — descriptor set for BOBAPP_TRACE_DESCRIPTOR_SET (tests only);
-#                typically the same as bobappDesc.
+#                $out/${variant}.desc (BOBAPP_DESCRIPTOR_SET for build.rs).
+#                Contains only Places FDPs — what protoscan finds in the binary.
+#   extraDesc  — the python.bobappExtraDesc derivation, holding
+#                $out/bobapp-extra.desc (BOBAPP_EXTRA_DESCRIPTOR_SET at runtime).
+#                Contains Routes FDPs + log.proto; used for log encoding.
 #
 # Output: $out/bin/${variant}
 #
@@ -36,7 +38,7 @@
 #   No --manifest-path is needed; mkDummySrc sees the right Cargo.lock at ".".
 #   Reference: crane docs/faq/workspace-not-at-source-root.md
 
-{ pkgs, crane, variant, bobappDesc, traceDesc }:
+{ pkgs, crane, variant, bobappDesc, extraDesc }:
 
 let
   repoRoot = ../..;
@@ -90,9 +92,10 @@ in crane.buildPackage (commonArgs // {
   # Neither of these is in commonArgs: the dependency cache is shared between
   # the two variants and must not rehash when a descriptor set is rebuilt.
   env = {
-    # build.rs reads BOBAPP_DESCRIPTOR_SET to embed the descriptor set.
+    # build.rs reads BOBAPP_DESCRIPTOR_SET to embed the Places-only descriptor set.
     BOBAPP_DESCRIPTOR_SET       = "${bobappDesc}/${variant}.desc";
-    BOBAPP_TRACE_DESCRIPTOR_SET = "${traceDesc}/${variant}.desc";
+    # Runtime pool for log encoding (Routes + log.proto); not embedded.
+    BOBAPP_EXTRA_DESCRIPTOR_SET = "${extraDesc}/bobapp-extra.desc";
   };
 
   # Cargo only knows how to build a binary called `bobapp`.

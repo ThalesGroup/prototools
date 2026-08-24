@@ -7,33 +7,28 @@
 //! ```text
 //! message Entry {
 //!   google.protobuf.Timestamp at = 1;
-//!   string method   = 2;
+//!   string method   = 2;   // last segment only: "SearchText" or "ComputeRoutes"
 //!   string note     = 3;
-//!   bytes  request  = 4;
-//!   bytes  response = 5;
+//!   // Places pair — in embedded set:
+//!   SearchTextRequest  places_request  = 4;
+//!   SearchTextResponse places_response = 5;
+//!   // Routes pair — NOT in embedded set:
+//!   ComputeRoutesRequest  routes_request  = 6;
+//!   ComputeRoutesResponse routes_response = 7;
 //! }
 //! message Log { repeated Entry entry = 1; }
 //! ```
 //!
-//! **The envelope is in the schema bobapp embeds, and in no schema anyone
-//! else has.**  `bobapp/v1/log.proto` is compiled into the descriptor set
-//! `build.rs` bakes into this executable, alongside the 39 googleapis files
-//! `routes_service.proto` drags in.  So the schema recovered *from the binary*
-//! names `Log` and `Entry`, and a stock `googleapis.desc` — which has never
-//! heard of Bob's app — sees the same bytes as an unnamed envelope around
-//! payloads it does know.
-//!
-//! That asymmetry is the point.  It is the difference between the two readings
-//! of the same file, and it is repaired by naming the envelope's `bytes` fields
-//! with an override rather than by finding a better schema.
-//!
-//! Because the envelope is now a real message, it is built the same way the
-//! request is: a `DynamicMessage` against the pool, by field name (spec 0241
-//! S14).  Nothing here writes a varint by hand.
+//! **The embedded set contains only Places FDPs** (spec 0350).  The log
+//! envelope (`bobapp.v1.Log`, `bobapp.v1.Entry`) and the Routes types are
+//! NOT embedded.  All log encoding uses the *extra* pool (loaded from
+//! `BOBAPP_EXTRA_DESCRIPTOR_SET`), which knows every type.  The embedded pool
+//! is used only by `request.rs` and `codec.rs` for the live API calls.
 
 use std::{io::Write, time::SystemTime};
 
 use anyhow::{Context, Result};
+use prost::encoding::{encode_key, encode_varint, WireType};
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage, Value};
 
@@ -44,35 +39,62 @@ pub const LOG_TYPE: &str = "bobapp.v1.Log";
 /// `bobapp.v1.Entry`, fully qualified.
 pub const ENTRY_TYPE: &str = "bobapp.v1.Entry";
 
+/// Which service pair a log entry belongs to.
+#[derive(Debug, Clone, Copy)]
+pub enum EntryKind {
+    /// A Places/SearchText round trip.  Fields 4/5 in the entry.
+    Places,
+    /// A Routes/ComputeRoutes round trip.  Fields 6/7 in the entry.
+    Routes,
+}
+
 /// One call: when it went out, where to, and the bytes in each direction.
 #[derive(Debug)]
 struct Entry {
     at: SystemTime,
+    /// Last path segment of the gRPC method (e.g. "SearchText").
     method: String,
     /// How the call went, as far as the entry knows when it is closed.
     note: &'static str,
+    kind: EntryKind,
     request: Option<Vec<u8>>,
     response: Option<Vec<u8>>,
 }
 
 /// Accumulates entries, then renders the whole `Log`.
 ///
+/// All encoding uses `pool`, which is the extra pool (knows all types).
 /// Shared between the codec's encoder and its decoder (see [`crate::codec`]),
 /// which is why the caller keeps it behind a mutex.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Recorder {
+    pool: DescriptorPool,
     done: Vec<Entry>,
     /// A request whose response has not arrived yet.
     open: Option<Entry>,
 }
 
 impl Recorder {
+    pub fn new(pool: DescriptorPool) -> Self {
+        Self {
+            pool,
+            done: Vec::new(),
+            open: None,
+        }
+    }
+
     /// Records the bytes of a request **as they are about to leave**.
     ///
-    /// Called from the encoder with the exact buffer handed to tonic, so a
-    /// step that rewrites the encoding into a non-canonical form has only to
-    /// do so before this call for the log to stay truthful.
-    pub fn record_request(&mut self, method: &str, bytes: &[u8]) {
+    /// `method` is the full gRPC path; the short name (last segment) is
+    /// derived here.  `kind` determines which typed fields are written.
+    pub fn record_request(&mut self, method: &str, kind: EntryKind, bytes: &[u8]) {
+        // Last non-empty segment of the path, e.g. "SearchText".
+        let method_name = method
+            .rsplit('/')
+            .find(|s| !s.is_empty())
+            .unwrap_or(method)
+            .to_owned();
+
         // A second request before the first was answered: close the first out
         // with no response rather than lose it.
         if let Some(open) = self.open.take() {
@@ -80,8 +102,9 @@ impl Recorder {
         }
         self.open = Some(Entry {
             at: SystemTime::now(),
-            method: method.to_owned(),
+            method: method_name,
             note: "sent",
+            kind,
             request: Some(bytes.to_vec()),
             response: None,
         });
@@ -99,21 +122,21 @@ impl Recorder {
 
     /// Serializes the accumulated entries as a `bobapp.v1.Log` message.
     ///
-    /// A request still awaiting a response is included with `Entry.response`
-    /// absent — a call that failed is exactly the one whose bytes you want to
-    /// look at.
-    pub fn encode_log(&self, pool: &DescriptorPool) -> Result<Vec<u8>> {
-        let mut log = DynamicMessage::new(message(pool, LOG_TYPE)?);
-        let entries: Result<Vec<Value>> = self
-            .done
-            .iter()
-            .chain(self.open.iter())
-            .map(|entry| Ok(Value::Message(entry.encode(pool)?)))
-            .collect();
-        set(&mut log, "entry", Value::List(entries?))?;
-
-        let mut out = Vec::with_capacity(log.encoded_len());
-        log.encode(&mut out).context("encoding the log")?;
+    /// A request still awaiting a response is included with its response
+    /// absent — a call that failed is exactly the one whose bytes you want.
+    ///
+    /// Request and response bytes are written verbatim into the typed fields —
+    /// no decode/re-encode cycle, so every non-canonical form survives.
+    pub fn encode_log(&self) -> Result<Vec<u8>> {
+        let pool = &self.pool;
+        let mut out = Vec::new();
+        for entry in self.done.iter().chain(self.open.iter()) {
+            let entry_bytes = entry.encode(pool)?;
+            // Log.entry is field 1, length-delimited.
+            encode_key(1, WireType::LengthDelimited, &mut out);
+            encode_varint(entry_bytes.len() as u64, &mut out);
+            out.extend_from_slice(&entry_bytes);
+        }
         Ok(out)
     }
 
@@ -124,22 +147,37 @@ impl Recorder {
 }
 
 impl Entry {
-    fn encode(&self, pool: &DescriptorPool) -> Result<DynamicMessage> {
-        let mut entry = DynamicMessage::new(message(pool, ENTRY_TYPE)?);
-        set(&mut entry, "at", Value::Message(timestamp(pool, self.at)?))?;
-        set(&mut entry, "method", Value::String(self.method.clone()))?;
-        set(&mut entry, "note", Value::String(self.note.to_owned()))?;
-        if let Some(request) = &self.request {
-            set(&mut entry, "request", Value::Bytes(request.clone().into()))?;
+    /// Encodes the entry as raw proto bytes.
+    ///
+    /// Fields 1–3 (timestamp, method, note) are built via `DynamicMessage`.
+    /// Fields 4–7 (typed request/response payloads) are appended verbatim as
+    /// length-delimited records — no decode/re-encode, so every non-canonical
+    /// form written by `anomaly::rewrite_request` survives into the log.
+    fn encode(&self, pool: &DescriptorPool) -> Result<Vec<u8>> {
+        // Fields 1–3 via DynamicMessage (they have no anomalies to preserve).
+        let mut header = DynamicMessage::new(message(pool, ENTRY_TYPE)?);
+        set(&mut header, "at", Value::Message(timestamp(pool, self.at)?))?;
+        set(&mut header, "method", Value::String(self.method.clone()))?;
+        set(&mut header, "note", Value::String(self.note.to_owned()))?;
+        let mut out = Vec::with_capacity(header.encoded_len() + 256);
+        header.encode(&mut out).context("encoding entry header")?;
+
+        // Fields 4–7: write raw bytes as length-delimited records.
+        let (req_field, resp_field) = match self.kind {
+            EntryKind::Places => (4u32, 5u32),
+            EntryKind::Routes => (6u32, 7u32),
+        };
+        if let Some(req) = &self.request {
+            encode_key(req_field, WireType::LengthDelimited, &mut out);
+            encode_varint(req.len() as u64, &mut out);
+            out.extend_from_slice(req);
         }
-        if let Some(response) = &self.response {
-            set(
-                &mut entry,
-                "response",
-                Value::Bytes(response.clone().into()),
-            )?;
+        if let Some(resp) = &self.response {
+            encode_key(resp_field, WireType::LengthDelimited, &mut out);
+            encode_varint(resp.len() as u64, &mut out);
+            out.extend_from_slice(resp);
         }
-        Ok(entry)
+        Ok(out)
     }
 }
 
@@ -176,11 +214,16 @@ pub fn write_to(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn dummy_pool() -> DescriptorPool {
+        DescriptorPool::decode(&include_bytes!(concat!(env!("OUT_DIR"), "/bobapp.desc"))[..])
+            .expect("embedded descriptor set")
+    }
+
     #[test]
     fn recorder_is_empty_until_first_request() {
-        let mut rec = Recorder::default();
+        let mut rec = Recorder::new(dummy_pool());
         assert!(rec.is_empty());
-        rec.record_request("/svc/M", b"\x08\x01");
+        rec.record_request("/svc/M", EntryKind::Places, b"\x08\x01");
         assert!(!rec.is_empty());
     }
 
@@ -188,9 +231,9 @@ mod tests {
     fn unanswered_request_is_not_evicted_by_a_second() {
         // Two requests in a row: the first closes without a response, the
         // second stays open.  Both must be present.
-        let mut rec = Recorder::default();
-        rec.record_request("/svc/A", b"\x08\x01");
-        rec.record_request("/svc/B", b"\x08\x02");
+        let mut rec = Recorder::new(dummy_pool());
+        rec.record_request("/svc/A", EntryKind::Places, b"\x08\x01");
+        rec.record_request("/svc/B", EntryKind::Routes, b"\x08\x02");
         // One entry in `done` (the closed first), one in `open`.
         assert_eq!(rec.done.len(), 1);
         assert!(rec.open.is_some());
@@ -200,8 +243,8 @@ mod tests {
 
     #[test]
     fn response_pairs_with_open_request() {
-        let mut rec = Recorder::default();
-        rec.record_request("/svc/M", b"\x08\x01");
+        let mut rec = Recorder::new(dummy_pool());
+        rec.record_request("/svc/M", EntryKind::Places, b"\x08\x01");
         rec.record_response(b"\x10\x02");
         // Closed into `done`; `open` is now empty.
         assert_eq!(rec.done.len(), 1);
@@ -214,11 +257,30 @@ mod tests {
     fn non_canonical_bytes_are_preserved_verbatim() {
         // A padded varint — nothing in the recorder may normalize it.
         let odd = b"\x08\x85\x80\x80\x80\x00";
-        let mut rec = Recorder::default();
-        rec.record_request("/svc/M", odd);
+        let mut rec = Recorder::new(dummy_pool());
+        rec.record_request("/svc/M", EntryKind::Routes, odd);
         assert_eq!(
             rec.open.as_ref().unwrap().request.as_deref(),
             Some(&odd[..])
         );
+    }
+
+    #[test]
+    fn method_is_shortened_to_last_segment() {
+        let mut rec = Recorder::new(dummy_pool());
+        rec.record_request(
+            "/google.maps.places.v1.Places/SearchText",
+            EntryKind::Places,
+            b"",
+        );
+        assert_eq!(rec.open.as_ref().unwrap().method, "SearchText");
+
+        let mut rec2 = Recorder::new(dummy_pool());
+        rec2.record_request(
+            "/google.maps.routing.v2.Routes/ComputeRoutes",
+            EntryKind::Routes,
+            b"",
+        );
+        assert_eq!(rec2.open.as_ref().unwrap().method, "ComputeRoutes");
     }
 }

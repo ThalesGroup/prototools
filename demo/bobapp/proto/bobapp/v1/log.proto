@@ -7,29 +7,38 @@ syntax = "proto3";
 package bobapp.v1;
 
 import "google/protobuf/timestamp.proto";
+import "google/maps/places/v1/places_service.proto";
+import "google/maps/routing/v2/routes_service.proto";
 
-// One round trip: what was asked, and what came back.
+// One round trip: when it happened, which method, and the bytes in each
+// direction typed against their service schema.
 //
-// `request` and `response` are `bytes` rather than `google.protobuf.Any`
-// on purpose. An `Any` carries a `type_url`, which a reader resolves
-// directly; these payloads are opaque, and the only breadcrumb to what
-// they hold is `method` sitting next to them.
+// Fields 4/5 (Places/SearchText) are in the embedded descriptor set —
+// protoscan finds those types in the binary.  Fields 6/7 (Routes/
+// ComputeRoutes) are NOT embedded; they appear as unknown typed fields
+// under bobapp.desc and open fully under a Routes-aware descriptor set.
+//
+// bobapp.v1.Log and bobapp.v1.Entry are themselves not in the embedded
+// set, so the log envelope is also opaque until a descriptor set that
+// includes this file is provided.
 message Entry {
   google.protobuf.Timestamp at = 1;
 
-  // The gRPC method path, e.g.
-  // "/google.maps.routing.v2.Routes/ComputeRoutes".
+  // Last segment of the gRPC method path, e.g. "SearchText" or
+  // "ComputeRoutes".
   string method = 2;
 
-  // A free-text diagnostic. It is numbered before the payloads because it
-  // is written before them: the entry is opened when the call goes out and
-  // closed when it lands, and the note is what the app had to say at each
-  // of those moments. Singular, so a reader is handed only the last thing
-  // written into it.
+  // A free-text diagnostic: "sent" while in flight, "ok" after landing.
+  // Singular, so a reader is handed only the last thing written into it.
   string note = 3;
 
-  bytes request = 4;
-  bytes response = 5;
+  // Places/SearchText pair — types present in the embedded descriptor set.
+  google.maps.places.v1.SearchTextRequest  places_request  = 4;
+  google.maps.places.v1.SearchTextResponse places_response = 5;
+
+  // Routes/ComputeRoutes pair — types NOT in the embedded set.
+  google.maps.routing.v2.ComputeRoutesRequest  routes_request  = 6;
+  google.maps.routing.v2.ComputeRoutesResponse routes_response = 7;
 }
 
 message Log {

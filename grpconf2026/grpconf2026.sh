@@ -1,96 +1,106 @@
-header prototools && blue "#           gRPConf 2026 North America"
+header "S3NS"
 # \
-#                                                                              \
-#                                                                              \
-#           Frederic Ruget                                                     \
-#           Senior Cloud Architect, S3ns                                       \
-#           fred@s3ns.io                                                       \
-#                                                                              \
-#           Thomas Butter                                                      \
-#           Senior Software Engineer, Google                                   \
-#           tabutter@google.com                                                \
+# S3NS is Thales x Google joint venture that operates a GCP region as a Trusted Cloud service, for European customers. The service is hosted on French data centers and operated by French personel, in autonomy. However Google provides all software updates, which are inspected and tested in a quarantine environment before being deployed to production. As part of the inspection activities, we have developed tooling to help audit protobufs, which are ubiquitous in the design of the Google Cloud platform.
 
 
-header "Context"
-
+header "prototools"
 # \
-# S3NS is Thales x Google                                                      \
-
-
-# \
-# prototools is 4 tools:                                                       \
+# prototools is 3 CLIs :                                                       \
 #                                                                              \
-# CLI                                                                          \
 # - protoscan: extraction of FileDescriptorProto descriptors from executables  \
 # - reproto: analysis and decompilation of FileDescriptor sets                 \
 # - prototext: lossless ser/deser or protobufs, using schemas                  \
+
+# \
+# and 1 TUI:                                                                   \
 #                                                                              \
-# TUI                                                                          \
 # - protolens: interactive TUI for analysing binary protobufs                  \
 
 
-header "1. Staging"
+header "The stage"
 
 # \
-# Bob downloaded an unknown executable and an associated log file.             \
+# 👨 Bob downloaded an unknown executable and an associated log file.          \
 # The executable seems to answer routing questions by calling some external    \
 # service. Bob captured one of its calls with wireshark.                       \
 
 
-# \
+ls -lh bob \
 # Three files overall:                                                         \
-# - bob/app       # the downloaded executable                                     \
-# - bob/logfile   # the downloaded log file                                       \
-# - bob/capture   # the capture Bob made                                           \
+# - bob/app       # the downloaded executable                                  \
+# - bob/logfile   # the downloaded log file                                    \
+# - bob/capture   # the capture Bob made                                       \
 
-ls -lh bob
 
 # \
 # Bob suspects the calls to be gRPC, and the logs to be protobuf.              \
-# Alice is handed the lot for analysis.                                        \
+# 👩 Alice is handed the lot for analysis 🚀                                   \
 
 
 header "2. protoc falls short"
 
 # Let's try protoc for decoding the capture file:
-cat bob/capture | protoc --decode_raw | nvim -R -
+protoc --decode_raw < bob/capture \
+  | nvim -R - -c "set ft=textproto"
 # OK. This is protobuf indeed.
 
 # Let's try with the logfile:
-cat bob/logfile | protoc --decode_raw
-# No luck here...
+protoc --decode_raw < bob/logfile
+# No luck here... 😭
 
 header "3. Let's retrieve descriptors"
 
 # protoscan is our friend
-protoscan bob/app | nvim -R -
+protoscan bob/app    | nvim -R -
 # So bob/app contains reflected descriptors indeed
 
 # Let's retrieve, decompile and index the descriptors
 reproto --desc-root bob/app --schema-db-out alice/app.desc
 
-# \
+ls -lhd alice/app.desc alice/app/* \
 # A couple of files were produced:                                             \
 # - app.desc: FileDescriptorSet for descriptors in app                         \
-# - app/index.rkyv: Index for fast access and loading                          \
 # - app/hopcroft.rkyv: Graph for type inference                                \
+# - app/index.rkyv: Index for fast access and loading                          \
 # - app/proto/: Decompiled descriptors                                         \
 
-ls -lhd alice/app.desc alice/app/*
 
-tree alice/app/proto | nvim -R -
+tree alice/app/proto    | nvim -R -
 # Let's look at one decompiled .proto file:
-nvim -R alice/app/proto/google/maps/routing/v2/waypoint.proto
+nvim -R alice/app/proto/google/maps/places/v1/places_service.proto
 
 header "4. Let's use the descriptors"
 
-# prototext is our friend
-prototext --descriptor-set alice/app.desc decode bob/capture | nvim -R -
-# prototext was able to infer capture's protobuf type
-# --> google.maps.routing.v2.ComputeRoutesRequest
+# prototext is our friend 🍀🍀🍀
+\
+prototext --descriptor-set alice/app.desc decode bob/capture \
+  | nvim -R - -c "set ft=textproto"
+
+# \
+# prototext was able to infer capture's protobuf type:                         \
+#   google.maps.places.v1.SearchTextRequest                                    \
+# Let's use this with protoc                                                   \
+
+\
+protoc --descriptor_set_in=alice/app.desc \
+       --decode=google.maps.places.v1.SearchTextRequest \
+    < bob/capture \
+  | nvim -R - -c "set ft=textproto"
+# Now protoc is happy 🙂
+
+# Compare again with the prototext output:
+prototext --descriptor-set alice/app.desc decode bob/capture \
+  | nvim -R - -c "set ft=textproto"
+# \
+# Notice that prototext adds annotations as comments                           \
+# There is more to capture than meets the protoc eye 🕵                         \
+
+
+# We can also use protolens, the interactive version of prototext:
+protolens --descriptor-set alice/app.desc bob/capture
 
 # Let's try with the logfile:
-prototext --descriptor-set alice/app.desc decode bob/logfile | nvim -R -
+protolens --descriptor-set alice/app.desc bob/logfile
 
 
 # \

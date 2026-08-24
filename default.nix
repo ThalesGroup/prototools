@@ -447,7 +447,7 @@ let
     inherit pkgs crane;
     variant    = "bobapp";
     bobappDesc = python.bobappDesc;
-    traceDesc  = python.bobappDesc;
+    extraDesc  = python.bobappExtraDesc;
   };
 
   # ---------------------------------------------------------------------------
@@ -457,9 +457,9 @@ let
   # live on stage (app.desc, src/).  Those go into writable working directories
   # (grpconf2026/bob/, grpconf2026/alice/); see _hook_demo in nix/shells.nix.
   #
-  #   $out/bin/bobapp          the demo binary (places v1 + routes v2)
-  #   $out/capture             one captured request body (84 bytes)
-  #   $out/logfile             the log with four anomalies (20 243 bytes)
+  #   $out/bin/bobapp          the demo binary (Places embedded; Routes via extra pool)
+  #   $out/capture             one SearchText request body (spec 0350 G5)
+  #   $out/logfile             the log with four anomalies (Routes entries first)
   #   $out/beats/              every grpconf2026/beats/*.script
   #
   # googleapis is not included: $PROTOTEXT_GOOGLEAPIS_SET already provides it.
@@ -561,6 +561,7 @@ in
   custom-db            = python.customDb;
   custom-tests         = python.customTests;
   bobapp-desc          = python.bobappDesc;
+  bobapp-extra-desc    = python.bobappExtraDesc;
   bobapp               = bobappDemo;
   grpconf-demo         = grpconfDemo;
   user-shell           = shells.user-shell;

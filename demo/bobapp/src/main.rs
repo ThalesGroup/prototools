@@ -29,13 +29,19 @@ use tonic::{
 
 use crate::{
     codec::DynamicCodec,
-    log::Recorder,
+    log::{EntryKind, Recorder},
     request::{RouteQuery, RESPONSE_TYPE},
 };
 
-/// The transitive closure of `routes_service.proto`, put here by `build.rs`
-/// from `BOBAPP_DESCRIPTOR_SET` (spec 0241 S5/S8).
+/// The transitive closure of `places_service.proto`, put here by `build.rs`
+/// from `BOBAPP_DESCRIPTOR_SET` (spec 0350).  Contains only Places FDPs —
+/// what `protoscan` finds in the binary.
 const DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/bobapp.desc"));
+
+/// The environment variable naming the extra descriptor set (spec 0350 S3).
+/// This set contains Routes + `bobapp/v1/log.proto` and is loaded at runtime
+/// for log encoding.  It is not embedded.
+const EXTRA_DESCRIPTOR_SET_VAR: &str = "BOBAPP_EXTRA_DESCRIPTOR_SET";
 
 /// Where the route call goes (S11).
 const ENDPOINT: &str = "https://routes.googleapis.com";
@@ -105,28 +111,32 @@ struct Cli {
     #[arg(long)]
     dump_descriptor: Option<PathBuf>,
 
-    /// A descriptor set to read at run time, for services this build did not
-    /// compile in.
-    #[arg(long)]
-    extra_descriptor_set: Option<PathBuf>,
-
     /// Look a place up by name before routing.  Repeatable.
-    ///
-    /// The bobapp1 build compiled in no Places service, so there it needs
-    /// `--extra-descriptor-set`; bobapp2 has one and does not.  Which is why
-    /// clap does not require the flag: whether it is needed is a fact about
-    /// the descriptor set this build embeds, and the error, if it comes,
-    /// names the type that could not be found.
     #[arg(long)]
     look_up: Vec<String>,
 }
 
-/// The pool, built once (S8).
+/// The embedded Places pool, built once.
 fn pool() -> Result<&'static DescriptorPool> {
     static POOL: OnceLock<Result<DescriptorPool, prost_reflect::DescriptorError>> = OnceLock::new();
     POOL.get_or_init(|| DescriptorPool::decode(DESCRIPTOR_SET))
         .as_ref()
         .map_err(|e| anyhow!("the embedded descriptor set does not parse: {e}"))
+}
+
+/// Loads the extra descriptor set (Routes + log.proto) from
+/// `BOBAPP_EXTRA_DESCRIPTOR_SET`.  Required for log encoding.
+fn load_extra_pool() -> Result<DescriptorPool> {
+    let path = std::env::var(EXTRA_DESCRIPTOR_SET_VAR).map_err(|_| {
+        anyhow!(
+            "{EXTRA_DESCRIPTOR_SET_VAR} is not set; bobapp needs it to encode the log.\n\
+             It must name a FileDescriptorSet holding Routes v2 and bobapp/v1/log.proto."
+        )
+    })?;
+    let bytes =
+        std::fs::read(&path).with_context(|| format!("reading extra descriptor set {path}"))?;
+    DescriptorPool::decode(&bytes[..])
+        .with_context(|| format!("{path} does not parse as a descriptor set"))
 }
 
 #[tokio::main]
@@ -141,7 +151,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let pool = pool()?;
+    let extra_pool = load_extra_pool()?;
     let api_key = std::env::var(API_KEY_VAR)
         .map_err(|_| anyhow!("{API_KEY_VAR} is not set; bobapp will not call without a key"))?;
 
@@ -157,30 +167,28 @@ async fn main() -> Result<()> {
         depart_in: cli.depart_in,
     };
 
-    let recorder = Arc::new(Mutex::new(Recorder::default()));
-
-    // Names are resolved before they are routed between, so the lookups come
-    // first in the log.  Not fatal: a lookup that fails still leaves its
-    // request in the log, and the route below is the job.
-    if let Err(e) = look_up(&cli, &api_key, &recorder).await {
-        eprintln!("a lookup failed: {e:#}");
-    }
+    let recorder = Arc::new(Mutex::new(Recorder::new(extra_pool.clone())));
 
     let routes = Wire {
         endpoint: ENDPOINT,
         method: METHOD,
         field_mask: &cli.field_mask,
-        response: request::message(pool, RESPONSE_TYPE)?,
+        response: request::message(&extra_pool, RESPONSE_TYPE)?,
+        kind: EntryKind::Routes,
     };
 
-    // Both directions, because bobapp is a round-trip planner and because the
-    // log needs more than one entry to *have* a tail: `write_log` cuts the
-    // file short, and with a single entry the cut would land in the outermost
-    // record and take the whole document with it.
+    // Lookups first so the log opens with the SearchText entries that the
+    // embedded schema names directly.  The ComputeRoutes entries follow, and
+    // the last one is what anomaly 4 cuts — which is beat 10's payoff.
+    // Not fatal: a lookup that fails still leaves its request in the log.
+    if let Err(e) = look_up(&cli, &api_key, &extra_pool, &recorder).await {
+        eprintln!("a lookup failed: {e:#}");
+    }
+
     let outcome = call(
         &routes,
         &api_key,
-        request::build(pool, &query(there, back))?,
+        request::build(&extra_pool, &query(there, back))?,
         Arc::clone(&recorder),
     )
     .await;
@@ -190,7 +198,7 @@ async fn main() -> Result<()> {
         if let Err(e) = call(
             &routes,
             &api_key,
-            request::build(pool, &query(back, there))?,
+            request::build(&extra_pool, &query(back, there))?,
             Arc::clone(&recorder),
         )
         .await
@@ -202,7 +210,7 @@ async fn main() -> Result<()> {
     // Written whether or not the call succeeded: a failed call is exactly the
     // one whose bytes are worth opening.
     if let Some(dir) = &cli.log_dir {
-        write_log(dir, &recorder, pool, &api_key)?;
+        write_log(dir, &recorder, &api_key)?;
     }
 
     let response = outcome?;
@@ -215,36 +223,22 @@ async fn main() -> Result<()> {
 }
 
 /// Calls `SearchText` once per `--look-up`.
-///
-/// Where the schema comes from is the whole point of shipping two builds.
-/// bobapp1 compiled in no Places service, so `--dump-descriptor` cannot
-/// produce a schema that names these bytes and the call needs
-/// `--extra-descriptor-set` to be made at all — which is exactly what makes
-/// the bytes worth opening with a bigger dictionary.  bobapp2 embeds Places,
-/// so it needs no flag and its recovered schema reads its own lookups back.
-/// The call itself is as real as the routing one either way — same codec,
-/// same recorder — so the difference between the two pairs of entries is
-/// entirely a matter of which schema can read them.
-async fn look_up(cli: &Cli, api_key: &str, recorder: &codec::SharedRecorder) -> Result<()> {
+async fn look_up(
+    cli: &Cli,
+    api_key: &str,
+    extra_pool: &DescriptorPool,
+    recorder: &codec::SharedRecorder,
+) -> Result<()> {
     if cli.look_up.is_empty() {
         return Ok(());
     }
-    // Cheap to clone: a DescriptorPool is reference-counted internally.
-    let pool = match cli.extra_descriptor_set.as_deref() {
-        Some(path) => {
-            let bytes =
-                std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-            DescriptorPool::decode(&bytes[..])
-                .with_context(|| format!("{} does not parse as a descriptor set", path.display()))?
-        }
-        None => pool()?.clone(),
-    };
 
     let wire = Wire {
         endpoint: LOOKUP_ENDPOINT,
         method: request::LOOKUP_METHOD,
         field_mask: LOOKUP_FIELD_MASK,
-        response: request::message(&pool, request::LOOKUP_RESPONSE_TYPE)?,
+        response: request::message(extra_pool, request::LOOKUP_RESPONSE_TYPE)?,
+        kind: EntryKind::Places,
     };
 
     // Each lookup is biased to one end of the trip, taken in turn: the first
@@ -255,7 +249,8 @@ async fn look_up(cli: &Cli, api_key: &str, recorder: &codec::SharedRecorder) -> 
     ];
 
     for (i, text) in cli.look_up.iter().enumerate() {
-        let message = request::lookup(&pool, text, ends[i % ends.len()], &cli.language_code)?;
+        // Build against the extra pool so anomaly.rs can reach google.rpc.Status.
+        let message = request::lookup(extra_pool, text, ends[i % ends.len()], &cli.language_code)?;
         call(&wire, api_key, message, Arc::clone(recorder))
             .await
             .with_context(|| format!("looking up {text:?}"))?;
@@ -269,6 +264,8 @@ struct Wire<'a> {
     method: &'static str,
     field_mask: &'a str,
     response: prost_reflect::MessageDescriptor,
+    /// Which log entry kind this call produces.
+    kind: EntryKind,
 }
 
 /// Makes the call, recording both directions through the codec.
@@ -299,7 +296,7 @@ async fn call(
             .context("the field mask is not a valid header")?,
     );
 
-    let codec = DynamicCodec::new(wire.method, wire.response.clone(), recorder);
+    let codec = DynamicCodec::new(wire.method, wire.kind, wire.response.clone(), recorder);
 
     let mut grpc = tonic::client::Grpc::new(channel);
     grpc.ready().await.context("the channel never got ready")?;
@@ -338,20 +335,15 @@ fn refuse_the_live_key(bytes: &[u8], api_key: &str) -> Result<()> {
     Ok(())
 }
 
-/// Writes `DIR/log.pb` and prints the command that reads it back (S17).
-fn write_log(
-    dir: &Path,
-    recorder: &codec::SharedRecorder,
-    pool: &DescriptorPool,
-    api_key: &str,
-) -> Result<()> {
+/// Writes `DIR/log.pb` and prints the command that reads it back.
+fn write_log(dir: &Path, recorder: &codec::SharedRecorder, api_key: &str) -> Result<()> {
     let recorder = recorder.lock().expect("recorder mutex");
     if recorder.is_empty() {
         return Ok(());
     }
 
     let path = dir.join("log.pb");
-    let bytes = recorder.encode_log(pool)?;
+    let bytes = recorder.encode_log()?;
     // Before the cut, so that a key sitting in the bytes about to be dropped
     // is still an error rather than a near miss nobody hears about.
     refuse_the_live_key(&bytes, api_key)?;
@@ -364,14 +356,14 @@ fn write_log(
     eprintln!("wrote {} ({} bytes)", path.display(), bytes.len());
     eprintln!(
         "  {} files in the embedded descriptor set, {} bytes",
-        pool.files().len(),
+        pool()?.files().len(),
         DESCRIPTOR_SET.len()
     );
     eprintln!();
-    // Deliberately not "the sweep names the message": the tail this file ends
-    // on vetoes every candidate for the document as a whole, so it opens with
-    // no type at all.  What names the entries is the cue on one of them.
-    eprintln!("Read it back — it opens untyped; the cues name the entries:");
+    // The log envelope is not in the embedded set, so the root opens as raw.
+    // The Places entries resolve against the embedded schema; the Routes entries
+    // are opaque until a Routes-aware descriptor set is provided.
+    eprintln!("Read it back — Places entries resolve; Routes entries are opaque:");
     eprintln!();
     eprintln!("  bobapp --dump-descriptor /tmp/bobapp.desc");
     eprintln!("  reproto --schema-db-out /tmp/bobapp-db /tmp/bobapp.desc");
