@@ -623,16 +623,30 @@ impl App {
         self.apply_rotation(token_start, prefix, candidates);
     }
 
-    /// `--card`'s completion (spec 0348 §S4): unfiltered rotation through
-    /// the three cardinality literals in `optional` → `repeated` →
-    /// `required` order, identical in style to `complete_field_name`.
+    /// `--card`'s completion (spec 0348 §S4):
+    ///
+    /// - Exact match (`optional`/`repeated`/`required`): rotate immediately
+    ///   on the first Tab, Shift-Tab goes the other way — same as `<origin>`
+    ///   and `--field-name`.
+    /// - Prefix (e.g. `op`, `re`): standard prefix completion — complete to
+    ///   the longest common prefix of matching candidates, then cycle.
     fn complete_card(&mut self, token_start: usize, prefix: &str) {
-        let candidates = vec![
-            "optional".to_string(),
-            "repeated".to_string(),
-            "required".to_string(),
-        ];
-        self.apply_rotation(token_start, prefix, candidates);
+        const CARDS: [&str; 3] = ["optional", "repeated", "required"];
+        let is_exact = CARDS.contains(&prefix);
+        if is_exact {
+            let candidates = CARDS.iter().map(|s| s.to_string()).collect();
+            self.apply_rotation(token_start, prefix, candidates);
+        } else {
+            let matches: Vec<String> = CARDS
+                .iter()
+                .filter(|c| c.starts_with(prefix))
+                .map(|s| s.to_string())
+                .collect();
+            if matches.is_empty() {
+                return;
+            }
+            self.apply_completion(token_start, prefix.chars().count(), matches);
+        }
     }
 
     /// `--as`'s completion (spec 0237 S8): prefix-match the inferred
