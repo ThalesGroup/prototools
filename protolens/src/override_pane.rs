@@ -8,7 +8,7 @@
 
 use std::sync::atomic::AtomicBool;
 
-use prost_reflect::DescriptorPool;
+use prost_reflect::{Cardinality, DescriptorPool};
 use prototext_graph::build_scoring_graph::serial::ArchivedCompiledGraph;
 use prototext_graph::score::{score_one, ScoringOpts};
 use serde::{Deserialize, Serialize};
@@ -342,6 +342,11 @@ pub struct OverrideEntry {
     /// save/restore format (spec 0125 §G3) like every other field; a
     /// file with no `auto` key defaults to `false`.
     pub auto: bool,
+    /// Explicit cardinality override (spec 0348 §G1): `None` defers to
+    /// the schema-derived `field_cardinality` fallback; `Some(c)` forces
+    /// `c` in `register_wrapper`/`splice_override`, ignoring the schema.
+    /// Not persisted to YAML in this spec (spec 0348 §N3).
+    pub cardinality: Option<Cardinality>,
 }
 
 /// The persistent collection of overrides (spec 0117 §1). Always kept
@@ -388,6 +393,7 @@ impl OverrideCollection {
             active: true,
             name: None,
             auto: false,
+            cardinality: None,
         });
         self.sort();
     }
@@ -444,6 +450,7 @@ impl OverrideCollection {
                 active: true,
                 name: None,
                 auto,
+                cardinality: None,
             });
         }
         self.sort();
@@ -456,6 +463,15 @@ impl OverrideCollection {
     pub fn rename(&mut self, idx: usize, name: Option<String>) {
         if let Some(entry) = self.entries.get_mut(idx) {
             entry.name = name;
+        }
+    }
+
+    /// Sets the entry at `idx`'s explicit cardinality override (spec 0348
+    /// §S6) — a direct in-place mutation like `rename`: `cardinality` is
+    /// not part of an entry's identity and cannot change sort order.
+    pub fn set_cardinality(&mut self, idx: usize, cardinality: Option<Cardinality>) {
+        if let Some(entry) = self.entries.get_mut(idx) {
+            entry.cardinality = cardinality;
         }
     }
 
@@ -903,6 +919,7 @@ impl OverrideCollection {
                     active,
                     name,
                     auto,
+                    cardinality: None,
                 },
                 YamlEntry::PathField(YamlPathFieldEntry {
                     path,
@@ -917,6 +934,7 @@ impl OverrideCollection {
                     active,
                     name,
                     auto,
+                    cardinality: None,
                 },
                 YamlEntry::FqdnField(YamlFqdnFieldEntry {
                     fqdn,
@@ -931,6 +949,7 @@ impl OverrideCollection {
                     active,
                     name,
                     auto,
+                    cardinality: None,
                 },
             });
         }

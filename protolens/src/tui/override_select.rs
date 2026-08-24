@@ -676,7 +676,13 @@ impl App {
         // a wrapper the splice never looks up, restoring the
         // per-keystroke registration stall this function exists to
         // remove.
-        let cardinality = self.field_cardinality(idx);
+        // Spec 0348 §S5: an explicit entry cardinality overrides the
+        // schema-derived one. The warming call uses the same resolution
+        // as `splice_override` to guarantee the same wrapper name.
+        let cardinality = self
+            .resolve_active_override_entry(idx)
+            .and_then(|e| e.cardinality)
+            .unwrap_or_else(|| self.field_cardinality(idx));
         let end = end.min(self.override_candidates.len());
         for row in start..end {
             let name = self.override_candidates[row].0.clone();

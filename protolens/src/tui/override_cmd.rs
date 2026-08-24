@@ -36,7 +36,7 @@ const ORIGIN_KINDS: [OverrideKind; 3] = [
 ];
 
 /// One parsed `:override` command line. `origin` is required (spec 0237
-/// S2); the two flags are `Option` because absent means default (spec
+/// S2); the other flags are `Option` because absent means default (spec
 /// 0236 S4), and the defaults are resolved against the document rather
 /// than here.
 #[derive(Debug, PartialEq, Eq)]
@@ -54,6 +54,10 @@ pub(super) struct OverrideArgs {
     /// step — correct at once: they all re-apply entries, and none of
     /// them re-declares anything.
     pub(super) declare: bool,
+    /// Explicit cardinality (spec 0348 §S1): `None` defers to the
+    /// schema-derived fallback; `Some(c)` forces `c` in
+    /// `register_wrapper`/`splice_override`.
+    pub(super) cardinality: Option<prost_reflect::Cardinality>,
 }
 
 /// Parse `<origin>` and the two flags, in any order (spec 0237 S2).
@@ -67,6 +71,7 @@ pub(super) fn parse_override(args: &[&str]) -> Result<OverrideArgs, String> {
     let mut name: Option<String> = None;
     let mut declare = false;
     let mut saw_as = false;
+    let mut cardinality: Option<prost_reflect::Cardinality> = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match *arg {
@@ -93,6 +98,12 @@ pub(super) fn parse_override(args: &[&str]) -> Result<OverrideArgs, String> {
                     .ok_or_else(|| "override: --field-name needs a value".to_string())?;
                 name = Some((*value).to_string());
             }
+            "--card" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "override: --card needs a value".to_string())?;
+                cardinality = Some(parse_cardinality(value)?);
+            }
             other if other.starts_with("--") => {
                 return Err(format!("override: unknown flag {other}"));
             }
@@ -108,7 +119,27 @@ pub(super) fn parse_override(args: &[&str]) -> Result<OverrideArgs, String> {
         r#type,
         name,
         declare,
+        cardinality,
     })
+}
+
+/// Parse a `--card` value (spec 0348 §S2).
+fn parse_cardinality(s: &str) -> Result<prost_reflect::Cardinality, String> {
+    match s {
+        "optional" => Ok(prost_reflect::Cardinality::Optional),
+        "repeated" => Ok(prost_reflect::Cardinality::Repeated),
+        "required" => Ok(prost_reflect::Cardinality::Required),
+        _ => Err("override: --card value must be optional, repeated, or required".to_string()),
+    }
+}
+
+/// Format a `Cardinality` as the `--card` token string.
+fn cardinality_str(c: prost_reflect::Cardinality) -> &'static str {
+    match c {
+        prost_reflect::Cardinality::Optional => "optional",
+        prost_reflect::Cardinality::Repeated => "repeated",
+        prost_reflect::Cardinality::Required => "required",
+    }
 }
 
 /// `<origin>` parses by shape — the inverse of `OverrideOrigin::label`
@@ -187,6 +218,7 @@ impl App {
         // target (which is the cursor when it was opened from the main
         // pane). An entry whose origin currently matches nothing still
         // gets a line — it just falls back for the schema-derived name.
+        let from_manage = entry.is_some();
         let (origin, r#type, entry_name) = match entry {
             Some(entry) => (entry.origin, entry.r#type, entry.name),
             None => {
@@ -239,6 +271,15 @@ impl App {
         if let Some(r#type) = &r#type {
             buf.push_str(" --as ");
             buf.push_str(r#type);
+        }
+        // Spec 0348 §S3: prefill --card only from the selection pane.
+        // The management pane pre-fills a stored entry; adding --card
+        // there would silently change entries that were stored without
+        // one, breaking the o-then-Enter no-op invariant (spec 0236 S6).
+        if !from_manage {
+            let card = self.field_cardinality(node);
+            buf.push_str(" --card ");
+            buf.push_str(cardinality_str(card));
         }
         buf.push_str(" --field-name ");
         buf.push_str(&self.display_name_for(node, entry_name));
@@ -397,6 +438,15 @@ impl App {
             .filter(|name| Some(name.as_str()) != self.schema_field_name(subject).as_deref());
         if let Some(idx) = self.entry_index_of(&origin, &parsed.r#type) {
             self.overrides.rename(idx, name);
+            // Spec 0348 §S5/§S6: store explicit cardinality when present,
+            // but normalize away a value that merely echoes what
+            // `field_cardinality` would return — mirrors the `--field-name`
+            // normalization (spec 0236 S8) so that accepting the pre-filled
+            // line on a schema-cardinality field is still a no-op.
+            let cardinality = parsed
+                .cardinality
+                .filter(|&c| c != self.field_cardinality(subject));
+            self.overrides.set_cardinality(idx, cardinality);
         }
 
         // Spec 0321 S2: the command has just answered the question the
@@ -511,6 +561,9 @@ impl App {
             // offering the existing ones here would offer exactly the
             // names S4 refuses.
             Some("--as-new") => {}
+            // Spec 0348 §S4: unfiltered rotation through the three
+            // cardinality literals, narrowest to widest.
+            Some("--card") => self.complete_card(token_start, token),
             _ => self.complete_override_origin(token_start, token),
         }
     }
@@ -555,6 +608,18 @@ impl App {
             .resolve_active_override_entry(subject)
             .and_then(|e| e.name.clone());
         let candidates = self.field_name_candidates(subject, entry_name);
+        self.apply_rotation(token_start, prefix, candidates);
+    }
+
+    /// `--card`'s completion (spec 0348 §S4): unfiltered rotation through
+    /// the three cardinality literals in `optional` → `repeated` →
+    /// `required` order, identical in style to `complete_field_name`.
+    fn complete_card(&mut self, token_start: usize, prefix: &str) {
+        let candidates = vec![
+            "optional".to_string(),
+            "repeated".to_string(),
+            "required".to_string(),
+        ];
         self.apply_rotation(token_start, prefix, candidates);
     }
 

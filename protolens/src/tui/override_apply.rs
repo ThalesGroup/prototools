@@ -1387,7 +1387,12 @@ impl App {
         // `idx`'s span; `warm_visible_override_wrappers` asks the same
         // function of the same node, which is what keeps warming and the
         // splice hashing to the same wrapper name.
-        let cardinality = self.field_cardinality(idx);
+        // Spec 0348 §S5: an explicit entry cardinality overrides the
+        // schema-derived one.
+        let cardinality = self
+            .resolve_active_override_entry(idx)
+            .and_then(|e| e.cardinality)
+            .unwrap_or_else(|| self.field_cardinality(idx));
 
         let field_number = old_span.field_number;
         let field_name = self.field_name_for(idx);
