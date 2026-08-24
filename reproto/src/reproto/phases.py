@@ -1382,7 +1382,7 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
     from .mappings import canonize_dependency
     with _progress('Rendering proto files', 0 if ctx.quiet else len(summoned), quiet=ctx.quiet) as advance:
         for re_fdp in summoned:
-            # --emit-descriptor suppresses disk output only (spec 0150):
+            # --no-emit-descriptor suppresses disk output only (spec 0150):
             # descriptor.proto (or a variant's equivalent) is otherwise
             # rendered and binary-accumulated exactly like any other WKT,
             # so --schema-db-out/--build-schema-db stays transitively

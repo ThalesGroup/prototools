@@ -463,16 +463,11 @@ EOF
     # the stub directory reproto permits (spec 0155 G1), the rest of it
     # being hopcroft.rkyv/index.rkyv.
     #
-    # --emit-descriptor: reproto suppresses google/protobuf/descriptor.proto
-    # from -O by default, but it is the one file whose types you see first
-    # when protolens opens a descriptor set, so without it jump-to-definition
-    # misses on every top-level node.
     mkdir -p "$out"
     reproto \
       --use-variant all \
       --force-proto2-for-editions \
       --proto-out="$out/googleapis/proto" \
-      --emit-descriptor \
       --emit-scoring-yaml \
       --emit-binary \
       --schema-db-out="$out/googleapis.desc" \
@@ -601,16 +596,12 @@ print('\n'.join(lines[:$N_EXTRA]))
     done
 
     # ── Build the schema DB ───────────────────────────────────────────────────
-    # -O and --emit-descriptor as in googleapisDb above, for the same
-    # reason: protolens's default proto_root is the stub's `proto` child,
-    # and descriptor.proto is suppressed from -O unless asked for.
     mkdir -p "$out"
     reproto \
       --use-variant all \
       --force-proto2-for-editions \
       -I"$PB" \
       --proto-out="$out/custom/proto" \
-      --emit-descriptor \
       --emit-scoring-yaml \
       --schema-db-out="$out/custom.desc" \
       .

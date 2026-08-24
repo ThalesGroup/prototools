@@ -180,7 +180,7 @@ _SECTIONS: dict[str, str] = {
     '--proto-variant':       'Variant / Schema',
     '--use-variant':         'Variant / Schema',
     '--keep-descriptor-path': 'Variant / Schema',
-    '--emit-descriptor':     'Variant / Schema',
+    '--no-emit-descriptor':  'Variant / Schema',
     '--seed':                'Filtering',
     '--prune':               'Filtering',
     '--filter-config':       'Filtering',
@@ -411,9 +411,12 @@ class _SectionedCommand(click.Command):
 )
 
 @click.option(
-    '--emit-descriptor',
+    '--no-emit-descriptor',
+    'emit_descriptor',
     is_flag=True,
-    help='Write descriptor.proto to the output directory (suppressed by default)',
+    flag_value=False,
+    default=True,
+    help='Suppress writing descriptor.proto to the output directory',
 )
 
 @click.option(

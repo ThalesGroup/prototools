@@ -134,7 +134,7 @@ reproto [OPTIONS] PB_FILES...
 | `--prune FQDN` | Exclude FQDN and its children from output |
 | `--build-schema-db FILE` | Build `.desc` + scoring graph + index (no `-O` needed) |
 | `--emit-scoring-yaml` | Write per-file scoring-graph YAML alongside `.proto` output |
-| `--emit-descriptor` | Include `descriptor.proto` in output |
+| `--no-emit-descriptor` | Exclude `descriptor.proto` from output |
 | `--dry-run` | Run all phases but skip writing files |
 | `--debug` | Verbose per-phase logging |
 | `--version` | Print version and exit |

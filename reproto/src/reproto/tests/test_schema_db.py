@@ -7,7 +7,7 @@
 Regression test for a bug where --schema-db-out/--build-schema-db
 silently omitted google/protobuf/descriptor.proto (or a variant's
 equivalent) from the produced FileDescriptorSet whenever it was needed
-only as a custom-option dependency and --emit-descriptor was not
+only as a custom-option dependency and --no-emit-descriptor was
 passed, violating the transitive-completeness invariant required by
 consumers such as prost_reflect::DescriptorPool::decode.
 """
@@ -36,7 +36,7 @@ def _compile(orig_dir: Path, proto_name: str) -> Path:
 
 
 def test_G1_schema_db_includes_suppressed_descriptor_proto(tmp_path: Path) -> None:
-    """--schema-db-out without --emit-descriptor must still include
+    """--schema-db-out with --no-emit-descriptor must still include
     google/protobuf/descriptor.proto when a custom option pulls it in
     (spec 0150), while --proto-out continues to omit it (N1)."""
     orig_dir = tmp_path / "orig"
@@ -59,6 +59,7 @@ def test_G1_schema_db_includes_suppressed_descriptor_proto(tmp_path: Path) -> No
     cmd = [
         sys.executable, "-m", "reproto.cli",
         "--use-variant", "descriptor",
+        "--no-emit-descriptor",
         f"-I{FIXTURES_DIR}",
         f"--proto-out={out_dir}",
         f"--schema-db-out={db_path}",
