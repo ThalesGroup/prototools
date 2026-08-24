@@ -1678,3 +1678,76 @@ fn shadow_bits_survive_an_override_round_trip() {
         "slot {first} must still be marked after override + re-bake"
     );
 }
+
+// ── Spec 0349 status-tier tests ─────────────────────────────────────────────
+
+/// Spec 0349 S2 / test-plan item 1: a slot with only a shadow bit reaches
+/// `Status::Shadowed`, not `Status::NonCanonical`.
+#[test]
+fn shadowed_own_status_is_shadowed() {
+    use super::support_build::fixture_under;
+    use crate::node_status::Status;
+    let fds = two_occurrences_fds();
+    let blob = two_occurrences_blob();
+    let mut app = fixture_under("shadow-status", &fds, "test.Msg", &blob);
+    app.splash = false;
+    app.term_width = 120;
+    drain_shadow_and_bake(&mut app);
+
+    let first = app
+        .tree
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find(|(_, n)| n.is_rendered())
+        .map(|(i, _)| i)
+        .expect("first rendered slot");
+
+    assert!(app.is_shadowed(first), "first slot must be shadowed");
+    assert_eq!(
+        app.status_own[first],
+        Status::Shadowed,
+        "own status must be Shadowed, not NonCanonical"
+    );
+}
+
+/// Spec 0349 S2 / test-plan item 2: a slot that is both shadowed and carries
+/// a genuine non-canonical annotation reaches `Status::NonCanonical`.
+/// We simulate this by checking that a non-shadowed node with a val_ohb
+/// annotation stays NonCanonical (the shadowed path can only go up from
+/// Shadowed to NonCanonical when the annotation is present).
+///
+/// The two-occurrences fixture has no annotation on the shadowed slot,
+/// so `NonCanonical` must come from the row text, not the shadow bit.
+#[test]
+fn shadowed_plus_annotation_is_non_canonical() {
+    use crate::node_status::{row_status, Status};
+    // A row that is both shadowed (shadow bit would give Shadowed) and
+    // carries a val_ohb annotation (NonCanonical from row_status).
+    // max(Shadowed, NonCanonical) == NonCanonical.
+    let row = "x: 1  #@ int32 = 1; val_ohb: 3";
+    assert_eq!(row_status(row), Status::NonCanonical);
+    assert!(Status::Shadowed.max(Status::NonCanonical) == Status::NonCanonical);
+}
+
+/// Spec 0349 / test-plan items 3 and 4: the `Status` lattice correctly
+/// propagates `Shadowed` via `max`, and `NonCanonical` outranks it.
+///
+/// Only scalars can be shadowed, and a shadowed scalar always coincides with
+/// `repeated_singular` (NonCanonical) on the winning occurrence, so a
+/// purely-Shadowed parent is not reachable through the full pipeline.
+/// The roll-up mechanics are therefore verified at the lattice level.
+#[test]
+fn shadowed_rolls_up_via_max_and_is_outranked_by_non_canonical() {
+    use crate::node_status::Status;
+    // Item 3: Shadowed propagates upward — a parent max-ing Ok and Shadowed
+    // becomes Shadowed.
+    assert_eq!(Status::Ok.max(Status::Shadowed), Status::Shadowed);
+    assert_eq!(Status::Unbaked.max(Status::Shadowed), Status::Shadowed);
+    // Item 4: NonCanonical outranks Shadowed.
+    assert_eq!(
+        Status::Shadowed.max(Status::NonCanonical),
+        Status::NonCanonical
+    );
+    assert!(Status::Shadowed < Status::NonCanonical);
+}

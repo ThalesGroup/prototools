@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Spec 0247: how bad a rendered row is, on a four-rung ladder.
+//! Spec 0247: how bad a rendered row is, on a five-rung ladder.
 //!
 //! The rungs are ordered, so rolling a subtree up is `Ord::max` — see
 //! `tui::node_status` for the roll-up itself. This module only decides
@@ -19,6 +19,13 @@ use crate::annotation::{self, Tier};
 
 /// How bad a node is, worst last. `Ord` is the severity order, so
 /// `worst_of` is `max` on a single byte (spec 0247 S1).
+///
+/// Spec 0349: `Shadowed` sits between `Unbaked` and `Unknown`. A
+/// shadowed scalar is valid on the wire and round-trips — the last
+/// occurrence wins — so it is less severe than `Unknown`, which signals
+/// a field the schema has nothing to say about. The glyph (hollow vs
+/// filled) is the visual distinction from `NonCanonical`; the color
+/// (amber) is the same.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 #[repr(u8)]
 pub enum Status {
@@ -37,14 +44,20 @@ pub enum Status {
     /// would make spec 0247's promise — that a toggle carries the worst
     /// news below it — simply false over an auto-fold.
     Unbaked = 1,
+    /// This scalar is overridden by a later occurrence of the same
+    /// singular field (spec 0343 / spec 0349). The last occurrence wins
+    /// on the wire; this one's value is silently discarded. Less severe
+    /// than `Unknown`: the bytes are well-formed and the schema knows
+    /// the field — it is just not the one that counts.
+    Shadowed = 2,
     /// No schema declares this field, so the row shows a field *number*
     /// and prototext could say nothing about what the bytes mean.
-    Unknown = 2,
+    Unknown = 3,
     /// Legal on the wire and round-trips, but no conformant writer
     /// emits one.
-    NonCanonical = 3,
+    NonCanonical = 4,
     /// Not legal. The blob is malformed, or the schema cannot be this.
-    Invalid = 4,
+    Invalid = 5,
 }
 
 impl From<Tier> for Status {
@@ -126,8 +139,10 @@ mod tests {
     #[test]
     fn the_ladder_is_ordered_by_severity() {
         assert!(Status::Ok < Status::Unbaked);
+        // Spec 0349: Shadowed sits between Unbaked and Unknown.
+        assert!(Status::Unbaked < Status::Shadowed);
         // Spec 0249 S12: below every *known* defect, deliberately.
-        assert!(Status::Unbaked < Status::Unknown);
+        assert!(Status::Shadowed < Status::Unknown);
         assert!(Status::Unknown < Status::NonCanonical);
         assert!(Status::NonCanonical < Status::Invalid);
         assert_eq!(Status::default(), Status::Ok);

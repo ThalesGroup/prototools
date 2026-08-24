@@ -196,11 +196,12 @@ impl App {
         if is_stop {
             worst = worst.max(Status::Unbaked);
         }
-        // Spec 0343 B9: a shadowed scalar is at least NonCanonical.
-        // The ◆ on a leaf follows from this rung through the normal
-        // status_of / theme::status_color path — no new display code.
+        // Spec 0349 S2 (replaces spec 0343 B9): a shadowed scalar is at
+        // least Shadowed.  A node that also has a genuine non-canonical
+        // annotation reaches NonCanonical through row_status's own
+        // contribution, so no explicit max with NonCanonical is needed.
         if shadowed {
-            worst = worst.max(Status::NonCanonical);
+            worst = worst.max(Status::Shadowed);
         }
         worst
     }

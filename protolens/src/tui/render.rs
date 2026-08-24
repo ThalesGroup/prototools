@@ -140,6 +140,21 @@ pub(super) const HEAT_FIELD_WIDTH: usize = 2;
 /// mark exists for.
 pub(super) const ANOMALY_GLYPH: char = '◆';
 
+/// Spec 0349 S5: hollow counterpart of [`ANOMALY_GLYPH`], worn by a leaf
+/// whose status is exactly `Shadowed` — overridden by a later occurrence
+/// but free of any other annotation.  `◇` U+25C7 `WHITE DIAMOND`, same
+/// block and width class as U+25C6.
+pub(super) const HOLLOW_ANOMALY_GLYPH: char = '◇';
+
+/// Spec 0349 S5: hollow open-fold toggle for a node whose subtree is
+/// entirely `Shadowed` (no genuine non-canonical annotation anywhere).
+/// `▽` U+25BD `WHITE DOWN-POINTING TRIANGLE`.
+pub(super) const FOLD_GLYPH_OPEN_HOLLOW: char = '▽';
+
+/// Spec 0349 S5: hollow closed-fold toggle, counterpart of
+/// [`FOLD_GLYPH_CLOSED`].  `▷` U+25B7 `WHITE RIGHT-POINTING TRIANGLE`.
+pub(super) const FOLD_GLYPH_CLOSED_HOLLOW: char = '▷';
+
 /// Spec 0318 S7: the bar an override preview draws down the fold column
 /// of its own rows. A box-drawing light vertical (U+2502), not one of
 /// the block elements: the column is one cell wide and shared with a
@@ -947,7 +962,13 @@ impl App {
             // not defects, and both are near-universal where they occur
             // — an untyped document is `Unknown` throughout (spec 0247
             // S12), so marking it would mark every leaf on screen.
-            None => (self.status_of(idx) >= Status::NonCanonical).then_some(ANOMALY_GLYPH),
+            // Spec 0349 S3: Shadowed gets a hollow diamond; NonCanonical
+            // and above get the filled one.
+            None => match self.status_of(idx) {
+                s if s >= Status::NonCanonical => Some(ANOMALY_GLYPH),
+                Status::Shadowed => Some(HOLLOW_ANOMALY_GLYPH),
+                _ => None,
+            },
         }
     }
 
@@ -962,8 +983,16 @@ impl App {
         if !self.has_children(idx) {
             return None;
         }
+        // Spec 0349 S4: hollow glyphs when the subtree's worst signal is
+        // exactly Shadowed — no genuine non-canonical annotation anywhere.
         Some(if self.is_folded(idx) {
-            FOLD_GLYPH_CLOSED
+            if self.status_of(idx) == Status::Shadowed {
+                FOLD_GLYPH_CLOSED_HOLLOW
+            } else {
+                FOLD_GLYPH_CLOSED
+            }
+        } else if self.status_of(idx) == Status::Shadowed {
+            FOLD_GLYPH_OPEN_HOLLOW
         } else {
             FOLD_GLYPH_OPEN
         })
@@ -1348,18 +1377,15 @@ impl App {
         out
     }
 
-    /// Spec 0334 S2: a bar wears `margin_glyph_color` of *its own*
-    /// node — the very call that node's triangle takes its color from,
-    /// so the two are the same color by construction rather than by a
-    /// second lookup that could come to disagree.
+    /// Spec 0349 S9: a bar wears a dimmed variant of its owner's status
+    /// color (same hue, ~60% luminance), so it recedes behind the fold
+    /// toggle it descends from. An `Ok` node has no status color and
+    /// draws in the terminal's default foreground.
     ///
-    /// Near and far bars are not told apart here. All bars use the same
-    /// thin glyph ([`TIER_BAR_GLYPH`]) and take their color from the
-    /// owner's status — see [`App::margin_glyph_color`]. An `Ok` node
-    /// has no status color and draws in the terminal's default
-    /// foreground whether it is near or far.
+    /// Near and far bars are not told apart. All bars use the same thin
+    /// glyph ([`TIER_BAR_GLYPH`]) and same dimmed color formula.
     fn bar_style(&self, bar: &CursorBar) -> Style {
-        match self.margin_glyph_color(Some(bar.owner)) {
+        match theme::bar_status_color(self.status_of(bar.owner), self.theme) {
             Some(color) => Style::default().fg(color),
             None => Style::default(),
         }

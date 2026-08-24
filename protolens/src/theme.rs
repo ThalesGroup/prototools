@@ -633,6 +633,9 @@ fn status_color_in(status: Status, theme: ThemeKind, rgb: bool) -> Option<Color>
             (DARK_RGB.status_unbaked, Color::DarkGray),
             (LIGHT_RGB.status_unbaked, Color::Gray),
         ),
+        // Spec 0349 S6: Shadowed uses the same amber as NonCanonical.
+        // The hollow vs filled glyph is the only visual distinction.
+        Status::Shadowed => tier_color(Tier::NonCanonical, theme, rgb),
         Status::Unknown => unknown_color(theme, rgb),
         Status::NonCanonical => tier_color(Tier::NonCanonical, theme, rgb),
         Status::Invalid => tier_color(Tier::Invalid, theme, rgb),
@@ -670,6 +673,53 @@ pub fn preview_bar_color(complete: bool, theme: ThemeKind) -> Option<Color> {
         (DARK_RGB.status_unbaked, Color::DarkGray),
         (LIGHT_RGB.status_unbaked, Color::Gray),
     ))
+}
+
+/// Spec 0349 S8: the color of a cursor bar (`│`) — same hue as the
+/// owner's `status_color`, but dimmed to ~60% luminance so the bar
+/// recedes behind the fold toggle it descends from.
+///
+/// `None` for `Ok` (bar draws in the terminal's default foreground,
+/// which is the same as an unstyled `Ok` node's triangle).
+///
+/// Concrete RGB values (dark theme):
+///
+/// | Status | Full | Dimmed |
+/// |---|---|---|
+/// | Unbaked | `#808080` | `#4D4D4D` |
+/// | Shadowed / NonCanonical | `#EFB94E` | `#8F6E2E` |
+/// | Invalid | `#E05C5C` | `#8A3636` |
+/// | Unknown | `#4D8FFF` | `#2D5599` |
+pub fn bar_status_color(status: Status, theme: ThemeKind) -> Option<Color> {
+    bar_status_color_in(status, theme, supports_rgb())
+}
+
+fn bar_status_color_in(status: Status, _theme: ThemeKind, rgb: bool) -> Option<Color> {
+    if status == Status::Ok {
+        return None;
+    }
+    if !rgb {
+        // ANSI-16 fallbacks: one step darker than the full-color named color.
+        // Ratatui's Color::Yellow maps to ANSI dark yellow (dim amber),
+        // Color::Blue to dark blue, Color::Red to dark red — these are
+        // the naturally dimmer variants on ANSI-16 terminals.
+        return Some(match status {
+            Status::Ok => unreachable!(),
+            Status::Unbaked => Color::DarkGray,
+            Status::Shadowed | Status::NonCanonical => Color::Yellow,
+            Status::Unknown => Color::Blue,
+            Status::Invalid => Color::Red,
+        });
+    }
+    // RGB: ~60% luminance of the full-intensity color.  The dimmed values
+    // are hue-based and do not vary by theme.
+    Some(match status {
+        Status::Ok => unreachable!("handled by early return above"),
+        Status::Unbaked => Color::Rgb(0x4D, 0x4D, 0x4D),
+        Status::Shadowed | Status::NonCanonical => Color::Rgb(0x8F, 0x6E, 0x2E),
+        Status::Unknown => Color::Rgb(0x2D, 0x55, 0x99),
+        Status::Invalid => Color::Rgb(0x8A, 0x36, 0x36),
+    })
 }
 
 /// The color of `tier`, in whichever of the four palettes applies.
@@ -1775,12 +1825,26 @@ mod tests {
     /// `Status::Unbaked` because it is deliberately a neutral and is
     /// not on that scale. See `unbaked_is_a_neutral_and_not_a_hue`,
     /// which is the test that holds it to that.
-    const MARGIN_HUES: [Status; 3] = [Status::Unknown, Status::NonCanonical, Status::Invalid];
+    // Spec 0349 S7: Shadowed is added to the hue list. The
+    // (Shadowed, NonCanonical) pair is exempted below because both
+    // borrow the same amber by design.
+    const MARGIN_HUES: [Status; 4] = [
+        Status::Shadowed,
+        Status::Unknown,
+        Status::NonCanonical,
+        Status::Invalid,
+    ];
 
     /// Whether a margin color is a tier's, taken whole, rather than one
     /// picked for this column. See `status_color`.
+    // Spec 0349 S7: Shadowed also borrows a tier color (NonCanonical's
+    // amber), so it is exempt from the luma ceiling and pairs with
+    // NonCanonical as same-color-by-design.
     fn borrows_a_tier(status: Status) -> bool {
-        matches!(status, Status::NonCanonical | Status::Invalid)
+        matches!(
+            status,
+            Status::Shadowed | Status::NonCanonical | Status::Invalid
+        )
     }
 
     /// Spec 0260 S1: every color the fold margin can wear is saturated
@@ -1905,6 +1969,9 @@ mod tests {
                 .collect();
             for (i, &(a, ha)) in hues.iter().enumerate() {
                 for &(b, hb) in &hues[i + 1..] {
+                    // Spec 0349 S7: Shadowed/NonCanonical share the same
+                    // amber by design; exempt the pair just as
+                    // NonCanonical/Invalid are exempted via borrows_a_tier.
                     if borrows_a_tier(a) && borrows_a_tier(b) {
                         continue;
                     }
