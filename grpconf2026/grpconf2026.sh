@@ -1,10 +1,23 @@
-clear && header prototools && echo $'\n\t\t'"gRPConf 2026 North America"$'\n\n\t\t'"fred@s3ns.io"$'\n\t\t'"tabutter@google.com"$'\n\n\n'
+header prototools && blue "#           gRPConf 2026 North America"
+# \
+#                                                                              \
+#                                                                              \
+#           Frederic Ruget                                                     \
+#           Senior Cloud Architect, S3ns                                       \
+#           fred@s3ns.io                                                       \
+#                                                                              \
+#           Thomas Butter                                                      \
+#           Senior Software Engineer, Google                                   \
+#           tabutter@google.com                                                \
+
 
 header "Context"
 
 # \
 # S3NS is Thales x Google                                                      \
-#                                                                              \
+
+
+# \
 # prototools is 4 tools:                                                       \
 #                                                                              \
 # CLI                                                                          \
@@ -23,11 +36,12 @@ header "1. Staging"
 # The executable seems to answer routing questions by calling some external    \
 # service. Bob captured one of its calls with wireshark.                       \
 
+
 # \
 # Three files overall:                                                         \
-# - bob/app    # the downloaded executable                                     \
-# - bob/logfile    # the downloaded log file                                       \
-# - bob/capture  # the capture he made                                           \
+# - bob/app       # the downloaded executable                                     \
+# - bob/logfile   # the downloaded log file                                       \
+# - bob/capture   # the capture Bob made                                           \
 
 ls -lh bob
 
@@ -38,30 +52,46 @@ ls -lh bob
 
 header "2. protoc falls short"
 
-# Let's try protoc for decoding the log file:
+# Let's try protoc for decoding the capture file:
+cat bob/capture | protoc --decode_raw | nvim -R -
+# OK. This is protobuf indeed.
+
+# Let's try with the logfile:
 cat bob/logfile | protoc --decode_raw
-# Not much success, let's try with the captured call:
-cat bob/capture | protoc --decode_raw
-# OK. At least this is protobuf
+# No luck here...
 
-header "Can we retrieve descriptors?"
+header "3. Let's retrieve descriptors"
 
-# Let's try with protoscan
-protoscan bob/app | head && echo "..."$'\n'"$(protoscan bob/app | wc -l) descriptors"
-# So bob/app contains reflected descriptors
+# protoscan is our friend
+protoscan bob/app | nvim -R -
+# So bob/app contains reflected descriptors indeed
 
-# Let's retrieve, decompile and index these descriptors
-reproto -I bob/app --schema-db-out alice/app.desc
+# Let's retrieve, decompile and index the descriptors
+reproto --desc-root bob/app --schema-db-out alice/app.desc
+
 # \
 # A couple of files were produced:                                             \
 # - app.desc: FileDescriptorSet for descriptors in app                         \
 # - app/index.rkyv: Index for fast access and loading                          \
 # - app/hopcroft.rkyv: Graph for type inference                                \
-# - app/proto/: Decompiled descriptors (.proto syntax)                         \
+# - app/proto/: Decompiled descriptors                                         \
 
-ls -lhd alice/app.desc alice/app/index.rkyv alice/app/hopcroft.rkyv alice/app/proto
+ls -lhd alice/app.desc alice/app/*
 
-tree alice/app | nvim -
+tree alice/app/proto | nvim -R -
+# Let's look at one decompiled .proto file:
+nvim -R alice/app/proto/google/maps/routing/v2/waypoint.proto
+
+header "4. Let's use the descriptors"
+
+# prototext is our friend
+prototext --descriptor-set alice/app.desc decode bob/capture | nvim -R -
+# prototext was able to infer capture's protobuf type
+# --> google.maps.routing.v2.ComputeRoutesRequest
+
+# Let's try with the logfile:
+prototext --descriptor-set alice/app.desc decode bob/logfile | nvim -R -
+
 
 # \
 # The standard tool needs three things Bob does not have.                       \

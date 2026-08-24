@@ -310,6 +310,14 @@ if [[ -n "$SPLASH_NAME" ]]; then
     header "$SPLASH_NAME"
 elif [[ -f "$SPLASH_FILE" ]]; then
     cat "$SPLASH_FILE"
+else
+    _config_stem="$(basename "$CONFIG_FILE")"
+    _config_stem="${_config_stem%.*}"
+    _auto_splash="$(dirname "$CONFIG_FILE")/${_config_stem}.splash"
+    if [[ -f "$_auto_splash" ]]; then
+        cat "$_auto_splash"
+    fi
+    unset _config_stem _auto_splash
 fi
 printf "%s  F1  help   F2  duplicate   F3  delete   Ctrl-S  save%s\n\n" "$YELLOW" "$RESET"
 
