@@ -525,7 +525,13 @@ end, { expr = true, silent = true })
 
 -- ── 2. Proto filetype + syntax highlighting (spec 0145) ──────────────────────
 
-vim.filetype.add({ extension = { proto = "proto" } })
+vim.filetype.add({
+  extension = {
+    proto     = "proto",
+    textproto = "textproto",
+    pbtxt     = "textproto",
+  },
+})
 
 vim.api.nvim_create_autocmd("FileType", {
   pattern  = "proto",
@@ -552,6 +558,31 @@ vim.api.nvim_create_autocmd("FileType", {
       cmd      = { "buf", "lsp", "serve" },
       root_dir = root,
     })
+  end,
+})
+
+vim.api.nvim_create_autocmd("FileType", {
+  pattern  = "textproto",
+  callback = function()
+    vim.bo.commentstring = "# %s"
+    vim.cmd([=[
+      syntax match  tpComment   "#.*$"
+      syntax region tpString    start=+"+ end=+"+ skip=+\\"+
+      syntax region tpString    start=+'+ end=+'+ skip=+\\'+
+      syntax match  tpNumber    "\<-\?\d\+\(\.\d*\)\?\([eE][+-]\?\d\+\)\?\>"
+      syntax match  tpNumber    "\<0[xX][0-9a-fA-F]\+\>"
+      syntax keyword tpBool     true false True False
+      syntax match  tpField     "^\s*\zs[a-zA-Z_][a-zA-Z0-9_]*\ze\s*[:{<\[]"
+      syntax match  tpFieldExt  "^\s*\zs\[[^\]]*\]\ze\s*[:{<\[]"
+      syntax match  tpDelim     "[{}<>\[\]]"
+      highlight default link tpComment  Comment
+      highlight default link tpString   String
+      highlight default link tpNumber   Number
+      highlight default link tpBool     Boolean
+      highlight default link tpField    Identifier
+      highlight default link tpFieldExt PreProc
+      highlight default link tpDelim    Delimiter
+    ]=])
   end,
 })
 
