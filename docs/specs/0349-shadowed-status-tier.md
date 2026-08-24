@@ -134,7 +134,7 @@ descends from overweights it.
 
   | Status | Full color | Dimmed bar color |
   |---|---|---|
-  | Unbaked | `#808080` | `#4D4D4D` |
+  | Unbaked | `#808080` | `#303030` |
   | Shadowed | `#EFB94E` | `#8F6E2E` |
   | NonCanonical | `#EFB94E` | `#8F6E2E` |
   | Invalid | `#E05C5C` | `#8A3636` |

@@ -686,7 +686,7 @@ pub fn preview_bar_color(complete: bool, theme: ThemeKind) -> Option<Color> {
 ///
 /// | Status | Full | Dimmed |
 /// |---|---|---|
-/// | Unbaked | `#808080` | `#4D4D4D` |
+/// | Unbaked | `#808080` | `#303030` |
 /// | Shadowed / NonCanonical | `#EFB94E` | `#8F6E2E` |
 /// | Invalid | `#E05C5C` | `#8A3636` |
 /// | Unknown | `#4D8FFF` | `#2D5599` |
@@ -715,7 +715,7 @@ fn bar_status_color_in(status: Status, _theme: ThemeKind, rgb: bool) -> Option<C
     // are hue-based and do not vary by theme.
     Some(match status {
         Status::Ok => unreachable!("handled by early return above"),
-        Status::Unbaked => Color::Rgb(0x4D, 0x4D, 0x4D),
+        Status::Unbaked => Color::Rgb(0x30, 0x30, 0x30),
         Status::Shadowed | Status::NonCanonical => Color::Rgb(0x8F, 0x6E, 0x2E),
         Status::Unknown => Color::Rgb(0x2D, 0x55, 0x99),
         Status::Invalid => Color::Rgb(0x8A, 0x36, 0x36),
