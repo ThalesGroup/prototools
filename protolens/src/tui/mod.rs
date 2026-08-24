@@ -1957,6 +1957,12 @@ pub struct App {
     /// as `Enter`. Tracked separately from `last_manage_click`, which is
     /// marker-column-only and drives an unrelated toggle behavior.
     last_manage_row_click: Option<(Instant, usize)>,
+    /// Timestamp + candidate index of the most recent left-click `Down`
+    /// that landed on a row in the override selection pane — compared
+    /// against on the next such click to recognize a double-click (same
+    /// row, within `DOUBLE_CLICK_THRESHOLD`), which applies the
+    /// highlighted candidate and closes the pane, same as `Enter`.
+    last_override_click: Option<(Instant, usize)>,
     /// `Some((origin, kind, cursor_moves))` while a `z`/`Z` attempt in
     /// the management pane is unresolved (spec 0134 G2/G3): `origin` is
     /// the highlighted entry's origin at the time of that attempt,
@@ -2446,6 +2452,7 @@ impl App {
             last_manage_highlight: None,
             last_manage_click: None,
             last_manage_row_click: None,
+            last_override_click: None,
             manage_pending_kind: None,
             manage_list_height: 0,
             back_stack: Vec::new(),

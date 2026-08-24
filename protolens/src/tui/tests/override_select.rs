@@ -2229,3 +2229,70 @@ fn t_on_schema_blind_varint_node_opens_on_int32() {
         .map(|(f, _)| f.as_str());
     assert_eq!(highlighted, Some("int32"), "highlight must be on 'int32'");
 }
+
+/// Double-clicking a candidate row in the override selection pane
+/// applies it and closes the pane, same as pressing `Enter`.
+#[test]
+fn double_click_on_candidate_applies_override_and_closes_pane() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.splash = false;
+    app.cursor = inner_idx;
+
+    // Open the override pane on the inner message node.
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert!(app.override_target.is_some());
+
+    // Switch to lexicographic mode so row 0 is the "none" sentinel and
+    // row 1 is a predictable primitive keyword — independent of any
+    // inferred scorer.
+    app.override_sort = SortMode::Lexicographic;
+    app.recompute_override_candidates();
+    // Row 1 in lexicographic mode is the first primitive keyword.  Pick
+    // it as the double-click target.
+    app.override_highlight = 1;
+    let expected_fqdn = app
+        .override_candidates
+        .get(1)
+        .map(|(f, _)| f.clone())
+        .expect("row 1 must exist");
+
+    // Set up geometry: a minimal side pane covering column 40..80,
+    // rows 0..20.  Row 0 inside it maps to `override_highlight` 0, so
+    // a click on row 1 (relative to the pane's top) selects candidate 1.
+    app.side_area = Rect::new(40, 0, 40, 20);
+    app.override_list_height = 20;
+
+    // Double-click on side-pane row 1 (absolute row 1, column 41).
+    let col: u16 = 41;
+    let row: u16 = 1;
+    for _ in 0..2 {
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+    }
+
+    assert!(
+        app.override_target.is_none(),
+        "pane must close after double-click"
+    );
+    assert!(app.message.is_empty(), "no error: {}", app.message);
+    // The override entry must exist and carry the clicked FQDN.
+    let active = app
+        .overrides
+        .entries()
+        .iter()
+        .find(|e| e.r#type.as_deref() == Some(expected_fqdn.as_str()));
+    assert!(
+        active.is_some(),
+        "override entry for {expected_fqdn:?} must exist"
+    );
+}

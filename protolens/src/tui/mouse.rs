@@ -343,6 +343,15 @@ impl App {
             return;
         }
 
+        // Route `Up(Left)` over the override selection pane so the
+        // double-click detector in `handle_override_mouse` can fire on
+        // the second click's release. (The `Down` arm above returns
+        // early, so `Up` is not reached by that path.)
+        if over_side && self.override_target.is_some() {
+            self.handle_override_mouse(event);
+            return;
+        }
+
         if main_interactive {
             match event.kind {
                 // Spec 0242 S10: dragging moves the *caret* to the
@@ -441,6 +450,16 @@ impl App {
             MouseEventKind::ScrollUp => self.override_pan_vertical(WHEEL_PAN_STEP, true),
             MouseEventKind::Down(MouseButton::Left) => {
                 self.handle_override_click(event.column, event.row)
+            }
+            // Double-click on a candidate row applies it, same as `Enter`.
+            // `Down` already moved the highlight to this row, so the
+            // highlighted candidate is the one the user pointed at twice.
+            MouseEventKind::Up(MouseButton::Left) => {
+                let idx = self.override_highlight;
+                if is_double_click(&mut self.last_override_click, idx) {
+                    let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+                    self.handle_override_key(key);
+                }
             }
             _ => {}
         }
